@@ -18,6 +18,7 @@ ItemDelegate {
     required property string lastMessage
     required property string lastAuthor
     required property real lastActivity
+    required property string participantUserId
 
     property bool selected: false
     property string filterText: ""
@@ -54,29 +55,46 @@ ItemDelegate {
         spacing: Theme.spacingNormal
 
         // Avatar
-        Rectangle {
+        Item {
             width: Theme.avatarSize
             height: Theme.avatarSize
-            radius: Theme.avatarSize / 2
-            color: {
-                var colors = ["#5eb5f7", "#e17076", "#faa05a", "#7bc862", "#a695e7", "#ee7aae", "#6ec9cb", "#65aadd"]
-                var hash = 0
-                for (var i = 0; i < displayName.length; i++) {
-                    hash = ((hash << 5) - hash) + displayName.charCodeAt(i)
-                    hash = hash & hash
-                }
-                return colors[Math.abs(hash) % colors.length]
+
+            // Real avatar (pre-cropped to circle by AvatarProvider)
+            Image {
+                id: avatarImg
+                anchors.fill: parent
+                source: (conversationType === 1 && participantUserId.length > 0)
+                    ? "image://avatar/" + participantUserId : ""
+                sourceSize: Qt.size(Theme.avatarSize, Theme.avatarSize)
+                visible: status === Image.Ready
+                fillMode: Image.PreserveAspectFit
             }
 
-            Label {
-                anchors.centerIn: parent
-                text: {
-                    if (conversationType === 6) return "📝"
-                    return displayName.length > 0 ? displayName[0].toUpperCase() : "?"
+            // Fallback colored circle
+            Rectangle {
+                anchors.fill: parent
+                radius: Theme.avatarSize / 2
+                visible: avatarImg.status !== Image.Ready
+                color: {
+                    var colors = ["#5eb5f7", "#e17076", "#faa05a", "#7bc862", "#a695e7", "#ee7aae", "#6ec9cb", "#65aadd"]
+                    var hash = 0
+                    for (var i = 0; i < displayName.length; i++) {
+                        hash = ((hash << 5) - hash) + displayName.charCodeAt(i)
+                        hash = hash & hash
+                    }
+                    return colors[Math.abs(hash) % colors.length]
                 }
-                font.pixelSize: conversationType === 6 ? 20 : 18
-                font.weight: Font.DemiBold
-                color: "white"
+
+                Label {
+                    anchors.centerIn: parent
+                    text: {
+                        if (conversationType === 6) return "📝"
+                        return displayName.length > 0 ? displayName[0].toUpperCase() : "?"
+                    }
+                    font.pixelSize: conversationType === 6 ? 20 : 18
+                    font.weight: Font.DemiBold
+                    color: "white"
+                }
             }
 
             // Group badge
@@ -107,10 +125,10 @@ ItemDelegate {
                 Layout.fillWidth: true
                 spacing: Theme.spacingSmall
 
-                Label {
+                Rectangle {
                     visible: isFavorite
-                    text: "⭐"
-                    font.pixelSize: 11
+                    width: 6; height: 6; radius: 3
+                    color: Theme.accent
                 }
 
                 Label {

@@ -5,7 +5,8 @@ import QtQuick.Layouts
 
 Item {
     id: bubble
-    height: dateSep.height + (isSystem ? systemMsg.height + 6 : bubbleContent.height + (isGrouped ? 1 : 6))
+    height: dateSep.height + (isSystem ? systemMsg.height + 6
+            : msgContent.height + (isGrouped ? 2 : 8))
 
     required property int messageId
     required property string actorName
@@ -22,23 +23,36 @@ Item {
     required property bool showDateSeparator
     required property string dateString
     required property bool isRead
+    required property string sendStatus
 
     property bool isOwnMessage: false
 
-    // Date separator
+    signal replyRequested(int msgId, string author, string text)
+
+    // Author color based on actorId hash
+    function authorColor() {
+        var colors = ["#2ec4b6", "#e07060", "#f0a050", "#5ec76a", "#9b7cd4", "#e87aae", "#50b8c8", "#5a9ecf"]
+        var hash = 0
+        for (var i = 0; i < actorId.length; i++) {
+            hash = ((hash << 5) - hash) + actorId.charCodeAt(i)
+            hash = hash & hash
+        }
+        return colors[Math.abs(hash) % colors.length]
+    }
+
+    // ── Date separator ──
     Rectangle {
         id: dateSep
         visible: showDateSeparator
         width: parent.width
-        height: visible ? 36 : 0
-
+        height: visible ? 40 : 0
         color: "transparent"
 
         Rectangle {
             anchors.centerIn: parent
             width: dateLabel.implicitWidth + Theme.spacingXLarge
-            height: 24
-            radius: 12
+            height: 26
+            radius: 13
             color: Theme.bgSurface
 
             Label {
@@ -52,7 +66,7 @@ Item {
         }
     }
 
-    // System messages
+    // ── System message ──
     Item {
         id: systemMsg
         visible: isSystem
@@ -65,91 +79,139 @@ Item {
             anchors.centerIn: parent
             text: messageText
             font.pixelSize: Theme.fontSizeTiny
+            font.italic: true
             color: Theme.systemMsg
         }
     }
 
-    // Regular message
+    // ── Regular message ──
     Item {
-        id: bubbleContent
+        id: msgContent
         visible: !isSystem
         anchors.top: dateSep.bottom
         width: parent.width
-        height: bubbleRect.height
+        height: isOwnMessage ? ownBubble.height : otherMsg.height
 
-        Rectangle {
-            id: bubbleRect
-            width: Math.max(msgCol.implicitWidth + 28, timeLabel.implicitWidth + 28)
-            height: msgCol.implicitHeight + 14
+        HoverHandler {
+            id: msgHover
+        }
 
-            // Clamp between reasonable min/max
-            Component.onCompleted: {
-                width = Qt.binding(function() {
-                    var natural = Math.max(msgCol.implicitWidth + 28, timeLabel.implicitWidth + 40)
-                    return Math.min(Math.max(natural, 80), bubble.width * 0.85)
-                })
+        // Reply button (appears on hover)
+        ToolButton {
+            visible: msgHover.hovered && messageId > 0 && sendStatus !== "sending" && sendStatus !== "failed"
+            z: 10
+            width: 28; height: 28
+            anchors.right: isOwnMessage ? ownBubble.left : undefined
+            anchors.left: isOwnMessage ? undefined : (otherMsg.visible ? otherMsgCol.right : undefined)
+            anchors.top: parent.top
+            anchors.margins: 2
+            ToolTip.visible: hovered
+            ToolTip.text: "Reply"
+            ToolTip.delay: 300
+
+            onClicked: bubble.replyRequested(messageId, actorName, messageText)
+
+            contentItem: Label {
+                text: "\u21A9"  // ↩ reply arrow
+                font.pixelSize: 14
+                color: parent.hovered ? Theme.accent : Theme.textSecondary
+                horizontalAlignment: Text.AlignHCenter
+                verticalAlignment: Text.AlignVCenter
             }
-
-            radius: Theme.radiusNormal
-            color: isOwnMessage ? Theme.bgMessageOwn : Theme.bgMessage
-
-            anchors {
-                left: isOwnMessage ? undefined : parent.left
-                right: isOwnMessage ? parent.right : undefined
-                leftMargin: isOwnMessage ? 0 : Theme.spacingNormal
-                rightMargin: isOwnMessage ? Theme.spacingNormal : 0
+            background: Rectangle {
+                radius: 14
+                color: parent.hovered ? Theme.bgHover : Theme.bgSurface
+                border.color: Theme.divider
+                border.width: 1
             }
+        }
 
-            ColumnLayout {
-                id: msgCol
-                anchors {
-                    left: parent.left
-                    right: parent.right
-                    top: parent.top
-                    margins: 7
-                    leftMargin: Theme.spacingNormal
-                    rightMargin: Theme.spacingNormal
+        // ═══════════════════════════════════════
+        // OTHER PEOPLE'S MESSAGES — flat, no bubble
+        // ═══════════════════════════════════════
+        Row {
+            id: otherMsg
+            visible: !isOwnMessage
+            spacing: Theme.spacingSmall
+            anchors.left: parent.left
+            anchors.leftMargin: Theme.spacingNormal
+
+            // Avatar
+            Item {
+                width: Theme.avatarSizeSmall
+                height: Theme.avatarSizeSmall
+                anchors.top: parent.top
+                anchors.topMargin: isGrouped ? 0 : 2
+                opacity: isGrouped ? 0 : 1
+
+                Image {
+                    id: otherAvatarImg
+                    anchors.fill: parent
+                    source: !isGrouped && actorId.length > 0
+                        ? "image://avatar/" + actorId : ""
+                    sourceSize: Qt.size(Theme.avatarSizeSmall, Theme.avatarSizeSmall)
+                    visible: status === Image.Ready
+                    fillMode: Image.PreserveAspectFit
                 }
+
+                Rectangle {
+                    anchors.fill: parent
+                    radius: width / 2
+                    visible: !isGrouped && otherAvatarImg.status !== Image.Ready
+                    color: authorColor()
+
+                    Label {
+                        anchors.centerIn: parent
+                        text: actorName.length > 0 ? actorName[0].toUpperCase() : "?"
+                        font.pixelSize: 12
+                        font.weight: Font.DemiBold
+                        color: "white"
+                    }
+                }
+            }
+
+            // Message content (flat — no bubble)
+            ColumnLayout {
+                id: otherMsgCol
+                width: Math.min(implicitWidth, bubble.width * 0.75 - Theme.avatarSizeSmall - 20)
                 spacing: 2
 
-                // Author
-                Label {
-                    visible: !isOwnMessage && !isGrouped
-                    text: actorName
-                    font.pixelSize: Theme.fontSizeSmall
-                    font.weight: Font.DemiBold
-                    color: {
-                        var colors = ["#5eb5f7", "#e17076", "#faa05a", "#7bc862", "#a695e7", "#ee7aae"]
-                        var hash = 0
-                        for (var i = 0; i < actorId.length; i++) {
-                            hash = ((hash << 5) - hash) + actorId.charCodeAt(i)
-                            hash = hash & hash
-                        }
-                        return colors[Math.abs(hash) % colors.length]
+                // Name + time row
+                RowLayout {
+                    visible: !isGrouped
+                    spacing: Theme.spacingSmall
+
+                    Label {
+                        text: actorName
+                        font.pixelSize: Theme.fontSizeSmall
+                        font.weight: Font.DemiBold
+                        color: authorColor()
+                    }
+
+                    Label {
+                        text: timeString
+                        font.pixelSize: Theme.fontSizeTiny
+                        color: Theme.textTime
                     }
                 }
 
-                // Reply
+                // Reply quote
                 Rectangle {
                     visible: replyToText.length > 0
                     Layout.fillWidth: true
-                    height: replyCol.implicitHeight + 8
+                    height: otherReplyCol.implicitHeight + 8
                     radius: Theme.radiusSmall
-                    color: Qt.rgba(1, 1, 1, 0.05)
+                    color: Theme.darkMode ? Qt.rgba(1, 1, 1, 0.04) : Qt.rgba(0, 0, 0, 0.04)
 
                     Rectangle {
-                        width: 3
-                        height: parent.height
-                        radius: 1.5
-                        color: Theme.accent
+                        width: 3; height: parent.height
+                        radius: 1.5; color: Theme.accent
                     }
 
                     ColumnLayout {
-                        id: replyCol
-                        anchors {
-                            left: parent.left; right: parent.right; top: parent.top
-                            leftMargin: 10; rightMargin: 8; topMargin: 4
-                        }
+                        id: otherReplyCol
+                        anchors { left: parent.left; right: parent.right; top: parent.top
+                                  leftMargin: 10; rightMargin: 8; topMargin: 4 }
                         spacing: 1
 
                         Label {
@@ -169,14 +231,18 @@ Item {
                     }
                 }
 
-                // Message text
-                Label {
+                // Message text (selectable, with mention support)
+                TextEdit {
                     Layout.fillWidth: true
                     text: messageText
                     font.pixelSize: Theme.fontSizeNormal
                     color: Theme.textPrimary
                     wrapMode: Text.Wrap
-                    textFormat: Text.PlainText
+                    textFormat: messageText.indexOf("<b") >= 0 ? Text.RichText : Text.PlainText
+                    readOnly: true
+                    selectByMouse: true
+                    selectionColor: Theme.accent
+                    selectedTextColor: "white"
                 }
 
                 // Reactions
@@ -187,28 +253,134 @@ Item {
                     color: Theme.textSecondary
                 }
 
-                // Timestamp + sent indicator
+                // Timestamp for grouped messages (no name row)
+                Label {
+                    visible: isGrouped
+                    text: timeString
+                    font.pixelSize: Theme.fontSizeTiny
+                    color: Theme.textTime
+                }
+            }
+        }
+
+        // ═══════════════════════════════════════
+        // OWN MESSAGES — teal-tinted bubble, right-aligned
+        // ═══════════════════════════════════════
+        Rectangle {
+            id: ownBubble
+            visible: isOwnMessage
+            anchors.right: parent.right
+            anchors.rightMargin: Theme.spacingNormal
+
+            width: Math.min(Math.max(ownCol.implicitWidth + 28, 80), bubble.width * 0.75)
+            height: ownCol.implicitHeight + 14
+            radius: Theme.radiusNormal
+            color: Theme.bgMessageOwn
+
+            ColumnLayout {
+                id: ownCol
+                anchors {
+                    left: parent.left; right: parent.right; top: parent.top
+                    margins: 7
+                    leftMargin: Theme.spacingNormal
+                    rightMargin: Theme.spacingNormal
+                }
+                spacing: 2
+
+                // Reply quote
+                Rectangle {
+                    visible: replyToText.length > 0
+                    Layout.fillWidth: true
+                    height: ownReplyCol.implicitHeight + 8
+                    radius: Theme.radiusSmall
+                    color: Qt.rgba(1, 1, 1, 0.06)
+
+                    Rectangle {
+                        width: 3; height: parent.height
+                        radius: 1.5; color: Theme.accent
+                    }
+
+                    ColumnLayout {
+                        id: ownReplyCol
+                        anchors { left: parent.left; right: parent.right; top: parent.top
+                                  leftMargin: 10; rightMargin: 8; topMargin: 4 }
+                        spacing: 1
+
+                        Label {
+                            text: replyToAuthor
+                            font.pixelSize: Theme.fontSizeTiny
+                            font.weight: Font.DemiBold
+                            color: Theme.accent
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            text: replyToText
+                            font.pixelSize: Theme.fontSizeTiny
+                            color: Theme.darkMode ? Qt.rgba(1, 1, 1, 0.6) : Theme.textSecondary
+                            elide: Text.ElideRight
+                            maximumLineCount: 1
+                        }
+                    }
+                }
+
+                // Message text (selectable, with mention support)
+                TextEdit {
+                    Layout.fillWidth: true
+                    text: messageText
+                    font.pixelSize: Theme.fontSizeNormal
+                    color: Theme.textPrimary
+                    wrapMode: Text.Wrap
+                    textFormat: messageText.indexOf("<b") >= 0 ? Text.RichText : Text.PlainText
+                    readOnly: true
+                    selectByMouse: true
+                    selectionColor: Theme.accent
+                    selectedTextColor: "white"
+                }
+
+                // Reactions
+                Label {
+                    visible: reactions.length > 0
+                    text: reactions
+                    font.pixelSize: Theme.fontSizeSmall
+                    color: Theme.textSecondary
+                }
+
+                // Time + send/read status (inline, right-aligned)
                 RowLayout {
                     Layout.alignment: Qt.AlignRight
                     spacing: 4
 
                     Label {
-                        id: timeLabel
-                        text: timeString
+                        text: sendStatus === "sending" ? "Sending..." : timeString
                         font.pixelSize: 10
-                        color: isOwnMessage ? Qt.rgba(1, 1, 1, 0.45) : Theme.textTime
+                        font.italic: sendStatus === "sending"
+                        color: sendStatus === "failed" ? Theme.danger
+                             : (Theme.darkMode ? Qt.rgba(1, 1, 1, 0.45) : Theme.textTime)
                     }
 
-                    // Delivery status for own messages
+                    // Send status indicator
                     Label {
-                        visible: isOwnMessage
-                        text: isRead ? "✓✓" : "✓"
-                        font.pixelSize: 10
-                        font.letterSpacing: -2
-                        color: isRead ? Theme.accent : Qt.rgba(1, 1, 1, 0.45)
+                        visible: isOwnMessage && sendStatus !== "sending"
+                        text: sendStatus === "failed" ? "\u26A0"  // ⚠ failed
+                            : isRead ? "\u25C9" : "\u25CB"        // ◉ read / ○ sent
+                        font.pixelSize: sendStatus === "failed" ? 12 : 9
+                        color: sendStatus === "failed" ? Theme.danger
+                             : isRead ? Theme.accent
+                             : (Theme.darkMode ? Qt.rgba(1, 1, 1, 0.45) : Theme.textTime)
+
+                        MouseArea {
+                            anchors.fill: parent
+                            visible: sendStatus === "failed"
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: messageModel.retryMessage(messageId)
+                        }
                     }
                 }
             }
+
+            // Sending opacity
+            opacity: sendStatus === "sending" ? 0.6 : 1.0
+            Behavior on opacity { NumberAnimation { duration: Theme.animFast } }
         }
     }
 }

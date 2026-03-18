@@ -2,38 +2,41 @@ pragma Singleton
 import QtQuick
 
 QtObject {
+    // ─── Theme Mode ───
+    property bool darkMode: true
+
     // ─── Backgrounds ───
-    readonly property color bgPrimary: "#17212b"
-    readonly property color bgSecondary: "#0e1621"
-    readonly property color bgSidebar: "#17212b"
-    readonly property color bgMessage: "#182533"
-    readonly property color bgMessageOwn: "#2b5278"
-    readonly property color bgHover: "#1e2a36"
-    readonly property color bgSelected: "#2b5278"
-    readonly property color bgInput: "#222e3a"
-    readonly property color bgSurface: "#1c2836"        // cards, elevated panels
-    readonly property color bgOverlay: "#0a0f14"        // modal overlays
+    readonly property color bgPrimary: darkMode ? "#1a1d24" : "#ffffff"
+    readonly property color bgSecondary: darkMode ? "#14171d" : "#f5f6f8"
+    readonly property color bgSidebar: darkMode ? "#1e2128" : "#f0f1f4"
+    readonly property color bgMessage: darkMode ? "transparent" : "transparent"  // flat for others
+    readonly property color bgMessageOwn: darkMode ? "#1a3a3a" : "#d4f0ed"
+    readonly property color bgHover: darkMode ? "#262a33" : "#e8eaee"
+    readonly property color bgSelected: darkMode ? "#2a2f3a" : "#e0e4ea"
+    readonly property color bgInput: darkMode ? "#262a33" : "#f0f1f4"
+    readonly property color bgSurface: darkMode ? "#232830" : "#ffffff"
+    readonly property color bgOverlay: darkMode ? "#0a0c10" : "#00000040"
 
     // ─── Text ───
-    readonly property color textPrimary: "#e8edf2"
-    readonly property color textSecondary: "#6b8299"
-    readonly property color textTime: "#5c7389"
-    readonly property color textMuted: "#465a6e"
+    readonly property color textPrimary: darkMode ? "#e8eaed" : "#1a1d24"
+    readonly property color textSecondary: darkMode ? "#8b919a" : "#6b7280"
+    readonly property color textTime: darkMode ? "#6b7280" : "#9ca3af"
+    readonly property color textMuted: darkMode ? "#565c66" : "#b0b6c0"
 
     // ─── Accents ───
-    readonly property color accent: "#5eb5f7"
-    readonly property color accentHover: "#78c4ff"
-    readonly property color accentPressed: "#4a9de0"
-    readonly property color unreadBadge: "#4082bc"
+    readonly property color accent: darkMode ? "#2ec4b6" : "#1aab9d"
+    readonly property color accentHover: darkMode ? "#3dd4c6" : "#22bfb0"
+    readonly property color accentPressed: darkMode ? "#25a99d" : "#159488"
+    readonly property color unreadBadge: darkMode ? "#2ec4b6" : "#1aab9d"
     readonly property color online: "#5ec76a"
-    readonly property color danger: "#e74c3c"
-    readonly property color dangerHover: "#c0392b"
-    readonly property color warning: "#faa05a"
-    readonly property color systemMsg: "#5c7389"
+    readonly property color danger: "#e06060"
+    readonly property color dangerHover: "#c94545"
+    readonly property color warning: "#f0a050"
+    readonly property color systemMsg: darkMode ? "#6b7280" : "#9ca3af"
 
     // ─── Borders & Dividers ───
-    readonly property color border: "#1c2936"
-    readonly property color divider: "#162230"
+    readonly property color border: darkMode ? "#2a2f3a" : "#e5e7eb"
+    readonly property color divider: darkMode ? "#22262e" : "#eeeff2"
     readonly property color selectionBar: accent
 
     // ─── Typography ───
@@ -64,7 +67,8 @@ QtObject {
 
     // ─── Dimensions ───
     readonly property int headerHeight: 54
-    readonly property int avatarSize: 46
-    readonly property int conversationHeight: 68
-    readonly property int composerMinHeight: 52
+    readonly property int avatarSize: 44
+    readonly property int avatarSizeSmall: 32
+    readonly property int conversationHeight: 76
+    readonly property int composerMinHeight: 56
 }
