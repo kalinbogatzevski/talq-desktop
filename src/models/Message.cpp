@@ -12,6 +12,7 @@ Message Message::fromJson(const QJsonObject &json)
     m.timestamp = json["timestamp"].toInteger();
     m.messageType = json["messageType"].toString();
     m.isSystem = (m.messageType == "system");
+    m.systemMessage = json["systemMessage"].toString();
 
     // Resolve messageParameters — replace {placeholder} with styled mentions
     QJsonObject params = json["messageParameters"].toObject();
