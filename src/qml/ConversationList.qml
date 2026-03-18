@@ -29,12 +29,58 @@ Item {
                     anchors.leftMargin: Theme.spacingLarge
                     anchors.rightMargin: Theme.spacingNormal
 
-                    Image {
-                        source: "qrc:/logo.png"
-                        width: 24
-                        height: 24
-                        sourceSize: Qt.size(48, 48)
-                        fillMode: Image.PreserveAspectFit
+                    Item {
+                        width: 32
+                        height: 32
+
+                        // User avatar
+                        Image {
+                            id: headerAvatar
+                            anchors.fill: parent
+                            source: auth.userId.length > 0 ? "image://avatar/" + auth.userId : ""
+                            sourceSize: Qt.size(32, 32)
+                            visible: status === Image.Ready
+                            fillMode: Image.PreserveAspectFit
+                        }
+
+                        // Fallback
+                        Rectangle {
+                            anchors.fill: parent
+                            radius: 16
+                            visible: headerAvatar.status !== Image.Ready
+                            color: Theme.accent
+
+                            Label {
+                                anchors.centerIn: parent
+                                text: auth.displayName.length > 0 ? auth.displayName[0].toUpperCase() : "?"
+                                font.pixelSize: 14
+                                font.weight: Font.DemiBold
+                                color: "white"
+                            }
+                        }
+
+                        // Connection status LED
+                        Rectangle {
+                            anchors.right: parent.right
+                            anchors.bottom: parent.bottom
+                            width: 10; height: 10; radius: 5
+                            color: messageModel.connected ? Theme.online : Theme.danger
+                            border.color: Theme.bgSecondary
+                            border.width: 2
+
+                            SequentialAnimation on opacity {
+                                loops: messageModel.connected ? 0 : Animation.Infinite
+                                running: !messageModel.connected
+                                NumberAnimation { from: 1.0; to: 0.3; duration: 800 }
+                                NumberAnimation { from: 0.3; to: 1.0; duration: 800 }
+                            }
+
+                            ToolTip.visible: ledHover.hovered
+                            ToolTip.text: messageModel.connected ? "Connected to server" : "Disconnected"
+                            ToolTip.delay: 300
+
+                            HoverHandler { id: ledHover }
+                        }
                     }
 
                     Label {

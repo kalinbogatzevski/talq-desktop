@@ -18,6 +18,7 @@ class MessageListModel : public QAbstractListModel
     Q_OBJECT
     Q_PROPERTY(bool loading READ isLoading NOTIFY loadingChanged)
     Q_PROPERTY(QString conversationToken READ conversationToken WRITE setConversationToken NOTIFY conversationTokenChanged)
+    Q_PROPERTY(bool connected READ isConnected NOTIFY connectedChanged)
 
 public:
     enum Roles {
@@ -47,6 +48,7 @@ public:
     QHash<int, QByteArray> roleNames() const override;
 
     bool isLoading() const { return m_loading; }
+    bool isConnected() const { return m_connected; }
     QString conversationToken() const { return m_token; }
     void setConversationToken(const QString &token);
 
@@ -60,12 +62,13 @@ signals:
     void messageSent();
     void errorOccurred(const QString &error);
     void newMessagesAtEnd();
+    void connectedChanged();
 
 private slots:
     void onMessagesReceived(const QJsonArray &messages);
 
 private:
-    void appendMessages(const QJsonArray &arr);
+    void startPoller();
 
     ApiClient *m_api;
     MessageCache *m_cache;
@@ -75,6 +78,7 @@ private:
     bool m_loading = false;
     int m_oldestMessageId = 0;
     int m_lastCommonRead = 0;
+    bool m_connected = true;  // assume connected until proven otherwise
 
 private slots:
     void onLastCommonReadChanged(int messageId);

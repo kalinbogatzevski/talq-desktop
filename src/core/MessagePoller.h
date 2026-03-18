@@ -31,6 +31,7 @@ signals:
     void messagesReceived(const QJsonArray &messages);
     void lastCommonReadChanged(int messageId);
     void pollError(const QString &error);
+    void pollSuccess();  // emitted on any successful poll response (200 or 304)
 
 private:
     void poll();
