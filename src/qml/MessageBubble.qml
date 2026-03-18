@@ -5,8 +5,9 @@ import QtQuick.Layouts
 
 Item {
     id: bubble
-    height: dateSep.height + (isSystem ? systemMsg.height + 6
+    implicitHeight: dateSep.height + (isSystem ? systemMsg.height + 6
             : msgContent.height + (isGrouped ? 2 : 8))
+    height: implicitHeight
 
     required property int messageId
     required property string actorName
@@ -231,18 +232,40 @@ Item {
                     }
                 }
 
-                // Message text (selectable, with mention support)
-                TextEdit {
+                // Message text with right-click copy
+                Label {
+                    id: msgLabel
                     Layout.fillWidth: true
                     text: messageText
                     font.pixelSize: Theme.fontSizeNormal
                     color: Theme.textPrimary
                     wrapMode: Text.Wrap
                     textFormat: messageText.indexOf("<b") >= 0 ? Text.RichText : Text.PlainText
-                    readOnly: true
-                    selectByMouse: true
-                    selectionColor: Theme.accent
-                    selectedTextColor: "white"
+
+                    // Hidden helper for clipboard
+                    TextEdit {
+                        id: clipHelper
+                        visible: false
+                    }
+
+                    MouseArea {
+                        anchors.fill: parent
+                        acceptedButtons: Qt.RightButton
+                        onClicked: msgContextMenu.popup()
+                    }
+
+                    Menu {
+                        id: msgContextMenu
+                        MenuItem {
+                            text: "Copy message"
+                            onTriggered: {
+                                var plain = messageText.replace(/<[^>]*>/g, "")
+                                clipHelper.text = plain
+                                clipHelper.selectAll()
+                                clipHelper.copy()
+                            }
+                        }
+                    }
                 }
 
                 // Reactions
@@ -323,18 +346,39 @@ Item {
                     }
                 }
 
-                // Message text (selectable, with mention support)
-                TextEdit {
+                // Message text with right-click copy
+                Label {
+                    id: ownMsgLabel
                     Layout.fillWidth: true
                     text: messageText
                     font.pixelSize: Theme.fontSizeNormal
                     color: Theme.textPrimary
                     wrapMode: Text.Wrap
                     textFormat: messageText.indexOf("<b") >= 0 ? Text.RichText : Text.PlainText
-                    readOnly: true
-                    selectByMouse: true
-                    selectionColor: Theme.accent
-                    selectedTextColor: "white"
+
+                    TextEdit {
+                        id: ownClipHelper
+                        visible: false
+                    }
+
+                    MouseArea {
+                        anchors.fill: parent
+                        acceptedButtons: Qt.RightButton
+                        onClicked: ownContextMenu.popup()
+                    }
+
+                    Menu {
+                        id: ownContextMenu
+                        MenuItem {
+                            text: "Copy message"
+                            onTriggered: {
+                                var plain = messageText.replace(/<[^>]*>/g, "")
+                                ownClipHelper.text = plain
+                                ownClipHelper.selectAll()
+                                ownClipHelper.copy()
+                            }
+                        }
+                    }
                 }
 
                 // Reactions

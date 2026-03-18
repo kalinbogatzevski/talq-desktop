@@ -5,7 +5,8 @@ import QtQuick.Layouts
 
 Rectangle {
     id: composer
-    height: Math.max(Theme.composerMinHeight, inputField.implicitHeight + 18)
+    implicitHeight: Math.max(Theme.composerMinHeight, inputField.implicitHeight + 18)
+    height: implicitHeight
     color: Theme.bgPrimary
 
     signal sendMessage(string text)
