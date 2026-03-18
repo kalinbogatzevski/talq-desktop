@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Installer>
+    <Name>TalQ</Name>
+    <Version>0.3.0</Version>
+    <Title>TalQ - Nextcloud Talk Desktop Client</Title>
+    <Publisher>123NET</Publisher>
+    <StartMenuDir>TalQ</StartMenuDir>
+    <TargetDir>@ApplicationsDir@/TalQ</TargetDir>
+    <InstallerWindowIcon>talq</InstallerWindowIcon>
+    <AllowNonAsciiCharacters>true</AllowNonAsciiCharacters>
+    <AllowSpaceInPath>true</AllowSpaceInPath>
+</Installer>
