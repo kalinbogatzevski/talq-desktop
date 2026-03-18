@@ -6,7 +6,7 @@ import QtQuick.Layouts
 Item {
     id: sidebar
 
-    signal conversationSelected(string token, string name)
+    signal conversationSelected(string token, string name, string odataUserId, int convType)
 
     property int selectedIndex: -1
 
@@ -217,7 +217,7 @@ Item {
 
                     onClicked: {
                         sidebar.selectedIndex = index
-                        sidebar.conversationSelected(token, displayName)
+                        sidebar.conversationSelected(token, displayName, participantUserId, conversationType)
                     }
                 }
 

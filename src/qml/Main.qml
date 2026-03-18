@@ -99,23 +99,15 @@ ApplicationWindow {
                 anchors.centerIn: parent
                 spacing: Theme.spacingLarge
 
-                // App icon placeholder
-                Rectangle {
+                // App logo
+                Image {
                     anchors.horizontalCenter: parent.horizontalCenter
-                    width: 72
-                    height: 72
-                    radius: Theme.radiusLarge
-                    color: Theme.bgSurface
-                    border.color: Theme.divider
-                    border.width: 1
+                    source: "qrc:/logo.png"
+                    width: 96
+                    height: 96
+                    sourceSize: Qt.size(192, 192)
+                    fillMode: Image.PreserveAspectFit
 
-                    Label {
-                        anchors.centerIn: parent
-                        text: "💬"
-                        font.pixelSize: 32
-                    }
-
-                    // Fade in
                     opacity: 0
                     Component.onCompleted: opacity = 1
                     Behavior on opacity { NumberAnimation { duration: Theme.animSlow; easing.type: Easing.OutCubic } }
@@ -192,9 +184,11 @@ ApplicationWindow {
                 SplitView.preferredWidth: 320
                 SplitView.minimumWidth: 260
                 SplitView.maximumWidth: 450
-                onConversationSelected: function(token, name) {
+                onConversationSelected: function(token, name, userId, convType) {
                     messageModel.conversationToken = token
                     chatView.conversationName = name
+                    chatView.conversationUserId = userId
+                    chatView.conversationType = convType
                 }
             }
 
