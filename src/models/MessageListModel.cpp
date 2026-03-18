@@ -371,12 +371,15 @@ void MessageListModel::addReaction(int messageId, const QString &emoji)
 {
     if (m_token.isEmpty() || messageId <= 0) return;
 
+    qDebug() << "Adding reaction" << emoji << "to message" << messageId << "in" << m_token;
+
     QJsonObject body;
     body["reaction"] = emoji;
 
     QString currentToken = m_token;
     m_api->post("apps/spreed/api/v1/reaction/" + currentToken + "/" + QString::number(messageId),
-        body, [this, messageId, currentToken](bool ok, const QJsonObject &data, int) {
+        body, [this, messageId, currentToken](bool ok, const QJsonObject &data, int statusCode) {
+            qDebug() << "Reaction response: ok=" << ok << "status=" << statusCode << "data keys:" << data.keys();
             if (m_token != currentToken || !ok) return;
 
             // Update reactions on the message from server response
@@ -386,9 +389,21 @@ void MessageListModel::addReaction(int messageId, const QString &emoji)
             }
             if (idx < 0) return;
 
-            // Server returns the full reactions map
-            m_messages[idx].reactions = data;
+            // Server returns reactions as { "👍": [{...}], "❤️": [{...}] }
+            // We need to convert to { "👍": count, "❤️": count }
+            QJsonObject reactionsMap;
+            for (auto it = data.begin(); it != data.end(); ++it) {
+                if (it.value().isArray()) {
+                    reactionsMap[it.key()] = it.value().toArray().size();
+                } else {
+                    reactionsMap[it.key()] = it.value().toInt();
+                }
+            }
+            m_messages[idx].reactions = reactionsMap;
             emit dataChanged(index(idx), index(idx), {ReactionsRole});
+
+            // Save updated message to cache
+            m_cache->saveMessages(m_token, {m_messages[idx]});
         });
 }
 
