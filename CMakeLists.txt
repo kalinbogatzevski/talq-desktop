@@ -13,6 +13,7 @@ find_package(Qt6 REQUIRED COMPONENTS
     Qml
     Quick
     QuickControls2
+    Sql
     WebSockets
 )
 
@@ -20,6 +21,8 @@ qt_add_executable(talk-qt
     src/main.cpp
     src/core/ApiClient.cpp
     src/core/AuthManager.cpp
+    src/core/MessageCache.cpp
+    src/core/AvatarProvider.cpp
     src/core/MessagePoller.cpp
     src/models/Conversation.cpp
     src/models/Message.cpp
@@ -58,12 +61,14 @@ target_link_libraries(talk-qt PRIVATE
     Qt6::Qml
     Qt6::Quick
     Qt6::QuickControls2
+    Qt6::Sql
     Qt6::WebSockets
 )
 
 # Windows-specific settings
 if(WIN32)
     set_target_properties(talk-qt PROPERTIES WIN32_EXECUTABLE TRUE)
+    target_link_libraries(talk-qt PRIVATE dwmapi)
 endif()
 
 install(TARGETS talk-qt RUNTIME DESTINATION bin)
