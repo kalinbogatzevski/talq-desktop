@@ -34,6 +34,7 @@ public:
     int replyToId = 0;
     QJsonObject replyTo;   // parent message for replies
     QJsonObject reactions; // emoji → count map
+    QString sendStatus;    // "", "sending", "failed" — for optimistic display
 
     static Message fromJson(const QJsonObject &json);
 

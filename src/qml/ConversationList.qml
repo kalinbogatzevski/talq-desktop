@@ -29,9 +29,12 @@ Item {
                     anchors.leftMargin: Theme.spacingLarge
                     anchors.rightMargin: Theme.spacingNormal
 
-                    Label {
-                        text: "💬"
-                        font.pixelSize: 18
+                    Image {
+                        source: "qrc:/logo.png"
+                        width: 24
+                        height: 24
+                        sourceSize: Qt.size(48, 48)
+                        fillMode: Image.PreserveAspectFit
                     }
 
                     Label {
@@ -46,12 +49,40 @@ Item {
                     ToolButton {
                         width: 36
                         height: 36
-                        onClicked: conversationModel.refresh()
+                        onClicked: Theme.darkMode = !Theme.darkMode
+                        ToolTip.visible: hovered
+                        ToolTip.text: Theme.darkMode ? "Switch to light mode" : "Switch to dark mode"
+                        ToolTip.delay: 500
                         contentItem: Label {
-                            text: "🔄"
-                            font.pixelSize: 14
+                            text: Theme.darkMode ? "\u2600" : "\u263E"  // ☀ / ☾
+                            font.pixelSize: 16
+                            color: parent.hovered ? Theme.accent : Theme.textSecondary
                             horizontalAlignment: Text.AlignHCenter
                             verticalAlignment: Text.AlignVCenter
+                            Behavior on color { ColorAnimation { duration: Theme.animFast } }
+                        }
+                        background: Rectangle {
+                            radius: 18
+                            color: parent.hovered ? Theme.bgHover : "transparent"
+                            Behavior on color { ColorAnimation { duration: Theme.animFast } }
+                        }
+                    }
+
+                    ToolButton {
+                        width: 36
+                        height: 36
+                        onClicked: conversationModel.refresh()
+                        ToolTip.visible: hovered
+                        ToolTip.text: "Refresh conversations"
+                        ToolTip.delay: 500
+                        contentItem: Label {
+                            text: "\u21BB"  // ↻ refresh arrow
+                            font.pixelSize: 18
+                            font.weight: Font.DemiBold
+                            color: parent.hovered ? Theme.textPrimary : Theme.textSecondary
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
+                            Behavior on color { ColorAnimation { duration: Theme.animFast } }
                         }
                         background: Rectangle {
                             radius: 18
@@ -64,11 +95,16 @@ Item {
                         width: 36
                         height: 36
                         onClicked: auth.logout()
+                        ToolTip.visible: hovered
+                        ToolTip.text: "Log out"
+                        ToolTip.delay: 500
                         contentItem: Label {
-                            text: "🚪"
-                            font.pixelSize: 14
+                            text: "\u23FB"  // ⏻ power symbol
+                            font.pixelSize: 16
+                            color: parent.hovered ? Theme.danger : Theme.textSecondary
                             horizontalAlignment: Text.AlignHCenter
                             verticalAlignment: Text.AlignVCenter
+                            Behavior on color { ColorAnimation { duration: Theme.animFast } }
                         }
                         background: Rectangle {
                             radius: 18

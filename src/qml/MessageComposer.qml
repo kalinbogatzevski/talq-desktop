@@ -24,13 +24,13 @@ Rectangle {
 
             TextArea {
                 id: inputField
-                placeholderText: "Write a message..."
+                placeholderText: "Message..."
                 placeholderTextColor: Theme.textMuted
                 font.pixelSize: Theme.fontSizeNormal
                 color: Theme.textPrimary
                 wrapMode: TextEdit.Wrap
                 background: Rectangle {
-                    radius: Theme.radiusNormal
+                    radius: Theme.radiusRound
                     color: Theme.bgInput
                     border.color: inputField.activeFocus
                         ? Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.35)
@@ -59,6 +59,9 @@ Rectangle {
             height: 40
             flat: true
             enabled: inputField.text.trim().length > 0
+            ToolTip.visible: hovered
+            ToolTip.text: "Send message (Enter)"
+            ToolTip.delay: 500
 
             background: Rectangle {
                 radius: 20
@@ -73,8 +76,9 @@ Rectangle {
             }
 
             contentItem: Label {
-                text: "➤"
+                text: "\u276F"  // ❯ send arrow
                 font.pixelSize: 18
+                font.weight: Font.Bold
                 color: sendButton.enabled ? "white" : Theme.textMuted
                 horizontalAlignment: Text.AlignHCenter
                 verticalAlignment: Text.AlignVCenter

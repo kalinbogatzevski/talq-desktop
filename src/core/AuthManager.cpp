@@ -23,6 +23,10 @@ void AuthManager::tryRestore()
 
     if (server.isEmpty() || user.isEmpty() || password.isEmpty()) {
         qDebug() << "No saved credentials";
+        m_restoringSession = true;
+        emit restoringChanged();
+        m_restoringSession = false;
+        emit restoringChanged();
         return;
     }
 
@@ -82,6 +86,7 @@ void AuthManager::initiateLoginFlow()
     // POST directly to the login/v2 endpoint (not OCS — raw Nextcloud endpoint)
     QNetworkRequest req(QUrl(m_serverUrl + "/index.php/login/v2"));
     req.setHeader(QNetworkRequest::ContentTypeHeader, "application/x-www-form-urlencoded");
+    req.setHeader(QNetworkRequest::UserAgentHeader, "TalQ/0.2.0");
 
     // Use the internal NAM from ApiClient for consistency
     // But this endpoint is unauthenticated and non-OCS, so we use a local NAM
@@ -224,6 +229,54 @@ void AuthManager::fetchUserInfo()
         setLoggedIn(true);
         setStatus({});
         qDebug() << "Logged in as" << m_displayName << "(" << m_userId << ")";
+
+        fetchServerInfo();
+    });
+}
+
+void AuthManager::fetchServerInfo()
+{
+    m_api->get("cloud/capabilities", [this](bool ok, const QJsonObject &data, int) {
+        if (!ok) return;
+
+        // Nextcloud version
+        auto version = data["version"].toObject();
+        m_ncVersion = version["string"].toString();
+        if (m_ncVersion.isEmpty()) {
+            int major = version["major"].toInt();
+            int minor = version["minor"].toInt();
+            int micro = version["micro"].toInt();
+            m_ncVersion = QString("%1.%2.%3").arg(major).arg(minor).arg(micro);
+        }
+
+        // Talk capabilities
+        auto caps = data["capabilities"].toObject();
+        auto spreed = caps["spreed"].toObject();
+
+        // Talk version from features
+        auto talkVersion = spreed["version"].toString();
+        if (!talkVersion.isEmpty())
+            m_talkVersion = talkVersion;
+
+        // Signaling mode
+        auto config = spreed["config"].toObject();
+        auto signaling = config["signaling"].toObject();
+        auto signalingMode = signaling["signalingMode"].toString();
+        if (!signalingMode.isEmpty()) {
+            if (signalingMode == "internal")
+                m_signalingMode = "Internal";
+            else if (signalingMode == "external")
+                m_signalingMode = "High Performance Backend";
+            else if (signalingMode == "clustered")
+                m_signalingMode = "Clustered HPB";
+            else
+                m_signalingMode = signalingMode;
+        } else {
+            m_signalingMode = "Internal";
+        }
+
+        qDebug() << "Server info: NC" << m_ncVersion << "Talk" << m_talkVersion << "Signaling:" << m_signalingMode;
+        emit serverInfoChanged();
     });
 }
 
