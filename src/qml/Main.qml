@@ -2,16 +2,40 @@ import QtQuick
 import TalkQt
 import QtQuick.Controls
 import QtQuick.Layouts
+import Qt.labs.settings
 
 ApplicationWindow {
     id: root
-    width: 1000
-    height: 700
-    minimumWidth: 600
+    width: 380
+    height: 420
+    minimumWidth: 380
     minimumHeight: 400
     visible: true
     title: "TalQ"
     color: Theme.bgPrimary
+
+    Settings {
+        id: windowSettings
+        category: "Window"
+        property alias x: root.x
+        property alias y: root.y
+        property alias width: root.width
+        property alias height: root.height
+    }
+
+    Settings {
+        id: themeSettings
+        category: "Theme"
+        property bool darkMode: true
+        Component.onCompleted: Theme.darkMode = darkMode
+    }
+
+    Connections {
+        target: Theme
+        function onDarkModeChanged() {
+            themeSettings.darkMode = Theme.darkMode
+        }
+    }
 
     StackView {
         id: mainStack
@@ -37,6 +61,9 @@ ApplicationWindow {
         function onRestoringChanged() {
             if (!auth.restoringSession) {
                 if (auth.loggedIn) {
+                    root.minimumWidth = 600
+                    root.width = 1000
+                    root.height = 700
                     mainStack.replace(chatPage)
                     conversationModel.refresh()
                 } else {
@@ -47,9 +74,15 @@ ApplicationWindow {
         function onLoggedInChanged() {
             if (auth.restoringSession) return
             if (auth.loggedIn) {
+                root.minimumWidth = 600
+                root.width = 1000
+                root.height = 700
                 mainStack.replace(chatPage)
                 conversationModel.refresh()
             } else {
+                root.minimumWidth = 400
+                root.width = 460
+                root.height = 520
                 mainStack.replace(loginPage)
             }
         }
@@ -58,6 +91,8 @@ ApplicationWindow {
     Component {
         id: splashPage
         Rectangle {
+            implicitWidth: 380
+            implicitHeight: 420
             color: Theme.bgPrimary
 
             Column {
@@ -144,7 +179,14 @@ ApplicationWindow {
     Component {
         id: chatPage
         SplitView {
+            implicitWidth: 1000
+            implicitHeight: 700
             orientation: Qt.Horizontal
+
+            handle: Rectangle {
+                implicitWidth: 1
+                color: Theme.divider
+            }
 
             ConversationList {
                 SplitView.preferredWidth: 320

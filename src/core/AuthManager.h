@@ -28,6 +28,9 @@ class AuthManager : public QObject
     Q_PROPERTY(bool waitingForBrowser READ isWaitingForBrowser NOTIFY waitingChanged)
     Q_PROPERTY(bool restoringSession READ isRestoringSession NOTIFY restoringChanged)
     Q_PROPERTY(QString statusMessage READ statusMessage NOTIFY statusChanged)
+    Q_PROPERTY(QString nextcloudVersion READ nextcloudVersion NOTIFY serverInfoChanged)
+    Q_PROPERTY(QString talkVersion READ talkVersion NOTIFY serverInfoChanged)
+    Q_PROPERTY(QString signalingMode READ signalingMode NOTIFY serverInfoChanged)
 
 public:
     explicit AuthManager(ApiClient *api, QObject *parent = nullptr);
@@ -40,6 +43,9 @@ public:
     bool isWaitingForBrowser() const { return m_waitingForBrowser; }
     bool isRestoringSession() const { return m_restoringSession; }
     QString statusMessage() const { return m_status; }
+    QString nextcloudVersion() const { return m_ncVersion; }
+    QString talkVersion() const { return m_talkVersion; }
+    QString signalingMode() const { return m_signalingMode; }
 
     Q_INVOKABLE void tryRestore();
     Q_INVOKABLE void startLogin(const QString &serverUrl);
@@ -54,11 +60,13 @@ signals:
     void waitingChanged();
     void restoringChanged();
     void statusChanged();
+    void serverInfoChanged();
 
 private:
     void initiateLoginFlow();
     void pollForCredentials();
     void fetchUserInfo();
+    void fetchServerInfo();
     void setError(const QString &msg);
     void setStatus(const QString &msg);
     void setLoggedIn(bool v);
@@ -79,6 +87,9 @@ private:
     QString m_status;
     QString m_user;
     QString m_password;
+    QString m_ncVersion;
+    QString m_talkVersion;
+    QString m_signalingMode;
 
     // Login Flow v2 poll state
     QString m_pollToken;
