@@ -28,6 +28,7 @@ QVariant ConversationListModel::data(const QModelIndex &index, int role) const
         case LastMessageRole:   return c.lastMessageText;
         case LastAuthorRole:    return c.lastMessageAuthor;
         case LastActivityRole:  return c.lastActivity;
+        case ActorIdRole:       return c.name;
         default:                return {};
     }
 }
@@ -44,6 +45,7 @@ QHash<int, QByteArray> ConversationListModel::roleNames() const
         {LastMessageRole,   "lastMessage"},
         {LastAuthorRole,    "lastAuthor"},
         {LastActivityRole,  "lastActivity"},
+        {ActorIdRole,       "participantUserId"},
     };
 }
 
