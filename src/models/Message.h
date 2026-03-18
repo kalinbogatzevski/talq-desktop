@@ -35,11 +35,18 @@ public:
     QJsonObject replyTo;   // parent message for replies
     QJsonObject reactions; // emoji → count map
     QString sendStatus;    // "", "sending", "failed" — for optimistic display
+    QString systemMessage; // system message type (e.g. "reaction", "call_ended")
 
     static Message fromJson(const QJsonObject &json);
 
     QDateTime dateTime() const {
         return QDateTime::fromSecsSinceEpoch(timestamp);
+    }
+
+    // Reaction system messages should be filtered out (data is in reactions field)
+    bool isReactionMessage() const {
+        return systemMessage == "reaction" || systemMessage == "reaction_deleted"
+            || systemMessage == "reaction_revoked";
     }
 
     // Check if this is from the same author and close in time to another message

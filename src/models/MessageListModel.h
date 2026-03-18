@@ -54,6 +54,7 @@ public:
 
     Q_INVOKABLE void sendMessage(const QString &text, int replyToId = 0);
     Q_INVOKABLE void retryMessage(int tempId);
+    Q_INVOKABLE void addReaction(int messageId, const QString &emoji);
     Q_INVOKABLE void loadHistory();
 
 signals:
