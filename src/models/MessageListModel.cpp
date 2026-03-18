@@ -1,4 +1,6 @@
 #include "models/MessageListModel.h"
+#include "core/MessageCache.h"
+#include <QSet>
 #include <QUrlQuery>
 #include <QJsonObject>
 #include <QJsonDocument>
@@ -7,9 +9,10 @@
 #include <QTimer>
 #include <QNetworkReply>
 
-MessageListModel::MessageListModel(ApiClient *api, QObject *parent)
+MessageListModel::MessageListModel(ApiClient *api, MessageCache *cache, QObject *parent)
     : QAbstractListModel(parent)
     , m_api(api)
+    , m_cache(cache)
     , m_poller(new MessagePoller(api, this))
 {
     connect(m_poller, &MessagePoller::messagesReceived,
@@ -33,7 +36,11 @@ QVariant MessageListModel::data(const QModelIndex &index, int role) const
     if (!index.isValid() || index.row() >= m_messages.size())
         return {};
 
-    const auto &m = m_messages[index.row()];
+    // Reverse mapping: index 0 = newest (bottom), last index = oldest (top)
+    // This works with ListView.BottomToTop for natural chat layout
+    int ri = m_messages.size() - 1 - index.row();
+    const auto &m = m_messages[ri];
+
     switch (role) {
         case IdRole:            return m.id;
         case ActorNameRole:     return m.actorDisplayName;
@@ -43,15 +50,15 @@ QVariant MessageListModel::data(const QModelIndex &index, int role) const
         case IsSystemRole:      return m.isSystem;
         case MessageTypeRole:   return m.messageType;
         case IsGroupedRole: {
-            if (index.row() == 0) return false;
-            return m.isGroupedWith(m_messages[index.row() - 1]);
+            // In reversed view, the "previous" message is at ri-1 (older, visually above)
+            if (ri == 0) return false;
+            return m.isGroupedWith(m_messages[ri - 1]);
         }
         case ReplyToTextRole:
             return m.replyTo.isEmpty() ? QString() : m.replyTo["message"].toString();
         case ReplyToAuthorRole:
             return m.replyTo.isEmpty() ? QString() : m.replyTo["actorDisplayName"].toString();
         case ReactionsRole: {
-            // Convert { "👍": 3 } to displayable string
             QStringList parts;
             for (auto it = m.reactions.begin(); it != m.reactions.end(); ++it) {
                 parts << QString("%1 %2").arg(it.key()).arg(it.value().toInt());
@@ -61,8 +68,9 @@ QVariant MessageListModel::data(const QModelIndex &index, int role) const
         case TimeStringRole:
             return m.dateTime().toString("HH:mm");
         case ShowDateSeparatorRole: {
-            if (index.row() == 0) return true;
-            auto prevDate = m_messages[index.row() - 1].dateTime().date();
+            // Show date separator when this message starts a new day vs the one above it
+            if (ri == 0) return true;
+            auto prevDate = m_messages[ri - 1].dateTime().date();
             return m.dateTime().date() != prevDate;
         }
         case DateStringRole: {
@@ -72,10 +80,14 @@ QVariant MessageListModel::data(const QModelIndex &index, int role) const
                 return QString("Today");
             if (date == today.addDays(-1))
                 return QString("Yesterday");
+            if (date.year() == today.year())
+                return date.toString("dd MMM");
             return date.toString("dd MMM yyyy");
         }
         case IsReadRole:
             return m.id > 0 && m.id <= m_lastCommonRead;
+        case SendStatusRole:
+            return m.sendStatus;
         default:
             return {};
     }
@@ -99,6 +111,7 @@ QHash<int, QByteArray> MessageListModel::roleNames() const
         {ShowDateSeparatorRole, "showDateSeparator"},
         {DateStringRole,    "dateString"},
         {IsReadRole,        "isRead"},
+        {SendStatusRole,    "sendStatus"},
     };
 }
 
@@ -110,19 +123,26 @@ void MessageListModel::setConversationToken(const QString &token)
     // Stop polling old conversation
     m_poller->stop();
 
-    // Clear messages
-    beginResetModel();
-    m_messages.clear();
-    endResetModel();
-
     m_token = token;
     m_oldestMessageId = 0;
+
+    // Load cache inside reset — single atomic visual update, no flash
+    beginResetModel();
+    m_messages.clear();
+    if (!token.isEmpty()) {
+        m_messages = m_cache->loadMessages(token, 50);
+        if (!m_messages.isEmpty())
+            m_oldestMessageId = m_messages.first().id;
+    }
+    endResetModel();
+
     emit conversationTokenChanged();
+    emit newMessagesAtEnd();  // scroll to bottom for the initial load
 
     if (token.isEmpty())
         return;
 
-    // Join conversation — capture token to guard against stale callbacks
+    // Join conversation and fetch fresh data in background
     QString joinToken = token;
     m_api->post("apps/spreed/api/v4/room/" + token + "/participants/active",
         [this, joinToken](bool ok, const QJsonObject &, int) {
@@ -191,14 +211,31 @@ void MessageListModel::loadHistory()
             newMsgs.append(Message::fromJson(data[i].toObject()));
         }
 
-        if (!newMsgs.isEmpty()) {
-            beginInsertRows({}, 0, newMsgs.size() - 1);
-            for (int i = newMsgs.size() - 1; i >= 0; --i)
-                m_messages.prepend(newMsgs[i]);
+        // Merge with existing (cached) messages — avoid duplicates
+        QSet<int> existingIds;
+        for (const auto &existing : m_messages)
+            existingIds.insert(existing.id);
+
+        QVector<Message> toInsert;
+        for (const auto &msg : newMsgs) {
+            if (!existingIds.contains(msg.id))
+                toInsert.append(msg);
+        }
+
+        if (!toInsert.isEmpty()) {
+            // Prepending to m_messages = inserting at the visual end (top of screen)
+            int visualEnd = m_messages.size();
+            beginInsertRows({}, visualEnd, visualEnd + toInsert.size() - 1);
+            for (int i = toInsert.size() - 1; i >= 0; --i)
+                m_messages.prepend(toInsert[i]);
             endInsertRows();
 
-            m_oldestMessageId = m_messages.first().id;
+            // Save new messages to cache
+            m_cache->saveMessages(m_token, toInsert);
         }
+
+        if (!m_messages.isEmpty())
+            m_oldestMessageId = m_messages.first().id;
 
         // Start long-polling for new messages
         int lastId = m_messages.isEmpty() ? 0 : m_messages.last().id;
@@ -215,24 +252,26 @@ void MessageListModel::appendMessages(const QJsonArray &arr)
 {
     if (arr.isEmpty()) return;
 
+    QSet<int> existingIds;
+    for (const auto &existing : m_messages)
+        existingIds.insert(existing.id);
+
     QVector<Message> newMsgs;
     for (const auto &val : arr) {
         Message m = Message::fromJson(val.toObject());
-        // Avoid duplicates
-        bool exists = false;
-        for (const auto &existing : m_messages) {
-            if (existing.id == m.id) { exists = true; break; }
-        }
-        if (!exists)
+        if (!existingIds.contains(m.id))
             newMsgs.append(m);
     }
 
     if (newMsgs.isEmpty()) return;
 
-    int first = m_messages.size();
-    beginInsertRows({}, first, first + newMsgs.size() - 1);
+    // Visual index 0 = newest (bottom). Appending to m_messages = inserting at visual index 0.
+    beginInsertRows({}, 0, newMsgs.size() - 1);
     m_messages.append(newMsgs);
     endInsertRows();
+
+    // Save new messages to cache
+    m_cache->saveMessages(m_token, newMsgs);
 }
 
 void MessageListModel::sendMessage(const QString &text, int replyToId)
@@ -240,23 +279,108 @@ void MessageListModel::sendMessage(const QString &text, int replyToId)
     if (text.trimmed().isEmpty() || m_token.isEmpty())
         return;
 
+    // Create optimistic message — show instantly
+    static int tempIdCounter = -1;
+    int tempId = tempIdCounter--;
+
+    Message optimistic;
+    optimistic.id = tempId;
+    optimistic.token = m_token;
+    optimistic.actorType = "users";
+    optimistic.actorId = m_api->user();
+    optimistic.actorDisplayName = "";  // own messages don't show name
+    optimistic.message = text;
+    optimistic.timestamp = QDateTime::currentSecsSinceEpoch();
+    optimistic.messageType = "comment";
+    optimistic.sendStatus = "sending";
+
+    // Insert at end (visual bottom)
+    beginInsertRows({}, 0, 0);
+    m_messages.append(optimistic);
+    endInsertRows();
+
+    emit messageSent();
+
+    // Send to server
     QJsonObject body;
     body["message"] = text;
     if (replyToId > 0)
         body["replyTo"] = replyToId;
 
-    m_api->post("apps/spreed/api/v1/chat/" + m_token, body,
-        [this](bool ok, const QJsonObject &data, int) {
-            if (ok) {
-                // Add the sent message to the list immediately from server response
-                if (!data.isEmpty()) {
-                    QJsonArray arr;
-                    arr.append(data);
-                    appendMessages(arr);
-                }
-                emit messageSent();
+    QString currentToken = m_token;
+    m_api->post("apps/spreed/api/v1/chat/" + currentToken, body,
+        [this, tempId, currentToken](bool ok, const QJsonObject &data, int) {
+            if (m_token != currentToken) return;
+
+            // Find the optimistic message by tempId
+            int idx = -1;
+            for (int i = 0; i < m_messages.size(); ++i) {
+                if (m_messages[i].id == tempId) { idx = i; break; }
+            }
+            if (idx < 0) return;
+
+            if (ok && !data.isEmpty()) {
+                // Replace optimistic with real server message
+                m_messages[idx] = Message::fromJson(data);
+                int visualIdx = m_messages.size() - 1 - idx;
+                emit dataChanged(index(visualIdx), index(visualIdx));
+
+                // Save to cache
+                QVector<Message> toCache;
+                toCache.append(m_messages[idx]);
+                m_cache->saveMessages(m_token, toCache);
             } else {
-                emit errorOccurred("Failed to send message");
+                // Mark as failed
+                m_messages[idx].sendStatus = "failed";
+                int visualIdx = m_messages.size() - 1 - idx;
+                emit dataChanged(index(visualIdx), index(visualIdx), {SendStatusRole});
+            }
+        });
+}
+
+void MessageListModel::retryMessage(int tempId)
+{
+    // Find the failed message
+    int idx = -1;
+    for (int i = 0; i < m_messages.size(); ++i) {
+        if (m_messages[i].id == tempId) { idx = i; break; }
+    }
+    if (idx < 0) return;
+
+    Message &msg = m_messages[idx];
+    if (msg.sendStatus != "failed") return;
+
+    msg.sendStatus = "sending";
+    int visualIdx = m_messages.size() - 1 - idx;
+    emit dataChanged(index(visualIdx), index(visualIdx), {SendStatusRole});
+
+    QString text = msg.message;
+    QString currentToken = m_token;
+    QJsonObject body;
+    body["message"] = text;
+
+    m_api->post("apps/spreed/api/v1/chat/" + currentToken, body,
+        [this, tempId, currentToken](bool ok, const QJsonObject &data, int) {
+            if (m_token != currentToken) return;
+
+            int idx = -1;
+            for (int i = 0; i < m_messages.size(); ++i) {
+                if (m_messages[i].id == tempId) { idx = i; break; }
+            }
+            if (idx < 0) return;
+
+            if (ok && !data.isEmpty()) {
+                m_messages[idx] = Message::fromJson(data);
+                int visualIdx = m_messages.size() - 1 - idx;
+                emit dataChanged(index(visualIdx), index(visualIdx));
+
+                QVector<Message> toCache;
+                toCache.append(m_messages[idx]);
+                m_cache->saveMessages(m_token, toCache);
+            } else {
+                m_messages[idx].sendStatus = "failed";
+                int visualIdx = m_messages.size() - 1 - idx;
+                emit dataChanged(index(visualIdx), index(visualIdx), {SendStatusRole});
             }
         });
 }

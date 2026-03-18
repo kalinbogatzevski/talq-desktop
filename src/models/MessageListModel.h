@@ -7,6 +7,8 @@
 #include "core/ApiClient.h"
 #include "core/MessagePoller.h"
 
+class MessageCache;
+
 /**
  * QAbstractListModel for chat messages in a conversation.
  * Handles initial history load + live polling for new messages.
@@ -34,9 +36,10 @@ public:
         ShowDateSeparatorRole,  // true if this message starts a new day
         DateStringRole,         // "Today", "Yesterday", "18 Mar 2026"
         IsReadRole,             // true if all participants have read this message
+        SendStatusRole,         // "sent", "sending", "failed"
     };
 
-    explicit MessageListModel(ApiClient *api, QObject *parent = nullptr);
+    explicit MessageListModel(ApiClient *api, MessageCache *cache, QObject *parent = nullptr);
     ~MessageListModel() override;
 
     int rowCount(const QModelIndex &parent = {}) const override;
@@ -48,6 +51,7 @@ public:
     void setConversationToken(const QString &token);
 
     Q_INVOKABLE void sendMessage(const QString &text, int replyToId = 0);
+    Q_INVOKABLE void retryMessage(int tempId);
     Q_INVOKABLE void loadHistory();
 
 signals:
@@ -55,6 +59,7 @@ signals:
     void conversationTokenChanged();
     void messageSent();
     void errorOccurred(const QString &error);
+    void newMessagesAtEnd();
 
 private slots:
     void onMessagesReceived(const QJsonArray &messages);
@@ -63,6 +68,7 @@ private:
     void appendMessages(const QJsonArray &arr);
 
     ApiClient *m_api;
+    MessageCache *m_cache;
     MessagePoller *m_poller;
     QVector<Message> m_messages;
     QString m_token;
