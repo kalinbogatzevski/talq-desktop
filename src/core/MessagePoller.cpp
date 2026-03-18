@@ -97,6 +97,7 @@ void MessagePoller::handlePollResponse()
 
     if (status == 304) {
         // No new messages (timeout expired) — poll again immediately
+        emit pollSuccess();
         if (m_polling) {
             poll();
         }
@@ -104,6 +105,7 @@ void MessagePoller::handlePollResponse()
     }
 
     if (status == 200) {
+        emit pollSuccess();
         QJsonDocument doc = QJsonDocument::fromJson(body);
         QJsonObject root = doc.object();
         QJsonObject ocs = root["ocs"].toObject();

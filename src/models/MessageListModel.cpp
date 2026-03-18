@@ -9,6 +9,18 @@
 #include <QTimer>
 #include <QNetworkReply>
 
+// ============================================================================
+// STORAGE CONVENTION: m_messages is stored NEWEST-FIRST.
+//   m_messages[0] = newest message
+//   m_messages[last] = oldest message
+//
+// ListView uses BottomToTop, so index 0 renders at the BOTTOM of the screen.
+// This means: newest message at bottom, oldest at top — natural chat order.
+//
+// "Prepend" (insert at index 0) = new messages appearing at bottom.
+// "Append" (insert at end) = older history appearing at top.
+// ============================================================================
+
 MessageListModel::MessageListModel(ApiClient *api, MessageCache *cache, QObject *parent)
     : QAbstractListModel(parent)
     , m_api(api)
@@ -19,6 +31,13 @@ MessageListModel::MessageListModel(ApiClient *api, MessageCache *cache, QObject 
             this, &MessageListModel::onMessagesReceived);
     connect(m_poller, &MessagePoller::lastCommonReadChanged,
             this, &MessageListModel::onLastCommonReadChanged);
+
+    connect(m_poller, &MessagePoller::pollSuccess, this, [this]() {
+        if (!m_connected) { m_connected = true; emit connectedChanged(); }
+    });
+    connect(m_poller, &MessagePoller::pollError, this, [this](const QString &) {
+        if (m_connected) { m_connected = false; emit connectedChanged(); }
+    });
 }
 
 MessageListModel::~MessageListModel()
@@ -36,10 +55,7 @@ QVariant MessageListModel::data(const QModelIndex &index, int role) const
     if (!index.isValid() || index.row() >= m_messages.size())
         return {};
 
-    // Reverse mapping: index 0 = newest (bottom), last index = oldest (top)
-    // This works with ListView.BottomToTop for natural chat layout
-    int ri = m_messages.size() - 1 - index.row();
-    const auto &m = m_messages[ri];
+    const auto &m = m_messages[index.row()];
 
     switch (role) {
         case IdRole:            return m.id;
@@ -50,9 +66,11 @@ QVariant MessageListModel::data(const QModelIndex &index, int role) const
         case IsSystemRole:      return m.isSystem;
         case MessageTypeRole:   return m.messageType;
         case IsGroupedRole: {
-            // In reversed view, the "previous" message is at ri-1 (older, visually above)
-            if (ri == 0) return false;
-            return m.isGroupedWith(m_messages[ri - 1]);
+            // In newest-first + BottomToTop, the message visually ABOVE us
+            // is at index.row()+1 (older). We group with the older message.
+            int olderIdx = index.row() + 1;
+            if (olderIdx >= m_messages.size()) return false;
+            return m.isGroupedWith(m_messages[olderIdx]);
         }
         case ReplyToTextRole:
             return m.replyTo.isEmpty() ? QString() : m.replyTo["message"].toString();
@@ -68,10 +86,12 @@ QVariant MessageListModel::data(const QModelIndex &index, int role) const
         case TimeStringRole:
             return m.dateTime().toString("HH:mm");
         case ShowDateSeparatorRole: {
-            // Show date separator when this message starts a new day vs the one above it
-            if (ri == 0) return true;
-            auto prevDate = m_messages[ri - 1].dateTime().date();
-            return m.dateTime().date() != prevDate;
+            // Show separator when this message is on a different day than the
+            // message visually ABOVE it (= older = index+1).
+            // The topmost message (oldest) always gets a separator.
+            int olderIdx = index.row() + 1;
+            if (olderIdx >= m_messages.size()) return true;
+            return m.dateTime().date() != m_messages[olderIdx].dateTime().date();
         }
         case DateStringRole: {
             auto date = m.dateTime().date();
@@ -120,34 +140,33 @@ void MessageListModel::setConversationToken(const QString &token)
     if (m_token == token)
         return;
 
-    // Stop polling old conversation
     m_poller->stop();
-
     m_token = token;
     m_oldestMessageId = 0;
 
-    // Load cache inside reset — single atomic visual update, no flash
+    // Load cache inside reset — single atomic visual update
     beginResetModel();
     m_messages.clear();
     if (!token.isEmpty()) {
-        m_messages = m_cache->loadMessages(token, 50);
-        if (!m_messages.isEmpty())
-            m_oldestMessageId = m_messages.first().id;
+        // Cache returns oldest-first; we reverse to newest-first
+        QVector<Message> cached = m_cache->loadMessages(token, 50);
+        m_messages.reserve(cached.size());
+        for (int i = cached.size() - 1; i >= 0; --i)
+            m_messages.append(cached[i]);
+        if (!cached.isEmpty())
+            m_oldestMessageId = cached.first().id;  // oldest from cache
     }
     endResetModel();
 
     emit conversationTokenChanged();
-    emit newMessagesAtEnd();  // scroll to bottom for the initial load
 
     if (token.isEmpty())
         return;
 
-    // Join conversation and fetch fresh data in background
     QString joinToken = token;
     m_api->post("apps/spreed/api/v4/room/" + token + "/participants/active",
         [this, joinToken](bool ok, const QJsonObject &, int) {
-            if (m_token != joinToken)
-                return;
+            if (m_token != joinToken) return;
             if (!ok) {
                 emit errorOccurred("Failed to join conversation");
                 return;
@@ -175,89 +194,84 @@ void MessageListModel::loadHistory()
     connect(reply, &QNetworkReply::finished, this, [this, reply, currentToken]() {
         reply->deleteLater();
 
-        if (m_token != currentToken)
-            return;
+        if (m_token != currentToken) return;
 
         m_loading = false;
         emit loadingChanged();
 
-        // Capture read receipt header
         QByteArray lastCommonRead = reply->rawHeader("X-Chat-Last-Common-Read");
-        if (!lastCommonRead.isEmpty()) {
+        if (!lastCommonRead.isEmpty())
             onLastCommonReadChanged(lastCommonRead.toInt());
-        }
 
         if (reply->error() != QNetworkReply::NoError) {
-            int lastId = m_messages.isEmpty() ? 0 : m_messages.last().id;
-            m_poller->start(m_token, lastId);
+            startPoller();
             return;
         }
 
         QByteArray body = reply->readAll();
         QJsonDocument doc = QJsonDocument::fromJson(body);
-        QJsonObject root = doc.object();
-        QJsonObject ocs = root["ocs"].toObject();
+        QJsonObject ocs = doc.object()["ocs"].toObject();
         QJsonArray data = ocs["data"].toArray();
 
         if (data.isEmpty()) {
-            int lastId = m_messages.isEmpty() ? 0 : m_messages.last().id;
-            m_poller->start(m_token, lastId);
+            startPoller();
             return;
         }
 
-        // History messages come newest-first, we need oldest-first
-        QVector<Message> newMsgs;
-        for (int i = data.size() - 1; i >= 0; --i) {
-            newMsgs.append(Message::fromJson(data[i].toObject()));
-        }
-
-        // Merge with existing (cached) messages — avoid duplicates
+        // API returns newest-first — that's our storage order already
         QSet<int> existingIds;
         for (const auto &existing : m_messages)
             existingIds.insert(existing.id);
 
-        QVector<Message> toInsert;
-        for (const auto &msg : newMsgs) {
-            if (!existingIds.contains(msg.id))
-                toInsert.append(msg);
+        // Collect older messages (not already in model), keep newest-first order
+        QVector<Message> olderMsgs;
+        QVector<Message> forCache;
+        for (const auto &val : data) {
+            Message m = Message::fromJson(val.toObject());
+            if (!existingIds.contains(m.id)) {
+                olderMsgs.append(m);  // already newest-first from API
+            }
+            forCache.append(m);
         }
 
-        if (!toInsert.isEmpty()) {
-            // Prepending to m_messages = inserting at the visual end (top of screen)
-            int visualEnd = m_messages.size();
-            beginInsertRows({}, visualEnd, visualEnd + toInsert.size() - 1);
-            for (int i = toInsert.size() - 1; i >= 0; --i)
-                m_messages.prepend(toInsert[i]);
+        // Save all fetched messages to cache
+        if (!forCache.isEmpty())
+            m_cache->saveMessages(m_token, forCache);
+
+        // Append older messages at the END of m_messages (= top of screen)
+        if (!olderMsgs.isEmpty()) {
+            int first = m_messages.size();
+            beginInsertRows({}, first, first + olderMsgs.size() - 1);
+            m_messages.append(olderMsgs);
             endInsertRows();
-
-            // Save new messages to cache
-            m_cache->saveMessages(m_token, toInsert);
         }
 
+        // Update oldest tracking
         if (!m_messages.isEmpty())
-            m_oldestMessageId = m_messages.first().id;
+            m_oldestMessageId = m_messages.last().id;  // last = oldest
 
-        // Start long-polling for new messages
-        int lastId = m_messages.isEmpty() ? 0 : m_messages.last().id;
-        m_poller->start(m_token, lastId);
+        startPoller();
     });
+}
+
+void MessageListModel::startPoller()
+{
+    // Newest message is at index 0
+    int lastId = m_messages.isEmpty() ? 0 : m_messages.first().id;
+    m_poller->start(m_token, lastId);
 }
 
 void MessageListModel::onMessagesReceived(const QJsonArray &messages)
 {
-    appendMessages(messages);
-}
-
-void MessageListModel::appendMessages(const QJsonArray &arr)
-{
-    if (arr.isEmpty()) return;
+    if (messages.isEmpty()) return;
 
     QSet<int> existingIds;
     for (const auto &existing : m_messages)
         existingIds.insert(existing.id);
 
+    // New messages from poller — prepend at index 0 (= bottom of screen)
     QVector<Message> newMsgs;
-    for (const auto &val : arr) {
+    for (const auto &val : messages) {
         Message m = Message::fromJson(val.toObject());
         if (!existingIds.contains(m.id))
             newMsgs.append(m);
@@ -265,12 +279,15 @@ void MessageListModel::appendMessages(const QJsonArray &arr)
 
     if (newMsgs.isEmpty()) return;
 
-    // Visual index 0 = newest (bottom). Appending to m_messages = inserting at visual index 0.
+    // Reverse so newest is first (poller returns oldest-first)
+    std::reverse(newMsgs.begin(), newMsgs.end());
+
     beginInsertRows({}, 0, newMsgs.size() - 1);
-    m_messages.append(newMsgs);
+    // Prepend: insert at beginning
+    for (int i = newMsgs.size() - 1; i >= 0; --i)
+        m_messages.prepend(newMsgs[i]);
     endInsertRows();
 
-    // Save new messages to cache
     m_cache->saveMessages(m_token, newMsgs);
 }
 
@@ -279,7 +296,6 @@ void MessageListModel::sendMessage(const QString &text, int replyToId)
     if (text.trimmed().isEmpty() || m_token.isEmpty())
         return;
 
-    // Create optimistic message — show instantly
     static int tempIdCounter = -1;
     int tempId = tempIdCounter--;
 
@@ -288,20 +304,19 @@ void MessageListModel::sendMessage(const QString &text, int replyToId)
     optimistic.token = m_token;
     optimistic.actorType = "users";
     optimistic.actorId = m_api->user();
-    optimistic.actorDisplayName = "";  // own messages don't show name
+    optimistic.actorDisplayName = "";
     optimistic.message = text;
     optimistic.timestamp = QDateTime::currentSecsSinceEpoch();
     optimistic.messageType = "comment";
     optimistic.sendStatus = "sending";
 
-    // Insert at end (visual bottom)
+    // Prepend at index 0 (newest = bottom of screen)
     beginInsertRows({}, 0, 0);
-    m_messages.append(optimistic);
+    m_messages.prepend(optimistic);
     endInsertRows();
 
     emit messageSent();
 
-    // Send to server
     QJsonObject body;
     body["message"] = text;
     if (replyToId > 0)
@@ -312,7 +327,6 @@ void MessageListModel::sendMessage(const QString &text, int replyToId)
         [this, tempId, currentToken](bool ok, const QJsonObject &data, int) {
             if (m_token != currentToken) return;
 
-            // Find the optimistic message by tempId
             int idx = -1;
             for (int i = 0; i < m_messages.size(); ++i) {
                 if (m_messages[i].id == tempId) { idx = i; break; }
@@ -320,27 +334,18 @@ void MessageListModel::sendMessage(const QString &text, int replyToId)
             if (idx < 0) return;
 
             if (ok && !data.isEmpty()) {
-                // Replace optimistic with real server message
                 m_messages[idx] = Message::fromJson(data);
-                int visualIdx = m_messages.size() - 1 - idx;
-                emit dataChanged(index(visualIdx), index(visualIdx));
-
-                // Save to cache
-                QVector<Message> toCache;
-                toCache.append(m_messages[idx]);
-                m_cache->saveMessages(m_token, toCache);
+                emit dataChanged(index(idx), index(idx));
+                m_cache->saveMessages(m_token, {m_messages[idx]});
             } else {
-                // Mark as failed
                 m_messages[idx].sendStatus = "failed";
-                int visualIdx = m_messages.size() - 1 - idx;
-                emit dataChanged(index(visualIdx), index(visualIdx), {SendStatusRole});
+                emit dataChanged(index(idx), index(idx), {SendStatusRole});
             }
         });
 }
 
 void MessageListModel::retryMessage(int tempId)
 {
-    // Find the failed message
     int idx = -1;
     for (int i = 0; i < m_messages.size(); ++i) {
         if (m_messages[i].id == tempId) { idx = i; break; }
@@ -351,8 +356,7 @@ void MessageListModel::retryMessage(int tempId)
     if (msg.sendStatus != "failed") return;
 
     msg.sendStatus = "sending";
-    int visualIdx = m_messages.size() - 1 - idx;
-    emit dataChanged(index(visualIdx), index(visualIdx), {SendStatusRole});
+    emit dataChanged(index(idx), index(idx), {SendStatusRole});
 
     QString text = msg.message;
     QString currentToken = m_token;
@@ -371,16 +375,11 @@ void MessageListModel::retryMessage(int tempId)
 
             if (ok && !data.isEmpty()) {
                 m_messages[idx] = Message::fromJson(data);
-                int visualIdx = m_messages.size() - 1 - idx;
-                emit dataChanged(index(visualIdx), index(visualIdx));
-
-                QVector<Message> toCache;
-                toCache.append(m_messages[idx]);
-                m_cache->saveMessages(m_token, toCache);
+                emit dataChanged(index(idx), index(idx));
+                m_cache->saveMessages(m_token, {m_messages[idx]});
             } else {
                 m_messages[idx].sendStatus = "failed";
-                int visualIdx = m_messages.size() - 1 - idx;
-                emit dataChanged(index(visualIdx), index(visualIdx), {SendStatusRole});
+                emit dataChanged(index(idx), index(idx), {SendStatusRole});
             }
         });
 }
@@ -392,7 +391,6 @@ void MessageListModel::onLastCommonReadChanged(int messageId)
 
     m_lastCommonRead = messageId;
 
-    // Notify that isRead may have changed for all visible messages
     if (!m_messages.isEmpty()) {
         emit dataChanged(index(0), index(m_messages.size() - 1), {IsReadRole});
     }
