@@ -1,4 +1,6 @@
 build/
+build-win64/
+dist/
 *.o
 *.a
 *.so
