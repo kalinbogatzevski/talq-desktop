@@ -1,4 +1,5 @@
 import QtQuick
+import TalkQt
 import QtQuick.Controls
 import QtQuick.Layouts
 
@@ -96,7 +97,8 @@ Item {
 
                     onClicked: {
                         sidebar.selectedIndex = index
-                        sidebar.conversationSelected(token, displayName)
+                        let t = token, n = displayName
+                        Qt.callLater(function() { sidebar.conversationSelected(t, n) })
                     }
                 }
 

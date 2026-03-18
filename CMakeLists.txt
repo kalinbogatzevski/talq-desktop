@@ -27,23 +27,26 @@ qt_add_executable(talk-qt
     src/models/MessageListModel.cpp
 )
 
+qt_policy(SET QTP0001 NEW)
+qt_policy(SET QTP0004 OLD)
+
+set_source_files_properties(src/qml/Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
+
 qt_add_qml_module(talk-qt
     URI TalkQt
     VERSION 1.0
     QML_FILES
-        src/qml/main.qml
+        src/qml/Main.qml
         src/qml/LoginView.qml
         src/qml/ConversationList.qml
         src/qml/ChatView.qml
         src/qml/Theme.qml
-        src/qml/components/MessageBubble.qml
-        src/qml/components/ConversationItem.qml
-        src/qml/components/MessageComposer.qml
+        src/qml/MessageBubble.qml
+        src/qml/ConversationItem.qml
+        src/qml/MessageComposer.qml
     RESOURCES
         resources/resources.qrc
 )
-
-set_source_files_properties(src/qml/Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 
 target_include_directories(talk-qt PRIVATE src)
 

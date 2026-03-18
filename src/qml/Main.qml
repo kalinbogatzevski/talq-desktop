@@ -1,4 +1,5 @@
 import QtQuick
+import TalkQt
 import QtQuick.Controls
 import QtQuick.Layouts
 
