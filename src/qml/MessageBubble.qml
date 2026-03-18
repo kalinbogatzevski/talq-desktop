@@ -102,10 +102,8 @@ Item {
             visible: msgHover.hovered && messageId > 0 && sendStatus !== "sending" && sendStatus !== "failed"
             z: 10
             width: 28; height: 28
-            anchors.right: isOwnMessage ? ownBubble.left : undefined
-            anchors.left: isOwnMessage ? undefined : (otherMsg.visible ? otherMsgCol.right : undefined)
-            anchors.top: parent.top
-            anchors.margins: 2
+            x: isOwnMessage ? parent.width - width - Theme.spacingNormal - 32 : Theme.spacingNormal
+            y: 2
             ToolTip.visible: hovered
             ToolTip.text: "Reply"
             ToolTip.delay: 300
@@ -171,11 +169,24 @@ Item {
                 }
             }
 
-            // Message content (flat — no bubble)
+            // Message content (flat — subtle card when reply)
             ColumnLayout {
                 id: otherMsgCol
-                width: Math.min(implicitWidth, bubble.width * 0.75 - Theme.avatarSizeSmall - 20)
+                property real maxWidth: bubble.width * 0.75 - Theme.avatarSizeSmall - 20
+                width: replyToText.length > 0
+                    ? Math.min(Math.max(implicitWidth, 280), maxWidth)
+                    : Math.min(implicitWidth, maxWidth)
                 spacing: 2
+
+                // Background card for messages with replies
+                Rectangle {
+                    visible: replyToText.length > 0
+                    anchors.fill: parent
+                    anchors.margins: -8
+                    radius: Theme.radiusNormal
+                    color: Theme.darkMode ? Qt.rgba(1, 1, 1, 0.04) : Qt.rgba(0, 0, 0, 0.04)
+                    z: -1
+                }
 
                 // Name + time row
                 RowLayout {
