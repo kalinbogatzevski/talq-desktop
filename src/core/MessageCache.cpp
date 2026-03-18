@@ -45,8 +45,12 @@ QVector<Message> MessageCache::loadMessages(const QString &token, int limit)
     QVector<Message> result;
 
     QSqlQuery q(m_db);
-    q.prepare("SELECT json FROM messages WHERE token = :token "
-              "ORDER BY timestamp ASC, message_id ASC LIMIT :limit");
+    // Get the NEWEST N messages, returned in oldest-first order
+    q.prepare("SELECT json FROM ("
+              "  SELECT json, timestamp, message_id FROM messages "
+              "  WHERE token = :token "
+              "  ORDER BY timestamp DESC, message_id DESC LIMIT :limit"
+              ") ORDER BY timestamp ASC, message_id ASC");
     q.bindValue(":token", token);
     q.bindValue(":limit", limit);
 
