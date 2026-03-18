@@ -3,10 +3,6 @@ import TalkQt
 import QtQuick.Controls
 import QtQuick.Layouts
 
-/**
- * Telegram-style conversation sidebar.
- * Shows conversations sorted by favorites + activity, with unread badges.
- */
 Item {
     id: sidebar
 
@@ -22,16 +18,21 @@ Item {
             anchors.fill: parent
             spacing: 0
 
-            // Header bar
+            // Header
             Rectangle {
                 Layout.fillWidth: true
-                Layout.preferredHeight: 56
+                Layout.preferredHeight: Theme.headerHeight
                 color: Theme.bgSecondary
 
                 RowLayout {
                     anchors.fill: parent
-                    anchors.leftMargin: 16
-                    anchors.rightMargin: 16
+                    anchors.leftMargin: Theme.spacingLarge
+                    anchors.rightMargin: Theme.spacingNormal
+
+                    Label {
+                        text: "💬"
+                        font.pixelSize: 18
+                    }
 
                     Label {
                         text: auth.displayName || "Talk"
@@ -42,41 +43,67 @@ Item {
                         Layout.fillWidth: true
                     }
 
-                    // Refresh button
                     ToolButton {
-                        text: "↻"
-                        font.pixelSize: 18
+                        width: 36
+                        height: 36
                         onClicked: conversationModel.refresh()
-                        contentItem: Text {
-                            text: parent.text
-                            color: Theme.textSecondary
-                            font: parent.font
+                        contentItem: Label {
+                            text: "🔄"
+                            font.pixelSize: 14
                             horizontalAlignment: Text.AlignHCenter
                             verticalAlignment: Text.AlignVCenter
                         }
                         background: Rectangle {
-                            radius: 20
+                            radius: 18
                             color: parent.hovered ? Theme.bgHover : "transparent"
+                            Behavior on color { ColorAnimation { duration: Theme.animFast } }
+                        }
+                    }
+
+                    ToolButton {
+                        width: 36
+                        height: 36
+                        onClicked: auth.logout()
+                        contentItem: Label {
+                            text: "🚪"
+                            font.pixelSize: 14
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
+                        }
+                        background: Rectangle {
+                            radius: 18
+                            color: parent.hovered ? Theme.bgHover : "transparent"
+                            Behavior on color { ColorAnimation { duration: Theme.animFast } }
                         }
                     }
                 }
             }
 
-            // Search bar
+            // Divider
+            Rectangle {
+                Layout.fillWidth: true
+                height: 1
+                color: Theme.divider
+            }
+
+            // Search
             TextField {
                 id: searchField
                 Layout.fillWidth: true
-                Layout.leftMargin: 8
-                Layout.rightMargin: 8
-                Layout.topMargin: 4
-                Layout.bottomMargin: 4
-                placeholderText: "Search..."
-                placeholderTextColor: Theme.textSecondary
-                font.pixelSize: Theme.fontSizeNormal
+                Layout.leftMargin: Theme.spacingSmall
+                Layout.rightMargin: Theme.spacingSmall
+                Layout.topMargin: Theme.spacingSmall
+                Layout.bottomMargin: Theme.spacingSmall
+                placeholderText: "🔍  Search conversations..."
+                placeholderTextColor: Theme.textMuted
+                font.pixelSize: Theme.fontSizeSmall
                 color: Theme.textPrimary
                 background: Rectangle {
-                    radius: Theme.radiusNormal
+                    radius: Theme.radiusSmall
                     color: Theme.bgInput
+                    border.color: searchField.activeFocus ? Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.4) : "transparent"
+                    border.width: 1
+                    Behavior on border.color { ColorAnimation { duration: Theme.animNormal } }
                 }
                 padding: 10
             }
@@ -89,6 +116,17 @@ Item {
                 model: conversationModel
                 clip: true
                 currentIndex: sidebar.selectedIndex
+                boundsBehavior: Flickable.StopAtBounds
+
+                ScrollBar.vertical: ScrollBar {
+                    policy: ScrollBar.AsNeeded
+                    width: 4
+                    contentItem: Rectangle {
+                        radius: 2
+                        color: Theme.textMuted
+                        opacity: 0.3
+                    }
+                }
 
                 delegate: ConversationItem {
                     width: convListView.width
@@ -97,16 +135,35 @@ Item {
 
                     onClicked: {
                         sidebar.selectedIndex = index
-                        let t = token, n = displayName
-                        Qt.callLater(function() { sidebar.conversationSelected(t, n) })
+                        sidebar.conversationSelected(token, displayName)
                     }
                 }
 
-                // Loading indicator
+                // Loading
                 BusyIndicator {
                     anchors.centerIn: parent
                     running: conversationModel.loading
                     visible: running
+                    palette.dark: Theme.accent
+                }
+
+                // Empty state
+                Column {
+                    anchors.centerIn: parent
+                    spacing: Theme.spacingSmall
+                    visible: !conversationModel.loading && convListView.count === 0
+
+                    Label {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        text: "📭"
+                        font.pixelSize: 32
+                    }
+                    Label {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        text: "No conversations"
+                        font.pixelSize: Theme.fontSizeNormal
+                        color: Theme.textSecondary
+                    }
                 }
             }
         }

@@ -26,6 +26,7 @@ class AuthManager : public QObject
     Q_PROPERTY(QString userId READ userId NOTIFY userInfoChanged)
     Q_PROPERTY(QString errorMessage READ errorMessage NOTIFY errorChanged)
     Q_PROPERTY(bool waitingForBrowser READ isWaitingForBrowser NOTIFY waitingChanged)
+    Q_PROPERTY(bool restoringSession READ isRestoringSession NOTIFY restoringChanged)
     Q_PROPERTY(QString statusMessage READ statusMessage NOTIFY statusChanged)
 
 public:
@@ -37,6 +38,7 @@ public:
     QString userId() const { return m_userId; }
     QString errorMessage() const { return m_error; }
     bool isWaitingForBrowser() const { return m_waitingForBrowser; }
+    bool isRestoringSession() const { return m_restoringSession; }
     QString statusMessage() const { return m_status; }
 
     Q_INVOKABLE void tryRestore();
@@ -50,6 +52,7 @@ signals:
     void userInfoChanged();
     void errorChanged();
     void waitingChanged();
+    void restoringChanged();
     void statusChanged();
 
 private:
@@ -68,6 +71,7 @@ private:
     QTimer m_pollTimer;
     bool m_loggedIn = false;
     bool m_waitingForBrowser = false;
+    bool m_restoringSession = false;
     QString m_serverUrl;
     QString m_userId;
     QString m_displayName;

@@ -29,6 +29,7 @@ public:
 
 signals:
     void messagesReceived(const QJsonArray &messages);
+    void lastCommonReadChanged(int messageId);
     void pollError(const QString &error);
 
 private:

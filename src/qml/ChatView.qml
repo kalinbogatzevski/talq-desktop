@@ -3,9 +3,6 @@ import TalkQt
 import QtQuick.Controls
 import QtQuick.Layouts
 
-/**
- * Telegram-style chat view with message list and composer.
- */
 Item {
     id: chatRoot
     property string conversationName: ""
@@ -21,30 +18,30 @@ Item {
             // Chat header
             Rectangle {
                 Layout.fillWidth: true
-                Layout.preferredHeight: 56
+                Layout.preferredHeight: Theme.headerHeight
                 color: Theme.bgPrimary
 
                 RowLayout {
                     anchors.fill: parent
-                    anchors.leftMargin: 20
-                    anchors.rightMargin: 20
+                    anchors.leftMargin: Theme.spacingXLarge
+                    anchors.rightMargin: Theme.spacingXLarge
+                    spacing: Theme.spacingNormal
 
                     Label {
                         text: chatRoot.conversationName || "Select a conversation"
                         font.pixelSize: Theme.fontSizeLarge
-                        font.weight: Font.DemiBold
-                        color: Theme.textPrimary
+                        font.weight: chatRoot.conversationName.length > 0 ? Font.DemiBold : Font.Normal
+                        color: chatRoot.conversationName.length > 0 ? Theme.textPrimary : Theme.textMuted
                         elide: Text.ElideRight
                         Layout.fillWidth: true
                     }
                 }
             }
 
-            // Separator
             Rectangle {
                 Layout.fillWidth: true
                 height: 1
-                color: Theme.border
+                color: Theme.divider
             }
 
             // Messages
@@ -56,28 +53,58 @@ Item {
                 clip: true
                 verticalLayoutDirection: ListView.TopToBottom
                 spacing: 2
+                topMargin: Theme.spacingSmall
+                bottomMargin: Theme.spacingSmall
+                boundsBehavior: Flickable.StopAtBounds
 
-                // Auto-scroll to bottom on new messages
+                ScrollBar.vertical: ScrollBar {
+                    policy: ScrollBar.AsNeeded
+                    width: 5
+                    contentItem: Rectangle {
+                        radius: 2
+                        color: Theme.textMuted
+                        opacity: 0.3
+                    }
+                }
+
+                // Scroll to bottom on new messages / initial load
                 onCountChanged: {
-                    Qt.callLater(positionViewAtEnd)
+                    scrollTimer.restart()
+                }
+
+                Timer {
+                    id: scrollTimer
+                    interval: 50
+                    onTriggered: messageListView.positionViewAtEnd()
                 }
 
                 // Empty state
-                Label {
+                Column {
                     anchors.centerIn: parent
+                    spacing: Theme.spacingNormal
                     visible: messageModel.count === 0 && !messageModel.loading
-                    text: messageModel.conversationToken.length > 0
-                        ? "No messages yet"
-                        : "Select a conversation to start chatting"
-                    color: Theme.textSecondary
-                    font.pixelSize: Theme.fontSizeNormal
+
+                    Label {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        text: messageModel.conversationToken.length > 0 ? "💬" : "👈"
+                        font.pixelSize: 40
+                        opacity: 0.6
+                    }
+                    Label {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        text: messageModel.conversationToken.length > 0
+                            ? "No messages yet — say hello!"
+                            : "Select a conversation to start chatting"
+                        font.pixelSize: Theme.fontSizeNormal
+                        color: Theme.textSecondary
+                    }
                 }
 
-                // Loading
                 BusyIndicator {
                     anchors.centerIn: parent
                     running: messageModel.loading
                     visible: running
+                    palette.dark: Theme.accent
                 }
 
                 delegate: MessageBubble {
@@ -86,14 +113,13 @@ Item {
                 }
             }
 
-            // Separator
             Rectangle {
                 Layout.fillWidth: true
                 height: 1
-                color: Theme.border
+                color: Theme.divider
             }
 
-            // Message composer
+            // Composer
             MessageComposer {
                 Layout.fillWidth: true
                 visible: messageModel.conversationToken.length > 0

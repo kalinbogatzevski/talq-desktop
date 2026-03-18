@@ -25,6 +25,7 @@ qt_add_executable(talk-qt
     src/models/Message.cpp
     src/models/ConversationListModel.cpp
     src/models/MessageListModel.cpp
+    resources/talq.rc
 )
 
 qt_policy(SET QTP0001 NEW)
