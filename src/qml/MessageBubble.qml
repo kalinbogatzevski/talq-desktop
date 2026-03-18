@@ -97,19 +97,18 @@ Item {
             id: msgHover
         }
 
-        // Action bar (appears on hover, top-right)
+        // Action bar (appears on hover, above the message)
         Row {
             visible: msgHover.hovered && messageId > 0 && sendStatus !== "sending" && sendStatus !== "failed"
             z: 10
             spacing: 2
-            anchors.right: parent.right
-            anchors.rightMargin: Theme.spacingNormal
-            y: 0
+            x: isOwnMessage ? parent.width - width - Theme.spacingLarge : Theme.avatarSizeSmall + Theme.spacingLarge
+            y: -height + 4
 
             ToolButton {
                 width: 26; height: 26
                 ToolTip.visible: hovered; ToolTip.text: "React"; ToolTip.delay: 300
-                onClicked: emojiPicker.open()
+                onClicked: msgPopup.open()
                 contentItem: Label {
                     text: "\u263A"; font.pixelSize: 13
                     color: parent.hovered ? Theme.accent : Theme.textSecondary
@@ -131,46 +130,22 @@ Item {
             }
         }
 
-        // Right-click context menu
+        // Right-click → unified context popup
         MouseArea {
             anchors.fill: parent
             acceptedButtons: Qt.RightButton
-            onClicked: function(mouse) { contextMenu.popup() }
-        }
-
-        Menu {
-            id: contextMenu
-
-            MenuItem {
-                text: "\u263A  React"
-                enabled: messageId > 0
-                onTriggered: emojiPicker.open()
-            }
-            MenuItem {
-                text: "\u21A9  Reply"
-                enabled: messageId > 0
-                onTriggered: bubble.replyRequested(messageId, actorName, messageText)
-            }
-            MenuItem {
-                text: "\u2398  Copy"
-                onTriggered: {
-                    var plain = messageText.replace(/<[^>]*>/g, "")
-                    contextClipHelper.text = plain
-                    contextClipHelper.selectAll()
-                    contextClipHelper.copy()
-                }
-            }
+            onClicked: function(mouse) { msgPopup.popup() }
         }
 
         TextEdit { id: contextClipHelper; visible: false }
 
-        // Quick emoji picker
+        // Unified popup: emoji row + actions
         Popup {
-            id: emojiPicker
-            x: parent.width - width - Theme.spacingNormal
-            y: -height - 4
-            width: emojiRow.width + 16
-            height: 40
+            id: msgPopup
+            x: isOwnMessage ? -width - 4 : parent.width + 4
+            y: Math.max(0, Math.min(parent.height - height, 0))
+            width: popupCol.width + 20
+            height: popupCol.height + 16
             padding: 8
             background: Rectangle {
                 radius: Theme.radiusNormal
@@ -179,27 +154,100 @@ Item {
                 border.width: 1
             }
 
-            Row {
-                id: emojiRow
-                spacing: 4
+            ColumnLayout {
+                id: popupCol
+                spacing: 6
 
+                // Emoji quick-react row
+                Row {
+                    Layout.alignment: Qt.AlignHCenter
+                    spacing: 2
+                    visible: messageId > 0
+
+                    Repeater {
+                        model: ["\uD83D\uDC4D", "\u2764\uFE0F", "\uD83D\uDE02", "\uD83D\uDE2E", "\uD83D\uDE22", "\uD83C\uDF89", "\uD83D\uDC4F", "\uD83D\uDE4F"]
+
+                        Rectangle {
+                            width: 32; height: 32; radius: 8
+                            color: emojiMa.containsMouse ? Theme.bgHover : "transparent"
+
+                            Label {
+                                anchors.centerIn: parent
+                                text: modelData
+                                font.pixelSize: 17
+                            }
+
+                            MouseArea {
+                                id: emojiMa
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: {
+                                    messageModel.addReaction(messageId, modelData)
+                                    msgPopup.close()
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Rectangle { Layout.fillWidth: true; height: 1; color: Theme.divider; visible: messageId > 0 }
+
+                // Action buttons
                 Repeater {
-                    model: ["\uD83D\uDC4D", "\u2764\uFE0F", "\uD83D\uDE02", "\uD83D\uDE2E", "\uD83D\uDE22", "\uD83C\uDF89", "\uD83D\uDC4F", "\uD83D\uDE4F"]
-                    // 👍 ❤️ 😂 😮 😢 🎉 👏 🙏
+                    model: [
+                        { icon: "\u21A9", label: "Reply", action: "reply", ownerOnly: false },
+                        { icon: "\uD83D\uDCCB", label: "Copy", action: "copy", ownerOnly: false },
+                        { icon: "\u21AA", label: "Forward", action: "forward", ownerOnly: false },
+                        { icon: "\uD83D\uDCCC", label: "Pin", action: "pin", ownerOnly: false },
+                        { icon: "\uD83D\uDD17", label: "Copy message link", action: "copylink", ownerOnly: false },
+                        { icon: "\u2709", label: "Mark as unread", action: "unread", ownerOnly: false },
+                        { icon: "\uD83D\uDCDD", label: "Note to self", action: "notetoself", ownerOnly: false },
+                        { icon: "\u23F0", label: "Set reminder", action: "reminder", ownerOnly: false },
+                        { icon: "\uD83D\uDDD1", label: "Delete", action: "delete", ownerOnly: true }
+                    ]
 
-                    Label {
-                        text: modelData
-                        font.pixelSize: 18
-                        opacity: emojiMa.containsMouse ? 1.0 : 0.7
+                    Rectangle {
+                        Layout.fillWidth: true
+                        width: 200; height: 32; radius: Theme.radiusSmall
+                        color: actionMa.containsMouse ? Theme.bgHover : "transparent"
+                        visible: !modelData.ownerOnly || isOwnMessage
+
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: 10
+                            spacing: 8
+
+                            Label {
+                                text: modelData.icon
+                                font.pixelSize: 14
+                                color: modelData.action === "delete" ? Theme.danger : Theme.textSecondary
+                            }
+                            Label {
+                                text: modelData.label
+                                font.pixelSize: Theme.fontSizeSmall
+                                color: modelData.action === "delete" ? Theme.danger : Theme.textPrimary
+                                Layout.fillWidth: true
+                            }
+                        }
 
                         MouseArea {
-                            id: emojiMa
+                            id: actionMa
                             anchors.fill: parent
                             hoverEnabled: true
                             cursorShape: Qt.PointingHandCursor
                             onClicked: {
-                                messageModel.addReaction(messageId, modelData)
-                                emojiPicker.close()
+                                msgPopup.close()
+                                if (modelData.action === "reply") {
+                                    bubble.replyRequested(messageId, actorName, messageText)
+                                } else if (modelData.action === "copy") {
+                                    var plain = messageText.replace(/<[^>]*>/g, "")
+                                    contextClipHelper.text = plain
+                                    contextClipHelper.selectAll()
+                                    contextClipHelper.copy()
+                                } else if (modelData.action === "delete") {
+                                    messageModel.sendMessage("/delete " + messageId)
+                                }
                             }
                         }
                     }
