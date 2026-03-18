@@ -33,7 +33,9 @@ void AuthManager::tryRestore()
     m_api->setCredentials(user, password);
     emit serverUrlChanged();
 
-    setStatus("Verifying saved session...");
+    // Show loading screen while verifying
+    m_restoringSession = true;
+    emit restoringChanged();
     fetchUserInfo();
 }
 
@@ -202,10 +204,14 @@ void AuthManager::cancelLogin()
 void AuthManager::fetchUserInfo()
 {
     m_api->get("cloud/user", [this](bool ok, const QJsonObject &data, int) {
+        m_restoringSession = false;
+        emit restoringChanged();
+
         if (!ok) {
             setError("Authentication failed. Please log in again.");
             setStatus({});
             clearCredentials();
+            setLoggedIn(false);
             return;
         }
 

@@ -1,8 +1,11 @@
 #include "models/MessageListModel.h"
 #include <QUrlQuery>
 #include <QJsonObject>
+#include <QJsonDocument>
+#include <QJsonArray>
 #include <QDateTime>
 #include <QTimer>
+#include <QNetworkReply>
 
 MessageListModel::MessageListModel(ApiClient *api, QObject *parent)
     : QAbstractListModel(parent)
@@ -11,6 +14,8 @@ MessageListModel::MessageListModel(ApiClient *api, QObject *parent)
 {
     connect(m_poller, &MessagePoller::messagesReceived,
             this, &MessageListModel::onMessagesReceived);
+    connect(m_poller, &MessagePoller::lastCommonReadChanged,
+            this, &MessageListModel::onLastCommonReadChanged);
 }
 
 MessageListModel::~MessageListModel()
@@ -55,6 +60,22 @@ QVariant MessageListModel::data(const QModelIndex &index, int role) const
         }
         case TimeStringRole:
             return m.dateTime().toString("HH:mm");
+        case ShowDateSeparatorRole: {
+            if (index.row() == 0) return true;
+            auto prevDate = m_messages[index.row() - 1].dateTime().date();
+            return m.dateTime().date() != prevDate;
+        }
+        case DateStringRole: {
+            auto date = m.dateTime().date();
+            auto today = QDate::currentDate();
+            if (date == today)
+                return QString("Today");
+            if (date == today.addDays(-1))
+                return QString("Yesterday");
+            return date.toString("dd MMM yyyy");
+        }
+        case IsReadRole:
+            return m.id > 0 && m.id <= m_lastCommonRead;
         default:
             return {};
     }
@@ -75,6 +96,9 @@ QHash<int, QByteArray> MessageListModel::roleNames() const
         {ReplyToAuthorRole, "replyToAuthor"},
         {ReactionsRole,     "reactions"},
         {TimeStringRole,    "timeString"},
+        {ShowDateSeparatorRole, "showDateSeparator"},
+        {DateStringRole,    "dateString"},
+        {IsReadRole,        "isRead"},
     };
 }
 
@@ -126,44 +150,60 @@ void MessageListModel::loadHistory()
         params.addQueryItem("lastKnownMessageId", QString::number(m_oldestMessageId));
 
     QString currentToken = m_token;
-    m_api->getArray("apps/spreed/api/v1/chat/" + m_token, params,
-        [this, currentToken](bool ok, const QJsonArray &data, int) {
-            if (m_token != currentToken)
-                return; // conversation changed while loading
-            m_loading = false;
-            emit loadingChanged();
+    auto *reply = m_api->getRaw("apps/spreed/api/v1/chat/" + m_token, params);
 
-            if (!ok || data.isEmpty()) {
-                // Start polling from wherever we are
-                int lastId = m_messages.isEmpty() ? 0 : m_messages.last().id;
-                m_poller->start(m_token, lastId);
-                return;
-            }
+    connect(reply, &QNetworkReply::finished, this, [this, reply, currentToken]() {
+        reply->deleteLater();
 
-            // History messages come newest-first, we need oldest-first
-            QJsonArray reversed;
-            for (int i = data.size() - 1; i >= 0; --i)
-                reversed.append(data[i]);
+        if (m_token != currentToken)
+            return;
 
-            int insertPos = 0; // prepend history at top
-            QVector<Message> newMsgs;
-            for (const auto &val : reversed) {
-                newMsgs.append(Message::fromJson(val.toObject()));
-            }
+        m_loading = false;
+        emit loadingChanged();
 
-            if (!newMsgs.isEmpty()) {
-                beginInsertRows({}, 0, newMsgs.size() - 1);
-                for (int i = newMsgs.size() - 1; i >= 0; --i)
-                    m_messages.prepend(newMsgs[i]);
-                endInsertRows();
+        // Capture read receipt header
+        QByteArray lastCommonRead = reply->rawHeader("X-Chat-Last-Common-Read");
+        if (!lastCommonRead.isEmpty()) {
+            onLastCommonReadChanged(lastCommonRead.toInt());
+        }
 
-                m_oldestMessageId = m_messages.first().id;
-            }
-
-            // Start long-polling for new messages
+        if (reply->error() != QNetworkReply::NoError) {
             int lastId = m_messages.isEmpty() ? 0 : m_messages.last().id;
             m_poller->start(m_token, lastId);
-        });
+            return;
+        }
+
+        QByteArray body = reply->readAll();
+        QJsonDocument doc = QJsonDocument::fromJson(body);
+        QJsonObject root = doc.object();
+        QJsonObject ocs = root["ocs"].toObject();
+        QJsonArray data = ocs["data"].toArray();
+
+        if (data.isEmpty()) {
+            int lastId = m_messages.isEmpty() ? 0 : m_messages.last().id;
+            m_poller->start(m_token, lastId);
+            return;
+        }
+
+        // History messages come newest-first, we need oldest-first
+        QVector<Message> newMsgs;
+        for (int i = data.size() - 1; i >= 0; --i) {
+            newMsgs.append(Message::fromJson(data[i].toObject()));
+        }
+
+        if (!newMsgs.isEmpty()) {
+            beginInsertRows({}, 0, newMsgs.size() - 1);
+            for (int i = newMsgs.size() - 1; i >= 0; --i)
+                m_messages.prepend(newMsgs[i]);
+            endInsertRows();
+
+            m_oldestMessageId = m_messages.first().id;
+        }
+
+        // Start long-polling for new messages
+        int lastId = m_messages.isEmpty() ? 0 : m_messages.last().id;
+        m_poller->start(m_token, lastId);
+    });
 }
 
 void MessageListModel::onMessagesReceived(const QJsonArray &messages)
@@ -208,9 +248,28 @@ void MessageListModel::sendMessage(const QString &text, int replyToId)
     m_api->post("apps/spreed/api/v1/chat/" + m_token, body,
         [this](bool ok, const QJsonObject &data, int) {
             if (ok) {
+                // Add the sent message to the list immediately from server response
+                if (!data.isEmpty()) {
+                    QJsonArray arr;
+                    arr.append(data);
+                    appendMessages(arr);
+                }
                 emit messageSent();
             } else {
                 emit errorOccurred("Failed to send message");
             }
         });
+}
+
+void MessageListModel::onLastCommonReadChanged(int messageId)
+{
+    if (messageId <= m_lastCommonRead)
+        return;
+
+    m_lastCommonRead = messageId;
+
+    // Notify that isRead may have changed for all visible messages
+    if (!m_messages.isEmpty()) {
+        emit dataChanged(index(0), index(m_messages.size() - 1), {IsReadRole});
+    }
 }

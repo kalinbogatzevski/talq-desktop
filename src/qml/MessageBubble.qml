@@ -3,13 +3,9 @@ import TalkQt
 import QtQuick.Controls
 import QtQuick.Layouts
 
-/**
- * Telegram-style message bubble.
- * Own messages on the right (blue), others on the left (dark).
- */
 Item {
     id: bubble
-    height: bubbleContent.height + (isGrouped ? 2 : 8)
+    height: dateSep.height + (isSystem ? systemMsg.height + 6 : bubbleContent.height + (isGrouped ? 1 : 6))
 
     required property int messageId
     required property string actorName
@@ -23,61 +19,100 @@ Item {
     required property string replyToAuthor
     required property string reactions
     required property string timeString
+    required property bool showDateSeparator
+    required property string dateString
+    required property bool isRead
 
     property bool isOwnMessage: false
 
-    // System messages (user joined, etc.)
+    // Date separator
     Rectangle {
-        visible: isSystem
-        anchors.horizontalCenter: parent.horizontalCenter
-        width: systemLabel.implicitWidth + 24
-        height: systemLabel.implicitHeight + 12
-        radius: Theme.radiusSmall
+        id: dateSep
+        visible: showDateSeparator
+        width: parent.width
+        height: visible ? 36 : 0
+
         color: "transparent"
+
+        Rectangle {
+            anchors.centerIn: parent
+            width: dateLabel.implicitWidth + Theme.spacingXLarge
+            height: 24
+            radius: 12
+            color: Theme.bgSurface
+
+            Label {
+                id: dateLabel
+                anchors.centerIn: parent
+                text: dateString
+                font.pixelSize: Theme.fontSizeTiny
+                font.weight: Font.DemiBold
+                color: Theme.textSecondary
+            }
+        }
+    }
+
+    // System messages
+    Item {
+        id: systemMsg
+        visible: isSystem
+        anchors.top: dateSep.bottom
+        width: parent.width
+        height: visible ? systemLabel.implicitHeight + 16 : 0
 
         Label {
             id: systemLabel
             anchors.centerIn: parent
             text: messageText
-            font.pixelSize: Theme.fontSizeSmall
-            font.italic: true
+            font.pixelSize: Theme.fontSizeTiny
             color: Theme.systemMsg
         }
     }
 
-    // Regular message bubble
+    // Regular message
     Item {
         id: bubbleContent
         visible: !isSystem
+        anchors.top: dateSep.bottom
         width: parent.width
         height: bubbleRect.height
 
         Rectangle {
             id: bubbleRect
-            width: Math.min(messageColumn.implicitWidth + 28, bubble.width * 0.75)
-            height: messageColumn.implicitHeight + 16
+            width: Math.max(msgCol.implicitWidth + 28, timeLabel.implicitWidth + 28)
+            height: msgCol.implicitHeight + 14
+
+            // Clamp between reasonable min/max
+            Component.onCompleted: {
+                width = Qt.binding(function() {
+                    var natural = Math.max(msgCol.implicitWidth + 28, timeLabel.implicitWidth + 40)
+                    return Math.min(Math.max(natural, 80), bubble.width * 0.85)
+                })
+            }
+
             radius: Theme.radiusNormal
             color: isOwnMessage ? Theme.bgMessageOwn : Theme.bgMessage
 
-            // Position: own messages right-aligned, others left-aligned
             anchors {
                 left: isOwnMessage ? undefined : parent.left
                 right: isOwnMessage ? parent.right : undefined
-                leftMargin: isOwnMessage ? 0 : 12
-                rightMargin: isOwnMessage ? 12 : 0
+                leftMargin: isOwnMessage ? 0 : Theme.spacingNormal
+                rightMargin: isOwnMessage ? Theme.spacingNormal : 0
             }
 
             ColumnLayout {
-                id: messageColumn
+                id: msgCol
                 anchors {
-                    fill: parent
-                    margins: 8
-                    leftMargin: 12
-                    rightMargin: 12
+                    left: parent.left
+                    right: parent.right
+                    top: parent.top
+                    margins: 7
+                    leftMargin: Theme.spacingNormal
+                    rightMargin: Theme.spacingNormal
                 }
-                spacing: 4
+                spacing: 2
 
-                // Author name (not shown for own messages or grouped messages)
+                // Author
                 Label {
                     visible: !isOwnMessage && !isGrouped
                     text: actorName
@@ -94,13 +129,13 @@ Item {
                     }
                 }
 
-                // Reply preview
+                // Reply
                 Rectangle {
                     visible: replyToText.length > 0
                     Layout.fillWidth: true
-                    height: replyColumn.implicitHeight + 8
-                    radius: 4
-                    color: Qt.rgba(255, 255, 255, 0.06)
+                    height: replyCol.implicitHeight + 8
+                    radius: Theme.radiusSmall
+                    color: Qt.rgba(1, 1, 1, 0.05)
 
                     Rectangle {
                         width: 3
@@ -110,27 +145,23 @@ Item {
                     }
 
                     ColumnLayout {
-                        id: replyColumn
+                        id: replyCol
                         anchors {
-                            left: parent.left
-                            right: parent.right
-                            top: parent.top
-                            leftMargin: 10
-                            rightMargin: 8
-                            topMargin: 4
+                            left: parent.left; right: parent.right; top: parent.top
+                            leftMargin: 10; rightMargin: 8; topMargin: 4
                         }
-                        spacing: 2
+                        spacing: 1
 
                         Label {
                             text: replyToAuthor
-                            font.pixelSize: Theme.fontSizeSmall
+                            font.pixelSize: Theme.fontSizeTiny
                             font.weight: Font.DemiBold
                             color: Theme.accent
                         }
                         Label {
                             Layout.fillWidth: true
                             text: replyToText
-                            font.pixelSize: Theme.fontSizeSmall
+                            font.pixelSize: Theme.fontSizeTiny
                             color: Theme.textSecondary
                             elide: Text.ElideRight
                             maximumLineCount: 1
@@ -148,7 +179,7 @@ Item {
                     textFormat: Text.PlainText
                 }
 
-                // Reactions row
+                // Reactions
                 Label {
                     visible: reactions.length > 0
                     text: reactions
@@ -156,12 +187,26 @@ Item {
                     color: Theme.textSecondary
                 }
 
-                // Timestamp (bottom-right, Telegram style)
-                Label {
+                // Timestamp + sent indicator
+                RowLayout {
                     Layout.alignment: Qt.AlignRight
-                    text: timeString
-                    font.pixelSize: 11
-                    color: Theme.textTime
+                    spacing: 4
+
+                    Label {
+                        id: timeLabel
+                        text: timeString
+                        font.pixelSize: 10
+                        color: isOwnMessage ? Qt.rgba(1, 1, 1, 0.45) : Theme.textTime
+                    }
+
+                    // Delivery status for own messages
+                    Label {
+                        visible: isOwnMessage
+                        text: isRead ? "✓✓" : "✓"
+                        font.pixelSize: 10
+                        font.letterSpacing: -2
+                        color: isRead ? Theme.accent : Qt.rgba(1, 1, 1, 0.45)
+                    }
                 }
             }
         }

@@ -44,6 +44,9 @@ public:
     void del(const QString &path, Callback callback);
     void del(const QString &path, const QUrlQuery &params, Callback callback);
 
+    // Raw GET — caller handles the reply (for reading headers)
+    QNetworkReply *getRaw(const QString &path, const QUrlQuery &params = QUrlQuery());
+
     // Long-poll (custom timeout)
     QNetworkReply *getLongPoll(const QString &path, const QUrlQuery &params, int timeoutSecs);
 

@@ -187,6 +187,14 @@ void ApiClient::del(const QString &path, const QUrlQuery &params, Callback callb
     handleReply(reply, callback);
 }
 
+QNetworkReply *ApiClient::getRaw(const QString &path, const QUrlQuery &params)
+{
+    auto req = makeRequest(path, params);
+    auto *reply = m_nam.get(req);
+    m_pendingReplies.append(reply);
+    return reply;
+}
+
 QNetworkReply *ApiClient::getLongPoll(const QString &path, const QUrlQuery &params, int timeoutSecs)
 {
     auto req = makeRequest(path, params);

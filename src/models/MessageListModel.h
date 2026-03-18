@@ -31,6 +31,9 @@ public:
         ReplyToAuthorRole,
         ReactionsRole,
         TimeStringRole,
+        ShowDateSeparatorRole,  // true if this message starts a new day
+        DateStringRole,         // "Today", "Yesterday", "18 Mar 2026"
+        IsReadRole,             // true if all participants have read this message
     };
 
     explicit MessageListModel(ApiClient *api, QObject *parent = nullptr);
@@ -65,4 +68,8 @@ private:
     QString m_token;
     bool m_loading = false;
     int m_oldestMessageId = 0;
+    int m_lastCommonRead = 0;
+
+private slots:
+    void onLastCommonReadChanged(int messageId);
 };

@@ -87,6 +87,12 @@ void MessagePoller::handlePollResponse()
         m_lastKnownMessageId = lastGiven.toInt();
     }
 
+    // Read receipt: last message all participants have read
+    QByteArray lastCommonRead = reply->rawHeader("X-Chat-Last-Common-Read");
+    if (!lastCommonRead.isEmpty()) {
+        emit lastCommonReadChanged(lastCommonRead.toInt());
+    }
+
     reply->deleteLater();
 
     if (status == 304) {

@@ -11,9 +11,9 @@
 int main(int argc, char *argv[])
 {
     QGuiApplication app(argc, argv);
-    app.setApplicationName("Talk Qt");
-    app.setOrganizationName("TalkQt");
-    app.setApplicationVersion("0.1.0");
+    app.setApplicationName("TalQ");
+    app.setOrganizationName("TalQ");
+    app.setApplicationVersion("0.2.0");
 
     QQuickStyle::setStyle("Basic");
 
@@ -37,7 +37,7 @@ int main(int argc, char *argv[])
     if (engine.rootObjects().isEmpty())
         return -1;
 
-    // Try to restore saved session
+    // Restore session after QML is loaded so loading screen is visible
     auth.tryRestore();
 
     return app.exec();

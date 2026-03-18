@@ -3,13 +3,9 @@ import TalkQt
 import QtQuick.Controls
 import QtQuick.Layouts
 
-/**
- * Single conversation row in the sidebar — Telegram style.
- * Shows avatar placeholder, name, last message preview, time, and unread badge.
- */
 ItemDelegate {
     id: convItem
-    height: visible ? 72 : 0
+    height: visible ? Theme.conversationHeight : 0
     padding: 0
 
     required property int index
@@ -26,27 +22,43 @@ ItemDelegate {
     property bool selected: false
     property string filterText: ""
 
-    // Filter by search text
     visible: filterText.length === 0 || displayName.toLowerCase().includes(filterText.toLowerCase())
 
     background: Rectangle {
         color: selected ? Theme.bgSelected
              : convItem.hovered ? Theme.bgHover
              : "transparent"
+
+        Behavior on color { ColorAnimation { duration: Theme.animFast } }
+
+        // Selection indicator bar
+        Rectangle {
+            width: 3
+            height: parent.height * 0.5
+            radius: 2
+            anchors.left: parent.left
+            anchors.verticalCenter: parent.verticalCenter
+            color: Theme.accent
+            visible: selected
+            opacity: selected ? 1 : 0
+            Behavior on opacity { NumberAnimation { duration: Theme.animNormal } }
+        }
     }
 
-    contentItem: RowLayout {
-        spacing: 12
-        anchors.leftMargin: 12
-        anchors.rightMargin: 12
+    leftPadding: Theme.spacingLarge
+    rightPadding: Theme.spacingNormal
+    topPadding: Theme.spacingSmall
+    bottomPadding: Theme.spacingSmall
 
-        // Avatar circle
+    contentItem: RowLayout {
+        spacing: Theme.spacingNormal
+
+        // Avatar
         Rectangle {
-            width: 48
-            height: 48
-            radius: 24
+            width: Theme.avatarSize
+            height: Theme.avatarSize
+            radius: Theme.avatarSize / 2
             color: {
-                // Generate consistent color from name
                 var colors = ["#5eb5f7", "#e17076", "#faa05a", "#7bc862", "#a695e7", "#ee7aae", "#6ec9cb", "#65aadd"]
                 var hash = 0
                 for (var i = 0; i < displayName.length; i++) {
@@ -59,27 +71,29 @@ ItemDelegate {
             Label {
                 anchors.centerIn: parent
                 text: {
-                    if (conversationType === 6) return "📝" // Note to self
+                    if (conversationType === 6) return "📝"
                     return displayName.length > 0 ? displayName[0].toUpperCase() : "?"
                 }
-                font.pixelSize: conversationType === 6 ? 22 : 20
+                font.pixelSize: conversationType === 6 ? 20 : 18
                 font.weight: Font.DemiBold
                 color: "white"
             }
 
-            // Group icon overlay
+            // Group badge
             Rectangle {
                 visible: conversationType === 2 || conversationType === 3
                 anchors.right: parent.right
                 anchors.bottom: parent.bottom
-                width: 18
-                height: 18
-                radius: 9
+                width: 16
+                height: 16
+                radius: 8
                 color: Theme.bgSidebar
+                border.color: Theme.bgSidebar
+                border.width: 2
                 Label {
                     anchors.centerIn: parent
-                    text: conversationType === 3 ? "🔓" : "👥"
-                    font.pixelSize: 10
+                    text: conversationType === 3 ? "🌐" : "👥"
+                    font.pixelSize: 8
                 }
             }
         }
@@ -87,20 +101,18 @@ ItemDelegate {
         // Text content
         ColumnLayout {
             Layout.fillWidth: true
-            spacing: 4
+            spacing: 3
 
             RowLayout {
                 Layout.fillWidth: true
+                spacing: Theme.spacingSmall
 
-                // Favorite star
                 Label {
                     visible: isFavorite
-                    text: "★"
-                    font.pixelSize: 12
-                    color: "#faa05a"
+                    text: "⭐"
+                    font.pixelSize: 11
                 }
 
-                // Conversation name
                 Label {
                     Layout.fillWidth: true
                     text: displayName
@@ -111,31 +123,28 @@ ItemDelegate {
                     maximumLineCount: 1
                 }
 
-                // Time
                 Label {
                     text: {
                         if (lastActivity <= 0) return ""
                         var d = new Date(lastActivity * 1000)
                         var now = new Date()
-                        if (d.toDateString() === now.toDateString()) {
+                        if (d.toDateString() === now.toDateString())
                             return d.toLocaleTimeString(Qt.locale(), "HH:mm")
-                        }
                         var yesterday = new Date(now)
                         yesterday.setDate(yesterday.getDate() - 1)
-                        if (d.toDateString() === yesterday.toDateString()) {
+                        if (d.toDateString() === yesterday.toDateString())
                             return "Yesterday"
-                        }
                         return d.toLocaleDateString(Qt.locale(), "dd MMM")
                     }
-                    font.pixelSize: Theme.fontSizeSmall
+                    font.pixelSize: Theme.fontSizeTiny
                     color: unreadCount > 0 ? Theme.accent : Theme.textTime
                 }
             }
 
             RowLayout {
                 Layout.fillWidth: true
+                spacing: Theme.spacingSmall
 
-                // Last message preview
                 Label {
                     Layout.fillWidth: true
                     text: {
@@ -144,7 +153,7 @@ ItemDelegate {
                         return prefix + lastMessage
                     }
                     font.pixelSize: Theme.fontSizeSmall
-                    color: Theme.textSecondary
+                    color: Theme.textMuted
                     elide: Text.ElideRight
                     maximumLineCount: 1
                 }
@@ -152,19 +161,22 @@ ItemDelegate {
                 // Unread badge
                 Rectangle {
                     visible: unreadCount > 0
-                    width: Math.max(22, unreadLabel.implicitWidth + 12)
-                    height: 22
-                    radius: 11
+                    width: Math.max(20, unreadLabel.implicitWidth + 10)
+                    height: 20
+                    radius: 10
                     color: unreadMention ? Theme.accent : Theme.unreadBadge
 
                     Label {
                         id: unreadLabel
                         anchors.centerIn: parent
                         text: unreadCount > 99 ? "99+" : unreadCount
-                        font.pixelSize: 11
+                        font.pixelSize: 10
                         font.weight: Font.Bold
                         color: "white"
                     }
+
+                    scale: visible ? 1 : 0
+                    Behavior on scale { NumberAnimation { duration: Theme.animNormal; easing.type: Easing.OutBack } }
                 }
             }
         }
