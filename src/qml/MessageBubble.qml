@@ -97,18 +97,27 @@ Item {
             id: msgHover
         }
 
-        // Action bar (appears on hover, above the message)
+        // Action bar (hover: right side for others, left of bubble for own)
         Row {
             visible: msgHover.hovered && messageId > 0 && sendStatus !== "sending" && sendStatus !== "failed"
             z: 10
             spacing: 2
-            x: isOwnMessage ? parent.width - width - Theme.spacingLarge : Theme.avatarSizeSmall + Theme.spacingLarge
-            y: -height + 4
+            x: isOwnMessage
+                ? (ownBubble.x - width - 6)
+                : (otherMsg.x + otherMsg.width + 6)
+            y: isOwnMessage
+                ? (ownBubble.y + (ownBubble.height - height) / 2)
+                : (otherMsg.y + (otherMsg.height - height) / 2)
 
             ToolButton {
                 width: 26; height: 26
                 ToolTip.visible: hovered; ToolTip.text: "React"; ToolTip.delay: 300
-                onClicked: msgPopup.open()
+                onClicked: {
+                    var pos = mapToItem(msgContent, 0, height)
+                    quickEmojis.x = pos.x - quickEmojis.width / 2 + 13
+                    quickEmojis.y = pos.y
+                    quickEmojis.open()
+                }
                 contentItem: Label {
                     text: "\u263A"; font.pixelSize: 13
                     color: parent.hovered ? Theme.accent : Theme.textSecondary
@@ -130,14 +139,62 @@ Item {
             }
         }
 
-        // Right-click → unified context popup
+        // Right-click → unified context popup at cursor
         MouseArea {
             anchors.fill: parent
             acceptedButtons: Qt.RightButton
-            onClicked: function(mouse) { msgPopup.popup() }
+            onClicked: function(mouse) {
+                msgPopup.x = mouse.x
+                msgPopup.y = mouse.y - msgPopup.height
+                msgPopup.open()
+            }
         }
 
         TextEdit { id: contextClipHelper; visible: false }
+
+        // Tiny emoji-only bar (from hover ☺ button)
+        Popup {
+            id: quickEmojis
+            width: quickRow.width + 12
+            height: 36
+            padding: 4
+            background: Rectangle {
+                radius: 18
+                color: Theme.bgSurface
+                border.color: Theme.divider
+                border.width: 1
+            }
+
+            Row {
+                id: quickRow
+                anchors.centerIn: parent
+                spacing: 2
+
+                Repeater {
+                    model: ["\uD83D\uDC4D", "\u2764\uFE0F", "\uD83D\uDE02", "\uD83D\uDE2E", "\uD83D\uDE22", "\uD83C\uDF89"]
+
+                    Rectangle {
+                        width: 28; height: 28; radius: 14
+                        color: qeMa.containsMouse ? Theme.bgHover : "transparent"
+
+                        Label {
+                            anchors.centerIn: parent
+                            text: modelData; font.pixelSize: 15
+                        }
+
+                        MouseArea {
+                            id: qeMa
+                            anchors.fill: parent; hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                messageModel.addReaction(messageId, modelData)
+                                quickEmojis.close()
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         // Unified popup: emoji row + actions
         Popup {

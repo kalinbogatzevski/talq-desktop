@@ -142,7 +142,16 @@ Page {
         boundsBehavior: Flickable.StopAtBounds
 
         // Scroll to newest message on any count change
-        onCountChanged: positionViewAtEnd()
+        onCountChanged: {
+            positionViewAtEnd()
+            scrollEndTimer.restart()
+        }
+
+        Timer {
+            id: scrollEndTimer
+            interval: 100
+            onTriggered: messageListView.positionViewAtEnd()
+        }
 
         ScrollBar.vertical: ScrollBar {
             policy: ScrollBar.AsNeeded; width: 5

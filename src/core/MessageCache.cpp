@@ -89,6 +89,9 @@ void MessageCache::saveMessages(const QString &token, const QVector<Message> &me
         json["message"] = msg.message;
         json["timestamp"] = msg.timestamp;
         json["messageType"] = msg.messageType;
+        if (!msg.systemMessage.isEmpty()) {
+            json["systemMessage"] = msg.systemMessage;
+        }
         if (!msg.replyTo.isEmpty()) {
             json["parent"] = msg.replyTo;
         }
