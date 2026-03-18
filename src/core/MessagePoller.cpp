@@ -24,9 +24,10 @@ void MessagePoller::stop()
 {
     m_polling = false;
     if (m_currentReply) {
-        m_currentReply->abort();
-        m_currentReply->deleteLater();
+        auto *reply = m_currentReply;
         m_currentReply = nullptr;
+        reply->abort();
+        reply->deleteLater();
     }
 }
 
@@ -68,8 +69,9 @@ void MessagePoller::handlePollResponse()
     }
 
     if (reply->error() != QNetworkReply::NoError && status == 0) {
+        QString errorMsg = reply->errorString();
         reply->deleteLater();
-        emit pollError(reply->errorString());
+        emit pollError(errorMsg);
         // Retry after a short delay
         if (m_polling) {
             QTimer::singleShot(2000, this, &MessagePoller::poll);

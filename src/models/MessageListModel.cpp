@@ -2,6 +2,7 @@
 #include <QUrlQuery>
 #include <QJsonObject>
 #include <QDateTime>
+#include <QTimer>
 
 MessageListModel::MessageListModel(ApiClient *api, QObject *parent)
     : QAbstractListModel(parent)
@@ -97,14 +98,16 @@ void MessageListModel::setConversationToken(const QString &token)
     if (token.isEmpty())
         return;
 
-    // Join conversation
+    // Join conversation — capture token to guard against stale callbacks
+    QString joinToken = token;
     m_api->post("apps/spreed/api/v4/room/" + token + "/participants/active",
-        [this](bool ok, const QJsonObject &, int) {
+        [this, joinToken](bool ok, const QJsonObject &, int) {
+            if (m_token != joinToken)
+                return;
             if (!ok) {
                 emit errorOccurred("Failed to join conversation");
                 return;
             }
-            // Load initial history
             loadHistory();
         });
 }
@@ -122,8 +125,11 @@ void MessageListModel::loadHistory()
     if (m_oldestMessageId > 0)
         params.addQueryItem("lastKnownMessageId", QString::number(m_oldestMessageId));
 
+    QString currentToken = m_token;
     m_api->getArray("apps/spreed/api/v1/chat/" + m_token, params,
-        [this](bool ok, const QJsonArray &data, int) {
+        [this, currentToken](bool ok, const QJsonArray &data, int) {
+            if (m_token != currentToken)
+                return; // conversation changed while loading
             m_loading = false;
             emit loadingChanged();
 
