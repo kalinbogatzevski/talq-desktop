@@ -47,6 +47,7 @@ public:
     int lastReadMessage = 0;
     int participantType = 0;
     QString actorId;
+    QString name;  // For 1:1 chats, this is the other user's userId
 
     static Conversation fromJson(const QJsonObject &json);
 

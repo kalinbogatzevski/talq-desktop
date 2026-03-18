@@ -13,6 +13,7 @@ Conversation Conversation::fromJson(const QJsonObject &json)
     c.lastReadMessage = json["lastReadMessage"].toInt();
     c.participantType = json["participantType"].toInt();
     c.actorId = json["actorId"].toString();
+    c.name = json["name"].toString();
 
     // Extract last message preview
     QJsonObject lastMsg = json["lastMessage"].toObject();

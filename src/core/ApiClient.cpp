@@ -204,6 +204,19 @@ QNetworkReply *ApiClient::getLongPoll(const QString &path, const QUrlQuery &para
     return reply;
 }
 
+QNetworkReply *ApiClient::getAbsoluteUrl(const QString &path)
+{
+    QUrl url(m_serverUrl + path);
+    QNetworkRequest req(url);
+    if (!m_user.isEmpty()) {
+        QString credentials = m_user + ":" + m_password;
+        req.setRawHeader("Authorization", "Basic " + credentials.toUtf8().toBase64());
+    }
+    auto *reply = m_nam.get(req);
+    // Not added to m_pendingReplies — caller manages lifetime
+    return reply;
+}
+
 void ApiClient::cancelAll()
 {
     for (auto *reply : m_pendingReplies) {

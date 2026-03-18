@@ -26,6 +26,7 @@ public:
         LastMessageRole,
         LastAuthorRole,
         LastActivityRole,
+        ActorIdRole,
     };
 
     explicit ConversationListModel(ApiClient *api, QObject *parent = nullptr);
