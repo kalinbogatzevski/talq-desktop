@@ -97,31 +97,113 @@ Item {
             id: msgHover
         }
 
-        // Reply button (appears on hover)
-        ToolButton {
+        // Action bar (appears on hover, top-right)
+        Row {
             visible: msgHover.hovered && messageId > 0 && sendStatus !== "sending" && sendStatus !== "failed"
             z: 10
-            width: 28; height: 28
-            x: isOwnMessage ? parent.width - width - Theme.spacingNormal - 32 : Theme.spacingNormal
-            y: 2
-            ToolTip.visible: hovered
-            ToolTip.text: "Reply"
-            ToolTip.delay: 300
+            spacing: 2
+            anchors.right: parent.right
+            anchors.rightMargin: Theme.spacingNormal
+            y: 0
 
-            onClicked: bubble.replyRequested(messageId, actorName, messageText)
-
-            contentItem: Label {
-                text: "\u21A9"  // ↩ reply arrow
-                font.pixelSize: 14
-                color: parent.hovered ? Theme.accent : Theme.textSecondary
-                horizontalAlignment: Text.AlignHCenter
-                verticalAlignment: Text.AlignVCenter
+            ToolButton {
+                width: 26; height: 26
+                ToolTip.visible: hovered; ToolTip.text: "React"; ToolTip.delay: 300
+                onClicked: emojiPicker.open()
+                contentItem: Label {
+                    text: "\u263A"; font.pixelSize: 13
+                    color: parent.hovered ? Theme.accent : Theme.textSecondary
+                    horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
+                }
+                background: Rectangle { radius: 13; color: parent.hovered ? Theme.bgHover : Theme.bgSurface }
             }
+
+            ToolButton {
+                width: 26; height: 26
+                ToolTip.visible: hovered; ToolTip.text: "Reply"; ToolTip.delay: 300
+                onClicked: bubble.replyRequested(messageId, actorName, messageText)
+                contentItem: Label {
+                    text: "\u21A9"; font.pixelSize: 13
+                    color: parent.hovered ? Theme.accent : Theme.textSecondary
+                    horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
+                }
+                background: Rectangle { radius: 13; color: parent.hovered ? Theme.bgHover : Theme.bgSurface }
+            }
+        }
+
+        // Right-click context menu
+        MouseArea {
+            anchors.fill: parent
+            acceptedButtons: Qt.RightButton
+            onClicked: function(mouse) { contextMenu.popup() }
+        }
+
+        Menu {
+            id: contextMenu
+
+            MenuItem {
+                text: "\u263A  React"
+                enabled: messageId > 0
+                onTriggered: emojiPicker.open()
+            }
+            MenuItem {
+                text: "\u21A9  Reply"
+                enabled: messageId > 0
+                onTriggered: bubble.replyRequested(messageId, actorName, messageText)
+            }
+            MenuItem {
+                text: "\u2398  Copy"
+                onTriggered: {
+                    var plain = messageText.replace(/<[^>]*>/g, "")
+                    contextClipHelper.text = plain
+                    contextClipHelper.selectAll()
+                    contextClipHelper.copy()
+                }
+            }
+        }
+
+        TextEdit { id: contextClipHelper; visible: false }
+
+        // Quick emoji picker
+        Popup {
+            id: emojiPicker
+            x: parent.width - width - Theme.spacingNormal
+            y: -height - 4
+            width: emojiRow.width + 16
+            height: 40
+            padding: 8
             background: Rectangle {
-                radius: 14
-                color: parent.hovered ? Theme.bgHover : Theme.bgSurface
+                radius: Theme.radiusNormal
+                color: Theme.bgSurface
                 border.color: Theme.divider
                 border.width: 1
+            }
+
+            Row {
+                id: emojiRow
+                spacing: 4
+
+                Repeater {
+                    model: ["\uD83D\uDC4D", "\u2764\uFE0F", "\uD83D\uDE02", "\uD83D\uDE2E", "\uD83D\uDE22", "\uD83C\uDF89", "\uD83D\uDC4F", "\uD83D\uDE4F"]
+                    // 👍 ❤️ 😂 😮 😢 🎉 👏 🙏
+
+                    Label {
+                        text: modelData
+                        font.pixelSize: 18
+                        opacity: emojiMa.containsMouse ? 1.0 : 0.7
+
+                        MouseArea {
+                            id: emojiMa
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                messageModel.addReaction(messageId, modelData)
+                                emojiPicker.close()
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -245,38 +327,12 @@ Item {
 
                 // Message text with right-click copy
                 Label {
-                    id: msgLabel
                     Layout.fillWidth: true
                     text: messageText
                     font.pixelSize: Theme.fontSizeNormal
                     color: Theme.textPrimary
                     wrapMode: Text.Wrap
                     textFormat: messageText.indexOf("<b") >= 0 ? Text.RichText : Text.PlainText
-
-                    // Hidden helper for clipboard
-                    TextEdit {
-                        id: clipHelper
-                        visible: false
-                    }
-
-                    MouseArea {
-                        anchors.fill: parent
-                        acceptedButtons: Qt.RightButton
-                        onClicked: msgContextMenu.popup()
-                    }
-
-                    Menu {
-                        id: msgContextMenu
-                        MenuItem {
-                            text: "Copy message"
-                            onTriggered: {
-                                var plain = messageText.replace(/<[^>]*>/g, "")
-                                clipHelper.text = plain
-                                clipHelper.selectAll()
-                                clipHelper.copy()
-                            }
-                        }
-                    }
                 }
 
                 // Reactions
@@ -357,39 +413,14 @@ Item {
                     }
                 }
 
-                // Message text with right-click copy
+                // Message text
                 Label {
-                    id: ownMsgLabel
                     Layout.fillWidth: true
                     text: messageText
                     font.pixelSize: Theme.fontSizeNormal
                     color: Theme.textPrimary
                     wrapMode: Text.Wrap
                     textFormat: messageText.indexOf("<b") >= 0 ? Text.RichText : Text.PlainText
-
-                    TextEdit {
-                        id: ownClipHelper
-                        visible: false
-                    }
-
-                    MouseArea {
-                        anchors.fill: parent
-                        acceptedButtons: Qt.RightButton
-                        onClicked: ownContextMenu.popup()
-                    }
-
-                    Menu {
-                        id: ownContextMenu
-                        MenuItem {
-                            text: "Copy message"
-                            onTriggered: {
-                                var plain = messageText.replace(/<[^>]*>/g, "")
-                                ownClipHelper.text = plain
-                                ownClipHelper.selectAll()
-                                ownClipHelper.copy()
-                            }
-                        }
-                    }
                 }
 
                 // Reactions

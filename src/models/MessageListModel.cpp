@@ -138,8 +138,12 @@ void MessageListModel::setConversationToken(const QString &token)
     beginResetModel();
     m_messages.clear();
     if (!token.isEmpty()) {
-        // Cache returns oldest-first, which is our storage order
-        m_messages = m_cache->loadMessages(token, 50);
+        // Cache returns oldest-first; filter reaction system messages
+        auto cached = m_cache->loadMessages(token, 50);
+        for (const auto &m : cached) {
+            if (!m.isReactionMessage())
+                m_messages.append(m);
+        }
         if (!m_messages.isEmpty())
             m_oldestMessageId = m_messages.first().id;
     }
@@ -213,7 +217,7 @@ void MessageListModel::loadHistory()
         QVector<Message> olderMsgs;
         for (int i = data.size() - 1; i >= 0; --i) {
             Message m = Message::fromJson(data[i].toObject());
-            if (!existingIds.contains(m.id))
+            if (!existingIds.contains(m.id) && !m.isReactionMessage())
                 olderMsgs.append(m);
         }
 
@@ -251,7 +255,7 @@ void MessageListModel::onMessagesReceived(const QJsonArray &messages)
     QVector<Message> newMsgs;
     for (const auto &val : messages) {
         Message m = Message::fromJson(val.toObject());
-        if (!existingIds.contains(m.id))
+        if (!existingIds.contains(m.id) && !m.isReactionMessage())
             newMsgs.append(m);
     }
 
@@ -360,6 +364,31 @@ void MessageListModel::retryMessage(int tempId)
                 m_messages[idx].sendStatus = "failed";
                 emit dataChanged(index(idx), index(idx), {SendStatusRole});
             }
+        });
+}
+
+void MessageListModel::addReaction(int messageId, const QString &emoji)
+{
+    if (m_token.isEmpty() || messageId <= 0) return;
+
+    QJsonObject body;
+    body["reaction"] = emoji;
+
+    QString currentToken = m_token;
+    m_api->post("apps/spreed/api/v1/reaction/" + currentToken + "/" + QString::number(messageId),
+        body, [this, messageId, currentToken](bool ok, const QJsonObject &data, int) {
+            if (m_token != currentToken || !ok) return;
+
+            // Update reactions on the message from server response
+            int idx = -1;
+            for (int i = 0; i < m_messages.size(); ++i) {
+                if (m_messages[i].id == messageId) { idx = i; break; }
+            }
+            if (idx < 0) return;
+
+            // Server returns the full reactions map
+            m_messages[idx].reactions = data;
+            emit dataChanged(index(idx), index(idx), {ReactionsRole});
         });
 }
 
