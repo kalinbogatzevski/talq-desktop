@@ -84,7 +84,10 @@ ApplicationWindow {
         }
     }
 
+    property bool geometrySaveEnabled: false
+
     function restoreChatWindow() {
+        geometrySaveEnabled = false  // block saving during restore
         root.minimumWidth = 500
         root.chatMode = true
 
@@ -108,6 +111,15 @@ ApplicationWindow {
         if (windowSettings.savedVisibility === 4) {
             root.showMaximized()
         }
+
+        // Enable saving after geometry settles (avoids frame-inflation)
+        restoreGuardTimer.start()
+    }
+
+    Timer {
+        id: restoreGuardTimer
+        interval: 500
+        onTriggered: root.geometrySaveEnabled = true
     }
 
     Connections {
@@ -151,7 +163,7 @@ ApplicationWindow {
     }
 
     function saveWindowState() {
-        if (!chatMode) return
+        if (!chatMode || !geometrySaveEnabled) return
 
         switch (root.visibility) {
         case ApplicationWindow.Windowed:
@@ -480,21 +492,24 @@ ApplicationWindow {
 
     Component {
         id: chatPage
-        SplitView {
+        Item {
+            id: chatLayout
             implicitWidth: 1000
             implicitHeight: 700
-            orientation: Qt.Horizontal
 
-            handle: Rectangle {
-                implicitWidth: 1
-                color: Theme.divider
-            }
+            property bool showTopics: false
+            property string activeConvToken: ""
 
             ConversationList {
-                SplitView.preferredWidth: 320
-                SplitView.minimumWidth: 260
-                SplitView.maximumWidth: 450
+                id: convList
+                anchors.left: parent.left
+                anchors.top: parent.top
+                anchors.bottom: parent.bottom
+                width: convList.sidebarWidth
+                squeezed: chatLayout.showTopics
+
                 onConversationSelected: function(token, name, userId, convType, status) {
+                    chatLayout.activeConvToken = token
                     messageModel.threadId = 0
                     messageModel.conversationToken = token
                     chatView.conversationName = name
@@ -505,13 +520,81 @@ ApplicationWindow {
                     signaling.joinRoom(token)
                     chatView.activeThreadId = 0
                     chatView.activeThreadTitle = ""
+                    chatView.isInTopicMode = false
+
+                    // Load topics for this conversation
+                    threadModel.conversationToken = token
+                    topicList.groupName = name
                 }
+            }
+
+            Rectangle {
+                id: divider1
+                anchors.left: convList.right
+                anchors.top: parent.top
+                anchors.bottom: parent.bottom
+                width: 1
+                color: Theme.divider
+            }
+
+            ThreadListView {
+                id: topicList
+                anchors.left: divider1.right
+                anchors.top: parent.top
+                anchors.bottom: parent.bottom
+                width: chatLayout.showTopics ? 240 : 0
+                clip: true
+                visible: width > 0
+
+                Behavior on width {
+                    NumberAnimation { duration: Theme.animNormal; easing.type: Easing.OutCubic }
+                }
+
+                onThreadSelected: function(threadId, title) {
+                    if (threadId === 0) {
+                        chatView.activeThreadId = 0
+                        chatView.activeThreadTitle = ""
+                        messageModel.threadId = 0
+                    } else {
+                        chatView.activeThreadId = threadId
+                        chatView.activeThreadTitle = title
+                        messageModel.threadId = threadId
+                    }
+                    threadModel.selectTopic(threadId)
+                    chatView.activeThreadColor = threadModel.colorForThread(threadId)
+                }
+            }
+
+            Rectangle {
+                id: divider2
+                anchors.left: topicList.right
+                anchors.top: parent.top
+                anchors.bottom: parent.bottom
+                width: chatLayout.showTopics ? 1 : 0
+                color: Theme.divider
             }
 
             ChatView {
                 id: chatView
-                SplitView.fillWidth: true
-                SplitView.minimumWidth: 300
+                anchors.left: divider2.right
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.bottom: parent.bottom
+            }
+
+            Connections {
+                target: threadModel
+                function onHasTopicsChanged() {
+                    chatLayout.showTopics = threadModel.hasTopics
+                    chatView.isInTopicMode = threadModel.hasTopics
+                    conversationModel.setHasTopics(chatLayout.activeConvToken, threadModel.hasTopics)
+
+                    if (threadModel.hasTopics) {
+                        root.minimumWidth = 600
+                    } else {
+                        root.minimumWidth = 500
+                    }
+                }
             }
         }
     }
