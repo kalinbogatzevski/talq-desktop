@@ -194,33 +194,145 @@ Page {
         // Welcome screen
         Column {
             anchors.centerIn: parent
-            spacing: Theme.spacingLarge
+            width: Math.min(parent.width - 60, 360)
+            spacing: Theme.spacingXLarge
             visible: messageModel.conversationToken.length === 0 && !messageModel.loading
 
             Image {
                 anchors.horizontalCenter: parent.horizontalCenter
-                source: "qrc:/logo.png"; width: 96; height: 96
-                sourceSize: Qt.size(192, 192); fillMode: Image.PreserveAspectFit; opacity: 0.8
+                source: "qrc:/logo.png"; width: 80; height: 80
+                sourceSize: Qt.size(192, 192); fillMode: Image.PreserveAspectFit; opacity: 0.9
             }
-            Label {
+
+            Column {
                 anchors.horizontalCenter: parent.horizontalCenter
-                text: "Welcome, " + auth.displayName
-                font.pixelSize: Theme.fontSizeLarge; font.weight: Font.DemiBold; color: Theme.textPrimary
+                spacing: Theme.spacingSmall
+
+                Label {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    text: "Welcome, " + auth.displayName
+                    font.pixelSize: Theme.fontSizeTitle; font.weight: Font.DemiBold; color: Theme.textPrimary
+                }
+                Label {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    text: "Pick a conversation from the sidebar"
+                    font.pixelSize: Theme.fontSizeNormal; color: Theme.textSecondary
+                }
             }
-            Label {
+
+            // Server info card
+            Rectangle {
                 anchors.horizontalCenter: parent.horizontalCenter
-                text: "Pick a chat from the sidebar"
-                font.pixelSize: Theme.fontSizeSmall; color: Theme.textSecondary
+                width: parent.width
+                height: serverInfoCol.implicitHeight + Theme.spacingXLarge
+                radius: Theme.radiusNormal
+                color: Theme.bgSurface
+                border.color: Theme.divider
+                border.width: 1
+                visible: auth.serverUrl.length > 0
+
+                ColumnLayout {
+                    id: serverInfoCol
+                    anchors {
+                        left: parent.left; right: parent.right
+                        verticalCenter: parent.verticalCenter
+                        margins: Theme.spacingLarge
+                    }
+                    spacing: Theme.spacingSmall
+
+                    // Card header
+                    Label {
+                        text: "Server"
+                        font.pixelSize: Theme.fontSizeTiny
+                        font.weight: Font.DemiBold
+                        color: Theme.textMuted
+                        font.letterSpacing: 0.8
+                    }
+
+                    Rectangle { Layout.fillWidth: true; height: 1; color: Theme.divider }
+
+                    // Server URL
+                    RowLayout {
+                        spacing: Theme.spacingSmall
+                        Label { text: "\u2601"; font.pixelSize: 14; color: Theme.accent }
+                        Label {
+                            text: auth.serverUrl.replace(/^https?:\/\//, "")
+                            font.pixelSize: Theme.fontSizeNormal
+                            color: Theme.textPrimary
+                            elide: Text.ElideRight
+                            Layout.fillWidth: true
+                        }
+                    }
+
+                    // Nextcloud version
+                    RowLayout {
+                        visible: auth.nextcloudVersion.length > 0
+                        spacing: Theme.spacingSmall
+                        Label { text: "\u24C3"; font.pixelSize: 14; color: Theme.textSecondary }
+                        Label {
+                            text: "Nextcloud " + auth.nextcloudVersion
+                            font.pixelSize: Theme.fontSizeSmall
+                            color: Theme.textSecondary
+                        }
+                    }
+
+                    // Talk version
+                    RowLayout {
+                        visible: auth.talkVersion.length > 0
+                        spacing: Theme.spacingSmall
+                        Label { text: "\u260E"; font.pixelSize: 14; color: Theme.textSecondary }
+                        Label {
+                            text: "Talk " + auth.talkVersion
+                            font.pixelSize: Theme.fontSizeSmall
+                            color: Theme.textSecondary
+                        }
+                    }
+
+                    // Signaling mode
+                    RowLayout {
+                        visible: auth.signalingMode.length > 0
+                        spacing: Theme.spacingSmall
+                        Label { text: "\u26A1"; font.pixelSize: 14; color: Theme.textSecondary }
+                        Label {
+                            text: auth.signalingMode
+                            font.pixelSize: Theme.fontSizeSmall
+                            color: Theme.textSecondary
+                        }
+                    }
+                }
             }
         }
 
         // Empty chat
         Column {
             anchors.centerIn: parent
-            spacing: Theme.spacingNormal
+            spacing: Theme.spacingLarge
             visible: messageModel.conversationToken.length > 0 && messageModel.count === 0 && !messageModel.loading
-            Label { anchors.horizontalCenter: parent.horizontalCenter; text: "💬"; font.pixelSize: 40; opacity: 0.6 }
-            Label { anchors.horizontalCenter: parent.horizontalCenter; text: "No messages yet — say hello!"; font.pixelSize: Theme.fontSizeNormal; color: Theme.textSecondary }
+
+            Rectangle {
+                anchors.horizontalCenter: parent.horizontalCenter
+                width: 64; height: 64; radius: 32
+                color: Theme.bgSurface
+                Label {
+                    anchors.centerIn: parent
+                    text: "💬"; font.pixelSize: 28
+                }
+            }
+
+            Column {
+                anchors.horizontalCenter: parent.horizontalCenter
+                spacing: Theme.spacingTiny
+                Label {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    text: "No messages yet"
+                    font.pixelSize: Theme.fontSizeLarge; font.weight: Font.DemiBold; color: Theme.textPrimary
+                }
+                Label {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    text: "Be the first to say something!"
+                    font.pixelSize: Theme.fontSizeSmall; color: Theme.textSecondary
+                }
+            }
         }
 
         delegate: MessageBubble {
