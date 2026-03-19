@@ -12,6 +12,11 @@
 #include <QUrl>
 #include <QTimer>
 #include <QNetworkReply>
+#include <QGuiApplication>
+#include <QClipboard>
+#include <QMimeData>
+#include <QImage>
+#include <QDir>
 
 // ============================================================================
 // STORAGE: m_messages is stored OLDEST-FIRST (natural chronological order).
@@ -478,6 +483,38 @@ void MessageListModel::addReaction(int messageId, const QString &emoji)
         });
 }
 
+void MessageListModel::createTopic(const QString &title)
+{
+    if (title.trimmed().isEmpty() || m_token.isEmpty())
+        return;
+
+    // Send root message (becomes the thread root)
+    QJsonObject rootBody;
+    rootBody["message"] = title.trimmed();
+    QString token = m_token;
+
+    m_api->post("apps/spreed/api/v1/chat/" + token, rootBody,
+        [this, token, title](bool ok, const QJsonObject &data, int) {
+            if (!ok || m_token != token) return;
+
+            int rootId = data["id"].toInt();
+            if (rootId <= 0) return;
+
+            // Immediately reply to bootstrap the thread
+            QJsonObject replyBody;
+            replyBody["message"] = QString::fromUtf8("\u2709\uFE0F Topic created");  // ✉️
+            replyBody["replyTo"] = rootId;
+
+            m_api->post("apps/spreed/api/v1/chat/" + token, replyBody,
+                [this, token](bool ok2, const QJsonObject &, int) {
+                    if (!ok2) return;
+                    // Refresh thread list to pick up the new topic
+                    if (m_token == token)
+                        emit messageSent();
+                });
+        });
+}
+
 void MessageListModel::deleteMessage(int messageId)
 {
     if (m_token.isEmpty() || messageId <= 0) return;
@@ -589,6 +626,32 @@ void MessageListModel::onLastCommonReadChanged(int messageId)
     if (!m_messages.isEmpty()) {
         emit dataChanged(index(0), index(m_messages.size() - 1), {IsReadRole});
     }
+}
+
+bool MessageListModel::pasteClipboardImage()
+{
+    const QClipboard *clipboard = QGuiApplication::clipboard();
+    const QMimeData *mimeData = clipboard->mimeData();
+
+    if (!mimeData || !mimeData->hasImage())
+        return false;
+
+    QImage image = clipboard->image();
+    if (image.isNull())
+        return false;
+
+    // Save to temp file
+    QString tempPath = QDir::tempPath() + "/talq_paste_"
+        + QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss") + ".png";
+
+    if (!image.save(tempPath, "PNG")) {
+        qWarning() << "Failed to save clipboard image to" << tempPath;
+        return false;
+    }
+
+    qDebug() << "Clipboard image saved:" << tempPath << image.size();
+    sendFile("file:///" + tempPath);
+    return true;
 }
 
 void MessageListModel::markAsRead()

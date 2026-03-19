@@ -14,6 +14,7 @@ Conversation Conversation::fromJson(const QJsonObject &json)
     c.participantType = json["participantType"].toInt();
     c.actorId = json["actorId"].toString();
     c.name = json["name"].toString();
+    c.status = json["status"].toString(); // 1:1 chats include user status
 
     // Extract last message preview
     QJsonObject lastMsg = json["lastMessage"].toObject();

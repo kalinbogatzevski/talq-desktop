@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.5.3 (2026-03-19)
+
+### Clipboard Paste
+- Ctrl+V to paste screenshots and images directly into chat
+- Clipboard images saved as temp PNG and sent via existing file upload pipeline
+
+### User Status
+- Online status heartbeat — TalQ now sets own status to "online" every 2 minutes
+- Fixed status dots disappearing: dual-source status (user_status API primary, room API fallback)
+
+### Context Menu Polish
+- Layered shadow for depth (Telegram-style)
+- Faster enter/exit transitions (100ms/60ms)
+- Stronger emoji row separator and hover states
+- Reduced emoji count to 6 to prevent overflow
+- Quadrant-aware positioning with edge clamping
+
+### Fixes
+- Window no longer grows on every restart (geometry save guard during restore)
+- Context menu no longer appears far above the cursor (correct popup height estimate)
+
+---
+
 ## v0.5.2 (2026-03-19)
 
 ### Image Previews

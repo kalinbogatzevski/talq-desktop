@@ -1,0 +1,158 @@
+<h2>Threads/Topics UX — Revised Flow</h2>
+<p class="subtitle">3-column layout: icons | topics list | topic messages (all visible simultaneously)</p>
+
+<div class="section">
+<h3>Stage 1 → 2: Click a group with topics → sidebar squeezes, topics appear</h3>
+<div class="mockup">
+  <div class="mockup-header">TalQ — Topics view, no topic selected yet</div>
+  <div class="mockup-body" style="display:flex;height:380px;font-size:13px;font-family:system-ui;">
+    <!-- Sidebar squeezed to icons -->
+    <div style="width:56px;background:#1e2229;border-right:1px solid #2a2f38;flex-shrink:0;display:flex;flex-direction:column;align-items:center;padding-top:12px;gap:8px;">
+      <div style="width:40px;height:40px;border-radius:50%;background:#5ec76a;display:flex;align-items:center;justify-content:center;color:white;font-weight:bold;font-size:15px;box-shadow:0 0 0 2px #2ec4b6;">D</div>
+      <div style="width:40px;height:40px;border-radius:50%;background:#e07060;display:flex;align-items:center;justify-content:center;color:white;font-weight:bold;font-size:15px;">I</div>
+      <div style="width:40px;height:40px;border-radius:50%;background:#9b7cd4;display:flex;align-items:center;justify-content:center;color:white;font-weight:bold;font-size:15px;">R</div>
+      <div style="width:40px;height:40px;border-radius:50%;background:#f0a050;display:flex;align-items:center;justify-content:center;color:white;font-weight:bold;font-size:15px;">T</div>
+    </div>
+    <!-- Topics list -->
+    <div style="width:240px;background:#1a1d24;border-right:1px solid #2a2f38;flex-shrink:0;">
+      <div style="padding:12px 14px;background:#1e2229;border-bottom:1px solid #2a2f38;display:flex;justify-content:space-between;align-items:center;">
+        <div style="color:#e8eaed;font-weight:600;font-size:14px;">Dev Team</div>
+        <div style="color:#2ec4b6;font-size:18px;cursor:pointer;line-height:1;">+</div>
+      </div>
+      <div style="padding:11px 14px;display:flex;align-items:center;gap:9px;border-bottom:1px solid rgba(255,255,255,0.04);">
+        <div style="width:10px;height:10px;border-radius:50%;background:#2ec4b6;flex-shrink:0;"></div>
+        <div style="flex:1;min-width:0;">
+          <div style="display:flex;justify-content:space-between;"><span style="color:#e8eaed;font-weight:600;font-size:13px;">General</span><span style="color:#6b7280;font-size:10px;">2m</span></div>
+          <div style="color:#8b919a;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Rakesh: ok sounds good</div>
+        </div>
+        <div style="background:#2ec4b6;color:white;font-size:10px;padding:1px 6px;border-radius:10px;font-weight:bold;">3</div>
+      </div>
+      <div style="padding:11px 14px;display:flex;align-items:center;gap:9px;border-bottom:1px solid rgba(255,255,255,0.04);">
+        <div style="width:10px;height:10px;border-radius:50%;background:#e07060;flex-shrink:0;"></div>
+        <div style="flex:1;min-width:0;">
+          <div style="display:flex;justify-content:space-between;"><span style="color:#e8eaed;font-weight:600;font-size:13px;">Bug Reports</span><span style="color:#6b7280;font-size:10px;">15m</span></div>
+          <div style="color:#8b919a;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Ilko: status shows offline</div>
+        </div>
+        <div style="background:#e07060;color:white;font-size:10px;padding:1px 6px;border-radius:10px;font-weight:bold;">1</div>
+      </div>
+      <div style="padding:11px 14px;display:flex;align-items:center;gap:9px;border-bottom:1px solid rgba(255,255,255,0.04);">
+        <div style="width:10px;height:10px;border-radius:50%;background:#f0a050;flex-shrink:0;"></div>
+        <div style="flex:1;min-width:0;">
+          <div style="display:flex;justify-content:space-between;"><span style="color:#e8eaed;font-weight:600;font-size:13px;">Features</span><span style="color:#6b7280;font-size:10px;">1h</span></div>
+          <div style="color:#8b919a;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Kalin: threads/topics is next</div>
+        </div>
+      </div>
+      <div style="padding:11px 14px;display:flex;align-items:center;gap:9px;border-bottom:1px solid rgba(255,255,255,0.04);">
+        <div style="width:10px;height:10px;border-radius:50%;background:#5ec76a;flex-shrink:0;"></div>
+        <div style="flex:1;min-width:0;">
+          <div style="display:flex;justify-content:space-between;"><span style="color:#e8eaed;font-weight:600;font-size:13px;">Releases</span><span style="color:#6b7280;font-size:10px;">3h</span></div>
+          <div style="color:#8b919a;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Kalin: v0.5.3 uploaded</div>
+        </div>
+      </div>
+    </div>
+    <!-- Empty state -->
+    <div style="flex:1;background:#1a1d24;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:8px;">
+      <div style="font-size:48px;opacity:0.3;">💬</div>
+      <div style="color:#6b7280;font-size:14px;">Select a topic</div>
+    </div>
+  </div>
+</div>
+</div>
+
+<div class="section">
+<h3>Stage 3: Topic selected → messages appear on the right, topics stay visible</h3>
+<div class="mockup">
+  <div class="mockup-header">TalQ — "Bug Reports" topic open (topics list still visible)</div>
+  <div class="mockup-body" style="display:flex;height:380px;font-size:13px;font-family:system-ui;">
+    <!-- Sidebar squeezed -->
+    <div style="width:56px;background:#1e2229;border-right:1px solid #2a2f38;flex-shrink:0;display:flex;flex-direction:column;align-items:center;padding-top:12px;gap:8px;">
+      <div style="width:40px;height:40px;border-radius:50%;background:#5ec76a;display:flex;align-items:center;justify-content:center;color:white;font-weight:bold;font-size:15px;box-shadow:0 0 0 2px #2ec4b6;">D</div>
+      <div style="width:40px;height:40px;border-radius:50%;background:#e07060;display:flex;align-items:center;justify-content:center;color:white;font-weight:bold;font-size:15px;">I</div>
+      <div style="width:40px;height:40px;border-radius:50%;background:#9b7cd4;display:flex;align-items:center;justify-content:center;color:white;font-weight:bold;font-size:15px;">R</div>
+      <div style="width:40px;height:40px;border-radius:50%;background:#f0a050;display:flex;align-items:center;justify-content:center;color:white;font-weight:bold;font-size:15px;">T</div>
+    </div>
+    <!-- Topics list — Bug Reports highlighted -->
+    <div style="width:240px;background:#1a1d24;border-right:1px solid #2a2f38;flex-shrink:0;">
+      <div style="padding:12px 14px;background:#1e2229;border-bottom:1px solid #2a2f38;display:flex;justify-content:space-between;align-items:center;">
+        <div style="color:#e8eaed;font-weight:600;font-size:14px;">Dev Team</div>
+        <div style="color:#2ec4b6;font-size:18px;cursor:pointer;line-height:1;">+</div>
+      </div>
+      <div style="padding:11px 14px;display:flex;align-items:center;gap:9px;border-bottom:1px solid rgba(255,255,255,0.04);">
+        <div style="width:10px;height:10px;border-radius:50%;background:#2ec4b6;flex-shrink:0;"></div>
+        <div style="flex:1;min-width:0;">
+          <div style="display:flex;justify-content:space-between;"><span style="color:#e8eaed;font-weight:600;font-size:13px;">General</span><span style="color:#6b7280;font-size:10px;">2m</span></div>
+          <div style="color:#8b919a;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Rakesh: ok sounds good</div>
+        </div>
+        <div style="background:#2ec4b6;color:white;font-size:10px;padding:1px 6px;border-radius:10px;font-weight:bold;">3</div>
+      </div>
+      <!-- Selected topic -->
+      <div style="padding:11px 14px;display:flex;align-items:center;gap:9px;border-bottom:1px solid rgba(255,255,255,0.04);background:rgba(224,112,96,0.1);border-left:3px solid #e07060;">
+        <div style="width:10px;height:10px;border-radius:50%;background:#e07060;flex-shrink:0;"></div>
+        <div style="flex:1;min-width:0;">
+          <div style="display:flex;justify-content:space-between;"><span style="color:#e8eaed;font-weight:600;font-size:13px;">Bug Reports</span><span style="color:#6b7280;font-size:10px;">15m</span></div>
+          <div style="color:#8b919a;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Ilko: status shows offline</div>
+        </div>
+      </div>
+      <div style="padding:11px 14px;display:flex;align-items:center;gap:9px;border-bottom:1px solid rgba(255,255,255,0.04);">
+        <div style="width:10px;height:10px;border-radius:50%;background:#f0a050;flex-shrink:0;"></div>
+        <div style="flex:1;min-width:0;">
+          <div style="display:flex;justify-content:space-between;"><span style="color:#e8eaed;font-weight:600;font-size:13px;">Features</span><span style="color:#6b7280;font-size:10px;">1h</span></div>
+          <div style="color:#8b919a;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Kalin: threads/topics is next</div>
+        </div>
+      </div>
+      <div style="padding:11px 14px;display:flex;align-items:center;gap:9px;border-bottom:1px solid rgba(255,255,255,0.04);">
+        <div style="width:10px;height:10px;border-radius:50%;background:#5ec76a;flex-shrink:0;"></div>
+        <div style="flex:1;min-width:0;">
+          <div style="display:flex;justify-content:space-between;"><span style="color:#e8eaed;font-weight:600;font-size:13px;">Releases</span><span style="color:#6b7280;font-size:10px;">3h</span></div>
+          <div style="color:#8b919a;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Kalin: v0.5.3 uploaded</div>
+        </div>
+      </div>
+    </div>
+    <!-- Messages for Bug Reports -->
+    <div style="flex:1;background:#1a1d24;display:flex;flex-direction:column;">
+      <div style="padding:10px 16px;background:#1e2229;border-bottom:1px solid #2a2f38;display:flex;align-items:center;gap:10px;">
+        <div style="width:10px;height:10px;border-radius:50%;background:#e07060;flex-shrink:0;"></div>
+        <div>
+          <div style="color:#e8eaed;font-weight:600;font-size:14px;">Bug Reports</div>
+          <div style="color:#6b7280;font-size:11px;">Dev Team · 12 messages</div>
+        </div>
+      </div>
+      <div style="flex:1;padding:16px;color:#c8ccd2;display:flex;flex-direction:column;justify-content:flex-end;gap:10px;font-size:13px;">
+        <div style="color:#6b7280;font-size:11px;text-align:center;padding:4px 0;">— Today —</div>
+        <div><span style="color:#e07060;font-weight:600;">Ilko:</span> the chat list had statuses on each avatar — now it is gone</div>
+        <div><span style="color:#5ec76a;font-weight:600;">Kalin:</span> found it, I switched to room API status field which was empty</div>
+        <div><span style="color:#5ec76a;font-weight:600;">Kalin:</span> reverted to user_status API as primary, room API as fallback</div>
+        <div><span style="color:#5ec76a;font-weight:600;">Kalin:</span> rebuilding 0.5.3 now</div>
+        <div style="align-self:flex-end;background:rgba(46,196,182,0.15);padding:8px 14px;border-radius:12px 12px 4px 12px;max-width:70%;">
+          <div style="color:#e8eaed;">fixed and uploaded, try the new installer</div>
+          <div style="color:rgba(255,255,255,0.4);font-size:10px;text-align:right;margin-top:2px;">19:42 ✓</div>
+        </div>
+        <div><span style="color:#e07060;font-weight:600;">Ilko:</span> 👍 testing now</div>
+      </div>
+      <div style="padding:10px 16px;background:#1e2229;border-top:1px solid #2a2f38;display:flex;align-items:center;gap:10px;">
+        <div style="color:#6b7280;font-size:16px;">📎</div>
+        <div style="flex:1;background:#262b34;border-radius:20px;padding:8px 16px;color:#6b7280;font-size:13px;">Reply in Bug Reports...</div>
+        <div style="width:32px;height:32px;border-radius:50%;background:#2ec4b6;display:flex;align-items:center;justify-content:center;color:white;font-weight:bold;">❯</div>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+
+<h3>How does this feel?</h3>
+<div class="options">
+  <div class="option" data-choice="perfect" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>This is it</h3>
+      <p>Topics stay visible, messages on the right. Ready to spec the details.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="tweaks" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Almost — needs adjustments</h3>
+      <p>Layout is right but some details need changing</p>
+    </div>
+  </div>
+</div>
