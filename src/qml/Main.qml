@@ -85,11 +85,11 @@ ApplicationWindow {
     }
 
     function restoreChatWindow() {
-        root.minimumWidth = 600
+        root.minimumWidth = 500
         root.chatMode = true
 
-        var w = Math.max(windowSettings.savedWidth, 800)
-        var h = Math.max(windowSettings.savedHeight, 600)
+        var w = Math.max(windowSettings.savedWidth, 500)
+        var h = Math.max(windowSettings.savedHeight, 400)
         var sx = windowSettings.savedX
         var sy = windowSettings.savedY
 
