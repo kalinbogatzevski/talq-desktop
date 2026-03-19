@@ -460,6 +460,47 @@ Page {
         }
     }
 
+    // Scroll-to-bottom floating button
+    Rectangle {
+        id: scrollToBottomBtn
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        anchors.rightMargin: 16
+        anchors.bottomMargin: 12
+        width: 36; height: 36; radius: 18
+        color: scrollBtnArea.containsMouse ? Theme.accent : Theme.bgSurface
+        border.color: scrollBtnArea.containsMouse ? Theme.accent : Theme.divider
+        border.width: 1
+        visible: !messageListView.atYEnd && messageModel.count > 0
+        opacity: visible ? 1 : 0
+        z: 50
+
+        Behavior on opacity { NumberAnimation { duration: Theme.animFast } }
+        Behavior on color { ColorAnimation { duration: Theme.animFast } }
+
+        Label {
+            anchors.centerIn: parent
+            text: "\u2193"  // ↓
+            font.pixelSize: 16
+            font.weight: Font.Bold
+            color: scrollBtnArea.containsMouse ? "white" : Theme.textSecondary
+            Behavior on color { ColorAnimation { duration: Theme.animFast } }
+        }
+
+        MouseArea {
+            id: scrollBtnArea
+            anchors.fill: parent
+            anchors.margins: -4
+            cursorShape: Qt.PointingHandCursor
+            hoverEnabled: true
+            onClicked: messageListView.positionViewAtEnd()
+        }
+
+        // Subtle scale on press
+        scale: scrollBtnArea.pressed ? 0.9 : 1
+        Behavior on scale { NumberAnimation { duration: Theme.animFast; easing.type: Easing.OutCubic } }
+    }
+
     Connections {
         target: messageModel
         function onConversationTokenChanged() {
