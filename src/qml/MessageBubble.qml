@@ -484,35 +484,9 @@ Item {
                     }
                 }
 
-                // Inline image preview
-                Image {
-                    visible: isImage && filePreview.length > 0
-                    Layout.fillWidth: true
-                    Layout.maximumWidth: 300
-                    Layout.maximumHeight: 300
-                    source: ""  // TODO: needs authenticated image provider for previews
-                    fillMode: Image.PreserveAspectFit
-                    sourceSize: Qt.size(300, 300)
-
-                    MouseArea {
-                        anchors.fill: parent
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: Qt.openUrlExternally(fileLink)
-                    }
-
-                    // Loading placeholder
-                    Rectangle {
-                        anchors.fill: parent
-                        visible: parent.status === Image.Loading
-                        color: Theme.bgSurface
-                        radius: Theme.radiusSmall
-                        Label { anchors.centerIn: parent; text: "Loading..."; color: Theme.textMuted; font.pixelSize: Theme.fontSizeTiny }
-                    }
-                }
-
-                // File attachment (non-image)
+                // File attachment (images + other files)
                 Rectangle {
-                    visible: hasFile && !isImage
+                    visible: hasFile
                     Layout.fillWidth: true
                     height: 44
                     radius: Theme.radiusSmall
@@ -525,7 +499,8 @@ Item {
                         spacing: Theme.spacingSmall
 
                         Label {
-                            text: fileMime.startsWith("video/") ? "\uD83C\uDFA5"
+                            text: fileMime.startsWith("image/") ? "\uD83D\uDDBC"
+                                : fileMime.startsWith("video/") ? "\uD83C\uDFA5"
                                 : fileMime.startsWith("audio/") ? "\uD83C\uDFB5"
                                 : fileMime.indexOf("pdf") >= 0 ? "\uD83D\uDCC4"
                                 : fileMime.indexOf("spreadsheet") >= 0 || fileMime.indexOf("excel") >= 0 ? "\uD83D\uDCCA"
@@ -681,21 +656,9 @@ Item {
                     }
                 }
 
-                // Inline image preview (own)
-                Image {
-                    visible: isImage && filePreview.length > 0
-                    Layout.fillWidth: true
-                    Layout.maximumWidth: 280
-                    Layout.maximumHeight: 280
-                    source: ""  // TODO: needs authenticated image provider for previews
-                    fillMode: Image.PreserveAspectFit
-                    sourceSize: Qt.size(280, 280)
-                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: Qt.openUrlExternally(fileLink) }
-                }
-
-                // File attachment (own, non-image)
+                // File attachment (own — images + other files)
                 Rectangle {
-                    visible: hasFile && !isImage
+                    visible: hasFile
                     Layout.fillWidth: true
                     height: 40
                     radius: Theme.radiusSmall
