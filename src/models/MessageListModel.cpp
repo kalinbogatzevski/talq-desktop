@@ -479,12 +479,21 @@ void MessageListModel::deleteMessage(int messageId)
 {
     if (m_token.isEmpty() || messageId <= 0) return;
 
-    QString path = "apps/spreed/api/v1/chat/" + m_token + "/" + QString::number(messageId);
-    m_api->del(path, [this, messageId](bool ok, const QJsonObject &, int) {
-        if (!ok) {
-            emit errorOccurred("Failed to delete message");
+    // Remove locally immediately
+    for (int i = 0; i < m_messages.size(); ++i) {
+        if (m_messages[i].id == messageId) {
+            beginRemoveRows({}, i, i);
+            m_messages.removeAt(i);
+            endRemoveRows();
+            break;
         }
-        // The deleted message will be replaced by a system message on next poll
+    }
+
+    // Tell server
+    QString path = "apps/spreed/api/v1/chat/" + m_token + "/" + QString::number(messageId);
+    m_api->del(path, [this](bool ok, const QJsonObject &, int) {
+        if (!ok)
+            emit errorOccurred("Failed to delete message");
     });
 }
 
