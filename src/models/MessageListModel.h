@@ -74,6 +74,13 @@ public:
     Q_INVOKABLE void pinMessage(int messageId);
     Q_INVOKABLE QString messageLink(int messageId) const;
     Q_INVOKABLE bool pasteClipboardImage();
+    Q_INVOKABLE void sendFileWithCaption(const QString &filePath, const QString &caption);
+
+    // Upload progress (0.0 to 1.0, -1 = no upload)
+    Q_PROPERTY(double uploadProgress READ uploadProgress NOTIFY uploadProgressChanged)
+    Q_PROPERTY(QString uploadFileName READ uploadFileName NOTIFY uploadProgressChanged)
+    double uploadProgress() const { return m_uploadProgress; }
+    QString uploadFileName() const { return m_uploadFileName; }
     Q_INVOKABLE void createTopic(const QString &title);
 
 signals:
@@ -84,6 +91,8 @@ signals:
     void newMessagesAtEnd();
     void connectedChanged();
     void threadIdChanged();
+    void uploadProgressChanged();
+    void pasteReady(const QString &filePath, int width, int height);
 
 private slots:
     void onMessagesReceived(const QJsonArray &messages);
@@ -103,4 +112,7 @@ private:
     int m_lastCommonRead = 0;
     int m_threadId = 0;
     bool m_connected = true;  // assume connected until proven otherwise
+    double m_uploadProgress = -1;
+    QString m_uploadFileName;
+    QString m_pendingPastePath;
 };
