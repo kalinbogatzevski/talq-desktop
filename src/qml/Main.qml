@@ -263,6 +263,7 @@ ApplicationWindow {
                     chatView.conversationUserId = userId
                     chatView.conversationType = convType
                     conversationModel.clearUnreadForToken(token)
+                    signaling.joinRoom(token)
                     chatView.activeThreadId = 0
                     chatView.activeThreadTitle = ""
                 }
