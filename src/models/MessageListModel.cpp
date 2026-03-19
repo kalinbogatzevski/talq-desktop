@@ -121,6 +121,18 @@ QVariant MessageListModel::data(const QModelIndex &index, int role) const
             return m.sendStatus;
         case ThreadIdRole:
             return m.threadId;
+        case FileNameRole:
+            return m.fileName;
+        case FileMimeRole:
+            return m.fileMimetype;
+        case FileSizeRole:
+            return m.fileSize;
+        case FileLinkRole:
+            return m.fileLink;
+        case FilePreviewRole:
+            return m.filePreviewUrl;
+        case HasFileRole:
+            return m.hasFile();
         default:
             return {};
     }
@@ -146,6 +158,12 @@ QHash<int, QByteArray> MessageListModel::roleNames() const
         {IsReadRole,        "isRead"},
         {SendStatusRole,    "sendStatus"},
         {ThreadIdRole,      "msgThreadId"},
+        {FileNameRole,      "fileName"},
+        {FileMimeRole,      "fileMime"},
+        {FileSizeRole,      "fileSize"},
+        {FileLinkRole,      "fileLink"},
+        {FilePreviewRole,   "filePreview"},
+        {HasFileRole,       "hasFile"},
     };
 }
 

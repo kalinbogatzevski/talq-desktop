@@ -31,9 +31,25 @@ Message Message::fromJson(const QJsonObject &json)
                     "<b style='color:#2ec4b6'>@" + name.toHtmlEscaped() + "</b>");
                 hasMentions = true;
             } else if (type == "file") {
-                m.message.replace(placeholder,
-                    "<b style='color:#2ec4b6'>\xF0\x9F\x93\x84 " + name.toHtmlEscaped() + "</b>");
-                hasMentions = true;
+                m.fileName = param["name"].toString();
+                m.fileMimetype = param["mimetype"].toString();
+                m.fileSize = param["size"].toInteger();
+                m.fileLink = param["link"].toString();
+                m.fileId = param["id"].toString().toInt();
+                if (param["preview-available"].toString() == "yes") {
+                    // Build preview URL from file ID
+                    m.filePreviewUrl = param["link"].toString().section("/f/", 0, 0)
+                        + "/index.php/core/preview?fileId="
+                        + QString::number(m.fileId) + "&x=400&y=400";
+                }
+                // Replace placeholder with filename
+                if (m.fileMimetype.startsWith("image/")) {
+                    m.message.replace(placeholder, "");  // image will show as preview
+                } else {
+                    m.message.replace(placeholder,
+                        "<b style='color:#2ec4b6'>\xF0\x9F\x93\x84 " + name.toHtmlEscaped() + "</b>");
+                    hasMentions = true;
+                }
             } else {
                 m.message.replace(placeholder, name);
             }
