@@ -46,6 +46,9 @@ void MessagePoller::poll()
     if (m_lastKnownMessageId > 0)
         params.addQueryItem("lastKnownMessageId", QString::number(m_lastKnownMessageId));
 
+    if (m_threadId > 0)
+        params.addQueryItem("threadId", QString::number(m_threadId));
+
     QString path = "apps/spreed/api/v1/chat/" + m_token;
     m_currentReply = m_api->getLongPoll(path, params, POLL_TIMEOUT_SECS);
 
