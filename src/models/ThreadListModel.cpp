@@ -30,6 +30,8 @@ QVariant ThreadListModel::data(const QModelIndex &index, int role) const
     case LastActivityRole:return t.lastActivity;
     case ReplyCountRole:  return t.replyCount;
     case IconColorRole:   return t.iconColor;
+    case UnreadCountRole:   return t.unreadCount;
+    case IsAllMessagesRole: return t.isAllMessages;
     }
     return {};
 }
@@ -44,6 +46,8 @@ QHash<int, QByteArray> ThreadListModel::roleNames() const
         {LastActivityRole, "lastActivity"},
         {ReplyCountRole, "replyCount"},
         {IconColorRole, "iconColor"},
+        {UnreadCountRole, "unreadCount"},
+        {IsAllMessagesRole, "isAllMessages"},
     };
 }
 
@@ -62,6 +66,32 @@ void ThreadListModel::refresh()
 {
     if (!m_token.isEmpty())
         fetchThreads();
+}
+
+void ThreadListModel::markTopicRead(int threadId)
+{
+    for (int i = 0; i < m_threads.size(); ++i) {
+        if (m_threads[i].threadId == threadId && m_threads[i].unreadCount > 0) {
+            m_threads[i].unreadCount = 0;
+            emit dataChanged(index(i), index(i), {UnreadCountRole});
+            break;
+        }
+    }
+}
+
+void ThreadListModel::selectTopic(int threadId)
+{
+    m_selectedThreadId = threadId;
+    markTopicRead(threadId);
+}
+
+int ThreadListModel::colorForThread(int threadId) const
+{
+    for (const auto &t : m_threads) {
+        if (t.threadId == threadId)
+            return t.iconColor;
+    }
+    return 0;
 }
 
 void ThreadListModel::fetchThreads()
@@ -155,6 +185,21 @@ void ThreadListModel::fetchThreads()
             return a.lastActivity > b.lastActivity;
         });
 
+        // Insert "All Messages" at index 0
+        ThreadInfo allMsg;
+        allMsg.threadId = 0;
+        allMsg.title = "All Messages";
+        allMsg.isAllMessages = true;
+        allMsg.iconColor = 0;  // teal
+        if (!threads.isEmpty()) {
+            allMsg.lastActivity = threads.first().lastActivity;
+            allMsg.lastMessage = threads.first().lastMessage;
+            allMsg.lastAuthor = threads.first().lastAuthor;
+        }
+        threads.prepend(allMsg);
+
+        bool hadTopics = m_threads.size() > 1;  // BEFORE update
+
         beginResetModel();
         m_threads = std::move(threads);
         endResetModel();
@@ -162,5 +207,26 @@ void ThreadListModel::fetchThreads()
         m_loading = false;
         emit loadingChanged();
         emit countChanged();
+
+        // Persist to SQLite (skip "All Messages" at index 0)
+        if (m_cache && m_threads.size() > 1) {
+            QVector<QJsonObject> toSave;
+            for (int i = 1; i < m_threads.size(); ++i) {
+                QJsonObject t;
+                t["threadId"] = m_threads[i].threadId;
+                t["title"] = m_threads[i].title;
+                t["iconColor"] = m_threads[i].iconColor;
+                t["lastActivity"] = m_threads[i].lastActivity;
+                t["lastMessage"] = m_threads[i].lastMessage;
+                t["lastAuthor"] = m_threads[i].lastAuthor;
+                t["replyCount"] = m_threads[i].replyCount;
+                t["lastReadMessageId"] = m_threads[i].lastReadMessageId;
+                toSave.append(t);
+            }
+            m_cache->saveThreadIndex(m_token, toSave);
+        }
+
+        if (hadTopics != (m_threads.size() > 1))
+            emit hasTopicsChanged();
     });
 }
