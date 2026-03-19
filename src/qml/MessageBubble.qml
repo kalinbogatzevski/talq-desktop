@@ -131,7 +131,7 @@ Item {
                     quickEmojisLoader.openAt(x, pos.y - 5)
                 }
                 contentItem: Label {
-                    text: "\u263A"; font.pixelSize: 16
+                    text: "\u263A"; font.pixelSize: 20
                     color: parent.hovered ? Theme.accent : Theme.textSecondary
                     horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
                 }
@@ -143,7 +143,7 @@ Item {
                 ToolTip.visible: hovered; ToolTip.text: "Reply"; ToolTip.delay: 300
                 onClicked: bubble.replyRequested(messageId, actorName, messageText)
                 contentItem: Label {
-                    text: "\u21A9"; font.pixelSize: 16
+                    text: "\u21A9"; font.pixelSize: 20
                     color: parent.hovered ? Theme.accent : Theme.textSecondary
                     horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
                 }
