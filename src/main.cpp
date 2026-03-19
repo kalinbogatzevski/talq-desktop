@@ -18,6 +18,7 @@
 #include "core/AuthManager.h"
 #include "core/MessageCache.h"
 #include "core/NotificationManager.h"
+#include "core/PushClient.h"
 #include "models/ConversationListModel.h"
 #include "models/MessageListModel.h"
 #include "models/ThreadListModel.h"
@@ -40,6 +41,7 @@ int main(int argc, char *argv[])
     MessageListModel messages(&api, &cache);
     ThreadListModel threads(&api);
     NotificationManager notifications;
+    PushClient push(&api);
 
     // QML engine
     QQmlApplicationEngine engine;
@@ -107,11 +109,22 @@ int main(int argc, char *argv[])
         notifications.updateUnreadCount(conversations.totalUnread());
     });
 
-    // Start auto-refresh after login
-    QObject::connect(&auth, &AuthManager::loggedInChanged, &conversations, [&auth, &conversations]() {
+    // On push event, refresh conversations (real-time)
+    QObject::connect(&push, &PushClient::pushReceived, &conversations, [&conversations](const QString &type) {
+        if (type == "notify_notification" || type == "notify_activities") {
+            conversations.refresh();
+        }
+    });
+
+    // Start push or polling after login
+    QObject::connect(&auth, &AuthManager::loggedInChanged, &conversations, [&auth, &conversations, &push]() {
         if (auth.isLoggedIn()) {
+            push.start();
+            // Also start polling as fallback — push will make it unnecessary
+            // but polling ensures we catch updates if push disconnects
             conversations.startAutoRefresh();
         } else {
+            push.stop();
             conversations.stopAutoRefresh();
         }
     });

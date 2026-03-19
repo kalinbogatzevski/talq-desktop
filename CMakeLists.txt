@@ -26,6 +26,7 @@ qt_add_executable(talq
     src/core/AvatarProvider.cpp
     src/core/MessagePoller.cpp
     src/core/NotificationManager.cpp
+    src/core/PushClient.cpp
     src/models/Conversation.cpp
     src/models/Message.cpp
     src/models/ConversationListModel.cpp
