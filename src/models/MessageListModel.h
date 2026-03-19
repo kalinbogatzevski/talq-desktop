@@ -83,6 +83,7 @@ signals:
 
 private slots:
     void onMessagesReceived(const QJsonArray &messages);
+    void onLastCommonReadChanged(int messageId);
 
 private:
     void startPoller();
@@ -98,7 +99,4 @@ private:
     int m_lastCommonRead = 0;
     int m_threadId = 0;
     bool m_connected = true;  // assume connected until proven otherwise
-
-private slots:
-    void onLastCommonReadChanged(int messageId);
 };

@@ -24,6 +24,8 @@ NotificationManager::NotificationManager(QObject *parent)
         m_wavData = wav.readAll();
     }
 
+    m_baseIcon = QPixmap(":/logo.png").scaled(32, 32, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+
     setupTrayIcon();
 }
 
@@ -149,6 +151,7 @@ void NotificationManager::clearNotifications()
 
 void NotificationManager::updateUnreadCount(int count)
 {
+    if (count == m_unreadCount) return;
     m_unreadCount = count;
     if (!m_trayIcon) return;
 
@@ -156,8 +159,7 @@ void NotificationManager::updateUnreadCount(int count)
         m_trayIcon->setToolTip(QString("TalQ — %1 unread").arg(count));
 
         // Paint badge on icon
-        QPixmap base(":/logo.png");
-        QPixmap icon = base.scaled(32, 32, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        QPixmap icon = m_baseIcon;
         QPainter p(&icon);
         p.setRenderHint(QPainter::Antialiasing);
 

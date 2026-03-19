@@ -32,7 +32,10 @@ void MessageCache::loadMessages(const QString &token, int limit)
     // Fully async — result comes via messagesLoaded signal
     QMetaObject::invokeMethod(m_worker, [this, token, limit]() {
         auto result = m_worker->doLoadMessages(token, limit);
-        emit messagesLoaded(token, result);
+        // Emit back on the main thread (MessageCache lives on main thread)
+        QMetaObject::invokeMethod(this, [this, token, result]() {
+            emit messagesLoaded(token, result);
+        }, Qt::QueuedConnection);
     }, Qt::QueuedConnection);
 }
 
