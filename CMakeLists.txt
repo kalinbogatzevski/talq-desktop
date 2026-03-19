@@ -28,6 +28,7 @@ qt_add_executable(talk-qt
     src/models/Message.cpp
     src/models/ConversationListModel.cpp
     src/models/MessageListModel.cpp
+    src/models/ThreadListModel.cpp
     resources/talq.rc
 )
 

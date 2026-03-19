@@ -17,6 +17,7 @@
 #include "core/MessageCache.h"
 #include "models/ConversationListModel.h"
 #include "models/MessageListModel.h"
+#include "models/ThreadListModel.h"
 
 int main(int argc, char *argv[])
 {
@@ -34,6 +35,7 @@ int main(int argc, char *argv[])
     ConversationListModel conversations(&api);
     MessageCache cache;
     MessageListModel messages(&api, &cache);
+    ThreadListModel threads(&api);
 
     // QML engine
     QQmlApplicationEngine engine;
@@ -43,6 +45,7 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty("auth", &auth);
     engine.rootContext()->setContextProperty("conversationModel", &conversations);
     engine.rootContext()->setContextProperty("messageModel", &messages);
+    engine.rootContext()->setContextProperty("threadModel", &threads);
 
     engine.addImageProvider("avatar", new AvatarProvider(&api));
 
