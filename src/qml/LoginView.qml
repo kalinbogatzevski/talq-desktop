@@ -61,9 +61,9 @@ Item {
 
             Image {
                 anchors.centerIn: parent
-                source: "qrc:/logo.png"
-                width: 72
-                height: 72
+                source: brandLogo
+                width: isBranded ? 96 : 72
+                height: isBranded ? 96 : 72
                 sourceSize: Qt.size(160, 160)
                 fillMode: Image.PreserveAspectFit
 
@@ -80,7 +80,7 @@ Item {
         Label {
             Layout.alignment: Qt.AlignHCenter
             Layout.bottomMargin: 4
-            text: "TalQ"
+            text: brandName
             font.pixelSize: 28
             font.weight: Font.DemiBold
             font.letterSpacing: -0.5
@@ -94,7 +94,7 @@ Item {
         Label {
             Layout.alignment: Qt.AlignHCenter
             Layout.bottomMargin: 32
-            text: "Nextcloud Talk for your desktop"
+            text: isBranded ? "Team Communication" : "Nextcloud Talk for your desktop"
             font.pixelSize: Theme.fontSizeSmall
             color: Theme.textSecondary
             opacity: 0
@@ -110,7 +110,7 @@ Item {
             font.weight: Font.DemiBold
             color: Theme.textSecondary
             font.letterSpacing: 0.5
-            visible: !auth.waitingForBrowser
+            visible: !auth.waitingForBrowser && !isBranded
         }
 
         // Server URL input
@@ -118,13 +118,13 @@ Item {
             id: serverInput
             Layout.fillWidth: true
             Layout.bottomMargin: Theme.spacingLarge
-            text: "https://ncloud.123net.link"
+            text: isBranded ? brandServer : "https://ncloud.123net.link"
             placeholderText: "https://cloud.example.com"
             placeholderTextColor: Theme.textMuted
             font.pixelSize: Theme.fontSizeNormal
             color: Theme.textPrimary
-            enabled: !auth.waitingForBrowser
-            visible: !auth.waitingForBrowser
+            enabled: !auth.waitingForBrowser && !isBranded
+            visible: !auth.waitingForBrowser && !isBranded
             selectByMouse: true
             background: Rectangle {
                 radius: Theme.radiusSmall
@@ -267,8 +267,10 @@ Item {
             onClicked: {
                 if (auth.waitingForBrowser) {
                     auth.cancelLogin()
-                } else if (serverInput.text.trim().length > 0) {
-                    auth.startLogin(serverInput.text.trim())
+                } else {
+                    var url = isBranded ? brandServer : serverInput.text.trim()
+                    if (url.length > 0)
+                        auth.startLogin(url)
                 }
             }
         }

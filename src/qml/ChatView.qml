@@ -247,7 +247,7 @@ Page {
 
             Image {
                 anchors.horizontalCenter: parent.horizontalCenter
-                source: "qrc:/logo.png"; width: 80; height: 80
+                source: isBranded ? brandLogo : "qrc:/logo.png"; width: 80; height: 80
                 sourceSize: Qt.size(192, 192); fillMode: Image.PreserveAspectFit; opacity: 0.9
             }
 

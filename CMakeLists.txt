@@ -63,6 +63,16 @@ qt_add_qml_module(talq
 string(TIMESTAMP TALQ_BUILD_TS "%m%d-%H%M")
 target_compile_definitions(talq PRIVATE TALQ_BUILD_TS="${TALQ_BUILD_TS}")
 
+# Branding: cmake -DTALQ_BRAND=123NET for dedicated 123NET build
+if(TALQ_BRAND STREQUAL "123NET")
+    target_compile_definitions(talq PRIVATE
+        TALQ_BRAND_123NET
+        TALQ_BRAND_NAME="123NET Talk"
+        TALQ_BRAND_SERVER="https://ncloud.123net.link"
+    )
+    message(STATUS "Building 123NET branded version")
+endif()
+
 target_include_directories(talq PRIVATE src)
 
 target_link_libraries(talq PRIVATE

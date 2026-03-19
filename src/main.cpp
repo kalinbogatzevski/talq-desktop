@@ -28,14 +28,19 @@
 int main(int argc, char *argv[])
 {
     QApplication app(argc, argv);
+#ifdef TALQ_BRAND_123NET
+    app.setApplicationName("123NET Talk");
+    app.setOrganizationName("123NET");
+#else
     app.setApplicationName("TalQ");
     app.setOrganizationName("TalQ");
+#endif
+    app.setWindowIcon(QIcon(":/logo.png"));  // TalQ icon always
 #ifdef TALQ_BUILD_TS
     app.setApplicationVersion("0.5.0-" TALQ_BUILD_TS);
 #else
     app.setApplicationVersion("0.5.0");
 #endif
-    app.setWindowIcon(QIcon(":/logo.png"));
 
     QQuickStyle::setStyle("Basic");
 
@@ -62,6 +67,19 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty("pushClient", &push);
     engine.rootContext()->setContextProperty("signaling", &signaling);
     engine.rootContext()->setContextProperty("notifications", &notifications);
+
+    // Branding context
+#ifdef TALQ_BRAND_123NET
+    engine.rootContext()->setContextProperty("brandName", QString("123NET Talk"));
+    engine.rootContext()->setContextProperty("brandServer", QString("https://ncloud.123net.link"));
+    engine.rootContext()->setContextProperty("brandLogo", QString("qrc:/123net-logo.png"));
+    engine.rootContext()->setContextProperty("isBranded", true);
+#else
+    engine.rootContext()->setContextProperty("brandName", QString("TalQ"));
+    engine.rootContext()->setContextProperty("brandServer", QString(""));
+    engine.rootContext()->setContextProperty("brandLogo", QString("qrc:/logo.png"));
+    engine.rootContext()->setContextProperty("isBranded", false);
+#endif
 
     engine.addImageProvider("avatar", new AvatarProvider(&api));
 
