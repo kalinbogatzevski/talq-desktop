@@ -52,8 +52,11 @@ MessageListModel::MessageListModel(ApiClient *api, MessageCache *cache, QObject 
 
         QVector<Message> filtered;
         for (const auto &m : messages) {
-            if (!m.isReactionMessage())
-                filtered.append(m);
+            if (m.isReactionMessage())
+                continue;
+            if (m_hideThreadMessages && m.threadId > 0)
+                continue;
+            filtered.append(m);
         }
         if (filtered.isEmpty()) return;
 
@@ -231,6 +234,24 @@ void MessageListModel::setThreadId(int id)
         loadHistory();
 }
 
+void MessageListModel::setHideThreadMessages(bool hide)
+{
+    if (m_hideThreadMessages == hide)
+        return;
+    m_hideThreadMessages = hide;
+    emit hideThreadMessagesChanged();
+
+    // Reload to apply the filter
+    if (!m_token.isEmpty()) {
+        m_poller->stop();
+        beginResetModel();
+        m_messages.clear();
+        endResetModel();
+        m_oldestMessageId = 0;
+        loadHistory();
+    }
+}
+
 void MessageListModel::loadHistory()
 {
     if (m_token.isEmpty()) return;
@@ -285,8 +306,11 @@ void MessageListModel::loadHistory()
         QVector<Message> olderMsgs;
         for (int i = data.size() - 1; i >= 0; --i) {
             Message m = Message::fromJson(data[i].toObject());
-            if (!existingIds.contains(m.id) && !m.isReactionMessage())
-                olderMsgs.append(m);
+            if (existingIds.contains(m.id) || m.isReactionMessage())
+                continue;
+            if (m_hideThreadMessages && m.threadId > 0)
+                continue;
+            olderMsgs.append(m);
         }
 
         if (!olderMsgs.isEmpty()) {
@@ -302,6 +326,7 @@ void MessageListModel::loadHistory()
         if (!m_messages.isEmpty())
             m_oldestMessageId = m_messages.first().id;
 
+        emit newMessagesAtEnd();
         startPoller();
     });
 }
@@ -324,8 +349,11 @@ void MessageListModel::onMessagesReceived(const QJsonArray &messages)
     QVector<Message> newMsgs;
     for (const auto &val : messages) {
         Message m = Message::fromJson(val.toObject());
-        if (!existingIds.contains(m.id) && !m.isReactionMessage())
-            newMsgs.append(m);
+        if (existingIds.contains(m.id) || m.isReactionMessage())
+            continue;
+        if (m_hideThreadMessages && m.threadId > 0)
+            continue;
+        newMsgs.append(m);
     }
 
     if (newMsgs.isEmpty()) return;

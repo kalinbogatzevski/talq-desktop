@@ -6,6 +6,7 @@ import QtQuick.Layouts
 Item {
     id: threadListRoot
     signal threadSelected(int threadId, string title)
+    signal backToChats()
 
     property string groupName: ""
     property bool creating: false
@@ -38,8 +39,22 @@ Item {
 
                 RowLayout {
                     anchors.fill: parent
-                    anchors.leftMargin: Theme.spacingLarge
+                    anchors.leftMargin: Theme.spacingSmall
                     anchors.rightMargin: Theme.spacingNormal
+                    spacing: 2
+
+                    ToolButton {
+                        implicitWidth: 28; implicitHeight: 28
+                        onClicked: threadListRoot.backToChats()
+                        contentItem: Label {
+                            text: "\u2190"
+                            font.pixelSize: 16
+                            color: Theme.accent
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
+                        }
+                        background: Rectangle { radius: 14; color: parent.hovered ? Theme.bgHover : "transparent" }
+                    }
 
                     Label {
                         text: threadListRoot.groupName || "Topics"
@@ -47,32 +62,10 @@ Item {
                         font.weight: Font.DemiBold
                         color: Theme.textPrimary
                         Layout.fillWidth: true
+                        elide: Text.ElideRight
                     }
 
-                    Button {
-                        text: "+"
-                        flat: true
-                        font.pixelSize: Theme.fontSizeLarge
-                        font.weight: Font.Bold
-                        implicitWidth: 36
-                        implicitHeight: 36
-
-                        contentItem: Label {
-                            text: parent.text
-                            font: parent.font
-                            color: Theme.accent
-                            horizontalAlignment: Text.AlignHCenter
-                            verticalAlignment: Text.AlignVCenter
-                        }
-
-                        background: Rectangle {
-                            radius: Theme.radiusSmall
-                            color: parent.hovered ? Theme.bgHover : "transparent"
-                            Behavior on color { ColorAnimation { duration: Theme.animFast } }
-                        }
-
-                        onClicked: threadListRoot.creating = true
-                    }
+                    // + button moved to bottom of list
                 }
 
                 // Bottom divider
@@ -180,6 +173,47 @@ Item {
                 Layout.bottomMargin: Theme.spacingLarge
                 running: threadModel.loading
                 visible: running
+            }
+
+            // New Topic button at the bottom
+            Rectangle {
+                Layout.fillWidth: true
+                height: 44
+                color: newTopicArea.containsMouse ? Theme.bgHover : "transparent"
+
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: Theme.spacingLarge
+                    anchors.rightMargin: Theme.spacingLarge
+                    spacing: Theme.spacingSmall
+
+                    Label {
+                        text: "+"
+                        font.pixelSize: 18
+                        font.weight: Font.Bold
+                        color: Theme.accent
+                    }
+                    Label {
+                        text: "New Topic"
+                        font.pixelSize: Theme.fontSizeSmall
+                        color: Theme.accent
+                        Layout.fillWidth: true
+                    }
+                }
+
+                MouseArea {
+                    id: newTopicArea
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    hoverEnabled: true
+                    onClicked: threadListRoot.creating = true
+                }
+
+                Rectangle {
+                    anchors.top: parent.top
+                    width: parent.width; height: 1
+                    color: Theme.divider
+                }
             }
         }
     }

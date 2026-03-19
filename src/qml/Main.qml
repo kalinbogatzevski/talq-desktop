@@ -506,8 +506,6 @@ ApplicationWindow {
                 anchors.top: parent.top
                 anchors.bottom: parent.bottom
                 width: convList.sidebarWidth
-                squeezed: chatLayout.showTopics
-
                 onConversationSelected: function(token, name, userId, convType, status) {
                     chatLayout.activeConvToken = token
                     messageModel.threadId = 0
@@ -521,8 +519,10 @@ ApplicationWindow {
                     chatView.activeThreadId = 0
                     chatView.activeThreadTitle = ""
                     chatView.isInTopicMode = false
+                    messageModel.hideThreadMessages = false
 
-                    // Load topics for this conversation
+                    // Load topics for this conversation (skip 1:1 chats)
+                    threadModel.setConversationType(convType)
                     threadModel.conversationToken = token
                     topicList.groupName = name
                 }
@@ -533,8 +533,36 @@ ApplicationWindow {
                 anchors.left: convList.right
                 anchors.top: parent.top
                 anchors.bottom: parent.bottom
-                width: 1
+                width: 5
                 color: Theme.divider
+
+                MouseArea {
+                    id: divider1Mouse
+                    anchors.fill: parent
+                    anchors.margins: -3
+                    cursorShape: Qt.SplitHCursor
+                    hoverEnabled: true
+                    property real startX: 0
+                    property real startWidth: 0
+                    onPressed: function(mouse) {
+                        startX = mouse.x + divider1.x
+                        startWidth = convList._userWidth
+                        convList._resizing = true
+                    }
+                    onPositionChanged: function(mouse) {
+                        if (pressed) {
+                            var delta = (mouse.x + divider1.x) - startX
+                            convList._userWidth = Math.max(200, Math.min(500, startWidth + delta))
+                            if (convList.squeezed && convList._userWidth > 150)
+                                convList.squeezed = false
+                        }
+                    }
+                    onReleased: {
+                        convList._resizing = false
+                        if (convList._userWidth < 100)
+                            convList.squeezed = true
+                    }
+                }
             }
 
             ThreadListView {
@@ -542,7 +570,8 @@ ApplicationWindow {
                 anchors.left: divider1.right
                 anchors.top: parent.top
                 anchors.bottom: parent.bottom
-                width: chatLayout.showTopics ? 240 : 0
+                property real userWidth: 240
+                width: chatLayout.showTopics ? Math.max(160, Math.min(400, userWidth)) : 0
                 clip: true
                 visible: width > 0
 
@@ -550,11 +579,16 @@ ApplicationWindow {
                     NumberAnimation { duration: Theme.animNormal; easing.type: Easing.OutCubic }
                 }
 
+                onBackToChats: convList.squeezed = false
+
                 onThreadSelected: function(threadId, title) {
-                    if (threadId === 0)
+                    if (threadId === 0) {
                         chatView.closeThread()
-                    else
+                        messageModel.hideThreadMessages = true
+                    } else {
                         chatView.openThread(threadId, title)
+                        messageModel.hideThreadMessages = false
+                    }
                     threadModel.selectTopic(threadId)
                     chatView.activeThreadColor = threadModel.colorForThread(threadId)
                 }
@@ -565,12 +599,35 @@ ApplicationWindow {
                 anchors.left: topicList.right
                 anchors.top: parent.top
                 anchors.bottom: parent.bottom
-                width: chatLayout.showTopics ? 1 : 0
-                color: Theme.divider
+                width: chatLayout.showTopics ? 5 : 0
+                color: divider2Mouse.pressed ? Theme.textMuted : Theme.divider
+
+                MouseArea {
+                    id: divider2Mouse
+                    anchors.fill: parent
+                    anchors.margins: -3
+                    cursorShape: chatLayout.showTopics ? Qt.SplitHCursor : Qt.ArrowCursor
+                    hoverEnabled: true
+                    enabled: chatLayout.showTopics
+                    property real startX: 0
+                    property real startWidth: 0
+                    onPressed: function(mouse) {
+                        startX = mouse.x + divider2.x
+                        startWidth = topicList.userWidth
+                    }
+                    onPositionChanged: function(mouse) {
+                        if (pressed) {
+                            var delta = (mouse.x + divider2.x) - startX
+                            topicList.userWidth = Math.max(160, Math.min(400, startWidth + delta))
+                        }
+                    }
+                }
             }
 
             ChatView {
                 id: chatView
+                sidebarSqueezed: convList.squeezed
+                onExpandSidebar: convList.squeezed = false
                 anchors.left: divider2.right
                 anchors.right: parent.right
                 anchors.top: parent.top
@@ -583,6 +640,8 @@ ApplicationWindow {
                     var active = threadModel.hasTopics && auth.hasThreadsSupport
                     chatLayout.showTopics = active
                     chatView.isInTopicMode = active
+                    messageModel.hideThreadMessages = active
+                    convList.squeezed = active
                     conversationModel.setHasTopics(chatLayout.activeConvToken, active)
                     root.minimumWidth = active ? 600 : 500
                 }
