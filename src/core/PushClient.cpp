@@ -45,6 +45,7 @@ void PushClient::authenticate()
 
     connect(reply, &QNetworkReply::finished, this, [this, reply]() {
         reply->deleteLater();
+        if (m_ws.state() != QAbstractSocket::ConnectedState) return;
 
         int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         if (reply->error() != QNetworkReply::NoError || status != 200) {

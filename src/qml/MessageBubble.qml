@@ -170,6 +170,7 @@ Item {
             id: quickEmojisLoader
             active: false
             sourceComponent: quickEmojisComp
+            onLoaded: item.closed.connect(function() { quickEmojisLoader.active = false })
             function openAt(globalX, globalY) {
                 active = true
                 item.x = globalX
@@ -182,6 +183,7 @@ Item {
             id: msgPopupLoader
             active: false
             sourceComponent: msgPopupComp
+            onLoaded: item.closed.connect(function() { msgPopupLoader.active = false })
             function openAt(x, y) { active = true; item.x = x; item.y = y; item.open() }
         }
 

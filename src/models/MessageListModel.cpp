@@ -193,7 +193,7 @@ void MessageListModel::setConversationToken(const QString &token)
 
     loadHistory();
 
-    // Mark as read immediately using "clear all" approach (no message ID needed)
+    // Mark as read
     QJsonObject body;
     m_api->post("apps/spreed/api/v1/chat/" + token + "/read", body,
         [](bool, const QJsonObject &, int) {});
