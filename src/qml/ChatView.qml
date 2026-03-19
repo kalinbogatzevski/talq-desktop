@@ -432,10 +432,54 @@ Page {
         target: messageModel
         function onConversationTokenChanged() {
             chatRoot.closeThread()
-            // DISABLED for debugging
-            // if (chatRoot.isGroupChat && messageModel.conversationToken.length > 0) {
-            //     threadModel.conversationToken = messageModel.conversationToken
-            // }
+        }
+    }
+
+    // Drag and drop file upload
+    DropArea {
+        anchors.fill: parent
+        keys: ["text/uri-list"]
+
+        onEntered: function(drag) {
+            drag.accepted = drag.hasUrls
+            dropOverlay.visible = drag.hasUrls
+        }
+        onExited: dropOverlay.visible = false
+        onDropped: function(drop) {
+            dropOverlay.visible = false
+            if (drop.hasUrls) {
+                for (var i = 0; i < drop.urls.length; i++) {
+                    messageModel.sendFile(drop.urls[i].toString())
+                }
+            }
+        }
+    }
+
+    // Drop overlay
+    Rectangle {
+        id: dropOverlay
+        anchors.fill: parent
+        visible: false
+        color: Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.15)
+        z: 100
+
+        Rectangle {
+            anchors.centerIn: parent
+            width: dropLabel.implicitWidth + Theme.spacingXLarge * 2
+            height: dropLabel.implicitHeight + Theme.spacingXLarge
+            radius: Theme.radiusLarge
+            color: Theme.bgSurface
+            border.color: Theme.accent
+            border.width: 2
+
+            Label {
+                id: dropLabel
+                anchors.centerIn: parent
+                text: "\uD83D\uDCCE  Drop files here to send"
+                font.pixelSize: Theme.fontSizeLarge
+                font.weight: Font.DemiBold
+                color: Theme.accent
+            }
         }
     }
 }
