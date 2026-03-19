@@ -241,7 +241,7 @@ Item {
                 var winW = bubble.Window.width || 900
                 var winH = bubble.Window.height || 700
                 var popW = 220
-                var popH = 340
+                var popH = isOwnMessage ? 290 : 260
 
                 // Choose which corner of the popup touches the cursor
                 var px, py
@@ -253,6 +253,10 @@ Item {
 
                 // Y: expand down if space, otherwise up
                 py = (spaceBelow >= popH) ? winPos.y : (winPos.y - popH)
+
+                // Clamp to window bounds
+                px = Math.max(4, Math.min(px, winW - popW - 4))
+                py = Math.max(4, Math.min(py, winH - popH - 4))
 
                 var local = mapFromItem(null, px, py)
                 msgPopupLoader.openAt(local.x, local.y)
@@ -351,15 +355,19 @@ Item {
                 border.color: Theme.darkMode ? "#363c48" : "#dde0e4"
                 border.width: 1
 
-                // Subtle shadow
+                // Layered shadow
+                Rectangle {
+                    anchors.fill: parent; anchors.margins: -3; radius: 13
+                    color: "transparent"; border.color: Qt.rgba(0,0,0,0.04); border.width: 2; z: -2
+                }
                 Rectangle {
                     anchors.fill: parent; anchors.margins: -1; radius: 11
-                    color: "transparent"; border.color: Qt.rgba(0,0,0,0.08); border.width: 1; z: -1
+                    color: "transparent"; border.color: Qt.rgba(0,0,0,0.12); border.width: 1; z: -1
                 }
             }
 
-            enter: Transition { NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 120 } }
-            exit: Transition { NumberAnimation { property: "opacity"; from: 1; to: 0; duration: 80 } }
+            enter: Transition { NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 100; easing.type: Easing.OutCubic } }
+            exit: Transition { NumberAnimation { property: "opacity"; from: 1; to: 0; duration: 60 } }
 
             ColumnLayout {
                 id: popupCol
@@ -369,20 +377,22 @@ Item {
                 Rectangle {
                     Layout.fillWidth: true
                     Layout.margins: 2
-                    height: 40
+                    implicitWidth: ctxEmojiRow.width + 12
+                    height: 38
                     radius: 8
-                    color: Theme.darkMode ? Qt.rgba(1,1,1,0.03) : Qt.rgba(0,0,0,0.02)
+                    color: Theme.darkMode ? Qt.rgba(1,1,1,0.06) : Qt.rgba(0,0,0,0.035)
                     visible: messageId > 0
 
                     Row {
+                        id: ctxEmojiRow
                         anchors.centerIn: parent
                         spacing: 2
 
                         Repeater {
-                            model: ["\uD83D\uDC4D", "\u2764\uFE0F", "\uD83D\uDE02", "\uD83D\uDE2E", "\uD83D\uDE22", "\uD83C\uDF89", "\uD83D\uDC4F", "\uD83D\uDE4F"]
+                            model: ["\uD83D\uDC4D", "\u2764\uFE0F", "\uD83D\uDE02", "\uD83D\uDE2E", "\uD83D\uDE22", "\uD83C\uDF89"]
 
                             Rectangle {
-                                width: 32; height: 32; radius: 8
+                                width: 30; height: 30; radius: 8
                                 color: emojiMa.containsMouse
                                     ? (Theme.darkMode ? Qt.rgba(1,1,1,0.16) : Qt.rgba(0,0,0,0.08))
                                     : "transparent"
@@ -414,10 +424,10 @@ Item {
                 // Divider
                 Rectangle {
                     Layout.fillWidth: true
-                    Layout.leftMargin: 8; Layout.rightMargin: 8
-                    Layout.topMargin: 3; Layout.bottomMargin: 3
+                    Layout.leftMargin: 6; Layout.rightMargin: 6
+                    Layout.topMargin: 4; Layout.bottomMargin: 4
                     height: 1
-                    color: Theme.darkMode ? Qt.rgba(1,1,1,0.06) : Qt.rgba(0,0,0,0.06)
+                    color: Theme.darkMode ? Qt.rgba(1,1,1,0.10) : Qt.rgba(0,0,0,0.08)
                     visible: messageId > 0
                 }
 
@@ -439,8 +449,8 @@ Item {
                         width: 195; height: 32; radius: 6
                         color: actionMa.containsMouse
                             ? (modelData.action === "delete"
-                                ? Qt.rgba(Theme.danger.r, Theme.danger.g, Theme.danger.b, 0.12)
-                                : (Theme.darkMode ? Qt.rgba(1,1,1,0.10) : Qt.rgba(0,0,0,0.06)))
+                                ? Qt.rgba(Theme.danger.r, Theme.danger.g, Theme.danger.b, 0.15)
+                                : (Theme.darkMode ? Qt.rgba(1,1,1,0.12) : Qt.rgba(0,0,0,0.07)))
                             : "transparent"
                         visible: !modelData.ownerOnly || isOwnMessage
                         Behavior on color { ColorAnimation { duration: 80 } }
@@ -457,7 +467,9 @@ Item {
                                 width: 20
                                 horizontalAlignment: Text.AlignHCenter
                                 anchors.verticalCenter: parent.verticalCenter
-                                color: modelData.action === "delete" ? Theme.danger : Theme.textSecondary
+                                color: modelData.action === "delete" ? Theme.danger
+                                    : (actionMa.containsMouse ? Theme.textPrimary : Theme.textSecondary)
+                                Behavior on color { ColorAnimation { duration: 80 } }
                             }
                             Label {
                                 text: modelData.label

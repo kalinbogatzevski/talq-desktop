@@ -275,7 +275,18 @@ void AuthManager::fetchServerInfo()
             m_signalingMode = "Internal";
         }
 
-        qDebug() << "Server info: NC" << m_ncVersion << "Talk" << m_talkVersion << "Signaling:" << m_signalingMode;
+        // Thread support (Talk v22+)
+        auto features = spreed["features"].toArray();
+        m_hasThreads = false;
+        for (const auto &f : features) {
+            if (f.toString() == "threads") {
+                m_hasThreads = true;
+                break;
+            }
+        }
+
+        qDebug() << "Server info: NC" << m_ncVersion << "Talk" << m_talkVersion
+                 << "Signaling:" << m_signalingMode << "Threads:" << m_hasThreads;
         emit serverInfoChanged();
     });
 }

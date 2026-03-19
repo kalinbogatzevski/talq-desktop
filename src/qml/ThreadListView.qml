@@ -11,6 +11,12 @@ Item {
     property bool creating: false
     property int selectedThreadId: -1
 
+    Timer {
+        id: refreshAfterCreate
+        interval: 2000
+        onTriggered: threadModel.refresh()
+    }
+
     Rectangle {
         anchors.fill: parent
         color: Theme.bgSecondary
@@ -100,9 +106,11 @@ Item {
                 Keys.onReturnPressed: {
                     var name = text.trim()
                     if (name.length > 0 && name.length <= 128) {
-                        messageModel.sendMessage(name, 0)
+                        messageModel.createTopic(name)
                         text = ""
                         threadListRoot.creating = false
+                        // Refresh thread list after a short delay to pick up new topic
+                        refreshAfterCreate.restart()
                     }
                 }
                 Keys.onEscapePressed: {

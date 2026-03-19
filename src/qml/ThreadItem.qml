@@ -21,13 +21,13 @@ ItemDelegate {
 
     property bool selected: false
 
+    readonly property color threadColor: Theme.topicColor(iconColor)
+
     background: Rectangle {
         color: {
             if (selected) {
-                var colors = ["#2ec4b6", "#e07060", "#f0a050", "#5ec76a", "#9b7cd4", "#e87aae"]
-                var c = colors[Math.abs(iconColor) % colors.length]
-                var qc = Qt.color(c)
-                return Qt.rgba(qc.r, qc.g, qc.b, 0.1)
+                var c = Qt.color(threadItem.threadColor)
+                return Qt.rgba(c.r, c.g, c.b, 0.1)
             }
             return threadItem.hovered ? Theme.bgHover : "transparent"
         }
@@ -38,10 +38,7 @@ ItemDelegate {
             width: 3
             height: parent.height
             anchors.left: parent.left
-            color: {
-                var colors = ["#2ec4b6", "#e07060", "#f0a050", "#5ec76a", "#9b7cd4", "#e87aae"]
-                return colors[Math.abs(iconColor) % colors.length]
-            }
+            color: threadItem.threadColor
             visible: selected
         }
     }
@@ -59,10 +56,7 @@ ItemDelegate {
             width: 8
             height: 8
             radius: 4
-            color: {
-                var colors = ["#2ec4b6", "#e07060", "#f0a050", "#5ec76a", "#9b7cd4", "#e87aae"]
-                return colors[Math.abs(iconColor) % colors.length]
-            }
+            color: threadItem.threadColor
             Layout.alignment: Qt.AlignVCenter
         }
 
@@ -126,10 +120,7 @@ ItemDelegate {
                     width: Math.max(20, unreadLabel.implicitWidth + 10)
                     height: 20
                     radius: 10
-                    color: {
-                        var colors = ["#2ec4b6", "#e07060", "#f0a050", "#5ec76a", "#9b7cd4", "#e87aae"]
-                        return colors[Math.abs(iconColor) % colors.length]
-                    }
+                    color: threadItem.threadColor
 
                     Label {
                         id: unreadLabel
