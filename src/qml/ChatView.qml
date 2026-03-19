@@ -12,6 +12,23 @@ Page {
     property string replyToAuthor: ""
     property string replyToText: ""
 
+    property int activeThreadId: 0
+    property string activeThreadTitle: ""
+    property bool isGroupChat: conversationType === 2 || conversationType === 3
+
+    function openThread(threadId, title) {
+        activeThreadId = threadId
+        activeThreadTitle = title
+        messageModel.threadId = threadId
+        threadModel.conversationToken = ""  // stop thread list loading
+    }
+
+    function closeThread() {
+        activeThreadId = 0
+        activeThreadTitle = ""
+        messageModel.threadId = 0
+    }
+
     function startReply(msgId, author, text) {
         replyToId = msgId
         replyToAuthor = author
@@ -36,6 +53,21 @@ Page {
             anchors.leftMargin: Theme.spacingLarge
             anchors.rightMargin: Theme.spacingXLarge
             spacing: Theme.spacingSmall
+
+            // Back button (when in thread)
+            ToolButton {
+                visible: chatRoot.activeThreadId > 0
+                width: 30; height: 30
+                onClicked: chatRoot.closeThread()
+                contentItem: Label {
+                    text: "\u2190"  // ← arrow
+                    font.pixelSize: 18
+                    color: Theme.accent
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                }
+                background: Rectangle { radius: 15; color: parent.hovered ? Theme.bgHover : "transparent" }
+            }
 
             Item {
                 width: 30; height: 30
@@ -62,7 +94,8 @@ Page {
             }
 
             Label {
-                text: chatRoot.conversationName || "Select a conversation"
+                text: chatRoot.activeThreadId > 0 ? chatRoot.activeThreadTitle
+                    : (chatRoot.conversationName || "Select a conversation")
                 font.pixelSize: Theme.fontSizeLarge
                 font.weight: chatRoot.conversationName.length > 0 ? Font.DemiBold : Font.Normal
                 color: chatRoot.conversationName.length > 0 ? Theme.textPrimary : Theme.textMuted
@@ -195,6 +228,25 @@ Page {
             isOwnMessage: actorId === auth.userId
             onReplyRequested: function(msgId, author, text) {
                 chatRoot.startReply(msgId, author, text)
+            }
+        }
+    }
+
+    // Thread list overlay for group chats
+    ThreadListView {
+        anchors.fill: parent
+        visible: chatRoot.isGroupChat && chatRoot.activeThreadId === 0 && messageModel.conversationToken.length > 0
+        onThreadSelected: function(threadId, title) {
+            chatRoot.openThread(threadId, title)
+        }
+    }
+
+    Connections {
+        target: messageModel
+        function onConversationTokenChanged() {
+            chatRoot.closeThread()
+            if (chatRoot.isGroupChat && messageModel.conversationToken.length > 0) {
+                threadModel.conversationToken = messageModel.conversationToken
             }
         }
     }
