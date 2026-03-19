@@ -63,6 +63,16 @@ qt_add_qml_module(talq
 string(TIMESTAMP TALQ_BUILD_TS "%m%d-%H%M")
 target_compile_definitions(talq PRIVATE TALQ_BUILD_TS="${TALQ_BUILD_TS}")
 
+# Branding: cmake -DTALQ_BRAND=BRAND for dedicated BRAND build
+if(TALQ_BRAND STREQUAL "BRAND")
+    target_compile_definitions(talq PRIVATE
+        TALQ_BRANDED
+        TALQ_BRAND_NAME="BRAND Talk"
+        TALQ_BRAND_SERVER="https://example.invalid"
+    )
+    message(STATUS "Building BRAND branded version")
+endif()
+
 target_include_directories(talq PRIVATE src)
 
 target_link_libraries(talq PRIVATE
