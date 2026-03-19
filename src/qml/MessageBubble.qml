@@ -121,11 +121,14 @@ Item {
             }
 
             ToolButton {
+                id: reactBtn
                 width: 26; height: 26
                 ToolTip.visible: hovered; ToolTip.text: "React"; ToolTip.delay: 300
                 onClicked: {
-                    var pos = mapToItem(msgContent, 0, height)
-                    quickEmojisLoader.open()
+                    var pos = mapToItem(msgContent, 0, 0)
+                    var emojiBarWidth = 210  // approximate
+                    var x = isOwnMessage ? (pos.x - emojiBarWidth - 4) : (pos.x + width + 4)
+                    quickEmojisLoader.openAt(x, pos.y - 5)
                 }
                 contentItem: Label {
                     text: "\u263A"; font.pixelSize: 13
@@ -167,7 +170,12 @@ Item {
             id: quickEmojisLoader
             active: false
             sourceComponent: quickEmojisComp
-            function open() { active = true; item.open() }
+            function openAt(globalX, globalY) {
+                active = true
+                item.x = globalX
+                item.y = globalY
+                item.open()
+            }
         }
 
         Loader {
@@ -255,7 +263,7 @@ Item {
 
                         Rectangle {
                             width: 32; height: 32; radius: 8
-                            color: emojiMa.containsMouse ? Theme.bgHover : "transparent"
+                            color: emojiMa.containsMouse ? (Theme.darkMode ? Qt.rgba(1,1,1,0.15) : Qt.rgba(0,0,0,0.10)) : "transparent"
 
                             Label {
                                 anchors.centerIn: parent
@@ -297,7 +305,7 @@ Item {
                     Rectangle {
                         Layout.fillWidth: true
                         width: 220; height: 36; radius: Theme.radiusSmall
-                        color: actionMa.containsMouse ? Theme.bgHover : "transparent"
+                        color: actionMa.containsMouse ? (Theme.darkMode ? Qt.rgba(1,1,1,0.12) : Qt.rgba(0,0,0,0.08)) : "transparent"
                         visible: !modelData.ownerOnly || isOwnMessage
 
                         RowLayout {
