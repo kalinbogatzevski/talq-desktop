@@ -1,0 +1,153 @@
+<h2>Threads/Topics UX Flow</h2>
+<p class="subtitle">Telegram-style 3-stage navigation. Does this match what you have in mind?</p>
+
+<div class="section">
+<h3>Stage 1: Normal Chat (no topics)</h3>
+<div class="mockup">
+  <div class="mockup-header">TalQ — Normal group chat</div>
+  <div class="mockup-body" style="display:flex;height:320px;font-size:13px;font-family:system-ui;">
+    <!-- Sidebar full -->
+    <div style="width:240px;background:#1e2229;border-right:1px solid #2a2f38;flex-shrink:0;padding:8px 0;">
+      <div style="padding:8px 12px;color:#8b919a;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;">Conversations</div>
+      <div style="padding:10px 12px;display:flex;align-items:center;gap:10px;background:#2a2f38;border-left:3px solid #2ec4b6;">
+        <div style="width:36px;height:36px;border-radius:50%;background:#5ec76a;display:flex;align-items:center;justify-content:center;color:white;font-weight:bold;font-size:14px;">D</div>
+        <div><div style="color:#e8eaed;font-weight:600;">Dev Team</div><div style="color:#8b919a;font-size:11px;">Kalin: pushed v0.5.3</div></div>
+      </div>
+      <div style="padding:10px 12px;display:flex;align-items:center;gap:10px;">
+        <div style="width:36px;height:36px;border-radius:50%;background:#e07060;display:flex;align-items:center;justify-content:center;color:white;font-weight:bold;font-size:14px;">I</div>
+        <div><div style="color:#e8eaed;">Ilko</div><div style="color:#8b919a;font-size:11px;">sent a photo</div></div>
+      </div>
+      <div style="padding:10px 12px;display:flex;align-items:center;gap:10px;">
+        <div style="width:36px;height:36px;border-radius:50%;background:#9b7cd4;display:flex;align-items:center;justify-content:center;color:white;font-weight:bold;font-size:14px;">R</div>
+        <div><div style="color:#e8eaed;">Rakesh</div><div style="color:#8b919a;font-size:11px;">ok sounds good</div></div>
+      </div>
+    </div>
+    <!-- Chat area -->
+    <div style="flex:1;background:#1a1d24;display:flex;flex-direction:column;">
+      <div style="padding:12px 16px;background:#1e2229;border-bottom:1px solid #2a2f38;color:#e8eaed;font-weight:600;">Dev Team</div>
+      <div style="flex:1;padding:16px;color:#c8ccd2;display:flex;flex-direction:column;justify-content:flex-end;gap:8px;">
+        <div><span style="color:#5ec76a;font-weight:600;">Kalin:</span> pushed v0.5.3 with status fixes</div>
+        <div><span style="color:#e07060;font-weight:600;">Ilko:</span> installed, testing now</div>
+        <div><span style="color:#9b7cd4;font-weight:600;">Rakesh:</span> ok sounds good</div>
+      </div>
+      <div style="padding:10px 16px;background:#1e2229;border-top:1px solid #2a2f38;color:#6b7280;">Message...</div>
+    </div>
+  </div>
+</div>
+</div>
+
+<div class="section">
+<h3>Stage 2: Group with Topics selected → sidebar squeezes, topics list shown</h3>
+<div class="mockup">
+  <div class="mockup-header">TalQ — Topics view (sidebar collapsed to icons)</div>
+  <div class="mockup-body" style="display:flex;height:380px;font-size:13px;font-family:system-ui;">
+    <!-- Sidebar squeezed to icons -->
+    <div style="width:56px;background:#1e2229;border-right:1px solid #2a2f38;flex-shrink:0;display:flex;flex-direction:column;align-items:center;padding-top:12px;gap:8px;">
+      <div style="width:40px;height:40px;border-radius:50%;background:#5ec76a;display:flex;align-items:center;justify-content:center;color:white;font-weight:bold;font-size:15px;box-shadow:0 0 0 2px #2ec4b6;">D</div>
+      <div style="width:40px;height:40px;border-radius:50%;background:#e07060;display:flex;align-items:center;justify-content:center;color:white;font-weight:bold;font-size:15px;">I</div>
+      <div style="width:40px;height:40px;border-radius:50%;background:#9b7cd4;display:flex;align-items:center;justify-content:center;color:white;font-weight:bold;font-size:15px;">R</div>
+    </div>
+    <!-- Topics list -->
+    <div style="width:260px;background:#1a1d24;border-right:1px solid #2a2f38;flex-shrink:0;">
+      <div style="padding:12px 16px;background:#1e2229;border-bottom:1px solid #2a2f38;display:flex;justify-content:space-between;align-items:center;">
+        <div style="color:#e8eaed;font-weight:600;font-size:15px;">Dev Team — Topics</div>
+        <div style="color:#2ec4b6;font-size:18px;cursor:pointer;">+</div>
+      </div>
+      <!-- Topic items -->
+      <div style="padding:12px 16px;display:flex;align-items:center;gap:10px;border-bottom:1px solid #2a2f38;">
+        <div style="width:10px;height:10px;border-radius:50%;background:#2ec4b6;flex-shrink:0;"></div>
+        <div style="flex:1;min-width:0;">
+          <div style="display:flex;justify-content:space-between;"><span style="color:#e8eaed;font-weight:600;">General</span><span style="color:#6b7280;font-size:11px;">2m</span></div>
+          <div style="color:#8b919a;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Rakesh: ok sounds good</div>
+        </div>
+        <div style="background:#2ec4b6;color:white;font-size:10px;padding:2px 6px;border-radius:10px;font-weight:bold;">3</div>
+      </div>
+      <div style="padding:12px 16px;display:flex;align-items:center;gap:10px;border-bottom:1px solid #2a2f38;">
+        <div style="width:10px;height:10px;border-radius:50%;background:#e07060;flex-shrink:0;"></div>
+        <div style="flex:1;min-width:0;">
+          <div style="display:flex;justify-content:space-between;"><span style="color:#e8eaed;font-weight:600;">Bug Reports</span><span style="color:#6b7280;font-size:11px;">15m</span></div>
+          <div style="color:#8b919a;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Ilko: status shows offline for everyone</div>
+        </div>
+        <div style="background:#e07060;color:white;font-size:10px;padding:2px 6px;border-radius:10px;font-weight:bold;">1</div>
+      </div>
+      <div style="padding:12px 16px;display:flex;align-items:center;gap:10px;border-bottom:1px solid #2a2f38;">
+        <div style="width:10px;height:10px;border-radius:50%;background:#f0a050;flex-shrink:0;"></div>
+        <div style="flex:1;min-width:0;">
+          <div style="display:flex;justify-content:space-between;"><span style="color:#e8eaed;font-weight:600;">Features</span><span style="color:#6b7280;font-size:11px;">1h</span></div>
+          <div style="color:#8b919a;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Kalin: threads/topics is next</div>
+        </div>
+      </div>
+      <div style="padding:12px 16px;display:flex;align-items:center;gap:10px;border-bottom:1px solid #2a2f38;">
+        <div style="width:10px;height:10px;border-radius:50%;background:#5ec76a;flex-shrink:0;"></div>
+        <div style="flex:1;min-width:0;">
+          <div style="display:flex;justify-content:space-between;"><span style="color:#e8eaed;font-weight:600;">Releases</span><span style="color:#6b7280;font-size:11px;">3h</span></div>
+          <div style="color:#8b919a;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Kalin: v0.5.3 uploaded to GitLab</div>
+        </div>
+      </div>
+    </div>
+    <!-- Empty state / instruction -->
+    <div style="flex:1;background:#1a1d24;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:8px;">
+      <div style="font-size:48px;opacity:0.3;">💬</div>
+      <div style="color:#6b7280;font-size:14px;">Select a topic to view messages</div>
+    </div>
+  </div>
+</div>
+</div>
+
+<div class="section">
+<h3>Stage 3: Topic selected → messages shown with back button</h3>
+<div class="mockup">
+  <div class="mockup-header">TalQ — Inside "Bug Reports" topic</div>
+  <div class="mockup-body" style="display:flex;height:340px;font-size:13px;font-family:system-ui;">
+    <!-- Sidebar squeezed -->
+    <div style="width:56px;background:#1e2229;border-right:1px solid #2a2f38;flex-shrink:0;display:flex;flex-direction:column;align-items:center;padding-top:12px;gap:8px;">
+      <div style="width:40px;height:40px;border-radius:50%;background:#5ec76a;display:flex;align-items:center;justify-content:center;color:white;font-weight:bold;font-size:15px;box-shadow:0 0 0 2px #2ec4b6;">D</div>
+      <div style="width:40px;height:40px;border-radius:50%;background:#e07060;display:flex;align-items:center;justify-content:center;color:white;font-weight:bold;font-size:15px;">I</div>
+      <div style="width:40px;height:40px;border-radius:50%;background:#9b7cd4;display:flex;align-items:center;justify-content:center;color:white;font-weight:bold;font-size:15px;">R</div>
+    </div>
+    <!-- Chat area with thread header -->
+    <div style="flex:1;background:#1a1d24;display:flex;flex-direction:column;">
+      <div style="padding:10px 16px;background:#1e2229;border-bottom:1px solid #2a2f38;display:flex;align-items:center;gap:12px;">
+        <div style="color:#2ec4b6;font-size:20px;cursor:pointer;">←</div>
+        <div style="width:10px;height:10px;border-radius:50%;background:#e07060;flex-shrink:0;"></div>
+        <div>
+          <div style="color:#e8eaed;font-weight:600;">Bug Reports</div>
+          <div style="color:#6b7280;font-size:11px;">Dev Team · 12 messages</div>
+        </div>
+      </div>
+      <div style="flex:1;padding:16px;color:#c8ccd2;display:flex;flex-direction:column;justify-content:flex-end;gap:10px;">
+        <div><span style="color:#e07060;font-weight:600;">Ilko:</span> the status shows offline for everyone now</div>
+        <div><span style="color:#5ec76a;font-weight:600;">Kalin:</span> found it — I switched to room API status which was empty</div>
+        <div><span style="color:#5ec76a;font-weight:600;">Kalin:</span> fixed, rebuilding 0.5.3</div>
+        <div><span style="color:#e07060;font-weight:600;">Ilko:</span> 👍 testing now</div>
+      </div>
+      <div style="padding:10px 16px;background:#1e2229;border-top:1px solid #2a2f38;color:#6b7280;">Reply in Bug Reports...</div>
+    </div>
+  </div>
+</div>
+</div>
+
+<h3>Does this flow match what you're envisioning?</h3>
+<div class="options">
+  <div class="option" data-choice="yes-exact" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Yes, exactly like this</h3>
+      <p>3-stage flow: full sidebar → icons + topics → topic messages</p>
+    </div>
+  </div>
+  <div class="option" data-choice="yes-but-tweaks" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Close, but needs tweaks</h3>
+      <p>The general flow is right but some details should change</p>
+    </div>
+  </div>
+  <div class="option" data-choice="different" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Different from what I meant</h3>
+      <p>Let me explain the flow I have in mind</p>
+    </div>
+  </div>
+</div>

@@ -31,6 +31,7 @@ class AuthManager : public QObject
     Q_PROPERTY(QString nextcloudVersion READ nextcloudVersion NOTIFY serverInfoChanged)
     Q_PROPERTY(QString talkVersion READ talkVersion NOTIFY serverInfoChanged)
     Q_PROPERTY(QString signalingMode READ signalingMode NOTIFY serverInfoChanged)
+    Q_PROPERTY(bool hasThreadsSupport READ hasThreadsSupport NOTIFY serverInfoChanged)
 
 public:
     explicit AuthManager(ApiClient *api, QObject *parent = nullptr);
@@ -46,6 +47,7 @@ public:
     QString nextcloudVersion() const { return m_ncVersion; }
     QString talkVersion() const { return m_talkVersion; }
     QString signalingMode() const { return m_signalingMode; }
+    bool hasThreadsSupport() const { return m_hasThreads; }
 
     Q_INVOKABLE void tryRestore();
     Q_INVOKABLE void startLogin(const QString &serverUrl);
@@ -90,6 +92,7 @@ private:
     QString m_ncVersion;
     QString m_talkVersion;
     QString m_signalingMode;
+    bool m_hasThreads = false;
 
     // Login Flow v2 poll state
     QString m_pollToken;

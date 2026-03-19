@@ -23,6 +23,10 @@ QtObject {
     readonly property color textTime: darkMode ? "#6b7280" : "#9ca3af"
     readonly property color textMuted: darkMode ? "#565c66" : "#b0b6c0"
 
+    // ─── Topic Colors ───
+    readonly property var topicPalette: ["#2ec4b6", "#e07060", "#f0a050", "#5ec76a", "#9b7cd4", "#e87aae"]
+    function topicColor(index) { return topicPalette[Math.abs(index) % topicPalette.length] }
+
     // ─── Accents ───
     readonly property color accent: darkMode ? "#2ec4b6" : "#1aab9d"
     readonly property color accentHover: darkMode ? "#3dd4c6" : "#22bfb0"

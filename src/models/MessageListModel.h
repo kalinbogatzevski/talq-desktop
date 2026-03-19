@@ -73,6 +73,8 @@ public:
     Q_INVOKABLE void deleteMessage(int messageId);
     Q_INVOKABLE void pinMessage(int messageId);
     Q_INVOKABLE QString messageLink(int messageId) const;
+    Q_INVOKABLE bool pasteClipboardImage();
+    Q_INVOKABLE void createTopic(const QString &title);
 
 signals:
     void loadingChanged();

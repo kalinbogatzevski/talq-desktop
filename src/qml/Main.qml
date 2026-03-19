@@ -551,15 +551,10 @@ ApplicationWindow {
                 }
 
                 onThreadSelected: function(threadId, title) {
-                    if (threadId === 0) {
-                        chatView.activeThreadId = 0
-                        chatView.activeThreadTitle = ""
-                        messageModel.threadId = 0
-                    } else {
-                        chatView.activeThreadId = threadId
-                        chatView.activeThreadTitle = title
-                        messageModel.threadId = threadId
-                    }
+                    if (threadId === 0)
+                        chatView.closeThread()
+                    else
+                        chatView.openThread(threadId, title)
                     threadModel.selectTopic(threadId)
                     chatView.activeThreadColor = threadModel.colorForThread(threadId)
                 }
@@ -585,15 +580,11 @@ ApplicationWindow {
             Connections {
                 target: threadModel
                 function onHasTopicsChanged() {
-                    chatLayout.showTopics = threadModel.hasTopics
-                    chatView.isInTopicMode = threadModel.hasTopics
-                    conversationModel.setHasTopics(chatLayout.activeConvToken, threadModel.hasTopics)
-
-                    if (threadModel.hasTopics) {
-                        root.minimumWidth = 600
-                    } else {
-                        root.minimumWidth = 500
-                    }
+                    var active = threadModel.hasTopics && auth.hasThreadsSupport
+                    chatLayout.showTopics = active
+                    chatView.isInTopicMode = active
+                    conversationModel.setHasTopics(chatLayout.activeConvToken, active)
+                    root.minimumWidth = active ? 600 : 500
                 }
             }
         }

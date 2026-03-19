@@ -82,10 +82,7 @@ Page {
             Rectangle {
                 width: 10; height: 10; radius: 5
                 visible: chatRoot.isInTopicMode && chatRoot.activeThreadId > 0
-                color: {
-                    var colors = ["#2ec4b6", "#e07060", "#f0a050", "#5ec76a", "#9b7cd4", "#e87aae"]
-                    return colors[Math.abs(chatRoot.activeThreadColor) % colors.length]
-                }
+                color: Theme.topicColor(chatRoot.activeThreadColor)
                 Layout.alignment: Qt.AlignVCenter
             }
 
@@ -104,10 +101,9 @@ Page {
                     anchors.fill: parent; radius: 15
                     visible: headerChatAvatar.status !== Image.Ready && chatRoot.conversationName.length > 0
                     color: {
-                        var colors = ["#2ec4b6", "#e07060", "#f0a050", "#5ec76a", "#9b7cd4", "#e87aae"]
                         var hash = 0; var n = chatRoot.conversationName
                         for (var i = 0; i < n.length; i++) { hash = ((hash << 5) - hash) + n.charCodeAt(i); hash = hash & hash }
-                        return colors[Math.abs(hash) % colors.length]
+                        return Theme.topicColor(hash)
                     }
                     Label { anchors.centerIn: parent; text: chatRoot.conversationName.length > 0 ? chatRoot.conversationName[0].toUpperCase() : ""; font.pixelSize: 13; font.weight: Font.DemiBold; color: "white" }
                 }
