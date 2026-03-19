@@ -27,7 +27,7 @@ int main(int argc, char *argv[])
     QApplication app(argc, argv);
     app.setApplicationName("TalQ");
     app.setOrganizationName("TalQ");
-    app.setApplicationVersion("0.2.0");
+    app.setApplicationVersion("0.4.0");
     app.setWindowIcon(QIcon(":/logo.png"));
 
     QQuickStyle::setStyle("Basic");
