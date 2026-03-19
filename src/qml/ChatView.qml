@@ -229,6 +229,9 @@ Page {
             onReplyRequested: function(msgId, author, text) {
                 chatRoot.startReply(msgId, author, text)
             }
+            onThreadOpenRequested: function(threadId) {
+                chatRoot.openThread(threadId, "Thread")
+            }
         }
     }
 
