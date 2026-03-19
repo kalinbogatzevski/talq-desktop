@@ -185,21 +185,32 @@ void SignalingClient::joinRoom(const QString &token)
 {
     m_currentRoom = token;
 
-    // Join as active participant via Talk API (fire-and-forget via raw POST)
-    auto *reply = m_api->postRaw("apps/spreed/api/v4/room/" + token + "/participants/active");
-    connect(reply, &QNetworkReply::finished, reply, &QNetworkReply::deleteLater);
+    // Join as active participant — the response contains the sessionId
+    // which the signaling server needs to verify room access
+    QJsonObject empty;
+    m_api->post("apps/spreed/api/v4/room/" + token + "/participants/active", empty,
+        [this, token](bool ok, const QJsonObject &data, int) {
+            qDebug() << "Signaling: participants/active response ok=" << ok
+                     << "room match=" << (m_currentRoom == token)
+                     << "auth=" << m_authenticated
+                     << "sessionId=" << data["sessionId"].toString().left(20);
+            if (!ok || m_currentRoom != token || !m_authenticated) return;
 
-    if (!m_authenticated) return;
+            // Extract the Nextcloud session ID from the response
+            QString ncSessionId = data["sessionId"].toString();
 
-    QJsonObject msg;
-    msg["type"] = QString("room");
+            QJsonObject msg;
+            msg["type"] = QString("room");
 
-    QJsonObject room;
-    room["roomid"] = token;
-    msg["room"] = room;
+            QJsonObject room;
+            room["roomid"] = token;
+            if (!ncSessionId.isEmpty())
+                room["sessionid"] = ncSessionId;
+            msg["room"] = room;
 
-    m_ws.sendTextMessage(QJsonDocument(msg).toJson(QJsonDocument::Compact));
-    qDebug() << "Signaling: joining room" << token;
+            m_ws.sendTextMessage(QJsonDocument(msg).toJson(QJsonDocument::Compact));
+            qDebug() << "Signaling: joining room" << token << "with session" << ncSessionId.left(20) + "...";
+        });
 }
 
 void SignalingClient::sendStartedTyping()
