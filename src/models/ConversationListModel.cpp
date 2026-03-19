@@ -1,10 +1,13 @@
 #include "models/ConversationListModel.h"
 #include <algorithm>
+#include <QHash>
 
 ConversationListModel::ConversationListModel(ApiClient *api, QObject *parent)
     : QAbstractListModel(parent)
     , m_api(api)
 {
+    m_autoRefreshTimer.setInterval(10000); // 10 seconds — fast enough for near-real-time
+    connect(&m_autoRefreshTimer, &QTimer::timeout, this, &ConversationListModel::refresh);
 }
 
 int ConversationListModel::rowCount(const QModelIndex &) const
@@ -51,6 +54,8 @@ QHash<int, QByteArray> ConversationListModel::roleNames() const
 
 void ConversationListModel::refresh()
 {
+    if (m_loading) return; // don't stack requests
+
     m_loading = true;
     emit loadingChanged();
 
@@ -63,16 +68,53 @@ void ConversationListModel::refresh()
             return;
         }
 
-        beginResetModel();
-        m_conversations.clear();
-        m_conversations.reserve(data.size());
-        for (const auto &val : data) {
-            m_conversations.append(Conversation::fromJson(val.toObject()));
+        // Snapshot old unread counts for notification detection
+        QHash<QString, int> oldUnread;
+        for (const auto &c : m_conversations) {
+            oldUnread[c.token] = c.unreadMessages;
         }
-        std::sort(m_conversations.begin(), m_conversations.end());
+
+        // Parse new data
+        QVector<Conversation> newConversations;
+        newConversations.reserve(data.size());
+        for (const auto &val : data) {
+            newConversations.append(Conversation::fromJson(val.toObject()));
+        }
+        std::sort(newConversations.begin(), newConversations.end());
+
+        // Detect new unread messages and emit notifications
+        int newTotalUnread = 0;
+        for (const auto &c : newConversations) {
+            newTotalUnread += c.unreadMessages;
+
+            int prev = oldUnread.value(c.token, 0);
+            if (c.unreadMessages > prev && prev >= 0 && !oldUnread.isEmpty()) {
+                // This conversation has new unread messages since last check
+                emit newUnreadMessage(c.displayName, c.lastMessageText, c.token);
+            }
+        }
+
+        // Update model
+        beginResetModel();
+        m_conversations = newConversations;
         endResetModel();
         emit countChanged();
+
+        if (m_totalUnread != newTotalUnread) {
+            m_totalUnread = newTotalUnread;
+            emit totalUnreadChanged();
+        }
     });
+}
+
+void ConversationListModel::startAutoRefresh()
+{
+    m_autoRefreshTimer.start();
+}
+
+void ConversationListModel::stopAutoRefresh()
+{
+    m_autoRefreshTimer.stop();
 }
 
 QString ConversationListModel::tokenAt(int index) const

@@ -2,18 +2,21 @@
 
 #include <QAbstractListModel>
 #include <QVector>
+#include <QTimer>
 #include "models/Conversation.h"
 #include "core/ApiClient.h"
 
 /**
  * QAbstractListModel exposing conversations to QML.
  * Fetches from Talk API and keeps the list sorted (favorites first, then by activity).
+ * Auto-refreshes every 30 seconds to catch new messages in all conversations.
  */
 class ConversationListModel : public QAbstractListModel
 {
     Q_OBJECT
     Q_PROPERTY(bool loading READ isLoading NOTIFY loadingChanged)
     Q_PROPERTY(int count READ rowCount NOTIFY countChanged)
+    Q_PROPERTY(int totalUnread READ totalUnread NOTIFY totalUnreadChanged)
 
 public:
     enum Roles {
@@ -36,18 +39,26 @@ public:
     QHash<int, QByteArray> roleNames() const override;
 
     Q_INVOKABLE void refresh();
+    Q_INVOKABLE void startAutoRefresh();
+    Q_INVOKABLE void stopAutoRefresh();
     Q_INVOKABLE QString tokenAt(int index) const;
     Q_INVOKABLE int lastReadMessageForToken(const QString &token) const;
 
     bool isLoading() const { return m_loading; }
+    int totalUnread() const { return m_totalUnread; }
 
 signals:
     void loadingChanged();
     void countChanged();
+    void totalUnreadChanged();
     void errorOccurred(const QString &error);
+    // Emitted when a conversation gets new unread messages
+    void newUnreadMessage(const QString &conversationName, const QString &lastMessage, const QString &token);
 
 private:
     ApiClient *m_api;
     QVector<Conversation> m_conversations;
+    QTimer m_autoRefreshTimer;
     bool m_loading = false;
+    int m_totalUnread = 0;
 };
