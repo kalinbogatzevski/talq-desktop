@@ -19,6 +19,7 @@ ItemDelegate {
     required property string lastAuthor
     required property real lastActivity
     required property string participantUserId
+    required property string userStatus
 
     property bool selected: false
     property string filterText: ""
@@ -95,6 +96,20 @@ ItemDelegate {
                     font.weight: Font.DemiBold
                     color: "white"
                 }
+            }
+
+            // Online status dot (1:1 chats only)
+            Rectangle {
+                visible: conversationType === 1 && userStatus.length > 0 && userStatus !== "offline"
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                width: 14; height: 14; radius: 7
+                color: userStatus === "online" ? Theme.online
+                     : userStatus === "away" ? Theme.warning
+                     : userStatus === "dnd" ? Theme.danger
+                     : "transparent"
+                border.color: Theme.bgSidebar
+                border.width: 2
             }
 
             // Group badge
