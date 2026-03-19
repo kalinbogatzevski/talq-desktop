@@ -16,27 +16,33 @@ ItemDelegate {
     required property real lastActivity
     required property int replyCount
     required property int iconColor
+    required property int unreadCount
+    required property bool isAllMessages
 
     property bool selected: false
 
     background: Rectangle {
-        color: selected ? Theme.bgSelected
-             : threadItem.hovered ? Theme.bgHover
-             : "transparent"
-
+        color: {
+            if (selected) {
+                var colors = ["#2ec4b6", "#e07060", "#f0a050", "#5ec76a", "#9b7cd4", "#e87aae"]
+                var c = colors[Math.abs(iconColor) % colors.length]
+                var qc = Qt.color(c)
+                return Qt.rgba(qc.r, qc.g, qc.b, 0.1)
+            }
+            return threadItem.hovered ? Theme.bgHover : "transparent"
+        }
         Behavior on color { ColorAnimation { duration: Theme.animFast } }
 
         // Selection indicator bar
         Rectangle {
             width: 3
-            height: parent.height * 0.5
-            radius: 2
+            height: parent.height
             anchors.left: parent.left
-            anchors.verticalCenter: parent.verticalCenter
-            color: Theme.accent
+            color: {
+                var colors = ["#2ec4b6", "#e07060", "#f0a050", "#5ec76a", "#9b7cd4", "#e87aae"]
+                return colors[Math.abs(iconColor) % colors.length]
+            }
             visible: selected
-            opacity: selected ? 1 : 0
-            Behavior on opacity { NumberAnimation { duration: Theme.animNormal } }
         }
     }
 
@@ -114,21 +120,24 @@ ItemDelegate {
                     maximumLineCount: 1
                 }
 
-                // Reply count badge
+                // Unread count badge
                 Rectangle {
-                    visible: replyCount > 0
-                    width: Math.max(20, replyLabel.implicitWidth + 10)
+                    visible: unreadCount > 0 && !selected
+                    width: Math.max(20, unreadLabel.implicitWidth + 10)
                     height: 20
                     radius: 10
-                    color: Theme.bgInput
+                    color: {
+                        var colors = ["#2ec4b6", "#e07060", "#f0a050", "#5ec76a", "#9b7cd4", "#e87aae"]
+                        return colors[Math.abs(iconColor) % colors.length]
+                    }
 
                     Label {
-                        id: replyLabel
+                        id: unreadLabel
                         anchors.centerIn: parent
-                        text: replyCount > 99 ? "99+" : replyCount
+                        text: unreadCount > 99 ? "99+" : unreadCount
                         font.pixelSize: 10
                         font.weight: Font.Bold
-                        color: Theme.textSecondary
+                        color: "white"
                     }
 
                     scale: visible ? 1 : 0
