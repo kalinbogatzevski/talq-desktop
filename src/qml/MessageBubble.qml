@@ -311,7 +311,14 @@ Item {
                                     // Signal to ChatView to open this message as a thread
                                     bubble.threadOpenRequested(messageId)
                                 } else if (modelData.action === "delete") {
-                                    messageModel.sendMessage("/delete " + messageId)
+                                    messageModel.deleteMessage(messageId)
+                                } else if (modelData.action === "pin") {
+                                    messageModel.pinMessage(messageId)
+                                } else if (modelData.action === "copylink") {
+                                    var link = messageModel.messageLink(messageId)
+                                    contextClipHelper.text = link
+                                    contextClipHelper.selectAll()
+                                    contextClipHelper.copy()
                                 }
                             }
                         }
