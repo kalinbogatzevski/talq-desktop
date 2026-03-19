@@ -29,7 +29,7 @@ int main(int argc, char *argv[])
 {
     QApplication app(argc, argv);
 #ifdef TALQ_BRANDED
-    app.setApplicationName("BRAND Talk");
+    app.setApplicationName("BRAND TalQ");
     app.setOrganizationName("BRAND");
 #else
     app.setApplicationName("TalQ");
@@ -70,7 +70,7 @@ int main(int argc, char *argv[])
 
     // Branding context
 #ifdef TALQ_BRANDED
-    engine.rootContext()->setContextProperty("brandName", QString("BRAND Talk"));
+    engine.rootContext()->setContextProperty("brandName", QString("BRAND TalQ"));
     engine.rootContext()->setContextProperty("brandServer", QString("https://example.invalid"));
     engine.rootContext()->setContextProperty("brandLogo", QString("qrc:/brand-logo.png"));
     engine.rootContext()->setContextProperty("isBranded", true);
