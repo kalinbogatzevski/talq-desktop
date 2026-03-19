@@ -83,10 +83,12 @@ void ConversationListModel::refresh()
             return;
         }
 
-        // Snapshot old unread counts for notification detection
+        // Snapshot old state for preservation across refresh
         QHash<QString, int> oldUnread;
+        QHash<QString, bool> oldHasTopics;
         for (const auto &c : m_conversations) {
             oldUnread[c.token] = c.unreadMessages;
+            oldHasTopics[c.token] = c.hasTopics;
         }
 
         // Parse new data
@@ -96,6 +98,11 @@ void ConversationListModel::refresh()
             newConversations.append(Conversation::fromJson(val.toObject()));
         }
         std::sort(newConversations.begin(), newConversations.end());
+
+        // Preserve hasTopics flag across refresh
+        for (auto &c : newConversations) {
+            c.hasTopics = oldHasTopics.value(c.token, false);
+        }
 
         // Detect new unread messages and emit notifications
         int newTotalUnread = 0;

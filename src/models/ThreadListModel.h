@@ -49,7 +49,9 @@ public:
     void setConversationToken(const QString &token);
     bool isLoading() const { return m_loading; }
     bool hasTopics() const { return m_threads.size() > 1; }
-    void setCache(MessageCache *cache) { m_cache = cache; }
+    void setCache(MessageCache *cache);
+private slots:
+    void onCachedThreadsLoaded(const QString &token, const QVector<QJsonObject> &threads);
 
     Q_INVOKABLE void refresh();
     Q_INVOKABLE void markTopicRead(int threadId);

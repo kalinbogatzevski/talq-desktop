@@ -51,6 +51,58 @@ QHash<int, QByteArray> ThreadListModel::roleNames() const
     };
 }
 
+void ThreadListModel::setCache(MessageCache *cache)
+{
+    m_cache = cache;
+    if (m_cache)
+        connect(m_cache, &MessageCache::threadIndexLoaded, this, &ThreadListModel::onCachedThreadsLoaded);
+}
+
+void ThreadListModel::onCachedThreadsLoaded(const QString &token, const QVector<QJsonObject> &threads)
+{
+    if (token != m_token || threads.isEmpty())
+        return;
+
+    // Only use cache if we haven't loaded from API yet
+    if (!m_threads.isEmpty())
+        return;
+
+    bool hadTopics = m_threads.size() > 1;
+
+    QVector<ThreadInfo> cached;
+    for (const auto &t : threads) {
+        ThreadInfo info;
+        info.threadId = t["threadId"].toInt();
+        info.title = t["title"].toString();
+        info.iconColor = t["iconColor"].toInt();
+        info.lastActivity = t["lastActivity"].toInteger();
+        info.lastMessage = t["lastMessage"].toString();
+        info.lastAuthor = t["lastAuthor"].toString();
+        info.replyCount = t["replyCount"].toInt();
+        info.lastReadMessageId = t["lastReadMessageId"].toInt();
+        cached.append(info);
+    }
+
+    // Add "All Messages" at index 0
+    ThreadInfo allMsg;
+    allMsg.threadId = 0;
+    allMsg.title = "All Messages";
+    allMsg.isAllMessages = true;
+    allMsg.iconColor = 0;
+    if (!cached.isEmpty()) {
+        allMsg.lastActivity = cached.first().lastActivity;
+    }
+    cached.prepend(allMsg);
+
+    beginResetModel();
+    m_threads = std::move(cached);
+    endResetModel();
+    emit countChanged();
+
+    if (hadTopics != (m_threads.size() > 1))
+        emit hasTopicsChanged();
+}
+
 void ThreadListModel::setConversationToken(const QString &token)
 {
     if (m_token == token)
@@ -58,8 +110,13 @@ void ThreadListModel::setConversationToken(const QString &token)
     m_token = token;
     emit tokenChanged();
 
-    if (!m_token.isEmpty())
+    if (!m_token.isEmpty()) {
+        // Load from cache first for instant display
+        if (m_cache)
+            m_cache->loadThreadIndex(m_token);
+        // Then fetch from API for fresh data
         fetchThreads();
+    }
 }
 
 void ThreadListModel::refresh()
@@ -105,7 +162,9 @@ void ThreadListModel::fetchThreads()
 
     const QString path = "apps/spreed/api/v1/chat/" + m_token;
 
-    m_api->getArray(path, params, [this](bool success, const QJsonArray &data, int /*statusCode*/) {
+    const QString capturedToken = m_token;
+    m_api->getArray(path, params, [this, capturedToken](bool success, const QJsonArray &data, int /*statusCode*/) {
+        if (capturedToken != m_token) return;  // stale callback
         if (!success) {
             m_loading = false;
             emit loadingChanged();

@@ -9,6 +9,7 @@ Item {
 
     property string groupName: ""
     property bool creating: false
+    property int selectedThreadId: -1
 
     Rectangle {
         anchors.fill: parent
@@ -120,8 +121,10 @@ Item {
 
                 delegate: ThreadItem {
                     width: threadList.width
+                    selected: threadId === threadListRoot.selectedThreadId
 
                     onClicked: {
+                        threadListRoot.selectedThreadId = threadId
                         threadListRoot.threadSelected(threadId, title)
                     }
                 }
