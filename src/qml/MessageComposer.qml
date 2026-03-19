@@ -11,6 +11,7 @@ Rectangle {
     color: Theme.bgPrimary
 
     signal sendMessage(string text)
+    property string topicName: ""
 
     RowLayout {
         anchors.fill: parent
@@ -44,7 +45,7 @@ Rectangle {
 
             TextArea {
                 id: inputField
-                placeholderText: "Message..."
+                placeholderText: composer.topicName.length > 0 ? "Reply in " + composer.topicName + "..." : "Message..."
                 placeholderTextColor: Theme.textMuted
                 font.pixelSize: Theme.fontSizeNormal
                 color: Theme.textPrimary
@@ -73,6 +74,15 @@ Rectangle {
                     id: typingStopTimer
                     interval: 3000
                     onTriggered: signaling.sendStoppedTyping()
+                }
+
+                Keys.onPressed: function(event) {
+                    if (event.key === Qt.Key_V && (event.modifiers & Qt.ControlModifier)) {
+                        if (messageModel.pasteClipboardImage()) {
+                            event.accepted = true
+                            return
+                        }
+                    }
                 }
 
                 Keys.onReturnPressed: function(event) {
