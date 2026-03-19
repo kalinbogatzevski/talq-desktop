@@ -122,7 +122,7 @@ Item {
 
             ToolButton {
                 id: reactBtn
-                width: 26; height: 26
+                width: 32; height: 32
                 ToolTip.visible: hovered; ToolTip.text: "React"; ToolTip.delay: 300
                 onClicked: {
                     var pos = mapToItem(msgContent, 0, 0)
@@ -131,23 +131,23 @@ Item {
                     quickEmojisLoader.openAt(x, pos.y - 5)
                 }
                 contentItem: Label {
-                    text: "\u263A"; font.pixelSize: 13
+                    text: "\u263A"; font.pixelSize: 16
                     color: parent.hovered ? Theme.accent : Theme.textSecondary
                     horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
                 }
-                background: Rectangle { radius: 13; color: parent.hovered ? Theme.bgHover : Theme.bgSurface }
+                background: Rectangle { radius: 16; color: parent.hovered ? Theme.bgHover : Theme.bgSurface }
             }
 
             ToolButton {
-                width: 26; height: 26
+                width: 32; height: 32
                 ToolTip.visible: hovered; ToolTip.text: "Reply"; ToolTip.delay: 300
                 onClicked: bubble.replyRequested(messageId, actorName, messageText)
                 contentItem: Label {
-                    text: "\u21A9"; font.pixelSize: 13
+                    text: "\u21A9"; font.pixelSize: 16
                     color: parent.hovered ? Theme.accent : Theme.textSecondary
                     horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
                 }
-                background: Rectangle { radius: 13; color: parent.hovered ? Theme.bgHover : Theme.bgSurface }
+                background: Rectangle { radius: 16; color: parent.hovered ? Theme.bgHover : Theme.bgSurface }
             }
         }
 
