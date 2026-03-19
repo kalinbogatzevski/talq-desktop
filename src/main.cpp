@@ -47,9 +47,9 @@ int main(int argc, char *argv[])
 #endif
     app.setWindowIcon(QIcon(":/logo.png"));  // TalQ icon always
 #ifdef TALQ_BUILD_TS
-    app.setApplicationVersion("0.5.2-" TALQ_BUILD_TS);
+    app.setApplicationVersion("0.5.3-" TALQ_BUILD_TS);
 #else
-    app.setApplicationVersion("0.5.2");
+    app.setApplicationVersion("0.5.3");
 #endif
 
     QQuickStyle::setStyle("Basic");
@@ -61,6 +61,7 @@ int main(int argc, char *argv[])
     MessageCache cache;
     MessageListModel messages(&api, &cache);
     ThreadListModel threads(&api);
+    threads.setCache(&cache);
     NotificationManager notifications;
     PushClient push(&api);
     SignalingClient signaling(&api);
@@ -151,12 +152,33 @@ int main(int argc, char *argv[])
         if (auth.isLoggedIn()) {
             push.start();
             signaling.start();
-            // Auto-refresh disabled — push provides real-time updates
-            // conversations.startAutoRefresh();
         } else {
             push.stop();
             signaling.stop();
             conversations.stopAutoRefresh();
+        }
+    });
+
+    // User status heartbeat — keep "online" while app is running
+    QTimer statusTimer;
+    statusTimer.setInterval(120000); // 2 minutes
+    QObject::connect(&statusTimer, &QTimer::timeout, [&api]() {
+        QJsonObject body;
+        body["statusType"] = "online";
+        api.put("apps/user_status/api/v1/user_status/status", body, [](bool ok, const QJsonObject &, int) {
+            if (!ok) qWarning() << "Status heartbeat failed";
+        });
+    });
+    QObject::connect(&auth, &AuthManager::loggedInChanged, &api, [&auth, &api, &statusTimer]() {
+        if (auth.isLoggedIn()) {
+            QJsonObject body;
+            body["statusType"] = "online";
+            api.put("apps/user_status/api/v1/user_status/status", body, [](bool ok, const QJsonObject &, int) {
+                qDebug() << "User status set:" << (ok ? "online" : "failed");
+            });
+            statusTimer.start();
+        } else {
+            statusTimer.stop();
         }
     });
 

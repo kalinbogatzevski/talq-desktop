@@ -3,6 +3,7 @@
 #include <QVector>
 #include <QJsonArray>
 #include "core/ApiClient.h"
+#include "core/MessageCache.h"
 
 struct ThreadInfo {
     int threadId = 0;
@@ -12,6 +13,9 @@ struct ThreadInfo {
     qint64 lastActivity = 0;
     int replyCount = 0;
     int iconColor = 0;
+    int unreadCount = 0;
+    int lastReadMessageId = 0;
+    bool isAllMessages = false;
 };
 
 class ThreadListModel : public QAbstractListModel
@@ -20,6 +24,7 @@ class ThreadListModel : public QAbstractListModel
     Q_PROPERTY(QString conversationToken READ conversationToken WRITE setConversationToken NOTIFY tokenChanged)
     Q_PROPERTY(bool loading READ isLoading NOTIFY loadingChanged)
     Q_PROPERTY(int count READ rowCount NOTIFY countChanged)
+    Q_PROPERTY(bool hasTopics READ hasTopics NOTIFY hasTopicsChanged)
 
 public:
     enum Roles {
@@ -30,6 +35,8 @@ public:
         LastActivityRole,
         ReplyCountRole,
         IconColorRole,
+        UnreadCountRole,
+        IsAllMessagesRole,
     };
 
     explicit ThreadListModel(ApiClient *api, QObject *parent = nullptr);
@@ -41,13 +48,19 @@ public:
     QString conversationToken() const { return m_token; }
     void setConversationToken(const QString &token);
     bool isLoading() const { return m_loading; }
+    bool hasTopics() const { return m_threads.size() > 1; }
+    void setCache(MessageCache *cache) { m_cache = cache; }
 
     Q_INVOKABLE void refresh();
+    Q_INVOKABLE void markTopicRead(int threadId);
+    Q_INVOKABLE void selectTopic(int threadId);
+    Q_INVOKABLE int colorForThread(int threadId) const;
 
 signals:
     void tokenChanged();
     void loadingChanged();
     void countChanged();
+    void hasTopicsChanged();
 
 private:
     void fetchThreads();
@@ -56,4 +69,6 @@ private:
     QVector<ThreadInfo> m_threads;
     QString m_token;
     bool m_loading = false;
+    MessageCache *m_cache = nullptr;
+    int m_selectedThreadId = -1;
 };
