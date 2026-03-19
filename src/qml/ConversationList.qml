@@ -9,6 +9,12 @@ Item {
     signal conversationSelected(string token, string name, string odataUserId, int convType, string userStatus)
 
     property int selectedIndex: -1
+    property bool squeezed: false
+    property real sidebarWidth: squeezed ? 56 : 320
+
+    Behavior on sidebarWidth {
+        NumberAnimation { duration: Theme.animNormal; easing.type: Easing.OutCubic }
+    }
 
     Rectangle {
         anchors.fill: parent
@@ -26,12 +32,17 @@ Item {
 
                 RowLayout {
                     anchors.fill: parent
-                    anchors.leftMargin: Theme.spacingLarge
-                    anchors.rightMargin: Theme.spacingNormal
+                    anchors.leftMargin: sidebar.squeezed ? 0 : Theme.spacingLarge
+                    anchors.rightMargin: sidebar.squeezed ? 0 : Theme.spacingNormal
+
+                    Behavior on anchors.leftMargin { NumberAnimation { duration: Theme.animNormal; easing.type: Easing.OutCubic } }
+                    Behavior on anchors.rightMargin { NumberAnimation { duration: Theme.animNormal; easing.type: Easing.OutCubic } }
 
                     Item {
                         width: 32
                         height: 32
+                        Layout.alignment: sidebar.squeezed ? Qt.AlignHCenter : Qt.AlignVCenter
+                        Layout.leftMargin: sidebar.squeezed ? (parent.width - 32) / 2 : 0
 
                         // User avatar
                         Image {
@@ -94,11 +105,17 @@ Item {
                         color: Theme.textPrimary
                         elide: Text.ElideRight
                         Layout.fillWidth: true
+                        visible: !sidebar.squeezed
+                        opacity: sidebar.squeezed ? 0 : 1
+                        Behavior on opacity { NumberAnimation { duration: Theme.animFast } }
                     }
 
                     ToolButton {
                         width: 36
                         height: 36
+                        visible: !sidebar.squeezed
+                        opacity: sidebar.squeezed ? 0 : 1
+                        Behavior on opacity { NumberAnimation { duration: Theme.animFast } }
                         onClicked: Theme.darkMode = !Theme.darkMode
                         ToolTip.visible: hovered
                         ToolTip.text: Theme.darkMode ? "Switch to light mode" : "Switch to dark mode"
@@ -121,6 +138,9 @@ Item {
                     ToolButton {
                         width: 36
                         height: 36
+                        visible: !sidebar.squeezed
+                        opacity: sidebar.squeezed ? 0 : 1
+                        Behavior on opacity { NumberAnimation { duration: Theme.animFast } }
                         onClicked: conversationModel.refresh()
                         ToolTip.visible: hovered
                         ToolTip.text: "Refresh conversations"
@@ -144,6 +164,9 @@ Item {
                     ToolButton {
                         width: 36
                         height: 36
+                        visible: !sidebar.squeezed
+                        opacity: sidebar.squeezed ? 0 : 1
+                        Behavior on opacity { NumberAnimation { duration: Theme.animFast } }
                         onClicked: exitDialog.open()
                         ToolTip.visible: hovered
                         ToolTip.text: "Exit"
@@ -275,6 +298,7 @@ Item {
                 placeholderTextColor: Theme.textMuted
                 font.pixelSize: Theme.fontSizeSmall
                 color: Theme.textPrimary
+                visible: !sidebar.squeezed
                 background: Rectangle {
                     radius: Theme.radiusSmall
                     color: Theme.bgInput
@@ -309,6 +333,7 @@ Item {
                     width: convListView.width
                     selected: index === sidebar.selectedIndex
                     filterText: searchField.text
+                    squeezed: sidebar.squeezed
 
                     onClicked: {
                         sidebar.selectedIndex = index
@@ -341,6 +366,29 @@ Item {
                         font.pixelSize: Theme.fontSizeNormal
                         color: Theme.textSecondary
                     }
+                }
+            }
+
+            // Manual squeeze toggle
+            Rectangle {
+                Layout.fillWidth: true
+                height: 28
+                color: "transparent"
+
+                Label {
+                    anchors.centerIn: parent
+                    text: sidebar.squeezed ? "\u276F" : "\u276E"  // ❯ / ❮
+                    font.pixelSize: 11
+                    color: toggleArea.containsMouse ? Theme.textSecondary : Theme.textMuted
+                    Behavior on color { ColorAnimation { duration: Theme.animFast } }
+                }
+
+                MouseArea {
+                    id: toggleArea
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    hoverEnabled: true
+                    onClicked: sidebar.squeezed = !sidebar.squeezed
                 }
             }
         }
