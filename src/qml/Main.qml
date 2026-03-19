@@ -264,12 +264,13 @@ ApplicationWindow {
                 SplitView.preferredWidth: 320
                 SplitView.minimumWidth: 260
                 SplitView.maximumWidth: 450
-                onConversationSelected: function(token, name, userId, convType) {
+                onConversationSelected: function(token, name, userId, convType, status) {
                     messageModel.threadId = 0
                     messageModel.conversationToken = token
                     chatView.conversationName = name
                     chatView.conversationUserId = userId
                     chatView.conversationType = convType
+                    chatView.peerStatus = status
                     conversationModel.clearUnreadForToken(token)
                     signaling.joinRoom(token)
                     chatView.activeThreadId = 0
