@@ -563,6 +563,7 @@ void MessageListModel::sendFile(const QString &filePath)
         body["shareType"] = 10;  // share to Talk conversation
         body["shareWith"] = token;
         body["path"] = QString("Talk/" + fileName);
+        body["permissions"] = 1;  // read permission for recipients
 
         m_api->post("apps/files_sharing/api/v1/shares", body,
             [this, fileName](bool ok, const QJsonObject &, int) {
