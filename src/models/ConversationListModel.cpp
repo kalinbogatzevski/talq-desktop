@@ -96,29 +96,20 @@ void ConversationListModel::refresh()
             }
         }
 
-        // Always update in-place — never use beginResetModel (causes UI freeze)
+        // Update model — use beginResetModel only when structure changes
         int oldSize = m_conversations.size();
         int newSize = newConversations.size();
 
-        if (newSize > oldSize) {
-            // New conversations added
+        if (oldSize == newSize) {
+            // Same count — just update data in-place (fast, no delegate destruction)
             m_conversations = newConversations;
-            if (oldSize > 0)
-                emit dataChanged(index(0), index(oldSize - 1));
-            beginInsertRows({}, oldSize, newSize - 1);
-            endInsertRows();
-        } else if (newSize < oldSize) {
-            // Conversations removed
-            beginRemoveRows({}, newSize, oldSize - 1);
-            m_conversations = newConversations;
-            endRemoveRows();
             if (newSize > 0)
                 emit dataChanged(index(0), index(newSize - 1));
         } else {
-            // Same count — just update data
+            // Count changed — must reset (rare: conversation added/removed)
+            beginResetModel();
             m_conversations = newConversations;
-            if (newSize > 0)
-                emit dataChanged(index(0), index(newSize - 1));
+            endResetModel();
         }
         emit countChanged();
 

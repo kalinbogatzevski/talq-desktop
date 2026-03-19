@@ -488,7 +488,7 @@ Item {
                     Layout.fillWidth: true
                     Layout.maximumWidth: 300
                     Layout.maximumHeight: 300
-                    source: visible ? filePreview : ""
+                    source: ""  // TODO: needs authenticated image provider for previews
                     fillMode: Image.PreserveAspectFit
                     sourceSize: Qt.size(300, 300)
 
@@ -685,7 +685,7 @@ Item {
                     Layout.fillWidth: true
                     Layout.maximumWidth: 280
                     Layout.maximumHeight: 280
-                    source: visible ? filePreview : ""
+                    source: ""  // TODO: needs authenticated image provider for previews
                     fillMode: Image.PreserveAspectFit
                     sourceSize: Qt.size(280, 280)
                     MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: Qt.openUrlExternally(fileLink) }
