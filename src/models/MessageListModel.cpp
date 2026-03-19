@@ -435,6 +435,42 @@ void MessageListModel::addReaction(int messageId, const QString &emoji)
         });
 }
 
+void MessageListModel::deleteMessage(int messageId)
+{
+    if (m_token.isEmpty() || messageId <= 0) return;
+
+    QString path = "apps/spreed/api/v1/chat/" + m_token + "/" + QString::number(messageId);
+    m_api->del(path, [this, messageId](bool ok, const QJsonObject &, int) {
+        if (!ok) {
+            emit errorOccurred("Failed to delete message");
+        }
+        // The deleted message will be replaced by a system message on next poll
+    });
+}
+
+void MessageListModel::pinMessage(int messageId)
+{
+    if (m_token.isEmpty() || messageId <= 0) return;
+
+    // POST to pin endpoint (no body needed)
+    QJsonObject empty;
+    QString path = "apps/spreed/api/v1/chat/" + m_token + "/" + QString::number(messageId) + "/pin";
+    m_api->post(path, empty, [this](bool ok, const QJsonObject &, int) {
+        if (!ok) {
+            emit errorOccurred("Failed to pin message");
+        }
+    });
+}
+
+QString MessageListModel::messageLink(int messageId) const
+{
+    if (m_token.isEmpty() || messageId <= 0) return {};
+
+    // Build the Talk web URL for this message
+    QString serverUrl = m_api->serverUrl();
+    return serverUrl + "/call/" + m_token + "#message_" + QString::number(messageId);
+}
+
 void MessageListModel::onLastCommonReadChanged(int messageId)
 {
     if (messageId <= m_lastCommonRead)
