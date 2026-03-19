@@ -71,26 +71,49 @@ int main(int argc, char *argv[])
         });
     }
 
-    // Notify on new polled messages (not sent by us)
+    // Notify on new polled messages in active conversation (not sent by us)
     QObject::connect(&messages, &MessageListModel::newMessagesAtEnd, &notifications, [&messages, &notifications, &auth]() {
-        // Get the last message to show in notification
         int count = messages.rowCount();
         if (count == 0) return;
 
         auto idx = messages.index(count - 1);
         QString actorId = messages.data(idx, MessageListModel::ActorIdRole).toString();
-
-        // Don't notify for our own messages
         if (actorId == auth.userId()) return;
 
         QString actorName = messages.data(idx, MessageListModel::ActorNameRole).toString();
         QString text = messages.data(idx, MessageListModel::MessageTextRole).toString();
-
-        // Strip HTML tags for notification
         text.remove(QRegularExpression("<[^>]*>"));
         if (text.length() > 100) text = text.left(100) + "...";
 
         notifications.notify(actorName, text);
+    });
+
+    // Notify on new messages in OTHER conversations (via conversation list refresh)
+    QObject::connect(&conversations, &ConversationListModel::newUnreadMessage,
+                     &notifications, [&notifications, &messages](const QString &name, const QString &lastMsg, const QString &token) {
+        // Don't notify for the active conversation (already handled by poller)
+        if (token == messages.conversationToken()) return;
+
+        QString preview = lastMsg;
+        preview.remove(QRegularExpression("<[^>]*>"));
+        if (preview.length() > 80) preview = preview.left(80) + "...";
+
+        notifications.notify(name, preview);
+    });
+
+    // Update tray icon unread count
+    QObject::connect(&conversations, &ConversationListModel::totalUnreadChanged,
+                     &notifications, [&conversations, &notifications]() {
+        notifications.updateUnreadCount(conversations.totalUnread());
+    });
+
+    // Start auto-refresh after login
+    QObject::connect(&auth, &AuthManager::loggedInChanged, &conversations, [&auth, &conversations]() {
+        if (auth.isLoggedIn()) {
+            conversations.startAutoRefresh();
+        } else {
+            conversations.stopAutoRefresh();
+        }
     });
 
 #ifdef Q_OS_WIN
