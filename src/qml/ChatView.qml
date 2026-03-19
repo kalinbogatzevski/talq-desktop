@@ -18,6 +18,9 @@ Page {
     property bool isGroupChat: conversationType === 2 || conversationType === 3
     property bool isInTopicMode: false
     property int activeThreadColor: 0
+    // Only show typing when it's from the current conversation
+    readonly property bool isTyping: signaling.typingUser.length > 0
+        && signaling.typingRoom === messageModel.conversationToken
 
     function openThread(threadId, title) {
         activeThreadId = threadId
@@ -125,10 +128,10 @@ Page {
 
                 // Status line: typing indicator OR user status (1:1 chats)
                 Label {
-                    visible: signaling.typingUser.length > 0
+                    visible: chatRoot.isTyping
                         || (chatRoot.conversationType === 1 && chatRoot.peerStatus.length > 0)
                     text: {
-                        if (signaling.typingUser.length > 0)
+                        if (chatRoot.isTyping)
                             return signaling.typingUser + " is typing..."
                         if (chatRoot.conversationType === 1 && chatRoot.peerStatus.length > 0) {
                             switch (chatRoot.peerStatus) {
@@ -141,9 +144,9 @@ Page {
                         return ""
                     }
                     font.pixelSize: Theme.fontSizeTiny
-                    font.italic: signaling.typingUser.length > 0
+                    font.italic: chatRoot.isTyping
                     color: {
-                        if (signaling.typingUser.length > 0) return Theme.accent
+                        if (chatRoot.isTyping) return Theme.accent
                         switch (chatRoot.peerStatus) {
                         case "online": return Theme.online
                         case "away": return Theme.warning
@@ -157,7 +160,7 @@ Page {
 
                 Label {
                     visible: chatRoot.isInTopicMode && chatRoot.activeThreadId > 0
-                             && signaling.typingUser.length === 0
+                             && !chatRoot.isTyping
                     text: chatRoot.conversationName + " \u00B7 " + messageModel.count + " messages"
                     font.pixelSize: Theme.fontSizeTiny
                     color: Theme.textSecondary

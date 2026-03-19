@@ -16,6 +16,7 @@ class SignalingClient : public QObject
     Q_OBJECT
     Q_PROPERTY(bool connected READ isConnected NOTIFY connectedChanged)
     Q_PROPERTY(QString typingUser READ typingUser NOTIFY typingUserChanged)
+    Q_PROPERTY(QString typingRoom READ typingRoom NOTIFY typingUserChanged)
 
 public:
     explicit SignalingClient(ApiClient *api, QObject *parent = nullptr);
@@ -25,6 +26,7 @@ public:
     bool isConnected() const { return m_authenticated; }
 
     QString typingUser() const { return m_typingUser; }
+    QString typingRoom() const { return m_typingRoom; }
 
     Q_INVOKABLE void joinRoom(const QString &token);
     Q_INVOKABLE void sendStartedTyping();
@@ -54,6 +56,7 @@ private:
     QString m_sessionId;
     QString m_currentRoom;
     QString m_typingUser;
+    QString m_typingRoom;  // room token where typing was detected
     bool m_authenticated = false;
     int m_reconnectDelay = 2000;
 };
