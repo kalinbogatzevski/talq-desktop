@@ -86,7 +86,7 @@ void AuthManager::initiateLoginFlow()
     // POST directly to the login/v2 endpoint (not OCS — raw Nextcloud endpoint)
     QNetworkRequest req(QUrl(m_serverUrl + "/index.php/login/v2"));
     req.setHeader(QNetworkRequest::ContentTypeHeader, "application/x-www-form-urlencoded");
-    req.setHeader(QNetworkRequest::UserAgentHeader, "TalQ/0.2.0");
+    req.setHeader(QNetworkRequest::UserAgentHeader, "TalQ");
 
     // Use the internal NAM from ApiClient for consistency
     // But this endpoint is unauthenticated and non-OCS, so we use a local NAM
