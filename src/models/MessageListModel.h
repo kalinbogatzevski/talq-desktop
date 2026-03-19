@@ -40,6 +40,12 @@ public:
         IsReadRole,             // true if all participants have read this message
         SendStatusRole,         // "sent", "sending", "failed"
         ThreadIdRole,
+        FileNameRole,
+        FileMimeRole,
+        FileSizeRole,
+        FileLinkRole,
+        FilePreviewRole,
+        HasFileRole,
     };
 
     explicit MessageListModel(ApiClient *api, MessageCache *cache, QObject *parent = nullptr);

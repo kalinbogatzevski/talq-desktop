@@ -36,9 +36,18 @@ public:
     int threadId = 0;           // Root thread message ID (0 = not in a thread)
     QString threadTitle;         // Thread title if this is a thread root
     int threadReplyCount = 0;    // Number of replies (for root messages)
-    QJsonObject reactions; // emoji → count map
-    QString sendStatus;    // "", "sending", "failed" — for optimistic display
-    QString systemMessage; // system message type (e.g. "reaction", "call_ended")
+    QJsonObject reactions;
+    QString sendStatus;
+    QString systemMessage;
+
+    // File attachment (from messageParameters)
+    QString fileName;
+    QString fileMimetype;
+    qint64 fileSize = 0;
+    QString fileLink;
+    QString filePreviewUrl;  // empty if no preview
+    int fileId = 0;
+    bool hasFile() const { return fileId > 0; }
 
     static Message fromJson(const QJsonObject &json);
 
