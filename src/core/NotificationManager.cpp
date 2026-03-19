@@ -4,6 +4,10 @@
 #include <QIcon>
 #include <QFile>
 #include <QActionGroup>
+#include <QPainter>
+#include <QPixmap>
+#include <QFont>
+#include <QFontMetrics>
 #include <QDebug>
 
 #ifdef Q_OS_WIN
@@ -146,12 +150,41 @@ void NotificationManager::clearNotifications()
 void NotificationManager::updateUnreadCount(int count)
 {
     m_unreadCount = count;
-    if (m_trayIcon) {
-        if (count > 0) {
-            m_trayIcon->setToolTip(QString("TalQ — %1 unread").arg(count));
-        } else {
-            m_trayIcon->setToolTip("TalQ");
-        }
+    if (!m_trayIcon) return;
+
+    if (count > 0) {
+        m_trayIcon->setToolTip(QString("TalQ — %1 unread").arg(count));
+
+        // Paint badge on icon
+        QPixmap base(":/logo.png");
+        QPixmap icon = base.scaled(32, 32, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        QPainter p(&icon);
+        p.setRenderHint(QPainter::Antialiasing);
+
+        // Red badge circle
+        QString text = count > 99 ? "99+" : QString::number(count);
+        QFont font;
+        font.setPixelSize(count > 9 ? 11 : 13);
+        font.setBold(true);
+        QFontMetrics fm(font);
+        int badgeW = qMax(16, fm.horizontalAdvance(text) + 6);
+        int badgeH = 16;
+        int bx = icon.width() - badgeW;
+        int by = 0;
+
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor("#e06060"));
+        p.drawRoundedRect(bx, by, badgeW, badgeH, 8, 8);
+
+        p.setFont(font);
+        p.setPen(Qt::white);
+        p.drawText(QRect(bx, by, badgeW, badgeH), Qt::AlignCenter, text);
+        p.end();
+
+        m_trayIcon->setIcon(QIcon(icon));
+    } else {
+        m_trayIcon->setToolTip("TalQ");
+        m_trayIcon->setIcon(QIcon(":/logo.png"));
     }
 }
 

@@ -300,6 +300,21 @@ Page {
                             color: Theme.textSecondary
                         }
                     }
+
+                    // Push status
+                    RowLayout {
+                        spacing: Theme.spacingSmall
+                        Rectangle {
+                            width: 8; height: 8; radius: 4
+                            color: pushClient.connected ? Theme.online : Theme.warning
+                        }
+                        Label {
+                            text: pushClient.connected ? "Push connected (real-time)"
+                                : "Push disconnected (polling fallback)"
+                            font.pixelSize: Theme.fontSizeSmall
+                            color: pushClient.connected ? Theme.online : Theme.textSecondary
+                        }
+                    }
                 }
             }
         }
