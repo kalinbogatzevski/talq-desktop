@@ -59,24 +59,28 @@ Item {
                             }
                         }
 
-                        // Connection status LED
+                        // Connection status LED (green = push live, amber = polling, red = disconnected)
                         Rectangle {
                             anchors.right: parent.right
                             anchors.bottom: parent.bottom
                             width: 10; height: 10; radius: 5
-                            color: messageModel.connected ? Theme.online : Theme.danger
+                            color: pushClient.connected ? Theme.online
+                                 : messageModel.connected ? Theme.warning
+                                 : Theme.danger
                             border.color: Theme.bgSecondary
                             border.width: 2
 
                             SequentialAnimation on opacity {
-                                loops: messageModel.connected ? 0 : Animation.Infinite
-                                running: !messageModel.connected
+                                loops: (!pushClient.connected && !messageModel.connected) ? Animation.Infinite : 0
+                                running: !pushClient.connected && !messageModel.connected
                                 NumberAnimation { from: 1.0; to: 0.3; duration: 800 }
                                 NumberAnimation { from: 0.3; to: 1.0; duration: 800 }
                             }
 
                             ToolTip.visible: ledHover.hovered
-                            ToolTip.text: messageModel.connected ? "Connected to server" : "Disconnected"
+                            ToolTip.text: pushClient.connected ? "Push connected (real-time)"
+                                        : messageModel.connected ? "Polling (delayed)"
+                                        : "Disconnected"
                             ToolTip.delay: 300
 
                             HoverHandler { id: ledHover }

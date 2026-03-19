@@ -56,6 +56,7 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty("conversationModel", &conversations);
     engine.rootContext()->setContextProperty("messageModel", &messages);
     engine.rootContext()->setContextProperty("threadModel", &threads);
+    engine.rootContext()->setContextProperty("pushClient", &push);
     engine.rootContext()->setContextProperty("notifications", &notifications);
 
     engine.addImageProvider("avatar", new AvatarProvider(&api));
