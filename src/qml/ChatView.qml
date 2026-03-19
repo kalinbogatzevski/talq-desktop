@@ -33,8 +33,14 @@ Page {
         replyToId = msgId
         replyToAuthor = author
         replyToText = text
-        // Re-scroll — reply bar adds height to footer, can hide last message
-        messageListView.positionViewAtEnd()
+        // Delay scroll — footer needs time to resize with reply bar
+        replyScrollTimer.restart()
+    }
+
+    Timer {
+        id: replyScrollTimer
+        interval: 100
+        onTriggered: messageListView.positionViewAtEnd()
     }
 
     function cancelReply() {
@@ -190,7 +196,7 @@ Page {
         model: messageModel
         clip: true
         spacing: 2
-        bottomMargin: Theme.spacingSmall
+        bottomMargin: Theme.spacingLarge
         boundsBehavior: Flickable.StopAtBounds
 
         // Scroll to newest message on any count change
