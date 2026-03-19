@@ -21,6 +21,7 @@
 #include "core/NotificationManager.h"
 #include "core/PushClient.h"
 #include "core/SignalingClient.h"
+#include "core/FilePreviewProvider.h"
 #include "models/ConversationListModel.h"
 #include "models/MessageListModel.h"
 #include "models/ThreadListModel.h"
@@ -82,6 +83,7 @@ int main(int argc, char *argv[])
 #endif
 
     engine.addImageProvider("avatar", new AvatarProvider(&api));
+    engine.addImageProvider("preview", new FilePreviewProvider(&api));
 
     engine.loadFromModule("TalkQt", "Main");
 

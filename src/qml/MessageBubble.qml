@@ -31,6 +31,7 @@ Item {
     required property string fileLink
     required property string filePreview
     required property bool hasFile
+    required property int fileId
 
     property bool isOwnMessage: false
     property bool isImage: hasFile && fileMime.startsWith("image/")
@@ -484,9 +485,36 @@ Item {
                     }
                 }
 
-                // File attachment (images + other files)
+                // Image preview (authenticated via image://preview/)
+                Image {
+                    visible: isImage && fileId > 0
+                    Layout.fillWidth: true
+                    Layout.maximumWidth: 300
+                    Layout.maximumHeight: 300
+                    source: isImage && fileId > 0 ? "image://preview/" + fileId : ""
+                    fillMode: Image.PreserveAspectFit
+                    sourceSize: Qt.size(300, 300)
+
+                    // Click opens in NC
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: Qt.openUrlExternally(fileLink)
+                    }
+
+                    // Loading placeholder
+                    Rectangle {
+                        anchors.fill: parent
+                        visible: parent.status === Image.Loading
+                        color: Theme.bgSurface
+                        radius: Theme.radiusSmall
+                        Label { anchors.centerIn: parent; text: "Loading preview..."; color: Theme.textMuted; font.pixelSize: Theme.fontSizeTiny }
+                    }
+                }
+
+                // File attachment (non-image)
                 Rectangle {
-                    visible: hasFile
+                    visible: hasFile && !isImage
                     Layout.fillWidth: true
                     height: 44
                     radius: Theme.radiusSmall
@@ -656,9 +684,21 @@ Item {
                     }
                 }
 
-                // File attachment (own — images + other files)
+                // Image preview (own)
+                Image {
+                    visible: isImage && fileId > 0
+                    Layout.fillWidth: true
+                    Layout.maximumWidth: 280
+                    Layout.maximumHeight: 280
+                    source: isImage && fileId > 0 ? "image://preview/" + fileId : ""
+                    fillMode: Image.PreserveAspectFit
+                    sourceSize: Qt.size(280, 280)
+                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: Qt.openUrlExternally(fileLink) }
+                }
+
+                // File attachment (own — non-image)
                 Rectangle {
-                    visible: hasFile
+                    visible: hasFile && !isImage
                     Layout.fillWidth: true
                     height: 40
                     radius: Theme.radiusSmall
