@@ -116,23 +116,22 @@ void NotificationManager::playSystemSound()
 #endif
 }
 
-void NotificationManager::notify(const QString &title, const QString &message)
+void NotificationManager::notify(const QString &title, const QString &message, bool alwaysSound)
 {
     bool windowActive = m_window && m_window->isActive();
 
-    if (!windowActive) {
-        // Play sound based on mode
+    // Play sound: always for cross-chat, only when unfocused for active chat
+    if (alwaysSound || !windowActive) {
         if (m_soundMode == "internal") {
             playInternalSound();
         } else if (m_soundMode == "system") {
             playSystemSound();
         }
-        // "none" = no sound
+    }
 
-        // Toast notification (always goes through Windows notification center)
-        if (m_notificationsEnabled && m_trayIcon) {
-            m_trayIcon->showMessage(title, message, QSystemTrayIcon::Information, 4000);
-        }
+    // Toast notification only when window is not focused
+    if (!windowActive && m_notificationsEnabled && m_trayIcon) {
+        m_trayIcon->showMessage(title, message, QSystemTrayIcon::Information, 4000);
     }
 }
 
