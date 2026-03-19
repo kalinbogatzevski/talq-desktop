@@ -140,7 +140,8 @@ int main(int argc, char *argv[])
         if (auth.isLoggedIn()) {
             push.start();
             signaling.start();
-            conversations.startAutoRefresh();
+            // Auto-refresh disabled — push provides real-time updates
+            // conversations.startAutoRefresh();
         } else {
             push.stop();
             signaling.stop();
@@ -163,9 +164,9 @@ int main(int argc, char *argv[])
     auth.tryRestore();
 
 #ifdef Q_OS_WIN
-    // Memory monitor — log every 5 seconds
+    // Memory monitor — every 30s (debug)
     QTimer memTimer;
-    memTimer.setInterval(5000);
+    memTimer.setInterval(30000);
     QObject::connect(&memTimer, &QTimer::timeout, [&]() {
         PROCESS_MEMORY_COUNTERS pmc;
         if (GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc))) {
