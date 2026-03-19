@@ -195,6 +195,14 @@ QNetworkReply *ApiClient::getRaw(const QString &path, const QUrlQuery &params)
     return reply;
 }
 
+QNetworkReply *ApiClient::postRaw(const QString &path, const QByteArray &body)
+{
+    auto req = makeRequest(path);
+    auto *reply = m_nam.post(req, body);
+    m_pendingReplies.append(reply);
+    return reply;
+}
+
 QNetworkReply *ApiClient::getLongPoll(const QString &path, const QUrlQuery &params, int timeoutSecs)
 {
     auto req = makeRequest(path, params);

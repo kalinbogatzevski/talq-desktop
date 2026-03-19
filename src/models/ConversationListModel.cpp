@@ -6,7 +6,7 @@ ConversationListModel::ConversationListModel(ApiClient *api, QObject *parent)
     : QAbstractListModel(parent)
     , m_api(api)
 {
-    m_autoRefreshTimer.setInterval(10000); // 10 seconds — fast enough for near-real-time
+    m_autoRefreshTimer.setInterval(30000); // 30s fallback — push provides real-time
     connect(&m_autoRefreshTimer, &QTimer::timeout, this, &ConversationListModel::refresh);
 }
 
@@ -54,14 +54,16 @@ QHash<int, QByteArray> ConversationListModel::roleNames() const
 
 void ConversationListModel::refresh()
 {
-    if (m_loading) return; // don't stack requests
+    if (m_loading) return;
 
+    // Only show loading indicator on initial load (empty list)
+    bool isInitialLoad = m_conversations.isEmpty();
     m_loading = true;
-    emit loadingChanged();
+    if (isInitialLoad) emit loadingChanged();
 
-    m_api->getArray("apps/spreed/api/v4/room", [this](bool ok, const QJsonArray &data, int) {
+    m_api->getArray("apps/spreed/api/v4/room", [this, isInitialLoad](bool ok, const QJsonArray &data, int) {
         m_loading = false;
-        emit loadingChanged();
+        if (isInitialLoad) emit loadingChanged();
 
         if (!ok) {
             emit errorOccurred("Failed to load conversations");
@@ -94,11 +96,35 @@ void ConversationListModel::refresh()
             }
         }
 
-        // Update model
-        beginResetModel();
-        m_conversations = newConversations;
-        endResetModel();
-        emit countChanged();
+        // Update model in-place to avoid destroying delegates (prevents freeze)
+        if (m_conversations.size() == newConversations.size()) {
+            // Same count — just update data in place
+            bool orderChanged = false;
+            for (int i = 0; i < newConversations.size(); ++i) {
+                if (m_conversations[i].token != newConversations[i].token) {
+                    orderChanged = true;
+                    break;
+                }
+            }
+
+            if (!orderChanged) {
+                // Same order — update each row's data without resetting
+                m_conversations = newConversations;
+                emit dataChanged(index(0), index(m_conversations.size() - 1));
+            } else {
+                // Order changed — must reset
+                beginResetModel();
+                m_conversations = newConversations;
+                endResetModel();
+                emit countChanged();
+            }
+        } else {
+            // Count changed — must reset
+            beginResetModel();
+            m_conversations = newConversations;
+            endResetModel();
+            emit countChanged();
+        }
 
         if (m_totalUnread != newTotalUnread) {
             m_totalUnread = newTotalUnread;
