@@ -7,6 +7,9 @@ Item {
     id: threadListRoot
     signal threadSelected(int threadId, string title)
 
+    property string groupName: ""
+    property bool creating: false
+
     Rectangle {
         anchors.fill: parent
         color: Theme.bgSecondary
@@ -27,7 +30,7 @@ Item {
                     anchors.rightMargin: Theme.spacingNormal
 
                     Label {
-                        text: "Topics"
+                        text: threadListRoot.groupName || "Topics"
                         font.pixelSize: Theme.fontSizeLarge
                         font.weight: Font.DemiBold
                         color: Theme.textPrimary
@@ -56,9 +59,7 @@ Item {
                             Behavior on color { ColorAnimation { duration: Theme.animFast } }
                         }
 
-                        onClicked: {
-                            // Placeholder for new topic creation
-                        }
+                        onClicked: threadListRoot.creating = true
                     }
                 }
 
@@ -69,6 +70,43 @@ Item {
                     anchors.right: parent.right
                     height: 1
                     color: Theme.divider
+                }
+            }
+
+            // Inline topic creation input
+            TextField {
+                id: createInput
+                Layout.fillWidth: true
+                Layout.leftMargin: Theme.spacingSmall
+                Layout.rightMargin: Theme.spacingSmall
+                Layout.topMargin: Theme.spacingSmall
+                visible: threadListRoot.creating
+                placeholderText: "Topic name..."
+                placeholderTextColor: Theme.textMuted
+                font.pixelSize: Theme.fontSizeSmall
+                color: Theme.textPrimary
+                background: Rectangle {
+                    radius: Theme.radiusSmall
+                    color: Theme.bgInput
+                    border.color: createInput.activeFocus ? Theme.accent : "transparent"
+                    border.width: 1
+                    Behavior on border.color { ColorAnimation { duration: Theme.animFast } }
+                }
+                padding: 8
+
+                onVisibleChanged: if (visible) forceActiveFocus()
+
+                Keys.onReturnPressed: {
+                    var name = text.trim()
+                    if (name.length > 0 && name.length <= 128) {
+                        messageModel.sendMessage(name, 0)
+                        text = ""
+                        threadListRoot.creating = false
+                    }
+                }
+                Keys.onEscapePressed: {
+                    text = ""
+                    threadListRoot.creating = false
                 }
             }
 
