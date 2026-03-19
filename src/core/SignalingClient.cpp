@@ -148,6 +148,7 @@ void SignalingClient::onTextMessage(const QString &msg)
 
             if (sender != m_userId && !sender.isEmpty()) {
                 m_typingUser = sender;
+                m_typingRoom = m_currentRoom;
                 emit typingUserChanged();
                 m_typingClearTimer.start();
             }
@@ -155,6 +156,7 @@ void SignalingClient::onTextMessage(const QString &msg)
         else if (msgType == "stoppedTyping") {
             if (!m_typingUser.isEmpty()) {
                 m_typingUser.clear();
+                m_typingRoom.clear();
                 emit typingUserChanged();
                 m_typingClearTimer.stop();
             }
