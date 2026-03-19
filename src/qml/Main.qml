@@ -249,11 +249,12 @@ ApplicationWindow {
                 SplitView.minimumWidth: 260
                 SplitView.maximumWidth: 450
                 onConversationSelected: function(token, name, userId, convType) {
-                    messageModel.threadId = 0  // reset thread filter before switching
+                    messageModel.threadId = 0
                     messageModel.conversationToken = token
                     chatView.conversationName = name
                     chatView.conversationUserId = userId
                     chatView.conversationType = convType
+                    conversationModel.clearUnreadForToken(token)
                     chatView.activeThreadId = 0
                     chatView.activeThreadTitle = ""
                 }
