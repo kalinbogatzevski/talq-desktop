@@ -296,23 +296,26 @@ Item {
 
                     Rectangle {
                         Layout.fillWidth: true
-                        width: 200; height: 32; radius: Theme.radiusSmall
+                        width: 220; height: 36; radius: Theme.radiusSmall
                         color: actionMa.containsMouse ? Theme.bgHover : "transparent"
                         visible: !modelData.ownerOnly || isOwnMessage
 
                         RowLayout {
                             anchors.fill: parent
-                            anchors.leftMargin: 10
-                            spacing: 8
+                            anchors.leftMargin: Theme.spacingNormal
+                            anchors.rightMargin: Theme.spacingNormal
+                            spacing: Theme.spacingNormal
 
                             Label {
                                 text: modelData.icon
-                                font.pixelSize: 14
+                                font.pixelSize: 18
+                                Layout.preferredWidth: 24
+                                horizontalAlignment: Text.AlignHCenter
                                 color: modelData.action === "delete" ? Theme.danger : Theme.textSecondary
                             }
                             Label {
                                 text: modelData.label
-                                font.pixelSize: Theme.fontSizeSmall
+                                font.pixelSize: Theme.fontSizeNormal
                                 color: modelData.action === "delete" ? Theme.danger : Theme.textPrimary
                                 Layout.fillWidth: true
                             }
