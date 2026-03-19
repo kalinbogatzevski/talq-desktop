@@ -112,9 +112,10 @@ Item {
             visible: msgHover.hovered && messageId > 0 && sendStatus !== "sending" && sendStatus !== "failed"
             z: 10
             spacing: 4
+            property real gap: 6
             x: isOwnMessage
-                ? (ownBubble.x - width - 8)
-                : (otherMsg.x + otherMsg.width + 8)
+                ? (ownBubble.x - width - gap)
+                : (otherMsg.x + Theme.avatarSizeSmall + Theme.spacingSmall + otherMsgCol.width + gap)
             y: {
                 var targetY = isOwnMessage
                     ? (ownBubble.y + (ownBubble.height - height) / 2)
@@ -223,35 +224,12 @@ Item {
             }
         }
 
-        // Right-click → context popup at cursor, clamped to window bounds
+        // Right-click → context popup at cursor position
         MouseArea {
             anchors.fill: parent
             acceptedButtons: Qt.RightButton
             onClicked: function(mouse) {
-                // Map click to the ListView's coordinate space (which fills the window content)
-                var listView = msgContent.parent  // MessageBubble's parent = ListView delegate → ListView
-                var globalPos = mapToItem(null, mouse.x, mouse.y)  // null = window coordinates
-
-                var popupW = 260
-                var popupH = 420  // approximate max height
-                var winW = bubble.Window.width || 800
-                var winH = bubble.Window.height || 600
-
-                // Clamp X: prefer right of cursor, flip left if clipped
-                var px = globalPos.x
-                if (px + popupW > winW) px = globalPos.x - popupW
-
-                // Clamp Y: prefer below cursor, flip above if clipped
-                var py = globalPos.y
-                if (py + popupH > winH) py = globalPos.y - popupH
-
-                // Safety: never go off-screen
-                px = Math.max(4, Math.min(px, winW - popupW - 4))
-                py = Math.max(4, Math.min(py, winH - popupH - 4))
-
-                // Convert back to msgContent local coordinates
-                var localPos = mapFromItem(null, px, py)
-                msgPopupLoader.openAt(localPos.x, localPos.y)
+                msgPopupLoader.openAt(mouse.x, mouse.y)
             }
         }
 
