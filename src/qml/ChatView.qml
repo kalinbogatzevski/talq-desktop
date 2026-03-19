@@ -33,6 +33,8 @@ Page {
         replyToId = msgId
         replyToAuthor = author
         replyToText = text
+        // Re-scroll — reply bar adds height to footer, can hide last message
+        messageListView.positionViewAtEnd()
     }
 
     function cancelReply() {
