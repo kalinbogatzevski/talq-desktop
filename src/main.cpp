@@ -98,7 +98,7 @@ int main(int argc, char *argv[])
         preview.remove(QRegularExpression("<[^>]*>"));
         if (preview.length() > 80) preview = preview.left(80) + "...";
 
-        notifications.notify(name, preview);
+        notifications.notify(name, preview, true);  // always play sound for other chats
     });
 
     // Update tray icon unread count
