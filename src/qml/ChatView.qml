@@ -268,67 +268,49 @@ Page {
 
                     Rectangle { Layout.fillWidth: true; height: 1; color: Theme.divider }
 
-                    // Server URL
-                    RowLayout {
-                        spacing: Theme.spacingSmall
-                        Label { text: "\u2601"; font.pixelSize: 14; color: Theme.accent }
+                    // Info rows — Grid for perfect alignment
+                    GridLayout {
+                        Layout.fillWidth: true
+                        columns: 2
+                        columnSpacing: Theme.spacingNormal
+                        rowSpacing: Theme.spacingSmall
+
+                        // Server URL
+                        Label { text: "\u2601"; font.pixelSize: 16; Layout.preferredWidth: 24; horizontalAlignment: Text.AlignHCenter; color: Theme.accent }
                         Label {
                             text: auth.serverUrl.replace(/^https?:\/\//, "")
-                            font.pixelSize: Theme.fontSizeNormal
-                            color: Theme.textPrimary
-                            elide: Text.ElideRight
-                            Layout.fillWidth: true
+                            font.pixelSize: Theme.fontSizeNormal; font.weight: Font.DemiBold
+                            color: Theme.textPrimary; elide: Text.ElideRight; Layout.fillWidth: true
                         }
-                    }
 
-                    // Nextcloud version
-                    RowLayout {
-                        visible: auth.nextcloudVersion.length > 0
-                        spacing: Theme.spacingSmall
-                        Label { text: "\u24C3"; font.pixelSize: 14; color: Theme.textSecondary }
-                        Label {
-                            text: "Nextcloud " + auth.nextcloudVersion
-                            font.pixelSize: Theme.fontSizeSmall
-                            color: Theme.textSecondary
-                        }
-                    }
+                        // Nextcloud version
+                        Label { text: "\u24C3"; font.pixelSize: 16; Layout.preferredWidth: 24; horizontalAlignment: Text.AlignHCenter; color: Theme.textSecondary; visible: auth.nextcloudVersion.length > 0 }
+                        Label { text: "Nextcloud " + auth.nextcloudVersion; font.pixelSize: Theme.fontSizeSmall; color: Theme.textSecondary; Layout.fillWidth: true; visible: auth.nextcloudVersion.length > 0 }
 
-                    // Talk version
-                    RowLayout {
-                        visible: auth.talkVersion.length > 0
-                        spacing: Theme.spacingSmall
-                        Label { text: "\u260E"; font.pixelSize: 14; color: Theme.textSecondary }
-                        Label {
-                            text: "Talk " + auth.talkVersion
-                            font.pixelSize: Theme.fontSizeSmall
-                            color: Theme.textSecondary
-                        }
-                    }
+                        // Talk version
+                        Label { text: "\u260E"; font.pixelSize: 16; Layout.preferredWidth: 24; horizontalAlignment: Text.AlignHCenter; color: Theme.textSecondary; visible: auth.talkVersion.length > 0 }
+                        Label { text: "Talk " + auth.talkVersion; font.pixelSize: Theme.fontSizeSmall; color: Theme.textSecondary; Layout.fillWidth: true; visible: auth.talkVersion.length > 0 }
 
-                    // Signaling mode
-                    RowLayout {
-                        visible: auth.signalingMode.length > 0
-                        spacing: Theme.spacingSmall
-                        Label { text: "\u26A1"; font.pixelSize: 14; color: Theme.textSecondary }
-                        Label {
-                            text: auth.signalingMode
-                            font.pixelSize: Theme.fontSizeSmall
-                            color: Theme.textSecondary
-                        }
-                    }
+                        // Signaling
+                        Label { text: "\u26A1"; font.pixelSize: 16; Layout.preferredWidth: 24; horizontalAlignment: Text.AlignHCenter; color: Theme.textSecondary; visible: auth.signalingMode.length > 0 }
+                        Label { text: auth.signalingMode; font.pixelSize: Theme.fontSizeSmall; color: Theme.textSecondary; Layout.fillWidth: true; visible: auth.signalingMode.length > 0 }
 
-                    // Push status
-                    RowLayout {
-                        spacing: Theme.spacingSmall
-                        Rectangle {
-                            width: 8; height: 8; radius: 4
-                            color: pushClient.connected ? Theme.online : Theme.warning
-                        }
+                        // Push status
+                        Rectangle { width: 8; height: 8; radius: 4; Layout.preferredWidth: 24; Layout.alignment: Qt.AlignHCenter; color: pushClient.connected ? Theme.online : Theme.warning }
                         Label {
-                            text: pushClient.connected ? "Push connected (real-time)"
-                                : "Push disconnected (polling fallback)"
+                            text: pushClient.connected ? "Push connected (real-time)" : "Push disconnected (polling)"
                             font.pixelSize: Theme.fontSizeSmall
                             color: pushClient.connected ? Theme.online : Theme.textSecondary
+                            Layout.fillWidth: true
+                        }
+
+                        // Signaling (typing)
+                        Rectangle { width: 8; height: 8; radius: 4; Layout.preferredWidth: 24; Layout.alignment: Qt.AlignHCenter; color: signaling.connected ? Theme.online : Theme.textMuted }
+                        Label {
+                            text: signaling.connected ? "Signaling connected" : "Signaling disconnected"
+                            font.pixelSize: Theme.fontSizeSmall
+                            color: signaling.connected ? Theme.online : Theme.textSecondary
+                            Layout.fillWidth: true
                         }
                     }
                 }
