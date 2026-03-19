@@ -148,12 +148,15 @@ Item {
             }
         }
 
-        // Right-click → unified context popup at cursor
+        // Right-click → context popup at cursor (Telegram-style: below cursor, or above if no space)
         MouseArea {
             anchors.fill: parent
             acceptedButtons: Qt.RightButton
             onClicked: function(mouse) {
-                msgPopupLoader.openAt(mouse.x, mouse.y - 200)
+                var popupHeight = 350  // approximate height
+                var spaceBelow = bubble.height - mouse.y
+                var y = spaceBelow >= popupHeight ? mouse.y : mouse.y - popupHeight
+                msgPopupLoader.openAt(mouse.x, Math.max(0, y))
             }
         }
 
