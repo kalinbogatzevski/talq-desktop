@@ -54,6 +54,20 @@ Page {
         replyToText = ""
     }
 
+    function confirmPaste() {
+        if (pasteBar.pendingPath.length > 0) {
+            messageModel.sendFileWithCaption(pasteBar.pendingPath, pasteCaptionField.text.trim())
+            cancelPaste()
+        }
+    }
+
+    function cancelPaste() {
+        pasteBar.visible = false
+        pasteBar.pendingPath = ""
+        pastePreview.source = ""
+        pasteCaptionField.text = ""
+    }
+
     padding: 0
     background: Rectangle { color: Theme.bgSecondary }
 
@@ -215,6 +229,114 @@ Page {
                     }
                     ToolButton {
                         width: 28; height: 28; onClicked: chatRoot.cancelReply()
+                        contentItem: Label { text: "\u2715"; font.pixelSize: 14; color: Theme.textSecondary; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                        background: Rectangle { radius: 14; color: parent.hovered ? Theme.bgHover : "transparent" }
+                    }
+                }
+            }
+
+            // Upload progress bar
+            Rectangle {
+                Layout.fillWidth: true
+                height: visible ? 36 : 0
+                color: Theme.bgSurface
+                visible: messageModel.uploadProgress >= 0
+
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: Theme.spacingLarge
+                    anchors.rightMargin: Theme.spacingLarge
+                    spacing: Theme.spacingSmall
+
+                    Label {
+                        text: "\uD83D\uDCCE"  // 📎
+                        font.pixelSize: 14
+                    }
+                    Label {
+                        text: messageModel.uploadFileName
+                        font.pixelSize: Theme.fontSizeTiny
+                        color: Theme.textSecondary
+                        elide: Text.ElideMiddle
+                        Layout.fillWidth: true
+                    }
+                    Label {
+                        text: Math.round(messageModel.uploadProgress * 100) + "%"
+                        font.pixelSize: Theme.fontSizeTiny
+                        font.weight: Font.DemiBold
+                        color: Theme.accent
+                    }
+                }
+
+                // Progress bar at bottom
+                Rectangle {
+                    anchors.bottom: parent.bottom
+                    anchors.left: parent.left
+                    width: parent.width * Math.max(0, messageModel.uploadProgress)
+                    height: 2
+                    color: Theme.accent
+                    Behavior on width { NumberAnimation { duration: 100 } }
+                }
+            }
+
+            // Paste confirmation bar
+            Rectangle {
+                id: pasteBar
+                Layout.fillWidth: true
+                height: visible ? pasteContent.implicitHeight + 16 : 0
+                color: Theme.bgSurface
+                visible: false
+
+                property string pendingPath: ""
+
+                RowLayout {
+                    id: pasteContent
+                    anchors.fill: parent
+                    anchors.leftMargin: Theme.spacingLarge
+                    anchors.rightMargin: Theme.spacingNormal
+                    spacing: Theme.spacingSmall
+
+                    Rectangle { width: 3; Layout.fillHeight: true; Layout.topMargin: 6; Layout.bottomMargin: 6; radius: 1.5; color: Theme.accent }
+
+                    // Thumbnail preview
+                    Image {
+                        id: pastePreview
+                        Layout.preferredWidth: 40
+                        Layout.preferredHeight: 40
+                        fillMode: Image.PreserveAspectFit
+                        visible: status === Image.Ready
+                    }
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 1
+                        Label { text: "Send image"; font.pixelSize: Theme.fontSizeTiny; font.weight: Font.DemiBold; color: Theme.accent }
+
+                        TextField {
+                            id: pasteCaptionField
+                            Layout.fillWidth: true
+                            placeholderText: "Add a caption..."
+                            placeholderTextColor: Theme.textMuted
+                            font.pixelSize: Theme.fontSizeTiny
+                            color: Theme.textPrimary
+                            background: Rectangle { color: "transparent" }
+                            padding: 0
+                            Keys.onReturnPressed: chatRoot.confirmPaste()
+                            Keys.onEscapePressed: chatRoot.cancelPaste()
+                        }
+                    }
+
+                    // Send button
+                    ToolButton {
+                        width: 28; height: 28
+                        onClicked: chatRoot.confirmPaste()
+                        contentItem: Label { text: "\u276F"; font.pixelSize: 14; font.weight: Font.Bold; color: Theme.accent; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                        background: Rectangle { radius: 14; color: parent.hovered ? Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.15) : "transparent" }
+                    }
+
+                    // Cancel button
+                    ToolButton {
+                        width: 28; height: 28
+                        onClicked: chatRoot.cancelPaste()
                         contentItem: Label { text: "\u2715"; font.pixelSize: 14; color: Theme.textSecondary; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                         background: Rectangle { radius: 14; color: parent.hovered ? Theme.bgHover : "transparent" }
                     }
@@ -505,6 +627,13 @@ Page {
         target: messageModel
         function onConversationTokenChanged() {
             chatRoot.closeThread()
+            chatRoot.cancelPaste()
+        }
+        function onPasteReady(filePath, width, height) {
+            pasteBar.pendingPath = filePath
+            pastePreview.source = filePath
+            pasteBar.visible = true
+            pasteCaptionField.forceActiveFocus()
         }
     }
 

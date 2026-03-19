@@ -562,6 +562,11 @@ QString MessageListModel::messageLink(int messageId) const
 
 void MessageListModel::sendFile(const QString &filePath)
 {
+    sendFileWithCaption(filePath, QString());
+}
+
+void MessageListModel::sendFileWithCaption(const QString &filePath, const QString &caption)
+{
     if (m_token.isEmpty() || filePath.isEmpty()) return;
 
     QUrl fileUrl(filePath);
@@ -581,21 +586,39 @@ void MessageListModel::sendFile(const QString &filePath)
 
     qDebug() << "Uploading file:" << fileName << "(" << fileData.size() << "bytes)";
 
+    // Show upload progress
+    m_uploadProgress = 0;
+    m_uploadFileName = fileName;
+    emit uploadProgressChanged();
+
     // Step 1: Upload via WebDAV PUT
     QString uploadPath = "/remote.php/dav/files/" + m_api->user() + "/Talk/" + fileName;
     auto *uploadReply = m_api->putAbsoluteUrl(uploadPath, fileData);
 
+    // Track upload progress
+    connect(uploadReply, &QNetworkReply::uploadProgress, this, [this](qint64 sent, qint64 total) {
+        if (total > 0) {
+            m_uploadProgress = static_cast<double>(sent) / total;
+            emit uploadProgressChanged();
+        }
+    });
+
     QString token = m_token;
-    connect(uploadReply, &QNetworkReply::finished, this, [this, uploadReply, fileName, token]() {
+    connect(uploadReply, &QNetworkReply::finished, this, [this, uploadReply, fileName, token, caption]() {
         uploadReply->deleteLater();
 
         int status = uploadReply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         if (status != 201 && status != 204) {
             qWarning() << "File upload failed:" << status << uploadReply->errorString();
+            m_uploadProgress = -1;
+            m_uploadFileName.clear();
+            emit uploadProgressChanged();
             emit errorOccurred("Failed to upload file");
             return;
         }
 
+        m_uploadProgress = 1.0;
+        emit uploadProgressChanged();
         qDebug() << "File uploaded, sharing to conversation" << token;
 
         // Step 2: Share to conversation
@@ -606,9 +629,17 @@ void MessageListModel::sendFile(const QString &filePath)
         body["permissions"] = 1;  // read permission for recipients
 
         m_api->post("apps/files_sharing/api/v1/shares", body,
-            [this, fileName](bool ok, const QJsonObject &, int) {
+            [this, fileName, token, caption](bool ok, const QJsonObject &, int) {
+                m_uploadProgress = -1;
+                m_uploadFileName.clear();
+                emit uploadProgressChanged();
+
                 if (ok) {
                     qDebug() << "File shared:" << fileName;
+                    // Send caption as a follow-up message if provided
+                    if (!caption.isEmpty() && m_token == token) {
+                        sendMessage(caption, 0);
+                    }
                 } else {
                     emit errorOccurred("Failed to share file to conversation");
                 }
@@ -650,7 +681,9 @@ bool MessageListModel::pasteClipboardImage()
     }
 
     qDebug() << "Clipboard image saved:" << tempPath << image.size();
-    sendFile("file:///" + tempPath);
+    // Don't auto-send — store path and let QML show confirmation UI
+    m_pendingPastePath = "file:///" + tempPath;
+    emit pasteReady(m_pendingPastePath, image.width(), image.height());
     return true;
 }
 
