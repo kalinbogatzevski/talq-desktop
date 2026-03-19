@@ -31,6 +31,7 @@ public:
         LastActivityRole,
         ActorIdRole,
         UserStatusRole,     // "online", "away", "dnd", "offline"
+        HasTopicsRole,
     };
 
     explicit ConversationListModel(ApiClient *api, QObject *parent = nullptr);
@@ -45,6 +46,7 @@ public:
     Q_INVOKABLE QString tokenAt(int index) const;
     Q_INVOKABLE int lastReadMessageForToken(const QString &token) const;
     Q_INVOKABLE void clearUnreadForToken(const QString &token);
+    Q_INVOKABLE void setHasTopics(const QString &token, bool has);
 
     bool isLoading() const { return m_loading; }
     int totalUnread() const { return m_totalUnread; }

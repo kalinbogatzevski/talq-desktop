@@ -48,6 +48,8 @@ public:
     int participantType = 0;
     QString actorId;
     QString name;  // For 1:1 chats, this is the other user's userId
+    QString status; // User status for 1:1 chats: "online", "away", "dnd", "offline"
+    bool hasTopics = false;
 
     static Conversation fromJson(const QJsonObject &json);
 

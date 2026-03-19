@@ -33,11 +33,16 @@ QVariant ConversationListModel::data(const QModelIndex &index, int role) const
         case LastActivityRole:  return c.lastActivity;
         case ActorIdRole:       return c.name;
         case UserStatusRole: {
-            // For 1:1 chats, return the other user's status
-            if (c.type == 1 && !c.name.isEmpty())
-                return m_userStatuses.value(c.name, "offline");
+            // For 1:1 chats — prefer user_status API, fallback to room API
+            if (c.type == 1 && !c.name.isEmpty()) {
+                QString status = m_userStatuses.value(c.name);
+                if (status.isEmpty())
+                    status = c.status;
+                return status.isEmpty() ? "offline" : status;
+            }
             return QString();
         }
+        case HasTopicsRole:     return c.hasTopics;
         default:                return {};
     }
 }
@@ -56,6 +61,7 @@ QHash<int, QByteArray> ConversationListModel::roleNames() const
         {LastActivityRole,  "lastActivity"},
         {ActorIdRole,       "participantUserId"},
         {UserStatusRole,    "userStatus"},
+        {HasTopicsRole,     "hasTopics"},
     };
 }
 
@@ -187,4 +193,15 @@ int ConversationListModel::lastReadMessageForToken(const QString &token) const
             return c.lastReadMessage;
     }
     return 0;
+}
+
+void ConversationListModel::setHasTopics(const QString &token, bool has)
+{
+    for (int i = 0; i < m_conversations.size(); ++i) {
+        if (m_conversations[i].token == token && m_conversations[i].hasTopics != has) {
+            m_conversations[i].hasTopics = has;
+            emit dataChanged(index(i), index(i), {HasTopicsRole});
+            break;
+        }
+    }
 }
