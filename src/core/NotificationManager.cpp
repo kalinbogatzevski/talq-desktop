@@ -135,14 +135,13 @@ void NotificationManager::notify(const QString &title, const QString &message, b
         }
     }
 
-    // Notification only when window is not focused
-    if (!windowActive && m_notificationsEnabled) {
-        if (m_notifStyle == "windows" && m_trayIcon) {
-            m_trayIcon->showMessage(title, message, QSystemTrayIcon::Information, 4000);
-        } else {
-            // Telegram-style popup — handled by QML
-            emit popupRequested(title, message, token);
-        }
+    if (!m_notificationsEnabled) return;
+
+    bool windowActive = m_window && m_window->isActive();
+
+    if (!windowActive) {
+        // Always show desktop popup when window is not focused
+        emit desktopPopupRequested(title, message, token);
     }
 }
 

@@ -144,9 +144,9 @@ Item {
                     ToolButton {
                         width: 36
                         height: 36
-                        onClicked: auth.logout()
+                        onClicked: exitDialog.open()
                         ToolTip.visible: hovered
-                        ToolTip.text: "Log out"
+                        ToolTip.text: "Exit"
                         ToolTip.delay: 500
                         contentItem: Label {
                             text: "\u23FB"  // ⏻ power symbol
@@ -160,6 +160,97 @@ Item {
                             radius: 18
                             color: parent.hovered ? Theme.bgHover : "transparent"
                             Behavior on color { ColorAnimation { duration: Theme.animFast } }
+                        }
+                    }
+
+                    // Exit confirmation dialog
+                    Dialog {
+                        id: exitDialog
+                        title: "Exit TalQ"
+                        modal: true
+                        anchors.centerIn: Overlay.overlay
+                        width: 300
+                        standardButtons: Dialog.NoButton
+
+                        background: Rectangle {
+                            radius: Theme.radiusNormal
+                            color: Theme.bgSurface
+                            border.color: Theme.divider
+                            border.width: 1
+                        }
+
+                        ColumnLayout {
+                            width: parent.width
+                            spacing: Theme.spacingLarge
+
+                            Label {
+                                text: "What would you like to do?"
+                                font.pixelSize: Theme.fontSizeNormal
+                                color: Theme.textPrimary
+                                Layout.fillWidth: true
+                                wrapMode: Text.Wrap
+                            }
+
+                            Button {
+                                Layout.fillWidth: true
+                                text: "Minimize to tray"
+                                font.pixelSize: Theme.fontSizeNormal
+                                onClicked: { exitDialog.close(); root.saveWindowState(); root.hide() }
+                                background: Rectangle {
+                                    radius: Theme.radiusSmall
+                                    color: parent.hovered ? Theme.bgHover : Theme.bgInput
+                                }
+                                contentItem: Label {
+                                    text: parent.text; font: parent.font
+                                    color: Theme.textPrimary
+                                    horizontalAlignment: Text.AlignHCenter
+                                }
+                            }
+
+                            Button {
+                                Layout.fillWidth: true
+                                text: "Log out"
+                                font.pixelSize: Theme.fontSizeNormal
+                                onClicked: { exitDialog.close(); auth.logout() }
+                                background: Rectangle {
+                                    radius: Theme.radiusSmall
+                                    color: parent.hovered ? Theme.bgHover : Theme.bgInput
+                                }
+                                contentItem: Label {
+                                    text: parent.text; font: parent.font
+                                    color: Theme.warning
+                                    horizontalAlignment: Text.AlignHCenter
+                                }
+                            }
+
+                            Button {
+                                Layout.fillWidth: true
+                                text: "Quit TalQ"
+                                font.pixelSize: Theme.fontSizeNormal
+                                onClicked: { root.saveWindowState(); Qt.quit() }
+                                background: Rectangle {
+                                    radius: Theme.radiusSmall
+                                    color: parent.hovered ? Qt.rgba(Theme.danger.r, Theme.danger.g, Theme.danger.b, 0.15) : Theme.bgInput
+                                }
+                                contentItem: Label {
+                                    text: parent.text; font: parent.font
+                                    color: Theme.danger
+                                    horizontalAlignment: Text.AlignHCenter
+                                }
+                            }
+
+                            Button {
+                                Layout.fillWidth: true
+                                text: "Cancel"
+                                font.pixelSize: Theme.fontSizeSmall
+                                onClicked: exitDialog.close()
+                                background: Rectangle { color: "transparent" }
+                                contentItem: Label {
+                                    text: parent.text; font: parent.font
+                                    color: Theme.textMuted
+                                    horizontalAlignment: Text.AlignHCenter
+                                }
+                            }
                         }
                     }
                 }

@@ -96,7 +96,13 @@ ApplicationWindow {
         // Always set the windowed geometry first
         root.width = w
         root.height = h
-        if (sx >= 0 && sy >= 0) { root.x = sx; root.y = sy }
+
+        // Restore position — check if it's a valid saved value (not default -1)
+        // Note: negative X is valid for multi-monitor setups (left monitor)
+        if (sx !== -1 || sy !== -1) {
+            root.x = sx
+            root.y = sy
+        }
 
         // Then apply maximized if that was the last state
         if (windowSettings.savedVisibility === 4) {
@@ -168,57 +174,37 @@ ApplicationWindow {
     onHeightChanged: saveGeometryTimer.restart()
     onVisibilityChanged: saveGeometryTimer.restart()
 
-    // ── Telegram-style notification popup ──
+    // ── Desktop notification popup (separate window, bottom-right of screen) ──
     Connections {
         target: notifications
-        function onPopupRequested(title, message, token) {
-            notifPopup.show(title, message, token)
+        function onDesktopPopupRequested(title, message, token) {
+            desktopNotifTitle.text = title
+            desktopNotifMessage.text = message
+            // Position bottom-right of screen
+            desktopNotif.x = Screen.width - desktopNotif.width - 16
+            desktopNotif.y = Screen.height - desktopNotif.height - 80
+            console.log("Desktop popup at:", desktopNotif.x, desktopNotif.y, "Screen:", Screen.width, Screen.height)
+            desktopNotif.show()
+            desktopNotif.raise()
+            desktopDismissTimer.restart()
         }
     }
 
-    // Notification popup — slides in from bottom-right, auto-dismisses
     Window {
-        id: notifPopup
-        flags: Qt.ToolTip | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
+        id: desktopNotif
+        width: 340; height: 80
+        flags: Qt.Window | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
         color: "transparent"
-        width: 340
-        height: 80
         visible: false
-
-        property string notifToken: ""
-
-        function show(title, message, token) {
-            notifToken = token
-            notifTitle.text = title
-            notifMessage.text = message
-
-            // Position: bottom-right of primary screen with margin
-            x = Screen.desktopAvailableWidth - width - 16
-            y = Screen.desktopAvailableHeight - height - 16
-
-            visible = true
-            slideIn.start()
-            dismissTimer.restart()
-        }
-
-        NumberAnimation {
-            id: slideIn
-            target: notifCard
-            property: "y"
-            from: 80
-            to: 0
-            duration: 200
-            easing.type: Easing.OutCubic
-        }
+        transientParent: null
 
         Timer {
-            id: dismissTimer
+            id: desktopDismissTimer
             interval: 5000
-            onTriggered: notifPopup.visible = false
+            onTriggered: desktopNotif.visible = false
         }
 
         Rectangle {
-            id: notifCard
             anchors.fill: parent
             anchors.margins: 4
             radius: 12
@@ -226,80 +212,162 @@ ApplicationWindow {
             border.color: Theme.darkMode ? "#3a4050" : "#e0e0e0"
             border.width: 1
 
-            // Shadow effect
-            Rectangle {
-                anchors.fill: parent
-                anchors.margins: -2
-                radius: 14
-                color: "transparent"
-                border.color: Qt.rgba(0, 0, 0, 0.15)
-                border.width: 2
-                z: -1
-            }
-
             RowLayout {
                 anchors.fill: parent
                 anchors.margins: 12
                 spacing: 10
 
-                // Avatar
                 Image {
                     source: "qrc:/logo.png"
-                    width: 40; height: 40
-                    sourceSize: Qt.size(40, 40)
+                    Layout.preferredWidth: 36; Layout.preferredHeight: 36
+                    sourceSize: Qt.size(36, 36)
                     fillMode: Image.PreserveAspectFit
                 }
 
                 ColumnLayout {
                     Layout.fillWidth: true
                     spacing: 2
-
-                    Label {
-                        id: notifTitle
-                        font.pixelSize: Theme.fontSizeSmall
-                        font.weight: Font.DemiBold
-                        color: Theme.darkMode ? "#e8eaed" : "#1a1d24"
-                        elide: Text.ElideRight
-                        Layout.fillWidth: true
-                    }
-
-                    Label {
-                        id: notifMessage
-                        font.pixelSize: Theme.fontSizeTiny
-                        color: Theme.darkMode ? "#8b919a" : "#6b7280"
-                        elide: Text.ElideRight
-                        maximumLineCount: 2
-                        wrapMode: Text.Wrap
-                        Layout.fillWidth: true
-                    }
+                    Label { id: desktopNotifTitle; font.pixelSize: 13; font.weight: Font.DemiBold; color: Theme.textPrimary; elide: Text.ElideRight; Layout.fillWidth: true }
+                    Label { id: desktopNotifMessage; font.pixelSize: 11; color: Theme.textSecondary; elide: Text.ElideRight; maximumLineCount: 2; wrapMode: Text.Wrap; Layout.fillWidth: true }
                 }
 
-                // Close button
                 Label {
-                    text: "\u2715"
-                    font.pixelSize: 12
-                    color: Theme.darkMode ? "#6b7280" : "#9ca3af"
-
-                    MouseArea {
-                        anchors.fill: parent
-                        anchors.margins: -4
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: notifPopup.visible = false
-                    }
+                    text: "\u2715"; font.pixelSize: 12; color: Theme.textMuted
+                    MouseArea { anchors.fill: parent; anchors.margins: -6; cursorShape: Qt.PointingHandCursor; onClicked: desktopNotif.visible = false }
                 }
             }
 
             MouseArea {
+                anchors.fill: parent; z: -1; cursorShape: Qt.PointingHandCursor
+                onClicked: { desktopNotif.visible = false; root.show(); root.raise(); root.requestActivate() }
+            }
+        }
+    }
+
+    // ── In-app notification popup (top-right corner inside window) ──
+    Connections {
+        target: notifications
+        function onPopupRequested(title, message, token) {
+            notifTitle.text = title
+            notifMessage.text = message
+            notifPopup.notifToken = token
+            notifPopup.open()
+            notifDismissTimer.restart()
+        }
+    }
+
+    Popup {
+        id: notifPopup
+        parent: Overlay.overlay
+        x: root.width - width - 12
+        y: 12
+        width: 330
+        padding: 0
+        modal: false
+        closePolicy: Popup.CloseOnPressOutside
+
+        property string notifToken: ""
+
+        enter: Transition {
+            ParallelAnimation {
+                NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 200; easing.type: Easing.OutCubic }
+                NumberAnimation { property: "x"; from: root.width; to: root.width - notifPopup.width - 12; duration: 200; easing.type: Easing.OutCubic }
+            }
+        }
+        exit: Transition {
+            NumberAnimation { property: "opacity"; from: 1; to: 0; duration: 150 }
+        }
+
+        Timer {
+            id: notifDismissTimer
+            interval: 5000
+            onTriggered: notifPopup.close()
+        }
+
+        background: Rectangle {
+            radius: 12
+            color: Theme.darkMode ? "#2a2f3a" : "#ffffff"
+            border.color: Theme.darkMode ? "#3a4050" : "#e0e0e0"
+            border.width: 1
+
+            // Subtle shadow
+            Rectangle {
                 anchors.fill: parent
+                anchors.margins: -1
+                radius: 13
+                color: "transparent"
+                border.color: Qt.rgba(0, 0, 0, 0.1)
+                border.width: 1
                 z: -1
-                cursorShape: Qt.PointingHandCursor
-                onClicked: {
-                    notifPopup.visible = false
-                    root.show()
-                    root.raise()
-                    root.requestActivate()
-                    // TODO: switch to the conversation by token
+            }
+        }
+
+        contentItem: RowLayout {
+            spacing: 10
+
+            Item { width: 12 }
+
+            // Avatar
+            Image {
+                source: "qrc:/logo.png"
+                Layout.preferredWidth: 36; Layout.preferredHeight: 36
+                sourceSize: Qt.size(36, 36)
+                fillMode: Image.PreserveAspectFit
+            }
+
+            ColumnLayout {
+                Layout.fillWidth: true
+                Layout.topMargin: 10
+                Layout.bottomMargin: 10
+                spacing: 2
+
+                Label {
+                    id: notifTitle
+                    font.pixelSize: Theme.fontSizeSmall
+                    font.weight: Font.DemiBold
+                    color: Theme.textPrimary
+                    elide: Text.ElideRight
+                    Layout.fillWidth: true
                 }
+
+                Label {
+                    id: notifMessage
+                    font.pixelSize: Theme.fontSizeTiny
+                    color: Theme.textSecondary
+                    elide: Text.ElideRight
+                    maximumLineCount: 2
+                    wrapMode: Text.Wrap
+                    Layout.fillWidth: true
+                }
+            }
+
+            // Close button
+            Label {
+                text: "\u2715"
+                font.pixelSize: 12
+                color: Theme.textMuted
+                Layout.rightMargin: 10
+                Layout.alignment: Qt.AlignTop
+                Layout.topMargin: 8
+
+                MouseArea {
+                    anchors.fill: parent
+                    anchors.margins: -6
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: notifPopup.close()
+                }
+            }
+        }
+
+        MouseArea {
+            anchors.fill: parent
+            z: -1
+            cursorShape: Qt.PointingHandCursor
+            onClicked: {
+                notifPopup.close()
+                root.show()
+                root.raise()
+                root.requestActivate()
             }
         }
     }

@@ -47,8 +47,8 @@ signals:
     void notificationsEnabledChanged();
     void notifStyleChanged();
     void showRequested();
-    // Emitted for QML to show a custom popup notification
     void popupRequested(const QString &title, const QString &message, const QString &token);
+    void desktopPopupRequested(const QString &title, const QString &message, const QString &token);
 
 private:
     void setupTrayIcon();

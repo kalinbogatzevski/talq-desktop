@@ -165,6 +165,8 @@ int main(int argc, char *argv[])
     // Restore session after QML is loaded so loading screen is visible
     auth.tryRestore();
 
+
+
 #ifdef Q_OS_WIN
     // Memory monitor — every 30s (debug)
     QTimer memTimer;
