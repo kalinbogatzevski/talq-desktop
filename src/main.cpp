@@ -47,9 +47,9 @@ int main(int argc, char *argv[])
 #endif
     app.setWindowIcon(QIcon(":/logo.png"));  // TalQ icon always
 #ifdef TALQ_BUILD_TS
-    app.setApplicationVersion("0.5.3-" TALQ_BUILD_TS);
+    app.setApplicationVersion("0.6.0-" TALQ_BUILD_TS);
 #else
-    app.setApplicationVersion("0.5.3");
+    app.setApplicationVersion("0.6.0");
 #endif
 
     QQuickStyle::setStyle("Basic");
