@@ -168,6 +168,142 @@ ApplicationWindow {
     onHeightChanged: saveGeometryTimer.restart()
     onVisibilityChanged: saveGeometryTimer.restart()
 
+    // ── Telegram-style notification popup ──
+    Connections {
+        target: notifications
+        function onPopupRequested(title, message, token) {
+            notifPopup.show(title, message, token)
+        }
+    }
+
+    // Notification popup — slides in from bottom-right, auto-dismisses
+    Window {
+        id: notifPopup
+        flags: Qt.ToolTip | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
+        color: "transparent"
+        width: 340
+        height: 80
+        visible: false
+
+        property string notifToken: ""
+
+        function show(title, message, token) {
+            notifToken = token
+            notifTitle.text = title
+            notifMessage.text = message
+
+            // Position: bottom-right of primary screen with margin
+            x = Screen.desktopAvailableWidth - width - 16
+            y = Screen.desktopAvailableHeight - height - 16
+
+            visible = true
+            slideIn.start()
+            dismissTimer.restart()
+        }
+
+        NumberAnimation {
+            id: slideIn
+            target: notifCard
+            property: "y"
+            from: 80
+            to: 0
+            duration: 200
+            easing.type: Easing.OutCubic
+        }
+
+        Timer {
+            id: dismissTimer
+            interval: 5000
+            onTriggered: notifPopup.visible = false
+        }
+
+        Rectangle {
+            id: notifCard
+            anchors.fill: parent
+            anchors.margins: 4
+            radius: 12
+            color: Theme.darkMode ? "#2a2f3a" : "#ffffff"
+            border.color: Theme.darkMode ? "#3a4050" : "#e0e0e0"
+            border.width: 1
+
+            // Shadow effect
+            Rectangle {
+                anchors.fill: parent
+                anchors.margins: -2
+                radius: 14
+                color: "transparent"
+                border.color: Qt.rgba(0, 0, 0, 0.15)
+                border.width: 2
+                z: -1
+            }
+
+            RowLayout {
+                anchors.fill: parent
+                anchors.margins: 12
+                spacing: 10
+
+                // Avatar
+                Image {
+                    source: "qrc:/logo.png"
+                    width: 40; height: 40
+                    sourceSize: Qt.size(40, 40)
+                    fillMode: Image.PreserveAspectFit
+                }
+
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 2
+
+                    Label {
+                        id: notifTitle
+                        font.pixelSize: Theme.fontSizeSmall
+                        font.weight: Font.DemiBold
+                        color: Theme.darkMode ? "#e8eaed" : "#1a1d24"
+                        elide: Text.ElideRight
+                        Layout.fillWidth: true
+                    }
+
+                    Label {
+                        id: notifMessage
+                        font.pixelSize: Theme.fontSizeTiny
+                        color: Theme.darkMode ? "#8b919a" : "#6b7280"
+                        elide: Text.ElideRight
+                        maximumLineCount: 2
+                        wrapMode: Text.Wrap
+                        Layout.fillWidth: true
+                    }
+                }
+
+                // Close button
+                Label {
+                    text: "\u2715"
+                    font.pixelSize: 12
+                    color: Theme.darkMode ? "#6b7280" : "#9ca3af"
+
+                    MouseArea {
+                        anchors.fill: parent
+                        anchors.margins: -4
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: notifPopup.visible = false
+                    }
+                }
+            }
+
+            MouseArea {
+                anchors.fill: parent
+                z: -1
+                cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                    notifPopup.visible = false
+                    root.show()
+                    root.raise()
+                    root.requestActivate()
+                    // TODO: switch to the conversation by token
+                }
+            }
+        }
+    }
+
     Component {
         id: splashPage
         Rectangle {

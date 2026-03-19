@@ -33,14 +33,22 @@ public:
     bool isNotificationsEnabled() const { return m_notificationsEnabled; }
     void setNotificationsEnabled(bool v);
 
-    Q_INVOKABLE void notify(const QString &title, const QString &message, bool alwaysSound = false);
+    Q_INVOKABLE void notify(const QString &title, const QString &message, bool alwaysSound = false, const QString &token = QString());
     Q_INVOKABLE void clearNotifications();
     Q_INVOKABLE void updateUnreadCount(int count);
+
+    Q_PROPERTY(QString notifStyle READ notifStyle WRITE setNotifStyle NOTIFY notifStyleChanged)
+
+    QString notifStyle() const { return m_notifStyle; }
+    void setNotifStyle(const QString &style);
 
 signals:
     void soundModeChanged();
     void notificationsEnabledChanged();
+    void notifStyleChanged();
     void showRequested();
+    // Emitted for QML to show a custom popup notification
+    void popupRequested(const QString &title, const QString &message, const QString &token);
 
 private:
     void setupTrayIcon();
@@ -52,6 +60,7 @@ private:
     QMenu *m_trayMenu = nullptr;
     QQuickWindow *m_window = nullptr;
     QString m_soundMode = "internal";  // "internal", "system", "none"
+    QString m_notifStyle = "popup";    // "popup" (Telegram-style) or "windows" (toast)
     bool m_notificationsEnabled = true;
     int m_unreadCount = 0;
     QByteArray m_wavData;  // embedded WAV loaded from resources
