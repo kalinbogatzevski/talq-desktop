@@ -61,6 +61,9 @@ public:
     Q_INVOKABLE void retryMessage(int tempId);
     Q_INVOKABLE void addReaction(int messageId, const QString &emoji);
     Q_INVOKABLE void loadHistory();
+    Q_INVOKABLE void deleteMessage(int messageId);
+    Q_INVOKABLE void pinMessage(int messageId);
+    Q_INVOKABLE QString messageLink(int messageId) const;
 
 signals:
     void loadingChanged();
