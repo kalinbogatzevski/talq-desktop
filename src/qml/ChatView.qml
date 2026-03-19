@@ -268,49 +268,77 @@ Page {
 
                     Rectangle { Layout.fillWidth: true; height: 1; color: Theme.divider }
 
-                    // Info rows — Grid for perfect alignment
-                    GridLayout {
+                    // Info rows — ColumnLayout with RowLayouts for clean alignment
+                    ColumnLayout {
                         Layout.fillWidth: true
-                        columns: 2
-                        columnSpacing: Theme.spacingNormal
-                        rowSpacing: Theme.spacingSmall
+                        spacing: Theme.spacingSmall
 
-                        // Server URL
-                        Label { text: "\u2601"; font.pixelSize: 16; Layout.preferredWidth: 24; horizontalAlignment: Text.AlignHCenter; color: Theme.accent }
-                        Label {
-                            text: auth.serverUrl.replace(/^https?:\/\//, "")
-                            font.pixelSize: Theme.fontSizeNormal; font.weight: Font.DemiBold
-                            color: Theme.textPrimary; elide: Text.ElideRight; Layout.fillWidth: true
+                        Repeater {
+                            model: [
+                                { icon: "\u2601", text: auth.serverUrl.replace(/^https?:\/\//, ""), bold: true, accent: true, vis: auth.serverUrl.length > 0 },
+                                { icon: "\u24C3", text: "Nextcloud " + auth.nextcloudVersion, bold: false, accent: false, vis: auth.nextcloudVersion.length > 0 },
+                                { icon: "\u260E", text: "Talk " + auth.talkVersion, bold: false, accent: false, vis: auth.talkVersion.length > 0 },
+                                { icon: "\u26A1", text: auth.signalingMode, bold: false, accent: false, vis: auth.signalingMode.length > 0 }
+                            ]
+
+                            RowLayout {
+                                visible: modelData.vis
+                                spacing: Theme.spacingNormal
+                                Item {
+                                    width: 24; height: 20
+                                    Label {
+                                        anchors.centerIn: parent
+                                        text: modelData.icon; font.pixelSize: 16
+                                        color: modelData.accent ? Theme.accent : Theme.textSecondary
+                                    }
+                                }
+                                Label {
+                                    text: modelData.text
+                                    font.pixelSize: modelData.bold ? Theme.fontSizeNormal : Theme.fontSizeSmall
+                                    font.weight: modelData.bold ? Font.DemiBold : Font.Normal
+                                    color: modelData.accent ? Theme.textPrimary : Theme.textSecondary
+                                    elide: Text.ElideRight
+                                    Layout.fillWidth: true
+                                }
+                            }
                         }
-
-                        // Nextcloud version
-                        Label { text: "\u24C3"; font.pixelSize: 16; Layout.preferredWidth: 24; horizontalAlignment: Text.AlignHCenter; color: Theme.textSecondary; visible: auth.nextcloudVersion.length > 0 }
-                        Label { text: "Nextcloud " + auth.nextcloudVersion; font.pixelSize: Theme.fontSizeSmall; color: Theme.textSecondary; Layout.fillWidth: true; visible: auth.nextcloudVersion.length > 0 }
-
-                        // Talk version
-                        Label { text: "\u260E"; font.pixelSize: 16; Layout.preferredWidth: 24; horizontalAlignment: Text.AlignHCenter; color: Theme.textSecondary; visible: auth.talkVersion.length > 0 }
-                        Label { text: "Talk " + auth.talkVersion; font.pixelSize: Theme.fontSizeSmall; color: Theme.textSecondary; Layout.fillWidth: true; visible: auth.talkVersion.length > 0 }
-
-                        // Signaling
-                        Label { text: "\u26A1"; font.pixelSize: 16; Layout.preferredWidth: 24; horizontalAlignment: Text.AlignHCenter; color: Theme.textSecondary; visible: auth.signalingMode.length > 0 }
-                        Label { text: auth.signalingMode; font.pixelSize: Theme.fontSizeSmall; color: Theme.textSecondary; Layout.fillWidth: true; visible: auth.signalingMode.length > 0 }
 
                         // Push status
-                        Rectangle { width: 8; height: 8; radius: 4; Layout.preferredWidth: 24; Layout.alignment: Qt.AlignHCenter; color: pushClient.connected ? Theme.online : Theme.warning }
-                        Label {
-                            text: pushClient.connected ? "Push connected (real-time)" : "Push disconnected (polling)"
-                            font.pixelSize: Theme.fontSizeSmall
-                            color: pushClient.connected ? Theme.online : Theme.textSecondary
-                            Layout.fillWidth: true
+                        RowLayout {
+                            spacing: Theme.spacingNormal
+                            Item {
+                                width: 24; height: 20
+                                Rectangle {
+                                    anchors.centerIn: parent
+                                    width: 8; height: 8; radius: 4
+                                    color: pushClient.connected ? Theme.online : Theme.warning
+                                }
+                            }
+                            Label {
+                                text: pushClient.connected ? "Push connected (real-time)" : "Push disconnected (polling)"
+                                font.pixelSize: Theme.fontSizeSmall
+                                color: pushClient.connected ? Theme.online : Theme.textSecondary
+                                Layout.fillWidth: true
+                            }
                         }
 
-                        // Signaling (typing)
-                        Rectangle { width: 8; height: 8; radius: 4; Layout.preferredWidth: 24; Layout.alignment: Qt.AlignHCenter; color: signaling.connected ? Theme.online : Theme.textMuted }
-                        Label {
-                            text: signaling.connected ? "Signaling connected" : "Signaling disconnected"
-                            font.pixelSize: Theme.fontSizeSmall
-                            color: signaling.connected ? Theme.online : Theme.textSecondary
-                            Layout.fillWidth: true
+                        // Signaling status
+                        RowLayout {
+                            spacing: Theme.spacingNormal
+                            Item {
+                                width: 24; height: 20
+                                Rectangle {
+                                    anchors.centerIn: parent
+                                    width: 8; height: 8; radius: 4
+                                    color: signaling.connected ? Theme.online : Theme.textMuted
+                                }
+                            }
+                            Label {
+                                text: signaling.connected ? "Signaling connected" : "Signaling disconnected"
+                                font.pixelSize: Theme.fontSizeSmall
+                                color: signaling.connected ? Theme.online : Theme.textSecondary
+                                Layout.fillWidth: true
+                            }
                         }
                     }
                 }
