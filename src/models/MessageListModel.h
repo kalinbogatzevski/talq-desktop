@@ -79,6 +79,7 @@ private slots:
 
 private:
     void startPoller();
+    void postAndReplace(const QString &token, const QJsonObject &body, int tempId);
 
     ApiClient *m_api;
     MessageCache *m_cache;

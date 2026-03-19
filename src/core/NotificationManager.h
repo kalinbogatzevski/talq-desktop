@@ -32,7 +32,7 @@ public:
     bool isNotificationsEnabled() const { return m_notificationsEnabled; }
     void setNotificationsEnabled(bool v);
 
-    Q_INVOKABLE void notify(const QString &title, const QString &message);
+    Q_INVOKABLE void notify(const QString &title, const QString &message, bool alwaysSound = false);
     Q_INVOKABLE void clearNotifications();
     Q_INVOKABLE void updateUnreadCount(int count);
 

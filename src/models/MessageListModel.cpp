@@ -300,6 +300,47 @@ void MessageListModel::onMessagesReceived(const QJsonArray &messages)
     emit newMessagesAtEnd();
 }
 
+void MessageListModel::postAndReplace(const QString &token, const QJsonObject &body, int tempId)
+{
+    m_api->post("apps/spreed/api/v1/chat/" + token, body,
+        [this, tempId, token](bool ok, const QJsonObject &data, int) {
+            if (m_token != token) return;
+
+            int idx = -1;
+            for (int i = 0; i < m_messages.size(); ++i) {
+                if (m_messages[i].id == tempId) { idx = i; break; }
+            }
+            if (idx < 0) return;
+
+            if (ok && !data.isEmpty()) {
+                Message real = Message::fromJson(data);
+
+                // Check if the poller already added this message (race condition)
+                bool alreadyExists = false;
+                for (int i = 0; i < m_messages.size(); ++i) {
+                    if (i != idx && m_messages[i].id == real.id) {
+                        alreadyExists = true;
+                        break;
+                    }
+                }
+
+                if (alreadyExists) {
+                    // Poller beat us — remove the optimistic placeholder
+                    beginRemoveRows({}, idx, idx);
+                    m_messages.removeAt(idx);
+                    endRemoveRows();
+                } else {
+                    m_messages[idx] = real;
+                    emit dataChanged(index(idx), index(idx));
+                    m_cache->saveMessages(m_token, {real});
+                }
+            } else {
+                m_messages[idx].sendStatus = "failed";
+                emit dataChanged(index(idx), index(idx), {SendStatusRole});
+            }
+        });
+}
+
 void MessageListModel::sendMessage(const QString &text, int replyToId)
 {
     if (text.trimmed().isEmpty() || m_token.isEmpty())
@@ -333,26 +374,7 @@ void MessageListModel::sendMessage(const QString &text, int replyToId)
     if (replyToId > 0)
         body["replyTo"] = replyToId;
 
-    QString currentToken = m_token;
-    m_api->post("apps/spreed/api/v1/chat/" + currentToken, body,
-        [this, tempId, currentToken](bool ok, const QJsonObject &data, int) {
-            if (m_token != currentToken) return;
-
-            int idx = -1;
-            for (int i = 0; i < m_messages.size(); ++i) {
-                if (m_messages[i].id == tempId) { idx = i; break; }
-            }
-            if (idx < 0) return;
-
-            if (ok && !data.isEmpty()) {
-                m_messages[idx] = Message::fromJson(data);
-                emit dataChanged(index(idx), index(idx));
-                m_cache->saveMessages(m_token, {m_messages[idx]});
-            } else {
-                m_messages[idx].sendStatus = "failed";
-                emit dataChanged(index(idx), index(idx), {SendStatusRole});
-            }
-        });
+    postAndReplace(m_token, body, tempId);
 }
 
 void MessageListModel::retryMessage(int tempId)
@@ -374,25 +396,7 @@ void MessageListModel::retryMessage(int tempId)
     QJsonObject body;
     body["message"] = text;
 
-    m_api->post("apps/spreed/api/v1/chat/" + currentToken, body,
-        [this, tempId, currentToken](bool ok, const QJsonObject &data, int) {
-            if (m_token != currentToken) return;
-
-            int idx = -1;
-            for (int i = 0; i < m_messages.size(); ++i) {
-                if (m_messages[i].id == tempId) { idx = i; break; }
-            }
-            if (idx < 0) return;
-
-            if (ok && !data.isEmpty()) {
-                m_messages[idx] = Message::fromJson(data);
-                emit dataChanged(index(idx), index(idx));
-                m_cache->saveMessages(m_token, {m_messages[idx]});
-            } else {
-                m_messages[idx].sendStatus = "failed";
-                emit dataChanged(index(idx), index(idx), {SendStatusRole});
-            }
-        });
+    postAndReplace(currentToken, body, tempId);
 }
 
 void MessageListModel::addReaction(int messageId, const QString &emoji)
