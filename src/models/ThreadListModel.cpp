@@ -1,6 +1,7 @@
 #include "ThreadListModel.h"
 #include <QJsonObject>
 #include <QUrlQuery>
+#include <QPointer>
 #include <algorithm>
 
 ThreadListModel::ThreadListModel(ApiClient *api, QObject *parent)
@@ -53,6 +54,8 @@ QHash<int, QByteArray> ThreadListModel::roleNames() const
 
 void ThreadListModel::setCache(MessageCache *cache)
 {
+    if (m_cache)
+        disconnect(m_cache, &MessageCache::threadIndexLoaded, this, &ThreadListModel::onCachedThreadsLoaded);
     m_cache = cache;
     if (m_cache)
         connect(m_cache, &MessageCache::threadIndexLoaded, this, &ThreadListModel::onCachedThreadsLoaded);
@@ -163,8 +166,9 @@ void ThreadListModel::fetchThreads()
     const QString path = "apps/spreed/api/v1/chat/" + m_token;
 
     const QString capturedToken = m_token;
-    m_api->getArray(path, params, [this, capturedToken](bool success, const QJsonArray &data, int /*statusCode*/) {
-        if (capturedToken != m_token) return;  // stale callback
+    QPointer<ThreadListModel> guard(this);
+    m_api->getArray(path, params, [this, guard, capturedToken](bool success, const QJsonArray &data, int /*statusCode*/) {
+        if (!guard || capturedToken != m_token) return;  // destroyed or stale
         if (!success) {
             m_loading = false;
             emit loadingChanged();

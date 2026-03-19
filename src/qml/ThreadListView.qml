@@ -11,10 +11,15 @@ Item {
     property bool creating: false
     property int selectedThreadId: -1
 
+    property string createToken: ""
+
     Timer {
         id: refreshAfterCreate
         interval: 2000
-        onTriggered: threadModel.refresh()
+        onTriggered: {
+            if (threadModel.conversationToken === threadListRoot.createToken)
+                threadModel.refresh()
+        }
     }
 
     Rectangle {
@@ -106,10 +111,10 @@ Item {
                 Keys.onReturnPressed: {
                     var name = text.trim()
                     if (name.length > 0 && name.length <= 128) {
+                        threadListRoot.createToken = threadModel.conversationToken
                         messageModel.createTopic(name)
                         text = ""
                         threadListRoot.creating = false
-                        // Refresh thread list after a short delay to pick up new topic
                         refreshAfterCreate.restart()
                     }
                 }
