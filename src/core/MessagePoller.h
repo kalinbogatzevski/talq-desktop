@@ -46,5 +46,5 @@ private:
     int m_lastKnownMessageId = 0;
     bool m_polling = false;
     int m_threadId = 0;
-    static constexpr int POLL_TIMEOUT_SECS = 30;
+    static constexpr int POLL_TIMEOUT_SECS = 15;
 };

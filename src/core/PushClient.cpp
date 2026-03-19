@@ -18,11 +18,13 @@ void PushClient::start()
 {
     if (m_api->serverUrl().isEmpty()) return;
 
-    m_pushEndpoint = m_api->serverUrl();
-    m_pushEndpoint.replace("https://", "wss://").replace("http://", "ws://");
-    m_pushEndpoint += "/push/ws";
+    QString wsUrl = m_api->serverUrl();
+    wsUrl.replace("https://", "wss://").replace("http://", "ws://");
+    wsUrl += "/push/ws";
+    m_pushEndpoint = wsUrl;
 
-    authenticate();
+    qDebug() << "Push: connecting to" << m_pushEndpoint;
+    m_ws.open(QUrl(m_pushEndpoint));
 }
 
 void PushClient::stop()
@@ -38,41 +40,39 @@ void PushClient::stop()
 
 void PushClient::authenticate()
 {
-    // POST to pre_auth (absolute path, not OCS)
+    // Get pre_auth token and send it immediately over the open WebSocket
     auto *reply = m_api->postAbsoluteUrl("/apps/notify_push/pre_auth");
 
     connect(reply, &QNetworkReply::finished, this, [this, reply]() {
         reply->deleteLater();
 
         int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-
         if (reply->error() != QNetworkReply::NoError || status != 200) {
-            qWarning() << "Push pre_auth failed:" << status << reply->errorString();
-            reconnect();
+            qWarning() << "Push: pre_auth failed:" << status << reply->errorString();
+            m_ws.close();
             return;
         }
 
-        m_pendingToken = QString::fromUtf8(reply->readAll()).trimmed();
-        if (m_pendingToken.isEmpty()) {
-            qWarning() << "Push pre_auth returned empty token";
-            reconnect();
+        QString token = QString::fromUtf8(reply->readAll()).trimmed();
+        if (token.isEmpty()) {
+            qWarning() << "Push: pre_auth returned empty token";
+            m_ws.close();
             return;
         }
 
-        qDebug() << "Push: pre_auth token obtained, connecting to" << m_pushEndpoint;
-        m_ws.open(QUrl(m_pushEndpoint));
+        // Protocol: send username first, then token (two separate messages)
+        qDebug() << "Push: sending username + token";
+        m_ws.sendTextMessage(m_api->user());
+        m_ws.sendTextMessage(token);
     });
 }
 
 void PushClient::onConnected()
 {
-    qDebug() << "Push: WebSocket connected, authenticating";
+    qDebug() << "Push: WebSocket connected, requesting pre_auth token";
     m_reconnectDelay = 2000;
-
-    if (!m_pendingToken.isEmpty()) {
-        m_ws.sendTextMessage(m_pendingToken);
-        m_pendingToken.clear();
-    }
+    // Get and send token NOW while the socket is fresh
+    authenticate();
 }
 
 void PushClient::onDisconnected()
@@ -95,15 +95,15 @@ void PushClient::onTextMessageReceived(const QString &message)
             m_authenticated = true;
             m_connected = true;
             emit connectedChanged();
-            qDebug() << "Push: authenticated, listening for events";
+            qDebug() << "Push: authenticated! Listening for events.";
         } else {
-            qWarning() << "Push: auth failed:" << msg;
-            m_ws.close();
+            qWarning() << "Push: auth response:" << msg;
+            // Don't close — might be a delayed response
         }
         return;
     }
 
-    qDebug() << "Push: event received:" << msg;
+    qDebug() << "Push: event:" << msg;
     emit pushReceived(msg);
 }
 

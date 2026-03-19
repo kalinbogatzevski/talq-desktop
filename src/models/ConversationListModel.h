@@ -43,6 +43,7 @@ public:
     Q_INVOKABLE void stopAutoRefresh();
     Q_INVOKABLE QString tokenAt(int index) const;
     Q_INVOKABLE int lastReadMessageForToken(const QString &token) const;
+    Q_INVOKABLE void clearUnreadForToken(const QString &token);
 
     bool isLoading() const { return m_loading; }
     int totalUnread() const { return m_totalUnread; }
