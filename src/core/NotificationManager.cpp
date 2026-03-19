@@ -137,8 +137,6 @@ void NotificationManager::notify(const QString &title, const QString &message, b
 
     if (!m_notificationsEnabled) return;
 
-    bool windowActive = m_window && m_window->isActive();
-
     if (!windowActive) {
         // Always show desktop popup when window is not focused
         emit desktopPopupRequested(title, message, token);
