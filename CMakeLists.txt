@@ -58,6 +58,10 @@ qt_add_qml_module(talq
         resources/resources.qrc
 )
 
+# Build timestamp — changes on every reconfigure for tracking
+string(TIMESTAMP TALQ_BUILD_TS "%m%d-%H%M")
+target_compile_definitions(talq PRIVATE TALQ_BUILD_TS="${TALQ_BUILD_TS}")
+
 target_include_directories(talq PRIVATE src)
 
 target_link_libraries(talq PRIVATE

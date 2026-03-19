@@ -118,9 +118,7 @@ Item {
                 ToolTip.visible: hovered; ToolTip.text: "React"; ToolTip.delay: 300
                 onClicked: {
                     var pos = mapToItem(msgContent, 0, height)
-                    quickEmojis.x = pos.x - quickEmojis.width / 2 + 13
-                    quickEmojis.y = pos.y
-                    quickEmojis.open()
+                    quickEmojisLoader.open()
                 }
                 contentItem: Label {
                     text: "\u263A"; font.pixelSize: 13
@@ -148,15 +146,29 @@ Item {
             anchors.fill: parent
             acceptedButtons: Qt.RightButton
             onClicked: function(mouse) {
-                msgPopup.x = mouse.x
-                msgPopup.y = mouse.y - msgPopup.height
-                msgPopup.open()
+                msgPopupLoader.openAt(mouse.x, mouse.y - 200)
             }
         }
 
         TextEdit { id: contextClipHelper; visible: false }
 
-        // Tiny emoji-only bar (from hover ☺ button)
+        // Lazy-loaded popups — only created when opened (saves 100s of window handles)
+        Loader {
+            id: quickEmojisLoader
+            active: false
+            sourceComponent: quickEmojisComp
+            function open() { active = true; item.open() }
+        }
+
+        Loader {
+            id: msgPopupLoader
+            active: false
+            sourceComponent: msgPopupComp
+            function openAt(x, y) { active = true; item.x = x; item.y = y; item.open() }
+        }
+
+        Component {
+            id: quickEmojisComp
         Popup {
             id: quickEmojis
             width: quickRow.width + 12
@@ -199,7 +211,10 @@ Item {
                 }
             }
         }
+        } // end Component quickEmojisComp
 
+        Component {
+            id: msgPopupComp
         // Unified popup: emoji row + actions
         Popup {
             id: msgPopup
@@ -326,6 +341,7 @@ Item {
                 }
             }
         }
+        } // end Component msgPopupComp
 
         // ═══════════════════════════════════════
         // OTHER PEOPLE'S MESSAGES — flat, no bubble
