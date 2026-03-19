@@ -1,0 +1,57 @@
+#pragma once
+
+#include <QObject>
+#include <QSystemTrayIcon>
+#include <QMenu>
+#include <QByteArray>
+
+class QQuickWindow;
+
+/**
+ * Manages system tray icon, desktop notifications, and notification sounds.
+ *
+ * Sound modes:
+ * - "internal" (default): plays embedded TalQ chime from resources
+ * - "system": plays Windows system notification sound
+ * - "none": silent
+ */
+class NotificationManager : public QObject
+{
+    Q_OBJECT
+    Q_PROPERTY(QString soundMode READ soundMode WRITE setSoundMode NOTIFY soundModeChanged)
+    Q_PROPERTY(bool notificationsEnabled READ isNotificationsEnabled WRITE setNotificationsEnabled NOTIFY notificationsEnabledChanged)
+
+public:
+    explicit NotificationManager(QObject *parent = nullptr);
+    ~NotificationManager() override;
+
+    void setWindow(QQuickWindow *window);
+
+    QString soundMode() const { return m_soundMode; }
+    void setSoundMode(const QString &mode);
+    bool isNotificationsEnabled() const { return m_notificationsEnabled; }
+    void setNotificationsEnabled(bool v);
+
+    Q_INVOKABLE void notify(const QString &title, const QString &message);
+    Q_INVOKABLE void clearNotifications();
+    Q_INVOKABLE void updateUnreadCount(int count);
+
+signals:
+    void soundModeChanged();
+    void notificationsEnabledChanged();
+    void showRequested();
+
+private:
+    void setupTrayIcon();
+    void playInternalSound();
+    void playSystemSound();
+    void onTrayActivated(QSystemTrayIcon::ActivationReason reason);
+
+    QSystemTrayIcon *m_trayIcon = nullptr;
+    QMenu *m_trayMenu = nullptr;
+    QQuickWindow *m_window = nullptr;
+    QString m_soundMode = "internal";  // "internal", "system", "none"
+    bool m_notificationsEnabled = true;
+    int m_unreadCount = 0;
+    QByteArray m_wavData;  // embedded WAV loaded from resources
+};

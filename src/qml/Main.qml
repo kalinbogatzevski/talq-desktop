@@ -14,13 +14,15 @@ ApplicationWindow {
     title: "TalQ"
     color: Theme.bgPrimary
 
+    // Window position/size saved — but only restored after login
+    // so the splash screen stays small
     Settings {
         id: windowSettings
         category: "Window"
         property alias x: root.x
         property alias y: root.y
-        property alias width: root.width
-        property alias height: root.height
+        property real savedWidth: 1000
+        property real savedHeight: 700
     }
 
     Settings {
@@ -62,8 +64,8 @@ ApplicationWindow {
             if (!auth.restoringSession) {
                 if (auth.loggedIn) {
                     root.minimumWidth = 600
-                    root.width = 1000
-                    root.height = 700
+                    root.width = Math.max(windowSettings.savedWidth, 800)
+                    root.height = Math.max(windowSettings.savedHeight, 600)
                     mainStack.replace(chatPage)
                     conversationModel.refresh()
                 } else {
@@ -75,8 +77,8 @@ ApplicationWindow {
             if (auth.restoringSession) return
             if (auth.loggedIn) {
                 root.minimumWidth = 600
-                root.width = 1000
-                root.height = 700
+                root.width = Math.max(windowSettings.savedWidth, 800)
+                root.height = Math.max(windowSettings.savedHeight, 600)
                 mainStack.replace(chatPage)
                 conversationModel.refresh()
             } else {
@@ -87,6 +89,10 @@ ApplicationWindow {
             }
         }
     }
+
+    // Save window size when it changes (only when logged in / big window)
+    onWidthChanged: if (width > 500) windowSettings.savedWidth = width
+    onHeightChanged: if (height > 500) windowSettings.savedHeight = height
 
     Component {
         id: splashPage
