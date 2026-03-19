@@ -21,15 +21,15 @@ ApplicationWindow {
         y = (Screen.height - height) / 2
     }
 
-    // Window position/size saved — but only restored after login
-    // so the splash screen stays small
+    // Window position/size saved — restored after login (not during splash)
     Settings {
         id: windowSettings
         category: "Window"
-        property alias x: root.x
-        property alias y: root.y
+        property real savedX: -1
+        property real savedY: -1
         property real savedWidth: 1000
         property real savedHeight: 700
+        property bool wasMaximized: false
     }
 
     Settings {
@@ -65,14 +65,30 @@ ApplicationWindow {
         }
     }
 
+    function restoreChatWindow() {
+        root.minimumWidth = 600
+
+        if (windowSettings.wasMaximized) {
+            root.width = Math.max(windowSettings.savedWidth, 800)
+            root.height = Math.max(windowSettings.savedHeight, 600)
+            root.showMaximized()
+        } else {
+            root.width = Math.max(windowSettings.savedWidth, 800)
+            root.height = Math.max(windowSettings.savedHeight, 600)
+            // Restore position if we have one saved
+            if (windowSettings.savedX >= 0 && windowSettings.savedY >= 0) {
+                root.x = windowSettings.savedX
+                root.y = windowSettings.savedY
+            }
+        }
+    }
+
     Connections {
         target: auth
         function onRestoringChanged() {
             if (!auth.restoringSession) {
                 if (auth.loggedIn) {
-                    root.minimumWidth = 600
-                    root.width = Math.max(windowSettings.savedWidth, 800)
-                    root.height = Math.max(windowSettings.savedHeight, 600)
+                    root.restoreChatWindow()
                     mainStack.replace(chatPage)
                     conversationModel.refresh()
                 } else {
@@ -83,23 +99,28 @@ ApplicationWindow {
         function onLoggedInChanged() {
             if (auth.restoringSession) return
             if (auth.loggedIn) {
-                root.minimumWidth = 600
-                root.width = Math.max(windowSettings.savedWidth, 800)
-                root.height = Math.max(windowSettings.savedHeight, 600)
+                root.restoreChatWindow()
                 mainStack.replace(chatPage)
                 conversationModel.refresh()
             } else {
+                windowSettings.wasMaximized = (root.visibility === Window.Maximized)
+                root.showNormal()
                 root.minimumWidth = 400
                 root.width = 460
                 root.height = 520
+                root.x = (Screen.width - 460) / 2
+                root.y = (Screen.height - 520) / 2
                 mainStack.replace(loginPage)
             }
         }
     }
 
-    // Save window size when it changes (only when logged in / big window)
-    onWidthChanged: if (width > 500) windowSettings.savedWidth = width
-    onHeightChanged: if (height > 500) windowSettings.savedHeight = height
+    // Save window geometry (only when in chat mode, not splash/login)
+    onWidthChanged: if (width > 500 && visibility !== Window.Maximized) windowSettings.savedWidth = width
+    onHeightChanged: if (width > 500 && visibility !== Window.Maximized) windowSettings.savedHeight = height
+    onXChanged: if (width > 500 && visibility !== Window.Maximized) windowSettings.savedX = x
+    onYChanged: if (width > 500 && visibility !== Window.Maximized) windowSettings.savedY = y
+    onVisibilityChanged: if (width > 500) windowSettings.wasMaximized = (visibility === Window.Maximized)
 
     Component {
         id: splashPage
