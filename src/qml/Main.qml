@@ -17,6 +17,14 @@ ApplicationWindow {
 
     property bool chatMode: false  // true after login — enables geometry saving
 
+    // Minimize to tray instead of closing (like Telegram/Discord)
+    onClosing: function(close) {
+        if (chatMode) {
+            close.accepted = false
+            root.hide()
+        }
+    }
+
     // Center splash and show
     Component.onCompleted: {
         x = (Screen.width - width) / 2
