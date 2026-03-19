@@ -172,12 +172,16 @@ Item {
                     onClicked: {
                         var pos = parent.mapToItem(msgContent, 0, 0)
                         var btnW = parent.width   // 30
-                        var barW = 200             // approximate popup width
-                        var popGap = 4
+                        var btnH = parent.height  // 30
+                        var barW = 200
+                        var barH = 40
+                        var popGap = 3
                         var ex = isOwnMessage
-                            ? (pos.x - barW - popGap)        // popup left of button
-                            : (pos.x + btnW + popGap)        // popup right of button
-                        quickEmojisLoader.openAt(ex, pos.y - 5)
+                            ? (pos.x - barW - popGap)
+                            : (pos.x + btnW + popGap)
+                        // Vertically center the emoji bar with the button
+                        var ey = pos.y + (btnH - barH) / 2
+                        quickEmojisLoader.openAt(ex, ey)
                     }
                 }
             }
@@ -228,33 +232,28 @@ Item {
             }
         }
 
-        // Right-click → context popup anchored at cursor, fits within window
+        // Right-click → context popup, corner anchored to cursor
         MouseArea {
             anchors.fill: parent
             acceptedButtons: Qt.RightButton
             onClicked: function(mouse) {
-                // Get click position in window coordinates
                 var winPos = mapToItem(null, mouse.x, mouse.y)
                 var winW = bubble.Window.width || 900
                 var winH = bubble.Window.height || 700
-                var popW = 220  // approximate popup width
-                var popH = 340  // approximate popup height
+                var popW = 220
+                var popH = 340
 
-                // Start at cursor, expand bottom-right by default
-                var px = winPos.x
-                var py = winPos.y
+                // Choose which corner of the popup touches the cursor
+                var px, py
+                var spaceRight = winW - winPos.x
+                var spaceBelow = winH - winPos.y
 
-                // Flip horizontally if clipped right
-                if (px + popW > winW) px = winPos.x - popW
+                // X: expand right if space, otherwise left
+                px = (spaceRight >= popW) ? winPos.x : (winPos.x - popW)
 
-                // Flip vertically if clipped bottom
-                if (py + popH > winH) py = winPos.y - popH
+                // Y: expand down if space, otherwise up
+                py = (spaceBelow >= popH) ? winPos.y : (winPos.y - popH)
 
-                // Safety clamp
-                px = Math.max(4, Math.min(px, winW - popW - 4))
-                py = Math.max(4, Math.min(py, winH - popH - 4))
-
-                // Convert back to local coordinates
                 var local = mapFromItem(null, px, py)
                 msgPopupLoader.openAt(local.x, local.y)
             }
