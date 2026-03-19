@@ -49,6 +49,8 @@ qt_add_qml_module(talk-qt
         src/qml/MessageBubble.qml
         src/qml/ConversationItem.qml
         src/qml/MessageComposer.qml
+        src/qml/ThreadItem.qml
+        src/qml/ThreadListView.qml
     RESOURCES
         resources/resources.qrc
 )
