@@ -122,55 +122,103 @@ Item {
                 return Math.max(0, Math.min(targetY, parent.height - height))
             }
 
-            // Shared hover button style
-            Repeater {
-                model: [
-                    { icon: "\u263A", tip: "React", isReact: true },
-                    { icon: "\u21A9", tip: "Reply", isReact: false }
-                ]
+            // React button — smiley face drawn via Canvas
+            Rectangle {
+                id: reactBtnRect
+                width: 32; height: 32; radius: 16
+                color: reactMa.containsMouse
+                    ? (Theme.darkMode ? Qt.rgba(1,1,1,0.15) : Qt.rgba(0,0,0,0.08))
+                    : Theme.bgSurface
+                border.color: Theme.divider; border.width: 0.5
+                scale: reactMa.containsMouse ? 1.1 : 1.0
+                Behavior on scale { NumberAnimation { duration: 100; easing.type: Easing.OutCubic } }
+                Behavior on color { ColorAnimation { duration: 100 } }
 
-                Rectangle {
-                    width: 34; height: 34; radius: 17
-                    color: btnMa.containsMouse
-                        ? (Theme.darkMode ? Qt.rgba(1,1,1,0.15) : Qt.rgba(0,0,0,0.08))
-                        : Theme.bgSurface
-                    border.color: Theme.divider
-                    border.width: 0.5
-                    scale: btnMa.containsMouse ? 1.1 : 1.0
-                    Behavior on scale { NumberAnimation { duration: 100; easing.type: Easing.OutCubic } }
-                    Behavior on color { ColorAnimation { duration: 100 } }
-
-                    Text {
-                        anchors.fill: parent
-                        text: modelData.icon
-                        font.pixelSize: 18
-                        font.bold: true
-                        color: btnMa.containsMouse ? Theme.accent : Theme.textSecondary
-                        horizontalAlignment: Text.AlignHCenter
-                        verticalAlignment: Text.AlignVCenter
-                        Behavior on color { ColorAnimation { duration: 100 } }
+                Canvas {
+                    anchors.centerIn: parent
+                    width: 20; height: 20
+                    property color strokeColor: reactMa.containsMouse ? Theme.accent : Theme.textSecondary
+                    onStrokeColorChanged: requestPaint()
+                    onPaint: {
+                        var ctx = getContext("2d")
+                        ctx.clearRect(0, 0, width, height)
+                        ctx.strokeStyle = strokeColor
+                        ctx.lineWidth = 2.0
+                        ctx.lineCap = "round"
+                        // Face circle
+                        ctx.beginPath()
+                        ctx.arc(10, 10, 8.5, 0, Math.PI * 2)
+                        ctx.stroke()
+                        // Left eye
+                        ctx.beginPath()
+                        ctx.arc(7, 8, 1.2, 0, Math.PI * 2)
+                        ctx.fillStyle = strokeColor
+                        ctx.fill()
+                        // Right eye
+                        ctx.beginPath()
+                        ctx.arc(13, 8, 1.2, 0, Math.PI * 2)
+                        ctx.fill()
+                        // Smile
+                        ctx.beginPath()
+                        ctx.arc(10, 10.5, 4.5, 0.2, Math.PI - 0.2)
+                        ctx.stroke()
                     }
+                }
 
-                    ToolTip.visible: btnMa.containsMouse
-                    ToolTip.text: modelData.tip
-                    ToolTip.delay: 400
-
-                    MouseArea {
-                        id: btnMa
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: {
-                            if (modelData.isReact) {
-                                var pos = parent.mapToItem(msgContent, 0, 0)
-                                var barW = 210
-                                var ex = isOwnMessage ? (pos.x - barW - 4) : (pos.x + parent.width + 4)
-                                quickEmojisLoader.openAt(ex, pos.y - 5)
-                            } else {
-                                bubble.replyRequested(messageId, actorName, messageText)
-                            }
-                        }
+                ToolTip.visible: reactMa.containsMouse; ToolTip.text: "React"; ToolTip.delay: 400
+                MouseArea {
+                    id: reactMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                        var pos = parent.mapToItem(msgContent, 0, 0)
+                        var barW = 210
+                        var ex = isOwnMessage ? (pos.x - barW - 4) : (pos.x + parent.width + 4)
+                        quickEmojisLoader.openAt(ex, pos.y - 5)
                     }
+                }
+            }
+
+            // Reply button — curved arrow drawn via Canvas
+            Rectangle {
+                width: 32; height: 32; radius: 16
+                color: replyMa.containsMouse
+                    ? (Theme.darkMode ? Qt.rgba(1,1,1,0.15) : Qt.rgba(0,0,0,0.08))
+                    : Theme.bgSurface
+                border.color: Theme.divider; border.width: 0.5
+                scale: replyMa.containsMouse ? 1.1 : 1.0
+                Behavior on scale { NumberAnimation { duration: 100; easing.type: Easing.OutCubic } }
+                Behavior on color { ColorAnimation { duration: 100 } }
+
+                Canvas {
+                    anchors.centerIn: parent
+                    width: 20; height: 20
+                    property color strokeColor: replyMa.containsMouse ? Theme.accent : Theme.textSecondary
+                    onStrokeColorChanged: requestPaint()
+                    onPaint: {
+                        var ctx = getContext("2d")
+                        ctx.clearRect(0, 0, width, height)
+                        ctx.strokeStyle = strokeColor
+                        ctx.lineWidth = 2.2
+                        ctx.lineCap = "round"
+                        ctx.lineJoin = "round"
+                        // Arrow pointing left
+                        ctx.beginPath()
+                        ctx.moveTo(8, 6)
+                        ctx.lineTo(3, 10)
+                        ctx.lineTo(8, 14)
+                        ctx.stroke()
+                        // Curved line from arrow to right
+                        ctx.beginPath()
+                        ctx.moveTo(3, 10)
+                        ctx.lineTo(12, 10)
+                        ctx.quadraticCurveTo(17, 10, 17, 15)
+                        ctx.stroke()
+                    }
+                }
+
+                ToolTip.visible: replyMa.containsMouse; ToolTip.text: "Reply"; ToolTip.delay: 400
+                MouseArea {
+                    id: replyMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                    onClicked: bubble.replyRequested(messageId, actorName, messageText)
                 }
             }
         }
