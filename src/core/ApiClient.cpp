@@ -225,6 +225,18 @@ QNetworkReply *ApiClient::getAbsoluteUrl(const QString &path)
     return reply;
 }
 
+QNetworkReply *ApiClient::postAbsoluteUrl(const QString &path, const QByteArray &body)
+{
+    QUrl url(m_serverUrl + path);
+    QNetworkRequest req(url);
+    if (!m_user.isEmpty()) {
+        QString credentials = m_user + ":" + m_password;
+        req.setRawHeader("Authorization", "Basic " + credentials.toUtf8().toBase64());
+    }
+    auto *reply = m_nam.post(req, body);
+    return reply;
+}
+
 void ApiClient::cancelAll()
 {
     for (auto *reply : m_pendingReplies) {

@@ -47,8 +47,11 @@ public:
     // Raw GET — caller handles the reply (for reading headers)
     QNetworkReply *getRaw(const QString &path, const QUrlQuery &params = QUrlQuery());
 
-    // Raw POST — caller handles the reply (for non-OCS endpoints like pre_auth)
+    // Raw POST via OCS path
     QNetworkReply *postRaw(const QString &path, const QByteArray &body = QByteArray());
+
+    // POST with absolute path (no OCS prefix) — for non-OCS endpoints like notify_push
+    QNetworkReply *postAbsoluteUrl(const QString &path, const QByteArray &body = QByteArray());
 
     // GET with absolute path (no OCS prefix, no OCS headers)
     QNetworkReply *getAbsoluteUrl(const QString &path);

@@ -116,13 +116,10 @@ int main(int argc, char *argv[])
         }
     });
 
-    // Start push or polling after login
+    // Start push after login — no auto-refresh polling (causes freezes)
     QObject::connect(&auth, &AuthManager::loggedInChanged, &conversations, [&auth, &conversations, &push]() {
         if (auth.isLoggedIn()) {
             push.start();
-            // Also start polling as fallback — push will make it unnecessary
-            // but polling ensures we catch updates if push disconnects
-            conversations.startAutoRefresh();
         } else {
             push.stop();
             conversations.stopAutoRefresh();
