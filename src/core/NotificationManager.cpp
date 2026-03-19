@@ -122,7 +122,7 @@ void NotificationManager::playSystemSound()
 #endif
 }
 
-void NotificationManager::notify(const QString &title, const QString &message, bool alwaysSound)
+void NotificationManager::notify(const QString &title, const QString &message, bool alwaysSound, const QString &token)
 {
     bool windowActive = m_window && m_window->isActive();
 
@@ -135,9 +135,22 @@ void NotificationManager::notify(const QString &title, const QString &message, b
         }
     }
 
-    // Toast notification only when window is not focused
-    if (!windowActive && m_notificationsEnabled && m_trayIcon) {
-        m_trayIcon->showMessage(title, message, QSystemTrayIcon::Information, 4000);
+    // Notification only when window is not focused
+    if (!windowActive && m_notificationsEnabled) {
+        if (m_notifStyle == "windows" && m_trayIcon) {
+            m_trayIcon->showMessage(title, message, QSystemTrayIcon::Information, 4000);
+        } else {
+            // Telegram-style popup — handled by QML
+            emit popupRequested(title, message, token);
+        }
+    }
+}
+
+void NotificationManager::setNotifStyle(const QString &style)
+{
+    if (m_notifStyle != style) {
+        m_notifStyle = style;
+        emit notifStyleChanged();
     }
 }
 

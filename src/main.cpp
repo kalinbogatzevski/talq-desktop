@@ -111,7 +111,7 @@ int main(int argc, char *argv[])
         QString text = messages.data(idx, MessageListModel::MessageTextRole).toString();
         text.remove(QRegularExpression("<[^>]*>"));
         if (text.length() > 100) text = text.left(100) + "...";
-        notifications.notify(actorName, text);
+        notifications.notify(actorName, text, false, messages.conversationToken());
     });
 
     // Notify on new messages in OTHER conversations
@@ -121,7 +121,7 @@ int main(int argc, char *argv[])
         QString preview = lastMsg;
         preview.remove(QRegularExpression("<[^>]*>"));
         if (preview.length() > 80) preview = preview.left(80) + "...";
-        notifications.notify(name, preview, true);
+        notifications.notify(name, preview, true, token);
     });
 
     // Tray unread count
