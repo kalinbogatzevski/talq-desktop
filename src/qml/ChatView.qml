@@ -18,6 +18,7 @@ Page {
     property bool isGroupChat: conversationType === 2 || conversationType === 3
     property bool isInTopicMode: false
     property int activeThreadColor: 0
+    readonly property bool isViewingTopic: isInTopicMode && activeThreadId > 0
     // Only show typing when it's from the current conversation
     readonly property bool isTyping: signaling.typingUser.length > 0
         && signaling.typingRoom === messageModel.conversationToken
@@ -56,12 +57,17 @@ Page {
 
     function confirmPaste() {
         if (pasteBar.pendingPath.length > 0) {
-            messageModel.sendFileWithCaption(pasteBar.pendingPath, pasteCaptionField.text.trim())
+            var path = pasteBar.pendingPath
+            messageModel.sendFileWithCaption(path, pasteCaptionField.text.trim())
+            // Clean up temp file after upload starts (file data already read into memory)
+            messageModel.cleanupTempFile(path)
             cancelPaste()
         }
     }
 
     function cancelPaste() {
+        if (pasteBar.pendingPath.length > 0)
+            messageModel.cleanupTempFile(pasteBar.pendingPath)
         pasteBar.visible = false
         pasteBar.pendingPath = ""
         pastePreview.source = ""
@@ -98,7 +104,7 @@ Page {
 
             Rectangle {
                 width: 10; height: 10; radius: 5
-                visible: chatRoot.isInTopicMode && chatRoot.activeThreadId > 0
+                visible: chatRoot.isViewingTopic
                 color: Theme.topicColor(chatRoot.activeThreadColor)
                 Layout.alignment: Qt.AlignVCenter
             }
@@ -117,11 +123,7 @@ Page {
                 Rectangle {
                     anchors.fill: parent; radius: 15
                     visible: headerChatAvatar.status !== Image.Ready && chatRoot.conversationName.length > 0
-                    color: {
-                        var hash = 0; var n = chatRoot.conversationName
-                        for (var i = 0; i < n.length; i++) { hash = ((hash << 5) - hash) + n.charCodeAt(i); hash = hash & hash }
-                        return Theme.topicColor(hash)
-                    }
+                    color: Theme.topicColor(Theme.stringHash(chatRoot.conversationName))
                     Label { anchors.centerIn: parent; text: chatRoot.conversationName.length > 0 ? chatRoot.conversationName[0].toUpperCase() : ""; font.pixelSize: 13; font.weight: Font.DemiBold; color: "white" }
                 }
             }
@@ -173,8 +175,7 @@ Page {
                 }
 
                 Label {
-                    visible: chatRoot.isInTopicMode && chatRoot.activeThreadId > 0
-                             && !chatRoot.isTyping
+                    visible: chatRoot.isViewingTopic && !chatRoot.isTyping
                     text: chatRoot.conversationName + " \u00B7 " + messageModel.count + " messages"
                     font.pixelSize: Theme.fontSizeTiny
                     color: Theme.textSecondary
@@ -345,7 +346,7 @@ Page {
 
             MessageComposer {
                 Layout.fillWidth: true
-                topicName: chatRoot.isInTopicMode && chatRoot.activeThreadId > 0 ? chatRoot.activeThreadTitle : ""
+                topicName: chatRoot.isViewingTopic ? chatRoot.activeThreadTitle : ""
                 onSendMessage: function(text) {
                     var replyId = chatRoot.replyToId > 0 ? chatRoot.replyToId : chatRoot.activeThreadId
                     messageModel.sendMessage(text, replyId)
@@ -554,7 +555,7 @@ Page {
         Column {
             anchors.centerIn: parent
             spacing: Theme.spacingLarge
-            visible: chatRoot.isInTopicMode && chatRoot.activeThreadId === 0 && messageModel.conversationToken.length > 0
+            visible: chatRoot.isInTopicMode && !chatRoot.isViewingTopic && messageModel.conversationToken.length > 0
 
             Label {
                 anchors.horizontalCenter: parent.horizontalCenter
