@@ -45,6 +45,22 @@ void MessageCache::saveMessages(const QString &token, const QVector<Message> &me
         Q_ARG(QString, token), Q_ARG(QVector<Message>, messages));
 }
 
+void MessageCache::saveThreadIndex(const QString &token, const QVector<QJsonObject> &threads)
+{
+    QMetaObject::invokeMethod(m_worker, "doSaveThreadIndex", Qt::QueuedConnection,
+        Q_ARG(QString, token), Q_ARG(QVector<QJsonObject>, threads));
+}
+
+void MessageCache::loadThreadIndex(const QString &token)
+{
+    QMetaObject::invokeMethod(m_worker, [this, token]() {
+        auto result = m_worker->doLoadThreadIndex(token);
+        QMetaObject::invokeMethod(this, [this, token, result]() {
+            emit threadIndexLoaded(token, result);
+        }, Qt::QueuedConnection);
+    }, Qt::QueuedConnection);
+}
+
 void MessageCache::clearConversation(const QString &token)
 {
     QMetaObject::invokeMethod(m_worker, "doClearConversation", Qt::QueuedConnection,
@@ -90,6 +106,19 @@ void MessageCacheWorker::doInit()
            ")");
     q.exec("CREATE INDEX IF NOT EXISTS idx_messages_token_ts "
            "ON messages(token, timestamp ASC)");
+
+    q.exec("CREATE TABLE IF NOT EXISTS thread_index ("
+           "token TEXT NOT NULL, "
+           "thread_id INTEGER NOT NULL, "
+           "title TEXT NOT NULL, "
+           "icon_color INTEGER DEFAULT 0, "
+           "last_activity INTEGER DEFAULT 0, "
+           "last_message TEXT DEFAULT '', "
+           "last_author TEXT DEFAULT '', "
+           "reply_count INTEGER DEFAULT 0, "
+           "last_read_message_id INTEGER DEFAULT 0, "
+           "PRIMARY KEY (token, thread_id)"
+           ")");
 
     qDebug() << "Message cache opened at" << dbPath;
 }
@@ -184,4 +213,58 @@ void MessageCacheWorker::doClearAll()
 {
     QSqlQuery q(m_db);
     q.exec("DELETE FROM messages");
+}
+
+void MessageCacheWorker::doSaveThreadIndex(const QString &token, const QVector<QJsonObject> &threads)
+{
+    QSqlQuery q(m_db);
+    q.prepare("INSERT OR REPLACE INTO thread_index "
+              "(token, thread_id, title, icon_color, last_activity, last_message, last_author, reply_count, last_read_message_id) "
+              "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+    m_db.transaction();
+    for (const auto &t : threads) {
+        q.addBindValue(token);
+        q.addBindValue(t["threadId"].toInt());
+        q.addBindValue(t["title"].toString());
+        q.addBindValue(t["iconColor"].toInt());
+        q.addBindValue(t["lastActivity"].toInteger());
+        q.addBindValue(t["lastMessage"].toString());
+        q.addBindValue(t["lastAuthor"].toString());
+        q.addBindValue(t["replyCount"].toInt());
+        q.addBindValue(t["lastReadMessageId"].toInt());
+        q.exec();
+    }
+    m_db.commit();
+}
+
+QVector<QJsonObject> MessageCacheWorker::doLoadThreadIndex(const QString &token)
+{
+    QVector<QJsonObject> result;
+    QSqlQuery q(m_db);
+    q.prepare("SELECT thread_id, title, icon_color, last_activity, last_message, last_author, reply_count, last_read_message_id "
+              "FROM thread_index WHERE token = ? ORDER BY last_activity DESC");
+    q.addBindValue(token);
+    if (q.exec()) {
+        while (q.next()) {
+            QJsonObject t;
+            t["threadId"] = q.value(0).toInt();
+            t["title"] = q.value(1).toString();
+            t["iconColor"] = q.value(2).toInt();
+            t["lastActivity"] = q.value(3).toLongLong();
+            t["lastMessage"] = q.value(4).toString();
+            t["lastAuthor"] = q.value(5).toString();
+            t["replyCount"] = q.value(6).toInt();
+            t["lastReadMessageId"] = q.value(7).toInt();
+            result.append(t);
+        }
+    }
+    return result;
+}
+
+void MessageCacheWorker::doClearThreadIndex(const QString &token)
+{
+    QSqlQuery q(m_db);
+    q.prepare("DELETE FROM thread_index WHERE token = ?");
+    q.addBindValue(token);
+    q.exec();
 }

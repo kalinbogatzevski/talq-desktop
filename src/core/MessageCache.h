@@ -8,6 +8,8 @@
 #include <QSqlDatabase>
 #include "models/Message.h"
 
+Q_DECLARE_METATYPE(QVector<QJsonObject>)
+
 class MessageCacheWorker;
 
 /**
@@ -28,9 +30,12 @@ public:
 
     void loadMessages(const QString &token, int limit = 200);
     void saveMessages(const QString &token, const QVector<Message> &messages);
+    void saveThreadIndex(const QString &token, const QVector<QJsonObject> &threads);
+    void loadThreadIndex(const QString &token);
 
 signals:
     void messagesLoaded(const QString &token, const QVector<Message> &messages);
+    void threadIndexLoaded(const QString &token, const QVector<QJsonObject> &threads);
 
 public slots:
     void clearConversation(const QString &token);
@@ -58,6 +63,9 @@ public:
     Q_INVOKABLE void doClearConversation(const QString &token);
     Q_INVOKABLE void doClearAll();
     Q_INVOKABLE void doInit();
+    Q_INVOKABLE void doSaveThreadIndex(const QString &token, const QVector<QJsonObject> &threads);
+    Q_INVOKABLE QVector<QJsonObject> doLoadThreadIndex(const QString &token);
+    Q_INVOKABLE void doClearThreadIndex(const QString &token);
 
 private:
     QSqlDatabase m_db;
