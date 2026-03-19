@@ -93,14 +93,30 @@ Page {
                 }
             }
 
-            Label {
-                text: chatRoot.activeThreadId > 0 ? chatRoot.activeThreadTitle
-                    : (chatRoot.conversationName || "Select a conversation")
-                font.pixelSize: Theme.fontSizeLarge
-                font.weight: chatRoot.conversationName.length > 0 ? Font.DemiBold : Font.Normal
-                color: chatRoot.conversationName.length > 0 ? Theme.textPrimary : Theme.textMuted
-                elide: Text.ElideRight
+            ColumnLayout {
                 Layout.fillWidth: true
+                spacing: 0
+
+                Label {
+                    text: chatRoot.activeThreadId > 0 ? chatRoot.activeThreadTitle
+                        : (chatRoot.conversationName || "Select a conversation")
+                    font.pixelSize: Theme.fontSizeLarge
+                    font.weight: chatRoot.conversationName.length > 0 ? Font.DemiBold : Font.Normal
+                    color: chatRoot.conversationName.length > 0 ? Theme.textPrimary : Theme.textMuted
+                    elide: Text.ElideRight
+                    Layout.fillWidth: true
+                }
+
+                // Typing indicator
+                Label {
+                    visible: signaling.typingUser.length > 0
+                    text: signaling.typingUser + " is typing..."
+                    font.pixelSize: Theme.fontSizeTiny
+                    font.italic: true
+                    color: Theme.accent
+                    Layout.fillWidth: true
+                    elide: Text.ElideRight
+                }
             }
 
             Label {
