@@ -1,5 +1,64 @@
 # Changelog
 
+## v0.5.0 (2026-03-19)
+
+### Real-Time Communication
+- Push notifications via Nextcloud Notify Push WebSocket (instant message delivery)
+- Typing indicators via standalone signaling (HPB) WebSocket
+- Push status LED on avatar: green (push), amber (polling), red (disconnected)
+- Signaling status on welcome screen
+
+### Notifications & System Tray
+- System tray icon with context menu (Show, Sound mode, Notifications, Quit)
+- Sound modes: TalQ chime (default, bypasses DND), system sound, or none
+- Tray icon badge with unread count (dynamically painted)
+- Cross-chat notifications with sound even when window is focused
+- Minimize to tray on close (X hides, tray Quit exits)
+- Conversation list auto-refresh (30s fallback for push)
+
+### File Attachments
+- Inline display of shared files in messages
+- Image files shown with preview placeholder (authenticated provider TODO)
+- Other files shown as styled pills with MIME-type icons (video, audio, PDF, etc.)
+- Click to open/download in browser
+
+### Read Markers
+- Mark conversation as read on open (POST /chat/{token}/read)
+- Instant sidebar badge clear (local + server)
+- Auto mark-as-read on new polled messages
+
+### Font Zoom
+- Ctrl+= zoom in, Ctrl+- zoom out, Ctrl+0 reset (0.7x to 2.0x)
+- Scale persisted between sessions
+- All font sizes scale via Theme.fontScale
+
+### UX Polish
+- Welcome screen: server info card with GridLayout alignment, push/signaling status
+- Context menu: bigger icons (18px), aligned columns, taller rows (36px)
+- Emoji bar positions inline with react button
+- Hover action buttons: 32px with 20px icons
+- Stronger hover backgrounds on menu items
+- Reply scroll fix (delayed 100ms for footer resize)
+
+### Stability Fixes
+- Memory leak fix: broken beginInsertRows + unauthenticated image retries (5.5GB → 260MB)
+- Conversation switch freeze fix: SQLite cache blocking main thread
+- MessageCache moved to worker thread (fully async saves, non-blocking)
+- Lazy-loaded Popups in MessageBubble (eliminates 100+ window handles)
+- In-place conversation list updates (no beginResetModel during refresh)
+- Participants/active join for signaling (prevents "not invited" error)
+- Thread-safe messagesLoaded signal (double-invoke for main thread delivery)
+- PushClient WebSocket state guard in authenticate callback
+- Popup Loaders deactivated on close (memory cleanup)
+- Tray icon pixmap cached (no disk reload per refresh)
+
+### Other
+- Exe renamed from talk-qt to talq
+- Build timestamp in window title for debug tracking
+- Code review findings addressed (8 fixes)
+
+---
+
 ## v0.4.0 (2026-03-19)
 
 ### Threads / Topics

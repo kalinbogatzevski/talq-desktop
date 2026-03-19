@@ -31,9 +31,9 @@ int main(int argc, char *argv[])
     app.setApplicationName("TalQ");
     app.setOrganizationName("TalQ");
 #ifdef TALQ_BUILD_TS
-    app.setApplicationVersion("0.4.0-" TALQ_BUILD_TS);
+    app.setApplicationVersion("0.5.0-" TALQ_BUILD_TS);
 #else
-    app.setApplicationVersion("0.4.0");
+    app.setApplicationVersion("0.5.0");
 #endif
     app.setWindowIcon(QIcon(":/logo.png"));
 
