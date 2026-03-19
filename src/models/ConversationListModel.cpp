@@ -96,35 +96,31 @@ void ConversationListModel::refresh()
             }
         }
 
-        // Update model in-place to avoid destroying delegates (prevents freeze)
-        if (m_conversations.size() == newConversations.size()) {
-            // Same count — just update data in place
-            bool orderChanged = false;
-            for (int i = 0; i < newConversations.size(); ++i) {
-                if (m_conversations[i].token != newConversations[i].token) {
-                    orderChanged = true;
-                    break;
-                }
-            }
+        // Always update in-place — never use beginResetModel (causes UI freeze)
+        int oldSize = m_conversations.size();
+        int newSize = newConversations.size();
 
-            if (!orderChanged) {
-                // Same order — update each row's data without resetting
-                m_conversations = newConversations;
-                emit dataChanged(index(0), index(m_conversations.size() - 1));
-            } else {
-                // Order changed — must reset
-                beginResetModel();
-                m_conversations = newConversations;
-                endResetModel();
-                emit countChanged();
-            }
-        } else {
-            // Count changed — must reset
-            beginResetModel();
+        if (newSize > oldSize) {
+            // New conversations added
             m_conversations = newConversations;
-            endResetModel();
-            emit countChanged();
+            if (oldSize > 0)
+                emit dataChanged(index(0), index(oldSize - 1));
+            beginInsertRows({}, oldSize, newSize - 1);
+            endInsertRows();
+        } else if (newSize < oldSize) {
+            // Conversations removed
+            beginRemoveRows({}, newSize, oldSize - 1);
+            m_conversations = newConversations;
+            endRemoveRows();
+            if (newSize > 0)
+                emit dataChanged(index(0), index(newSize - 1));
+        } else {
+            // Same count — just update data
+            m_conversations = newConversations;
+            if (newSize > 0)
+                emit dataChanged(index(0), index(newSize - 1));
         }
+        emit countChanged();
 
         if (m_totalUnread != newTotalUnread) {
             m_totalUnread = newTotalUnread;
@@ -148,6 +144,20 @@ QString ConversationListModel::tokenAt(int index) const
     if (index >= 0 && index < m_conversations.size())
         return m_conversations[index].token;
     return {};
+}
+
+void ConversationListModel::clearUnreadForToken(const QString &token)
+{
+    for (int i = 0; i < m_conversations.size(); ++i) {
+        if (m_conversations[i].token == token && m_conversations[i].unreadMessages > 0) {
+            m_totalUnread -= m_conversations[i].unreadMessages;
+            m_conversations[i].unreadMessages = 0;
+            m_conversations[i].unreadMention = false;
+            emit dataChanged(index(i), index(i), {UnreadCountRole, UnreadMentionRole});
+            emit totalUnreadChanged();
+            break;
+        }
+    }
 }
 
 int ConversationListModel::lastReadMessageForToken(const QString &token) const

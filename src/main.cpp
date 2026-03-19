@@ -44,8 +44,8 @@ int main(int argc, char *argv[])
     MessageCache cache;
     MessageListModel messages(&api, &cache);
     ThreadListModel threads(&api);
-    // NotificationManager notifications;
-    // PushClient push(&api);
+    NotificationManager notifications;
+    PushClient push(&api);
 
     // QML engine
     QQmlApplicationEngine engine;
@@ -56,7 +56,7 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty("conversationModel", &conversations);
     engine.rootContext()->setContextProperty("messageModel", &messages);
     engine.rootContext()->setContextProperty("threadModel", &threads);
-    // engine.rootContext()->setContextProperty("notifications", &notifications);
+    engine.rootContext()->setContextProperty("notifications", &notifications);
 
     engine.addImageProvider("avatar", new AvatarProvider(&api));
 
@@ -65,7 +65,63 @@ int main(int argc, char *argv[])
     if (engine.rootObjects().isEmpty())
         return -1;
 
-    /* ALL notification/push wiring disabled for freeze debugging */
+    // Wire notifications
+    if (auto *window = qobject_cast<QQuickWindow*>(engine.rootObjects().first())) {
+        notifications.setWindow(window);
+        QObject::connect(&notifications, &NotificationManager::showRequested, window, [window]() {
+            window->show();
+            window->raise();
+            window->requestActivate();
+        });
+    }
+
+    // Notify on new polled messages in active conversation
+    QObject::connect(&messages, &MessageListModel::newMessagesAtEnd, &notifications, [&messages, &notifications, &auth]() {
+        int count = messages.rowCount();
+        if (count == 0) return;
+        auto idx = messages.index(count - 1);
+        QString actorId = messages.data(idx, MessageListModel::ActorIdRole).toString();
+        if (actorId == auth.userId()) return;
+        QString actorName = messages.data(idx, MessageListModel::ActorNameRole).toString();
+        QString text = messages.data(idx, MessageListModel::MessageTextRole).toString();
+        text.remove(QRegularExpression("<[^>]*>"));
+        if (text.length() > 100) text = text.left(100) + "...";
+        notifications.notify(actorName, text);
+    });
+
+    // Notify on new messages in OTHER conversations
+    QObject::connect(&conversations, &ConversationListModel::newUnreadMessage,
+                     &notifications, [&notifications, &messages](const QString &name, const QString &lastMsg, const QString &token) {
+        if (token == messages.conversationToken()) return;
+        QString preview = lastMsg;
+        preview.remove(QRegularExpression("<[^>]*>"));
+        if (preview.length() > 80) preview = preview.left(80) + "...";
+        notifications.notify(name, preview, true);
+    });
+
+    // Tray unread count
+    QObject::connect(&conversations, &ConversationListModel::totalUnreadChanged,
+                     &notifications, [&conversations, &notifications]() {
+        notifications.updateUnreadCount(conversations.totalUnread());
+    });
+
+    // Push events → refresh conversation list
+    QObject::connect(&push, &PushClient::pushReceived, &conversations, [&conversations](const QString &type) {
+        if (type == "notify_notification" || type == "notify_activities") {
+            conversations.refresh();
+        }
+    });
+
+    // Start push + conversation polling after login
+    QObject::connect(&auth, &AuthManager::loggedInChanged, &conversations, [&auth, &conversations, &push]() {
+        if (auth.isLoggedIn()) {
+            push.start();
+            conversations.startAutoRefresh();  // 30s fallback for push
+        } else {
+            push.stop();
+            conversations.stopAutoRefresh();
+        }
+    });
 
 #ifdef Q_OS_WIN
     // Force dark title bar on Windows

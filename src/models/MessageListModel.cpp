@@ -173,8 +173,12 @@ void MessageListModel::setConversationToken(const QString &token)
     if (token.isEmpty())
         return;
 
-    // Server-only load — cache disabled until we fix the stability
     loadHistory();
+
+    // Mark as read immediately using "clear all" approach (no message ID needed)
+    QJsonObject body;
+    m_api->post("apps/spreed/api/v1/chat/" + token + "/read", body,
+        [](bool, const QJsonObject &, int) {});
 }
 
 void MessageListModel::setThreadId(int id)
@@ -306,6 +310,9 @@ void MessageListModel::onMessagesReceived(const QJsonArray &messages)
     m_cache->saveMessages(m_token, newMsgs);
 
     emit newMessagesAtEnd();
+
+    // Auto-mark as read when new messages arrive
+    markAsRead();
 }
 
 void MessageListModel::postAndReplace(const QString &token, const QJsonObject &body, int tempId)
@@ -493,4 +500,28 @@ void MessageListModel::onLastCommonReadChanged(int messageId)
     if (!m_messages.isEmpty()) {
         emit dataChanged(index(0), index(m_messages.size() - 1), {IsReadRole});
     }
+}
+
+void MessageListModel::markAsRead()
+{
+    if (m_token.isEmpty()) return;
+
+    // Find the last message ID
+    int lastId = 0;
+    for (int i = m_messages.size() - 1; i >= 0; --i) {
+        if (m_messages[i].id > 0) {
+            lastId = m_messages[i].id;
+            break;
+        }
+    }
+
+    if (lastId <= 0) return;
+
+    // POST /apps/spreed/api/v1/chat/{token}/read
+    QJsonObject body;
+    body["lastReadMessage"] = lastId;
+    m_api->post("apps/spreed/api/v1/chat/" + m_token + "/read", body,
+        [](bool, const QJsonObject &, int) {
+            // Fire and forget
+        });
 }
