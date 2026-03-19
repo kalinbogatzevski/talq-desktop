@@ -29,7 +29,7 @@ int main(int argc, char *argv[])
 {
     QApplication app(argc, argv);
 #ifdef TALQ_BRAND_123NET
-    app.setApplicationName("123NET Talk");
+    app.setApplicationName("123NET TalQ");
     app.setOrganizationName("123NET");
 #else
     app.setApplicationName("TalQ");
@@ -70,7 +70,7 @@ int main(int argc, char *argv[])
 
     // Branding context
 #ifdef TALQ_BRAND_123NET
-    engine.rootContext()->setContextProperty("brandName", QString("123NET Talk"));
+    engine.rootContext()->setContextProperty("brandName", QString("123NET TalQ"));
     engine.rootContext()->setContextProperty("brandServer", QString("https://ncloud.123net.link"));
     engine.rootContext()->setContextProperty("brandLogo", QString("qrc:/123net-logo.png"));
     engine.rootContext()->setContextProperty("isBranded", true);
