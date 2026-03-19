@@ -6,6 +6,7 @@
 #include <QJsonDocument>
 #include <QJsonArray>
 #include <QDateTime>
+#include <QElapsedTimer>
 #include <QTimer>
 #include <QNetworkReply>
 
@@ -33,6 +34,26 @@ MessageListModel::MessageListModel(ApiClient *api, MessageCache *cache, QObject 
     });
     connect(m_poller, &MessagePoller::pollError, this, [this](const QString &) {
         if (m_connected) { m_connected = false; emit connectedChanged(); }
+    });
+
+    // Async cache results
+    connect(m_cache, &MessageCache::messagesLoaded, this, [this](const QString &token, const QVector<Message> &messages) {
+        if (m_token != token) return;  // stale result
+        if (messages.isEmpty()) return;
+        if (!m_messages.isEmpty()) return;  // server already loaded messages
+
+        QVector<Message> filtered;
+        for (const auto &m : messages) {
+            if (!m.isReactionMessage())
+                filtered.append(m);
+        }
+        if (filtered.isEmpty()) return;
+
+        beginInsertRows({}, 0, filtered.size() - 1);
+        m_messages = filtered;
+        endInsertRows();
+        m_oldestMessageId = m_messages.first().id;
+        emit newMessagesAtEnd();
     });
 }
 
@@ -136,37 +157,24 @@ void MessageListModel::setConversationToken(const QString &token)
     m_poller->stop();
     m_token = token;
     m_oldestMessageId = 0;
+    m_threadId = 0;
+    m_lastCommonRead = 0;
+    m_loading = false;
 
-    // Load cache atomically inside model reset — no flash
-    beginResetModel();
-    m_messages.clear();
-    if (!token.isEmpty()) {
-        // Cache returns oldest-first; filter reaction system messages
-        auto cached = m_cache->loadMessages(token, 50);
-        for (const auto &m : cached) {
-            if (!m.isReactionMessage())
-                m_messages.append(m);
-        }
-        if (!m_messages.isEmpty())
-            m_oldestMessageId = m_messages.first().id;
+    // Clear messages
+    if (!m_messages.isEmpty()) {
+        beginRemoveRows({}, 0, m_messages.size() - 1);
+        m_messages.clear();
+        endRemoveRows();
     }
-    endResetModel();
 
     emit conversationTokenChanged();
 
     if (token.isEmpty())
         return;
 
-    QString joinToken = token;
-    m_api->post("apps/spreed/api/v4/room/" + token + "/participants/active",
-        [this, joinToken](bool ok, const QJsonObject &, int) {
-            if (m_token != joinToken) return;
-            if (!ok) {
-                emit errorOccurred("Failed to join conversation");
-                return;
-            }
-            loadHistory();
-        });
+    // Server-only load — cache disabled until we fix the stability
+    loadHistory();
 }
 
 void MessageListModel::setThreadId(int id)

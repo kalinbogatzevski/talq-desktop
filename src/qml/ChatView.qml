@@ -348,10 +348,10 @@ Page {
         }
     }
 
-    // Thread list overlay for group chats
+    // Thread list overlay for group chats (DISABLED for debugging)
     ThreadListView {
         anchors.fill: parent
-        visible: chatRoot.isGroupChat && chatRoot.activeThreadId === 0 && messageModel.conversationToken.length > 0
+        visible: false // chatRoot.isGroupChat && chatRoot.activeThreadId === 0 && messageModel.conversationToken.length > 0
         onThreadSelected: function(threadId, title) {
             chatRoot.openThread(threadId, title)
         }
@@ -361,9 +361,10 @@ Page {
         target: messageModel
         function onConversationTokenChanged() {
             chatRoot.closeThread()
-            if (chatRoot.isGroupChat && messageModel.conversationToken.length > 0) {
-                threadModel.conversationToken = messageModel.conversationToken
-            }
+            // DISABLED for debugging
+            // if (chatRoot.isGroupChat && messageModel.conversationToken.length > 0) {
+            //     threadModel.conversationToken = messageModel.conversationToken
+            // }
         }
     }
 }

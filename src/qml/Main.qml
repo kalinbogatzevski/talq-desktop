@@ -12,7 +12,7 @@ ApplicationWindow {
     minimumWidth: 380
     minimumHeight: 400
     visible: false  // start hidden, show after centering
-    title: "TalQ"
+    title: "TalQ " + Qt.application.version
     color: Theme.bgPrimary
 
     property bool chatMode: false  // true after login — enables geometry saving

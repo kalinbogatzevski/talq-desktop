@@ -1,4 +1,5 @@
 #include "core/MessageCache.h"
+#include <QSqlDatabase>
 #include <QSqlQuery>
 #include <QSqlError>
 #include <QJsonDocument>
@@ -6,19 +7,66 @@
 #include <QDir>
 #include <QDebug>
 
+// ─── MessageCache (main thread API) ───
+
 MessageCache::MessageCache(QObject *parent)
     : QObject(parent)
+    , m_worker(new MessageCacheWorker)
 {
-    initDatabase();
+    m_worker->moveToThread(&m_workerThread);
+    connect(&m_workerThread, &QThread::finished, m_worker, &QObject::deleteLater);
+    m_workerThread.start();
+
+    // Initialize DB on worker thread
+    QMetaObject::invokeMethod(m_worker, "doInit", Qt::BlockingQueuedConnection);
 }
 
-void MessageCache::initDatabase()
+MessageCache::~MessageCache()
+{
+    m_workerThread.quit();
+    m_workerThread.wait(3000);
+}
+
+void MessageCache::loadMessages(const QString &token, int limit)
+{
+    // Fully async — result comes via messagesLoaded signal
+    QMetaObject::invokeMethod(m_worker, [this, token, limit]() {
+        auto result = m_worker->doLoadMessages(token, limit);
+        emit messagesLoaded(token, result);
+    }, Qt::QueuedConnection);
+}
+
+void MessageCache::saveMessages(const QString &token, const QVector<Message> &messages)
+{
+    QMetaObject::invokeMethod(m_worker, "doSaveMessages", Qt::QueuedConnection,
+        Q_ARG(QString, token), Q_ARG(QVector<Message>, messages));
+}
+
+void MessageCache::clearConversation(const QString &token)
+{
+    QMetaObject::invokeMethod(m_worker, "doClearConversation", Qt::QueuedConnection,
+        Q_ARG(QString, token));
+}
+
+void MessageCache::clearAll()
+{
+    QMetaObject::invokeMethod(m_worker, "doClearAll", Qt::QueuedConnection);
+}
+
+// ─── MessageCacheWorker (worker thread) ───
+
+MessageCacheWorker::MessageCacheWorker(QObject *parent)
+    : QObject(parent)
+{
+}
+
+void MessageCacheWorker::doInit()
 {
     QString dataDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     QDir().mkpath(dataDir);
     QString dbPath = dataDir + "/message_cache.db";
 
-    m_db = QSqlDatabase::addDatabase("QSQLITE", "message_cache");
+    m_db = QSqlDatabase::addDatabase("QSQLITE", "message_cache_worker");
     m_db.setDatabaseName(dbPath);
 
     if (!m_db.open()) {
@@ -27,6 +75,9 @@ void MessageCache::initDatabase()
     }
 
     QSqlQuery q(m_db);
+    q.exec("PRAGMA journal_mode=WAL");
+    q.exec("PRAGMA synchronous=NORMAL");
+
     q.exec("CREATE TABLE IF NOT EXISTS messages ("
            "  token TEXT NOT NULL,"
            "  message_id INTEGER NOT NULL,"
@@ -40,12 +91,11 @@ void MessageCache::initDatabase()
     qDebug() << "Message cache opened at" << dbPath;
 }
 
-QVector<Message> MessageCache::loadMessages(const QString &token, int limit)
+QVector<Message> MessageCacheWorker::doLoadMessages(const QString &token, int limit)
 {
     QVector<Message> result;
 
     QSqlQuery q(m_db);
-    // Get the NEWEST N messages, returned in oldest-first order
     q.prepare("SELECT json FROM ("
               "  SELECT json, timestamp, message_id FROM messages "
               "  WHERE token = :token "
@@ -69,7 +119,7 @@ QVector<Message> MessageCache::loadMessages(const QString &token, int limit)
     return result;
 }
 
-void MessageCache::saveMessages(const QString &token, const QVector<Message> &messages)
+void MessageCacheWorker::doSaveMessages(const QString &token, const QVector<Message> &messages)
 {
     if (messages.isEmpty()) return;
 
@@ -80,6 +130,8 @@ void MessageCache::saveMessages(const QString &token, const QVector<Message> &me
               "VALUES (:token, :id, :ts, :json)");
 
     for (const auto &msg : messages) {
+        if (msg.id <= 0) continue;  // skip optimistic/temp messages
+
         QJsonObject json;
         json["id"] = msg.id;
         json["token"] = msg.token.isEmpty() ? token : msg.token;
@@ -89,15 +141,12 @@ void MessageCache::saveMessages(const QString &token, const QVector<Message> &me
         json["message"] = msg.message;
         json["timestamp"] = msg.timestamp;
         json["messageType"] = msg.messageType;
-        if (!msg.systemMessage.isEmpty()) {
+        if (!msg.systemMessage.isEmpty())
             json["systemMessage"] = msg.systemMessage;
-        }
-        if (!msg.replyTo.isEmpty()) {
+        if (!msg.replyTo.isEmpty())
             json["parent"] = msg.replyTo;
-        }
-        if (!msg.reactions.isEmpty()) {
+        if (!msg.reactions.isEmpty())
             json["reactions"] = msg.reactions;
-        }
 
         q.bindValue(":token", token);
         q.bindValue(":id", msg.id);
@@ -110,7 +159,7 @@ void MessageCache::saveMessages(const QString &token, const QVector<Message> &me
     m_db.commit();
 }
 
-int MessageCache::lastMessageId(const QString &token)
+int MessageCacheWorker::doLastMessageId(const QString &token)
 {
     QSqlQuery q(m_db);
     q.prepare("SELECT MAX(message_id) FROM messages WHERE token = :token");
@@ -120,17 +169,7 @@ int MessageCache::lastMessageId(const QString &token)
     return 0;
 }
 
-int MessageCache::oldestMessageId(const QString &token)
-{
-    QSqlQuery q(m_db);
-    q.prepare("SELECT MIN(message_id) FROM messages WHERE token = :token");
-    q.bindValue(":token", token);
-    if (q.exec() && q.next())
-        return q.value(0).toInt();
-    return 0;
-}
-
-void MessageCache::clearConversation(const QString &token)
+void MessageCacheWorker::doClearConversation(const QString &token)
 {
     QSqlQuery q(m_db);
     q.prepare("DELETE FROM messages WHERE token = :token");
@@ -138,7 +177,7 @@ void MessageCache::clearConversation(const QString &token)
     q.exec();
 }
 
-void MessageCache::clearAll()
+void MessageCacheWorker::doClearAll()
 {
     QSqlQuery q(m_db);
     q.exec("DELETE FROM messages");
