@@ -9,6 +9,7 @@
 
 #ifdef Q_OS_WIN
 #include <windows.h>
+#include <psapi.h>
 #include <dwmapi.h>
 #pragma comment(lib, "dwmapi.lib")
 #endif
@@ -142,6 +143,21 @@ int main(int argc, char *argv[])
 
     // Restore session after QML is loaded so loading screen is visible
     auth.tryRestore();
+
+#ifdef Q_OS_WIN
+    // Memory monitor — log every 5 seconds
+    QTimer memTimer;
+    memTimer.setInterval(5000);
+    QObject::connect(&memTimer, &QTimer::timeout, [&]() {
+        PROCESS_MEMORY_COUNTERS pmc;
+        if (GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc))) {
+            qDebug() << "MEM:" << (pmc.WorkingSetSize / 1024 / 1024) << "MB"
+                     << "msgs:" << messages.rowCount()
+                     << "convs:" << conversations.rowCount();
+        }
+    });
+    memTimer.start();
+#endif
 
     return app.exec();
 }
