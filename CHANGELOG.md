@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.6.1 (2026-03-20)
+
+### Thread/Topic Fixes
+- Fixed false thread detection in 1:1 chats — regular replies no longer create phantom topics
+- Thread detection now uses the API-provided `isThread`/`threadId`/`threadTitle` fields instead of heuristic parent scanning
+- "All Messages" renamed to "General" — now shows only non-thread messages (like Telegram's #General)
+- Back arrow added to topics column header for returning to full chat list
+- "+ New Topic" button moved from header to bottom of topic list to prevent overlap
+- Sidebar can now be expanded/collapsed via toggle even when topics are active
+- Draggable resize handles on sidebar and topic list dividers
+
+### Scroll Fix
+- Fixed scroll-to-bottom not working when opening conversations
+- Replaced timer-based scroll with callback-driven approach using `onContentHeightChanged`
+
 ## v0.6.0 (2026-03-19)
 
 ### Threads / Topics (Telegram-style)

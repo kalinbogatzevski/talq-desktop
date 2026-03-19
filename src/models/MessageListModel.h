@@ -20,6 +20,7 @@ class MessageListModel : public QAbstractListModel
     Q_PROPERTY(QString conversationToken READ conversationToken WRITE setConversationToken NOTIFY conversationTokenChanged)
     Q_PROPERTY(bool connected READ isConnected NOTIFY connectedChanged)
     Q_PROPERTY(int threadId READ threadId WRITE setThreadId NOTIFY threadIdChanged)
+    Q_PROPERTY(bool hideThreadMessages READ hideThreadMessages WRITE setHideThreadMessages NOTIFY hideThreadMessagesChanged)
 
 public:
     enum Roles {
@@ -64,6 +65,9 @@ public:
     int threadId() const { return m_threadId; }
     void setThreadId(int id);
 
+    bool hideThreadMessages() const { return m_hideThreadMessages; }
+    void setHideThreadMessages(bool hide);
+
     Q_INVOKABLE void sendMessage(const QString &text, int replyToId = 0);
     Q_INVOKABLE void markAsRead();
     Q_INVOKABLE void sendFile(const QString &filePath);
@@ -92,6 +96,7 @@ signals:
     void newMessagesAtEnd();
     void connectedChanged();
     void threadIdChanged();
+    void hideThreadMessagesChanged();
     void uploadProgressChanged();
     void pasteReady(const QString &filePath, int width, int height);
 
@@ -112,6 +117,7 @@ private:
     int m_oldestMessageId = 0;
     int m_lastCommonRead = 0;
     int m_threadId = 0;
+    bool m_hideThreadMessages = false;
     bool m_connected = true;  // assume connected until proven otherwise
     double m_uploadProgress = -1;
     QString m_uploadFileName;

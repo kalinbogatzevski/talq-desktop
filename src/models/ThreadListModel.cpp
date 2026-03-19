@@ -63,7 +63,7 @@ void ThreadListModel::setCache(MessageCache *cache)
 
 void ThreadListModel::onCachedThreadsLoaded(const QString &token, const QVector<QJsonObject> &threads)
 {
-    if (token != m_token || threads.isEmpty())
+    if (token != m_token || threads.isEmpty() || m_conversationType == 1)
         return;
 
     // Only use cache if we haven't loaded from API yet
@@ -89,7 +89,7 @@ void ThreadListModel::onCachedThreadsLoaded(const QString &token, const QVector<
     // Add "All Messages" at index 0
     ThreadInfo allMsg;
     allMsg.threadId = 0;
-    allMsg.title = "All Messages";
+    allMsg.title = "General";
     allMsg.isAllMessages = true;
     allMsg.iconColor = 0;
     if (!cached.isEmpty()) {
@@ -175,11 +175,14 @@ void ThreadListModel::fetchThreads()
             return;
         }
 
-        // Group messages by parent.id to find threads
-        // Key: parent message id -> collected info
+        // Use the API-provided thread fields:
+        //   isThread: true    — message belongs to a thread
+        //   threadId: N       — the thread root message ID
+        //   threadTitle: "X"  — the thread name
+        // Non-thread messages have threadId == their own id and no isThread field.
         struct ThreadAccumulator {
-            int parentId = 0;
-            QString parentMessage;
+            int threadRootId = 0;
+            QString threadTitle;
             qint64 latestTimestamp = 0;
             QString latestMessage;
             QString latestAuthor;
@@ -189,25 +192,25 @@ void ThreadListModel::fetchThreads()
 
         for (const QJsonValue &val : data) {
             const QJsonObject msg = val.toObject();
-            const QJsonObject parent = msg["parent"].toObject();
 
-            if (parent.isEmpty())
+            // Only process messages explicitly marked as thread messages
+            if (!msg["isThread"].toBool())
                 continue;
 
-            const int parentId = parent["id"].toInt();
-            if (parentId == 0)
+            const int threadRootId = msg["threadId"].toInt();
+            if (threadRootId == 0)
                 continue;
 
-            auto &acc = threadMap[parentId];
-            acc.parentId = parentId;
+            auto &acc = threadMap[threadRootId];
+            acc.threadRootId = threadRootId;
             acc.count++;
 
-            // Store the parent's message text as thread title
-            const QString parentText = parent["message"].toString();
-            if (acc.parentMessage.isEmpty() && !parentText.isEmpty())
-                acc.parentMessage = parentText;
+            // Use the API-provided thread title
+            const QString title = msg["threadTitle"].toString();
+            if (acc.threadTitle.isEmpty() && !title.isEmpty())
+                acc.threadTitle = title;
 
-            // Track the most recent reply
+            // Track the most recent message in this thread
             const qint64 ts = msg["timestamp"].toVariant().toLongLong();
             if (ts > acc.latestTimestamp) {
                 acc.latestTimestamp = ts;
@@ -223,13 +226,8 @@ void ThreadListModel::fetchThreads()
         for (auto it = threadMap.cbegin(); it != threadMap.cend(); ++it) {
             const auto &acc = it.value();
             ThreadInfo info;
-            info.threadId = acc.parentId;
-
-            // Title: first 50 chars of the parent message
-            QString title = acc.parentMessage;
-            if (title.length() > 50)
-                title = title.left(50) + QStringLiteral("...");
-            info.title = title;
+            info.threadId = acc.threadRootId;
+            info.title = acc.threadTitle;
 
             info.lastMessage = acc.latestMessage;
             info.lastAuthor = acc.latestAuthor;
@@ -251,7 +249,7 @@ void ThreadListModel::fetchThreads()
         // Insert "All Messages" at index 0
         ThreadInfo allMsg;
         allMsg.threadId = 0;
-        allMsg.title = "All Messages";
+        allMsg.title = "General";
         allMsg.isAllMessages = true;
         allMsg.iconColor = 0;  // teal
         if (!threads.isEmpty()) {
