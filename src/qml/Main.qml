@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Window
 import TalkQt
 import QtQuick.Controls
 import QtQuick.Layouts
@@ -13,6 +14,12 @@ ApplicationWindow {
     visible: true
     title: "TalQ"
     color: Theme.bgPrimary
+
+    // Center on primary screen at startup
+    Component.onCompleted: {
+        x = (Screen.width - width) / 2
+        y = (Screen.height - height) / 2
+    }
 
     // Window position/size saved — but only restored after login
     // so the splash screen stays small
