@@ -38,8 +38,8 @@ void PushClient::stop()
 
 void PushClient::authenticate()
 {
-    // POST to pre_auth — returns a plain-text one-time token
-    auto *reply = m_api->postRaw("../apps/notify_push/pre_auth");
+    // POST to pre_auth (absolute path, not OCS)
+    auto *reply = m_api->postAbsoluteUrl("/apps/notify_push/pre_auth");
 
     connect(reply, &QNetworkReply::finished, this, [this, reply]() {
         reply->deleteLater();
