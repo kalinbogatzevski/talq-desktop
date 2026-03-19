@@ -136,6 +136,8 @@ QVariant MessageListModel::data(const QModelIndex &index, int role) const
             return m.filePreviewUrl;
         case HasFileRole:
             return m.hasFile();
+        case FileIdRole:
+            return m.fileId;
         default:
             return {};
     }
@@ -167,6 +169,7 @@ QHash<int, QByteArray> MessageListModel::roleNames() const
         {FileLinkRole,      "fileLink"},
         {FilePreviewRole,   "filePreview"},
         {HasFileRole,       "hasFile"},
+        {FileIdRole,        "fileId"},
     };
 }
 

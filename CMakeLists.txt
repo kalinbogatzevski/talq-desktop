@@ -28,6 +28,7 @@ qt_add_executable(talq
     src/core/NotificationManager.cpp
     src/core/PushClient.cpp
     src/core/SignalingClient.cpp
+    src/core/FilePreviewProvider.cpp
     src/models/Conversation.cpp
     src/models/Message.cpp
     src/models/ConversationListModel.cpp
