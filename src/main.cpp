@@ -19,6 +19,7 @@
 #include "core/MessageCache.h"
 #include "core/NotificationManager.h"
 #include "core/PushClient.h"
+#include "core/SignalingClient.h"
 #include "models/ConversationListModel.h"
 #include "models/MessageListModel.h"
 #include "models/ThreadListModel.h"
@@ -46,6 +47,7 @@ int main(int argc, char *argv[])
     ThreadListModel threads(&api);
     NotificationManager notifications;
     PushClient push(&api);
+    SignalingClient signaling(&api);
 
     // QML engine
     QQmlApplicationEngine engine;
@@ -57,6 +59,7 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty("messageModel", &messages);
     engine.rootContext()->setContextProperty("threadModel", &threads);
     engine.rootContext()->setContextProperty("pushClient", &push);
+    engine.rootContext()->setContextProperty("signaling", &signaling);
     engine.rootContext()->setContextProperty("notifications", &notifications);
 
     engine.addImageProvider("avatar", new AvatarProvider(&api));
@@ -114,12 +117,14 @@ int main(int argc, char *argv[])
     });
 
     // Start push + conversation polling after login
-    QObject::connect(&auth, &AuthManager::loggedInChanged, &conversations, [&auth, &conversations, &push]() {
+    QObject::connect(&auth, &AuthManager::loggedInChanged, &conversations, [&auth, &conversations, &push, &signaling]() {
         if (auth.isLoggedIn()) {
             push.start();
-            conversations.startAutoRefresh();  // 30s fallback for push
+            signaling.start();
+            conversations.startAutoRefresh();
         } else {
             push.stop();
+            signaling.stop();
             conversations.stopAutoRefresh();
         }
     });

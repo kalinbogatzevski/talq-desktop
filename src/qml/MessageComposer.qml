@@ -42,11 +42,27 @@ Rectangle {
                 padding: Theme.spacingNormal
                 leftPadding: Theme.spacingLarge
 
+                // Send typing indicator (debounced)
+                onTextChanged: {
+                    if (text.length > 0) {
+                        signaling.sendStartedTyping()
+                        typingStopTimer.restart()
+                    }
+                }
+
+                Timer {
+                    id: typingStopTimer
+                    interval: 3000
+                    onTriggered: signaling.sendStoppedTyping()
+                }
+
                 Keys.onReturnPressed: function(event) {
                     if (event.modifiers & Qt.ShiftModifier) {
                         event.accepted = false
                     } else {
                         event.accepted = true
+                        typingStopTimer.stop()
+                        signaling.sendStoppedTyping()
                         sendAction()
                     }
                 }
