@@ -125,7 +125,7 @@ Item {
             // React button — smiley face drawn via Canvas
             Rectangle {
                 id: reactBtnRect
-                width: 32; height: 32; radius: 16
+                width: 30; height: 30; radius: 15
                 color: reactMa.containsMouse
                     ? (Theme.darkMode ? Qt.rgba(1,1,1,0.15) : Qt.rgba(0,0,0,0.08))
                     : Theme.bgSurface
@@ -179,7 +179,7 @@ Item {
 
             // Reply button — curved arrow drawn via Canvas
             Rectangle {
-                width: 32; height: 32; radius: 16
+                width: 30; height: 30; radius: 15
                 color: replyMa.containsMouse
                     ? (Theme.darkMode ? Qt.rgba(1,1,1,0.15) : Qt.rgba(0,0,0,0.08))
                     : Theme.bgSurface
