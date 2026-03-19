@@ -6,6 +6,7 @@
 #include <QIcon>
 #include <QWindow>
 #include <QRegularExpression>
+#include <QSharedMemory>
 
 #ifdef Q_OS_WIN
 #include <windows.h>
@@ -29,6 +30,14 @@
 int main(int argc, char *argv[])
 {
     QApplication app(argc, argv);
+
+    // Single-instance guard
+    QSharedMemory singleInstance("TalQ_SingleInstance_Lock");
+    if (!singleInstance.create(1)) {
+        // Another instance is already running
+        qWarning() << "TalQ is already running!";
+        return 0;
+    }
 #ifdef TALQ_BRAND_123NET
     app.setApplicationName("123NET TalQ");
     app.setOrganizationName("123NET");

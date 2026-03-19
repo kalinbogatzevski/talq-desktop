@@ -152,15 +152,35 @@ Item {
             }
         }
 
-        // Right-click → context popup at cursor (Telegram-style: below cursor, or above if no space)
+        // Right-click → context popup at cursor, clamped to window bounds
         MouseArea {
             anchors.fill: parent
             acceptedButtons: Qt.RightButton
             onClicked: function(mouse) {
-                var popupHeight = 350  // approximate height
-                var spaceBelow = bubble.height - mouse.y
-                var y = spaceBelow >= popupHeight ? mouse.y : mouse.y - popupHeight
-                msgPopupLoader.openAt(mouse.x, Math.max(0, y))
+                // Map click to the ListView's coordinate space (which fills the window content)
+                var listView = msgContent.parent  // MessageBubble's parent = ListView delegate → ListView
+                var globalPos = mapToItem(null, mouse.x, mouse.y)  // null = window coordinates
+
+                var popupW = 260
+                var popupH = 420  // approximate max height
+                var winW = bubble.Window.width || 800
+                var winH = bubble.Window.height || 600
+
+                // Clamp X: prefer right of cursor, flip left if clipped
+                var px = globalPos.x
+                if (px + popupW > winW) px = globalPos.x - popupW
+
+                // Clamp Y: prefer below cursor, flip above if clipped
+                var py = globalPos.y
+                if (py + popupH > winH) py = globalPos.y - popupH
+
+                // Safety: never go off-screen
+                px = Math.max(4, Math.min(px, winW - popupW - 4))
+                py = Math.max(4, Math.min(py, winH - popupH - 4))
+
+                // Convert back to msgContent local coordinates
+                var localPos = mapFromItem(null, px, py)
+                msgPopupLoader.openAt(localPos.x, localPos.y)
             }
         }
 
@@ -241,9 +261,9 @@ Item {
             id: msgPopup
             x: isOwnMessage ? -width - 4 : parent.width + 4
             y: Math.max(0, Math.min(parent.height - height, 0))
-            width: popupCol.width + 20
-            height: popupCol.height + 16
-            padding: 8
+            width: popupCol.width + 16
+            height: popupCol.height + 12
+            padding: 6
             background: Rectangle {
                 radius: Theme.radiusNormal
                 color: Theme.bgSurface
@@ -253,80 +273,84 @@ Item {
 
             ColumnLayout {
                 id: popupCol
-                spacing: 6
+                spacing: 2
 
-                // Emoji quick-react row
-                Row {
-                    Layout.alignment: Qt.AlignHCenter
-                    spacing: 2
+                // Emoji quick-react row (visually separated with background)
+                Rectangle {
+                    Layout.fillWidth: true
+                    height: 38
+                    radius: Theme.radiusSmall
+                    color: Theme.darkMode ? Qt.rgba(1,1,1,0.04) : Qt.rgba(0,0,0,0.03)
                     visible: messageId > 0
 
-                    Repeater {
-                        model: ["\uD83D\uDC4D", "\u2764\uFE0F", "\uD83D\uDE02", "\uD83D\uDE2E", "\uD83D\uDE22", "\uD83C\uDF89", "\uD83D\uDC4F", "\uD83D\uDE4F"]
+                    Row {
+                        anchors.centerIn: parent
+                        spacing: 1
 
-                        Rectangle {
-                            width: 32; height: 32; radius: 8
-                            color: emojiMa.containsMouse ? (Theme.darkMode ? Qt.rgba(1,1,1,0.15) : Qt.rgba(0,0,0,0.10)) : "transparent"
+                        Repeater {
+                            model: ["\uD83D\uDC4D", "\u2764\uFE0F", "\uD83D\uDE02", "\uD83D\uDE2E", "\uD83D\uDE22", "\uD83C\uDF89", "\uD83D\uDC4F", "\uD83D\uDE4F"]
 
-                            Label {
-                                anchors.centerIn: parent
-                                text: modelData
-                                font.pixelSize: 17
-                            }
+                            Rectangle {
+                                width: 30; height: 30; radius: 8
+                                color: emojiMa.containsMouse ? (Theme.darkMode ? Qt.rgba(1,1,1,0.18) : Qt.rgba(0,0,0,0.12)) : "transparent"
 
-                            MouseArea {
-                                id: emojiMa
-                                anchors.fill: parent
-                                hoverEnabled: true
-                                cursorShape: Qt.PointingHandCursor
-                                onClicked: {
-                                    messageModel.addReaction(messageId, modelData)
-                                    msgPopup.close()
+                                Label {
+                                    anchors.centerIn: parent
+                                    text: modelData
+                                    font.pixelSize: 16
+                                }
+
+                                MouseArea {
+                                    id: emojiMa
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: {
+                                        messageModel.addReaction(messageId, modelData)
+                                        msgPopup.close()
+                                    }
                                 }
                             }
                         }
                     }
                 }
 
-                Rectangle { Layout.fillWidth: true; height: 1; color: Theme.divider; visible: messageId > 0 }
+                Item { height: 2; visible: messageId > 0 }
 
-                // Action buttons
+                // Action buttons — compact
                 Repeater {
                     model: [
                         { icon: "\u21A9", label: "Reply", action: "reply", ownerOnly: false },
                         { icon: "\uD83D\uDCCB", label: "Copy", action: "copy", ownerOnly: false },
                         { icon: "\u21AA", label: "Forward", action: "forward", ownerOnly: false },
                         { icon: "\uD83D\uDCCC", label: "Pin", action: "pin", ownerOnly: false },
-                        { icon: "\uD83D\uDD17", label: "Copy message link", action: "copylink", ownerOnly: false },
-                        { icon: "\u2709", label: "Mark as unread", action: "unread", ownerOnly: false },
-                        { icon: "\uD83D\uDCDD", label: "Note to self", action: "notetoself", ownerOnly: false },
-                        { icon: "\u23F0", label: "Set reminder", action: "reminder", ownerOnly: false },
+                        { icon: "\uD83D\uDD17", label: "Copy link", action: "copylink", ownerOnly: false },
                         { icon: "\uD83D\uDCAC", label: "Reply in thread", action: "thread", ownerOnly: false },
                         { icon: "\uD83D\uDDD1", label: "Delete", action: "delete", ownerOnly: true }
                     ]
 
                     Rectangle {
                         Layout.fillWidth: true
-                        width: 220; height: 36; radius: Theme.radiusSmall
+                        width: 200; height: 30; radius: Theme.radiusSmall
                         color: actionMa.containsMouse ? (Theme.darkMode ? Qt.rgba(1,1,1,0.12) : Qt.rgba(0,0,0,0.08)) : "transparent"
                         visible: !modelData.ownerOnly || isOwnMessage
 
                         RowLayout {
                             anchors.fill: parent
-                            anchors.leftMargin: Theme.spacingNormal
-                            anchors.rightMargin: Theme.spacingNormal
-                            spacing: Theme.spacingNormal
+                            anchors.leftMargin: 10
+                            anchors.rightMargin: 10
+                            spacing: 8
 
                             Label {
                                 text: modelData.icon
-                                font.pixelSize: 18
-                                Layout.preferredWidth: 24
+                                font.pixelSize: 15
+                                Layout.preferredWidth: 20
                                 horizontalAlignment: Text.AlignHCenter
                                 color: modelData.action === "delete" ? Theme.danger : Theme.textSecondary
                             }
                             Label {
                                 text: modelData.label
-                                font.pixelSize: Theme.fontSizeNormal
+                                font.pixelSize: Theme.fontSizeSmall
                                 color: modelData.action === "delete" ? Theme.danger : Theme.textPrimary
                                 Layout.fillWidth: true
                             }
