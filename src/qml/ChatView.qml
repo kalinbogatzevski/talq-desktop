@@ -172,6 +172,7 @@ Page {
         model: messageModel
         clip: true
         spacing: 2
+        bottomMargin: Theme.spacingSmall
         boundsBehavior: Flickable.StopAtBounds
 
         // Scroll to newest message on any count change
@@ -182,7 +183,7 @@ Page {
 
         Timer {
             id: scrollEndTimer
-            interval: 100
+            interval: 150
             onTriggered: messageListView.positionViewAtEnd()
         }
 
