@@ -29,6 +29,7 @@ Item {
     property bool isOwnMessage: false
 
     signal replyRequested(int msgId, string author, string text)
+    signal threadOpenRequested(int threadId)
 
     // Author color based on actorId hash
     function authorColor() {
@@ -105,9 +106,12 @@ Item {
             x: isOwnMessage
                 ? (ownBubble.x - width - 6)
                 : (otherMsg.x + otherMsg.width + 6)
-            y: isOwnMessage
-                ? (ownBubble.y + (ownBubble.height - height) / 2)
-                : (otherMsg.y + (otherMsg.height - height) / 2)
+            y: {
+                var targetY = isOwnMessage
+                    ? (ownBubble.y + (ownBubble.height - height) / 2)
+                    : (otherMsg.y + (otherMsg.height - height) / 2)
+                return Math.max(0, Math.min(targetY, parent.height - height))
+            }
 
             ToolButton {
                 width: 26; height: 26
@@ -261,6 +265,7 @@ Item {
                         { icon: "\u2709", label: "Mark as unread", action: "unread", ownerOnly: false },
                         { icon: "\uD83D\uDCDD", label: "Note to self", action: "notetoself", ownerOnly: false },
                         { icon: "\u23F0", label: "Set reminder", action: "reminder", ownerOnly: false },
+                        { icon: "\uD83D\uDCAC", label: "Reply in thread", action: "thread", ownerOnly: false },
                         { icon: "\uD83D\uDDD1", label: "Delete", action: "delete", ownerOnly: true }
                     ]
 
@@ -302,6 +307,9 @@ Item {
                                     contextClipHelper.text = plain
                                     contextClipHelper.selectAll()
                                     contextClipHelper.copy()
+                                } else if (modelData.action === "thread") {
+                                    // Signal to ChatView to open this message as a thread
+                                    bubble.threadOpenRequested(messageId)
                                 } else if (modelData.action === "delete") {
                                     messageModel.sendMessage("/delete " + messageId)
                                 }
@@ -441,11 +449,41 @@ Item {
                 }
 
                 // Reactions
-                Label {
+                Flow {
                     visible: reactions.length > 0
-                    text: reactions
-                    font.pixelSize: Theme.fontSizeSmall
-                    color: Theme.textSecondary
+                    Layout.fillWidth: true
+                    spacing: 4
+
+                    Repeater {
+                        model: reactions.length > 0 ? reactions.split("  ") : []
+
+                        Rectangle {
+                            width: rxLabel.implicitWidth + 14
+                            height: 22
+                            radius: 11
+                            color: rxMa.containsMouse
+                                ? (Theme.darkMode ? Qt.rgba(1,1,1,0.14) : Qt.rgba(0,0,0,0.10))
+                                : (Theme.darkMode ? Qt.rgba(1,1,1,0.07) : Qt.rgba(0,0,0,0.05))
+
+                            Label {
+                                id: rxLabel
+                                anchors.centerIn: parent
+                                text: modelData
+                                font.pixelSize: Theme.fontSizeTiny
+                            }
+
+                            MouseArea {
+                                id: rxMa
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: {
+                                    var emoji = modelData.split(" ")[0]
+                                    messageModel.addReaction(messageId, emoji)
+                                }
+                            }
+                        }
+                    }
                 }
 
                 // Timestamp for grouped messages (no name row)
@@ -529,11 +567,41 @@ Item {
                 }
 
                 // Reactions
-                Label {
+                Flow {
                     visible: reactions.length > 0
-                    text: reactions
-                    font.pixelSize: Theme.fontSizeSmall
-                    color: Theme.textSecondary
+                    Layout.fillWidth: true
+                    spacing: 4
+
+                    Repeater {
+                        model: reactions.length > 0 ? reactions.split("  ") : []
+
+                        Rectangle {
+                            width: ownRxLabel.implicitWidth + 14
+                            height: 22
+                            radius: 11
+                            color: ownRxMa.containsMouse
+                                ? (Theme.darkMode ? Qt.rgba(1,1,1,0.14) : Qt.rgba(0,0,0,0.10))
+                                : (Theme.darkMode ? Qt.rgba(1,1,1,0.07) : Qt.rgba(0,0,0,0.05))
+
+                            Label {
+                                id: ownRxLabel
+                                anchors.centerIn: parent
+                                text: modelData
+                                font.pixelSize: Theme.fontSizeTiny
+                            }
+
+                            MouseArea {
+                                id: ownRxMa
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: {
+                                    var emoji = modelData.split(" ")[0]
+                                    messageModel.addReaction(messageId, emoji)
+                                }
+                            }
+                        }
+                    }
                 }
 
                 // Time + send/read status (inline, right-aligned)
