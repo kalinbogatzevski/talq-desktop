@@ -24,7 +24,7 @@ MessageCache::MessageCache(QObject *parent)
 MessageCache::~MessageCache()
 {
     m_workerThread.quit();
-    m_workerThread.wait(3000);
+    m_workerThread.wait();  // block until worker finishes — no timeout, prevents dangling lambdas
 }
 
 void MessageCache::loadMessages(const QString &token, int limit)

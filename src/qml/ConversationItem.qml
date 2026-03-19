@@ -53,6 +53,23 @@ ItemDelegate {
     topPadding: squeezed ? 0 : Theme.spacingSmall
     bottomPadding: squeezed ? 0 : Theme.spacingSmall
 
+    // Shared avatar source — single image load for both expanded and squeezed views
+    readonly property string avatarSource: (conversationType === 1 && participantUserId.length > 0)
+        ? "image://avatar/" + participantUserId : ""
+    readonly property color avatarFallbackColor: {
+        var colors = ["#5eb5f7", "#e17076", "#faa05a", "#7bc862", "#a695e7", "#ee7aae", "#6ec9cb", "#65aadd"]
+        var hash = 0
+        for (var i = 0; i < displayName.length; i++) {
+            hash = ((hash << 5) - hash) + displayName.charCodeAt(i)
+            hash = hash & hash
+        }
+        return colors[Math.abs(hash) % colors.length]
+    }
+    readonly property string avatarLetter: {
+        if (conversationType === 6) return "\uD83D\uDCDD"
+        return displayName.length > 0 ? displayName[0].toUpperCase() : "?"
+    }
+
     contentItem: Item {
         // Normal (expanded) view
         RowLayout {
@@ -71,8 +88,7 @@ ItemDelegate {
                 Image {
                     id: avatarImg
                     anchors.fill: parent
-                    source: (conversationType === 1 && participantUserId.length > 0)
-                        ? "image://avatar/" + participantUserId : ""
+                    source: convItem.avatarSource
                     sourceSize: Qt.size(Theme.avatarSize, Theme.avatarSize)
                     visible: status === Image.Ready
                     fillMode: Image.PreserveAspectFit
@@ -83,22 +99,11 @@ ItemDelegate {
                     anchors.fill: parent
                     radius: Theme.avatarSize / 2
                     visible: avatarImg.status !== Image.Ready
-                    color: {
-                        var colors = ["#5eb5f7", "#e17076", "#faa05a", "#7bc862", "#a695e7", "#ee7aae", "#6ec9cb", "#65aadd"]
-                        var hash = 0
-                        for (var i = 0; i < displayName.length; i++) {
-                            hash = ((hash << 5) - hash) + displayName.charCodeAt(i)
-                            hash = hash & hash
-                        }
-                        return colors[Math.abs(hash) % colors.length]
-                    }
+                    color: convItem.avatarFallbackColor
 
                     Label {
                         anchors.centerIn: parent
-                        text: {
-                            if (conversationType === 6) return "📝"
-                            return displayName.length > 0 ? displayName[0].toUpperCase() : "?"
-                        }
+                        text: convItem.avatarLetter
                         font.pixelSize: conversationType === 6 ? 20 : 18
                         font.weight: Font.DemiBold
                         color: "white"
@@ -132,7 +137,7 @@ ItemDelegate {
                     border.width: 2
                     Label {
                         anchors.centerIn: parent
-                        text: conversationType === 3 ? "🌐" : "👥"
+                        text: conversationType === 3 ? "\uD83C\uDF10" : "\uD83D\uDC65"
                         font.pixelSize: 8
                     }
                 }
@@ -231,13 +236,11 @@ ItemDelegate {
             opacity: convItem.squeezed ? 1 : 0
             Behavior on opacity { NumberAnimation { duration: Theme.animFast } }
 
-            // Real avatar image
+            // Reuse the expanded avatar (same source, scaled down)
             Image {
-                id: squeezedAvatarImg
                 anchors.fill: parent
-                source: (conversationType === 1 && participantUserId.length > 0)
-                    ? "image://avatar/" + participantUserId : ""
-                sourceSize: Qt.size(40, 40)
+                source: convItem.avatarSource
+                sourceSize: Qt.size(Theme.avatarSize, Theme.avatarSize)  // same sourceSize = same cache slot
                 visible: status === Image.Ready
                 fillMode: Image.PreserveAspectFit
             }
@@ -246,23 +249,12 @@ ItemDelegate {
             Rectangle {
                 anchors.fill: parent
                 radius: 20
-                visible: squeezedAvatarImg.status !== Image.Ready
-                color: {
-                    var colors = ["#5eb5f7", "#e17076", "#faa05a", "#7bc862", "#a695e7", "#ee7aae", "#6ec9cb", "#65aadd"]
-                    var hash = 0
-                    for (var i = 0; i < displayName.length; i++) {
-                        hash = ((hash << 5) - hash) + displayName.charCodeAt(i)
-                        hash = hash & hash
-                    }
-                    return colors[Math.abs(hash) % colors.length]
-                }
+                visible: convItem.avatarSource.length === 0 || avatarImg.status !== Image.Ready
+                color: convItem.avatarFallbackColor
 
                 Label {
                     anchors.centerIn: parent
-                    text: {
-                        if (conversationType === 6) return "📝"
-                        return displayName.length > 0 ? displayName[0].toUpperCase() : "?"
-                    }
+                    text: convItem.avatarLetter
                     font.pixelSize: conversationType === 6 ? 18 : 16
                     font.weight: Font.DemiBold
                     color: "white"
