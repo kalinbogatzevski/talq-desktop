@@ -27,6 +27,9 @@ public:
     bool isPolling() const { return m_polling; }
     QString currentToken() const { return m_token; }
 
+    void setThreadId(int id) { m_threadId = id; }
+    int threadId() const { return m_threadId; }
+
 signals:
     void messagesReceived(const QJsonArray &messages);
     void lastCommonReadChanged(int messageId);
@@ -42,5 +45,6 @@ private:
     QString m_token;
     int m_lastKnownMessageId = 0;
     bool m_polling = false;
+    int m_threadId = 0;
     static constexpr int POLL_TIMEOUT_SECS = 30;
 };

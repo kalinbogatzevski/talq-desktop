@@ -19,6 +19,7 @@ class MessageListModel : public QAbstractListModel
     Q_PROPERTY(bool loading READ isLoading NOTIFY loadingChanged)
     Q_PROPERTY(QString conversationToken READ conversationToken WRITE setConversationToken NOTIFY conversationTokenChanged)
     Q_PROPERTY(bool connected READ isConnected NOTIFY connectedChanged)
+    Q_PROPERTY(int threadId READ threadId WRITE setThreadId NOTIFY threadIdChanged)
 
 public:
     enum Roles {
@@ -38,6 +39,7 @@ public:
         DateStringRole,         // "Today", "Yesterday", "18 Mar 2026"
         IsReadRole,             // true if all participants have read this message
         SendStatusRole,         // "sent", "sending", "failed"
+        ThreadIdRole,
     };
 
     explicit MessageListModel(ApiClient *api, MessageCache *cache, QObject *parent = nullptr);
@@ -52,6 +54,9 @@ public:
     QString conversationToken() const { return m_token; }
     void setConversationToken(const QString &token);
 
+    int threadId() const { return m_threadId; }
+    void setThreadId(int id);
+
     Q_INVOKABLE void sendMessage(const QString &text, int replyToId = 0);
     Q_INVOKABLE void retryMessage(int tempId);
     Q_INVOKABLE void addReaction(int messageId, const QString &emoji);
@@ -64,6 +69,7 @@ signals:
     void errorOccurred(const QString &error);
     void newMessagesAtEnd();
     void connectedChanged();
+    void threadIdChanged();
 
 private slots:
     void onMessagesReceived(const QJsonArray &messages);
@@ -79,6 +85,7 @@ private:
     bool m_loading = false;
     int m_oldestMessageId = 0;
     int m_lastCommonRead = 0;
+    int m_threadId = 0;
     bool m_connected = true;  // assume connected until proven otherwise
 
 private slots:
