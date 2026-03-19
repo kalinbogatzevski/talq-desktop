@@ -89,12 +89,33 @@ Item {
                 }
 
                 // Empty state
-                Label {
+                Column {
                     anchors.centerIn: parent
+                    spacing: Theme.spacingNormal
                     visible: !threadModel.loading && threadList.count === 0
-                    text: "No topics yet"
-                    font.pixelSize: Theme.fontSizeNormal
-                    color: Theme.textMuted
+
+                    Rectangle {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        width: 56; height: 56; radius: 28
+                        color: Theme.bgSurface
+                        Label {
+                            anchors.centerIn: parent
+                            text: "\uD83D\uDCAC"  // 💬
+                            font.pixelSize: 24
+                        }
+                    }
+                    Label {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        text: "No topics yet"
+                        font.pixelSize: Theme.fontSizeNormal; font.weight: Font.DemiBold
+                        color: Theme.textPrimary
+                    }
+                    Label {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        text: "Reply to a message to start a thread"
+                        font.pixelSize: Theme.fontSizeSmall
+                        color: Theme.textSecondary
+                    }
                 }
             }
 
