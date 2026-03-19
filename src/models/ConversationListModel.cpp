@@ -32,6 +32,12 @@ QVariant ConversationListModel::data(const QModelIndex &index, int role) const
         case LastAuthorRole:    return c.lastMessageAuthor;
         case LastActivityRole:  return c.lastActivity;
         case ActorIdRole:       return c.name;
+        case UserStatusRole: {
+            // For 1:1 chats, return the other user's status
+            if (c.type == 1 && !c.name.isEmpty())
+                return m_userStatuses.value(c.name, "offline");
+            return QString();
+        }
         default:                return {};
     }
 }
@@ -49,6 +55,7 @@ QHash<int, QByteArray> ConversationListModel::roleNames() const
         {LastAuthorRole,    "lastAuthor"},
         {LastActivityRole,  "lastActivity"},
         {ActorIdRole,       "participantUserId"},
+        {UserStatusRole,    "userStatus"},
     };
 }
 
@@ -112,12 +119,34 @@ void ConversationListModel::refresh()
             endResetModel();
         }
         emit countChanged();
+        fetchUserStatuses();
 
         if (m_totalUnread != newTotalUnread) {
             m_totalUnread = newTotalUnread;
             emit totalUnreadChanged();
         }
     });
+}
+
+void ConversationListModel::fetchUserStatuses()
+{
+    m_api->getArray("apps/user_status/api/v1/statuses",
+        [this](bool ok, const QJsonArray &data, int) {
+            if (!ok) return;
+
+            QHash<QString, QString> statuses;
+            for (const auto &val : data) {
+                QJsonObject u = val.toObject();
+                statuses[u["userId"].toString()] = u["status"].toString();
+            }
+
+            if (statuses != m_userStatuses) {
+                m_userStatuses = statuses;
+                // Notify all 1:1 conversations that status may have changed
+                if (!m_conversations.isEmpty())
+                    emit dataChanged(index(0), index(m_conversations.size() - 1), {UserStatusRole});
+            }
+        });
 }
 
 void ConversationListModel::startAutoRefresh()

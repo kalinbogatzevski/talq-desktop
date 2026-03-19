@@ -30,6 +30,7 @@ public:
         LastAuthorRole,
         LastActivityRole,
         ActorIdRole,
+        UserStatusRole,     // "online", "away", "dnd", "offline"
     };
 
     explicit ConversationListModel(ApiClient *api, QObject *parent = nullptr);
@@ -57,8 +58,11 @@ signals:
     void newUnreadMessage(const QString &conversationName, const QString &lastMessage, const QString &token);
 
 private:
+    void fetchUserStatuses();
+
     ApiClient *m_api;
     QVector<Conversation> m_conversations;
+    QHash<QString, QString> m_userStatuses;  // userId → "online"/"away"/"dnd"/"offline"
     QTimer m_autoRefreshTimer;
     bool m_loading = false;
     int m_totalUnread = 0;
