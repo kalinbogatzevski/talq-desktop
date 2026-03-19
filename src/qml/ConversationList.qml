@@ -221,10 +221,10 @@ Item {
                     }
                 }
 
-                // Loading
+                // Loading — only show on initial load when list is empty
                 BusyIndicator {
                     anchors.centerIn: parent
-                    running: conversationModel.loading
+                    running: conversationModel.loading && convListView.count === 0
                     visible: running
                     palette.dark: Theme.accent
                 }
