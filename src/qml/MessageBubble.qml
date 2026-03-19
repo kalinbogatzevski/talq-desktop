@@ -25,8 +25,15 @@ Item {
     required property string dateString
     required property bool isRead
     required property string sendStatus
+    required property string fileName
+    required property string fileMime
+    required property real fileSize
+    required property string fileLink
+    required property string filePreview
+    required property bool hasFile
 
     property bool isOwnMessage: false
+    property bool isImage: hasFile && fileMime.startsWith("image/")
 
     signal replyRequested(int msgId, string author, string text)
     signal threadOpenRequested(int threadId)
@@ -461,10 +468,89 @@ Item {
                     }
                 }
 
+                // Inline image preview
+                Image {
+                    visible: isImage && filePreview.length > 0
+                    Layout.fillWidth: true
+                    Layout.maximumWidth: 300
+                    Layout.maximumHeight: 300
+                    source: visible ? filePreview : ""
+                    fillMode: Image.PreserveAspectFit
+                    sourceSize: Qt.size(300, 300)
+
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: Qt.openUrlExternally(fileLink)
+                    }
+
+                    // Loading placeholder
+                    Rectangle {
+                        anchors.fill: parent
+                        visible: parent.status === Image.Loading
+                        color: Theme.bgSurface
+                        radius: Theme.radiusSmall
+                        Label { anchors.centerIn: parent; text: "Loading..."; color: Theme.textMuted; font.pixelSize: Theme.fontSizeTiny }
+                    }
+                }
+
+                // File attachment (non-image)
+                Rectangle {
+                    visible: hasFile && !isImage
+                    Layout.fillWidth: true
+                    height: 44
+                    radius: Theme.radiusSmall
+                    color: Theme.darkMode ? Qt.rgba(1,1,1,0.06) : Qt.rgba(0,0,0,0.05)
+
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.leftMargin: Theme.spacingNormal
+                        anchors.rightMargin: Theme.spacingNormal
+                        spacing: Theme.spacingSmall
+
+                        Label {
+                            text: fileMime.startsWith("video/") ? "\uD83C\uDFA5"
+                                : fileMime.startsWith("audio/") ? "\uD83C\uDFB5"
+                                : fileMime.indexOf("pdf") >= 0 ? "\uD83D\uDCC4"
+                                : fileMime.indexOf("spreadsheet") >= 0 || fileMime.indexOf("excel") >= 0 ? "\uD83D\uDCCA"
+                                : fileMime.indexOf("document") >= 0 || fileMime.indexOf("word") >= 0 ? "\uD83D\uDCC3"
+                                : "\uD83D\uDCCE"
+                            font.pixelSize: 20
+                        }
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 0
+                            Label {
+                                text: fileName
+                                font.pixelSize: Theme.fontSizeSmall
+                                font.weight: Font.DemiBold
+                                color: Theme.accent
+                                elide: Text.ElideMiddle
+                                Layout.fillWidth: true
+                            }
+                            Label {
+                                text: {
+                                    var kb = fileSize / 1024
+                                    return kb > 1024 ? (kb/1024).toFixed(1) + " MB" : Math.round(kb) + " KB"
+                                }
+                                font.pixelSize: Theme.fontSizeTiny
+                                color: Theme.textMuted
+                            }
+                        }
+                    }
+
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: Qt.openUrlExternally(fileLink)
+                    }
+                }
+
                 // Message text with right-click copy
                 Label {
                     Layout.fillWidth: true
                     text: messageText
+                    visible: messageText.length > 0
                     font.pixelSize: Theme.fontSizeNormal
                     color: Theme.textPrimary
                     wrapMode: Text.Wrap
@@ -579,10 +665,38 @@ Item {
                     }
                 }
 
+                // Inline image preview (own)
+                Image {
+                    visible: isImage && filePreview.length > 0
+                    Layout.fillWidth: true
+                    Layout.maximumWidth: 280
+                    Layout.maximumHeight: 280
+                    source: visible ? filePreview : ""
+                    fillMode: Image.PreserveAspectFit
+                    sourceSize: Qt.size(280, 280)
+                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: Qt.openUrlExternally(fileLink) }
+                }
+
+                // File attachment (own, non-image)
+                Rectangle {
+                    visible: hasFile && !isImage
+                    Layout.fillWidth: true
+                    height: 40
+                    radius: Theme.radiusSmall
+                    color: Qt.rgba(1,1,1,0.08)
+                    RowLayout {
+                        anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 10; spacing: 8
+                        Label { text: "\uD83D\uDCCE"; font.pixelSize: 16 }
+                        Label { text: fileName; font.pixelSize: Theme.fontSizeSmall; color: "white"; elide: Text.ElideMiddle; Layout.fillWidth: true }
+                    }
+                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: Qt.openUrlExternally(fileLink) }
+                }
+
                 // Message text
                 Label {
                     Layout.fillWidth: true
                     text: messageText
+                    visible: messageText.length > 0
                     font.pixelSize: Theme.fontSizeNormal
                     color: Theme.textPrimary
                     wrapMode: Text.Wrap
