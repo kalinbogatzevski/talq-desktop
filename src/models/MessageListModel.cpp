@@ -7,6 +7,9 @@
 #include <QJsonArray>
 #include <QDateTime>
 #include <QElapsedTimer>
+#include <QFile>
+#include <QFileInfo>
+#include <QUrl>
 #include <QTimer>
 #include <QNetworkReply>
 
@@ -506,6 +509,61 @@ QString MessageListModel::messageLink(int messageId) const
     // Build the Talk web URL for this message
     QString serverUrl = m_api->serverUrl();
     return serverUrl + "/call/" + m_token + "#message_" + QString::number(messageId);
+}
+
+void MessageListModel::sendFile(const QString &filePath)
+{
+    if (m_token.isEmpty() || filePath.isEmpty()) return;
+
+    QUrl fileUrl(filePath);
+    QString localPath = fileUrl.isLocalFile() ? fileUrl.toLocalFile() : filePath;
+
+    QFile *file = new QFile(localPath);
+    if (!file->open(QIODevice::ReadOnly)) {
+        emit errorOccurred("Cannot open file: " + localPath);
+        delete file;
+        return;
+    }
+
+    QString fileName = QFileInfo(localPath).fileName();
+    QByteArray fileData = file->readAll();
+    file->close();
+    delete file;
+
+    qDebug() << "Uploading file:" << fileName << "(" << fileData.size() << "bytes)";
+
+    // Step 1: Upload via WebDAV PUT
+    QString uploadPath = "/remote.php/dav/files/" + m_api->user() + "/Talk/" + fileName;
+    auto *uploadReply = m_api->putAbsoluteUrl(uploadPath, fileData);
+
+    QString token = m_token;
+    connect(uploadReply, &QNetworkReply::finished, this, [this, uploadReply, fileName, token]() {
+        uploadReply->deleteLater();
+
+        int status = uploadReply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if (status != 201 && status != 204) {
+            qWarning() << "File upload failed:" << status << uploadReply->errorString();
+            emit errorOccurred("Failed to upload file");
+            return;
+        }
+
+        qDebug() << "File uploaded, sharing to conversation" << token;
+
+        // Step 2: Share to conversation
+        QJsonObject body;
+        body["shareType"] = 10;  // share to Talk conversation
+        body["shareWith"] = token;
+        body["path"] = QString("Talk/" + fileName);
+
+        m_api->post("apps/files_sharing/api/v1/shares", body,
+            [this, fileName](bool ok, const QJsonObject &, int) {
+                if (ok) {
+                    qDebug() << "File shared:" << fileName;
+                } else {
+                    emit errorOccurred("Failed to share file to conversation");
+                }
+            });
+    });
 }
 
 void MessageListModel::onLastCommonReadChanged(int messageId)

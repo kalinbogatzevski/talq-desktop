@@ -2,6 +2,7 @@ import QtQuick
 import TalkQt
 import QtQuick.Controls
 import QtQuick.Layouts
+import QtQuick.Dialogs
 
 Rectangle {
     id: composer
@@ -18,6 +19,24 @@ Rectangle {
         anchors.topMargin: Theme.spacingTiny
         anchors.bottomMargin: Theme.spacingTiny
         spacing: Theme.spacingSmall
+
+        // Attach file button
+        RoundButton {
+            width: 36; height: 36; flat: true
+            ToolTip.visible: hovered; ToolTip.text: "Attach file"; ToolTip.delay: 300
+            contentItem: Label {
+                text: "\uD83D\uDCCE"  // 📎
+                font.pixelSize: 18
+                horizontalAlignment: Text.AlignHCenter
+                verticalAlignment: Text.AlignVCenter
+            }
+            background: Rectangle {
+                radius: 18
+                color: parent.hovered ? Theme.bgHover : "transparent"
+                Behavior on color { ColorAnimation { duration: Theme.animFast } }
+            }
+            onClicked: fileDialog.open()
+        }
 
         ScrollView {
             Layout.fillWidth: true
@@ -111,6 +130,14 @@ Rectangle {
         if (text.length > 0) {
             composer.sendMessage(text)
             inputField.text = ""
+        }
+    }
+
+    FileDialog {
+        id: fileDialog
+        title: "Send file"
+        onAccepted: {
+            messageModel.sendFile(selectedFile.toString())
         }
     }
 }
