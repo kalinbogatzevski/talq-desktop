@@ -2,5 +2,6 @@
     <qresource prefix="/">
         <file>logo.png</file>
         <file>notification.wav</file>
+        <file>brand-logo.png</file>
     </qresource>
 </RCC>

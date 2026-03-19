@@ -12,7 +12,7 @@ ApplicationWindow {
     minimumWidth: 380
     minimumHeight: 400
     visible: false  // start hidden, show after centering
-    title: "TalQ " + Qt.application.version
+    title: brandName + " " + Qt.application.version
     color: Theme.bgPrimary
 
     property bool chatMode: false  // true after login — enables geometry saving
@@ -206,9 +206,24 @@ ApplicationWindow {
                     Behavior on opacity { NumberAnimation { duration: Theme.animSlow; easing.type: Easing.OutCubic } }
                 }
 
+                // Brand logo (only for branded builds)
+                Image {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    source: isBranded ? brandLogo : ""
+                    visible: isBranded
+                    width: 80
+                    height: 80
+                    sourceSize: Qt.size(160, 160)
+                    fillMode: Image.PreserveAspectFit
+
+                    opacity: 0
+                    Component.onCompleted: opacity = 1
+                    Behavior on opacity { NumberAnimation { duration: Theme.animSlow; easing.type: Easing.OutCubic } }
+                }
+
                 Label {
                     anchors.horizontalCenter: parent.horizontalCenter
-                    text: "Connecting to your server..."
+                    text: isBranded ? "Connecting..." : "Connecting to your server..."
                     font.pixelSize: Theme.fontSizeNormal
                     color: Theme.textSecondary
 
