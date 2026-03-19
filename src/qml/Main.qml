@@ -11,25 +11,28 @@ ApplicationWindow {
     height: 420
     minimumWidth: 380
     minimumHeight: 400
-    visible: true
+    visible: false  // start hidden, show after centering
     title: "TalQ"
     color: Theme.bgPrimary
 
-    // Center on primary screen at startup
+    property bool chatMode: false  // true after login — enables geometry saving
+
+    // Center splash and show
     Component.onCompleted: {
         x = (Screen.width - width) / 2
         y = (Screen.height - height) / 2
+        visible = true
     }
 
-    // Window position/size saved — restored after login (not during splash)
+    // Saved geometry — only used after login
     Settings {
         id: windowSettings
-        category: "Window"
-        property real savedX: -1
-        property real savedY: -1
-        property real savedWidth: 1000
-        property real savedHeight: 700
-        property bool wasMaximized: false
+        category: "WindowGeometry"
+        property int savedX: -1
+        property int savedY: -1
+        property int savedWidth: 1000
+        property int savedHeight: 700
+        property int savedVisibility: 2  // Window.Windowed = 2, Window.Maximized = 4
     }
 
     Settings {
@@ -67,19 +70,21 @@ ApplicationWindow {
 
     function restoreChatWindow() {
         root.minimumWidth = 600
+        root.chatMode = true
 
-        if (windowSettings.wasMaximized) {
-            root.width = Math.max(windowSettings.savedWidth, 800)
-            root.height = Math.max(windowSettings.savedHeight, 600)
+        var w = Math.max(windowSettings.savedWidth, 800)
+        var h = Math.max(windowSettings.savedHeight, 600)
+        var sx = windowSettings.savedX
+        var sy = windowSettings.savedY
+
+        // Always set the windowed geometry first
+        root.width = w
+        root.height = h
+        if (sx >= 0 && sy >= 0) { root.x = sx; root.y = sy }
+
+        // Then apply maximized if that was the last state
+        if (windowSettings.savedVisibility === 4) {
             root.showMaximized()
-        } else {
-            root.width = Math.max(windowSettings.savedWidth, 800)
-            root.height = Math.max(windowSettings.savedHeight, 600)
-            // Restore position if we have one saved
-            if (windowSettings.savedX >= 0 && windowSettings.savedY >= 0) {
-                root.x = windowSettings.savedX
-                root.y = windowSettings.savedY
-            }
         }
     }
 
@@ -103,7 +108,8 @@ ApplicationWindow {
                 mainStack.replace(chatPage)
                 conversationModel.refresh()
             } else {
-                windowSettings.wasMaximized = (root.visibility === Window.Maximized)
+                root.saveWindowState()  // save before switching to login
+                root.chatMode = false
                 root.showNormal()
                 root.minimumWidth = 400
                 root.width = 460
@@ -115,12 +121,36 @@ ApplicationWindow {
         }
     }
 
-    // Save window geometry (only when in chat mode, not splash/login)
-    onWidthChanged: if (width > 500 && visibility !== Window.Maximized) windowSettings.savedWidth = width
-    onHeightChanged: if (width > 500 && visibility !== Window.Maximized) windowSettings.savedHeight = height
-    onXChanged: if (width > 500 && visibility !== Window.Maximized) windowSettings.savedX = x
-    onYChanged: if (width > 500 && visibility !== Window.Maximized) windowSettings.savedY = y
-    onVisibilityChanged: if (width > 500) windowSettings.wasMaximized = (visibility === Window.Maximized)
+    // Debounced window state save — proven pattern from QGroundControl
+    Timer {
+        id: saveGeometryTimer
+        interval: 300
+        onTriggered: root.saveWindowState()
+    }
+
+    function saveWindowState() {
+        if (!chatMode) return
+
+        switch (root.visibility) {
+        case ApplicationWindow.Windowed:
+            windowSettings.savedX = root.x
+            windowSettings.savedY = root.y
+            windowSettings.savedWidth = root.width
+            windowSettings.savedHeight = root.height
+            windowSettings.savedVisibility = 2  // Windowed
+            break
+        case ApplicationWindow.Maximized:
+            windowSettings.savedVisibility = 4  // Maximized
+            break
+        // Ignore Hidden, Minimized, FullScreen
+        }
+    }
+
+    onXChanged: saveGeometryTimer.restart()
+    onYChanged: saveGeometryTimer.restart()
+    onWidthChanged: saveGeometryTimer.restart()
+    onHeightChanged: saveGeometryTimer.restart()
+    onVisibilityChanged: saveGeometryTimer.restart()
 
     Component {
         id: splashPage
