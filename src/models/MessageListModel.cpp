@@ -98,6 +98,8 @@ QVariant MessageListModel::data(const QModelIndex &index, int role) const
             return m.id > 0 && m.id <= m_lastCommonRead;
         case SendStatusRole:
             return m.sendStatus;
+        case ThreadIdRole:
+            return m.threadId;
         default:
             return {};
     }
@@ -122,6 +124,7 @@ QHash<int, QByteArray> MessageListModel::roleNames() const
         {DateStringRole,    "dateString"},
         {IsReadRole,        "isRead"},
         {SendStatusRole,    "sendStatus"},
+        {ThreadIdRole,      "msgThreadId"},
     };
 }
 
@@ -166,6 +169,27 @@ void MessageListModel::setConversationToken(const QString &token)
         });
 }
 
+void MessageListModel::setThreadId(int id)
+{
+    if (m_threadId == id)
+        return;
+
+    m_poller->stop();
+
+    beginResetModel();
+    m_messages.clear();
+    endResetModel();
+
+    m_threadId = id;
+    m_oldestMessageId = 0;
+    emit threadIdChanged();
+
+    m_poller->setThreadId(id);
+
+    if (!m_token.isEmpty())
+        loadHistory();
+}
+
 void MessageListModel::loadHistory()
 {
     if (m_token.isEmpty()) return;
@@ -178,6 +202,9 @@ void MessageListModel::loadHistory()
     params.addQueryItem("limit", "50");
     if (m_oldestMessageId > 0)
         params.addQueryItem("lastKnownMessageId", QString::number(m_oldestMessageId));
+
+    if (m_threadId > 0)
+        params.addQueryItem("threadId", QString::number(m_threadId));
 
     QString currentToken = m_token;
     auto *reply = m_api->getRaw("apps/spreed/api/v1/chat/" + m_token, params);
@@ -240,6 +267,7 @@ void MessageListModel::loadHistory()
 
 void MessageListModel::startPoller()
 {
+    m_poller->setThreadId(m_threadId);
     int lastId = m_messages.isEmpty() ? 0 : m_messages.last().id;
     m_poller->start(m_token, lastId);
 }
