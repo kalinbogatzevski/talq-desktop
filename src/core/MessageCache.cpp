@@ -207,22 +207,28 @@ void MessageCacheWorker::doClearConversation(const QString &token)
     q.prepare("DELETE FROM messages WHERE token = :token");
     q.bindValue(":token", token);
     q.exec();
+
+    QSqlQuery q2(m_db);
+    q2.prepare("DELETE FROM thread_index WHERE token = ?");
+    q2.addBindValue(token);
+    q2.exec();
 }
 
 void MessageCacheWorker::doClearAll()
 {
     QSqlQuery q(m_db);
     q.exec("DELETE FROM messages");
+    q.exec("DELETE FROM thread_index");
 }
 
 void MessageCacheWorker::doSaveThreadIndex(const QString &token, const QVector<QJsonObject> &threads)
 {
-    QSqlQuery q(m_db);
-    q.prepare("INSERT OR REPLACE INTO thread_index "
-              "(token, thread_id, title, icon_color, last_activity, last_message, last_author, reply_count, last_read_message_id) "
-              "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
     m_db.transaction();
     for (const auto &t : threads) {
+        QSqlQuery q(m_db);
+        q.prepare("INSERT OR REPLACE INTO thread_index "
+                  "(token, thread_id, title, icon_color, last_activity, last_message, last_author, reply_count, last_read_message_id) "
+                  "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
         q.addBindValue(token);
         q.addBindValue(t["threadId"].toInt());
         q.addBindValue(t["title"].toString());
@@ -232,7 +238,8 @@ void MessageCacheWorker::doSaveThreadIndex(const QString &token, const QVector<Q
         q.addBindValue(t["lastAuthor"].toString());
         q.addBindValue(t["replyCount"].toInt());
         q.addBindValue(t["lastReadMessageId"].toInt());
-        q.exec();
+        if (!q.exec())
+            qWarning() << "Thread index save failed:" << q.lastError().text();
     }
     m_db.commit();
 }
