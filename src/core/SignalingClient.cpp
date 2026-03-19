@@ -131,14 +131,20 @@ void SignalingClient::onTextMessage(const QString &msg)
         qDebug() << "Signaling: joined room";
     }
     else if (type == "message") {
-        // Incoming message from another participant
-        QJsonObject msgData = obj["message"].toObject()["data"].toObject();
+        QJsonObject messageObj = obj["message"].toObject();
+        QJsonObject msgData = messageObj["data"].toObject();
         QString msgType = msgData["type"].toString();
 
+        // Check if this message is for our current room
+        QString senderRoom = messageObj["sender"].toObject()["roomid"].toString();
+        if (!senderRoom.isEmpty() && senderRoom != m_currentRoom) {
+            return;  // typing from a different room — ignore
+        }
+
         if (msgType == "startedTyping") {
-            QString sender = obj["message"].toObject()["sender"].toObject()["displayname"].toString();
+            QString sender = messageObj["sender"].toObject()["displayname"].toString();
             if (sender.isEmpty())
-                sender = obj["message"].toObject()["sender"].toObject()["userid"].toString();
+                sender = messageObj["sender"].toObject()["userid"].toString();
 
             if (sender != m_userId && !sender.isEmpty()) {
                 m_typingUser = sender;
@@ -184,6 +190,13 @@ void SignalingClient::sendHello()
 void SignalingClient::joinRoom(const QString &token)
 {
     m_currentRoom = token;
+
+    // Clear typing from previous room
+    if (!m_typingUser.isEmpty()) {
+        m_typingUser.clear();
+        emit typingUserChanged();
+        m_typingClearTimer.stop();
+    }
 
     // Join as active participant — the response contains the sessionId
     // which the signaling server needs to verify room access
