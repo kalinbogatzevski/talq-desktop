@@ -16,12 +16,13 @@ Page {
     property int activeThreadId: 0
     property string activeThreadTitle: ""
     property bool isGroupChat: conversationType === 2 || conversationType === 3
+    property bool isInTopicMode: false
+    property int activeThreadColor: 0
 
     function openThread(threadId, title) {
         activeThreadId = threadId
         activeThreadTitle = title
         messageModel.threadId = threadId
-        threadModel.conversationToken = ""  // stop thread list loading
     }
 
     function closeThread() {
@@ -65,7 +66,7 @@ Page {
 
             // Back button (when in thread)
             ToolButton {
-                visible: chatRoot.activeThreadId > 0
+                visible: chatRoot.activeThreadId > 0 && !chatRoot.isInTopicMode
                 width: 30; height: 30
                 onClicked: chatRoot.closeThread()
                 contentItem: Label {
@@ -76,6 +77,16 @@ Page {
                     verticalAlignment: Text.AlignVCenter
                 }
                 background: Rectangle { radius: 15; color: parent.hovered ? Theme.bgHover : "transparent" }
+            }
+
+            Rectangle {
+                width: 10; height: 10; radius: 5
+                visible: chatRoot.isInTopicMode && chatRoot.activeThreadId > 0
+                color: {
+                    var colors = ["#2ec4b6", "#e07060", "#f0a050", "#5ec76a", "#9b7cd4", "#e87aae"]
+                    return colors[Math.abs(chatRoot.activeThreadColor) % colors.length]
+                }
+                Layout.alignment: Qt.AlignVCenter
             }
 
             Item {
@@ -147,6 +158,16 @@ Page {
                     Layout.fillWidth: true
                     elide: Text.ElideRight
                 }
+
+                Label {
+                    visible: chatRoot.isInTopicMode && chatRoot.activeThreadId > 0
+                             && signaling.typingUser.length === 0
+                    text: chatRoot.conversationName + " \u00B7 " + messageModel.count + " messages"
+                    font.pixelSize: Theme.fontSizeTiny
+                    color: Theme.textSecondary
+                    Layout.fillWidth: true
+                    elide: Text.ElideRight
+                }
             }
 
             Label {
@@ -203,8 +224,10 @@ Page {
 
             MessageComposer {
                 Layout.fillWidth: true
+                topicName: chatRoot.isInTopicMode && chatRoot.activeThreadId > 0 ? chatRoot.activeThreadTitle : ""
                 onSendMessage: function(text) {
-                    messageModel.sendMessage(text, chatRoot.replyToId)
+                    var replyId = chatRoot.replyToId > 0 ? chatRoot.replyToId : chatRoot.activeThreadId
+                    messageModel.sendMessage(text, replyId)
                     chatRoot.cancelReply()
                 }
             }
@@ -407,6 +430,25 @@ Page {
             }
         }
 
+        Column {
+            anchors.centerIn: parent
+            spacing: Theme.spacingLarge
+            visible: chatRoot.isInTopicMode && chatRoot.activeThreadId === 0 && messageModel.conversationToken.length > 0
+
+            Label {
+                anchors.horizontalCenter: parent.horizontalCenter
+                text: "\uD83D\uDCAC"
+                font.pixelSize: 48
+                opacity: 0.3
+            }
+            Label {
+                anchors.horizontalCenter: parent.horizontalCenter
+                text: "Select a topic"
+                font.pixelSize: Theme.fontSizeNormal
+                color: Theme.textMuted
+            }
+        }
+
         delegate: MessageBubble {
             width: messageListView.width
             isOwnMessage: actorId === auth.userId
@@ -416,15 +458,6 @@ Page {
             onThreadOpenRequested: function(threadId) {
                 chatRoot.openThread(threadId, "Thread")
             }
-        }
-    }
-
-    // Thread list overlay for group chats (DISABLED for debugging)
-    ThreadListView {
-        anchors.fill: parent
-        visible: false // chatRoot.isGroupChat && chatRoot.activeThreadId === 0 && messageModel.conversationToken.length > 0
-        onThreadSelected: function(threadId, title) {
-            chatRoot.openThread(threadId, title)
         }
     }
 
