@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.5.1 (2026-03-19)
+
+### File Uploads
+- 📎 button in composer for file picker
+- Drag-and-drop files onto chat to upload
+- WebDAV PUT upload + share to conversation
+
+### Branding
+- 123NET TalQ dedicated build (`cmake -DTALQ_BRAND=123NET`)
+- Hardcoded server URL, no URL field on login
+- Dual logos on splash (TalQ + brand), brand logo on welcome screen
+- Separate Inno Setup installer for branded builds
+- Self-signed code signing: 123 NET CPT (PTY) LTD
+
+### Fixes
+- Typing indicator filtered by current room (was showing wrong chat)
+- Deleted messages removed instantly from list
+- Window minimum width lowered to 500px
+- Missing QML modules in installer (Qt.labs.settings, QtQuick.Dialogs)
+- windeployqt used for complete dependency gathering
+
+---
+
 ## v0.5.0 (2026-03-19)
 
 ### Real-Time Communication
