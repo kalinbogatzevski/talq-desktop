@@ -106,14 +106,15 @@ Item {
             id: msgHover
         }
 
-        // Action bar (hover: right side for others, left of bubble for own)
+        // Action bar (hover: right of others, left of own bubble)
         Row {
+            id: hoverBar
             visible: msgHover.hovered && messageId > 0 && sendStatus !== "sending" && sendStatus !== "failed"
             z: 10
-            spacing: 2
+            spacing: 4
             x: isOwnMessage
-                ? (ownBubble.x - width - 6)
-                : (otherMsg.x + otherMsg.width + 6)
+                ? (ownBubble.x - width - 8)
+                : (otherMsg.x + otherMsg.width + 8)
             y: {
                 var targetY = isOwnMessage
                     ? (ownBubble.y + (ownBubble.height - height) / 2)
@@ -121,34 +122,56 @@ Item {
                 return Math.max(0, Math.min(targetY, parent.height - height))
             }
 
-            ToolButton {
-                id: reactBtn
-                width: 32; height: 32
-                ToolTip.visible: hovered; ToolTip.text: "React"; ToolTip.delay: 300
-                onClicked: {
-                    var pos = mapToItem(msgContent, 0, 0)
-                    var emojiBarWidth = 210  // approximate
-                    var x = isOwnMessage ? (pos.x - emojiBarWidth - 4) : (pos.x + width + 4)
-                    quickEmojisLoader.openAt(x, pos.y - 5)
-                }
-                contentItem: Label {
-                    text: "\u263A"; font.pixelSize: 20
-                    color: parent.hovered ? Theme.accent : Theme.textSecondary
-                    horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
-                }
-                background: Rectangle { radius: 16; color: parent.hovered ? Theme.bgHover : Theme.bgSurface }
-            }
+            // Shared hover button style
+            Repeater {
+                model: [
+                    { icon: "\u263A", tip: "React", isReact: true },
+                    { icon: "\u21A9", tip: "Reply", isReact: false }
+                ]
 
-            ToolButton {
-                width: 32; height: 32
-                ToolTip.visible: hovered; ToolTip.text: "Reply"; ToolTip.delay: 300
-                onClicked: bubble.replyRequested(messageId, actorName, messageText)
-                contentItem: Label {
-                    text: "\u21A9"; font.pixelSize: 20
-                    color: parent.hovered ? Theme.accent : Theme.textSecondary
-                    horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
+                Rectangle {
+                    width: 34; height: 34; radius: 17
+                    color: btnMa.containsMouse
+                        ? (Theme.darkMode ? Qt.rgba(1,1,1,0.15) : Qt.rgba(0,0,0,0.08))
+                        : Theme.bgSurface
+                    border.color: Theme.divider
+                    border.width: 0.5
+                    scale: btnMa.containsMouse ? 1.1 : 1.0
+                    Behavior on scale { NumberAnimation { duration: 100; easing.type: Easing.OutCubic } }
+                    Behavior on color { ColorAnimation { duration: 100 } }
+
+                    Text {
+                        anchors.fill: parent
+                        text: modelData.icon
+                        font.pixelSize: 18
+                        font.bold: true
+                        color: btnMa.containsMouse ? Theme.accent : Theme.textSecondary
+                        horizontalAlignment: Text.AlignHCenter
+                        verticalAlignment: Text.AlignVCenter
+                        Behavior on color { ColorAnimation { duration: 100 } }
+                    }
+
+                    ToolTip.visible: btnMa.containsMouse
+                    ToolTip.text: modelData.tip
+                    ToolTip.delay: 400
+
+                    MouseArea {
+                        id: btnMa
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            if (modelData.isReact) {
+                                var pos = parent.mapToItem(msgContent, 0, 0)
+                                var barW = 210
+                                var ex = isOwnMessage ? (pos.x - barW - 4) : (pos.x + parent.width + 4)
+                                quickEmojisLoader.openAt(ex, pos.y - 5)
+                            } else {
+                                bubble.replyRequested(messageId, actorName, messageText)
+                            }
+                        }
+                    }
                 }
-                background: Rectangle { radius: 16; color: parent.hovered ? Theme.bgHover : Theme.bgSurface }
             }
         }
 
@@ -212,15 +235,18 @@ Item {
             id: quickEmojisComp
         Popup {
             id: quickEmojis
-            width: quickRow.width + 12
-            height: 36
-            padding: 4
+            width: quickRow.width + 14
+            height: 40
+            padding: 5
             background: Rectangle {
-                radius: 18
-                color: Theme.bgSurface
-                border.color: Theme.divider
+                radius: 20
+                color: Theme.darkMode ? "#262b34" : "#fafbfc"
+                border.color: Theme.darkMode ? "#363c48" : "#dde0e4"
                 border.width: 1
             }
+
+            enter: Transition { NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 100 } }
+            exit: Transition { NumberAnimation { property: "opacity"; from: 1; to: 0; duration: 60 } }
 
             Row {
                 id: quickRow
@@ -231,12 +257,17 @@ Item {
                     model: ["\uD83D\uDC4D", "\u2764\uFE0F", "\uD83D\uDE02", "\uD83D\uDE2E", "\uD83D\uDE22", "\uD83C\uDF89"]
 
                     Rectangle {
-                        width: 28; height: 28; radius: 14
-                        color: qeMa.containsMouse ? Theme.bgHover : "transparent"
+                        width: 30; height: 30; radius: 8
+                        color: qeMa.containsMouse
+                            ? (Theme.darkMode ? Qt.rgba(1,1,1,0.16) : Qt.rgba(0,0,0,0.08))
+                            : "transparent"
+                        Behavior on color { ColorAnimation { duration: 80 } }
 
                         Label {
                             anchors.centerIn: parent
-                            text: modelData; font.pixelSize: 15
+                            text: modelData; font.pixelSize: 17
+                            scale: qeMa.containsMouse ? 1.25 : 1.0
+                            Behavior on scale { NumberAnimation { duration: 100; easing.type: Easing.OutBack } }
                         }
 
                         MouseArea {
@@ -256,48 +287,61 @@ Item {
 
         Component {
             id: msgPopupComp
-        // Unified popup: emoji row + actions
+        // Unified popup: emoji row + actions — polished Telegram-style
         Popup {
             id: msgPopup
-            x: isOwnMessage ? -width - 4 : parent.width + 4
-            y: Math.max(0, Math.min(parent.height - height, 0))
-            width: popupCol.width + 16
-            height: popupCol.height + 12
-            padding: 6
+            width: popupCol.width + 14
+            height: popupCol.height + 10
+            padding: 5
             background: Rectangle {
-                radius: Theme.radiusNormal
-                color: Theme.bgSurface
-                border.color: Theme.divider
+                radius: 10
+                color: Theme.darkMode ? "#262b34" : "#fafbfc"
+                border.color: Theme.darkMode ? "#363c48" : "#dde0e4"
                 border.width: 1
+
+                // Subtle shadow
+                Rectangle {
+                    anchors.fill: parent; anchors.margins: -1; radius: 11
+                    color: "transparent"; border.color: Qt.rgba(0,0,0,0.08); border.width: 1; z: -1
+                }
             }
+
+            enter: Transition { NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 120 } }
+            exit: Transition { NumberAnimation { property: "opacity"; from: 1; to: 0; duration: 80 } }
 
             ColumnLayout {
                 id: popupCol
-                spacing: 2
+                spacing: 0
 
-                // Emoji quick-react row (visually separated with background)
+                // ── Emoji quick-react row ──
                 Rectangle {
                     Layout.fillWidth: true
-                    height: 38
-                    radius: Theme.radiusSmall
-                    color: Theme.darkMode ? Qt.rgba(1,1,1,0.04) : Qt.rgba(0,0,0,0.03)
+                    Layout.margins: 2
+                    height: 40
+                    radius: 8
+                    color: Theme.darkMode ? Qt.rgba(1,1,1,0.03) : Qt.rgba(0,0,0,0.02)
                     visible: messageId > 0
 
                     Row {
                         anchors.centerIn: parent
-                        spacing: 1
+                        spacing: 2
 
                         Repeater {
                             model: ["\uD83D\uDC4D", "\u2764\uFE0F", "\uD83D\uDE02", "\uD83D\uDE2E", "\uD83D\uDE22", "\uD83C\uDF89", "\uD83D\uDC4F", "\uD83D\uDE4F"]
 
                             Rectangle {
-                                width: 30; height: 30; radius: 8
-                                color: emojiMa.containsMouse ? (Theme.darkMode ? Qt.rgba(1,1,1,0.18) : Qt.rgba(0,0,0,0.12)) : "transparent"
+                                width: 32; height: 32; radius: 8
+                                color: emojiMa.containsMouse
+                                    ? (Theme.darkMode ? Qt.rgba(1,1,1,0.16) : Qt.rgba(0,0,0,0.08))
+                                    : "transparent"
+                                Behavior on color { ColorAnimation { duration: 80 } }
 
                                 Label {
                                     anchors.centerIn: parent
                                     text: modelData
-                                    font.pixelSize: 16
+                                    font.pixelSize: 17
+                                    scale: emojiMa.containsMouse ? 1.25 : 1.0
+                                    Behavior on scale { NumberAnimation { duration: 100; easing.type: Easing.OutBack } }
                                 }
 
                                 MouseArea {
@@ -315,9 +359,17 @@ Item {
                     }
                 }
 
-                Item { height: 2; visible: messageId > 0 }
+                // Divider
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.leftMargin: 8; Layout.rightMargin: 8
+                    Layout.topMargin: 3; Layout.bottomMargin: 3
+                    height: 1
+                    color: Theme.darkMode ? Qt.rgba(1,1,1,0.06) : Qt.rgba(0,0,0,0.06)
+                    visible: messageId > 0
+                }
 
-                // Action buttons — compact
+                // ── Action items ──
                 Repeater {
                     model: [
                         { icon: "\u21A9", label: "Reply", action: "reply", ownerOnly: false },
@@ -325,34 +377,43 @@ Item {
                         { icon: "\u21AA", label: "Forward", action: "forward", ownerOnly: false },
                         { icon: "\uD83D\uDCCC", label: "Pin", action: "pin", ownerOnly: false },
                         { icon: "\uD83D\uDD17", label: "Copy link", action: "copylink", ownerOnly: false },
-                        { icon: "\uD83D\uDCAC", label: "Reply in thread", action: "thread", ownerOnly: false },
+                        { icon: "\uD83D\uDCAC", label: "Thread", action: "thread", ownerOnly: false },
                         { icon: "\uD83D\uDDD1", label: "Delete", action: "delete", ownerOnly: true }
                     ]
 
                     Rectangle {
                         Layout.fillWidth: true
-                        width: 200; height: 30; radius: Theme.radiusSmall
-                        color: actionMa.containsMouse ? (Theme.darkMode ? Qt.rgba(1,1,1,0.12) : Qt.rgba(0,0,0,0.08)) : "transparent"
+                        Layout.leftMargin: 2; Layout.rightMargin: 2
+                        width: 195; height: 32; radius: 6
+                        color: actionMa.containsMouse
+                            ? (modelData.action === "delete"
+                                ? Qt.rgba(Theme.danger.r, Theme.danger.g, Theme.danger.b, 0.12)
+                                : (Theme.darkMode ? Qt.rgba(1,1,1,0.10) : Qt.rgba(0,0,0,0.06)))
+                            : "transparent"
                         visible: !modelData.ownerOnly || isOwnMessage
+                        Behavior on color { ColorAnimation { duration: 80 } }
 
-                        RowLayout {
-                            anchors.fill: parent
+                        Row {
+                            anchors.verticalCenter: parent.verticalCenter
+                            anchors.left: parent.left
                             anchors.leftMargin: 10
-                            anchors.rightMargin: 10
-                            spacing: 8
+                            spacing: 10
 
                             Label {
                                 text: modelData.icon
-                                font.pixelSize: 15
-                                Layout.preferredWidth: 20
+                                font.pixelSize: 14
+                                width: 20
                                 horizontalAlignment: Text.AlignHCenter
+                                anchors.verticalCenter: parent.verticalCenter
                                 color: modelData.action === "delete" ? Theme.danger : Theme.textSecondary
                             }
                             Label {
                                 text: modelData.label
-                                font.pixelSize: Theme.fontSizeSmall
-                                color: modelData.action === "delete" ? Theme.danger : Theme.textPrimary
-                                Layout.fillWidth: true
+                                font.pixelSize: 13
+                                anchors.verticalCenter: parent.verticalCenter
+                                color: modelData.action === "delete" ? Theme.danger
+                                    : (actionMa.containsMouse ? Theme.textPrimary : Theme.textSecondary)
+                                Behavior on color { ColorAnimation { duration: 80 } }
                             }
                         }
 
