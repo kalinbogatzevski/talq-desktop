@@ -64,11 +64,13 @@ Message Message::fromJson(const QJsonObject &json)
     if (!parent.isEmpty()) {
         m.replyToId = parent["id"].toInt();
         m.replyTo = parent;
-        m.threadId = parent["id"].toInt();
     }
 
-    // Thread metadata
-    m.threadTitle = json["threadTitle"].toString();
+    // Thread metadata (from API: isThread, threadId, threadTitle)
+    if (json["isThread"].toBool()) {
+        m.threadId = json["threadId"].toInt();
+        m.threadTitle = json["threadTitle"].toString();
+    }
 
     // Reactions: { "👍": 3, "❤️": 1 }
     if (json.contains("reactions")) {

@@ -49,6 +49,9 @@ public:
     void setConversationToken(const QString &token);
     bool isLoading() const { return m_loading; }
     bool hasTopics() const { return m_threads.size() > 1; }
+
+    int conversationType() const { return m_conversationType; }
+    Q_INVOKABLE void setConversationType(int type) { m_conversationType = type; }
     void setCache(MessageCache *cache);
 
     Q_INVOKABLE void refresh();
@@ -74,4 +77,5 @@ private:
     bool m_loading = false;
     MessageCache *m_cache = nullptr;
     int m_selectedThreadId = -1;
+    int m_conversationType = 0;
 };

@@ -10,11 +10,14 @@ Item {
 
     property int selectedIndex: -1
     property bool squeezed: false
-    property real sidebarWidth: squeezed ? 56 : 320
+    property real sidebarWidth: squeezed ? 56 : Math.max(200, Math.min(500, _userWidth))
+    property real _userWidth: 320
 
     Behavior on sidebarWidth {
+        enabled: !_resizing
         NumberAnimation { duration: Theme.animNormal; easing.type: Easing.OutCubic }
     }
+    property bool _resizing: false
 
     Rectangle {
         anchors.fill: parent

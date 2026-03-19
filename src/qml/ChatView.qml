@@ -17,6 +17,8 @@ Page {
     property string activeThreadTitle: ""
     property bool isGroupChat: conversationType === 2 || conversationType === 3
     property bool isInTopicMode: false
+    property bool sidebarSqueezed: false
+    signal expandSidebar()
     property int activeThreadColor: 0
     readonly property bool isViewingTopic: isInTopicMode && activeThreadId > 0
     // Only show typing when it's from the current conversation
@@ -39,14 +41,7 @@ Page {
         replyToId = msgId
         replyToAuthor = author
         replyToText = text
-        // Delay scroll — footer needs time to resize with reply bar
-        replyScrollTimer.restart()
-    }
-
-    Timer {
-        id: replyScrollTimer
-        interval: 100
-        onTriggered: messageListView.positionViewAtEnd()
+        Qt.callLater(function() { messageListView.positionViewAtEnd() })
     }
 
     function cancelReply() {
@@ -87,9 +82,24 @@ Page {
             anchors.rightMargin: Theme.spacingXLarge
             spacing: Theme.spacingSmall
 
-            // Back button (when in thread)
+            // Back to chat list (when sidebar is squeezed in topic mode)
             ToolButton {
-                visible: chatRoot.activeThreadId > 0 && !chatRoot.isInTopicMode
+                visible: chatRoot.sidebarSqueezed && chatRoot.conversationName.length > 0
+                width: 30; height: 30
+                onClicked: chatRoot.expandSidebar()
+                contentItem: Label {
+                    text: "\u2190"
+                    font.pixelSize: 18
+                    color: Theme.accent
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                }
+                background: Rectangle { radius: 15; color: parent.hovered ? Theme.bgHover : "transparent" }
+            }
+
+            // Back button (when viewing a thread or topic)
+            ToolButton {
+                visible: chatRoot.activeThreadId > 0
                 width: 30; height: 30
                 onClicked: chatRoot.closeThread()
                 contentItem: Label {
@@ -366,16 +376,16 @@ Page {
         bottomMargin: Theme.spacingLarge
         boundsBehavior: Flickable.StopAtBounds
 
-        // Scroll to newest message on any count change
-        onCountChanged: {
-            positionViewAtEnd()
-            scrollEndTimer.restart()
+        property bool autoScrolling: true
+
+        onContentHeightChanged: {
+            if (autoScrolling && count > 0)
+                positionViewAtIndex(count - 1, ListView.End)
         }
 
-        Timer {
-            id: scrollEndTimer
-            interval: 150
-            onTriggered: messageListView.positionViewAtEnd()
+        onMovingChanged: {
+            if (moving)
+                autoScrolling = false
         }
 
         ScrollBar.vertical: ScrollBar {
@@ -629,6 +639,11 @@ Page {
         function onConversationTokenChanged() {
             chatRoot.closeThread()
             chatRoot.cancelPaste()
+        }
+        function onNewMessagesAtEnd() {
+            messageListView.autoScrolling = true
+            if (messageListView.count > 0)
+                messageListView.positionViewAtIndex(messageListView.count - 1, ListView.End)
         }
         function onPasteReady(filePath, width, height) {
             pasteBar.pendingPath = filePath
