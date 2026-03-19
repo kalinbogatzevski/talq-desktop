@@ -35,9 +35,12 @@ void SignalingClient::stop()
 {
     m_reconnectTimer.stop();
     m_ws.close();
-    m_authenticated = false;
     m_sessionId.clear();
-    emit connectedChanged();
+    m_reconnectDelay = 2000;
+    if (m_authenticated) {
+        m_authenticated = false;
+        emit connectedChanged();
+    }
 }
 
 void SignalingClient::fetchSettings()
@@ -181,6 +184,11 @@ void SignalingClient::sendHello()
 void SignalingClient::joinRoom(const QString &token)
 {
     m_currentRoom = token;
+
+    // Join as active participant via Talk API (fire-and-forget via raw POST)
+    auto *reply = m_api->postRaw("apps/spreed/api/v4/room/" + token + "/participants/active");
+    connect(reply, &QNetworkReply::finished, reply, &QNetworkReply::deleteLater);
+
     if (!m_authenticated) return;
 
     QJsonObject msg;

@@ -42,7 +42,6 @@ private:
     QString m_pushEndpoint;
     bool m_connected = false;
     bool m_authenticated = false;
-    QString m_pendingToken;
     int m_reconnectDelay = 2000;
     static constexpr int MAX_RECONNECT_DELAY = 60000;
 };

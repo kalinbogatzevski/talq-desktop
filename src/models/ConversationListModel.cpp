@@ -141,7 +141,7 @@ void ConversationListModel::clearUnreadForToken(const QString &token)
 {
     for (int i = 0; i < m_conversations.size(); ++i) {
         if (m_conversations[i].token == token && m_conversations[i].unreadMessages > 0) {
-            m_totalUnread -= m_conversations[i].unreadMessages;
+            m_totalUnread = qMax(0, m_totalUnread - m_conversations[i].unreadMessages);
             m_conversations[i].unreadMessages = 0;
             m_conversations[i].unreadMention = false;
             emit dataChanged(index(i), index(i), {UnreadCountRole, UnreadMentionRole});

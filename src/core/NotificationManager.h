@@ -4,6 +4,7 @@
 #include <QSystemTrayIcon>
 #include <QMenu>
 #include <QByteArray>
+#include <QPixmap>
 
 class QQuickWindow;
 
@@ -54,4 +55,5 @@ private:
     bool m_notificationsEnabled = true;
     int m_unreadCount = 0;
     QByteArray m_wavData;  // embedded WAV loaded from resources
+    QPixmap m_baseIcon;
 };
