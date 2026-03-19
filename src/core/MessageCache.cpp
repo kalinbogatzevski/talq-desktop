@@ -224,6 +224,13 @@ void MessageCacheWorker::doClearAll()
 void MessageCacheWorker::doSaveThreadIndex(const QString &token, const QVector<QJsonObject> &threads)
 {
     m_db.transaction();
+
+    // Delete stale threads for this token before inserting fresh data
+    QSqlQuery del(m_db);
+    del.prepare("DELETE FROM thread_index WHERE token = ?");
+    del.addBindValue(token);
+    del.exec();
+
     for (const auto &t : threads) {
         QSqlQuery q(m_db);
         q.prepare("INSERT OR REPLACE INTO thread_index "

@@ -21,6 +21,7 @@ SignalingClient::SignalingClient(ApiClient *api, QObject *parent)
     connect(&m_typingClearTimer, &QTimer::timeout, this, [this]() {
         if (!m_typingUser.isEmpty()) {
             m_typingUser.clear();
+            m_typingRoom.clear();
             emit typingUserChanged();
         }
     });

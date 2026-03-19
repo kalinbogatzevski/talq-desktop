@@ -50,13 +50,14 @@ public:
     bool isLoading() const { return m_loading; }
     bool hasTopics() const { return m_threads.size() > 1; }
     void setCache(MessageCache *cache);
-private slots:
-    void onCachedThreadsLoaded(const QString &token, const QVector<QJsonObject> &threads);
 
     Q_INVOKABLE void refresh();
     Q_INVOKABLE void markTopicRead(int threadId);
     Q_INVOKABLE void selectTopic(int threadId);
     Q_INVOKABLE int colorForThread(int threadId) const;
+
+private slots:
+    void onCachedThreadsLoaded(const QString &token, const QVector<QJsonObject> &threads);
 
 signals:
     void tokenChanged();
