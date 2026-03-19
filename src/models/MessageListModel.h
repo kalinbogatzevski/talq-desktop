@@ -46,6 +46,7 @@ public:
         FileLinkRole,
         FilePreviewRole,
         HasFileRole,
+        FileIdRole,
     };
 
     explicit MessageListModel(ApiClient *api, MessageCache *cache, QObject *parent = nullptr);
