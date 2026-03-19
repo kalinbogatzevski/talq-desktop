@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.5.2 (2026-03-19)
+
+### Image Previews
+- Authenticated inline image previews via `image://preview/` provider
+- Thumbnails fetched from NC with auth headers, memory-cached per fileId
+- Click image to open in Nextcloud browser
+
+### Fixes
+- Image attachments were invisible (preview disabled, pill excluded images)
+- File shares now include read permission for recipients
+- Deleted messages removed instantly from list
+- Typing indicator filtered by current room
+- Version bumped correctly across all files
+- Auto-refresh disabled (push-only for real-time updates)
+
+---
+
 ## v0.5.1 (2026-03-19)
 
 ### File Uploads
