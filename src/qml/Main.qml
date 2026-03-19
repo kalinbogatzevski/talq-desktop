@@ -183,9 +183,9 @@ ApplicationWindow {
             // Position bottom-right of screen
             desktopNotif.x = Screen.width - desktopNotif.width - 16
             desktopNotif.y = Screen.height - desktopNotif.height - 80
-            console.log("Desktop popup at:", desktopNotif.x, desktopNotif.y, "Screen:", Screen.width, Screen.height)
             desktopNotif.show()
             desktopNotif.raise()
+            desktopDismissTimer.interval = 5000
             desktopDismissTimer.restart()
         }
     }
@@ -202,6 +202,17 @@ ApplicationWindow {
             id: desktopDismissTimer
             interval: 5000
             onTriggered: desktopNotif.visible = false
+        }
+
+        HoverHandler {
+            id: desktopHover
+            onHoveredChanged: {
+                if (hovered) {
+                    desktopDismissTimer.stop()
+                } else {
+                    desktopDismissTimer.restart()
+                }
+            }
         }
 
         Rectangle {
@@ -227,8 +238,8 @@ ApplicationWindow {
                 ColumnLayout {
                     Layout.fillWidth: true
                     spacing: 2
-                    Label { id: desktopNotifTitle; font.pixelSize: 13; font.weight: Font.DemiBold; color: Theme.textPrimary; elide: Text.ElideRight; Layout.fillWidth: true }
-                    Label { id: desktopNotifMessage; font.pixelSize: 11; color: Theme.textSecondary; elide: Text.ElideRight; maximumLineCount: 2; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                    Label { id: desktopNotifTitle; font.pixelSize: 14; font.weight: Font.DemiBold; color: Theme.darkMode ? "#f0f2f5" : "#111111"; elide: Text.ElideRight; Layout.fillWidth: true }
+                    Label { id: desktopNotifMessage; font.pixelSize: 12; color: Theme.darkMode ? "#c0c4cc" : "#444444"; elide: Text.ElideRight; maximumLineCount: 2; wrapMode: Text.Wrap; Layout.fillWidth: true }
                 }
 
                 Label {
