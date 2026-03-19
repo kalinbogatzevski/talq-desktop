@@ -17,6 +17,11 @@ ApplicationWindow {
 
     property bool chatMode: false  // true after login — enables geometry saving
 
+    // Font zoom: Ctrl+Plus / Ctrl+Minus / Ctrl+0
+    Shortcut { sequence: "Ctrl+=" ; onActivated: Theme.fontScale = Math.min(Theme.fontScale + 0.1, 2.0) }
+    Shortcut { sequence: "Ctrl+-" ; onActivated: Theme.fontScale = Math.max(Theme.fontScale - 0.1, 0.7) }
+    Shortcut { sequence: "Ctrl+0" ; onActivated: Theme.fontScale = 1.0 }
+
     // Minimize to tray instead of closing (like Telegram/Discord)
     onClosing: function(close) {
         if (chatMode) {
@@ -47,14 +52,17 @@ ApplicationWindow {
         id: themeSettings
         category: "Theme"
         property bool darkMode: true
-        Component.onCompleted: Theme.darkMode = darkMode
+        property real fontScale: 1.0
+        Component.onCompleted: {
+            Theme.darkMode = darkMode
+            Theme.fontScale = fontScale
+        }
     }
 
     Connections {
         target: Theme
-        function onDarkModeChanged() {
-            themeSettings.darkMode = Theme.darkMode
-        }
+        function onDarkModeChanged() { themeSettings.darkMode = Theme.darkMode }
+        function onFontScaleChanged() { themeSettings.fontScale = Theme.fontScale }
     }
 
     StackView {

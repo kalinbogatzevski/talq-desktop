@@ -39,13 +39,16 @@ QtObject {
     readonly property color divider: darkMode ? "#22262e" : "#eeeff2"
     readonly property color selectionBar: accent
 
+    // ─── Font Scale (Ctrl+Plus / Ctrl+Minus) ───
+    property real fontScale: 1.0
+
     // ─── Typography ───
-    readonly property int fontSizeTiny: 11
-    readonly property int fontSizeSmall: 12
-    readonly property int fontSizeNormal: 14
-    readonly property int fontSizeLarge: 16
-    readonly property int fontSizeTitle: 22
-    readonly property int fontSizeHero: 36
+    readonly property int fontSizeTiny: Math.round(11 * fontScale)
+    readonly property int fontSizeSmall: Math.round(12 * fontScale)
+    readonly property int fontSizeNormal: Math.round(14 * fontScale)
+    readonly property int fontSizeLarge: Math.round(16 * fontScale)
+    readonly property int fontSizeTitle: Math.round(22 * fontScale)
+    readonly property int fontSizeHero: Math.round(36 * fontScale)
 
     // ─── Spacing ───
     readonly property int spacingTiny: 4
