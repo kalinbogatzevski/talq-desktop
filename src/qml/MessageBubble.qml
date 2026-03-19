@@ -115,7 +115,7 @@ Item {
             property real gap: 6
             x: isOwnMessage
                 ? (ownBubble.x - width - gap)
-                : (otherMsg.x + Theme.avatarSizeSmall + Theme.spacingSmall + otherMsgCol.width + gap)
+                : (otherMsg.x + otherMsg.width + gap)
             y: {
                 var targetY = isOwnMessage
                     ? (ownBubble.y + (ownBubble.height - height) / 2)
@@ -171,8 +171,12 @@ Item {
                     id: reactMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
                     onClicked: {
                         var pos = parent.mapToItem(msgContent, 0, 0)
-                        var barW = 210
-                        var ex = isOwnMessage ? (pos.x - barW - 4) : (pos.x + parent.width + 4)
+                        var btnW = parent.width   // 30
+                        var barW = 200             // approximate popup width
+                        var popGap = 4
+                        var ex = isOwnMessage
+                            ? (pos.x - barW - popGap)        // popup left of button
+                            : (pos.x + btnW + popGap)        // popup right of button
                         quickEmojisLoader.openAt(ex, pos.y - 5)
                     }
                 }
@@ -224,12 +228,35 @@ Item {
             }
         }
 
-        // Right-click → context popup at cursor position
+        // Right-click → context popup anchored at cursor, fits within window
         MouseArea {
             anchors.fill: parent
             acceptedButtons: Qt.RightButton
             onClicked: function(mouse) {
-                msgPopupLoader.openAt(mouse.x, mouse.y)
+                // Get click position in window coordinates
+                var winPos = mapToItem(null, mouse.x, mouse.y)
+                var winW = bubble.Window.width || 900
+                var winH = bubble.Window.height || 700
+                var popW = 220  // approximate popup width
+                var popH = 340  // approximate popup height
+
+                // Start at cursor, expand bottom-right by default
+                var px = winPos.x
+                var py = winPos.y
+
+                // Flip horizontally if clipped right
+                if (px + popW > winW) px = winPos.x - popW
+
+                // Flip vertically if clipped bottom
+                if (py + popH > winH) py = winPos.y - popH
+
+                // Safety clamp
+                px = Math.max(4, Math.min(px, winW - popW - 4))
+                py = Math.max(4, Math.min(py, winH - popH - 4))
+
+                // Convert back to local coordinates
+                var local = mapFromItem(null, px, py)
+                msgPopupLoader.openAt(local.x, local.y)
             }
         }
 
