@@ -1,5 +1,46 @@
 # Changelog
 
+## v0.6.0 (2026-03-19)
+
+### Threads / Topics (Telegram-style)
+- 3-column layout for group chats with threads: squeezed sidebar icons | topics list | messages
+- Sidebar auto-squeezes to 56px icon-only mode with smooth animation
+- Manual squeeze toggle chevron at sidebar bottom
+- Topics list with colored dots, unread badges, selection highlight
+- "All Messages" row for unfiltered conversation view
+- Inline topic creation: "+" button → type name → Enter
+- Topic-aware chat header with color dot + group subtitle
+- Dynamic composer placeholder: "Reply in [topic name]..."
+- Thread index persisted in SQLite across app restarts
+- Server capability check (requires Talk v22+ threads feature)
+- Topic color palette centralized in Theme.topicColor()
+
+### Upload Progress
+- File upload shows progress bar in footer (filename + percentage)
+- Animated progress indicator during WebDAV upload
+
+### Paste Confirmation
+- Ctrl+V no longer auto-sends images — shows preview bar first
+- Caption field for adding text description before sending
+- Send button (or Enter) to confirm, Escape or X to cancel
+
+### Scroll to Bottom
+- Floating ↓ button appears when scrolled up in chat history
+- Click to jump to newest messages, teal hover highlight
+
+### Fixes
+- Typing indicator no longer leaks across conversations (room-scoped)
+- Memory safety: QPointer guard in API callbacks, disconnect in setCache
+- hasTopics flag preserved across conversation list refresh
+- ThreadItem selection state properly bound in delegate
+- thread_index cleared on conversation/account clear
+- MessageCache wait timeout removed (prevents dangling lambdas)
+- Deduplicated avatar images in squeezed ConversationItem
+- Stale callback guard in ThreadListModel.fetchThreads
+- refreshAfterCreate timer guards against conversation switch
+
+---
+
 ## v0.5.3 (2026-03-19)
 
 ### Clipboard Paste

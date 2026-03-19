@@ -75,6 +75,7 @@ public:
     Q_INVOKABLE QString messageLink(int messageId) const;
     Q_INVOKABLE bool pasteClipboardImage();
     Q_INVOKABLE void sendFileWithCaption(const QString &filePath, const QString &caption);
+    Q_INVOKABLE void cleanupTempFile(const QString &filePath);
 
     // Upload progress (0.0 to 1.0, -1 = no upload)
     Q_PROPERTY(double uploadProgress READ uploadProgress NOTIFY uploadProgressChanged)
@@ -114,5 +115,4 @@ private:
     bool m_connected = true;  // assume connected until proven otherwise
     double m_uploadProgress = -1;
     QString m_uploadFileName;
-    QString m_pendingPastePath;
 };

@@ -572,17 +572,14 @@ void MessageListModel::sendFileWithCaption(const QString &filePath, const QStrin
     QUrl fileUrl(filePath);
     QString localPath = fileUrl.isLocalFile() ? fileUrl.toLocalFile() : filePath;
 
-    QFile *file = new QFile(localPath);
-    if (!file->open(QIODevice::ReadOnly)) {
+    QFile file(localPath);
+    if (!file.open(QIODevice::ReadOnly)) {
         emit errorOccurred("Cannot open file: " + localPath);
-        delete file;
         return;
     }
 
     QString fileName = QFileInfo(localPath).fileName();
-    QByteArray fileData = file->readAll();
-    file->close();
-    delete file;
+    QByteArray fileData = file.readAll();
 
     qDebug() << "Uploading file:" << fileName << "(" << fileData.size() << "bytes)";
 
@@ -681,10 +678,20 @@ bool MessageListModel::pasteClipboardImage()
     }
 
     qDebug() << "Clipboard image saved:" << tempPath << image.size();
-    // Don't auto-send — store path and let QML show confirmation UI
-    m_pendingPastePath = "file:///" + tempPath;
-    emit pasteReady(m_pendingPastePath, image.width(), image.height());
+    // Don't auto-send — let QML show confirmation UI
+    QString fileUrl = "file:///" + tempPath;
+    emit pasteReady(fileUrl, image.width(), image.height());
     return true;
+}
+
+void MessageListModel::cleanupTempFile(const QString &filePath)
+{
+    QUrl url(filePath);
+    QString path = url.isLocalFile() ? url.toLocalFile() : filePath;
+    if (path.contains("talq_paste_") && QFile::exists(path)) {
+        QFile::remove(path);
+        qDebug() << "Cleaned up temp file:" << path;
+    }
 }
 
 void MessageListModel::markAsRead()

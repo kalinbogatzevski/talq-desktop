@@ -26,6 +26,11 @@ QtObject {
     // ─── Topic Colors ───
     readonly property var topicPalette: ["#2ec4b6", "#e07060", "#f0a050", "#5ec76a", "#9b7cd4", "#e87aae"]
     function topicColor(index) { return topicPalette[Math.abs(index) % topicPalette.length] }
+    function stringHash(str) {
+        var h = 0
+        for (var i = 0; i < str.length; i++) { h = ((h << 5) - h) + str.charCodeAt(i); h = h & h }
+        return h
+    }
 
     // ─── Accents ───
     readonly property color accent: darkMode ? "#2ec4b6" : "#1aab9d"

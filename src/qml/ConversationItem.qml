@@ -56,15 +56,8 @@ ItemDelegate {
     // Shared avatar source — single image load for both expanded and squeezed views
     readonly property string avatarSource: (conversationType === 1 && participantUserId.length > 0)
         ? "image://avatar/" + participantUserId : ""
-    readonly property color avatarFallbackColor: {
-        var colors = ["#5eb5f7", "#e17076", "#faa05a", "#7bc862", "#a695e7", "#ee7aae", "#6ec9cb", "#65aadd"]
-        var hash = 0
-        for (var i = 0; i < displayName.length; i++) {
-            hash = ((hash << 5) - hash) + displayName.charCodeAt(i)
-            hash = hash & hash
-        }
-        return colors[Math.abs(hash) % colors.length]
-    }
+    readonly property var avatarPalette: ["#5eb5f7", "#e17076", "#faa05a", "#7bc862", "#a695e7", "#ee7aae", "#6ec9cb", "#65aadd"]
+    readonly property color avatarFallbackColor: avatarPalette[Math.abs(Theme.stringHash(displayName)) % avatarPalette.length]
     readonly property string avatarLetter: {
         if (conversationType === 6) return "\uD83D\uDCDD"
         return displayName.length > 0 ? displayName[0].toUpperCase() : "?"
