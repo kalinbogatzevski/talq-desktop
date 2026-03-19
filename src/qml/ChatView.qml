@@ -8,6 +8,7 @@ Page {
     property string conversationName: ""
     property string conversationUserId: ""
     property int conversationType: 0
+    property string peerStatus: ""   // "online", "away", "dnd", "offline"
     property int replyToId: 0
     property string replyToAuthor: ""
     property string replyToText: ""
@@ -115,13 +116,34 @@ Page {
                     Layout.fillWidth: true
                 }
 
-                // Typing indicator
+                // Status line: typing indicator OR user status (1:1 chats)
                 Label {
                     visible: signaling.typingUser.length > 0
-                    text: signaling.typingUser + " is typing..."
+                        || (chatRoot.conversationType === 1 && chatRoot.peerStatus.length > 0)
+                    text: {
+                        if (signaling.typingUser.length > 0)
+                            return signaling.typingUser + " is typing..."
+                        if (chatRoot.conversationType === 1 && chatRoot.peerStatus.length > 0) {
+                            switch (chatRoot.peerStatus) {
+                            case "online": return "online"
+                            case "away": return "away"
+                            case "dnd": return "do not disturb"
+                            default: return "offline"
+                            }
+                        }
+                        return ""
+                    }
                     font.pixelSize: Theme.fontSizeTiny
-                    font.italic: true
-                    color: Theme.accent
+                    font.italic: signaling.typingUser.length > 0
+                    color: {
+                        if (signaling.typingUser.length > 0) return Theme.accent
+                        switch (chatRoot.peerStatus) {
+                        case "online": return Theme.online
+                        case "away": return Theme.warning
+                        case "dnd": return Theme.danger
+                        default: return Theme.textMuted
+                        }
+                    }
                     Layout.fillWidth: true
                     elide: Text.ElideRight
                 }
