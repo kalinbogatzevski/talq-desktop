@@ -16,6 +16,34 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, QObject *pa
             this, &CallManager::onOfferReceived);
     connect(m_signaling, &SignalingClient::answerReceived,
             this, &CallManager::onAnswerReceived);
+    connect(m_signaling, &SignalingClient::candidateReceived,
+            this, [this](const QString &fromSessionId, const QJsonObject &candidate) {
+        if (fromSessionId == m_remoteSessionId || m_remoteSessionId.isEmpty()) {
+            m_pipeline.addIceCandidate(
+                candidate["candidate"].toString(),
+                candidate["sdpMLineIndex"].toInt(),
+                candidate["sdpMid"].toString());
+        }
+    });
+
+    // Pipeline signals → signaling
+    connect(&m_pipeline, &CallPipeline::localSdpReady,
+            this, [this](const QString &type, const QString &sdp) {
+        if (m_remoteSessionId.isEmpty()) return;
+        if (type == "offer")
+            m_signaling->sendOffer(m_remoteSessionId, sdp);
+        else
+            m_signaling->sendAnswer(m_remoteSessionId, sdp);
+    });
+    connect(&m_pipeline, &CallPipeline::iceCandidateReady,
+            this, [this](const QString &candidate, int mlineIndex, const QString &sdpMid) {
+        if (m_remoteSessionId.isEmpty()) return;
+        QJsonObject candidateObj;
+        candidateObj["candidate"] = candidate;
+        candidateObj["sdpMLineIndex"] = mlineIndex;
+        candidateObj["sdpMid"] = sdpMid;
+        m_signaling->sendCandidate(m_remoteSessionId, candidateObj);
+    });
 
     // Duration timer — ticks every second during Active state
     m_durationTimer.setInterval(1000);
@@ -95,8 +123,8 @@ void CallManager::hangUp()
 void CallManager::toggleMute()
 {
     m_muted = !m_muted;
+    m_pipeline.setMuted(m_muted);
     emit muteChanged();
-    // TODO: mute audio in pipeline (valve element or pause wasapi2src)
 }
 
 void CallManager::toggleCamera()
@@ -122,8 +150,9 @@ void CallManager::joinCallOnServer(bool withVideo)
                 teardown("Failed to join call");
                 return;
             }
-            qDebug() << "CallManager: joined call on server";
-            // TODO: create GStreamer pipeline with webrtcbin, generate SDP offer
+            qDebug() << "CallManager: joined call on server, starting pipeline";
+            // TODO: get STUN/TURN from signaling settings
+            m_pipeline.startCall(QString(), QString());
         });
 }
 
@@ -162,7 +191,6 @@ void CallManager::onParticipantJoinedCall(const QString &sessionId, int flags, c
         m_ringTimeout.stop();
         setState(Connecting);
         emit callInfoChanged();
-        // TODO: exchange SDP offer/answer
     }
     else if (m_state == Idle) {
         // Incoming call — remote peer started a call in our current room
@@ -189,20 +217,18 @@ void CallManager::onParticipantLeftCall(const QString &sessionId)
 
 void CallManager::onOfferReceived(const QString &fromSessionId, const QString &sdp)
 {
-    Q_UNUSED(sdp)
     if (m_state != Connecting && m_state != Active) return;
     m_remoteSessionId = fromSessionId;
-    qDebug() << "CallManager: received SDP offer";
-    // TODO: set remote description on webrtcbin, create answer
+    qDebug() << "CallManager: received SDP offer, setting remote description";
+    m_pipeline.setRemoteDescription("offer", sdp);
 }
 
 void CallManager::onAnswerReceived(const QString &fromSessionId, const QString &sdp)
 {
-    Q_UNUSED(sdp)
     if (m_state != Connecting) return;
     if (fromSessionId != m_remoteSessionId) return;
-    qDebug() << "CallManager: received SDP answer";
-    // TODO: set remote description on webrtcbin
+    qDebug() << "CallManager: received SDP answer, setting remote description";
+    m_pipeline.setRemoteDescription("answer", sdp);
     setState(Active);
     m_durationTimer.start();
 }
