@@ -26,9 +26,13 @@
 #include "models/ConversationListModel.h"
 #include "models/MessageListModel.h"
 #include "models/ThreadListModel.h"
+#include "core/CallPipeline.h"
+#include "core/MediaDeviceManager.h"
+#include <gst/gst.h>
 
 int main(int argc, char *argv[])
 {
+    gst_init(&argc, &argv);
     QApplication app(argc, argv);
 
     // Single-instance guard
@@ -65,6 +69,9 @@ int main(int argc, char *argv[])
     NotificationManager notifications;
     PushClient push(&api);
     SignalingClient signaling(&api);
+    MediaDeviceManager deviceManager;
+    deviceManager.refresh();
+    CallPipeline callPipeline;
 
     // QML engine
     QQmlApplicationEngine engine;
@@ -78,6 +85,7 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty("pushClient", &push);
     engine.rootContext()->setContextProperty("signaling", &signaling);
     engine.rootContext()->setContextProperty("notifications", &notifications);
+    engine.rootContext()->setContextProperty("deviceManager", &deviceManager);
 
     // Branding context
 #ifdef TALQ_BRAND_123NET

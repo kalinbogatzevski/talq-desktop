@@ -18,6 +18,17 @@ find_package(Qt6 REQUIRED COMPONENTS
     Widgets
 )
 
+# GStreamer (for calls)
+set(GSTREAMER_ROOT "C:/gst" CACHE PATH "GStreamer installation root")
+set(GST_INCLUDE_DIRS
+    "${GSTREAMER_ROOT}/include/gstreamer-1.0"
+    "${GSTREAMER_ROOT}/include/glib-2.0"
+    "${GSTREAMER_ROOT}/lib/glib-2.0/include"
+    "${GSTREAMER_ROOT}/include"
+)
+set(GST_LIBRARY_DIRS "${GSTREAMER_ROOT}/lib")
+set(GST_LIBRARIES gstreamer-1.0 gobject-2.0 glib-2.0 intl)
+
 qt_add_executable(talq
     src/main.cpp
     src/core/ApiClient.cpp
@@ -34,6 +45,8 @@ qt_add_executable(talq
     src/models/ConversationListModel.cpp
     src/models/MessageListModel.cpp
     src/models/ThreadListModel.cpp
+    src/core/CallPipeline.cpp
+    src/core/MediaDeviceManager.cpp
     resources/talq.rc
 )
 
@@ -74,7 +87,8 @@ if(TALQ_BRAND STREQUAL "123NET")
     message(STATUS "Building 123NET branded version")
 endif()
 
-target_include_directories(talq PRIVATE src)
+target_include_directories(talq PRIVATE src ${GST_INCLUDE_DIRS})
+target_link_directories(talq PRIVATE ${GST_LIBRARY_DIRS})
 
 target_link_libraries(talq PRIVATE
     Qt6::Core
@@ -86,6 +100,7 @@ target_link_libraries(talq PRIVATE
     Qt6::Sql
     Qt6::WebSockets
     Qt6::Widgets
+    ${GST_LIBRARIES}
 )
 
 # Windows-specific settings
