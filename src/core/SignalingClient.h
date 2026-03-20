@@ -37,6 +37,7 @@ public:
 
     // WebRTC call signaling
     QString sessionId() const { return m_sessionId; }
+    QString currentRoom() const { return m_currentRoom; }
     void sendOffer(const QString &toSessionId, const QString &sdp);
     void sendAnswer(const QString &toSessionId, const QString &sdp);
     void sendCandidate(const QString &toSessionId, const QJsonObject &candidate);
@@ -51,7 +52,7 @@ signals:
     void answerReceived(const QString &fromSessionId, const QString &sdp);
     void candidateReceived(const QString &fromSessionId, const QJsonObject &candidate);
     void endOfCandidatesReceived(const QString &fromSessionId);
-    void participantJoinedCall(const QString &sessionId, int flags);
+    void participantJoinedCall(const QString &sessionId, int flags, const QString &displayName);
     void participantLeftCall(const QString &sessionId);
 
 private:

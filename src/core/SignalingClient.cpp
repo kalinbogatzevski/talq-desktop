@@ -206,8 +206,9 @@ void SignalingClient::onTextMessage(const QString &msg)
                 m_participantCallFlags[sid] = inCall;
 
                 if (prevFlags == 0 && inCall > 0) {
-                    qDebug() << "Signaling: participant joined call" << sid.left(20) << "flags=" << inCall;
-                    emit participantJoinedCall(sid, inCall);
+                    QString displayName = user["displayName"].toString();
+                    qDebug() << "Signaling: participant joined call" << sid.left(20) << "flags=" << inCall << "name=" << displayName;
+                    emit participantJoinedCall(sid, inCall, displayName);
                 } else if (prevFlags > 0 && inCall == 0) {
                     qDebug() << "Signaling: participant left call" << sid.left(20);
                     emit participantLeftCall(sid);
