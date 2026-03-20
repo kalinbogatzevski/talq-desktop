@@ -28,6 +28,7 @@
 #include "models/ThreadListModel.h"
 #include "core/MediaDeviceManager.h"
 #include "core/CallManager.h"
+#include "core/DebugMonitor.h"
 #include <gst/gst.h>
 
 int main(int argc, char *argv[])
@@ -83,6 +84,8 @@ int main(int argc, char *argv[])
     // Device enumeration deferred until first call attempt
     CallManager callManager(&api, &signaling);
 
+    DebugMonitor debug;
+
     // QML engine
     QQmlApplicationEngine engine;
 
@@ -97,6 +100,7 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty("notifications", &notifications);
     engine.rootContext()->setContextProperty("deviceManager", &deviceManager);
     engine.rootContext()->setContextProperty("callManager", &callManager);
+    engine.rootContext()->setContextProperty("debugMonitor", &debug);
 
     // Branding context
 #ifdef TALQ_BRAND_123NET
@@ -111,8 +115,10 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty("isBranded", false);
 #endif
 
-    engine.addImageProvider("avatar", new AvatarProvider(&api));
-    engine.addImageProvider("preview", new FilePreviewProvider(&api));
+    auto *avatarProvider = new AvatarProvider(&api);
+    auto *previewProvider = new FilePreviewProvider(&api);
+    engine.addImageProvider("avatar", avatarProvider);
+    engine.addImageProvider("preview", previewProvider);
 
     engine.loadFromModule("TalkQt", "Main");
 
@@ -217,20 +223,15 @@ int main(int argc, char *argv[])
 
 
 
-#ifdef Q_OS_WIN
-    // Memory monitor — every 30s (debug)
-    QTimer memTimer;
-    memTimer.setInterval(30000);
-    QObject::connect(&memTimer, &QTimer::timeout, [&]() {
-        PROCESS_MEMORY_COUNTERS pmc;
-        if (GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc))) {
-            qDebug() << "MEM:" << (pmc.WorkingSetSize / 1024 / 1024) << "MB"
-                     << "msgs:" << messages.rowCount()
-                     << "convs:" << conversations.rowCount();
-        }
+    // Feed live stats to debug monitor
+    QObject::connect(&debug, &DebugMonitor::updated, [&]() {
+        debug.setMessageCount(messages.rowCount());
+        debug.setConversationCount(conversations.rowCount());
+        debug.setAvatarCacheCount(avatarProvider->cacheCount());
+        debug.setPreviewCacheCount(previewProvider->cacheCount());
+        debug.setPreviewCacheBytes(previewProvider->cacheBytes());
+        debug.setPendingRequests(api.pendingCount());
     });
-    memTimer.start();
-#endif
 
     return app.exec();
 }

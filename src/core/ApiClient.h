@@ -68,6 +68,9 @@ public:
     // Cancel all pending requests
     void cancelAll();
 
+    // Debug: number of pending network replies
+    int pendingCount() const { return m_pendingReplies.size(); }
+
 signals:
     void serverUrlChanged();
     void authenticatedChanged();
@@ -76,6 +79,7 @@ private:
     QNetworkRequest makeRequest(const QString &path, const QUrlQuery &params = QUrlQuery()) const;
     void handleReply(QNetworkReply *reply, Callback callback);
     void handleArrayReply(QNetworkReply *reply, ArrayCallback callback);
+    void trackReply(QNetworkReply *reply);
 
     QNetworkAccessManager m_nam;
     QString m_serverUrl;

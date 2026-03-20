@@ -1,14 +1,16 @@
 [Setup]
 AppName=123NET TalQ
-AppVersion=0.6.1
+AppVersion=0.6.2
 AppPublisher=123 NET CPT (PTY) LTD
 AppPublisherURL=https://123net.link
 DefaultDirName={autopf}\123NET TalQ
 DefaultGroupName=123NET TalQ
 OutputDir=..\dist
-OutputBaseFilename=123NET-TalQ-v0.6.1-Setup
+OutputBaseFilename=123NET-TalQ-v0.6.2-Setup
 SetupIconFile=..\resources\talq.ico
 UninstallDisplayIcon={app}\talq.exe
+WizardImageFile=..\resources\123net-wizard.bmp
+WizardSmallImageFile=..\resources\123net-wizard-small.bmp
 Compression=lzma2/ultra64
 SolidCompression=yes
 ArchitecturesAllowed=x64compatible
@@ -25,7 +27,7 @@ Name: "startmenuicon"; Description: "Create a Start Menu shortcut"; GroupDescrip
 Name: "autostart"; Description: "Start 123NET TalQ when Windows starts"; GroupDescription: "System:"; Flags: checkedonce
 
 [Files]
-Source: "..\dist\123NET-TalQ-v0.6.1-win64\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\dist\TalQ-v0.6.2-win64\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\123NET TalQ"; Filename: "{app}\talq.exe"; Tasks: startmenuicon

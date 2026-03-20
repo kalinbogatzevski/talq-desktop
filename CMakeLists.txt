@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(talq VERSION 0.6.1 LANGUAGES CXX)
+project(talq VERSION 0.6.2 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -48,6 +48,8 @@ qt_add_executable(talq
     src/core/CallPipeline.cpp
     src/core/MediaDeviceManager.cpp
     src/core/CallManager.cpp
+    src/core/CallSignaling.cpp
+    src/core/DebugMonitor.cpp
     resources/talq.rc
 )
 
@@ -72,6 +74,7 @@ qt_add_qml_module(talq
         src/qml/ThreadListView.qml
         src/qml/CallWindow.qml
         src/qml/IncomingCallPopup.qml
+        src/qml/DebugOverlay.qml
     RESOURCES
         resources/resources.qrc
 )

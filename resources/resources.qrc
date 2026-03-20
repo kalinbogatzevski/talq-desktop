@@ -5,5 +5,9 @@
         <file>123net-logo.png</file>
         <file>icons/react.svg</file>
         <file>icons/reply.svg</file>
+        <file>icons/phone-call.svg</file>
+        <file>icons/phone-off.svg</file>
+        <file>icons/mic.svg</file>
+        <file>icons/mic-off.svg</file>
     </qresource>
 </RCC>
