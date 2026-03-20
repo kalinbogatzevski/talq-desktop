@@ -152,24 +152,28 @@ void CallManager::teardown(const QString &reason)
     emit callEnded(reason);
 }
 
-void CallManager::onParticipantJoinedCall(const QString &sessionId, int flags)
+void CallManager::onParticipantJoinedCall(const QString &sessionId, int flags, const QString &displayName)
 {
-    if (m_state == Outgoing) {
-        // Remote peer answered our call
+    if (m_state == Outgoing && m_remoteSessionId.isEmpty()) {
+        // Remote peer answered our call (first-writer guard)
         m_remoteSessionId = sessionId;
-        qDebug() << "CallManager: remote peer joined, session=" << sessionId.left(20);
+        m_remotePeerName = displayName;
+        qDebug() << "CallManager: remote peer joined, session=" << sessionId.left(20) << "name=" << displayName;
         m_ringTimeout.stop();
         setState(Connecting);
+        emit callInfoChanged();
         // TODO: exchange SDP offer/answer
     }
     else if (m_state == Idle) {
         // Incoming call — remote peer started a call in our current room
         m_remoteSessionId = sessionId;
-        m_callToken = m_signaling->property("typingRoom").toString();  // current room
+        m_remotePeerName = displayName;
+        m_callToken = m_signaling->currentRoom();
         m_withVideo = (flags & 4) != 0;
 
         setState(Incoming);
         m_ringTimeout.start();
+        emit callInfoChanged();
         emit incomingCall(m_remotePeerName, m_callToken, m_withVideo);
     }
 }
