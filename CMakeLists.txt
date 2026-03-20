@@ -70,6 +70,8 @@ qt_add_qml_module(talq
         src/qml/MessageComposer.qml
         src/qml/ThreadItem.qml
         src/qml/ThreadListView.qml
+        src/qml/CallWindow.qml
+        src/qml/IncomingCallPopup.qml
     RESOURCES
         resources/resources.qrc
 )

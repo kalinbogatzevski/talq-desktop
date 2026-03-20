@@ -194,6 +194,34 @@ Page {
                 }
             }
 
+            // Call button (1:1 chats only, hidden during active call)
+            ToolButton {
+                visible: chatRoot.conversationType === 1 && callManager.state === 0
+                implicitWidth: 32; implicitHeight: 32
+                onClicked: callManager.startCall(messageModel.conversationToken, false)
+                contentItem: Label {
+                    text: "\uD83D\uDCDE"  // phone emoji
+                    font.pixelSize: 16
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                }
+                background: Rectangle { radius: 16; color: parent.hovered ? Theme.bgHover : "transparent" }
+                ToolTip.visible: hovered; ToolTip.text: "Audio call"
+            }
+
+            // Active call indicator
+            Label {
+                visible: callManager.state > 0
+                text: "\uD83D\uDCDE " + formatDuration(callManager.callDuration)
+                font.pixelSize: Theme.fontSizeTiny
+                color: Theme.online
+                function formatDuration(s) {
+                    var m = Math.floor(s / 60)
+                    var sec = s % 60
+                    return (m < 10 ? "0" : "") + m + ":" + (sec < 10 ? "0" : "") + sec
+                }
+            }
+
             Label {
                 visible: messageModel.loading && messageModel.count > 0
                 text: "\u21BB"; font.pixelSize: 14; color: Theme.textMuted
