@@ -2,6 +2,7 @@
 
 #include <QObject>
 #include <QJsonObject>
+#include <QTimer>
 #include <gst/gst.h>
 #include <gst/sdp/sdp.h>
 #include <gst/webrtc/webrtc.h>
@@ -32,6 +33,8 @@ private:
     GstElement *m_pipeline = nullptr;
     GstElement *m_webrtcbin = nullptr;
     bool m_running = false;
+    QTimer m_glibTimer;  // pump GLib main context for GStreamer
+    int m_iceCheckCount = 0;
 
     void cleanup();
 
@@ -41,4 +44,6 @@ private:
     static void onPadAdded(GstElement *webrtc, GstPad *pad, gpointer userData);
     static void onOfferCreated(GstPromise *promise, gpointer userData);
     static void onAnswerCreated(GstPromise *promise, gpointer userData);
+    static void onIceStateChanged(GObject *obj, GParamSpec *pspec, gpointer userData);
+    static void onConnectionStateChanged(GObject *obj, GParamSpec *pspec, gpointer userData);
 };

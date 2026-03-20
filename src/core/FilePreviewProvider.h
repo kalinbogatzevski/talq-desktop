@@ -29,6 +29,9 @@ public:
     QQuickImageResponse *requestImageResponse(
         const QString &id, const QSize &requestedSize) override;
 
+    int cacheCount() const { return m_cache.size(); }
+    qint64 cacheBytes() const;
+
 private:
     ApiClient *m_api;
     QHash<int, QImage> m_cache;

@@ -80,6 +80,39 @@ bool CallPipeline::startCall(const QString &stunServer, const QString &turnServe
     g_signal_connect(m_webrtcbin, "pad-added",
                      G_CALLBACK(onPadAdded), this);
 
+    // Monitor ICE and peer connection state
+    g_signal_connect(m_webrtcbin, "notify::ice-connection-state",
+                     G_CALLBACK(onIceStateChanged), nullptr);
+    g_signal_connect(m_webrtcbin, "notify::connection-state",
+                     G_CALLBACK(onConnectionStateChanged), nullptr);
+
+    // Monitor GStreamer bus for errors
+    GstBus *bus = gst_element_get_bus(m_pipeline);
+    gst_bus_add_watch(bus, [](GstBus *, GstMessage *msg, gpointer) -> gboolean {
+        switch (GST_MESSAGE_TYPE(msg)) {
+        case GST_MESSAGE_ERROR: {
+            GError *err = nullptr;
+            gchar *dbg = nullptr;
+            gst_message_parse_error(msg, &err, &dbg);
+            qWarning() << "GStreamer ERROR:" << err->message << (dbg ? dbg : "");
+            g_clear_error(&err);
+            g_free(dbg);
+            break;
+        }
+        case GST_MESSAGE_WARNING: {
+            GError *err = nullptr;
+            gst_message_parse_warning(msg, &err, nullptr);
+            qWarning() << "GStreamer WARNING:" << err->message;
+            g_clear_error(&err);
+            break;
+        }
+        default:
+            break;
+        }
+        return TRUE;
+    }, nullptr);
+    gst_object_unref(bus);
+
     // Start pipeline
     GstStateChangeReturn ret = gst_element_set_state(m_pipeline, GST_STATE_PLAYING);
     if (ret == GST_STATE_CHANGE_FAILURE) {
@@ -87,6 +120,25 @@ bool CallPipeline::startCall(const QString &stunServer, const QString &turnServe
         cleanup();
         return false;
     }
+
+    // Pump GLib main context so GStreamer signals/bus messages dispatch
+    // Also poll ICE state every second
+    m_iceCheckCount = 0;
+    connect(&m_glibTimer, &QTimer::timeout, this, [this]() {
+        while (g_main_context_iteration(nullptr, FALSE)) {}
+
+        if (m_webrtcbin && m_running && ++m_iceCheckCount % 50 == 0) {
+            GstWebRTCICEConnectionState s;
+            g_object_get(m_webrtcbin, "ice-connection-state", &s, nullptr);
+            GstWebRTCPeerConnectionState p;
+            g_object_get(m_webrtcbin, "connection-state", &p, nullptr);
+            const char *iceNames[] = {"new", "checking", "connected", "completed", "failed", "disconnected", "closed"};
+            const char *peerNames[] = {"new", "connecting", "connected", "disconnected", "failed", "closed"};
+            qDebug() << "CallPipeline: [poll] ICE:" << iceNames[qMin((int)s, 6)]
+                     << "peer:" << peerNames[qMin((int)p, 5)];
+        }
+    });
+    m_glibTimer.start(20);  // 50Hz
 
     m_running = true;
     qDebug() << "CallPipeline: WebRTC call started";
@@ -103,6 +155,7 @@ void CallPipeline::stop()
 
 void CallPipeline::cleanup()
 {
+    m_glibTimer.stop();
     if (m_pipeline) {
         gst_element_set_state(m_pipeline, GST_STATE_NULL);
         gst_object_unref(m_pipeline);
@@ -124,13 +177,20 @@ void CallPipeline::setRemoteDescription(const QString &type, const QString &sdp)
         type == "offer" ? GST_WEBRTC_SDP_TYPE_OFFER : GST_WEBRTC_SDP_TYPE_ANSWER,
         sdpMsg);
 
-    GstPromise *promise = gst_promise_new();
-    g_signal_emit_by_name(m_webrtcbin, "set-remote-description", desc, promise);
-    gst_promise_interrupt(promise);
-    gst_promise_unref(promise);
+    // Don't interrupt the promise — let webrtcbin process the SDP fully
+    g_signal_emit_by_name(m_webrtcbin, "set-remote-description", desc, nullptr);
     gst_webrtc_session_description_free(desc);
 
-    qDebug() << "CallPipeline: set remote description type=" << type;
+    // Debug: check ICE state right after
+    GstWebRTCICEConnectionState iceState;
+    g_object_get(m_webrtcbin, "ice-connection-state", &iceState, nullptr);
+    GstWebRTCICEGatheringState gatherState;
+    g_object_get(m_webrtcbin, "ice-gathering-state", &gatherState, nullptr);
+    qDebug() << "CallPipeline: set remote description type=" << type
+             << "ice-state=" << (int)iceState << "gathering=" << (int)gatherState;
+
+    // Reset poll counter so we get immediate state dumps
+    m_iceCheckCount = 0;
 
     // If we received an offer, create an answer
     if (type == "offer") {
@@ -230,11 +290,8 @@ void CallPipeline::onOfferCreated(GstPromise *promise, gpointer userData)
         return;
     }
 
-    // Set as local description
-    GstPromise *localPromise = gst_promise_new();
-    g_signal_emit_by_name(self->m_webrtcbin, "set-local-description", offer, localPromise);
-    gst_promise_interrupt(localPromise);
-    gst_promise_unref(localPromise);
+    // Set as local description (no promise interrupt)
+    g_signal_emit_by_name(self->m_webrtcbin, "set-local-description", offer, nullptr);
 
     // Emit SDP to send via signaling
     gchar *sdpText = gst_sdp_message_as_text(offer->sdp);
@@ -260,11 +317,8 @@ void CallPipeline::onAnswerCreated(GstPromise *promise, gpointer userData)
         return;
     }
 
-    // Set as local description
-    GstPromise *localPromise = gst_promise_new();
-    g_signal_emit_by_name(self->m_webrtcbin, "set-local-description", answer, localPromise);
-    gst_promise_interrupt(localPromise);
-    gst_promise_unref(localPromise);
+    // Set as local description (no promise interrupt)
+    g_signal_emit_by_name(self->m_webrtcbin, "set-local-description", answer, nullptr);
 
     // Emit SDP to send via signaling
     gchar *sdpText = gst_sdp_message_as_text(answer->sdp);
@@ -274,4 +328,22 @@ void CallPipeline::onAnswerCreated(GstPromise *promise, gpointer userData)
     gst_webrtc_session_description_free(answer);
     gst_promise_unref(promise);
     qDebug() << "CallPipeline: answer created and set as local description";
+}
+
+void CallPipeline::onIceStateChanged(GObject *obj, GParamSpec *, gpointer)
+{
+    GstWebRTCICEConnectionState state;
+    g_object_get(obj, "ice-connection-state", &state, nullptr);
+    const char *names[] = {"new", "checking", "connected", "completed", "failed", "disconnected", "closed"};
+    int idx = static_cast<int>(state);
+    qDebug() << "CallPipeline: ICE state ->" << (idx < 7 ? names[idx] : "unknown");
+}
+
+void CallPipeline::onConnectionStateChanged(GObject *obj, GParamSpec *, gpointer)
+{
+    GstWebRTCPeerConnectionState state;
+    g_object_get(obj, "connection-state", &state, nullptr);
+    const char *names[] = {"new", "connecting", "connected", "disconnected", "failed", "closed"};
+    int idx = static_cast<int>(state);
+    qDebug() << "CallPipeline: connection state ->" << (idx < 6 ? names[idx] : "unknown");
 }

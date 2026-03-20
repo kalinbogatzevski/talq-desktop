@@ -55,6 +55,8 @@ public:
     QQuickImageResponse *requestImageResponse(
         const QString &id, const QSize &requestedSize) override;
 
+    int cacheCount() const { return m_memCache.size(); }
+
 private:
     ApiClient *m_api;
     QString m_cachePath;

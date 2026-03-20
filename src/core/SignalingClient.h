@@ -42,6 +42,8 @@ public:
     void sendAnswer(const QString &toSessionId, const QString &sdp);
     void sendCandidate(const QString &toSessionId, const QJsonObject &candidate);
     void sendEndOfCandidates(const QString &toSessionId);
+    void requestOffer(const QString &sessionId, const QString &roomType = "video");
+    bool hasMcu() const { return m_hasMcu; }
 
 signals:
     void connectedChanged();
@@ -77,10 +79,14 @@ private:
     QString m_typingUser;
     QString m_typingRoom;  // room token where typing was detected
     bool m_authenticated = false;
+    bool m_hasMcu = false;
     int m_reconnectDelay = 2000;
 
     // Track participant inCall flags for change detection
     QHash<QString, int> m_participantCallFlags;
+
+    // Call session ID — random per call, used in signaling messages
+    QString m_callSid;
 
     void sendSessionMessage(const QString &toSessionId, const QString &type, const QJsonObject &payload);
 };

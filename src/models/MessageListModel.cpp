@@ -368,6 +368,17 @@ void MessageListModel::onMessagesReceived(const QJsonArray &messages)
 
     m_cache->saveMessages(m_token, newMsgs);
 
+    // Trim old messages if we've grown too large (keep last 200)
+    const int maxMessages = 200;
+    if (m_messages.size() > maxMessages) {
+        int excess = m_messages.size() - maxMessages;
+        beginRemoveRows({}, 0, excess - 1);
+        m_messages.remove(0, excess);
+        endRemoveRows();
+        if (!m_messages.isEmpty())
+            m_oldestMessageId = m_messages.first().id;
+    }
+
     emit newMessagesAtEnd();
 
     // Auto-mark as read when new messages arrive
@@ -690,20 +701,15 @@ void MessageListModel::downloadFile(int fileId, const QString &fileName)
 {
     if (fileId <= 0 || fileName.isEmpty()) return;
 
-    // Download via authenticated WebDAV
-    QString downloadPath = "/remote.php/dav/files/" + m_api->user() + "/Talk/" + fileName;
+    // Download via Nextcloud file ID endpoint (works for any participant with access)
+    QString downloadPath = "/index.php/f/" + QString::number(fileId) + "/download";
     auto *reply = m_api->getAbsoluteUrl(downloadPath);
 
     connect(reply, &QNetworkReply::finished, this, [this, reply, fileName, fileId]() {
         reply->deleteLater();
 
         if (reply->error() != QNetworkReply::NoError) {
-            // Try alternative: download via file ID preview endpoint (works for shared files)
-            QString altPath = "/index.php/apps/files/ajax/download.php?files=" + fileName + "&dir=/Talk";
-            auto *reply2 = m_api->getAbsoluteUrl("/remote.php/dav/files/" + m_api->user() + "/Talk/" + fileName);
-            Q_UNUSED(reply2);
-            qWarning() << "Direct download failed, file may not be in user's Talk folder:" << reply->errorString();
-
+            qWarning() << "File download failed:" << reply->errorString();
             // Fallback: open in browser
             QDesktopServices::openUrl(QUrl(m_api->serverUrl() + "/f/" + QString::number(fileId)));
             return;

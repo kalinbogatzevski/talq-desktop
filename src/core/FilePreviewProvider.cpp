@@ -58,3 +58,11 @@ QQuickImageResponse *FilePreviewProvider::requestImageResponse(
     int fileId = id.toInt();
     return new FilePreviewResponse(fileId, requestedSize, m_api, m_cache);
 }
+
+qint64 FilePreviewProvider::cacheBytes() const
+{
+    qint64 total = 0;
+    for (auto it = m_cache.cbegin(); it != m_cache.cend(); ++it)
+        total += it.value().sizeInBytes();
+    return total;
+}
