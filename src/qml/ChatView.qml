@@ -197,15 +197,20 @@ Page {
             // Call button (1:1 chats only, hidden during active call)
             ToolButton {
                 visible: chatRoot.conversationType === 1 && callManager.state === 0
-                implicitWidth: 32; implicitHeight: 32
-                onClicked: callManager.startCall(messageModel.conversationToken, false)
-                contentItem: Label {
-                    text: "\uD83D\uDCDE"  // phone emoji
-                    font.pixelSize: 16
-                    horizontalAlignment: Text.AlignHCenter
-                    verticalAlignment: Text.AlignVCenter
+                implicitWidth: 34; implicitHeight: 34
+                onClicked: { callManager.setRemotePeerInfo(chatRoot.conversationName, chatRoot.conversationUserId); callManager.startCall(messageModel.conversationToken, false) }
+                contentItem: Image {
+                    source: "qrc:/icons/phone-call.svg"
+                    sourceSize: Qt.size(18, 18)
+                    anchors.centerIn: parent
                 }
-                background: Rectangle { radius: 16; color: parent.hovered ? Theme.bgHover : "transparent" }
+                background: Rectangle {
+                    radius: 17
+                    color: parent.hovered ? "#2ecc71" : "transparent"
+                    border.color: parent.hovered ? "#2ecc71" : Theme.textMuted
+                    border.width: 1.5
+                    opacity: parent.hovered ? 1.0 : 0.5
+                }
                 ToolTip.visible: hovered; ToolTip.text: "Audio call"
             }
 

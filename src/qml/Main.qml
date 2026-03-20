@@ -21,6 +21,7 @@ ApplicationWindow {
     Shortcut { sequence: "Ctrl+=" ; onActivated: Theme.fontScale = Math.min(Theme.fontScale + 0.1, 2.0) }
     Shortcut { sequence: "Ctrl+-" ; onActivated: Theme.fontScale = Math.max(Theme.fontScale - 0.1, 0.7) }
     Shortcut { sequence: "Ctrl+0" ; onActivated: Theme.fontScale = 1.0 }
+    Shortcut { sequence: "Ctrl+D" ; onActivated: debugMonitor.visible = !debugMonitor.visible }
 
     // Minimize to tray instead of closing (like Telegram/Discord)
     onClosing: function(close) {
@@ -83,6 +84,8 @@ ApplicationWindow {
             NumberAnimation { property: "opacity"; from: 1; to: 0; duration: Theme.animFast }
         }
     }
+
+    DebugOverlay {}
 
     property bool geometrySaveEnabled: false
 

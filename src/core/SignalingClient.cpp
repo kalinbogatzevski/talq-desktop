@@ -3,6 +3,7 @@
 #include <QJsonArray>
 #include <QHash>
 #include <QNetworkReply>
+#include <QUuid>
 #include <QDebug>
 
 SignalingClient::SignalingClient(ApiClient *api, QObject *parent)
@@ -116,8 +117,20 @@ void SignalingClient::onTextMessage(const QString &msg)
         sendHello();
     }
     else if (type == "hello") {
-        m_sessionId = obj["hello"].toObject()["sessionid"].toString();
+        QJsonObject helloObj = obj["hello"].toObject();
+        m_sessionId = helloObj["sessionid"].toString();
         m_authenticated = true;
+
+        // Check server features (MCU, etc.)
+        QJsonArray features = helloObj["server"].toObject()["features"].toArray();
+        m_hasMcu = false;
+        QStringList featureList;
+        for (const auto &f : features) {
+            featureList << f.toString();
+            if (f.toString() == "mcu") m_hasMcu = true;
+        }
+        qDebug() << "Signaling: features:" << featureList.join(", ") << "MCU:" << m_hasMcu;
+
         emit connectedChanged();
         qDebug() << "Signaling: authenticated, session:" << m_sessionId.left(20) + "...";
 
@@ -323,6 +336,7 @@ void SignalingClient::sendStoppedTyping()
 
 // --- WebRTC call signaling ---
 
+
 void SignalingClient::sendSessionMessage(const QString &toSessionId, const QString &type, const QJsonObject &payload)
 {
     if (!m_authenticated) return;
@@ -338,6 +352,8 @@ void SignalingClient::sendSessionMessage(const QString &toSessionId, const QStri
 
     QJsonObject data;
     data["type"] = type;
+    data["to"] = toSessionId;
+    data["sid"] = m_callSid;
     data["roomType"] = QString("video");
     data["payload"] = payload;
     message["data"] = data;
@@ -367,12 +383,39 @@ void SignalingClient::sendAnswer(const QString &toSessionId, const QString &sdp)
 
 void SignalingClient::sendCandidate(const QString &toSessionId, const QJsonObject &candidate)
 {
-    sendSessionMessage(toSessionId, "candidate", candidate);
+    // HPB expects payload.candidate = { candidate, sdpMLineIndex, sdpMid }
+    QJsonObject payload;
+    payload["candidate"] = candidate;
+    sendSessionMessage(toSessionId, "candidate", payload);
 }
 
 void SignalingClient::sendEndOfCandidates(const QString &toSessionId)
 {
     sendSessionMessage(toSessionId, "endOfCandidates", QJsonObject());
+}
+
+void SignalingClient::requestOffer(const QString &sessionId, const QString &roomType)
+{
+    if (!m_authenticated) return;
+
+    QJsonObject msg;
+    msg["type"] = QString("message");
+
+    QJsonObject message;
+    QJsonObject recipient;
+    recipient["type"] = QString("session");
+    recipient["sessionid"] = sessionId;
+    message["recipient"] = recipient;
+
+    QJsonObject data;
+    data["type"] = QString("requestoffer");
+    data["roomType"] = roomType;
+    message["data"] = data;
+
+    msg["message"] = message;
+
+    m_ws.sendTextMessage(QJsonDocument(msg).toJson(QJsonDocument::Compact));
+    qDebug() << "Signaling: sent requestOffer to" << sessionId.left(20) << "type=" << roomType;
 }
 
 void SignalingClient::reconnect()

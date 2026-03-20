@@ -35,7 +35,7 @@ QNetworkRequest ApiClient::makeRequest(const QString &path, const QUrlQuery &par
     if (!fullPath.startsWith('/'))
         fullPath.prepend('/');
 
-    QUrl url(m_serverUrl + "/ocs/v2.php/" + fullPath);
+    QUrl url(m_serverUrl + "/ocs/v2.php" + fullPath);
     if (!params.isEmpty())
         url.setQuery(params);
 
@@ -191,7 +191,7 @@ QNetworkReply *ApiClient::getRaw(const QString &path, const QUrlQuery &params)
 {
     auto req = makeRequest(path, params);
     auto *reply = m_nam.get(req);
-    m_pendingReplies.append(reply);
+    trackReply(reply);
     return reply;
 }
 
@@ -199,7 +199,7 @@ QNetworkReply *ApiClient::postRaw(const QString &path, const QByteArray &body)
 {
     auto req = makeRequest(path);
     auto *reply = m_nam.post(req, body);
-    m_pendingReplies.append(reply);
+    trackReply(reply);
     return reply;
 }
 
@@ -208,7 +208,7 @@ QNetworkReply *ApiClient::getLongPoll(const QString &path, const QUrlQuery &para
     auto req = makeRequest(path, params);
     req.setTransferTimeout((timeoutSecs + 5) * 1000); // extra 5s grace
     auto *reply = m_nam.get(req);
-    m_pendingReplies.append(reply);
+    trackReply(reply);
     return reply;
 }
 
@@ -247,6 +247,14 @@ QNetworkReply *ApiClient::postAbsoluteUrl(const QString &path, const QByteArray 
     }
     auto *reply = m_nam.post(req, body);
     return reply;
+}
+
+void ApiClient::trackReply(QNetworkReply *reply)
+{
+    m_pendingReplies.append(reply);
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        m_pendingReplies.removeOne(reply);
+    });
 }
 
 void ApiClient::cancelAll()
