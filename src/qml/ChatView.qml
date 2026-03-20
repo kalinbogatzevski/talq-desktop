@@ -669,7 +669,6 @@ Page {
             chatRoot.cancelPaste()
         }
         function onNewMessagesAtEnd() {
-            messageListView.autoScrolling = true
             if (messageListView.count > 0)
                 messageListView.positionViewAtIndex(messageListView.count - 1, ListView.End)
         }
