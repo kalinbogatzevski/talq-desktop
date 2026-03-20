@@ -51,7 +51,7 @@ signals:
     void callEnded(const QString &reason);
 
 private slots:
-    void onParticipantJoinedCall(const QString &sessionId, int flags);
+    void onParticipantJoinedCall(const QString &sessionId, int flags, const QString &displayName);
     void onParticipantLeftCall(const QString &sessionId);
     void onOfferReceived(const QString &fromSessionId, const QString &sdp);
     void onAnswerReceived(const QString &fromSessionId, const QString &sdp);
