@@ -32,7 +32,8 @@
 
 int main(int argc, char *argv[])
 {
-    gst_init(&argc, &argv);
+    // gst_init deferred until first call — avoids memory/plugin scanning at startup
+    // gst_init(&argc, &argv);
     QApplication app(argc, argv);
 
     // Single-instance guard — attach first to clean stale segments
@@ -71,7 +72,7 @@ int main(int argc, char *argv[])
     PushClient push(&api);
     SignalingClient signaling(&api);
     MediaDeviceManager deviceManager;
-    deviceManager.refresh();
+    // Device enumeration deferred until first call attempt
     CallManager callManager(&api, &signaling);
 
     // QML engine
