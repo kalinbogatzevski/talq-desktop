@@ -27,7 +27,7 @@ set(GST_INCLUDE_DIRS
     "${GSTREAMER_ROOT}/include"
 )
 set(GST_LIBRARY_DIRS "${GSTREAMER_ROOT}/lib")
-set(GST_LIBRARIES gstreamer-1.0 gobject-2.0 glib-2.0 intl)
+set(GST_LIBRARIES gstreamer-1.0 gstsdp-1.0 gstwebrtc-1.0 gobject-2.0 glib-2.0 intl)
 
 qt_add_executable(talq
     src/main.cpp
