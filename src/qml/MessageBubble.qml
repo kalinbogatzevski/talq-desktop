@@ -648,7 +648,7 @@ Item {
                     MouseArea {
                         anchors.fill: parent
                         cursorShape: Qt.PointingHandCursor
-                        onClicked: Qt.openUrlExternally(fileLink)
+                        onClicked: messageModel.downloadFile(fileId, fileName)
                     }
 
                     // Loading placeholder
@@ -710,7 +710,7 @@ Item {
                     MouseArea {
                         anchors.fill: parent
                         cursorShape: Qt.PointingHandCursor
-                        onClicked: Qt.openUrlExternally(fileLink)
+                        onClicked: messageModel.downloadFile(fileId, fileName)
                     }
                 }
 
@@ -842,7 +842,7 @@ Item {
                     source: isImage && fileId > 0 ? "image://preview/" + fileId : ""
                     fillMode: Image.PreserveAspectFit
                     sourceSize: Qt.size(280, 280)
-                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: Qt.openUrlExternally(fileLink) }
+                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: messageModel.downloadFile(fileId, fileName) }
                 }
 
                 // File attachment (own — non-image)
@@ -857,7 +857,7 @@ Item {
                         Label { text: "\uD83D\uDCCE"; font.pixelSize: 16 }
                         Label { text: fileName; font.pixelSize: Theme.fontSizeSmall; color: "white"; elide: Text.ElideMiddle; Layout.fillWidth: true }
                     }
-                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: Qt.openUrlExternally(fileLink) }
+                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: messageModel.downloadFile(fileId, fileName) }
                 }
 
                 // Message text

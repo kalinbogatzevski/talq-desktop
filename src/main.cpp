@@ -32,8 +32,16 @@
 
 int main(int argc, char *argv[])
 {
-    // gst_init deferred until first call — avoids memory/plugin scanning at startup
-    // gst_init(&argc, &argv);
+    // Set GStreamer plugin path relative to the exe (before gst_init)
+    {
+        std::string exePath(argv[0]);
+        auto lastSlash = exePath.find_last_of("\\/");
+        std::string appDir = (lastSlash != std::string::npos) ? exePath.substr(0, lastSlash) : ".";
+        std::string gstPath = appDir + "/gst-plugins";
+        qputenv("GST_PLUGIN_PATH", QByteArray::fromStdString(gstPath));
+        qputenv("GST_PLUGIN_SYSTEM_PATH", "");
+    }
+    gst_init(&argc, &argv);
     QApplication app(argc, argv);
 
     // Single-instance guard — attach first to clean stale segments
