@@ -648,4 +648,25 @@ ApplicationWindow {
             }
         }
     }
+
+    // Call windows
+    CallWindow { id: callWindow }
+
+    IncomingCallPopup {
+        id: incomingCallPopup
+        onAccepted: function(withVideo) { callManager.acceptCall(withVideo) }
+        onDeclined: callManager.declineCall()
+    }
+
+    Connections {
+        target: callManager
+        function onIncomingCall(callerName, token, withVideo) {
+            incomingCallPopup.callerName = callerName
+            incomingCallPopup.withVideo = withVideo
+            incomingCallPopup.visible = true
+        }
+        function onCallEnded(reason) {
+            incomingCallPopup.visible = false
+        }
+    }
 }
