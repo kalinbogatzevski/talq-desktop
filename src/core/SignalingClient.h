@@ -4,12 +4,15 @@
 #include <QWebSocket>
 #include <QTimer>
 #include <QJsonObject>
+#include <QJsonArray>
+#include <QHash>
 #include "core/ApiClient.h"
 
 /**
- * Standalone Signaling (HPB) WebSocket client for typing indicators.
+ * Standalone Signaling (HPB) WebSocket client for typing indicators and WebRTC call signaling.
  *
  * Protocol: connect → wait for welcome → hello with ticket → join room → send/receive messages
+ * Call signaling: offer/answer SDP exchange, ICE candidate trickle, participant state events
  */
 class SignalingClient : public QObject
 {
@@ -32,9 +35,24 @@ public:
     Q_INVOKABLE void sendStartedTyping();
     Q_INVOKABLE void sendStoppedTyping();
 
+    // WebRTC call signaling
+    QString sessionId() const { return m_sessionId; }
+    void sendOffer(const QString &toSessionId, const QString &sdp);
+    void sendAnswer(const QString &toSessionId, const QString &sdp);
+    void sendCandidate(const QString &toSessionId, const QJsonObject &candidate);
+    void sendEndOfCandidates(const QString &toSessionId);
+
 signals:
     void connectedChanged();
     void typingUserChanged();
+
+    // WebRTC signaling signals
+    void offerReceived(const QString &fromSessionId, const QString &sdp);
+    void answerReceived(const QString &fromSessionId, const QString &sdp);
+    void candidateReceived(const QString &fromSessionId, const QJsonObject &candidate);
+    void endOfCandidatesReceived(const QString &fromSessionId);
+    void participantJoinedCall(const QString &sessionId, int flags);
+    void participantLeftCall(const QString &sessionId);
 
 private:
     void fetchSettings();
@@ -59,4 +77,9 @@ private:
     QString m_typingRoom;  // room token where typing was detected
     bool m_authenticated = false;
     int m_reconnectDelay = 2000;
+
+    // Track participant inCall flags for change detection
+    QHash<QString, int> m_participantCallFlags;
+
+    void sendSessionMessage(const QString &toSessionId, const QString &type, const QJsonObject &payload);
 };

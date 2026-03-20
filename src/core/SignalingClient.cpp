@@ -1,6 +1,7 @@
 #include "core/SignalingClient.h"
 #include <QJsonDocument>
 #include <QJsonArray>
+#include <QHash>
 #include <QNetworkReply>
 #include <QDebug>
 
@@ -135,11 +136,35 @@ void SignalingClient::onTextMessage(const QString &msg)
         QJsonObject messageObj = obj["message"].toObject();
         QJsonObject msgData = messageObj["data"].toObject();
         QString msgType = msgData["type"].toString();
+        QString senderSessionId = messageObj["sender"].toObject()["sessionid"].toString();
 
-        // Check if this message is for our current room
+        // WebRTC signaling messages (session-targeted, dispatch before room filter)
+        if (msgType == "offer") {
+            QString sdp = msgData["payload"].toObject()["sdp"].toString();
+            qDebug() << "Signaling: received offer from" << senderSessionId.left(20);
+            emit offerReceived(senderSessionId, sdp);
+            return;
+        }
+        if (msgType == "answer") {
+            QString sdp = msgData["payload"].toObject()["sdp"].toString();
+            qDebug() << "Signaling: received answer from" << senderSessionId.left(20);
+            emit answerReceived(senderSessionId, sdp);
+            return;
+        }
+        if (msgType == "candidate") {
+            QJsonObject candidate = msgData["payload"].toObject();
+            emit candidateReceived(senderSessionId, candidate);
+            return;
+        }
+        if (msgType == "endOfCandidates") {
+            emit endOfCandidatesReceived(senderSessionId);
+            return;
+        }
+
+        // Room-scoped messages (typing indicators)
         QString senderRoom = messageObj["sender"].toObject()["roomid"].toString();
         if (!senderRoom.isEmpty() && senderRoom != m_currentRoom) {
-            return;  // typing from a different room — ignore
+            return;
         }
 
         if (msgType == "startedTyping") {
@@ -164,7 +189,31 @@ void SignalingClient::onTextMessage(const QString &msg)
         }
     }
     else if (type == "event") {
-        // Room events (participants joined/left, etc.)
+        QJsonObject event = obj["event"].toObject();
+        QString target = event["target"].toString();
+
+        if (target == "participants") {
+            QJsonObject update = event["update"].toObject();
+            QJsonArray users = update["users"].toArray();
+            for (const QJsonValue &val : users) {
+                QJsonObject user = val.toObject();
+                int inCall = user["inCall"].toInt();
+                QString sid = user["sessionId"].toString();
+                if (sid.isEmpty() || sid == m_sessionId)
+                    continue;  // skip self
+
+                int prevFlags = m_participantCallFlags.value(sid, 0);
+                m_participantCallFlags[sid] = inCall;
+
+                if (prevFlags == 0 && inCall > 0) {
+                    qDebug() << "Signaling: participant joined call" << sid.left(20) << "flags=" << inCall;
+                    emit participantJoinedCall(sid, inCall);
+                } else if (prevFlags > 0 && inCall == 0) {
+                    qDebug() << "Signaling: participant left call" << sid.left(20);
+                    emit participantLeftCall(sid);
+                }
+            }
+        }
     }
 }
 
@@ -269,6 +318,60 @@ void SignalingClient::sendStoppedTyping()
     msg["message"] = message;
 
     m_ws.sendTextMessage(QJsonDocument(msg).toJson(QJsonDocument::Compact));
+}
+
+// --- WebRTC call signaling ---
+
+void SignalingClient::sendSessionMessage(const QString &toSessionId, const QString &type, const QJsonObject &payload)
+{
+    if (!m_authenticated) return;
+
+    QJsonObject msg;
+    msg["type"] = QString("message");
+
+    QJsonObject message;
+    QJsonObject recipient;
+    recipient["type"] = QString("session");
+    recipient["sessionid"] = toSessionId;
+    message["recipient"] = recipient;
+
+    QJsonObject data;
+    data["type"] = type;
+    data["roomType"] = QString("video");
+    data["payload"] = payload;
+    message["data"] = data;
+
+    msg["message"] = message;
+
+    m_ws.sendTextMessage(QJsonDocument(msg).toJson(QJsonDocument::Compact));
+}
+
+void SignalingClient::sendOffer(const QString &toSessionId, const QString &sdp)
+{
+    QJsonObject payload;
+    payload["type"] = QString("offer");
+    payload["sdp"] = sdp;
+    sendSessionMessage(toSessionId, "offer", payload);
+    qDebug() << "Signaling: sent offer to" << toSessionId.left(20);
+}
+
+void SignalingClient::sendAnswer(const QString &toSessionId, const QString &sdp)
+{
+    QJsonObject payload;
+    payload["type"] = QString("answer");
+    payload["sdp"] = sdp;
+    sendSessionMessage(toSessionId, "answer", payload);
+    qDebug() << "Signaling: sent answer to" << toSessionId.left(20);
+}
+
+void SignalingClient::sendCandidate(const QString &toSessionId, const QJsonObject &candidate)
+{
+    sendSessionMessage(toSessionId, "candidate", candidate);
+}
+
+void SignalingClient::sendEndOfCandidates(const QString &toSessionId)
+{
+    sendSessionMessage(toSessionId, "endOfCandidates", QJsonObject());
 }
 
 void SignalingClient::reconnect()
