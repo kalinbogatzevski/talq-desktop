@@ -19,7 +19,7 @@ find_package(Qt6 REQUIRED COMPONENTS
 )
 
 # GStreamer (for calls)
-set(GSTREAMER_ROOT "C:/gst" CACHE PATH "GStreamer installation root")
+set(GSTREAMER_ROOT "C:/msys64/mingw64" CACHE PATH "GStreamer installation root")
 set(GST_INCLUDE_DIRS
     "${GSTREAMER_ROOT}/include/gstreamer-1.0"
     "${GSTREAMER_ROOT}/include/glib-2.0"
