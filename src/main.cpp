@@ -35,10 +35,11 @@ int main(int argc, char *argv[])
     gst_init(&argc, &argv);
     QApplication app(argc, argv);
 
-    // Single-instance guard
+    // Single-instance guard — attach first to clean stale segments
     QSharedMemory singleInstance("TalQ_SingleInstance_Lock");
+    singleInstance.attach();  // clears stale segment from previous crash
+    singleInstance.detach();
     if (!singleInstance.create(1)) {
-        // Another instance is already running
         qWarning() << "TalQ is already running!";
         return 0;
     }
