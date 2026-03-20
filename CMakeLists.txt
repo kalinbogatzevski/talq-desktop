@@ -47,6 +47,7 @@ qt_add_executable(talq
     src/models/ThreadListModel.cpp
     src/core/CallPipeline.cpp
     src/core/MediaDeviceManager.cpp
+    src/core/CallManager.cpp
     resources/talq.rc
 )
 

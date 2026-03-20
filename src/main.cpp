@@ -28,6 +28,7 @@
 #include "models/ThreadListModel.h"
 #include "core/CallPipeline.h"
 #include "core/MediaDeviceManager.h"
+#include "core/CallManager.h"
 #include <gst/gst.h>
 
 int main(int argc, char *argv[])
@@ -73,6 +74,7 @@ int main(int argc, char *argv[])
     MediaDeviceManager deviceManager;
     deviceManager.refresh();
     CallPipeline callPipeline;
+    CallManager callManager(&api, &signaling);
 
     // QML engine
     QQmlApplicationEngine engine;
@@ -87,6 +89,7 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty("signaling", &signaling);
     engine.rootContext()->setContextProperty("notifications", &notifications);
     engine.rootContext()->setContextProperty("deviceManager", &deviceManager);
+    engine.rootContext()->setContextProperty("callManager", &callManager);
 
     // Branding context
 #ifdef TALQ_BRAND_123NET
