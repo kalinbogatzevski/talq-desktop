@@ -17,6 +17,8 @@
 #include <QMimeData>
 #include <QImage>
 #include <QDir>
+#include <QStandardPaths>
+#include <QDesktopServices>
 
 // ============================================================================
 // STORAGE: m_messages is stored OLDEST-FIRST (natural chronological order).
@@ -682,6 +684,65 @@ void MessageListModel::onLastCommonReadChanged(int messageId)
     if (!m_messages.isEmpty()) {
         emit dataChanged(index(0), index(m_messages.size() - 1), {IsReadRole});
     }
+}
+
+void MessageListModel::downloadFile(int fileId, const QString &fileName)
+{
+    if (fileId <= 0 || fileName.isEmpty()) return;
+
+    // Download via authenticated WebDAV
+    QString downloadPath = "/remote.php/dav/files/" + m_api->user() + "/Talk/" + fileName;
+    auto *reply = m_api->getAbsoluteUrl(downloadPath);
+
+    connect(reply, &QNetworkReply::finished, this, [this, reply, fileName, fileId]() {
+        reply->deleteLater();
+
+        if (reply->error() != QNetworkReply::NoError) {
+            // Try alternative: download via file ID preview endpoint (works for shared files)
+            QString altPath = "/index.php/apps/files/ajax/download.php?files=" + fileName + "&dir=/Talk";
+            auto *reply2 = m_api->getAbsoluteUrl("/remote.php/dav/files/" + m_api->user() + "/Talk/" + fileName);
+            Q_UNUSED(reply2);
+            qWarning() << "Direct download failed, file may not be in user's Talk folder:" << reply->errorString();
+
+            // Fallback: open in browser
+            QDesktopServices::openUrl(QUrl(m_api->serverUrl() + "/f/" + QString::number(fileId)));
+            return;
+        }
+
+        QByteArray data = reply->readAll();
+        if (data.isEmpty()) {
+            emit errorOccurred("Downloaded file is empty");
+            return;
+        }
+
+        // Save to Downloads folder
+        QString downloadsDir = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
+        QString savePath = downloadsDir + "/" + fileName;
+
+        // Avoid overwriting — add (1), (2) etc.
+        if (QFile::exists(savePath)) {
+            QString base = QFileInfo(savePath).completeBaseName();
+            QString ext = QFileInfo(savePath).suffix();
+            int n = 1;
+            while (QFile::exists(savePath)) {
+                savePath = downloadsDir + "/" + base + " (" + QString::number(n++) + ")" +
+                    (ext.isEmpty() ? "" : "." + ext);
+            }
+        }
+
+        QFile file(savePath);
+        if (!file.open(QIODevice::WriteOnly)) {
+            emit errorOccurred("Cannot save file: " + savePath);
+            return;
+        }
+        file.write(data);
+        file.close();
+
+        qDebug() << "File downloaded to:" << savePath;
+
+        // Open the file
+        QDesktopServices::openUrl(QUrl::fromLocalFile(savePath));
+    });
 }
 
 bool MessageListModel::pasteClipboardImage()

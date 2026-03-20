@@ -80,6 +80,7 @@ public:
     Q_INVOKABLE bool pasteClipboardImage();
     Q_INVOKABLE void sendFileWithCaption(const QString &filePath, const QString &caption);
     Q_INVOKABLE void cleanupTempFile(const QString &filePath);
+    Q_INVOKABLE void downloadFile(int fileId, const QString &fileName);
 
     // Upload progress (0.0 to 1.0, -1 = no upload)
     Q_PROPERTY(double uploadProgress READ uploadProgress NOTIFY uploadProgressChanged)
