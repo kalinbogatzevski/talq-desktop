@@ -19,6 +19,7 @@
 #include <QDir>
 #include <QStandardPaths>
 #include <QDesktopServices>
+#include <QMimeDatabase>
 
 // ============================================================================
 // STORAGE: m_messages is stored OLDEST-FIRST (natural chronological order).
@@ -778,28 +779,50 @@ bool MessageListModel::pasteClipboardImage()
 {
     const QClipboard *clipboard = QGuiApplication::clipboard();
     const QMimeData *mimeData = clipboard->mimeData();
-
-    if (!mimeData || !mimeData->hasImage())
+    if (!mimeData)
         return false;
 
-    QImage image = clipboard->image();
-    if (image.isNull())
-        return false;
-
-    // Save to temp file
-    QString tempPath = QDir::tempPath() + "/talq_paste_"
-        + QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss") + ".png";
-
-    if (!image.save(tempPath, "PNG")) {
-        qWarning() << "Failed to save clipboard image to" << tempPath;
-        return false;
+    // Case 1: Image data in clipboard (screenshot, copied image)
+    if (mimeData->hasImage()) {
+        QImage image = clipboard->image();
+        if (!image.isNull()) {
+            QString tempPath = QDir::tempPath() + "/talq_paste_"
+                + QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss") + ".png";
+            if (!image.save(tempPath, "PNG")) {
+                qWarning() << "Failed to save clipboard image to" << tempPath;
+                return false;
+            }
+            qDebug() << "Clipboard image saved:" << tempPath << image.size();
+            emit pasteReady("file:///" + tempPath, image.width(), image.height());
+            return true;
+        }
     }
 
-    qDebug() << "Clipboard image saved:" << tempPath << image.size();
-    // Don't auto-send — let QML show confirmation UI
-    QString fileUrl = "file:///" + tempPath;
-    emit pasteReady(fileUrl, image.width(), image.height());
-    return true;
+    // Case 2: File(s) copied from Explorer or file manager
+    if (mimeData->hasUrls()) {
+        QList<QUrl> urls = mimeData->urls();
+        for (const auto &url : urls) {
+            if (!url.isLocalFile()) continue;
+            QString path = url.toLocalFile();
+            if (!QFile::exists(path)) continue;
+
+            QString mime = QMimeDatabase().mimeTypeForFile(path).name();
+            if (mime.startsWith("image/")) {
+                // Image file — show paste confirmation with preview
+                QImage img(path);
+                qDebug() << "Clipboard file paste (image):" << path;
+                emit pasteReady(url.toString(), img.width(), img.height());
+                return true;
+            } else {
+                // Non-image file — send directly
+                qDebug() << "Clipboard file paste:" << path;
+                sendFile(url.toString());
+                return true;
+            }
+        }
+    }
+
+    return false;
 }
 
 void MessageListModel::cleanupTempFile(const QString &filePath)
