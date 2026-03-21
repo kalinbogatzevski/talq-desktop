@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import QtMultimedia
 import TalkQt
 
 Window {
@@ -16,6 +17,62 @@ Window {
         return "Call — " + callManager.remotePeerName
     }
     visible: false
+
+    VideoOutput {
+        id: remoteVideo
+        anchors.fill: parent
+        visible: callManager.remoteVideoProvider && callManager.remoteVideoProvider.hasVideo
+        videoSink: callManager.remoteVideoProvider ? callManager.remoteVideoProvider.videoSink : null
+        fillMode: VideoOutput.PreserveAspectCrop
+    }
+
+    MouseArea {
+        anchors.fill: parent
+        hoverEnabled: true
+        propagateComposedEvents: true
+        onPositionChanged: (mouse) => {
+            controlBar.controlBarVisible = true
+            hideTimer.restart()
+            mouse.accepted = false
+        }
+        onClicked: (mouse) => mouse.accepted = false
+    }
+
+    Timer {
+        id: hideTimer
+        interval: 3000
+        onTriggered: {
+            if (remoteVideo.visible)
+                controlBar.controlBarVisible = false
+        }
+    }
+
+    // Duration overlay for video mode
+    Rectangle {
+        anchors.top: parent.top
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.topMargin: 16
+        width: durationOverlayText.width + 24
+        height: 32
+        radius: 16
+        color: "#80000000"
+        visible: remoteVideo.visible && callManager.state === CallManager.Active
+        z: 10
+
+        Text {
+            id: durationOverlayText
+            anchors.centerIn: parent
+            text: callManager.state === CallManager.Active ? formatDuration(callManager.callDuration) : ""
+            color: "white"
+            font.pixelSize: 14
+        }
+    }
+
+    function formatDuration(s) {
+        var m = Math.floor(s / 60)
+        var sec = s % 60
+        return (m < 10 ? "0" : "") + m + ":" + (sec < 10 ? "0" : "") + sec
+    }
 
     Connections {
         target: callManager
@@ -40,7 +97,7 @@ Window {
         width: 96; height: 96; radius: 48
         color: "transparent"
         border.color: "#2ecc71"; border.width: 2; opacity: 0
-        visible: callManager.state === CallManager.Outgoing || callManager.state === CallManager.Incoming
+        visible: !remoteVideo.visible && (callManager.state === CallManager.Outgoing || callManager.state === CallManager.Incoming)
         SequentialAnimation on opacity {
             running: pulseRing.visible; loops: Animation.Infinite
             NumberAnimation { to: 0.6; duration: 800 }
@@ -66,6 +123,7 @@ Window {
             Layout.alignment: Qt.AlignHCenter
             width: 72; height: 72; radius: 36
             color: Theme.accent
+            visible: !remoteVideo.visible
 
             Image {
                 anchors.fill: parent
@@ -86,26 +144,23 @@ Window {
             Layout.alignment: Qt.AlignHCenter
             text: callManager.remotePeerName || "Unknown"
             font.pixelSize: 16; font.weight: Font.DemiBold; color: "white"
+            visible: !remoteVideo.visible
         }
 
         Label {
             Layout.alignment: Qt.AlignHCenter
+            visible: !remoteVideo.visible
             text: {
                 switch (callManager.state) {
                 case CallManager.Outgoing: return "Calling..."
                 case CallManager.Incoming: return "Incoming call..."
                 case CallManager.Connecting: return "Connecting..."
-                case CallManager.Active: return formatDuration(callManager.callDuration)
+                case CallManager.Active: return callWindow.formatDuration(callManager.callDuration)
                 default: return ""
                 }
             }
             font.pixelSize: 13
             color: callManager.state === CallManager.Active ? "#2ecc71" : "#aaaacc"
-            function formatDuration(s) {
-                var m = Math.floor(s / 60)
-                var sec = s % 60
-                return (m < 10 ? "0" : "") + m + ":" + (sec < 10 ? "0" : "") + sec
-            }
         }
 
         // Audio waveform — scrolling bars drawn on Canvas, last ~8 seconds
@@ -113,7 +168,7 @@ Window {
             id: waveCanvas
             Layout.alignment: Qt.AlignHCenter
             width: 280; height: 54
-            visible: callManager.state === CallManager.Active
+            visible: !remoteVideo.visible && callManager.state === CallManager.Active
 
             property var samples: []
             property int maxBars: 80
@@ -187,87 +242,120 @@ Window {
         }
     }
 
-    // Control bar
-    RowLayout {
+    // Control bar overlay
+    Rectangle {
+        id: controlBar
         anchors.bottom: parent.bottom
-        anchors.horizontalCenter: parent.horizontalCenter
-        anchors.bottomMargin: 24
-        spacing: 20
+        anchors.left: parent.left
+        anchors.right: parent.right
+        height: 100
+        color: remoteVideo.visible ? "#80000000" : "transparent"
+        z: 5
 
-        // Stats toggle
-        RoundButton {
-            implicitWidth: 40; implicitHeight: 40
-            id: statsToggle
-            checkable: true
-            checked: false
-            visible: callManager.state === CallManager.Active
-            contentItem: Label {
-                text: "i"
-                font.pixelSize: 16; font.weight: Font.Bold; font.italic: true
-                color: statsToggle.checked ? "white" : "#8888aa"
-                horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
-            }
-            background: Rectangle {
-                radius: 20
-                color: statsToggle.checked ? "#3a3a6e" : "#2a2a4e"
-                border.color: "#4a4a7e"; border.width: 1
-            }
-            ToolTip.visible: hovered; ToolTip.text: "Call info"
-        }
+        property bool controlBarVisible: true
+        opacity: controlBarVisible ? 1.0 : 0.0
+        Behavior on opacity { NumberAnimation { duration: 300 } }
 
-        // Mute (with mic level fill)
-        RoundButton {
-            implicitWidth: 50; implicitHeight: 50
-            visible: callManager.state === CallManager.Connecting || callManager.state === CallManager.Active
-            onClicked: callManager.toggleMute()
-            contentItem: Image {
-                source: callManager.isMuted ? "qrc:/icons/mic-off.svg" : "qrc:/icons/mic.svg"
-                sourceSize: Qt.size(22, 22); anchors.centerIn: parent; z: 2
-            }
-            background: Rectangle {
-                radius: 25
-                color: callManager.isMuted ? "#e74c3c" : "#3a3a5e"
-                border.color: callManager.isMuted ? "#e74c3c" : "#5a5a8e"; border.width: 1
-                clip: true
+        RowLayout {
+            anchors.centerIn: parent
+            spacing: 20
 
-                // Green level fill from bottom (clipped to circle)
-                Rectangle {
-                    anchors.left: parent.left
-                    anchors.right: parent.right
-                    anchors.bottom: parent.bottom
-                    height: callManager.isMuted ? 0 : parent.height * callManager.audioLevel
-                    color: "#2ecc71"
-                    opacity: 0.4
-                    Behavior on height { NumberAnimation { duration: 80 } }
+            // Stats toggle
+            RoundButton {
+                implicitWidth: 40; implicitHeight: 40
+                id: statsToggle
+                checkable: true
+                checked: false
+                visible: callManager.state === CallManager.Active
+                contentItem: Label {
+                    text: "i"
+                    font.pixelSize: 16; font.weight: Font.Bold; font.italic: true
+                    color: statsToggle.checked ? "white" : "#8888aa"
+                    horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
+                }
+                background: Rectangle {
+                    radius: 20
+                    color: statsToggle.checked ? "#3a3a6e" : "#2a2a4e"
+                    border.color: "#4a4a7e"; border.width: 1
+                }
+                ToolTip.visible: hovered; ToolTip.text: "Call info"
+            }
+
+            // Camera toggle
+            Rectangle {
+                width: 48; height: 48
+                radius: 24
+                color: callManager.isCameraOn ? "#2ecc71" : "#555"
+                visible: callManager.state === CallManager.Active || callManager.state === CallManager.Connecting
+
+                Text {
+                    anchors.centerIn: parent
+                    text: callManager.isCameraOn ? "\uD83D\uDCF7" : "\u2715"
+                    font.pixelSize: 20
+                    color: "white"
+                }
+
+                MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: callManager.toggleCamera()
                 }
             }
-            ToolTip.visible: hovered; ToolTip.text: callManager.isMuted ? "Unmute" : "Mute"
-        }
 
-        // Hang up
-        RoundButton {
-            implicitWidth: 56; implicitHeight: 56
-            onClicked: callManager.state === CallManager.Incoming ? callManager.declineCall() : callManager.hangUp()
-            contentItem: Image {
-                source: "qrc:/icons/phone-off.svg"
-                sourceSize: Qt.size(24, 24); anchors.centerIn: parent
-            }
-            background: Rectangle { radius: 28; color: parent.hovered ? "#ff4444" : "#e74c3c" }
-            ToolTip.visible: hovered
-            ToolTip.text: callManager.state === CallManager.Incoming ? "Decline" : "Hang up"
-        }
+            // Mute (with mic level fill)
+            RoundButton {
+                implicitWidth: 50; implicitHeight: 50
+                visible: callManager.state === CallManager.Connecting || callManager.state === CallManager.Active
+                onClicked: callManager.toggleMute()
+                contentItem: Image {
+                    source: callManager.isMuted ? "qrc:/icons/mic-off.svg" : "qrc:/icons/mic.svg"
+                    sourceSize: Qt.size(22, 22); anchors.centerIn: parent; z: 2
+                }
+                background: Rectangle {
+                    radius: 25
+                    color: callManager.isMuted ? "#e74c3c" : "#3a3a5e"
+                    border.color: callManager.isMuted ? "#e74c3c" : "#5a5a8e"; border.width: 1
+                    clip: true
 
-        // Accept (incoming)
-        RoundButton {
-            implicitWidth: 56; implicitHeight: 56
-            visible: callManager.state === CallManager.Incoming
-            onClicked: callManager.acceptCall(false)
-            contentItem: Image {
-                source: "qrc:/icons/phone-call.svg"
-                sourceSize: Qt.size(24, 24); anchors.centerIn: parent
+                    // Green level fill from bottom (clipped to circle)
+                    Rectangle {
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.bottom: parent.bottom
+                        height: callManager.isMuted ? 0 : parent.height * callManager.audioLevel
+                        color: "#2ecc71"
+                        opacity: 0.4
+                        Behavior on height { NumberAnimation { duration: 80 } }
+                    }
+                }
+                ToolTip.visible: hovered; ToolTip.text: callManager.isMuted ? "Unmute" : "Mute"
             }
-            background: Rectangle { radius: 28; color: parent.hovered ? "#33dd77" : "#2ecc71" }
-            ToolTip.visible: hovered; ToolTip.text: "Accept"
+
+            // Hang up
+            RoundButton {
+                implicitWidth: 56; implicitHeight: 56
+                onClicked: callManager.state === CallManager.Incoming ? callManager.declineCall() : callManager.hangUp()
+                contentItem: Image {
+                    source: "qrc:/icons/phone-off.svg"
+                    sourceSize: Qt.size(24, 24); anchors.centerIn: parent
+                }
+                background: Rectangle { radius: 28; color: parent.hovered ? "#ff4444" : "#e74c3c" }
+                ToolTip.visible: hovered
+                ToolTip.text: callManager.state === CallManager.Incoming ? "Decline" : "Hang up"
+            }
+
+            // Accept (incoming)
+            RoundButton {
+                implicitWidth: 56; implicitHeight: 56
+                visible: callManager.state === CallManager.Incoming
+                onClicked: callManager.acceptCall(false)
+                contentItem: Image {
+                    source: "qrc:/icons/phone-call.svg"
+                    sourceSize: Qt.size(24, 24); anchors.centerIn: parent
+                }
+                background: Rectangle { radius: 28; color: parent.hovered ? "#33dd77" : "#2ecc71" }
+                ToolTip.visible: hovered; ToolTip.text: "Accept"
+            }
         }
     }
 
