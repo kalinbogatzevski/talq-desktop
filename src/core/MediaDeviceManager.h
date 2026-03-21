@@ -26,15 +26,22 @@ public:
 
     Q_PROPERTY(int selectedAudioInput READ selectedAudioInput WRITE setSelectedAudioInput NOTIFY selectedChanged)
     Q_PROPERTY(int selectedAudioOutput READ selectedAudioOutput WRITE setSelectedAudioOutput NOTIFY selectedChanged)
+    Q_PROPERTY(int selectedVideoInput READ selectedVideoInput WRITE setSelectedVideoInput NOTIFY selectedChanged)
 
     int selectedAudioInput() const { return m_selectedInput; }
     int selectedAudioOutput() const { return m_selectedOutput; }
+    int selectedVideoInput() const { return m_selectedVideo; }
     void setSelectedAudioInput(int idx) { if (m_selectedInput != idx) { m_selectedInput = idx; emit selectedChanged(); } }
     void setSelectedAudioOutput(int idx) { if (m_selectedOutput != idx) { m_selectedOutput = idx; emit selectedChanged(); } }
+    void setSelectedVideoInput(int idx) { if (m_selectedVideo != idx) { m_selectedVideo = idx; emit selectedChanged(); } }
 
     // Get selected device name for pipeline configuration
     QString selectedInputName() const { return (m_selectedInput >= 0 && m_selectedInput < m_audioInputs.size()) ? m_audioInputs[m_selectedInput].name : QString(); }
     QString selectedOutputName() const { return (m_selectedOutput >= 0 && m_selectedOutput < m_audioOutputs.size()) ? m_audioOutputs[m_selectedOutput].name : QString(); }
+
+    // Get selected device ID (strid/path) for pipeline configuration
+    QString selectedInputDeviceId() const;
+    QString selectedOutputDeviceId() const;
 
     QStringList audioInputNames() const;
     QStringList audioOutputNames() const;
@@ -51,6 +58,7 @@ signals:
 private:
     int m_selectedInput = -1;   // -1 = system default
     int m_selectedOutput = -1;
+    int m_selectedVideo = -1;
     QVector<MediaDevice> m_audioInputs;
     QVector<MediaDevice> m_audioOutputs;
     QVector<MediaDevice> m_videoInputs;
