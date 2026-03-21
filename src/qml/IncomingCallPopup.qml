@@ -12,6 +12,10 @@ Window {
     color: Theme.bgSurface
     visible: false
 
+    Component.onCompleted: {
+        callManager.setUserActionReady()
+    }
+
     property string callerName: ""
     property bool withVideo: false
 
