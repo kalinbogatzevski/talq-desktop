@@ -4,6 +4,7 @@
 #include <gst/gst.h>
 #include <gst/sdp/sdp.h>
 #include <gst/webrtc/webrtc.h>
+#include "SignalingClient.h"
 
 /**
  * Receive-only GStreamer webrtcbin pipeline for MCU subscription.
@@ -20,7 +21,8 @@ public:
     explicit SubscribePipeline(const QString &remoteSessionId, QObject *parent = nullptr);
     ~SubscribePipeline() override;
 
-    bool start(const QString &stunServer);
+    bool start(const QString &stunServer, const QList<TurnServer> &turnServers = {},
+               const QString &audioOutputDeviceId = {});
     void stop();
     void setRemoteOffer(const QString &sdp);
     void addIceCandidate(const QString &candidate, int sdpMLineIndex, const QString &sdpMid);
@@ -39,6 +41,7 @@ private:
     GstElement *m_pipeline = nullptr;
     GstElement *m_webrtcbin = nullptr;
     QString m_remoteSessionId;
+    QString m_audioOutputDeviceId;
     bool m_running = false;
     guint m_busWatchId = 0;
 

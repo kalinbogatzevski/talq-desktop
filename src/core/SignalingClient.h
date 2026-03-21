@@ -8,6 +8,12 @@
 #include <QHash>
 #include "core/ApiClient.h"
 
+struct TurnServer {
+    QStringList urls;
+    QString username;
+    QString credential;
+};
+
 /**
  * Standalone Signaling (HPB) WebSocket client for typing indicators and WebRTC call signaling.
  *

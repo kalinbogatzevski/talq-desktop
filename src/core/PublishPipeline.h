@@ -4,6 +4,7 @@
 #include <gst/gst.h>
 #include <gst/sdp/sdp.h>
 #include <gst/webrtc/webrtc.h>
+#include "SignalingClient.h"
 
 /**
  * Send-only GStreamer webrtcbin pipeline for MCU publishing.
@@ -21,7 +22,8 @@ public:
     explicit PublishPipeline(QObject *parent = nullptr);
     ~PublishPipeline() override;
 
-    bool start(const QString &stunServer);
+    bool start(const QString &stunServer, const QList<TurnServer> &turnServers = {},
+               const QString &audioDeviceId = {});
     void stop();
     void setRemoteAnswer(const QString &sdp);
     void addIceCandidate(const QString &candidate, int sdpMLineIndex, const QString &sdpMid);

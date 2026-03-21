@@ -1,5 +1,7 @@
 #include "core/SubscribePipeline.h"
 #include <QDebug>
+#include <QRegularExpression>
+#include <QUrl>
 
 SubscribePipeline::SubscribePipeline(const QString &remoteSessionId, QObject *parent)
     : QObject(parent)
@@ -12,9 +14,11 @@ SubscribePipeline::~SubscribePipeline()
     stop();
 }
 
-bool SubscribePipeline::start(const QString &stunServer)
+bool SubscribePipeline::start(const QString &stunServer, const QList<TurnServer> &turnServers,
+                              const QString &audioOutputDeviceId)
 {
     if (m_running) return false;
+    m_audioOutputDeviceId = audioOutputDeviceId;
 
     m_pipeline = gst_pipeline_new("subscribe-pipeline");
     m_webrtcbin = gst_element_factory_make("webrtcbin", "sub-webrtcbin");
@@ -29,6 +33,23 @@ bool SubscribePipeline::start(const QString &stunServer)
         g_object_set(m_webrtcbin, "stun-server", stunServer.toUtf8().constData(), nullptr);
     g_object_set(m_webrtcbin, "bundle-policy",
                  GST_WEBRTC_BUNDLE_POLICY_MAX_BUNDLE, nullptr);
+
+    for (const auto &turn : turnServers) {
+        for (const auto &url : turn.urls) {
+            QString gstUrl = url;
+            gstUrl.remove(QRegularExpression("\\?transport=.*$"));
+            if (gstUrl.startsWith("turn:") && !gstUrl.startsWith("turn://"))
+                gstUrl.replace("turn:", "turn://");
+            if (gstUrl.startsWith("turns:") && !gstUrl.startsWith("turns://"))
+                gstUrl.replace("turns:", "turns://");
+            QString escapedUser = QString(QUrl::toPercentEncoding(turn.username));
+            QString escapedCred = QString(QUrl::toPercentEncoding(turn.credential));
+            gstUrl.replace("://", QString("://%1:%2@").arg(escapedUser, escapedCred));
+            qDebug() << "SubscribePipeline: adding TURN server" << gstUrl;
+            gboolean ret = FALSE;
+            g_signal_emit_by_name(m_webrtcbin, "add-turn-server", gstUrl.toUtf8().constData(), &ret);
+        }
+    }
 
     gst_bin_add(GST_BIN(m_pipeline), m_webrtcbin);
 
@@ -171,6 +192,10 @@ void SubscribePipeline::onPadAdded(GstElement *, GstPad *pad, gpointer userData)
     if (!depay || !dec || !convert || !resample || !sink) {
         qWarning() << "SubscribePipeline: failed to create receive chain";
         return;
+    }
+
+    if (!self->m_audioOutputDeviceId.isEmpty()) {
+        g_object_set(sink, "device", self->m_audioOutputDeviceId.toUtf8().constData(), nullptr);
     }
 
     gst_bin_add_many(GST_BIN(self->m_pipeline), depay, dec, convert, resample, sink, nullptr);
