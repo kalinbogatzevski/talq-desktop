@@ -432,8 +432,8 @@ Page {
                 autoScrolling = false
         }
 
-        // Lazy load older messages only when user manually scrolls near the top
         onContentYChanged: {
+            // Lazy load older messages only when user manually scrolls near the top
             if (contentY < 200 && !autoScrolling && !messageModel.loading
                     && messageModel.hasMoreHistory && count > 0) {
                 messageModel.loadHistory()
@@ -471,6 +471,11 @@ Page {
                     anchors.horizontalCenter: parent.horizontalCenter
                     text: "Pick a conversation from the sidebar"
                     font.pixelSize: Theme.fontSizeNormal; color: Theme.textSecondary
+                }
+                Label {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    text: "v" + Qt.application.version
+                    font.pixelSize: Theme.fontSizeTiny; color: Theme.textMuted
                 }
             }
 
@@ -648,15 +653,15 @@ Page {
     // Scroll-to-bottom floating button
     Rectangle {
         id: scrollToBottomBtn
-        anchors.right: parent.right
-        anchors.bottom: parent.bottom
-        anchors.rightMargin: 16
-        anchors.bottomMargin: 12
+        anchors.right: chatRoot.contentItem.right
+        anchors.bottom: chatRoot.contentItem.bottom
+        anchors.rightMargin: 20
+        anchors.bottomMargin: 16
         width: 36; height: 36; radius: 18
         color: scrollBtnArea.containsMouse ? Theme.accent : Theme.bgSurface
         border.color: scrollBtnArea.containsMouse ? Theme.accent : Theme.divider
         border.width: 1
-        visible: !messageListView.atYEnd && messageModel.count > 0
+        visible: !messageListView.autoScrolling && messageModel.count > 0
         opacity: visible ? 1 : 0
         z: 50
 
