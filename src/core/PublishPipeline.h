@@ -35,6 +35,9 @@ signals:
     void audioLevelUpdated(double level);  // 0.0 to 1.0
     void error(const QString &message);
 
+public slots:
+    void pollBus();  // called from CallManager's GLib timer
+
 private:
     void cleanup();
 

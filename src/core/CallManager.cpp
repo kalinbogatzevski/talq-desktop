@@ -160,9 +160,10 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, QObject *pa
         }
     });
 
-    // GLib main context pump (shared for all GStreamer pipelines)
-    connect(&m_glibTimer, &QTimer::timeout, this, []() {
+    // GLib main context pump + bus polling
+    connect(&m_glibTimer, &QTimer::timeout, this, [this]() {
         while (g_main_context_iteration(nullptr, FALSE)) {}
+        if (m_publishPipeline) m_publishPipeline->pollBus();
     });
 
     // Duration timer
@@ -360,10 +361,20 @@ void CallManager::joinCallOnServer(bool withVideo)
                 [this](bool ok2, const QJsonObject &settings, int) {
                     m_stunServer = "stun:stun.nextcloud.com:443";
                     if (ok2) {
+                        // Pick STUN server — prefer non-nextcloud.com (own server)
                         auto stunArr = settings["stunservers"].toArray();
-                        if (!stunArr.isEmpty()) {
-                            auto urls = stunArr[0].toObject()["urls"].toArray();
-                            if (!urls.isEmpty()) m_stunServer = urls[0].toString();
+                        for (const auto &s : stunArr) {
+                            auto urls = s.toObject()["urls"].toArray();
+                            for (const auto &u : urls) {
+                                QString url = u.toString();
+                                if (!url.contains("nextcloud.com")) {
+                                    m_stunServer = url;
+                                    break;
+                                }
+                                if (m_stunServer.contains("nextcloud.com"))
+                                    m_stunServer = url;
+                            }
+                            if (!m_stunServer.contains("nextcloud.com")) break;
                         }
                     }
                     qDebug() << "CallManager: STUN:" << m_stunServer;
