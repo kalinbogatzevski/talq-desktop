@@ -23,6 +23,8 @@ void ApiClient::setServerUrl(const QString &url)
 
 void ApiClient::setCredentials(const QString &user, const QString &password)
 {
+    // Zero old credentials before overwriting
+    m_password.fill(QChar(0));
     m_user = user;
     m_password = password;
     emit authenticatedChanged();
