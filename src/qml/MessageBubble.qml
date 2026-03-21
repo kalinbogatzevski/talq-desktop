@@ -716,8 +716,8 @@ Item {
                     }
                 }
 
-                // Message text with right-click copy
-                Label {
+                // Message text — selectable
+                TextEdit {
                     Layout.fillWidth: true
                     text: messageText
                     visible: messageText.length > 0
@@ -725,6 +725,10 @@ Item {
                     color: Theme.textPrimary
                     wrapMode: Text.Wrap
                     textFormat: Text.RichText
+                    readOnly: true
+                    selectByMouse: true
+                    selectionColor: Theme.accent
+                    selectedTextColor: "white"
                     onLinkActivated: function(link) { if (link.startsWith("http://") || link.startsWith("https://")) Qt.openUrlExternally(link) }
                 }
 
@@ -863,8 +867,8 @@ Item {
                     MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: messageModel.downloadFile(fileId, fileName) }
                 }
 
-                // Message text
-                Label {
+                // Message text — selectable
+                TextEdit {
                     Layout.fillWidth: true
                     text: messageText
                     visible: messageText.length > 0
@@ -872,6 +876,10 @@ Item {
                     color: Theme.textPrimary
                     wrapMode: Text.Wrap
                     textFormat: Text.RichText
+                    readOnly: true
+                    selectByMouse: true
+                    selectionColor: Theme.accent
+                    selectedTextColor: "white"
                     onLinkActivated: function(link) { if (link.startsWith("http://") || link.startsWith("https://")) Qt.openUrlExternally(link) }
                 }
 

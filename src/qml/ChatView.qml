@@ -408,26 +408,33 @@ Page {
         spacing: 2
         bottomMargin: Theme.spacingLarge
         boundsBehavior: Flickable.StopAtBounds
+        interactive: false  // disable drag-to-scroll; use wheel + scrollbar instead (allows text selection in messages)
 
         property bool autoScrolling: true
         property int previousCount: 0
-        property bool _userDragging: false
 
-        // Detect user-initiated drags only (not programmatic scrolls)
-        onDraggingChanged: {
-            _userDragging = dragging
-            if (dragging)
-                autoScrolling = false
+        // Mouse wheel scrolling (interactive: false disables built-in wheel)
+        WheelHandler {
+            onWheel: function(event) {
+                var delta = event.angleDelta.y
+                messageListView.contentY -= delta
+                // Clamp
+                if (messageListView.contentY < messageListView.originY)
+                    messageListView.contentY = messageListView.originY
+                var maxY = messageListView.contentHeight - messageListView.height + messageListView.originY
+                if (messageListView.contentY > maxY)
+                    messageListView.contentY = maxY
+
+                // Update auto-scroll state
+                var atBottom = (messageListView.contentY + messageListView.height >= messageListView.contentHeight - 40)
+                if (atBottom)
+                    messageListView.autoScrolling = true
+                else
+                    messageListView.autoScrolling = false
+            }
         }
 
-        // Re-enable auto-scroll when user scrolls back to bottom
         onContentYChanged: {
-            if (_userDragging || flicking) {
-                var atBottom = (contentY + height >= contentHeight - 40)
-                if (atBottom)
-                    autoScrolling = true
-            }
-
             // Lazy load older messages when near the top
             if (contentY < 200 && !autoScrolling && !messageModel.loading
                     && messageModel.hasMoreHistory && count > 0) {
