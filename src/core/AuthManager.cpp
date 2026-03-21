@@ -364,9 +364,9 @@ void AuthManager::logout()
     clearCredentials();
     m_api->cancelAll();
     m_api->setCredentials({}, {});
-    // Clear credentials from memory
-    m_password.clear();
-    m_user.clear();
+    // Clear credentials from memory (zero before releasing)
+    m_password.fill(QChar(0)); m_password.clear();
+    m_user.fill(QChar(0)); m_user.clear();
     m_serverUrl.clear();
     setLoggedIn(false);
     m_userId.clear();
