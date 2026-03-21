@@ -61,6 +61,12 @@ public:
             || systemMessage == "reaction_revoked";
     }
 
+    // Call join/leave noise — filter from chat display
+    bool isCallJoinLeave() const {
+        return systemMessage == "call_joined"
+            || systemMessage == "call_left";
+    }
+
     // Check if this is from the same author and close in time to another message
     bool isGroupedWith(const Message &other) const {
         return actorId == other.actorId

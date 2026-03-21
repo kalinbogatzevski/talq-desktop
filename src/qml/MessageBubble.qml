@@ -84,13 +84,15 @@ Item {
         width: parent.width
         height: visible ? systemLabel.implicitHeight + 16 : 0
 
+        property bool isCallMsg: isSystem && (messageText.indexOf("call") >= 0 || messageText.indexOf("Call") >= 0)
+
         Label {
             id: systemLabel
             anchors.centerIn: parent
-            text: messageText
+            text: systemMsg.isCallMsg ? "\uD83D\uDCDE " + messageText : messageText
             font.pixelSize: Theme.fontSizeTiny
             font.italic: true
-            color: Theme.systemMsg
+            color: systemMsg.isCallMsg ? Theme.online : Theme.systemMsg
         }
     }
 
@@ -722,7 +724,8 @@ Item {
                     font.pixelSize: Theme.fontSizeNormal
                     color: Theme.textPrimary
                     wrapMode: Text.Wrap
-                    textFormat: messageText.indexOf("<b") >= 0 ? Text.RichText : Text.PlainText
+                    textFormat: Text.RichText
+                    onLinkActivated: function(link) { Qt.openUrlExternally(link) }
                 }
 
                 // Reactions
@@ -868,7 +871,8 @@ Item {
                     font.pixelSize: Theme.fontSizeNormal
                     color: Theme.textPrimary
                     wrapMode: Text.Wrap
-                    textFormat: messageText.indexOf("<b") >= 0 ? Text.RichText : Text.PlainText
+                    textFormat: Text.RichText
+                    onLinkActivated: function(link) { Qt.openUrlExternally(link) }
                 }
 
                 // Reactions
