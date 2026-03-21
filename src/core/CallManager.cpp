@@ -45,55 +45,45 @@ static QByteArray generateOutgoingTone()
     return buildWavHeader(pcm.size(), sampleRate) + pcm;
 }
 
-// Incoming: Smurf melody! La-la la-la-la la, la la-la la la
-static QByteArray generateSmurfRingtone()
+// Incoming: classic two-tone ring (ding-dong, pause, ding-dong)
+static QByteArray generateIncomingRingtone()
 {
     const int sampleRate = 22050;
-    // Notes: C5=523, E5=659, G5=784, A5=880, F5=698, D5=587
-    struct Note { double freq; double duration; };
-    Note melody[] = {
-        {523, 0.18},  // C  - La
-        {659, 0.18},  // E  - la
-        {784, 0.28},  // G  - la-a
-        {784, 0.18},  // G  - la
-        {880, 0.18},  // A  - la
-        {880, 0.28},  // A  - la-a
-        {784, 0.35},  // G  - la---
-        {698, 0.18},  // F  - la
-        {698, 0.18},  // F  - la
-        {659, 0.18},  // E  - la
-        {587, 0.18},  // D  - la
-        {587, 0.28},  // D  - la-a
-        {523, 0.35},  // C  - la---
+    // Two-tone chime: high-low, pause, high-low, longer pause
+    struct Tone { double freq; double duration; double gap; };
+    Tone pattern[] = {
+        {880, 0.15, 0.05},   // ding (A5)
+        {659, 0.25, 0.40},   // dong (E5) + pause
+        {880, 0.15, 0.05},   // ding
+        {659, 0.25, 1.20},   // dong + long pause before loop
     };
-    const int noteCount = sizeof(melody) / sizeof(melody[0]);
+    const int count = sizeof(pattern) / sizeof(pattern[0]);
 
-    // Calculate total duration
     double totalDuration = 0;
-    for (int n = 0; n < noteCount; n++) totalDuration += melody[n].duration;
-    totalDuration += 0.8;  // pause at end before loop
+    for (int n = 0; n < count; n++) totalDuration += pattern[n].duration + pattern[n].gap;
 
     const int totalSamples = static_cast<int>(sampleRate * totalDuration);
     QByteArray pcm(totalSamples * 2, 0);
     auto *samples = reinterpret_cast<qint16*>(pcm.data());
 
     int pos = 0;
-    for (int n = 0; n < noteCount; n++) {
-        int noteSamples = static_cast<int>(sampleRate * melody[n].duration);
-        for (int i = 0; i < noteSamples && pos < totalSamples; i++, pos++) {
+    for (int n = 0; n < count; n++) {
+        int toneSamples = static_cast<int>(sampleRate * pattern[n].duration);
+        int gapSamples = static_cast<int>(sampleRate * pattern[n].gap);
+        for (int i = 0; i < toneSamples && pos < totalSamples; i++, pos++) {
             double t = static_cast<double>(i) / sampleRate;
-            // Envelope: quick attack, sustain, soft release
+            // Smooth envelope: fade in 10ms, fade out last 30%
             double env = 1.0;
-            if (i < sampleRate / 50) env = static_cast<double>(i) / (sampleRate / 50);  // 20ms attack
-            int release = noteSamples / 5;
-            if (i > noteSamples - release) env = static_cast<double>(noteSamples - i) / release;
-            // Mix fundamental + soft overtone for warmth
-            double wave = 0.8 * qSin(2.0 * M_PI * melody[n].freq * t)
-                        + 0.2 * qSin(2.0 * M_PI * melody[n].freq * 2.0 * t);
+            if (i < sampleRate / 100) env = static_cast<double>(i) / (sampleRate / 100);
+            int fadeOut = toneSamples * 3 / 10;
+            if (i > toneSamples - fadeOut) env = static_cast<double>(toneSamples - i) / fadeOut;
+            // Clean sine with soft second harmonic
+            double wave = 0.85 * qSin(2.0 * M_PI * pattern[n].freq * t)
+                        + 0.15 * qSin(2.0 * M_PI * pattern[n].freq * 2.0 * t);
             samples[pos] = static_cast<qint16>(14000 * env * wave);
         }
+        pos += gapSamples;  // silence gap
     }
-    // Rest of samples stay 0 (pause before loop)
 
     return buildWavHeader(pcm.size(), sampleRate) + pcm;
 }
@@ -101,7 +91,7 @@ static QByteArray generateSmurfRingtone()
 void CallManager::startRingtone() {
 #ifdef Q_OS_WIN
     static QByteArray outgoing = generateOutgoingTone();
-    static QByteArray incoming = generateSmurfRingtone();
+    static QByteArray incoming = generateIncomingRingtone();
     const QByteArray &wav = (m_state == Incoming) ? incoming : outgoing;
     PlaySoundA(wav.constData(), nullptr, SND_MEMORY | SND_ASYNC | SND_LOOP);
 #endif
