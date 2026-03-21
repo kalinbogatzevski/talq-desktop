@@ -17,6 +17,8 @@ class CallManager : public QObject
     Q_PROPERTY(int callDuration READ callDuration NOTIFY durationChanged)
     Q_PROPERTY(QString remotePeerName READ remotePeerName NOTIFY callInfoChanged)
     Q_PROPERTY(QString remotePeerId READ remotePeerId NOTIFY callInfoChanged)
+    Q_PROPERTY(double audioLevel READ audioLevel NOTIFY audioLevelChanged)
+    Q_PROPERTY(QString callStats READ callStats NOTIFY callStatsChanged)
 
 public:
     enum CallState { Idle, Outgoing, Incoming, Connecting, Active, Ending };
@@ -30,6 +32,8 @@ public:
     int callDuration() const { return m_callDuration; }
     QString remotePeerName() const { return m_remotePeerName; }
     QString remotePeerId() const { return m_remotePeerId; }
+    double audioLevel() const { return m_audioLevel; }
+    QString callStats() const { return m_callStats; }
 
     Q_INVOKABLE void startCall(const QString &token, bool withVideo);
     Q_INVOKABLE void setRemotePeerInfo(const QString &name, const QString &peerId);
@@ -47,6 +51,8 @@ signals:
     void callInfoChanged();
     void incomingCall(const QString &callerName, const QString &token, bool withVideo);
     void callEnded(const QString &reason);
+    void audioLevelChanged();
+    void callStatsChanged();
 
 private slots:
     void onParticipantJoinedCall(const QString &sessionId, int flags, const QString &displayName);
@@ -80,7 +86,11 @@ private:
     bool m_cameraOn = false;
     bool m_withVideo = false;
     int m_callDuration = 0;
+    double m_audioLevel = 0.0;
+    QString m_callStats;
+    void updateCallStats();
 
     QTimer m_durationTimer;
     QTimer m_ringTimeout;
+    QTimer m_statsTimer;
 };

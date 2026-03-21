@@ -22,6 +22,9 @@ ApplicationWindow {
     Shortcut { sequence: "Ctrl+-" ; onActivated: Theme.fontScale = Math.max(Theme.fontScale - 0.1, 0.7) }
     Shortcut { sequence: "Ctrl+0" ; onActivated: Theme.fontScale = 1.0 }
     Shortcut { sequence: "Ctrl+D" ; onActivated: debugMonitor.visible = !debugMonitor.visible }
+    Shortcut { sequence: "Ctrl+," ; onActivated: settingsDialog.visible = true }
+
+    SettingsDialog { id: settingsDialog }
 
     // Minimize to tray instead of closing (like Telegram/Discord)
     onClosing: function(close) {

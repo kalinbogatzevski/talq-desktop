@@ -76,6 +76,7 @@ qt_add_qml_module(talq
         src/qml/CallWindow.qml
         src/qml/IncomingCallPopup.qml
         src/qml/DebugOverlay.qml
+        src/qml/SettingsDialog.qml
     RESOURCES
         resources/resources.qrc
 )
