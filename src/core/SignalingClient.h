@@ -38,10 +38,13 @@ public:
     // WebRTC call signaling
     QString sessionId() const { return m_sessionId; }
     QString currentRoom() const { return m_currentRoom; }
-    void sendOffer(const QString &toSessionId, const QString &sdp);
-    void sendAnswer(const QString &toSessionId, const QString &sdp);
-    void sendCandidate(const QString &toSessionId, const QJsonObject &candidate);
-    void sendEndOfCandidates(const QString &toSessionId);
+    void sendOffer(const QString &toSessionId, const QString &sdp,
+                   const QString &sid, const QString &nick = {});
+    void sendAnswer(const QString &toSessionId, const QString &sdp,
+                    const QString &sid, const QString &nick = {});
+    void sendCandidate(const QString &toSessionId, const QJsonObject &candidate,
+                       const QString &sid);
+    void sendEndOfCandidates(const QString &toSessionId, const QString &sid);
     void requestOffer(const QString &sessionId, const QString &roomType = "video");
     bool hasMcu() const { return m_hasMcu; }
 
@@ -50,7 +53,7 @@ signals:
     void typingUserChanged();
 
     // WebRTC signaling signals
-    void offerReceived(const QString &fromSessionId, const QString &sdp);
+    void offerReceived(const QString &fromSessionId, const QString &sdp, const QString &sid);
     void answerReceived(const QString &fromSessionId, const QString &sdp);
     void candidateReceived(const QString &fromSessionId, const QJsonObject &candidate);
     void endOfCandidatesReceived(const QString &fromSessionId);
@@ -84,9 +87,8 @@ private:
 
     // Track participant inCall flags for change detection
     QHash<QString, int> m_participantCallFlags;
+    QHash<QString, QString> m_participantNames;  // userId → displayName
 
-    // Call session ID — random per call, used in signaling messages
-    QString m_callSid;
-
-    void sendSessionMessage(const QString &toSessionId, const QString &type, const QJsonObject &payload);
+    void sendSessionMessage(const QString &toSessionId, const QString &type,
+                            const QJsonObject &payload, const QString &sid);
 };

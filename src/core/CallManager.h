@@ -2,10 +2,12 @@
 
 #include <QObject>
 #include <QTimer>
+#include <QHash>
 #include <QByteArray>
 #include "core/ApiClient.h"
 #include "core/SignalingClient.h"
-#include "core/CallPipeline.h"
+#include "core/PublishPipeline.h"
+#include "core/SubscribePipeline.h"
 #include "core/CallSignaling.h"
 
 class CallManager : public QObject
@@ -19,14 +21,7 @@ class CallManager : public QObject
     Q_PROPERTY(QString remotePeerId READ remotePeerId NOTIFY callInfoChanged)
 
 public:
-    enum CallState {
-        Idle,
-        Outgoing,
-        Incoming,
-        Connecting,
-        Active,
-        Ending
-    };
+    enum CallState { Idle, Outgoing, Incoming, Connecting, Active, Ending };
     Q_ENUM(CallState)
 
     explicit CallManager(ApiClient *api, SignalingClient *signaling, QObject *parent = nullptr);
@@ -58,7 +53,7 @@ signals:
 private slots:
     void onParticipantJoinedCall(const QString &sessionId, int flags, const QString &displayName);
     void onParticipantLeftCall(const QString &sessionId);
-    void onOfferReceived(const QString &fromSessionId, const QString &sdp);
+    void onOfferReceived(const QString &fromSessionId, const QString &sdp, const QString &sid);
     void onAnswerReceived(const QString &fromSessionId, const QString &sdp);
 
 private:
@@ -66,35 +61,35 @@ private:
     void joinCallOnServer(bool withVideo);
     void leaveCallOnServer();
     void teardown(const QString &reason);
-    void connectPipeline();
+    void stopAllPipelines();
+    void startRingtone();
+    void stopRingtone();
 
     ApiClient *m_api;
     SignalingClient *m_signaling;
-    CallPipeline m_pipeline;
-    CallSignaling m_callSignaling;  // internal signaling for WebRTC messages
+    CallSignaling m_callSignaling;  // kept for potential future use
+
+    // MCU dual pipelines
+    PublishPipeline *m_publishPipeline = nullptr;
+    QHash<QString, SubscribePipeline*> m_subscribePipelines;
+    QTimer m_glibTimer;  // shared GLib main context pump
 
     CallState m_state = Idle;
     QString m_callToken;
     QString m_callSid;
-    QString m_ncSessionId;         // Nextcloud session for internal signaling
+    QString m_stunServer;
     QString m_remoteSessionId;
     QString m_remotePeerName;
     QString m_remotePeerId;
     bool m_muted = false;
     bool m_cameraOn = false;
     bool m_withVideo = false;
-    bool m_isOfferer = false;      // true if our sessionId > remote (we create offer)
     int m_callDuration = 0;
-
-    void startRingtone();
-    void stopRingtone();
 
     QTimer m_durationTimer;
     QTimer m_ringTimeout;
 
-    // Queued SDP/ICE
-    QString m_pendingSdpType;
-    QString m_pendingSdp;
-    QString m_pendingSdpTarget;  // who to send the SDP to
-    QList<QJsonObject> m_pendingCandidates;
+    // Queued SDP/ICE for when publisher isn't ready yet
+    QString m_pendingOfferSdp;
+    QList<QJsonObject> m_pendingPubCandidates;
 };

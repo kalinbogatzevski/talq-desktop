@@ -208,14 +208,21 @@ void AuthManager::cancelLogin()
 
 void AuthManager::fetchUserInfo()
 {
-    m_api->get("cloud/user", [this](bool ok, const QJsonObject &data, int) {
+    m_api->get("cloud/user", [this](bool ok, const QJsonObject &data, int statusCode) {
         m_restoringSession = false;
         emit restoringChanged();
 
         if (!ok) {
-            setError("Authentication failed. Please log in again.");
+            if (statusCode == 0) {
+                // Network error (DNS, timeout, no connection)
+                setError("Cannot connect to server. Check your network.");
+            } else if (statusCode == 401 || statusCode == 403) {
+                setError("Authentication failed. Please log in again.");
+                clearCredentials();
+            } else {
+                setError("Server error (" + QString::number(statusCode) + "). Try again later.");
+            }
             setStatus({});
-            clearCredentials();
             setLoggedIn(false);
             return;
         }

@@ -154,8 +154,9 @@ void SignalingClient::onTextMessage(const QString &msg)
         // WebRTC signaling messages (session-targeted, dispatch before room filter)
         if (msgType == "offer") {
             QString sdp = msgData["payload"].toObject()["sdp"].toString();
-            qDebug() << "Signaling: received offer from" << senderSessionId.left(20);
-            emit offerReceived(senderSessionId, sdp);
+            QString sid = msgData["sid"].toString();
+            qDebug() << "Signaling: received offer from" << senderSessionId.left(20) << "sid=" << sid;
+            emit offerReceived(senderSessionId, sdp, sid);
             return;
         }
         if (msgType == "answer") {
@@ -181,9 +182,15 @@ void SignalingClient::onTextMessage(const QString &msg)
         }
 
         if (msgType == "startedTyping") {
-            QString sender = messageObj["sender"].toObject()["displayname"].toString();
-            if (sender.isEmpty())
-                sender = messageObj["sender"].toObject()["userid"].toString();
+            QJsonObject senderObj = messageObj["sender"].toObject();
+            QString sender = senderObj["displayname"].toString();
+            if (sender.isEmpty()) {
+                // HPB may not provide displayname — use userid as fallback key
+                // and look up the display name from participant data if available
+                sender = m_participantNames.value(
+                    senderObj["userid"].toString(),
+                    senderObj["userid"].toString());
+            }
 
             if (sender != m_userId && !sender.isEmpty()) {
                 m_typingUser = sender;
@@ -215,6 +222,12 @@ void SignalingClient::onTextMessage(const QString &msg)
                 if (sid.isEmpty() || sid == m_sessionId)
                     continue;  // skip self
 
+                // Cache userid → displayName for typing indicators
+                QString userId = user["actorId"].toString();
+                QString displayName = user["displayName"].toString();
+                if (!userId.isEmpty() && !displayName.isEmpty())
+                    m_participantNames[userId] = displayName;
+
                 int prevFlags = m_participantCallFlags.value(sid, 0);
                 m_participantCallFlags[sid] = inCall;
 
@@ -237,6 +250,7 @@ void SignalingClient::sendHello()
     hello["type"] = QString("hello");
 
     QJsonObject helloData;
+    // Use v1.0 auth (userid/ticket). v2.0 requires JWT which we don't have.
     helloData["version"] = QString("1.0");
 
     QJsonObject auth;
@@ -337,7 +351,8 @@ void SignalingClient::sendStoppedTyping()
 // --- WebRTC call signaling ---
 
 
-void SignalingClient::sendSessionMessage(const QString &toSessionId, const QString &type, const QJsonObject &payload)
+void SignalingClient::sendSessionMessage(const QString &toSessionId, const QString &type,
+                                          const QJsonObject &payload, const QString &sid)
 {
     if (!m_authenticated) return;
 
@@ -353,7 +368,7 @@ void SignalingClient::sendSessionMessage(const QString &toSessionId, const QStri
     QJsonObject data;
     data["type"] = type;
     data["to"] = toSessionId;
-    data["sid"] = m_callSid;
+    data["sid"] = sid;
     data["roomType"] = QString("video");
     data["payload"] = payload;
     message["data"] = data;
@@ -363,35 +378,39 @@ void SignalingClient::sendSessionMessage(const QString &toSessionId, const QStri
     m_ws.sendTextMessage(QJsonDocument(msg).toJson(QJsonDocument::Compact));
 }
 
-void SignalingClient::sendOffer(const QString &toSessionId, const QString &sdp)
+void SignalingClient::sendOffer(const QString &toSessionId, const QString &sdp,
+                                const QString &sid, const QString &nick)
 {
     QJsonObject payload;
     payload["type"] = QString("offer");
     payload["sdp"] = sdp;
-    sendSessionMessage(toSessionId, "offer", payload);
-    qDebug() << "Signaling: sent offer to" << toSessionId.left(20);
+    if (!nick.isEmpty()) payload["nick"] = nick;
+    sendSessionMessage(toSessionId, "offer", payload, sid);
+    qDebug() << "Signaling: sent offer to" << toSessionId.left(20) << "sid=" << sid.left(10);
 }
 
-void SignalingClient::sendAnswer(const QString &toSessionId, const QString &sdp)
+void SignalingClient::sendAnswer(const QString &toSessionId, const QString &sdp,
+                                  const QString &sid, const QString &nick)
 {
     QJsonObject payload;
     payload["type"] = QString("answer");
     payload["sdp"] = sdp;
-    sendSessionMessage(toSessionId, "answer", payload);
-    qDebug() << "Signaling: sent answer to" << toSessionId.left(20);
+    if (!nick.isEmpty()) payload["nick"] = nick;
+    sendSessionMessage(toSessionId, "answer", payload, sid);
+    qDebug() << "Signaling: sent answer to" << toSessionId.left(20) << "sid=" << sid.left(10);
 }
 
-void SignalingClient::sendCandidate(const QString &toSessionId, const QJsonObject &candidate)
+void SignalingClient::sendCandidate(const QString &toSessionId, const QJsonObject &candidate,
+                                     const QString &sid)
 {
-    // HPB expects payload.candidate = { candidate, sdpMLineIndex, sdpMid }
     QJsonObject payload;
     payload["candidate"] = candidate;
-    sendSessionMessage(toSessionId, "candidate", payload);
+    sendSessionMessage(toSessionId, "candidate", payload, sid);
 }
 
-void SignalingClient::sendEndOfCandidates(const QString &toSessionId)
+void SignalingClient::sendEndOfCandidates(const QString &toSessionId, const QString &sid)
 {
-    sendSessionMessage(toSessionId, "endOfCandidates", QJsonObject());
+    sendSessionMessage(toSessionId, "endOfCandidates", QJsonObject(), sid);
 }
 
 void SignalingClient::requestOffer(const QString &sessionId, const QString &roomType)
