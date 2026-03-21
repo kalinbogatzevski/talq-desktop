@@ -20,7 +20,8 @@ Window {
     Connections {
         target: callManager
         function onStateChanged() {
-            if (callManager.state !== CallManager.Idle && callManager.state !== CallManager.Ending)
+            if (callManager.state !== CallManager.Idle && callManager.state !== CallManager.Ending
+                    && callManager.state !== CallManager.Incoming)
                 callWindow.visible = true
             else if (callManager.state === CallManager.Idle) {
                 callWindow.visible = false
