@@ -34,7 +34,16 @@ void MediaDeviceManager::refresh()
 
         MediaDevice md;
         md.name = QString::fromUtf8(name);
-        md.id = md.name;
+        GstStructure *props = gst_device_get_properties(dev);
+        if (props) {
+            const gchar *strid = gst_structure_get_string(props, "device.strid");
+            if (!strid)
+                strid = gst_structure_get_string(props, "device.path");
+            md.id = strid ? QString::fromUtf8(strid) : md.name;
+            gst_structure_free(props);
+        } else {
+            md.id = md.name;
+        }
 
         QString deviceClass = QString::fromUtf8(cls);
         if (deviceClass.contains("Source") && deviceClass.contains("Audio")) {
@@ -87,4 +96,18 @@ QStringList MediaDeviceManager::videoInputNames() const
     for (const auto &d : m_videoInputs)
         names << d.name;
     return names;
+}
+
+QString MediaDeviceManager::selectedInputDeviceId() const
+{
+    if (m_selectedInput >= 0 && m_selectedInput < m_audioInputs.size())
+        return m_audioInputs[m_selectedInput].id;
+    return {};
+}
+
+QString MediaDeviceManager::selectedOutputDeviceId() const
+{
+    if (m_selectedOutput >= 0 && m_selectedOutput < m_audioOutputs.size())
+        return m_audioOutputs[m_selectedOutput].id;
+    return {};
 }

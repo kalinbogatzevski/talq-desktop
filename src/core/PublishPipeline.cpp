@@ -1,5 +1,7 @@
 #include "core/PublishPipeline.h"
 #include <QDebug>
+#include <QRegularExpression>
+#include <QUrl>
 
 PublishPipeline::PublishPipeline(QObject *parent)
     : QObject(parent)
@@ -11,7 +13,8 @@ PublishPipeline::~PublishPipeline()
     stop();
 }
 
-bool PublishPipeline::start(const QString &stunServer)
+bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &turnServers,
+                           const QString &audioDeviceId)
 {
     if (m_running) return false;
 
@@ -29,6 +32,23 @@ bool PublishPipeline::start(const QString &stunServer)
     g_object_set(m_webrtcbin, "bundle-policy",
                  GST_WEBRTC_BUNDLE_POLICY_MAX_BUNDLE, nullptr);
 
+    for (const auto &turn : turnServers) {
+        for (const auto &url : turn.urls) {
+            QString gstUrl = url;
+            gstUrl.remove(QRegularExpression("\\?transport=.*$"));
+            if (gstUrl.startsWith("turn:") && !gstUrl.startsWith("turn://"))
+                gstUrl.replace("turn:", "turn://");
+            if (gstUrl.startsWith("turns:") && !gstUrl.startsWith("turns://"))
+                gstUrl.replace("turns:", "turns://");
+            QString escapedUser = QString(QUrl::toPercentEncoding(turn.username));
+            QString escapedCred = QString(QUrl::toPercentEncoding(turn.credential));
+            gstUrl.replace("://", QString("://%1:%2@").arg(escapedUser, escapedCred));
+            qDebug() << "PublishPipeline: adding TURN server" << gstUrl;
+            gboolean ret = FALSE;
+            g_signal_emit_by_name(m_webrtcbin, "add-turn-server", gstUrl.toUtf8().constData(), &ret);
+        }
+    }
+
     // Audio capture chain
     GstElement *audiosrc = gst_element_factory_make("wasapi2src", "pub-audiosrc");
     GstElement *audioconvert = gst_element_factory_make("audioconvert", nullptr);
@@ -41,6 +61,11 @@ bool PublishPipeline::start(const QString &stunServer)
         emit error("Failed to create audio capture elements");
         cleanup();
         return false;
+    }
+
+    if (!audioDeviceId.isEmpty()) {
+        g_object_set(audiosrc, "device", audioDeviceId.toUtf8().constData(), nullptr);
+        qDebug() << "PublishPipeline: using audio input device" << audioDeviceId;
     }
 
     // Configure level element: report every 100ms
