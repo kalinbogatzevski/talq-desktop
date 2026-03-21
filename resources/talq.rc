@@ -3,8 +3,8 @@ IDI_ICON1 ICON "talq.ico"
 #include <winver.h>
 
 VS_VERSION_INFO VERSIONINFO
-FILEVERSION     0,6,3,0
-PRODUCTVERSION  0,6,3,0
+FILEVERSION     0,7,0,0
+PRODUCTVERSION  0,7,0,0
 FILEFLAGSMASK   VS_FFI_FILEFLAGSMASK
 FILEFLAGS       0
 FILEOS          VOS_NT_WINDOWS32
@@ -17,11 +17,11 @@ BEGIN
         BEGIN
             VALUE "CompanyName",      "TalQ\0"
             VALUE "FileDescription",  "TalQ - Nextcloud Talk Client\0"
-            VALUE "FileVersion",      "0.6.3\0"
+            VALUE "FileVersion",      "0.7.0\0"
             VALUE "InternalName",     "TalQ\0"
             VALUE "OriginalFilename", "talq.exe\0"
             VALUE "ProductName",      "TalQ\0"
-            VALUE "ProductVersion",   "0.6.3\0"
+            VALUE "ProductVersion",   "0.7.0\0"
         END
     END
     BLOCK "VarFileInfo"
