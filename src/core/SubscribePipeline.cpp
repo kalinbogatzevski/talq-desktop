@@ -27,13 +27,12 @@ bool SubscribePipeline::start(const QString &stunServer)
 
     if (!stunServer.isEmpty())
         g_object_set(m_webrtcbin, "stun-server", stunServer.toUtf8().constData(), nullptr);
+    g_object_set(m_webrtcbin, "bundle-policy",
+                 GST_WEBRTC_BUNDLE_POLICY_MAX_BUNDLE, nullptr);
 
-    g_object_set(m_webrtcbin, "bundle-policy", 3 /* max-bundle */, nullptr);
-
-    // Add webrtcbin only — no send elements (receive-only)
     gst_bin_add(GST_BIN(m_pipeline), m_webrtcbin);
 
-    // Signals — no negotiation-needed (we don't create offers)
+    // No negotiation-needed (we don't create offers)
     g_signal_connect(m_webrtcbin, "on-ice-candidate",
                      G_CALLBACK(onIceCandidate), this);
     g_signal_connect(m_webrtcbin, "pad-added",
@@ -41,9 +40,9 @@ bool SubscribePipeline::start(const QString &stunServer)
     g_signal_connect(m_webrtcbin, "notify::ice-connection-state",
                      G_CALLBACK(onIceStateChanged), this);
 
-    // Bus watch
+    // Bus watch — track ID for cleanup
     GstBus *bus = gst_element_get_bus(m_pipeline);
-    gst_bus_add_watch(bus, [](GstBus *, GstMessage *msg, gpointer) -> gboolean {
+    m_busWatchId = gst_bus_add_watch(bus, [](GstBus *, GstMessage *msg, gpointer) -> gboolean {
         if (GST_MESSAGE_TYPE(msg) == GST_MESSAGE_ERROR) {
             GError *err = nullptr; gchar *dbg = nullptr;
             gst_message_parse_error(msg, &err, &dbg);
@@ -76,6 +75,12 @@ void SubscribePipeline::stop()
 
 void SubscribePipeline::cleanup()
 {
+    if (m_busWatchId > 0) {
+        g_source_remove(m_busWatchId);
+        m_busWatchId = 0;
+    }
+    if (m_webrtcbin)
+        g_signal_handlers_disconnect_by_data(m_webrtcbin, this);
     if (m_pipeline) {
         gst_element_set_state(m_pipeline, GST_STATE_NULL);
         gst_object_unref(m_pipeline);
@@ -101,7 +106,6 @@ void SubscribePipeline::setRemoteOffer(const QString &sdp)
 
     qDebug() << "SubscribePipeline: set remote offer, creating answer...";
 
-    // Create answer
     GstPromise *answerPromise = gst_promise_new_with_change_func(
         onAnswerCreated, this, nullptr);
     g_signal_emit_by_name(m_webrtcbin, "create-answer", nullptr, answerPromise);
@@ -115,15 +119,16 @@ void SubscribePipeline::addIceCandidate(const QString &candidate, int sdpMLineIn
                           sdpMLineIndex, candidate.toUtf8().constData());
 }
 
-// --- GStreamer callbacks ---
+// --- GStreamer callbacks (marshalled to Qt thread) ---
 
 void SubscribePipeline::onIceCandidate(GstElement *, guint mlineIndex, gchar *candidate, gpointer userData)
 {
     auto *self = static_cast<SubscribePipeline *>(userData);
-    emit self->iceCandidateReady(
-        QString::fromUtf8(candidate),
-        static_cast<int>(mlineIndex),
-        QString("0"));
+    QString c = QString::fromUtf8(candidate);
+    int ml = static_cast<int>(mlineIndex);
+    QMetaObject::invokeMethod(self, [self, c, ml]() {
+        emit self->iceCandidateReady(c, ml, QString("0"));
+    }, Qt::QueuedConnection);
 }
 
 void SubscribePipeline::onPadAdded(GstElement *, GstPad *pad, gpointer userData)
@@ -133,9 +138,10 @@ void SubscribePipeline::onPadAdded(GstElement *, GstPad *pad, gpointer userData)
     if (GST_PAD_DIRECTION(pad) != GST_PAD_SRC)
         return;
 
+    // Must build receive chain on the streaming thread (GStreamer requirement for pad linking)
+    // but the pipeline pointer is safe because we disconnect signals before cleanup
     qDebug() << "SubscribePipeline: new pad from webrtcbin:" << GST_PAD_NAME(pad);
 
-    // Build receive chain: depayload → decode → output
     GstElement *depay = gst_element_factory_make("rtpopusdepay", nullptr);
     GstElement *dec = gst_element_factory_make("opusdec", nullptr);
     GstElement *convert = gst_element_factory_make("audioconvert", nullptr);
@@ -181,12 +187,13 @@ void SubscribePipeline::onAnswerCreated(GstPromise *promise, gpointer userData)
     gchar *sdpText = gst_sdp_message_as_text(answer->sdp);
     QString sdp = QString::fromUtf8(sdpText);
     g_free(sdpText);
-
     gst_webrtc_session_description_free(answer);
     gst_promise_unref(promise);
 
     qDebug() << "SubscribePipeline: answer created, SDP length=" << sdp.length();
-    emit self->localAnswerReady(sdp);
+    QMetaObject::invokeMethod(self, [self, sdp]() {
+        emit self->localAnswerReady(sdp);
+    }, Qt::QueuedConnection);
 }
 
 void SubscribePipeline::onIceStateChanged(GObject *obj, GParamSpec *, gpointer userData)
@@ -197,6 +204,8 @@ void SubscribePipeline::onIceStateChanged(GObject *obj, GParamSpec *, gpointer u
     const char *names[] = {"new", "checking", "connected", "completed", "failed", "disconnected", "closed"};
     int idx = static_cast<int>(state);
     QString stateName = (idx < 7) ? names[idx] : "unknown";
-    qDebug() << "SubscribePipeline: ICE ->" << stateName;
-    emit self->iceStateChanged(stateName);
+    QMetaObject::invokeMethod(self, [self, stateName]() {
+        qDebug() << "SubscribePipeline: ICE ->" << stateName;
+        emit self->iceStateChanged(stateName);
+    }, Qt::QueuedConnection);
 }

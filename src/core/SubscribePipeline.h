@@ -9,6 +9,8 @@
  * Receive-only GStreamer webrtcbin pipeline for MCU subscription.
  * Receives audio from the MCU for one remote participant.
  * MCU sends an offer; we create an answer.
+ *
+ * Thread safety: all GStreamer callbacks marshal to Qt main thread.
  */
 class SubscribePipeline : public QObject
 {
@@ -38,6 +40,7 @@ private:
     GstElement *m_webrtcbin = nullptr;
     QString m_remoteSessionId;
     bool m_running = false;
+    guint m_busWatchId = 0;
 
     static void onIceCandidate(GstElement *webrtc, guint mlineIndex, gchar *candidate, gpointer userData);
     static void onPadAdded(GstElement *webrtc, GstPad *pad, gpointer userData);
