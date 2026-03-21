@@ -50,6 +50,8 @@ public:
     QString name;  // For 1:1 chats, this is the other user's userId
     QString status; // User status for 1:1 chats: "online", "away", "dnd", "offline"
     bool hasTopics = false;
+    bool hasCall = false;   // someone is in a call in this room
+    int callFlag = 0;       // call flags (1=in-call, 2=audio, 4=video)
 
     static Conversation fromJson(const QJsonObject &json);
 

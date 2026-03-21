@@ -163,6 +163,12 @@ int main(int argc, char *argv[])
         notifications.notify(name, preview, true, token);
     });
 
+    // Incoming call detection from conversation list refresh
+    QObject::connect(&conversations, &ConversationListModel::incomingCallDetected,
+                     &callManager, [&callManager](const QString &name, const QString &token, int callFlag) {
+        callManager.onIncomingCallDetected(name, token, callFlag);
+    });
+
     // Tray unread count
     QObject::connect(&conversations, &ConversationListModel::totalUnreadChanged,
                      &notifications, [&conversations, &notifications]() {

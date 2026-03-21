@@ -108,6 +108,10 @@ void SignalingClient::onTextMessage(const QString &msg)
     QJsonObject obj = doc.object();
     QString type = obj["type"].toString();
 
+    // Debug: log all incoming WebSocket messages (truncated)
+    if (type != "hello" && type != "welcome")
+        qDebug() << "Signaling: WS <<" << type << msg.left(200);
+
     if (type == "welcome") {
         qDebug() << "Signaling: received welcome, sending hello";
         sendHello();
@@ -207,6 +211,8 @@ void SignalingClient::onTextMessage(const QString &msg)
     else if (type == "event") {
         QJsonObject event = obj["event"].toObject();
         QString target = event["target"].toString();
+        QString eventType = event["type"].toString();
+        qDebug() << "Signaling: event target=" << target << "type=" << eventType;
 
         if (target == "participants") {
             QJsonObject update = event["update"].toObject();

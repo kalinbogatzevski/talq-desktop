@@ -671,6 +671,11 @@ ApplicationWindow {
             incomingCallPopup.withVideo = withVideo
             incomingCallPopup.visible = true
         }
+        function onStateChanged() {
+            // Hide incoming popup when call is accepted or ends
+            if (callManager.state !== CallManager.Incoming)
+                incomingCallPopup.visible = false
+        }
         function onCallEnded(reason) {
             incomingCallPopup.visible = false
         }
