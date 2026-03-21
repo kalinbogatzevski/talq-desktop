@@ -105,6 +105,44 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, QObject *pa
         if (m_state == Incoming) declineCall();
         else if (m_state == Outgoing) teardown("No answer");
     });
+
+    // Stats timer — update call info every 2 seconds
+    m_statsTimer.setInterval(2000);
+    connect(&m_statsTimer, &QTimer::timeout, this, &CallManager::updateCallStats);
+}
+
+void CallManager::updateCallStats()
+{
+    QStringList lines;
+
+    // Signaling
+    lines << "Signaling: HPB (MCU)";
+    lines << "STUN: " + m_stunServer;
+    lines << "Session: " + m_signaling->sessionId().left(16) + "...";
+
+    // Publisher
+    if (m_publishPipeline && m_publishPipeline->isRunning())
+        lines << "Publisher: connected (Opus 48kHz)";
+    else
+        lines << "Publisher: -";
+
+    // Subscribers
+    lines << "Subscribers: " + QString::number(m_subscribePipelines.size());
+    for (auto it = m_subscribePipelines.begin(); it != m_subscribePipelines.end(); ++it) {
+        QString state = it.value()->isRunning() ? "active" : "stopped";
+        lines << "  " + it.key().left(12) + "... " + state;
+    }
+
+    // Remote peer
+    if (!m_remoteSessionId.isEmpty())
+        lines << "Remote: " + m_remoteSessionId.left(16) + "...";
+
+    // Codec info
+    lines << "Codec: Opus (WebRTC)";
+    lines << "Transport: DTLS-SRTP";
+
+    m_callStats = lines.join("\n");
+    emit callStatsChanged();
 }
 
 void CallManager::setState(CallState newState)
@@ -114,6 +152,8 @@ void CallManager::setState(CallState newState)
     qDebug() << "CallManager: state ->" << newState;
     if (newState == Outgoing || newState == Incoming) startRingtone();
     else stopRingtone();
+    if (newState == Active) { updateCallStats(); m_statsTimer.start(); }
+    else m_statsTimer.stop();
     emit stateChanged();
 }
 
@@ -220,6 +260,14 @@ void CallManager::joinCallOnServer(bool withVideo)
                     connect(m_publishPipeline, &PublishPipeline::iceStateChanged,
                             this, [this](const QString &state) {
                         qDebug() << "CallManager: publisher ICE:" << state;
+                    });
+
+                    connect(m_publishPipeline, &PublishPipeline::audioLevelUpdated,
+                            this, [this](double level) {
+                        if (qAbs(m_audioLevel - level) > 0.02) {
+                            m_audioLevel = level;
+                            emit audioLevelChanged();
+                        }
                     });
 
                     m_publishPipeline->start(m_stunServer);

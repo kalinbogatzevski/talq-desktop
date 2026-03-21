@@ -33,20 +33,24 @@ bool PublishPipeline::start(const QString &stunServer)
     GstElement *audiosrc = gst_element_factory_make("wasapi2src", "pub-audiosrc");
     GstElement *audioconvert = gst_element_factory_make("audioconvert", nullptr);
     GstElement *audioresample = gst_element_factory_make("audioresample", nullptr);
+    GstElement *level = gst_element_factory_make("level", "pub-level");
     GstElement *opusenc = gst_element_factory_make("opusenc", nullptr);
     GstElement *rtpopuspay = gst_element_factory_make("rtpopuspay", nullptr);
 
-    if (!audiosrc || !audioconvert || !audioresample || !opusenc || !rtpopuspay) {
+    if (!audiosrc || !audioconvert || !audioresample || !level || !opusenc || !rtpopuspay) {
         emit error("Failed to create audio capture elements");
         cleanup();
         return false;
     }
 
+    // Configure level element: report every 100ms
+    g_object_set(level, "post-messages", TRUE, "interval", (guint64)100000000, nullptr);
+
     gst_bin_add_many(GST_BIN(m_pipeline), audiosrc, audioconvert, audioresample,
-                     opusenc, rtpopuspay, m_webrtcbin, nullptr);
+                     level, opusenc, rtpopuspay, m_webrtcbin, nullptr);
 
     if (!gst_element_link_many(audiosrc, audioconvert, audioresample,
-                               opusenc, rtpopuspay, nullptr)) {
+                               level, opusenc, rtpopuspay, nullptr)) {
         emit error("Failed to link audio capture chain");
         cleanup();
         return false;
@@ -72,17 +76,32 @@ bool PublishPipeline::start(const QString &stunServer)
     g_signal_connect(m_webrtcbin, "notify::ice-connection-state",
                      G_CALLBACK(onIceStateChanged), this);
 
-    // Bus watch — track ID for cleanup
+    // Bus watch — track ID for cleanup, also extract audio levels
     GstBus *bus = gst_element_get_bus(m_pipeline);
-    m_busWatchId = gst_bus_add_watch(bus, [](GstBus *, GstMessage *msg, gpointer) -> gboolean {
+    m_busWatchId = gst_bus_add_watch(bus, [](GstBus *, GstMessage *msg, gpointer userData) -> gboolean {
+        auto *self = static_cast<PublishPipeline *>(userData);
         if (GST_MESSAGE_TYPE(msg) == GST_MESSAGE_ERROR) {
             GError *err = nullptr; gchar *dbg = nullptr;
             gst_message_parse_error(msg, &err, &dbg);
             qWarning() << "PublishPipeline ERROR:" << err->message << (dbg ? dbg : "");
             g_clear_error(&err); g_free(dbg);
         }
+        else if (GST_MESSAGE_TYPE(msg) == GST_MESSAGE_ELEMENT) {
+            const GstStructure *s = gst_message_get_structure(msg);
+            if (g_strcmp0(gst_structure_get_name(s), "level") == 0) {
+                const GValue *peakArr = gst_structure_get_value(s, "peak");
+                if (peakArr && GST_VALUE_HOLDS_LIST(peakArr) && gst_value_list_get_size(peakArr) > 0) {
+                    gdouble peakDb = g_value_get_double(gst_value_list_get_value(peakArr, 0));
+                    // Convert dB to 0.0-1.0 range (-60dB = 0, 0dB = 1)
+                    double level = qBound(0.0, (peakDb + 60.0) / 60.0, 1.0);
+                    QMetaObject::invokeMethod(self, [self, level]() {
+                        emit self->audioLevelUpdated(level);
+                    }, Qt::QueuedConnection);
+                }
+            }
+        }
         return TRUE;
-    }, nullptr);
+    }, this);
     gst_object_unref(bus);
 
     GstStateChangeReturn ret = gst_element_set_state(m_pipeline, GST_STATE_PLAYING);
