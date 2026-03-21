@@ -49,6 +49,9 @@ public:
     int fileId = 0;
     bool hasFile() const { return fileId > 0; }
 
+    // Original server JSON — stored for lossless caching
+    QJsonObject rawJson;
+
     static Message fromJson(const QJsonObject &json);
 
     QDateTime dateTime() const {

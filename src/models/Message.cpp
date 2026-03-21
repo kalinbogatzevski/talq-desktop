@@ -4,6 +4,7 @@
 Message Message::fromJson(const QJsonObject &json)
 {
     Message m;
+    m.rawJson = json;  // preserve original for lossless caching
     m.id = json["id"].toInt();
     m.token = json["token"].toString();
     m.actorType = json["actorType"].toString();
