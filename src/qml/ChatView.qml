@@ -410,39 +410,57 @@ Page {
         boundsBehavior: Flickable.StopAtBounds
 
         property bool autoScrolling: true
-
         property int previousCount: 0
+        property bool _userDragging: false
 
-        onContentHeightChanged: {
-            if (autoScrolling && count > 0)
-                positionViewAtIndex(count - 1, ListView.End)
-        }
-
-        onCountChanged: {
-            // When older messages are prepended, keep scroll position stable
-            if (count > previousCount && previousCount > 0 && !autoScrolling) {
-                var added = count - previousCount
-                positionViewAtIndex(added, ListView.Beginning)
-            }
-            previousCount = count
-        }
-
-        onMovingChanged: {
-            if (moving)
+        // Detect user-initiated drags only (not programmatic scrolls)
+        onDraggingChanged: {
+            _userDragging = dragging
+            if (dragging)
                 autoScrolling = false
         }
 
+        // Re-enable auto-scroll when user scrolls back to bottom
         onContentYChanged: {
-            // Lazy load older messages only when user manually scrolls near the top
+            if (_userDragging || flicking) {
+                var atBottom = (contentY + height >= contentHeight - 40)
+                if (atBottom)
+                    autoScrolling = true
+            }
+
+            // Lazy load older messages when near the top
             if (contentY < 200 && !autoScrolling && !messageModel.loading
                     && messageModel.hasMoreHistory && count > 0) {
                 messageModel.loadHistory()
             }
         }
 
+        onCountChanged: {
+            if (count > previousCount && previousCount > 0) {
+                if (autoScrolling) {
+                    // New messages at end — scroll to bottom
+                    Qt.callLater(function() { positionViewAtIndex(count - 1, ListView.End) })
+                } else {
+                    // History prepended — keep current view position stable
+                    var added = count - previousCount
+                    positionViewAtIndex(added, ListView.Beginning)
+                }
+            }
+            previousCount = count
+        }
+
         ScrollBar.vertical: ScrollBar {
-            policy: ScrollBar.AsNeeded; width: 5
-            contentItem: Rectangle { radius: 2; color: Theme.textMuted; opacity: 0.3 }
+            id: chatScrollBar
+            policy: ScrollBar.AlwaysOn
+            width: 6
+            contentItem: Rectangle {
+                implicitWidth: 6
+                radius: 3
+                color: Theme.textMuted
+                opacity: chatScrollBar.active ? 0.5 : 0
+                Behavior on opacity { NumberAnimation { duration: 400 } }
+            }
+            background: Item {}  // transparent track
         }
 
         // Welcome screen
@@ -683,7 +701,10 @@ Page {
             anchors.margins: -4
             cursorShape: Qt.PointingHandCursor
             hoverEnabled: true
-            onClicked: { messageListView.autoScrolling = true; messageListView.positionViewAtEnd() }
+            onClicked: {
+                messageListView.autoScrolling = true
+                messageListView.positionViewAtIndex(messageListView.count - 1, ListView.End)
+            }
         }
 
         // Subtle scale on press
@@ -701,7 +722,9 @@ Page {
         }
         function onNewMessagesAtEnd() {
             if (messageListView.count > 0 && messageListView.autoScrolling)
-                messageListView.positionViewAtIndex(messageListView.count - 1, ListView.End)
+                Qt.callLater(function() {
+                    messageListView.positionViewAtIndex(messageListView.count - 1, ListView.End)
+                })
         }
         function onPasteReady(filePath, width, height) {
             pasteBar.pendingPath = filePath
