@@ -345,10 +345,10 @@ void MessageListModel::loadHistory()
         }
 
         if (!olderMsgs.isEmpty()) {
-            // Prepend older messages at the beginning
+            // Prepend older messages at the beginning (single insert, not O(n^2) prepend loop)
             beginInsertRows({}, 0, olderMsgs.size() - 1);
-            for (int i = olderMsgs.size() - 1; i >= 0; --i)
-                m_messages.prepend(olderMsgs[i]);
+            olderMsgs.append(std::move(m_messages));
+            m_messages = std::move(olderMsgs);
             endInsertRows();
 
             m_cache->saveMessages(m_token, olderMsgs);

@@ -232,7 +232,6 @@ void SignalingClient::onTextMessage(const QString &msg)
                 m_participantCallFlags[sid] = inCall;
 
                 if (prevFlags == 0 && inCall > 0) {
-                    QString displayName = user["displayName"].toString();
                     qDebug() << "Signaling: participant joined call" << sid.left(20) << "flags=" << inCall << "name=" << displayName;
                     emit participantJoinedCall(sid, inCall, displayName);
                 } else if (prevFlags > 0 && inCall == 0) {
@@ -271,12 +270,14 @@ void SignalingClient::joinRoom(const QString &token)
 {
     m_currentRoom = token;
 
-    // Clear typing from previous room
+    // Clear state from previous room
     if (!m_typingUser.isEmpty()) {
         m_typingUser.clear();
         emit typingUserChanged();
         m_typingClearTimer.stop();
     }
+    m_participantCallFlags.clear();
+    m_participantNames.clear();
 
     // Join as active participant — the response contains the sessionId
     // which the signaling server needs to verify room access

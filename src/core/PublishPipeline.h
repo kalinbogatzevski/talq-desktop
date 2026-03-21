@@ -9,6 +9,9 @@
  * Send-only GStreamer webrtcbin pipeline for MCU publishing.
  * Captures local audio, encodes as Opus, sends via RTP to the MCU.
  * Creates an offer; MCU answers back.
+ *
+ * Thread safety: all GStreamer callbacks marshal signals to the Qt main
+ * thread via QMetaObject::invokeMethod(Qt::QueuedConnection).
  */
 class PublishPipeline : public QObject
 {
@@ -37,6 +40,7 @@ private:
     GstElement *m_pipeline = nullptr;
     GstElement *m_webrtcbin = nullptr;
     bool m_running = false;
+    guint m_busWatchId = 0;
 
     static void onNegotiationNeeded(GstElement *webrtc, gpointer userData);
     static void onIceCandidate(GstElement *webrtc, guint mlineIndex, gchar *candidate, gpointer userData);

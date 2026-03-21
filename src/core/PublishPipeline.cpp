@@ -24,14 +24,12 @@ bool PublishPipeline::start(const QString &stunServer)
         return false;
     }
 
-    // STUN
     if (!stunServer.isEmpty())
         g_object_set(m_webrtcbin, "stun-server", stunServer.toUtf8().constData(), nullptr);
+    g_object_set(m_webrtcbin, "bundle-policy",
+                 GST_WEBRTC_BUNDLE_POLICY_MAX_BUNDLE, nullptr);
 
-    // Bundle policy (match browser default)
-    g_object_set(m_webrtcbin, "bundle-policy", 3 /* max-bundle */, nullptr);
-
-    // Audio capture chain: wasapi2src → audioconvert → audioresample → opusenc → rtpopuspay
+    // Audio capture chain
     GstElement *audiosrc = gst_element_factory_make("wasapi2src", "pub-audiosrc");
     GstElement *audioconvert = gst_element_factory_make("audioconvert", nullptr);
     GstElement *audioresample = gst_element_factory_make("audioresample", nullptr);
@@ -54,7 +52,6 @@ bool PublishPipeline::start(const QString &stunServer)
         return false;
     }
 
-    // Link RTP payloader to webrtcbin
     GstPad *rtpSrcPad = gst_element_get_static_pad(rtpopuspay, "src");
     GstPad *sinkPad = gst_element_request_pad_simple(m_webrtcbin, "sink_%u");
     if (gst_pad_link(rtpSrcPad, sinkPad) != GST_PAD_LINK_OK) {
@@ -75,9 +72,9 @@ bool PublishPipeline::start(const QString &stunServer)
     g_signal_connect(m_webrtcbin, "notify::ice-connection-state",
                      G_CALLBACK(onIceStateChanged), this);
 
-    // Bus watch for errors
+    // Bus watch — track ID for cleanup
     GstBus *bus = gst_element_get_bus(m_pipeline);
-    gst_bus_add_watch(bus, [](GstBus *, GstMessage *msg, gpointer) -> gboolean {
+    m_busWatchId = gst_bus_add_watch(bus, [](GstBus *, GstMessage *msg, gpointer) -> gboolean {
         if (GST_MESSAGE_TYPE(msg) == GST_MESSAGE_ERROR) {
             GError *err = nullptr; gchar *dbg = nullptr;
             gst_message_parse_error(msg, &err, &dbg);
@@ -110,6 +107,14 @@ void PublishPipeline::stop()
 
 void PublishPipeline::cleanup()
 {
+    // Remove bus watch first
+    if (m_busWatchId > 0) {
+        g_source_remove(m_busWatchId);
+        m_busWatchId = 0;
+    }
+    // Disconnect GStreamer signals to prevent callbacks with stale userData
+    if (m_webrtcbin)
+        g_signal_handlers_disconnect_by_data(m_webrtcbin, this);
     if (m_pipeline) {
         gst_element_set_state(m_pipeline, GST_STATE_NULL);
         gst_object_unref(m_pipeline);
@@ -154,23 +159,27 @@ void PublishPipeline::setMuted(bool muted)
     }
 }
 
-// --- GStreamer callbacks ---
+// --- GStreamer callbacks (marshal to Qt thread) ---
 
 void PublishPipeline::onNegotiationNeeded(GstElement *, gpointer userData)
 {
     auto *self = static_cast<PublishPipeline *>(userData);
-    qDebug() << "PublishPipeline: negotiation needed, creating offer";
-    GstPromise *promise = gst_promise_new_with_change_func(onOfferCreated, self, nullptr);
-    g_signal_emit_by_name(self->m_webrtcbin, "create-offer", nullptr, promise);
+    QMetaObject::invokeMethod(self, [self]() {
+        if (!self->m_webrtcbin) return;
+        qDebug() << "PublishPipeline: negotiation needed, creating offer";
+        GstPromise *promise = gst_promise_new_with_change_func(onOfferCreated, self, nullptr);
+        g_signal_emit_by_name(self->m_webrtcbin, "create-offer", nullptr, promise);
+    }, Qt::QueuedConnection);
 }
 
 void PublishPipeline::onIceCandidate(GstElement *, guint mlineIndex, gchar *candidate, gpointer userData)
 {
     auto *self = static_cast<PublishPipeline *>(userData);
-    emit self->iceCandidateReady(
-        QString::fromUtf8(candidate),
-        static_cast<int>(mlineIndex),
-        QString("0"));
+    QString c = QString::fromUtf8(candidate);
+    int ml = static_cast<int>(mlineIndex);
+    QMetaObject::invokeMethod(self, [self, c, ml]() {
+        emit self->iceCandidateReady(c, ml, QString("0"));
+    }, Qt::QueuedConnection);
 }
 
 void PublishPipeline::onOfferCreated(GstPromise *promise, gpointer userData)
@@ -192,12 +201,13 @@ void PublishPipeline::onOfferCreated(GstPromise *promise, gpointer userData)
     gchar *sdpText = gst_sdp_message_as_text(offer->sdp);
     QString sdp = QString::fromUtf8(sdpText);
     g_free(sdpText);
-
     gst_webrtc_session_description_free(offer);
     gst_promise_unref(promise);
 
     qDebug() << "PublishPipeline: offer created, SDP length=" << sdp.length();
-    emit self->localOfferReady(sdp);
+    QMetaObject::invokeMethod(self, [self, sdp]() {
+        emit self->localOfferReady(sdp);
+    }, Qt::QueuedConnection);
 }
 
 void PublishPipeline::onIceStateChanged(GObject *obj, GParamSpec *, gpointer userData)
@@ -208,6 +218,8 @@ void PublishPipeline::onIceStateChanged(GObject *obj, GParamSpec *, gpointer use
     const char *names[] = {"new", "checking", "connected", "completed", "failed", "disconnected", "closed"};
     int idx = static_cast<int>(state);
     QString stateName = (idx < 7) ? names[idx] : "unknown";
-    qDebug() << "PublishPipeline: ICE ->" << stateName;
-    emit self->iceStateChanged(stateName);
+    QMetaObject::invokeMethod(self, [self, stateName]() {
+        qDebug() << "PublishPipeline: ICE ->" << stateName;
+        emit self->iceStateChanged(stateName);
+    }, Qt::QueuedConnection);
 }
