@@ -82,7 +82,7 @@ int main(int argc, char *argv[])
     SignalingClient signaling(&api);
     MediaDeviceManager deviceManager;
     // Device enumeration deferred until first call attempt
-    CallManager callManager(&api, &signaling);
+    CallManager callManager(&api, &signaling, &deviceManager);
 
     DebugMonitor debug;
 

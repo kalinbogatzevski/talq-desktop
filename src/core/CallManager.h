@@ -8,6 +8,7 @@
 #include "core/PublishPipeline.h"
 #include "core/SubscribePipeline.h"
 #include "core/MediaDeviceManager.h"
+#include "core/VideoFrameProvider.h"
 
 class CallManager : public QObject
 {
@@ -20,12 +21,13 @@ class CallManager : public QObject
     Q_PROPERTY(QString remotePeerId READ remotePeerId NOTIFY callInfoChanged)
     Q_PROPERTY(double audioLevel READ audioLevel NOTIFY audioLevelChanged)
     Q_PROPERTY(QString callStats READ callStats NOTIFY callStatsChanged)
+    Q_PROPERTY(VideoFrameProvider* remoteVideoProvider READ remoteVideoProvider NOTIFY remoteVideoProviderChanged)
 
 public:
     enum CallState { Idle, Outgoing, Incoming, Connecting, Active, Ending };
     Q_ENUM(CallState)
 
-    explicit CallManager(ApiClient *api, SignalingClient *signaling, QObject *parent = nullptr);
+    explicit CallManager(ApiClient *api, SignalingClient *signaling, MediaDeviceManager *deviceMgr, QObject *parent = nullptr);
 
     CallState state() const { return m_state; }
     bool isMuted() const { return m_muted; }
@@ -35,6 +37,7 @@ public:
     QString remotePeerId() const { return m_remotePeerId; }
     double audioLevel() const { return m_audioLevel; }
     QString callStats() const { return m_callStats; }
+    VideoFrameProvider *remoteVideoProvider() const { return m_remoteVideoProvider; }
 
     Q_INVOKABLE void startCall(const QString &token, bool withVideo);
     Q_INVOKABLE void setRemotePeerInfo(const QString &name, const QString &peerId);
@@ -56,6 +59,7 @@ signals:
     void callEnded(const QString &reason);
     void audioLevelChanged();
     void callStatsChanged();
+    void remoteVideoProviderChanged();
 
 private slots:
     void onParticipantJoinedCall(const QString &sessionId, int flags, const QString &displayName);
@@ -105,4 +109,6 @@ private:
     QString m_lastDeclinedToken;
     QDateTime m_lastDeclinedTime;
     QDateTime m_incomingTime;  // when incoming call was detected
+
+    VideoFrameProvider *m_remoteVideoProvider = nullptr;
 };
