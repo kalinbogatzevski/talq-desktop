@@ -278,13 +278,20 @@ void CallManager::acceptCall(bool withVideo) {
     m_ringTimeout.stop();
     setState(Connecting);
 
-    // Ensure we're an active participant in the room before joining the call
+    // Sequence: join room (REST) → join signaling room (WS) → wait for room joined → join call
     QJsonObject empty;
     m_api->post("apps/spreed/api/v4/room/" + m_callToken + "/participants/active", empty,
         [this, withVideo](bool, const QJsonObject &, int) {
-            // Also join the signaling room for WebRTC events
+            // Wait for HPB room join confirmation before calling the API
+            auto *conn = new QMetaObject::Connection;
+            *conn = connect(m_signaling, &SignalingClient::roomJoined,
+                this, [this, withVideo, conn]() {
+                    disconnect(*conn);
+                    delete conn;
+                    qDebug() << "CallManager: signaling room joined, now joining call";
+                    joinCallOnServer(withVideo);
+                });
             m_signaling->joinRoom(m_callToken);
-            joinCallOnServer(withVideo);
         });
 }
 

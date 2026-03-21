@@ -144,6 +144,7 @@ void SignalingClient::onTextMessage(const QString &msg)
     }
     else if (type == "room") {
         qDebug() << "Signaling: joined room";
+        emit roomJoined();
     }
     else if (type == "message") {
         QJsonObject messageObj = obj["message"].toObject();
