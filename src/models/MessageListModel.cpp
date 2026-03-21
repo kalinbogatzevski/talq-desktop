@@ -814,15 +814,30 @@ bool MessageListModel::pasteClipboardImage()
                 emit pasteReady(url.toString(), img.width(), img.height());
                 return true;
             } else {
-                // Non-image file — send directly
+                // Non-image file — show confirmation with caption
                 qDebug() << "Clipboard file paste:" << path;
-                sendFile(url.toString());
+                emit pasteReady(url.toString(), 0, 0);
                 return true;
             }
         }
     }
 
     return false;
+}
+
+void MessageListModel::promptFileSend(const QString &filePath)
+{
+    QUrl url(filePath);
+    QString path = url.isLocalFile() ? url.toLocalFile() : filePath;
+    QString mime = QMimeDatabase().mimeTypeForFile(path).name();
+
+    int w = 0, h = 0;
+    if (mime.startsWith("image/")) {
+        QImage img(path);
+        w = img.width();
+        h = img.height();
+    }
+    emit pasteReady(filePath, w, h);
 }
 
 void MessageListModel::cleanupTempFile(const QString &filePath)

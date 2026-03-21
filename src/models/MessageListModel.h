@@ -81,6 +81,7 @@ public:
     Q_INVOKABLE QString messageLink(int messageId) const;
     Q_INVOKABLE bool pasteClipboardImage();
     Q_INVOKABLE void sendFileWithCaption(const QString &filePath, const QString &caption);
+    Q_INVOKABLE void promptFileSend(const QString &filePath);
     Q_INVOKABLE void cleanupTempFile(const QString &filePath);
     Q_INVOKABLE void downloadFile(int fileId, const QString &fileName);
 
