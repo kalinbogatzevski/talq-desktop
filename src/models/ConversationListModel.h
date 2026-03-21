@@ -58,6 +58,8 @@ signals:
     void errorOccurred(const QString &error);
     // Emitted when a conversation gets new unread messages
     void newUnreadMessage(const QString &conversationName, const QString &lastMessage, const QString &token);
+    // Emitted when someone starts a call in a conversation
+    void incomingCallDetected(const QString &conversationName, const QString &token, int callFlag);
 
 private:
     void fetchUserStatuses();

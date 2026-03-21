@@ -12,20 +12,10 @@
 
 // --- Ringtone ---
 
-static QByteArray generateRingtoneWav()
+static QByteArray buildWavHeader(int dataSize, int sampleRate)
 {
-    const int sampleRate = 22050;
-    const int totalSamples = sampleRate * 3;
-    const int t1s = 0, t1e = sampleRate * 3 / 10;
-    const int t2s = sampleRate * 4 / 10, t2e = sampleRate * 7 / 10;
-    QByteArray pcm(totalSamples * 2, 0);
-    auto *samples = reinterpret_cast<qint16*>(pcm.data());
-    for (int i = 0; i < totalSamples; i++) {
-        bool inTone = (i >= t1s && i < t1e) || (i >= t2s && i < t2e);
-        samples[i] = inTone ? static_cast<qint16>(16000 * qSin(2.0 * M_PI * 440.0 * i / sampleRate)) : 0;
-    }
     QByteArray wav;
-    int ds = pcm.size(), fs = 36 + ds;
+    int fs = 36 + dataSize;
     wav.append("RIFF", 4); wav.append(reinterpret_cast<const char*>(&fs), 4);
     wav.append("WAVE", 4); wav.append("fmt ", 4);
     qint32 fmtSz = 16; wav.append(reinterpret_cast<const char*>(&fmtSz), 4);
@@ -35,15 +25,85 @@ static QByteArray generateRingtoneWav()
     qint32 br = sampleRate * 2; wav.append(reinterpret_cast<const char*>(&br), 4);
     qint16 ba = 2; wav.append(reinterpret_cast<const char*>(&ba), 2);
     qint16 bps = 16; wav.append(reinterpret_cast<const char*>(&bps), 2);
-    wav.append("data", 4); wav.append(reinterpret_cast<const char*>(&ds), 4);
-    wav.append(pcm);
+    wav.append("data", 4); wav.append(reinterpret_cast<const char*>(&dataSize), 4);
     return wav;
+}
+
+// Outgoing: simple ringback tone (brrr-brrr)
+static QByteArray generateOutgoingTone()
+{
+    const int sampleRate = 22050;
+    const int totalSamples = sampleRate * 3;
+    const int t1s = 0, t1e = sampleRate * 3 / 10;
+    const int t2s = sampleRate * 4 / 10, t2e = sampleRate * 7 / 10;
+    QByteArray pcm(totalSamples * 2, 0);
+    auto *samples = reinterpret_cast<qint16*>(pcm.data());
+    for (int i = 0; i < totalSamples; i++) {
+        bool inTone = (i >= t1s && i < t1e) || (i >= t2s && i < t2e);
+        samples[i] = inTone ? static_cast<qint16>(12000 * qSin(2.0 * M_PI * 440.0 * i / sampleRate)) : 0;
+    }
+    return buildWavHeader(pcm.size(), sampleRate) + pcm;
+}
+
+// Incoming: Smurf melody! La-la la-la-la la, la la-la la la
+static QByteArray generateSmurfRingtone()
+{
+    const int sampleRate = 22050;
+    // Notes: C5=523, E5=659, G5=784, A5=880, F5=698, D5=587
+    struct Note { double freq; double duration; };
+    Note melody[] = {
+        {523, 0.18},  // C  - La
+        {659, 0.18},  // E  - la
+        {784, 0.28},  // G  - la-a
+        {784, 0.18},  // G  - la
+        {880, 0.18},  // A  - la
+        {880, 0.28},  // A  - la-a
+        {784, 0.35},  // G  - la---
+        {698, 0.18},  // F  - la
+        {698, 0.18},  // F  - la
+        {659, 0.18},  // E  - la
+        {587, 0.18},  // D  - la
+        {587, 0.28},  // D  - la-a
+        {523, 0.35},  // C  - la---
+    };
+    const int noteCount = sizeof(melody) / sizeof(melody[0]);
+
+    // Calculate total duration
+    double totalDuration = 0;
+    for (int n = 0; n < noteCount; n++) totalDuration += melody[n].duration;
+    totalDuration += 0.8;  // pause at end before loop
+
+    const int totalSamples = static_cast<int>(sampleRate * totalDuration);
+    QByteArray pcm(totalSamples * 2, 0);
+    auto *samples = reinterpret_cast<qint16*>(pcm.data());
+
+    int pos = 0;
+    for (int n = 0; n < noteCount; n++) {
+        int noteSamples = static_cast<int>(sampleRate * melody[n].duration);
+        for (int i = 0; i < noteSamples && pos < totalSamples; i++, pos++) {
+            double t = static_cast<double>(i) / sampleRate;
+            // Envelope: quick attack, sustain, soft release
+            double env = 1.0;
+            if (i < sampleRate / 50) env = static_cast<double>(i) / (sampleRate / 50);  // 20ms attack
+            int release = noteSamples / 5;
+            if (i > noteSamples - release) env = static_cast<double>(noteSamples - i) / release;
+            // Mix fundamental + soft overtone for warmth
+            double wave = 0.8 * qSin(2.0 * M_PI * melody[n].freq * t)
+                        + 0.2 * qSin(2.0 * M_PI * melody[n].freq * 2.0 * t);
+            samples[pos] = static_cast<qint16>(14000 * env * wave);
+        }
+    }
+    // Rest of samples stay 0 (pause before loop)
+
+    return buildWavHeader(pcm.size(), sampleRate) + pcm;
 }
 
 void CallManager::startRingtone() {
 #ifdef Q_OS_WIN
-    static QByteArray wavData = generateRingtoneWav();
-    PlaySoundA(wavData.constData(), nullptr, SND_MEMORY | SND_ASYNC | SND_LOOP);
+    static QByteArray outgoing = generateOutgoingTone();
+    static QByteArray incoming = generateSmurfRingtone();
+    const QByteArray &wav = (m_state == Incoming) ? incoming : outgoing;
+    PlaySoundA(wav.constData(), nullptr, SND_MEMORY | SND_ASYNC | SND_LOOP);
 #endif
 }
 void CallManager::stopRingtone() {
@@ -170,6 +230,28 @@ void CallManager::startCall(const QString &token, bool withVideo)
     m_ringTimeout.start();
 }
 
+void CallManager::onIncomingCallDetected(const QString &callerName, const QString &token, int callFlag)
+{
+    if (m_state != Idle) return;
+
+    // Cooldown: don't re-detect the same call we just declined
+    if (token == m_lastDeclinedToken
+        && m_lastDeclinedTime.isValid()
+        && m_lastDeclinedTime.msecsTo(QDateTime::currentDateTime()) < 10000) {
+        qDebug() << "CallManager: ignoring re-detection of recently declined call" << token;
+        return;
+    }
+
+    qDebug() << "CallManager: incoming call detected:" << callerName << "token=" << token;
+    m_callToken = token;
+    m_remotePeerName = callerName;
+    m_withVideo = (callFlag & 4) != 0;
+    setState(Incoming);
+    m_ringTimeout.start();
+    emit callInfoChanged();
+    emit incomingCall(callerName, token, m_withVideo);
+}
+
 void CallManager::setRemotePeerInfo(const QString &name, const QString &peerId) {
     m_remotePeerName = name;
     m_remotePeerId = peerId;
@@ -186,7 +268,28 @@ void CallManager::acceptCall(bool withVideo) {
 
 void CallManager::declineCall() {
     if (m_state != Incoming) return;
-    m_ringTimeout.stop(); setState(Idle); emit callEnded("Declined");
+    m_ringTimeout.stop();
+
+    // Notify the server: reject the call for this conversation
+    // Send a "reject" reaction via the call API
+    if (!m_callToken.isEmpty()) {
+        QString token = m_callToken;
+        QUrlQuery params;
+        params.addQueryItem("all", "true");
+        m_api->del("apps/spreed/api/v4/call/" + token, params,
+            [token](bool ok, const QJsonObject &, int status) {
+                qDebug() << "CallManager: reject call API:" << ok << "status=" << status;
+            });
+    }
+
+    qDebug() << "CallManager: declining call" << m_callToken;
+    m_lastDeclinedToken = m_callToken;
+    m_lastDeclinedTime = QDateTime::currentDateTime();
+    m_callToken.clear();
+    m_remoteSessionId.clear();
+    m_remotePeerName.clear();
+    setState(Idle);
+    emit callEnded("Declined");
 }
 
 void CallManager::hangUp() {
@@ -272,6 +375,12 @@ void CallManager::joinCallOnServer(bool withVideo)
 
                     m_publishPipeline->start(m_stunServer);
                     m_glibTimer.start(20);
+
+                    // If remote peer already joined (incoming call), request their stream now
+                    if (!m_remoteSessionId.isEmpty() && !m_subscribePipelines.contains(m_remoteSessionId)) {
+                        m_signaling->requestOffer(m_remoteSessionId, "video");
+                        qDebug() << "CallManager: sent requestOffer for already-joined remote peer";
+                    }
                 });
         });
 }

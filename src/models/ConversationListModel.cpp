@@ -86,9 +86,11 @@ void ConversationListModel::refresh()
         // Snapshot old state for preservation across refresh
         QHash<QString, int> oldUnread;
         QHash<QString, bool> oldHasTopics;
+        QHash<QString, bool> oldCallState;
         for (const auto &c : m_conversations) {
             oldUnread[c.token] = c.unreadMessages;
             oldHasTopics[c.token] = c.hasTopics;
+            oldCallState[c.token] = c.hasCall;
         }
 
         // Parse new data
@@ -113,6 +115,13 @@ void ConversationListModel::refresh()
             if (c.unreadMessages > prev && prev >= 0 && !oldUnread.isEmpty()) {
                 // This conversation has new unread messages since last check
                 emit newUnreadMessage(c.displayName, c.lastMessageText, c.token);
+            }
+
+            // Detect incoming calls
+            bool prevCall = oldCallState.value(c.token, false);
+            if (c.hasCall && !prevCall) {
+                qDebug() << "ConversationListModel: call detected in" << c.displayName << "token=" << c.token;
+                emit incomingCallDetected(c.displayName, c.token, c.callFlag);
             }
         }
 

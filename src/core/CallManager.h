@@ -42,6 +42,7 @@ public:
     Q_INVOKABLE void hangUp();
     Q_INVOKABLE void toggleMute();
     Q_INVOKABLE void toggleCamera();
+    void onIncomingCallDetected(const QString &callerName, const QString &token, int callFlag);
 
 signals:
     void stateChanged();
@@ -93,4 +94,7 @@ private:
     QTimer m_durationTimer;
     QTimer m_ringTimeout;
     QTimer m_statsTimer;
+
+    QString m_lastDeclinedToken;
+    QDateTime m_lastDeclinedTime;
 };
