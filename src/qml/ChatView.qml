@@ -65,6 +65,7 @@ Page {
             messageModel.cleanupTempFile(pasteBar.pendingPath)
         pasteBar.visible = false
         pasteBar.pendingPath = ""
+        pasteBar.isImage = false
         pastePreview.source = ""
         pasteCaptionField.text = ""
     }
@@ -331,6 +332,7 @@ Page {
                 visible: false
 
                 property string pendingPath: ""
+                property bool isImage: false
 
                 RowLayout {
                     id: pasteContent
@@ -341,19 +343,34 @@ Page {
 
                     Rectangle { width: 3; Layout.fillHeight: true; Layout.topMargin: 6; Layout.bottomMargin: 6; radius: 1.5; color: Theme.accent }
 
-                    // Thumbnail preview
+                    // Thumbnail preview (images only)
                     Image {
                         id: pastePreview
                         Layout.preferredWidth: 40
                         Layout.preferredHeight: 40
                         fillMode: Image.PreserveAspectFit
-                        visible: status === Image.Ready
+                        visible: pasteBar.isImage && status === Image.Ready
+                    }
+
+                    // File icon (non-images)
+                    Label {
+                        text: "\uD83D\uDCCE"
+                        font.pixelSize: 22
+                        visible: !pasteBar.isImage
                     }
 
                     ColumnLayout {
                         Layout.fillWidth: true
                         spacing: 1
-                        Label { text: "Send image"; font.pixelSize: Theme.fontSizeTiny; font.weight: Font.DemiBold; color: Theme.accent }
+                        Label {
+                            text: pasteBar.isImage ? "Send image"
+                                : "Send file: " + pasteBar.pendingPath.split("/").pop()
+                            font.pixelSize: Theme.fontSizeTiny
+                            font.weight: Font.DemiBold
+                            color: Theme.accent
+                            elide: Text.ElideMiddle
+                            Layout.fillWidth: true
+                        }
 
                         TextField {
                             id: pasteCaptionField
@@ -735,7 +752,8 @@ Page {
         }
         function onPasteReady(filePath, width, height) {
             pasteBar.pendingPath = filePath
-            pastePreview.source = filePath
+            pasteBar.isImage = (width > 0 && height > 0)
+            pastePreview.source = pasteBar.isImage ? filePath : ""
             pasteBar.visible = true
             pasteCaptionField.forceActiveFocus()
         }
@@ -753,8 +771,10 @@ Page {
         onExited: dropOverlay.visible = false
         onDropped: function(drop) {
             dropOverlay.visible = false
-            if (drop.hasUrls) {
-                for (var i = 0; i < drop.urls.length; i++) {
+            if (drop.hasUrls && drop.urls.length > 0) {
+                // Show confirmation for first file (multi-file: send rest directly)
+                messageModel.promptFileSend(drop.urls[0].toString())
+                for (var i = 1; i < drop.urls.length; i++) {
                     messageModel.sendFile(drop.urls[i].toString())
                 }
             }

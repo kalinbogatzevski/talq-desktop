@@ -147,7 +147,7 @@ Rectangle {
         id: fileDialog
         title: "Send file"
         onAccepted: {
-            messageModel.sendFile(selectedFile.toString())
+            messageModel.promptFileSend(selectedFile.toString())
         }
     }
 }
