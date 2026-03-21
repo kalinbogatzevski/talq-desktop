@@ -9,6 +9,7 @@ set(CMAKE_AUTORCC ON)
 find_package(Qt6 REQUIRED COMPONENTS
     Core
     Gui
+    Multimedia
     Network
     Qml
     Quick
@@ -27,7 +28,7 @@ set(GST_INCLUDE_DIRS
     "${GSTREAMER_ROOT}/include"
 )
 set(GST_LIBRARY_DIRS "${GSTREAMER_ROOT}/lib")
-set(GST_LIBRARIES gstreamer-1.0 gstsdp-1.0 gstwebrtc-1.0 gobject-2.0 glib-2.0 intl)
+set(GST_LIBRARIES gstreamer-1.0 gstsdp-1.0 gstwebrtc-1.0 gstapp-1.0 gobject-2.0 glib-2.0 intl)
 
 qt_add_executable(talq
     src/main.cpp
@@ -47,6 +48,8 @@ qt_add_executable(talq
     src/models/ThreadListModel.cpp
     src/core/PublishPipeline.cpp
     src/core/SubscribePipeline.cpp
+    src/core/VideoFrameProvider.h
+    src/core/VideoFrameProvider.cpp
     src/core/MediaDeviceManager.cpp
     src/core/CallManager.cpp
     src/core/CallSignaling.cpp
@@ -111,6 +114,7 @@ target_link_libraries(talq PRIVATE
     Qt6::Sql
     Qt6::WebSockets
     Qt6::Widgets
+    Qt6::Multimedia
     ${GST_LIBRARIES}
 )
 

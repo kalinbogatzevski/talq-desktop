@@ -7,6 +7,7 @@ SubscribePipeline::SubscribePipeline(const QString &remoteSessionId, QObject *pa
     : QObject(parent)
     , m_remoteSessionId(remoteSessionId)
 {
+    m_videoProvider = new VideoFrameProvider(this);
 }
 
 SubscribePipeline::~SubscribePipeline()
@@ -157,32 +158,37 @@ void SubscribePipeline::onPadAdded(GstElement *, GstPad *pad, gpointer userData)
 {
     auto *self = static_cast<SubscribePipeline *>(userData);
 
-    if (GST_PAD_DIRECTION(pad) != GST_PAD_SRC)
-        return;
-
-    // Only handle audio pads — skip video pads from MCU
     GstCaps *caps = gst_pad_get_current_caps(pad);
     if (!caps) caps = gst_pad_query_caps(pad, nullptr);
-    bool isAudio = false;
-    if (caps) {
-        GstStructure *s = gst_caps_get_structure(caps, 0);
-        const gchar *media = gst_structure_get_string(s, "media");
-        const gchar *encoding = gst_structure_get_string(s, "encoding-name");
-        isAudio = (media && g_strcmp0(media, "audio") == 0)
-               || (encoding && g_ascii_strcasecmp(encoding, "OPUS") == 0);
-        qDebug() << "SubscribePipeline: new pad" << GST_PAD_NAME(pad)
-                 << "media=" << (media ? media : "?") << "encoding=" << (encoding ? encoding : "?");
-        gst_caps_unref(caps);
+    if (!caps) return;
+
+    GstStructure *s = gst_caps_get_structure(caps, 0);
+    const gchar *media = gst_structure_get_string(s, "media");
+    const gchar *encoding = gst_structure_get_string(s, "encoding-name");
+
+    qDebug() << "SubscribePipeline: pad added, media=" << media << "encoding=" << encoding;
+
+    bool isAudio = (media && g_strcmp0(media, "audio") == 0)
+                || (encoding && g_ascii_strcasecmp(encoding, "OPUS") == 0);
+    bool isVideo = (media && g_strcmp0(media, "video") == 0)
+                || (encoding && (g_ascii_strcasecmp(encoding, "VP8") == 0
+                              || g_ascii_strcasecmp(encoding, "H264") == 0));
+
+    // Copy encoding string before unreffing caps (encoding points into caps memory)
+    QByteArray encodingCopy = encoding ? QByteArray(encoding) : QByteArray();
+    gst_caps_unref(caps);
+
+    if (isAudio) {
+        self->createAudioChain(pad);
+    } else if (isVideo) {
+        self->createVideoChain(pad, encodingCopy.constData());
     } else {
-        qDebug() << "SubscribePipeline: new pad" << GST_PAD_NAME(pad) << "(no caps yet, assuming audio)";
-        isAudio = true;
+        qDebug() << "SubscribePipeline: skipping unknown pad type";
     }
+}
 
-    if (!isAudio) {
-        qDebug() << "SubscribePipeline: skipping non-audio pad";
-        return;
-    }
-
+void SubscribePipeline::createAudioChain(GstPad *pad)
+{
     GstElement *depay = gst_element_factory_make("rtpopusdepay", nullptr);
     GstElement *dec = gst_element_factory_make("opusdec", nullptr);
     GstElement *convert = gst_element_factory_make("audioconvert", nullptr);
@@ -190,15 +196,15 @@ void SubscribePipeline::onPadAdded(GstElement *, GstPad *pad, gpointer userData)
     GstElement *sink = gst_element_factory_make("wasapi2sink", nullptr);
 
     if (!depay || !dec || !convert || !resample || !sink) {
-        qWarning() << "SubscribePipeline: failed to create receive chain";
+        qWarning() << "SubscribePipeline: failed to create audio receive chain";
         return;
     }
 
-    if (!self->m_audioOutputDeviceId.isEmpty()) {
-        g_object_set(sink, "device", self->m_audioOutputDeviceId.toUtf8().constData(), nullptr);
+    if (!m_audioOutputDeviceId.isEmpty()) {
+        g_object_set(sink, "device", m_audioOutputDeviceId.toUtf8().constData(), nullptr);
     }
 
-    gst_bin_add_many(GST_BIN(self->m_pipeline), depay, dec, convert, resample, sink, nullptr);
+    gst_bin_add_many(GST_BIN(m_pipeline), depay, dec, convert, resample, sink, nullptr);
     gst_element_link_many(depay, dec, convert, resample, sink, nullptr);
     gst_element_sync_state_with_parent(depay);
     gst_element_sync_state_with_parent(dec);
@@ -211,6 +217,74 @@ void SubscribePipeline::onPadAdded(GstElement *, GstPad *pad, gpointer userData)
     gst_object_unref(sinkPad);
 
     qDebug() << "SubscribePipeline: audio receive chain linked";
+}
+
+void SubscribePipeline::createVideoChain(GstPad *pad, const gchar *encoding)
+{
+    qDebug() << "SubscribePipeline: creating video chain for" << encoding;
+
+    GstElement *depay = nullptr;
+    GstElement *decoder = nullptr;
+
+    if (encoding && g_ascii_strcasecmp(encoding, "VP8") == 0) {
+        depay = gst_element_factory_make("rtpvp8depay", nullptr);
+        decoder = gst_element_factory_make("vp8dec", nullptr);
+    } else {
+        depay = gst_element_factory_make("rtph264depay", nullptr);
+        decoder = gst_element_factory_make("openh264dec", nullptr);
+    }
+
+    GstElement *convert = gst_element_factory_make("videoconvert", nullptr);
+    GstElement *appsink = gst_element_factory_make("appsink", nullptr);
+
+    if (!depay || !decoder || !convert || !appsink) {
+        qWarning() << "SubscribePipeline: failed to create video elements";
+        return;
+    }
+
+    GstCaps *sinkCaps = gst_caps_from_string("video/x-raw,format=I420");
+    g_object_set(appsink,
+        "emit-signals", TRUE,
+        "caps", sinkCaps,
+        "drop", TRUE,
+        "max-buffers", 1,
+        nullptr);
+    gst_caps_unref(sinkCaps);
+
+    g_signal_connect(appsink, "new-sample",
+        G_CALLBACK(onNewVideoSample), this);
+    m_videoAppsink = appsink;
+
+    gst_bin_add_many(GST_BIN(m_pipeline), depay, decoder, convert, appsink, nullptr);
+    gst_element_link_many(depay, decoder, convert, appsink, nullptr);
+
+    gst_element_sync_state_with_parent(depay);
+    gst_element_sync_state_with_parent(decoder);
+    gst_element_sync_state_with_parent(convert);
+    gst_element_sync_state_with_parent(appsink);
+
+    GstPad *sinkPad = gst_element_get_static_pad(depay, "sink");
+    GstPadLinkReturn ret = gst_pad_link(pad, sinkPad);
+    gst_object_unref(sinkPad);
+
+    if (ret != GST_PAD_LINK_OK)
+        qWarning() << "SubscribePipeline: video pad link failed:" << ret;
+    else
+        qDebug() << "SubscribePipeline: video chain linked successfully";
+}
+
+GstFlowReturn SubscribePipeline::onNewVideoSample(GstAppSink *sink, gpointer userData)
+{
+    auto *self = static_cast<SubscribePipeline *>(userData);
+    GstSample *sample = gst_app_sink_pull_sample(sink);
+    if (!sample) return GST_FLOW_OK;
+
+    QMetaObject::invokeMethod(self->m_videoProvider, [self, sample]() {
+        self->m_videoProvider->feedFrame(sample);
+        gst_sample_unref(sample);
+    }, Qt::QueuedConnection);
+
+    return GST_FLOW_OK;
 }
 
 void SubscribePipeline::onAnswerCreated(GstPromise *promise, gpointer userData)
