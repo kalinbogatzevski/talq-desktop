@@ -411,14 +411,33 @@ Page {
 
         property bool autoScrolling: true
 
+        property int previousCount: 0
+
         onContentHeightChanged: {
             if (autoScrolling && count > 0)
                 positionViewAtIndex(count - 1, ListView.End)
         }
 
+        onCountChanged: {
+            // When older messages are prepended, keep scroll position stable
+            if (count > previousCount && previousCount > 0 && !autoScrolling) {
+                var added = count - previousCount
+                positionViewAtIndex(added, ListView.Beginning)
+            }
+            previousCount = count
+        }
+
         onMovingChanged: {
             if (moving)
                 autoScrolling = false
+        }
+
+        // Lazy load older messages only when user manually scrolls near the top
+        onContentYChanged: {
+            if (contentY < 200 && !autoScrolling && !messageModel.loading
+                    && messageModel.hasMoreHistory && count > 0) {
+                messageModel.loadHistory()
+            }
         }
 
         ScrollBar.vertical: ScrollBar {
@@ -659,7 +678,7 @@ Page {
             anchors.margins: -4
             cursorShape: Qt.PointingHandCursor
             hoverEnabled: true
-            onClicked: messageListView.positionViewAtEnd()
+            onClicked: { messageListView.autoScrolling = true; messageListView.positionViewAtEnd() }
         }
 
         // Subtle scale on press
@@ -672,9 +691,11 @@ Page {
         function onConversationTokenChanged() {
             chatRoot.closeThread()
             chatRoot.cancelPaste()
+            messageListView.autoScrolling = true
+            messageListView.previousCount = 0
         }
         function onNewMessagesAtEnd() {
-            if (messageListView.count > 0)
+            if (messageListView.count > 0 && messageListView.autoScrolling)
                 messageListView.positionViewAtIndex(messageListView.count - 1, ListView.End)
         }
         function onPasteReady(filePath, width, height) {

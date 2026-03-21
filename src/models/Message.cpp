@@ -1,4 +1,5 @@
 #include "models/Message.h"
+#include <QRegularExpression>
 
 Message Message::fromJson(const QJsonObject &json)
 {
@@ -55,9 +56,16 @@ Message Message::fromJson(const QJsonObject &json)
             }
         }
     }
-    // If we injected HTML, the message needs rich text rendering
-    // We signal this by keeping the HTML tags in the message string
-    // QML will detect <b> tags and use Text.RichText
+    // Linkify URLs — turn bare http(s) links into clickable <a> tags
+    // Only process text outside existing HTML tags
+    static QRegularExpression urlRx(
+        R"((https?://[^\s<>"']+))",
+        QRegularExpression::CaseInsensitiveOption);
+    // Don't linkify URLs already inside <a> or <b> tags
+    if (!m.message.contains("href=")) {
+        m.message.replace(urlRx,
+            R"(<a href='\1' style='color:#5a9ecf'>\1</a>)");
+    }
 
     // Reply parent
     QJsonObject parent = json["parent"].toObject();

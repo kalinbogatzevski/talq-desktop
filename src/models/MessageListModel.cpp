@@ -49,24 +49,28 @@ MessageListModel::MessageListModel(ApiClient *api, MessageCache *cache, QObject 
     // Async cache results
     connect(m_cache, &MessageCache::messagesLoaded, this, [this](const QString &token, const QVector<Message> &messages) {
         if (m_token != token) return;  // stale result
-        if (messages.isEmpty()) return;
-        if (!m_messages.isEmpty()) return;  // server already loaded messages
 
-        QVector<Message> filtered;
-        for (const auto &m : messages) {
-            if (m.isReactionMessage())
-                continue;
-            if (m_hideThreadMessages && m.threadId > 0)
-                continue;
-            filtered.append(m);
+        // Display cached messages instantly (even if empty — still trigger API fetch)
+        if (!messages.isEmpty() && m_messages.isEmpty()) {
+            QVector<Message> filtered;
+            for (const auto &m : messages) {
+                if (m.isReactionMessage() || m.isCallJoinLeave())
+                    continue;
+                if (m_hideThreadMessages && m.threadId > 0)
+                    continue;
+                filtered.append(m);
+            }
+            if (!filtered.isEmpty()) {
+                beginInsertRows({}, 0, filtered.size() - 1);
+                m_messages = filtered;
+                endInsertRows();
+                m_oldestMessageId = m_messages.first().id;
+                emit newMessagesAtEnd();
+            }
         }
-        if (filtered.isEmpty()) return;
 
-        beginInsertRows({}, 0, filtered.size() - 1);
-        m_messages = filtered;
-        endInsertRows();
-        m_oldestMessageId = m_messages.first().id;
-        emit newMessagesAtEnd();
+        // Now fetch fresh messages from the server (non-blocking)
+        loadHistory();
     });
 }
 
@@ -189,11 +193,23 @@ void MessageListModel::setConversationToken(const QString &token)
         return;
 
     m_poller->stop();
+
+    // Cancel any in-flight history request (disconnect first to prevent re-entry)
+    if (m_historyReply) {
+        auto *oldReply = m_historyReply;
+        m_historyReply = nullptr;
+        oldReply->disconnect(this);
+        oldReply->abort();
+        oldReply->deleteLater();
+    }
+
     m_token = token;
     m_oldestMessageId = 0;
     m_threadId = 0;
     m_lastCommonRead = 0;
     m_loading = false;
+    m_hasMoreHistory = true;
+    emit hasMoreHistoryChanged();
 
     // Clear messages
     if (!m_messages.isEmpty()) {
@@ -207,7 +223,9 @@ void MessageListModel::setConversationToken(const QString &token)
     if (token.isEmpty())
         return;
 
-    loadHistory();
+    // Load last 20 from local cache for instant display,
+    // then fetch fresh from API in background (triggered after cache loads)
+    m_cache->loadMessages(token, 20);
 
     // Mark as read
     QJsonObject body;
@@ -256,7 +274,8 @@ void MessageListModel::setHideThreadMessages(bool hide)
 
 void MessageListModel::loadHistory()
 {
-    if (m_token.isEmpty()) return;
+    if (m_token.isEmpty() || m_loading) return;
+    if (!m_hasMoreHistory && m_oldestMessageId > 0) return;  // no more pages
 
     m_loading = true;
     emit loadingChanged();
@@ -272,8 +291,10 @@ void MessageListModel::loadHistory()
 
     QString currentToken = m_token;
     auto *reply = m_api->getRaw("apps/spreed/api/v1/chat/" + m_token, params);
+    m_historyReply = reply;
 
     connect(reply, &QNetworkReply::finished, this, [this, reply, currentToken]() {
+        if (m_historyReply == reply) m_historyReply = nullptr;
         reply->deleteLater();
 
         if (m_token != currentToken) return;
@@ -296,8 +317,16 @@ void MessageListModel::loadHistory()
         QJsonArray data = ocs["data"].toArray();
 
         if (data.isEmpty()) {
+            m_hasMoreHistory = false;
+            emit hasMoreHistoryChanged();
             startPoller();
             return;
+        }
+
+        // Less than requested = no more pages
+        if (data.size() < 50) {
+            m_hasMoreHistory = false;
+            emit hasMoreHistoryChanged();
         }
 
         // API returns newest-first; reverse to oldest-first
@@ -308,7 +337,7 @@ void MessageListModel::loadHistory()
         QVector<Message> olderMsgs;
         for (int i = data.size() - 1; i >= 0; --i) {
             Message m = Message::fromJson(data[i].toObject());
-            if (existingIds.contains(m.id) || m.isReactionMessage())
+            if (existingIds.contains(m.id) || m.isReactionMessage() || m.isCallJoinLeave())
                 continue;
             if (m_hideThreadMessages && m.threadId > 0)
                 continue;
@@ -351,7 +380,7 @@ void MessageListModel::onMessagesReceived(const QJsonArray &messages)
     QVector<Message> newMsgs;
     for (const auto &val : messages) {
         Message m = Message::fromJson(val.toObject());
-        if (existingIds.contains(m.id) || m.isReactionMessage())
+        if (existingIds.contains(m.id) || m.isReactionMessage() || m.isCallJoinLeave())
             continue;
         if (m_hideThreadMessages && m.threadId > 0)
             continue;
@@ -367,17 +396,6 @@ void MessageListModel::onMessagesReceived(const QJsonArray &messages)
     endInsertRows();
 
     m_cache->saveMessages(m_token, newMsgs);
-
-    // Trim old messages if we've grown too large (keep last 200)
-    const int maxMessages = 200;
-    if (m_messages.size() > maxMessages) {
-        int excess = m_messages.size() - maxMessages;
-        beginRemoveRows({}, 0, excess - 1);
-        m_messages.remove(0, excess);
-        endRemoveRows();
-        if (!m_messages.isEmpty())
-            m_oldestMessageId = m_messages.first().id;
-    }
 
     emit newMessagesAtEnd();
 

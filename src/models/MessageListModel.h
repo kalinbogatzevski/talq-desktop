@@ -21,6 +21,7 @@ class MessageListModel : public QAbstractListModel
     Q_PROPERTY(bool connected READ isConnected NOTIFY connectedChanged)
     Q_PROPERTY(int threadId READ threadId WRITE setThreadId NOTIFY threadIdChanged)
     Q_PROPERTY(bool hideThreadMessages READ hideThreadMessages WRITE setHideThreadMessages NOTIFY hideThreadMessagesChanged)
+    Q_PROPERTY(bool hasMoreHistory READ hasMoreHistory NOTIFY hasMoreHistoryChanged)
 
 public:
     enum Roles {
@@ -59,6 +60,7 @@ public:
 
     bool isLoading() const { return m_loading; }
     bool isConnected() const { return m_connected; }
+    bool hasMoreHistory() const { return m_hasMoreHistory; }
     QString conversationToken() const { return m_token; }
     void setConversationToken(const QString &token);
 
@@ -99,6 +101,7 @@ signals:
     void threadIdChanged();
     void hideThreadMessagesChanged();
     void uploadProgressChanged();
+    void hasMoreHistoryChanged();
     void pasteReady(const QString &filePath, int width, int height);
 
 private slots:
@@ -115,6 +118,7 @@ private:
     QVector<Message> m_messages;
     QString m_token;
     bool m_loading = false;
+    bool m_hasMoreHistory = true;
     int m_oldestMessageId = 0;
     int m_lastCommonRead = 0;
     int m_threadId = 0;
@@ -122,4 +126,5 @@ private:
     bool m_connected = true;  // assume connected until proven otherwise
     double m_uploadProgress = -1;
     QString m_uploadFileName;
+    QNetworkReply *m_historyReply = nullptr;  // cancel on chat switch
 };
