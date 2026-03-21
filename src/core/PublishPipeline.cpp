@@ -164,28 +164,19 @@ void PublishPipeline::pollBus()
                     qDebug() << "PublishPipeline: level raw:" << QString::fromUtf8(str).left(300);
                     g_free(str);
                 }
-                // GValueArray from level element
-                GValueArray *peakArr = nullptr;
-                GValueArray *rmsArr = nullptr;
-                gst_structure_get(s, "peak", G_TYPE_VALUE_ARRAY, &peakArr, nullptr);
-                if (!peakArr) gst_structure_get(s, "rms", G_TYPE_VALUE_ARRAY, &rmsArr, nullptr);
-                GValueArray *arr = peakArr ? peakArr : rmsArr;
+                // Extract peak level from GValueArray
+                // Range: -100dB (silence) to 0dB (max) → map to 0.0-1.0
+                GValueArray *arr = nullptr;
+                gst_structure_get(s, "peak", G_TYPE_VALUE_ARRAY, &arr, nullptr);
                 if (arr && arr->n_values > 0) {
                     gdouble db = g_value_get_double(arr->values);
-                    double lvl = qBound(0.0, (db + 60.0) / 60.0, 1.0);
-                    static int cnt = 0;
-                    if (++cnt % 50 == 1) qDebug() << "PublishPipeline: LEVEL" << lvl;
+                    // Use wider range: -100 to 0
+                    double lvl = qBound(0.0, (db + 100.0) / 100.0, 1.0);
+                    // Apply curve for better visual response
+                    lvl = lvl * lvl;  // square for more dynamic range visibility
                     emit audioLevelUpdated(lvl);
-                } else {
-                    // Array empty — try direct structure parsing
-                    gdouble peak = -60.0;
-                    if (gst_structure_get_double(s, "peak", &peak)) {
-                        double lvl = qBound(0.0, (peak + 60.0) / 60.0, 1.0);
-                        emit audioLevelUpdated(lvl);
-                    }
                 }
-                if (peakArr) g_value_array_free(peakArr);
-                if (rmsArr) g_value_array_free(rmsArr);
+                if (arr) g_value_array_free(arr);
             }
         } else if (GST_MESSAGE_TYPE(msg) == GST_MESSAGE_ERROR) {
             GError *err = nullptr; gchar *dbg = nullptr;

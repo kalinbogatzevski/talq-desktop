@@ -29,11 +29,10 @@ Window {
             }
         }
         function onAudioLevelChanged() {
-            // Push new sample into waveform buffer
             var s = waveCanvas.samples
             s.push(callManager.audioLevel)
-            if (s.length > waveCanvas.maxSamples)
-                s.shift()
+            if (s.length > waveCanvas.maxBars * 2)
+                s = s.slice(-waveCanvas.maxBars)
             waveCanvas.samples = s
             waveCanvas.requestPaint()
         }
@@ -114,56 +113,38 @@ Window {
             }
         }
 
-        // Audio waveform visualization
+        // Audio waveform — scrolling bars drawn on Canvas, last ~8 seconds
         Canvas {
             id: waveCanvas
             Layout.alignment: Qt.AlignHCenter
-            width: 200; height: 40
+            width: 240; height: 36
             visible: callManager.state === CallManager.Active
 
             property var samples: []
-            property int maxSamples: 60
+            property int maxBars: 80
 
             onPaint: {
                 var ctx = getContext("2d")
                 ctx.clearRect(0, 0, width, height)
-
-                if (samples.length < 2) return
-
                 var midY = height / 2
-                var stepX = width / maxSamples
+                var barW = 2
+                var gap = 1
+                var step = barW + gap
 
-                // Draw filled waveform (mirrored)
-                ctx.beginPath()
-                ctx.moveTo(0, midY)
-                for (var i = 0; i < samples.length; i++) {
-                    var x = i * stepX
-                    var amp = samples[i] * midY * 0.9
-                    ctx.lineTo(x, midY - amp)
+                for (var i = 0; i < maxBars; i++) {
+                    var idx = samples.length - maxBars + i
+                    var lvl = (idx >= 0 && idx < samples.length) ? samples[idx] : 0
+                    var barH = Math.max(1, lvl * midY * 1.8)
+                    var x = i * step
+
+                    if (lvl > 0.5) ctx.fillStyle = "#e74c3c"
+                    else if (lvl > 0.15) ctx.fillStyle = "#2ecc71"
+                    else if (lvl > 0.02) ctx.fillStyle = "#3a6a8e"
+                    else ctx.fillStyle = "#1e1e3e"
+
+                    // Draw bar centered vertically
+                    ctx.fillRect(x, midY - barH, barW, barH * 2)
                 }
-                ctx.lineTo((samples.length - 1) * stepX, midY)
-                for (var j = samples.length - 1; j >= 0; j--) {
-                    var x2 = j * stepX
-                    var amp2 = samples[j] * midY * 0.9
-                    ctx.lineTo(x2, midY + amp2)
-                }
-                ctx.closePath()
-
-                // Gradient fill
-                var grad = ctx.createLinearGradient(0, 0, 0, height)
-                grad.addColorStop(0, "#2ecc7180")
-                grad.addColorStop(0.5, "#2ecc71")
-                grad.addColorStop(1, "#2ecc7180")
-                ctx.fillStyle = grad
-                ctx.fill()
-
-                // Center line
-                ctx.strokeStyle = "#2ecc7140"
-                ctx.lineWidth = 1
-                ctx.beginPath()
-                ctx.moveTo(0, midY)
-                ctx.lineTo(width, midY)
-                ctx.stroke()
             }
         }
 
