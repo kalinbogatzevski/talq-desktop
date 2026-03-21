@@ -139,9 +139,28 @@ void SubscribePipeline::onPadAdded(GstElement *, GstPad *pad, gpointer userData)
     if (GST_PAD_DIRECTION(pad) != GST_PAD_SRC)
         return;
 
-    // Must build receive chain on the streaming thread (GStreamer requirement for pad linking)
-    // but the pipeline pointer is safe because we disconnect signals before cleanup
-    qDebug() << "SubscribePipeline: new pad from webrtcbin:" << GST_PAD_NAME(pad);
+    // Only handle audio pads — skip video pads from MCU
+    GstCaps *caps = gst_pad_get_current_caps(pad);
+    if (!caps) caps = gst_pad_query_caps(pad, nullptr);
+    bool isAudio = false;
+    if (caps) {
+        GstStructure *s = gst_caps_get_structure(caps, 0);
+        const gchar *media = gst_structure_get_string(s, "media");
+        const gchar *encoding = gst_structure_get_string(s, "encoding-name");
+        isAudio = (media && g_strcmp0(media, "audio") == 0)
+               || (encoding && g_ascii_strcasecmp(encoding, "OPUS") == 0);
+        qDebug() << "SubscribePipeline: new pad" << GST_PAD_NAME(pad)
+                 << "media=" << (media ? media : "?") << "encoding=" << (encoding ? encoding : "?");
+        gst_caps_unref(caps);
+    } else {
+        qDebug() << "SubscribePipeline: new pad" << GST_PAD_NAME(pad) << "(no caps yet, assuming audio)";
+        isAudio = true;
+    }
+
+    if (!isAudio) {
+        qDebug() << "SubscribePipeline: skipping non-audio pad";
+        return;
+    }
 
     GstElement *depay = gst_element_factory_make("rtpopusdepay", nullptr);
     GstElement *dec = gst_element_factory_make("opusdec", nullptr);

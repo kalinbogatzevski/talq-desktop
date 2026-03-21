@@ -86,6 +86,10 @@ int main(int argc, char *argv[])
 
     DebugMonitor debug;
 
+    // Register types for QML enum access
+    qmlRegisterUncreatableType<CallManager>("TalkQt", 1, 0, "CallManager",
+        "CallManager is not creatable, use callManager context property");
+
     // QML engine
     QQmlApplicationEngine engine;
 
