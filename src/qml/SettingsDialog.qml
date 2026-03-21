@@ -1,18 +1,25 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import Qt.labs.settings
 import TalkQt
 
 Window {
     id: settingsDialog
     title: "Settings"
     width: 400
-    height: 320
+    height: 520
     minimumWidth: 350
-    minimumHeight: 280
+    minimumHeight: 440
     color: Theme.bgPrimary
     modality: Qt.ApplicationModal
     visible: false
+
+    Settings {
+        id: videoSettings
+        category: "Video"
+        property int resolution: 0
+    }
 
     Component.onCompleted: {
         deviceManager.refresh()
@@ -69,6 +76,60 @@ Window {
                 palette.text: Theme.textPrimary
                 palette.buttonText: Theme.textPrimary
             }
+        }
+
+        // Camera
+        Text {
+            text: "Camera"
+            color: Theme.textPrimary
+            font.pixelSize: 14
+            font.bold: true
+            Layout.topMargin: 16
+        }
+
+        ComboBox {
+            Layout.fillWidth: true
+            model: deviceManager.videoInputNames
+            currentIndex: deviceManager.selectedVideoInput
+            onActivated: (index) => deviceManager.selectedVideoInput = index
+            enabled: deviceManager.videoInputNames.length > 0
+            palette.window: Theme.bgSurface
+            palette.text: Theme.textPrimary
+            palette.buttonText: Theme.textPrimary
+        }
+
+        Text {
+            visible: deviceManager.videoInputNames.length === 0
+            text: "No cameras found"
+            color: Theme.textSecondary
+            font.pixelSize: 12
+        }
+
+        // Video Quality
+        Text {
+            text: "Video Quality"
+            color: Theme.textPrimary
+            font.pixelSize: 14
+            font.bold: true
+            Layout.topMargin: 12
+        }
+
+        ComboBox {
+            Layout.fillWidth: true
+            model: ["Full HD (1080p)", "HD (720p)"]
+            currentIndex: videoSettings.resolution
+            onActivated: (index) => videoSettings.resolution = index
+            palette.window: Theme.bgSurface
+            palette.text: Theme.textPrimary
+            palette.buttonText: Theme.textPrimary
+        }
+
+        Text {
+            text: "Changes apply to next call"
+            color: Theme.textSecondary
+            font.pixelSize: 11
+            Layout.alignment: Qt.AlignHCenter
+            visible: callManager.state !== CallManager.Idle
         }
 
         // Refresh button
