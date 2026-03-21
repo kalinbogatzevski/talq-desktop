@@ -29,12 +29,7 @@ Window {
             }
         }
         function onAudioLevelChanged() {
-            var s = waveCanvas.samples
-            s.push(callManager.audioLevel)
-            if (s.length > waveCanvas.maxBars * 2)
-                s = s.slice(-waveCanvas.maxBars)
-            waveCanvas.samples = s
-            waveCanvas.requestPaint()
+            waveCanvas.lastLevel = Math.max(waveCanvas.lastLevel, callManager.audioLevel)
         }
     }
 
@@ -117,11 +112,29 @@ Window {
         Canvas {
             id: waveCanvas
             Layout.alignment: Qt.AlignHCenter
-            width: 240; height: 36
+            width: 280; height: 54
             visible: callManager.state === CallManager.Active
 
             property var samples: []
             property int maxBars: 80
+            property double lastLevel: 0
+
+            // Continuous scroll — push a sample every 100ms regardless
+            Timer {
+                id: waveTimer
+                interval: 100
+                repeat: true
+                running: waveCanvas.visible
+                onTriggered: {
+                    var s = waveCanvas.samples
+                    s.push(waveCanvas.lastLevel)
+                    waveCanvas.lastLevel = waveCanvas.lastLevel * 0.7  // decay toward silence
+                    if (s.length > waveCanvas.maxBars * 2)
+                        s = s.slice(-waveCanvas.maxBars)
+                    waveCanvas.samples = s
+                    waveCanvas.requestPaint()
+                }
+            }
 
             onPaint: {
                 var ctx = getContext("2d")
@@ -202,19 +215,31 @@ Window {
             ToolTip.visible: hovered; ToolTip.text: "Call info"
         }
 
-        // Mute
+        // Mute (with mic level fill)
         RoundButton {
             implicitWidth: 50; implicitHeight: 50
             visible: callManager.state === CallManager.Connecting || callManager.state === CallManager.Active
             onClicked: callManager.toggleMute()
             contentItem: Image {
                 source: callManager.isMuted ? "qrc:/icons/mic-off.svg" : "qrc:/icons/mic.svg"
-                sourceSize: Qt.size(22, 22); anchors.centerIn: parent
+                sourceSize: Qt.size(22, 22); anchors.centerIn: parent; z: 2
             }
             background: Rectangle {
                 radius: 25
                 color: callManager.isMuted ? "#e74c3c" : "#3a3a5e"
                 border.color: callManager.isMuted ? "#e74c3c" : "#5a5a8e"; border.width: 1
+                clip: true
+
+                // Green level fill from bottom (clipped to circle)
+                Rectangle {
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.bottom: parent.bottom
+                    height: callManager.isMuted ? 0 : parent.height * callManager.audioLevel
+                    color: "#2ecc71"
+                    opacity: 0.4
+                    Behavior on height { NumberAnimation { duration: 80 } }
+                }
             }
             ToolTip.visible: hovered; ToolTip.text: callManager.isMuted ? "Unmute" : "Mute"
         }
