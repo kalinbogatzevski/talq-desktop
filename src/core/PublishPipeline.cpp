@@ -179,6 +179,33 @@ void PublishPipeline::setMuted(bool muted)
     }
 }
 
+void PublishPipeline::pollBus()
+{
+    if (!m_pipeline) return;
+    GstBus *bus = gst_element_get_bus(m_pipeline);
+    GstMessage *msg;
+    while ((msg = gst_bus_pop(bus)) != nullptr) {
+        if (GST_MESSAGE_TYPE(msg) == GST_MESSAGE_ELEMENT) {
+            const GstStructure *s = gst_message_get_structure(msg);
+            if (g_strcmp0(gst_structure_get_name(s), "level") == 0) {
+                const GValue *peakArr = gst_structure_get_value(s, "peak");
+                if (peakArr && GST_VALUE_HOLDS_LIST(peakArr) && gst_value_list_get_size(peakArr) > 0) {
+                    gdouble peakDb = g_value_get_double(gst_value_list_get_value(peakArr, 0));
+                    double lvl = qBound(0.0, (peakDb + 60.0) / 60.0, 1.0);
+                    emit audioLevelUpdated(lvl);
+                }
+            }
+        } else if (GST_MESSAGE_TYPE(msg) == GST_MESSAGE_ERROR) {
+            GError *err = nullptr; gchar *dbg = nullptr;
+            gst_message_parse_error(msg, &err, &dbg);
+            qWarning() << "PublishPipeline ERROR:" << err->message << (dbg ? dbg : "");
+            g_clear_error(&err); g_free(dbg);
+        }
+        gst_message_unref(msg);
+    }
+    gst_object_unref(bus);
+}
+
 // --- GStreamer callbacks (marshal to Qt thread) ---
 
 void PublishPipeline::onNegotiationNeeded(GstElement *, gpointer userData)
