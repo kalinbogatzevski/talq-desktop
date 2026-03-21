@@ -93,10 +93,11 @@ void SubscribePipeline::setRemoteOffer(const QString &sdp)
 {
     if (!m_webrtcbin) return;
 
+    QByteArray sdpUtf8 = sdp.toUtf8();
     GstSDPMessage *sdpMsg;
     gst_sdp_message_new(&sdpMsg);
-    gst_sdp_message_parse_buffer((const guint8 *)sdp.toUtf8().constData(),
-                                  sdp.toUtf8().size(), sdpMsg);
+    gst_sdp_message_parse_buffer((const guint8 *)sdpUtf8.constData(),
+                                  sdpUtf8.size(), sdpMsg);
 
     GstWebRTCSessionDescription *desc = gst_webrtc_session_description_new(
         GST_WEBRTC_SDP_TYPE_OFFER, sdpMsg);

@@ -3,12 +3,10 @@
 #include <QObject>
 #include <QTimer>
 #include <QHash>
-#include <QByteArray>
 #include "core/ApiClient.h"
 #include "core/SignalingClient.h"
 #include "core/PublishPipeline.h"
 #include "core/SubscribePipeline.h"
-#include "core/CallSignaling.h"
 
 class CallManager : public QObject
 {
@@ -67,8 +65,6 @@ private:
 
     ApiClient *m_api;
     SignalingClient *m_signaling;
-    CallSignaling m_callSignaling;  // kept for potential future use
-
     // MCU dual pipelines
     PublishPipeline *m_publishPipeline = nullptr;
     QHash<QString, SubscribePipeline*> m_subscribePipelines;
@@ -76,7 +72,6 @@ private:
 
     CallState m_state = Idle;
     QString m_callToken;
-    QString m_callSid;
     QString m_stunServer;
     QString m_remoteSessionId;
     QString m_remotePeerName;
@@ -88,8 +83,4 @@ private:
 
     QTimer m_durationTimer;
     QTimer m_ringTimeout;
-
-    // Queued SDP/ICE for when publisher isn't ready yet
-    QString m_pendingOfferSdp;
-    QList<QJsonObject> m_pendingPubCandidates;
 };

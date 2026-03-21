@@ -1,7 +1,6 @@
 #include "core/CallManager.h"
 #include <QJsonObject>
 #include <QDebug>
-#include <QUuid>
 #include <QDateTime>
 #include <QtMath>
 
@@ -59,7 +58,6 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, QObject *pa
     : QObject(parent)
     , m_api(api)
     , m_signaling(signaling)
-    , m_callSignaling(api, this)
 {
     // HPB participant events
     connect(m_signaling, &SignalingClient::participantJoinedCall,
@@ -127,8 +125,6 @@ void CallManager::startCall(const QString &token, bool withVideo)
     m_cameraOn = withVideo;
     m_muted = false;
     m_callDuration = 0;
-    m_callSid = QUuid::createUuid().toString(QUuid::WithoutBraces).left(16);
-
     setState(Outgoing);
     joinCallOnServer(withVideo);
     m_ringTimeout.start();
@@ -266,8 +262,6 @@ void CallManager::teardown(const QString &reason)
     m_remotePeerName.clear();
     m_remotePeerId.clear();
     m_callDuration = 0;
-    m_pendingOfferSdp.clear();
-    m_pendingPubCandidates.clear();
 
     setState(Idle);
     emit callEnded(reason);

@@ -17,7 +17,6 @@ Message Message::fromJson(const QJsonObject &json)
 
     // Resolve messageParameters — replace {placeholder} with styled mentions
     QJsonObject params = json["messageParameters"].toObject();
-    bool hasMentions = false;
     for (auto it = params.begin(); it != params.end(); ++it) {
         QJsonObject param = it.value().toObject();
         QString type = param["type"].toString();
@@ -30,7 +29,6 @@ Message Message::fromJson(const QJsonObject &json)
                 // Wrap in styled span for rich text rendering
                 m.message.replace(placeholder,
                     "<b style='color:#2ec4b6'>@" + name.toHtmlEscaped() + "</b>");
-                hasMentions = true;
             } else if (type == "file") {
                 m.fileName = param["name"].toString();
                 m.fileMimetype = param["mimetype"].toString();
@@ -49,7 +47,6 @@ Message Message::fromJson(const QJsonObject &json)
                 } else {
                     m.message.replace(placeholder,
                         "<b style='color:#2ec4b6'>\xF0\x9F\x93\x84 " + name.toHtmlEscaped() + "</b>");
-                    hasMentions = true;
                 }
             } else {
                 m.message.replace(placeholder, name);

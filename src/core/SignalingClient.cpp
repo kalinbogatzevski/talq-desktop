@@ -1,9 +1,5 @@
 #include "core/SignalingClient.h"
 #include <QJsonDocument>
-#include <QJsonArray>
-#include <QHash>
-#include <QNetworkReply>
-#include <QUuid>
 #include <QDebug>
 
 SignalingClient::SignalingClient(ApiClient *api, QObject *parent)
@@ -350,7 +346,6 @@ void SignalingClient::sendStoppedTyping()
 }
 
 // --- WebRTC call signaling ---
-
 
 void SignalingClient::sendSessionMessage(const QString &toSessionId, const QString &type,
                                           const QJsonObject &payload, const QString &sid)
