@@ -3,6 +3,7 @@
 #include <QDebug>
 #include <QDateTime>
 #include <QtMath>
+#include <QSettings>
 
 #ifdef Q_OS_WIN
 #include <windows.h>
@@ -104,10 +105,11 @@ void CallManager::stopRingtone() {
 
 // --- CallManager ---
 
-CallManager::CallManager(ApiClient *api, SignalingClient *signaling, QObject *parent)
+CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDeviceManager *deviceMgr, QObject *parent)
     : QObject(parent)
     , m_api(api)
     , m_signaling(signaling)
+    , m_deviceManager(deviceMgr)
 {
     // HPB participant events
     connect(m_signaling, &SignalingClient::participantJoinedCall,
@@ -342,7 +344,16 @@ void CallManager::toggleMute() {
 }
 
 void CallManager::toggleCamera() {
-    m_cameraOn = !m_cameraOn; emit cameraChanged();
+    m_cameraOn = !m_cameraOn;
+    emit cameraChanged();
+
+    if (m_cameraOn && m_publishPipeline) {
+        int videoDevice = m_deviceManager ? m_deviceManager->selectedVideoInput() : 0;
+        bool hd1080 = QSettings().value("video/resolution", 0).toInt() == 0;
+        m_publishPipeline->enableCamera(videoDevice, hd1080);
+    } else if (!m_cameraOn && m_publishPipeline) {
+        m_publishPipeline->disableCamera();
+    }
 }
 
 void CallManager::joinCallOnServer(bool withVideo)
@@ -438,6 +449,12 @@ void CallManager::joinCallOnServer(bool withVideo)
                         }
                     });
 
+                    connect(m_publishPipeline, &PublishPipeline::cameraError, this, [this](const QString &reason) {
+                        qWarning() << "CallManager: camera error:" << reason;
+                        m_cameraOn = false;
+                        emit cameraChanged();
+                    });
+
                     m_publishPipeline->start(m_stunServer, turnServers, m_deviceManager ? m_deviceManager->selectedInputDeviceId() : QString());
                     m_glibTimer.start(20);
 
@@ -491,6 +508,9 @@ void CallManager::stopAllPipelines()
         sub->deleteLater();
     }
     m_subscribePipelines.clear();
+
+    m_remoteVideoProvider = nullptr;
+    emit remoteVideoProviderChanged();
 }
 
 void CallManager::teardown(const QString &reason)
@@ -604,6 +624,9 @@ void CallManager::onOfferReceived(const QString &fromSessionId, const QString &s
 
         m_subscribePipelines[fromSessionId] = sub;
         sub->start(m_stunServer, m_turnServers, m_deviceManager ? m_deviceManager->selectedOutputDeviceId() : QString());
+
+        m_remoteVideoProvider = sub->videoProvider();
+        emit remoteVideoProviderChanged();
     }
 
     m_subscribePipelines[fromSessionId]->setRemoteOffer(sdp);

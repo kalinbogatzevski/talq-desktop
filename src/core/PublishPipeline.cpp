@@ -118,6 +118,7 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
 void PublishPipeline::stop()
 {
     if (!m_running) return;
+    disableCamera();
     cleanup();
     m_running = false;
     qDebug() << "PublishPipeline: stopped";
@@ -171,6 +172,111 @@ void PublishPipeline::setMuted(bool muted)
         g_object_set(src, "mute", muted, nullptr);
         gst_object_unref(src);
     }
+}
+
+void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)
+{
+    if (m_cameraEnabled || !m_pipeline) return;
+
+    qDebug() << "PublishPipeline: enabling camera, device" << deviceIndex << (hd1080 ? "1080p" : "720p");
+
+    m_cameraSrc = gst_element_factory_make("ksvideosrc", nullptr);
+    if (!m_cameraSrc) {
+        emit cameraError("Camera capture plugin (ksvideosrc) not available");
+        return;
+    }
+    g_object_set(m_cameraSrc, "device-index", deviceIndex, nullptr);
+
+    m_videoConvert = gst_element_factory_make("videoconvert", nullptr);
+    m_videoCapsFilter = gst_element_factory_make("capsfilter", nullptr);
+    m_videoEncoder = gst_element_factory_make("openh264enc", nullptr);
+    m_videoPayloader = gst_element_factory_make("rtph264pay", nullptr);
+
+    if (!m_videoConvert || !m_videoCapsFilter || !m_videoEncoder || !m_videoPayloader) {
+        emit cameraError("Failed to create video encoding elements");
+        if (m_cameraSrc) { gst_object_unref(m_cameraSrc); m_cameraSrc = nullptr; }
+        if (m_videoConvert) { gst_object_unref(m_videoConvert); m_videoConvert = nullptr; }
+        if (m_videoCapsFilter) { gst_object_unref(m_videoCapsFilter); m_videoCapsFilter = nullptr; }
+        if (m_videoEncoder) { gst_object_unref(m_videoEncoder); m_videoEncoder = nullptr; }
+        if (m_videoPayloader) { gst_object_unref(m_videoPayloader); m_videoPayloader = nullptr; }
+        return;
+    }
+
+    int w = hd1080 ? 1920 : 1280;
+    int h = hd1080 ? 1080 : 720;
+    int bitrate = hd1080 ? 3000000 : 1500000;
+    QString capsStr = QString("video/x-raw,width=%1,height=%2,framerate=30/1").arg(w).arg(h);
+    GstCaps *caps = gst_caps_from_string(capsStr.toUtf8().constData());
+    g_object_set(m_videoCapsFilter, "caps", caps, nullptr);
+    gst_caps_unref(caps);
+
+    g_object_set(m_videoEncoder, "bitrate", bitrate, "rate-control", 1, "complexity", 1, nullptr);
+
+    gst_bin_add_many(GST_BIN(m_pipeline), m_cameraSrc, m_videoConvert, m_videoCapsFilter, m_videoEncoder, m_videoPayloader, nullptr);
+
+    if (!gst_element_link_many(m_cameraSrc, m_videoConvert, m_videoCapsFilter, m_videoEncoder, m_videoPayloader, nullptr)) {
+        qWarning() << "PublishPipeline: failed to link video chain";
+        emit cameraError("Failed to link video pipeline");
+        disableCamera();
+        return;
+    }
+
+    m_videoSinkPad = gst_element_request_pad_simple(m_webrtcbin, "sink_%u");
+    GstPad *payloaderSrc = gst_element_get_static_pad(m_videoPayloader, "src");
+    GstPadLinkReturn ret = gst_pad_link(payloaderSrc, m_videoSinkPad);
+    gst_object_unref(payloaderSrc);
+
+    if (ret != GST_PAD_LINK_OK) {
+        qWarning() << "PublishPipeline: video pad link failed:" << ret;
+        emit cameraError("Failed to connect video to WebRTC");
+        disableCamera();
+        return;
+    }
+
+    gst_element_sync_state_with_parent(m_cameraSrc);
+    gst_element_sync_state_with_parent(m_videoConvert);
+    gst_element_sync_state_with_parent(m_videoCapsFilter);
+    gst_element_sync_state_with_parent(m_videoEncoder);
+    gst_element_sync_state_with_parent(m_videoPayloader);
+
+    m_cameraEnabled = true;
+    qDebug() << "PublishPipeline: camera enabled successfully";
+}
+
+void PublishPipeline::disableCamera()
+{
+    if (!m_cameraEnabled && !m_cameraSrc) return;
+
+    qDebug() << "PublishPipeline: disabling camera";
+
+    auto removeElement = [this](GstElement *&el) {
+        if (el) {
+            gst_element_set_state(el, GST_STATE_NULL);
+            gst_bin_remove(GST_BIN(m_pipeline), el);
+            el = nullptr;
+        }
+    };
+
+    if (m_videoPayloader && m_videoSinkPad) {
+        GstPad *src = gst_element_get_static_pad(m_videoPayloader, "src");
+        if (src) {
+            gst_pad_unlink(src, m_videoSinkPad);
+            gst_object_unref(src);
+        }
+    }
+    if (m_videoSinkPad) {
+        gst_element_release_request_pad(m_webrtcbin, m_videoSinkPad);
+        gst_object_unref(m_videoSinkPad);
+        m_videoSinkPad = nullptr;
+    }
+
+    removeElement(m_videoPayloader);
+    removeElement(m_videoEncoder);
+    removeElement(m_videoCapsFilter);
+    removeElement(m_videoConvert);
+    removeElement(m_cameraSrc);
+
+    m_cameraEnabled = false;
 }
 
 void PublishPipeline::pollBus()
