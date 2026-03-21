@@ -46,6 +46,8 @@ qt_add_executable(talq
     src/models/MessageListModel.cpp
     src/models/ThreadListModel.cpp
     src/core/CallPipeline.cpp
+    src/core/PublishPipeline.cpp
+    src/core/SubscribePipeline.cpp
     src/core/MediaDeviceManager.cpp
     src/core/CallManager.cpp
     src/core/CallSignaling.cpp
@@ -81,7 +83,10 @@ qt_add_qml_module(talq
 
 # Build timestamp — changes on every reconfigure for tracking
 string(TIMESTAMP TALQ_BUILD_TS "%m%d-%H%M")
-target_compile_definitions(talq PRIVATE TALQ_BUILD_TS="${TALQ_BUILD_TS}")
+target_compile_definitions(talq PRIVATE
+    TALQ_VERSION="${PROJECT_VERSION}"
+    TALQ_BUILD_TS="${TALQ_BUILD_TS}"
+)
 
 # Branding: cmake -DTALQ_BRAND=123NET for dedicated 123NET build
 if(TALQ_BRAND STREQUAL "123NET")
