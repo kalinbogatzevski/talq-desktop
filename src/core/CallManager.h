@@ -97,4 +97,5 @@ private:
 
     QString m_lastDeclinedToken;
     QDateTime m_lastDeclinedTime;
+    QDateTime m_incomingTime;  // when incoming call was detected
 };

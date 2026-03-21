@@ -76,33 +76,7 @@ bool PublishPipeline::start(const QString &stunServer)
     g_signal_connect(m_webrtcbin, "notify::ice-connection-state",
                      G_CALLBACK(onIceStateChanged), this);
 
-    // Bus watch — track ID for cleanup, also extract audio levels
-    GstBus *bus = gst_element_get_bus(m_pipeline);
-    m_busWatchId = gst_bus_add_watch(bus, [](GstBus *, GstMessage *msg, gpointer userData) -> gboolean {
-        auto *self = static_cast<PublishPipeline *>(userData);
-        if (GST_MESSAGE_TYPE(msg) == GST_MESSAGE_ERROR) {
-            GError *err = nullptr; gchar *dbg = nullptr;
-            gst_message_parse_error(msg, &err, &dbg);
-            qWarning() << "PublishPipeline ERROR:" << err->message << (dbg ? dbg : "");
-            g_clear_error(&err); g_free(dbg);
-        }
-        else if (GST_MESSAGE_TYPE(msg) == GST_MESSAGE_ELEMENT) {
-            const GstStructure *s = gst_message_get_structure(msg);
-            if (g_strcmp0(gst_structure_get_name(s), "level") == 0) {
-                const GValue *peakArr = gst_structure_get_value(s, "peak");
-                if (peakArr && GST_VALUE_HOLDS_LIST(peakArr) && gst_value_list_get_size(peakArr) > 0) {
-                    gdouble peakDb = g_value_get_double(gst_value_list_get_value(peakArr, 0));
-                    // Convert dB to 0.0-1.0 range (-60dB = 0, 0dB = 1)
-                    double level = qBound(0.0, (peakDb + 60.0) / 60.0, 1.0);
-                    QMetaObject::invokeMethod(self, [self, level]() {
-                        emit self->audioLevelUpdated(level);
-                    }, Qt::QueuedConnection);
-                }
-            }
-        }
-        return TRUE;
-    }, this);
-    gst_object_unref(bus);
+    // No bus watch — pollBus() handles all bus messages via manual polling
 
     GstStateChangeReturn ret = gst_element_set_state(m_pipeline, GST_STATE_PLAYING);
     if (ret == GST_STATE_CHANGE_FAILURE) {
@@ -126,11 +100,6 @@ void PublishPipeline::stop()
 
 void PublishPipeline::cleanup()
 {
-    // Remove bus watch first
-    if (m_busWatchId > 0) {
-        g_source_remove(m_busWatchId);
-        m_busWatchId = 0;
-    }
     // Disconnect GStreamer signals to prevent callbacks with stale userData
     if (m_webrtcbin)
         g_signal_handlers_disconnect_by_data(m_webrtcbin, this);
@@ -184,19 +153,39 @@ void PublishPipeline::pollBus()
     if (!m_pipeline) return;
     GstBus *bus = gst_element_get_bus(m_pipeline);
     GstMessage *msg;
-    static int pollCount = 0;
     while ((msg = gst_bus_pop(bus)) != nullptr) {
-        if (++pollCount % 100 == 1)
-            qDebug() << "PublishPipeline: bus msg type=" << GST_MESSAGE_TYPE(msg);
         if (GST_MESSAGE_TYPE(msg) == GST_MESSAGE_ELEMENT) {
             const GstStructure *s = gst_message_get_structure(msg);
-            if (g_strcmp0(gst_structure_get_name(s), "level") == 0) {
-                const GValue *peakArr = gst_structure_get_value(s, "peak");
-                if (peakArr && GST_VALUE_HOLDS_LIST(peakArr) && gst_value_list_get_size(peakArr) > 0) {
-                    gdouble peakDb = g_value_get_double(gst_value_list_get_value(peakArr, 0));
-                    double lvl = qBound(0.0, (peakDb + 60.0) / 60.0, 1.0);
-                    emit audioLevelUpdated(lvl);
+            const gchar *name = gst_structure_get_name(s);
+            if (g_strcmp0(name, "level") == 0) {
+                static int lvlDbg = 0;
+                if (++lvlDbg <= 2) {
+                    gchar *str = gst_structure_to_string(s);
+                    qDebug() << "PublishPipeline: level raw:" << QString::fromUtf8(str).left(300);
+                    g_free(str);
                 }
+                // GValueArray from level element
+                GValueArray *peakArr = nullptr;
+                GValueArray *rmsArr = nullptr;
+                gst_structure_get(s, "peak", G_TYPE_VALUE_ARRAY, &peakArr, nullptr);
+                if (!peakArr) gst_structure_get(s, "rms", G_TYPE_VALUE_ARRAY, &rmsArr, nullptr);
+                GValueArray *arr = peakArr ? peakArr : rmsArr;
+                if (arr && arr->n_values > 0) {
+                    gdouble db = g_value_get_double(arr->values);
+                    double lvl = qBound(0.0, (db + 60.0) / 60.0, 1.0);
+                    static int cnt = 0;
+                    if (++cnt % 50 == 1) qDebug() << "PublishPipeline: LEVEL" << lvl;
+                    emit audioLevelUpdated(lvl);
+                } else {
+                    // Array empty — try direct structure parsing
+                    gdouble peak = -60.0;
+                    if (gst_structure_get_double(s, "peak", &peak)) {
+                        double lvl = qBound(0.0, (peak + 60.0) / 60.0, 1.0);
+                        emit audioLevelUpdated(lvl);
+                    }
+                }
+                if (peakArr) g_value_array_free(peakArr);
+                if (rmsArr) g_value_array_free(rmsArr);
             }
         } else if (GST_MESSAGE_TYPE(msg) == GST_MESSAGE_ERROR) {
             GError *err = nullptr; gchar *dbg = nullptr;

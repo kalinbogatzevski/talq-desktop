@@ -251,6 +251,7 @@ void CallManager::onIncomingCallDetected(const QString &callerName, const QStrin
     m_callToken = token;
     m_remotePeerName = callerName;
     m_withVideo = (callFlag & 4) != 0;
+    m_incomingTime = QDateTime::currentDateTime();
     setState(Incoming);
     m_ringTimeout.start();
     emit callInfoChanged();
@@ -302,6 +303,11 @@ void CallManager::declineCall() {
             });
     }
 
+    // Guard: ignore instant declines (QML signal race)
+    if (m_incomingTime.isValid() && m_incomingTime.msecsTo(QDateTime::currentDateTime()) < 2000) {
+        qDebug() << "CallManager: ignoring premature decline (< 2s since incoming)";
+        return;
+    }
     qDebug() << "CallManager: declining call" << m_callToken << "from state" << m_state;
     m_lastDeclinedToken = m_callToken;
     m_lastDeclinedTime = QDateTime::currentDateTime();
