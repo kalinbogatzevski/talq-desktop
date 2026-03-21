@@ -5,6 +5,7 @@
 #include <gst/sdp/sdp.h>
 #include <gst/webrtc/webrtc.h>
 #include "SignalingClient.h"
+#include "VideoFrameProvider.h"
 
 /**
  * Receive-only GStreamer webrtcbin pipeline for MCU subscription.
@@ -28,6 +29,7 @@ public:
     void addIceCandidate(const QString &candidate, int sdpMLineIndex, const QString &sdpMid);
     QString remoteSessionId() const { return m_remoteSessionId; }
     bool isRunning() const { return m_running; }
+    VideoFrameProvider *videoProvider() const { return m_videoProvider; }
 
 signals:
     void localAnswerReady(const QString &sdp);
@@ -45,8 +47,15 @@ private:
     bool m_running = false;
     guint m_busWatchId = 0;
 
+    VideoFrameProvider *m_videoProvider = nullptr;
+    GstElement *m_videoAppsink = nullptr;
+
+    void createAudioChain(GstPad *pad);
+    void createVideoChain(GstPad *pad, const gchar *encoding);
+
     static void onIceCandidate(GstElement *webrtc, guint mlineIndex, gchar *candidate, gpointer userData);
     static void onPadAdded(GstElement *webrtc, GstPad *pad, gpointer userData);
     static void onAnswerCreated(GstPromise *promise, gpointer userData);
     static void onIceStateChanged(GObject *obj, GParamSpec *pspec, gpointer userData);
+    static GstFlowReturn onNewVideoSample(GstAppSink *sink, gpointer userData);
 };
