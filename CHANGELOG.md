@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.7.1 (2026-03-21)
+
+### Message Cache Fix
+- Fixed file attachments (images, documents) disappearing after switching conversations
+- Cache now stores original server JSON for lossless round-trip (previously reconstructed a lossy subset, dropping messageParameters)
+- Mentions, thread metadata, and all parameter-dependent content now survive cache reload
+- Schema v2 migration auto-purges stale entries on first launch
+
+### Chat Scroll Stability
+- Fixed chat jumping to older history during actions (image upload, footer changes)
+- Replaced `onContentHeightChanged` auto-scroll with targeted `onCountChanged` handler
+- Auto-scroll no longer disabled by programmatic scrolling (uses `onDraggingChanged` instead of `onMovingChanged`)
+- Auto-scroll re-enables when user scrolls back to bottom
+- Scroll-to-bottom button now correctly shows/hides based on position
+- Scrollbar fades in during scrolling, fades out after 400ms of inactivity
+
+### Text Selection
+- Message text is now selectable with click-drag (Ctrl+C to copy)
+- ListView switched to `interactive: false` with WheelHandler for mouse wheel scrolling
+
+### File Handling Improvements
+- Ctrl+V now handles files copied from Explorer (not just screenshots)
+- Image files get preview confirmation; other files show file icon with name
+- All file sends (paste, file dialog, drag-drop) show confirmation bar with caption field
+- Files are never sent directly without user confirmation
+
 ## v0.6.1 (2026-03-20)
 
 ### Thread/Topic Fixes

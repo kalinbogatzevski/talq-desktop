@@ -1,6 +1,16 @@
-# TalQ v0.7.0 → v0.8.0 Continue Prompt
+# TalQ v0.7.1 → v0.8.0 Continue Prompt
 
 ## What was done (2026-03-21)
+
+### v0.7.1 — Chat Reliability & UX (PATCH RELEASE)
+- **Fixed message cache** — stores original server JSON instead of reconstructed subset; file attachments, mentions, and thread metadata no longer lost after conversation switch
+- **Schema migration** — v2 cache schema auto-purges stale v1 entries on first launch
+- **Fixed chat scroll** — replaced aggressive `onContentHeightChanged` with targeted `onCountChanged`; auto-scroll no longer breaks during image upload or footer changes
+- **Text selection** — message text is now selectable (click-drag); ListView uses WheelHandler instead of drag-to-scroll
+- **Scroll-to-bottom button** — properly shows/hides based on scroll position; scrollbar fades in/out on activity
+- **Ctrl+V file paste** — now handles files from Explorer (not just screenshots); images get preview, other files show icon
+- **Caption for all file sends** — file dialog, paste, and drag-drop all show confirmation bar with caption field before sending
+- **v0.8.0 design spec written** — video calls + call polish planned (docs/superpowers/specs/)
 
 ### v0.7.0 — Audio Calls (MAJOR RELEASE)
 - **Bidirectional audio calls working** via Nextcloud Talk MCU (Janus/HPB)
