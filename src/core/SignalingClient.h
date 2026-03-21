@@ -60,6 +60,7 @@ signals:
     void participantJoinedCall(const QString &sessionId, int flags, const QString &displayName);
     void participantLeftCall(const QString &sessionId);
     void roomPeerJoined(const QString &sessionId);
+    void roomJoined();
 
 private:
     void fetchSettings();
