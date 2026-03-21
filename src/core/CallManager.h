@@ -7,6 +7,7 @@
 #include "core/SignalingClient.h"
 #include "core/PublishPipeline.h"
 #include "core/SubscribePipeline.h"
+#include "core/MediaDeviceManager.h"
 
 class CallManager : public QObject
 {
@@ -39,6 +40,7 @@ public:
     Q_INVOKABLE void setRemotePeerInfo(const QString &name, const QString &peerId);
     Q_INVOKABLE void acceptCall(bool withVideo);
     Q_INVOKABLE void declineCall();
+    Q_INVOKABLE void setUserActionReady();
     Q_INVOKABLE void hangUp();
     Q_INVOKABLE void toggleMute();
     Q_INVOKABLE void toggleCamera();
@@ -72,6 +74,7 @@ private:
 
     ApiClient *m_api;
     SignalingClient *m_signaling;
+    MediaDeviceManager *m_deviceManager = nullptr;
     // MCU dual pipelines
     PublishPipeline *m_publishPipeline = nullptr;
     QHash<QString, SubscribePipeline*> m_subscribePipelines;
@@ -80,6 +83,7 @@ private:
     CallState m_state = Idle;
     QString m_callToken;
     QString m_stunServer;
+    QList<TurnServer> m_turnServers;
     QString m_remoteSessionId;
     QString m_remotePeerName;
     QString m_remotePeerId;
@@ -94,6 +98,9 @@ private:
     QTimer m_durationTimer;
     QTimer m_ringTimeout;
     QTimer m_statsTimer;
+
+    bool m_joinedCall = false;
+    bool m_userActionReady = false;
 
     QString m_lastDeclinedToken;
     QDateTime m_lastDeclinedTime;
