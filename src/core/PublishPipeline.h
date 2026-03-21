@@ -30,12 +30,16 @@ public:
     void setMuted(bool muted);
     bool isRunning() const { return m_running; }
 
+    void enableCamera(int deviceIndex, bool hd1080 = true);
+    void disableCamera();
+
 signals:
     void localOfferReady(const QString &sdp);
     void iceCandidateReady(const QString &candidate, int sdpMLineIndex, const QString &sdpMid);
     void iceStateChanged(const QString &state);
     void audioLevelUpdated(double level);  // 0.0 to 1.0
     void error(const QString &message);
+    void cameraError(const QString &reason);
 
 public slots:
     void pollBus();  // called from CallManager's GLib timer
@@ -47,6 +51,15 @@ private:
     GstElement *m_webrtcbin = nullptr;
     bool m_running = false;
     guint m_busWatchId = 0;
+
+    // Video elements
+    GstElement *m_cameraSrc = nullptr;
+    GstElement *m_videoConvert = nullptr;
+    GstElement *m_videoCapsFilter = nullptr;
+    GstElement *m_videoEncoder = nullptr;
+    GstElement *m_videoPayloader = nullptr;
+    GstPad *m_videoSinkPad = nullptr;
+    bool m_cameraEnabled = false;
 
     static void onNegotiationNeeded(GstElement *webrtc, gpointer userData);
     static void onIceCandidate(GstElement *webrtc, guint mlineIndex, gchar *candidate, gpointer userData);
