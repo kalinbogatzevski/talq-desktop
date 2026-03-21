@@ -45,7 +45,6 @@ qt_add_executable(talq
     src/models/ConversationListModel.cpp
     src/models/MessageListModel.cpp
     src/models/ThreadListModel.cpp
-    src/core/CallPipeline.cpp
     src/core/PublishPipeline.cpp
     src/core/SubscribePipeline.cpp
     src/core/MediaDeviceManager.cpp

@@ -221,8 +221,6 @@ int main(int argc, char *argv[])
     // Restore session after QML is loaded so loading screen is visible
     auth.tryRestore();
 
-
-
     // Feed live stats to debug monitor
     QObject::connect(&debug, &DebugMonitor::updated, [&]() {
         debug.setMessageCount(messages.rowCount());
