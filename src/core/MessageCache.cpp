@@ -107,6 +107,23 @@ void MessageCacheWorker::doInit()
     q.exec("CREATE INDEX IF NOT EXISTS idx_messages_token_ts "
            "ON messages(token, timestamp ASC)");
 
+    // Schema version check — purge stale cache from v0.7.0 which stored
+    // reconstructed JSON (missing messageParameters, file info, mentions).
+    // v0.8.0+ stores original server JSON for lossless round-trip.
+    q.exec("CREATE TABLE IF NOT EXISTS cache_meta ("
+           "  key TEXT PRIMARY KEY, value TEXT)");
+    q.prepare("SELECT value FROM cache_meta WHERE key = 'schema_version'");
+    q.exec();
+    int schemaVersion = q.next() ? q.value(0).toInt() : 0;
+    if (schemaVersion < 2) {
+        qDebug() << "MessageCache: upgrading schema v" << schemaVersion << "→ 2, purging stale entries";
+        QSqlQuery purge(m_db);
+        purge.exec("DELETE FROM messages");
+        QSqlQuery setVer(m_db);
+        setVer.prepare("INSERT OR REPLACE INTO cache_meta (key, value) VALUES ('schema_version', '2')");
+        setVer.exec();
+    }
+
     q.exec("CREATE TABLE IF NOT EXISTS thread_index ("
            "token TEXT NOT NULL, "
            "thread_id INTEGER NOT NULL, "
@@ -164,21 +181,27 @@ void MessageCacheWorker::doSaveMessages(const QString &token, const QVector<Mess
     for (const auto &msg : messages) {
         if (msg.id <= 0) continue;  // skip optimistic/temp messages
 
-        QJsonObject json;
-        json["id"] = msg.id;
-        json["token"] = msg.token.isEmpty() ? token : msg.token;
-        json["actorType"] = msg.actorType;
-        json["actorId"] = msg.actorId;
-        json["actorDisplayName"] = msg.actorDisplayName;
-        json["message"] = msg.message;
-        json["timestamp"] = msg.timestamp;
-        json["messageType"] = msg.messageType;
-        if (!msg.systemMessage.isEmpty())
-            json["systemMessage"] = msg.systemMessage;
-        if (!msg.replyTo.isEmpty())
-            json["parent"] = msg.replyTo;
-        if (!msg.reactions.isEmpty())
-            json["reactions"] = msg.reactions;
+        // Use original server JSON for lossless round-trip caching.
+        // This preserves messageParameters (file attachments, mentions),
+        // thread metadata, reactions, and all other fields.
+        QJsonObject json = msg.rawJson;
+        if (json.isEmpty()) {
+            // Fallback for messages without rawJson (e.g. optimistic messages)
+            json["id"] = msg.id;
+            json["token"] = msg.token.isEmpty() ? token : msg.token;
+            json["actorType"] = msg.actorType;
+            json["actorId"] = msg.actorId;
+            json["actorDisplayName"] = msg.actorDisplayName;
+            json["message"] = msg.message;
+            json["timestamp"] = msg.timestamp;
+            json["messageType"] = msg.messageType;
+            if (!msg.systemMessage.isEmpty())
+                json["systemMessage"] = msg.systemMessage;
+            if (!msg.replyTo.isEmpty())
+                json["parent"] = msg.replyTo;
+            if (!msg.reactions.isEmpty())
+                json["reactions"] = msg.reactions;
+        }
 
         q.bindValue(":token", token);
         q.bindValue(":id", msg.id);
