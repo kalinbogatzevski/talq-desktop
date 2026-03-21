@@ -53,7 +53,7 @@ When enabled, creates video branch alongside existing audio chain:
 ksvideosrc (device-index from MediaDeviceManager)
   → videoconvert
   → capsfilter (video/x-raw,width=1920,height=1080,framerate=30/1)
-  → openh264enc (bitrate=3000000, complexity=medium)
+  → openh264enc (rate-control=bitrate, bitrate=3000000, complexity=medium)
   → rtph264pay
   → webrtcbin sink_%u (second requested pad)
 ```
@@ -108,7 +108,11 @@ When disabled: unlink elements, set to NULL state, remove from bin, release webr
 - Store as struct: `TurnServer { QStringList urls; QString username; QString credential; }`
 - Pass to `PublishPipeline` and `SubscribePipeline` alongside STUN
 - On webrtcbin: set via `add-turn-server` signal: `turn://username:credential@host:port` (or `turns://` for TLS)
-- Parse Nextcloud-provided TURN URLs (RFC 7065 format with `?transport=`) into GStreamer-compatible URIs: strip `?transport=` suffix, use `turns://` scheme for TCP/TLS
+- Parse Nextcloud-provided TURN URLs (RFC 7065 format with `?transport=`) into GStreamer-compatible URIs:
+  - `turn:host:port?transport=udp` → `turn://user:pass@host:port`
+  - `turn:host:port?transport=tcp` → `turn://user:pass@host:port` (libnice handles transport)
+  - `turns:host:port?transport=tcp` → `turns://user:pass@host:port`
+- **Credential escaping:** Nextcloud time-limited credentials use `timestamp:username` format — the colon must be URL-encoded (`%3A`) in the URI
 - Credentials are time-limited (24h TTL from Nextcloud), fresh ones fetched per call (already the case)
 
 ---
@@ -119,24 +123,17 @@ When disabled: unlink elements, set to NULL state, remove from bin, release webr
 
 GStreamer's `webrtcdsp` + `webrtcechoprobe` elements must be in the **same GstPipeline** — the probe is found by `gst_bin_get_by_name()` which only searches within the parent bin. PublishPipeline and SubscribePipeline are separate `GstPipeline` objects, so `webrtcdsp` cannot find the probe across pipelines.
 
-### Approach: Shared audio pipeline
+### Status: Deferred to v0.9.0
 
-Introduce a lightweight `AudioProcessingBin` that both pipelines reference:
+Neither approach is viable for v0.8.0:
 
-1. **`CallManager` owns a single `GstPipeline` for audio processing** containing both `webrtcdsp` and `webrtcechoprobe`
-2. PublishPipeline's audio chain tees through this shared pipeline's `webrtcdsp` element via `intervideosrc`/`intervideosink` (audio equivalent: `interaudiosrc`/`interaudiosink` from `audiointerleave` plugin)
-3. SubscribePipeline's playback chain routes through `webrtcechoprobe` in the same shared pipeline
+1. **`webrtcdsp` cross-pipeline**: Requires merging PublishPipeline and SubscribePipeline into a shared `GstPipeline`, or routing audio through inter-pipeline elements (`interaudiosrc`/`interaudiosink` from the `inter` plugin). Significant refactor — better suited to v0.9.0 when pipelines may be restructured for group calls.
 
-**Alternative (simpler, recommended for v0.8.0):** Use **WASAPI2's built-in AEC**. Windows 10+ provides system-level echo cancellation via the audio processing pipeline. `wasapi2src` supports this with the `loopback` and audio processing properties. This avoids the cross-pipeline problem entirely:
-- Set `wasapi2src` property `processing` to enable Windows audio processing (AEC/NS/AGC)
-- No GStreamer plugin dependency, no cross-pipeline wiring
-- Quality depends on Windows audio stack (generally good on modern hardware)
+2. **WASAPI2 built-in AEC**: The `wasapi2src` element in MSYS2's GStreamer 1.26.9 does not expose audio processing properties (no `processing`, no AEC/NS/AGC controls). This feature exists in the official GStreamer Windows installer but not the MinGW build.
 
-**Decision:** Try WASAPI2 built-in AEC first. If quality is insufficient, implement the shared pipeline approach in v0.9.0 when pipelines may be restructured for group calls anyway.
+**v0.8.0 behavior:** No echo cancellation. Audio works as in v0.7.0. Users with external echo cancellation (headphones, hardware AEC) are unaffected.
 
-### Graceful fallback
-
-If `wasapi2src` processing mode fails or is unavailable on older Windows, fall back to no AEC. Log a warning. Audio works without echo cancellation.
+**v0.9.0 plan:** Implement shared pipeline approach when restructuring for group calls, or switch to a custom GStreamer build (P3 in CONTINUE.md) that enables WASAPI2 audio processing.
 
 ---
 
