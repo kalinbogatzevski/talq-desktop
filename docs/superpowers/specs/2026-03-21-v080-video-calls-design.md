@@ -21,9 +21,9 @@ Add video call support (receive + optional send) and polish the existing audio c
 - Inherits `QObject`, owns a `QVideoSink*`
 - Exposes `Q_PROPERTY(QVideoSink* videoSink)` for QML binding
 - Method `feedFrame(GstSample*)`:
-  - `gst_buffer_map()` → raw bytes
-  - Detect pixel format from caps (I420/NV12) → map to `QVideoFrameFormat::PixelFormat`
-  - Construct `QVideoFrame` from data + format
+  - Extract `GstCaps` from sample → detect width, height, pixel format (I420/NV12)
+  - Map to `QVideoFrameFormat::PixelFormat` (e.g., `Format_YUV420P` for I420)
+  - Construct `QVideoFrame(QVideoFrameFormat(...))`, then `frame.map(QVideoFrame::WriteOnly)`, `memcpy()` pixel data from `GstBuffer`, `frame.unmap()`
   - `m_videoSink->setVideoFrame(frame)`
 - Thread safety: `appsink` callback fires on GStreamer thread. `feedFrame()` marshals to Qt main thread via `QMetaObject::invokeMethod(Qt::QueuedConnection)`
 
@@ -32,7 +32,7 @@ Add video call support (receive + optional send) and polish the existing audio c
 - `onPadAdded()` — remove `if (!isAudio) return;`, add video branch:
   - Detect codec from caps `encoding-name`:
     - `VP8` → `rtpvp8depay` + `vp8dec`
-    - `H264` → `rtph264depay` + `avdec_h264`
+    - `H264` → `rtph264depay` + `openh264dec`
   - Chain: `depay → decoder → videoconvert → appsink`
   - `appsink` caps: `video/x-raw,format=I420` (consistent format for QVideoFrame)
   - Connect `appsink` `new-sample` signal → `VideoFrameProvider::feedFrame()`
@@ -50,7 +50,7 @@ New methods: `enableCamera(const QString &deviceId)` / `disableCamera()`
 
 When enabled, creates video branch alongside existing audio chain:
 ```
-mfvideosrc (device-path from MediaDeviceManager)
+ksvideosrc (device-index from MediaDeviceManager)
   → videoconvert
   → capsfilter (video/x-raw,width=1920,height=1080,framerate=30/1)
   → openh264enc (bitrate=3000000, complexity=medium)
@@ -58,13 +58,15 @@ mfvideosrc (device-path from MediaDeviceManager)
   → webrtcbin sink_%u (second requested pad)
 ```
 
-When disabled: unlink, remove elements, release webrtcbin pad.
+When disabled: unlink elements, set to NULL state, remove from bin, release webrtcbin pad (in that order).
+
+**Error handling:** If `ksvideosrc` fails to open the camera (in use, permission denied), emit `cameraError(reason)` signal. `CallManager` falls back to audio-only and shows a user-visible notification in CallWindow.
 
 ### Resolution
 
 - **Default:** 1080p (1920x1080 @ 30fps, 3 Mbps)
 - **Fallback:** 720p (1280x720 @ 30fps, 1.5 Mbps) — selectable in SettingsDialog
-- `mfvideosrc` negotiates down if camera doesn't support requested resolution
+- `ksvideosrc` negotiates down if camera doesn't support requested resolution via caps negotiation
 - Resolution stored in `QSettings`, read at camera enable time
 - Changing resolution requires camera restart (toggle off/on)
 
@@ -73,6 +75,7 @@ When disabled: unlink, remove elements, release webrtcbin pad.
 - Camera on: SDP offer contains two m-lines (audio + video)
 - Camera off: audio-only offer (current behavior)
 - Mid-call camera toggle: triggers `onNegotiationNeeded` → new offer/answer cycle (standard webrtcbin behavior)
+- When adding video elements mid-call: `gst_element_sync_state_with_parent()` after adding to bin
 
 ---
 
@@ -104,36 +107,36 @@ When disabled: unlink, remove elements, release webrtcbin pad.
 - Parse `turnservers` from settings response: extract `urls`, `username`, `credential`
 - Store as struct: `TurnServer { QStringList urls; QString username; QString credential; }`
 - Pass to `PublishPipeline` and `SubscribePipeline` alongside STUN
-- On webrtcbin: set via `add-turn-server` signal: `turn://username:credential@host:port?transport=udp`
+- On webrtcbin: set via `add-turn-server` signal: `turn://username:credential@host:port` (or `turns://` for TLS)
+- Parse Nextcloud-provided TURN URLs (RFC 7065 format with `?transport=`) into GStreamer-compatible URIs: strip `?transport=` suffix, use `turns://` scheme for TCP/TLS
 - Credentials are time-limited (24h TTL from Nextcloud), fresh ones fetched per call (already the case)
 
 ---
 
 ## 5. Echo Cancellation
 
-### GStreamer `webrtcdsp` plugin (from `gst-plugins-bad`)
+### Problem
 
-Two elements:
-- `webrtcdsp` — processing (AEC + noise suppression + auto gain), placed on capture chain
-- `webrtcechoprobe` — placed on playback chain, provides reference signal
+GStreamer's `webrtcdsp` + `webrtcechoprobe` elements must be in the **same GstPipeline** — the probe is found by `gst_bin_get_by_name()` which only searches within the parent bin. PublishPipeline and SubscribePipeline are separate `GstPipeline` objects, so `webrtcdsp` cannot find the probe across pipelines.
 
-### Pipeline changes
+### Approach: Shared audio pipeline
 
-**PublishPipeline** audio chain:
-```
-wasapi2src → audioconvert → audioresample → webrtcdsp → level → opusenc → rtpopuspay
-```
+Introduce a lightweight `AudioProcessingBin` that both pipelines reference:
 
-**SubscribePipeline** audio chain:
-```
-rtpopusdepay → opusdec → audioconvert → audioresample → webrtcechoprobe → wasapi2sink
-```
+1. **`CallManager` owns a single `GstPipeline` for audio processing** containing both `webrtcdsp` and `webrtcechoprobe`
+2. PublishPipeline's audio chain tees through this shared pipeline's `webrtcdsp` element via `intervideosrc`/`intervideosink` (audio equivalent: `interaudiosrc`/`interaudiosink` from `audiointerleave` plugin)
+3. SubscribePipeline's playback chain routes through `webrtcechoprobe` in the same shared pipeline
 
-Both elements linked by name via the `probe` property on `webrtcdsp`.
+**Alternative (simpler, recommended for v0.8.0):** Use **WASAPI2's built-in AEC**. Windows 10+ provides system-level echo cancellation via the audio processing pipeline. `wasapi2src` supports this with the `loopback` and audio processing properties. This avoids the cross-pipeline problem entirely:
+- Set `wasapi2src` property `processing` to enable Windows audio processing (AEC/NS/AGC)
+- No GStreamer plugin dependency, no cross-pipeline wiring
+- Quality depends on Windows audio stack (generally good on modern hardware)
+
+**Decision:** Try WASAPI2 built-in AEC first. If quality is insufficient, implement the shared pipeline approach in v0.9.0 when pipelines may be restructured for group calls anyway.
 
 ### Graceful fallback
 
-Check that `libgstwebrtcdsp.dll` exists at startup. If absent, skip both elements, log a warning. Audio works without AEC.
+If `wasapi2src` processing mode fails or is unavailable on older Windows, fall back to no AEC. Log a warning. Audio works without echo cancellation.
 
 ---
 
@@ -148,6 +151,7 @@ Check that `libgstwebrtcdsp.dll` exists at startup. If absent, skip both element
 1. **Track join state:** `bool m_joinedCall` in `CallManager` — set `true` after successful join API call, checked before leave API call
 2. **Decline action:** Leave the room (`DELETE /participants/active`) instead of trying to leave the call. This triggers a `participantLeftRoom` event that the caller's client can interpret as a decline.
 3. Don't call leave-call API if `!m_joinedCall`
+4. **Sequencing fix:** Move the leave-call API call to AFTER the `m_joinedCall` check — currently the API fires before the guard check in `declineCall()`
 
 ---
 
@@ -175,8 +179,9 @@ Likely: `IncomingCallPopup` initialization triggers an unintended signal (e.g., 
 ### MediaDeviceManager changes
 
 During device enumeration, save GStreamer device path alongside display name:
-- `gst_device_get_properties()` → extract `device.strid` (WASAPI2 device ID)
-- New getters: `selectedInputDeviceId()`, `selectedOutputDeviceId()` returning device path strings
+- Audio devices: `gst_device_get_properties()` → extract `device.strid` (WASAPI2 device ID)
+- Video devices: `gst_device_get_properties()` → extract `device.path` (kernel streaming device path) or use device index for `ksvideosrc`
+- New getters: `selectedInputDeviceId()`, `selectedOutputDeviceId()`, `selectedVideoDeviceIndex()` returning device identifiers
 
 ### Pipeline changes
 
@@ -187,9 +192,19 @@ During device enumeration, save GStreamer device path alongside display name:
 **SubscribePipeline** — accept device ID:
 - `wasapi2sink` property `device` set to selected output device ID
 
-**CallManager** — pass device IDs when creating pipelines:
+**CallManager** — pass device IDs when creating pipelines.
+
+New pipeline signatures:
 ```cpp
-m_publishPipeline->start(stunServer, turnServers, deviceManager->selectedInputDeviceId());
+// PublishPipeline
+bool start(const QString &stunServer, const QList<TurnServer> &turnServers,
+           const QString &audioDeviceId);
+void enableCamera(int videoDeviceIndex, int resolutionPreset);
+void disableCamera();
+
+// SubscribePipeline
+bool start(const QString &stunServer, const QList<TurnServer> &turnServers,
+           const QString &audioOutputDeviceId);
 ```
 
 ### Limitations (v0.8.0)
@@ -208,12 +223,11 @@ m_publishPipeline->start(stunServer, turnServers, deviceManager->selectedInputDe
 
 ### GStreamer plugins required (additions)
 
-- `libgstvpx.dll` — VP8 decode/encode
-- `libgstlibav.dll` or `libgstopenh264.dll` — H.264 decode/encode
-- `libgstvideotestsrc.dll` — (debug only)
-- `libgstvideoconvertscale.dll` — format/resolution conversion
-- `libgstwebrtcdsp.dll` — echo cancellation (optional, graceful fallback)
-- `libgstmediafoundation.dll` — `mfvideosrc` camera capture
+- `libgstvpx.dll` — VP8 decode (`vp8dec`)
+- `libgstopenh264.dll` — H.264 decode/encode (`openh264dec`, `openh264enc`)
+- `libgstvideoconvertscale.dll` — format/resolution conversion (`videoconvert`)
+- `libgstwinks.dll` — camera capture (`ksvideosrc`)
+- `libgstapp.dll` — video frame extraction (`appsink`)
 
 ### Existing plugins (unchanged)
 
