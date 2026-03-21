@@ -101,33 +101,43 @@ cd C:/build/talq
 cmake C:/src/talk-desktop-qt -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=C:/Qt/6.8.2/mingw_64
 cmake --build . --target talq
 # Ensure GStreamer plugins are in gst-plugins/ next to exe:
-mkdir -p gst-plugins && cp /c/msys64/mingw64/lib/gstreamer-1.0/libgst{coreelements,audioconvert,audioresample,autodetect,dtls,nice,opus,rtp,rtpmanager,srtp,wasapi2,webrtc,app,level}.dll gst-plugins/
+mkdir -p gst-plugins && cp /c/msys64/mingw64/lib/gstreamer-1.0/libgst{coreelements,audioconvert,audioresample,autodetect,dtls,nice,opus,rtp,rtpmanager,srtp,wasapi2,webrtc,app,level,vpx,openh264,videoconvertscale,winks}.dll gst-plugins/
 # Run:
 export QT_FORCE_STDERR_LOGGING=1
 C:/build/talq/talq.exe > /tmp/talq-debug.log 2>&1 &
 ```
 
-## What to do next (v0.8.0)
+## What was done (v0.8.0)
 
-### Priority 1: Video calls
-1. In SubscribePipeline `onPadAdded`, detect video pads (currently skipped)
-2. Add video decode: `vp8dec` or `h264dec` based on codec
-3. Render to QML via `qmlglsink` or `qml6glsink` + VideoOutput
-4. Add camera capture to PublishPipeline (optional — audio-only is fine too)
+### P1: Video calls (DONE)
+1. VideoFrameProvider: GStreamer appsink → QVideoFrame → QVideoSink bridge
+2. SubscribePipeline: video decode branch (VP8/H264) with codec auto-detection
+3. PublishPipeline: camera capture (ksvideosrc → openh264enc), 1080p/720p
+4. CallWindow: VideoOutput, overlay controls with auto-hide, camera toggle
+5. SettingsDialog: camera selection, resolution preset (Qt.labs.settings)
 
-### Priority 2: Call polish
-- TURN server configuration (extract credentials from signaling settings)
-- Echo cancellation (`webrtcdsp` plugin)
-- Proper incoming call decline notification
-- Fix auto-decline race condition
-- Device selection actually applied to pipelines (currently UI-only)
+### P2: Call polish (DONE)
+1. TURN server configuration (parsed from signaling settings, URL-encoded credentials)
+2. Device selection wired to pipelines (wasapi2src/wasapi2sink device property)
+3. Incoming call decline fix (leave room, not call; m_joinedCall tracking)
+4. Auto-decline race condition fix (m_userActionReady gate)
+
+## What to do next (v0.9.0)
+
+### Priority 1: Group calls + screen sharing
+- Multiple SubscribePipelines with video (grid layout)
+- Screen sharing capture (dxgiscreencapsrc or similar)
+- Self-preview PIP
+
+### Priority 2: Call improvements
+- Echo cancellation (shared pipeline or custom GStreamer build)
+- Mid-call device switching
+- qml6glsink for zero-copy video rendering (custom GStreamer build)
 
 ### Priority 3: Chat improvements
-- Custom GStreamer build (Meson, selective plugins)
-- Group call support (multiple subscribers)
 - Message search
-- File drag-and-drop
 - Emoji picker
+- Custom GStreamer build (Meson, selective plugins)
 
 ### Priority 4: UX polish
 - Use frontend-design skill for CallWindow, settings, chat UI
