@@ -638,6 +638,8 @@ void MessageListModel::sendFileWithCaption(const QString &filePath, const QStrin
     }
 
     QString fileName = QFileInfo(localPath).fileName();
+    fileName.remove(QRegularExpression("[/\\\\]"));  // sanitize for WebDAV path safety
+    if (fileName.isEmpty()) fileName = "upload";
     QByteArray fileData = file.readAll();
 
     qDebug() << "Uploading file:" << fileName << "(" << fileData.size() << "bytes)";
@@ -739,14 +741,17 @@ void MessageListModel::downloadFile(int fileId, const QString &fileName)
             return;
         }
 
-        // Save to Downloads folder
+        // Save to Downloads folder — sanitize filename to prevent path traversal
+        QString safeFileName = QFileInfo(fileName).fileName();  // strip directory components
+        safeFileName.remove(QRegularExpression("[/\\\\]"));     // extra safety
+        if (safeFileName.isEmpty()) safeFileName = "download";
         QString downloadsDir = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
-        QString savePath = downloadsDir + "/" + fileName;
+        QString savePath = downloadsDir + "/" + safeFileName;
 
         // Avoid overwriting — add (1), (2) etc.
         if (QFile::exists(savePath)) {
-            QString base = QFileInfo(savePath).completeBaseName();
-            QString ext = QFileInfo(savePath).suffix();
+            QString base = QFileInfo(safeFileName).completeBaseName();
+            QString ext = QFileInfo(safeFileName).suffix();
             int n = 1;
             while (QFile::exists(savePath)) {
                 savePath = downloadsDir + "/" + base + " (" + QString::number(n++) + ")" +

@@ -56,9 +56,6 @@ public:
     // PUT with absolute path — for WebDAV file uploads
     QNetworkReply *putAbsoluteUrl(const QString &path, const QByteArray &body);
 
-    // Password accessor (needed for WebDAV auth)
-    QString password() const { return m_password; }
-
     // GET with absolute path (no OCS prefix, no OCS headers)
     QNetworkReply *getAbsoluteUrl(const QString &path);
 

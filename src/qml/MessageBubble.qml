@@ -725,7 +725,7 @@ Item {
                     color: Theme.textPrimary
                     wrapMode: Text.Wrap
                     textFormat: Text.RichText
-                    onLinkActivated: function(link) { Qt.openUrlExternally(link) }
+                    onLinkActivated: function(link) { if (link.startsWith("http://") || link.startsWith("https://")) Qt.openUrlExternally(link) }
                 }
 
                 // Reactions
@@ -872,7 +872,7 @@ Item {
                     color: Theme.textPrimary
                     wrapMode: Text.Wrap
                     textFormat: Text.RichText
-                    onLinkActivated: function(link) { Qt.openUrlExternally(link) }
+                    onLinkActivated: function(link) { if (link.startsWith("http://") || link.startsWith("https://")) Qt.openUrlExternally(link) }
                 }
 
                 // Reactions

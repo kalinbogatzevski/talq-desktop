@@ -6,6 +6,54 @@
 #include <QJsonObject>
 #include <QDebug>
 
+#ifdef Q_OS_WIN
+#include <windows.h>
+#include <wincred.h>
+#pragma comment(lib, "advapi32.lib")
+#endif
+
+// --- Secure credential storage via Windows Credential Manager ---
+
+static const wchar_t *CRED_TARGET = L"TalQ/NextcloudAppPassword";
+
+static void savePasswordSecure(const QString &password)
+{
+#ifdef Q_OS_WIN
+    QByteArray utf8 = password.toUtf8();
+    CREDENTIALW cred = {};
+    cred.Type = CRED_TYPE_GENERIC;
+    cred.TargetName = const_cast<LPWSTR>(CRED_TARGET);
+    cred.CredentialBlobSize = static_cast<DWORD>(utf8.size());
+    cred.CredentialBlob = reinterpret_cast<LPBYTE>(utf8.data());
+    cred.Persist = CRED_PERSIST_LOCAL_MACHINE;
+    CredWriteW(&cred, 0);
+#else
+    Q_UNUSED(password)
+#endif
+}
+
+static QString loadPasswordSecure()
+{
+#ifdef Q_OS_WIN
+    PCREDENTIALW cred = nullptr;
+    if (CredReadW(CRED_TARGET, CRED_TYPE_GENERIC, 0, &cred)) {
+        QString pw = QString::fromUtf8(
+            reinterpret_cast<const char *>(cred->CredentialBlob),
+            static_cast<int>(cred->CredentialBlobSize));
+        CredFree(cred);
+        return pw;
+    }
+#endif
+    return {};
+}
+
+static void deletePasswordSecure()
+{
+#ifdef Q_OS_WIN
+    CredDeleteW(CRED_TARGET, CRED_TYPE_GENERIC, 0);
+#endif
+}
+
 AuthManager::AuthManager(ApiClient *api, QObject *parent)
     : QObject(parent)
     , m_api(api)
@@ -19,7 +67,19 @@ void AuthManager::tryRestore()
 {
     QString server = m_settings.value("auth/serverUrl").toString();
     QString user = m_settings.value("auth/user").toString();
-    QString password = m_settings.value("auth/password").toString();
+
+    // Load password from secure storage (Windows Credential Manager)
+    QString password = loadPasswordSecure();
+
+    // Migration: if password was in QSettings (old format), migrate to secure storage
+    if (password.isEmpty()) {
+        password = m_settings.value("auth/password").toString();
+        if (!password.isEmpty()) {
+            savePasswordSecure(password);
+            m_settings.remove("auth/password");  // remove from plaintext registry
+            qDebug() << "Migrated password from QSettings to Credential Manager";
+        }
+    }
 
     if (server.isEmpty() || user.isEmpty() || password.isEmpty()) {
         qDebug() << "No saved credentials";
@@ -304,6 +364,10 @@ void AuthManager::logout()
     clearCredentials();
     m_api->cancelAll();
     m_api->setCredentials({}, {});
+    // Clear credentials from memory
+    m_password.clear();
+    m_user.clear();
+    m_serverUrl.clear();
     setLoggedIn(false);
     m_userId.clear();
     m_displayName.clear();
@@ -346,12 +410,15 @@ void AuthManager::saveCredentials()
 {
     m_settings.setValue("auth/serverUrl", m_serverUrl);
     m_settings.setValue("auth/user", m_user);
-    m_settings.setValue("auth/password", m_password);
+    // Password goes to Windows Credential Manager, NOT QSettings
+    savePasswordSecure(m_password);
+    m_settings.remove("auth/password");  // ensure no plaintext copy
 }
 
 void AuthManager::clearCredentials()
 {
     m_settings.remove("auth/serverUrl");
     m_settings.remove("auth/user");
-    m_settings.remove("auth/password");
+    m_settings.remove("auth/password");  // clean up any legacy
+    deletePasswordSecure();
 }

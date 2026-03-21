@@ -6,6 +6,7 @@
 #include <QNetworkReply>
 #include <QPainter>
 #include <QPainterPath>
+#include <QRegularExpression>
 #include <QDebug>
 
 // --- AvatarProvider ---
@@ -58,7 +59,11 @@ AvatarFetchResponse::AvatarFetchResponse(const QString &userId, const QSize &req
 
 void AvatarFetchResponse::loadFromDisk()
 {
-    QString filePath = m_cachePath + "/" + m_userId + ".png";
+    // Sanitize userId to prevent path traversal
+    QString safeId = m_userId;
+    safeId.remove(QRegularExpression("[/\\\\\\.]"));
+    if (safeId.isEmpty()) safeId = "_unknown";
+    QString filePath = m_cachePath + "/" + safeId + ".png";
     QFileInfo fi(filePath);
 
     if (fi.exists()) {
@@ -102,8 +107,11 @@ void AvatarFetchResponse::fetchFromServer()
             return;
         }
 
-        // Save to disk cache
-        QString filePath = m_cachePath + "/" + m_userId + ".png";
+        // Save to disk cache (sanitized userId)
+        QString safeId = m_userId;
+        safeId.remove(QRegularExpression("[/\\\\\\.]"));
+        if (safeId.isEmpty()) safeId = "_unknown";
+        QString filePath = m_cachePath + "/" + safeId + ".png";
         img.save(filePath, "PNG");
 
         handleImage(img);
