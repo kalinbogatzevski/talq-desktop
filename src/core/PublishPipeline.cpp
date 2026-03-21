@@ -184,7 +184,10 @@ void PublishPipeline::pollBus()
     if (!m_pipeline) return;
     GstBus *bus = gst_element_get_bus(m_pipeline);
     GstMessage *msg;
+    static int pollCount = 0;
     while ((msg = gst_bus_pop(bus)) != nullptr) {
+        if (++pollCount % 100 == 1)
+            qDebug() << "PublishPipeline: bus msg type=" << GST_MESSAGE_TYPE(msg);
         if (GST_MESSAGE_TYPE(msg) == GST_MESSAGE_ELEMENT) {
             const GstStructure *s = gst_message_get_structure(msg);
             if (g_strcmp0(gst_structure_get_name(s), "level") == 0) {
