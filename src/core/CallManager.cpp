@@ -252,6 +252,7 @@ void CallManager::onIncomingCallDetected(const QString &callerName, const QStrin
     m_remotePeerName = callerName;
     m_withVideo = (callFlag & 4) != 0;
     m_incomingTime = QDateTime::currentDateTime();
+    m_userActionReady = false;
     setState(Incoming);
     m_ringTimeout.start();
     emit callInfoChanged();
@@ -264,8 +265,18 @@ void CallManager::setRemotePeerInfo(const QString &name, const QString &peerId) 
     emit callInfoChanged();
 }
 
+void CallManager::setUserActionReady()
+{
+    m_userActionReady = true;
+    qDebug() << "CallManager: user action ready (popup loaded)";
+}
+
 void CallManager::acceptCall(bool withVideo) {
     if (m_state != Incoming) return;
+    if (!m_userActionReady) {
+        qDebug() << "CallManager: ignoring accept — UI not ready";
+        return;
+    }
     m_withVideo = withVideo; m_cameraOn = withVideo; m_muted = false; m_callDuration = 0;
     m_ringTimeout.stop();
     setState(Connecting);
@@ -287,35 +298,35 @@ void CallManager::acceptCall(bool withVideo) {
         });
 }
 
-void CallManager::declineCall() {
+void CallManager::declineCall()
+{
     if (m_state != Incoming) return;
-    m_ringTimeout.stop();
-
-    // Notify the server: reject the call for this conversation
-    // Send a "reject" reaction via the call API
-    if (!m_callToken.isEmpty()) {
-        QString token = m_callToken;
-        QUrlQuery params;
-        params.addQueryItem("all", "true");
-        m_api->del("apps/spreed/api/v4/call/" + token, params,
-            [token](bool ok, const QJsonObject &, int status) {
-                qDebug() << "CallManager: reject call API:" << ok << "status=" << status;
-            });
-    }
-
-    // Guard: ignore instant declines (QML signal race)
-    if (m_incomingTime.isValid() && m_incomingTime.msecsTo(QDateTime::currentDateTime()) < 2000) {
-        qDebug() << "CallManager: ignoring premature decline (< 2s since incoming)";
+    if (!m_userActionReady) {
+        qDebug() << "CallManager: ignoring decline — UI not ready";
         return;
     }
-    qDebug() << "CallManager: declining call" << m_callToken << "from state" << m_state;
+
+    qDebug() << "CallManager: declining call for token" << m_callToken;
+    setState(Ending);
+
+    if (m_joinedCall) {
+        m_api->del(QString("apps/spreed/api/v4/call/%1").arg(m_callToken),
+            [this](bool ok, const QJsonObject &, int) {
+                qDebug() << "CallManager: leave call API" << (ok ? "succeeded" : "failed");
+            });
+        m_joinedCall = false;
+    }
+
+    // Leave the room — triggers participantLeftRoom event for caller
+    m_api->del(QString("apps/spreed/api/v4/room/%1/participants/active").arg(m_callToken),
+        [this](bool ok, const QJsonObject &, int) {
+            qDebug() << "CallManager: leave room API" << (ok ? "succeeded" : "failed");
+            teardown("declined");
+        });
+
+    // Preserve cooldown tracking to prevent re-detection
     m_lastDeclinedToken = m_callToken;
     m_lastDeclinedTime = QDateTime::currentDateTime();
-    m_callToken.clear();
-    m_remoteSessionId.clear();
-    m_remotePeerName.clear();
-    setState(Idle);
-    emit callEnded("Declined");
 }
 
 void CallManager::hangUp() {
@@ -350,6 +361,7 @@ void CallManager::joinCallOnServer(bool withVideo)
                 return;
             }
 
+            m_joinedCall = true;
             qDebug() << "CallManager: joined call, MCU=" << m_signaling->hasMcu();
 
             // Fetch STUN server
@@ -374,6 +386,22 @@ void CallManager::joinCallOnServer(bool withVideo)
                         }
                     }
                     qDebug() << "CallManager: STUN:" << m_stunServer;
+
+                    QList<TurnServer> turnServers;
+                    auto turnArr = settings["turnservers"].toArray();
+                    for (const auto &ts : turnArr) {
+                        auto obj = ts.toObject();
+                        TurnServer turn;
+                        auto urls = obj["urls"].toArray();
+                        for (const auto &u : urls)
+                            turn.urls.append(u.toString());
+                        turn.username = obj["username"].toString();
+                        turn.credential = obj["credential"].toString();
+                        if (!turn.urls.isEmpty())
+                            turnServers.append(turn);
+                    }
+                    qDebug() << "CallManager: found" << turnServers.size() << "TURN servers";
+                    m_turnServers = turnServers;
 
                     // Generate publisher SID (matches NC Talk: Date.now().toString())
                     QString pubSid = QString::number(QDateTime::currentMSecsSinceEpoch());
@@ -410,7 +438,7 @@ void CallManager::joinCallOnServer(bool withVideo)
                         }
                     });
 
-                    m_publishPipeline->start(m_stunServer);
+                    m_publishPipeline->start(m_stunServer, turnServers, m_deviceManager ? m_deviceManager->selectedInputDeviceId() : QString());
                     m_glibTimer.start(20);
 
                     // If remote peer already joined (incoming call), request their stream
@@ -477,6 +505,8 @@ void CallManager::teardown(const QString &reason)
     m_remotePeerName.clear();
     m_remotePeerId.clear();
     m_callDuration = 0;
+    m_joinedCall = false;
+    m_userActionReady = false;
 
     setState(Idle);
     emit callEnded(reason);
@@ -573,7 +603,7 @@ void CallManager::onOfferReceived(const QString &fromSessionId, const QString &s
         });
 
         m_subscribePipelines[fromSessionId] = sub;
-        sub->start(m_stunServer);
+        sub->start(m_stunServer, m_turnServers, m_deviceManager ? m_deviceManager->selectedOutputDeviceId() : QString());
     }
 
     m_subscribePipelines[fromSessionId]->setRemoteOffer(sdp);
