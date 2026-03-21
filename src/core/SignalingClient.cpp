@@ -214,6 +214,17 @@ void SignalingClient::onTextMessage(const QString &msg)
         QString eventType = event["type"].toString();
         qDebug() << "Signaling: event target=" << target << "type=" << eventType;
 
+        if (target == "room" && eventType == "join") {
+            QJsonArray joins = event["join"].toArray();
+            for (const auto &j : joins) {
+                QString sid = j.toObject()["sessionid"].toString();
+                if (!sid.isEmpty() && sid != m_sessionId) {
+                    qDebug() << "Signaling: room peer joined:" << sid.left(20);
+                    emit roomPeerJoined(sid);
+                }
+            }
+        }
+
         if (target == "participants") {
             QJsonObject update = event["update"].toObject();
             QJsonArray users = update["users"].toArray();

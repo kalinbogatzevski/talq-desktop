@@ -660,8 +660,8 @@ ApplicationWindow {
 
     IncomingCallPopup {
         id: incomingCallPopup
-        onAccepted: function(withVideo) { callManager.acceptCall(withVideo) }
-        onDeclined: callManager.declineCall()
+        onAccepted: function(withVideo) { console.log("POPUP: accepted"); callManager.acceptCall(withVideo) }
+        onDeclined: { console.log("POPUP: declined signal fired"); callManager.declineCall() }
     }
 
     Connections {
