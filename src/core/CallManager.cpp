@@ -125,6 +125,20 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, QObject *pa
     connect(m_signaling, &SignalingClient::participantLeftCall,
             this, &CallManager::onParticipantLeftCall);
 
+    // Room peer joined — request their stream if we're in a call
+    connect(m_signaling, &SignalingClient::roomPeerJoined,
+            this, [this](const QString &sessionId) {
+        if ((m_state == Connecting || m_state == Active)
+            && !m_subscribePipelines.contains(sessionId)) {
+            if (m_remoteSessionId.isEmpty()) {
+                m_remoteSessionId = sessionId;
+                emit callInfoChanged();
+            }
+            m_signaling->requestOffer(sessionId, "video");
+            qDebug() << "CallManager: requestOffer for room peer" << sessionId.left(20);
+        }
+    });
+
     // HPB WebSocket signaling messages
     connect(m_signaling, &SignalingClient::offerReceived,
             this, &CallManager::onOfferReceived);
@@ -160,7 +174,7 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, QObject *pa
 
     // Ring timeout
     m_ringTimeout.setSingleShot(true);
-    m_ringTimeout.setInterval(30000);
+    m_ringTimeout.setInterval(60000);  // 60s — incoming call detection can take up to 30s
     connect(&m_ringTimeout, &QTimer::timeout, this, [this]() {
         if (m_state == Incoming) declineCall();
         else if (m_state == Outgoing) teardown("No answer");
@@ -263,7 +277,15 @@ void CallManager::acceptCall(bool withVideo) {
     m_withVideo = withVideo; m_cameraOn = withVideo; m_muted = false; m_callDuration = 0;
     m_ringTimeout.stop();
     setState(Connecting);
-    joinCallOnServer(withVideo);
+
+    // Ensure we're an active participant in the room before joining the call
+    QJsonObject empty;
+    m_api->post("apps/spreed/api/v4/room/" + m_callToken + "/participants/active", empty,
+        [this, withVideo](bool, const QJsonObject &, int) {
+            // Also join the signaling room for WebRTC events
+            m_signaling->joinRoom(m_callToken);
+            joinCallOnServer(withVideo);
+        });
 }
 
 void CallManager::declineCall() {
@@ -282,7 +304,7 @@ void CallManager::declineCall() {
             });
     }
 
-    qDebug() << "CallManager: declining call" << m_callToken;
+    qDebug() << "CallManager: declining call" << m_callToken << "from state" << m_state;
     m_lastDeclinedToken = m_callToken;
     m_lastDeclinedTime = QDateTime::currentDateTime();
     m_callToken.clear();
@@ -294,6 +316,7 @@ void CallManager::declineCall() {
 
 void CallManager::hangUp() {
     if (m_state == Idle) return;
+    qDebug() << "CallManager: hangUp from state" << m_state;
     teardown("Hung up");
 }
 
@@ -376,10 +399,31 @@ void CallManager::joinCallOnServer(bool withVideo)
                     m_publishPipeline->start(m_stunServer);
                     m_glibTimer.start(20);
 
-                    // If remote peer already joined (incoming call), request their stream now
+                    // If remote peer already joined (incoming call), request their stream
                     if (!m_remoteSessionId.isEmpty() && !m_subscribePipelines.contains(m_remoteSessionId)) {
                         m_signaling->requestOffer(m_remoteSessionId, "video");
                         qDebug() << "CallManager: sent requestOffer for already-joined remote peer";
+                    } else {
+                        // Discover who's already in the call and request their streams
+                        m_api->getArray("apps/spreed/api/v4/call/" + m_callToken,
+                            [this](bool ok, const QJsonArray &data, int) {
+                                if (!ok) return;
+                                for (const auto &val : data) {
+                                    QJsonObject p = val.toObject();
+                                    QString sid = p["sessionId"].toString();
+                                    int inCall = p["inCall"].toInt();
+                                    if (sid.isEmpty() || sid == m_signaling->sessionId() || inCall == 0)
+                                        continue;
+                                    if (m_remoteSessionId.isEmpty()) {
+                                        m_remoteSessionId = sid;
+                                        emit callInfoChanged();
+                                    }
+                                    if (!m_subscribePipelines.contains(sid)) {
+                                        m_signaling->requestOffer(sid, "video");
+                                        qDebug() << "CallManager: sent requestOffer for discovered peer" << sid.left(20);
+                                    }
+                                }
+                            });
                     }
                 });
         });

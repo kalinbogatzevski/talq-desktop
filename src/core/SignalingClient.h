@@ -59,6 +59,7 @@ signals:
     void endOfCandidatesReceived(const QString &fromSessionId);
     void participantJoinedCall(const QString &sessionId, int flags, const QString &displayName);
     void participantLeftCall(const QString &sessionId);
+    void roomPeerJoined(const QString &sessionId);
 
 private:
     void fetchSettings();
