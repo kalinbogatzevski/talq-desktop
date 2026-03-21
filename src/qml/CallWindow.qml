@@ -11,8 +11,8 @@ Window {
     minimumHeight: 220
     color: "#16162a"
     title: {
-        if (callManager.state === 1) return "Calling..."
-        if (callManager.state === 2) return "Incoming call"
+        if (callManager.state === CallManager.Outgoing) return "Calling..."
+        if (callManager.state === CallManager.Incoming) return "Incoming call"
         return "Call — " + callManager.remotePeerName
     }
     visible: false
@@ -21,9 +21,9 @@ Window {
     Connections {
         target: callManager
         function onStateChanged() {
-            if (callManager.state >= 1 && callManager.state <= 4)
+            if (callManager.state !== CallManager.Idle && callManager.state !== CallManager.Ending)
                 callWindow.visible = true
-            else if (callManager.state === 0)
+            else if (callManager.state === CallManager.Idle)
                 callWindow.visible = false
         }
     }
@@ -37,7 +37,7 @@ Window {
         border.color: "#2ecc71"
         border.width: 2
         opacity: 0
-        visible: callManager.state === 1 || callManager.state === 2
+        visible: callManager.state === CallManager.Outgoing || callManager.state === CallManager.Incoming
 
         SequentialAnimation on opacity {
             running: pulseRing.visible
@@ -94,15 +94,15 @@ Window {
             Layout.alignment: Qt.AlignHCenter
             text: {
                 switch (callManager.state) {
-                case 1: return "Calling..."
-                case 2: return "Incoming call..."
-                case 3: return "Connecting..."
-                case 4: return formatDuration(callManager.callDuration)
+                case CallManager.Outgoing: return "Calling..."
+                case CallManager.Incoming: return "Incoming call..."
+                case CallManager.Connecting: return "Connecting..."
+                case CallManager.Active: return formatDuration(callManager.callDuration)
                 default: return ""
                 }
             }
             font.pixelSize: 13
-            color: callManager.state === 4 ? "#2ecc71" : "#aaaacc"
+            color: callManager.state === CallManager.Active ? "#2ecc71" : "#aaaacc"
 
             function formatDuration(s) {
                 var m = Math.floor(s / 60)
@@ -142,7 +142,7 @@ Window {
         // Hang up / Decline
         RoundButton {
             implicitWidth: 56; implicitHeight: 56
-            onClicked: callManager.state === 2 ? callManager.declineCall() : callManager.hangUp()
+            onClicked: callManager.state === CallManager.Incoming ? callManager.declineCall() : callManager.hangUp()
             contentItem: Image {
                 source: "qrc:/icons/phone-off.svg"
                 sourceSize: Qt.size(24, 24)
@@ -153,13 +153,13 @@ Window {
                 color: parent.hovered ? "#ff4444" : "#e74c3c"
             }
             ToolTip.visible: hovered
-            ToolTip.text: callManager.state === 2 ? "Decline" : "Hang up"
+            ToolTip.text: callManager.state === CallManager.Incoming ? "Decline" : "Hang up"
         }
 
         // Accept (incoming only)
         RoundButton {
             implicitWidth: 56; implicitHeight: 56
-            visible: callManager.state === 2
+            visible: callManager.state === CallManager.Incoming
             onClicked: callManager.acceptCall(false)
             contentItem: Image {
                 source: "qrc:/icons/phone-call.svg"
