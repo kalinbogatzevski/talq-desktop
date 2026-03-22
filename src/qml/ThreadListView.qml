@@ -44,7 +44,7 @@ Item {
                     spacing: 2
 
                     TqIconButton {
-                        icon: "\u2190"
+                        iconText: "\u2190"
                         size: 28
                         iconColor: Theme.accent
                         onClicked: threadListRoot.backToChats()

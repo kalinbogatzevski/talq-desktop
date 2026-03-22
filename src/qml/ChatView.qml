@@ -85,7 +85,7 @@ Page {
 
             // Back to chat list (when sidebar is squeezed in topic mode)
             TqIconButton {
-                icon: "\u2190"
+                iconText: "\u2190"
                 size: 30
                 iconColor: Theme.accent
                 visible: chatRoot.sidebarSqueezed && chatRoot.conversationName.length > 0
@@ -94,7 +94,7 @@ Page {
 
             // Back button (when viewing a thread or topic)
             TqIconButton {
-                icon: "\u2190"
+                iconText: "\u2190"
                 size: 30
                 iconColor: Theme.accent
                 visible: chatRoot.activeThreadId > 0
@@ -173,7 +173,7 @@ Page {
 
             // Call button (1:1 chats only, hidden during active call)
             TqIconButton {
-                icon: "\uD83D\uDCDE"
+                iconText: "\uD83D\uDCDE"
                 size: 34
                 bgColor: Theme.success
                 iconColor: "white"
@@ -650,7 +650,7 @@ Page {
 
     // Scroll-to-bottom floating button
     TqIconButton {
-        icon: "\u2193"
+        iconText: "\u2193"
         size: Theme.buttonSizeMedium
         bgColor: Theme.bgSurface
         anchors.right: chatRoot.contentItem.right
