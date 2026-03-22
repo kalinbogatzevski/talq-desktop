@@ -29,6 +29,7 @@
 #include "core/MediaDeviceManager.h"
 #include "core/CallManager.h"
 #include "core/DebugMonitor.h"
+#include "core/AppSettings.h"
 #include <gst/gst.h>
 
 int main(int argc, char *argv[])
@@ -85,6 +86,7 @@ int main(int argc, char *argv[])
     CallManager callManager(&api, &signaling, &deviceManager);
 
     DebugMonitor debug;
+    AppSettings appSettings;
 
     // Register types for QML enum access
     qmlRegisterUncreatableType<CallManager>("TalkQt", 1, 0, "CallManager",
@@ -105,6 +107,7 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty("deviceManager", &deviceManager);
     engine.rootContext()->setContextProperty("callManager", &callManager);
     engine.rootContext()->setContextProperty("debugMonitor", &debug);
+    engine.rootContext()->setContextProperty("appSettings", &appSettings);
 
     // Branding context
 #ifdef TALQ_BRAND_123NET
