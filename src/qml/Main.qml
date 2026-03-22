@@ -28,7 +28,7 @@ ApplicationWindow {
 
     // Minimize to tray instead of closing (like Telegram/Discord)
     onClosing: function(close) {
-        if (chatMode) {
+        if (chatMode && generalSettings.closeToTray) {
             close.accepted = false
             root.hide()
         }
@@ -38,7 +38,9 @@ ApplicationWindow {
     Component.onCompleted: {
         x = (Screen.width - width) / 2
         y = (Screen.height - height) / 2
-        visible = true
+        // Only start minimized if already logged in (has a session to restore).
+        // If not logged in, always show — user needs to see the login screen.
+        visible = !(generalSettings.startMinimized && auth.isRestoringSession)
     }
 
     // Saved geometry — only used after login
@@ -67,6 +69,13 @@ ApplicationWindow {
         target: Theme
         function onDarkModeChanged() { themeSettings.darkMode = Theme.darkMode }
         function onFontScaleChanged() { themeSettings.fontScale = Theme.fontScale }
+    }
+
+    Settings {
+        id: generalSettings
+        category: "General"
+        property bool closeToTray: true
+        property bool startMinimized: false
     }
 
     StackView {
