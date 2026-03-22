@@ -398,6 +398,9 @@ Page {
 
         function scrollToBottom() {
             positionViewAtEnd()
+            // File attachments and images may resize after initial layout.
+            // Schedule a second scroll to catch late height changes.
+            Qt.callLater(positionViewAtEnd)
         }
 
         onDraggingChanged: {
@@ -405,6 +408,11 @@ Page {
         }
 
         onFlickStarted: autoScrolling = false
+
+        onContentHeightChanged: {
+            if (autoScrolling && count > 0)
+                Qt.callLater(positionViewAtEnd)
+        }
 
         onMovingChanged: {
             if (!moving) {

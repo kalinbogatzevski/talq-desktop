@@ -111,8 +111,10 @@ ApplicationWindow {
 
         var w = Math.max(windowSettings.savedWidth, 500)
         var h = Math.max(windowSettings.savedHeight, 400)
-        var sx = windowSettings.savedX
-        var sy = windowSettings.savedY
+        // Qt.labs.settings stores ints as unsigned — negative values wrap to large positives.
+        // Fix: values > 2^31 are actually negative (multi-monitor left/top offsets).
+        var sx = windowSettings.savedX > 2147483647 ? windowSettings.savedX - 4294967296 : windowSettings.savedX
+        var sy = windowSettings.savedY > 2147483647 ? windowSettings.savedY - 4294967296 : windowSettings.savedY
 
         // Always set the windowed geometry first
         root.width = w
