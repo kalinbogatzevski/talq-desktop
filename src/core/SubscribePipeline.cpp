@@ -127,6 +127,8 @@ void SubscribePipeline::setRemoteOffer(const QString &sdp)
     g_signal_emit_by_name(m_webrtcbin, "set-remote-description", desc, nullptr);
     gst_webrtc_session_description_free(desc);
 
+    // Log SDP content for debugging
+    qDebug() << "SubscribePipeline: remote offer SDP:\n" << sdp.left(2000);
     qDebug() << "SubscribePipeline: set remote offer, creating answer...";
 
     GstPromise *answerPromise = gst_promise_new_with_change_func(
@@ -309,6 +311,7 @@ void SubscribePipeline::onAnswerCreated(GstPromise *promise, gpointer userData)
     gst_webrtc_session_description_free(answer);
     gst_promise_unref(promise);
 
+    qDebug() << "SubscribePipeline: answer SDP:\n" << sdp.left(2000);
     qDebug() << "SubscribePipeline: answer created, SDP length=" << sdp.length();
     QMetaObject::invokeMethod(self, [self, sdp]() {
         emit self->localAnswerReady(sdp);
