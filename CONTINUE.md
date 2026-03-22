@@ -1,6 +1,22 @@
-# TalQ v0.7.1 → v0.8.0 Continue Prompt
+# TalQ v0.8.0 → v0.9.0 Continue Prompt
 
-## What was done (2026-03-21)
+## What was done (2026-03-22)
+
+### v0.8.0 — Video Calls (MAJOR RELEASE)
+- **Video receive**: VP8/H.264 auto-detection, GStreamer appsink → QVideoFrame → Qt VideoOutput
+- **Camera send**: ksvideosrc → openh264enc, 1080p/720p, toggle mid-call
+- **CallWindow**: VideoOutput fills window, overlay controls auto-hide, camera toggle, duration overlay
+- **Settings**: camera selection, video quality preset (Qt.labs.settings)
+- **TURN servers**: parsed from signaling settings, URL-encoded credentials, configured on webrtcbin
+- **Device selection**: mic/speaker IDs wired to wasapi2src/wasapi2sink
+- **Decline fix**: leave room (not call), m_joinedCall tracking, no more 404
+- **Auto-decline fix**: m_userActionReady gate on popup Component.onCompleted
+- **Chat scroll**: stable scroll-to-bottom, image height reservation, no layout shift
+- **Image viewer**: in-app dark window, click/Esc to close
+- **Context menu**: Download + Open in Nextcloud for file messages
+- **Reply bubbles**: min width 260px when quoting, prevents clipping
+- **Qt6::Multimedia**: QVideoSink, QVideoFrame, VideoOutput
+- **GStreamer plugins**: vpx, openh264, videoconvertscale, winks
 
 ### v0.7.1 — Chat Reliability & UX (PATCH RELEASE)
 - **Fixed message cache** — stores original server JSON instead of reconstructed subset; file attachments, mentions, and thread metadata no longer lost after conversation switch

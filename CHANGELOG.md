@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.8.0 (2026-03-22)
+
+### Video Calls
+- **Receive remote video** — VP8 and H.264 codec auto-detection, decoded via GStreamer appsink to Qt VideoOutput
+- **Send camera** — ksvideosrc + openh264enc, 1080p default / 720p option, toggle on/off mid-call
+- **CallWindow video layout** — remote video fills window, controls auto-hide after 3s, camera toggle button, duration overlay
+- **Settings** — camera device selection, video quality preset (Full HD / HD), persisted via Qt.labs.settings
+
+### Call Polish
+- **TURN server support** — credentials parsed from signaling settings, URL-encoded, configured on webrtcbin
+- **Device selection wired to pipelines** — selected mic/speaker actually used (wasapi2src/wasapi2sink device property)
+- **Incoming call decline fix** — leave room instead of call API (no more 404), m_joinedCall tracking
+- **Auto-decline race fix** — m_userActionReady flag gates accept/decline on popup Component.onCompleted
+
+### Chat UX
+- **Scroll-to-bottom fixed** — no more jumping during image load, history prepend doesn't disrupt position
+- **Image previews reserve height** — 200px placeholder prevents layout shift during async load
+- **Reply bubble width** — own reply bubbles expand to fit quoted text (min 260px when quoting)
+- **In-app image viewer** — click any image to view full-size in dark window (Esc to close)
+- **Context menu** — Download and Open in Nextcloud items for file/image messages
+
+### Dependencies
+- Qt6::Multimedia added (QVideoSink, QVideoFrame, VideoOutput)
+- GStreamer plugins: vpx, openh264, videoconvertscale, winks (camera)
+
 ## v0.7.1 (2026-03-21)
 
 ### Message Cache Fix
