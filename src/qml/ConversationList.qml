@@ -82,7 +82,7 @@ Item {
                     }
 
                     TqIconButton {
-                        icon: Theme.darkMode ? "\u2600" : "\u263E"
+                        iconText: Theme.darkMode ? "\u2600" : "\u263E"
                         size: Theme.buttonSizeMedium
                         visible: !sidebar.squeezed
                         opacity: sidebar.squeezed ? 0 : 1
@@ -94,7 +94,7 @@ Item {
                     }
 
                     TqIconButton {
-                        icon: "\u21BB"
+                        iconText: "\u21BB"
                         size: Theme.buttonSizeMedium
                         visible: !sidebar.squeezed
                         opacity: sidebar.squeezed ? 0 : 1
@@ -106,7 +106,7 @@ Item {
                     }
 
                     TqIconButton {
-                        icon: "\u23FB"
+                        iconText: "\u23FB"
                         size: Theme.buttonSizeMedium
                         visible: !sidebar.squeezed
                         opacity: sidebar.squeezed ? 0 : 1

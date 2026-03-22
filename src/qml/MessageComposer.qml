@@ -23,7 +23,7 @@ Rectangle {
 
         // Attach file button
         TqIconButton {
-            icon: "\uD83D\uDCCE"
+            iconText: "\uD83D\uDCCE"
             size: Theme.buttonSizeMedium
             onClicked: fileDialog.open()
             ToolTip.visible: hovered; ToolTip.text: "Attach file"; ToolTip.delay: 300
@@ -91,7 +91,7 @@ Rectangle {
         // Send button
         TqIconButton {
             id: sendButton
-            icon: "\u276F"
+            iconText: "\u276F"
             size: 40
             bgColor: enabled ? Theme.accent : "transparent"
             iconColor: enabled ? "#000" : Theme.textMuted

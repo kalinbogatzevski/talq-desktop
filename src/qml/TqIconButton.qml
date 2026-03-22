@@ -5,7 +5,7 @@ import TalkQt
 AbstractButton {
     id: root
 
-    property string icon: ""
+    property string iconText: ""
     property int size: Theme.buttonSizeMedium
     property int iconSize: Theme.iconSizeMedium
     property color bgColor: "transparent"
@@ -14,7 +14,8 @@ AbstractButton {
 
     implicitWidth: size
     implicitHeight: size
-    cursorShape: Qt.PointingHandCursor
+
+    HoverHandler { cursorShape: Qt.PointingHandCursor }
 
     background: Rectangle {
         radius: root.size / 2
@@ -23,7 +24,7 @@ AbstractButton {
     }
 
     contentItem: Text {
-        text: root.icon
+        text: root.iconText
         font.pixelSize: root.iconSize
         color: root.iconColor
         horizontalAlignment: Text.AlignHCenter
