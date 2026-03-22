@@ -75,29 +75,59 @@ void MediaDeviceManager::refresh()
     restoreDevices();
 }
 
-QStringList MediaDeviceManager::audioInputNames() const
+void MediaDeviceManager::setSelectedAudioInput(int idx)
+{
+    if (m_selectedInput != idx) {
+        m_selectedInput = idx;
+        emit selectedChanged();
+        if (!m_restoring) saveDevices();
+    }
+}
+
+void MediaDeviceManager::setSelectedAudioOutput(int idx)
+{
+    if (m_selectedOutput != idx) {
+        m_selectedOutput = idx;
+        emit selectedChanged();
+        if (!m_restoring) saveDevices();
+    }
+}
+
+void MediaDeviceManager::setSelectedVideoInput(int idx)
+{
+    if (m_selectedVideo != idx) {
+        m_selectedVideo = idx;
+        emit selectedChanged();
+        if (!m_restoring) saveDevices();
+    }
+}
+
+QString MediaDeviceManager::selectedInputName() const
+{
+    if (m_selectedInput >= 0 && m_selectedInput < m_audioInputs.size())
+        return m_audioInputs[m_selectedInput].name;
+    return {};
+}
+
+QString MediaDeviceManager::selectedOutputName() const
+{
+    if (m_selectedOutput >= 0 && m_selectedOutput < m_audioOutputs.size())
+        return m_audioOutputs[m_selectedOutput].name;
+    return {};
+}
+
+static QStringList deviceNames(const QVector<MediaDevice> &devices)
 {
     QStringList names;
-    for (const auto &d : m_audioInputs)
+    names.reserve(devices.size());
+    for (const auto &d : devices)
         names << d.name;
     return names;
 }
 
-QStringList MediaDeviceManager::audioOutputNames() const
-{
-    QStringList names;
-    for (const auto &d : m_audioOutputs)
-        names << d.name;
-    return names;
-}
-
-QStringList MediaDeviceManager::videoInputNames() const
-{
-    QStringList names;
-    for (const auto &d : m_videoInputs)
-        names << d.name;
-    return names;
-}
+QStringList MediaDeviceManager::audioInputNames() const  { return deviceNames(m_audioInputs); }
+QStringList MediaDeviceManager::audioOutputNames() const { return deviceNames(m_audioOutputs); }
+QStringList MediaDeviceManager::videoInputNames() const  { return deviceNames(m_videoInputs); }
 
 QString MediaDeviceManager::selectedInputDeviceId() const
 {
@@ -133,6 +163,7 @@ void MediaDeviceManager::saveDevices()
 
 void MediaDeviceManager::restoreDevices()
 {
+    m_restoring = true;
     m_settings.beginGroup("Devices");
     auto matchDevice = [](const QVector<MediaDevice> &list, const QString &name, const QString &id) -> int {
         QVector<int> nameMatches;
@@ -174,6 +205,7 @@ void MediaDeviceManager::restoreDevices()
     }
 
     m_settings.endGroup();
+    m_restoring = false;
     qDebug() << "MediaDeviceManager: restored devices — mic:" << m_selectedInput
              << "speaker:" << m_selectedOutput << "camera:" << m_selectedVideo;
 }

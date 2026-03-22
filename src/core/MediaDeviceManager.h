@@ -24,7 +24,7 @@ public:
     ~MediaDeviceManager() override;
 
     Q_INVOKABLE void refresh();
-    Q_INVOKABLE void saveDevices();
+    void saveDevices();
     void restoreDevices();
 
     Q_PROPERTY(int selectedAudioInput READ selectedAudioInput WRITE setSelectedAudioInput NOTIFY selectedChanged)
@@ -34,13 +34,13 @@ public:
     int selectedAudioInput() const { return m_selectedInput; }
     int selectedAudioOutput() const { return m_selectedOutput; }
     int selectedVideoInput() const { return m_selectedVideo; }
-    void setSelectedAudioInput(int idx) { if (m_selectedInput != idx) { m_selectedInput = idx; emit selectedChanged(); saveDevices(); } }
-    void setSelectedAudioOutput(int idx) { if (m_selectedOutput != idx) { m_selectedOutput = idx; emit selectedChanged(); saveDevices(); } }
-    void setSelectedVideoInput(int idx) { if (m_selectedVideo != idx) { m_selectedVideo = idx; emit selectedChanged(); saveDevices(); } }
+    void setSelectedAudioInput(int idx);
+    void setSelectedAudioOutput(int idx);
+    void setSelectedVideoInput(int idx);
 
     // Get selected device name for pipeline configuration
-    QString selectedInputName() const { return (m_selectedInput >= 0 && m_selectedInput < m_audioInputs.size()) ? m_audioInputs[m_selectedInput].name : QString(); }
-    QString selectedOutputName() const { return (m_selectedOutput >= 0 && m_selectedOutput < m_audioOutputs.size()) ? m_audioOutputs[m_selectedOutput].name : QString(); }
+    QString selectedInputName() const;
+    QString selectedOutputName() const;
 
     // Get selected device ID (strid/path) for pipeline configuration
     QString selectedInputDeviceId() const;
@@ -66,4 +66,5 @@ private:
     QVector<MediaDevice> m_audioOutputs;
     QVector<MediaDevice> m_videoInputs;
     QSettings m_settings;
+    bool m_restoring = false;  // suppress saveDevices() during restoreDevices()
 };

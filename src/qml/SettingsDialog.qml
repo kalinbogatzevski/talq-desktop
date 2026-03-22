@@ -15,6 +15,24 @@ Window {
     modality: Qt.ApplicationModal
     visible: false
 
+    // --- Inline components for repeated patterns ---
+
+    // Uppercase section header (used 8 times across tabs)
+    component SectionHeader: Label {
+        font.pixelSize: 10
+        font.weight: Font.DemiBold
+        font.letterSpacing: 1
+        color: Theme.textSecondary
+        opacity: 0.7
+    }
+
+    // Toggle button for option groups (used 7 times across tabs)
+    component OptionButton: Button {
+        palette.button: checked ? Theme.accent : Theme.bgSurface
+        palette.buttonText: checked ? "#000000" : Theme.textSecondary
+        font.pixelSize: Theme.fontSizeSmall
+    }
+
     // --- Persistence blocks ---
     Settings {
         id: videoSettings
@@ -30,22 +48,12 @@ Window {
         property string soundMode: "internal"  // "internal", "system", "none"
     }
 
-    Settings {
-        id: generalSettings
-        category: "General"
-        property bool autoStart: false
-        property bool startMinimized: false
-        property bool closeToTray: true
-    }
-
     // Push saved notification settings to NotificationManager on load
     Component.onCompleted: {
         deviceManager.refresh()
         notifications.notificationsEnabled = notifSettings.enabled
         notifications.notifStyle = notifSettings.style
         notifications.soundMode = notifSettings.soundMode
-        // Sync auto-start toggle with registry
-        generalSettings.autoStart = appSettings.isAutoStart()
     }
 
     ColumnLayout {
@@ -104,13 +112,7 @@ Window {
 
                     Item { height: 20 }
 
-                    // --- Microphone ---
-                    Label {
-                        text: "MICROPHONE"
-                        font.pixelSize: 10; font.weight: Font.DemiBold
-                        color: Theme.textSecondary; opacity: 0.7
-                        font.letterSpacing: 1
-                    }
+                    SectionHeader { text: "MICROPHONE" }
                     ComboBox {
                         Layout.fillWidth: true
                         model: deviceManager.audioInputNames
@@ -127,14 +129,7 @@ Window {
                         color: Theme.textSecondary; font.pixelSize: 11
                     }
 
-                    // --- Speaker ---
-                    Label {
-                        text: "SPEAKER"
-                        font.pixelSize: 10; font.weight: Font.DemiBold
-                        color: Theme.textSecondary; opacity: 0.7
-                        font.letterSpacing: 1
-                        Layout.topMargin: 4
-                    }
+                    SectionHeader { text: "SPEAKER"; Layout.topMargin: 4 }
                     ComboBox {
                         Layout.fillWidth: true
                         model: deviceManager.audioOutputNames
@@ -151,14 +146,7 @@ Window {
                         color: Theme.textSecondary; font.pixelSize: 11
                     }
 
-                    // --- Camera ---
-                    Label {
-                        text: "CAMERA"
-                        font.pixelSize: 10; font.weight: Font.DemiBold
-                        color: Theme.textSecondary; opacity: 0.7
-                        font.letterSpacing: 1
-                        Layout.topMargin: 4
-                    }
+                    SectionHeader { text: "CAMERA"; Layout.topMargin: 4 }
                     ComboBox {
                         Layout.fillWidth: true
                         model: deviceManager.videoInputNames
@@ -175,31 +163,18 @@ Window {
                         color: Theme.textSecondary; font.pixelSize: 11
                     }
 
-                    // --- Video Quality ---
-                    Label {
-                        text: "VIDEO QUALITY"
-                        font.pixelSize: 10; font.weight: Font.DemiBold
-                        color: Theme.textSecondary; opacity: 0.7
-                        font.letterSpacing: 1
-                        Layout.topMargin: 4
-                    }
+                    SectionHeader { text: "VIDEO QUALITY"; Layout.topMargin: 4 }
                     Row {
                         spacing: 8
-                        Button {
+                        OptionButton {
                             text: "Full HD (1080p)"
                             checked: videoSettings.resolution === 0
                             onClicked: videoSettings.resolution = 0
-                            palette.button: checked ? Theme.accent : Theme.bgSurface
-                            palette.buttonText: checked ? "#000000" : Theme.textSecondary
-                            font.pixelSize: Theme.fontSizeSmall
                         }
-                        Button {
+                        OptionButton {
                             text: "HD (720p)"
                             checked: videoSettings.resolution === 1
                             onClicked: videoSettings.resolution = 1
-                            palette.button: checked ? Theme.accent : Theme.bgSurface
-                            palette.buttonText: checked ? "#000000" : Theme.textSecondary
-                            font.pixelSize: Theme.fontSizeSmall
                         }
                     }
                     Label {
@@ -208,7 +183,6 @@ Window {
                         visible: callManager.state !== CallManager.Idle
                     }
 
-                    // --- Refresh ---
                     Rectangle { Layout.fillWidth: true; height: 1; color: Theme.divider; Layout.topMargin: 8 }
                     RowLayout {
                         Layout.fillWidth: true
@@ -235,13 +209,7 @@ Window {
 
                     Item { height: 20 }
 
-                    // --- Enable ---
-                    Label {
-                        text: "DESKTOP NOTIFICATIONS"
-                        font.pixelSize: 10; font.weight: Font.DemiBold
-                        color: Theme.textSecondary; opacity: 0.7
-                        font.letterSpacing: 1
-                    }
+                    SectionHeader { text: "DESKTOP NOTIFICATIONS" }
                     RowLayout {
                         Layout.fillWidth: true
                         Label {
@@ -260,71 +228,41 @@ Window {
                         }
                     }
 
-                    // --- Style ---
-                    Label {
-                        text: "NOTIFICATION STYLE"
-                        font.pixelSize: 10; font.weight: Font.DemiBold
-                        color: Theme.textSecondary; opacity: 0.7
-                        font.letterSpacing: 1
-                        Layout.topMargin: 4
-                    }
+                    SectionHeader { text: "NOTIFICATION STYLE"; Layout.topMargin: 4 }
                     Row {
                         spacing: 8
-                        Button {
+                        OptionButton {
                             text: "In-app popup"
                             checked: notifSettings.style === "popup"
                             onClicked: { notifSettings.style = "popup"; notifications.notifStyle = "popup" }
-                            palette.button: checked ? Theme.accent : Theme.bgSurface
-                            palette.buttonText: checked ? "#000000" : Theme.textSecondary
-                            font.pixelSize: Theme.fontSizeSmall
                         }
-                        Button {
+                        OptionButton {
                             text: "Windows toast"
                             checked: notifSettings.style === "windows"
                             onClicked: { notifSettings.style = "windows"; notifications.notifStyle = "windows" }
-                            palette.button: checked ? Theme.accent : Theme.bgSurface
-                            palette.buttonText: checked ? "#000000" : Theme.textSecondary
-                            font.pixelSize: Theme.fontSizeSmall
                         }
                     }
 
-                    // --- Sound ---
-                    Label {
-                        text: "SOUND"
-                        font.pixelSize: 10; font.weight: Font.DemiBold
-                        color: Theme.textSecondary; opacity: 0.7
-                        font.letterSpacing: 1
-                        Layout.topMargin: 4
-                    }
+                    SectionHeader { text: "SOUND"; Layout.topMargin: 4 }
                     Row {
                         spacing: 8
-                        Button {
+                        OptionButton {
                             text: "TalQ chime"
                             checked: notifSettings.soundMode === "internal"
                             onClicked: { notifSettings.soundMode = "internal"; notifications.soundMode = "internal" }
-                            palette.button: checked ? Theme.accent : Theme.bgSurface
-                            palette.buttonText: checked ? "#000000" : Theme.textSecondary
-                            font.pixelSize: Theme.fontSizeSmall
                         }
-                        Button {
+                        OptionButton {
                             text: "System sound"
                             checked: notifSettings.soundMode === "system"
                             onClicked: { notifSettings.soundMode = "system"; notifications.soundMode = "system" }
-                            palette.button: checked ? Theme.accent : Theme.bgSurface
-                            palette.buttonText: checked ? "#000000" : Theme.textSecondary
-                            font.pixelSize: Theme.fontSizeSmall
                         }
-                        Button {
+                        OptionButton {
                             text: "None"
                             checked: notifSettings.soundMode === "none"
                             onClicked: { notifSettings.soundMode = "none"; notifications.soundMode = "none" }
-                            palette.button: checked ? Theme.accent : Theme.bgSurface
-                            palette.buttonText: checked ? "#000000" : Theme.textSecondary
-                            font.pixelSize: Theme.fontSizeSmall
                         }
                     }
 
-                    // --- Hint ---
                     Item { height: 8 }
                     Rectangle {
                         Layout.fillWidth: true
@@ -363,12 +301,7 @@ Window {
 
                     Item { height: 20 }
 
-                    Label {
-                        text: "STARTUP"
-                        font.pixelSize: 10; font.weight: Font.DemiBold
-                        color: Theme.textSecondary; opacity: 0.7
-                        font.letterSpacing: 1
-                    }
+                    SectionHeader { text: "STARTUP" }
 
                     RowLayout {
                         Layout.fillWidth: true
@@ -403,14 +336,7 @@ Window {
                         }
                     }
 
-                    // --- Behavior ---
-                    Label {
-                        text: "BEHAVIOR"
-                        font.pixelSize: 10; font.weight: Font.DemiBold
-                        color: Theme.textSecondary; opacity: 0.7
-                        font.letterSpacing: 1
-                        Layout.topMargin: 8
-                    }
+                    SectionHeader { text: "BEHAVIOR"; Layout.topMargin: 8 }
 
                     RowLayout {
                         Layout.fillWidth: true
@@ -448,7 +374,7 @@ Window {
 
                     Item { height: 20 }
 
-                    // --- Profile card ---
+                    // Profile card
                     RowLayout {
                         spacing: 14
                         Rectangle {
@@ -487,13 +413,7 @@ Window {
 
                     Rectangle { Layout.fillWidth: true; height: 1; color: Theme.divider; Layout.topMargin: 4 }
 
-                    // --- Server info ---
-                    Label {
-                        text: "SERVER"
-                        font.pixelSize: 10; font.weight: Font.DemiBold
-                        color: Theme.textSecondary; opacity: 0.7
-                        font.letterSpacing: 1
-                    }
+                    SectionHeader { text: "SERVER" }
                     Rectangle {
                         Layout.fillWidth: true
                         height: serverUrlLabel.implicitHeight + 16
@@ -508,13 +428,7 @@ Window {
                         }
                     }
 
-                    Label {
-                        text: "NEXTCLOUD"
-                        font.pixelSize: 10; font.weight: Font.DemiBold
-                        color: Theme.textSecondary; opacity: 0.7
-                        font.letterSpacing: 1
-                        Layout.topMargin: 4
-                    }
+                    SectionHeader { text: "NEXTCLOUD"; Layout.topMargin: 4 }
                     Row {
                         spacing: 20
                         Label {
@@ -529,7 +443,6 @@ Window {
 
                     Item { Layout.fillHeight: true }
 
-                    // --- Footer: version + logout ---
                     Rectangle { Layout.fillWidth: true; height: 1; color: Theme.divider }
                     RowLayout {
                         Layout.fillWidth: true
