@@ -572,7 +572,7 @@ Item {
             ColumnLayout {
                 id: otherMsgCol
                 property real maxWidth: bubble.width * 0.75 - Theme.avatarSizeSmall - 20
-                width: Math.min(implicitWidth, maxWidth)
+                width: isImage ? maxWidth : Math.min(implicitWidth, maxWidth)
                 spacing: 2
 
                 // Background card for messages with replies
@@ -643,12 +643,17 @@ Item {
                 // Image preview (authenticated via image://preview/)
                 Image {
                     visible: isImage && fileId > 0
-                    Layout.fillWidth: true
-                    Layout.maximumWidth: otherMsgCol.maxWidth
-                    Layout.preferredHeight: isImage && fileId > 0 ? 250 : 0
-                    source: isImage && fileId > 0 ? "image://preview/" + fileId : ""
+                    asynchronous: true
                     fillMode: Image.PreserveAspectFit
-                    sourceSize: Qt.size(600, 600)
+                    source: isImage && fileId > 0 ? "image://preview/" + fileId : ""
+                    sourceSize.width: otherMsgCol.width
+
+                    readonly property real aspectRatio: implicitWidth > 0 ? implicitHeight / implicitWidth : 0.75
+
+                    Layout.fillWidth: true
+                    Layout.maximumWidth: Math.min(implicitWidth > 0 ? implicitWidth : otherMsgCol.maxWidth, otherMsgCol.maxWidth)
+                    Layout.preferredHeight: width * aspectRatio
+                    Layout.maximumHeight: 500
 
                     MouseArea {
                         anchors.fill: parent
@@ -656,7 +661,6 @@ Item {
                         onClicked: messageModel.downloadFile(fileId, fileName)
                     }
 
-                    // Loading placeholder
                     Rectangle {
                         anchors.fill: parent
                         visible: parent.status === Image.Loading
@@ -792,7 +796,8 @@ Item {
             anchors.right: parent.right
             anchors.rightMargin: Theme.spacingNormal
 
-            width: Math.min(Math.max(ownCol.implicitWidth + 28, replyToText.length > 0 ? 260 : 80), bubble.width * 0.75)
+            width: isImage ? bubble.width * 0.75
+                         : Math.min(Math.max(ownCol.implicitWidth + 28, replyToText.length > 0 ? 260 : 80), bubble.width * 0.75)
             height: ownCol.implicitHeight + 14
             radius: Theme.radiusNormal
             color: Theme.bgMessageOwn
@@ -846,12 +851,17 @@ Item {
                 // Image preview (own)
                 Image {
                     visible: isImage && fileId > 0
-                    Layout.fillWidth: true
-                    Layout.maximumWidth: ownBubble.width - 28
-                    Layout.preferredHeight: isImage && fileId > 0 ? 250 : 0
-                    source: isImage && fileId > 0 ? "image://preview/" + fileId : ""
+                    asynchronous: true
                     fillMode: Image.PreserveAspectFit
-                    sourceSize: Qt.size(600, 600)
+                    source: isImage && fileId > 0 ? "image://preview/" + fileId : ""
+                    sourceSize.width: ownCol.width
+
+                    readonly property real aspectRatio: implicitWidth > 0 ? implicitHeight / implicitWidth : 0.75
+
+                    Layout.fillWidth: true
+                    Layout.maximumWidth: Math.min(implicitWidth > 0 ? implicitWidth : ownCol.width, ownCol.width)
+                    Layout.preferredHeight: width * aspectRatio
+                    Layout.maximumHeight: 500
                     MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: messageModel.downloadFile(fileId, fileName) }
                 }
 
