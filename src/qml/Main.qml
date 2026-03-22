@@ -76,6 +76,8 @@ ApplicationWindow {
         category: "General"
         property bool closeToTray: true
         property bool startMinimized: false
+        property bool autoStart: false
+        Component.onCompleted: autoStart = appSettings.isAutoStart()
     }
 
     StackView {
