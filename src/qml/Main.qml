@@ -681,39 +681,5 @@ ApplicationWindow {
         }
     }
 
-    // Full-screen image viewer
-    Window {
-        id: imageViewer
-        visible: false
-        width: 800; height: 600
-        minimumWidth: 400; minimumHeight: 300
-        color: "#000000"
-        title: "Image Viewer"
 
-        property string imageSource: ""
-
-        function open(src) {
-            imageSource = src
-            visible = true
-            raise()
-        }
-
-        Image {
-            anchors.fill: parent
-            anchors.margins: 20
-            source: imageViewer.imageSource
-            fillMode: Image.PreserveAspectFit
-            sourceSize: Qt.size(1920, 1080)
-        }
-
-        MouseArea {
-            anchors.fill: parent
-            onClicked: imageViewer.visible = false
-        }
-
-        Shortcut {
-            sequence: "Escape"
-            onActivated: imageViewer.visible = false
-        }
-    }
 }
