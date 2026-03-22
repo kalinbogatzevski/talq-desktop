@@ -22,8 +22,17 @@ Window {
         id: remoteVideo
         anchors.fill: parent
         visible: callManager.remoteVideoProvider && callManager.remoteVideoProvider.hasVideo
-        videoSink: callManager.remoteVideoProvider ? callManager.remoteVideoProvider.videoSink : null
         fillMode: VideoOutput.PreserveAspectCrop
+    }
+
+    // Bind the VideoOutput's sink to the VideoFrameProvider
+    Connections {
+        target: callManager
+        function onRemoteVideoProviderChanged() {
+            if (callManager.remoteVideoProvider) {
+                callManager.remoteVideoProvider.videoSink = remoteVideo.videoSink
+            }
+        }
     }
 
     MouseArea {
