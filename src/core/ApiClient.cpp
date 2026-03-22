@@ -263,8 +263,12 @@ void ApiClient::setNotificationLevel(const QString &token, int level, Callback c
 {
     QJsonObject body;
     body["level"] = level;
-    put("/apps/spreed/api/v4/room/" + token + "/notify", body,
-        callback ? callback : Callback([](bool, const QJsonObject &, int) {}));
+    QString path = "/apps/spreed/api/v4/room/" + token + "/notify";
+    if (callback) {
+        put(path, body, callback);
+    } else {
+        put(path, body, [](bool, const QJsonObject &, int) {});
+    }
 }
 
 void ApiClient::cancelAll()
