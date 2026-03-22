@@ -572,7 +572,7 @@ Item {
             ColumnLayout {
                 id: otherMsgCol
                 property real maxWidth: bubble.width * 0.75 - Theme.avatarSizeSmall - 20
-                width: isImage ? maxWidth : Math.min(implicitWidth, maxWidth)
+                width: isImage ? maxWidth : Math.min(Math.max(implicitWidth, replyToText.length > 0 ? 260 : 0), maxWidth)
                 spacing: 2
 
                 // Background card for messages with replies
