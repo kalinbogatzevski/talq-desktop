@@ -291,24 +291,22 @@ Window {
             }
 
             // Camera toggle
-            Rectangle {
-                width: 48; height: 48
-                radius: 24
-                color: callManager.isCameraOn ? "#2ecc71" : "#555"
-                visible: callManager.state === CallManager.Active || callManager.state === CallManager.Connecting
-
-                Text {
-                    anchors.centerIn: parent
-                    text: callManager.isCameraOn ? "\uD83D\uDCF7" : "\u2715"
-                    font.pixelSize: 20
-                    color: "white"
+            RoundButton {
+                implicitWidth: 50; implicitHeight: 50
+                visible: callManager.state === CallManager.Connecting || callManager.state === CallManager.Active
+                onClicked: callManager.toggleCamera()
+                contentItem: Label {
+                    text: callManager.isCameraOn ? "\uD83D\uDCF9" : "\uD83D\uDCF9"
+                    font.pixelSize: 22
+                    horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
+                    opacity: callManager.isCameraOn ? 1.0 : 0.5
                 }
-
-                MouseArea {
-                    anchors.fill: parent
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: callManager.toggleCamera()
+                background: Rectangle {
+                    radius: 25
+                    color: callManager.isCameraOn ? "#2ecc71" : "#3a3a5e"
+                    border.color: callManager.isCameraOn ? "#2ecc71" : "#5a5a8e"; border.width: 1
                 }
+                ToolTip.visible: hovered; ToolTip.text: callManager.isCameraOn ? "Camera off" : "Camera on"
             }
 
             // Mute (with mic level fill)

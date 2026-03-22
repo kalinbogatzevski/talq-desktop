@@ -205,16 +205,40 @@ void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)
     int w = hd1080 ? 1920 : 1280;
     int h = hd1080 ? 1080 : 720;
     int bitrate = hd1080 ? 3000000 : 1500000;
-    QString capsStr = QString("video/x-raw,width=%1,height=%2,framerate=30/1").arg(w).arg(h);
+
+    // Camera outputs JPEG at high res, raw only at 640x480.
+    // Use JPEG capture + jpegdec for full resolution.
+    GstElement *jpegdec = gst_element_factory_make("jpegdec", nullptr);
+
+    // Capture caps: request JPEG at desired resolution
+    QString capsStr = QString("image/jpeg,width=%1,height=%2,framerate=30/1").arg(w).arg(h);
     GstCaps *caps = gst_caps_from_string(capsStr.toUtf8().constData());
     g_object_set(m_videoCapsFilter, "caps", caps, nullptr);
     gst_caps_unref(caps);
 
     g_object_set(m_videoEncoder, "bitrate", bitrate, "rate-control", 1, "complexity", 1, nullptr);
 
-    gst_bin_add_many(GST_BIN(m_pipeline), m_cameraSrc, m_videoConvert, m_videoCapsFilter, m_videoEncoder, m_videoPayloader, nullptr);
+    if (!jpegdec) {
+        qWarning() << "PublishPipeline: jpegdec not available, trying raw capture";
+        // Fallback: raw capture (640x480 max)
+        GstCaps *rawCaps = gst_caps_from_string("video/x-raw,framerate=30/1");
+        g_object_set(m_videoCapsFilter, "caps", rawCaps, nullptr);
+        gst_caps_unref(rawCaps);
 
-    if (!gst_element_link_many(m_cameraSrc, m_videoConvert, m_videoCapsFilter, m_videoEncoder, m_videoPayloader, nullptr)) {
+        gst_bin_add_many(GST_BIN(m_pipeline), m_cameraSrc, m_videoConvert, m_videoCapsFilter, m_videoEncoder, m_videoPayloader, nullptr);
+    } else {
+        // JPEG path: ksvideosrc ! capsfilter(image/jpeg) ! jpegdec ! videoconvert ! openh264enc ! rtph264pay
+        gst_bin_add_many(GST_BIN(m_pipeline), m_cameraSrc, m_videoCapsFilter, jpegdec, m_videoConvert, m_videoEncoder, m_videoPayloader, nullptr);
+    }
+
+    gboolean linked;
+    if (jpegdec) {
+        linked = gst_element_link_many(m_cameraSrc, m_videoCapsFilter, jpegdec, m_videoConvert, m_videoEncoder, m_videoPayloader, nullptr);
+    } else {
+        linked = gst_element_link_many(m_cameraSrc, m_videoConvert, m_videoCapsFilter, m_videoEncoder, m_videoPayloader, nullptr);
+    }
+
+    if (!linked) {
         qWarning() << "PublishPipeline: failed to link video chain";
         emit cameraError("Failed to link video pipeline");
         disableCamera();
@@ -312,8 +336,13 @@ void PublishPipeline::pollBus()
         } else if (GST_MESSAGE_TYPE(msg) == GST_MESSAGE_ERROR) {
             GError *err = nullptr; gchar *dbg = nullptr;
             gst_message_parse_error(msg, &err, &dbg);
-            qWarning() << "PublishPipeline ERROR:" << err->message << (dbg ? dbg : "");
+            QString errMsg = QString::fromUtf8(err->message);
+            qWarning() << "PublishPipeline ERROR:" << errMsg << (dbg ? dbg : "");
             g_clear_error(&err); g_free(dbg);
+            if (m_cameraEnabled) {
+                disableCamera();
+                emit cameraError(errMsg);
+            }
         }
         gst_message_unref(msg);
     }

@@ -348,7 +348,7 @@ void CallManager::toggleCamera() {
     emit cameraChanged();
 
     if (m_cameraOn && m_publishPipeline) {
-        int videoDevice = m_deviceManager ? m_deviceManager->selectedVideoInput() : 0;
+        int videoDevice = m_deviceManager ? qMax(0, m_deviceManager->selectedVideoInput()) : 0;
         bool hd1080 = QSettings().value("video/resolution", 0).toInt() == 0;
         m_publishPipeline->enableCamera(videoDevice, hd1080);
     } else if (!m_cameraOn && m_publishPipeline) {
@@ -451,8 +451,17 @@ void CallManager::joinCallOnServer(bool withVideo)
 
                     connect(m_publishPipeline, &PublishPipeline::cameraError, this, [this](const QString &reason) {
                         qWarning() << "CallManager: camera error:" << reason;
-                        m_cameraOn = false;
-                        emit cameraChanged();
+                        // Try 720p fallback if 1080p failed
+                        if (m_cameraOn && !m_cameraFallbackTried) {
+                            m_cameraFallbackTried = true;
+                            qDebug() << "CallManager: retrying camera at 720p";
+                            int videoDevice = m_deviceManager ? qMax(0, m_deviceManager->selectedVideoInput()) : 0;
+                            m_publishPipeline->enableCamera(videoDevice, false);
+                        } else {
+                            m_cameraOn = false;
+                            m_cameraFallbackTried = false;
+                            emit cameraChanged();
+                        }
                     });
 
                     m_publishPipeline->start(m_stunServer, turnServers, m_deviceManager ? m_deviceManager->selectedInputDeviceId() : QString());
