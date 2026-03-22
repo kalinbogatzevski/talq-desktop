@@ -437,12 +437,14 @@ Item {
                 Repeater {
                     model: [
                         { icon: "\u21A9", label: "Reply", action: "reply", ownerOnly: false },
-                        { icon: "\uD83D\uDCCB", label: "Copy", action: "copy", ownerOnly: false },
-                        { icon: "\u21AA", label: "Forward", action: "forward", ownerOnly: false },
-                        { icon: "\uD83D\uDCCC", label: "Pin", action: "pin", ownerOnly: false },
-                        { icon: "\uD83D\uDD17", label: "Copy link", action: "copylink", ownerOnly: false },
-                        { icon: "\uD83D\uDCAC", label: "Thread", action: "thread", ownerOnly: false },
-                        { icon: "\uD83D\uDDD1", label: "Delete", action: "delete", ownerOnly: true }
+                        { icon: "\u2B07", label: "Download", action: "download", ownerOnly: false, fileOnly: true },
+                        { icon: "\u2601", label: "Open in Nextcloud", action: "openincloud", ownerOnly: false, fileOnly: true },
+                        { icon: "\uD83D\uDCCB", label: "Copy", action: "copy", ownerOnly: false, fileOnly: false },
+                        { icon: "\u21A9", label: "Reply", action: "reply", ownerOnly: false, fileOnly: false },
+                        { icon: "\uD83D\uDCCC", label: "Pin", action: "pin", ownerOnly: false, fileOnly: false },
+                        { icon: "\uD83D\uDD17", label: "Copy link", action: "copylink", ownerOnly: false, fileOnly: false },
+                        { icon: "\uD83D\uDCAC", label: "Thread", action: "thread", ownerOnly: false, fileOnly: false },
+                        { icon: "\uD83D\uDDD1", label: "Delete", action: "delete", ownerOnly: true, fileOnly: false }
                     ]
 
                     Rectangle {
@@ -454,7 +456,7 @@ Item {
                                 ? Qt.rgba(Theme.danger.r, Theme.danger.g, Theme.danger.b, 0.15)
                                 : (Theme.darkMode ? Qt.rgba(1,1,1,0.12) : Qt.rgba(0,0,0,0.07)))
                             : "transparent"
-                        visible: !modelData.ownerOnly || isOwnMessage
+                        visible: (!modelData.ownerOnly || isOwnMessage) && (!modelData.fileOnly || hasFile)
                         Behavior on color { ColorAnimation { duration: 80 } }
 
                         Row {
@@ -490,7 +492,11 @@ Item {
                             cursorShape: Qt.PointingHandCursor
                             onClicked: {
                                 msgPopup.close()
-                                if (modelData.action === "reply") {
+                                if (modelData.action === "download") {
+                                    messageModel.downloadFile(fileId, fileName)
+                                } else if (modelData.action === "openincloud") {
+                                    Qt.openUrlExternally(fileLink)
+                                } else if (modelData.action === "reply") {
                                     bubble.replyRequested(messageId, actorName, messageText)
                                 } else if (modelData.action === "copy") {
                                     var plain = messageText.replace(/<[^>]*>/g, "")
