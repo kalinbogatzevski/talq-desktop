@@ -52,6 +52,7 @@ public:
     bool hasTopics = false;
     bool hasCall = false;   // someone is in a call in this room
     int callFlag = 0;       // call flags (1=in-call, 2=audio, 4=video)
+    int notificationLevel = 0;  // 0=default, 1=always, 2=mention-only, 3=never
 
     static Conversation fromJson(const QJsonObject &json);
 
