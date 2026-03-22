@@ -72,6 +72,7 @@ void MediaDeviceManager::refresh()
              << m_videoInputs.size() << "camera(s)";
 
     emit devicesChanged();
+    restoreDevices();
 }
 
 QStringList MediaDeviceManager::audioInputNames() const
@@ -110,4 +111,69 @@ QString MediaDeviceManager::selectedOutputDeviceId() const
     if (m_selectedOutput >= 0 && m_selectedOutput < m_audioOutputs.size())
         return m_audioOutputs[m_selectedOutput].id;
     return {};
+}
+
+void MediaDeviceManager::saveDevices()
+{
+    m_settings.beginGroup("Devices");
+    if (m_selectedInput >= 0 && m_selectedInput < m_audioInputs.size()) {
+        m_settings.setValue("audioInputName", m_audioInputs[m_selectedInput].name);
+        m_settings.setValue("audioInputId", m_audioInputs[m_selectedInput].id);
+    }
+    if (m_selectedOutput >= 0 && m_selectedOutput < m_audioOutputs.size()) {
+        m_settings.setValue("audioOutputName", m_audioOutputs[m_selectedOutput].name);
+        m_settings.setValue("audioOutputId", m_audioOutputs[m_selectedOutput].id);
+    }
+    if (m_selectedVideo >= 0 && m_selectedVideo < m_videoInputs.size()) {
+        m_settings.setValue("videoInputName", m_videoInputs[m_selectedVideo].name);
+        m_settings.setValue("videoInputId", m_videoInputs[m_selectedVideo].id);
+    }
+    m_settings.endGroup();
+}
+
+void MediaDeviceManager::restoreDevices()
+{
+    m_settings.beginGroup("Devices");
+    auto matchDevice = [](const QVector<MediaDevice> &list, const QString &name, const QString &id) -> int {
+        QVector<int> nameMatches;
+        for (int i = 0; i < list.size(); ++i) {
+            if (list[i].name == name)
+                nameMatches.append(i);
+        }
+        if (nameMatches.size() == 1)
+            return nameMatches.first();
+        if (nameMatches.size() > 1) {
+            for (int idx : nameMatches) {
+                if (list[idx].id == id)
+                    return idx;
+            }
+            return nameMatches.first();
+        }
+        return -1;
+    };
+
+    QString inName = m_settings.value("audioInputName").toString();
+    QString inId = m_settings.value("audioInputId").toString();
+    if (!inName.isEmpty()) {
+        int idx = matchDevice(m_audioInputs, inName, inId);
+        if (idx >= 0) setSelectedAudioInput(idx);
+    }
+
+    QString outName = m_settings.value("audioOutputName").toString();
+    QString outId = m_settings.value("audioOutputId").toString();
+    if (!outName.isEmpty()) {
+        int idx = matchDevice(m_audioOutputs, outName, outId);
+        if (idx >= 0) setSelectedAudioOutput(idx);
+    }
+
+    QString vidName = m_settings.value("videoInputName").toString();
+    QString vidId = m_settings.value("videoInputId").toString();
+    if (!vidName.isEmpty()) {
+        int idx = matchDevice(m_videoInputs, vidName, vidId);
+        if (idx >= 0) setSelectedVideoInput(idx);
+    }
+
+    m_settings.endGroup();
+    qDebug() << "MediaDeviceManager: restored devices — mic:" << m_selectedInput
+             << "speaker:" << m_selectedOutput << "camera:" << m_selectedVideo;
 }
