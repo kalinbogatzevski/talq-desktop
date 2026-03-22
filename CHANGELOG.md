@@ -3,8 +3,9 @@
 ## v0.8.0 (2026-03-22)
 
 ### Video Calls
-- **Receive remote video** — VP8 and H.264 codec auto-detection, decoded via GStreamer appsink to Qt VideoOutput
-- **Send camera** — ksvideosrc + openh264enc, 1080p default / 720p option, toggle on/off mid-call
+- **Receive remote video** — VP8 and H.264 codec auto-detection, decoded via GStreamer appsink to Qt VideoOutput. Tested working via MCU (Janus).
+- **Send camera** — ksvideosrc (JPEG capture + jpegdec for HD) → openh264enc → rtph264pay, 1080p/720p with auto-fallback, toggle mid-call
+- **SCTP data channel support** — required for MCU SDP compatibility (Janus includes datachannel m-line)
 - **CallWindow video layout** — remote video fills window, controls auto-hide after 3s, camera toggle button, duration overlay
 - **Settings** — camera device selection, video quality preset (Full HD / HD), persisted via Qt.labs.settings
 

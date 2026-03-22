@@ -19,9 +19,14 @@
 - **GStreamer plugins**: vpx, openh264, videoconvertscale, winks
 
 ### Known issues for v0.8.0
-- **Video calls untested** — video receive/send code is in place but needs real call testing with browser peer
-- **Echo cancellation**: deferred to v0.9.0 (WASAPI2 AEC not available in MSYS2 GStreamer)
+- **Video receive WORKS** — tested with browser peer, VP8 decode via MCU confirmed working
+- **Camera send WORKS** — JPEG capture pipeline (jpegdec), but ksvideosrc uses exclusive Kernel Streaming access. Browser and TalQ can't share camera simultaneously. Fix: enable Windows Frame Server Mode (`HKLM\SOFTWARE\Microsoft\Windows Media Foundation\Platform\EnableFrameServerMode=1`, needs admin + reboot)
+- **TalQ appears as "Guest"** in browser call view — session not properly identified by NC Talk call API
+- **Ghost participants** — previous call sessions may linger as guests in the room
+- **SCTP plugin required** — `libgstsctp.dll` must be in gst-plugins/ (MCU SDP includes datachannel m-line)
+- **Echo cancellation**: deferred to v0.9.0
 - **Qt6::Multimedia must be installed separately**: `aqt install-qt windows desktop 6.8.2 win64_mingw --modules qtmultimedia -O C:/Qt`
+- **GStreamer plugins needed for camera**: `libgstjpeg.dll` + `libjpeg-8.dll` in dist
 
 ### v0.7.1 — Chat Reliability & UX (PATCH RELEASE)
 - **Fixed message cache** — stores original server JSON instead of reconstructed subset; file attachments, mentions, and thread metadata no longer lost after conversation switch
@@ -140,7 +145,9 @@ cmake --build . --target talq
 
 ### GStreamer plugins (copy to gst-plugins/ next to exe)
 ```bash
-mkdir -p gst-plugins && cp /c/msys64/mingw64/lib/gstreamer-1.0/libgst{coreelements,audioconvert,audioresample,autodetect,dtls,nice,opus,rtp,rtpmanager,srtp,wasapi2,webrtc,app,level,vpx,openh264,videoconvertscale,winks}.dll gst-plugins/
+mkdir -p gst-plugins && cp /c/msys64/mingw64/lib/gstreamer-1.0/libgst{coreelements,audioconvert,audioresample,autodetect,dtls,nice,opus,rtp,rtpmanager,srtp,wasapi2,webrtc,app,level,vpx,openh264,videoconvertscale,winks,sctp,jpeg}.dll gst-plugins/
+# Also copy runtime deps:
+cp /c/msys64/mingw64/bin/libjpeg-8.dll dist/
 ```
 
 ### Run (debug build needs DLLs deployed alongside via windeployqt or from dist/)
