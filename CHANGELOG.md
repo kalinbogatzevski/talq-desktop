@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.8.1 (2026-03-22)
+
+### Settings Dialog
+- **Full settings dialog** — 4-tab layout (Audio & Video, Notifications, General, Account) with dark mode styling
+- **Device persistence** — mic, speaker, and camera selections saved via QSettings, restored on app restart (matches by name, falls back to device ID for disambiguation)
+- **Notification settings** — enable/disable, style (in-app popup vs Windows toast), sound mode (TalQ chime / system / none), all persisted
+- **General settings** — start with Windows (registry auto-start), start minimized to tray, close to tray toggle
+- **Account tab** — avatar, display name, server URL, Nextcloud/Talk versions, logout button
+- **Click avatar to open** — click your avatar or display name in the sidebar header to open settings
+
+### Per-Conversation Mute
+- **Right-click mute** — right-click any conversation in the sidebar to Mute/Unmute
+- **Server-synced** — uses Nextcloud Talk API (`/api/v4/room/{token}/notify`), persists across devices
+- **Visual indicator** — "Muted" label shown on muted conversations
+
 ## v0.8.0 (2026-03-22)
 
 ### Video Calls
