@@ -81,6 +81,11 @@ qt_add_qml_module(talq
         src/qml/IncomingCallPopup.qml
         src/qml/DebugOverlay.qml
         src/qml/SettingsDialog.qml
+        src/qml/TqAvatar.qml
+        src/qml/TqIconButton.qml
+        src/qml/TqBadge.qml
+        src/qml/TqSwitch.qml
+        src/qml/TqComboBox.qml
     RESOURCES
         resources/resources.qrc
 )
