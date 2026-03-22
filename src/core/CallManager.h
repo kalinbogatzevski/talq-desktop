@@ -93,6 +93,7 @@ private:
     QString m_remotePeerId;
     bool m_muted = false;
     bool m_cameraOn = false;
+    bool m_cameraFallbackTried = false;
     bool m_withVideo = false;
     int m_callDuration = 0;
     double m_audioLevel = 0.0;
