@@ -39,16 +39,10 @@ Window {
             spacing: Theme.spacingNormal
 
             // Caller avatar with pulse
-            Rectangle {
+            TqAvatar {
                 Layout.alignment: Qt.AlignHCenter
-                width: 56; height: 56; radius: 28
-                color: Theme.accent
-
-                Label {
-                    anchors.centerIn: parent
-                    text: callPopup.callerName.length > 0 ? callPopup.callerName[0].toUpperCase() : "?"
-                    font.pixelSize: 22; font.weight: Font.Bold; color: "white"
-                }
+                displayName: callPopup.callerName
+                size: 56
 
                 SequentialAnimation on scale {
                     loops: Animation.Infinite
