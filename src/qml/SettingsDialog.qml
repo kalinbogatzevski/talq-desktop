@@ -41,6 +41,7 @@ Window {
     }
 
     component StyledComboBox: ComboBox {
+        id: styledCombo
         Layout.fillWidth: true
         background: Rectangle {
             radius: Theme.radiusSmall
@@ -50,22 +51,38 @@ Window {
         }
         contentItem: Text {
             leftPadding: 10
-            text: parent.displayText
+            rightPadding: 30
+            text: styledCombo.displayText
             color: Theme.textPrimary
             font.pixelSize: Theme.fontSizeSmall
             verticalAlignment: Text.AlignVCenter
             elide: Text.ElideRight
         }
         indicator: Text {
-            x: parent.width - width - 10
+            x: styledCombo.width - width - 10
             anchors.verticalCenter: parent.verticalCenter
             text: "\u25BE"
             color: Theme.textSecondary
             font.pixelSize: 12
         }
+        delegate: ItemDelegate {
+            required property int index
+            required property string modelData
+            width: styledCombo.width
+            highlighted: styledCombo.highlightedIndex === index
+            contentItem: Text {
+                text: modelData
+                color: highlighted ? "#000000" : Theme.textPrimary
+                font.pixelSize: Theme.fontSizeSmall
+                verticalAlignment: Text.AlignVCenter
+            }
+            background: Rectangle {
+                color: highlighted ? Theme.accent : Theme.bgSurface
+            }
+        }
         popup: Popup {
-            y: parent.height
-            width: parent.width
+            y: styledCombo.height
+            width: styledCombo.width
             implicitHeight: contentItem.implicitHeight + 2
             padding: 1
             background: Rectangle {
@@ -77,23 +94,10 @@ Window {
             contentItem: ListView {
                 clip: true
                 implicitHeight: contentHeight
-                model: parent.parent.delegateModel
-                currentIndex: parent.parent.highlightedIndex
+                model: styledCombo.popup.visible ? styledCombo.delegateModel : null
+                currentIndex: styledCombo.highlightedIndex
                 ScrollIndicator.vertical: ScrollIndicator {}
             }
-        }
-        delegate: ItemDelegate {
-            width: parent ? parent.width : 0
-            contentItem: Text {
-                text: modelData
-                color: highlighted ? "#000000" : Theme.textPrimary
-                font.pixelSize: Theme.fontSizeSmall
-                verticalAlignment: Text.AlignVCenter
-            }
-            background: Rectangle {
-                color: highlighted ? Theme.accent : "transparent"
-            }
-            highlighted: parent && parent.currentIndex === index
         }
     }
 
