@@ -115,21 +115,10 @@ ItemDelegate {
                 }
 
                 // Unread count badge
-                Rectangle {
+                TqBadge {
+                    count: unreadCount
                     visible: unreadCount > 0 && !selected
-                    width: Math.max(20, unreadLabel.implicitWidth + 10)
-                    height: 20
-                    radius: 10
-                    color: threadItem.threadColor
-
-                    Label {
-                        id: unreadLabel
-                        anchors.centerIn: parent
-                        text: unreadCount > 99 ? "99+" : unreadCount
-                        font.pixelSize: 10
-                        font.weight: Font.Bold
-                        color: "white"
-                    }
+                    badgeColor: threadItem.threadColor
 
                     scale: visible ? 1 : 0
                     Behavior on scale { NumberAnimation { duration: Theme.animNormal; easing.type: Easing.OutBack } }

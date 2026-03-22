@@ -42,68 +42,24 @@ Item {
                     Behavior on anchors.rightMargin { NumberAnimation { duration: Theme.animNormal; easing.type: Easing.OutCubic } }
 
                     Item {
-                        width: 32
-                        height: 32
+                        width: Theme.avatarSizeSmall
+                        height: Theme.avatarSizeSmall
                         Layout.alignment: sidebar.squeezed ? Qt.AlignHCenter : Qt.AlignVCenter
-                        Layout.leftMargin: sidebar.squeezed ? (parent.width - 32) / 2 : 0
+                        Layout.leftMargin: sidebar.squeezed ? (parent.width - Theme.avatarSizeSmall) / 2 : 0
 
-                        // User avatar
-                        Image {
-                            id: headerAvatar
+                        TqAvatar {
                             anchors.fill: parent
-                            source: auth.userId.length > 0 ? "image://avatar/" + auth.userId : ""
-                            sourceSize: Qt.size(32, 32)
-                            visible: status === Image.Ready
-                            fillMode: Image.PreserveAspectFit
-                        }
-
-                        // Fallback
-                        Rectangle {
-                            anchors.fill: parent
-                            radius: 16
-                            visible: headerAvatar.status !== Image.Ready
-                            color: Theme.accent
-
-                            Label {
-                                anchors.centerIn: parent
-                                text: auth.displayName.length > 0 ? auth.displayName[0].toUpperCase() : "?"
-                                font.pixelSize: 14
-                                font.weight: Font.DemiBold
-                                color: "white"
-                            }
+                            userId: auth.userId
+                            displayName: auth.displayName
+                            size: Theme.avatarSizeSmall
+                            showStatus: true
+                            status: pushClient.connected ? "online" : messageModel.connected ? "away" : "offline"
                         }
 
                         MouseArea {
                             anchors.fill: parent
                             cursorShape: Qt.PointingHandCursor
                             onClicked: settingsDialog.visible = true
-                        }
-
-                        // Connection status LED (green = push live, amber = polling, red = disconnected)
-                        Rectangle {
-                            anchors.right: parent.right
-                            anchors.bottom: parent.bottom
-                            width: 10; height: 10; radius: 5
-                            color: pushClient.connected ? Theme.online
-                                 : messageModel.connected ? Theme.warning
-                                 : Theme.danger
-                            border.color: Theme.bgSecondary
-                            border.width: 2
-
-                            SequentialAnimation on opacity {
-                                loops: (!pushClient.connected && !messageModel.connected) ? Animation.Infinite : 0
-                                running: !pushClient.connected && !messageModel.connected
-                                NumberAnimation { from: 1.0; to: 0.3; duration: 800 }
-                                NumberAnimation { from: 0.3; to: 1.0; duration: 800 }
-                            }
-
-                            ToolTip.visible: ledHover.hovered
-                            ToolTip.text: pushClient.connected ? "Push connected (real-time)"
-                                        : messageModel.connected ? "Polling (delayed)"
-                                        : "Disconnected"
-                            ToolTip.delay: 300
-
-                            HoverHandler { id: ledHover }
                         }
                     }
 
@@ -125,9 +81,9 @@ Item {
                         }
                     }
 
-                    ToolButton {
-                        width: 36
-                        height: 36
+                    TqIconButton {
+                        icon: Theme.darkMode ? "\u2600" : "\u263E"
+                        size: Theme.buttonSizeMedium
                         visible: !sidebar.squeezed
                         opacity: sidebar.squeezed ? 0 : 1
                         Behavior on opacity { NumberAnimation { duration: Theme.animFast } }
@@ -135,24 +91,11 @@ Item {
                         ToolTip.visible: hovered
                         ToolTip.text: Theme.darkMode ? "Switch to light mode" : "Switch to dark mode"
                         ToolTip.delay: 500
-                        contentItem: Label {
-                            text: Theme.darkMode ? "\u2600" : "\u263E"  // ☀ / ☾
-                            font.pixelSize: 16
-                            color: parent.hovered ? Theme.accent : Theme.textSecondary
-                            horizontalAlignment: Text.AlignHCenter
-                            verticalAlignment: Text.AlignVCenter
-                            Behavior on color { ColorAnimation { duration: Theme.animFast } }
-                        }
-                        background: Rectangle {
-                            radius: 18
-                            color: parent.hovered ? Theme.bgHover : "transparent"
-                            Behavior on color { ColorAnimation { duration: Theme.animFast } }
-                        }
                     }
 
-                    ToolButton {
-                        width: 36
-                        height: 36
+                    TqIconButton {
+                        icon: "\u21BB"
+                        size: Theme.buttonSizeMedium
                         visible: !sidebar.squeezed
                         opacity: sidebar.squeezed ? 0 : 1
                         Behavior on opacity { NumberAnimation { duration: Theme.animFast } }
@@ -160,25 +103,11 @@ Item {
                         ToolTip.visible: hovered
                         ToolTip.text: "Refresh conversations"
                         ToolTip.delay: 500
-                        contentItem: Label {
-                            text: "\u21BB"  // ↻ refresh arrow
-                            font.pixelSize: 18
-                            font.weight: Font.DemiBold
-                            color: parent.hovered ? Theme.textPrimary : Theme.textSecondary
-                            horizontalAlignment: Text.AlignHCenter
-                            verticalAlignment: Text.AlignVCenter
-                            Behavior on color { ColorAnimation { duration: Theme.animFast } }
-                        }
-                        background: Rectangle {
-                            radius: 18
-                            color: parent.hovered ? Theme.bgHover : "transparent"
-                            Behavior on color { ColorAnimation { duration: Theme.animFast } }
-                        }
                     }
 
-                    ToolButton {
-                        width: 36
-                        height: 36
+                    TqIconButton {
+                        icon: "\u23FB"
+                        size: Theme.buttonSizeMedium
                         visible: !sidebar.squeezed
                         opacity: sidebar.squeezed ? 0 : 1
                         Behavior on opacity { NumberAnimation { duration: Theme.animFast } }
@@ -186,19 +115,6 @@ Item {
                         ToolTip.visible: hovered
                         ToolTip.text: "Exit"
                         ToolTip.delay: 500
-                        contentItem: Label {
-                            text: "\u23FB"  // ⏻ power symbol
-                            font.pixelSize: 16
-                            color: parent.hovered ? Theme.danger : Theme.textSecondary
-                            horizontalAlignment: Text.AlignHCenter
-                            verticalAlignment: Text.AlignVCenter
-                            Behavior on color { ColorAnimation { duration: Theme.animFast } }
-                        }
-                        background: Rectangle {
-                            radius: 18
-                            color: parent.hovered ? Theme.bgHover : "transparent"
-                            Behavior on color { ColorAnimation { duration: Theme.animFast } }
-                        }
                     }
 
                     // Exit confirmation dialog
