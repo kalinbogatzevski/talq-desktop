@@ -54,6 +54,7 @@ qt_add_executable(talq
     src/core/CallManager.cpp
     src/core/CallSignaling.cpp
     src/core/DebugMonitor.cpp
+    src/core/AppSettings.cpp
     resources/talq.rc
 )
 
