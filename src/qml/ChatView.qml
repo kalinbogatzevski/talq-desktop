@@ -41,7 +41,7 @@ Page {
         replyToId = msgId
         replyToAuthor = author
         replyToText = text
-        Qt.callLater(function() { messageListView.positionViewAtEnd() })
+        Qt.callLater(messageListView.scrollToBottom)
     }
 
     function cancelReply() {
@@ -425,34 +425,28 @@ Page {
         spacing: 2
         bottomMargin: Theme.spacingLarge
         boundsBehavior: Flickable.StopAtBounds
-        interactive: false  // disable drag-to-scroll; use wheel + scrollbar instead (allows text selection in messages)
 
         property bool autoScrolling: true
         property int previousCount: 0
 
-        // Mouse wheel scrolling (interactive: false disables built-in wheel)
-        WheelHandler {
-            onWheel: function(event) {
-                var delta = event.angleDelta.y
-                messageListView.contentY -= delta
-                // Clamp
-                if (messageListView.contentY < messageListView.originY)
-                    messageListView.contentY = messageListView.originY
-                var maxY = messageListView.contentHeight - messageListView.height + messageListView.originY
-                if (messageListView.contentY > maxY)
-                    messageListView.contentY = maxY
+        function scrollToBottom() {
+            positionViewAtEnd()
+        }
 
-                // Update auto-scroll state
-                var atBottom = (messageListView.contentY + messageListView.height >= messageListView.contentHeight - 40)
-                if (atBottom)
-                    messageListView.autoScrolling = true
-                else
-                    messageListView.autoScrolling = false
+        onDraggingChanged: {
+            if (dragging) autoScrolling = false
+        }
+
+        onFlickStarted: autoScrolling = false
+
+        onMovingChanged: {
+            if (!moving) {
+                var atBottom = (contentY + height >= contentHeight - 40)
+                if (atBottom) autoScrolling = true
             }
         }
 
         onContentYChanged: {
-            // Lazy load older messages when near the top
             if (contentY < 200 && !autoScrolling && !messageModel.loading
                     && messageModel.hasMoreHistory && count > 0) {
                 messageModel.loadHistory()
@@ -460,15 +454,10 @@ Page {
         }
 
         onCountChanged: {
-            if (count > previousCount && previousCount > 0) {
-                if (autoScrolling) {
-                    // New messages at end — scroll to bottom
-                    Qt.callLater(function() { positionViewAtIndex(count - 1, ListView.End) })
-                } else {
-                    // History prepended — keep current view position stable
-                    var added = count - previousCount
-                    positionViewAtIndex(added, ListView.Beginning)
-                }
+            if (count > previousCount && previousCount > 0 && !autoScrolling) {
+                // History prepended — keep current view position stable
+                var added = count - previousCount
+                positionViewAtIndex(added, ListView.Beginning)
             }
             previousCount = count
         }
@@ -727,7 +716,7 @@ Page {
             hoverEnabled: true
             onClicked: {
                 messageListView.autoScrolling = true
-                messageListView.positionViewAtIndex(messageListView.count - 1, ListView.End)
+                messageListView.scrollToBottom()
             }
         }
 
@@ -746,9 +735,7 @@ Page {
         }
         function onNewMessagesAtEnd() {
             if (messageListView.count > 0 && messageListView.autoScrolling)
-                Qt.callLater(function() {
-                    messageListView.positionViewAtIndex(messageListView.count - 1, ListView.End)
-                })
+                Qt.callLater(messageListView.scrollToBottom)
         }
         function onPasteReady(filePath, width, height) {
             pasteBar.pendingPath = filePath
