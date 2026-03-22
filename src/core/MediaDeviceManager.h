@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QObject>
+#include <QSettings>
 #include <QStringList>
 #include <QVector>
 #include <gst/gst.h>
@@ -23,6 +24,8 @@ public:
     ~MediaDeviceManager() override;
 
     Q_INVOKABLE void refresh();
+    Q_INVOKABLE void saveDevices();
+    void restoreDevices();
 
     Q_PROPERTY(int selectedAudioInput READ selectedAudioInput WRITE setSelectedAudioInput NOTIFY selectedChanged)
     Q_PROPERTY(int selectedAudioOutput READ selectedAudioOutput WRITE setSelectedAudioOutput NOTIFY selectedChanged)
@@ -31,9 +34,9 @@ public:
     int selectedAudioInput() const { return m_selectedInput; }
     int selectedAudioOutput() const { return m_selectedOutput; }
     int selectedVideoInput() const { return m_selectedVideo; }
-    void setSelectedAudioInput(int idx) { if (m_selectedInput != idx) { m_selectedInput = idx; emit selectedChanged(); } }
-    void setSelectedAudioOutput(int idx) { if (m_selectedOutput != idx) { m_selectedOutput = idx; emit selectedChanged(); } }
-    void setSelectedVideoInput(int idx) { if (m_selectedVideo != idx) { m_selectedVideo = idx; emit selectedChanged(); } }
+    void setSelectedAudioInput(int idx) { if (m_selectedInput != idx) { m_selectedInput = idx; emit selectedChanged(); saveDevices(); } }
+    void setSelectedAudioOutput(int idx) { if (m_selectedOutput != idx) { m_selectedOutput = idx; emit selectedChanged(); saveDevices(); } }
+    void setSelectedVideoInput(int idx) { if (m_selectedVideo != idx) { m_selectedVideo = idx; emit selectedChanged(); saveDevices(); } }
 
     // Get selected device name for pipeline configuration
     QString selectedInputName() const { return (m_selectedInput >= 0 && m_selectedInput < m_audioInputs.size()) ? m_audioInputs[m_selectedInput].name : QString(); }
@@ -62,4 +65,5 @@ private:
     QVector<MediaDevice> m_audioInputs;
     QVector<MediaDevice> m_audioOutputs;
     QVector<MediaDevice> m_videoInputs;
+    QSettings m_settings;
 };
