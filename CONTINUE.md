@@ -12,11 +12,16 @@
 - **Decline fix**: leave room (not call), m_joinedCall tracking, no more 404
 - **Auto-decline fix**: m_userActionReady gate on popup Component.onCompleted
 - **Chat scroll**: stable scroll-to-bottom, image height reservation, no layout shift
-- **Image viewer**: in-app dark window, click/Esc to close
+- **Image previews**: full aspect ratio display, Nextcloud preview API with `a=1` for uncropped, click opens in Windows default viewer
 - **Context menu**: Download + Open in Nextcloud for file messages
 - **Reply bubbles**: min width 260px when quoting, prevents clipping
 - **Qt6::Multimedia**: QVideoSink, QVideoFrame, VideoOutput
 - **GStreamer plugins**: vpx, openh264, videoconvertscale, winks
+
+### Known issues for v0.8.0
+- **Video calls untested** — video receive/send code is in place but needs real call testing with browser peer
+- **Echo cancellation**: deferred to v0.9.0 (WASAPI2 AEC not available in MSYS2 GStreamer)
+- **Qt6::Multimedia must be installed separately**: `aqt install-qt windows desktop 6.8.2 win64_mingw --modules qtmultimedia -O C:/Qt`
 
 ### v0.7.1 — Chat Reliability & UX (PATCH RELEASE)
 - **Fixed message cache** — stores original server JSON instead of reconstructed subset; file attachments, mentions, and thread metadata no longer lost after conversation switch
@@ -110,18 +115,46 @@ Incoming:
 - TURN: `turn:turn-za.123net.link`, `turn:turn-bg.123net.link` (with time-limited credentials)
 - Hello: v1.0 (v2.0 needs JWT auth we don't have)
 
-## Build (home machine)
+## Build
+
+### Prerequisites
+- Qt 6.8.2 via aqtinstall at `C:\Qt` (MinGW 13.1)
+- Qt6::Multimedia module: `aqt install-qt windows desktop 6.8.2 win64_mingw --modules qtmultimedia -O C:/Qt`
+- MSYS2 MinGW64 with GStreamer 1.26.9
+
+### Home machine
 ```bash
 export PATH="/c/msys64/mingw64/bin:/c/Qt/Tools/CMake_64/bin:/c/Qt/Tools/Ninja:/c/Qt/6.8.2/mingw_64/bin:$PATH"
 cd C:/build/talq
 cmake C:/src/talk-desktop-qt -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=C:/Qt/6.8.2/mingw_64
 cmake --build . --target talq
-# Ensure GStreamer plugins are in gst-plugins/ next to exe:
+```
+
+### Office machine
+```bash
+export PATH="/c/Qt/Tools/mingw1310_64/bin:/c/Qt/Tools/CMake_64/bin:/c/Qt/Tools/Ninja:/c/Qt/6.8.2/mingw_64/bin:/c/msys64/mingw64/bin:$PATH"
+cd C:/build/talq
+cmake C:/Projects/talk-desktop-qt -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_PREFIX_PATH=C:/Qt/6.8.2/mingw_64 -DCMAKE_CXX_COMPILER=g++ -Wno-dev
+cmake --build . --target talq
+```
+
+### GStreamer plugins (copy to gst-plugins/ next to exe)
+```bash
 mkdir -p gst-plugins && cp /c/msys64/mingw64/lib/gstreamer-1.0/libgst{coreelements,audioconvert,audioresample,autodetect,dtls,nice,opus,rtp,rtpmanager,srtp,wasapi2,webrtc,app,level,vpx,openh264,videoconvertscale,winks}.dll gst-plugins/
-# Run:
+```
+
+### Run (debug build needs DLLs deployed alongside via windeployqt or from dist/)
+```bash
 export QT_FORCE_STDERR_LOGGING=1
 C:/build/talq/talq.exe > /tmp/talq-debug.log 2>&1 &
 ```
+
+### Packaging
+- Inno Setup at `C:\Users\bogat\InnoSetup\ISCC.exe`
+- `windeployqt6.exe --no-translations --qmldir src/qml talq.exe`
+- Copy QtMultimedia QML module manually: `cp -r /c/Qt/6.8.2/mingw_64/qml/QtMultimedia dist/qml/`
+- Copy GStreamer + transitive DLLs (see dist folder for full list)
+- GitLab API token "Talk QT" (id: 17) with `api` scope for uploads
 
 ## What was done (v0.8.0)
 
