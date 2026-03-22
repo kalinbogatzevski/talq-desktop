@@ -73,6 +73,12 @@ Item {
                             }
                         }
 
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: settingsDialog.visible = true
+                        }
+
                         // Connection status LED (green = push live, amber = polling, red = disconnected)
                         Rectangle {
                             anchors.right: parent.right
@@ -111,6 +117,12 @@ Item {
                         visible: !sidebar.squeezed
                         opacity: sidebar.squeezed ? 0 : 1
                         Behavior on opacity { NumberAnimation { duration: Theme.animFast } }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: settingsDialog.visible = true
+                        }
                     }
 
                     ToolButton {

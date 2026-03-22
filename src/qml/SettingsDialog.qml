@@ -15,9 +15,23 @@ Window {
     modality: Qt.ApplicationModal
     visible: false
 
+    // --- Dark mode palette for ALL child controls ---
+    palette.window: Theme.bgPrimary
+    palette.base: Theme.bgSurface
+    palette.alternateBase: Theme.bgSecondary
+    palette.button: Theme.bgSurface
+    palette.text: Theme.textPrimary
+    palette.windowText: Theme.textPrimary
+    palette.buttonText: Theme.textPrimary
+    palette.highlight: Theme.accent
+    palette.highlightedText: "#000000"
+    palette.mid: Theme.border
+    palette.dark: Theme.bgSecondary
+    palette.light: Theme.bgHover
+    palette.midlight: Theme.bgHover
+
     // --- Inline components for repeated patterns ---
 
-    // Uppercase section header (used 8 times across tabs)
     component SectionHeader: Label {
         font.pixelSize: 10
         font.weight: Font.DemiBold
@@ -26,11 +40,97 @@ Window {
         opacity: 0.7
     }
 
-    // Toggle button for option groups (used 7 times across tabs)
+    component StyledComboBox: ComboBox {
+        Layout.fillWidth: true
+        background: Rectangle {
+            radius: Theme.radiusSmall
+            color: Theme.bgSurface
+            border.width: 1
+            border.color: Theme.border
+        }
+        contentItem: Text {
+            leftPadding: 10
+            text: parent.displayText
+            color: Theme.textPrimary
+            font.pixelSize: Theme.fontSizeSmall
+            verticalAlignment: Text.AlignVCenter
+            elide: Text.ElideRight
+        }
+        indicator: Text {
+            x: parent.width - width - 10
+            anchors.verticalCenter: parent.verticalCenter
+            text: "\u25BE"
+            color: Theme.textSecondary
+            font.pixelSize: 12
+        }
+        popup: Popup {
+            y: parent.height
+            width: parent.width
+            implicitHeight: contentItem.implicitHeight + 2
+            padding: 1
+            background: Rectangle {
+                color: Theme.bgSurface
+                border.width: 1
+                border.color: Theme.border
+                radius: Theme.radiusSmall
+            }
+            contentItem: ListView {
+                clip: true
+                implicitHeight: contentHeight
+                model: parent.parent.delegateModel
+                currentIndex: parent.parent.highlightedIndex
+                ScrollIndicator.vertical: ScrollIndicator {}
+            }
+        }
+        delegate: ItemDelegate {
+            width: parent ? parent.width : 0
+            contentItem: Text {
+                text: modelData
+                color: highlighted ? "#000000" : Theme.textPrimary
+                font.pixelSize: Theme.fontSizeSmall
+                verticalAlignment: Text.AlignVCenter
+            }
+            background: Rectangle {
+                color: highlighted ? Theme.accent : "transparent"
+            }
+            highlighted: parent && parent.currentIndex === index
+        }
+    }
+
+    component StyledSwitch: Switch {
+        indicator: Rectangle {
+            x: parent.leftPadding
+            anchors.verticalCenter: parent.verticalCenter
+            width: 40; height: 22; radius: 11
+            color: parent.checked ? Theme.accent : Theme.bgSurface
+            border.width: 1
+            border.color: parent.checked ? Theme.accent : Theme.border
+
+            Rectangle {
+                x: parent.parent.checked ? parent.width - width - 3 : 3
+                anchors.verticalCenter: parent.verticalCenter
+                width: 16; height: 16; radius: 8
+                color: parent.parent.checked ? "#ffffff" : Theme.textSecondary
+                Behavior on x { NumberAnimation { duration: Theme.animFast } }
+            }
+        }
+    }
+
     component OptionButton: Button {
-        palette.button: checked ? Theme.accent : Theme.bgSurface
-        palette.buttonText: checked ? "#000000" : Theme.textSecondary
-        font.pixelSize: Theme.fontSizeSmall
+        background: Rectangle {
+            radius: Theme.radiusSmall
+            color: parent.checked ? Theme.accent : Theme.bgSurface
+            border.width: 1
+            border.color: parent.checked ? Theme.accent : Theme.border
+        }
+        contentItem: Text {
+            text: parent.text
+            color: parent.checked ? "#000000" : Theme.textSecondary
+            font.pixelSize: Theme.fontSizeSmall
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+            padding: 6
+        }
     }
 
     // --- Persistence blocks ---
@@ -65,37 +165,30 @@ Window {
             Layout.fillWidth: true
             background: Rectangle { color: Theme.bgSecondary }
 
-            TabButton {
-                text: "Audio && Video"
-                palette.button: Theme.bgSecondary
-                palette.buttonText: tabBar.currentIndex === 0 ? Theme.accent : Theme.textSecondary
-                font.pixelSize: Theme.fontSizeSmall
+            Repeater {
+                model: ["Audio & Video", "Notifications", "General", "Account"]
+                TabButton {
+                    text: modelData
+                    width: settingsDialog.width / 4
+                    font.pixelSize: Theme.fontSizeSmall
+                    background: Rectangle {
+                        color: Theme.bgSecondary
+                        Rectangle {
+                            anchors.bottom: parent.bottom
+                            width: parent.width; height: 2
+                            color: tabBar.currentIndex === index ? Theme.accent : "transparent"
+                        }
+                    }
+                    contentItem: Text {
+                        text: parent.text
+                        font: parent.font
+                        color: tabBar.currentIndex === index ? Theme.accent : Theme.textSecondary
+                        horizontalAlignment: Text.AlignHCenter
+                        verticalAlignment: Text.AlignVCenter
+                        padding: 10
+                    }
+                }
             }
-            TabButton {
-                text: "Notifications"
-                palette.button: Theme.bgSecondary
-                palette.buttonText: tabBar.currentIndex === 1 ? Theme.accent : Theme.textSecondary
-                font.pixelSize: Theme.fontSizeSmall
-            }
-            TabButton {
-                text: "General"
-                palette.button: Theme.bgSecondary
-                palette.buttonText: tabBar.currentIndex === 2 ? Theme.accent : Theme.textSecondary
-                font.pixelSize: Theme.fontSizeSmall
-            }
-            TabButton {
-                text: "Account"
-                palette.button: Theme.bgSecondary
-                palette.buttonText: tabBar.currentIndex === 3 ? Theme.accent : Theme.textSecondary
-                font.pixelSize: Theme.fontSizeSmall
-            }
-        }
-
-        // Active tab indicator line
-        Rectangle {
-            Layout.fillWidth: true
-            height: 2
-            color: Theme.accent
         }
 
         StackLayout {
@@ -107,21 +200,17 @@ Window {
             ScrollView {
                 ColumnLayout {
                     width: settingsDialog.width - 40
+                    x: 20
                     spacing: 12
-                    anchors.margins: 20
 
                     Item { height: 20 }
 
                     SectionHeader { text: "MICROPHONE" }
-                    ComboBox {
-                        Layout.fillWidth: true
+                    StyledComboBox {
                         model: deviceManager.audioInputNames
                         currentIndex: deviceManager.selectedAudioInput >= 0 ? deviceManager.selectedAudioInput : 0
                         onActivated: (index) => deviceManager.selectedAudioInput = index
                         enabled: deviceManager.audioInputNames.length > 0
-                        palette.window: Theme.bgSurface
-                        palette.text: Theme.textPrimary
-                        palette.buttonText: Theme.textPrimary
                     }
                     Label {
                         visible: deviceManager.audioInputNames.length === 0
@@ -130,15 +219,11 @@ Window {
                     }
 
                     SectionHeader { text: "SPEAKER"; Layout.topMargin: 4 }
-                    ComboBox {
-                        Layout.fillWidth: true
+                    StyledComboBox {
                         model: deviceManager.audioOutputNames
                         currentIndex: deviceManager.selectedAudioOutput >= 0 ? deviceManager.selectedAudioOutput : 0
                         onActivated: (index) => deviceManager.selectedAudioOutput = index
                         enabled: deviceManager.audioOutputNames.length > 0
-                        palette.window: Theme.bgSurface
-                        palette.text: Theme.textPrimary
-                        palette.buttonText: Theme.textPrimary
                     }
                     Label {
                         visible: deviceManager.audioOutputNames.length === 0
@@ -147,15 +232,11 @@ Window {
                     }
 
                     SectionHeader { text: "CAMERA"; Layout.topMargin: 4 }
-                    ComboBox {
-                        Layout.fillWidth: true
+                    StyledComboBox {
                         model: deviceManager.videoInputNames
                         currentIndex: deviceManager.selectedVideoInput >= 0 ? deviceManager.selectedVideoInput : 0
                         onActivated: (index) => deviceManager.selectedVideoInput = index
                         enabled: deviceManager.videoInputNames.length > 0
-                        palette.window: Theme.bgSurface
-                        palette.text: Theme.textPrimary
-                        palette.buttonText: Theme.textPrimary
                     }
                     Label {
                         visible: deviceManager.videoInputNames.length === 0
@@ -190,9 +271,19 @@ Window {
                         Button {
                             text: "Refresh Devices"
                             onClicked: deviceManager.refresh()
-                            palette.button: Theme.bgSurface
-                            palette.buttonText: Theme.textPrimary
                             font.pixelSize: Theme.fontSizeSmall
+                            background: Rectangle {
+                                radius: Theme.radiusSmall
+                                color: Theme.bgSurface
+                                border.width: 1
+                                border.color: Theme.border
+                            }
+                            contentItem: Text {
+                                text: parent.text; font: parent.font
+                                color: Theme.textPrimary
+                                horizontalAlignment: Text.AlignHCenter
+                                padding: 6
+                            }
                         }
                     }
 
@@ -204,8 +295,8 @@ Window {
             ScrollView {
                 ColumnLayout {
                     width: settingsDialog.width - 40
+                    x: 20
                     spacing: 12
-                    anchors.margins: 20
 
                     Item { height: 20 }
 
@@ -218,13 +309,12 @@ Window {
                             font.pixelSize: Theme.fontSizeNormal
                             Layout.fillWidth: true
                         }
-                        Switch {
+                        StyledSwitch {
                             checked: notifSettings.enabled
                             onToggled: {
                                 notifSettings.enabled = checked
                                 notifications.notificationsEnabled = checked
                             }
-                            palette.highlight: Theme.accent
                         }
                     }
 
@@ -296,8 +386,8 @@ Window {
             ScrollView {
                 ColumnLayout {
                     width: settingsDialog.width - 40
+                    x: 20
                     spacing: 12
-                    anchors.margins: 20
 
                     Item { height: 20 }
 
@@ -311,13 +401,12 @@ Window {
                             font.pixelSize: Theme.fontSizeNormal
                             Layout.fillWidth: true
                         }
-                        Switch {
+                        StyledSwitch {
                             checked: generalSettings.autoStart
                             onToggled: {
                                 generalSettings.autoStart = checked
                                 appSettings.setAutoStart(checked)
                             }
-                            palette.highlight: Theme.accent
                         }
                     }
 
@@ -329,10 +418,9 @@ Window {
                             font.pixelSize: Theme.fontSizeNormal
                             Layout.fillWidth: true
                         }
-                        Switch {
+                        StyledSwitch {
                             checked: generalSettings.startMinimized
                             onToggled: generalSettings.startMinimized = checked
-                            palette.highlight: Theme.accent
                         }
                     }
 
@@ -354,10 +442,9 @@ Window {
                                 font.pixelSize: 11
                             }
                         }
-                        Switch {
+                        StyledSwitch {
                             checked: generalSettings.closeToTray
                             onToggled: generalSettings.closeToTray = checked
-                            palette.highlight: Theme.accent
                         }
                     }
 
@@ -369,8 +456,8 @@ Window {
             ScrollView {
                 ColumnLayout {
                     width: settingsDialog.width - 40
+                    x: 20
                     spacing: 12
-                    anchors.margins: 20
 
                     Item { height: 20 }
 
@@ -458,9 +545,17 @@ Window {
                                 auth.logout()
                                 settingsDialog.visible = false
                             }
-                            palette.button: "#e07060"
-                            palette.buttonText: "white"
                             font.pixelSize: Theme.fontSizeSmall
+                            background: Rectangle {
+                                radius: Theme.radiusSmall
+                                color: "#e07060"
+                            }
+                            contentItem: Text {
+                                text: parent.text; font: parent.font
+                                color: "white"
+                                horizontalAlignment: Text.AlignHCenter
+                                padding: 6
+                            }
                         }
                     }
 
