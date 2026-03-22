@@ -224,15 +224,19 @@ void ConversationListModel::setHasTopics(const QString &token, bool has)
     }
 }
 
-void ConversationListModel::setNotificationLevel(int index, int level)
+void ConversationListModel::setNotificationLevel(int idx, int level)
 {
-    if (index < 0 || index >= m_conversations.size()) return;
-    const QString &token = m_conversations[index].token;
+    if (idx < 0 || idx >= m_conversations.size()) return;
+    QString token = m_conversations[idx].token;
     m_api->setNotificationLevel(token, level,
-        [this, index, level](bool success, const QJsonObject &, int) {
-            if (!success || index >= m_conversations.size()) return;
-            m_conversations[index].notificationLevel = level;
-            QModelIndex mi = this->index(index);
-            emit dataChanged(mi, mi, {NotificationLevelRole});
+        [this, token, level](bool success, const QJsonObject &, int) {
+            if (!success) return;
+            for (int i = 0; i < m_conversations.size(); ++i) {
+                if (m_conversations[i].token == token) {
+                    m_conversations[i].notificationLevel = level;
+                    emit dataChanged(index(i), index(i), {NotificationLevelRole});
+                    break;
+                }
+            }
         });
 }
