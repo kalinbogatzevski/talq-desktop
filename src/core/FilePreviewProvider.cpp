@@ -15,11 +15,13 @@ FilePreviewResponse::FilePreviewResponse(int fileId, const QSize &requestedSize,
         return;
     }
 
-    // Fetch from server
-    int w = requestedSize.width() > 0 ? requestedSize.width() : 400;
-    int h = requestedSize.height() > 0 ? requestedSize.height() : 400;
+    // Fetch from server — request wide rectangle to avoid square crop
+    int w = requestedSize.width() > 0 ? qMax(requestedSize.width(), 1024) : 1024;
+    int h = qMax(w * 3 / 4, 768);  // wide aspect to avoid cropping landscape images
+    qDebug() << "FilePreview: fetching fileId" << fileId << "at" << w << "x" << h << "(requested:" << requestedSize << ")";
 
-    QString path = QString("/index.php/core/preview?fileId=%1&x=%2&y=%3")
+    // a=1 preserves aspect ratio, forceIcon=0 gets actual preview
+    QString path = QString("/index.php/core/preview?fileId=%1&x=%2&y=%3&a=1&forceIcon=0&mode=cover")
         .arg(fileId).arg(w).arg(h);
 
     auto *reply = api->getAbsoluteUrl(path);
@@ -32,6 +34,7 @@ FilePreviewResponse::FilePreviewResponse(int fileId, const QSize &requestedSize,
             if (img.loadFromData(reply->readAll())) {
                 m_image = img;
                 cache[fileId] = img;
+                qDebug() << "FilePreview: loaded fileId" << fileId << "size:" << img.size();
             }
         } else {
             qDebug() << "Preview fetch failed for fileId" << fileId << reply->errorString();
