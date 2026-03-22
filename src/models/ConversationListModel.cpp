@@ -43,6 +43,7 @@ QVariant ConversationListModel::data(const QModelIndex &index, int role) const
             return QString();
         }
         case HasTopicsRole:     return c.hasTopics;
+        case NotificationLevelRole: return c.notificationLevel;
         default:                return {};
     }
 }
@@ -62,6 +63,7 @@ QHash<int, QByteArray> ConversationListModel::roleNames() const
         {ActorIdRole,       "participantUserId"},
         {UserStatusRole,    "userStatus"},
         {HasTopicsRole,     "hasTopics"},
+        {NotificationLevelRole, "notificationLevel"},
     };
 }
 
@@ -220,4 +222,17 @@ void ConversationListModel::setHasTopics(const QString &token, bool has)
             break;
         }
     }
+}
+
+void ConversationListModel::setNotificationLevel(int index, int level)
+{
+    if (index < 0 || index >= m_conversations.size()) return;
+    const QString &token = m_conversations[index].token;
+    m_api->setNotificationLevel(token, level,
+        [this, index, level](bool success, const QJsonObject &, int) {
+            if (!success || index >= m_conversations.size()) return;
+            m_conversations[index].notificationLevel = level;
+            QModelIndex mi = this->index(index);
+            emit dataChanged(mi, mi, {NotificationLevelRole});
+        });
 }

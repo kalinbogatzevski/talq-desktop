@@ -21,6 +21,7 @@ ItemDelegate {
     required property string participantUserId
     required property string userStatus
 
+    property int notificationLevel: 0  // 0=default, 1=always, 2=mention, 3=never
     property bool selected: false
     property string filterText: ""
     property bool squeezed: false
@@ -46,6 +47,25 @@ ItemDelegate {
             opacity: selected ? 1 : 0
             Behavior on opacity { NumberAnimation { duration: Theme.animNormal } }
         }
+    }
+
+    Menu {
+        id: contextMenu
+        palette.window: Theme.bgSurface
+        palette.text: Theme.textPrimary
+
+        MenuItem {
+            text: convItem.notificationLevel === 3 ? "Unmute" : "Mute"
+            onTriggered: {
+                let newLevel = convItem.notificationLevel === 3 ? 0 : 3
+                conversationModel.setNotificationLevel(convItem.index, newLevel)
+            }
+        }
+    }
+
+    TapHandler {
+        acceptedButtons: Qt.RightButton
+        onTapped: contextMenu.popup()
     }
 
     leftPadding: squeezed ? 0 : Theme.spacingLarge
@@ -215,6 +235,14 @@ ItemDelegate {
 
                         scale: visible ? 1 : 0
                         Behavior on scale { NumberAnimation { duration: Theme.animNormal; easing.type: Easing.OutBack } }
+                    }
+
+                    Label {
+                        visible: convItem.notificationLevel === 3
+                        text: "Muted"
+                        color: Theme.textSecondary
+                        font.pixelSize: 9
+                        opacity: 0.6
                     }
                 }
             }

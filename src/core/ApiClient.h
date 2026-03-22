@@ -43,6 +43,7 @@ public:
     void put(const QString &path, const QJsonObject &body, Callback callback);
     void del(const QString &path, Callback callback);
     void del(const QString &path, const QUrlQuery &params, Callback callback);
+    void setNotificationLevel(const QString &token, int level, Callback callback = nullptr);
 
     // Raw GET — caller handles the reply (for reading headers)
     QNetworkReply *getRaw(const QString &path, const QUrlQuery &params = QUrlQuery());

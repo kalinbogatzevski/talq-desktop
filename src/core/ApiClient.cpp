@@ -259,6 +259,14 @@ void ApiClient::trackReply(QNetworkReply *reply)
     });
 }
 
+void ApiClient::setNotificationLevel(const QString &token, int level, Callback callback)
+{
+    QJsonObject body;
+    body["level"] = level;
+    put("/apps/spreed/api/v4/room/" + token + "/notify", body,
+        callback ? callback : Callback([](bool, const QJsonObject &, int) {}));
+}
+
 void ApiClient::cancelAll()
 {
     for (auto *reply : m_pendingReplies) {
