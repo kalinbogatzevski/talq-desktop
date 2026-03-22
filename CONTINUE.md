@@ -1,83 +1,96 @@
-# TalQ v0.8.0 → v0.9.0 Continue Prompt
+# TalQ v0.8.1 → v0.9.0 Continue Prompt
 
 ## What was done (2026-03-22)
 
-### v0.8.0 — Video Calls (MAJOR RELEASE)
-- **Video receive**: VP8/H.264 auto-detection, GStreamer appsink → QVideoFrame → Qt VideoOutput
-- **Camera send**: ksvideosrc → openh264enc, 1080p/720p, toggle mid-call
-- **CallWindow**: VideoOutput fills window, overlay controls auto-hide, camera toggle, duration overlay
-- **Settings**: camera selection, video quality preset (Qt.labs.settings)
-- **TURN servers**: parsed from signaling settings, URL-encoded credentials, configured on webrtcbin
-- **Device selection**: mic/speaker IDs wired to wasapi2src/wasapi2sink
-- **Decline fix**: leave room (not call), m_joinedCall tracking, no more 404
-- **Auto-decline fix**: m_userActionReady gate on popup Component.onCompleted
-- **Chat scroll**: stable scroll-to-bottom, image height reservation, no layout shift
-- **Image previews**: full aspect ratio display, Nextcloud preview API with `a=1` for uncropped, click opens in Windows default viewer
-- **Context menu**: Download + Open in Nextcloud for file messages
-- **Reply bubbles**: min width 260px when quoting, prevents clipping
-- **Qt6::Multimedia**: QVideoSink, QVideoFrame, VideoOutput
-- **GStreamer plugins**: vpx, openh264, videoconvertscale, winks
+### v0.8.1 — Settings Dialog & Design System (PATCH RELEASE)
 
-### Known issues for v0.8.0
-- **Video receive WORKS** — tested with browser peer, VP8 decode via MCU confirmed working
-- **Camera send WORKS** — JPEG capture pipeline (jpegdec), but ksvideosrc uses exclusive Kernel Streaming access. Browser and TalQ can't share camera simultaneously. Fix: enable Windows Frame Server Mode (`HKLM\SOFTWARE\Microsoft\Windows Media Foundation\Platform\EnableFrameServerMode=1`, needs admin + reboot)
-- **TalQ appears as "Guest"** in browser call view — session not properly identified by NC Talk call API
-- **Ghost participants** — previous call sessions may linger as guests in the room
-- **SCTP plugin required** — `libgstsctp.dll` must be in gst-plugins/ (MCU SDP includes datachannel m-line)
-- **Echo cancellation**: deferred to v0.9.0
-- **Qt6::Multimedia must be installed separately**: `aqt install-qt windows desktop 6.8.2 win64_mingw --modules qtmultimedia -O C:/Qt`
-- **GStreamer plugins needed for camera**: `libgstjpeg.dll` + `libjpeg-8.dll` in dist
+#### Settings Dialog (new)
+- **Full tabbed settings** — 4 tabs: Audio & Video, Notifications, General, Account
+- **Device persistence** — mic/speaker/camera selections saved via QSettings, restored on restart (name + device ID matching with fallback for duplicates)
+- **Notification settings** — enable/disable, style (in-app popup vs Windows toast), sound mode (chime/system/none), all persisted via Qt.labs.settings
+- **General settings** — start with Windows (registry auto-start), start minimized to tray, close to tray toggle
+- **Account tab** — avatar from AvatarProvider, display name, server URL, NC/Talk versions, app version, logout button
+- **Dark mode styled** — custom StyledComboBox, StyledSwitch, OptionButton, TabBar with teal indicator, window-level palette
+- **Click avatar to open** — click avatar or display name in sidebar header to open settings
+- **AppSettings C++ helper** — `setAutoStart()`/`isAutoStart()` for Windows Run registry key
 
-### v0.7.1 — Chat Reliability & UX (PATCH RELEASE)
-- **Fixed message cache** — stores original server JSON instead of reconstructed subset; file attachments, mentions, and thread metadata no longer lost after conversation switch
-- **Schema migration** — v2 cache schema auto-purges stale v1 entries on first launch
-- **Fixed chat scroll** — replaced aggressive `onContentHeightChanged` with targeted `onCountChanged`; auto-scroll no longer breaks during image upload or footer changes
-- **Text selection** — message text is now selectable (click-drag); ListView uses WheelHandler instead of drag-to-scroll
-- **Scroll-to-bottom button** — properly shows/hides based on scroll position; scrollbar fades in/out on activity
-- **Ctrl+V file paste** — now handles files from Explorer (not just screenshots); images get preview, other files show icon
-- **Caption for all file sends** — file dialog, paste, and drag-drop all show confirmation bar with caption field before sending
-- **v0.8.0 design spec written** — video calls + call polish planned (docs/superpowers/specs/)
+#### Per-conversation mute
+- **Right-click mute** — right-click any conversation → Mute/Unmute
+- **Server-synced** — PUT `/apps/spreed/api/v4/room/{token}/notify`, notification level stored in ConversationListModel
+- **Visual indicator** — "Muted" label on muted conversations
+- **notificationLevel** — added to Conversation struct, ConversationListModel role, parsed from API JSON
 
-### v0.7.0 — Audio Calls (MAJOR RELEASE)
-- **Bidirectional audio calls working** via Nextcloud Talk MCU (Janus/HPB)
-- Split pipeline: PublishPipeline (send-only) + SubscribePipeline (receive-only)
-- MCU signaling: publish ownPeer offer to self, requestOffer for remote subscribers
-- Incoming call detection via push notifications + conversation `hasCall` field
-- Critical fix: must wait for HPB room join confirmation BEFORE calling the call API
-- GStreamer `level` element for real-time audio metering
-- Bus polling (not watch) for level messages — watch was consuming them before pollBus could read
-- GValueArray extraction with `G_TYPE_VALUE_ARRAY` via `gst_structure_get`
-- Call window with scrolling waveform (Canvas bars), mic level fill in button, call stats panel
-- Settings dialog (Ctrl+,) with mic/speaker device selection
-- Ringtones: ding-dong chime (incoming), brrr-brrr ringback (outgoing)
-- All security fixes: Windows Credential Manager, path sanitization, memory zeroing
-- All code review fixes: GStreamer thread safety, bus watch cleanup, dead code removal
+#### Design System Phase 1: Warm Carbon Theme
+- **Color identity** — warm/olive-tinted blacks (#121210 base) where teal (#2ec4b6) is the only vivid color
+- **30+ new tokens** in Theme.qml: semantic colors (success, danger, warning, info), button sizes (small 28, medium 36, large 48), icon sizes (16, 20, 24), avatar sizes (tiny 24, small 32, normal 44, large 52), alpha helpers, border widths, scrollbar width, fontSizeXSmall (9), fontSizeXLarge (20), statusDotSize, badgeHeight
+- **All existing colors migrated** to Warm Carbon palette (warm grays instead of blue-grays)
+
+#### Design System Phase 2: Reusable Components
+- **TqAvatar** — circular avatar with AvatarProvider image + colored initial fallback + optional status dot
+- **TqIconButton** — circular button with emoji icon, hover state, configurable size/colors
+- **TqBadge** — pill-shaped unread count badge, auto-hides at 0, caps at 99+
+- **TqSwitch** — dark-mode toggle with animated thumb
+- **TqComboBox** — dark-mode dropdown with themed popup and delegate
+- **484 lines removed** from 8 QML files by replacing duplicated avatar/button/badge/switch/combobox code
+
+#### Bug fixes
+- **Scroll-to-bottom** — onContentHeightChanged re-scrolls when autoScrolling (catches file attachment and image height changes without timers)
+- **Window position restore** — fix Qt.labs.settings unsigned int wrapping for negative X/Y on multi-monitor setups
+- **Reply bubble width** — 260px minimum now applied to other-person reply bubbles too (was only on own messages)
+- **Code review fixes** — deduplicated generalSettings (single source in Main.qml), m_restoring guard prevents redundant saveDevices() during restoreDevices(), token capture by value in setNotificationLevel callback
+
+### Known issues
+- **Office machine Qt6Multimedia ABI mismatch** — aqt-installed qtmultimedia module crashes with 0xC0000139 (STATUS_ENTRYPOINT_NOT_FOUND). Home machine works fine. Fix: reinstall full Qt via online installer on office machine, or build without multimedia temporarily.
+- **Ctrl+, shortcut** — may not work on all keyboard layouts. Backup: Ctrl+P or click avatar.
+- **Settings dialog combo boxes** — unequal height between mic/speaker/camera dropdowns (cosmetic)
+- **SettingsDialog SectionHeader** — still uses hardcoded `font.pixelSize: 10` instead of `Theme.fontSizeXSmall` (Phase 3 task)
 
 ### Test user
 - Username: `test-talq` / Password: `talQing123@`
 - 1:1 conversation with kalin: token `u2f3gbu4`
 - Can log in at `https://ncloud.123net.link` in browser for call testing
 
-## Known issues to fix next
+## What to do next (v0.9.0)
 
-### Call flow
-- **Incoming call auto-decline race**: QML signal race causes instant decline; mitigated with 2s guard but root cause (likely IncomingCallPopup signal) not fully resolved
-- **Decline doesn't notify caller**: NC Talk 1:1 calls use "waiting room" model; caller waits indefinitely. Our decline attempt gets 404 because we're not in the call yet
-- **Incoming call not detected if `hasCall` was already true on app start** (no false→true transition)
-- **"Unknown" remote peer name** in some call flows — name set in `onIncomingCallDetected` but may not persist through all state transitions
-- **Conversation list doesn't auto-update** when a new conversation is created externally
+### Priority 1: Design System Phase 3 — Apply Theme tokens
+- Sweep all 14 QML files replacing hardcoded colors, font sizes, dimensions with Theme references
+- Target: MessageBubble.qml (975 lines, worst offender — 15+ hardcoded sizes, RGBA hover states)
+- Target: CallWindow.qml (20+ hardcoded colors, no Theme reference at all)
+- Target: Main.qml (notification styling not themed)
+- Fix all hardcoded button colors (#27ae60, #e74c3c, #2ecc71) to use Theme.success/danger
 
-### Audio
-- **Mic level scaling**: peaks at -90dB in silence, speech around -30 to -10dB. Current range -100 to 0 with squared curve works but could be tuned
-- **No TURN server support**: STUN works (using own server), but TURN credentials from signaling settings not yet configured on webrtcbin. Needed for calls behind NAT
-- **No echo cancellation**: GStreamer has `webrtcdsp` plugin (AEC/NS/AGC) from `gst-plugins-bad` — add to publish pipeline
+### Priority 2: Group calls + screen sharing
+- Multiple SubscribePipelines with video (grid layout)
+- Screen sharing capture (dxgiscreencapsrc or similar)
+- Self-preview PIP
 
-### UI
-- **Scroll-to-bottom button**: visibility logic works (`!autoScrolling`) but UX needs polish
-- **Call window design**: functional but needs frontend-design skill for proper polish
-- **Video calls**: v0.8.0 — SubscribePipeline already receives video pads from MCU but skips them. Need `vp8dec`/`h264dec` + QML VideoOutput via `qmlglsink`
+### Priority 3: Call improvements
+- Echo cancellation (shared pipeline or custom GStreamer build)
+- Mid-call device switching
+- qml6glsink for zero-copy video rendering (custom GStreamer build)
+
+### Priority 4: Chat improvements
+- Message search
+- Emoji picker + emoji rendering in chat history (text emoji shortcodes → actual emoji)
+- Custom GStreamer build (Meson, selective plugins)
+
+### Priority 5: UX polish
+- Use frontend-design skill for CallWindow, settings, chat UI
+- Proper app icon and branding
+- System tray improvements
+- Light mode refinement (Warm Carbon light palette needs testing)
 
 ## Architecture reference
+
+### Design System
+- **Theme.qml** — Singleton, Warm Carbon palette. All colors, fonts, spacing, dimensions.
+- **Tq* components** — TqAvatar, TqIconButton, TqBadge, TqSwitch, TqComboBox. In `src/qml/`, registered via qt_add_qml_module.
+- **Specs** — `docs/superpowers/specs/2026-03-22-design-system-phase1-design.md`, `phase2-design.md`
+
+### Settings
+- **SettingsDialog.qml** — TabBar + StackLayout, 4 tabs. Notification settings in local Qt.labs.settings, General settings in Main.qml's generalSettings block.
+- **AppSettings.h/cpp** — Q_INVOKABLE setAutoStart/isAutoStart for Windows Run registry key.
+- **MediaDeviceManager** — saveDevices()/restoreDevices() with QSettings, name+ID matching.
 
 ### MCU Call Flow (working)
 ```
@@ -98,112 +111,51 @@ Incoming:
 6. Same as outgoing steps 2-6
 ```
 
-### Key signaling message format
-```json
-{
-  "type": "message",
-  "message": {
-    "recipient": {"type": "session", "sessionid": TARGET},
-    "data": {
-      "to": TARGET, "sid": "Date.now()", "roomType": "video",
-      "type": "offer|answer|candidate|requestoffer",
-      "payload": { ... }
-    }
-  }
-}
-```
-
 ### Server config
 - HPB: `wss://ncloud.123net.link/standalone-signaling/spreed`
 - MCU: enabled (Janus) — confirmed via `server.features: ["mcu", ...]`
 - STUN: `stun:turn-za.123net.link:3478`, `stun:turn-bg.123net.link:3478`
 - TURN: `turn:turn-za.123net.link`, `turn:turn-bg.123net.link` (with time-limited credentials)
-- Hello: v1.0 (v2.0 needs JWT auth we don't have)
 
 ## Build
 
-### Prerequisites
-- Qt 6.8.2 via aqtinstall at `C:\Qt` (MinGW 13.1)
-- Qt6::Multimedia module: `aqt install-qt windows desktop 6.8.2 win64_mingw --modules qtmultimedia -O C:/Qt`
-- MSYS2 MinGW64 with GStreamer 1.26.9
+### Office machine
+```bash
+export PATH="/c/Qt/Tools/mingw1310_64/bin:/c/Qt/Tools/CMake_64/bin:/c/Qt/Tools/Ninja:$PATH"
+cd C:/build/talq
+cmake C:/src/talk-desktop-qt -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_PREFIX_PATH=C:/Qt/6.8.2/mingw_64 -DCMAKE_CXX_COMPILER=g++ -Wno-dev
+cmake --build . --target talq
+```
+
+**NOTE**: Office machine may need Qt6Multimedia reinstall. If build crashes with 0xC0000139, the aqt-installed multimedia module is ABI-incompatible. Workaround: use online Qt installer instead of aqt for the multimedia module.
 
 ### Home machine
 ```bash
 export PATH="/c/msys64/mingw64/bin:/c/Qt/Tools/CMake_64/bin:/c/Qt/Tools/Ninja:/c/Qt/6.8.2/mingw_64/bin:$PATH"
 cd C:/build/talq
-cmake C:/src/talk-desktop-qt -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=C:/Qt/6.8.2/mingw_64
+cmake C:/src/talk-desktop-qt -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=C:/Qt/6.8.2/mingw_64 -Wno-dev
 cmake --build . --target talq
 ```
 
-### Office machine
+### Run
 ```bash
-export PATH="/c/Qt/Tools/mingw1310_64/bin:/c/Qt/Tools/CMake_64/bin:/c/Qt/Tools/Ninja:/c/Qt/6.8.2/mingw_64/bin:/c/msys64/mingw64/bin:$PATH"
-cd C:/build/talq
-cmake C:/Projects/talk-desktop-qt -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_PREFIX_PATH=C:/Qt/6.8.2/mingw_64 -DCMAKE_CXX_COMPILER=g++ -Wno-dev
-cmake --build . --target talq
+export QT_FORCE_STDERR_LOGGING=1
+C:/build/talq/talq.exe
 ```
 
 ### GStreamer plugins (copy to gst-plugins/ next to exe)
 ```bash
 mkdir -p gst-plugins && cp /c/msys64/mingw64/lib/gstreamer-1.0/libgst{coreelements,audioconvert,audioresample,autodetect,dtls,nice,opus,rtp,rtpmanager,srtp,wasapi2,webrtc,app,level,vpx,openh264,videoconvertscale,winks,sctp,jpeg}.dll gst-plugins/
-# Also copy runtime deps:
 cp /c/msys64/mingw64/bin/libjpeg-8.dll dist/
-```
-
-### Run (debug build needs DLLs deployed alongside via windeployqt or from dist/)
-```bash
-export QT_FORCE_STDERR_LOGGING=1
-C:/build/talq/talq.exe > /tmp/talq-debug.log 2>&1 &
 ```
 
 ### Packaging
 - Inno Setup at `C:\Users\bogat\InnoSetup\ISCC.exe`
 - `windeployqt6.exe --no-translations --qmldir src/qml talq.exe`
-- Copy QtMultimedia QML module manually: `cp -r /c/Qt/6.8.2/mingw_64/qml/QtMultimedia dist/qml/`
-- Copy GStreamer + transitive DLLs (see dist folder for full list)
+- Copy QtMultimedia QML module: `cp -r /c/Qt/6.8.2/mingw_64/qml/QtMultimedia dist/qml/`
 - GitLab API token "Talk QT" (id: 17) with `api` scope for uploads
-
-## What was done (v0.8.0)
-
-### P1: Video calls (DONE)
-1. VideoFrameProvider: GStreamer appsink → QVideoFrame → QVideoSink bridge
-2. SubscribePipeline: video decode branch (VP8/H264) with codec auto-detection
-3. PublishPipeline: camera capture (ksvideosrc → openh264enc), 1080p/720p
-4. CallWindow: VideoOutput, overlay controls with auto-hide, camera toggle
-5. SettingsDialog: camera selection, resolution preset (Qt.labs.settings)
-
-### P2: Call polish (DONE)
-1. TURN server configuration (parsed from signaling settings, URL-encoded credentials)
-2. Device selection wired to pipelines (wasapi2src/wasapi2sink device property)
-3. Incoming call decline fix (leave room, not call; m_joinedCall tracking)
-4. Auto-decline race condition fix (m_userActionReady gate)
-
-## What to do next (v0.9.0)
-
-### Priority 1: Group calls + screen sharing
-- Multiple SubscribePipelines with video (grid layout)
-- Screen sharing capture (dxgiscreencapsrc or similar)
-- Self-preview PIP
-
-### Priority 2: Call improvements
-- Echo cancellation (shared pipeline or custom GStreamer build)
-- Mid-call device switching
-- qml6glsink for zero-copy video rendering (custom GStreamer build)
-
-### Priority 3: Chat improvements
-- Message search
-- Emoji picker
-- Custom GStreamer build (Meson, selective plugins)
-
-### Priority 4: UX polish
-- Use frontend-design skill for CallWindow, settings, chat UI
-- Proper app icon and branding
-- System tray improvements
-- Dark/light theme refinement
 
 ## NC Talk source reference
 - Clone: `git clone --depth 1 https://github.com/nextcloud/spreed.git /tmp/spreed`
 - Signaling: `src/utils/signaling.js`
 - WebRTC: `src/utils/webrtc/webrtc.js`
-- Peer: `src/utils/webrtc/simplewebrtc/peer.js`
-- SimpleWebRTC: `src/utils/webrtc/simplewebrtc/simplewebrtc.js`
