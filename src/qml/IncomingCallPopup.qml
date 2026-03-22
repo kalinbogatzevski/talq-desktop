@@ -12,8 +12,9 @@ Window {
     color: Theme.bgSurface
     visible: false
 
-    Component.onCompleted: {
-        callManager.setUserActionReady()
+    onVisibleChanged: {
+        if (visible)
+            callManager.setUserActionReady()
     }
 
     property string callerName: ""
