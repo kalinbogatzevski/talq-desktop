@@ -644,17 +644,16 @@ Item {
                 Image {
                     visible: isImage && fileId > 0
                     Layout.fillWidth: true
-                    Layout.maximumWidth: 300
-                    Layout.preferredHeight: isImage && fileId > 0 ? 200 : 0
-                    Layout.maximumHeight: 300
+                    Layout.maximumWidth: otherMsgCol.maxWidth
+                    Layout.preferredHeight: isImage && fileId > 0 ? 250 : 0
                     source: isImage && fileId > 0 ? "image://preview/" + fileId : ""
                     fillMode: Image.PreserveAspectFit
-                    sourceSize: Qt.size(300, 300)
+                    sourceSize: Qt.size(600, 600)
 
                     MouseArea {
                         anchors.fill: parent
                         cursorShape: Qt.PointingHandCursor
-                        onClicked: imageViewer.open(parent.source)
+                        onClicked: messageModel.downloadFile(fileId, fileName)
                     }
 
                     // Loading placeholder
@@ -848,13 +847,12 @@ Item {
                 Image {
                     visible: isImage && fileId > 0
                     Layout.fillWidth: true
-                    Layout.maximumWidth: 280
-                    Layout.preferredHeight: isImage && fileId > 0 ? 200 : 0
-                    Layout.maximumHeight: 280
+                    Layout.maximumWidth: ownBubble.width - 28
+                    Layout.preferredHeight: isImage && fileId > 0 ? 250 : 0
                     source: isImage && fileId > 0 ? "image://preview/" + fileId : ""
                     fillMode: Image.PreserveAspectFit
-                    sourceSize: Qt.size(280, 280)
-                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: imageViewer.open(parent.source) }
+                    sourceSize: Qt.size(600, 600)
+                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: messageModel.downloadFile(fileId, fileName) }
                 }
 
                 // File attachment (own — non-image)
