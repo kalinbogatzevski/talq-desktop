@@ -475,7 +475,7 @@ Window {
                             Image {
                                 id: avatarImage
                                 anchors.fill: parent
-                                source: auth.userId ? "image://avatar/" + auth.userId + "/52" : ""
+                                source: auth.userId ? "image://avatar/" + auth.userId : ""
                                 fillMode: Image.PreserveAspectCrop
                                 visible: status === Image.Ready
                             }
