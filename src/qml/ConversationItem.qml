@@ -73,15 +73,6 @@ ItemDelegate {
     topPadding: squeezed ? 0 : Theme.spacingSmall
     bottomPadding: squeezed ? 0 : Theme.spacingSmall
 
-    // Shared avatar source — single image load for both expanded and squeezed views
-    readonly property string avatarSource: (conversationType === 1 && participantUserId.length > 0)
-        ? "image://avatar/" + participantUserId : ""
-    readonly property var avatarPalette: ["#5eb5f7", "#e17076", "#faa05a", "#7bc862", "#a695e7", "#ee7aae", "#6ec9cb", "#65aadd"]
-    readonly property color avatarFallbackColor: avatarPalette[Math.abs(Theme.stringHash(displayName)) % avatarPalette.length]
-    readonly property string avatarLetter: {
-        if (conversationType === 6) return "\uD83D\uDCDD"
-        return displayName.length > 0 ? displayName[0].toUpperCase() : "?"
-    }
 
     contentItem: Item {
         // Normal (expanded) view
@@ -93,67 +84,12 @@ ItemDelegate {
             Behavior on opacity { NumberAnimation { duration: Theme.animFast } }
 
             // Avatar
-            Item {
-                width: Theme.avatarSize
-                height: Theme.avatarSize
-
-                // Real avatar (pre-cropped to circle by AvatarProvider)
-                Image {
-                    id: avatarImg
-                    anchors.fill: parent
-                    source: convItem.avatarSource
-                    sourceSize: Qt.size(Theme.avatarSize, Theme.avatarSize)
-                    visible: status === Image.Ready
-                    fillMode: Image.PreserveAspectFit
-                }
-
-                // Fallback colored circle
-                Rectangle {
-                    anchors.fill: parent
-                    radius: Theme.avatarSize / 2
-                    visible: avatarImg.status !== Image.Ready
-                    color: convItem.avatarFallbackColor
-
-                    Label {
-                        anchors.centerIn: parent
-                        text: convItem.avatarLetter
-                        font.pixelSize: conversationType === 6 ? 20 : 18
-                        font.weight: Font.DemiBold
-                        color: "white"
-                    }
-                }
-
-                // Online status dot (1:1 chats only)
-                Rectangle {
-                    visible: conversationType === 1 && userStatus.length > 0 && userStatus !== "offline"
-                    anchors.right: parent.right
-                    anchors.bottom: parent.bottom
-                    width: 14; height: 14; radius: 7
-                    color: userStatus === "online" ? Theme.online
-                         : userStatus === "away" ? Theme.warning
-                         : userStatus === "dnd" ? Theme.danger
-                         : "transparent"
-                    border.color: Theme.bgSidebar
-                    border.width: 2
-                }
-
-                // Group badge
-                Rectangle {
-                    visible: conversationType === 2 || conversationType === 3
-                    anchors.right: parent.right
-                    anchors.bottom: parent.bottom
-                    width: 16
-                    height: 16
-                    radius: 8
-                    color: Theme.bgSidebar
-                    border.color: Theme.bgSidebar
-                    border.width: 2
-                    Label {
-                        anchors.centerIn: parent
-                        text: conversationType === 3 ? "\uD83C\uDF10" : "\uD83D\uDC65"
-                        font.pixelSize: 8
-                    }
-                }
+            TqAvatar {
+                userId: participantUserId
+                displayName: convItem.displayName
+                size: Theme.avatarSize
+                showStatus: conversationType === 1
+                status: userStatus
             }
 
             // Text content
@@ -217,21 +153,9 @@ ItemDelegate {
                     }
 
                     // Unread badge
-                    Rectangle {
-                        visible: unreadCount > 0
-                        width: Math.max(20, unreadLabel.implicitWidth + 10)
-                        height: 20
-                        radius: 10
-                        color: unreadMention ? Theme.accent : Theme.unreadBadge
-
-                        Label {
-                            id: unreadLabel
-                            anchors.centerIn: parent
-                            text: unreadCount > 99 ? "99+" : unreadCount
-                            font.pixelSize: 10
-                            font.weight: Font.Bold
-                            color: "white"
-                        }
+                    TqBadge {
+                        count: unreadCount
+                        badgeColor: unreadMention ? Theme.accent : Theme.unreadBadge
 
                         scale: visible ? 1 : 0
                         Behavior on scale { NumberAnimation { duration: Theme.animNormal; easing.type: Easing.OutBack } }
@@ -257,50 +181,21 @@ ItemDelegate {
             opacity: convItem.squeezed ? 1 : 0
             Behavior on opacity { NumberAnimation { duration: Theme.animFast } }
 
-            // Reuse the expanded avatar (same source, scaled down)
-            Image {
+            TqAvatar {
                 anchors.fill: parent
-                source: convItem.avatarSource
-                sourceSize: Qt.size(Theme.avatarSize, Theme.avatarSize)  // same sourceSize = same cache slot
-                visible: status === Image.Ready
-                fillMode: Image.PreserveAspectFit
-            }
-
-            // Fallback colored circle
-            Rectangle {
-                anchors.fill: parent
-                radius: 20
-                visible: convItem.avatarSource.length === 0 || avatarImg.status !== Image.Ready
-                color: convItem.avatarFallbackColor
-
-                Label {
-                    anchors.centerIn: parent
-                    text: convItem.avatarLetter
-                    font.pixelSize: conversationType === 6 ? 18 : 16
-                    font.weight: Font.DemiBold
-                    color: "white"
-                }
+                userId: participantUserId
+                displayName: convItem.displayName
+                size: 40
             }
 
             // Unread badge overlay
-            Rectangle {
-                visible: unreadCount > 0
+            TqBadge {
+                count: unreadCount
                 anchors.top: parent.top
                 anchors.right: parent.right
                 anchors.topMargin: -2
                 anchors.rightMargin: -2
-                width: 16
-                height: 16
-                radius: 8
-                color: unreadMention ? Theme.danger : Theme.accent
-
-                Label {
-                    anchors.centerIn: parent
-                    text: unreadCount > 9 ? "9+" : unreadCount
-                    font.pixelSize: 8
-                    font.weight: Font.Bold
-                    color: "white"
-                }
+                badgeColor: unreadMention ? Theme.danger : Theme.accent
             }
         }
     }

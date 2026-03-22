@@ -22,21 +22,11 @@ Rectangle {
         spacing: Theme.spacingSmall
 
         // Attach file button
-        RoundButton {
-            width: 36; height: 36; flat: true
-            ToolTip.visible: hovered; ToolTip.text: "Attach file"; ToolTip.delay: 300
-            contentItem: Label {
-                text: "\uD83D\uDCCE"  // 📎
-                font.pixelSize: 18
-                horizontalAlignment: Text.AlignHCenter
-                verticalAlignment: Text.AlignVCenter
-            }
-            background: Rectangle {
-                radius: 18
-                color: parent.hovered ? Theme.bgHover : "transparent"
-                Behavior on color { ColorAnimation { duration: Theme.animFast } }
-            }
+        TqIconButton {
+            icon: "\uD83D\uDCCE"
+            size: Theme.buttonSizeMedium
             onClicked: fileDialog.open()
+            ToolTip.visible: hovered; ToolTip.text: "Attach file"; ToolTip.delay: 300
         }
 
         ScrollView {
@@ -99,39 +89,17 @@ Rectangle {
         }
 
         // Send button
-        RoundButton {
+        TqIconButton {
             id: sendButton
-            width: 40
-            height: 40
-            flat: true
+            icon: "\u276F"
+            size: 40
+            bgColor: enabled ? Theme.accent : "transparent"
+            iconColor: enabled ? "#000" : Theme.textMuted
             enabled: inputField.text.trim().length > 0
+            onClicked: sendAction()
             ToolTip.visible: hovered
             ToolTip.text: "Send message (Enter)"
             ToolTip.delay: 500
-
-            background: Rectangle {
-                radius: 20
-                color: sendButton.enabled
-                    ? (sendButton.pressed ? Theme.accentPressed
-                       : sendButton.hovered ? Theme.accentHover : Theme.accent)
-                    : "transparent"
-                Behavior on color { ColorAnimation { duration: Theme.animFast } }
-
-                scale: sendButton.pressed ? 0.92 : 1
-                Behavior on scale { NumberAnimation { duration: Theme.animFast; easing.type: Easing.OutCubic } }
-            }
-
-            contentItem: Label {
-                text: "\u276F"  // ❯ send arrow
-                font.pixelSize: 18
-                font.weight: Font.Bold
-                color: sendButton.enabled ? "white" : Theme.textMuted
-                horizontalAlignment: Text.AlignHCenter
-                verticalAlignment: Text.AlignVCenter
-                Behavior on color { ColorAnimation { duration: Theme.animNormal } }
-            }
-
-            onClicked: sendAction()
         }
     }
 

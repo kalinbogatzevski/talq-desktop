@@ -40,85 +40,6 @@ Window {
         opacity: 0.7
     }
 
-    component StyledComboBox: ComboBox {
-        id: styledCombo
-        Layout.fillWidth: true
-        background: Rectangle {
-            radius: Theme.radiusSmall
-            color: Theme.bgSurface
-            border.width: 1
-            border.color: Theme.border
-        }
-        contentItem: Text {
-            leftPadding: 10
-            rightPadding: 30
-            text: styledCombo.displayText
-            color: Theme.textPrimary
-            font.pixelSize: Theme.fontSizeSmall
-            verticalAlignment: Text.AlignVCenter
-            elide: Text.ElideRight
-        }
-        indicator: Text {
-            x: styledCombo.width - width - 10
-            anchors.verticalCenter: parent.verticalCenter
-            text: "\u25BE"
-            color: Theme.textSecondary
-            font.pixelSize: 12
-        }
-        delegate: ItemDelegate {
-            required property int index
-            required property string modelData
-            width: styledCombo.width
-            highlighted: styledCombo.highlightedIndex === index
-            contentItem: Text {
-                text: modelData
-                color: highlighted ? "#000000" : Theme.textPrimary
-                font.pixelSize: Theme.fontSizeSmall
-                verticalAlignment: Text.AlignVCenter
-            }
-            background: Rectangle {
-                color: highlighted ? Theme.accent : Theme.bgSurface
-            }
-        }
-        popup: Popup {
-            y: styledCombo.height
-            width: styledCombo.width
-            implicitHeight: contentItem.implicitHeight + 2
-            padding: 1
-            background: Rectangle {
-                color: Theme.bgSurface
-                border.width: 1
-                border.color: Theme.border
-                radius: Theme.radiusSmall
-            }
-            contentItem: ListView {
-                clip: true
-                implicitHeight: contentHeight
-                model: styledCombo.popup.visible ? styledCombo.delegateModel : null
-                currentIndex: styledCombo.highlightedIndex
-                ScrollIndicator.vertical: ScrollIndicator {}
-            }
-        }
-    }
-
-    component StyledSwitch: Switch {
-        indicator: Rectangle {
-            x: parent.leftPadding
-            anchors.verticalCenter: parent.verticalCenter
-            width: 40; height: 22; radius: 11
-            color: parent.checked ? Theme.accent : Theme.bgSurface
-            border.width: 1
-            border.color: parent.checked ? Theme.accent : Theme.border
-
-            Rectangle {
-                x: parent.parent.checked ? parent.width - width - 3 : 3
-                anchors.verticalCenter: parent.verticalCenter
-                width: 16; height: 16; radius: 8
-                color: parent.parent.checked ? "#ffffff" : Theme.textSecondary
-                Behavior on x { NumberAnimation { duration: Theme.animFast } }
-            }
-        }
-    }
 
     component OptionButton: Button {
         background: Rectangle {
@@ -210,7 +131,7 @@ Window {
                     Item { height: 20 }
 
                     SectionHeader { text: "MICROPHONE" }
-                    StyledComboBox {
+                    TqComboBox {
                         model: deviceManager.audioInputNames
                         currentIndex: deviceManager.selectedAudioInput >= 0 ? deviceManager.selectedAudioInput : 0
                         onActivated: (index) => deviceManager.selectedAudioInput = index
@@ -223,7 +144,7 @@ Window {
                     }
 
                     SectionHeader { text: "SPEAKER"; Layout.topMargin: 4 }
-                    StyledComboBox {
+                    TqComboBox {
                         model: deviceManager.audioOutputNames
                         currentIndex: deviceManager.selectedAudioOutput >= 0 ? deviceManager.selectedAudioOutput : 0
                         onActivated: (index) => deviceManager.selectedAudioOutput = index
@@ -236,7 +157,7 @@ Window {
                     }
 
                     SectionHeader { text: "CAMERA"; Layout.topMargin: 4 }
-                    StyledComboBox {
+                    TqComboBox {
                         model: deviceManager.videoInputNames
                         currentIndex: deviceManager.selectedVideoInput >= 0 ? deviceManager.selectedVideoInput : 0
                         onActivated: (index) => deviceManager.selectedVideoInput = index
@@ -313,7 +234,7 @@ Window {
                             font.pixelSize: Theme.fontSizeNormal
                             Layout.fillWidth: true
                         }
-                        StyledSwitch {
+                        TqSwitch {
                             checked: notifSettings.enabled
                             onToggled: {
                                 notifSettings.enabled = checked
@@ -405,7 +326,7 @@ Window {
                             font.pixelSize: Theme.fontSizeNormal
                             Layout.fillWidth: true
                         }
-                        StyledSwitch {
+                        TqSwitch {
                             checked: generalSettings.autoStart
                             onToggled: {
                                 generalSettings.autoStart = checked
@@ -422,7 +343,7 @@ Window {
                             font.pixelSize: Theme.fontSizeNormal
                             Layout.fillWidth: true
                         }
-                        StyledSwitch {
+                        TqSwitch {
                             checked: generalSettings.startMinimized
                             onToggled: generalSettings.startMinimized = checked
                         }
@@ -446,7 +367,7 @@ Window {
                                 font.pixelSize: 11
                             }
                         }
-                        StyledSwitch {
+                        TqSwitch {
                             checked: generalSettings.closeToTray
                             onToggled: generalSettings.closeToTray = checked
                         }
@@ -468,24 +389,10 @@ Window {
                     // Profile card
                     RowLayout {
                         spacing: 14
-                        Rectangle {
-                            width: 52; height: 52; radius: 26
-                            color: Theme.accent
-                            clip: true
-                            Image {
-                                id: avatarImage
-                                anchors.fill: parent
-                                source: auth.userId ? "image://avatar/" + auth.userId : ""
-                                fillMode: Image.PreserveAspectCrop
-                                visible: status === Image.Ready
-                            }
-                            Label {
-                                anchors.centerIn: parent
-                                text: auth.displayName.length > 0 ? auth.displayName.charAt(0).toUpperCase() : "?"
-                                font.pixelSize: 22; font.weight: Font.DemiBold
-                                color: "#000000"
-                                visible: !avatarImage.visible
-                            }
+                        TqAvatar {
+                            userId: auth.userId
+                            displayName: auth.displayName
+                            size: Theme.avatarSizeLarge
                         }
                         ColumnLayout {
                             spacing: 2

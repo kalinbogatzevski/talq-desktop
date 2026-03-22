@@ -43,17 +43,11 @@ Item {
                     anchors.rightMargin: Theme.spacingNormal
                     spacing: 2
 
-                    ToolButton {
-                        implicitWidth: 28; implicitHeight: 28
+                    TqIconButton {
+                        icon: "\u2190"
+                        size: 28
+                        iconColor: Theme.accent
                         onClicked: threadListRoot.backToChats()
-                        contentItem: Label {
-                            text: "\u2190"
-                            font.pixelSize: 16
-                            color: Theme.accent
-                            horizontalAlignment: Text.AlignHCenter
-                            verticalAlignment: Text.AlignVCenter
-                        }
-                        background: Rectangle { radius: 14; color: parent.hovered ? Theme.bgHover : "transparent" }
                     }
 
                     Label {

@@ -84,33 +84,21 @@ Page {
             spacing: Theme.spacingSmall
 
             // Back to chat list (when sidebar is squeezed in topic mode)
-            ToolButton {
+            TqIconButton {
+                icon: "\u2190"
+                size: 30
+                iconColor: Theme.accent
                 visible: chatRoot.sidebarSqueezed && chatRoot.conversationName.length > 0
-                width: 30; height: 30
                 onClicked: chatRoot.expandSidebar()
-                contentItem: Label {
-                    text: "\u2190"
-                    font.pixelSize: 18
-                    color: Theme.accent
-                    horizontalAlignment: Text.AlignHCenter
-                    verticalAlignment: Text.AlignVCenter
-                }
-                background: Rectangle { radius: 15; color: parent.hovered ? Theme.bgHover : "transparent" }
             }
 
             // Back button (when viewing a thread or topic)
-            ToolButton {
+            TqIconButton {
+                icon: "\u2190"
+                size: 30
+                iconColor: Theme.accent
                 visible: chatRoot.activeThreadId > 0
-                width: 30; height: 30
                 onClicked: chatRoot.closeThread()
-                contentItem: Label {
-                    text: "\u2190"  // ← arrow
-                    font.pixelSize: 18
-                    color: Theme.accent
-                    horizontalAlignment: Text.AlignHCenter
-                    verticalAlignment: Text.AlignVCenter
-                }
-                background: Rectangle { radius: 15; color: parent.hovered ? Theme.bgHover : "transparent" }
             }
 
             Rectangle {
@@ -120,23 +108,11 @@ Page {
                 Layout.alignment: Qt.AlignVCenter
             }
 
-            Item {
-                width: 30; height: 30
+            TqAvatar {
+                userId: chatRoot.conversationUserId
+                displayName: chatRoot.conversationName
+                size: 30
                 visible: chatRoot.conversationName.length > 0
-                Image {
-                    id: headerChatAvatar
-                    anchors.fill: parent
-                    source: chatRoot.conversationType === 1 && chatRoot.conversationUserId.length > 0
-                        ? "image://avatar/" + chatRoot.conversationUserId : ""
-                    sourceSize: Qt.size(30, 30)
-                    visible: status === Image.Ready
-                }
-                Rectangle {
-                    anchors.fill: parent; radius: 15
-                    visible: headerChatAvatar.status !== Image.Ready && chatRoot.conversationName.length > 0
-                    color: Theme.topicColor(Theme.stringHash(chatRoot.conversationName))
-                    Label { anchors.centerIn: parent; text: chatRoot.conversationName.length > 0 ? chatRoot.conversationName[0].toUpperCase() : ""; font.pixelSize: 13; font.weight: Font.DemiBold; color: "white" }
-                }
             }
 
             ColumnLayout {
@@ -196,22 +172,13 @@ Page {
             }
 
             // Call button (1:1 chats only, hidden during active call)
-            ToolButton {
+            TqIconButton {
+                icon: "\uD83D\uDCDE"
+                size: 34
+                bgColor: Theme.success
+                iconColor: "white"
                 visible: chatRoot.conversationType === 1 && callManager.state === 0
-                implicitWidth: 34; implicitHeight: 34
                 onClicked: { callManager.setRemotePeerInfo(chatRoot.conversationName, chatRoot.conversationUserId); callManager.startCall(messageModel.conversationToken, false) }
-                contentItem: Image {
-                    source: "qrc:/icons/phone-call.svg"
-                    sourceSize: Qt.size(18, 18)
-                    anchors.centerIn: parent
-                }
-                background: Rectangle {
-                    radius: 17
-                    color: parent.hovered ? "#2ecc71" : "transparent"
-                    border.color: parent.hovered ? "#2ecc71" : Theme.textMuted
-                    border.width: 1.5
-                    opacity: parent.hovered ? 1.0 : 0.5
-                }
                 ToolTip.visible: hovered; ToolTip.text: "Audio call"
             }
 
@@ -682,47 +649,22 @@ Page {
     }
 
     // Scroll-to-bottom floating button
-    Rectangle {
-        id: scrollToBottomBtn
+    TqIconButton {
+        icon: "\u2193"
+        size: Theme.buttonSizeMedium
+        bgColor: Theme.bgSurface
         anchors.right: chatRoot.contentItem.right
         anchors.bottom: chatRoot.contentItem.bottom
         anchors.rightMargin: 20
         anchors.bottomMargin: 16
-        width: 36; height: 36; radius: 18
-        color: scrollBtnArea.containsMouse ? Theme.accent : Theme.bgSurface
-        border.color: scrollBtnArea.containsMouse ? Theme.accent : Theme.divider
-        border.width: 1
         visible: !messageListView.autoScrolling && messageModel.count > 0
         opacity: visible ? 1 : 0
         z: 50
-
         Behavior on opacity { NumberAnimation { duration: Theme.animFast } }
-        Behavior on color { ColorAnimation { duration: Theme.animFast } }
-
-        Label {
-            anchors.centerIn: parent
-            text: "\u2193"  // ↓
-            font.pixelSize: 16
-            font.weight: Font.Bold
-            color: scrollBtnArea.containsMouse ? "white" : Theme.textSecondary
-            Behavior on color { ColorAnimation { duration: Theme.animFast } }
+        onClicked: {
+            messageListView.autoScrolling = true
+            messageListView.scrollToBottom()
         }
-
-        MouseArea {
-            id: scrollBtnArea
-            anchors.fill: parent
-            anchors.margins: -4
-            cursorShape: Qt.PointingHandCursor
-            hoverEnabled: true
-            onClicked: {
-                messageListView.autoScrolling = true
-                messageListView.scrollToBottom()
-            }
-        }
-
-        // Subtle scale on press
-        scale: scrollBtnArea.pressed ? 0.9 : 1
-        Behavior on scale { NumberAnimation { duration: Theme.animFast; easing.type: Easing.OutCubic } }
     }
 
     Connections {
