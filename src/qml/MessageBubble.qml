@@ -566,9 +566,7 @@ Item {
             ColumnLayout {
                 id: otherMsgCol
                 property real maxWidth: bubble.width * 0.75 - Theme.avatarSizeSmall - 20
-                width: replyToText.length > 0
-                    ? Math.min(Math.max(implicitWidth, 280), maxWidth)
-                    : Math.min(implicitWidth, maxWidth)
+                width: Math.min(implicitWidth, maxWidth)
                 spacing: 2
 
                 // Background card for messages with replies
@@ -641,16 +639,16 @@ Item {
                     visible: isImage && fileId > 0
                     Layout.fillWidth: true
                     Layout.maximumWidth: 300
+                    Layout.preferredHeight: isImage && fileId > 0 ? 200 : 0
                     Layout.maximumHeight: 300
                     source: isImage && fileId > 0 ? "image://preview/" + fileId : ""
                     fillMode: Image.PreserveAspectFit
                     sourceSize: Qt.size(300, 300)
 
-                    // Click opens in NC
                     MouseArea {
                         anchors.fill: parent
                         cursorShape: Qt.PointingHandCursor
-                        onClicked: messageModel.downloadFile(fileId, fileName)
+                        onClicked: imageViewer.open(parent.source)
                     }
 
                     // Loading placeholder
@@ -789,7 +787,7 @@ Item {
             anchors.right: parent.right
             anchors.rightMargin: Theme.spacingNormal
 
-            width: Math.min(Math.max(ownCol.implicitWidth + 28, 80), bubble.width * 0.75)
+            width: Math.min(Math.max(ownCol.implicitWidth + 28, replyToText.length > 0 ? 260 : 80), bubble.width * 0.75)
             height: ownCol.implicitHeight + 14
             radius: Theme.radiusNormal
             color: Theme.bgMessageOwn
@@ -845,11 +843,12 @@ Item {
                     visible: isImage && fileId > 0
                     Layout.fillWidth: true
                     Layout.maximumWidth: 280
+                    Layout.preferredHeight: isImage && fileId > 0 ? 200 : 0
                     Layout.maximumHeight: 280
                     source: isImage && fileId > 0 ? "image://preview/" + fileId : ""
                     fillMode: Image.PreserveAspectFit
                     sourceSize: Qt.size(280, 280)
-                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: messageModel.downloadFile(fileId, fileName) }
+                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: imageViewer.open(parent.source) }
                 }
 
                 // File attachment (own — non-image)
@@ -864,7 +863,7 @@ Item {
                         Label { text: "\uD83D\uDCCE"; font.pixelSize: 16 }
                         Label { text: fileName; font.pixelSize: Theme.fontSizeSmall; color: "white"; elide: Text.ElideMiddle; Layout.fillWidth: true }
                     }
-                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: messageModel.downloadFile(fileId, fileName) }
+                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: imageViewer.open(parent.source) }
                 }
 
                 // Message text — selectable
