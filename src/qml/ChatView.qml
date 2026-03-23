@@ -171,7 +171,7 @@ Page {
                 }
             }
 
-            // Call button (1:1 chats only, hidden during active call)
+            // Audio call button
             TqIconButton {
                 iconText: "\uD83D\uDCDE"
                 size: 34
@@ -179,7 +179,18 @@ Page {
                 iconColor: "white"
                 visible: chatRoot.conversationType === 1 && callManager.state === 0
                 onClicked: { callManager.setRemotePeerInfo(chatRoot.conversationName, chatRoot.conversationUserId); callManager.startCall(messageModel.conversationToken, false) }
-                ToolTip.visible: hovered; ToolTip.text: "Audio call"
+                ToolTip.visible: hovered; ToolTip.text: "Audio call"; ToolTip.delay: 300
+            }
+
+            // Video call button
+            TqIconButton {
+                iconText: "\uD83D\uDCF9"
+                size: 34
+                bgColor: Theme.accent
+                iconColor: "white"
+                visible: chatRoot.conversationType === 1 && callManager.state === 0
+                onClicked: { callManager.setRemotePeerInfo(chatRoot.conversationName, chatRoot.conversationUserId); callManager.startCall(messageModel.conversationToken, true) }
+                ToolTip.visible: hovered; ToolTip.text: "Video call"; ToolTip.delay: 300
             }
 
             // Active call indicator

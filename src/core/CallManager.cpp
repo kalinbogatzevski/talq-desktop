@@ -117,6 +117,19 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
     connect(m_signaling, &SignalingClient::participantLeftCall,
             this, &CallManager::onParticipantLeftCall);
 
+    // Re-request subscriber stream when remote peer's media flags change
+    // (e.g., they enable their camera — flags gain WITH_VIDEO=4)
+    connect(m_signaling, &SignalingClient::participantFlagsChanged,
+            this, [this](const QString &sessionId, int oldFlags, int newFlags) {
+        if (m_state != Connecting && m_state != Active) return;
+        bool hadVideo = (oldFlags & 4) != 0;
+        bool hasVideo = (newFlags & 4) != 0;
+        if (!hadVideo && hasVideo && m_subscribePipelines.contains(sessionId)) {
+            qDebug() << "CallManager: peer" << sessionId.left(20) << "enabled video, re-requesting stream";
+            m_signaling->requestOffer(sessionId, "video");
+        }
+    });
+
     // Room peer joined — request their stream if we're in a call
     connect(m_signaling, &SignalingClient::roomPeerJoined,
             this, [this](const QString &sessionId) {
@@ -347,6 +360,9 @@ void CallManager::toggleMute() {
     if (m_useP2P && m_peerPipeline) m_peerPipeline->setMuted(m_muted);
     else if (m_publishPipeline) m_publishPipeline->setMuted(m_muted);
     emit muteChanged();
+
+    // Broadcast mute/unmute state to peers via signaling (NC Talk compatibility)
+    broadcastMediaState("audio", !m_muted);
 }
 
 void CallManager::toggleCamera() {
@@ -364,6 +380,41 @@ void CallManager::toggleCamera() {
     } else if (m_publishPipeline) {
         m_cameraOn ? enableCam(m_publishPipeline) : m_publishPipeline->disableCamera();
     }
+
+    // Broadcast video state + update call flags on server
+    broadcastMediaState("video", m_cameraOn);
+    updateCallFlags();
+}
+
+void CallManager::broadcastMediaState(const QString &media, bool enabled)
+{
+    // NC Talk sends mute/unmute messages via signaling to all peers
+    QString type = enabled ? "unmute" : "mute";
+    QJsonObject payload;
+    payload["name"] = media;
+
+    // Send to all known peers
+    if (!m_remoteSessionId.isEmpty()) {
+        m_signaling->sendSessionMessage(m_remoteSessionId, type, payload, QString());
+    }
+    for (auto it = m_subscribePipelines.constBegin(); it != m_subscribePipelines.constEnd(); ++it) {
+        if (it.key() != m_remoteSessionId) {
+            m_signaling->sendSessionMessage(it.key(), type, payload, QString());
+        }
+    }
+    qDebug() << "CallManager: broadcast" << type << media;
+}
+
+void CallManager::updateCallFlags()
+{
+    // Update our call flags on the server (IN_CALL=1 | WITH_AUDIO=2 | WITH_VIDEO=4)
+    int flags = 1 | 2;
+    if (m_cameraOn) flags |= 4;
+
+    QJsonObject body;
+    body["flags"] = flags;
+    m_api->put("apps/spreed/api/v4/call/" + m_callToken, body,
+        [](bool, const QJsonObject &, int) {});
 }
 
 void CallManager::joinCallOnServer(bool withVideo)
@@ -563,6 +614,14 @@ void CallManager::joinCallOnServer(bool withVideo)
 
                         m_publishPipeline->start(m_stunServer, turnServers, m_deviceManager ? m_deviceManager->selectedInputDeviceId() : QString());
                         m_glibTimer.start(20);
+
+                        // If video call, enable camera immediately (local preview shows right away)
+                        if (m_withVideo) {
+                            int videoDevice = m_deviceManager ? qMax(0, m_deviceManager->selectedVideoInput()) : 0;
+                            bool hd1080 = QSettings().value("video/resolution", 0).toInt() == 0;
+                            m_publishPipeline->enableCamera(videoDevice, hd1080);
+                            qDebug() << "CallManager: auto-enabled camera for video call";
+                        }
 
                         // If remote peer already joined (incoming call), request their stream
                         if (!m_remoteSessionId.isEmpty() && !m_subscribePipelines.contains(m_remoteSessionId)) {
@@ -773,17 +832,16 @@ void CallManager::onAnswerReceived(const QString &fromSessionId, const QString &
 
         // If this answer includes video (renegotiation after enableCamera),
         // re-request all existing subscriber streams so MCU sends video too.
+        // Don't tear down existing subscribers — just request new offers.
+        // onOfferReceived handles re-offers for existing subscribers.
         if (m_cameraOn && sdp.contains("m=video") && !m_subscribePipelines.isEmpty()) {
+            QStringList peerIds = m_subscribePipelines.keys();
             qDebug() << "CallManager: video renegotiation accepted, re-requesting"
-                     << m_subscribePipelines.size() << "subscriber stream(s)";
-            for (auto it = m_subscribePipelines.begin(); it != m_subscribePipelines.end(); ++it) {
-                // Tear down old subscriber and re-request fresh stream with video
-                it.value()->stop();
-                it.value()->deleteLater();
-                m_signaling->requestOffer(it.key(), "video");
-                qDebug() << "CallManager: re-requested stream for" << it.key().left(20);
+                     << peerIds.size() << "subscriber stream(s)";
+            for (const QString &peerId : peerIds) {
+                m_signaling->requestOffer(peerId, "video");
+                qDebug() << "CallManager: re-requested stream for" << peerId.left(20);
             }
-            m_subscribePipelines.clear();
         }
     }
 }

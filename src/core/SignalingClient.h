@@ -65,6 +65,7 @@ signals:
     void endOfCandidatesReceived(const QString &fromSessionId);
     void participantJoinedCall(const QString &sessionId, int flags, const QString &displayName);
     void participantLeftCall(const QString &sessionId);
+    void participantFlagsChanged(const QString &sessionId, int oldFlags, int newFlags);
     void roomPeerJoined(const QString &sessionId);
     void roomJoined();
 
@@ -97,6 +98,7 @@ private:
     QHash<QString, int> m_participantCallFlags;
     QHash<QString, QString> m_participantNames;  // userId → displayName
 
+public:
     void sendSessionMessage(const QString &toSessionId, const QString &type,
                             const QJsonObject &payload, const QString &sid);
 };
