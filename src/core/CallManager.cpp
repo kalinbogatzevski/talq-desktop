@@ -258,6 +258,7 @@ void CallManager::startCall(const QString &token, bool withVideo)
     m_muted = false;
     m_callDuration = 0;
     setState(Outgoing);
+    setStatusDetail("Joining call");
     joinCallOnServer(withVideo);
     m_ringTimeout.start();
 }
@@ -307,6 +308,7 @@ void CallManager::acceptCall(bool withVideo) {
     m_withVideo = withVideo; m_cameraOn = withVideo; m_muted = false; m_callDuration = 0;
     emit cameraChanged();
     m_ringTimeout.stop();
+    setStatusDetail("Joining room");
     setState(Connecting);
 
     // Sequence: join room (REST) → join signaling room (WS) → wait for room joined → join call
@@ -452,6 +454,7 @@ void CallManager::joinCallOnServer(bool withVideo)
             }
 
             m_joinedCall = true;
+            setStatusDetail("Fetching servers");
             qDebug() << "CallManager: joined call, MCU=" << m_signaling->hasMcu();
 
             // Fetch STUN server
@@ -495,6 +498,7 @@ void CallManager::joinCallOnServer(bool withVideo)
 
                     // P2P for 1:1 calls when no MCU, MCU when server has it
                     m_useP2P = !m_signaling->hasMcu();
+                    setStatusDetail("Starting pipeline");
                     qDebug() << "CallManager: call mode =" << (m_useP2P ? "P2P" : "MCU");
 
                     if (m_useP2P) {
@@ -509,6 +513,7 @@ void CallManager::joinCallOnServer(bool withVideo)
 
                         connect(m_peerPipeline, &PeerPipeline::localOfferReady,
                                 this, [this, p2pSid](const QString &sdp) {
+                            setStatusDetail("Sending offer");
                             m_signaling->sendOffer(m_remoteSessionId, sdp, p2pSid);
                             qDebug() << "CallManager: sent P2P offer to" << m_remoteSessionId.left(20);
                         });
@@ -531,7 +536,9 @@ void CallManager::joinCallOnServer(bool withVideo)
                         connect(m_peerPipeline, &PeerPipeline::iceStateChanged,
                                 this, [this](const QString &state) {
                             qDebug() << "CallManager: P2P ICE:" << state;
+                            setStatusDetail("ICE " + state);
                             if (state == "connected" || state == "completed") {
+                                setStatusDetail("Connected");
                                 if (m_state == Connecting) {
                                     setState(Active);
                                     m_durationTimer.start();
@@ -598,6 +605,7 @@ void CallManager::joinCallOnServer(bool withVideo)
                         connect(m_publishPipeline, &PublishPipeline::localOfferReady,
                                 this, [this, pubSid](const QString &sdp) {
                             // Send offer to OUR OWN session ID (MCU intercepts)
+                            setStatusDetail("Sending offer to MCU");
                             m_signaling->sendOffer(m_signaling->sessionId(), sdp, pubSid);
                             qDebug() << "CallManager: sent publish offer to own session, sid=" << pubSid;
                         });
@@ -614,6 +622,7 @@ void CallManager::joinCallOnServer(bool withVideo)
                         connect(m_publishPipeline, &PublishPipeline::iceStateChanged,
                                 this, [this](const QString &state) {
                             qDebug() << "CallManager: publisher ICE:" << state;
+                            setStatusDetail("Publisher ICE " + state);
                         });
 
                         connect(m_publishPipeline, &PublishPipeline::audioLevelUpdated,
@@ -658,6 +667,7 @@ void CallManager::joinCallOnServer(bool withVideo)
 
                         // If remote peer already joined (incoming call), request their stream
                         if (!m_remoteSessionId.isEmpty() && !m_subscribePipelines.contains(m_remoteSessionId)) {
+                            setStatusDetail("Requesting peer stream");
                             m_signaling->requestOffer(m_remoteSessionId, "video");
                             qDebug() << "CallManager: sent requestOffer for already-joined remote peer";
                         } else {
@@ -725,6 +735,7 @@ void CallManager::stopAllPipelines()
 
 void CallManager::teardown(const QString &reason)
 {
+    setStatusDetail("");
     m_ringTimeout.stop();
     m_durationTimer.stop();
     stopAllPipelines();
@@ -801,6 +812,7 @@ void CallManager::onParticipantLeftCall(const QString &sessionId)
 
 void CallManager::onOfferReceived(const QString &fromSessionId, const QString &sdp, const QString &sid)
 {
+    setStatusDetail("Received offer");
     qDebug() << "CallManager: received offer from" << fromSessionId.left(20) << "sid=" << sid;
 
     if (m_useP2P && m_peerPipeline) {
@@ -833,7 +845,9 @@ void CallManager::onOfferReceived(const QString &fromSessionId, const QString &s
         connect(sub, &SubscribePipeline::iceStateChanged,
                 this, [this](const QString &state) {
             qDebug() << "CallManager: subscriber ICE:" << state;
+            setStatusDetail("Subscriber ICE " + state);
             if (state == "connected" || state == "completed") {
+                setStatusDetail("Connected");
                 if (m_state == Connecting) {
                     setState(Active);
                     m_durationTimer.start();
@@ -862,6 +876,7 @@ void CallManager::onOfferReceived(const QString &fromSessionId, const QString &s
 
 void CallManager::onAnswerReceived(const QString &fromSessionId, const QString &sdp)
 {
+    setStatusDetail("Received answer");
     qDebug() << "CallManager: received answer from" << fromSessionId.left(20);
 
     if (m_useP2P && m_peerPipeline) {
