@@ -22,6 +22,7 @@ class CallManager : public QObject
     Q_PROPERTY(double audioLevel READ audioLevel NOTIFY audioLevelChanged)
     Q_PROPERTY(QString callStats READ callStats NOTIFY callStatsChanged)
     Q_PROPERTY(VideoFrameProvider* remoteVideoProvider READ remoteVideoProvider NOTIFY remoteVideoProviderChanged)
+    Q_PROPERTY(VideoFrameProvider* localVideoProvider READ localVideoProvider NOTIFY localVideoProviderChanged)
 
 public:
     enum CallState { Idle, Outgoing, Incoming, Connecting, Active, Ending };
@@ -38,6 +39,7 @@ public:
     double audioLevel() const { return m_audioLevel; }
     QString callStats() const { return m_callStats; }
     VideoFrameProvider *remoteVideoProvider() const { return m_remoteVideoProvider; }
+    VideoFrameProvider *localVideoProvider() const { return m_localVideoProvider; }
 
     Q_INVOKABLE void startCall(const QString &token, bool withVideo);
     Q_INVOKABLE void setRemotePeerInfo(const QString &name, const QString &peerId);
@@ -60,6 +62,7 @@ signals:
     void audioLevelChanged();
     void callStatsChanged();
     void remoteVideoProviderChanged();
+    void localVideoProviderChanged();
 
 private slots:
     void onParticipantJoinedCall(const QString &sessionId, int flags, const QString &displayName);
@@ -112,4 +115,5 @@ private:
     QDateTime m_incomingTime;  // when incoming call was detected
 
     VideoFrameProvider *m_remoteVideoProvider = nullptr;
+    VideoFrameProvider *m_localVideoProvider = nullptr;
 };
