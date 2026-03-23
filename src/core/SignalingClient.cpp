@@ -251,6 +251,9 @@ void SignalingClient::onTextMessage(const QString &msg)
                 } else if (prevFlags > 0 && inCall == 0) {
                     qDebug() << "Signaling: participant left call" << sid.left(20);
                     emit participantLeftCall(sid);
+                } else if (prevFlags != inCall && inCall > 0) {
+                    qDebug() << "Signaling: participant flags changed" << sid.left(20) << prevFlags << "->" << inCall;
+                    emit participantFlagsChanged(sid, prevFlags, inCall);
                 }
             }
         }
