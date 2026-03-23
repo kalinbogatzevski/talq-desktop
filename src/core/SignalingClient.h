@@ -52,6 +52,8 @@ public:
                        const QString &sid);
     void sendEndOfCandidates(const QString &toSessionId, const QString &sid);
     void requestOffer(const QString &sessionId, const QString &roomType = "video");
+    void sendSessionMessage(const QString &toSessionId, const QString &type,
+                            const QJsonObject &payload, const QString &sid);
     bool hasMcu() const { return m_hasMcu; }
 
 signals:
@@ -98,7 +100,4 @@ private:
     QHash<QString, int> m_participantCallFlags;
     QHash<QString, QString> m_participantNames;  // userId → displayName
 
-public:
-    void sendSessionMessage(const QString &toSessionId, const QString &type,
-                            const QJsonObject &payload, const QString &sid);
 };

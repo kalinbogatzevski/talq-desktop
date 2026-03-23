@@ -4,6 +4,7 @@
 #include <QDateTime>
 #include <QtMath>
 #include <QSettings>
+#include <QRegularExpression>
 
 #ifdef Q_OS_WIN
 #include <windows.h>
@@ -248,6 +249,7 @@ void CallManager::startCall(const QString &token, bool withVideo)
     m_callToken = token;
     m_withVideo = withVideo;
     m_cameraOn = withVideo;
+    emit cameraChanged();
     m_muted = false;
     m_callDuration = 0;
     setState(Outgoing);
@@ -298,6 +300,7 @@ void CallManager::acceptCall(bool withVideo) {
         return;
     }
     m_withVideo = withVideo; m_cameraOn = withVideo; m_muted = false; m_callDuration = 0;
+    emit cameraChanged();
     m_ringTimeout.stop();
     setState(Connecting);
 
@@ -407,6 +410,9 @@ void CallManager::broadcastMediaState(const QString &media, bool enabled)
 
 void CallManager::updateCallFlags()
 {
+    if (m_callToken.isEmpty() || (m_state != Connecting && m_state != Active))
+        return;
+
     // Update our call flags on the server (IN_CALL=1 | WITH_AUDIO=2 | WITH_VIDEO=4)
     int flags = 1 | 2;
     if (m_cameraOn) flags |= 4;
@@ -834,7 +840,9 @@ void CallManager::onAnswerReceived(const QString &fromSessionId, const QString &
         // re-request all existing subscriber streams so MCU sends video too.
         // Don't tear down existing subscribers — just request new offers.
         // onOfferReceived handles re-offers for existing subscribers.
-        if (m_cameraOn && sdp.contains("m=video") && !m_subscribePipelines.isEmpty()) {
+        // Check for active video line (port > 0; "m=video 0" means rejected)
+        bool hasActiveVideo = sdp.contains(QRegularExpression("m=video [1-9]"));
+        if (m_cameraOn && hasActiveVideo && !m_subscribePipelines.isEmpty()) {
             QStringList peerIds = m_subscribePipelines.keys();
             qDebug() << "CallManager: video renegotiation accepted, re-requesting"
                      << peerIds.size() << "subscriber stream(s)";
