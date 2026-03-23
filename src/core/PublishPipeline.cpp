@@ -53,7 +53,8 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
     }
 
     // Audio capture chain
-    GstElement *audiosrc = gst_element_factory_make("wasapi2src", "pub-audiosrc");
+    // autoaudiosrc picks the best working audio backend (wasapisrc, wasapi2src, etc.)
+    GstElement *audiosrc = gst_element_factory_make("autoaudiosrc", "pub-audiosrc");
     GstElement *audioconvert = gst_element_factory_make("audioconvert", nullptr);
     GstElement *audioresample = gst_element_factory_make("audioresample", nullptr);
     GstElement *level = gst_element_factory_make("level", "pub-level");
