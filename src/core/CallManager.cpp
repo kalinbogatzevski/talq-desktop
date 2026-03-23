@@ -420,7 +420,9 @@ void CallManager::updateCallFlags()
     QJsonObject body;
     body["flags"] = flags;
     m_api->put("apps/spreed/api/v4/call/" + m_callToken, body,
-        [](bool, const QJsonObject &, int) {});
+        [](bool ok, const QJsonObject &, int statusCode) {
+            if (!ok) qWarning() << "CallManager: failed to update call flags, status=" << statusCode;
+        });
 }
 
 void CallManager::joinCallOnServer(bool withVideo)
@@ -554,9 +556,18 @@ void CallManager::joinCallOnServer(bool withVideo)
                             emit cameraChanged();
                         });
 
-                        m_peerPipeline->start(m_stunServer, turnServers,
+                        connect(m_peerPipeline, &PeerPipeline::error, this, [this](const QString &msg) {
+                            qWarning() << "CallManager: peer pipeline error:" << msg;
+                            teardown(msg);
+                        });
+
+                        if (!m_peerPipeline->start(m_stunServer, turnServers,
                             m_deviceManager ? m_deviceManager->selectedInputDeviceId() : QString(),
-                            m_deviceManager ? m_deviceManager->selectedOutputDeviceId() : QString());
+                            m_deviceManager ? m_deviceManager->selectedOutputDeviceId() : QString())) {
+                            qWarning() << "CallManager: failed to start peer pipeline";
+                            teardown("Failed to start audio pipeline");
+                            return;
+                        }
                         m_glibTimer.start(20);
 
                         // If outgoing call and remote peer already known, create offer
@@ -603,6 +614,11 @@ void CallManager::joinCallOnServer(bool withVideo)
                             }
                         });
 
+                        connect(m_publishPipeline, &PublishPipeline::error, this, [this](const QString &msg) {
+                            qWarning() << "CallManager: publish pipeline error:" << msg;
+                            teardown(msg);
+                        });
+
                         connect(m_publishPipeline, &PublishPipeline::cameraError, this, [this](const QString &reason) {
                             qWarning() << "CallManager: camera error:" << reason;
                             // Try 720p fallback if 1080p failed
@@ -618,7 +634,11 @@ void CallManager::joinCallOnServer(bool withVideo)
                             }
                         });
 
-                        m_publishPipeline->start(m_stunServer, turnServers, m_deviceManager ? m_deviceManager->selectedInputDeviceId() : QString());
+                        if (!m_publishPipeline->start(m_stunServer, turnServers, m_deviceManager ? m_deviceManager->selectedInputDeviceId() : QString())) {
+                            qWarning() << "CallManager: failed to start publish pipeline";
+                            teardown("Failed to start audio pipeline");
+                            return;
+                        }
                         m_glibTimer.start(20);
 
                         // If video call, enable camera immediately (local preview shows right away)
@@ -637,7 +657,8 @@ void CallManager::joinCallOnServer(bool withVideo)
                             // Discover who's already in the call and request their streams
                             m_api->getArray("apps/spreed/api/v4/call/" + m_callToken,
                                 [this](bool ok, const QJsonArray &data, int) {
-                                    if (!ok) return;
+                                    if (!ok) { qWarning() << "CallManager: failed to discover call participants"; return; }
+                                    if (m_state == Idle) return;  // call ended during request
                                     for (const auto &val : data) {
                                         QJsonObject p = val.toObject();
                                         QString sid = p["sessionId"].toString();
@@ -664,7 +685,9 @@ void CallManager::leaveCallOnServer()
 {
     if (m_callToken.isEmpty()) return;
     m_api->del("apps/spreed/api/v4/call/" + m_callToken,
-        [](bool, const QJsonObject &, int) {});
+        [](bool ok, const QJsonObject &, int statusCode) {
+            if (!ok) qWarning() << "CallManager: failed to leave call on server, status=" << statusCode;
+        });
 }
 
 void CallManager::stopAllPipelines()
@@ -811,8 +834,17 @@ void CallManager::onOfferReceived(const QString &fromSessionId, const QString &s
             }
         });
 
+        connect(sub, &SubscribePipeline::error, this, [this, fromSessionId](const QString &msg) {
+            qWarning() << "CallManager: subscriber pipeline error for" << fromSessionId.left(20) << ":" << msg;
+        });
+
         m_subscribePipelines[fromSessionId] = sub;
-        sub->start(m_stunServer, m_turnServers, m_deviceManager ? m_deviceManager->selectedOutputDeviceId() : QString());
+        if (!sub->start(m_stunServer, m_turnServers, m_deviceManager ? m_deviceManager->selectedOutputDeviceId() : QString())) {
+            qWarning() << "CallManager: failed to start subscriber pipeline for" << fromSessionId.left(20);
+            m_subscribePipelines.remove(fromSessionId);
+            sub->deleteLater();
+            return;
+        }
 
         m_remoteVideoProvider = sub->videoProvider();
         emit remoteVideoProviderChanged();
