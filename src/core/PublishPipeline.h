@@ -5,6 +5,7 @@
 #include <gst/sdp/sdp.h>
 #include <gst/webrtc/webrtc.h>
 #include "SignalingClient.h"
+#include "VideoFrameProvider.h"
 
 /**
  * Send-only GStreamer webrtcbin pipeline for MCU publishing.
@@ -32,6 +33,8 @@ public:
 
     void enableCamera(int deviceIndex, bool hd1080 = true);
     void disableCamera();
+
+    VideoFrameProvider *localVideoProvider() const { return m_localVideoProvider; }
 
 signals:
     void localOfferReady(const QString &sdp);
@@ -61,8 +64,17 @@ private:
     GstPad *m_videoSinkPad = nullptr;
     bool m_cameraEnabled = false;
 
+    // Local preview (tee branch)
+    GstElement *m_tee = nullptr;
+    GstElement *m_encQueue = nullptr;
+    GstElement *m_previewQueue = nullptr;
+    GstElement *m_previewConvert = nullptr;
+    GstElement *m_previewAppsink = nullptr;
+    VideoFrameProvider *m_localVideoProvider = nullptr;
+
     static void onNegotiationNeeded(GstElement *webrtc, gpointer userData);
     static void onIceCandidate(GstElement *webrtc, guint mlineIndex, gchar *candidate, gpointer userData);
     static void onOfferCreated(GstPromise *promise, gpointer userData);
     static void onIceStateChanged(GObject *obj, GParamSpec *pspec, gpointer userData);
+    static GstFlowReturn onPreviewSample(GstAppSink *sink, gpointer userData);
 };

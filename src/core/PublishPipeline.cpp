@@ -2,10 +2,12 @@
 #include <QDebug>
 #include <QRegularExpression>
 #include <QUrl>
+#include <gst/app/gstappsink.h>
 
 PublishPipeline::PublishPipeline(QObject *parent)
     : QObject(parent)
 {
+    m_localVideoProvider = new VideoFrameProvider(this);
 }
 
 PublishPipeline::~PublishPipeline()
@@ -218,6 +220,35 @@ void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)
 
     g_object_set(m_videoEncoder, "bitrate", bitrate, "rate-control", 1, "complexity", 1, nullptr);
 
+    // Create tee + preview branch elements
+    m_tee = gst_element_factory_make("tee", "camera-tee");
+    m_encQueue = gst_element_factory_make("queue", "enc-queue");
+    m_previewQueue = gst_element_factory_make("queue", "preview-queue");
+    m_previewConvert = gst_element_factory_make("videoconvert", "preview-convert");
+    m_previewAppsink = gst_element_factory_make("appsink", "preview-sink");
+
+    if (!m_tee || !m_encQueue || !m_previewQueue || !m_previewConvert || !m_previewAppsink) {
+        qWarning() << "PublishPipeline: failed to create preview elements, continuing without preview";
+        if (m_tee) { gst_object_unref(m_tee); m_tee = nullptr; }
+        if (m_encQueue) { gst_object_unref(m_encQueue); m_encQueue = nullptr; }
+        if (m_previewQueue) { gst_object_unref(m_previewQueue); m_previewQueue = nullptr; }
+        if (m_previewConvert) { gst_object_unref(m_previewConvert); m_previewConvert = nullptr; }
+        if (m_previewAppsink) { gst_object_unref(m_previewAppsink); m_previewAppsink = nullptr; }
+    }
+
+    if (m_previewAppsink) {
+        GstCaps *previewCaps = gst_caps_from_string("video/x-raw,format=I420");
+        g_object_set(m_previewAppsink,
+            "emit-signals", TRUE,
+            "caps", previewCaps,
+            "drop", TRUE,
+            "max-buffers", 1,
+            nullptr);
+        gst_caps_unref(previewCaps);
+        g_signal_connect(m_previewAppsink, "new-sample",
+            G_CALLBACK(onPreviewSample), this);
+    }
+
     if (!jpegdec) {
         qWarning() << "PublishPipeline: jpegdec not available, trying raw capture";
         // Fallback: raw capture (640x480 max)
@@ -225,17 +256,64 @@ void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)
         g_object_set(m_videoCapsFilter, "caps", rawCaps, nullptr);
         gst_caps_unref(rawCaps);
 
-        gst_bin_add_many(GST_BIN(m_pipeline), m_cameraSrc, m_videoConvert, m_videoCapsFilter, m_videoEncoder, m_videoPayloader, nullptr);
+        if (m_tee) {
+            gst_bin_add_many(GST_BIN(m_pipeline), m_cameraSrc, m_videoConvert, m_videoCapsFilter,
+                m_tee, m_encQueue, m_videoEncoder, m_videoPayloader,
+                m_previewQueue, m_previewConvert, m_previewAppsink, nullptr);
+        } else {
+            gst_bin_add_many(GST_BIN(m_pipeline), m_cameraSrc, m_videoConvert, m_videoCapsFilter,
+                m_videoEncoder, m_videoPayloader, nullptr);
+        }
     } else {
-        // JPEG path: ksvideosrc ! capsfilter(image/jpeg) ! jpegdec ! videoconvert ! openh264enc ! rtph264pay
-        gst_bin_add_many(GST_BIN(m_pipeline), m_cameraSrc, m_videoCapsFilter, jpegdec, m_videoConvert, m_videoEncoder, m_videoPayloader, nullptr);
+        if (m_tee) {
+            gst_bin_add_many(GST_BIN(m_pipeline), m_cameraSrc, m_videoCapsFilter, jpegdec, m_videoConvert,
+                m_tee, m_encQueue, m_videoEncoder, m_videoPayloader,
+                m_previewQueue, m_previewConvert, m_previewAppsink, nullptr);
+        } else {
+            gst_bin_add_many(GST_BIN(m_pipeline), m_cameraSrc, m_videoCapsFilter, jpegdec, m_videoConvert,
+                m_videoEncoder, m_videoPayloader, nullptr);
+        }
     }
 
     gboolean linked;
-    if (jpegdec) {
-        linked = gst_element_link_many(m_cameraSrc, m_videoCapsFilter, jpegdec, m_videoConvert, m_videoEncoder, m_videoPayloader, nullptr);
+    if (m_tee) {
+        // Link capture chain up to tee
+        if (jpegdec) {
+            linked = gst_element_link_many(m_cameraSrc, m_videoCapsFilter, jpegdec, m_videoConvert, m_tee, nullptr);
+        } else {
+            linked = gst_element_link_many(m_cameraSrc, m_videoConvert, m_videoCapsFilter, m_tee, nullptr);
+        }
+        // Link encoder branch: encQueue -> encoder -> payloader
+        linked = linked && gst_element_link_many(m_encQueue, m_videoEncoder, m_videoPayloader, nullptr);
+        // Link preview branch: previewQueue -> previewConvert -> previewAppsink
+        linked = linked && gst_element_link_many(m_previewQueue, m_previewConvert, m_previewAppsink, nullptr);
+
+        if (linked) {
+            // Request tee src pads and link to each branch
+            GstPad *teeSrcEnc = gst_element_request_pad_simple(m_tee, "src_%u");
+            GstPad *encQueueSink = gst_element_get_static_pad(m_encQueue, "sink");
+            GstPadLinkReturn r1 = gst_pad_link(teeSrcEnc, encQueueSink);
+            gst_object_unref(teeSrcEnc);
+            gst_object_unref(encQueueSink);
+
+            GstPad *teeSrcPreview = gst_element_request_pad_simple(m_tee, "src_%u");
+            GstPad *previewQueueSink = gst_element_get_static_pad(m_previewQueue, "sink");
+            GstPadLinkReturn r2 = gst_pad_link(teeSrcPreview, previewQueueSink);
+            gst_object_unref(teeSrcPreview);
+            gst_object_unref(previewQueueSink);
+
+            if (r1 != GST_PAD_LINK_OK || r2 != GST_PAD_LINK_OK) {
+                qWarning() << "PublishPipeline: tee pad link failed:" << r1 << r2;
+                linked = false;
+            }
+        }
     } else {
-        linked = gst_element_link_many(m_cameraSrc, m_videoConvert, m_videoCapsFilter, m_videoEncoder, m_videoPayloader, nullptr);
+        // No tee fallback: original direct path
+        if (jpegdec) {
+            linked = gst_element_link_many(m_cameraSrc, m_videoCapsFilter, jpegdec, m_videoConvert, m_videoEncoder, m_videoPayloader, nullptr);
+        } else {
+            linked = gst_element_link_many(m_cameraSrc, m_videoConvert, m_videoCapsFilter, m_videoEncoder, m_videoPayloader, nullptr);
+        }
     }
 
     if (!linked) {
@@ -260,6 +338,13 @@ void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)
     gst_element_sync_state_with_parent(m_cameraSrc);
     gst_element_sync_state_with_parent(m_videoConvert);
     gst_element_sync_state_with_parent(m_videoCapsFilter);
+    if (m_tee) {
+        gst_element_sync_state_with_parent(m_tee);
+        gst_element_sync_state_with_parent(m_encQueue);
+        gst_element_sync_state_with_parent(m_previewQueue);
+        gst_element_sync_state_with_parent(m_previewConvert);
+        gst_element_sync_state_with_parent(m_previewAppsink);
+    }
     gst_element_sync_state_with_parent(m_videoEncoder);
     gst_element_sync_state_with_parent(m_videoPayloader);
 
@@ -294,6 +379,11 @@ void PublishPipeline::disableCamera()
         m_videoSinkPad = nullptr;
     }
 
+    removeElement(m_previewAppsink);
+    removeElement(m_previewConvert);
+    removeElement(m_previewQueue);
+    removeElement(m_tee);
+    removeElement(m_encQueue);
     removeElement(m_videoPayloader);
     removeElement(m_videoEncoder);
     removeElement(m_videoCapsFilter);
@@ -412,4 +502,19 @@ void PublishPipeline::onIceStateChanged(GObject *obj, GParamSpec *, gpointer use
         qDebug() << "PublishPipeline: ICE ->" << stateName;
         emit self->iceStateChanged(stateName);
     }, Qt::QueuedConnection);
+}
+
+GstFlowReturn PublishPipeline::onPreviewSample(GstAppSink *sink, gpointer userData)
+{
+    Q_UNUSED(sink)
+    auto *self = static_cast<PublishPipeline *>(userData);
+    GstSample *sample = gst_app_sink_pull_sample(GST_APP_SINK(sink));
+    if (!sample) return GST_FLOW_OK;
+
+    QMetaObject::invokeMethod(self->m_localVideoProvider, [self, sample]() {
+        self->m_localVideoProvider->feedFrame(sample);
+        gst_sample_unref(sample);
+    }, Qt::QueuedConnection);
+
+    return GST_FLOW_OK;
 }
