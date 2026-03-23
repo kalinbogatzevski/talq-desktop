@@ -35,6 +35,40 @@ Window {
         }
     }
 
+    // Local camera preview (PIP)
+    VideoOutput {
+        id: localPreview
+        anchors.right: parent.right
+        anchors.bottom: controlBar.top
+        anchors.rightMargin: 16
+        anchors.bottomMargin: 16
+        width: 160
+        height: 120
+        visible: callManager.isCameraOn && callManager.localVideoProvider && callManager.localVideoProvider.hasVideo
+        fillMode: VideoOutput.PreserveAspectCrop
+        z: 8
+
+        // Mirror for natural feel
+        transform: Scale { origin.x: localPreview.width / 2; xScale: -1 }
+
+        Rectangle {
+            anchors.fill: parent
+            color: "transparent"
+            border.color: "#40ffffff"
+            border.width: 1
+            radius: 4
+        }
+    }
+
+    Connections {
+        target: callManager
+        function onLocalVideoProviderChanged() {
+            if (callManager.localVideoProvider) {
+                callManager.localVideoProvider.videoSink = localPreview.videoSink
+            }
+        }
+    }
+
     MouseArea {
         anchors.fill: parent
         hoverEnabled: true
@@ -102,7 +136,8 @@ Window {
     // Pulsing ring during outgoing/incoming
     Rectangle {
         id: pulseRing
-        anchors.centerIn: avatarCircle
+        x: (parent.width - width) / 2
+        y: 12  // ColumnLayout topMargin(24) + avatar center(36) - half pulseRing(48)
         width: 96; height: 96; radius: 48
         color: "transparent"
         border.color: "#2ecc71"; border.width: 2; opacity: 0
