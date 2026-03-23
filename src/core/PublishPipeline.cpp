@@ -1,5 +1,6 @@
 #include "core/PublishPipeline.h"
 #include <QDebug>
+#include <QPointer>
 #include <QRegularExpression>
 #include <QUrl>
 #include <gst/app/gstappsink.h>
@@ -210,7 +211,7 @@ void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)
 
     // Camera outputs JPEG at high res, raw only at 640x480.
     // Use JPEG capture + jpegdec for full resolution.
-    GstElement *jpegdec = gst_element_factory_make("jpegdec", nullptr);
+    m_jpegDec = gst_element_factory_make("jpegdec", nullptr);
 
     // Capture caps: request JPEG at desired resolution
     QString capsStr = QString("image/jpeg,width=%1,height=%2,framerate=30/1").arg(w).arg(h);
@@ -249,7 +250,7 @@ void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)
             G_CALLBACK(onPreviewSample), this);
     }
 
-    if (!jpegdec) {
+    if (!m_jpegDec) {
         qWarning() << "PublishPipeline: jpegdec not available, trying raw capture";
         // Fallback: raw capture (640x480 max)
         GstCaps *rawCaps = gst_caps_from_string("video/x-raw,framerate=30/1");
@@ -266,11 +267,11 @@ void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)
         }
     } else {
         if (m_tee) {
-            gst_bin_add_many(GST_BIN(m_pipeline), m_cameraSrc, m_videoCapsFilter, jpegdec, m_videoConvert,
+            gst_bin_add_many(GST_BIN(m_pipeline), m_cameraSrc, m_videoCapsFilter, m_jpegDec, m_videoConvert,
                 m_tee, m_encQueue, m_videoEncoder, m_videoPayloader,
                 m_previewQueue, m_previewConvert, m_previewAppsink, nullptr);
         } else {
-            gst_bin_add_many(GST_BIN(m_pipeline), m_cameraSrc, m_videoCapsFilter, jpegdec, m_videoConvert,
+            gst_bin_add_many(GST_BIN(m_pipeline), m_cameraSrc, m_videoCapsFilter, m_jpegDec, m_videoConvert,
                 m_videoEncoder, m_videoPayloader, nullptr);
         }
     }
@@ -278,8 +279,8 @@ void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)
     gboolean linked;
     if (m_tee) {
         // Link capture chain up to tee
-        if (jpegdec) {
-            linked = gst_element_link_many(m_cameraSrc, m_videoCapsFilter, jpegdec, m_videoConvert, m_tee, nullptr);
+        if (m_jpegDec) {
+            linked = gst_element_link_many(m_cameraSrc, m_videoCapsFilter, m_jpegDec, m_videoConvert, m_tee, nullptr);
         } else {
             linked = gst_element_link_many(m_cameraSrc, m_videoConvert, m_videoCapsFilter, m_tee, nullptr);
         }
@@ -309,8 +310,8 @@ void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)
         }
     } else {
         // No tee fallback: original direct path
-        if (jpegdec) {
-            linked = gst_element_link_many(m_cameraSrc, m_videoCapsFilter, jpegdec, m_videoConvert, m_videoEncoder, m_videoPayloader, nullptr);
+        if (m_jpegDec) {
+            linked = gst_element_link_many(m_cameraSrc, m_videoCapsFilter, m_jpegDec, m_videoConvert, m_videoEncoder, m_videoPayloader, nullptr);
         } else {
             linked = gst_element_link_many(m_cameraSrc, m_videoConvert, m_videoCapsFilter, m_videoEncoder, m_videoPayloader, nullptr);
         }
@@ -338,6 +339,7 @@ void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)
     gst_element_sync_state_with_parent(m_cameraSrc);
     gst_element_sync_state_with_parent(m_videoConvert);
     gst_element_sync_state_with_parent(m_videoCapsFilter);
+    if (m_jpegDec) gst_element_sync_state_with_parent(m_jpegDec);
     if (m_tee) {
         gst_element_sync_state_with_parent(m_tee);
         gst_element_sync_state_with_parent(m_encQueue);
@@ -379,6 +381,8 @@ void PublishPipeline::disableCamera()
         m_videoSinkPad = nullptr;
     }
 
+    if (m_previewAppsink)
+        g_signal_handlers_disconnect_by_data(m_previewAppsink, this);
     removeElement(m_previewAppsink);
     removeElement(m_previewConvert);
     removeElement(m_previewQueue);
@@ -387,6 +391,7 @@ void PublishPipeline::disableCamera()
     removeElement(m_videoPayloader);
     removeElement(m_videoEncoder);
     removeElement(m_videoCapsFilter);
+    removeElement(m_jpegDec);
     removeElement(m_videoConvert);
     removeElement(m_cameraSrc);
 
@@ -506,13 +511,14 @@ void PublishPipeline::onIceStateChanged(GObject *obj, GParamSpec *, gpointer use
 
 GstFlowReturn PublishPipeline::onPreviewSample(GstAppSink *sink, gpointer userData)
 {
-    Q_UNUSED(sink)
     auto *self = static_cast<PublishPipeline *>(userData);
-    GstSample *sample = gst_app_sink_pull_sample(GST_APP_SINK(sink));
+    GstSample *sample = gst_app_sink_pull_sample(sink);
     if (!sample) return GST_FLOW_OK;
 
-    QMetaObject::invokeMethod(self->m_localVideoProvider, [self, sample]() {
-        self->m_localVideoProvider->feedFrame(sample);
+    QPointer<PublishPipeline> guard(self);
+    QMetaObject::invokeMethod(self->m_localVideoProvider, [guard, sample]() {
+        if (guard && guard->m_localVideoProvider)
+            guard->m_localVideoProvider->feedFrame(sample);
         gst_sample_unref(sample);
     }, Qt::QueuedConnection);
 

@@ -60,6 +60,7 @@ private:
     GstElement *m_videoConvert = nullptr;
     GstElement *m_videoCapsFilter = nullptr;
     GstElement *m_videoEncoder = nullptr;
+    GstElement *m_jpegDec = nullptr;
     GstElement *m_videoPayloader = nullptr;
     GstPad *m_videoSinkPad = nullptr;
     bool m_cameraEnabled = false;
