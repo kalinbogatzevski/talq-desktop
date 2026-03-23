@@ -200,6 +200,37 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
     // Stats timer — update call info every 2 seconds
     m_statsTimer.setInterval(2000);
     connect(&m_statsTimer, &QTimer::timeout, this, &CallManager::updateCallStats);
+
+    // Check GStreamer plugins on startup
+    checkGStreamerPlugins();
+}
+
+void CallManager::checkGStreamerPlugins()
+{
+    static const char *requiredPlugins[] = {
+        "coreelements", "audioconvert", "audioresample", "opus",
+        "rtp", "rtpmanager", "srtp", "dtls", "nice", "webrtc",
+        "wasapi2", "app", "autodetect", nullptr
+    };
+
+    QStringList missing;
+    for (int i = 0; requiredPlugins[i]; ++i) {
+        GstPlugin *plugin = gst_registry_find_plugin(gst_registry_get(), requiredPlugins[i]);
+        if (!plugin) {
+            missing << requiredPlugins[i];
+        } else {
+            gst_object_unref(plugin);
+        }
+    }
+
+    if (!missing.isEmpty()) {
+        m_callsAvailable = false;
+        m_callsUnavailableReason = "Missing GStreamer plugins: " + missing.join(", ");
+        qWarning() << "CallManager:" << m_callsUnavailableReason;
+        qWarning() << "CallManager: copy plugins to gst-plugins/ directory next to talq.exe";
+    } else {
+        qDebug() << "CallManager: all required GStreamer plugins found";
+    }
 }
 
 void CallManager::updateCallStats()
