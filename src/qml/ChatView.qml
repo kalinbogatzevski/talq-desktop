@@ -85,7 +85,7 @@ Page {
 
             // Back to chat list (when sidebar is squeezed in topic mode)
             TqIconButton {
-                iconText: "\u2190"
+                iconName: "arrow-left"
                 size: 30
                 iconColor: Theme.accent
                 visible: chatRoot.sidebarSqueezed && chatRoot.conversationName.length > 0
@@ -94,7 +94,7 @@ Page {
 
             // Back button (when viewing a thread or topic)
             TqIconButton {
-                iconText: "\u2190"
+                iconName: "arrow-left"
                 size: 30
                 iconColor: Theme.accent
                 visible: chatRoot.activeThreadId > 0
@@ -173,7 +173,7 @@ Page {
 
             // Audio call button
             TqIconButton {
-                iconText: "\uD83D\uDCDE"
+                iconName: "phone"
                 size: 34
                 bgColor: Theme.success
                 iconColor: "white"
@@ -184,7 +184,7 @@ Page {
 
             // Video call button
             TqIconButton {
-                iconText: "\uD83D\uDCF9"
+                iconName: "video"
                 size: 34
                 bgColor: Theme.accent
                 iconColor: "white"
@@ -669,7 +669,7 @@ Page {
 
     // Scroll-to-bottom floating button
     TqIconButton {
-        iconText: "\u2193"
+        iconName: "arrow-down"
         size: Theme.buttonSizeMedium
         bgColor: Theme.bgSurface
         anchors.right: chatRoot.contentItem.right

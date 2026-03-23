@@ -87,6 +87,7 @@ qt_add_qml_module(talq
         src/qml/TqBadge.qml
         src/qml/TqSwitch.qml
         src/qml/TqComboBox.qml
+        src/qml/TqIcon.qml
     RESOURCES
         resources/resources.qrc
 )

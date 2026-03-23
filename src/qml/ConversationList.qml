@@ -82,7 +82,7 @@ Item {
                     }
 
                     TqIconButton {
-                        iconText: Theme.darkMode ? "\u2600" : "\u263E"
+                        iconName: Theme.darkMode ? "sun" : "moon"
                         size: Theme.buttonSizeMedium
                         visible: !sidebar.squeezed
                         opacity: sidebar.squeezed ? 0 : 1
@@ -94,7 +94,7 @@ Item {
                     }
 
                     TqIconButton {
-                        iconText: "\u21BB"
+                        iconName: "refresh"
                         size: Theme.buttonSizeMedium
                         visible: !sidebar.squeezed
                         opacity: sidebar.squeezed ? 0 : 1
@@ -106,7 +106,7 @@ Item {
                     }
 
                     TqIconButton {
-                        iconText: "\u23FB"
+                        iconName: "power"
                         size: Theme.buttonSizeMedium
                         visible: !sidebar.squeezed
                         opacity: sidebar.squeezed ? 0 : 1
