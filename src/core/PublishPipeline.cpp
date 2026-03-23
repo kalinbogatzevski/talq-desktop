@@ -352,6 +352,12 @@ void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)
 
     m_cameraEnabled = true;
     qDebug() << "PublishPipeline: camera enabled successfully";
+
+    // Manually trigger renegotiation — webrtcbin doesn't always fire
+    // on-negotiation-needed when pads are added to a running pipeline
+    qDebug() << "PublishPipeline: triggering renegotiation for video";
+    GstPromise *promise = gst_promise_new_with_change_func(onOfferCreated, this, nullptr);
+    g_signal_emit_by_name(m_webrtcbin, "create-offer", nullptr, promise);
 }
 
 void PublishPipeline::disableCamera()
