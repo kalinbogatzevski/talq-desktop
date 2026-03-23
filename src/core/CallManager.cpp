@@ -419,6 +419,8 @@ void CallManager::joinCallOnServer(bool withVideo)
 
                     // Start publisher (send our audio to MCU)
                     m_publishPipeline = new PublishPipeline(this);
+                    m_localVideoProvider = m_publishPipeline->localVideoProvider();
+                    emit localVideoProviderChanged();
 
                     connect(m_publishPipeline, &PublishPipeline::localOfferReady,
                             this, [this, pubSid](const QString &sdp) {
@@ -520,6 +522,9 @@ void CallManager::stopAllPipelines()
 
     m_remoteVideoProvider = nullptr;
     emit remoteVideoProviderChanged();
+
+    m_localVideoProvider = nullptr;
+    emit localVideoProviderChanged();
 }
 
 void CallManager::teardown(const QString &reason)
