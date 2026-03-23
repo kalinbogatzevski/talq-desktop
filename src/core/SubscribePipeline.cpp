@@ -274,17 +274,26 @@ void SubscribePipeline::createVideoChain(GstPad *pad, const gchar *encoding)
     } else {
         qDebug() << "SubscribePipeline: video chain linked successfully";
 
-        // Request a keyframe immediately — without this, the decoder waits for
-        // the next natural keyframe which can take minutes from the MCU.
-        GstPad *sinkPadForEvent = gst_element_get_static_pad(depay, "sink");
-        if (sinkPadForEvent) {
-            gst_pad_send_event(sinkPadForEvent,
-                gst_event_new_custom(GST_EVENT_CUSTOM_UPSTREAM,
-                    gst_structure_new("GstForceKeyUnit",
-                        "all-headers", G_TYPE_BOOLEAN, TRUE, nullptr)));
-            gst_object_unref(sinkPadForEvent);
-            qDebug() << "SubscribePipeline: requested keyframe (ForceKeyUnit)";
-        }
+        // Request keyframes aggressively — send PLI at 0s, 1s, 2s, 4s after link.
+        // webrtcbin translates ForceKeyUnit to RTCP PLI → MCU → phone sends keyframe.
+        // Multiple requests needed because MCU/Janus may not forward the first one.
+        m_videoDepay = depay;  // save for PLI requests
+        auto sendPLI = [this]() {
+            if (!m_videoDepay || !m_pipeline) return;
+            GstPad *sinkPad = gst_element_get_static_pad(m_videoDepay, "sink");
+            if (sinkPad) {
+                gst_pad_send_event(sinkPad,
+                    gst_event_new_custom(GST_EVENT_CUSTOM_UPSTREAM,
+                        gst_structure_new("GstForceKeyUnit",
+                            "all-headers", G_TYPE_BOOLEAN, TRUE, nullptr)));
+                gst_object_unref(sinkPad);
+                qDebug() << "SubscribePipeline: sent PLI for keyframe";
+            }
+        };
+        sendPLI();
+        QTimer::singleShot(1000, this, sendPLI);
+        QTimer::singleShot(2000, this, sendPLI);
+        QTimer::singleShot(4000, this, sendPLI);
     }
 }
 
