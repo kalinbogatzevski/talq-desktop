@@ -269,10 +269,23 @@ void SubscribePipeline::createVideoChain(GstPad *pad, const gchar *encoding)
     GstPadLinkReturn ret = gst_pad_link(pad, sinkPad);
     gst_object_unref(sinkPad);
 
-    if (ret != GST_PAD_LINK_OK)
+    if (ret != GST_PAD_LINK_OK) {
         qWarning() << "SubscribePipeline: video pad link failed:" << ret;
-    else
+    } else {
         qDebug() << "SubscribePipeline: video chain linked successfully";
+
+        // Request a keyframe immediately — without this, the decoder waits for
+        // the next natural keyframe which can take minutes from the MCU.
+        GstPad *sinkPadForEvent = gst_element_get_static_pad(depay, "sink");
+        if (sinkPadForEvent) {
+            gst_pad_send_event(sinkPadForEvent,
+                gst_event_new_custom(GST_EVENT_CUSTOM_UPSTREAM,
+                    gst_structure_new("GstForceKeyUnit",
+                        "all-headers", G_TYPE_BOOLEAN, TRUE, nullptr)));
+            gst_object_unref(sinkPadForEvent);
+            qDebug() << "SubscribePipeline: requested keyframe (ForceKeyUnit)";
+        }
+    }
 }
 
 GstFlowReturn SubscribePipeline::onNewVideoSample(GstAppSink *sink, gpointer userData)
