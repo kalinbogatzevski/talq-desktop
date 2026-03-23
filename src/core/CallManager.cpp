@@ -424,6 +424,7 @@ void CallManager::joinCallOnServer(bool withVideo)
                     qDebug() << "CallManager: found" << turnServers.size() << "TURN servers";
                     m_turnServers = turnServers;
 
+                    // P2P for 1:1 calls when no MCU, MCU when server has it
                     m_useP2P = !m_signaling->hasMcu();
                     qDebug() << "CallManager: call mode =" << (m_useP2P ? "P2P" : "MCU");
 
@@ -466,6 +467,19 @@ void CallManager::joinCallOnServer(bool withVideo)
                                     setState(Active);
                                     m_durationTimer.start();
                                 }
+                            } else if (state == "failed" && m_signaling->hasMcu()) {
+                                // P2P failed, fall back to MCU
+                                qWarning() << "CallManager: P2P ICE failed, falling back to MCU";
+                                m_peerPipeline->stop();
+                                m_peerPipeline->deleteLater();
+                                m_peerPipeline = nullptr;
+                                m_useP2P = false;
+                                m_localVideoProvider = nullptr;
+                                emit localVideoProviderChanged();
+                                m_remoteVideoProvider = nullptr;
+                                emit remoteVideoProviderChanged();
+                                // Re-enter joinCallOnServer which will now use MCU
+                                joinCallOnServer(m_withVideo);
                             }
                         });
 

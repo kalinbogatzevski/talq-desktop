@@ -259,6 +259,9 @@ void PeerPipeline::enableCamera(int deviceIndex, bool hd1080)
     m_tee = gst_element_factory_make("tee", "camera-tee");
     m_encQueue = gst_element_factory_make("queue", "enc-queue");
     m_previewQueue = gst_element_factory_make("queue", "preview-queue");
+    // Prevent tee from blocking: drop old frames if downstream is slow
+    if (m_encQueue) g_object_set(m_encQueue, "leaky", 2 /* downstream */, "max-size-buffers", 3, nullptr);
+    if (m_previewQueue) g_object_set(m_previewQueue, "leaky", 2, "max-size-buffers", 2, nullptr);
     m_previewConvert = gst_element_factory_make("videoconvert", "preview-convert");
     m_previewAppsink = gst_element_factory_make("appsink", "preview-sink");
 
