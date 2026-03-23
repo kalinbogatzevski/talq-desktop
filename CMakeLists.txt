@@ -52,6 +52,7 @@ qt_add_executable(talq
     src/core/VideoFrameProvider.cpp
     src/core/MediaDeviceManager.cpp
     src/core/CallManager.cpp
+    src/core/PeerPipeline.cpp
     src/core/CallSignaling.cpp
     src/core/DebugMonitor.cpp
     src/core/AppSettings.cpp
