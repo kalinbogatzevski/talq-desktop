@@ -7,6 +7,7 @@
 #include "core/SignalingClient.h"
 #include "core/PublishPipeline.h"
 #include "core/SubscribePipeline.h"
+#include "core/PeerPipeline.h"
 #include "core/MediaDeviceManager.h"
 #include "core/VideoFrameProvider.h"
 
@@ -85,6 +86,9 @@ private:
     // MCU dual pipelines
     PublishPipeline *m_publishPipeline = nullptr;
     QHash<QString, SubscribePipeline*> m_subscribePipelines;
+    // P2P single pipeline
+    PeerPipeline *m_peerPipeline = nullptr;
+    bool m_useP2P = false;
     QTimer m_glibTimer;  // shared GLib main context pump
 
     CallState m_state = Idle;

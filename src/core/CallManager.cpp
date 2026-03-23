@@ -145,6 +145,10 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
         int mline = c["sdpMLineIndex"].toInt();
         QString mid = c["sdpMid"].toString();
 
+        if (m_useP2P && m_peerPipeline) {
+            m_peerPipeline->addIceCandidate(cStr, mline, mid);
+            return;
+        }
         if (fromSessionId == m_signaling->sessionId() && m_publishPipeline) {
             m_publishPipeline->addIceCandidate(cStr, mline, mid);
         } else if (m_subscribePipelines.contains(fromSessionId)) {
@@ -156,6 +160,7 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
     connect(&m_glibTimer, &QTimer::timeout, this, [this]() {
         while (g_main_context_iteration(nullptr, FALSE)) {}
         if (m_publishPipeline) m_publishPipeline->pollBus();
+        if (m_peerPipeline) m_peerPipeline->pollBus();
     });
 
     // Duration timer
@@ -339,7 +344,8 @@ void CallManager::hangUp() {
 
 void CallManager::toggleMute() {
     m_muted = !m_muted;
-    if (m_publishPipeline) m_publishPipeline->setMuted(m_muted);
+    if (m_useP2P && m_peerPipeline) m_peerPipeline->setMuted(m_muted);
+    else if (m_publishPipeline) m_publishPipeline->setMuted(m_muted);
     emit muteChanged();
 }
 
@@ -347,12 +353,16 @@ void CallManager::toggleCamera() {
     m_cameraOn = !m_cameraOn;
     emit cameraChanged();
 
-    if (m_cameraOn && m_publishPipeline) {
+    auto enableCam = [this](auto *pipeline) {
         int videoDevice = m_deviceManager ? qMax(0, m_deviceManager->selectedVideoInput()) : 0;
         bool hd1080 = QSettings().value("video/resolution", 0).toInt() == 0;
-        m_publishPipeline->enableCamera(videoDevice, hd1080);
-    } else if (!m_cameraOn && m_publishPipeline) {
-        m_publishPipeline->disableCamera();
+        pipeline->enableCamera(videoDevice, hd1080);
+    };
+
+    if (m_useP2P && m_peerPipeline) {
+        m_cameraOn ? enableCam(m_peerPipeline) : m_peerPipeline->disableCamera();
+    } else if (m_publishPipeline) {
+        m_cameraOn ? enableCam(m_publishPipeline) : m_publishPipeline->disableCamera();
     }
 }
 
@@ -414,86 +424,158 @@ void CallManager::joinCallOnServer(bool withVideo)
                     qDebug() << "CallManager: found" << turnServers.size() << "TURN servers";
                     m_turnServers = turnServers;
 
-                    // Generate publisher SID (matches NC Talk: Date.now().toString())
-                    QString pubSid = QString::number(QDateTime::currentMSecsSinceEpoch());
+                    m_useP2P = !m_signaling->hasMcu();
+                    qDebug() << "CallManager: call mode =" << (m_useP2P ? "P2P" : "MCU");
 
-                    // Start publisher (send our audio to MCU)
-                    m_publishPipeline = new PublishPipeline(this);
-                    m_localVideoProvider = m_publishPipeline->localVideoProvider();
-                    emit localVideoProviderChanged();
+                    if (m_useP2P) {
+                        // --- P2P mode: single PeerPipeline for 1:1 calls ---
+                        QString p2pSid = QString::number(QDateTime::currentMSecsSinceEpoch());
 
-                    connect(m_publishPipeline, &PublishPipeline::localOfferReady,
-                            this, [this, pubSid](const QString &sdp) {
-                        // Send offer to OUR OWN session ID (MCU intercepts)
-                        m_signaling->sendOffer(m_signaling->sessionId(), sdp, pubSid);
-                        qDebug() << "CallManager: sent publish offer to own session, sid=" << pubSid;
-                    });
+                        m_peerPipeline = new PeerPipeline(this);
+                        m_localVideoProvider = m_peerPipeline->localVideoProvider();
+                        emit localVideoProviderChanged();
+                        m_remoteVideoProvider = m_peerPipeline->remoteVideoProvider();
+                        emit remoteVideoProviderChanged();
 
-                    connect(m_publishPipeline, &PublishPipeline::iceCandidateReady,
-                            this, [this, pubSid](const QString &candidate, int mline, const QString &mid) {
-                        QJsonObject c;
-                        c["candidate"] = candidate;
-                        c["sdpMLineIndex"] = mline;
-                        c["sdpMid"] = mid;
-                        m_signaling->sendCandidate(m_signaling->sessionId(), c, pubSid);
-                    });
+                        connect(m_peerPipeline, &PeerPipeline::localOfferReady,
+                                this, [this, p2pSid](const QString &sdp) {
+                            m_signaling->sendOffer(m_remoteSessionId, sdp, p2pSid);
+                            qDebug() << "CallManager: sent P2P offer to" << m_remoteSessionId.left(20);
+                        });
 
-                    connect(m_publishPipeline, &PublishPipeline::iceStateChanged,
-                            this, [this](const QString &state) {
-                        qDebug() << "CallManager: publisher ICE:" << state;
-                    });
+                        connect(m_peerPipeline, &PeerPipeline::localAnswerReady,
+                                this, [this, p2pSid](const QString &sdp) {
+                            m_signaling->sendAnswer(m_remoteSessionId, sdp, p2pSid);
+                            qDebug() << "CallManager: sent P2P answer to" << m_remoteSessionId.left(20);
+                        });
 
-                    connect(m_publishPipeline, &PublishPipeline::audioLevelUpdated,
-                            this, [this](double level) {
-                        if (qAbs(m_audioLevel - level) > 0.02) {
-                            m_audioLevel = level;
-                            emit audioLevelChanged();
-                        }
-                    });
+                        connect(m_peerPipeline, &PeerPipeline::iceCandidateReady,
+                                this, [this, p2pSid](const QString &candidate, int mline, const QString &mid) {
+                            QJsonObject c;
+                            c["candidate"] = candidate;
+                            c["sdpMLineIndex"] = mline;
+                            c["sdpMid"] = mid;
+                            m_signaling->sendCandidate(m_remoteSessionId, c, p2pSid);
+                        });
 
-                    connect(m_publishPipeline, &PublishPipeline::cameraError, this, [this](const QString &reason) {
-                        qWarning() << "CallManager: camera error:" << reason;
-                        // Try 720p fallback if 1080p failed
-                        if (m_cameraOn && !m_cameraFallbackTried) {
-                            m_cameraFallbackTried = true;
-                            qDebug() << "CallManager: retrying camera at 720p";
-                            int videoDevice = m_deviceManager ? qMax(0, m_deviceManager->selectedVideoInput()) : 0;
-                            m_publishPipeline->enableCamera(videoDevice, false);
-                        } else {
-                            m_cameraOn = false;
-                            m_cameraFallbackTried = false;
-                            emit cameraChanged();
-                        }
-                    });
-
-                    m_publishPipeline->start(m_stunServer, turnServers, m_deviceManager ? m_deviceManager->selectedInputDeviceId() : QString());
-                    m_glibTimer.start(20);
-
-                    // If remote peer already joined (incoming call), request their stream
-                    if (!m_remoteSessionId.isEmpty() && !m_subscribePipelines.contains(m_remoteSessionId)) {
-                        m_signaling->requestOffer(m_remoteSessionId, "video");
-                        qDebug() << "CallManager: sent requestOffer for already-joined remote peer";
-                    } else {
-                        // Discover who's already in the call and request their streams
-                        m_api->getArray("apps/spreed/api/v4/call/" + m_callToken,
-                            [this](bool ok, const QJsonArray &data, int) {
-                                if (!ok) return;
-                                for (const auto &val : data) {
-                                    QJsonObject p = val.toObject();
-                                    QString sid = p["sessionId"].toString();
-                                    int inCall = p["inCall"].toInt();
-                                    if (sid.isEmpty() || sid == m_signaling->sessionId() || inCall == 0)
-                                        continue;
-                                    if (m_remoteSessionId.isEmpty()) {
-                                        m_remoteSessionId = sid;
-                                        emit callInfoChanged();
-                                    }
-                                    if (!m_subscribePipelines.contains(sid)) {
-                                        m_signaling->requestOffer(sid, "video");
-                                        qDebug() << "CallManager: sent requestOffer for discovered peer" << sid.left(20);
-                                    }
+                        connect(m_peerPipeline, &PeerPipeline::iceStateChanged,
+                                this, [this](const QString &state) {
+                            qDebug() << "CallManager: P2P ICE:" << state;
+                            if (state == "connected" || state == "completed") {
+                                if (m_state == Connecting) {
+                                    setState(Active);
+                                    m_durationTimer.start();
                                 }
-                            });
+                            }
+                        });
+
+                        connect(m_peerPipeline, &PeerPipeline::audioLevelUpdated,
+                                this, [this](double level) {
+                            if (qAbs(m_audioLevel - level) > 0.02) {
+                                m_audioLevel = level;
+                                emit audioLevelChanged();
+                            }
+                        });
+
+                        connect(m_peerPipeline, &PeerPipeline::cameraError, this, [this](const QString &reason) {
+                            qWarning() << "CallManager: P2P camera error:" << reason;
+                            m_cameraOn = false;
+                            emit cameraChanged();
+                        });
+
+                        m_peerPipeline->start(m_stunServer, turnServers,
+                            m_deviceManager ? m_deviceManager->selectedInputDeviceId() : QString(),
+                            m_deviceManager ? m_deviceManager->selectedOutputDeviceId() : QString());
+                        m_glibTimer.start(20);
+
+                        // If outgoing call and remote peer already known, create offer
+                        if (m_state == Outgoing && !m_remoteSessionId.isEmpty()) {
+                            m_peerPipeline->createOffer();
+                            qDebug() << "CallManager: creating initial P2P offer";
+                        }
+                    } else {
+                        // --- MCU mode: dual PublishPipeline + SubscribePipeline ---
+                        // Generate publisher SID (matches NC Talk: Date.now().toString())
+                        QString pubSid = QString::number(QDateTime::currentMSecsSinceEpoch());
+
+                        // Start publisher (send our audio to MCU)
+                        m_publishPipeline = new PublishPipeline(this);
+                        m_localVideoProvider = m_publishPipeline->localVideoProvider();
+                        emit localVideoProviderChanged();
+
+                        connect(m_publishPipeline, &PublishPipeline::localOfferReady,
+                                this, [this, pubSid](const QString &sdp) {
+                            // Send offer to OUR OWN session ID (MCU intercepts)
+                            m_signaling->sendOffer(m_signaling->sessionId(), sdp, pubSid);
+                            qDebug() << "CallManager: sent publish offer to own session, sid=" << pubSid;
+                        });
+
+                        connect(m_publishPipeline, &PublishPipeline::iceCandidateReady,
+                                this, [this, pubSid](const QString &candidate, int mline, const QString &mid) {
+                            QJsonObject c;
+                            c["candidate"] = candidate;
+                            c["sdpMLineIndex"] = mline;
+                            c["sdpMid"] = mid;
+                            m_signaling->sendCandidate(m_signaling->sessionId(), c, pubSid);
+                        });
+
+                        connect(m_publishPipeline, &PublishPipeline::iceStateChanged,
+                                this, [this](const QString &state) {
+                            qDebug() << "CallManager: publisher ICE:" << state;
+                        });
+
+                        connect(m_publishPipeline, &PublishPipeline::audioLevelUpdated,
+                                this, [this](double level) {
+                            if (qAbs(m_audioLevel - level) > 0.02) {
+                                m_audioLevel = level;
+                                emit audioLevelChanged();
+                            }
+                        });
+
+                        connect(m_publishPipeline, &PublishPipeline::cameraError, this, [this](const QString &reason) {
+                            qWarning() << "CallManager: camera error:" << reason;
+                            // Try 720p fallback if 1080p failed
+                            if (m_cameraOn && !m_cameraFallbackTried) {
+                                m_cameraFallbackTried = true;
+                                qDebug() << "CallManager: retrying camera at 720p";
+                                int videoDevice = m_deviceManager ? qMax(0, m_deviceManager->selectedVideoInput()) : 0;
+                                m_publishPipeline->enableCamera(videoDevice, false);
+                            } else {
+                                m_cameraOn = false;
+                                m_cameraFallbackTried = false;
+                                emit cameraChanged();
+                            }
+                        });
+
+                        m_publishPipeline->start(m_stunServer, turnServers, m_deviceManager ? m_deviceManager->selectedInputDeviceId() : QString());
+                        m_glibTimer.start(20);
+
+                        // If remote peer already joined (incoming call), request their stream
+                        if (!m_remoteSessionId.isEmpty() && !m_subscribePipelines.contains(m_remoteSessionId)) {
+                            m_signaling->requestOffer(m_remoteSessionId, "video");
+                            qDebug() << "CallManager: sent requestOffer for already-joined remote peer";
+                        } else {
+                            // Discover who's already in the call and request their streams
+                            m_api->getArray("apps/spreed/api/v4/call/" + m_callToken,
+                                [this](bool ok, const QJsonArray &data, int) {
+                                    if (!ok) return;
+                                    for (const auto &val : data) {
+                                        QJsonObject p = val.toObject();
+                                        QString sid = p["sessionId"].toString();
+                                        int inCall = p["inCall"].toInt();
+                                        if (sid.isEmpty() || sid == m_signaling->sessionId() || inCall == 0)
+                                            continue;
+                                        if (m_remoteSessionId.isEmpty()) {
+                                            m_remoteSessionId = sid;
+                                            emit callInfoChanged();
+                                        }
+                                        if (!m_subscribePipelines.contains(sid)) {
+                                            m_signaling->requestOffer(sid, "video");
+                                            qDebug() << "CallManager: sent requestOffer for discovered peer" << sid.left(20);
+                                        }
+                                    }
+                                });
+                        }
                     }
                 });
         });
@@ -509,6 +591,11 @@ void CallManager::leaveCallOnServer()
 void CallManager::stopAllPipelines()
 {
     m_glibTimer.stop();
+    if (m_peerPipeline) {
+        m_peerPipeline->stop();
+        m_peerPipeline->deleteLater();
+        m_peerPipeline = nullptr;
+    }
     if (m_publishPipeline) {
         m_publishPipeline->stop();
         m_publishPipeline->deleteLater();
@@ -563,9 +650,13 @@ void CallManager::onParticipantJoinedCall(const QString &sessionId, int flags, c
         setState(Connecting);
         emit callInfoChanged();
 
-        // MCU: request the remote peer's audio stream
-        m_signaling->requestOffer(sessionId, "video");
-        qDebug() << "CallManager: sent requestOffer for remote peer";
+        if (m_useP2P && m_peerPipeline) {
+            m_peerPipeline->createOffer();
+            qDebug() << "CallManager: creating P2P offer for joined peer";
+        } else {
+            m_signaling->requestOffer(sessionId, "video");
+            qDebug() << "CallManager: sent requestOffer for remote peer";
+        }
     }
     else if (m_state == Idle) {
         m_remoteSessionId = sessionId;
@@ -602,6 +693,11 @@ void CallManager::onParticipantLeftCall(const QString &sessionId)
 void CallManager::onOfferReceived(const QString &fromSessionId, const QString &sdp, const QString &sid)
 {
     qDebug() << "CallManager: received offer from" << fromSessionId.left(20) << "sid=" << sid;
+
+    if (m_useP2P && m_peerPipeline) {
+        m_peerPipeline->setRemoteOffer(sdp);
+        return;
+    }
 
     // Use the MCU's sid for all subscriber messages (answer + candidates)
     QString mcuSid = sid;
@@ -649,6 +745,12 @@ void CallManager::onOfferReceived(const QString &fromSessionId, const QString &s
 void CallManager::onAnswerReceived(const QString &fromSessionId, const QString &sdp)
 {
     qDebug() << "CallManager: received answer from" << fromSessionId.left(20);
+
+    if (m_useP2P && m_peerPipeline) {
+        m_peerPipeline->setRemoteAnswer(sdp);
+        qDebug() << "CallManager: set P2P remote answer";
+        return;
+    }
 
     // MCU answer to our publisher offer (from our own session ID)
     if (m_publishPipeline) {
