@@ -79,6 +79,8 @@ private:
     void stopAllPipelines();
     void startRingtone();
     void stopRingtone();
+    int videoDeviceIndex() const;
+    bool preferHd1080() const;
     void broadcastMediaState(const QString &media, bool enabled);
     void updateCallFlags();
 

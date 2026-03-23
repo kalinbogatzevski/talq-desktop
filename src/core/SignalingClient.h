@@ -78,6 +78,7 @@ private:
     void onDisconnected();
     void onTextMessage(const QString &msg);
     void sendHello();
+    void sendRoomMessage(const QString &msgType);
     void reconnect();
 
     ApiClient *m_api;

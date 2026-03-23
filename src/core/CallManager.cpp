@@ -3,6 +3,7 @@
 #include <QDebug>
 #include <QDateTime>
 #include <QtMath>
+#include <QSet>
 #include <QSettings>
 #include <QRegularExpression>
 
@@ -11,6 +12,11 @@
 #include <mmsystem.h>
 #pragma comment(lib, "winmm.lib")
 #endif
+
+// NC Talk call flags (bitmask)
+static constexpr int CALL_FLAG_IN_CALL    = 1;
+static constexpr int CALL_FLAG_WITH_AUDIO = 2;
+static constexpr int CALL_FLAG_WITH_VIDEO = 4;
 
 // --- Ringtone ---
 
@@ -118,13 +124,12 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
     connect(m_signaling, &SignalingClient::participantLeftCall,
             this, &CallManager::onParticipantLeftCall);
 
-    // Re-request subscriber stream when remote peer's media flags change
-    // (e.g., they enable their camera — flags gain WITH_VIDEO=4)
+    // Re-request subscriber stream when remote peer enables their camera
     connect(m_signaling, &SignalingClient::participantFlagsChanged,
             this, [this](const QString &sessionId, int oldFlags, int newFlags) {
         if (m_state != Connecting && m_state != Active) return;
-        bool hadVideo = (oldFlags & 4) != 0;
-        bool hasVideo = (newFlags & 4) != 0;
+        bool hadVideo = (oldFlags & CALL_FLAG_WITH_VIDEO) != 0;
+        bool hasVideo = (newFlags & CALL_FLAG_WITH_VIDEO) != 0;
         if (!hadVideo && hasVideo && m_subscribePipelines.contains(sessionId)) {
             qDebug() << "CallManager: peer" << sessionId.left(20) << "enabled video, re-requesting stream";
             m_signaling->requestOffer(sessionId, "video");
@@ -272,7 +277,7 @@ void CallManager::onIncomingCallDetected(const QString &callerName, const QStrin
     qDebug() << "CallManager: incoming call detected:" << callerName << "token=" << token;
     m_callToken = token;
     m_remotePeerName = callerName;
-    m_withVideo = (callFlag & 4) != 0;
+    m_withVideo = (callFlag & CALL_FLAG_WITH_VIDEO) != 0;
     m_incomingTime = QDateTime::currentDateTime();
     m_userActionReady = false;
     setState(Incoming);
@@ -373,9 +378,7 @@ void CallManager::toggleCamera() {
     emit cameraChanged();
 
     auto enableCam = [this](auto *pipeline) {
-        int videoDevice = m_deviceManager ? qMax(0, m_deviceManager->selectedVideoInput()) : 0;
-        bool hd1080 = QSettings().value("video/resolution", 0).toInt() == 0;
-        pipeline->enableCamera(videoDevice, hd1080);
+        pipeline->enableCamera(videoDeviceIndex(), preferHd1080());
     };
 
     if (m_useP2P && m_peerPipeline) {
@@ -389,6 +392,16 @@ void CallManager::toggleCamera() {
     updateCallFlags();
 }
 
+int CallManager::videoDeviceIndex() const
+{
+    return m_deviceManager ? qMax(0, m_deviceManager->selectedVideoInput()) : 0;
+}
+
+bool CallManager::preferHd1080() const
+{
+    return QSettings().value("video/resolution", 0).toInt() == 0;
+}
+
 void CallManager::broadcastMediaState(const QString &media, bool enabled)
 {
     // NC Talk sends mute/unmute messages via signaling to all peers
@@ -396,16 +409,14 @@ void CallManager::broadcastMediaState(const QString &media, bool enabled)
     QJsonObject payload;
     payload["name"] = media;
 
-    // Send to all known peers
-    if (!m_remoteSessionId.isEmpty()) {
-        m_signaling->sendSessionMessage(m_remoteSessionId, type, payload, QString());
-    }
-    for (auto it = m_subscribePipelines.constBegin(); it != m_subscribePipelines.constEnd(); ++it) {
-        if (it.key() != m_remoteSessionId) {
-            m_signaling->sendSessionMessage(it.key(), type, payload, QString());
-        }
-    }
-    qDebug() << "CallManager: broadcast" << type << media;
+    // Collect unique peer session IDs (remote + all subscribers)
+    QSet<QString> peers(m_subscribePipelines.keyBegin(), m_subscribePipelines.keyEnd());
+    if (!m_remoteSessionId.isEmpty())
+        peers.insert(m_remoteSessionId);
+
+    for (const QString &peerId : peers)
+        m_signaling->sendSessionMessage(peerId, type, payload, QString());
+    qDebug() << "CallManager: broadcast" << type << media << "to" << peers.size() << "peer(s)";
 }
 
 void CallManager::updateCallFlags()
@@ -413,9 +424,8 @@ void CallManager::updateCallFlags()
     if (m_callToken.isEmpty() || (m_state != Connecting && m_state != Active))
         return;
 
-    // Update our call flags on the server (IN_CALL=1 | WITH_AUDIO=2 | WITH_VIDEO=4)
-    int flags = 1 | 2;
-    if (m_cameraOn) flags |= 4;
+    int flags = CALL_FLAG_IN_CALL | CALL_FLAG_WITH_AUDIO;
+    if (m_cameraOn) flags |= CALL_FLAG_WITH_VIDEO;
 
     QJsonObject body;
     body["flags"] = flags;
@@ -427,8 +437,8 @@ void CallManager::updateCallFlags()
 
 void CallManager::joinCallOnServer(bool withVideo)
 {
-    int flags = 1 | 2;  // IN_CALL | WITH_AUDIO
-    if (withVideo) flags |= 4;
+    int flags = CALL_FLAG_IN_CALL | CALL_FLAG_WITH_AUDIO;
+    if (withVideo) flags |= CALL_FLAG_WITH_VIDEO;
 
     QJsonObject body;
     body["flags"] = flags;
@@ -625,8 +635,7 @@ void CallManager::joinCallOnServer(bool withVideo)
                             if (m_cameraOn && !m_cameraFallbackTried) {
                                 m_cameraFallbackTried = true;
                                 qDebug() << "CallManager: retrying camera at 720p";
-                                int videoDevice = m_deviceManager ? qMax(0, m_deviceManager->selectedVideoInput()) : 0;
-                                m_publishPipeline->enableCamera(videoDevice, false);
+                                m_publishPipeline->enableCamera(videoDeviceIndex(), false);
                             } else {
                                 m_cameraOn = false;
                                 m_cameraFallbackTried = false;
@@ -643,9 +652,7 @@ void CallManager::joinCallOnServer(bool withVideo)
 
                         // If video call, enable camera immediately (local preview shows right away)
                         if (m_withVideo) {
-                            int videoDevice = m_deviceManager ? qMax(0, m_deviceManager->selectedVideoInput()) : 0;
-                            bool hd1080 = QSettings().value("video/resolution", 0).toInt() == 0;
-                            m_publishPipeline->enableCamera(videoDevice, hd1080);
+                            m_publishPipeline->enableCamera(videoDeviceIndex(), preferHd1080());
                             qDebug() << "CallManager: auto-enabled camera for video call";
                         }
 
@@ -764,7 +771,7 @@ void CallManager::onParticipantJoinedCall(const QString &sessionId, int flags, c
         m_remoteSessionId = sessionId;
         m_remotePeerName = displayName;
         m_callToken = m_signaling->currentRoom();
-        m_withVideo = (flags & 4) != 0;
+        m_withVideo = (flags & CALL_FLAG_WITH_VIDEO) != 0;
         setState(Incoming);
         m_ringTimeout.start();
         emit callInfoChanged();
