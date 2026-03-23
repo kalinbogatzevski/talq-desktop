@@ -108,7 +108,23 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
 
     GstStateChangeReturn ret = gst_element_set_state(m_pipeline, GST_STATE_PLAYING);
     if (ret == GST_STATE_CHANGE_FAILURE) {
-        emit error("Failed to start publish pipeline");
+        // Get the actual GStreamer error from the bus
+        GstBus *bus = gst_element_get_bus(m_pipeline);
+        GstMessage *errMsg = gst_bus_pop_filtered(bus, GST_MESSAGE_ERROR);
+        if (errMsg) {
+            GError *err = nullptr;
+            gchar *dbg = nullptr;
+            gst_message_parse_error(errMsg, &err, &dbg);
+            QString detail = QString("%1 (%2)").arg(err->message, dbg ? dbg : "no details");
+            qWarning() << "PublishPipeline: GStreamer error:" << detail;
+            emit error(detail);
+            g_clear_error(&err);
+            g_free(dbg);
+            gst_message_unref(errMsg);
+        } else {
+            emit error("Failed to start publish pipeline");
+        }
+        gst_object_unref(bus);
         cleanup();
         return false;
     }
