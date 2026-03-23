@@ -207,6 +207,25 @@ Window {
             color: callManager.state === CallManager.Active ? "#2ecc71" : "#aaaacc"
         }
 
+        // Status detail breadcrumb — shows signaling progress during connection
+        Label {
+            Layout.alignment: Qt.AlignHCenter
+            visible: callManager.statusDetail.length > 0
+                     && callManager.state !== CallManager.Active
+                     && callManager.state !== CallManager.Idle
+            text: callManager.statusDetail
+            font.pixelSize: 10
+            color: "#8888aa"
+            opacity: 0.8
+
+            Behavior on text {
+                SequentialAnimation {
+                    NumberAnimation { target: parent; property: "opacity"; to: 0.4; duration: 80 }
+                    NumberAnimation { target: parent; property: "opacity"; to: 0.8; duration: 200 }
+                }
+            }
+        }
+
         // Audio waveform — scrolling bars drawn on Canvas, last ~8 seconds
         Canvas {
             id: waveCanvas
