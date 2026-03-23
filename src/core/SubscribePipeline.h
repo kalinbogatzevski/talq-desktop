@@ -49,6 +49,7 @@ private:
 
     VideoFrameProvider *m_videoProvider = nullptr;
     GstElement *m_videoAppsink = nullptr;
+    GstElement *m_videoDepay = nullptr;
 
     void createAudioChain(GstPad *pad);
     void createVideoChain(GstPad *pad, const gchar *encoding);
