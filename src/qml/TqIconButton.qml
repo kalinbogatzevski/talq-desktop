@@ -5,7 +5,8 @@ import TalkQt
 AbstractButton {
     id: root
 
-    property string iconText: ""
+    property string iconText: ""     // emoji fallback
+    property string iconName: ""     // SVG icon name (takes precedence)
     property int size: Theme.buttonSizeMedium
     property int iconSize: Theme.iconSizeMedium
     property color bgColor: "transparent"
@@ -23,11 +24,25 @@ AbstractButton {
         Behavior on color { ColorAnimation { duration: Theme.animFast } }
     }
 
-    contentItem: Text {
-        text: root.iconText
-        font.pixelSize: root.iconSize
-        color: root.iconColor
-        horizontalAlignment: Text.AlignHCenter
-        verticalAlignment: Text.AlignVCenter
+    contentItem: Item {
+        // SVG icon (preferred)
+        TqIcon {
+            visible: root.iconName.length > 0
+            anchors.centerIn: parent
+            name: root.iconName
+            size: root.iconSize
+            color: root.iconColor
+        }
+
+        // Emoji text fallback
+        Text {
+            visible: root.iconName.length === 0
+            anchors.centerIn: parent
+            text: root.iconText
+            font.pixelSize: root.iconSize
+            color: root.iconColor
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+        }
     }
 }
