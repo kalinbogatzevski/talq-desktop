@@ -70,7 +70,9 @@ MessageListModel::MessageListModel(ApiClient *api, MessageCache *cache, QObject 
             }
         }
 
-        // Now fetch fresh messages from the server (non-blocking)
+        // Refresh latest messages from server (fills gaps between cache and live)
+        refreshLatest();
+        // Also fetch older history in background
         loadHistory();
     });
 }
@@ -368,6 +370,86 @@ void MessageListModel::startPoller()
     m_poller->setThreadId(m_threadId);
     int lastId = m_messages.isEmpty() ? 0 : m_messages.last().id;
     m_poller->start(m_token, lastId);
+}
+
+void MessageListModel::refreshLatest()
+{
+    if (m_token.isEmpty()) return;
+
+    // Fetch the latest 50 messages from the server (lookIntoFuture=0, no lastKnownMessageId)
+    // This gets the absolute newest messages, regardless of what the cache had.
+    QUrlQuery params;
+    params.addQueryItem("lookIntoFuture", "0");
+    params.addQueryItem("limit", "50");
+
+    if (m_threadId > 0)
+        params.addQueryItem("threadId", QString::number(m_threadId));
+
+    QString currentToken = m_token;
+    auto *reply = m_api->getRaw("apps/spreed/api/v1/chat/" + m_token, params);
+
+    connect(reply, &QNetworkReply::finished, this, [this, reply, currentToken]() {
+        reply->deleteLater();
+        if (m_token != currentToken) return;
+
+        if (reply->error() != QNetworkReply::NoError) return;
+
+        QByteArray body = reply->readAll();
+        QJsonDocument doc = QJsonDocument::fromJson(body);
+        QJsonArray data = doc.object()["ocs"].toObject()["data"].toArray();
+        if (data.isEmpty()) return;
+
+        // Build set of existing message IDs for quick lookup
+        QSet<int> existingIds;
+        QHash<int, int> idToIndex;
+        for (int i = 0; i < m_messages.size(); i++) {
+            existingIds.insert(m_messages[i].id);
+            idToIndex[m_messages[i].id] = i;
+        }
+
+        // API returns newest-first; process to find missing and edited messages
+        QVector<Message> missing;
+        for (const auto &val : data) {
+            Message m = Message::fromJson(val.toObject());
+            if (m.isReactionMessage() || m.isCallJoinLeave()) continue;
+            if (m_hideThreadMessages && m.threadId > 0) continue;
+
+            if (!existingIds.contains(m.id)) {
+                // Missing message — needs to be inserted
+                missing.append(m);
+            } else {
+                // Existing message — check if edited (message text changed)
+                int idx = idToIndex.value(m.id, -1);
+                if (idx >= 0 && m_messages[idx].message != m.message) {
+                    m_messages[idx] = m;
+                    QModelIndex mi = index(idx);
+                    emit dataChanged(mi, mi);
+                }
+            }
+        }
+
+        if (!missing.isEmpty()) {
+            // Sort missing messages by ID (oldest first) for correct insertion
+            std::sort(missing.begin(), missing.end(), [](const Message &a, const Message &b) {
+                return a.id < b.id;
+            });
+
+            // Append at the end (they're newer than what we had)
+            int first = m_messages.size();
+            beginInsertRows({}, first, first + missing.size() - 1);
+            m_messages.append(missing);
+            endInsertRows();
+
+            m_cache->saveMessages(m_token, missing);
+            emit newMessagesAtEnd();
+
+            qDebug() << "MessageListModel: refreshLatest found" << missing.size() << "missing messages";
+        }
+
+        // Restart poller from the true latest message
+        m_poller->stop();
+        startPoller();
+    });
 }
 
 void MessageListModel::onMessagesReceived(const QJsonArray &messages)
