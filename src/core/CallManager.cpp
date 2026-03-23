@@ -770,5 +770,20 @@ void CallManager::onAnswerReceived(const QString &fromSessionId, const QString &
     if (m_publishPipeline) {
         m_publishPipeline->setRemoteAnswer(sdp);
         qDebug() << "CallManager: set publisher remote answer";
+
+        // If this answer includes video (renegotiation after enableCamera),
+        // re-request all existing subscriber streams so MCU sends video too.
+        if (m_cameraOn && sdp.contains("m=video") && !m_subscribePipelines.isEmpty()) {
+            qDebug() << "CallManager: video renegotiation accepted, re-requesting"
+                     << m_subscribePipelines.size() << "subscriber stream(s)";
+            for (auto it = m_subscribePipelines.begin(); it != m_subscribePipelines.end(); ++it) {
+                // Tear down old subscriber and re-request fresh stream with video
+                it.value()->stop();
+                it.value()->deleteLater();
+                m_signaling->requestOffer(it.key(), "video");
+                qDebug() << "CallManager: re-requested stream for" << it.key().left(20);
+            }
+            m_subscribePipelines.clear();
+        }
     }
 }
