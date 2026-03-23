@@ -215,9 +215,15 @@ void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)
 
     qDebug() << "PublishPipeline: enabling camera, device" << deviceIndex << (hd1080 ? "1080p" : "720p");
 
-    m_cameraSrc = gst_element_factory_make("ksvideosrc", nullptr);
+    // Use mfvideosrc (Media Foundation) — works in shared mode, compatible with GUI apps.
+    // ksvideosrc (Kernel Streaming) requires exclusive access and fails inside Qt's COM/STA apartment.
+    m_cameraSrc = gst_element_factory_make("mfvideosrc", nullptr);
     if (!m_cameraSrc) {
-        emit cameraError("Camera capture plugin (ksvideosrc) not available");
+        // Fallback to ksvideosrc if mfvideosrc not available
+        m_cameraSrc = gst_element_factory_make("ksvideosrc", nullptr);
+    }
+    if (!m_cameraSrc) {
+        emit cameraError("No camera capture plugin available");
         return;
     }
     g_object_set(m_cameraSrc, "device-index", deviceIndex, nullptr);
@@ -369,6 +375,16 @@ void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)
         emit cameraError("Failed to connect video to WebRTC");
         disableCamera();
         return;
+    }
+
+    // Ensure the video transceiver is set to sendrecv — without this,
+    // webrtcbin creates an offer with m=video 0 (port 0 = disabled)
+    GstWebRTCRTPTransceiver *transceiver = nullptr;
+    g_object_get(m_videoSinkPad, "transceiver", &transceiver, nullptr);
+    if (transceiver) {
+        g_object_set(transceiver, "direction", GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDONLY, nullptr);
+        gst_object_unref(transceiver);
+        qDebug() << "PublishPipeline: set video transceiver to sendonly";
     }
 
     gst_element_sync_state_with_parent(m_cameraSrc);
