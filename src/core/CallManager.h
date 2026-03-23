@@ -79,6 +79,8 @@ private:
     void stopAllPipelines();
     void startRingtone();
     void stopRingtone();
+    void broadcastMediaState(const QString &media, bool enabled);
+    void updateCallFlags();
 
     ApiClient *m_api;
     SignalingClient *m_signaling;
