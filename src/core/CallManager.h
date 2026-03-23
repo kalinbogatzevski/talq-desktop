@@ -24,6 +24,7 @@ class CallManager : public QObject
     Q_PROPERTY(QString callStats READ callStats NOTIFY callStatsChanged)
     Q_PROPERTY(VideoFrameProvider* remoteVideoProvider READ remoteVideoProvider NOTIFY remoteVideoProviderChanged)
     Q_PROPERTY(VideoFrameProvider* localVideoProvider READ localVideoProvider NOTIFY localVideoProviderChanged)
+    Q_PROPERTY(QString statusDetail READ statusDetail NOTIFY statusDetailChanged)
 
 public:
     enum CallState { Idle, Outgoing, Incoming, Connecting, Active, Ending };
@@ -41,6 +42,7 @@ public:
     QString callStats() const { return m_callStats; }
     VideoFrameProvider *remoteVideoProvider() const { return m_remoteVideoProvider; }
     VideoFrameProvider *localVideoProvider() const { return m_localVideoProvider; }
+    QString statusDetail() const { return m_statusDetail; }
 
     Q_INVOKABLE void startCall(const QString &token, bool withVideo);
     Q_INVOKABLE void setRemotePeerInfo(const QString &name, const QString &peerId);
@@ -64,6 +66,7 @@ signals:
     void callStatsChanged();
     void remoteVideoProviderChanged();
     void localVideoProviderChanged();
+    void statusDetailChanged();
 
 private slots:
     void onParticipantJoinedCall(const QString &sessionId, int flags, const QString &displayName);
@@ -109,7 +112,11 @@ private:
     int m_callDuration = 0;
     double m_audioLevel = 0.0;
     QString m_callStats;
+    QString m_statusDetail;
     void updateCallStats();
+    void setStatusDetail(const QString &detail) {
+        if (m_statusDetail != detail) { m_statusDetail = detail; emit statusDetailChanged(); }
+    }
 
     QTimer m_durationTimer;
     QTimer m_ringTimeout;
