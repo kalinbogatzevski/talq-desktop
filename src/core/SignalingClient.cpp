@@ -333,26 +333,15 @@ void SignalingClient::joinRoom(const QString &token)
 
 void SignalingClient::sendStartedTyping()
 {
-    if (!m_authenticated || m_currentRoom.isEmpty()) return;
-
-    QJsonObject msg;
-    msg["type"] = QString("message");
-
-    QJsonObject message;
-    QJsonObject recipient;
-    recipient["type"] = QString("room");
-    message["recipient"] = recipient;
-
-    QJsonObject data;
-    data["type"] = QString("startedTyping");
-    message["data"] = data;
-
-    msg["message"] = message;
-
-    m_ws.sendTextMessage(QJsonDocument(msg).toJson(QJsonDocument::Compact));
+    sendRoomMessage("startedTyping");
 }
 
 void SignalingClient::sendStoppedTyping()
+{
+    sendRoomMessage("stoppedTyping");
+}
+
+void SignalingClient::sendRoomMessage(const QString &msgType)
 {
     if (!m_authenticated || m_currentRoom.isEmpty()) return;
 
@@ -365,7 +354,7 @@ void SignalingClient::sendStoppedTyping()
     message["recipient"] = recipient;
 
     QJsonObject data;
-    data["type"] = QString("stoppedTyping");
+    data["type"] = msgType;
     message["data"] = data;
 
     msg["message"] = message;
