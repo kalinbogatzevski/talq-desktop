@@ -690,12 +690,6 @@ void CallManager::joinCallOnServer(bool withVideo)
                         }
                         m_glibTimer.start(20);
 
-                        // If video call, enable camera immediately (local preview shows right away)
-                        if (m_withVideo) {
-                            m_publishPipeline->enableCamera(videoDeviceIndex(), preferHd1080());
-                            qDebug() << "CallManager: auto-enabled camera for video call";
-                        }
-
                         // If remote peer already joined (incoming call), request their stream
                         if (!m_remoteSessionId.isEmpty() && !m_subscribePipelines.contains(m_remoteSessionId)) {
                             setStatusDetail("Requesting peer stream");
@@ -723,6 +717,18 @@ void CallManager::joinCallOnServer(bool withVideo)
                                         }
                                     }
                                 });
+                        }
+
+                        // Enable camera AFTER subscriber discovery (not before — camera renegotiation
+                        // floods signaling and can prevent subscriber requests from executing)
+                        if (m_withVideo) {
+                            // Delay camera enable to let the initial offer/answer complete first
+                            QTimer::singleShot(1000, this, [this]() {
+                                if (m_state != Idle && m_withVideo && m_publishPipeline) {
+                                    m_publishPipeline->enableCamera(videoDeviceIndex(), preferHd1080());
+                                    qDebug() << "CallManager: auto-enabled camera for video call";
+                                }
+                            });
                         }
                     }
                 });
