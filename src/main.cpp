@@ -41,8 +41,10 @@ int main(int argc, char *argv[])
         std::string appDir = (lastSlash != std::string::npos) ? exePath.substr(0, lastSlash) : ".";
         std::string gstPath = appDir + "/gst-plugins";
         qputenv("GST_PLUGIN_PATH", QByteArray::fromStdString(gstPath));
-        qputenv("GST_PLUGIN_SYSTEM_PATH", "");
+        // Don't clear GST_PLUGIN_SYSTEM_PATH — wasapisrc may need plugins from the system path
+        // qputenv("GST_PLUGIN_SYSTEM_PATH", "");
     }
+
     gst_init(&argc, &argv);
     QApplication app(argc, argv);
 

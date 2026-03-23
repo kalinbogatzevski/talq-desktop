@@ -53,19 +53,28 @@ bool PeerPipeline::start(const QString &stunServer, const QList<TurnServer> &tur
         }
     }
 
-    // Audio capture chain: wasapi2src -> audioconvert -> audioresample -> level -> opusenc -> rtpopuspay -> webrtcbin
-    GstElement *audiosrc = gst_element_factory_make("autoaudiosrc", "peer-audiosrc");
+    // Audio capture — wasapisrc with low-latency=false for Bluetooth compatibility
+    GstElement *audiosrc = gst_element_factory_make("wasapisrc", "peer-audiosrc");
+    if (!audiosrc) audiosrc = gst_element_factory_make("directsoundsrc", "peer-audiosrc");
+    if (!audiosrc) audiosrc = gst_element_factory_make("autoaudiosrc", "peer-audiosrc");
+    g_object_set(audiosrc, "low-latency", FALSE, nullptr);
     GstElement *audioconvert = gst_element_factory_make("audioconvert", nullptr);
     GstElement *audioresample = gst_element_factory_make("audioresample", nullptr);
+    GstElement *capsfilter = gst_element_factory_make("capsfilter", nullptr);
     GstElement *level = gst_element_factory_make("level", "peer-level");
     GstElement *opusenc = gst_element_factory_make("opusenc", nullptr);
     GstElement *rtpopuspay = gst_element_factory_make("rtpopuspay", nullptr);
 
-    if (!audiosrc || !audioconvert || !audioresample || !level || !opusenc || !rtpopuspay) {
+    if (!audiosrc || !audioconvert || !audioresample || !capsfilter || !level || !opusenc || !rtpopuspay) {
         emit error("Failed to create audio capture elements");
         cleanup();
         return false;
     }
+
+    // Force S16LE right after capture — prevents format negotiation failures
+    GstCaps *srcCaps = gst_caps_from_string("audio/x-raw,format=S16LE");
+    g_object_set(capsfilter, "caps", srcCaps, nullptr);
+    gst_caps_unref(srcCaps);
 
     if (!audioInputDeviceId.isEmpty()) {
         g_object_set(audiosrc, "device", audioInputDeviceId.toUtf8().constData(), nullptr);
@@ -75,10 +84,10 @@ bool PeerPipeline::start(const QString &stunServer, const QList<TurnServer> &tur
     // Configure level element: report every 100ms
     g_object_set(level, "post-messages", TRUE, "interval", (guint64)100000000, nullptr);
 
-    gst_bin_add_many(GST_BIN(m_pipeline), audiosrc, audioconvert, audioresample,
+    gst_bin_add_many(GST_BIN(m_pipeline), audiosrc, capsfilter, audioconvert, audioresample,
                      level, opusenc, rtpopuspay, m_webrtcbin, nullptr);
 
-    if (!gst_element_link_many(audiosrc, audioconvert, audioresample,
+    if (!gst_element_link_many(audiosrc, capsfilter, audioconvert, audioresample,
                                level, opusenc, rtpopuspay, nullptr)) {
         emit error("Failed to link audio capture chain");
         cleanup();

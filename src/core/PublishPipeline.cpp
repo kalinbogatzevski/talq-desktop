@@ -52,9 +52,29 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         }
     }
 
-    // Audio capture chain
-    // autoaudiosrc picks the best working audio backend (wasapisrc, wasapi2src, etc.)
-    GstElement *audiosrc = gst_element_factory_make("autoaudiosrc", "pub-audiosrc");
+    // Audio capture — wasapi2src (best), wasapisrc (fallback), autoaudiosrc (last resort)
+    // DEBUG: set TALQ_TEST_AUDIO=1 env var to use audiotestsrc (440Hz tone) for testing
+    GstElement *audiosrc = nullptr;
+    if (qEnvironmentVariableIsSet("TALQ_TEST_AUDIO")) {
+        audiosrc = gst_element_factory_make("audiotestsrc", "pub-audiosrc");
+        g_object_set(audiosrc, "is-live", TRUE, "wave", 0, "freq", 440.0, nullptr);
+        qDebug() << "PublishPipeline: audio source: audiotestsrc (TEST MODE)";
+    } else {
+        audiosrc = gst_element_factory_make("wasapi2src", "pub-audiosrc");
+        if (audiosrc) {
+            qDebug() << "PublishPipeline: audio source: wasapi2src";
+        } else {
+            audiosrc = gst_element_factory_make("wasapisrc", "pub-audiosrc");
+            if (audiosrc) {
+                g_object_set(audiosrc, "low-latency", FALSE, nullptr);
+                qDebug() << "PublishPipeline: audio source: wasapisrc";
+            } else {
+                audiosrc = gst_element_factory_make("autoaudiosrc", "pub-audiosrc");
+                qDebug() << "PublishPipeline: audio source: autoaudiosrc";
+            }
+        }
+    }
+
     GstElement *audioconvert = gst_element_factory_make("audioconvert", nullptr);
     GstElement *audioresample = gst_element_factory_make("audioresample", nullptr);
     GstElement *level = gst_element_factory_make("level", "pub-level");
@@ -65,11 +85,6 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         emit error("Failed to create audio capture elements");
         cleanup();
         return false;
-    }
-
-    if (!audioDeviceId.isEmpty()) {
-        g_object_set(audiosrc, "device", audioDeviceId.toUtf8().constData(), nullptr);
-        qDebug() << "PublishPipeline: using audio input device" << audioDeviceId;
     }
 
     // Configure level element: report every 100ms
@@ -515,7 +530,14 @@ void PublishPipeline::onOfferCreated(GstPromise *promise, gpointer userData)
     gst_webrtc_session_description_free(offer);
     gst_promise_unref(promise);
 
-    qDebug() << "PublishPipeline: offer created, SDP length=" << sdp.length();
+    qDebug() << "PublishPipeline: offer created, SDP length=" << sdp.length() << "\n" << sdp;
+
+    // Validate SDP has at least one media line — empty offers get rejected by MCU
+    if (!sdp.contains("m=audio") && !sdp.contains("m=video")) {
+        qWarning() << "PublishPipeline: offer has no media lines, not sending (audio source may have failed)";
+        return;
+    }
+
     QMetaObject::invokeMethod(self, [self, sdp]() {
         emit self->localOfferReady(sdp);
     }, Qt::QueuedConnection);
