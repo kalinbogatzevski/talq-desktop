@@ -195,7 +195,7 @@ void SubscribePipeline::createAudioChain(GstPad *pad)
     GstElement *dec = gst_element_factory_make("opusdec", nullptr);
     GstElement *convert = gst_element_factory_make("audioconvert", nullptr);
     GstElement *resample = gst_element_factory_make("audioresample", nullptr);
-    GstElement *sink = gst_element_factory_make("wasapi2sink", nullptr);
+    GstElement *sink = gst_element_factory_make("autoaudiosink", nullptr);
 
     if (!depay || !dec || !convert || !resample || !sink) {
         qWarning() << "SubscribePipeline: failed to create audio receive chain";

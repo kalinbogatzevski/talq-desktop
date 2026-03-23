@@ -54,7 +54,7 @@ bool PeerPipeline::start(const QString &stunServer, const QList<TurnServer> &tur
     }
 
     // Audio capture chain: wasapi2src -> audioconvert -> audioresample -> level -> opusenc -> rtpopuspay -> webrtcbin
-    GstElement *audiosrc = gst_element_factory_make("wasapi2src", "peer-audiosrc");
+    GstElement *audiosrc = gst_element_factory_make("autoaudiosrc", "peer-audiosrc");
     GstElement *audioconvert = gst_element_factory_make("audioconvert", nullptr);
     GstElement *audioresample = gst_element_factory_make("audioresample", nullptr);
     GstElement *level = gst_element_factory_make("level", "peer-level");
@@ -493,7 +493,7 @@ void PeerPipeline::createAudioReceiveChain(GstPad *pad)
     GstElement *dec = gst_element_factory_make("opusdec", nullptr);
     GstElement *convert = gst_element_factory_make("audioconvert", nullptr);
     GstElement *resample = gst_element_factory_make("audioresample", nullptr);
-    GstElement *sink = gst_element_factory_make("wasapi2sink", nullptr);
+    GstElement *sink = gst_element_factory_make("autoaudiosink", nullptr);
 
     if (!depay || !dec || !convert || !resample || !sink) {
         qWarning() << "PeerPipeline: failed to create audio receive chain";
