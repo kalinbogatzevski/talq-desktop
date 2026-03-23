@@ -177,7 +177,7 @@ Page {
                 size: 34
                 bgColor: Theme.success
                 iconColor: "white"
-                visible: chatRoot.conversationType === 1 && callManager.state === 0
+                visible: chatRoot.conversationType === 1 && callManager.state === 0 && callManager.callsAvailable
                 onClicked: { callManager.setRemotePeerInfo(chatRoot.conversationName, chatRoot.conversationUserId); callManager.startCall(messageModel.conversationToken, false) }
                 ToolTip.visible: hovered; ToolTip.text: "Audio call"; ToolTip.delay: 300
             }
@@ -188,9 +188,21 @@ Page {
                 size: 34
                 bgColor: Theme.accent
                 iconColor: "white"
-                visible: chatRoot.conversationType === 1 && callManager.state === 0
+                visible: chatRoot.conversationType === 1 && callManager.state === 0 && callManager.callsAvailable
                 onClicked: { callManager.setRemotePeerInfo(chatRoot.conversationName, chatRoot.conversationUserId); callManager.startCall(messageModel.conversationToken, true) }
                 ToolTip.visible: hovered; ToolTip.text: "Video call"; ToolTip.delay: 300
+            }
+
+            // Calls unavailable indicator
+            Label {
+                visible: chatRoot.conversationType === 1 && !callManager.callsAvailable
+                text: "Calls unavailable"
+                color: Theme.textMuted
+                font.pixelSize: Theme.fontSizeTiny
+                ToolTip.visible: callsUnavailableHover.hovered
+                ToolTip.text: callManager.callsUnavailableReason
+                ToolTip.delay: 300
+                HoverHandler { id: callsUnavailableHover }
             }
 
             // Active call indicator

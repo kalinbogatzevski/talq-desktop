@@ -25,6 +25,8 @@ class CallManager : public QObject
     Q_PROPERTY(VideoFrameProvider* remoteVideoProvider READ remoteVideoProvider NOTIFY remoteVideoProviderChanged)
     Q_PROPERTY(VideoFrameProvider* localVideoProvider READ localVideoProvider NOTIFY localVideoProviderChanged)
     Q_PROPERTY(QString statusDetail READ statusDetail NOTIFY statusDetailChanged)
+    Q_PROPERTY(bool callsAvailable READ callsAvailable CONSTANT)
+    Q_PROPERTY(QString callsUnavailableReason READ callsUnavailableReason CONSTANT)
 
 public:
     enum CallState { Idle, Outgoing, Incoming, Connecting, Active, Ending };
@@ -43,6 +45,8 @@ public:
     VideoFrameProvider *remoteVideoProvider() const { return m_remoteVideoProvider; }
     VideoFrameProvider *localVideoProvider() const { return m_localVideoProvider; }
     QString statusDetail() const { return m_statusDetail; }
+    bool callsAvailable() const { return m_callsAvailable; }
+    QString callsUnavailableReason() const { return m_callsUnavailableReason; }
 
     Q_INVOKABLE void startCall(const QString &token, bool withVideo);
     Q_INVOKABLE void setRemotePeerInfo(const QString &name, const QString &peerId);
@@ -113,6 +117,9 @@ private:
     double m_audioLevel = 0.0;
     QString m_callStats;
     QString m_statusDetail;
+    bool m_callsAvailable = true;
+    QString m_callsUnavailableReason;
+    void checkGStreamerPlugins();
     void updateCallStats();
     void setStatusDetail(const QString &detail) {
         if (m_statusDetail != detail) { m_statusDetail = detail; emit statusDetailChanged(); }
