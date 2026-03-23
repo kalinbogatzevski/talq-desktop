@@ -9,6 +9,9 @@ SignalingClient::SignalingClient(ApiClient *api, QObject *parent)
     connect(&m_ws, &QWebSocket::connected, this, &SignalingClient::onConnected);
     connect(&m_ws, &QWebSocket::disconnected, this, &SignalingClient::onDisconnected);
     connect(&m_ws, &QWebSocket::textMessageReceived, this, &SignalingClient::onTextMessage);
+    connect(&m_ws, &QWebSocket::errorOccurred, this, [this](QAbstractSocket::SocketError err) {
+        qWarning() << "Signaling: WebSocket error:" << err << m_ws.errorString();
+    });
 
     m_reconnectTimer.setSingleShot(true);
     connect(&m_reconnectTimer, &QTimer::timeout, this, &SignalingClient::start);
@@ -105,6 +108,10 @@ void SignalingClient::onDisconnected()
 void SignalingClient::onTextMessage(const QString &msg)
 {
     QJsonDocument doc = QJsonDocument::fromJson(msg.toUtf8());
+    if (doc.isNull()) {
+        qWarning() << "Signaling: received malformed JSON:" << msg.left(200);
+        return;
+    }
     QJsonObject obj = doc.object();
     QString type = obj["type"].toString();
 
