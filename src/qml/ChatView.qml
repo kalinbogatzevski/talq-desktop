@@ -416,25 +416,34 @@ Page {
         bottomMargin: Theme.spacingLarge
         boundsBehavior: Flickable.StopAtBounds
 
-        // --- Scroll management ---
-        // autoScrolling=true means "stick to the bottom"
-        // Set false when user drags/flicks up, true when they reach bottom again
         property bool autoScrolling: true
         property int previousCount: 0
 
         function scrollToBottom() {
-            // Direct contentY manipulation — most reliable method
-            contentY = contentHeight - height
+            positionViewAtEnd()
+            // File attachments and images may resize after initial layout.
+            // Schedule a second scroll to catch late height changes.
+            Qt.callLater(positionViewAtEnd)
         }
 
-        // User interaction disables auto-scroll
-        onDraggingChanged: if (dragging) autoScrolling = false
+        onDraggingChanged: {
+            if (dragging) autoScrolling = false
+        }
+
         onFlickStarted: autoScrolling = false
 
-        // Re-enable when user reaches the bottom
-        onAtYEndChanged: if (atYEnd) autoScrolling = true
+        onContentHeightChanged: {
+            if (autoScrolling && count > 0)
+                Qt.callLater(positionViewAtEnd)
+        }
 
-        // History load when user scrolls near the top
+        onMovingChanged: {
+            if (!moving) {
+                var atBottom = (contentY + height >= contentHeight - 40)
+                if (atBottom) autoScrolling = true
+            }
+        }
+
         onContentYChanged: {
             if (contentY < 200 && !autoScrolling && !messageModel.loading
                     && messageModel.hasMoreHistory && count > 0) {
@@ -442,9 +451,9 @@ Page {
             }
         }
 
-        // Only preserve scroll position when history is prepended while user is scrolling up
         onCountChanged: {
             if (count > previousCount && previousCount > 0 && !autoScrolling) {
+                // History prepended — keep current view position stable
                 var added = count - previousCount
                 positionViewAtIndex(added, ListView.Beginning)
             }
@@ -696,8 +705,6 @@ Page {
             chatRoot.cancelPaste()
             messageListView.autoScrolling = true
             messageListView.previousCount = 0
-            // Scroll to bottom after messages load
-            Qt.callLater(messageListView.scrollToBottom)
         }
         function onNewMessagesAtEnd() {
             if (messageListView.count > 0 && messageListView.autoScrolling)
