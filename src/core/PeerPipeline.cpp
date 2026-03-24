@@ -370,6 +370,19 @@ void PeerPipeline::enableCamera(int deviceIndex, bool hd1080)
         return;
     }
 
+    // Add a sendonly video transceiver with H264 caps BEFORE requesting the pad.
+    // Prevents m=video 0 when adding video mid-session.
+    GstCaps *videoCaps = gst_caps_from_string("application/x-rtp,media=video,encoding-name=H264,clock-rate=90000,payload=96");
+    GstWebRTCRTPTransceiver *transceiver = nullptr;
+    g_signal_emit_by_name(m_webrtcbin, "add-transceiver",
+                          GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDONLY,
+                          videoCaps, &transceiver);
+    gst_caps_unref(videoCaps);
+    if (transceiver) {
+        qDebug() << "PeerPipeline: added sendonly video transceiver";
+        gst_object_unref(transceiver);
+    }
+
     m_videoSinkPad = gst_element_request_pad_simple(m_webrtcbin, "sink_%u");
     GstPad *payloaderSrc = gst_element_get_static_pad(m_videoPayloader, "src");
     GstPadLinkReturn ret = gst_pad_link(payloaderSrc, m_videoSinkPad);

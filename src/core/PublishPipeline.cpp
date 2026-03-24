@@ -365,6 +365,21 @@ void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)
         return;
     }
 
+    // Add a sendonly video transceiver with H264 caps BEFORE requesting the pad.
+    // This prevents webrtcbin from creating an inactive transceiver (m=video 0)
+    // when adding video mid-session.
+    GstCaps *videoCaps = gst_caps_from_string("application/x-rtp,media=video,encoding-name=H264,clock-rate=90000,payload=96");
+    GstWebRTCRTPTransceiver *transceiver = nullptr;
+    g_signal_emit_by_name(m_webrtcbin, "add-transceiver",
+                          GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDONLY,
+                          videoCaps, &transceiver);
+    gst_caps_unref(videoCaps);
+
+    if (transceiver) {
+        qDebug() << "PublishPipeline: added sendonly video transceiver";
+        gst_object_unref(transceiver);
+    }
+
     m_videoSinkPad = gst_element_request_pad_simple(m_webrtcbin, "sink_%u");
     GstPad *payloaderSrc = gst_element_get_static_pad(m_videoPayloader, "src");
     GstPadLinkReturn ret = gst_pad_link(payloaderSrc, m_videoSinkPad);
@@ -375,16 +390,6 @@ void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)
         emit cameraError("Failed to connect video to WebRTC");
         disableCamera();
         return;
-    }
-
-    // Ensure the video transceiver is set to sendrecv — without this,
-    // webrtcbin creates an offer with m=video 0 (port 0 = disabled)
-    GstWebRTCRTPTransceiver *transceiver = nullptr;
-    g_object_get(m_videoSinkPad, "transceiver", &transceiver, nullptr);
-    if (transceiver) {
-        g_object_set(transceiver, "direction", GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDONLY, nullptr);
-        gst_object_unref(transceiver);
-        qDebug() << "PublishPipeline: set video transceiver to sendonly";
     }
 
     gst_element_sync_state_with_parent(m_cameraSrc);
