@@ -71,9 +71,9 @@ MessageListModel::MessageListModel(ApiClient *api, MessageCache *cache, QObject 
         }
 
         // Refresh latest messages from server (fills gaps between cache and live)
+        // Do NOT call loadHistory() here — it races with refreshLatest() and prepends
+        // new messages at position 0 (wrong!). History loads when user scrolls up.
         refreshLatest();
-        // Also fetch older history in background
-        loadHistory();
     });
 }
 
