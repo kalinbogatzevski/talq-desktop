@@ -24,7 +24,8 @@ public:
     ~PublishPipeline() override;
 
     bool start(const QString &stunServer, const QList<TurnServer> &turnServers = {},
-               const QString &audioDeviceId = {});
+               const QString &audioDeviceId = {}, bool withVideo = false,
+               int videoDeviceIndex = 0, bool hd1080 = true);
     void stop();
     void setRemoteAnswer(const QString &sdp);
     void addIceCandidate(const QString &candidate, int sdpMLineIndex, const QString &sdpMid);

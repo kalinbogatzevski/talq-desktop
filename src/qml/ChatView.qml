@@ -432,15 +432,10 @@ Page {
 
         onFlickStarted: autoScrolling = false
 
-        onContentHeightChanged: {
-            if (autoScrolling && count > 0)
-                Qt.callLater(positionViewAtEnd)
-        }
-
         onMovingChanged: {
             if (!moving) {
                 var atBottom = (contentY + height >= contentHeight - 40)
-                if (atBottom) autoScrolling = true
+                autoScrolling = atBottom
             }
         }
 

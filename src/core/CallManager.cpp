@@ -671,19 +671,16 @@ void CallManager::joinCallOnServer(bool withVideo)
 
                         connect(m_publishPipeline, &PublishPipeline::cameraError, this, [this](const QString &reason) {
                             qWarning() << "CallManager: camera error:" << reason;
-                            // Try 720p fallback if 1080p failed
-                            if (m_cameraOn && !m_cameraFallbackTried) {
-                                m_cameraFallbackTried = true;
-                                qDebug() << "CallManager: retrying camera at 720p";
-                                m_publishPipeline->enableCamera(videoDeviceIndex(), false);
-                            } else {
-                                m_cameraOn = false;
-                                m_cameraFallbackTried = false;
-                                emit cameraChanged();
-                            }
+                            // Give up on camera — don't retry, as it floods signaling with offers
+                            m_cameraOn = false;
+                            m_cameraFallbackTried = false;
+                            emit cameraChanged();
+                            qDebug() << "CallManager: camera disabled, continuing audio-only";
                         });
 
-                        if (!m_publishPipeline->start(m_stunServer, turnServers, m_deviceManager ? m_deviceManager->selectedInputDeviceId() : QString())) {
+                        if (!m_publishPipeline->start(m_stunServer, turnServers,
+                            m_deviceManager ? m_deviceManager->selectedInputDeviceId() : QString(),
+                            m_withVideo, videoDeviceIndex(), preferHd1080())) {
                             qWarning() << "CallManager: failed to start publish pipeline";
                             teardown("Failed to start audio pipeline");
                             return;
@@ -719,17 +716,8 @@ void CallManager::joinCallOnServer(bool withVideo)
                                 });
                         }
 
-                        // Enable camera AFTER subscriber discovery (not before — camera renegotiation
-                        // floods signaling and can prevent subscriber requests from executing)
-                        if (m_withVideo) {
-                            // Delay camera enable to let the initial offer/answer complete first
-                            QTimer::singleShot(1000, this, [this]() {
-                                if (m_state != Idle && m_withVideo && m_publishPipeline) {
-                                    m_publishPipeline->enableCamera(videoDeviceIndex(), preferHd1080());
-                                    qDebug() << "CallManager: auto-enabled camera for video call";
-                                }
-                            });
-                        }
+                        // Video is now included in the initial pipeline (no delayed renegotiation)
+                        // Camera preview starts immediately when pipeline starts
                     }
                 });
         });
