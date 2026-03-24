@@ -87,12 +87,21 @@ int MessageListModel::rowCount(const QModelIndex &) const
     return m_messages.size();
 }
 
+// Reverse index: QML row 0 = newest message (m_messages.last())
+// BottomToTop layout renders row 0 at the visual bottom = newest at bottom
+int MessageListModel::sourceRow(int proxyRow) const
+{
+    return m_messages.size() - 1 - proxyRow;
+}
+
 QVariant MessageListModel::data(const QModelIndex &index, int role) const
 {
     if (!index.isValid() || index.row() >= m_messages.size())
         return {};
 
-    const auto &m = m_messages[index.row()];
+    int src = sourceRow(index.row());
+    if (src < 0 || src >= m_messages.size()) return {};
+    const auto &m = m_messages[src];
 
     switch (role) {
         case IdRole:            return m.id;
@@ -103,8 +112,9 @@ QVariant MessageListModel::data(const QModelIndex &index, int role) const
         case IsSystemRole:      return m.isSystem;
         case MessageTypeRole:   return m.messageType;
         case IsGroupedRole: {
-            if (index.row() == 0) return false;
-            return m.isGroupedWith(m_messages[index.row() - 1]);
+            // In reversed view, "previous" message is src+1 (older)
+            if (src >= m_messages.size() - 1) return false;
+            return m.isGroupedWith(m_messages[src + 1]);
         }
         case ReplyToTextRole:
             return m.replyTo.isEmpty() ? QString() : m.replyTo["message"].toString();
@@ -120,8 +130,9 @@ QVariant MessageListModel::data(const QModelIndex &index, int role) const
         case TimeStringRole:
             return m.dateTime().toString("HH:mm");
         case ShowDateSeparatorRole: {
-            if (index.row() == 0) return true;
-            auto prevDate = m_messages[index.row() - 1].dateTime().date();
+            // In reversed view, "previous" (older) message is at src+1
+            if (src >= m_messages.size() - 1) return true;  // oldest message gets separator
+            auto prevDate = m_messages[src + 1].dateTime().date();
             return m.dateTime().date() != prevDate;
         }
         case DateStringRole: {
