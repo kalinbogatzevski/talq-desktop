@@ -1,0 +1,137 @@
+<h2>Settings Layout Approaches</h2>
+<p class="subtitle">How should TalQ settings be structured?</p>
+
+<div class="cards">
+  <!-- Option A: Tabbed Dialog -->
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding:16px;background:#1a1d24;">
+      <div style="background:#252830;border-radius:8px;overflow:hidden;font-size:12px;color:#ccc;">
+        <!-- Title bar -->
+        <div style="padding:8px 12px;background:#2a2d36;display:flex;justify-content:space-between;align-items:center;">
+          <span style="font-weight:600;color:#fff;">Settings</span>
+          <span style="color:#666;cursor:pointer;">✕</span>
+        </div>
+        <!-- Tabs -->
+        <div style="display:flex;border-bottom:1px solid #333;background:#22252d;">
+          <div style="padding:8px 14px;border-bottom:2px solid #2ec4b6;color:#2ec4b6;font-size:11px;">Audio/Video</div>
+          <div style="padding:8px 14px;color:#888;font-size:11px;">Notifications</div>
+          <div style="padding:8px 14px;color:#888;font-size:11px;">General</div>
+          <div style="padding:8px 14px;color:#888;font-size:11px;">Account</div>
+        </div>
+        <!-- Content -->
+        <div style="padding:12px;">
+          <div style="color:#888;font-size:10px;text-transform:uppercase;margin-bottom:6px;">Microphone</div>
+          <div style="background:#1a1d24;border-radius:4px;padding:6px 10px;margin-bottom:10px;color:#aaa;font-size:11px;">Default Device ▾</div>
+          <div style="color:#888;font-size:10px;text-transform:uppercase;margin-bottom:6px;">Speaker</div>
+          <div style="background:#1a1d24;border-radius:4px;padding:6px 10px;margin-bottom:10px;color:#aaa;font-size:11px;">Default Device ▾</div>
+          <div style="color:#888;font-size:10px;text-transform:uppercase;margin-bottom:6px;">Camera</div>
+          <div style="background:#1a1d24;border-radius:4px;padding:6px 10px;margin-bottom:10px;color:#aaa;font-size:11px;">Integrated Webcam ▾</div>
+          <div style="color:#888;font-size:10px;text-transform:uppercase;margin-bottom:6px;">Video Quality</div>
+          <div style="display:flex;gap:8px;">
+            <div style="background:#2ec4b6;color:#000;border-radius:4px;padding:4px 10px;font-size:11px;">1080p</div>
+            <div style="background:#1a1d24;border-radius:4px;padding:4px 10px;font-size:11px;color:#aaa;">720p</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>A: Tabbed Dialog</h3>
+      <p>Separate modal window with tab bar. Classic desktop pattern (Firefox, VS Code settings). Compact, familiar.</p>
+    </div>
+  </div>
+
+  <!-- Option B: Telegram-style Drill-down -->
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding:16px;background:#1a1d24;">
+      <div style="background:#252830;border-radius:8px;overflow:hidden;font-size:12px;color:#ccc;display:flex;height:260px;">
+        <!-- Sidebar (squeezed) -->
+        <div style="width:50px;background:#1e2028;border-right:1px solid #333;display:flex;flex-direction:column;align-items:center;padding-top:10px;gap:12px;">
+          <div style="width:32px;height:32px;border-radius:50%;background:#2ec4b6;display:flex;align-items:center;justify-content:center;font-size:14px;">K</div>
+          <div style="width:28px;height:28px;border-radius:4px;background:#333;"></div>
+          <div style="width:28px;height:28px;border-radius:4px;background:#333;"></div>
+        </div>
+        <!-- Settings categories (replaces chat) -->
+        <div style="flex:1;">
+          <!-- Header -->
+          <div style="padding:10px 12px;background:#2a2d36;display:flex;align-items:center;gap:8px;">
+            <span style="color:#2ec4b6;">←</span>
+            <span style="font-weight:600;color:#fff;">Settings</span>
+          </div>
+          <!-- Profile card -->
+          <div style="padding:12px;display:flex;align-items:center;gap:10px;border-bottom:1px solid #333;">
+            <div style="width:40px;height:40px;border-radius:50%;background:#2ec4b6;display:flex;align-items:center;justify-content:center;font-size:16px;color:#000;font-weight:600;">K</div>
+            <div>
+              <div style="color:#fff;font-size:12px;font-weight:500;">Kalin</div>
+              <div style="color:#888;font-size:10px;">ncloud.123net.link</div>
+            </div>
+          </div>
+          <!-- Category list -->
+          <div style="padding:4px 0;">
+            <div style="padding:10px 14px;display:flex;align-items:center;gap:10px;background:#2ec4b633;">
+              <span>🎙</span><span style="color:#fff;font-size:12px;">Audio & Video</span>
+            </div>
+            <div style="padding:10px 14px;display:flex;align-items:center;gap:10px;">
+              <span>🔔</span><span style="font-size:12px;">Notifications</span>
+            </div>
+            <div style="padding:10px 14px;display:flex;align-items:center;gap:10px;">
+              <span>⚙️</span><span style="font-size:12px;">General</span>
+            </div>
+            <div style="padding:10px 14px;display:flex;align-items:center;gap:10px;">
+              <span>👤</span><span style="font-size:12px;">Account</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B: Telegram-style Drill-down</h3>
+      <p>Replaces chat area with category list. Click a category → slides to detail view with back arrow. Profile card at top. Feels native to TalQ's existing navigation.</p>
+    </div>
+  </div>
+
+  <!-- Option C: Sidebar + Content -->
+  <div class="card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding:16px;background:#1a1d24;">
+      <div style="background:#252830;border-radius:8px;overflow:hidden;font-size:12px;color:#ccc;display:flex;height:260px;">
+        <!-- Sidebar (squeezed) -->
+        <div style="width:50px;background:#1e2028;border-right:1px solid #333;display:flex;flex-direction:column;align-items:center;padding-top:10px;gap:12px;">
+          <div style="width:32px;height:32px;border-radius:50%;background:#2ec4b6;display:flex;align-items:center;justify-content:center;font-size:14px;">K</div>
+          <div style="width:28px;height:28px;border-radius:4px;background:#333;"></div>
+          <div style="width:28px;height:28px;border-radius:4px;background:#333;"></div>
+        </div>
+        <!-- Settings nav -->
+        <div style="width:140px;background:#22252d;border-right:1px solid #333;">
+          <div style="padding:10px 12px;background:#2a2d36;display:flex;align-items:center;gap:6px;">
+            <span style="color:#2ec4b6;">←</span>
+            <span style="font-weight:600;color:#fff;font-size:11px;">Settings</span>
+          </div>
+          <div style="padding:4px 0;">
+            <div style="padding:8px 12px;background:#2ec4b622;border-left:2px solid #2ec4b6;font-size:11px;color:#2ec4b6;">Audio & Video</div>
+            <div style="padding:8px 12px;font-size:11px;color:#888;">Notifications</div>
+            <div style="padding:8px 12px;font-size:11px;color:#888;">General</div>
+            <div style="padding:8px 12px;font-size:11px;color:#888;">Account</div>
+          </div>
+        </div>
+        <!-- Content area -->
+        <div style="flex:1;padding:12px;overflow:hidden;">
+          <div style="color:#fff;font-size:13px;font-weight:600;margin-bottom:10px;">Audio & Video</div>
+          <div style="color:#888;font-size:10px;text-transform:uppercase;margin-bottom:4px;">Microphone</div>
+          <div style="background:#1a1d24;border-radius:4px;padding:5px 8px;margin-bottom:8px;color:#aaa;font-size:10px;">Default ▾</div>
+          <div style="color:#888;font-size:10px;text-transform:uppercase;margin-bottom:4px;">Speaker</div>
+          <div style="background:#1a1d24;border-radius:4px;padding:5px 8px;margin-bottom:8px;color:#aaa;font-size:10px;">Default ▾</div>
+          <div style="color:#888;font-size:10px;text-transform:uppercase;margin-bottom:4px;">Camera</div>
+          <div style="background:#1a1d24;border-radius:4px;padding:5px 8px;margin-bottom:8px;color:#aaa;font-size:10px;">Webcam ▾</div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>C: Sidebar + Content Split</h3>
+      <p>Settings nav on left, content on right — always visible together. Like VS Code or Discord. Most space-efficient for browsing, but adds a third column to TalQ's layout.</p>
+    </div>
+  </div>
+</div>
+
+<div style="margin-top:20px;padding:16px;background:#1a2332;border-radius:8px;border-left:3px solid #2ec4b6;">
+  <h3 style="margin:0 0 8px;color:#2ec4b6;">Recommendation: B (Telegram-style)</h3>
+  <p style="margin:0;color:#aaa;font-size:14px;">Fits TalQ's existing navigation pattern — you already have StackView for splash→login→chat transitions. Settings becomes another screen in that stack. Category list → detail view matches how Telegram does it. Simple to implement, room to grow, no extra columns.</p>
+</div>

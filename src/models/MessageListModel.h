@@ -110,7 +110,6 @@ private slots:
     void onLastCommonReadChanged(int messageId);
 
 private:
-    int sourceRow(int proxyRow) const;  // reverse index for BottomToTop display
     void startPoller();
     void refreshLatest();
     void postAndReplace(const QString &token, const QJsonObject &body, int tempId);

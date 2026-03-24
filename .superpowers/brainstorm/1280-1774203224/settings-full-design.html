@@ -1,0 +1,160 @@
+<h2>TalQ Settings Dialog — Full Design</h2>
+<p class="subtitle">Tabbed modal dialog (Ctrl+,) — click a tab to preview each section</p>
+
+<div style="max-width:520px;margin:20px auto;">
+  <div style="background:#252830;border-radius:10px;overflow:hidden;font-size:13px;color:#ccc;box-shadow:0 8px 32px rgba(0,0,0,0.5);">
+    <!-- Title bar -->
+    <div style="padding:10px 16px;background:#2a2d36;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #333;">
+      <span style="font-weight:600;color:#fff;font-size:14px;">Settings</span>
+      <span style="color:#666;cursor:pointer;font-size:16px;">✕</span>
+    </div>
+    <!-- Tabs -->
+    <div style="display:flex;background:#22252d;border-bottom:1px solid #333;" id="tabBar">
+      <div class="stab active" onclick="showTab('av')" id="tab-av" style="padding:10px 16px;cursor:pointer;font-size:12px;border-bottom:2px solid #2ec4b6;color:#2ec4b6;">Audio & Video</div>
+      <div class="stab" onclick="showTab('notif')" id="tab-notif" style="padding:10px 16px;cursor:pointer;font-size:12px;border-bottom:2px solid transparent;color:#888;">Notifications</div>
+      <div class="stab" onclick="showTab('general')" id="tab-general" style="padding:10px 16px;cursor:pointer;font-size:12px;border-bottom:2px solid transparent;color:#888;">General</div>
+      <div class="stab" onclick="showTab('account')" id="tab-account" style="padding:10px 16px;cursor:pointer;font-size:12px;border-bottom:2px solid transparent;color:#888;">Account</div>
+    </div>
+
+    <!-- Audio & Video Tab -->
+    <div id="panel-av" style="padding:16px 20px;min-height:340px;">
+      <div style="color:#888;font-size:10px;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;">Microphone</div>
+      <div style="background:#1a1d24;border-radius:6px;padding:8px 12px;margin-bottom:4px;color:#ddd;font-size:12px;display:flex;justify-content:space-between;align-items:center;">
+        <span>Realtek Microphone</span><span style="color:#666;">▾</span>
+      </div>
+      <!-- Level meter -->
+      <div style="margin-bottom:14px;display:flex;align-items:center;gap:8px;">
+        <div style="flex:1;height:4px;background:#1a1d24;border-radius:2px;overflow:hidden;">
+          <div style="width:35%;height:100%;background:linear-gradient(90deg,#2ec4b6,#5ec76a);border-radius:2px;"></div>
+        </div>
+        <span style="font-size:10px;color:#666;">Test</span>
+      </div>
+
+      <div style="color:#888;font-size:10px;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;">Speaker</div>
+      <div style="background:#1a1d24;border-radius:6px;padding:8px 12px;margin-bottom:4px;color:#ddd;font-size:12px;display:flex;justify-content:space-between;align-items:center;">
+        <span>Realtek Speakers</span><span style="color:#666;">▾</span>
+      </div>
+      <div style="margin-bottom:14px;display:flex;align-items:center;gap:8px;">
+        <div style="flex:1;height:4px;background:#1a1d24;border-radius:2px;overflow:hidden;">
+          <div style="width:0%;height:100%;background:#2ec4b6;border-radius:2px;"></div>
+        </div>
+        <span style="font-size:10px;color:#666;">Test</span>
+      </div>
+
+      <div style="color:#888;font-size:10px;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;">Camera</div>
+      <div style="background:#1a1d24;border-radius:6px;padding:8px 12px;margin-bottom:14px;color:#ddd;font-size:12px;display:flex;justify-content:space-between;align-items:center;">
+        <span>Integrated Webcam</span><span style="color:#666;">▾</span>
+      </div>
+
+      <div style="color:#888;font-size:10px;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;">Video Quality</div>
+      <div style="display:flex;gap:8px;margin-bottom:14px;">
+        <div style="background:#2ec4b6;color:#000;border-radius:6px;padding:6px 14px;font-size:12px;font-weight:500;cursor:pointer;">Full HD (1080p)</div>
+        <div style="background:#1a1d24;border-radius:6px;padding:6px 14px;font-size:12px;color:#aaa;cursor:pointer;">HD (720p)</div>
+      </div>
+
+      <div style="display:flex;justify-content:flex-end;gap:8px;padding-top:8px;border-top:1px solid #333;">
+        <div style="background:#1a1d24;border-radius:6px;padding:6px 14px;font-size:12px;color:#aaa;cursor:pointer;">Refresh Devices</div>
+      </div>
+    </div>
+
+    <!-- Notifications Tab -->
+    <div id="panel-notif" style="padding:16px 20px;min-height:340px;display:none;">
+      <div style="color:#888;font-size:10px;text-transform:uppercase;letter-spacing:1px;margin-bottom:10px;">Desktop Notifications</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+        <span style="color:#ddd;font-size:12px;">Enable notifications</span>
+        <div style="width:36px;height:20px;background:#2ec4b6;border-radius:10px;position:relative;cursor:pointer;">
+          <div style="width:16px;height:16px;background:#fff;border-radius:50%;position:absolute;top:2px;right:2px;"></div>
+        </div>
+      </div>
+
+      <div style="color:#888;font-size:10px;text-transform:uppercase;letter-spacing:1px;margin-bottom:10px;">Notification Style</div>
+      <div style="display:flex;gap:8px;margin-bottom:16px;">
+        <div style="background:#2ec4b6;color:#000;border-radius:6px;padding:6px 14px;font-size:12px;font-weight:500;cursor:pointer;">In-app popup</div>
+        <div style="background:#1a1d24;border-radius:6px;padding:6px 14px;font-size:12px;color:#aaa;cursor:pointer;">Windows toast</div>
+      </div>
+
+      <div style="color:#888;font-size:10px;text-transform:uppercase;letter-spacing:1px;margin-bottom:10px;">Sound</div>
+      <div style="display:flex;gap:8px;margin-bottom:16px;">
+        <div style="background:#2ec4b6;color:#000;border-radius:6px;padding:6px 14px;font-size:12px;font-weight:500;cursor:pointer;">TalQ chime</div>
+        <div style="background:#1a1d24;border-radius:6px;padding:6px 14px;font-size:12px;color:#aaa;cursor:pointer;">System sound</div>
+        <div style="background:#1a1d24;border-radius:6px;padding:6px 14px;font-size:12px;color:#aaa;cursor:pointer;">None</div>
+      </div>
+
+      <div style="margin-top:12px;padding:12px;background:#1a2332;border-radius:6px;border-left:3px solid #2ec4b6;">
+        <p style="margin:0;color:#aaa;font-size:11px;">💡 To mute individual conversations, right-click on them in the sidebar.</p>
+      </div>
+    </div>
+
+    <!-- General Tab -->
+    <div id="panel-general" style="padding:16px 20px;min-height:340px;display:none;">
+      <div style="color:#888;font-size:10px;text-transform:uppercase;letter-spacing:1px;margin-bottom:10px;">Startup</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <span style="color:#ddd;font-size:12px;">Start with Windows</span>
+        <div style="width:36px;height:20px;background:#333;border-radius:10px;position:relative;cursor:pointer;">
+          <div style="width:16px;height:16px;background:#888;border-radius:50%;position:absolute;top:2px;left:2px;"></div>
+        </div>
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+        <span style="color:#ddd;font-size:12px;">Start minimized to tray</span>
+        <div style="width:36px;height:20px;background:#333;border-radius:10px;position:relative;cursor:pointer;">
+          <div style="width:16px;height:16px;background:#888;border-radius:50%;position:absolute;top:2px;left:2px;"></div>
+        </div>
+      </div>
+
+      <div style="color:#888;font-size:10px;text-transform:uppercase;letter-spacing:1px;margin-bottom:10px;">Behavior</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <div>
+          <span style="color:#ddd;font-size:12px;">Close to tray</span>
+          <div style="color:#666;font-size:10px;">Minimize to tray instead of quitting</div>
+        </div>
+        <div style="width:36px;height:20px;background:#2ec4b6;border-radius:10px;position:relative;cursor:pointer;">
+          <div style="width:16px;height:16px;background:#fff;border-radius:50%;position:absolute;top:2px;right:2px;"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Account Tab -->
+    <div id="panel-account" style="padding:16px 20px;min-height:340px;display:none;">
+      <!-- Profile card -->
+      <div style="display:flex;align-items:center;gap:14px;margin-bottom:20px;padding-bottom:16px;border-bottom:1px solid #333;">
+        <div style="width:52px;height:52px;border-radius:50%;background:#2ec4b6;display:flex;align-items:center;justify-content:center;font-size:22px;color:#000;font-weight:600;">K</div>
+        <div>
+          <div style="color:#fff;font-size:14px;font-weight:500;">Kalin</div>
+          <div style="color:#888;font-size:12px;">ncloud.123net.link</div>
+        </div>
+      </div>
+
+      <div style="color:#888;font-size:10px;text-transform:uppercase;letter-spacing:1px;margin-bottom:10px;">Server</div>
+      <div style="background:#1a1d24;border-radius:6px;padding:8px 12px;margin-bottom:16px;color:#aaa;font-size:12px;">
+        https://ncloud.123net.link
+      </div>
+
+      <div style="color:#888;font-size:10px;text-transform:uppercase;letter-spacing:1px;margin-bottom:10px;">Nextcloud</div>
+      <div style="display:flex;gap:20px;margin-bottom:20px;">
+        <div><span style="color:#666;font-size:11px;">Version: </span><span style="color:#aaa;font-size:11px;">30.0.6</span></div>
+        <div><span style="color:#666;font-size:11px;">Talk: </span><span style="color:#aaa;font-size:11px;">v22.0</span></div>
+      </div>
+
+      <div style="border-top:1px solid #333;padding-top:16px;display:flex;justify-content:space-between;align-items:center;">
+        <div style="color:#666;font-size:11px;">TalQ v0.8.1</div>
+        <div style="background:#e07060;color:#fff;border-radius:6px;padding:6px 16px;font-size:12px;cursor:pointer;">Log out</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+function showTab(name) {
+  // Hide all panels
+  document.querySelectorAll('[id^="panel-"]').forEach(p => p.style.display = 'none');
+  // Deactivate all tabs
+  document.querySelectorAll('.stab').forEach(t => {
+    t.style.borderBottomColor = 'transparent';
+    t.style.color = '#888';
+  });
+  // Show selected
+  document.getElementById('panel-' + name).style.display = 'block';
+  document.getElementById('tab-' + name).style.borderBottomColor = '#2ec4b6';
+  document.getElementById('tab-' + name).style.color = '#2ec4b6';
+}
+</script>

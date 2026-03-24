@@ -1,0 +1,118 @@
+<h2>TalQ Color System — Pick a Direction</h2>
+<p class="subtitle">Each builds on your existing teal (#2ec4b6) accent but takes backgrounds and neutrals in a different direction</p>
+
+<div class="cards">
+  <!-- Option A: Cool Slate -->
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding:0;overflow:hidden;">
+      <!-- Color palette strip -->
+      <div style="display:flex;height:60px;">
+        <div style="flex:1;background:#0f1118;" title="bgPrimary"></div>
+        <div style="flex:1;background:#161922;" title="bgSecondary"></div>
+        <div style="flex:1;background:#1c2030;" title="bgSurface"></div>
+        <div style="flex:1;background:#252a3a;" title="bgHover"></div>
+        <div style="flex:1;background:#2ec4b6;" title="accent"></div>
+      </div>
+      <!-- Mock chat -->
+      <div style="background:#0f1118;padding:16px;font-size:12px;">
+        <div style="background:#161922;border-radius:8px;padding:12px;margin-bottom:8px;">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+            <div style="width:28px;height:28px;border-radius:14px;background:#2ec4b6;"></div>
+            <span style="color:#c8cdd6;font-weight:500;">Kalin</span>
+            <span style="color:#555d6e;font-size:10px;">12:34</span>
+          </div>
+          <div style="color:#9aa0ae;">Hey, did you check the latest build?</div>
+        </div>
+        <div style="background:#132e2b;border-radius:8px;padding:12px;margin-left:40px;">
+          <div style="color:#d0d4dc;">Yes, looks good! The settings dialog is working now.</div>
+        </div>
+        <div style="margin-top:12px;background:#1c2030;border-radius:6px;padding:8px 12px;display:flex;align-items:center;">
+          <span style="color:#555d6e;flex:1;">Type a message...</span>
+          <div style="width:28px;height:28px;border-radius:14px;background:#2ec4b6;display:flex;align-items:center;justify-content:center;">
+            <span style="color:#0f1118;font-size:14px;">&#10148;</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>A: Cool Slate</h3>
+      <p>Blue-gray undertones. Feels like deep night sky. Your current direction but cooler and more uniform. Neutrals: blue-shifted grays.</p>
+    </div>
+  </div>
+
+  <!-- Option B: Warm Carbon -->
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding:0;overflow:hidden;">
+      <div style="display:flex;height:60px;">
+        <div style="flex:1;background:#121210;" title="bgPrimary"></div>
+        <div style="flex:1;background:#1a1a16;" title="bgSecondary"></div>
+        <div style="flex:1;background:#222220;" title="bgSurface"></div>
+        <div style="flex:1;background:#2c2c28;" title="bgHover"></div>
+        <div style="flex:1;background:#2ec4b6;" title="accent"></div>
+      </div>
+      <div style="background:#121210;padding:16px;font-size:12px;">
+        <div style="background:#1a1a16;border-radius:8px;padding:12px;margin-bottom:8px;">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+            <div style="width:28px;height:28px;border-radius:14px;background:#2ec4b6;"></div>
+            <span style="color:#c8c4be;font-weight:500;">Kalin</span>
+            <span style="color:#5a5850;font-size:10px;">12:34</span>
+          </div>
+          <div style="color:#9a968e;">Hey, did you check the latest build?</div>
+        </div>
+        <div style="background:#1a302e;border-radius:8px;padding:12px;margin-left:40px;">
+          <div style="color:#d4d0ca;">Yes, looks good! The settings dialog is working now.</div>
+        </div>
+        <div style="margin-top:12px;background:#222220;border-radius:6px;padding:8px 12px;display:flex;align-items:center;">
+          <span style="color:#5a5850;flex:1;">Type a message...</span>
+          <div style="width:28px;height:28px;border-radius:14px;background:#2ec4b6;display:flex;align-items:center;justify-content:center;">
+            <span style="color:#121210;font-size:14px;">&#10148;</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B: Warm Carbon</h3>
+      <p>Slightly warm/olive-tinted blacks. Teal pops harder against warm neutrals. Feels premium, like a luxury dark UI. Neutrals: warm grays.</p>
+    </div>
+  </div>
+
+  <!-- Option C: True Neutral -->
+  <div class="card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding:0;overflow:hidden;">
+      <div style="display:flex;height:60px;">
+        <div style="flex:1;background:#111111;" title="bgPrimary"></div>
+        <div style="flex:1;background:#1a1a1a;" title="bgSecondary"></div>
+        <div style="flex:1;background:#222222;" title="bgSurface"></div>
+        <div style="flex:1;background:#2a2a2a;" title="bgHover"></div>
+        <div style="flex:1;background:#2ec4b6;" title="accent"></div>
+      </div>
+      <div style="background:#111111;padding:16px;font-size:12px;">
+        <div style="background:#1a1a1a;border-radius:8px;padding:12px;margin-bottom:8px;">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+            <div style="width:28px;height:28px;border-radius:14px;background:#2ec4b6;"></div>
+            <span style="color:#cccccc;font-weight:500;">Kalin</span>
+            <span style="color:#555555;font-size:10px;">12:34</span>
+          </div>
+          <div style="color:#999999;">Hey, did you check the latest build?</div>
+        </div>
+        <div style="background:#15302d;border-radius:8px;padding:12px;margin-left:40px;">
+          <div style="color:#d4d4d4;">Yes, looks good! The settings dialog is working now.</div>
+        </div>
+        <div style="margin-top:12px;background:#222222;border-radius:6px;padding:8px 12px;display:flex;align-items:center;">
+          <span style="color:#555555;flex:1;">Type a message...</span>
+          <div style="width:28px;height:28px;border-radius:14px;background:#2ec4b6;display:flex;align-items:center;justify-content:center;">
+            <span style="color:#111111;font-size:14px;">&#10148;</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>C: True Neutral</h3>
+      <p>Pure grays, no tint. Maximum contrast for teal. Most minimal, like a camera UI. Teal is the ONLY color that exists. Neutrals: pure grays.</p>
+    </div>
+  </div>
+</div>
+
+<div style="margin-top:20px;padding:16px;background:#1a2332;border-radius:8px;border-left:3px solid #2ec4b6;">
+  <p style="margin:0;color:#aaa;font-size:14px;">All three keep your teal (#2ec4b6) as the primary accent. The difference is the neutral foundation everything sits on. Which feels most like TalQ to you?</p>
+</div>
