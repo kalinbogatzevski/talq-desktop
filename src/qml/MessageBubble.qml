@@ -726,7 +726,7 @@ Item {
                 // Message text — selectable
                 TextEdit {
                     Layout.fillWidth: true
-                    text: messageText
+                    text: messageText.replace(/\n/g, "<br>")
                     visible: messageText.length > 0
                     font.pixelSize: Theme.fontSizeNormal
                     color: Theme.textPrimary
@@ -883,7 +883,7 @@ Item {
                 // Message text — selectable
                 TextEdit {
                     Layout.fillWidth: true
-                    text: messageText
+                    text: messageText.replace(/\n/g, "<br>")
                     visible: messageText.length > 0
                     font.pixelSize: Theme.fontSizeNormal
                     color: Theme.textPrimary
