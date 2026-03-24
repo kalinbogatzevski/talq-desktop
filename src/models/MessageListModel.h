@@ -120,7 +120,6 @@ private:
     QVector<Message> m_messages;
     QString m_token;
     bool m_loading = false;
-    bool m_refreshingLatest = false;
     bool m_hasMoreHistory = true;
     int m_oldestMessageId = 0;
     int m_lastCommonRead = 0;
