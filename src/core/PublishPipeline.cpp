@@ -17,7 +17,8 @@ PublishPipeline::~PublishPipeline()
 }
 
 bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &turnServers,
-                           const QString &audioDeviceId)
+                           const QString &audioDeviceId, bool withVideo,
+                           int videoDeviceIndex, bool hd1080)
 {
     if (m_running) return false;
 
@@ -111,6 +112,18 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
     }
     gst_object_unref(rtpSrcPad);
     gst_object_unref(sinkPad);
+
+    // If video call, add camera chain BEFORE starting the pipeline
+    // This ensures the initial SDP offer includes m=video with active port
+    // (no mid-session renegotiation needed — matches browser app behavior)
+    if (withVideo) {
+        enableCamera(videoDeviceIndex, hd1080);
+        if (m_cameraEnabled) {
+            qDebug() << "PublishPipeline: video included in initial pipeline";
+        } else {
+            qDebug() << "PublishPipeline: camera failed, starting audio-only";
+        }
+    }
 
     // Signals — no pad-added (send-only)
     g_signal_connect(m_webrtcbin, "on-negotiation-needed",
