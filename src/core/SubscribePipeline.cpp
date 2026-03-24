@@ -280,20 +280,30 @@ void SubscribePipeline::createVideoChain(GstPad *pad, const gchar *encoding)
         m_videoDepay = depay;  // save for PLI requests
         auto sendPLI = [this]() {
             if (!m_videoDepay || !m_pipeline) return;
-            GstPad *sinkPad = gst_element_get_static_pad(m_videoDepay, "sink");
-            if (sinkPad) {
-                gst_pad_send_event(sinkPad,
+            // Send ForceKeyUnit on the depay's src pad — upstream events travel from src to sink
+            // This propagates through webrtcbin which translates it to RTCP PLI
+            GstPad *srcPad = gst_element_get_static_pad(m_videoDepay, "src");
+            if (srcPad) {
+                gst_pad_send_event(srcPad,
                     gst_event_new_custom(GST_EVENT_CUSTOM_UPSTREAM,
                         gst_structure_new("GstForceKeyUnit",
                             "all-headers", G_TYPE_BOOLEAN, TRUE, nullptr)));
-                gst_object_unref(sinkPad);
+                gst_object_unref(srcPad);
                 qDebug() << "SubscribePipeline: sent PLI for keyframe";
             }
         };
         sendPLI();
-        QTimer::singleShot(1000, this, sendPLI);
-        QTimer::singleShot(2000, this, sendPLI);
-        QTimer::singleShot(4000, this, sendPLI);
+        QTimer::singleShot(500, this, sendPLI);
+        QTimer::singleShot(1500, this, sendPLI);
+        QTimer::singleShot(3000, this, sendPLI);
+
+        // Periodic PLI every 5 seconds to recover from packet loss mid-call.
+        // VP8 without keyframes scrambles on any lost packet and never recovers
+        // until the next keyframe. MCU/Janus doesn't send keyframes automatically.
+        m_pliTimer = new QTimer(this);
+        m_pliTimer->setInterval(5000);
+        connect(m_pliTimer, &QTimer::timeout, this, sendPLI);
+        m_pliTimer->start();
     }
 }
 
