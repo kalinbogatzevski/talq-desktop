@@ -209,6 +209,7 @@ void MessageListModel::setConversationToken(const QString &token)
     m_token = token;
     m_oldestMessageId = 0;
     m_threadId = 0;
+    m_refreshingLatest = false;
     m_lastCommonRead = 0;
     m_loading = false;
     m_hasMoreHistory = true;
@@ -374,7 +375,8 @@ void MessageListModel::startPoller()
 
 void MessageListModel::refreshLatest()
 {
-    if (m_token.isEmpty()) return;
+    if (m_token.isEmpty() || m_refreshingLatest) return;
+    m_refreshingLatest = true;
 
     // Fetch the latest 50 messages from the server (lookIntoFuture=0, no lastKnownMessageId)
     // This gets the absolute newest messages, regardless of what the cache had.
@@ -390,6 +392,7 @@ void MessageListModel::refreshLatest()
 
     connect(reply, &QNetworkReply::finished, this, [this, reply, currentToken]() {
         reply->deleteLater();
+        m_refreshingLatest = false;
         if (m_token != currentToken) return;
 
         if (reply->error() != QNetworkReply::NoError) return;
