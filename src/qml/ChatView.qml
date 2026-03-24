@@ -416,48 +416,21 @@ Page {
         bottomMargin: Theme.spacingLarge
         boundsBehavior: Flickable.StopAtBounds
 
-        property bool autoScrolling: true
-        property int previousCount: 0
+        // BottomToTop: index 0 = newest message at visual bottom
+        // New messages insert at index 0 → appear at bottom → view follows if atYEnd
+        // History loads append at model end → appear at visual top → no jump
+        verticalLayoutDirection: ListView.BottomToTop
 
         function scrollToBottom() {
-            positionViewAtEnd()
-            // File attachments and images may resize after initial layout.
-            // Schedule a second scroll to catch late height changes.
-            Qt.callLater(positionViewAtEnd)
+            positionViewAtBeginning()  // index 0 = newest = visual bottom in BottomToTop
         }
 
-        onDraggingChanged: {
-            if (dragging) autoScrolling = false
-        }
-
-        onFlickStarted: autoScrolling = false
-
-        onContentHeightChanged: {
-            if (autoScrolling && count > 0)
-                Qt.callLater(positionViewAtEnd)
-        }
-
-        onMovingChanged: {
-            if (!moving) {
-                var atBottom = (contentY + height >= contentHeight - 40)
-                if (atBottom) autoScrolling = true
-            }
-        }
-
+        // History load: when user scrolls toward visual top (away from bottom)
         onContentYChanged: {
-            if (contentY < 200 && !autoScrolling && !messageModel.loading
+            if (contentY - 500 < originY && !messageModel.loading
                     && messageModel.hasMoreHistory && count > 0) {
                 messageModel.loadHistory()
             }
-        }
-
-        onCountChanged: {
-            if (count > previousCount && previousCount > 0 && !autoScrolling) {
-                // History prepended — keep current view position stable
-                var added = count - previousCount
-                positionViewAtIndex(added, ListView.Beginning)
-            }
-            previousCount = count
         }
 
         ScrollBar.vertical: ScrollBar {
@@ -688,14 +661,11 @@ Page {
         anchors.bottom: chatRoot.contentItem.bottom
         anchors.rightMargin: 20
         anchors.bottomMargin: 16
-        visible: !messageListView.autoScrolling && messageModel.count > 0
+        visible: !messageListView.atYEnd && messageModel.count > 0
         opacity: visible ? 1 : 0
         z: 50
         Behavior on opacity { NumberAnimation { duration: Theme.animFast } }
-        onClicked: {
-            messageListView.autoScrolling = true
-            messageListView.scrollToBottom()
-        }
+        onClicked: messageListView.scrollToBottom()
     }
 
     Connections {
@@ -703,11 +673,12 @@ Page {
         function onConversationTokenChanged() {
             chatRoot.closeThread()
             chatRoot.cancelPaste()
-            messageListView.autoScrolling = true
-            messageListView.previousCount = 0
+            // BottomToTop starts at visual bottom automatically — no scroll needed
         }
         function onNewMessagesAtEnd() {
-            if (messageListView.count > 0 && messageListView.autoScrolling)
+            // In BottomToTop, new messages at index 0 auto-scroll if atYEnd
+            // Only need explicit scroll if user scrolled away
+            if (messageListView.count > 0 && messageListView.atYEnd)
                 Qt.callLater(messageListView.scrollToBottom)
         }
         function onPasteReady(filePath, width, height) {
