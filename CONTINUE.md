@@ -47,17 +47,19 @@ Additional fixes in same commit (af0084f):
 
 ## Build
 
-### Home machine
 ```bash
-export PATH="/c/Qt/Tools/mingw1310_64/bin:/c/msys64/mingw64/bin:/c/Qt/Tools/CMake_64/bin:/c/Qt/Tools/Ninja:/c/Qt/6.8.2/mingw_64/bin:$PATH"
-rm -rf /c/build/talq && cmake -B /c/build/talq -S /c/Projects/talk-desktop-qt -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_PREFIX_PATH=C:/Qt/6.8.2/mingw_64 -DCMAKE_CXX_COMPILER=g++ -Wno-dev && cmake --build /c/build/talq --target talq
-mkdir -p /c/build/talq/gst-plugins && cp /c/msys64/mingw64/lib/gstreamer-1.0/libgst{coreelements,audioconvert,audioresample,autodetect,dtls,nice,opus,rtp,rtpmanager,srtp,wasapi,wasapi2,webrtc,app,level,vpx,openh264,videoconvertscale,winks,sctp,jpeg}.dll /c/build/talq/gst-plugins/
-QT_FORCE_STDERR_LOGGING=1 /c/build/talq/talq.exe
-```
+# Clean build
+taskkill.exe //IM talq.exe //F 2>/dev/null; sleep 3
+export PATH="/c/Qt/Tools/mingw1310_64/bin:/c/Qt/Tools/CMake_64/bin:/c/Qt/Tools/Ninja:$PATH"
+rm -rf /c/build/talq
+cmake -B C:/build/talq -S C:/src/talk-desktop-qt -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_PREFIX_PATH=C:/Qt/6.8.2/mingw_64 -DCMAKE_CXX_COMPILER=g++ -Wno-dev
+cmake --build C:/build/talq
 
-### Run (with DLLs deployed via windeployqt)
-```bash
-powershell.exe -Command 'Start-Process -FilePath "C:\build\talq\talq.exe" -WorkingDirectory "C:\build\talq"'
+# Deploy DLLs + launch (handles Qt/MSYS2 runtime conflict)
+bash scripts/deploy-dev.sh
+
+# Incremental build + run
+cmake --build C:/build/talq && bash scripts/deploy-dev.sh
 ```
 
 ### SSH
