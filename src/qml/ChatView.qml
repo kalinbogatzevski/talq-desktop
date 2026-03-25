@@ -433,9 +433,14 @@ Page {
             onTriggered: {
                 messageListView.programmaticScroll = true
                 messageListView.positionViewAtEnd()
+                // Second pass after delegates have been measured
                 Qt.callLater(function() {
                     messageListView.positionViewAtEnd()
-                    messageListView.programmaticScroll = false
+                    // Third pass — catches late delegate height changes (images, rich text)
+                    Qt.callLater(function() {
+                        messageListView.positionViewAtEnd()
+                        messageListView.programmaticScroll = false
+                    })
                 })
             }
         }
@@ -737,7 +742,7 @@ Page {
         }
         function onNewMessagesAtEnd() {
             if (messageListView.count > 0 && messageListView.autoScrolling)
-                Qt.callLater(messageListView.scrollToBottom)
+                messageListView.scrollToBottom()
         }
         function onPasteReady(filePath, width, height) {
             pasteBar.pendingPath = filePath
