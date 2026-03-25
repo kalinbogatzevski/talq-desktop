@@ -87,6 +87,7 @@ ItemDelegate {
             TqAvatar {
                 userId: participantUserId
                 displayName: convItem.displayName
+                token: convItem.token
                 size: Theme.avatarSize
                 showStatus: conversationType === 1
                 status: userStatus
@@ -185,6 +186,7 @@ ItemDelegate {
                 anchors.fill: parent
                 userId: participantUserId
                 displayName: convItem.displayName
+                token: convItem.token
                 size: 40
             }
 
