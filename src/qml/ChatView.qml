@@ -418,24 +418,50 @@ Page {
 
         property bool autoScrolling: true
         property int previousCount: 0
+        property bool programmaticScroll: false
+        property bool userHasScrolled: false  // true after first user interaction
 
         function scrollToBottom() {
-            positionViewAtEnd()
-            // File attachments and images may resize after initial layout.
-            // Schedule a second scroll to catch late height changes.
-            Qt.callLater(positionViewAtEnd)
+            // Coalesce multiple scrollToBottom calls into one frame
+            if (!scrollCoalesceTimer.running)
+                scrollCoalesceTimer.start()
+        }
+
+        Timer {
+            id: scrollCoalesceTimer
+            interval: 16  // one frame
+            onTriggered: {
+                messageListView.programmaticScroll = true
+                messageListView.positionViewAtEnd()
+                Qt.callLater(function() {
+                    messageListView.positionViewAtEnd()
+                    messageListView.programmaticScroll = false
+                })
+            }
+        }
+
+        Timer {
+            id: historyDebounce
+            interval: 500  // cooldown after each history load
         }
 
         onDraggingChanged: {
-            if (dragging) autoScrolling = false
+            if (dragging) {
+                autoScrolling = false
+                userHasScrolled = true
+            }
         }
 
-        onFlickStarted: autoScrolling = false
-
-        onContentHeightChanged: {
-            if (autoScrolling && count > 0)
-                Qt.callLater(positionViewAtEnd)
+        onFlickStarted: {
+            if (!programmaticScroll) {
+                autoScrolling = false
+                userHasScrolled = true
+            }
         }
+
+        // Removed onContentHeightChanged auto-scroll — it can cause infinite
+        // loops when positionViewAtEnd() triggers delegate loading which changes
+        // contentHeight again. Scrolling is handled by onNewMessagesAtEnd instead.
 
         onMovingChanged: {
             if (!moving) {
@@ -445,9 +471,11 @@ Page {
         }
 
         onContentYChanged: {
-            if (contentY < 200 && !autoScrolling && !messageModel.loading
-                    && messageModel.hasMoreHistory && count > 0) {
+            if (userHasScrolled && contentY < 200 && !autoScrolling
+                    && !messageModel.loading && messageModel.hasMoreHistory && count > 0
+                    && !historyDebounce.running) {
                 messageModel.loadHistory()
+                historyDebounce.start()
             }
         }
 
@@ -705,6 +733,7 @@ Page {
             chatRoot.cancelPaste()
             messageListView.autoScrolling = true
             messageListView.previousCount = 0
+            messageListView.userHasScrolled = false
         }
         function onNewMessagesAtEnd() {
             if (messageListView.count > 0 && messageListView.autoScrolling)
