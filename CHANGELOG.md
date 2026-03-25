@@ -1,5 +1,70 @@
 # Changelog
 
+## v0.9.1 (2026-03-25)
+
+### Room Avatars
+- **Group chat avatars** — conversations without a specific user (group chats, public rooms) now show the room avatar fetched via authenticated OCS API
+- **TqAvatar token fallback** — avatar component falls back to `image://avatar/room/{token}` when no userId is available
+
+### Build & Deploy
+- **deploy-dev.sh** — new script handles Qt + GStreamer DLL deployment after build, resolves MinGW runtime ABI conflict automatically
+- **Unified build paths** — all docs and scripts now use `/c/build/talq` and `/c/src/talk-desktop-qt` consistently
+
+### Fixes
+- Triple-pass scrollToBottom for first-load delegate sizing
+
+## v0.9.0 (2026-03-25)
+
+### Memory Leak & Scroll Fix
+- **Orphan network callbacks** — rapid conversation switching stacked duplicate refreshLatest() replies. Fixed: `m_refreshReply` member, cancelled on switch.
+- **loadHistory() cascade** — `onContentYChanged` re-triggered after each prepend, loading entire history into memory. Fixed: 500ms debounce + `userHasScrolled` guard.
+- **Unbounded FilePreviewProvider cache** — every preview (~3MB each) cached forever. Fixed: 50MB LRU eviction cap.
+- **refreshLatest() ordering** — partition missing messages into older (prepend) / newer (append)
+- **Persistent m_messageIds** — QSet replaces per-poll O(n) rebuild
+- **onLastCommonReadChanged** scoped to changed range (was emitting for ALL messages every 15s)
+- **scrollToBottom()** coalesced via 16ms timer
+- **AvatarProvider** memory cache capped at 200 entries
+
+### Video Calls — Compatibility
+- **NC Talk video compatibility** — media state broadcasting, auto-camera detection, dual call buttons (audio/video)
+- **SVG icon system** — geometric thin-stroke icons replace emoji throughout the app
+- **Call status breadcrumbs** — shows signaling progress during connection (joining → signaling → connecting → active)
+- **GStreamer plugin check** — disable call buttons when required plugins are missing
+- **mfvideosrc** — use Media Foundation camera source instead of ksvideosrc
+- **PLI keyframe fix** — request on src pad (not sink), periodic every 5s
+- **Add-transceiver fix** — prevents m=video 0 in renegotiation SDP (untested)
+- **Audio fallback chain** — autoaudiosrc/autoaudiosink with device selection override
+- **MCU video renegotiation** — re-request subscriber streams after video accepted
+
+### Fixes
+- Duplicate "Reply" in context menu removed
+- imageViewer.open() crash → downloadFile()
+- Scroll-up no longer blocked by aggressive auto-scroll
+
+## v0.8.3 (2026-03-23)
+
+### Camera & P2P
+- **Local camera preview** — PIP overlay in CallWindow via tee + appsink in PublishPipeline
+- **P2P call mode** — direct peer-to-peer WebRTC for 1:1 calls (PeerPipeline), MCU used for group calls
+- **Camera renegotiation** — enabling camera mid-call triggers proper SDP renegotiation
+
+### Fixes
+- Refresh latest messages from server after cache load (stale cache issue)
+- Signal disconnect and QPointer guard in pipeline callbacks
+
+## v0.8.2 (2026-03-22)
+
+### Warm Carbon Design System
+- **Phase 1: Theme foundation** — comprehensive dark/light theme with warm teal accent, standardized spacing/radius/font tokens
+- **Phase 2: Component library** — 5 reusable QML components: TqAvatar, TqIconButton, TqBadge, TqSwitch, TqComboBox
+- **Refactored UI** — replaced duplicated code across views with Tq* components
+
+### Fixes
+- Scroll-to-bottom catches late delegate height changes
+- Negative window position restore fixed
+- Reply bubble min width applied to other-person messages (was only own)
+- TqIconButton: icon→iconText (AbstractButton.icon is FINAL)
+
 ## v0.8.1 (2026-03-22)
 
 ### Settings Dialog
