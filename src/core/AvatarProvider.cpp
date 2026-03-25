@@ -88,7 +88,14 @@ void AvatarFetchResponse::fetchFromServer()
         return;
     }
 
-    auto *reply = m_api->getAbsoluteUrl("/index.php/avatar/" + m_userId + "/64");
+    // Room avatars need authenticated OCS API; user avatars are public
+    QNetworkReply *reply;
+    if (m_userId.startsWith("room/")) {
+        QString token = m_userId.mid(5);  // strip "room/" prefix
+        reply = m_api->getRaw("apps/spreed/api/v1/room/" + token + "/avatar");
+    } else {
+        reply = m_api->getAbsoluteUrl("/index.php/avatar/" + m_userId + "/64");
+    }
 
     connect(reply, &QNetworkReply::finished, this, [this, reply]() {
         // Remove from pending replies to avoid dangling pointer
