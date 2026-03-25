@@ -1,35 +1,23 @@
-# TalQ v0.9.0 Continue Prompt
+# TalQ v0.9.x Continue Prompt
 
-## CRITICAL: Chat history scroll/data bug
+## What was done (v0.9.0, 2026-03-25)
 
-### What happens
-- Open a conversation (e.g., Sumeshini) — shows messages, then jumps to wrong position
-- Latest messages exist in cache DB (verified: id 11825) but view shows ~id 11391
-- With FRESH cache (deleted DB), everything works correctly
+### Memory leak / scroll fix (RESOLVED)
+Root cause was a triple hit:
+1. **Untracked `refreshLatest()` reply** — rapid conversation switching stacked orphan network callbacks that injected duplicate messages and spawned duplicate pollers. Fixed: added `m_refreshReply` member, cancelled on conversation switch.
+2. **`loadHistory()` cascade** — `onContentYChanged` re-triggered after each prepend, loading entire history into memory. Fixed: 500ms debounce timer + `userHasScrolled` guard.
+3. **Unbounded `FilePreviewProvider` cache** — every preview (~3MB each at 1024x768 ARGB32) cached forever. Fixed: 50MB LRU eviction cap.
 
-### Root cause (identified, NOT fixed)
-1. Cache loads 49 messages in correct order (newest = 11825)
-2. `refreshLatest()` and `loadHistory()` run concurrently from cache callback
-3. `positionViewAtEnd()` fires but internal flick triggers `onFlickStarted` → `autoScrolling = false`
-4. View stuck in wrong position, can't scroll to actual bottom
-
-### What WORKS
-- Fresh cache (delete message_cache.db) → loads and scrolls correctly
-- Original v0.8.3 code works on office machine
-
-### What was tried and FAILED (ALL REVERTED to c826479)
-- BottomToTop ListView + reversed model (multiple proxy approaches)
-- Remove/modify onContentHeightChanged, onFlickStarted, atYEnd
-- Sequential loadHistory, delayed scrollToBottom, debounce timers
-- All caused worse issues — code reverted to c826479 (PLI fix commit)
-
-### How to fix (next session)
-1. Add logging to MessageListModel: print IDs after each operation
-2. Compare model state with server DB via SSH
-3. Fix data ordering/insertion at model level
-4. Consider proper BottomToTop with correct QAbstractProxyModel (study nheko/Quaternion source)
-
-## What was done (2026-03-24/25, home machine)
+Additional fixes in same commit (af0084f):
+- `refreshLatest()` ordering: partition missing messages into older (prepend) / newer (append)
+- Persistent `m_messageIds` QSet replaces per-poll O(n) rebuild
+- `onLastCommonReadChanged` scoped to changed range (was emitting for ALL messages every 15s)
+- `scrollToBottom()` coalesced via 16ms timer
+- `onContentHeightChanged` removed (infinite loop source)
+- `onFlickStarted` guarded against programmatic scrolls
+- `AvatarProvider` memory cache capped at 200 entries
+- Duplicate "Reply" in context menu removed
+- `imageViewer.open()` crash → `downloadFile()`
 
 ### Video call
 - PLI keyframe fix (src pad, periodic 5s timer)
@@ -40,18 +28,17 @@
 
 ### Chat
 - Newline rendering: \n → <br> in MessageBubble RichText
-- Cache/scroll investigation — root cause identified but not fixed
 
 ### Infrastructure
 - SSH to ncloud.123net.link via dev.netline.bg key (copied to Windows)
 - Server DB: mysql -u root nextcloud
 - Realtek driver downgraded 6.0.9929.1 → 6.0.9231.1
+- v0.9.0 release created on GitLab with both installers
 
-## Known bugs
+## Next: Stabilize video calls
 
 | Bug | Priority | Notes |
 |-----|----------|-------|
-| Chat scroll shows wrong messages | CRITICAL | Works with fresh cache |
 | m=video 0 in renegotiation SDP | HIGH | add-transceiver fix untested |
 | Phone doesn't hear audio (home) | MEDIUM | Mic broken, works on office |
 | Push notification not received | MEDIUM | hasCall race |
@@ -63,9 +50,14 @@
 ### Home machine
 ```bash
 export PATH="/c/Qt/Tools/mingw1310_64/bin:/c/msys64/mingw64/bin:/c/Qt/Tools/CMake_64/bin:/c/Qt/Tools/Ninja:/c/Qt/6.8.2/mingw_64/bin:$PATH"
-rm -rf /c/build/talq && cmake -B /c/build/talq -S /c/src/talk-desktop-qt -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_PREFIX_PATH=C:/Qt/6.8.2/mingw_64 -DCMAKE_CXX_COMPILER=g++ -Wno-dev && cmake --build /c/build/talq --target talq
-mkdir -p /c/build/talq/gst-plugins && cp /c/msys64/mingw64/lib/gstreamer-1.0/libgst{coreelements,audioconvert,audioresample,autodetect,dtls,nice,opus,rtp,rtpmanager,srtp,wasapi,wasapi2,webrtc,app,level,vpx,openh264,videoconvertscale,winks,sctp,jpeg,mediafoundation}.dll /c/build/talq/gst-plugins/
+rm -rf /c/build/talq && cmake -B /c/build/talq -S /c/Projects/talk-desktop-qt -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_PREFIX_PATH=C:/Qt/6.8.2/mingw_64 -DCMAKE_CXX_COMPILER=g++ -Wno-dev && cmake --build /c/build/talq --target talq
+mkdir -p /c/build/talq/gst-plugins && cp /c/msys64/mingw64/lib/gstreamer-1.0/libgst{coreelements,audioconvert,audioresample,autodetect,dtls,nice,opus,rtp,rtpmanager,srtp,wasapi,wasapi2,webrtc,app,level,vpx,openh264,videoconvertscale,winks,sctp,jpeg}.dll /c/build/talq/gst-plugins/
 QT_FORCE_STDERR_LOGGING=1 /c/build/talq/talq.exe
+```
+
+### Run (with DLLs deployed via windeployqt)
+```bash
+powershell.exe -Command 'Start-Process -FilePath "C:\build\talq\talq.exe" -WorkingDirectory "C:\build\talq"'
 ```
 
 ### SSH
