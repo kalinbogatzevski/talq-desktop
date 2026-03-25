@@ -31,8 +31,14 @@ bool PeerPipeline::start(const QString &stunServer, const QList<TurnServer> &tur
         return false;
     }
 
-    if (!stunServer.isEmpty())
-        g_object_set(m_webrtcbin, "stun-server", stunServer.toUtf8().constData(), nullptr);
+    if (!stunServer.isEmpty()) {
+        // Nextcloud returns "stun:host:port" but GStreamer needs "stun://host:port"
+        QString gstStun = stunServer;
+        if (gstStun.startsWith("stun:") && !gstStun.startsWith("stun://"))
+            gstStun.replace("stun:", "stun://");
+        qDebug() << "PeerPipeline: STUN server:" << gstStun;
+        g_object_set(m_webrtcbin, "stun-server", gstStun.toUtf8().constData(), nullptr);
+    }
     g_object_set(m_webrtcbin, "bundle-policy",
                  GST_WEBRTC_BUNDLE_POLICY_MAX_BUNDLE, nullptr);
 
@@ -53,11 +59,22 @@ bool PeerPipeline::start(const QString &stunServer, const QList<TurnServer> &tur
         }
     }
 
-    // Audio capture — wasapisrc with low-latency=false for Bluetooth compatibility
-    GstElement *audiosrc = gst_element_factory_make("wasapisrc", "peer-audiosrc");
+    // Audio capture — use audiotestsrc in test mode, else wasapisrc
+    bool testAudio = !qEnvironmentVariableIsEmpty("TALQ_TEST_AUDIO");
+    GstElement *audiosrc = nullptr;
+    if (testAudio) {
+        audiosrc = gst_element_factory_make("audiotestsrc", "peer-audiosrc");
+        if (audiosrc) {
+            g_object_set(audiosrc, "wave", 0 /* sine */, "freq", 440.0, "is-live", TRUE, nullptr);
+            qDebug() << "PeerPipeline: using audiotestsrc (test mode)";
+        }
+    }
+    if (!audiosrc) {
+        audiosrc = gst_element_factory_make("wasapisrc", "peer-audiosrc");
+        if (audiosrc) g_object_set(audiosrc, "low-latency", FALSE, nullptr);
+    }
     if (!audiosrc) audiosrc = gst_element_factory_make("directsoundsrc", "peer-audiosrc");
     if (!audiosrc) audiosrc = gst_element_factory_make("autoaudiosrc", "peer-audiosrc");
-    g_object_set(audiosrc, "low-latency", FALSE, nullptr);
     GstElement *audioconvert = gst_element_factory_make("audioconvert", nullptr);
     GstElement *audioresample = gst_element_factory_make("audioresample", nullptr);
     GstElement *capsfilter = gst_element_factory_make("capsfilter", nullptr);
@@ -515,14 +532,21 @@ void PeerPipeline::createAudioReceiveChain(GstPad *pad)
     GstElement *dec = gst_element_factory_make("opusdec", nullptr);
     GstElement *convert = gst_element_factory_make("audioconvert", nullptr);
     GstElement *resample = gst_element_factory_make("audioresample", nullptr);
-    GstElement *sink = gst_element_factory_make("autoaudiosink", nullptr);
+
+    bool testMode = !qEnvironmentVariableIsEmpty("TALQ_TEST_AUDIO");
+    GstElement *sink = nullptr;
+    if (testMode) {
+        sink = gst_element_factory_make("fakesink", nullptr);
+        if (sink) qDebug() << "PeerPipeline: using fakesink for audio receive (test mode)";
+    }
+    if (!sink) sink = gst_element_factory_make("autoaudiosink", nullptr);
 
     if (!depay || !dec || !convert || !resample || !sink) {
         qWarning() << "PeerPipeline: failed to create audio receive chain";
         return;
     }
 
-    if (!m_audioOutputDeviceId.isEmpty()) {
+    if (!testMode && !m_audioOutputDeviceId.isEmpty()) {
         g_object_set(sink, "device", m_audioOutputDeviceId.toUtf8().constData(), nullptr);
     }
 

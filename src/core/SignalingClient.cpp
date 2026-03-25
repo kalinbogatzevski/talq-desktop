@@ -115,7 +115,7 @@ void SignalingClient::onTextMessage(const QString &msg)
     QJsonObject obj = doc.object();
     QString type = obj["type"].toString();
 
-    // Debug: log all incoming WebSocket messages (truncated)
+    // Debug: log all incoming WebSocket messages
     if (type != "hello" && type != "welcome")
         qDebug() << "Signaling: WS <<" << type << msg.left(200);
 
@@ -174,7 +174,16 @@ void SignalingClient::onTextMessage(const QString &msg)
             return;
         }
         if (msgType == "candidate") {
-            QJsonObject candidate = msgData["payload"].toObject();
+            QJsonObject payload = msgData["payload"].toObject();
+            // MCU (Janus) sends: payload = {candidate: {candidate: "...", sdpMLineIndex: N}}
+            // P2P client sends: payload = {candidate: {candidate: "...", sdpMLineIndex: N}}
+            // Extract the inner candidate object if double-nested
+            QJsonObject candidate;
+            if (payload.contains("candidate") && payload["candidate"].isObject()) {
+                candidate = payload["candidate"].toObject();
+            } else {
+                candidate = payload;
+            }
             emit candidateReceived(senderSessionId, candidate);
             return;
         }
