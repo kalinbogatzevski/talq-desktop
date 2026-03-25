@@ -436,7 +436,6 @@ Item {
                 // ── Action items ──
                 Repeater {
                     model: [
-                        { icon: "\u21A9", label: "Reply", action: "reply", ownerOnly: false },
                         { icon: "\u2B07", label: "Download", action: "download", ownerOnly: false, fileOnly: true },
                         { icon: "\u2601", label: "Open in Nextcloud", action: "openincloud", ownerOnly: false, fileOnly: true },
                         { icon: "\uD83D\uDCCB", label: "Copy", action: "copy", ownerOnly: false, fileOnly: false },
@@ -877,7 +876,7 @@ Item {
                         Label { text: "\uD83D\uDCCE"; font.pixelSize: 16 }
                         Label { text: fileName; font.pixelSize: Theme.fontSizeSmall; color: "white"; elide: Text.ElideMiddle; Layout.fillWidth: true }
                     }
-                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: imageViewer.open(parent.source) }
+                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: messageModel.downloadFile(fileId, fileName) }
                 }
 
                 // Message text — selectable
