@@ -25,7 +25,7 @@ export PATH="/c/Qt/Tools/mingw1310_64/bin:/c/Qt/Tools/CMake_64/bin:/c/Qt/Tools/N
 cmake --build C:/build/talq && bash scripts/deploy-dev.sh
 ```
 
-**Why deploy-dev.sh exists**: Qt (MinGW 13.1) and GStreamer (MSYS2 MinGW) both ship `libstdc++-6.dll` with incompatible ABIs. The script copies all DLLs into the build dir and forces Qt's runtime last, so the correct version wins regardless of PATH.
+**Why deploy-dev.sh exists**: Qt (MinGW 13.1) and GStreamer (MSYS2 MinGW) both ship `libstdc++-6.dll`. MSYS2's version works with both; Qt's causes `0xC0000139`. The script copies all DLLs into the build dir with MSYS2's runtime, so it launches cleanly regardless of PATH.
 
 **Junction setup** (if not exists):
 ```bash
