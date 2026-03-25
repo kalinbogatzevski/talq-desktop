@@ -133,3 +133,28 @@ if(WIN32)
 endif()
 
 install(TARGETS talq RUNTIME DESTINATION bin)
+
+# ─── Call test harness (no GUI, no QML) ────────────────────────────────────────
+qt_add_executable(talq-call-test
+    tests/call_test.cpp
+    src/core/ApiClient.cpp
+    src/core/SignalingClient.cpp
+    src/core/PeerPipeline.cpp
+    src/core/PublishPipeline.cpp
+    src/core/SubscribePipeline.cpp
+    src/core/VideoFrameProvider.cpp
+    src/core/CallSignaling.cpp
+)
+target_include_directories(talq-call-test PRIVATE src ${GST_INCLUDE_DIRS})
+target_link_directories(talq-call-test PRIVATE ${GST_LIBRARY_DIRS})
+target_link_libraries(talq-call-test PRIVATE
+    Qt6::Core
+    Qt6::Gui
+    Qt6::Network
+    Qt6::WebSockets
+    Qt6::Multimedia
+    ${GST_LIBRARIES}
+)
+if(WIN32)
+    target_link_libraries(talq-call-test PRIVATE credui advapi32)
+endif()
