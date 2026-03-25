@@ -64,16 +64,19 @@ MessageListModel::MessageListModel(ApiClient *api, MessageCache *cache, QObject 
             if (!filtered.isEmpty()) {
                 beginInsertRows({}, 0, filtered.size() - 1);
                 m_messages = filtered;
+                for (const auto &m : filtered)
+                    m_messageIds.insert(m.id);
                 endInsertRows();
                 m_oldestMessageId = m_messages.first().id;
                 emit newMessagesAtEnd();
             }
         }
 
-        // Refresh latest messages from server (fills gaps between cache and live)
+        // Refresh latest messages from server (fills gaps between cache and live).
+        // Do NOT call loadHistory() here — it races with refreshLatest() and
+        // prepending older messages while the view is still settling causes
+        // scroll position corruption. History loads on-demand when user scrolls up.
         refreshLatest();
-        // Also fetch older history in background
-        loadHistory();
     });
 }
 
@@ -197,10 +200,17 @@ void MessageListModel::setConversationToken(const QString &token)
 
     m_poller->stop();
 
-    // Cancel any in-flight history request (disconnect first to prevent re-entry)
+    // Cancel any in-flight requests (disconnect first to prevent re-entry)
     if (m_historyReply) {
         auto *oldReply = m_historyReply;
         m_historyReply = nullptr;
+        oldReply->disconnect(this);
+        oldReply->abort();
+        oldReply->deleteLater();
+    }
+    if (m_refreshReply) {
+        auto *oldReply = m_refreshReply;
+        m_refreshReply = nullptr;
         oldReply->disconnect(this);
         oldReply->abort();
         oldReply->deleteLater();
@@ -218,6 +228,7 @@ void MessageListModel::setConversationToken(const QString &token)
     if (!m_messages.isEmpty()) {
         beginRemoveRows({}, 0, m_messages.size() - 1);
         m_messages.clear();
+        m_messageIds.clear();
         endRemoveRows();
     }
 
@@ -245,6 +256,7 @@ void MessageListModel::setThreadId(int id)
 
     beginResetModel();
     m_messages.clear();
+    m_messageIds.clear();
     endResetModel();
 
     m_threadId = id;
@@ -269,6 +281,7 @@ void MessageListModel::setHideThreadMessages(bool hide)
         m_poller->stop();
         beginResetModel();
         m_messages.clear();
+        m_messageIds.clear();
         endResetModel();
         m_oldestMessageId = 0;
         loadHistory();
@@ -333,14 +346,10 @@ void MessageListModel::loadHistory()
         }
 
         // API returns newest-first; reverse to oldest-first
-        QSet<int> existingIds;
-        for (const auto &existing : m_messages)
-            existingIds.insert(existing.id);
-
         QVector<Message> olderMsgs;
         for (int i = data.size() - 1; i >= 0; --i) {
             Message m = Message::fromJson(data[i].toObject());
-            if (existingIds.contains(m.id) || m.isReactionMessage() || m.isCallJoinLeave())
+            if (m_messageIds.contains(m.id) || m.isReactionMessage() || m.isCallJoinLeave())
                 continue;
             if (m_hideThreadMessages && m.threadId > 0)
                 continue;
@@ -348,19 +357,26 @@ void MessageListModel::loadHistory()
         }
 
         if (!olderMsgs.isEmpty()) {
+            // Save to cache BEFORE moving
+            m_cache->saveMessages(m_token, olderMsgs);
+
+            // Update persistent ID set
+            for (const auto &m : olderMsgs)
+                m_messageIds.insert(m.id);
+
             // Prepend older messages at the beginning (single insert, not O(n^2) prepend loop)
             beginInsertRows({}, 0, olderMsgs.size() - 1);
             olderMsgs.append(std::move(m_messages));
             m_messages = std::move(olderMsgs);
             endInsertRows();
-
-            m_cache->saveMessages(m_token, olderMsgs);
         }
 
         if (!m_messages.isEmpty())
             m_oldestMessageId = m_messages.first().id;
 
-        emit newMessagesAtEnd();
+        // Don't emit newMessagesAtEnd() — these are OLDER messages prepended
+        // at the top, not new messages at the bottom. Scrolling to bottom here
+        // would jump the user away from what they were reading.
         startPoller();
     });
 }
@@ -387,25 +403,30 @@ void MessageListModel::refreshLatest()
 
     QString currentToken = m_token;
     auto *reply = m_api->getRaw("apps/spreed/api/v1/chat/" + m_token, params);
+    m_refreshReply = reply;
 
     connect(reply, &QNetworkReply::finished, this, [this, reply, currentToken]() {
+        if (m_refreshReply == reply) m_refreshReply = nullptr;
         reply->deleteLater();
         if (m_token != currentToken) return;
 
-        if (reply->error() != QNetworkReply::NoError) return;
+        if (reply->error() != QNetworkReply::NoError) {
+            startPoller();
+            return;
+        }
 
         QByteArray body = reply->readAll();
         QJsonDocument doc = QJsonDocument::fromJson(body);
         QJsonArray data = doc.object()["ocs"].toObject()["data"].toArray();
-        if (data.isEmpty()) return;
-
-        // Build set of existing message IDs for quick lookup
-        QSet<int> existingIds;
-        QHash<int, int> idToIndex;
-        for (int i = 0; i < m_messages.size(); i++) {
-            existingIds.insert(m_messages[i].id);
-            idToIndex[m_messages[i].id] = i;
+        if (data.isEmpty()) {
+            startPoller();
+            return;
         }
+
+        // Build index for existing messages (for edit detection)
+        QHash<int, int> idToIndex;
+        for (int i = 0; i < m_messages.size(); i++)
+            idToIndex[m_messages[i].id] = i;
 
         // API returns newest-first; process to find missing and edited messages
         QVector<Message> missing;
@@ -414,8 +435,7 @@ void MessageListModel::refreshLatest()
             if (m.isReactionMessage() || m.isCallJoinLeave()) continue;
             if (m_hideThreadMessages && m.threadId > 0) continue;
 
-            if (!existingIds.contains(m.id)) {
-                // Missing message — needs to be inserted
+            if (!m_messageIds.contains(m.id)) {
                 missing.append(m);
             } else {
                 // Existing message — check if edited (message text changed)
@@ -434,14 +454,41 @@ void MessageListModel::refreshLatest()
                 return a.id < b.id;
             });
 
-            // Append at the end (they're newer than what we had)
-            int first = m_messages.size();
-            beginInsertRows({}, first, first + missing.size() - 1);
-            m_messages.append(missing);
-            endInsertRows();
+            // Partition into older-than-current (prepend) and newer-than-current (append)
+            int firstId = m_messages.isEmpty() ? INT_MAX : m_messages.first().id;
+            QVector<Message> older, newer;
+            for (const auto &m : missing) {
+                if (m.id < firstId)
+                    older.append(m);
+                else
+                    newer.append(m);
+            }
 
-            m_cache->saveMessages(m_token, missing);
-            emit newMessagesAtEnd();
+            // Prepend older messages at the beginning
+            if (!older.isEmpty()) {
+                m_cache->saveMessages(m_token, older);
+                beginInsertRows({}, 0, older.size() - 1);
+                older.append(std::move(m_messages));
+                m_messages = std::move(older);
+                endInsertRows();
+            }
+
+            // Append newer messages at the end
+            if (!newer.isEmpty()) {
+                int first = m_messages.size();
+                beginInsertRows({}, first, first + newer.size() - 1);
+                m_messages.append(newer);
+                endInsertRows();
+                m_cache->saveMessages(m_token, newer);
+                emit newMessagesAtEnd();
+            }
+
+            // Update persistent ID set
+            for (const auto &m : missing)
+                m_messageIds.insert(m.id);
+
+            if (!m_messages.isEmpty())
+                m_oldestMessageId = m_messages.first().id;
 
             qDebug() << "MessageListModel: refreshLatest found" << missing.size() << "missing messages";
         }
@@ -456,14 +503,10 @@ void MessageListModel::onMessagesReceived(const QJsonArray &messages)
 {
     if (messages.isEmpty()) return;
 
-    QSet<int> existingIds;
-    for (const auto &existing : m_messages)
-        existingIds.insert(existing.id);
-
     QVector<Message> newMsgs;
     for (const auto &val : messages) {
         Message m = Message::fromJson(val.toObject());
-        if (existingIds.contains(m.id) || m.isReactionMessage() || m.isCallJoinLeave())
+        if (m_messageIds.contains(m.id) || m.isReactionMessage() || m.isCallJoinLeave())
             continue;
         if (m_hideThreadMessages && m.threadId > 0)
             continue;
@@ -476,6 +519,8 @@ void MessageListModel::onMessagesReceived(const QJsonArray &messages)
     int first = m_messages.size();
     beginInsertRows({}, first, first + newMsgs.size() - 1);
     m_messages.append(newMsgs);
+    for (const auto &m : newMsgs)
+        m_messageIds.insert(m.id);
     endInsertRows();
 
     m_cache->saveMessages(m_token, newMsgs);
@@ -793,11 +838,20 @@ void MessageListModel::onLastCommonReadChanged(int messageId)
     if (messageId <= m_lastCommonRead)
         return;
 
+    int oldRead = m_lastCommonRead;
     m_lastCommonRead = messageId;
 
-    if (!m_messages.isEmpty()) {
-        emit dataChanged(index(0), index(m_messages.size() - 1), {IsReadRole});
+    // Only emit dataChanged for messages that actually changed status
+    int first = -1, last = -1;
+    for (int i = 0; i < m_messages.size(); ++i) {
+        int id = m_messages[i].id;
+        if (id > oldRead && id <= messageId) {
+            if (first < 0) first = i;
+            last = i;
+        }
     }
+    if (first >= 0)
+        emit dataChanged(index(first), index(last), {IsReadRole});
 }
 
 void MessageListModel::downloadFile(int fileId, const QString &fileName)

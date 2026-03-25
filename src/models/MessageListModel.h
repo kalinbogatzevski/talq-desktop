@@ -118,6 +118,7 @@ private:
     MessageCache *m_cache;
     MessagePoller *m_poller;
     QVector<Message> m_messages;
+    QSet<int> m_messageIds;  // persistent set for O(1) dedup — updated incrementally
     QString m_token;
     bool m_loading = false;
     bool m_hasMoreHistory = true;
@@ -128,5 +129,6 @@ private:
     bool m_connected = true;  // assume connected until proven otherwise
     double m_uploadProgress = -1;
     QString m_uploadFileName;
-    QNetworkReply *m_historyReply = nullptr;  // cancel on chat switch
+    QNetworkReply *m_historyReply = nullptr;   // cancel on chat switch
+    QNetworkReply *m_refreshReply = nullptr;   // cancel on chat switch
 };

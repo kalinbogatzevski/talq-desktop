@@ -27,7 +27,8 @@ class AvatarFetchResponse : public QQuickImageResponse
 public:
     AvatarFetchResponse(const QString &userId, const QSize &requestedSize,
                         ApiClient *api, const QString &cachePath,
-                        QHash<QString, QImage> &memCache);
+                        QHash<QString, QImage> &memCache,
+                        QList<QString> &memCacheOrder);
     QQuickTextureFactory *textureFactory() const override;
 
 private:
@@ -42,6 +43,7 @@ private:
     QString m_cachePath;
     QImage m_image;
     QHash<QString, QImage> &m_memCache;
+    QList<QString> &m_memCacheOrder;
 };
 
 /**
@@ -56,9 +58,13 @@ public:
         const QString &id, const QSize &requestedSize) override;
 
     int cacheCount() const { return m_memCache.size(); }
+    void evictIfNeeded();
+
+    static constexpr int MAX_MEM_CACHE = 200;
 
 private:
     ApiClient *m_api;
     QString m_cachePath;
     QHash<QString, QImage> m_memCache;
+    QList<QString> m_memCacheOrder;  // insertion order for LRU eviction
 };

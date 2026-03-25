@@ -26,7 +26,7 @@ QQuickImageResponse *AvatarProvider::requestImageResponse(
         return new AvatarCachedResponse(m_memCache[id]);
     }
 
-    return new AvatarFetchResponse(id, requestedSize, m_api, m_cachePath, m_memCache);
+    return new AvatarFetchResponse(id, requestedSize, m_api, m_cachePath, m_memCache, m_memCacheOrder);
 }
 
 // --- AvatarCachedResponse ---
@@ -46,12 +46,14 @@ QQuickTextureFactory *AvatarCachedResponse::textureFactory() const
 
 AvatarFetchResponse::AvatarFetchResponse(const QString &userId, const QSize &requestedSize,
                                          ApiClient *api, const QString &cachePath,
-                                         QHash<QString, QImage> &memCache)
+                                         QHash<QString, QImage> &memCache,
+                                         QList<QString> &memCacheOrder)
     : m_userId(userId)
     , m_requestedSize(requestedSize)
     , m_api(api)
     , m_cachePath(cachePath)
     , m_memCache(memCache)
+    , m_memCacheOrder(memCacheOrder)
 {
     // Defer the work to next event loop iteration to avoid blocking the caller
     QMetaObject::invokeMethod(this, &AvatarFetchResponse::loadFromDisk, Qt::QueuedConnection);
@@ -124,7 +126,15 @@ void AvatarFetchResponse::handleImage(const QImage &image)
     m_image = cropToCircle(image, size);
 
     // Store in memory cache for instant access next time
+    if (!m_memCache.contains(m_userId))
+        m_memCacheOrder.append(m_userId);
     m_memCache[m_userId] = m_image;
+
+    // Evict oldest entries if over limit
+    while (m_memCache.size() > AvatarProvider::MAX_MEM_CACHE && !m_memCacheOrder.isEmpty()) {
+        QString evictId = m_memCacheOrder.takeFirst();
+        m_memCache.remove(evictId);
+    }
 
     emit finished();
 }

@@ -6,7 +6,8 @@
 // ─── Response ───
 
 FilePreviewResponse::FilePreviewResponse(int fileId, const QSize &requestedSize,
-                                         ApiClient *api, QHash<int, QImage> &cache)
+                                         ApiClient *api, QHash<int, QImage> &cache,
+                                         FilePreviewProvider *provider)
 {
     // Check memory cache
     if (cache.contains(fileId)) {
@@ -26,7 +27,7 @@ FilePreviewResponse::FilePreviewResponse(int fileId, const QSize &requestedSize,
 
     auto *reply = api->getAbsoluteUrl(path);
 
-    connect(reply, &QNetworkReply::finished, this, [this, reply, fileId, &cache]() {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, fileId, &cache, provider]() {
         reply->deleteLater();
 
         if (reply->error() == QNetworkReply::NoError) {
@@ -34,7 +35,11 @@ FilePreviewResponse::FilePreviewResponse(int fileId, const QSize &requestedSize,
             if (img.loadFromData(reply->readAll())) {
                 m_image = img;
                 cache[fileId] = img;
-                qDebug() << "FilePreview: loaded fileId" << fileId << "size:" << img.size();
+                provider->m_cacheOrder.append(fileId);
+                provider->m_cachedBytes += img.sizeInBytes();
+                provider->evictIfNeeded();
+                qDebug() << "FilePreview: loaded fileId" << fileId << "size:" << img.size()
+                         << "cache:" << provider->m_cachedBytes / 1024 / 1024 << "MB";
             }
         } else {
             qDebug() << "Preview fetch failed for fileId" << fileId << reply->errorString();
@@ -59,13 +64,22 @@ QQuickImageResponse *FilePreviewProvider::requestImageResponse(
     const QString &id, const QSize &requestedSize)
 {
     int fileId = id.toInt();
-    return new FilePreviewResponse(fileId, requestedSize, m_api, m_cache);
+    return new FilePreviewResponse(fileId, requestedSize, m_api, m_cache, this);
 }
 
 qint64 FilePreviewProvider::cacheBytes() const
 {
-    qint64 total = 0;
-    for (auto it = m_cache.cbegin(); it != m_cache.cend(); ++it)
-        total += it.value().sizeInBytes();
-    return total;
+    return m_cachedBytes;
+}
+
+void FilePreviewProvider::evictIfNeeded()
+{
+    while (m_cachedBytes > MAX_CACHE_BYTES && !m_cacheOrder.isEmpty()) {
+        int evictId = m_cacheOrder.takeFirst();
+        auto it = m_cache.find(evictId);
+        if (it != m_cache.end()) {
+            m_cachedBytes -= it.value().sizeInBytes();
+            m_cache.erase(it);
+        }
+    }
 }
