@@ -8,17 +8,24 @@
 
 **Build commands** (Git Bash):
 ```bash
-# Kill existing, clean build, launch
+# Kill existing, clean build
 taskkill.exe //IM talq.exe //F 2>/dev/null; sleep 3
 export PATH="/c/Qt/Tools/mingw1310_64/bin:/c/Qt/Tools/CMake_64/bin:/c/Qt/Tools/Ninja:$PATH"
-rm -rf /c/build/talk-qt
-cmake -B C:/build/talk-qt -S C:/src/talk-desktop-qt -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_PREFIX_PATH=C:/Qt/6.8.2/mingw_64 -DCMAKE_CXX_COMPILER=g++ -Wno-dev
-cmake --build C:/build/talk-qt
+rm -rf /c/build/talq
+cmake -B C:/build/talq -S C:/src/talk-desktop-qt -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_PREFIX_PATH=C:/Qt/6.8.2/mingw_64 -DCMAKE_CXX_COMPILER=g++ -Wno-dev
+cmake --build C:/build/talq
 
-# Run
-export PATH="/c/Qt/6.8.2/mingw_64/bin:/c/Qt/Tools/mingw1310_64/bin:$PATH"
-QT_FORCE_STDERR_LOGGING=1 /c/build/talk-qt/talq.exe
+# Deploy DLLs + launch (handles Qt/MSYS2 MinGW runtime conflict)
+bash scripts/deploy-dev.sh
 ```
+
+**Incremental build + run:**
+```bash
+export PATH="/c/Qt/Tools/mingw1310_64/bin:/c/Qt/Tools/CMake_64/bin:/c/Qt/Tools/Ninja:$PATH"
+cmake --build C:/build/talq && bash scripts/deploy-dev.sh
+```
+
+**Why deploy-dev.sh exists**: Qt (MinGW 13.1) and GStreamer (MSYS2 MinGW) both ship `libstdc++-6.dll` with incompatible ABIs. The script copies all DLLs into the build dir and forces Qt's runtime last, so the correct version wins regardless of PATH.
 
 **Junction setup** (if not exists):
 ```bash
@@ -27,7 +34,7 @@ echo 'mklink /J C:\src\talk-desktop-qt "C:\Users\bogat\Desktop\My Projects\talk-
 
 **Kill before rebuild**: `taskkill.exe //IM talq.exe //F` — MUST wait 3-5s after kill before linking, or get "Permission denied"
 
-**QML changes not detected?** The junction can cause stale build detection. Fix: `rm -rf /c/build/talk-qt` and do a clean build.
+**QML changes not detected?** The junction can cause stale build detection. Fix: `rm -rf /c/build/talq` and do a clean build.
 
 ## Key Pitfalls (hard-won lessons)
 
