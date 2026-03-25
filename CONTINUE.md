@@ -1,92 +1,79 @@
 # TalQ v0.9.0 Continue Prompt
 
-## CRITICAL BUG: Chat history shows wrong/old messages
+## CRITICAL: Chat history scroll/data bug
 
-### Symptom
-- Open Sumeshini's conversation — shows "thats valid" as last message
-- Server DB has message id 11813 "#55968 - no sub task..." as latest
-- Cache has 49 messages up to id 11813 (correct)
-- But the model displays older messages, not the latest ones
+### What happens
+- Open a conversation (e.g., Sumeshini) — shows messages, then jumps to wrong position
+- Latest messages exist in cache DB (verified: id 11825) but view shows ~id 11391
+- With FRESH cache (deleted DB), everything works correctly
 
-### Root cause (not yet fixed)
-The `refreshLatest()` function in `MessageListModel.cpp` has a data merge bug:
-- Cache loads 49 messages into the model
-- `refreshLatest()` fetches 50 newest from server
-- The merge logic fails — either duplicates, overwrites, or misordering
-- Was observed running 6x in a row adding 29 "missing" messages each time
-- The `loadHistory()` callback also calls `emit newMessagesAtEnd()` after prepending OLD messages at position 0
+### Root cause (identified, NOT fixed)
+1. Cache loads 49 messages in correct order (newest = 11825)
+2. `refreshLatest()` and `loadHistory()` run concurrently from cache callback
+3. `positionViewAtEnd()` fires but internal flick triggers `onFlickStarted` → `autoScrolling = false`
+4. View stuck in wrong position, can't scroll to actual bottom
 
-### What NOT to do
-- Do NOT try to fix this by changing scroll logic in ChatView.qml
-- Do NOT remove `emit newMessagesAtEnd()` from the model — it breaks data loading
-- The scroll and data issues are separate problems that were entangled today
+### What WORKS
+- Fresh cache (delete message_cache.db) → loads and scrolls correctly
+- Original v0.8.3 code works on office machine
 
-### How to debug
-1. SSH to server: `ssh -i ~/.ssh/id_ed25519 root@ncloud.123net.link`
-2. Query actual messages: `mysql -u root nextcloud -e "SELECT id, actor_id, SUBSTRING(message,1,80) FROM oc_comments c JOIN oc_talk_rooms r ON c.object_id=CAST(r.id AS CHAR) WHERE r.token='4pv7k2fj' AND c.object_type='chat' ORDER BY c.id DESC LIMIT 10"`
-3. Compare with cache: `sqlite3 C:/Users/bogat/AppData/Roaming/TalQ/TalQ/message_cache.db "SELECT message_id FROM messages WHERE token='4pv7k2fj' ORDER BY message_id DESC LIMIT 10"`
-4. Add logging to `refreshLatest()` to see what IDs it fetches and what it considers "missing"
+### What was tried and FAILED (ALL REVERTED to c826479)
+- BottomToTop ListView + reversed model (multiple proxy approaches)
+- Remove/modify onContentHeightChanged, onFlickStarted, atYEnd
+- Sequential loadHistory, delayed scrollToBottom, debounce timers
+- All caused worse issues — code reverted to c826479 (PLI fix commit)
 
-### Scroll management (separate issue, not fixed)
-- `onContentHeightChanged` with `positionViewAtEnd` causes snap-back when user scrolls up
-- Qt's recommended approach is `BottomToTop` layout (official chat tutorial)
-- All incremental patches attempted today were reverted — back to c826479 state
-- Needs a proper redesign, possibly BottomToTop with newest-first model
+### How to fix (next session)
+1. Add logging to MessageListModel: print IDs after each operation
+2. Compare model state with server DB via SSH
+3. Fix data ordering/insertion at model level
+4. Consider proper BottomToTop with correct QAbstractProxyModel (study nheko/Quaternion source)
 
-## What was done (2026-03-24, home machine)
+## What was done (2026-03-24/25, home machine)
 
-### Video call improvements
-- PLI keyframe direction fix (src pad not sink) + periodic 5s PLI timer
-- Video included in initial PublishPipeline (no mid-session renegotiation)
-- Camera error: give up immediately instead of retry-flooding signaling
-- SSH access to ncloud.123net.link server established (via dev.netline.bg key)
-- SSH key unified across machines (Windows now uses same key as dev server)
+### Video call
+- PLI keyframe fix (src pad, periodic 5s timer)
+- Video in initial PublishPipeline (withVideo param) — untested
+- Camera error: give up immediately, no retry flood
+- mfvideosrc with ksvideosrc fallback
+- NC Talk signaling study: browser uses forceReconnect, not renegotiation
 
-### Scroll attempts (all reverted)
-- Tried: remove onContentHeightChanged, atYEnd tracking, debounced scroll, contentY direct manipulation, model signal changes
-- All caused worse issues (missing data, wrong position, empty history)
-- Reverted to c826479 state
+### Chat
+- Newline rendering: \n → <br> in MessageBubble RichText
+- Cache/scroll investigation — root cause identified but not fixed
 
-## What was done (2026-03-24, office session)
-- Video SDP fix: add-transceiver approach for m=video (untested on home machine)
-- Audio tested: Ilko heard Kalin (office machine calls work)
-- Camera preview leaky queue fix
-- 20 missing DLLs added to installer
-- mfvideosrc instead of ksvideosrc
+### Infrastructure
+- SSH to ncloud.123net.link via dev.netline.bg key (copied to Windows)
+- Server DB: mysql -u root nextcloud
+- Realtek driver downgraded 6.0.9929.1 → 6.0.9231.1
 
 ## Known bugs
 
 | Bug | Priority | Notes |
 |-----|----------|-------|
-| Chat shows wrong/old messages | CRITICAL | refreshLatest merge bug |
-| Scroll snaps back on scroll-up | HIGH | onContentHeightChanged too aggressive |
+| Chat scroll shows wrong messages | CRITICAL | Works with fresh cache |
 | m=video 0 in renegotiation SDP | HIGH | add-transceiver fix untested |
-| Phone doesn't hear audio (home) | MEDIUM | Built-in mic broken, works on office |
-| "Not allowed to request offer" | MEDIUM | Race condition |
-| Push notification not received | MEDIUM | hasCall already true on app start |
-| Call not ending when phone hangs up | LOW | participantLeftCall not detected |
+| Phone doesn't hear audio (home) | MEDIUM | Mic broken, works on office |
+| Push notification not received | MEDIUM | hasCall race |
+| Call not ending on remote hangup | LOW | participantLeftCall |
+| Window height grows on restore | LOW | Unsigned int wrapping |
 
-## Build (home machine)
+## Build
+
+### Home machine
 ```bash
 export PATH="/c/Qt/Tools/mingw1310_64/bin:/c/msys64/mingw64/bin:/c/Qt/Tools/CMake_64/bin:/c/Qt/Tools/Ninja:/c/Qt/6.8.2/mingw_64/bin:$PATH"
-rm -rf /c/build/talq
-cmake -B /c/build/talq -S /c/src/talk-desktop-qt -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_PREFIX_PATH=C:/Qt/6.8.2/mingw_64 -DCMAKE_CXX_COMPILER=g++ -Wno-dev
-cmake --build /c/build/talq --target talq
+rm -rf /c/build/talq && cmake -B /c/build/talq -S /c/src/talk-desktop-qt -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_PREFIX_PATH=C:/Qt/6.8.2/mingw_64 -DCMAKE_CXX_COMPILER=g++ -Wno-dev && cmake --build /c/build/talq --target talq
 mkdir -p /c/build/talq/gst-plugins && cp /c/msys64/mingw64/lib/gstreamer-1.0/libgst{coreelements,audioconvert,audioresample,autodetect,dtls,nice,opus,rtp,rtpmanager,srtp,wasapi,wasapi2,webrtc,app,level,vpx,openh264,videoconvertscale,winks,sctp,jpeg,mediafoundation}.dll /c/build/talq/gst-plugins/
 QT_FORCE_STDERR_LOGGING=1 /c/build/talq/talq.exe
 ```
 
-## SSH access
+### SSH
 ```bash
 ssh -i ~/.ssh/id_ed25519 root@ncloud.123net.link
-# DB: mysql -u root nextcloud
-# NC config: /var/www/ncloud.123net.link/config/config.php
-# HPB: docker logs talk-hpb_signaling_1
-# Push: journalctl -u notify_push
+mysql -u root nextcloud -e "SELECT id, SUBSTRING(message,1,80) FROM oc_comments c JOIN oc_talk_rooms r ON c.object_id=CAST(r.id AS CHAR) WHERE r.token='4pv7k2fj' AND c.object_type='chat' ORDER BY c.id DESC LIMIT 10"
 ```
 
 ## Test user
 - test-talq / talQing123@ on https://ncloud.123net.link
-- Sumeshini token: 4pv7k2fj
-- Rakesh token: bv86wo4c
-- Test TalQ token: u2f3gbu4
+- Sumeshini: 4pv7k2fj | Rakesh: bv86wo4c
