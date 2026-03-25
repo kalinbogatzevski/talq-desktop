@@ -66,18 +66,20 @@ for p in "${GST_PLUGINS[@]}"; do
     [ -f "$src" ] && cp "$src" "$BUILD_DIR/gst-plugins/"
 done
 
-# Step 4: Force Qt's MinGW runtime DLLs LAST (overwrite MSYS2's copies)
-# This is the critical step — MSYS2 GStreamer DLLs pull in MSYS2's libstdc++
-# which is ABI-incompatible with Qt's MinGW 13.1. Qt's copies must win.
-echo "[4/4] Forcing Qt MinGW runtime DLLs (fixing ABI conflict)..."
-cp "$MINGW_DIR/bin/libstdc++-6.dll"       "$BUILD_DIR/"
-cp "$MINGW_DIR/bin/libgcc_s_seh-1.dll"    "$BUILD_DIR/"
-cp "$MINGW_DIR/bin/libwinpthread-1.dll"   "$BUILD_DIR/"
+# Step 4: Copy MSYS2's MinGW runtime DLLs (overwrite any Qt copies)
+# Both Qt and GStreamer DLLs work with MSYS2's libstdc++ (tested).
+# Qt's bundled MinGW 13.1 libstdc++ causes 0xC0000139 (Entry Point Not Found).
+echo "[4/4] Copying MSYS2 MinGW runtime DLLs..."
+cp "$MSYS2_DIR/bin/libstdc++-6.dll"       "$BUILD_DIR/"
+cp "$MSYS2_DIR/bin/libgcc_s_seh-1.dll"    "$BUILD_DIR/"
+cp "$MSYS2_DIR/bin/libwinpthread-1.dll"   "$BUILD_DIR/"
+# Transitive deps needed by GStreamer
+cp "$MSYS2_DIR/bin/liborc-0.4-0.dll"      "$BUILD_DIR/" 2>/dev/null
+cp "$MSYS2_DIR/bin/zlib1.dll"             "$BUILD_DIR/" 2>/dev/null
 
 echo "Deploy complete."
 
 if [ "$NO_RUN" = false ]; then
     echo "Launching talq..."
-    export QT_FORCE_STDERR_LOGGING=1
-    "$BUILD_DIR/talq.exe" &
+    powershell.exe -Command "Start-Process -FilePath '$BUILD_DIR/talq.exe' -WorkingDirectory '$BUILD_DIR'"
 fi
