@@ -1,0 +1,83 @@
+#!/bin/bash
+# deploy-dev.sh — Deploy Qt + GStreamer DLLs to build dir and launch.
+# Run after cmake --build. Handles the Qt/MSYS2 MinGW runtime conflict.
+#
+# Usage: bash scripts/deploy-dev.sh [--no-run] [--clean]
+
+set -euo pipefail
+
+BUILD_DIR="/c/build/talq"
+QT_DIR="/c/Qt/6.8.2/mingw_64"
+MINGW_DIR="/c/Qt/Tools/mingw1310_64"
+MSYS2_DIR="/c/msys64/mingw64"
+SRC_QML="/c/src/talk-desktop-qt/src/qml"
+
+NO_RUN=false
+CLEAN=false
+for arg in "$@"; do
+    case "$arg" in
+        --no-run) NO_RUN=true ;;
+        --clean)  CLEAN=true ;;
+    esac
+done
+
+if [ ! -f "$BUILD_DIR/talq.exe" ]; then
+    echo "ERROR: $BUILD_DIR/talq.exe not found. Build first."
+    exit 1
+fi
+
+export PATH="$MINGW_DIR/bin:$QT_DIR/bin:$MSYS2_DIR/bin:$PATH"
+
+# Step 1: windeployqt (Qt DLLs + QML imports)
+if [ "$CLEAN" = true ] || [ ! -f "$BUILD_DIR/Qt6Core.dll" ]; then
+    echo "[1/4] Running windeployqt..."
+    windeployqt6.exe --qmldir "$SRC_QML" "$BUILD_DIR/talq.exe" > /dev/null 2>&1
+else
+    echo "[1/4] Qt DLLs already deployed (use --clean to redo)"
+fi
+
+# Step 2: Copy all GStreamer runtime DLLs into build dir
+# These are needed because talq links against GStreamer directly.
+echo "[2/4] Copying GStreamer runtime DLLs..."
+GST_RUNTIME_DLLS=(
+    libgstreamer-1.0-0 libgstbase-1.0-0 libgstapp-1.0-0
+    libgstsdp-1.0-0 libgstwebrtc-1.0-0 libgstrtp-1.0-0
+    libgstpbutils-1.0-0 libgstaudio-1.0-0 libgsttag-1.0-0
+    libgstvideo-1.0-0
+    libglib-2.0-0 libgobject-2.0-0 libgio-2.0-0 libgmodule-2.0-0
+    libintl-8 libiconv-2 libffi-8 libpcre2-8-0 libz
+)
+for dll in "${GST_RUNTIME_DLLS[@]}"; do
+    src="$MSYS2_DIR/bin/${dll}.dll"
+    [ -f "$src" ] && cp "$src" "$BUILD_DIR/"
+done
+
+# Step 3: Copy GStreamer plugins
+echo "[3/4] Copying GStreamer plugins..."
+mkdir -p "$BUILD_DIR/gst-plugins"
+GST_PLUGINS=(
+    coreelements audioconvert audioresample autodetect
+    dtls nice opus rtp rtpmanager srtp
+    wasapi wasapi2 webrtc app level
+    vpx openh264 videoconvertscale sctp jpeg
+)
+for p in "${GST_PLUGINS[@]}"; do
+    src="$MSYS2_DIR/lib/gstreamer-1.0/libgst${p}.dll"
+    [ -f "$src" ] && cp "$src" "$BUILD_DIR/gst-plugins/"
+done
+
+# Step 4: Force Qt's MinGW runtime DLLs LAST (overwrite MSYS2's copies)
+# This is the critical step — MSYS2 GStreamer DLLs pull in MSYS2's libstdc++
+# which is ABI-incompatible with Qt's MinGW 13.1. Qt's copies must win.
+echo "[4/4] Forcing Qt MinGW runtime DLLs (fixing ABI conflict)..."
+cp "$MINGW_DIR/bin/libstdc++-6.dll"       "$BUILD_DIR/"
+cp "$MINGW_DIR/bin/libgcc_s_seh-1.dll"    "$BUILD_DIR/"
+cp "$MINGW_DIR/bin/libwinpthread-1.dll"   "$BUILD_DIR/"
+
+echo "Deploy complete."
+
+if [ "$NO_RUN" = false ]; then
+    echo "Launching talq..."
+    export QT_FORCE_STDERR_LOGGING=1
+    "$BUILD_DIR/talq.exe" &
+fi
