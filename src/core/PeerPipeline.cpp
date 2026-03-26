@@ -243,12 +243,26 @@ void PeerPipeline::enableCamera(int deviceIndex, bool hd1080)
 
     qDebug() << "PeerPipeline: enabling camera, device" << deviceIndex << (hd1080 ? "1080p" : "720p");
 
-    m_cameraSrc = gst_element_factory_make("ksvideosrc", nullptr);
+    bool testVideo = !qEnvironmentVariableIsEmpty("TALQ_TEST_AUDIO");
+
+    if (testVideo) {
+        m_cameraSrc = gst_element_factory_make("videotestsrc", nullptr);
+        if (m_cameraSrc) {
+            g_object_set(m_cameraSrc, "is-live", TRUE, "pattern", 0 /* SMPTE */, nullptr);
+            qDebug() << "PeerPipeline: using videotestsrc (test mode)";
+        }
+    }
     if (!m_cameraSrc) {
-        emit cameraError("Camera capture plugin (ksvideosrc) not available");
+        m_cameraSrc = gst_element_factory_make("mfvideosrc", nullptr);
+        if (!m_cameraSrc)
+            m_cameraSrc = gst_element_factory_make("ksvideosrc", nullptr);
+    }
+    if (!m_cameraSrc) {
+        emit cameraError("No camera capture plugin available");
         return;
     }
-    g_object_set(m_cameraSrc, "device-index", deviceIndex, nullptr);
+    if (!testVideo)
+        g_object_set(m_cameraSrc, "device-index", deviceIndex, nullptr);
 
     m_videoConvert = gst_element_factory_make("videoconvert", nullptr);
     m_videoCapsFilter = gst_element_factory_make("capsfilter", nullptr);
@@ -269,15 +283,21 @@ void PeerPipeline::enableCamera(int deviceIndex, bool hd1080)
     int h = hd1080 ? 1080 : 720;
     int bitrate = hd1080 ? 3000000 : 1500000;
 
-    // Camera outputs JPEG at high res, raw only at 640x480.
-    // Use JPEG capture + jpegdec for full resolution.
-    m_jpegDec = gst_element_factory_make("jpegdec", nullptr);
-
-    // Capture caps: request JPEG at desired resolution
-    QString capsStr = QString("image/jpeg,width=%1,height=%2,framerate=30/1").arg(w).arg(h);
-    GstCaps *caps = gst_caps_from_string(capsStr.toUtf8().constData());
-    g_object_set(m_videoCapsFilter, "caps", caps, nullptr);
-    gst_caps_unref(caps);
+    // In test mode, videotestsrc outputs raw video — no jpegdec needed.
+    // In real mode, camera outputs JPEG at high res, raw only at 640x480.
+    if (testVideo) {
+        m_jpegDec = nullptr;
+        QString capsStr = QString("video/x-raw,width=%1,height=%2,framerate=30/1").arg(w).arg(h);
+        GstCaps *caps = gst_caps_from_string(capsStr.toUtf8().constData());
+        g_object_set(m_videoCapsFilter, "caps", caps, nullptr);
+        gst_caps_unref(caps);
+    } else {
+        m_jpegDec = gst_element_factory_make("jpegdec", nullptr);
+        QString capsStr = QString("image/jpeg,width=%1,height=%2,framerate=30/1").arg(w).arg(h);
+        GstCaps *caps = gst_caps_from_string(capsStr.toUtf8().constData());
+        g_object_set(m_videoCapsFilter, "caps", caps, nullptr);
+        gst_caps_unref(caps);
+    }
 
     g_object_set(m_videoEncoder, "bitrate", bitrate, "rate-control", 1, "complexity", 1, nullptr);
 
@@ -387,20 +407,27 @@ void PeerPipeline::enableCamera(int deviceIndex, bool hd1080)
         return;
     }
 
-    // Add a sendonly video transceiver with H264 caps BEFORE requesting the pad.
-    // Prevents m=video 0 when adding video mid-session.
-    GstCaps *videoCaps = gst_caps_from_string("application/x-rtp,media=video,encoding-name=H264,clock-rate=90000,payload=96");
+    // Request a webrtcbin sink pad for video, then configure its transceiver
+    // with H264 caps so renegotiation SDP gets an active m=video line (not port 0).
+    m_videoSinkPad = gst_element_request_pad_simple(m_webrtcbin, "sink_%u");
+
+    // Get the transceiver for this pad and set codec-preferences + direction
     GstWebRTCRTPTransceiver *transceiver = nullptr;
-    g_signal_emit_by_name(m_webrtcbin, "add-transceiver",
-                          GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDONLY,
-                          videoCaps, &transceiver);
-    gst_caps_unref(videoCaps);
+    g_object_get(m_videoSinkPad, "transceiver", &transceiver, nullptr);
     if (transceiver) {
-        qDebug() << "PeerPipeline: added sendonly video transceiver";
+        GstCaps *videoCaps = gst_caps_from_string(
+            "application/x-rtp,media=video,encoding-name=H264,clock-rate=90000,payload=96");
+        g_object_set(transceiver,
+                     "direction", GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDONLY,
+                     "codec-preferences", videoCaps,
+                     nullptr);
+        gst_caps_unref(videoCaps);
+        qDebug() << "PeerPipeline: configured video transceiver (sendonly, H264)";
         gst_object_unref(transceiver);
+    } else {
+        qWarning() << "PeerPipeline: could not get transceiver from video pad";
     }
 
-    m_videoSinkPad = gst_element_request_pad_simple(m_webrtcbin, "sink_%u");
     GstPad *payloaderSrc = gst_element_get_static_pad(m_videoPayloader, "src");
     GstPadLinkReturn ret = gst_pad_link(payloaderSrc, m_videoSinkPad);
     gst_object_unref(payloaderSrc);
