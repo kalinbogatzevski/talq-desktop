@@ -37,6 +37,7 @@
 #include "core/ApiClient.h"
 #include "core/SignalingClient.h"
 #include "core/PeerPipeline.h"
+#include "core/SubscribePipeline.h"
 
 // Test configuration
 static const QString SERVER = "https://ncloud.123net.link";
@@ -104,13 +105,16 @@ struct TestPeer {
     ApiClient *api = nullptr;
     SignalingClient *signaling = nullptr;
     PeerPipeline *pipeline = nullptr;
+    SubscribePipeline *subscribePipeline = nullptr;  // for receiving remote peer's stream via MCU
     TestPhase phase = Init;
     QString sessionId;       // HPB session ID
+    QString remoteSessionId; // other peer's HPB session ID
     bool joinedCall = false;
     bool iceConnected = false;
     bool pipelineStarted = false;
     bool videoRenegSdpValid = false;   // true if renegotiation SDP has active m=video
     bool videoAnswerReceived = false;  // true when MCU answers our video renegotiation
+    bool subscriberRequested = false;  // true after requestOffer for remote peer
     int remoteVideoFramesBefore = 0;   // frame count before waiting
     int remoteVideoFramesAfter = 0;    // frame count after waiting
     QString stunServer;
@@ -208,14 +212,12 @@ private:
             }
         });
 
-        // Offer received from MCU (subscriber flow: MCU sends offer to us)
+        // Offer received from MCU (subscriber flow: MCU sends offer for remote peer's stream)
         connect(peer.signaling, &SignalingClient::offerReceived, this,
                 [this, &peer](const QString &from, const QString &sdp, const QString &sid) {
             Q_UNUSED(sid)
-            peer.log("Offer received from " + from.left(20) + "... (" + QString::number(sdp.length()) + " chars)");
-            if (peer.pipeline) {
-                peer.pipeline->setRemoteOffer(sdp);
-            }
+            peer.log("Subscriber offer from MCU for remote: " + from.left(20) + "... (" + QString::number(sdp.length()) + " chars)");
+            startSubscribePipeline(peer, from, sdp);
         });
 
         // ICE candidates from MCU
@@ -240,10 +242,12 @@ private:
             joinCall(peer);
         });
 
-        // Participant joined call (for tracking)
+        // Participant joined call — track remote peer's session ID
         connect(peer.signaling, &SignalingClient::participantJoinedCall, this,
                 [this, &peer](const QString &sessionId, int flags, const QString &) {
             peer.log(QString("Participant in call: %1 flags=%2").arg(sessionId.left(20)).arg(flags));
+            if (sessionId != peer.sessionId)
+                peer.remoteSessionId = sessionId;
         });
     }
 
@@ -406,6 +410,57 @@ private:
         });
     }
 
+    void startSubscribePipeline(TestPeer &peer, const QString &remoteSession, const QString &sdp)
+    {
+        if (peer.subscribePipeline) {
+            peer.log("Already have subscribe pipeline, setting new offer");
+            peer.subscribePipeline->setRemoteOffer(sdp);
+            return;
+        }
+
+        peer.subscribePipeline = new SubscribePipeline(remoteSession, this);
+
+        connect(peer.subscribePipeline, &SubscribePipeline::localAnswerReady, this,
+                [this, &peer, remoteSession](const QString &answer) {
+            peer.log("Subscriber answer ready, sending to MCU");
+            peer.signaling->sendAnswer(peer.sessionId, answer, "mcu-test");
+        });
+
+        connect(peer.subscribePipeline, &SubscribePipeline::iceCandidateReady, this,
+                [this, &peer](const QString &cand, int mline, const QString &mid) {
+            QJsonObject c;
+            c["candidate"] = cand;
+            c["sdpMLineIndex"] = mline;
+            c["sdpMid"] = mid;
+            peer.signaling->sendCandidate(peer.sessionId, c, "mcu-test");
+        });
+
+        connect(peer.subscribePipeline, &SubscribePipeline::iceStateChanged, this,
+                [&peer](const QString &state) {
+            peer.log("Subscriber ICE: " + state);
+        });
+
+        connect(peer.subscribePipeline, &SubscribePipeline::error, this,
+                [&peer](const QString &err) {
+            peer.log("Subscriber error: " + err);
+        });
+
+        bool ok = peer.subscribePipeline->start(peer.stunServer, peer.turnServers);
+        if (!ok) {
+            peer.log("ERROR: SubscribePipeline failed to start");
+            return;
+        }
+        peer.log("SubscribePipeline started");
+
+        // Bus pump for subscriber
+        auto *busTimer = new QTimer(this);
+        connect(busTimer, &QTimer::timeout, this, [&peer]() {
+            // SubscribePipeline doesn't have pollBus — GStreamer runs its own context
+        });
+
+        peer.subscribePipeline->setRemoteOffer(sdp);
+    }
+
     void checkBothActive()
     {
         if (m_peerA.iceConnected && m_peerB.iceConnected && !m_videoTestStarted) {
@@ -513,7 +568,38 @@ private:
     {
         if (m_peerA.videoAnswerReceived && m_peerB.videoAnswerReceived) {
             qDebug() << "\n===== BOTH PEERS VIDEO RENEGOTIATION COMPLETE =====";
-            startFrameWait();
+
+            // Update call flags to include VIDEO (7 = IN_CALL + AUDIO + VIDEO)
+            // The MCU uses these flags to decide what media to forward
+            qDebug() << "Updating call flags to include VIDEO (flags=7)...";
+            QJsonObject flagsBody;
+            flagsBody["flags"] = 7;
+            m_peerA.api->put("apps/spreed/api/v4/call/" + m_token, flagsBody,
+                [this](bool ok, const QJsonObject &, int) {
+                m_peerA.log(ok ? "Call flags updated to 7" : "WARNING: flags update failed");
+            });
+            m_peerB.api->put("apps/spreed/api/v4/call/" + m_token, flagsBody,
+                [this](bool ok, const QJsonObject &, int) {
+                m_peerB.log(ok ? "Call flags updated to 7" : "WARNING: flags update failed");
+            });
+
+            // Wait for flags to propagate, then request subscriber streams
+            QTimer::singleShot(2000, this, [this]() {
+                qDebug() << "Requesting subscriber streams from MCU...";
+                if (!m_peerA.remoteSessionId.isEmpty() && !m_peerA.subscriberRequested) {
+                    m_peerA.log("requestOffer for remote: " + m_peerA.remoteSessionId.left(20));
+                    m_peerA.signaling->requestOffer(m_peerA.remoteSessionId, "video");
+                    m_peerA.subscriberRequested = true;
+                }
+                if (!m_peerB.remoteSessionId.isEmpty() && !m_peerB.subscriberRequested) {
+                    m_peerB.log("requestOffer for remote: " + m_peerB.remoteSessionId.left(20));
+                    m_peerB.signaling->requestOffer(m_peerB.remoteSessionId, "video");
+                    m_peerB.subscriberRequested = true;
+                }
+
+                // Wait for MCU to send subscriber offers with video
+                QTimer::singleShot(3000, this, &CallTest::startFrameWait);
+            });
         }
     }
 
@@ -525,18 +611,25 @@ private:
         m_peerA.setPhase(VideoWaitingFrames);
         m_peerB.setPhase(VideoWaitingFrames);
 
-        // Record initial frame counts
-        m_peerA.remoteVideoFramesBefore = m_peerA.pipeline->remoteVideoProvider()->frameCount();
-        m_peerB.remoteVideoFramesBefore = m_peerB.pipeline->remoteVideoProvider()->frameCount();
+        // Record initial frame counts from SubscribePipeline (where MCU delivers remote video)
+        auto getRemoteFrames = [](TestPeer &p) -> int {
+            if (p.subscribePipeline && p.subscribePipeline->videoProvider())
+                return p.subscribePipeline->videoProvider()->frameCount();
+            if (p.pipeline && p.pipeline->remoteVideoProvider())
+                return p.pipeline->remoteVideoProvider()->frameCount();
+            return 0;
+        };
+        m_peerA.remoteVideoFramesBefore = getRemoteFrames(m_peerA);
+        m_peerB.remoteVideoFramesBefore = getRemoteFrames(m_peerB);
 
         qDebug() << "Waiting 8 seconds for video frames to flow through MCU...";
         qDebug() << "  User A remote frames so far:" << m_peerA.remoteVideoFramesBefore;
         qDebug() << "  User B remote frames so far:" << m_peerB.remoteVideoFramesBefore;
 
         // Wait 8 seconds for the MCU to route video between peers
-        QTimer::singleShot(8000, this, [this]() {
-            m_peerA.remoteVideoFramesAfter = m_peerA.pipeline->remoteVideoProvider()->frameCount();
-            m_peerB.remoteVideoFramesAfter = m_peerB.pipeline->remoteVideoProvider()->frameCount();
+        QTimer::singleShot(8000, this, [this, getRemoteFrames]() {
+            m_peerA.remoteVideoFramesAfter = getRemoteFrames(m_peerA);
+            m_peerB.remoteVideoFramesAfter = getRemoteFrames(m_peerB);
 
             int aNewFrames = m_peerA.remoteVideoFramesAfter - m_peerA.remoteVideoFramesBefore;
             int bNewFrames = m_peerB.remoteVideoFramesAfter - m_peerB.remoteVideoFramesBefore;
@@ -579,6 +672,8 @@ private:
         m_peerB.setPhase(TearingDown);
 
         // Stop pipelines
+        if (m_peerA.subscribePipeline) m_peerA.subscribePipeline->stop();
+        if (m_peerB.subscribePipeline) m_peerB.subscribePipeline->stop();
         if (m_peerA.pipeline) m_peerA.pipeline->stop();
         if (m_peerB.pipeline) m_peerB.pipeline->stop();
 
