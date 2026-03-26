@@ -27,12 +27,25 @@ ApplicationWindow {
 
     SettingsDialog { id: settingsDialog }
 
+    // Track visibility before hiding to tray, so we can restore it
+    property bool wasMaximized: false
+
     // Minimize to tray instead of closing (like Telegram/Discord)
     onClosing: function(close) {
         if (chatMode && generalSettings.closeToTray) {
             close.accepted = false
+            wasMaximized = (root.visibility === ApplicationWindow.Maximized)
             root.hide()
         }
+    }
+
+    function restoreFromTray() {
+        if (wasMaximized)
+            root.showMaximized()
+        else
+            root.showNormal()
+        root.raise()
+        root.requestActivate()
     }
 
     // Center splash and show
@@ -293,7 +306,7 @@ ApplicationWindow {
 
             MouseArea {
                 anchors.fill: parent; z: -1; cursorShape: Qt.PointingHandCursor
-                onClicked: { desktopNotif.visible = false; root.show(); root.raise(); root.requestActivate() }
+                onClicked: { desktopNotif.visible = false; root.restoreFromTray() }
             }
         }
     }
@@ -419,9 +432,7 @@ ApplicationWindow {
             cursorShape: Qt.PointingHandCursor
             onClicked: {
                 notifPopup.close()
-                root.show()
-                root.raise()
-                root.requestActivate()
+                root.restoreFromTray()
             }
         }
     }

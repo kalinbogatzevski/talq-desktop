@@ -138,9 +138,8 @@ int main(int argc, char *argv[])
     if (auto *window = qobject_cast<QQuickWindow*>(engine.rootObjects().first())) {
         notifications.setWindow(window);
         QObject::connect(&notifications, &NotificationManager::showRequested, window, [window]() {
-            window->show();
-            window->raise();
-            window->requestActivate();
+            // Call QML restoreFromTray() to restore maximized/windowed state
+            QMetaObject::invokeMethod(window, "restoreFromTray");
         });
     }
 
