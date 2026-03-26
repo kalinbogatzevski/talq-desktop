@@ -72,6 +72,7 @@ MessageListModel::MessageListModel(ApiClient *api, MessageCache *cache, QObject 
             }
         }
 
+        qDebug() << "Cache loaded" << m_messages.size() << "messages for" << m_token;
         // Refresh latest messages from server (fills gaps between cache and live).
         // Do NOT call loadHistory() here — it races with refreshLatest() and
         // prepending older messages while the view is still settling causes
@@ -558,9 +559,13 @@ void MessageListModel::postAndReplace(const QString &token, const QJsonObject &b
                 if (alreadyExists) {
                     // Poller beat us — remove the optimistic placeholder
                     beginRemoveRows({}, idx, idx);
+                    m_messageIds.remove(tempId);
                     m_messages.removeAt(idx);
                     endRemoveRows();
                 } else {
+                    // Replace optimistic with real — update ID tracking
+                    m_messageIds.remove(tempId);
+                    m_messageIds.insert(real.id);
                     m_messages[idx] = real;
                     emit dataChanged(index(idx), index(idx));
                     m_cache->saveMessages(m_token, {real});
@@ -595,6 +600,7 @@ void MessageListModel::sendMessage(const QString &text, int replyToId)
     int pos = m_messages.size();
     beginInsertRows({}, pos, pos);
     m_messages.append(optimistic);
+    m_messageIds.insert(tempId);
     endInsertRows();
 
     emit messageSent();
@@ -710,6 +716,7 @@ void MessageListModel::deleteMessage(int messageId)
     for (int i = 0; i < m_messages.size(); ++i) {
         if (m_messages[i].id == messageId) {
             beginRemoveRows({}, i, i);
+            m_messageIds.remove(messageId);
             m_messages.removeAt(i);
             endRemoveRows();
             break;
