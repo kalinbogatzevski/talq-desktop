@@ -111,6 +111,9 @@ ApplicationWindow {
 
         var w = Math.max(windowSettings.savedWidth, 500)
         var h = Math.max(windowSettings.savedHeight, 400)
+        // Clamp to screen bounds — prevents growth from prior buggy saves
+        w = Math.min(w, Screen.desktopAvailableWidth)
+        h = Math.min(h, Screen.desktopAvailableHeight)
         // Qt.labs.settings stores ints as unsigned — negative values wrap to large positives.
         // Fix: values > 2^31 are actually negative (multi-monitor left/top offsets).
         var sx = windowSettings.savedX > 2147483647 ? windowSettings.savedX - 4294967296 : windowSettings.savedX
@@ -187,10 +190,18 @@ ApplicationWindow {
 
         switch (root.visibility) {
         case ApplicationWindow.Windowed:
+            // Guard against saving maximized dimensions during the
+            // Maximized→Windowed transition (events arrive out of order).
+            // Screen.desktopAvailableWidth/Height is the usable area.
+            var maxW = Screen.desktopAvailableWidth
+            var maxH = Screen.desktopAvailableHeight
+            if (root.width >= maxW && root.height >= maxH)
+                return  // still maximized dimensions, skip
+
             windowSettings.savedX = root.x
             windowSettings.savedY = root.y
-            windowSettings.savedWidth = root.width
-            windowSettings.savedHeight = root.height
+            windowSettings.savedWidth = Math.min(root.width, maxW - 1)
+            windowSettings.savedHeight = Math.min(root.height, maxH - 1)
             windowSettings.savedVisibility = 2  // Windowed
             break
         case ApplicationWindow.Maximized:
