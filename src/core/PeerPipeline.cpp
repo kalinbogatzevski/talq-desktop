@@ -70,11 +70,25 @@ bool PeerPipeline::start(const QString &stunServer, const QList<TurnServer> &tur
         }
     }
     if (!audiosrc) {
-        audiosrc = gst_element_factory_make("wasapisrc", "peer-audiosrc");
-        if (audiosrc) g_object_set(audiosrc, "low-latency", FALSE, nullptr);
+        audiosrc = gst_element_factory_make("wasapi2src", "peer-audiosrc");
+        if (audiosrc) {
+            qDebug() << "PeerPipeline: audio source: wasapi2src";
+        } else {
+            audiosrc = gst_element_factory_make("wasapisrc", "peer-audiosrc");
+            if (audiosrc) {
+                g_object_set(audiosrc, "low-latency", FALSE, nullptr);
+                qDebug() << "PeerPipeline: audio source: wasapisrc";
+            }
+        }
     }
-    if (!audiosrc) audiosrc = gst_element_factory_make("directsoundsrc", "peer-audiosrc");
-    if (!audiosrc) audiosrc = gst_element_factory_make("autoaudiosrc", "peer-audiosrc");
+    if (!audiosrc) {
+        audiosrc = gst_element_factory_make("directsoundsrc", "peer-audiosrc");
+        if (audiosrc) qDebug() << "PeerPipeline: audio source: directsoundsrc";
+    }
+    if (!audiosrc) {
+        audiosrc = gst_element_factory_make("autoaudiosrc", "peer-audiosrc");
+        if (audiosrc) qDebug() << "PeerPipeline: audio source: autoaudiosrc";
+    }
     GstElement *audioconvert = gst_element_factory_make("audioconvert", nullptr);
     GstElement *audioresample = gst_element_factory_make("audioresample", nullptr);
     GstElement *capsfilter = gst_element_factory_make("capsfilter", nullptr);
@@ -566,15 +580,40 @@ void PeerPipeline::createAudioReceiveChain(GstPad *pad)
         sink = gst_element_factory_make("fakesink", nullptr);
         if (sink) qDebug() << "PeerPipeline: using fakesink for audio receive (test mode)";
     }
-    if (!sink) sink = gst_element_factory_make("autoaudiosink", nullptr);
+    // Try WASAPI2 sink first (best Windows audio output), then wasapisink, then autoaudiosink
+    if (!sink) {
+        sink = gst_element_factory_make("wasapi2sink", nullptr);
+        if (sink) {
+            qDebug() << "PeerPipeline: audio receive sink: wasapi2sink";
+            if (!m_audioOutputDeviceId.isEmpty())
+                g_object_set(sink, "device", m_audioOutputDeviceId.toUtf8().constData(), nullptr);
+        }
+    }
+    if (!sink) {
+        sink = gst_element_factory_make("wasapisink", nullptr);
+        if (sink) {
+            qDebug() << "PeerPipeline: audio receive sink: wasapisink";
+            g_object_set(sink, "low-latency", FALSE, nullptr);
+            if (!m_audioOutputDeviceId.isEmpty())
+                g_object_set(sink, "device", m_audioOutputDeviceId.toUtf8().constData(), nullptr);
+        }
+    }
+    if (!sink) {
+        sink = gst_element_factory_make("directsoundsink", nullptr);
+        if (sink) {
+            qDebug() << "PeerPipeline: audio receive sink: directsoundsink";
+            if (!m_audioOutputDeviceId.isEmpty())
+                g_object_set(sink, "device", m_audioOutputDeviceId.toUtf8().constData(), nullptr);
+        }
+    }
+    if (!sink) {
+        sink = gst_element_factory_make("autoaudiosink", nullptr);
+        if (sink) qDebug() << "PeerPipeline: audio receive sink: autoaudiosink (device selection may not work)";
+    }
 
     if (!depay || !dec || !convert || !resample || !sink) {
         qWarning() << "PeerPipeline: failed to create audio receive chain";
         return;
-    }
-
-    if (!testMode && !m_audioOutputDeviceId.isEmpty()) {
-        g_object_set(sink, "device", m_audioOutputDeviceId.toUtf8().constData(), nullptr);
     }
 
     gst_bin_add_many(GST_BIN(m_pipeline), depay, dec, convert, resample, sink, nullptr);
