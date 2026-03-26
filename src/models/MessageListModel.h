@@ -111,6 +111,7 @@ private slots:
 
 private:
     void startPoller();
+    void trimOldMessages();
     void refreshLatest();
     void postAndReplace(const QString &token, const QJsonObject &body, int tempId);
 

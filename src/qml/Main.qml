@@ -527,31 +527,26 @@ ApplicationWindow {
                 anchors.bottom: parent.bottom
                 width: convList.sidebarWidth
                 onConversationSelected: function(token, name, userId, convType, status) {
-                    console.warn("CLICK-TRACE 1: activeConvToken")
+                    // Set all UI properties BEFORE loading messages
+                    // (prevents QML re-renders during message insert)
                     chatLayout.activeConvToken = token
-                    console.warn("CLICK-TRACE 2: threadId=0")
-                    messageModel.threadId = 0
-                    console.warn("CLICK-TRACE 3: conversationToken=" + token)
-                    messageModel.conversationToken = token
-                    console.warn("CLICK-TRACE 4: chatView props")
                     chatView.conversationName = name
                     chatView.conversationUserId = userId
                     chatView.conversationType = convType
                     chatView.peerStatus = status
-                    console.warn("CLICK-TRACE 5: clearUnread")
-                    conversationModel.clearUnreadForToken(token)
-                    console.warn("CLICK-TRACE 6: signaling.joinRoom")
-                    signaling.joinRoom(token)
-                    console.warn("CLICK-TRACE 7: thread props")
                     chatView.activeThreadId = 0
                     chatView.activeThreadTitle = ""
                     chatView.isInTopicMode = false
-                    messageModel.hideThreadMessages = false
-                    console.warn("CLICK-TRACE 8: threadModel")
+                    conversationModel.clearUnreadForToken(token)
+                    signaling.joinRoom(token)
                     threadModel.setConversationType(convType)
                     threadModel.conversationToken = token
                     topicList.groupName = name
-                    console.warn("CLICK-TRACE 9: DONE")
+
+                    // Load messages LAST — after all UI is settled
+                    messageModel.threadId = 0
+                    messageModel.hideThreadMessages = false
+                    messageModel.conversationToken = token
                 }
             }
 
