@@ -117,9 +117,13 @@ void MessagePoller::handlePollResponse()
         if (dataVal.isArray()) {
             QJsonArray messages = dataVal.toArray();
             if (!messages.isEmpty()) {
+                qDebug() << "Poller:" << messages.size() << "new message(s) in" << m_token
+                         << "lastKnown:" << m_lastKnownMessageId;
                 emit messagesReceived(messages);
             }
         }
+    } else if (status != 304) {
+        qDebug() << "Poller: unexpected status" << status << "for" << m_token;
     }
 
     // Continue polling
