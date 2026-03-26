@@ -265,7 +265,7 @@ Item {
                     selected: index === sidebar.selectedIndex
                     filterText: searchField.text
                     squeezed: sidebar.squeezed
-                    notificationLevel: model.notificationLevel
+                    notificationLevel: notificationLevel
 
                     onClicked: {
                         sidebar.selectedIndex = index

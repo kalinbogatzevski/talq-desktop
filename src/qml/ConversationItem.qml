@@ -21,7 +21,7 @@ ItemDelegate {
     required property string participantUserId
     required property string userStatus
 
-    property int notificationLevel: 0  // 0=default, 1=always, 2=mention, 3=never
+    required property int notificationLevel  // 0=default, 1=always, 2=mention, 3=never
     property bool selected: false
     property string filterText: ""
     property bool squeezed: false
