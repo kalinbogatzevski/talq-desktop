@@ -70,16 +70,22 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         audiosrc = gst_element_factory_make("wasapi2src", "pub-audiosrc");
         if (audiosrc) {
             qDebug() << "PublishPipeline: audio source: wasapi2src";
+            if (!audioDeviceId.isEmpty())
+                g_object_set(audiosrc, "device", audioDeviceId.toUtf8().constData(), nullptr);
         } else {
             audiosrc = gst_element_factory_make("wasapisrc", "pub-audiosrc");
             if (audiosrc) {
                 g_object_set(audiosrc, "low-latency", FALSE, nullptr);
                 qDebug() << "PublishPipeline: audio source: wasapisrc";
+                if (!audioDeviceId.isEmpty())
+                    g_object_set(audiosrc, "device", audioDeviceId.toUtf8().constData(), nullptr);
             } else {
                 audiosrc = gst_element_factory_make("autoaudiosrc", "pub-audiosrc");
                 qDebug() << "PublishPipeline: audio source: autoaudiosrc";
             }
         }
+        if (!audioDeviceId.isEmpty())
+            qDebug() << "PublishPipeline: using audio input device" << audioDeviceId;
     }
 
     GstElement *audioconvert = gst_element_factory_make("audioconvert", nullptr);
