@@ -10,7 +10,7 @@
  * Fetches a file preview from the NC server with authentication.
  * Usage in QML: source: "image://preview/" + fileId
  */
-class FilePreviewProvider;  // forward declare
+class FilePreviewProvider;
 
 class FilePreviewResponse : public QQuickImageResponse
 {
@@ -21,7 +21,14 @@ public:
     QQuickTextureFactory *textureFactory() const override;
 
 private:
+    Q_INVOKABLE void doFetch();
+
     QImage m_image;
+    int m_fileId = 0;
+    QSize m_requestedSize;
+    ApiClient *m_api = nullptr;
+    QHash<int, QImage> &m_cache;
+    FilePreviewProvider *m_provider = nullptr;
 };
 
 class FilePreviewProvider : public QQuickAsyncImageProvider
@@ -41,6 +48,6 @@ private:
     friend class FilePreviewResponse;
     ApiClient *m_api;
     QHash<int, QImage> m_cache;
-    QList<int> m_cacheOrder;  // insertion order for LRU eviction
+    QList<int> m_cacheOrder;
     qint64 m_cachedBytes = 0;
 };

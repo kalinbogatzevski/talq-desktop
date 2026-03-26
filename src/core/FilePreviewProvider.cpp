@@ -1,6 +1,7 @@
 #include "core/FilePreviewProvider.h"
 #include <QQuickTextureFactory>
 #include <QNetworkReply>
+#include <QCoreApplication>
 #include <QDebug>
 
 // ─── Response ───
@@ -8,41 +9,51 @@
 FilePreviewResponse::FilePreviewResponse(int fileId, const QSize &requestedSize,
                                          ApiClient *api, QHash<int, QImage> &cache,
                                          FilePreviewProvider *provider)
+    : m_fileId(fileId), m_requestedSize(requestedSize), m_api(api), m_cache(cache), m_provider(provider)
 {
-    // Check memory cache
+    // Move to main thread — requestImageResponse is called from the render thread,
+    // but QNetworkAccessManager lives on the main thread.
+    moveToThread(QCoreApplication::instance()->thread());
+
+    // Check memory cache (read-only, safe from any thread)
     if (cache.contains(fileId)) {
         m_image = cache[fileId];
-        emit finished();
+        // Defer finished — caller connects after constructor returns
+        QMetaObject::invokeMethod(this, &FilePreviewResponse::finished, Qt::QueuedConnection);
         return;
     }
 
-    // Fetch from server — request wide rectangle to avoid square crop
-    int w = requestedSize.width() > 0 ? qMax(requestedSize.width(), 1024) : 1024;
-    int h = qMax(w * 3 / 4, 768);  // wide aspect to avoid cropping landscape images
-    qDebug() << "FilePreview: fetching fileId" << fileId << "at" << w << "x" << h << "(requested:" << requestedSize << ")";
+    // Defer network fetch to main thread
+    QMetaObject::invokeMethod(this, &FilePreviewResponse::doFetch, Qt::QueuedConnection);
+}
 
-    // a=1 preserves aspect ratio, forceIcon=0 gets actual preview
+void FilePreviewResponse::doFetch()
+{
+    int w = m_requestedSize.width() > 0 ? qMax(m_requestedSize.width(), 1024) : 1024;
+    int h = qMax(w * 3 / 4, 768);
+
     QString path = QString("/index.php/core/preview?fileId=%1&x=%2&y=%3&a=1&forceIcon=0&mode=cover")
-        .arg(fileId).arg(w).arg(h);
+        .arg(m_fileId).arg(w).arg(h);
 
-    auto *reply = api->getAbsoluteUrl(path);
+    auto *reply = m_api->getAbsoluteUrl(path);
 
-    connect(reply, &QNetworkReply::finished, this, [this, reply, fileId, &cache, provider]() {
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
         reply->deleteLater();
 
         if (reply->error() == QNetworkReply::NoError) {
             QImage img;
             if (img.loadFromData(reply->readAll())) {
                 m_image = img;
-                cache[fileId] = img;
-                provider->m_cacheOrder.append(fileId);
-                provider->m_cachedBytes += img.sizeInBytes();
-                provider->evictIfNeeded();
-                qDebug() << "FilePreview: loaded fileId" << fileId << "size:" << img.size()
-                         << "cache:" << provider->m_cachedBytes / 1024 / 1024 << "MB";
+                // Guard against duplicate fileId overwrites
+                if (m_cache.contains(m_fileId)) {
+                    m_provider->m_cachedBytes -= m_cache[m_fileId].sizeInBytes();
+                } else {
+                    m_provider->m_cacheOrder.append(m_fileId);
+                }
+                m_cache[m_fileId] = img;
+                m_provider->m_cachedBytes += img.sizeInBytes();
+                m_provider->evictIfNeeded();
             }
-        } else {
-            qDebug() << "Preview fetch failed for fileId" << fileId << reply->errorString();
         }
         emit finished();
     });

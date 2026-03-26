@@ -1,5 +1,32 @@
 # Changelog
 
+## v0.9.4 (2026-03-26)
+
+### Major: BottomToTop ListView (conversation switch freeze fix)
+- **Root cause**: `positionViewAtEnd()` / `positionViewAtIndex()` forced Qt to instantiate ALL MessageBubble delegates simultaneously, causing 1-4GB memory explosion and UI freeze on every conversation switch
+- **Fix**: Reversed message storage to newest-first + `ListView.BottomToTop` layout. The view naturally starts at the bottom (newest messages visible) — no scroll calls needed
+- Messages now stored newest-first in the model (`m_messages[0]` = newest)
+- New messages from poller prepend at index 0 (appear at bottom)
+- History loads append at end (appear at top on scroll-up)
+- `cacheBuffer: 200` — only creates delegates near the viewport
+
+### Memory & Stability Fixes
+- **Poller backoff**: HTTP 401/403/404 stops polling; 5xx retries with exponential backoff (2s→60s)
+- **Poller lastKnown:0 guard**: never start polling with lastKnownMessageId=0 (was downloading entire conversation history — 2000+ messages)
+- **Message trimming**: cap at 200 messages per conversation, oldest trimmed on overflow
+- **m_messageIds in postAndReplace**: prevents duplicate messages from poller
+- **refreshLatest after file share**: sent files now appear immediately
+- **cancelAll() safe iteration**: copies list before aborting
+- **Cross-thread image providers**: FilePreviewProvider and AvatarProvider now moveToThread to main thread before network calls (eliminates "Cannot create children for a parent that is in a different thread" warnings)
+- **MessageBubble anchors fix**: reply background Rectangle moved outside ColumnLayout (was causing 4000+ re-layout cycles)
+
+### Other Fixes
+- PushClient WebSocket error handler added
+- PushClient auth failure reconnects instead of permanent dead state
+- m_hasMoreHistory reset in setThreadId/setHideThreadMessages
+- ConversationItem required property notificationLevel (eliminates "model is not defined" errors)
+- markAsRead uses proper method on conversation open
+
 ## v0.9.2 (2026-03-26)
 
 ### Call Fixes
