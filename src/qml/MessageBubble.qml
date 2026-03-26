@@ -568,21 +568,23 @@ Item {
             }
 
             // Message content (flat — subtle card when reply)
+            // Background card — sibling of ColumnLayout, not a child (anchors inside Layout cause infinite re-layout)
+            Rectangle {
+                visible: replyToText.length > 0 && !isOwnMessage
+                x: otherMsgCol.x - 8
+                y: otherMsgCol.y - 8
+                width: otherMsgCol.width + 16
+                height: otherMsgCol.height + 16
+                radius: Theme.radiusNormal
+                color: Theme.darkMode ? Qt.rgba(1, 1, 1, 0.04) : Qt.rgba(0, 0, 0, 0.04)
+                z: -1
+            }
+
             ColumnLayout {
                 id: otherMsgCol
                 property real maxWidth: bubble.width * 0.75 - Theme.avatarSizeSmall - 20
                 width: isImage ? maxWidth : Math.min(Math.max(implicitWidth, replyToText.length > 0 ? 260 : 0), maxWidth)
                 spacing: 2
-
-                // Background card for messages with replies
-                Rectangle {
-                    visible: replyToText.length > 0
-                    anchors.fill: parent
-                    anchors.margins: -8
-                    radius: Theme.radiusNormal
-                    color: Theme.darkMode ? Qt.rgba(1, 1, 1, 0.04) : Qt.rgba(0, 0, 0, 0.04)
-                    z: -1
-                }
 
                 // Name + time row
                 RowLayout {
