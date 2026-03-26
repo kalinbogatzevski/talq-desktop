@@ -71,6 +71,8 @@ enum TestPhase {
     Negotiating,
     WaitingICE,
     Active,
+    VideoRenegotiating,
+    VideoActive,
     TearingDown,
     Done
 };
@@ -85,6 +87,8 @@ static const char *phaseStr(TestPhase p) {
     case Negotiating: return "Negotiating";
     case WaitingICE: return "WaitingICE";
     case Active: return "Active";
+    case VideoRenegotiating: return "VideoRenegotiating";
+    case VideoActive: return "VideoActive";
     case TearingDown: return "TearingDown";
     case Done: return "Done";
     }
@@ -101,6 +105,7 @@ struct TestPeer {
     bool joinedCall = false;
     bool iceConnected = false;
     bool pipelineStarted = false;
+    bool videoRenegSdpValid = false;   // true if renegotiation SDP has active m=video
     QString stunServer;
     QList<TurnServer> turnServers;
     // Pending ICE candidates (received before pipeline started)
@@ -389,15 +394,107 @@ private:
 
     void checkBothActive()
     {
-        if (m_peerA.iceConnected && m_peerB.iceConnected) {
+        if (m_peerA.iceConnected && m_peerB.iceConnected && !m_videoTestStarted) {
             qDebug() << "\n===== BOTH PEERS ICE CONNECTED TO MCU =====";
-            qDebug() << "Staying active for 3 seconds to verify stability...";
-            m_activeTimer.start();
+            qDebug() << "Waiting 1 second for stability, then testing video renegotiation...";
+            m_videoTestStarted = true;
+            QTimer::singleShot(1000, this, &CallTest::startVideoRenegotiation);
         }
+    }
+
+    void startVideoRenegotiation()
+    {
+        qDebug() << "\n===== VIDEO RENEGOTIATION TEST =====";
+        m_peerA.setPhase(VideoRenegotiating);
+
+        // Capture the next offer from User A to validate the SDP
+        // Disconnect old offer handler and install a validating one
+        disconnect(m_peerA.pipeline, &PeerPipeline::localOfferReady, nullptr, nullptr);
+        connect(m_peerA.pipeline, &PeerPipeline::localOfferReady, this,
+                [this](const QString &sdp) {
+            m_peerA.log("Video renegotiation offer ready (" + QString::number(sdp.length()) + " chars)");
+
+            // ===== SDP VALIDATION =====
+            // Check that the renegotiation SDP has an m=video line.
+            // Note: m=video 0 with a=bundle-only is VALID per RFC 8843 —
+            // it means "use transport from BUNDLE leader". This is normal for
+            // bundled offers. The real indicator of a broken video line is
+            // m=video 0 WITHOUT a=bundle-only AND without a=sendonly/sendrecv.
+            bool hasVideoLine = false;
+            bool hasBundleOnly = false;
+            bool hasSendDirection = false;
+            bool hasH264Codec = false;
+            bool hasPort0 = false;
+            const auto lines = sdp.split('\n');
+            bool inVideoSection = false;
+            for (const auto &line : lines) {
+                QString trimmed = line.trimmed();
+                if (trimmed.startsWith("m=")) {
+                    inVideoSection = trimmed.startsWith("m=video");
+                    if (inVideoSection) {
+                        hasVideoLine = true;
+                        hasPort0 = trimmed.startsWith("m=video 0 ") || trimmed == "m=video 0";
+                        qDebug() << "SDP video m-line:" << trimmed;
+                    }
+                }
+                if (inVideoSection) {
+                    if (trimmed == "a=bundle-only") hasBundleOnly = true;
+                    if (trimmed == "a=sendonly" || trimmed == "a=sendrecv") hasSendDirection = true;
+                    if (trimmed.contains("H264")) hasH264Codec = true;
+                }
+            }
+
+            qDebug() << "\n--- Renegotiation SDP ---";
+            qDebug().noquote() << sdp;
+            qDebug() << "--- End SDP ---\n";
+
+            qDebug() << "SDP analysis: hasVideoLine=" << hasVideoLine
+                     << "hasPort0=" << hasPort0
+                     << "hasBundleOnly=" << hasBundleOnly
+                     << "hasSendDirection=" << hasSendDirection
+                     << "hasH264Codec=" << hasH264Codec;
+
+            if (!hasVideoLine) {
+                qWarning() << "BUG: Renegotiation SDP has NO m=video line at all!";
+                m_peerA.videoRenegSdpValid = false;
+            } else if (hasPort0 && !hasBundleOnly && !hasSendDirection) {
+                // Port 0 without bundle-only and without direction = truly rejected
+                qWarning() << "BUG: m=video 0 without bundle-only — video rejected!";
+                m_peerA.videoRenegSdpValid = false;
+            } else if (hasVideoLine && hasSendDirection && hasH264Codec) {
+                // Video present with correct direction and codec
+                if (hasPort0 && hasBundleOnly) {
+                    qDebug() << "OK: m=video 0 with a=bundle-only — valid BUNDLE offer";
+                } else if (!hasPort0) {
+                    qDebug() << "OK: m=video with active port";
+                }
+                qDebug() << "SUCCESS: Renegotiation SDP has valid video section!";
+                m_peerA.videoRenegSdpValid = true;
+            } else {
+                qWarning() << "UNCERTAIN: Video line present but missing direction or codec";
+                m_peerA.videoRenegSdpValid = false;
+            }
+
+            // Still send the offer to the MCU so the full flow completes
+            m_peerA.signaling->sendOffer(m_peerA.sessionId, sdp, "mcu-test");
+        });
+
+        // Enable camera on User A using videotestsrc (TALQ_TEST_AUDIO is set)
+        m_peerA.log("Calling enableCamera(0, false) -- videotestsrc 720p");
+        m_peerA.pipeline->enableCamera(0, false);
+
+        // Wait 2 seconds for video to stabilize, then 2 more and tear down
+        QTimer::singleShot(4000, this, [this]() {
+            m_peerA.setPhase(VideoActive);
+            qDebug() << "Video renegotiation test complete. Tearing down...";
+            teardown();
+        });
     }
 
     void onActiveTimerDone()
     {
+        // This timer is no longer used (replaced by video renegotiation flow)
+        // Keep for safety in case checkBothActive isn't reached
         qDebug() << "Active period complete. Tearing down...";
         teardown();
     }
@@ -425,8 +522,10 @@ private:
                 m_peerB.signaling->stop();
 
                 QTimer::singleShot(1000, this, [this]() {
-                    printSummary(m_peerA.iceConnected && m_peerB.iceConnected);
-                    qApp->exit(m_peerA.iceConnected && m_peerB.iceConnected ? 0 : 1);
+                    bool icePassed = m_peerA.iceConnected && m_peerB.iceConnected;
+                    bool videoPassed = m_peerA.videoRenegSdpValid;
+                    printSummary(icePassed);
+                    qApp->exit((icePassed && videoPassed) ? 0 : 1);
                 });
             }
         };
@@ -441,9 +540,12 @@ private:
 
     void printSummary(bool passed)
     {
+        bool videoOk = m_peerA.videoRenegSdpValid;
+        bool fullPass = passed && videoOk;
+
         qDebug() << "\n==========================================";
-        qDebug() << (passed ? "   CALL TEST: PASSED"
-                            : "   CALL TEST: FAILED");
+        qDebug() << (fullPass ? "   CALL TEST: PASSED (with video renegotiation)"
+                              : "   CALL TEST: FAILED");
         qDebug() << "==========================================";
         qDebug().noquote() << QString("  User A: %1 -> %2")
                     .arg(USER_A, -10).arg(phaseStr(m_peerA.phase));
@@ -452,7 +554,15 @@ private:
         qDebug().noquote() << QString("  ICE A: %1  ICE B: %2")
                     .arg(m_peerA.iceConnected ? "OK" : "NO")
                     .arg(m_peerB.iceConnected ? "OK" : "NO");
+        qDebug().noquote() << QString("  Video Renegotiation SDP: %1")
+                    .arg(videoOk ? "VALID (active m=video)" : "INVALID (m=video 0 or missing)");
         qDebug() << "==========================================";
+
+        // Exit with failure if video renegotiation SDP was invalid
+        if (passed && !videoOk) {
+            qApp->exit(1);
+            return;
+        }
     }
 
     QString m_token;
@@ -460,6 +570,7 @@ private:
     TestPeer m_peerB;
     QTimer m_timeout;
     QTimer m_activeTimer;
+    bool m_videoTestStarted = false;
 };
 
 int main(int argc, char *argv[])
