@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.9.2 (2026-03-26)
+
+### Call Fixes
+- **MCU ICE candidate parsing** — fixed double-nested candidate extraction from Janus MCU signaling (was likely causing intermittent call failures)
+- **STUN URL format** — convert Nextcloud's `stun:host:port` to `stun://host:port` for GStreamer compatibility
+- **Test audio mode** — PeerPipeline supports `TALQ_TEST_AUDIO` env var for headless testing (audiotestsrc + fakesink)
+
+### Automated Call Testing
+- **talq-call-test.exe** — headless two-user MCU call test harness
+- Authenticates kalin + test-talq, joins call via HPB, creates WebRTC pipelines, verifies ICE connection through real STUN/TURN, validates 3s stability, tears down cleanly
+- Catches SDP issues, ICE failures, and signaling bugs without GUI
+
+### Build & Deploy
+- **deploy-dev.sh** — added audiotestsrc to GStreamer plugin list, fixed MSYS2 runtime DLL handling
+- **Unified build paths** — all docs use `/c/build/talq` consistently
+
 ## v0.9.1 (2026-03-25)
 
 ### Room Avatars

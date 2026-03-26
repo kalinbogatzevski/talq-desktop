@@ -1,5 +1,22 @@
 # TalQ v0.9.x Continue Prompt
 
+## What was done (v0.9.2, 2026-03-26)
+
+### Call bugs fixed
+- **MCU ICE candidate double-nesting** — Janus sends `payload.candidate = {candidate: "..."}`, our code was passing outer payload. Fixed in SignalingClient.cpp. This likely caused intermittent call failures.
+- **STUN URL format** — Nextcloud returns `stun:host:port`, GStreamer needs `stun://host:port`. Fixed in PeerPipeline.cpp.
+- **P2P won't work on this server** — HPB intercepts all signaling, "No MCU client found" for direct P2P. All calls must go through MCU (Janus).
+
+### Automated call test harness
+- `talq-call-test.exe` — two-user MCU call test, uses audiotestsrc, verifies ICE through real STUN/TURN
+- Run: `powershell.exe -Command '...'` from build dir (see scripts/deploy-dev.sh)
+- Test token: `u2f3gbu4` (kalin <-> test-talq 1:1 room)
+- PASSED: both peers ICE connected + 3s stability + clean teardown
+
+### Room avatars (v0.9.1)
+- Group chat avatars via authenticated OCS API
+- TqAvatar token fallback for rooms without userId
+
 ## What was done (v0.9.0, 2026-03-25)
 
 ### Memory leak / scroll fix (RESOLVED)
@@ -37,12 +54,13 @@ Additional fixes in same commit (af0084f):
 
 ## Next: Stabilize video calls
 
-| Bug | Priority | Notes |
-|-----|----------|-------|
+| Bug | Priority | Status |
+|-----|----------|--------|
+| P2P mode broken (MCU-only server) | HIGH | m_useP2P codepath dead on HPB servers |
 | m=video 0 in renegotiation SDP | HIGH | add-transceiver fix untested |
 | Phone doesn't hear audio (home) | MEDIUM | Mic broken, works on office |
 | Push notification not received | MEDIUM | hasCall race |
-| Call not ending on remote hangup | LOW | participantLeftCall |
+| Call not ending on remote hangup | LOW | participantLeftCall only handles MCU subs |
 | Window height grows on restore | LOW | Unsigned int wrapping |
 
 ## Build
