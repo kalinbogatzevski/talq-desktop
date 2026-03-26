@@ -81,5 +81,5 @@ echo "Deploy complete."
 
 if [ "$NO_RUN" = false ]; then
     echo "Launching talq..."
-    powershell.exe -Command "Start-Process -FilePath '$BUILD_DIR/talq.exe' -WorkingDirectory '$BUILD_DIR'"
+    powershell.exe -Command "Start-Process -FilePath 'C:\build\talq\talq.exe' -WorkingDirectory 'C:\build\talq'"
 fi

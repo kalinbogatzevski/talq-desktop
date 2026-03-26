@@ -30,8 +30,14 @@ bool SubscribePipeline::start(const QString &stunServer, const QList<TurnServer>
         return false;
     }
 
-    if (!stunServer.isEmpty())
-        g_object_set(m_webrtcbin, "stun-server", stunServer.toUtf8().constData(), nullptr);
+    if (!stunServer.isEmpty()) {
+        // Nextcloud returns "stun:host:port" but GStreamer needs "stun://host:port"
+        QString gstStun = stunServer;
+        if (gstStun.startsWith("stun:") && !gstStun.startsWith("stun://"))
+            gstStun.replace("stun:", "stun://");
+        qDebug() << "SubscribePipeline: STUN server:" << gstStun;
+        g_object_set(m_webrtcbin, "stun-server", gstStun.toUtf8().constData(), nullptr);
+    }
     g_object_set(m_webrtcbin, "bundle-policy",
                  GST_WEBRTC_BUNDLE_POLICY_MAX_BUNDLE, nullptr);
 
