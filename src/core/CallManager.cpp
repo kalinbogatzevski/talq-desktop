@@ -804,14 +804,11 @@ void CallManager::onParticipantJoinedCall(const QString &sessionId, int flags, c
         }
     }
     else if (m_state == Idle) {
+        // Incoming call detected via signaling — route through the same path
+        // as conversation-list detection so cooldown logic is applied.
         m_remoteSessionId = sessionId;
-        m_remotePeerName = displayName;
-        m_callToken = m_signaling->currentRoom();
-        m_withVideo = (flags & CALL_FLAG_WITH_VIDEO) != 0;
-        setState(Incoming);
-        m_ringTimeout.start();
-        emit callInfoChanged();
-        emit incomingCall(m_remotePeerName, m_callToken, m_withVideo);
+        QString token = m_signaling->currentRoom();
+        onIncomingCallDetected(displayName, token, flags);
     }
 }
 

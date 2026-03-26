@@ -88,11 +88,9 @@ void ConversationListModel::refresh()
         // Snapshot old state for preservation across refresh
         QHash<QString, int> oldUnread;
         QHash<QString, bool> oldHasTopics;
-        QHash<QString, bool> oldCallState;
         for (const auto &c : m_conversations) {
             oldUnread[c.token] = c.unreadMessages;
             oldHasTopics[c.token] = c.hasTopics;
-            oldCallState[c.token] = c.hasCall;
         }
 
         // Parse new data
@@ -119,12 +117,15 @@ void ConversationListModel::refresh()
                 emit newUnreadMessage(c.displayName, c.lastMessageText, c.token);
             }
 
-            // Detect incoming calls
-            bool prevCall = oldCallState.value(c.token, false);
+            // Detect incoming calls — use persistent m_callState so two
+            // overlapping refreshes (push + auto-refresh) can't both miss the
+            // false→true transition.  Only emit once per transition.
+            bool prevCall = m_callState.value(c.token, false);
             if (c.hasCall && !prevCall) {
                 qDebug() << "ConversationListModel: call detected in" << c.displayName << "token=" << c.token;
                 emit incomingCallDetected(c.displayName, c.token, c.callFlag);
             }
+            m_callState[c.token] = c.hasCall;
         }
 
         // Update model — use beginResetModel only when structure changes

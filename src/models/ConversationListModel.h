@@ -69,6 +69,7 @@ private:
     ApiClient *m_api;
     QVector<Conversation> m_conversations;
     QHash<QString, QString> m_userStatuses;  // userId → "online"/"away"/"dnd"/"offline"
+    QHash<QString, bool> m_callState;        // persistent call state — survives across refreshes
     QTimer m_autoRefreshTimer;
     bool m_loading = false;
     int m_totalUnread = 0;
