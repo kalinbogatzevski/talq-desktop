@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.9.5 (2026-03-26)
+
+### Video Call Fixes
+- **Video renegotiation (m=video 0)** — enabling camera mid-call now works. Root cause: `enableCamera()` created two transceivers (one orphaned → `m=video 0`). Fixed with single transceiver approach in both PeerPipeline and PublishPipeline.
+- **STUN URL format** — applied `stun:` → `stun://` conversion to PublishPipeline and SubscribePipeline (was only in PeerPipeline). STUN was silently failing in MCU mode.
+- **Audio device selection** — mic and speaker settings from Settings dialog were silently ignored. PublishPipeline never passed `audioDeviceId`; `autoaudiosink` doesn't propagate `device` property. Fixed with explicit `wasapi2sink` → `wasapisink` → `directsoundsink` fallback chain.
+- **Incoming call detection race** — overlapping conversation refreshes could both miss the `hasCall` false→true transition. Fixed with persistent `m_callState` map that survives across refresh cycles.
+
+### Test Harness
+- Video renegotiation test phase: enables camera mid-call, validates SDP has active `m=video` line
+- `videotestsrc` support in PeerPipeline and PublishPipeline for headless testing
+
 ## v0.9.4 (2026-03-26)
 
 ### Major: BottomToTop ListView (conversation switch freeze fix)
