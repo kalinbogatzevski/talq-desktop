@@ -201,15 +201,40 @@ void SubscribePipeline::createAudioChain(GstPad *pad)
     GstElement *dec = gst_element_factory_make("opusdec", nullptr);
     GstElement *convert = gst_element_factory_make("audioconvert", nullptr);
     GstElement *resample = gst_element_factory_make("audioresample", nullptr);
-    GstElement *sink = gst_element_factory_make("autoaudiosink", nullptr);
+
+    // Try WASAPI2 sink first (best Windows audio), then wasapisink, then autoaudiosink
+    GstElement *sink = nullptr;
+    sink = gst_element_factory_make("wasapi2sink", nullptr);
+    if (sink) {
+        qDebug() << "SubscribePipeline: audio sink: wasapi2sink";
+        if (!m_audioOutputDeviceId.isEmpty())
+            g_object_set(sink, "device", m_audioOutputDeviceId.toUtf8().constData(), nullptr);
+    }
+    if (!sink) {
+        sink = gst_element_factory_make("wasapisink", nullptr);
+        if (sink) {
+            qDebug() << "SubscribePipeline: audio sink: wasapisink";
+            g_object_set(sink, "low-latency", FALSE, nullptr);
+            if (!m_audioOutputDeviceId.isEmpty())
+                g_object_set(sink, "device", m_audioOutputDeviceId.toUtf8().constData(), nullptr);
+        }
+    }
+    if (!sink) {
+        sink = gst_element_factory_make("directsoundsink", nullptr);
+        if (sink) {
+            qDebug() << "SubscribePipeline: audio sink: directsoundsink";
+            if (!m_audioOutputDeviceId.isEmpty())
+                g_object_set(sink, "device", m_audioOutputDeviceId.toUtf8().constData(), nullptr);
+        }
+    }
+    if (!sink) {
+        sink = gst_element_factory_make("autoaudiosink", nullptr);
+        if (sink) qDebug() << "SubscribePipeline: audio sink: autoaudiosink";
+    }
 
     if (!depay || !dec || !convert || !resample || !sink) {
         qWarning() << "SubscribePipeline: failed to create audio receive chain";
         return;
-    }
-
-    if (!m_audioOutputDeviceId.isEmpty()) {
-        g_object_set(sink, "device", m_audioOutputDeviceId.toUtf8().constData(), nullptr);
     }
 
     gst_bin_add_many(GST_BIN(m_pipeline), depay, dec, convert, resample, sink, nullptr);
