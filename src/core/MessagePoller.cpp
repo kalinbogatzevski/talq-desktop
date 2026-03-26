@@ -17,6 +17,7 @@ void MessagePoller::start(const QString &conversationToken, int lastKnownMessage
     m_token = conversationToken;
     m_lastKnownMessageId = lastKnownMessageId;
     m_polling = true;
+    qDebug() << "Poller: starting for" << conversationToken << "lastKnown:" << lastKnownMessageId;
     poll();
 }
 
@@ -33,8 +34,10 @@ void MessagePoller::stop()
 
 void MessagePoller::poll()
 {
-    if (!m_polling || m_token.isEmpty())
+    if (!m_polling || m_token.isEmpty()) {
+        qDebug() << "Poller: poll() skipped — polling:" << m_polling << "token:" << m_token;
         return;
+    }
 
     QUrlQuery params;
     params.addQueryItem("lookIntoFuture", "1");
