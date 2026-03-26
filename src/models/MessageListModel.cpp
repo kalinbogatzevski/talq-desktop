@@ -833,6 +833,11 @@ void MessageListModel::sendFileWithCaption(const QString &filePath, const QStrin
                     if (!caption.isEmpty() && m_token == token) {
                         sendMessage(caption, 0);
                     }
+                    // Refresh to pick up the server-generated file share message
+                    // (file shares don't create an optimistic placeholder)
+                    if (m_token == token) {
+                        refreshLatest();
+                    }
                 } else {
                     emit errorOccurred("Failed to share file to conversation");
                 }
