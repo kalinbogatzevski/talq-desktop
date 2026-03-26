@@ -27,6 +27,13 @@
 - ConversationItem required property notificationLevel (eliminates "model is not defined" errors)
 - markAsRead uses proper method on conversation open
 
+## v0.9.3 (2026-03-26)
+
+### Fixes
+- **Duplicate message prevention** — `m_messageIds` updated in `postAndReplace()` and `deleteMessage()`, preventing poller from re-adding sent/deleted messages
+- **Refresh after file share** — conversation refreshes immediately after uploading a file
+- Poller diagnostic logging added
+
 ## v0.9.2 (2026-03-26)
 
 ### Call Fixes
