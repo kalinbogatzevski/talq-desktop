@@ -56,7 +56,7 @@ done
 echo "[3/4] Copying GStreamer plugins..."
 mkdir -p "$BUILD_DIR/gst-plugins"
 GST_PLUGINS=(
-    coreelements audioconvert audioresample autodetect audiotestsrc
+    coreelements audioconvert audioresample autodetect audiotestsrc videotestsrc
     dtls nice opus rtp rtpmanager srtp
     wasapi wasapi2 webrtc app level
     vpx openh264 videoconvertscale sctp jpeg
