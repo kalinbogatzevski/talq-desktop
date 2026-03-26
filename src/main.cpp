@@ -181,10 +181,11 @@ int main(int argc, char *argv[])
     });
 
     // Push events → refresh conversation list
+    // Refresh on any push event — "notify_notification" covers calls, messages,
+    // and other Talk events.  Also accept "notify_call" if the server ever sends it.
     QObject::connect(&push, &PushClient::pushReceived, &conversations, [&conversations](const QString &type) {
-        if (type == "notify_notification" || type == "notify_activities") {
-            conversations.refresh();
-        }
+        qDebug() << "Push event received:" << type << "— refreshing conversations";
+        conversations.refresh();
     });
 
     // Start push + conversation polling after login
