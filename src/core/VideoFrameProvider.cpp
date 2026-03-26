@@ -16,7 +16,20 @@ void VideoFrameProvider::setVideoSink(QVideoSink *sink)
 
 void VideoFrameProvider::feedFrame(GstSample *sample)
 {
-    if (!m_videoSink || !sample) return;
+    if (!sample) return;
+
+    // Always count frames, even without a videoSink (for test harness)
+    m_frameCount++;
+    if (m_frameCount <= 3 || m_frameCount % 100 == 0)
+        qDebug() << "VideoFrameProvider: frame" << m_frameCount << (m_videoSink ? "(has sink)" : "(no sink)");
+    emit frameCountChanged();
+
+    if (!m_hasVideo) {
+        m_hasVideo = true;
+        emit hasVideoChanged();
+    }
+
+    if (!m_videoSink) return;
 
     GstCaps *caps = gst_sample_get_caps(sample);
     if (!caps) return;
@@ -57,11 +70,6 @@ void VideoFrameProvider::feedFrame(GstSample *sample)
         }
         frame.unmap();
         m_videoSink->setVideoFrame(frame);
-
-        if (!m_hasVideo) {
-            m_hasVideo = true;
-            emit hasVideoChanged();
-        }
     }
 
     gst_buffer_unmap(buf, &map);
