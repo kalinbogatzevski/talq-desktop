@@ -429,19 +429,12 @@ Page {
 
         Timer {
             id: scrollCoalesceTimer
-            interval: 16  // one frame
+            interval: 50  // short delay to let delegates settle
             onTriggered: {
+                if (messageListView.count === 0) return
                 messageListView.programmaticScroll = true
-                messageListView.positionViewAtEnd()
-                // Second pass after delegates have been measured
-                Qt.callLater(function() {
-                    messageListView.positionViewAtEnd()
-                    // Third pass — catches late delegate height changes (images, rich text)
-                    Qt.callLater(function() {
-                        messageListView.positionViewAtEnd()
-                        messageListView.programmaticScroll = false
-                    })
-                })
+                messageListView.positionViewAtIndex(messageListView.count - 1, ListView.End)
+                messageListView.programmaticScroll = false
             }
         }
 
