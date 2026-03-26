@@ -22,11 +22,14 @@
 #include <QMimeDatabase>
 
 // ============================================================================
-// STORAGE: m_messages is stored OLDEST-FIRST (natural chronological order).
-//   m_messages[0] = oldest message
-//   m_messages[last] = newest message
+// STORAGE: m_messages is stored NEWEST-FIRST (reverse chronological order).
+//   m_messages[0] = newest message
+//   m_messages[last] = oldest message
 //
-// ListView uses TopToBottom. QML scrolls to end after load.
+// ListView uses BottomToTop — index 0 at the bottom (newest visible first).
+// No positionViewAtEnd needed — the view naturally starts at the bottom.
+// New messages from poller are prepended at index 0 (appear at bottom).
+// History loads append at the end (appear at top on scroll-up).
 // ============================================================================
 
 MessageListModel::MessageListModel(ApiClient *api, MessageCache *cache, QObject *parent)
@@ -52,6 +55,7 @@ MessageListModel::MessageListModel(ApiClient *api, MessageCache *cache, QObject 
         if (m_token != token) return;  // stale result
 
         // Display cached messages instantly (even if empty — still trigger API fetch)
+        // Cache returns oldest-first; reverse to newest-first for BottomToTop display.
         if (!messages.isEmpty() && m_messages.isEmpty()) {
             QVector<Message> filtered;
             for (const auto &m : messages) {
@@ -62,21 +66,18 @@ MessageListModel::MessageListModel(ApiClient *api, MessageCache *cache, QObject 
                 filtered.append(m);
             }
             if (!filtered.isEmpty()) {
+                // Reverse to newest-first
+                std::reverse(filtered.begin(), filtered.end());
                 beginInsertRows({}, 0, filtered.size() - 1);
                 m_messages = filtered;
                 for (const auto &m : filtered)
                     m_messageIds.insert(m.id);
                 endInsertRows();
-                m_oldestMessageId = m_messages.first().id;
-                emit newMessagesAtEnd();
+                m_oldestMessageId = m_messages.last().id;  // oldest is now at the end
             }
         }
 
         qDebug() << "Cache loaded" << m_messages.size() << "messages for" << m_token;
-        // Refresh latest messages from server (fills gaps between cache and live).
-        // Do NOT call loadHistory() here — it races with refreshLatest() and
-        // prepending older messages while the view is still settling causes
-        // scroll position corruption. History loads on-demand when user scrolls up.
         refreshLatest();
     });
 }
@@ -107,8 +108,10 @@ QVariant MessageListModel::data(const QModelIndex &index, int role) const
         case IsSystemRole:      return m.isSystem;
         case MessageTypeRole:   return m.messageType;
         case IsGroupedRole: {
-            if (index.row() == 0) return false;
-            return m.isGroupedWith(m_messages[index.row() - 1]);
+            // Newest-first: chronologically previous message is at index+1
+            int next = index.row() + 1;
+            if (next >= m_messages.size()) return false;
+            return m.isGroupedWith(m_messages[next]);
         }
         case ReplyToTextRole:
             return m.replyTo.isEmpty() ? QString() : m.replyTo["message"].toString();
@@ -124,9 +127,11 @@ QVariant MessageListModel::data(const QModelIndex &index, int role) const
         case TimeStringRole:
             return m.dateTime().toString("HH:mm");
         case ShowDateSeparatorRole: {
-            if (index.row() == 0) return true;
-            auto prevDate = m_messages[index.row() - 1].dateTime().date();
-            return m.dateTime().date() != prevDate;
+            // Newest-first: show separator when date differs from the next (older) message
+            int next = index.row() + 1;
+            if (next >= m_messages.size()) return true;  // oldest message always shows date
+            auto nextDate = m_messages[next].dateTime().date();
+            return m.dateTime().date() != nextDate;
         }
         case DateStringRole: {
             auto date = m.dateTime().date();
@@ -240,7 +245,7 @@ void MessageListModel::setConversationToken(const QString &token)
 
     // Load last 20 from local cache for instant display,
     // then fetch fresh from API in background (triggered after cache loads)
-    m_cache->loadMessages(token, 20);
+    m_cache->loadMessages(token, 50);
 
     // Mark as read
     QJsonObject body;
@@ -346,10 +351,10 @@ void MessageListModel::loadHistory()
             emit hasMoreHistoryChanged();
         }
 
-        // API returns newest-first; reverse to oldest-first
+        // API returns newest-first; keep as-is (our storage is newest-first)
         QVector<Message> olderMsgs;
-        for (int i = data.size() - 1; i >= 0; --i) {
-            Message m = Message::fromJson(data[i].toObject());
+        for (const auto &val : data) {
+            Message m = Message::fromJson(val.toObject());
             if (m_messageIds.contains(m.id) || m.isReactionMessage() || m.isCallJoinLeave())
                 continue;
             if (m_hideThreadMessages && m.threadId > 0)
@@ -358,25 +363,23 @@ void MessageListModel::loadHistory()
         }
 
         if (!olderMsgs.isEmpty()) {
-            // Save to cache BEFORE moving
             m_cache->saveMessages(m_token, olderMsgs);
 
-            // Update persistent ID set
             for (const auto &m : olderMsgs)
                 m_messageIds.insert(m.id);
 
-            // Prepend older messages at the beginning (single insert, not O(n^2) prepend loop)
-            beginInsertRows({}, 0, olderMsgs.size() - 1);
-            olderMsgs.append(std::move(m_messages));
-            m_messages = std::move(olderMsgs);
+            // Append older messages at the END (newest-first: old = end)
+            int first = m_messages.size();
+            beginInsertRows({}, first, first + olderMsgs.size() - 1);
+            m_messages.append(olderMsgs);
             endInsertRows();
         }
 
         if (!m_messages.isEmpty())
-            m_oldestMessageId = m_messages.first().id;
+            m_oldestMessageId = m_messages.last().id;  // oldest is at the end
 
-        // Don't emit newMessagesAtEnd() — these are OLDER messages prepended
-        // at the top, not new messages at the bottom. Scrolling to bottom here
+        // Don't emit newMessagesAtEnd() — these are OLDER messages appended
+        // at the end (top of BottomToTop view). No scroll needed.
         // would jump the user away from what they were reading.
         startPoller();
     });
@@ -384,9 +387,31 @@ void MessageListModel::loadHistory()
 
 void MessageListModel::startPoller()
 {
+    int lastId = m_messages.isEmpty() ? 0 : m_messages.first().id;  // newest is at index 0
+    if (lastId <= 0) {
+        qDebug() << "Poller: NOT starting — no messages loaded yet for" << m_token;
+        return;  // never poll with lastKnown=0, it downloads entire history
+    }
     m_poller->setThreadId(m_threadId);
-    int lastId = m_messages.isEmpty() ? 0 : m_messages.last().id;
     m_poller->start(m_token, lastId);
+}
+
+void MessageListModel::trimOldMessages()
+{
+    static constexpr int MAX_MESSAGES = 200;
+    if (m_messages.size() <= MAX_MESSAGES) return;
+
+    int trimCount = m_messages.size() - MAX_MESSAGES;
+    beginRemoveRows({}, 0, trimCount - 1);
+    for (int i = 0; i < trimCount; ++i)
+        m_messageIds.remove(m_messages[i].id);
+    m_messages.remove(0, trimCount);
+    endRemoveRows();
+
+    if (!m_messages.isEmpty())
+        m_oldestMessageId = m_messages.first().id;
+    m_hasMoreHistory = true;  // can re-fetch trimmed messages on scroll-up
+    emit hasMoreHistoryChanged();
 }
 
 void MessageListModel::refreshLatest()
@@ -450,46 +475,47 @@ void MessageListModel::refreshLatest()
         }
 
         if (!missing.isEmpty()) {
-            // Sort missing messages by ID (oldest first) for correct insertion
+            // Sort by ID descending (newest first) for our storage order
             std::sort(missing.begin(), missing.end(), [](const Message &a, const Message &b) {
-                return a.id < b.id;
+                return a.id > b.id;
             });
 
-            // Partition into older-than-current (prepend) and newer-than-current (append)
-            int firstId = m_messages.isEmpty() ? INT_MAX : m_messages.first().id;
-            QVector<Message> older, newer;
+            // Partition: newer than current newest → prepend at index 0
+            //            older than current oldest → append at end
+            int newestId = m_messages.isEmpty() ? 0 : m_messages.first().id;
+            int oldestId = m_messages.isEmpty() ? INT_MAX : m_messages.last().id;
+            QVector<Message> newer, older;
             for (const auto &m : missing) {
-                if (m.id < firstId)
-                    older.append(m);
-                else
+                if (m.id > newestId)
                     newer.append(m);
+                else if (m.id < oldestId)
+                    older.append(m);
             }
 
-            // Prepend older messages at the beginning
-            if (!older.isEmpty()) {
-                m_cache->saveMessages(m_token, older);
-                beginInsertRows({}, 0, older.size() - 1);
-                older.append(std::move(m_messages));
-                m_messages = std::move(older);
-                endInsertRows();
-            }
-
-            // Append newer messages at the end
+            // Prepend newer messages at index 0 (appear at bottom in BottomToTop)
             if (!newer.isEmpty()) {
-                int first = m_messages.size();
-                beginInsertRows({}, first, first + newer.size() - 1);
-                m_messages.append(newer);
+                for (const auto &m : newer)
+                    m_messageIds.insert(m.id);
+                beginInsertRows({}, 0, newer.size() - 1);
+                newer.append(std::move(m_messages));
+                m_messages = std::move(newer);
                 endInsertRows();
-                m_cache->saveMessages(m_token, newer);
-                emit newMessagesAtEnd();
+                m_cache->saveMessages(m_token, m_messages.mid(0, m_messages.size()));  // save all
             }
 
-            // Update persistent ID set
-            for (const auto &m : missing)
-                m_messageIds.insert(m.id);
+            // Append older messages at end (appear at top in BottomToTop)
+            if (!older.isEmpty()) {
+                for (const auto &m : older)
+                    m_messageIds.insert(m.id);
+                int first = m_messages.size();
+                beginInsertRows({}, first, first + older.size() - 1);
+                m_messages.append(older);
+                endInsertRows();
+                m_cache->saveMessages(m_token, older);
+            }
 
             if (!m_messages.isEmpty())
-                m_oldestMessageId = m_messages.first().id;
+                m_oldestMessageId = m_messages.last().id;
 
             qDebug() << "MessageListModel: refreshLatest found" << missing.size() << "missing messages";
         }
@@ -516,15 +542,20 @@ void MessageListModel::onMessagesReceived(const QJsonArray &messages)
 
     if (newMsgs.isEmpty()) return;
 
-    // Append new messages at the end (newest)
-    int first = m_messages.size();
-    beginInsertRows({}, first, first + newMsgs.size() - 1);
-    m_messages.append(newMsgs);
+    // Prepend new messages at index 0 (newest-first: new = front)
+    // In BottomToTop view, index 0 is at the bottom — new messages appear at bottom
     for (const auto &m : newMsgs)
         m_messageIds.insert(m.id);
+    std::reverse(newMsgs.begin(), newMsgs.end());
+    beginInsertRows({}, 0, newMsgs.size() - 1);
+    newMsgs.append(std::move(m_messages));
+    m_messages = std::move(newMsgs);
     endInsertRows();
 
     m_cache->saveMessages(m_token, newMsgs);
+
+    // Trim old messages to prevent unbounded memory growth
+    trimOldMessages();
 
     emit newMessagesAtEnd();
 
@@ -596,11 +627,10 @@ void MessageListModel::sendMessage(const QString &text, int replyToId)
     optimistic.messageType = "comment";
     optimistic.sendStatus = "sending";
 
-    // Append at end (newest)
-    int pos = m_messages.size();
-    beginInsertRows({}, pos, pos);
-    m_messages.append(optimistic);
+    // Prepend at index 0 (newest-first: new = front)
     m_messageIds.insert(tempId);
+    beginInsertRows({}, 0, 0);
+    m_messages.prepend(optimistic);
     endInsertRows();
 
     emit messageSent();
@@ -1002,9 +1032,9 @@ void MessageListModel::markAsRead()
 {
     if (m_token.isEmpty()) return;
 
-    // Find the last message ID
+    // Find the newest message ID (index 0 in newest-first order)
     int lastId = 0;
-    for (int i = m_messages.size() - 1; i >= 0; --i) {
+    for (int i = 0; i < m_messages.size(); ++i) {
         if (m_messages[i].id > 0) {
             lastId = m_messages[i].id;
             break;

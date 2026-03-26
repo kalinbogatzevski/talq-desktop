@@ -1,52 +1,33 @@
 # TalQ v0.9.x Continue Prompt
 
-## CRITICAL: Conversation switch freeze (UNSOLVED)
+## What was done (v0.9.4, 2026-03-26)
 
-### Symptom
-Switching from one conversation to another causes the app to freeze and memory to grow from ~270MB to 1-4GB. Happens on EVERY conversation switch, even on clean v0.9.2 baseline. Previously thought to be intermittent — it's consistent.
+### Conversation switch freeze — RESOLVED
+**Root cause**: `positionViewAtEnd()` / `positionViewAtIndex()` forced Qt to instantiate ALL MessageBubble delegates simultaneously. With complex delegates (RowLayout, ColumnLayout, avatars, images), this caused 1-4GB memory explosion and UI freeze.
 
-### What we know
-- Freeze happens right after `Cache loaded 20 messages for "..."` when opening 2nd conversation
-- The MEM timer and event loop stop completely — main thread is blocked
-- `refreshLatest()` network response never arrives (event loop dead)
-- NOT caused by: our C++ fixes, loadHistory cascade, poller loop, image provider threading
-- The `MessageBubble.qml:578` anchors-in-layout issue caused 4000+ re-layout cycles per conversation open — FIXED (moved Rectangle outside ColumnLayout) — but freeze persists
-- `positionViewAtEnd()` triple-call replaced with single `positionViewAtIndex` — but freeze persists
-- Happens with empty cache too (deleted message_cache.db)
+**Solution**: BottomToTop ListView with newest-first model storage.
+- Messages stored newest-first: `m_messages[0]` = newest
+- ListView `verticalLayoutDirection: BottomToTop` — index 0 renders at the bottom
+- View naturally starts at bottom — **no scroll calls needed**
+- New messages from poller prepend at index 0 (appear at bottom automatically)
+- History appends at end (appears at top on scroll-up)
+- `cacheBuffer: 200` limits delegate creation to viewport + small buffer
 
-### Root cause hypothesis
-The QML ListView delegate creation for 20+ messages blocks the main thread. Each MessageBubble is complex (RowLayout, ColumnLayout, avatars, images, Canvas elements). Creating 20 simultaneously saturates the event loop. Possible that `positionViewAtIndex` still forces ALL delegates to be measured.
-
-### Next steps
-1. **Profile with QML profiler** — attach `QT_QML_DEBUG` to see which QML operations take time
-2. **Reduce delegate complexity** — use Loader for reply/reaction/file sections, only instantiate visible parts
-3. **Async delegate creation** — set `ListView.cacheBuffer: 0` and `displayMarginBeginning/End: 0` to force minimal delegate creation
-4. **Try `ListView.reuseItems: true`** (Qt 6.6+) to recycle delegates instead of creating/destroying
-
-## What was done (v0.9.3, 2026-03-26)
-
-### C++ fixes (committed, pushed)
-- **Poller backoff**: HTTP 401/403/404 stops polling; 5xx retries with exponential backoff 2s→60s
-- **m_messageIds in postAndReplace**: swap temp→real ID, prevents poller duplicates
-- **refreshLatest after file share**: server-generated file message now appears immediately
-- **m_hasMoreHistory reset**: in setThreadId/setHideThreadMessages
-- **m_messageIds before endInsertRows**: in refreshLatest, prevents timing-dependent duplicates
-- **cancelAll() safe iteration**: copies list before aborting (was UB)
-- **PushClient error handler**: WebSocket errors now logged
-- **PushClient auth failure**: closes and reconnects instead of permanent dead state
-- **markAsRead**: uses proper method on conversation open
-
-### QML fixes (committed, pushed)
-- **MessageBubble anchors loop**: reply background Rectangle moved outside ColumnLayout (was causing 4000+ re-layout cycles)
-- **scrollToBottom simplified**: single positionViewAtIndex instead of triple positionViewAtEnd
-
-### Review findings (not yet fixed — lower priority than the freeze)
-- Cross-thread image providers (QQuickPixmapReader calls getAbsoluteUrl from render thread)
-- FilePreviewProvider duplicate fileId overcounting
-- Avatar cache failure entries not evictable
-- Deferred finished() for cache hits
+### C++ fixes
+- Poller backoff (401/403/404 stops, 5xx exponential backoff)
+- Poller lastKnown:0 guard (was downloading 2000+ messages)
+- Message trimming: 200 message cap per conversation
+- m_messageIds in postAndReplace (prevents duplicates)
+- refreshLatest after file share
+- cancelAll() safe iteration
+- Cross-thread image providers: moveToThread to main thread
+- PushClient error handler + auth failure reconnect
+- m_hasMoreHistory reset in setThreadId/setHideThreadMessages
 - ConversationItem required property notificationLevel
-- Message rawJson doubles per-message memory
+
+### QML fixes
+- MessageBubble reply background outside ColumnLayout (was 4000+ re-layout cycles)
+- BottomToTop layout eliminates all positionViewAtEnd/positionViewAtIndex calls
 
 ## What was done (v0.9.2, 2026-03-26)
 

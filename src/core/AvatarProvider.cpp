@@ -1,4 +1,5 @@
 #include "core/AvatarProvider.h"
+#include <QCoreApplication>
 #include <QStandardPaths>
 #include <QDir>
 #include <QFileInfo>
@@ -34,7 +35,8 @@ QQuickImageResponse *AvatarProvider::requestImageResponse(
 AvatarCachedResponse::AvatarCachedResponse(const QImage &image)
     : m_image(image)
 {
-    emit finished();
+    // Defer — caller connects to finished() after constructor returns
+    QMetaObject::invokeMethod(this, &AvatarCachedResponse::finished, Qt::QueuedConnection);
 }
 
 QQuickTextureFactory *AvatarCachedResponse::textureFactory() const
@@ -55,7 +57,9 @@ AvatarFetchResponse::AvatarFetchResponse(const QString &userId, const QSize &req
     , m_memCache(memCache)
     , m_memCacheOrder(memCacheOrder)
 {
-    // Defer the work to next event loop iteration to avoid blocking the caller
+    // Move to main thread — requestImageResponse is called from the render thread,
+    // but QNetworkAccessManager and disk I/O must happen on the main thread.
+    moveToThread(QCoreApplication::instance()->thread());
     QMetaObject::invokeMethod(this, &AvatarFetchResponse::loadFromDisk, Qt::QueuedConnection);
 }
 
