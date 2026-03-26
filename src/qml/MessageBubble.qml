@@ -9,6 +9,9 @@ Item {
             : msgContent.height + (isGrouped ? 2 : 8))
     height: implicitHeight
 
+    Component.onCompleted: console.log("DELEGATE CREATED id=" + messageId)
+    Component.onDestruction: console.log("DELEGATE DESTROYED id=" + messageId)
+
     required property int messageId
     required property string actorName
     required property string actorId
