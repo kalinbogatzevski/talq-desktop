@@ -20,7 +20,6 @@ Page {
     property bool sidebarSqueezed: false
     signal expandSidebar()
     property int activeThreadColor: 0
-    property bool usePainter: true
     property var ctxMenuData: ({})
     readonly property bool isViewingTopic: isInTopicMode && activeThreadId > 0
     // Only show typing when it's from the current conversation
@@ -412,7 +411,7 @@ Page {
     ChatPainter {
         id: chatPainter
         anchors.fill: parent
-        visible: chatRoot.usePainter && messageModel.conversationToken.length > 0
+        visible: messageModel.conversationToken.length > 0
         model: messageModel
         myUserId: auth.userId
         darkMode: Theme.darkMode
@@ -723,97 +722,8 @@ Page {
         }
     }
 
-    // Messages list — fills the content area between header and footer
-    ListView {
-        id: messageListView
-        anchors.fill: parent
-        visible: !chatRoot.usePainter
-        model: messageModel
-        clip: true
-        spacing: 2
-        topMargin: Theme.spacingNormal
-        bottomMargin: Theme.spacingLarge
-        boundsBehavior: Flickable.StopAtBounds
-        cacheBuffer: 200
-        verticalLayoutDirection: ListView.BottomToTop
-        interactive: !chatRoot.usePainter  // disable when ChatPainter is active
-        flickableDirection: Flickable.VerticalFlick
-
-        property bool autoScrolling: true
-        property int previousCount: 0
-        property bool programmaticScroll: false
-        property bool userHasScrolled: false  // true after first user interaction
-
-        function scrollToBottom() {
-            // BottomToTop: view naturally starts at bottom. No-op for initial load.
-            // For poller/send: view is already at bottom if autoScrolling is true.
-        }
-
-        Timer {
-            id: historyDebounce
-            interval: 500  // cooldown after each history load
-        }
-
-        onDraggingChanged: {
-            if (dragging) {
-                autoScrolling = false
-                userHasScrolled = true
-            }
-        }
-
-        onFlickStarted: {
-            if (!programmaticScroll) {
-                autoScrolling = false
-                userHasScrolled = true
-            }
-        }
-
-        // Removed onContentHeightChanged auto-scroll — it can cause infinite
-        // loops when positionViewAtEnd() triggers delegate loading which changes
-        // contentHeight again. Scrolling is handled by onNewMessagesAtEnd instead.
-
-        onMovingChanged: {
-            if (!moving) {
-                // BottomToTop: "at bottom" means contentY is near originY
-                var atBottom = Math.abs(contentY - originY) < 40
-                if (atBottom) autoScrolling = true
-            }
-        }
-
-        onContentYChanged: {
-            // BottomToTop: scrolling UP = contentY increasing toward contentHeight
-            // Load history when near the top (oldest messages)
-            var distFromTop = contentHeight - (contentY + height)
-            if (userHasScrolled && distFromTop < 200 && !autoScrolling
-                    && !messageModel.loading && messageModel.hasMoreHistory && count > 0
-                    && !historyDebounce.running) {
-                messageModel.loadHistory()
-                historyDebounce.start()
-            }
-        }
-
-        onCountChanged: {
-            // BottomToTop: view naturally shows newest (index 0) at bottom.
-            // No scroll needed on initial load or history append.
-            previousCount = count
-        }
-
-        ScrollBar.vertical: ScrollBar {
-            id: chatScrollBar
-            policy: ScrollBar.AlwaysOn
-            width: 6
-            contentItem: Rectangle {
-                implicitWidth: 6
-                radius: 3
-                color: Theme.textMuted
-                opacity: chatScrollBar.active ? 0.5 : 0
-                Behavior on opacity { NumberAnimation { duration: 400 } }
-            }
-            background: Item {}  // transparent track
-        }
-
-        // Welcome screen
-        Column {
+    // Welcome screen
+    Column {
             anchors.centerIn: parent
             width: Math.min(parent.width - 60, 360)
             spacing: Theme.spacingXLarge
@@ -1005,17 +915,6 @@ Page {
             }
         }
 
-        delegate: MessageBubble {
-            width: messageListView.width
-            isOwnMessage: actorId === auth.userId
-            onReplyRequested: function(msgId, author, text) {
-                chatRoot.startReply(msgId, author, text)
-            }
-            onThreadOpenRequested: function(threadId) {
-                chatRoot.openThread(threadId, "Thread")
-            }
-        }
-    }
 
     // Scroll-to-bottom floating button
     TqIconButton {
@@ -1026,20 +925,11 @@ Page {
         anchors.bottom: chatRoot.contentItem.bottom
         anchors.rightMargin: 20
         anchors.bottomMargin: 16
-        visible: chatRoot.usePainter
-            ? (!chatPainter.atBottom && messageModel.count > 0)
-            : (!messageListView.autoScrolling && messageModel.count > 0)
+        visible: !chatPainter.atBottom && messageModel.count > 0
         opacity: visible ? 1 : 0
         z: 50
         Behavior on opacity { NumberAnimation { duration: Theme.animFast } }
-        onClicked: {
-            if (chatRoot.usePainter) {
-                chatPainter.scrollToBottom()
-            } else {
-                messageListView.autoScrolling = true
-                messageListView.scrollToBottom()
-            }
-        }
+        onClicked: chatPainter.scrollToBottom()
     }
 
     Connections {
@@ -1047,22 +937,11 @@ Page {
         function onConversationTokenChanged() {
             chatRoot.closeThread()
             chatRoot.cancelPaste()
-            if (chatRoot.usePainter) {
-                chatPainter.scrollToBottom()
-            } else {
-                messageListView.autoScrolling = true
-                messageListView.previousCount = 0
-                messageListView.userHasScrolled = false
-            }
+            chatPainter.scrollToBottom()
         }
         function onNewMessagesAtEnd() {
-            if (chatRoot.usePainter) {
-                if (chatPainter.atBottom)
-                    chatPainter.scrollToBottom()
-            } else {
-                if (messageListView.count > 0 && messageListView.autoScrolling)
-                    messageListView.scrollToBottom()
-            }
+            if (chatPainter.atBottom)
+                chatPainter.scrollToBottom()
         }
         function onPasteReady(filePath, width, height) {
             pasteBar.pendingPath = filePath
