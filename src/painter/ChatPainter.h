@@ -64,6 +64,7 @@ public:
     Q_INVOKABLE void scrollToBottom();
     Q_INVOKABLE QString hitTestAt(qreal x, qreal y);
     Q_INVOKABLE QVariantMap messageAt(qreal x, qreal y);  // returns message data for context menu
+    Q_INVOKABLE void setHoveredPos(qreal x, qreal y);     // update hovered index from QML mouse position
 
 signals:
     void modelChanged();
@@ -108,6 +109,11 @@ private:
     void paintReplyQuote(QPainter *p, const MessageLayout &ml, qreal offsetY);
     void paintFileAttachment(QPainter *p, const MessageLayout &ml, qreal offsetY);
     void paintReactions(QPainter *p, const MessageLayout &ml, qreal offsetY);
+    void paintHoverBar(QPainter *p, const MessageLayout &ml, qreal offsetY);
+
+    // ── Hover bar geometry ──
+    QRectF hoverBarReactRect(const MessageLayout &ml) const;
+    QRectF hoverBarReplyRect(const MessageLayout &ml) const;
 
     // ── Image loading ──
     QImage fetchAvatar(const QString &userId);

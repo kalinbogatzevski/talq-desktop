@@ -138,6 +138,19 @@ QString ChatPainter::hitTestAt(qreal x, qreal y)
 
     const auto &ml = m_layouts[idx];
 
+    // Hover bar buttons (check first — they overlay the message)
+    if (idx == m_hoveredIndex && !ml.isSystem && ml.sendStatus != QLatin1String("sending")
+        && ml.sendStatus != QLatin1String("failed")) {
+        QRectF replyR = hoverBarReplyRect(ml);
+        if (!ml.isOwn) {
+            QRectF reactR = hoverBarReactRect(ml);
+            if (reactR.contains(canvasPos))
+                return QStringLiteral("react:%1").arg(ml.messageId);
+        }
+        if (replyR.contains(canvasPos))
+            return QStringLiteral("reply:%1:%2:%3").arg(ml.messageId).arg(ml.actorName, ml.bodyHtml);
+    }
+
     // Link
     QString link = hitTestLink(ml, canvasPos);
     if (!link.isEmpty()) return QStringLiteral("link:") + link;
@@ -154,6 +167,26 @@ QString ChatPainter::hitTestAt(qreal x, qreal y)
     }
 
     return {};
+}
+
+void ChatPainter::setHoveredPos(qreal x, qreal y)
+{
+    QPointF canvasPos(x, y + m_scrollY);
+    int idx = layoutIndexAtY(canvasPos.y());
+
+    // Don't hover system messages or sending/failed messages
+    if (idx >= 0 && idx < m_layouts.size()) {
+        const auto &ml = m_layouts[idx];
+        if (ml.isSystem || ml.sendStatus == QLatin1String("sending")
+            || ml.sendStatus == QLatin1String("failed"))
+            idx = -1;
+    }
+
+    if (idx != m_hoveredIndex) {
+        m_hoveredIndex = idx;
+        emit hoveredIndexChanged();
+        update();
+    }
 }
 
 // ═══════════════════════════════════════════════════════
@@ -370,6 +403,12 @@ void ChatPainter::paint(QPainter *painter)
             paintOwnMessage(painter, ml, offsetY);
         else
             paintOtherMessage(painter, ml, offsetY);
+
+        // Hover action bar (react + reply buttons)
+        if (i == m_hoveredIndex && !ml.isSystem
+            && ml.sendStatus != QLatin1String("sending")
+            && ml.sendStatus != QLatin1String("failed"))
+            paintHoverBar(painter, ml, offsetY);
     }
 }
 
@@ -724,6 +763,113 @@ void ChatPainter::paintReactions(QPainter *p, const MessageLayout &ml, qreal off
                      Qt::AlignCenter, count);
 
         x += pillW + pillGap;
+    }
+}
+
+// ─── Hover bar geometry ─────────────────────────────
+
+QRectF ChatPainter::hoverBarReactRect(const MessageLayout &ml) const
+{
+    const qreal btnSize = 28;
+    const qreal gap = 6;
+
+    if (ml.isOwn) {
+        // Left of bubble — single button width (reply only)
+        qreal x = ml.bubbleRect.left() - gap - btnSize;
+        qreal y = ml.bubbleRect.top() + (ml.bubbleRect.height() - btnSize) / 2.0;
+        y = qBound(ml.totalY, y, ml.totalY + ml.totalHeight - btnSize);
+        return QRectF(x, y, btnSize, btnSize);
+    } else {
+        // Right of actual content (uses dynamic contentRight)
+        qreal x = ml.contentRight + gap;
+        qreal refTop = ml.isGrouped ? ml.bodyRect.top() : (ml.nameRect.isNull() ? ml.bodyRect.top() : ml.nameRect.top());
+        qreal refBottom = ml.bodyRect.bottom();
+        qreal y = refTop + (refBottom - refTop - btnSize) / 2.0;
+        y = qBound(ml.totalY, y, ml.totalY + ml.totalHeight - btnSize);
+        return QRectF(x, y, btnSize, btnSize);
+    }
+}
+
+QRectF ChatPainter::hoverBarReplyRect(const MessageLayout &ml) const
+{
+    if (ml.isOwn) {
+        // Own messages: reply is the only button, takes the react position
+        return hoverBarReactRect(ml);
+    }
+    QRectF reactR = hoverBarReactRect(ml);
+    return QRectF(reactR.right() + 4, reactR.top(), reactR.width(), reactR.height());
+}
+
+// ─── Hover bar painting ─────────────────────────────
+
+void ChatPainter::paintHoverBar(QPainter *p, const MessageLayout &ml, qreal offsetY)
+{
+    const qreal btnSize = 28;
+    QRectF replyR = hoverBarReplyRect(ml).translated(0, offsetY);
+
+    auto drawButton = [&](const QRectF &r) {
+        p->setPen(QPen(m_theme.divider, 0.5));
+        p->setBrush(m_theme.bgSurface);
+        p->drawEllipse(r);
+    };
+
+    // --- React button (smiley) — only for other people's messages ---
+    if (!ml.isOwn) {
+    QRectF reactR = hoverBarReactRect(ml).translated(0, offsetY);
+    drawButton(reactR);
+    {
+        qreal cx = reactR.center().x();
+        qreal cy = reactR.center().y();
+        qreal scale = btnSize / 30.0;  // icons designed for 30px, we use 28
+
+        QPen iconPen(m_theme.textSecondary, 1.8 * scale, Qt::SolidLine, Qt::RoundCap);
+        p->setPen(iconPen);
+        p->setBrush(Qt::NoBrush);
+
+        // Face circle
+        p->drawEllipse(QPointF(cx, cy), 8.0 * scale, 8.0 * scale);
+
+        // Eyes (filled dots)
+        p->setPen(Qt::NoPen);
+        p->setBrush(m_theme.textSecondary);
+        p->drawEllipse(QPointF(cx - 3.0 * scale, cy - 2.0 * scale), 1.2 * scale, 1.2 * scale);
+        p->drawEllipse(QPointF(cx + 3.0 * scale, cy - 2.0 * scale), 1.2 * scale, 1.2 * scale);
+
+        // Smile arc
+        p->setPen(iconPen);
+        p->setBrush(Qt::NoBrush);
+        QPainterPath smile;
+        QRectF smileRect(cx - 4.5 * scale, cy - 0.5 * scale, 9.0 * scale, 7.0 * scale);
+        smile.arcMoveTo(smileRect, -160);
+        smile.arcTo(smileRect, -160, -220);
+        p->drawPath(smile);
+    }
+    } // end if (!ml.isOwn) for react button
+
+    // --- Reply button (curved arrow) ---
+    drawButton(replyR);
+    {
+        qreal cx = replyR.center().x();
+        qreal cy = replyR.center().y();
+        qreal scale = btnSize / 30.0;
+
+        QPen iconPen(m_theme.textSecondary, 2.0 * scale, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+        p->setPen(iconPen);
+        p->setBrush(Qt::NoBrush);
+
+        // Arrow pointing left
+        QPainterPath arrow;
+        arrow.moveTo(cx - 2.0 * scale, cy - 4.0 * scale);
+        arrow.lineTo(cx - 7.0 * scale, cy);
+        arrow.lineTo(cx - 2.0 * scale, cy + 4.0 * scale);
+        p->drawPath(arrow);
+
+        // Curved line from arrow tip to right
+        QPainterPath curve;
+        curve.moveTo(cx - 7.0 * scale, cy);
+        curve.lineTo(cx + 2.0 * scale, cy);
+        curve.quadTo(cx + 7.0 * scale, cy, cx + 7.0 * scale, cy + 5.0 * scale);
+        p->drawPath(curve);
     }
 }
 
