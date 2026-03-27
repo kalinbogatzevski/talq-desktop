@@ -62,6 +62,7 @@ public:
     int hoveredIndex() const { return m_hoveredIndex; }
 
     Q_INVOKABLE void scrollToBottom();
+    Q_INVOKABLE QString hitTestAt(qreal x, qreal y);  // returns "link:URL", "file:ID:NAME", "reaction:MSGID:EMOJI", or ""
 
 signals:
     void modelChanged();
@@ -73,6 +74,9 @@ signals:
     void contentHeightChanged();
     void visibleHeightChanged();
     void hoveredIndexChanged();
+    void linkActivated(const QString &url);
+    void fileClicked(int fileId, const QString &fileName);
+    void reactionClicked(int messageId, const QString &emoji);
 
 protected:
     void wheelEvent(QWheelEvent *event) override;
@@ -92,6 +96,8 @@ private:
     void rebuildAllLayouts();
     void clampScroll();
     int layoutIndexAtY(qreal viewportY) const;
+    QString hitTestLink(const MessageLayout &ml, const QPointF &localPos) const;
+    QString hitTestReaction(const MessageLayout &ml, const QPointF &localPos) const;
 
     // ── Painting helpers ──
     void paintDateSep(QPainter *p, const MessageLayout &ml, qreal offsetY);
@@ -119,6 +125,8 @@ private:
 
     // Mouse drag state
     bool m_dragging = false;
+    bool m_dragMoved = false;  // true if mouse moved >4px during drag
+    QPointF m_pressCanvasPos;  // press position in canvas coordinates
     qreal m_dragStartY = 0;
     qreal m_dragStartScroll = 0;
 

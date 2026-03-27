@@ -417,6 +417,52 @@ Page {
         darkMode: Theme.darkMode
         fontScale: Theme.fontScale
         clip: true
+        focus: true  // ensure it receives input events
+
+        MouseArea {
+            id: chatMouseArea
+            anchors.fill: parent
+            acceptedButtons: Qt.LeftButton | Qt.RightButton
+            hoverEnabled: true
+            property real dragStartY: 0
+            property real dragStartScroll: 0
+            property bool dragMoved: false
+            cursorShape: {
+                var hit = chatPainter.hitTestAt(mouseX, mouseY)
+                return hit.length > 0 ? Qt.PointingHandCursor : Qt.ArrowCursor
+            }
+            onPressed: function(mouse) {
+                dragStartY = mouse.y
+                dragStartScroll = chatPainter.scrollY
+                dragMoved = false
+            }
+            onPositionChanged: function(mouse) {
+                if (pressed) {
+                    var dy = dragStartY - mouse.y
+                    if (Math.abs(dy) > 4) dragMoved = true
+                    if (dragMoved) chatPainter.scrollY = dragStartScroll + dy
+                }
+            }
+            onReleased: function(mouse) {
+                if (!dragMoved && mouse.button === Qt.LeftButton) {
+                    var hit = chatPainter.hitTestAt(mouse.x, mouse.y)
+                    if (hit.startsWith("link:")) {
+                        var url = hit.substring(5)
+                        if (url.startsWith("http://") || url.startsWith("https://"))
+                            Qt.openUrlExternally(url)
+                    } else if (hit.startsWith("file:")) {
+                        var parts = hit.substring(5).split(":")
+                        messageModel.downloadFile(parseInt(parts[0]), parts.slice(1).join(":"))
+                    } else if (hit.startsWith("reaction:")) {
+                        var rparts = hit.substring(9).split(":")
+                        messageModel.addReaction(parseInt(rparts[0]), rparts.slice(1).join(":"))
+                    }
+                }
+            }
+            onWheel: function(wheel) {
+                chatPainter.scrollY = chatPainter.scrollY - wheel.angleDelta.y / 120.0 * 40.0
+            }
+        }
 
         ScrollBar {
             id: painterScrollBar
@@ -457,13 +503,8 @@ Page {
         boundsBehavior: Flickable.StopAtBounds
         cacheBuffer: 200
         verticalLayoutDirection: ListView.BottomToTop
-        // Allow mouse wheel scrolling but not drag-to-scroll,
-        // so TextEdit inside delegates can handle click-drag for text selection.
-        interactive: true
+        interactive: !chatRoot.usePainter  // disable when ChatPainter is active
         flickableDirection: Flickable.VerticalFlick
-
-        // Steal press only after a drag threshold — gives TextEdit time to grab the press first
-        pressDelay: 200
 
         property bool autoScrolling: true
         property int previousCount: 0
