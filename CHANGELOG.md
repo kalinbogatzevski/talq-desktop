@@ -1,5 +1,37 @@
 # Changelog
 
+## v0.11.0 (2026-03-27)
+
+### ChatPainter — QPainter-based Message Renderer
+- **Complete rewrite** of message rendering: replaced QML ListView + MessageBubble delegates with a single `QQuickPaintedItem` that renders all messages via QPainter
+- **50% memory reduction** — ~385MB vs ~700MB+ with the old QML delegate approach
+- **Zero delegate overhead** — only visible messages are painted (viewport culling), no QML item tree
+- **Dynamic bubble widths** — message bubbles shrink to fit content, max 75% of chat width
+- **Rich text** via QTextDocument with HTML links, mentions, word wrap
+- **Async image loading** — avatars and file previews fetched via API, cached in memory, placeholder shown while loading
+- **Inline image previews** — image attachments shown with rounded corners, click for full-screen preview
+- **File attachment pills** — non-image files shown as rounded rect with document icon + filename
+- **Reactions row** — emoji + count pills rendered inline
+- **Clickable links** — cursor changes on hover, left-click opens in browser
+- **Right-click context menu** — emoji quick-react + Copy/Reply/Delete actions, positioned at cursor with edge clamping
+- **Hover action bar** — react (others) + reply (all) buttons appear on message hover
+- **Emoji quick-react bar** — lightweight popup opens beside the smiley icon
+- **Read status** — green filled circle (read) / empty circle (delivered) with cached lastCommonRead
+- **Dark/light mode** — PainterTheme mirrors Theme.qml, auto-updates on toggle
+- **Scroll** — mouse wheel + drag-to-scroll via QML MouseArea overlay
+- **Date separators** — pill-style day headers between messages
+- **System messages** — centered italic text for calls, joins, etc.
+- **Message grouping** — consecutive same-author messages within 5 minutes share avatar/name
+
+### Bug Fixes
+- **Read status broken since v0.9.x** — `refreshLatest()` wasn't reading `X-Chat-Last-Common-Read` header. Fixed + cached in SQLite per conversation for instant status on app restart.
+- **Empty green bars** — own messages with no text/file no longer render as tiny bubbles
+
+### Cleanup
+- Removed QML ListView + MessageBubble delegate path entirely
+- MessageBubble.qml removed from QML module (file kept for reference)
+- 130 lines of legacy toggle code removed
+
 ## v0.9.5 (2026-03-26)
 
 ### Video Call Fixes
