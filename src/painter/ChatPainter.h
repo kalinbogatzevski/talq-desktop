@@ -62,7 +62,8 @@ public:
     int hoveredIndex() const { return m_hoveredIndex; }
 
     Q_INVOKABLE void scrollToBottom();
-    Q_INVOKABLE QString hitTestAt(qreal x, qreal y);  // returns "link:URL", "file:ID:NAME", "reaction:MSGID:EMOJI", or ""
+    Q_INVOKABLE QString hitTestAt(qreal x, qreal y);
+    Q_INVOKABLE QVariantMap messageAt(qreal x, qreal y);  // returns message data for context menu
 
 signals:
     void modelChanged();

@@ -21,6 +21,7 @@ Page {
     signal expandSidebar()
     property int activeThreadColor: 0
     property bool usePainter: true
+    property var ctxMenuData: ({})
     readonly property bool isViewingTopic: isInTopicMode && activeThreadId > 0
     // Only show typing when it's from the current conversation
     readonly property bool isTyping: signaling.typingUser.length > 0
@@ -458,6 +459,27 @@ Page {
                         messageModel.addReaction(parseInt(rparts[0]), rparts.slice(1).join(":"))
                     }
                 }
+                // Right-click → context menu
+                if (!dragMoved && mouse.button === Qt.RightButton) {
+                    var msg = chatPainter.messageAt(mouse.x, mouse.y)
+                    if (msg.messageId > 0) {
+                        ctxMenuData = msg
+                        var popW = 220
+                        var popH = msg.isOwn ? 260 : 230
+                        // Popup parent = chatPainter, so x/y relative to chatPainter
+                        // mouse.x/y already relative to chatMouseArea which fills chatPainter
+                        ctxMenu.x = mouse.x
+                        ctxMenu.y = mouse.y
+                        ctxMenu.open()
+                        // After open, clamp if overflowing
+                        if (ctxMenu.x + ctxMenu.width > chatPainter.width)
+                            ctxMenu.x = mouse.x - ctxMenu.width
+                        if (ctxMenu.y + ctxMenu.height > chatPainter.height)
+                            ctxMenu.y = mouse.y - ctxMenu.height
+                        ctxMenu.x = Math.max(4, ctxMenu.x)
+                        ctxMenu.y = Math.max(4, ctxMenu.y)
+                    }
+                }
             }
             onWheel: function(wheel) {
                 chatPainter.scrollY = chatPainter.scrollY - wheel.angleDelta.y / 120.0 * 40.0
@@ -487,6 +509,91 @@ Page {
                 Behavior on opacity { NumberAnimation { duration: 400 } }
             }
             background: Item {}
+        }
+    }
+
+    // ═══ Context menu for ChatPainter messages ═══
+    Popup {
+        id: ctxMenu
+        parent: chatPainter
+        width: ctxCol.width + 14
+        height: ctxCol.height + 10
+        padding: 5
+        modal: false
+        closePolicy: Popup.CloseOnPressOutside | Popup.CloseOnEscape
+        Overlay.modal: Rectangle { color: "transparent" }
+        Overlay.modeless: Rectangle { color: "transparent" }
+        background: Rectangle {
+            radius: 10
+            color: Theme.darkMode ? "#262b34" : "#fafbfc"
+            border.color: Theme.darkMode ? "#363c48" : "#dde0e4"
+            border.width: 1
+            Rectangle { anchors.fill: parent; anchors.margins: -3; radius: 13; color: "transparent"; border.color: Qt.rgba(0,0,0,0.04); border.width: 2; z: -2 }
+            Rectangle { anchors.fill: parent; anchors.margins: -1; radius: 11; color: "transparent"; border.color: Qt.rgba(0,0,0,0.12); border.width: 1; z: -1 }
+        }
+        enter: Transition { NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 100; easing.type: Easing.OutCubic } }
+        exit: Transition { NumberAnimation { property: "opacity"; from: 1; to: 0; duration: 60 } }
+
+        TextEdit { id: ctxClipHelper; visible: false }
+
+        ColumnLayout {
+            id: ctxCol
+            spacing: 0
+
+            // Emoji quick-react row
+            Rectangle {
+                Layout.fillWidth: true; Layout.margins: 2
+                implicitWidth: ctxEmojiRow.width + 12; height: 38; radius: 8
+                color: Theme.darkMode ? Qt.rgba(1,1,1,0.06) : Qt.rgba(0,0,0,0.035)
+                Row {
+                    id: ctxEmojiRow; anchors.centerIn: parent; spacing: 2
+                    Repeater {
+                        model: ["\uD83D\uDC4D", "\u2764\uFE0F", "\uD83D\uDE02", "\uD83D\uDE2E", "\uD83D\uDE22", "\uD83C\uDF89"]
+                        Rectangle {
+                            width: 30; height: 30; radius: 8
+                            color: ctxEmoMa.containsMouse ? (Theme.darkMode ? Qt.rgba(1,1,1,0.16) : Qt.rgba(0,0,0,0.08)) : "transparent"
+                            Label { anchors.centerIn: parent; text: modelData; font.pixelSize: 17; scale: ctxEmoMa.containsMouse ? 1.25 : 1.0; Behavior on scale { NumberAnimation { duration: 100; easing.type: Easing.OutBack } } }
+                            MouseArea { id: ctxEmoMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: { messageModel.addReaction(ctxMenuData.messageId, modelData); ctxMenu.close() } }
+                        }
+                    }
+                }
+            }
+
+            Rectangle { Layout.fillWidth: true; Layout.leftMargin: 6; Layout.rightMargin: 6; Layout.topMargin: 4; Layout.bottomMargin: 4; height: 1; color: Theme.darkMode ? Qt.rgba(1,1,1,0.10) : Qt.rgba(0,0,0,0.08) }
+
+            // Action items
+            Repeater {
+                model: [
+                    { icon: "\u2B07", label: "Download", action: "download", ownerOnly: false, fileOnly: true },
+                    { icon: "\u2601", label: "Open in Nextcloud", action: "openincloud", ownerOnly: false, fileOnly: true },
+                    { icon: "\uD83D\uDCCB", label: "Copy", action: "copy", ownerOnly: false, fileOnly: false },
+                    { icon: "\u21A9", label: "Reply", action: "reply", ownerOnly: false, fileOnly: false },
+                    { icon: "\uD83D\uDDD1", label: "Delete", action: "delete", ownerOnly: true, fileOnly: false }
+                ]
+                Rectangle {
+                    Layout.fillWidth: true; Layout.leftMargin: 2; Layout.rightMargin: 2
+                    width: 195; height: 32; radius: 6
+                    color: ctxActMa.containsMouse ? (modelData.action === "delete" ? Qt.rgba(Theme.danger.r, Theme.danger.g, Theme.danger.b, 0.15) : (Theme.darkMode ? Qt.rgba(1,1,1,0.12) : Qt.rgba(0,0,0,0.07))) : "transparent"
+                    visible: (!modelData.ownerOnly || ctxMenuData.isOwn) && (!modelData.fileOnly || ctxMenuData.hasFile)
+                    Row {
+                        anchors.verticalCenter: parent.verticalCenter; anchors.left: parent.left; anchors.leftMargin: 10; spacing: 10
+                        Label { text: modelData.icon; font.pixelSize: 14; width: 20; horizontalAlignment: Text.AlignHCenter; anchors.verticalCenter: parent.verticalCenter; color: modelData.action === "delete" ? Theme.danger : (ctxActMa.containsMouse ? Theme.textPrimary : Theme.textSecondary) }
+                        Label { text: modelData.label; font.pixelSize: 13; anchors.verticalCenter: parent.verticalCenter; color: modelData.action === "delete" ? Theme.danger : (ctxActMa.containsMouse ? Theme.textPrimary : Theme.textSecondary) }
+                    }
+                    MouseArea {
+                        id: ctxActMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            ctxMenu.close()
+                            var d = ctxMenuData
+                            if (modelData.action === "download") messageModel.downloadFile(d.fileId, d.fileName)
+                            else if (modelData.action === "openincloud") Qt.openUrlExternally(messageModel.fileLink(d.fileId))
+                            else if (modelData.action === "copy") { ctxClipHelper.text = d.messageText.replace(/<[^>]*>/g, ""); ctxClipHelper.selectAll(); ctxClipHelper.copy() }
+                            else if (modelData.action === "reply") chatRoot.startReply(d.messageId, d.actorName, d.messageText)
+                            else if (modelData.action === "delete") messageModel.deleteMessage(d.messageId)
+                        }
+                    }
+                }
+            }
         }
     }
 
