@@ -2,6 +2,7 @@
 #include "models/MessageListModel.h"
 #include <QFontMetrics>
 #include <QTextDocument>
+#include <QRegularExpression>
 #include <QtMath>
 
 std::shared_ptr<QTextDocument> LayoutEngine::createBodyDoc(
@@ -105,14 +106,55 @@ MessageLayout LayoutEngine::computeLayout(
 
     // ── Own message ──
     if (ml.isOwn) {
-        qreal bubbleX = width - bubbleMaxWidth - margin;
-        qreal bubbleInnerW = bubbleMaxWidth - 2 * PainterTheme::spacingNormal;
+        // Skip empty own messages (no text, no file, no reply) — prevents tiny green bar
+        QString strippedBody = ml.bodyHtml;
+        strippedBody.remove(QRegularExpression(QStringLiteral("<[^>]*>")));
+        strippedBody = strippedBody.trimmed();
+        if (strippedBody.isEmpty() && !ml.hasFile && ml.replyToText.isEmpty()) {
+            ml.totalHeight = ml.showDateSep ? (y - startY) : 0;
+            return ml;
+        }
+
+        qreal maxInnerW = bubbleMaxWidth - 2 * PainterTheme::spacingNormal;
+
+        // First pass: measure content to find actual needed width
+        // Body text — layout with max width for wrapping, then get ideal width
+        ml.bodyDoc = createBodyDoc(ml.bodyHtml, maxInnerW, theme);
+        qreal bodyIdealW = ml.bodyDoc->idealWidth();
+        qreal bodyH = ml.bodyDoc->size().height();
+
+        // Timestamp
+        QFontMetrics fmTime(theme.timeFont());
+        int timeW = fmTime.horizontalAdvance(ml.timeString) + 20;
+        int timeH = fmTime.height();
+
+        // Determine actual bubble inner width: widest of body, time, quote, file
+        qreal neededW = qMax(bodyIdealW, (qreal)timeW);
+        if (!ml.replyToText.isEmpty()) {
+            QFontMetrics fmTiny(theme.timeFont());
+            qreal quoteTextW = fmTiny.horizontalAdvance(ml.replyToAuthor + ": " + ml.replyToText) + 20;
+            neededW = qMax(neededW, qMin(quoteTextW, maxInnerW));
+        }
+        if (ml.hasFile) neededW = maxInnerW; // files use full width
+        if (!ml.reactions.isEmpty()) neededW = qMax(neededW, 100.0);
+
+        // Clamp: min 80, max bubbleMaxWidth inner
+        qreal bubbleInnerW = qBound(80.0, neededW + 2, maxInnerW);
+        qreal actualBubbleW = bubbleInnerW + 2 * PainterTheme::spacingNormal;
+        qreal bubbleX = width - actualBubbleW - margin;
+
+        // Re-layout body with actual width (may differ from max)
+        if (qAbs(bubbleInnerW - maxInnerW) > 1) {
+            ml.bodyDoc = createBodyDoc(ml.bodyHtml, bubbleInnerW, theme);
+            bodyH = ml.bodyDoc->size().height();
+        }
+
         qreal innerY = y + 7; // top padding inside bubble
 
         // Reply quote
         if (!ml.replyToText.isEmpty()) {
             QFontMetrics fmTiny(theme.timeFont());
-            int quoteH = fmTiny.height() * 2 + 12; // author + text + padding
+            int quoteH = fmTiny.height() * 2 + 12;
             ml.quoteRect = QRectF(
                 bubbleX + PainterTheme::spacingNormal,
                 innerY,
@@ -136,8 +178,6 @@ MessageLayout LayoutEngine::computeLayout(
         }
 
         // Body text
-        ml.bodyDoc = createBodyDoc(ml.bodyHtml, bubbleInnerW, theme);
-        qreal bodyH = ml.bodyDoc->size().height();
         ml.bodyRect = QRectF(
             bubbleX + PainterTheme::spacingNormal,
             innerY,
@@ -158,11 +198,8 @@ MessageLayout LayoutEngine::computeLayout(
         }
 
         // Timestamp row
-        QFontMetrics fmTime(theme.timeFont());
-        int timeW = fmTime.horizontalAdvance(ml.timeString) + 20; // room for status icon
-        int timeH = fmTime.height();
         ml.timeRect = QRectF(
-            bubbleX + bubbleMaxWidth - PainterTheme::spacingNormal - timeW,
+            bubbleX + actualBubbleW - PainterTheme::spacingNormal - timeW,
             innerY,
             timeW,
             timeH
@@ -170,7 +207,8 @@ MessageLayout LayoutEngine::computeLayout(
         innerY += timeH + 7; // bottom padding
 
         // Bubble rect
-        ml.bubbleRect = QRectF(bubbleX, y, bubbleMaxWidth, innerY - y);
+        ml.bubbleRect = QRectF(bubbleX, y, actualBubbleW, innerY - y);
+        ml.contentRight = bubbleX; // own messages: hover bar goes LEFT of bubble
 
         y = innerY;
     }
@@ -193,19 +231,49 @@ MessageLayout LayoutEngine::computeLayout(
         }
 
         contentX = margin + avatarW;
-        qreal contentW = bubbleMaxWidth - avatarW - margin;
+        qreal maxContentW = bubbleMaxWidth - avatarW - margin;
+
+        // First pass: measure body to get ideal width
+        ml.bodyDoc = createBodyDoc(ml.bodyHtml, maxContentW, theme);
+        qreal bodyIdealW = ml.bodyDoc->idealWidth();
+        qreal bodyH = ml.bodyDoc->size().height();
+
+        // Measure name + time width
+        QFontMetrics fmName(theme.nameFont());
+        QFontMetrics fmTime(theme.timeFont());
+        qreal nameTimeW = 0;
+        if (!ml.isGrouped)
+            nameTimeW = fmName.horizontalAdvance(ml.actorName) + PainterTheme::spacingSmall + fmTime.horizontalAdvance(ml.timeString);
+
+        // Dynamic width: widest element, clamped to max
+        qreal neededW = qMax(bodyIdealW, nameTimeW);
+        if (!ml.replyToText.isEmpty()) {
+            qreal quoteTextW = fmTime.horizontalAdvance(ml.replyToAuthor + ": " + ml.replyToText) + 20;
+            neededW = qMax(neededW, qMin(quoteTextW, maxContentW));
+        }
+        if (ml.hasFile) neededW = maxContentW;
+        if (!ml.reactions.isEmpty()) neededW = qMax(neededW, 100.0);
+        if (!ml.isGrouped) {
+            qreal groupedTimeW = fmTime.horizontalAdvance(ml.timeString);
+            neededW = qMax(neededW, groupedTimeW);
+        }
+
+        qreal contentW = qBound(80.0, neededW + 2, maxContentW);
+
+        // Re-layout body if width changed
+        if (qAbs(contentW - maxContentW) > 1) {
+            ml.bodyDoc = createBodyDoc(ml.bodyHtml, contentW, theme);
+            bodyH = ml.bodyDoc->size().height();
+        }
 
         // Name + time row (non-grouped)
         if (!ml.isGrouped) {
-            QFontMetrics fmName(theme.nameFont());
             int nameH = fmName.height();
             ml.nameRect = QRectF(contentX, y, contentW, nameH);
-            // Time is placed after name text
-            QFontMetrics fmTime(theme.timeFont());
             int nameTextW = fmName.horizontalAdvance(ml.actorName);
             ml.timeRect = QRectF(
                 contentX + nameTextW + PainterTheme::spacingSmall,
-                y + (nameH - fmTime.height()) / 2.0, // vertically center with name
+                y + (nameH - fmTime.height()) / 2.0,
                 fmTime.horizontalAdvance(ml.timeString),
                 fmTime.height()
             );
@@ -214,8 +282,7 @@ MessageLayout LayoutEngine::computeLayout(
 
         // Reply quote
         if (!ml.replyToText.isEmpty()) {
-            QFontMetrics fmTiny(theme.timeFont());
-            int quoteH = fmTiny.height() * 2 + 12;
+            int quoteH = fmTime.height() * 2 + 12;
             ml.quoteRect = QRectF(contentX, y, contentW, quoteH);
             y += quoteH + 4;
         }
@@ -229,8 +296,6 @@ MessageLayout LayoutEngine::computeLayout(
         }
 
         // Body text
-        ml.bodyDoc = createBodyDoc(ml.bodyHtml, contentW, theme);
-        qreal bodyH = ml.bodyDoc->size().height();
         ml.bodyRect = QRectF(contentX, y, contentW, bodyH);
         y += bodyH;
 
@@ -252,6 +317,7 @@ MessageLayout LayoutEngine::computeLayout(
             y += fmTime.height() + 4;
         }
 
+        ml.contentRight = contentX + contentW; // other messages: hover bar goes RIGHT of content
         y += 2; // bottom padding
     }
 
