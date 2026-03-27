@@ -416,7 +416,6 @@ Page {
         bottomMargin: Theme.spacingLarge
         boundsBehavior: Flickable.StopAtBounds
         cacheBuffer: 200
-        verticalLayoutDirection: ListView.BottomToTop
 
         property bool autoScrolling: true
         property int previousCount: 0
@@ -424,11 +423,21 @@ Page {
         property bool userHasScrolled: false  // true after first user interaction
 
         function scrollToBottom() {
-            // BottomToTop: index 0 is at the bottom. Just go to origin.
             if (count === 0) return
             programmaticScroll = true
-            contentY = originY
-            programmaticScroll = false
+            var y = contentHeight - height
+            if (y > 0) contentY = y
+            scrollSettleTimer.restart()
+        }
+
+        Timer {
+            id: scrollSettleTimer
+            interval: 100
+            onTriggered: {
+                var y = messageListView.contentHeight - messageListView.height
+                if (y > 0) messageListView.contentY = y
+                messageListView.programmaticScroll = false
+            }
         }
 
         Timer {
@@ -456,17 +465,13 @@ Page {
 
         onMovingChanged: {
             if (!moving) {
-                // BottomToTop: "at bottom" means contentY is near originY
-                var atBottom = Math.abs(contentY - originY) < 40
+                var atBottom = (contentY + height >= contentHeight - 40)
                 if (atBottom) autoScrolling = true
             }
         }
 
         onContentYChanged: {
-            // BottomToTop: scrolling UP = contentY increasing toward contentHeight
-            // Load history when near the top (oldest messages)
-            var distFromTop = contentHeight - (contentY + height)
-            if (userHasScrolled && distFromTop < 200 && !autoScrolling
+            if (userHasScrolled && contentY < 200 && !autoScrolling
                     && !messageModel.loading && messageModel.hasMoreHistory && count > 0
                     && !historyDebounce.running) {
                 messageModel.loadHistory()
@@ -475,8 +480,10 @@ Page {
         }
 
         onCountChanged: {
-            // BottomToTop: view naturally shows newest (index 0) at bottom.
-            // No scroll needed on initial load or history append.
+            if (count > previousCount && previousCount > 0 && !autoScrolling) {
+                var added = count - previousCount
+                positionViewAtIndex(added, ListView.Beginning)
+            }
             previousCount = count
         }
 
