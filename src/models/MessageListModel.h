@@ -52,6 +52,9 @@ public:
     };
 
     explicit MessageListModel(ApiClient *api, MessageCache *cache, QObject *parent = nullptr);
+
+    /// Public accessor so ChatPainter can make authenticated requests
+    ApiClient *api() const { return m_api; }
     ~MessageListModel() override;
 
     int rowCount(const QModelIndex &parent = {}) const override;

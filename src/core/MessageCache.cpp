@@ -61,6 +61,20 @@ void MessageCache::loadThreadIndex(const QString &token)
     }, Qt::QueuedConnection);
 }
 
+void MessageCache::saveLastCommonRead(const QString &token, int messageId)
+{
+    QMetaObject::invokeMethod(m_worker, "doSaveLastCommonRead", Qt::QueuedConnection,
+        Q_ARG(QString, token), Q_ARG(int, messageId));
+}
+
+int MessageCache::loadLastCommonRead(const QString &token)
+{
+    int result = 0;
+    QMetaObject::invokeMethod(m_worker, "doLoadLastCommonRead", Qt::BlockingQueuedConnection,
+        Q_RETURN_ARG(int, result), Q_ARG(QString, token));
+    return result;
+}
+
 void MessageCache::clearConversation(const QString &token)
 {
     QMetaObject::invokeMethod(m_worker, "doClearConversation", Qt::QueuedConnection,
@@ -304,4 +318,22 @@ void MessageCacheWorker::doClearThreadIndex(const QString &token)
     q.prepare("DELETE FROM thread_index WHERE token = ?");
     q.addBindValue(token);
     q.exec();
+}
+
+void MessageCacheWorker::doSaveLastCommonRead(const QString &token, int messageId)
+{
+    QSqlQuery q(m_db);
+    q.prepare("INSERT OR REPLACE INTO cache_meta (key, value) VALUES (?, ?)");
+    q.addBindValue("lastCommonRead_" + token);
+    q.addBindValue(messageId);
+    q.exec();
+}
+
+int MessageCacheWorker::doLoadLastCommonRead(const QString &token)
+{
+    QSqlQuery q(m_db);
+    q.prepare("SELECT value FROM cache_meta WHERE key = ?");
+    q.addBindValue("lastCommonRead_" + token);
+    q.exec();
+    return q.next() ? q.value(0).toInt() : 0;
 }

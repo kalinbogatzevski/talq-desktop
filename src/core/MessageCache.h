@@ -32,6 +32,8 @@ public:
     void saveMessages(const QString &token, const QVector<Message> &messages);
     void saveThreadIndex(const QString &token, const QVector<QJsonObject> &threads);
     void loadThreadIndex(const QString &token);
+    void saveLastCommonRead(const QString &token, int messageId);
+    int loadLastCommonRead(const QString &token);
 
 signals:
     void messagesLoaded(const QString &token, const QVector<Message> &messages);
@@ -66,6 +68,8 @@ public:
     Q_INVOKABLE void doSaveThreadIndex(const QString &token, const QVector<QJsonObject> &threads);
     Q_INVOKABLE QVector<QJsonObject> doLoadThreadIndex(const QString &token);
     Q_INVOKABLE void doClearThreadIndex(const QString &token);
+    Q_INVOKABLE void doSaveLastCommonRead(const QString &token, int messageId);
+    Q_INVOKABLE int doLoadLastCommonRead(const QString &token);
 
 private:
     QSqlDatabase m_db;

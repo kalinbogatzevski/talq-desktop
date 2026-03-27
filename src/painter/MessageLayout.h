@@ -47,6 +47,12 @@ struct MessageLayout
     // ── Reactions data ──
     QString reactions;
 
+    // ── File attachment data ──
+    bool hasFile = false;
+    int fileId = 0;
+    QString fileName;
+    QString fileMime;
+
     // ── Geometry (absolute Y in document space) ──
     qreal totalY = 0;
     qreal totalHeight = 0;
@@ -73,7 +79,10 @@ struct MessageLayout
     // Reply quote (if present) — painted but not interactive yet
     QRectF quoteRect;
 
-    // Reactions bar — space reserved, not painted in Phase 3
+    // File attachment area
+    QRectF fileRect;        // image preview or file pill rect
+
+    // Reactions bar
     QRectF reactBarRect;
 
     // ── Cached rich-text document for body ──

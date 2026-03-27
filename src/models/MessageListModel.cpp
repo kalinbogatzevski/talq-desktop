@@ -226,7 +226,7 @@ void MessageListModel::setConversationToken(const QString &token)
     m_token = token;
     m_oldestMessageId = 0;
     m_threadId = 0;
-    m_lastCommonRead = 0;
+    m_lastCommonRead = m_cache ? m_cache->loadLastCommonRead(token) : 0;
     m_loading = false;
     m_hasMoreHistory = true;
     emit hasMoreHistoryChanged();
@@ -436,6 +436,11 @@ void MessageListModel::refreshLatest()
         if (m_refreshReply == reply) m_refreshReply = nullptr;
         reply->deleteLater();
         if (m_token != currentToken) return;
+
+        // Read receipt header — must be read before error check
+        QByteArray lastCommonRead = reply->rawHeader("X-Chat-Last-Common-Read");
+        if (!lastCommonRead.isEmpty())
+            onLastCommonReadChanged(lastCommonRead.toInt());
 
         if (reply->error() != QNetworkReply::NoError) {
             startPoller();
@@ -884,6 +889,10 @@ void MessageListModel::onLastCommonReadChanged(int messageId)
 
     int oldRead = m_lastCommonRead;
     m_lastCommonRead = messageId;
+
+    // Persist to cache
+    if (m_cache && !m_token.isEmpty())
+        m_cache->saveLastCommonRead(m_token, messageId);
 
     // Only emit dataChanged for messages that actually changed status
     int first = -1, last = -1;
