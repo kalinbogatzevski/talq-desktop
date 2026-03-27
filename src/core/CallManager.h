@@ -89,6 +89,7 @@ private:
     int videoDeviceIndex() const;
     bool preferHd1080() const;
     void broadcastMediaState(const QString &media, bool enabled);
+    void forceReconnectPublisher();
     void updateCallFlags();
 
     ApiClient *m_api;
