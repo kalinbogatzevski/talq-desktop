@@ -142,9 +142,9 @@ QString ChatPainter::hitTestAt(qreal x, qreal y)
     QString link = hitTestLink(ml, canvasPos);
     if (!link.isEmpty()) return QStringLiteral("link:") + link;
 
-    // File
+    // File — include MIME for image detection
     if (ml.hasFile && !ml.fileRect.isNull() && ml.fileRect.contains(canvasPos))
-        return QStringLiteral("file:%1:%2").arg(ml.fileId).arg(ml.fileName);
+        return QStringLiteral("file:%1:%2:%3").arg(ml.fileId).arg(ml.fileMime, ml.fileName);
 
     // Reaction
     if (!ml.reactions.isEmpty() && !ml.reactBarRect.isNull()) {
