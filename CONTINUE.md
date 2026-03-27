@@ -1,5 +1,66 @@
 # TalQ v0.9.x Continue Prompt
 
+## Next: ChatPainter — QPainter-based message rendering
+
+### Decision
+Replace QML `ListView + MessageBubble` with a single `QQuickPaintedItem` that renders messages via QPainter. This is the Telegram Desktop approach — zero delegate overhead, perfect scroll, ~50MB instead of ~700MB.
+
+### Why
+QML ListView with complex delegates (MessageBubble = ~80 QML items each) has fundamental performance issues:
+- `positionViewAtEnd()` freezes because it instantiates ALL delegates
+- BottomToTop layout works but has positioning/margin quirks
+- Loaders reduce delegate count but not enough to prevent freeze
+- Memory is 700MB+ for 50 messages — QML scene graph overhead
+- After extensive debugging (2026-03-27), concluded QML ListView is not suitable for chat message rendering
+
+### Architecture
+```
+Keep existing QML              New C++ component
+├── ConversationList.qml       ChatPainter : QQuickPaintedItem
+├── ChatView.qml ──────→        - paint() draws visible messages
+│   └── ChatPainter {}           - pre-computed heights (QFontMetrics)
+├── MessageComposer.qml         - scroll via QScrollBar / Flickable
+├── CallWindow.qml               - takes MessageListModel
+└── Settings, Login, etc.        - handles click/hover/right-click
+```
+
+### Files
+- Create: `src/core/ChatPainter.cpp` + `.h` (~600 lines)
+- Modify: `src/qml/ChatView.qml` (replace ListView with ChatPainter)
+- Delete: `src/qml/MessageBubble.qml` (no longer needed)
+- Untouched: MessageListModel, all backend C++, all other QML
+
+### Reference
+- Telegram Desktop: custom QWidget, paints messages in paintEvent()
+- Implementation plan: `docs/superpowers/plans/2026-03-27-chat-history-refactor.md`
+
+## What was done (2026-03-27)
+
+### Chat history debugging (extensive)
+- **Root cause identified**: `positionViewAtEnd()` / `positionViewAtIndex()` forces Qt to instantiate ALL MessageBubble delegates (~80 QML items each × 50 = 4000 items = freeze)
+- **Loaders added** to MessageBubble: avatar, reply, file, reactions wrapped in Loader components (Task 3 of refactor plan)
+- **TopToBottom revert attempted** but `positionViewAtIndex` still freezes even with Loaders
+- **BottomToTop kept** as interim — no freeze, positioning 90% correct (last message slightly clipped)
+- **Decision**: abandon QML ListView for messages, implement QPainter-based ChatPainter
+
+### Janus H264 fix
+- Janus videoroom plugin configured with `videocodec = "vp8,h264"` (was vp8-only)
+- Root cause of "Unsupported codec 'none'" error in Janus logs
+- Docker container recreated with custom `janus.plugin.videoroom.jcfg`
+- SSH key from storm.123net.link copied to access ncloud.123net.link from office
+
+### C++ fixes (from review agents)
+- Poller: exponential backoff on 401/403/5xx, stop on fatal errors
+- Poller: guard against lastKnown=0 downloading entire history
+- Message trim: 200 message cap per conversation
+- m_messageIds consistency in postAndReplace/deleteMessage
+- refreshLatest after file share
+- cancelAll() safe iteration
+- Cross-thread image providers: moveToThread to main thread
+- PushClient: WebSocket error handler, auth failure reconnect
+- m_hasMoreHistory reset in setThreadId/setHideThreadMessages
+- ConversationItem required property notificationLevel
+
 ## What was done (v0.9.5+, 2026-03-27)
 
 ### Video call bugs — ALL FIXED
