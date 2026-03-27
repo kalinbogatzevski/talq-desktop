@@ -234,33 +234,22 @@ Item {
             }
         }
 
-        // Right-click → context popup, corner anchored to cursor
-        MouseArea {
-            anchors.fill: parent
+        // Right-click → context popup (TapHandler doesn't steal left-click from TextEdit)
+        TapHandler {
             acceptedButtons: Qt.RightButton
-            onClicked: function(mouse) {
-                var winPos = mapToItem(null, mouse.x, mouse.y)
+            onTapped: function(eventPoint) {
+                var winPos = msgContent.mapToItem(null, eventPoint.position.x, eventPoint.position.y)
                 var winW = bubble.Window.width || 900
                 var winH = bubble.Window.height || 700
                 var popW = 220
                 var popH = isOwnMessage ? 290 : 260
 
-                // Choose which corner of the popup touches the cursor
-                var px, py
-                var spaceRight = winW - winPos.x
-                var spaceBelow = winH - winPos.y
-
-                // X: expand right if space, otherwise left
-                px = (spaceRight >= popW) ? winPos.x : (winPos.x - popW)
-
-                // Y: expand down if space, otherwise up
-                py = (spaceBelow >= popH) ? winPos.y : (winPos.y - popH)
-
-                // Clamp to window bounds
+                var px = (winW - winPos.x >= popW) ? winPos.x : (winPos.x - popW)
+                var py = (winH - winPos.y >= popH) ? winPos.y : (winPos.y - popH)
                 px = Math.max(4, Math.min(px, winW - popW - 4))
                 py = Math.max(4, Math.min(py, winH - popH - 4))
 
-                var local = mapFromItem(null, px, py)
+                var local = msgContent.mapFromItem(null, px, py)
                 msgPopupLoader.openAt(local.x, local.y)
             }
         }
