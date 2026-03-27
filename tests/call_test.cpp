@@ -532,33 +532,120 @@ private:
         });
     }
 
-    void startVideoRenegotiation()
+    // forceReconnect a peer: stop pipeline, restart with video, re-request subscriber
+    void forceReconnectWithVideo(TestPeer &peer)
     {
-        qDebug() << "\n===== BIDIRECTIONAL VIDEO TEST =====";
+        peer.log("forceReconnect: stopping pipeline...");
+        if (peer.pipeline) {
+            peer.pipeline->stop();
+            peer.pipeline->deleteLater();
+            peer.pipeline = nullptr;
+        }
+        // Stop subscriber too — MCU will re-offer after new publisher
+        if (peer.subscribePipeline) {
+            peer.subscribePipeline->stop();
+            peer.subscribePipeline->deleteLater();
+            peer.subscribePipeline = nullptr;
+        }
 
-        // Step 1: User A enables camera
-        m_peerA.setPhase(VideoRenegotiatingA);
-        installVideoOfferHandler(m_peerA);
-
-        m_peerA.log("Calling enableCamera(0, false) -- videotestsrc 720p");
-        m_peerA.pipeline->enableCamera(0, false);
-
-        // Step 2: After 2s, User B also enables camera
-        QTimer::singleShot(2000, this, [this]() {
-            if (m_peerB.phase == TearingDown) return;
-            qDebug() << "\n--- User B enabling camera ---";
-            m_peerB.setPhase(VideoRenegotiatingB);
-            installVideoOfferHandler(m_peerB);
-
-            m_peerB.log("Calling enableCamera(0, false) -- videotestsrc 720p");
-            m_peerB.pipeline->enableCamera(0, false);
+        // Update call flags to include VIDEO
+        QJsonObject flagsBody;
+        flagsBody["flags"] = 7;  // IN_CALL + AUDIO + VIDEO
+        peer.api->put("apps/spreed/api/v4/call/" + m_token, flagsBody,
+            [&peer](bool ok, const QJsonObject &, int) {
+            peer.log(ok ? "Call flags updated to 7 (WITH_VIDEO)" : "WARNING: flags update failed");
         });
 
-        // Safety: if both renegotiations don't complete in 20s, proceed anyway
-        QTimer::singleShot(20000, this, [this]() {
-            if (m_peerA.phase == VideoRenegotiatingA || m_peerA.phase == VideoRenegotiatingB
-                || m_peerB.phase == VideoRenegotiatingA || m_peerB.phase == VideoRenegotiatingB) {
-                qWarning() << "Video renegotiation timed out, checking frames anyway...";
+        // Create new pipeline with video from the start
+        peer.pipeline = new PeerPipeline(this);
+
+        connect(peer.pipeline, &PeerPipeline::localOfferReady, this,
+                [this, &peer](const QString &sdp) {
+            peer.log("forceReconnect offer ready (" + QString::number(sdp.length()) + " chars)");
+            peer.videoRenegSdpValid = validateVideoSdp(peer, sdp);
+            peer.signaling->sendOffer(peer.sessionId, sdp, "mcu-test");
+        });
+
+        connect(peer.pipeline, &PeerPipeline::localAnswerReady, this,
+                [this, &peer](const QString &sdp) {
+            peer.signaling->sendAnswer(peer.sessionId, sdp, "mcu-test");
+        });
+
+        connect(peer.pipeline, &PeerPipeline::iceCandidateReady, this,
+                [this, &peer](const QString &cand, int mline, const QString &mid) {
+            QJsonObject c;
+            c["candidate"] = cand;
+            c["sdpMLineIndex"] = mline;
+            c["sdpMid"] = mid;
+            peer.signaling->sendCandidate(peer.sessionId, c, "mcu-test");
+        });
+
+        connect(peer.pipeline, &PeerPipeline::iceStateChanged, this,
+                [this, &peer](const QString &state) {
+            peer.log("forceReconnect ICE: " + state);
+            if (state == "connected" || state == "completed") {
+                peer.iceConnected = true;
+                peer.videoAnswerReceived = true;  // MCU answered our offer
+                // Request subscriber stream for remote peer's video
+                if (!peer.remoteSessionId.isEmpty()) {
+                    peer.log("Requesting subscriber for " + peer.remoteSessionId.left(20));
+                    peer.signaling->requestOffer(peer.remoteSessionId, "video");
+                }
+                checkBothVideoRenegotiated();
+            }
+        });
+
+        connect(peer.pipeline, &PeerPipeline::error, this, [&peer](const QString &err) {
+            peer.log("forceReconnect error: " + err);
+        });
+
+        // Start with video enabled (withVideo=true via TALQ_TEST_AUDIO using videotestsrc)
+        // PeerPipeline doesn't have a withVideo param in start(), so we start then enableCamera
+        bool ok = peer.pipeline->start(peer.stunServer, peer.turnServers);
+        if (!ok) {
+            peer.log("ERROR: forceReconnect pipeline failed to start");
+            return;
+        }
+
+        // Bus pump
+        auto *busTimer = new QTimer(this);
+        connect(busTimer, &QTimer::timeout, this, [&peer]() {
+            if (peer.pipeline) peer.pipeline->pollBus();
+        });
+        busTimer->start(50);
+
+        // Enable camera immediately (before createOffer, so video is in initial SDP)
+        peer.log("Enabling camera before offer...");
+        peer.pipeline->enableCamera(0, false);
+
+        // Create offer after a brief delay for pipeline to settle
+        QTimer::singleShot(500, this, [this, &peer]() {
+            if (!peer.pipeline) return;
+            peer.log("Creating forceReconnect offer with video...");
+            peer.pipeline->createOffer();
+        });
+    }
+
+    void startVideoRenegotiation()
+    {
+        qDebug() << "\n===== BIDIRECTIONAL VIDEO TEST (forceReconnect) =====";
+
+        // Step 1: User A does forceReconnect with video
+        m_peerA.setPhase(VideoRenegotiatingA);
+        forceReconnectWithVideo(m_peerA);
+
+        // Step 2: After 3s, User B does forceReconnect with video
+        QTimer::singleShot(3000, this, [this]() {
+            if (m_peerB.phase == TearingDown) return;
+            qDebug() << "\n--- User B forceReconnect with video ---";
+            m_peerB.setPhase(VideoRenegotiatingB);
+            forceReconnectWithVideo(m_peerB);
+        });
+
+        // Safety timeout
+        QTimer::singleShot(30000, this, [this]() {
+            if (!m_frameWaitStarted) {
+                qWarning() << "Video forceReconnect timed out, checking frames anyway...";
                 startFrameWait();
             }
         });

@@ -410,19 +410,98 @@ void CallManager::toggleCamera() {
     m_cameraOn = !m_cameraOn;
     emit cameraChanged();
 
-    auto enableCam = [this](auto *pipeline) {
-        pipeline->enableCamera(videoDeviceIndex(), preferHd1080());
-    };
-
     if (m_useP2P && m_peerPipeline) {
-        m_cameraOn ? enableCam(m_peerPipeline) : m_peerPipeline->disableCamera();
-    } else if (m_publishPipeline) {
-        m_cameraOn ? enableCam(m_publishPipeline) : m_publishPipeline->disableCamera();
+        // P2P: renegotiate on existing pipeline (no MCU involved)
+        m_cameraOn ? m_peerPipeline->enableCamera(videoDeviceIndex(), preferHd1080())
+                   : m_peerPipeline->disableCamera();
+    } else if (!m_useP2P) {
+        // MCU: forceReconnect — tear down publisher and recreate with/without video.
+        // The MCU only forwards what the publisher includes at offer time.
+        // Renegotiating video onto an existing connection doesn't update MCU routing.
+        forceReconnectPublisher();
     }
 
     // Broadcast video state + update call flags on server
     broadcastMediaState("video", m_cameraOn);
     updateCallFlags();
+}
+
+void CallManager::forceReconnectPublisher()
+{
+    qDebug() << "CallManager: forceReconnect publisher, cameraOn=" << m_cameraOn;
+
+    // 1. Stop existing publish pipeline
+    if (m_publishPipeline) {
+        m_publishPipeline->stop();
+        m_publishPipeline->deleteLater();
+        m_publishPipeline = nullptr;
+    }
+
+    // 2. Stop all subscriber pipelines (MCU will re-offer after new publisher connects)
+    for (auto *sub : m_subscribePipelines)
+        sub->deleteLater();
+    m_subscribePipelines.clear();
+
+    // 3. Create new publisher with video included from the start
+    QString pubSid = QString::number(QDateTime::currentMSecsSinceEpoch());
+
+    m_publishPipeline = new PublishPipeline(this);
+    m_localVideoProvider = m_publishPipeline->localVideoProvider();
+    emit localVideoProviderChanged();
+
+    connect(m_publishPipeline, &PublishPipeline::localOfferReady,
+            this, [this, pubSid](const QString &sdp) {
+        m_signaling->sendOffer(m_signaling->sessionId(), sdp, pubSid);
+        qDebug() << "CallManager: forceReconnect — sent new publish offer, sid=" << pubSid;
+    });
+
+    connect(m_publishPipeline, &PublishPipeline::iceCandidateReady,
+            this, [this, pubSid](const QString &candidate, int mline, const QString &mid) {
+        QJsonObject c;
+        c["candidate"] = candidate;
+        c["sdpMLineIndex"] = mline;
+        c["sdpMid"] = mid;
+        m_signaling->sendCandidate(m_signaling->sessionId(), c, pubSid);
+    });
+
+    connect(m_publishPipeline, &PublishPipeline::iceStateChanged,
+            this, [this](const QString &state) {
+        qDebug() << "CallManager: forceReconnect publisher ICE:" << state;
+        if (state == "connected" || state == "completed") {
+            // Re-request subscriber streams for all known remote peers
+            if (!m_remoteSessionId.isEmpty()) {
+                m_signaling->requestOffer(m_remoteSessionId, "video");
+                qDebug() << "CallManager: forceReconnect — re-requested subscriber for" << m_remoteSessionId.left(20);
+            }
+        }
+    });
+
+    connect(m_publishPipeline, &PublishPipeline::audioLevelUpdated,
+            this, [this](double level) {
+        if (qAbs(m_audioLevel - level) > 0.02) {
+            m_audioLevel = level;
+            emit audioLevelChanged();
+        }
+    });
+
+    connect(m_publishPipeline, &PublishPipeline::error, this, [this](const QString &msg) {
+        qWarning() << "CallManager: forceReconnect publish error:" << msg;
+    });
+
+    connect(m_publishPipeline, &PublishPipeline::cameraError, this, [this](const QString &reason) {
+        qWarning() << "CallManager: forceReconnect camera error:" << reason;
+        m_cameraOn = false;
+        emit cameraChanged();
+    });
+
+    if (!m_publishPipeline->start(m_stunServer, m_turnServers,
+            m_deviceManager ? m_deviceManager->selectedInputDeviceId() : QString(),
+            m_cameraOn, videoDeviceIndex(), preferHd1080())) {
+        qWarning() << "CallManager: forceReconnect — failed to start publisher";
+        return;
+    }
+
+    qDebug() << "CallManager: forceReconnect — new publisher started, withVideo=" << m_cameraOn;
 }
 
 int CallManager::videoDeviceIndex() const
