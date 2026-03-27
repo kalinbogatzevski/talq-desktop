@@ -452,8 +452,18 @@ Page {
                         if (url.startsWith("http://") || url.startsWith("https://"))
                             Qt.openUrlExternally(url)
                     } else if (hit.startsWith("file:")) {
+                        // format: file:ID:MIME:FILENAME
                         var parts = hit.substring(5).split(":")
-                        messageModel.downloadFile(parseInt(parts[0]), parts.slice(1).join(":"))
+                        var fid = parseInt(parts[0])
+                        var mime = parts[1]
+                        var fname = parts.slice(2).join(":")
+                        if (mime.startsWith("image/")) {
+                            imageViewer.fileId = fid
+                            imageViewer.fileName = fname
+                            imageViewer.visible = true
+                        } else {
+                            messageModel.downloadFile(fid, fname)
+                        }
                     } else if (hit.startsWith("reaction:")) {
                         var rparts = hit.substring(9).split(":")
                         messageModel.addReaction(parseInt(rparts[0]), rparts.slice(1).join(":"))
@@ -594,6 +604,65 @@ Page {
                     }
                 }
             }
+        }
+    }
+
+    // ═══ Full-screen image preview ═══
+    Rectangle {
+        id: imageViewer
+        property int fileId: 0
+        property string fileName: ""
+        visible: false
+        anchors.fill: parent
+        z: 100
+        color: "#e0000000"
+
+        MouseArea {
+            anchors.fill: parent
+            onClicked: imageViewer.visible = false
+        }
+
+        Image {
+            id: viewerImage
+            anchors.centerIn: parent
+            width: Math.min(parent.width - 40, sourceSize.width)
+            height: Math.min(parent.height - 80, sourceSize.height)
+            fillMode: Image.PreserveAspectFit
+            source: imageViewer.visible && imageViewer.fileId > 0
+                ? "image://preview/" + imageViewer.fileId : ""
+            asynchronous: true
+
+            BusyIndicator {
+                anchors.centerIn: parent
+                running: viewerImage.status === Image.Loading
+            }
+        }
+
+        // File name at the top
+        Label {
+            anchors.top: parent.top
+            anchors.topMargin: 12
+            anchors.horizontalCenter: parent.horizontalCenter
+            text: imageViewer.fileName
+            color: "white"
+            font.pixelSize: 14
+        }
+
+        // Close hint at bottom
+        Label {
+            anchors.bottom: parent.bottom
+            anchors.bottomMargin: 12
+            anchors.horizontalCenter: parent.horizontalCenter
+            text: "Click anywhere or press Esc to close"
+            color: Qt.rgba(1,1,1,0.5)
+            font.pixelSize: 12
+        }
+
+        // Esc to close
+        Shortcut {
+            sequence: "Escape"
+            enabled: imageViewer.visible
+            onActivated: imageViewer.visible = false
         }
     }
 
