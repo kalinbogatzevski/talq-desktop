@@ -51,6 +51,12 @@ MessageLayout LayoutEngine::computeLayout(
     ml.replyToText  = model->data(idx, MessageListModel::ReplyToTextRole).toString();
     ml.reactions    = model->data(idx, MessageListModel::ReactionsRole).toString();
 
+    // File attachment
+    ml.hasFile  = model->data(idx, MessageListModel::HasFileRole).toBool();
+    ml.fileId   = model->data(idx, MessageListModel::FileIdRole).toInt();
+    ml.fileName = model->data(idx, MessageListModel::FileNameRole).toString();
+    ml.fileMime = model->data(idx, MessageListModel::FileMimeRole).toString();
+
     ml.isOwn = (ml.actorId == myUserId);
 
     // Grouping: same author, within 300s, neither is system
@@ -116,6 +122,19 @@ MessageLayout LayoutEngine::computeLayout(
             innerY += quoteH + 4;
         }
 
+        // File attachment area
+        if (ml.hasFile) {
+            bool isImage = ml.fileMime.startsWith(QLatin1String("image/"));
+            qreal fileH = isImage ? qMin(bubbleInnerW * 0.75, 300.0) : 44.0;
+            ml.fileRect = QRectF(
+                bubbleX + PainterTheme::spacingNormal,
+                innerY,
+                bubbleInnerW,
+                fileH
+            );
+            innerY += fileH + 4;
+        }
+
         // Body text
         ml.bodyDoc = createBodyDoc(ml.bodyHtml, bubbleInnerW, theme);
         qreal bodyH = ml.bodyDoc->size().height();
@@ -127,7 +146,7 @@ MessageLayout LayoutEngine::computeLayout(
         );
         innerY += bodyH + 2;
 
-        // Reactions (reserve space, no painting in Phase 3)
+        // Reactions
         if (!ml.reactions.isEmpty()) {
             ml.reactBarRect = QRectF(
                 bubbleX + PainterTheme::spacingNormal,
@@ -201,13 +220,21 @@ MessageLayout LayoutEngine::computeLayout(
             y += quoteH + 4;
         }
 
+        // File attachment area
+        if (ml.hasFile) {
+            bool isImage = ml.fileMime.startsWith(QLatin1String("image/"));
+            qreal fileH = isImage ? qMin(contentW * 0.75, 300.0) : 44.0;
+            ml.fileRect = QRectF(contentX, y, contentW, fileH);
+            y += fileH + 4;
+        }
+
         // Body text
         ml.bodyDoc = createBodyDoc(ml.bodyHtml, contentW, theme);
         qreal bodyH = ml.bodyDoc->size().height();
         ml.bodyRect = QRectF(contentX, y, contentW, bodyH);
         y += bodyH;
 
-        // Reactions (reserve space)
+        // Reactions
         if (!ml.reactions.isEmpty()) {
             ml.reactBarRect = QRectF(contentX, y + 2, contentW, 24);
             y += 28;
