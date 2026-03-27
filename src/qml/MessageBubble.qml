@@ -9,9 +9,6 @@ Item {
             : msgContent.height + (isGrouped ? 2 : 8))
     height: implicitHeight
 
-    Component.onCompleted: console.log("DELEGATE CREATED id=" + messageId)
-    Component.onDestruction: console.log("DELEGATE DESTROYED id=" + messageId)
-
     required property int messageId
     required property string actorName
     required property string actorId
@@ -537,50 +534,58 @@ Item {
             anchors.leftMargin: Theme.spacingNormal
 
             // Avatar
-            Item {
-                width: Theme.avatarSizeSmall
-                height: Theme.avatarSizeSmall
-                anchors.top: parent.top
-                anchors.topMargin: isGrouped ? 0 : 2
-                opacity: isGrouped ? 0 : 1
+            Loader {
+                active: !isGrouped
+                asynchronous: true
+                width: active ? Theme.avatarSizeSmall : 0
+                height: width
+                sourceComponent: Component {
+                    Item {
+                        anchors.fill: parent
 
-                Image {
-                    id: otherAvatarImg
-                    anchors.fill: parent
-                    source: !isGrouped && actorId.length > 0
-                        ? "image://avatar/" + actorId : ""
-                    sourceSize: Qt.size(Theme.avatarSizeSmall, Theme.avatarSizeSmall)
-                    visible: status === Image.Ready
-                    fillMode: Image.PreserveAspectFit
-                }
+                        Image {
+                            id: otherAvatarImg
+                            anchors.fill: parent
+                            source: actorId.length > 0
+                                ? "image://avatar/" + actorId : ""
+                            sourceSize: Qt.size(Theme.avatarSizeSmall, Theme.avatarSizeSmall)
+                            visible: status === Image.Ready
+                            fillMode: Image.PreserveAspectFit
+                        }
 
-                Rectangle {
-                    anchors.fill: parent
-                    radius: width / 2
-                    visible: !isGrouped && otherAvatarImg.status !== Image.Ready
-                    color: authorColor()
+                        Rectangle {
+                            anchors.fill: parent
+                            radius: width / 2
+                            visible: otherAvatarImg.status !== Image.Ready
+                            color: authorColor()
 
-                    Label {
-                        anchors.centerIn: parent
-                        text: actorName.length > 0 ? actorName[0].toUpperCase() : "?"
-                        font.pixelSize: 12
-                        font.weight: Font.DemiBold
-                        color: "white"
+                            Label {
+                                anchors.centerIn: parent
+                                text: actorName.length > 0 ? actorName[0].toUpperCase() : "?"
+                                font.pixelSize: 12
+                                font.weight: Font.DemiBold
+                                color: "white"
+                            }
+                        }
                     }
                 }
             }
 
             // Message content (flat — subtle card when reply)
             // Background card — sibling of ColumnLayout, not a child (anchors inside Layout cause infinite re-layout)
-            Rectangle {
-                visible: replyToText.length > 0 && !isOwnMessage
-                x: otherMsgCol.x - 8
-                y: otherMsgCol.y - 8
-                width: otherMsgCol.width + 16
-                height: otherMsgCol.height + 16
-                radius: Theme.radiusNormal
-                color: Theme.darkMode ? Qt.rgba(1, 1, 1, 0.04) : Qt.rgba(0, 0, 0, 0.04)
-                z: -1
+            Loader {
+                active: replyToText.length > 0 && !isOwnMessage
+                sourceComponent: Component {
+                    Rectangle {
+                        x: otherMsgCol.x - 8
+                        y: otherMsgCol.y - 8
+                        width: otherMsgCol.width + 16
+                        height: otherMsgCol.height + 16
+                        radius: Theme.radiusNormal
+                        color: Theme.darkMode ? Qt.rgba(1, 1, 1, 0.04) : Qt.rgba(0, 0, 0, 0.04)
+                        z: -1
+                    }
+                }
             }
 
             ColumnLayout {
@@ -609,121 +614,139 @@ Item {
                 }
 
                 // Reply quote
-                Rectangle {
-                    visible: replyToText.length > 0
+                Loader {
+                    active: replyToText.length > 0
                     Layout.fillWidth: true
-                    height: otherReplyCol.implicitHeight + 8
-                    radius: Theme.radiusSmall
-                    color: Theme.darkMode ? Qt.rgba(1, 1, 1, 0.04) : Qt.rgba(0, 0, 0, 0.04)
+                    sourceComponent: Component {
+                        Rectangle {
+                            width: parent ? parent.width : 0
+                            height: otherReplyCol.implicitHeight + 8
+                            radius: Theme.radiusSmall
+                            color: Theme.darkMode ? Qt.rgba(1, 1, 1, 0.04) : Qt.rgba(0, 0, 0, 0.04)
 
-                    Rectangle {
-                        width: 3; height: parent.height
-                        radius: 1.5; color: Theme.accent
-                    }
-
-                    ColumnLayout {
-                        id: otherReplyCol
-                        anchors { left: parent.left; right: parent.right; top: parent.top
-                                  leftMargin: 10; rightMargin: 8; topMargin: 4 }
-                        spacing: 1
-
-                        Label {
-                            text: replyToAuthor
-                            font.pixelSize: Theme.fontSizeTiny
-                            font.weight: Font.DemiBold
-                            color: Theme.accent
-                        }
-                        Label {
-                            Layout.fillWidth: true
-                            text: replyToText
-                            font.pixelSize: Theme.fontSizeTiny
-                            color: Theme.textSecondary
-                            elide: Text.ElideRight
-                            maximumLineCount: 1
-                        }
-                    }
-                }
-
-                // Image preview (authenticated via image://preview/)
-                Image {
-                    visible: isImage && fileId > 0
-                    asynchronous: true
-                    fillMode: Image.PreserveAspectFit
-                    source: isImage && fileId > 0 ? "image://preview/" + fileId : ""
-                    sourceSize.width: otherMsgCol.width
-
-                    readonly property real aspectRatio: implicitWidth > 0 ? implicitHeight / implicitWidth : 0.75
-
-                    Layout.fillWidth: true
-                    Layout.maximumWidth: Math.min(implicitWidth > 0 ? implicitWidth : otherMsgCol.maxWidth, otherMsgCol.maxWidth)
-                    Layout.preferredHeight: width * aspectRatio
-                    Layout.maximumHeight: 500
-
-                    MouseArea {
-                        anchors.fill: parent
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: messageModel.downloadFile(fileId, fileName)
-                    }
-
-                    Rectangle {
-                        anchors.fill: parent
-                        visible: parent.status === Image.Loading
-                        color: Theme.bgSurface
-                        radius: Theme.radiusSmall
-                        Label { anchors.centerIn: parent; text: "Loading preview..."; color: Theme.textMuted; font.pixelSize: Theme.fontSizeTiny }
-                    }
-                }
-
-                // File attachment (non-image)
-                Rectangle {
-                    visible: hasFile && !isImage
-                    Layout.fillWidth: true
-                    height: 44
-                    radius: Theme.radiusSmall
-                    color: Theme.darkMode ? Qt.rgba(1,1,1,0.06) : Qt.rgba(0,0,0,0.05)
-
-                    RowLayout {
-                        anchors.fill: parent
-                        anchors.leftMargin: Theme.spacingNormal
-                        anchors.rightMargin: Theme.spacingNormal
-                        spacing: Theme.spacingSmall
-
-                        Label {
-                            text: fileMime.startsWith("image/") ? "\uD83D\uDDBC"
-                                : fileMime.startsWith("video/") ? "\uD83C\uDFA5"
-                                : fileMime.startsWith("audio/") ? "\uD83C\uDFB5"
-                                : fileMime.indexOf("pdf") >= 0 ? "\uD83D\uDCC4"
-                                : fileMime.indexOf("spreadsheet") >= 0 || fileMime.indexOf("excel") >= 0 ? "\uD83D\uDCCA"
-                                : fileMime.indexOf("document") >= 0 || fileMime.indexOf("word") >= 0 ? "\uD83D\uDCC3"
-                                : "\uD83D\uDCCE"
-                            font.pixelSize: 20
-                        }
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            spacing: 0
-                            Label {
-                                text: fileName
-                                font.pixelSize: Theme.fontSizeSmall
-                                font.weight: Font.DemiBold
-                                color: Theme.accent
-                                elide: Text.ElideMiddle
-                                Layout.fillWidth: true
+                            Rectangle {
+                                width: 3; height: parent.height
+                                radius: 1.5; color: Theme.accent
                             }
-                            Label {
-                                text: {
-                                    var kb = fileSize / 1024
-                                    return kb > 1024 ? (kb/1024).toFixed(1) + " MB" : Math.round(kb) + " KB"
+
+                            ColumnLayout {
+                                id: otherReplyCol
+                                anchors { left: parent.left; right: parent.right; top: parent.top
+                                          leftMargin: 10; rightMargin: 8; topMargin: 4 }
+                                spacing: 1
+
+                                Label {
+                                    text: replyToAuthor
+                                    font.pixelSize: Theme.fontSizeTiny
+                                    font.weight: Font.DemiBold
+                                    color: Theme.accent
                                 }
-                                font.pixelSize: Theme.fontSizeTiny
-                                color: Theme.textMuted
+                                Label {
+                                    Layout.fillWidth: true
+                                    text: replyToText
+                                    font.pixelSize: Theme.fontSizeTiny
+                                    color: Theme.textSecondary
+                                    elide: Text.ElideRight
+                                    maximumLineCount: 1
+                                }
                             }
                         }
                     }
+                }
 
-                    MouseArea {
-                        anchors.fill: parent
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: messageModel.downloadFile(fileId, fileName)
+                // File attachment (image preview + non-image info)
+                Loader {
+                    active: hasFile
+                    asynchronous: true
+                    Layout.fillWidth: true
+                    sourceComponent: Component {
+                        ColumnLayout {
+                            width: parent ? parent.width : 0
+                            spacing: 2
+
+                            // Image preview (authenticated via image://preview/)
+                            Image {
+                                visible: isImage && fileId > 0
+                                asynchronous: true
+                                fillMode: Image.PreserveAspectFit
+                                source: isImage && fileId > 0 ? "image://preview/" + fileId : ""
+                                sourceSize.width: otherMsgCol.width
+
+                                readonly property real aspectRatio: implicitWidth > 0 ? implicitHeight / implicitWidth : 0.75
+
+                                Layout.fillWidth: true
+                                Layout.maximumWidth: Math.min(implicitWidth > 0 ? implicitWidth : otherMsgCol.maxWidth, otherMsgCol.maxWidth)
+                                Layout.preferredHeight: width * aspectRatio
+                                Layout.maximumHeight: 500
+
+                                MouseArea {
+                                    anchors.fill: parent
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: messageModel.downloadFile(fileId, fileName)
+                                }
+
+                                Rectangle {
+                                    anchors.fill: parent
+                                    visible: parent.status === Image.Loading
+                                    color: Theme.bgSurface
+                                    radius: Theme.radiusSmall
+                                    Label { anchors.centerIn: parent; text: "Loading preview..."; color: Theme.textMuted; font.pixelSize: Theme.fontSizeTiny }
+                                }
+                            }
+
+                            // File attachment (non-image)
+                            Rectangle {
+                                visible: hasFile && !isImage
+                                Layout.fillWidth: true
+                                height: 44
+                                radius: Theme.radiusSmall
+                                color: Theme.darkMode ? Qt.rgba(1,1,1,0.06) : Qt.rgba(0,0,0,0.05)
+
+                                RowLayout {
+                                    anchors.fill: parent
+                                    anchors.leftMargin: Theme.spacingNormal
+                                    anchors.rightMargin: Theme.spacingNormal
+                                    spacing: Theme.spacingSmall
+
+                                    Label {
+                                        text: fileMime.startsWith("image/") ? "\uD83D\uDDBC"
+                                            : fileMime.startsWith("video/") ? "\uD83C\uDFA5"
+                                            : fileMime.startsWith("audio/") ? "\uD83C\uDFB5"
+                                            : fileMime.indexOf("pdf") >= 0 ? "\uD83D\uDCC4"
+                                            : fileMime.indexOf("spreadsheet") >= 0 || fileMime.indexOf("excel") >= 0 ? "\uD83D\uDCCA"
+                                            : fileMime.indexOf("document") >= 0 || fileMime.indexOf("word") >= 0 ? "\uD83D\uDCC3"
+                                            : "\uD83D\uDCCE"
+                                        font.pixelSize: 20
+                                    }
+                                    ColumnLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 0
+                                        Label {
+                                            text: fileName
+                                            font.pixelSize: Theme.fontSizeSmall
+                                            font.weight: Font.DemiBold
+                                            color: Theme.accent
+                                            elide: Text.ElideMiddle
+                                            Layout.fillWidth: true
+                                        }
+                                        Label {
+                                            text: {
+                                                var kb = fileSize / 1024
+                                                return kb > 1024 ? (kb/1024).toFixed(1) + " MB" : Math.round(kb) + " KB"
+                                            }
+                                            font.pixelSize: Theme.fontSizeTiny
+                                            color: Theme.textMuted
+                                        }
+                                    }
+                                }
+
+                                MouseArea {
+                                    anchors.fill: parent
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: messageModel.downloadFile(fileId, fileName)
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -744,37 +767,43 @@ Item {
                 }
 
                 // Reactions
-                Flow {
-                    visible: reactions.length > 0
+                Loader {
+                    active: reactions.length > 0
+                    asynchronous: true
                     Layout.fillWidth: true
-                    spacing: 4
+                    sourceComponent: Component {
+                        Flow {
+                            width: parent ? parent.width : 0
+                            spacing: 4
 
-                    Repeater {
-                        model: reactions.length > 0 ? reactions.split("  ") : []
+                            Repeater {
+                                model: reactions.split("  ")
 
-                        Rectangle {
-                            width: rxLabel.implicitWidth + 14
-                            height: 22
-                            radius: 11
-                            color: rxMa.containsMouse
-                                ? (Theme.darkMode ? Qt.rgba(1,1,1,0.14) : Qt.rgba(0,0,0,0.10))
-                                : (Theme.darkMode ? Qt.rgba(1,1,1,0.07) : Qt.rgba(0,0,0,0.05))
+                                Rectangle {
+                                    width: rxLabel.implicitWidth + 14
+                                    height: 22
+                                    radius: 11
+                                    color: rxMa.containsMouse
+                                        ? (Theme.darkMode ? Qt.rgba(1,1,1,0.14) : Qt.rgba(0,0,0,0.10))
+                                        : (Theme.darkMode ? Qt.rgba(1,1,1,0.07) : Qt.rgba(0,0,0,0.05))
 
-                            Label {
-                                id: rxLabel
-                                anchors.centerIn: parent
-                                text: modelData
-                                font.pixelSize: Theme.fontSizeTiny
-                            }
+                                    Label {
+                                        id: rxLabel
+                                        anchors.centerIn: parent
+                                        text: modelData
+                                        font.pixelSize: Theme.fontSizeTiny
+                                    }
 
-                            MouseArea {
-                                id: rxMa
-                                anchors.fill: parent
-                                hoverEnabled: true
-                                cursorShape: Qt.PointingHandCursor
-                                onClicked: {
-                                    var emoji = modelData.split(" ")[0]
-                                    messageModel.addReaction(messageId, emoji)
+                                    MouseArea {
+                                        id: rxMa
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: {
+                                            var emoji = modelData.split(" ")[0]
+                                            messageModel.addReaction(messageId, emoji)
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -817,71 +846,89 @@ Item {
                 spacing: 2
 
                 // Reply quote
-                Rectangle {
-                    visible: replyToText.length > 0
+                Loader {
+                    active: replyToText.length > 0
                     Layout.fillWidth: true
-                    height: ownReplyCol.implicitHeight + 8
-                    radius: Theme.radiusSmall
-                    color: Qt.rgba(1, 1, 1, 0.06)
+                    sourceComponent: Component {
+                        Rectangle {
+                            width: parent ? parent.width : 0
+                            height: ownReplyCol.implicitHeight + 8
+                            radius: Theme.radiusSmall
+                            color: Qt.rgba(1, 1, 1, 0.06)
 
-                    Rectangle {
-                        width: 3; height: parent.height
-                        radius: 1.5; color: Theme.accent
-                    }
+                            Rectangle {
+                                width: 3; height: parent.height
+                                radius: 1.5; color: Theme.accent
+                            }
 
-                    ColumnLayout {
-                        id: ownReplyCol
-                        anchors { left: parent.left; right: parent.right; top: parent.top
-                                  leftMargin: 10; rightMargin: 8; topMargin: 4 }
-                        spacing: 1
+                            ColumnLayout {
+                                id: ownReplyCol
+                                anchors { left: parent.left; right: parent.right; top: parent.top
+                                          leftMargin: 10; rightMargin: 8; topMargin: 4 }
+                                spacing: 1
 
-                        Label {
-                            text: replyToAuthor
-                            font.pixelSize: Theme.fontSizeTiny
-                            font.weight: Font.DemiBold
-                            color: Theme.accent
-                        }
-                        Label {
-                            Layout.fillWidth: true
-                            text: replyToText
-                            font.pixelSize: Theme.fontSizeTiny
-                            color: Theme.darkMode ? Qt.rgba(1, 1, 1, 0.6) : Theme.textSecondary
-                            elide: Text.ElideRight
-                            maximumLineCount: 1
+                                Label {
+                                    text: replyToAuthor
+                                    font.pixelSize: Theme.fontSizeTiny
+                                    font.weight: Font.DemiBold
+                                    color: Theme.accent
+                                }
+                                Label {
+                                    Layout.fillWidth: true
+                                    text: replyToText
+                                    font.pixelSize: Theme.fontSizeTiny
+                                    color: Theme.darkMode ? Qt.rgba(1, 1, 1, 0.6) : Theme.textSecondary
+                                    elide: Text.ElideRight
+                                    maximumLineCount: 1
+                                }
+                            }
                         }
                     }
                 }
 
-                // Image preview (own)
-                Image {
-                    visible: isImage && fileId > 0
+                // File attachment (own — image preview + non-image)
+                Loader {
+                    active: hasFile
                     asynchronous: true
-                    fillMode: Image.PreserveAspectFit
-                    source: isImage && fileId > 0 ? "image://preview/" + fileId : ""
-                    sourceSize.width: ownCol.width
-
-                    readonly property real aspectRatio: implicitWidth > 0 ? implicitHeight / implicitWidth : 0.75
-
                     Layout.fillWidth: true
-                    Layout.maximumWidth: Math.min(implicitWidth > 0 ? implicitWidth : ownCol.width, ownCol.width)
-                    Layout.preferredHeight: width * aspectRatio
-                    Layout.maximumHeight: 500
-                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: messageModel.downloadFile(fileId, fileName) }
-                }
+                    sourceComponent: Component {
+                        ColumnLayout {
+                            width: parent ? parent.width : 0
+                            spacing: 2
 
-                // File attachment (own — non-image)
-                Rectangle {
-                    visible: hasFile && !isImage
-                    Layout.fillWidth: true
-                    height: 40
-                    radius: Theme.radiusSmall
-                    color: Qt.rgba(1,1,1,0.08)
-                    RowLayout {
-                        anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 10; spacing: 8
-                        Label { text: "\uD83D\uDCCE"; font.pixelSize: 16 }
-                        Label { text: fileName; font.pixelSize: Theme.fontSizeSmall; color: "white"; elide: Text.ElideMiddle; Layout.fillWidth: true }
+                            // Image preview (own)
+                            Image {
+                                visible: isImage && fileId > 0
+                                asynchronous: true
+                                fillMode: Image.PreserveAspectFit
+                                source: isImage && fileId > 0 ? "image://preview/" + fileId : ""
+                                sourceSize.width: ownCol.width
+
+                                readonly property real aspectRatio: implicitWidth > 0 ? implicitHeight / implicitWidth : 0.75
+
+                                Layout.fillWidth: true
+                                Layout.maximumWidth: Math.min(implicitWidth > 0 ? implicitWidth : ownCol.width, ownCol.width)
+                                Layout.preferredHeight: width * aspectRatio
+                                Layout.maximumHeight: 500
+                                MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: messageModel.downloadFile(fileId, fileName) }
+                            }
+
+                            // File attachment (own — non-image)
+                            Rectangle {
+                                visible: hasFile && !isImage
+                                Layout.fillWidth: true
+                                height: 40
+                                radius: Theme.radiusSmall
+                                color: Qt.rgba(1,1,1,0.08)
+                                RowLayout {
+                                    anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 10; spacing: 8
+                                    Label { text: "\uD83D\uDCCE"; font.pixelSize: 16 }
+                                    Label { text: fileName; font.pixelSize: Theme.fontSizeSmall; color: "white"; elide: Text.ElideMiddle; Layout.fillWidth: true }
+                                }
+                                MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: messageModel.downloadFile(fileId, fileName) }
+                            }
+                        }
                     }
-                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: messageModel.downloadFile(fileId, fileName) }
                 }
 
                 // Message text — selectable
@@ -901,37 +948,43 @@ Item {
                 }
 
                 // Reactions
-                Flow {
-                    visible: reactions.length > 0
+                Loader {
+                    active: reactions.length > 0
+                    asynchronous: true
                     Layout.fillWidth: true
-                    spacing: 4
+                    sourceComponent: Component {
+                        Flow {
+                            width: parent ? parent.width : 0
+                            spacing: 4
 
-                    Repeater {
-                        model: reactions.length > 0 ? reactions.split("  ") : []
+                            Repeater {
+                                model: reactions.split("  ")
 
-                        Rectangle {
-                            width: ownRxLabel.implicitWidth + 14
-                            height: 22
-                            radius: 11
-                            color: ownRxMa.containsMouse
-                                ? (Theme.darkMode ? Qt.rgba(1,1,1,0.14) : Qt.rgba(0,0,0,0.10))
-                                : (Theme.darkMode ? Qt.rgba(1,1,1,0.07) : Qt.rgba(0,0,0,0.05))
+                                Rectangle {
+                                    width: ownRxLabel.implicitWidth + 14
+                                    height: 22
+                                    radius: 11
+                                    color: ownRxMa.containsMouse
+                                        ? (Theme.darkMode ? Qt.rgba(1,1,1,0.14) : Qt.rgba(0,0,0,0.10))
+                                        : (Theme.darkMode ? Qt.rgba(1,1,1,0.07) : Qt.rgba(0,0,0,0.05))
 
-                            Label {
-                                id: ownRxLabel
-                                anchors.centerIn: parent
-                                text: modelData
-                                font.pixelSize: Theme.fontSizeTiny
-                            }
+                                    Label {
+                                        id: ownRxLabel
+                                        anchors.centerIn: parent
+                                        text: modelData
+                                        font.pixelSize: Theme.fontSizeTiny
+                                    }
 
-                            MouseArea {
-                                id: ownRxMa
-                                anchors.fill: parent
-                                hoverEnabled: true
-                                cursorShape: Qt.PointingHandCursor
-                                onClicked: {
-                                    var emoji = modelData.split(" ")[0]
-                                    messageModel.addReaction(messageId, emoji)
+                                    MouseArea {
+                                        id: ownRxMa
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: {
+                                            var emoji = modelData.split(" ")[0]
+                                            messageModel.addReaction(messageId, emoji)
+                                        }
+                                    }
                                 }
                             }
                         }
