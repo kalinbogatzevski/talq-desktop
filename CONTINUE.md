@@ -1,5 +1,40 @@
 # TalQ v0.9.x Continue Prompt
 
+## What was done (v0.9.5+, 2026-03-27)
+
+### Video call bugs — ALL FIXED
+- **STUN URL format** — `stun:` → `stun://` conversion applied to PublishPipeline + SubscribePipeline (was only in PeerPipeline). STUN was silently failing in MCU mode.
+- **m=video 0 in renegotiation** — Root cause: `enableCamera()` created two transceivers (orphaned one → `m=video 0`). Fixed with single transceiver approach in both PeerPipeline and PublishPipeline.
+- **Audio device selection** — mic/speaker from Settings were silently ignored. PublishPipeline never passed `audioDeviceId`; `autoaudiosink` doesn't propagate `device` property. Fixed with `wasapi2sink` → `wasapisink` → `directsoundsink` fallback.
+- **Incoming call detection race** — overlapping conversation refreshes both missed `hasCall` false→true. Fixed with persistent `m_callState` map.
+- **Window height grows on restore** — save guard during Maximized→Windowed transition + clamp to screen bounds.
+- **Window restore from tray** — now restores maximized state (was always Windowed).
+
+### forceReconnect for camera toggle (matches browser behavior)
+**Key discovery**: Nextcloud Talk browser does `forceReconnect()` when toggling camera — tears down entire publisher and recreates with video from the start. The MCU only forwards what the publisher includes at initial offer time. Renegotiating video onto existing connection doesn't update MCU routing.
+
+**Implementation**: `CallManager::toggleCamera()` now calls `forceReconnectPublisher()` in MCU mode: stops PublishPipeline + all SubscribePipelines, creates new publisher with/without video, re-requests subscriber streams after ICE connects.
+
+### MCU video delivery — UNSOLVED
+Publisher SDP includes video (`m=video` with H264). MCU accepts it. But MCU subscriber offers come back **audio-only**. Both `enableCamera` renegotiation and `forceReconnect` approaches produce the same result — MCU doesn't include video in subscriber offers.
+
+**Suspected cause**: GStreamer's webrtcbin with `MAX_BUNDLE` policy encodes video as `m=video 0` with `a=bundle-only` (valid per RFC 8843). Janus may not recognize this as active video and skips it in subscriber offers. The browser likely sends `m=video 9` (non-zero port).
+
+**Next steps**:
+1. Capture browser's actual SDP to compare format (WebSocket intercept or Janus logs)
+2. Check if setting `bundle-policy` to `BALANCED` or `NONE` changes the m=video port
+3. Or check Janus videoroom plugin config on server
+4. SSH to server: `ssh -i ~/.ssh/id_ed25519 root@ncloud.123net.link` and check HPB/Janus logs
+
+### Call test harness improvements
+- Video renegotiation test phase with SDP validation
+- `videotestsrc` support in PeerPipeline and PublishPipeline
+- SubscribePipeline integration — requests subscriber streams from MCU via `requestOffer`
+- `forceReconnect` pattern in test (matches real app behavior)
+- `VideoFrameProvider.frameCount` for headless frame tracking
+- Test consistently PASSES for: signaling, ICE, SDP validation, local preview frames
+- Remote video frames = 0 (MCU subscriber offers are audio-only — server-side issue)
+
 ## What was done (v0.9.4, 2026-03-26)
 
 ### Conversation switch freeze — RESOLVED
@@ -81,16 +116,17 @@ Additional fixes in same commit (af0084f):
 - Realtek driver downgraded 6.0.9929.1 → 6.0.9231.1
 - v0.9.0 release created on GitLab with both installers
 
-## Next: Stabilize video calls
+## Next: MCU video delivery
 
 | Bug | Priority | Status |
 |-----|----------|--------|
-| P2P mode broken (MCU-only server) | HIGH | m_useP2P codepath dead on HPB servers |
-| m=video 0 in renegotiation SDP | HIGH | add-transceiver fix untested |
-| Phone doesn't hear audio (home) | MEDIUM | Mic broken, works on office |
-| Push notification not received | MEDIUM | hasCall race |
-| Call not ending on remote hangup | LOW | participantLeftCall only handles MCU subs |
-| Window height grows on restore | LOW | Unsigned int wrapping |
+| MCU subscriber offers audio-only | HIGH | Publisher includes video but MCU doesn't forward — SDP format issue |
+| ~~STUN URL in MCU pipelines~~ | ~~HIGH~~ | FIXED — stun: → stun:// |
+| ~~m=video 0 in renegotiation~~ | ~~HIGH~~ | FIXED — single transceiver |
+| ~~Audio device selection~~ | ~~MEDIUM~~ | FIXED — device IDs passed to sinks |
+| ~~Incoming call detection race~~ | ~~MEDIUM~~ | FIXED — persistent m_callState |
+| ~~Window height grows on restore~~ | ~~LOW~~ | FIXED — clamp to screen bounds |
+| ~~Window restore from tray~~ | ~~LOW~~ | FIXED — wasMaximized tracking |
 
 ## Build
 
