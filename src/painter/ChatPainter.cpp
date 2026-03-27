@@ -372,50 +372,42 @@ void ChatPainter::paintOwnMessage(QPainter *p, const MessageLayout &ml, qreal of
         p->restore();
     }
 
-    // Timestamp + read status
+    // Timestamp + read status (draw once, not twice)
     {
         QRectF tr = ml.timeRect.translated(0, offsetY);
         QColor timeColor = m_darkMode
-            ? QColor(255, 255, 255, 115)  // rgba(1,1,1,0.45)
+            ? QColor(255, 255, 255, 115)
             : m_theme.textTime;
-
-        if (ml.sendStatus == QLatin1String("failed"))
-            timeColor = m_theme.danger;
-
-        p->setPen(timeColor);
-        p->setFont(m_theme.timeFont());
 
         QString timeText = ml.sendStatus == QLatin1String("sending")
             ? QStringLiteral("Sending...") : ml.timeString;
-        p->drawText(tr, Qt::AlignRight | Qt::AlignVCenter, timeText);
 
-        // Read status indicator
-        if (ml.sendStatus != QLatin1String("sending")) {
-            QFont statusFont = m_theme.timeFont();
-            statusFont.setPixelSize(ml.sendStatus == QLatin1String("failed") ? 12 : 9);
-            p->setFont(statusFont);
+        // Determine status icon — ◉ read (green), ○ delivered (muted)
+        QString statusChar;
+        QColor statusColor = timeColor;
+        if (ml.sendStatus == QLatin1String("failed")) {
+            statusColor = m_theme.danger;
+            timeColor = m_theme.danger;
+            statusChar = QStringLiteral("\u26A0");  // ⚠ warning
+        } else if (ml.sendStatus != QLatin1String("sending")) {
+            statusColor = ml.isRead ? m_theme.accent : timeColor;
+            statusChar = ml.isRead ? QStringLiteral("\u25C9") : QStringLiteral("\u25CB");  // ◉ read, ○ delivered
+        }
 
-            QColor statusColor = timeColor;
-            QString statusChar;
-            if (ml.sendStatus == QLatin1String("failed")) {
-                statusColor = m_theme.danger;
-                statusChar = QStringLiteral("\u26A0"); // warning
-            } else if (ml.isRead) {
-                statusColor = m_theme.accent;
-                statusChar = QStringLiteral("\u25C9"); // filled circle
-            } else {
-                statusChar = QStringLiteral("\u25CB"); // empty circle
-            }
+        // Measure status icon width
+        QFont statusFont = m_theme.timeFont();
+        statusFont.setPixelSize(ml.sendStatus == QLatin1String("failed") ? 12 : 12);
+        int sw = statusChar.isEmpty() ? 0 : QFontMetrics(statusFont).horizontalAdvance(statusChar) + 4;
 
-            p->setPen(statusColor);
-            QFontMetrics fm(p->font());
-            int sw = fm.horizontalAdvance(statusChar);
-            QRectF sr(tr.right() - sw, tr.top(), sw, tr.height());
-            // Shift time text left to make room
-            QRectF tr2 = tr.adjusted(0, 0, -(sw + 4), 0);
-            p->setPen(timeColor);
-            p->setFont(m_theme.timeFont());
-            p->drawText(tr2, Qt::AlignRight | Qt::AlignVCenter, timeText);
+        // Draw time (shifted left to make room for icon)
+        QRectF timeArea = tr.adjusted(0, 0, -sw, 0);
+        p->setPen(timeColor);
+        p->setFont(m_theme.timeFont());
+        p->drawText(timeArea, Qt::AlignRight | Qt::AlignVCenter, timeText);
+
+        // Draw status icon
+        if (!statusChar.isEmpty()) {
+            QRectF sr(tr.right() - sw + 2, tr.top(), sw - 2, tr.height());
             p->setPen(statusColor);
             p->setFont(statusFont);
             p->drawText(sr, Qt::AlignCenter, statusChar);
