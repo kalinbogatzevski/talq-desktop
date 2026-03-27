@@ -2,10 +2,14 @@
 
 #include <QQuickPaintedItem>
 #include <QVector>
+#include <QHash>
+#include <QImage>
+#include <QSet>
 #include "MessageLayout.h"
 #include "PainterTheme.h"
 
 class MessageListModel;
+class QNetworkReply;
 
 /**
  * QQuickPaintedItem that renders the entire chat message list
@@ -95,6 +99,14 @@ private:
     void paintOwnMessage(QPainter *p, const MessageLayout &ml, qreal offsetY);
     void paintOtherMessage(QPainter *p, const MessageLayout &ml, qreal offsetY);
     void paintReplyQuote(QPainter *p, const MessageLayout &ml, qreal offsetY);
+    void paintFileAttachment(QPainter *p, const MessageLayout &ml, qreal offsetY);
+    void paintReactions(QPainter *p, const MessageLayout &ml, qreal offsetY);
+
+    // ── Image loading ──
+    QImage fetchAvatar(const QString &userId);
+    QImage fetchFilePreview(int fileId);
+    void requestAvatar(const QString &userId);
+    void requestFilePreview(int fileId);
 
     // ── State ──
     MessageListModel *m_model = nullptr;
@@ -115,4 +127,10 @@ private:
     // Layouts: index 0 = oldest message (top of view)
     // Model is newest-first, so m_layouts[i] corresponds to model row (rowCount - 1 - i)
     QVector<MessageLayout> m_layouts;
+
+    // ── Image caches ──
+    QHash<QString, QImage> m_avatarCache;   // userId -> circular avatar
+    QSet<QString> m_avatarPending;          // in-flight avatar requests
+    QHash<int, QImage> m_previewCache;      // fileId -> preview image
+    QSet<int> m_previewPending;             // in-flight preview requests
 };

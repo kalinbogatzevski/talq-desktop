@@ -2,13 +2,16 @@
 #include "LayoutEngine.h"
 #include "models/MessageListModel.h"
 #include <QPainter>
+#include <QPainterPath>
 #include <QWheelEvent>
 #include <QMouseEvent>
 #include <QHoverEvent>
 #include <QTextDocument>
 #include <QAbstractTextDocumentLayout>
 #include <QRegularExpression>
+#include <QNetworkReply>
 #include <QtMath>
+#include "core/ApiClient.h"
 
 ChatPainter::ChatPainter(QQuickItem *parent)
     : QQuickPaintedItem(parent)
@@ -42,6 +45,10 @@ void ChatPainter::setModelObject(QObject *obj)
     }
 
     m_model = mdl;
+
+    // Clear file preview caches on model switch (avatars persist across conversations)
+    m_previewCache.clear();
+    m_previewPending.clear();
 
     // Connect new model
     if (m_model) {
@@ -359,6 +366,10 @@ void ChatPainter::paintOwnMessage(QPainter *p, const MessageLayout &ml, qreal of
     if (!ml.replyToText.isEmpty())
         paintReplyQuote(p, ml, offsetY);
 
+    // File attachment
+    if (ml.hasFile && !ml.fileRect.isNull())
+        paintFileAttachment(p, ml, offsetY);
+
     // Body text
     if (ml.bodyDoc) {
         p->save();
@@ -371,6 +382,10 @@ void ChatPainter::paintOwnMessage(QPainter *p, const MessageLayout &ml, qreal of
         ml.bodyDoc->documentLayout()->draw(p, ctx);
         p->restore();
     }
+
+    // Reactions
+    if (!ml.reactions.isEmpty() && !ml.reactBarRect.isNull())
+        paintReactions(p, ml, offsetY);
 
     // Timestamp + read status (draw once, not twice)
     {
@@ -424,23 +439,28 @@ void ChatPainter::paintOtherMessage(QPainter *p, const MessageLayout &ml, qreal 
     // Avatar (non-grouped)
     if (!ml.isGrouped && !ml.avatarRect.isNull()) {
         QRectF ar = ml.avatarRect.translated(0, offsetY);
-        QColor avatarColor = PainterTheme::authorColor(ml.actorId);
+        QImage avatarImg = fetchAvatar(ml.actorId);
 
-        // Colored circle
-        p->setPen(Qt::NoPen);
-        p->setBrush(avatarColor);
-        p->drawEllipse(ar);
+        if (!avatarImg.isNull()) {
+            // Draw the circular avatar image
+            p->drawImage(ar, avatarImg);
+        } else {
+            // Fallback: colored circle with initial
+            QColor avatarColor = PainterTheme::authorColor(ml.actorId);
+            p->setPen(Qt::NoPen);
+            p->setBrush(avatarColor);
+            p->drawEllipse(ar);
 
-        // First letter
-        QFont letterFont;
-        letterFont.setPixelSize(14);
-        letterFont.setWeight(QFont::DemiBold);
-        p->setFont(letterFont);
-        p->setPen(Qt::white);
-        QString letter = ml.actorName.isEmpty()
-            ? QStringLiteral("?")
-            : ml.actorName.left(1).toUpper();
-        p->drawText(ar, Qt::AlignCenter, letter);
+            QFont letterFont;
+            letterFont.setPixelSize(14);
+            letterFont.setWeight(QFont::DemiBold);
+            p->setFont(letterFont);
+            p->setPen(Qt::white);
+            QString letter = ml.actorName.isEmpty()
+                ? QStringLiteral("?")
+                : ml.actorName.left(1).toUpper();
+            p->drawText(ar, Qt::AlignCenter, letter);
+        }
     }
 
     // Author name (non-grouped)
@@ -461,6 +481,10 @@ void ChatPainter::paintOtherMessage(QPainter *p, const MessageLayout &ml, qreal 
     if (!ml.replyToText.isEmpty())
         paintReplyQuote(p, ml, offsetY);
 
+    // File attachment
+    if (ml.hasFile && !ml.fileRect.isNull())
+        paintFileAttachment(p, ml, offsetY);
+
     // Body text
     if (ml.bodyDoc) {
         p->save();
@@ -472,6 +496,10 @@ void ChatPainter::paintOtherMessage(QPainter *p, const MessageLayout &ml, qreal 
         ml.bodyDoc->documentLayout()->draw(p, ctx);
         p->restore();
     }
+
+    // Reactions
+    if (!ml.reactions.isEmpty() && !ml.reactBarRect.isNull())
+        paintReactions(p, ml, offsetY);
 
     // Grouped: time below body
     if (ml.isGrouped && !ml.timeRect.isNull()) {
@@ -519,4 +547,253 @@ void ChatPainter::paintReplyQuote(QPainter *p, const MessageLayout &ml, qreal of
     QFontMetrics fm(m_theme.timeFont());
     truncated = fm.elidedText(truncated, Qt::ElideRight, qRound(textR.width()));
     p->drawText(textR, Qt::AlignLeft | Qt::AlignVCenter, truncated);
+}
+
+// ─── File attachment ────────────────────────────────
+
+void ChatPainter::paintFileAttachment(QPainter *p, const MessageLayout &ml, qreal offsetY)
+{
+    QRectF fr = ml.fileRect.translated(0, offsetY);
+    bool isImage = ml.fileMime.startsWith(QLatin1String("image/"));
+
+    if (isImage) {
+        // Try to draw the loaded preview image
+        QImage preview = fetchFilePreview(ml.fileId);
+        if (!preview.isNull()) {
+            // Scale to fit within the rect while keeping aspect ratio
+            QImage scaled = preview.scaled(
+                qRound(fr.width()), qRound(fr.height()),
+                Qt::KeepAspectRatio, Qt::SmoothTransformation);
+            // Center horizontally within the file rect
+            qreal imgX = fr.left() + (fr.width() - scaled.width()) / 2.0;
+            // Draw with rounded corners
+            p->save();
+            QPainterPath clip;
+            clip.addRoundedRect(QRectF(imgX, fr.top(), scaled.width(), scaled.height()),
+                                PainterTheme::radiusSmall, PainterTheme::radiusSmall);
+            p->setClipPath(clip);
+            p->drawImage(QPointF(imgX, fr.top()), scaled);
+            p->restore();
+        } else {
+            // Placeholder: gray rect with filename
+            p->setPen(Qt::NoPen);
+            p->setBrush(m_theme.bgSurface);
+            p->drawRoundedRect(fr, PainterTheme::radiusSmall, PainterTheme::radiusSmall);
+
+            p->setPen(m_theme.textSecondary);
+            p->setFont(m_theme.timeFont());
+            p->drawText(fr, Qt::AlignCenter, ml.fileName);
+        }
+    } else {
+        // Non-image file: draw a pill with document icon + filename
+        p->setPen(Qt::NoPen);
+        p->setBrush(m_theme.bgSurface);
+        p->drawRoundedRect(fr, fr.height() / 2.0, fr.height() / 2.0);
+
+        // Document icon (Unicode page symbol)
+        QFont iconFont = m_theme.bodyFont();
+        iconFont.setPixelSize(18);
+        QRectF iconR(fr.left() + 12, fr.top(), 24, fr.height());
+        p->setPen(m_theme.accent);
+        p->setFont(iconFont);
+        p->drawText(iconR, Qt::AlignCenter, QStringLiteral("\U0001F4C4"));
+
+        // Filename text
+        QRectF textR(iconR.right() + 4, fr.top(), fr.width() - 52, fr.height());
+        p->setPen(m_theme.textPrimary);
+        p->setFont(m_theme.bodyFont());
+        QFontMetrics fm(m_theme.bodyFont());
+        QString elided = fm.elidedText(ml.fileName, Qt::ElideMiddle, qRound(textR.width()));
+        p->drawText(textR, Qt::AlignLeft | Qt::AlignVCenter, elided);
+    }
+}
+
+// ─── Reactions ──────────────────────────────────────
+
+void ChatPainter::paintReactions(QPainter *p, const MessageLayout &ml, qreal offsetY)
+{
+    QRectF bar = ml.reactBarRect.translated(0, offsetY);
+
+    // Parse: "emoji1 count1  emoji2 count2" (double-space separated tokens)
+    QStringList tokens = ml.reactions.split(QStringLiteral("  "), Qt::SkipEmptyParts);
+
+    QFont emojiFont = m_theme.bodyFont();
+    emojiFont.setPixelSize(13);
+    QFont countFont = m_theme.timeFont();
+    countFont.setPixelSize(11);
+
+    QFontMetrics fmEmoji(emojiFont);
+    QFontMetrics fmCount(countFont);
+
+    qreal x = bar.left();
+    const qreal pillH = bar.height();
+    const qreal pillGap = 4;
+    const qreal pillPadX = 6;
+
+    QColor pillBg = m_darkMode ? QColor(255, 255, 255, 15) : QColor(0, 0, 0, 10);
+    QColor countColor = m_theme.textSecondary;
+
+    for (const QString &token : tokens) {
+        // Each token is "emoji count" (single space)
+        int lastSpace = token.lastIndexOf(' ');
+        if (lastSpace <= 0) continue;
+
+        QString emoji = token.left(lastSpace);
+        QString count = token.mid(lastSpace + 1);
+
+        int emojiW = fmEmoji.horizontalAdvance(emoji);
+        int countW = fmCount.horizontalAdvance(count);
+        qreal pillW = pillPadX + emojiW + 3 + countW + pillPadX;
+
+        // Don't overflow the bar
+        if (x + pillW > bar.right())
+            break;
+
+        QRectF pill(x, bar.top(), pillW, pillH);
+
+        // Pill background
+        p->setPen(Qt::NoPen);
+        p->setBrush(pillBg);
+        p->drawRoundedRect(pill, pillH / 2.0, pillH / 2.0);
+
+        // Emoji
+        p->setPen(m_theme.textPrimary);
+        p->setFont(emojiFont);
+        p->drawText(QRectF(x + pillPadX, bar.top(), emojiW, pillH),
+                     Qt::AlignCenter, emoji);
+
+        // Count
+        p->setPen(countColor);
+        p->setFont(countFont);
+        p->drawText(QRectF(x + pillPadX + emojiW + 3, bar.top(), countW, pillH),
+                     Qt::AlignCenter, count);
+
+        x += pillW + pillGap;
+    }
+}
+
+// ─── Avatar image loading ───────────────────────────
+
+QImage ChatPainter::fetchAvatar(const QString &userId)
+{
+    auto it = m_avatarCache.find(userId);
+    if (it != m_avatarCache.end())
+        return it.value();
+
+    // Start async fetch if not already pending
+    requestAvatar(userId);
+    return QImage(); // empty = use fallback
+}
+
+void ChatPainter::requestAvatar(const QString &userId)
+{
+    if (m_avatarPending.contains(userId))
+        return;
+    if (!m_model || !m_model->api())
+        return;
+
+    m_avatarPending.insert(userId);
+
+    ApiClient *api = m_model->api();
+    QNetworkReply *reply = api->getAbsoluteUrl(
+        QStringLiteral("/index.php/avatar/") + userId + QStringLiteral("/64"));
+
+    connect(reply, &QNetworkReply::finished, this, [this, reply, userId]() {
+        reply->deleteLater();
+        m_avatarPending.remove(userId);
+
+        if (reply->error() != QNetworkReply::NoError) {
+            // Cache empty image so we don't retry
+            m_avatarCache[userId] = QImage();
+            return;
+        }
+
+        QByteArray data = reply->readAll();
+        QImage img;
+        if (!img.loadFromData(data)) {
+            m_avatarCache[userId] = QImage();
+            return;
+        }
+
+        // Crop to circle (same logic as AvatarProvider)
+        int size = PainterTheme::avatarSize;
+        QImage scaled = img.scaled(size, size, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
+        int cx = (scaled.width() - size) / 2;
+        int cy = (scaled.height() - size) / 2;
+        if (cx > 0 || cy > 0)
+            scaled = scaled.copy(cx, cy, size, size);
+
+        QImage result(size, size, QImage::Format_ARGB32_Premultiplied);
+        result.fill(Qt::transparent);
+        {
+            QPainter painter(&result);
+            painter.setRenderHint(QPainter::Antialiasing);
+            QPainterPath path;
+            path.addEllipse(0, 0, size, size);
+            painter.setClipPath(path);
+            painter.drawImage(0, 0, scaled);
+        }
+
+        m_avatarCache[userId] = result;
+        update(); // repaint with the loaded avatar
+    });
+}
+
+// ─── File preview image loading ─────────────────────
+
+QImage ChatPainter::fetchFilePreview(int fileId)
+{
+    auto it = m_previewCache.find(fileId);
+    if (it != m_previewCache.end())
+        return it.value();
+
+    // Start async fetch if not already pending
+    requestFilePreview(fileId);
+    return QImage(); // empty = show placeholder
+}
+
+void ChatPainter::requestFilePreview(int fileId)
+{
+    if (m_previewPending.contains(fileId))
+        return;
+    if (!m_model || !m_model->api())
+        return;
+
+    m_previewPending.insert(fileId);
+
+    ApiClient *api = m_model->api();
+    QString path = QString("/index.php/core/preview?fileId=%1&x=800&y=600&a=1")
+        .arg(fileId);
+    QNetworkReply *reply = api->getAbsoluteUrl(path);
+
+    connect(reply, &QNetworkReply::finished, this, [this, reply, fileId]() {
+        reply->deleteLater();
+        m_previewPending.remove(fileId);
+
+        if (reply->error() != QNetworkReply::NoError) {
+            m_previewCache[fileId] = QImage();
+            return;
+        }
+
+        QByteArray data = reply->readAll();
+        QImage img;
+        if (!img.loadFromData(data)) {
+            m_previewCache[fileId] = QImage();
+            return;
+        }
+
+        m_previewCache[fileId] = img;
+
+        // Evict oldest if over 50 MB
+        qint64 totalBytes = 0;
+        for (auto it = m_previewCache.begin(); it != m_previewCache.end(); ++it)
+            totalBytes += it.value().sizeInBytes();
+        while (totalBytes > 50 * 1024 * 1024 && m_previewCache.size() > 1) {
+            auto oldest = m_previewCache.begin();
+            totalBytes -= oldest.value().sizeInBytes();
+            m_previewCache.erase(oldest);
+        }
+
+        update(); // repaint with the loaded preview
+    });
 }
