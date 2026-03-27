@@ -20,6 +20,7 @@ Page {
     property bool sidebarSqueezed: false
     signal expandSidebar()
     property int activeThreadColor: 0
+    property bool usePainter: true
     readonly property bool isViewingTopic: isInTopicMode && activeThreadId > 0
     // Only show typing when it's from the current conversation
     readonly property bool isTyping: signaling.typingUser.length > 0
@@ -406,10 +407,48 @@ Page {
         }
     }
 
+    // ═══ Painted chat renderer (toggle with usePainter) ═══
+    ChatPainter {
+        id: chatPainter
+        anchors.fill: parent
+        visible: chatRoot.usePainter && messageModel.conversationToken.length > 0
+        model: messageModel
+        myUserId: auth.userId
+        darkMode: Theme.darkMode
+        fontScale: Theme.fontScale
+        clip: true
+
+        ScrollBar {
+            id: painterScrollBar
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.bottom: parent.bottom
+            width: 6
+            policy: ScrollBar.AlwaysOn
+            size: chatPainter.visibleHeight / Math.max(1, chatPainter.contentHeight)
+            position: chatPainter.contentHeight > chatPainter.visibleHeight
+                ? chatPainter.scrollY / chatPainter.contentHeight
+                : 0
+            onPositionChanged: {
+                if (active)
+                    chatPainter.scrollY = position * chatPainter.contentHeight
+            }
+            contentItem: Rectangle {
+                implicitWidth: 6
+                radius: 3
+                color: Theme.textMuted
+                opacity: painterScrollBar.active ? 0.5 : 0
+                Behavior on opacity { NumberAnimation { duration: 400 } }
+            }
+            background: Item {}
+        }
+    }
+
     // Messages list — fills the content area between header and footer
     ListView {
         id: messageListView
         anchors.fill: parent
+        visible: !chatRoot.usePainter
         model: messageModel
         clip: true
         spacing: 2
@@ -418,6 +457,13 @@ Page {
         boundsBehavior: Flickable.StopAtBounds
         cacheBuffer: 200
         verticalLayoutDirection: ListView.BottomToTop
+        // Allow mouse wheel scrolling but not drag-to-scroll,
+        // so TextEdit inside delegates can handle click-drag for text selection.
+        interactive: true
+        flickableDirection: Flickable.VerticalFlick
+
+        // Steal press only after a drag threshold — gives TextEdit time to grab the press first
+        pressDelay: 200
 
         property bool autoScrolling: true
         property int previousCount: 0
@@ -706,13 +752,19 @@ Page {
         anchors.bottom: chatRoot.contentItem.bottom
         anchors.rightMargin: 20
         anchors.bottomMargin: 16
-        visible: !messageListView.autoScrolling && messageModel.count > 0
+        visible: chatRoot.usePainter
+            ? (!chatPainter.atBottom && messageModel.count > 0)
+            : (!messageListView.autoScrolling && messageModel.count > 0)
         opacity: visible ? 1 : 0
         z: 50
         Behavior on opacity { NumberAnimation { duration: Theme.animFast } }
         onClicked: {
-            messageListView.autoScrolling = true
-            messageListView.scrollToBottom()
+            if (chatRoot.usePainter) {
+                chatPainter.scrollToBottom()
+            } else {
+                messageListView.autoScrolling = true
+                messageListView.scrollToBottom()
+            }
         }
     }
 
@@ -721,13 +773,22 @@ Page {
         function onConversationTokenChanged() {
             chatRoot.closeThread()
             chatRoot.cancelPaste()
-            messageListView.autoScrolling = true
-            messageListView.previousCount = 0
-            messageListView.userHasScrolled = false
+            if (chatRoot.usePainter) {
+                chatPainter.scrollToBottom()
+            } else {
+                messageListView.autoScrolling = true
+                messageListView.previousCount = 0
+                messageListView.userHasScrolled = false
+            }
         }
         function onNewMessagesAtEnd() {
-            if (messageListView.count > 0 && messageListView.autoScrolling)
-                messageListView.scrollToBottom()
+            if (chatRoot.usePainter) {
+                if (chatPainter.atBottom)
+                    chatPainter.scrollToBottom()
+            } else {
+                if (messageListView.count > 0 && messageListView.autoScrolling)
+                    messageListView.scrollToBottom()
+            }
         }
         function onPasteReady(filePath, width, height) {
             pasteBar.pendingPath = filePath

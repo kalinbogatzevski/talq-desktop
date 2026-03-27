@@ -30,6 +30,7 @@
 #include "core/CallManager.h"
 #include "core/DebugMonitor.h"
 #include "core/AppSettings.h"
+#include "painter/ChatPainter.h"
 #include <gst/gst.h>
 
 int main(int argc, char *argv[])
@@ -93,6 +94,7 @@ int main(int argc, char *argv[])
     // Register types for QML enum access
     qmlRegisterUncreatableType<CallManager>("TalkQt", 1, 0, "CallManager",
         "CallManager is not creatable, use callManager context property");
+    qmlRegisterType<ChatPainter>("TalkQt", 1, 0, "ChatPainter");
 
     // QML engine
     QQmlApplicationEngine engine;
