@@ -110,6 +110,25 @@ void ChatPainter::scrollToBottom()
     setScrollY(qMax(0.0, m_contentHeight - height()));
 }
 
+QVariantMap ChatPainter::messageAt(qreal x, qreal y)
+{
+    qreal canvasY = y + m_scrollY;
+    int idx = layoutIndexAtY(canvasY);
+    if (idx < 0 || idx >= m_layouts.size()) return {};
+
+    const auto &ml = m_layouts[idx];
+    QVariantMap m;
+    m["messageId"] = ml.messageId;
+    m["isOwn"] = ml.isOwn;
+    m["actorName"] = ml.actorName;
+    m["messageText"] = ml.bodyHtml;
+    m["hasFile"] = ml.hasFile;
+    m["fileId"] = ml.fileId;
+    m["fileName"] = ml.fileName;
+    m["fileMime"] = ml.fileMime;
+    return m;
+}
+
 QString ChatPainter::hitTestAt(qreal x, qreal y)
 {
     // All rects in m_layouts are canvas-absolute (y starts at startY which is cumulative)
