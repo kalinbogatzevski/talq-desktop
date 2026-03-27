@@ -442,8 +442,11 @@ Page {
                     var dy = dragStartY - mouse.y
                     if (Math.abs(dy) > 4) dragMoved = true
                     if (dragMoved) chatPainter.scrollY = dragStartScroll + dy
+                } else {
+                    chatPainter.setHoveredPos(mouse.x, mouse.y)
                 }
             }
+            onExited: chatPainter.setHoveredPos(-1, -1)
             onReleased: function(mouse) {
                 if (!dragMoved && mouse.button === Qt.LeftButton) {
                     var hit = chatPainter.hitTestAt(mouse.x, mouse.y)
@@ -467,6 +470,29 @@ Page {
                     } else if (hit.startsWith("reaction:")) {
                         var rparts = hit.substring(9).split(":")
                         messageModel.addReaction(parseInt(rparts[0]), rparts.slice(1).join(":"))
+                    } else if (hit.startsWith("react:")) {
+                        emojiBar.reactMsgId = parseInt(hit.substring(6))
+                        var msg2 = chatPainter.messageAt(mouse.x, mouse.y)
+                        var btnSize = 28
+                        if (msg2.isOwn) {
+                            // Own message: emoji bar opens LEFT of the icon
+                            emojiBar.x = mouse.x - btnSize / 2 - 4 - 210
+                        } else {
+                            // Other message: emoji bar opens RIGHT of the icon
+                            emojiBar.x = mouse.x + btnSize / 2 + 4
+                        }
+                        emojiBar.y = mouse.y - emojiBar.height / 2
+                        emojiBar.open()
+                        // Clamp to bounds
+                        emojiBar.x = Math.max(4, Math.min(emojiBar.x, chatPainter.width - emojiBar.width - 4))
+                        emojiBar.y = Math.max(4, Math.min(emojiBar.y, chatPainter.height - emojiBar.height - 4))
+                    } else if (hit.startsWith("reply:")) {
+                        // Hover bar reply button — format: reply:MSGID:AUTHOR:TEXT
+                        var replyParts = hit.substring(6).split(":")
+                        var replyMsgId = parseInt(replyParts[0])
+                        var replyAuthor = replyParts[1]
+                        var replyText = replyParts.slice(2).join(":")
+                        chatRoot.startReply(replyMsgId, replyAuthor, replyText)
                     }
                 }
                 // Right-click → context menu
@@ -519,6 +545,37 @@ Page {
                 Behavior on opacity { NumberAnimation { duration: 400 } }
             }
             background: Item {}
+        }
+    }
+
+    // ═══ Quick emoji react bar ═══
+    Popup {
+        id: emojiBar
+        parent: chatPainter
+        property int reactMsgId: 0
+        width: emojiBarRow.width + 16
+        height: 42
+        padding: 5
+        modal: false
+        closePolicy: Popup.CloseOnPressOutside | Popup.CloseOnEscape
+        background: Rectangle {
+            radius: 21; color: Theme.darkMode ? "#262b34" : "#fafbfc"
+            border.color: Theme.darkMode ? "#363c48" : "#dde0e4"; border.width: 1
+            Rectangle { anchors.fill: parent; anchors.margins: -2; radius: 23; color: "transparent"; border.color: Qt.rgba(0,0,0,0.08); border.width: 1; z: -1 }
+        }
+        enter: Transition { NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 80 } }
+        exit: Transition { NumberAnimation { property: "opacity"; from: 1; to: 0; duration: 50 } }
+        Row {
+            id: emojiBarRow; spacing: 2
+            Repeater {
+                model: ["\uD83D\uDC4D", "\u2764\uFE0F", "\uD83D\uDE02", "\uD83D\uDE2E", "\uD83D\uDE22", "\uD83C\uDF89"]
+                Rectangle {
+                    width: 32; height: 32; radius: 8
+                    color: emoBarMa.containsMouse ? (Theme.darkMode ? Qt.rgba(1,1,1,0.16) : Qt.rgba(0,0,0,0.08)) : "transparent"
+                    Label { anchors.centerIn: parent; text: modelData; font.pixelSize: 18; scale: emoBarMa.containsMouse ? 1.2 : 1.0; Behavior on scale { NumberAnimation { duration: 80; easing.type: Easing.OutBack } } }
+                    MouseArea { id: emoBarMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: { messageModel.addReaction(emojiBar.reactMsgId, modelData); emojiBar.close() } }
+                }
+            }
         }
     }
 

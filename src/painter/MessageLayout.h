@@ -72,6 +72,7 @@ struct MessageLayout
 
     // Bubble rect (own messages get a rounded-rect background)
     QRectF bubbleRect;
+    qreal contentRight = 0;  // right edge of actual content (for hover bar positioning)
 
     // Timestamp
     QRectF timeRect;
