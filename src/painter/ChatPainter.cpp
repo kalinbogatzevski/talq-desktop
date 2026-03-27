@@ -6,6 +6,7 @@
 #include <QWheelEvent>
 #include <QMouseEvent>
 #include <QHoverEvent>
+#include <QCursor>
 #include <QTextDocument>
 #include <QAbstractTextDocumentLayout>
 #include <QRegularExpression>
@@ -17,8 +18,8 @@ ChatPainter::ChatPainter(QQuickItem *parent)
     : QQuickPaintedItem(parent)
     , m_theme(m_darkMode, m_fontScale)
 {
-    setAcceptedMouseButtons(Qt::LeftButton);
-    setAcceptHoverEvents(true);
+    setAcceptedMouseButtons(Qt::NoButton);  // QML MouseArea handles clicks
+    setAcceptHoverEvents(false);           // QML MouseArea handles hover
     setFlag(ItemAcceptsInputMethod, false);
 
     // RenderTarget: default (Image) is fine for Phase 3
@@ -107,6 +108,33 @@ void ChatPainter::setScrollY(qreal y)
 void ChatPainter::scrollToBottom()
 {
     setScrollY(qMax(0.0, m_contentHeight - height()));
+}
+
+QString ChatPainter::hitTestAt(qreal x, qreal y)
+{
+    // All rects in m_layouts are canvas-absolute (y starts at startY which is cumulative)
+    QPointF canvasPos(x, y + m_scrollY);
+    int idx = layoutIndexAtY(canvasPos.y());
+    if (idx < 0 || idx >= m_layouts.size()) return {};
+
+    const auto &ml = m_layouts[idx];
+
+    // Link
+    QString link = hitTestLink(ml, canvasPos);
+    if (!link.isEmpty()) return QStringLiteral("link:") + link;
+
+    // File
+    if (ml.hasFile && !ml.fileRect.isNull() && ml.fileRect.contains(canvasPos))
+        return QStringLiteral("file:%1:%2").arg(ml.fileId).arg(ml.fileName);
+
+    // Reaction
+    if (!ml.reactions.isEmpty() && !ml.reactBarRect.isNull()) {
+        QString emoji = hitTestReaction(ml, canvasPos);
+        if (!emoji.isEmpty())
+            return QStringLiteral("reaction:%1:%2").arg(ml.messageId).arg(emoji);
+    }
+
+    return {};
 }
 
 // ═══════════════════════════════════════════════════════
@@ -226,41 +254,49 @@ void ChatPainter::wheelEvent(QWheelEvent *event)
     event->accept();
 }
 
-void ChatPainter::mousePressEvent(QMouseEvent *event)
-{
-    if (event->button() == Qt::LeftButton) {
-        m_dragging = true;
-        m_dragStartY = event->position().y();
-        m_dragStartScroll = m_scrollY;
-        event->accept();
-    }
+// Mouse events are handled by QML MouseArea overlay in ChatView.qml
+// C++ only provides hitTestAt() for QML to call.
+void ChatPainter::mousePressEvent(QMouseEvent *event) { event->ignore(); }
+void ChatPainter::mouseMoveEvent(QMouseEvent *event) { event->ignore(); }
+void ChatPainter::mouseReleaseEvent(QMouseEvent *event) { event->ignore(); }
+
+void ChatPainter::hoverMoveEvent(QHoverEvent *) {
+    // Handled by QML MouseArea
 }
 
-void ChatPainter::mouseMoveEvent(QMouseEvent *event)
+QString ChatPainter::hitTestLink(const MessageLayout &ml, const QPointF &canvasPos) const
 {
-    if (m_dragging) {
-        qreal dy = m_dragStartY - event->position().y();
-        setScrollY(m_dragStartScroll + dy);
-        event->accept();
-    }
+    if (!ml.bodyDoc || ml.bodyRect.isNull()) return {};
+
+    // bodyRect is canvas-absolute, canvasPos is canvas-absolute
+    QPointF bodyLocal(canvasPos.x() - ml.bodyRect.x(), canvasPos.y() - ml.bodyRect.y());
+    if (bodyLocal.x() < 0 || bodyLocal.y() < 0
+        || bodyLocal.x() > ml.bodyRect.width() || bodyLocal.y() > ml.bodyRect.height())
+        return {};
+
+    return ml.bodyDoc->documentLayout()->anchorAt(bodyLocal);
 }
 
-void ChatPainter::mouseReleaseEvent(QMouseEvent *event)
+QString ChatPainter::hitTestReaction(const MessageLayout &ml, const QPointF &canvasPos) const
 {
-    if (event->button() == Qt::LeftButton) {
-        m_dragging = false;
-        event->accept();
-    }
-}
+    if (!ml.reactBarRect.contains(canvasPos)) return {};
 
-void ChatPainter::hoverMoveEvent(QHoverEvent *event)
-{
-    qreal viewY = event->position().y() + m_scrollY;
-    int idx = layoutIndexAtY(viewY);
-    if (idx != m_hoveredIndex) {
-        m_hoveredIndex = idx;
-        emit hoveredIndexChanged();
+    QStringList tokens = ml.reactions.split(QStringLiteral("  "), Qt::SkipEmptyParts);
+    QFontMetrics fm(m_theme.timeFont());
+    qreal x = ml.reactBarRect.left();
+    qreal y = ml.reactBarRect.top();
+    qreal pillH = 22;
+
+    for (const auto &token : tokens) {
+        int pillW = fm.horizontalAdvance(token) + 14;
+        QRectF pillRect(x, y, pillW, pillH);
+        if (pillRect.contains(canvasPos)) {
+            int sp = token.indexOf(' ');
+            return sp > 0 ? token.left(sp) : token;
+        }
+        x += pillW + 4;
     }
+    return {};
 }
 
 int ChatPainter::layoutIndexAtY(qreal viewportY) const
