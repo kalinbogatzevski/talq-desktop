@@ -1,6 +1,6 @@
 #pragma once
 
-#include <QQuickPaintedItem>
+#include <QWidget>
 #include <QVector>
 #include <QHash>
 #include <QImage>
@@ -12,36 +12,18 @@ class MessageListModel;
 class QNetworkReply;
 
 /**
- * QQuickPaintedItem that renders the entire chat message list
- * using QPainter. Replaces QML ListView + MessageBubble delegates.
- *
- * Phases:
- *  1. Skeleton — compiles, shows background
- *  2. Layout engine — computes message positions
- *  3. Basic painting — renders text, bubbles, avatars, timestamps
+ * QWidget that renders the entire chat message list using QPainter.
  */
-class ChatPainter : public QQuickPaintedItem
+class ChatPainter : public QWidget
 {
     Q_OBJECT
 
-    Q_PROPERTY(QObject* model READ modelObject WRITE setModelObject NOTIFY modelChanged)
-    Q_PROPERTY(QString myUserId READ myUserId WRITE setMyUserId NOTIFY myUserIdChanged)
-    Q_PROPERTY(bool darkMode READ darkMode WRITE setDarkMode NOTIFY darkModeChanged)
-    Q_PROPERTY(qreal fontScale READ fontScale WRITE setFontScale NOTIFY fontScaleChanged)
-    Q_PROPERTY(bool atBottom READ atBottom NOTIFY atBottomChanged)
-    Q_PROPERTY(qreal scrollY READ scrollY WRITE setScrollY NOTIFY scrollYChanged)
-    Q_PROPERTY(qreal contentHeight READ contentHeight NOTIFY contentHeightChanged)
-    Q_PROPERTY(qreal visibleHeight READ visibleHeight NOTIFY visibleHeightChanged)
-    Q_PROPERTY(int hoveredIndex READ hoveredIndex NOTIFY hoveredIndexChanged)
-
 public:
-    explicit ChatPainter(QQuickItem *parent = nullptr);
-
-    void paint(QPainter *painter) override;
+    explicit ChatPainter(QWidget *parent = nullptr);
 
     // ── Property accessors ──
-    QObject *modelObject() const;
-    void setModelObject(QObject *obj);
+    void setModel(MessageListModel *model);
+    MessageListModel *model() const { return m_model; }
 
     QString myUserId() const { return m_myUserId; }
     void setMyUserId(const QString &id);
@@ -61,16 +43,12 @@ public:
 
     int hoveredIndex() const { return m_hoveredIndex; }
 
-    Q_INVOKABLE void scrollToBottom();
-    Q_INVOKABLE QString hitTestAt(qreal x, qreal y);
-    Q_INVOKABLE QVariantMap messageAt(qreal x, qreal y);  // returns message data for context menu
-    Q_INVOKABLE void setHoveredPos(qreal x, qreal y);     // update hovered index from QML mouse position
+    void scrollToBottom();
+    QString hitTestAt(qreal x, qreal y);
+    QVariantMap messageAt(qreal x, qreal y);
+    void setHoveredPos(qreal x, qreal y);
 
 signals:
-    void modelChanged();
-    void myUserIdChanged();
-    void darkModeChanged();
-    void fontScaleChanged();
     void atBottomChanged();
     void scrollYChanged();
     void contentHeightChanged();
@@ -81,12 +59,13 @@ signals:
     void reactionClicked(int messageId, const QString &emoji);
 
 protected:
+    void paintEvent(QPaintEvent *event) override;
     void wheelEvent(QWheelEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
-    void hoverMoveEvent(QHoverEvent *event) override;
-    void geometryChange(const QRectF &newGeom, const QRectF &oldGeom) override;
+    void resizeEvent(QResizeEvent *event) override;
+    bool event(QEvent *event) override;
 
 private slots:
     void onRowsInserted(const QModelIndex &parent, int first, int last);

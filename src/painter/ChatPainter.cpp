@@ -3,6 +3,7 @@
 #include "models/MessageListModel.h"
 #include <QPainter>
 #include <QPainterPath>
+#include <QPaintEvent>
 #include <QWheelEvent>
 #include <QMouseEvent>
 #include <QHoverEvent>
@@ -14,29 +15,20 @@
 #include <QtMath>
 #include "core/ApiClient.h"
 
-ChatPainter::ChatPainter(QQuickItem *parent)
-    : QQuickPaintedItem(parent)
+ChatPainter::ChatPainter(QWidget *parent)
+    : QWidget(parent)
     , m_theme(m_darkMode, m_fontScale)
 {
-    setAcceptedMouseButtons(Qt::NoButton);  // QML MouseArea handles clicks
-    setAcceptHoverEvents(false);           // QML MouseArea handles hover
-    setFlag(ItemAcceptsInputMethod, false);
-
-    // RenderTarget: default (Image) is fine for Phase 3
+    setAttribute(Qt::WA_Hover);
+    setMouseTracking(true);
 }
 
 // ═══════════════════════════════════════════════════════
 // Properties
 // ═══════════════════════════════════════════════════════
 
-QObject *ChatPainter::modelObject() const
+void ChatPainter::setModel(MessageListModel *mdl)
 {
-    return m_model;
-}
-
-void ChatPainter::setModelObject(QObject *obj)
-{
-    auto *mdl = qobject_cast<MessageListModel *>(obj);
     if (mdl == m_model)
         return;
 
@@ -60,7 +52,6 @@ void ChatPainter::setModelObject(QObject *obj)
     }
 
     rebuildAllLayouts();
-    emit modelChanged();
 }
 
 void ChatPainter::setMyUserId(const QString &id)
@@ -68,7 +59,6 @@ void ChatPainter::setMyUserId(const QString &id)
     if (m_myUserId == id) return;
     m_myUserId = id;
     rebuildAllLayouts();
-    emit myUserIdChanged();
 }
 
 void ChatPainter::setDarkMode(bool dark)
@@ -77,7 +67,6 @@ void ChatPainter::setDarkMode(bool dark)
     m_darkMode = dark;
     m_theme = PainterTheme(m_darkMode, m_fontScale);
     rebuildAllLayouts();
-    emit darkModeChanged();
 }
 
 void ChatPainter::setFontScale(qreal scale)
@@ -86,7 +75,6 @@ void ChatPainter::setFontScale(qreal scale)
     m_fontScale = scale;
     m_theme = PainterTheme(m_darkMode, m_fontScale);
     rebuildAllLayouts();
-    emit fontScaleChanged();
 }
 
 bool ChatPainter::atBottom() const
@@ -284,13 +272,25 @@ void ChatPainter::onModelReset()
 // Geometry change
 // ═══════════════════════════════════════════════════════
 
-void ChatPainter::geometryChange(const QRectF &newGeom, const QRectF &oldGeom)
+void ChatPainter::resizeEvent(QResizeEvent *event)
 {
-    QQuickPaintedItem::geometryChange(newGeom, oldGeom);
-    if (newGeom.width() != oldGeom.width() || newGeom.height() != oldGeom.height()) {
-        rebuildAllLayouts();
-        emit visibleHeightChanged();
+    QWidget::resizeEvent(event);
+    rebuildAllLayouts();
+    emit visibleHeightChanged();
+}
+
+bool ChatPainter::event(QEvent *e)
+{
+    if (e->type() == QEvent::HoverMove) {
+        auto *he = static_cast<QHoverEvent *>(e);
+        setHoveredPos(he->position().x(), he->position().y());
+        return true;
     }
+    if (e->type() == QEvent::HoverLeave) {
+        setHoveredPos(-1, -1);
+        return true;
+    }
+    return QWidget::event(e);
 }
 
 // ═══════════════════════════════════════════════════════
@@ -308,12 +308,62 @@ void ChatPainter::wheelEvent(QWheelEvent *event)
 
 // Mouse events are handled by QML MouseArea overlay in ChatView.qml
 // C++ only provides hitTestAt() for QML to call.
-void ChatPainter::mousePressEvent(QMouseEvent *event) { event->ignore(); }
-void ChatPainter::mouseMoveEvent(QMouseEvent *event) { event->ignore(); }
-void ChatPainter::mouseReleaseEvent(QMouseEvent *event) { event->ignore(); }
+void ChatPainter::mousePressEvent(QMouseEvent *event)
+{
+    if (event->button() == Qt::LeftButton || event->button() == Qt::RightButton) {
+        m_dragging = true;
+        m_dragMoved = false;
+        m_pressCanvasPos = event->position();
+        m_dragStartY = event->position().y();
+        m_dragStartScroll = m_scrollY;
+        event->accept();
+    }
+}
 
-void ChatPainter::hoverMoveEvent(QHoverEvent *) {
-    // Handled by QML MouseArea
+void ChatPainter::mouseMoveEvent(QMouseEvent *event)
+{
+    if (m_dragging) {
+        qreal dy = m_dragStartY - event->position().y();
+        if (qAbs(dy) > 4) m_dragMoved = true;
+        if (m_dragMoved) {
+            setScrollY(m_dragStartScroll + dy);
+        }
+        event->accept();
+    } else {
+        // Update hover
+        setHoveredPos(event->position().x(), event->position().y());
+        // Update cursor
+        QString hit = hitTestAt(event->position().x(), event->position().y());
+        if (!hit.isEmpty())
+            setCursor(Qt::PointingHandCursor);
+        else
+            setCursor(Qt::ArrowCursor);
+    }
+}
+
+void ChatPainter::mouseReleaseEvent(QMouseEvent *event)
+{
+    if (!m_dragging) return;
+    m_dragging = false;
+
+    if (!m_dragMoved && event->button() == Qt::LeftButton) {
+        QString hit = hitTestAt(event->position().x(), event->position().y());
+        if (hit.startsWith("link:")) {
+            QString url = hit.mid(5);
+            if (url.startsWith("http://") || url.startsWith("https://"))
+                emit linkActivated(url);
+        } else if (hit.startsWith("reaction:")) {
+            QStringList rparts = hit.mid(9).split(":");
+            if (rparts.size() >= 2)
+                emit reactionClicked(rparts[0].toInt(), rparts.mid(1).join(":"));
+        } else if (hit.startsWith("reply:")) {
+            // reply:MSGID:AUTHOR:TEXT - emit signal for MainWindow to handle
+            // For now, just log
+        } else if (hit.startsWith("react:")) {
+            // Quick react button - would need emoji picker
+        }
+    }
+    event->accept();
 }
 
 QString ChatPainter::hitTestLink(const MessageLayout &ml, const QPointF &canvasPos) const
@@ -366,8 +416,10 @@ int ChatPainter::layoutIndexAtY(qreal viewportY) const
 // PAINT
 // ═══════════════════════════════════════════════════════
 
-void ChatPainter::paint(QPainter *painter)
+void ChatPainter::paintEvent(QPaintEvent *)
 {
+    QPainter p(this);
+    QPainter *painter = &p;
     painter->setRenderHint(QPainter::Antialiasing, true);
     painter->setRenderHint(QPainter::TextAntialiasing, true);
 

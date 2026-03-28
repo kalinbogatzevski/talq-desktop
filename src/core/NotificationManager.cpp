@@ -1,6 +1,6 @@
 #include "core/NotificationManager.h"
 #include <QApplication>
-#include <QQuickWindow>
+#include <QWidget>
 #include <QIcon>
 #include <QFile>
 #include <QActionGroup>
@@ -34,7 +34,7 @@ NotificationManager::~NotificationManager()
     delete m_trayMenu;
 }
 
-void NotificationManager::setWindow(QQuickWindow *window)
+void NotificationManager::setWindow(QWidget *window)
 {
     m_window = window;
 }
@@ -124,7 +124,7 @@ void NotificationManager::playSystemSound()
 
 void NotificationManager::notify(const QString &title, const QString &message, bool alwaysSound, const QString &token)
 {
-    bool windowActive = m_window && m_window->isActive();
+    bool windowActive = m_window && m_window->isActiveWindow();
 
     // Play sound: always for cross-chat, only when unfocused for active chat
     if (alwaysSound || !windowActive) {

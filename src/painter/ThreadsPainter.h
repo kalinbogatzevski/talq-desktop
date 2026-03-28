@@ -1,6 +1,6 @@
 #pragma once
 
-#include <QQuickPaintedItem>
+#include <QWidget>
 #include <QVector>
 #include "PainterTheme.h"
 
@@ -28,36 +28,17 @@ struct ThreadLayout {
 };
 
 /**
- * QQuickPaintedItem that renders the thread/topics list using QPainter.
- * Replaces QML ThreadListView + ThreadItem delegates.
- *
- * Features:
- *  - Scrollable list with hover/selection highlighting
- *  - Colored dot + title + last message preview + timestamp
- *  - Unread badge with topic color
- *  - Selection bar with topic color tint
- *  - "New Topic" button at bottom
- *  - Empty state
- *  - Header with back button and group name
+ * QWidget that renders the thread/topics list using QPainter.
  */
-class ThreadsPainter : public QQuickPaintedItem
+class ThreadsPainter : public QWidget
 {
     Q_OBJECT
 
-    Q_PROPERTY(QObject* model READ modelObject WRITE setModelObject NOTIFY modelChanged)
-    Q_PROPERTY(bool darkMode READ darkMode WRITE setDarkMode NOTIFY darkModeChanged)
-    Q_PROPERTY(int selectedThreadId READ selectedThreadId WRITE setSelectedThreadId NOTIFY selectedThreadIdChanged)
-    Q_PROPERTY(QString groupName READ groupName WRITE setGroupName NOTIFY groupNameChanged)
-    Q_PROPERTY(bool creating READ creating WRITE setCreating NOTIFY creatingChanged)
-
 public:
-    explicit ThreadsPainter(QQuickItem *parent = nullptr);
-
-    void paint(QPainter *painter) override;
+    explicit ThreadsPainter(QWidget *parent = nullptr);
 
     // Property accessors
-    QObject *modelObject() const;
-    void setModelObject(QObject *obj);
+    void setModel(ThreadListModel *model);
 
     bool darkMode() const { return m_darkMode; }
     void setDarkMode(bool dark);
@@ -72,23 +53,17 @@ public:
     void setCreating(bool c);
 
 signals:
-    void modelChanged();
-    void darkModeChanged();
-    void selectedThreadIdChanged();
-    void groupNameChanged();
-    void creatingChanged();
-
     void threadClicked(int threadId, const QString &title);
     void backClicked();
     void newTopicClicked();
 
 protected:
+    void paintEvent(QPaintEvent *event) override;
     void wheelEvent(QWheelEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
-    void hoverMoveEvent(QHoverEvent *event) override;
-    void hoverLeaveEvent(QHoverEvent *event) override;
-    void geometryChange(const QRectF &newGeom, const QRectF &oldGeom) override;
+    void resizeEvent(QResizeEvent *event) override;
+    bool event(QEvent *event) override;
 
 private slots:
     void onDataChanged(const QModelIndex &topLeft, const QModelIndex &bottomRight);

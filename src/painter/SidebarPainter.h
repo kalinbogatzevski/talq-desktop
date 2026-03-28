@@ -1,6 +1,6 @@
 #pragma once
 
-#include <QQuickPaintedItem>
+#include <QWidget>
 #include <QVector>
 #include <QHash>
 #include <QSet>
@@ -36,39 +36,18 @@ struct ConversationLayout {
 };
 
 /**
- * QQuickPaintedItem that renders the conversation sidebar using QPainter.
- * Replaces QML ListView + ConversationItem delegates.
- *
- * Features:
- *  - Scrollable list with hover/selection highlighting
- *  - Avatar (circular), display name, last message preview, timestamp
- *  - Unread badge, mute indicator, favorite dot, online status
- *  - Squeeze mode (avatar-only, 56px wide)
- *  - Search filtering
- *  - Right-click context menu (mute/unmute via signal)
+ * QWidget that renders the conversation sidebar using QPainter.
  */
-class SidebarPainter : public QQuickPaintedItem
+class SidebarPainter : public QWidget
 {
     Q_OBJECT
 
-    Q_PROPERTY(QObject* model READ modelObject WRITE setModelObject NOTIFY modelChanged)
-    Q_PROPERTY(QObject* api READ apiObject WRITE setApiObject NOTIFY apiChanged)
-    Q_PROPERTY(bool darkMode READ darkMode WRITE setDarkMode NOTIFY darkModeChanged)
-    Q_PROPERTY(int selectedIndex READ selectedIndex WRITE setSelectedIndex NOTIFY selectedIndexChanged)
-    Q_PROPERTY(bool squeezed READ squeezed WRITE setSqueezed NOTIFY squeezedChanged)
-    Q_PROPERTY(QString filterText READ filterText WRITE setFilterText NOTIFY filterTextChanged)
-
 public:
-    explicit SidebarPainter(QQuickItem *parent = nullptr);
-
-    void paint(QPainter *painter) override;
+    explicit SidebarPainter(QWidget *parent = nullptr);
 
     // ── Property accessors ──
-    QObject *modelObject() const;
-    void setModelObject(QObject *obj);
-
-    QObject *apiObject() const;
-    void setApiObject(QObject *obj);
+    void setModel(ConversationListModel *model);
+    void setApi(ApiClient *api);
 
     bool darkMode() const { return m_darkMode; }
     void setDarkMode(bool dark);
@@ -83,34 +62,21 @@ public:
     void setFilterText(const QString &text);
 
 signals:
-    void modelChanged();
-    void apiChanged();
-    void darkModeChanged();
     void selectedIndexChanged();
-    void squeezedChanged();
-    void filterTextChanged();
 
-    /**
-     * Emitted when the user clicks a conversation row.
-     * Parameters match ConversationList.qml's conversationSelected signal.
-     */
     void conversationClicked(const QString &token, const QString &displayName,
                              const QString &participantUserId, int conversationType,
                              const QString &userStatus);
 
-    /**
-     * Emitted on right-click for context menu (mute/unmute).
-     * QML handles the actual Menu popup.
-     */
     void contextMenuRequested(int modelIndex, int notificationLevel, qreal globalX, qreal globalY);
 
 protected:
+    void paintEvent(QPaintEvent *event) override;
     void wheelEvent(QWheelEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
-    void hoverMoveEvent(QHoverEvent *event) override;
-    void hoverLeaveEvent(QHoverEvent *event) override;
-    void geometryChange(const QRectF &newGeom, const QRectF &oldGeom) override;
+    void resizeEvent(QResizeEvent *event) override;
+    bool event(QEvent *event) override;
 
 private slots:
     void onDataChanged(const QModelIndex &topLeft, const QModelIndex &bottomRight);

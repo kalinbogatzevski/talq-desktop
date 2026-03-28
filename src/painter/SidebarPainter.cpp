@@ -3,6 +3,7 @@
 #include "core/ApiClient.h"
 #include <QPainter>
 #include <QPainterPath>
+#include <QPaintEvent>
 #include <QWheelEvent>
 #include <QMouseEvent>
 #include <QHoverEvent>
@@ -15,26 +16,20 @@
 // Constructor
 // ═══════════════════════════════════════════════════════
 
-SidebarPainter::SidebarPainter(QQuickItem *parent)
-    : QQuickPaintedItem(parent)
+SidebarPainter::SidebarPainter(QWidget *parent)
+    : QWidget(parent)
     , m_theme(m_darkMode, 1.0)
 {
-    setAcceptedMouseButtons(Qt::LeftButton | Qt::RightButton);
-    setAcceptHoverEvents(true);
+    setAttribute(Qt::WA_Hover);
+    setMouseTracking(true);
 }
 
 // ═══════════════════════════════════════════════════════
 // Properties
 // ═══════════════════════════════════════════════════════
 
-QObject *SidebarPainter::modelObject() const
+void SidebarPainter::setModel(ConversationListModel *mdl)
 {
-    return m_model;
-}
-
-void SidebarPainter::setModelObject(QObject *obj)
-{
-    auto *mdl = qobject_cast<ConversationListModel *>(obj);
     if (mdl == m_model) return;
 
     if (m_model) {
@@ -51,20 +46,12 @@ void SidebarPainter::setModelObject(QObject *obj)
     }
 
     rebuildLayouts();
-    emit modelChanged();
 }
 
-QObject *SidebarPainter::apiObject() const
+void SidebarPainter::setApi(ApiClient *api)
 {
-    return m_api;
-}
-
-void SidebarPainter::setApiObject(QObject *obj)
-{
-    auto *api = qobject_cast<ApiClient *>(obj);
     if (api == m_api) return;
     m_api = api;
-    emit apiChanged();
 }
 
 void SidebarPainter::setDarkMode(bool dark)
@@ -73,7 +60,6 @@ void SidebarPainter::setDarkMode(bool dark)
     m_darkMode = dark;
     m_theme = PainterTheme(m_darkMode, 1.0);
     update();
-    emit darkModeChanged();
 }
 
 void SidebarPainter::setSelectedIndex(int idx)
@@ -90,7 +76,6 @@ void SidebarPainter::setSqueezed(bool sq)
     m_squeezed = sq;
     m_scrollY = 0;
     update();
-    emit squeezedChanged();
 }
 
 void SidebarPainter::setFilterText(const QString &text)
@@ -98,7 +83,6 @@ void SidebarPainter::setFilterText(const QString &text)
     if (m_filterText == text) return;
     m_filterText = text;
     rebuildLayouts();
-    emit filterTextChanged();
 }
 
 // ═══════════════════════════════════════════════════════
@@ -219,13 +203,33 @@ int SidebarPainter::rowAtY(qreal viewportY) const
 // Geometry
 // ═══════════════════════════════════════════════════════
 
-void SidebarPainter::geometryChange(const QRectF &newGeom, const QRectF &oldGeom)
+void SidebarPainter::resizeEvent(QResizeEvent *event)
 {
-    QQuickPaintedItem::geometryChange(newGeom, oldGeom);
-    if (newGeom.width() != oldGeom.width() || newGeom.height() != oldGeom.height()) {
-        clampScroll();
-        update();
+    QWidget::resizeEvent(event);
+    clampScroll();
+    update();
+}
+
+bool SidebarPainter::event(QEvent *e)
+{
+    if (e->type() == QEvent::HoverMove) {
+        auto *he = static_cast<QHoverEvent *>(e);
+        // Replicate hoverMoveEvent
+        int row = rowAtY(he->position().y());
+        if (row != m_hoveredRow) {
+            m_hoveredRow = row;
+            update();
+        }
+        return true;
     }
+    if (e->type() == QEvent::HoverLeave) {
+        if (m_hoveredRow != -1) {
+            m_hoveredRow = -1;
+            update();
+        }
+        return true;
+    }
+    return QWidget::event(e);
 }
 
 // ═══════════════════════════════════════════════════════
@@ -273,29 +277,16 @@ void SidebarPainter::mouseReleaseEvent(QMouseEvent *event)
     event->accept();
 }
 
-void SidebarPainter::hoverMoveEvent(QHoverEvent *event)
-{
-    int row = rowAtY(event->position().y());
-    if (row != m_hoveredRow) {
-        m_hoveredRow = row;
-        update();
-    }
-}
-
-void SidebarPainter::hoverLeaveEvent(QHoverEvent *)
-{
-    if (m_hoveredRow != -1) {
-        m_hoveredRow = -1;
-        update();
-    }
-}
+// hoverMoveEvent/hoverLeaveEvent handled in event() override
 
 // ═══════════════════════════════════════════════════════
 // PAINT
 // ═══════════════════════════════════════════════════════
 
-void SidebarPainter::paint(QPainter *painter)
+void SidebarPainter::paintEvent(QPaintEvent *)
 {
+    QPainter p(this);
+    QPainter *painter = &p;
     painter->setRenderHint(QPainter::Antialiasing, true);
     painter->setRenderHint(QPainter::TextAntialiasing, true);
 
