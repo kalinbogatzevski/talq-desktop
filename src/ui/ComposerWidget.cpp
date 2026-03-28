@@ -167,18 +167,22 @@ ComposerWidget::ComposerWidget(QWidget *parent)
     // Reply bar (hidden by default)
     m_replyBar = new QWidget(this);
     m_replyBar->hide();
-    m_replyBar->setStyleSheet("background: #1e2a28; border-left: 3px solid #2ec4b6;");
+    m_replyBar->setStyleSheet("background: #1e2a28; border-left: 3px solid #2ec4b6; border-top: 1px solid #2a2a26;");
+    m_replyBar->setFixedHeight(36);
     auto *replyBarLayout = new QHBoxLayout(m_replyBar);
-    replyBarLayout->setContentsMargins(12, 6, 8, 6);
+    replyBarLayout->setContentsMargins(14, 0, 8, 0);
     replyBarLayout->setSpacing(8);
     m_replyLabel = new QLabel(m_replyBar);
-    m_replyLabel->setStyleSheet("font-size: 12px; color: #b0aca5;");
+    m_replyLabel->setStyleSheet("font-size: 13px; color: #b0aca5;");
     replyBarLayout->addWidget(m_replyLabel, 1);
     auto *replyCancelBtn = new QPushButton("\u2715", m_replyBar);
-    replyCancelBtn->setFixedSize(24, 24);
+    replyCancelBtn->setFixedSize(28, 28);
     replyCancelBtn->setFlat(true);
     replyCancelBtn->setCursor(Qt::PointingHandCursor);
-    replyCancelBtn->setStyleSheet("font-size: 12px; border: none; color: #8a8680;");
+    replyCancelBtn->setStyleSheet(
+        "QPushButton { font-size: 14px; border: none; border-radius: 14px; color: #8a8680; }"
+        "QPushButton:hover { background: rgba(255,255,255,0.1); color: #e4e0da; }"
+    );
     connect(replyCancelBtn, &QPushButton::clicked, this, &ComposerWidget::hideReplyBar);
     replyBarLayout->addWidget(replyCancelBtn);
 
@@ -269,7 +273,9 @@ void ComposerWidget::cancelPendingFile()
 
 void ComposerWidget::showReplyBar(const QString &author, const QString &preview)
 {
-    m_replyLabel->setText(QStringLiteral("\u21A9 ") + author + ": " + preview);
+    m_replyLabel->setText(QStringLiteral("<span style='color:#2ec4b6; font-weight:600;'>%1</span>  %2")
+        .arg(author.toHtmlEscaped(), preview.toHtmlEscaped()));
+    m_replyLabel->setTextFormat(Qt::RichText);
     m_replyBar->show();
 }
 
