@@ -708,6 +708,9 @@ void MessageListModel::updateReactions(int messageId, const QJsonObject &data)
             reactionsMap[it.key()] = it.value().toInt();
     }
     m_messages[idx].reactions = reactionsMap;
+    // Also update rawJson so the cache saves the new reactions
+    if (!m_messages[idx].rawJson.isEmpty())
+        m_messages[idx].rawJson["reactions"] = data;
     emit dataChanged(index(idx), index(idx), {ReactionsRole});
     m_cache->saveMessages(m_token, {m_messages[idx]});
 }

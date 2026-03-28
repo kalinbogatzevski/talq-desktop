@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.12.2 (2026-03-28)
+
+### UI Polish
+- **Reply bar** — teal accent bar above composer shows "Author: preview..." with X to cancel
+- **Context menu** — Telegram-style dark popup with emoji row, Download, Open in NC, Copy, Reply, Pin, Copy link, Thread (groups only), Delete (own + confirmation)
+- **Emoji toggle** — clicking same emoji again removes it (POST 409 → DELETE)
+- **Hover buttons fixed** — hit test at press time (hover state was clearing during click)
+- **Call buttons** — subtle transparent icons with hover highlight + tooltips
+- **Note to self** — bookmark icon in gray circle
+- **Sidebar rows** — 62px compact height
+- **Composer** — rounded pill input, dark background, larger buttons with hover
+- **Welcome screen** — larger server card (420px), 14px fonts
+- **Smooth avatars** — SmoothPixmapTransform on all painters
+- **Splitter divider** — 1px line between sidebar and chat
+
+### Bug Fixes
+- **Code review fixes** — QDateTime include, screen() null guard, preview aspect clear, static regex
+- **NC/Talk versions** — update on serverInfoChanged (was empty on first load)
+- **Profile avatar** — reload on userInfoChanged
+- **Thread action** — hidden in 1:1 chats
+
 ## v0.12.1 (2026-03-28)
 
 ### Fixes
