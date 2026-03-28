@@ -164,13 +164,31 @@ ComposerWidget::ComposerWidget(QWidget *parent)
     connect(m_pendingCancelBtn, &QPushButton::clicked, this, &ComposerWidget::cancelPendingFile);
     pendingLayout->addWidget(m_pendingCancelBtn);
 
-    // Insert pending bar above the input row
+    // Reply bar (hidden by default)
+    m_replyBar = new QWidget(this);
+    m_replyBar->hide();
+    m_replyBar->setStyleSheet("background: #1e2a28; border-left: 3px solid #2ec4b6;");
+    auto *replyBarLayout = new QHBoxLayout(m_replyBar);
+    replyBarLayout->setContentsMargins(12, 6, 8, 6);
+    replyBarLayout->setSpacing(8);
+    m_replyLabel = new QLabel(m_replyBar);
+    m_replyLabel->setStyleSheet("font-size: 12px; color: #b0aca5;");
+    replyBarLayout->addWidget(m_replyLabel, 1);
+    auto *replyCancelBtn = new QPushButton("\u2715", m_replyBar);
+    replyCancelBtn->setFixedSize(24, 24);
+    replyCancelBtn->setFlat(true);
+    replyCancelBtn->setCursor(Qt::PointingHandCursor);
+    replyCancelBtn->setStyleSheet("font-size: 12px; border: none; color: #8a8680;");
+    connect(replyCancelBtn, &QPushButton::clicked, this, &ComposerWidget::hideReplyBar);
+    replyBarLayout->addWidget(replyCancelBtn);
+
+    // Insert bars above the input row
     auto *mainLayout = new QVBoxLayout();
     mainLayout->setContentsMargins(0, 0, 0, 0);
     mainLayout->setSpacing(0);
     mainLayout->addWidget(m_pendingBar);
+    mainLayout->addWidget(m_replyBar);
 
-    // Re-parent the existing layout into the main layout
     auto *inputRow = new QWidget(this);
     inputRow->setLayout(layout);
     mainLayout->addWidget(inputRow);
@@ -247,6 +265,18 @@ void ComposerWidget::cancelPendingFile()
     m_pendingBar->hide();
     m_captionInput->clear();
     m_input->setFocus();
+}
+
+void ComposerWidget::showReplyBar(const QString &author, const QString &preview)
+{
+    m_replyLabel->setText(QStringLiteral("\u21A9 ") + author + ": " + preview);
+    m_replyBar->show();
+}
+
+void ComposerWidget::hideReplyBar()
+{
+    m_replyBar->hide();
+    emit replyBarCancelled();
 }
 
 void ComposerWidget::sendAction()
