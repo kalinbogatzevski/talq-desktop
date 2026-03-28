@@ -6,7 +6,7 @@
 #include <QByteArray>
 #include <QPixmap>
 
-class QQuickWindow;
+class QWidget;
 
 /**
  * Manages system tray icon, desktop notifications, and notification sounds.
@@ -26,7 +26,7 @@ public:
     explicit NotificationManager(QObject *parent = nullptr);
     ~NotificationManager() override;
 
-    void setWindow(QQuickWindow *window);
+    void setWindow(QWidget *window);
 
     QString soundMode() const { return m_soundMode; }
     void setSoundMode(const QString &mode);
@@ -58,7 +58,7 @@ private:
 
     QSystemTrayIcon *m_trayIcon = nullptr;
     QMenu *m_trayMenu = nullptr;
-    QQuickWindow *m_window = nullptr;
+    QWidget *m_window = nullptr;
     QString m_soundMode = "internal";  // "internal", "system", "none"
     QString m_notifStyle = "popup";    // "popup" (Telegram-style) or "windows" (toast)
     bool m_notificationsEnabled = true;

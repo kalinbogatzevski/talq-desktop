@@ -1,10 +1,5 @@
 #include <QApplication>
-#include <QQmlApplicationEngine>
-#include <QQmlContext>
-#include <QQuickStyle>
-#include <QQuickWindow>
 #include <QIcon>
-#include <QWindow>
 #include <QRegularExpression>
 #include <QSharedMemory>
 
@@ -30,10 +25,7 @@
 #include "core/CallManager.h"
 #include "core/DebugMonitor.h"
 #include "core/AppSettings.h"
-#include "painter/ChatPainter.h"
-#include "painter/SidebarPainter.h"
-#include "painter/HeaderPainter.h"
-#include "painter/ThreadsPainter.h"
+#include "ui/MainWindow.h"
 #include <gst/gst.h>
 
 int main(int argc, char *argv[])
@@ -45,16 +37,14 @@ int main(int argc, char *argv[])
         std::string appDir = (lastSlash != std::string::npos) ? exePath.substr(0, lastSlash) : ".";
         std::string gstPath = appDir + "/gst-plugins";
         qputenv("GST_PLUGIN_PATH", QByteArray::fromStdString(gstPath));
-        // Don't clear GST_PLUGIN_SYSTEM_PATH — wasapisrc may need plugins from the system path
-        // qputenv("GST_PLUGIN_SYSTEM_PATH", "");
     }
 
     gst_init(&argc, &argv);
     QApplication app(argc, argv);
 
-    // Single-instance guard — attach first to clean stale segments
+    // Single-instance guard
     QSharedMemory singleInstance("TalQ_SingleInstance_Lock");
-    singleInstance.attach();  // clears stale segment from previous crash
+    singleInstance.attach();
     singleInstance.detach();
     if (!singleInstance.create(1)) {
         qWarning() << "TalQ is already running!";
@@ -67,14 +57,12 @@ int main(int argc, char *argv[])
     app.setApplicationName("TalQ");
     app.setOrganizationName("TalQ");
 #endif
-    app.setWindowIcon(QIcon(":/logo.png"));  // TalQ icon always
+    app.setWindowIcon(QIcon(":/logo.png"));
 #ifdef TALQ_BUILD_TS
     app.setApplicationVersion(TALQ_VERSION "-" TALQ_BUILD_TS);
 #else
     app.setApplicationVersion(TALQ_VERSION);
 #endif
-
-    QQuickStyle::setStyle("Basic");
 
     // Core services
     ApiClient api;
@@ -88,68 +76,22 @@ int main(int argc, char *argv[])
     PushClient push(&api);
     SignalingClient signaling(&api);
     MediaDeviceManager deviceManager;
-    // Device enumeration deferred until first call attempt
     CallManager callManager(&api, &signaling, &deviceManager);
 
     DebugMonitor debug;
     AppSettings appSettings;
 
-    // Register types for QML enum access
-    qmlRegisterUncreatableType<CallManager>("TalkQt", 1, 0, "CallManager",
-        "CallManager is not creatable, use callManager context property");
-    qmlRegisterType<ChatPainter>("TalkQt", 1, 0, "ChatPainter");
-    qmlRegisterType<SidebarPainter>("TalkQt", 1, 0, "SidebarPainter");
-    qmlRegisterType<HeaderPainter>("TalkQt", 1, 0, "HeaderPainter");
-    qmlRegisterType<ThreadsPainter>("TalkQt", 1, 0, "ThreadsPainter");
+    // Image providers (kept for potential future use, e.g. avatar widget)
+    AvatarProvider avatarProvider(&api);
+    FilePreviewProvider previewProvider(&api);
 
-    // QML engine
-    QQmlApplicationEngine engine;
-
-    // Expose to QML
-    engine.rootContext()->setContextProperty("api", &api);
-    engine.rootContext()->setContextProperty("auth", &auth);
-    engine.rootContext()->setContextProperty("conversationModel", &conversations);
-    engine.rootContext()->setContextProperty("messageModel", &messages);
-    engine.rootContext()->setContextProperty("threadModel", &threads);
-    engine.rootContext()->setContextProperty("pushClient", &push);
-    engine.rootContext()->setContextProperty("signaling", &signaling);
-    engine.rootContext()->setContextProperty("notifications", &notifications);
-    engine.rootContext()->setContextProperty("deviceManager", &deviceManager);
-    engine.rootContext()->setContextProperty("callManager", &callManager);
-    engine.rootContext()->setContextProperty("debugMonitor", &debug);
-    engine.rootContext()->setContextProperty("appSettings", &appSettings);
-
-    // Branding context
-#ifdef TALQ_BRAND_123NET
-    engine.rootContext()->setContextProperty("brandName", QString("123NET TalQ"));
-    engine.rootContext()->setContextProperty("brandServer", QString("https://ncloud.123net.link"));
-    engine.rootContext()->setContextProperty("brandLogo", QString("qrc:/123net-logo.png"));
-    engine.rootContext()->setContextProperty("isBranded", true);
-#else
-    engine.rootContext()->setContextProperty("brandName", QString("TalQ"));
-    engine.rootContext()->setContextProperty("brandServer", QString(""));
-    engine.rootContext()->setContextProperty("brandLogo", QString("qrc:/logo.png"));
-    engine.rootContext()->setContextProperty("isBranded", false);
-#endif
-
-    auto *avatarProvider = new AvatarProvider(&api);
-    auto *previewProvider = new FilePreviewProvider(&api);
-    engine.addImageProvider("avatar", avatarProvider);
-    engine.addImageProvider("preview", previewProvider);
-
-    engine.loadFromModule("TalkQt", "Main");
-
-    if (engine.rootObjects().isEmpty())
-        return -1;
-
-    // Wire notifications
-    if (auto *window = qobject_cast<QQuickWindow*>(engine.rootObjects().first())) {
-        notifications.setWindow(window);
-        QObject::connect(&notifications, &NotificationManager::showRequested, window, [window]() {
-            // Call QML restoreFromTray() to restore maximized/windowed state
-            QMetaObject::invokeMethod(window, "restoreFromTray");
-        });
-    }
+    // Create main window (replaces QML engine entirely)
+    MainWindow window(
+        &api, &auth, &conversations, &messages, &threads,
+        &notifications, &push, &signaling, &deviceManager,
+        &callManager, &debug, &appSettings,
+        &avatarProvider, &previewProvider
+    );
 
     // Notify on new polled messages in active conversation
     QObject::connect(&messages, &MessageListModel::newMessagesAtEnd, &notifications, [&messages, &notifications, &auth]() {
@@ -175,7 +117,7 @@ int main(int argc, char *argv[])
         notifications.notify(name, preview, true, token);
     });
 
-    // Incoming call detection from conversation list refresh
+    // Incoming call detection
     QObject::connect(&conversations, &ConversationListModel::incomingCallDetected,
                      &callManager, [&callManager](const QString &name, const QString &token, int callFlag) {
         callManager.onIncomingCallDetected(name, token, callFlag);
@@ -187,15 +129,13 @@ int main(int argc, char *argv[])
         notifications.updateUnreadCount(conversations.totalUnread());
     });
 
-    // Push events → refresh conversation list
-    // Refresh on any push event — "notify_notification" covers calls, messages,
-    // and other Talk events.  Also accept "notify_call" if the server ever sends it.
+    // Push events -> refresh
     QObject::connect(&push, &PushClient::pushReceived, &conversations, [&conversations](const QString &type) {
-        qDebug() << "Push event received:" << type << "— refreshing conversations";
+        qDebug() << "Push event received:" << type << "-- refreshing conversations";
         conversations.refresh();
     });
 
-    // Start push + conversation polling after login
+    // Start push + signaling after login
     QObject::connect(&auth, &AuthManager::loggedInChanged, &conversations, [&auth, &conversations, &push, &signaling]() {
         if (auth.isLoggedIn()) {
             push.start();
@@ -207,9 +147,9 @@ int main(int argc, char *argv[])
         }
     });
 
-    // User status heartbeat — keep "online" while app is running
+    // User status heartbeat
     QTimer statusTimer;
-    statusTimer.setInterval(120000); // 2 minutes
+    statusTimer.setInterval(120000);
     QObject::connect(&statusTimer, &QTimer::timeout, [&api]() {
         QJsonObject body;
         body["statusType"] = "online";
@@ -230,27 +170,16 @@ int main(int argc, char *argv[])
         }
     });
 
-#ifdef Q_OS_WIN
-    // Force dark title bar on Windows
-    for (auto *obj : engine.rootObjects()) {
-        if (auto *window = qobject_cast<QWindow*>(obj)) {
-            HWND hwnd = reinterpret_cast<HWND>(window->winId());
-            BOOL darkMode = TRUE;
-            DwmSetWindowAttribute(hwnd, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &darkMode, sizeof(darkMode));
-        }
-    }
-#endif
-
-    // Restore session after QML is loaded so loading screen is visible
+    // Restore session
     auth.tryRestore();
 
-    // Feed live stats to debug monitor
+    // Debug monitor feed
     QObject::connect(&debug, &DebugMonitor::updated, [&]() {
         debug.setMessageCount(messages.rowCount());
         debug.setConversationCount(conversations.rowCount());
-        debug.setAvatarCacheCount(avatarProvider->cacheCount());
-        debug.setPreviewCacheCount(previewProvider->cacheCount());
-        debug.setPreviewCacheBytes(previewProvider->cacheBytes());
+        debug.setAvatarCacheCount(avatarProvider.cacheCount());
+        debug.setPreviewCacheCount(previewProvider.cacheCount());
+        debug.setPreviewCacheBytes(previewProvider.cacheBytes());
         debug.setPendingRequests(api.pendingCount());
     });
 
