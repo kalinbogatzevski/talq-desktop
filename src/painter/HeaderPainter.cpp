@@ -8,6 +8,7 @@
 #include <QNetworkReply>
 #include <QFontMetrics>
 #include <QCursor>
+#include <QToolTip>
 #include <QtMath>
 
 // ═══════════════════════════════════════════════════════
@@ -163,6 +164,7 @@ void HeaderPainter::paintEvent(QPaintEvent *)
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing, true);
     p.setRenderHint(QPainter::TextAntialiasing, true);
+    p.setRenderHint(QPainter::SmoothPixmapTransform, true);
     QPainter *painter = &p;
 
     const qreal w = width();
@@ -294,7 +296,7 @@ void HeaderPainter::paintEvent(QPaintEvent *)
         rightX -= ButtonSize;
         m_videoCallRect = QRectF(rightX, btnY, ButtonSize, ButtonSize);
         paintCallButton(painter, m_videoCallRect, m_theme.accent,
-                        QStringLiteral("\u25B6"), m_hoveredButton == 3);  // ▶ as video icon
+                        QStringLiteral("\U0001F4F9"), m_hoveredButton == 3);  // 📹 camera
         rightX -= spacing;
 
         // Audio call button
@@ -576,6 +578,19 @@ bool HeaderPainter::event(QEvent *e)
             else
                 setCursor(QCursor(Qt::ArrowCursor));
             update();
+
+            // Tooltips
+            QString tip;
+            switch (btn) {
+            case 0: tip = "Expand sidebar"; break;
+            case 1: tip = "Back"; break;
+            case 2: tip = "Audio call"; break;
+            case 3: tip = "Video call"; break;
+            }
+            if (!tip.isEmpty())
+                QToolTip::showText(mapToGlobal(he->position().toPoint()), tip, this);
+            else
+                QToolTip::hideText();
         }
         return true;
     }
