@@ -24,9 +24,10 @@ public:
 signals:
     void sendMessage(const QString &text);
 
-private:
+private slots:
     void sendAction();
 
+private:
     QTextEdit *m_input = nullptr;
     QPushButton *m_sendBtn = nullptr;
     QPushButton *m_attachBtn = nullptr;

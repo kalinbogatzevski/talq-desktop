@@ -6,16 +6,9 @@
 #include <QWheelEvent>
 #include <QMouseEvent>
 #include <QHoverEvent>
-#include <QDateTime>
 #include <QFontMetrics>
 #include <QCursor>
 #include <QtMath>
-
-// Topic palette — matches Theme.qml topicPalette
-static const QColor s_topicPalette[] = {
-    QColor("#2ec4b6"), QColor("#e07060"), QColor("#f0a050"),
-    QColor("#5ec76a"), QColor("#9b7cd4"), QColor("#e87aae")
-};
 
 // ===============================================================
 // Constructor
@@ -140,32 +133,9 @@ void ThreadsPainter::rebuildLayouts()
         tl.unreadCount = m_model->data(idx, ThreadListModel::UnreadCountRole).toInt();
         tl.isAllMessages = m_model->data(idx, ThreadListModel::IsAllMessagesRole).toBool();
 
-        // Compute thread color
-        tl.threadColor = topicColor(tl.iconColor);
-
-        // Compute time string
-        if (tl.lastActivity > 0) {
-            QDateTime dt = QDateTime::fromSecsSinceEpoch(tl.lastActivity);
-            QDateTime now = QDateTime::currentDateTime();
-            if (dt.date() == now.date()) {
-                tl.timeString = dt.toString(QStringLiteral("HH:mm"));
-            } else {
-                QDate yesterday = now.date().addDays(-1);
-                if (dt.date() == yesterday) {
-                    tl.timeString = QStringLiteral("Yesterday");
-                } else {
-                    tl.timeString = dt.toString(QStringLiteral("dd MMM"));
-                }
-            }
-        }
-
-        // Compute preview text
-        if (!tl.lastMessage.isEmpty()) {
-            if (!tl.lastAuthor.isEmpty())
-                tl.previewText = tl.lastAuthor + QStringLiteral(": ") + tl.lastMessage;
-            else
-                tl.previewText = tl.lastMessage;
-        }
+        tl.threadColor = PainterTheme::topicColor(tl.iconColor);
+        tl.timeString = PainterTheme::formatRelativeTime(tl.lastActivity);
+        tl.previewText = PainterTheme::formatPreviewText(tl.lastAuthor, tl.lastMessage);
 
         m_layouts.append(tl);
     }
@@ -304,39 +274,24 @@ bool ThreadsPainter::event(QEvent *e)
 }
 
 // ===============================================================
-// Topic color
-// ===============================================================
-
-QColor ThreadsPainter::topicColor(int index)
-{
-    constexpr int N = sizeof(s_topicPalette) / sizeof(s_topicPalette[0]);
-    return s_topicPalette[qAbs(index) % N];
-}
-
-// ===============================================================
 // PAINT
 // ===============================================================
 
 void ThreadsPainter::paintEvent(QPaintEvent *)
 {
     QPainter p(this);
-    QPainter *painter = &p;
-    painter->setRenderHint(QPainter::Antialiasing, true);
-    painter->setRenderHint(QPainter::TextAntialiasing, true);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setRenderHint(QPainter::TextAntialiasing, true);
 
-    // Background
-    painter->fillRect(QRectF(0, 0, width(), height()), m_theme.bgSecondary);
+    p.fillRect(QRectF(0, 0, width(), height()), m_theme.bgSecondary);
 
-    // Header
-    paintHeader(painter);
+    paintHeader(&p);
 
-    // Thread list area
     if (m_layouts.isEmpty() && !m_modelLoading) {
-        paintEmptyState(painter);
+        paintEmptyState(&p);
     } else {
-        // Clip to list area
-        painter->save();
-        painter->setClipRect(QRectF(0, listTop(), width(), listBottom() - listTop()));
+        p.save();
+        p.setClipRect(QRectF(0, listTop(), width(), listBottom() - listTop()));
 
         qreal vpTop = m_scrollY;
         qreal vpBottom = m_scrollY + (listBottom() - listTop());
@@ -348,27 +303,23 @@ void ThreadsPainter::paintEvent(QPaintEvent *)
             if (rowBottom < vpTop || rowTop > vpBottom)
                 continue;
 
-            paintRow(painter, m_layouts[i], i);
+            paintRow(&p, m_layouts[i], i);
         }
 
-        // Scrollbar
-        paintScrollbar(painter);
-
-        painter->restore();
+        paintScrollbar(&p);
+        p.restore();
     }
 
-    // Loading indicator (simple text)
     if (m_modelLoading && m_layouts.isEmpty()) {
         QFont loadFont;
         loadFont.setPixelSize(m_theme.fontSizeSmall);
-        painter->setFont(loadFont);
-        painter->setPen(m_theme.textSecondary);
+        p.setFont(loadFont);
+        p.setPen(m_theme.textSecondary);
         qreal cy = (listTop() + listBottom()) / 2.0;
-        painter->drawText(QRectF(0, cy - 10, width(), 20), Qt::AlignCenter, QStringLiteral("Loading..."));
+        p.drawText(QRectF(0, cy - 10, width(), 20), Qt::AlignCenter, QStringLiteral("Loading..."));
     }
 
-    // New Topic button
-    paintNewTopicButton(painter);
+    paintNewTopicButton(&p);
 }
 
 // ===============================================================
@@ -380,13 +331,11 @@ void ThreadsPainter::paintHeader(QPainter *p)
     // Background
     p->fillRect(QRectF(0, 0, width(), HeaderHeight), m_theme.bgSurface);
 
-    // Back arrow "<"
-    bool backHovered = (m_hoveredRow == -3);
     QFont arrowFont;
     arrowFont.setPixelSize(16);
     arrowFont.setWeight(QFont::DemiBold);
     p->setFont(arrowFont);
-    p->setPen(backHovered ? m_theme.accent : m_theme.accent);
+    p->setPen(m_theme.accent);
 
     // Draw a simple left arrow using text
     QRectF backRect(PainterTheme::spacingSmall, 0, 28, HeaderHeight);

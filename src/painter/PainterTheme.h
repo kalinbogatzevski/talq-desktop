@@ -1,7 +1,9 @@
 #pragma once
 
 #include <QColor>
+#include <QDateTime>
 #include <QFont>
+#include <QImage>
 #include <QString>
 
 /**
@@ -66,8 +68,20 @@ public:
     static constexpr int dateSepHeight = 40;
     static constexpr int datePillHeight = 26;
 
-    // ── Author color from actorId (djb2 hash → 8-color palette) ──
+    // ── Author color from actorId (djb2 hash -> 8-color palette) ──
     static QColor authorColor(const QString &actorId);
+
+    // ── Topic color from palette index (6-color palette) ──
+    static QColor topicColor(int index);
+
+    // ── Crop an image to a circle at the given size ──
+    static QImage cropToCircle(const QImage &source, int size);
+
+    // ── Format a Unix timestamp as "HH:mm", "Yesterday", or "dd MMM" ──
+    static QString formatRelativeTime(qint64 epochSecs);
+
+    // ── Build preview text from author + message ──
+    static QString formatPreviewText(const QString &author, const QString &message);
 
     // ── Fonts ──
     QFont bodyFont() const;

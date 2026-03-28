@@ -306,8 +306,6 @@ void ChatPainter::wheelEvent(QWheelEvent *event)
     event->accept();
 }
 
-// Mouse events are handled by QML MouseArea overlay in ChatView.qml
-// C++ only provides hitTestAt() for QML to call.
 void ChatPainter::mousePressEvent(QMouseEvent *event)
 {
     if (event->button() == Qt::LeftButton || event->button() == Qt::RightButton) {
@@ -419,48 +417,38 @@ int ChatPainter::layoutIndexAtY(qreal viewportY) const
 void ChatPainter::paintEvent(QPaintEvent *)
 {
     QPainter p(this);
-    QPainter *painter = &p;
-    painter->setRenderHint(QPainter::Antialiasing, true);
-    painter->setRenderHint(QPainter::TextAntialiasing, true);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setRenderHint(QPainter::TextAntialiasing, true);
 
-    // Background
-    painter->fillRect(QRectF(0, 0, width(), height()), m_theme.bgPrimary);
+    p.fillRect(QRectF(0, 0, width(), height()), m_theme.bgPrimary);
 
     if (m_layouts.isEmpty())
         return;
 
-    // Viewport culling: only paint messages that overlap [scrollY, scrollY + height]
     qreal vpTop = m_scrollY;
     qreal vpBottom = m_scrollY + height();
+    qreal offsetY = -m_scrollY;
 
     for (int i = 0; i < m_layouts.size(); ++i) {
         const auto &ml = m_layouts[i];
-        qreal msgTop = ml.totalY;
-        qreal msgBottom = ml.totalY + ml.totalHeight;
 
-        // Skip if entirely above or below viewport
-        if (msgBottom < vpTop || msgTop > vpBottom)
+        if (ml.totalY + ml.totalHeight < vpTop || ml.totalY > vpBottom)
             continue;
 
-        qreal offsetY = -m_scrollY;
-
-        // Date separator
         if (ml.showDateSep)
-            paintDateSep(painter, ml, offsetY);
+            paintDateSep(&p, ml, offsetY);
 
-        // Message content
         if (ml.isSystem)
-            paintSystemMessage(painter, ml, offsetY);
+            paintSystemMessage(&p, ml, offsetY);
         else if (ml.isOwn)
-            paintOwnMessage(painter, ml, offsetY);
+            paintOwnMessage(&p, ml, offsetY);
         else
-            paintOtherMessage(painter, ml, offsetY);
+            paintOtherMessage(&p, ml, offsetY);
 
-        // Hover action bar (react + reply buttons)
         if (i == m_hoveredIndex && !ml.isSystem
             && ml.sendStatus != QLatin1String("sending")
             && ml.sendStatus != QLatin1String("failed"))
-            paintHoverBar(painter, ml, offsetY);
+            paintHoverBar(&p, ml, offsetY);
     }
 }
 
@@ -555,9 +543,8 @@ void ChatPainter::paintOwnMessage(QPainter *p, const MessageLayout &ml, qreal of
             statusChar = ml.isRead ? QStringLiteral("\u25C9") : QStringLiteral("\u25CB");  // ◉ read, ○ delivered
         }
 
-        // Measure status icon width
         QFont statusFont = m_theme.timeFont();
-        statusFont.setPixelSize(ml.sendStatus == QLatin1String("failed") ? 12 : 12);
+        statusFont.setPixelSize(12);
         int sw = statusChar.isEmpty() ? 0 : QFontMetrics(statusFont).horizontalAdvance(statusChar) + 4;
 
         // Draw time (shifted left to make room for icon)
@@ -968,26 +955,7 @@ void ChatPainter::requestAvatar(const QString &userId)
             return;
         }
 
-        // Crop to circle (same logic as AvatarProvider)
-        int size = PainterTheme::avatarSize;
-        QImage scaled = img.scaled(size, size, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
-        int cx = (scaled.width() - size) / 2;
-        int cy = (scaled.height() - size) / 2;
-        if (cx > 0 || cy > 0)
-            scaled = scaled.copy(cx, cy, size, size);
-
-        QImage result(size, size, QImage::Format_ARGB32_Premultiplied);
-        result.fill(Qt::transparent);
-        {
-            QPainter painter(&result);
-            painter.setRenderHint(QPainter::Antialiasing);
-            QPainterPath path;
-            path.addEllipse(0, 0, size, size);
-            painter.setClipPath(path);
-            painter.drawImage(0, 0, scaled);
-        }
-
-        m_avatarCache[userId] = result;
+        m_avatarCache[userId] = PainterTheme::cropToCircle(img, PainterTheme::avatarSize);
         update(); // repaint with the loaded avatar
     });
 }
