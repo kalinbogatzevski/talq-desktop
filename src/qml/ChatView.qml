@@ -74,161 +74,42 @@ Page {
     padding: 0
     background: Rectangle { color: Theme.bgSecondary }
 
-    header: Rectangle {
+    header: HeaderPainter {
+        width: parent.width
         height: Theme.headerHeight
-        color: Theme.bgPrimary
+        darkMode: Theme.darkMode
+        api: api
 
-        RowLayout {
-            anchors.fill: parent
-            anchors.leftMargin: Theme.spacingLarge
-            anchors.rightMargin: Theme.spacingXLarge
-            spacing: Theme.spacingSmall
+        conversationName: chatRoot.conversationName
+        conversationUserId: chatRoot.conversationUserId
+        conversationType: chatRoot.conversationType
+        peerStatus: chatRoot.peerStatus
+        activeThreadId: chatRoot.activeThreadId
+        activeThreadTitle: chatRoot.activeThreadTitle
+        activeThreadColor: chatRoot.activeThreadColor
+        isInTopicMode: chatRoot.isInTopicMode
+        sidebarSqueezed: chatRoot.sidebarSqueezed
+        conversationToken: messageModel.conversationToken
+        messageCount: messageModel.count
+        loading: messageModel.loading
 
-            // Back to chat list (when sidebar is squeezed in topic mode)
-            TqIconButton {
-                iconName: "arrow-left"
-                size: 30
-                iconColor: Theme.accent
-                visible: chatRoot.sidebarSqueezed && chatRoot.conversationName.length > 0
-                onClicked: chatRoot.expandSidebar()
-            }
+        typingUser: signaling.typingUser
+        isTyping: chatRoot.isTyping
 
-            // Back button (when viewing a thread or topic)
-            TqIconButton {
-                iconName: "arrow-left"
-                size: 30
-                iconColor: Theme.accent
-                visible: chatRoot.activeThreadId > 0
-                onClicked: chatRoot.closeThread()
-            }
+        callState: callManager.state
+        callDuration: callManager.callDuration
+        callsAvailable: callManager.callsAvailable
+        callsUnavailableReason: callManager.callsUnavailableReason
 
-            Rectangle {
-                width: 10; height: 10; radius: 5
-                visible: chatRoot.isViewingTopic
-                color: Theme.topicColor(chatRoot.activeThreadColor)
-                Layout.alignment: Qt.AlignVCenter
-            }
-
-            TqAvatar {
-                userId: chatRoot.conversationUserId
-                displayName: chatRoot.conversationName
-                size: 30
-                visible: chatRoot.conversationName.length > 0
-            }
-
-            ColumnLayout {
-                Layout.fillWidth: true
-                spacing: 0
-
-                Label {
-                    text: chatRoot.activeThreadId > 0 ? chatRoot.activeThreadTitle
-                        : (chatRoot.conversationName || "Select a conversation")
-                    font.pixelSize: Theme.fontSizeLarge
-                    font.weight: chatRoot.conversationName.length > 0 ? Font.DemiBold : Font.Normal
-                    color: chatRoot.conversationName.length > 0 ? Theme.textPrimary : Theme.textMuted
-                    elide: Text.ElideRight
-                    Layout.fillWidth: true
-                }
-
-                // Status line: typing indicator OR user status (1:1 chats)
-                Label {
-                    visible: chatRoot.isTyping
-                        || (chatRoot.conversationType === 1 && chatRoot.peerStatus.length > 0)
-                    text: {
-                        if (chatRoot.isTyping)
-                            return signaling.typingUser + " is typing..."
-                        if (chatRoot.conversationType === 1 && chatRoot.peerStatus.length > 0) {
-                            switch (chatRoot.peerStatus) {
-                            case "online": return "online"
-                            case "away": return "away"
-                            case "dnd": return "do not disturb"
-                            default: return "offline"
-                            }
-                        }
-                        return ""
-                    }
-                    font.pixelSize: Theme.fontSizeTiny
-                    font.italic: chatRoot.isTyping
-                    color: {
-                        if (chatRoot.isTyping) return Theme.accent
-                        switch (chatRoot.peerStatus) {
-                        case "online": return Theme.online
-                        case "away": return Theme.warning
-                        case "dnd": return Theme.danger
-                        default: return Theme.textMuted
-                        }
-                    }
-                    Layout.fillWidth: true
-                    elide: Text.ElideRight
-                }
-
-                Label {
-                    visible: chatRoot.isViewingTopic && !chatRoot.isTyping
-                    text: chatRoot.conversationName + " \u00B7 " + messageModel.count + " messages"
-                    font.pixelSize: Theme.fontSizeTiny
-                    color: Theme.textSecondary
-                    Layout.fillWidth: true
-                    elide: Text.ElideRight
-                }
-            }
-
-            // Audio call button
-            TqIconButton {
-                iconName: "phone"
-                size: 34
-                bgColor: Theme.success
-                iconColor: "white"
-                visible: chatRoot.conversationType === 1 && callManager.state === 0 && callManager.callsAvailable
-                onClicked: { callManager.setRemotePeerInfo(chatRoot.conversationName, chatRoot.conversationUserId); callManager.startCall(messageModel.conversationToken, false) }
-                ToolTip.visible: hovered; ToolTip.text: "Audio call"; ToolTip.delay: 300
-            }
-
-            // Video call button
-            TqIconButton {
-                iconName: "video"
-                size: 34
-                bgColor: Theme.accent
-                iconColor: "white"
-                visible: chatRoot.conversationType === 1 && callManager.state === 0 && callManager.callsAvailable
-                onClicked: { callManager.setRemotePeerInfo(chatRoot.conversationName, chatRoot.conversationUserId); callManager.startCall(messageModel.conversationToken, true) }
-                ToolTip.visible: hovered; ToolTip.text: "Video call"; ToolTip.delay: 300
-            }
-
-            // Calls unavailable indicator
-            Label {
-                visible: chatRoot.conversationType === 1 && !callManager.callsAvailable
-                text: "Calls unavailable"
-                color: Theme.textMuted
-                font.pixelSize: Theme.fontSizeTiny
-                ToolTip.visible: callsUnavailableHover.hovered
-                ToolTip.text: callManager.callsUnavailableReason
-                ToolTip.delay: 300
-                HoverHandler { id: callsUnavailableHover }
-            }
-
-            // Active call indicator
-            Label {
-                visible: callManager.state > 0
-                text: "\uD83D\uDCDE " + formatDuration(callManager.callDuration)
-                font.pixelSize: Theme.fontSizeTiny
-                color: Theme.online
-                function formatDuration(s) {
-                    var m = Math.floor(s / 60)
-                    var sec = s % 60
-                    return (m < 10 ? "0" : "") + m + ":" + (sec < 10 ? "0" : "") + sec
-                }
-            }
-
-            Label {
-                visible: messageModel.loading && messageModel.count > 0
-                text: "\u21BB"; font.pixelSize: 14; color: Theme.textMuted
-                RotationAnimation on rotation { from: 0; to: 360; duration: 1000; loops: Animation.Infinite; running: messageModel.loading && messageModel.count > 0 }
-            }
-
-            BusyIndicator {
-                running: messageModel.loading && messageModel.count === 0
-                visible: running; implicitWidth: 20; implicitHeight: 20; palette.dark: Theme.accent
-            }
+        onExpandSidebarClicked: chatRoot.expandSidebar()
+        onBackClicked: chatRoot.closeThread()
+        onAudioCallClicked: {
+            callManager.setRemotePeerInfo(chatRoot.conversationName, chatRoot.conversationUserId)
+            callManager.startCall(messageModel.conversationToken, false)
+        }
+        onVideoCallClicked: {
+            callManager.setRemotePeerInfo(chatRoot.conversationName, chatRoot.conversationUserId)
+            callManager.startCall(messageModel.conversationToken, true)
         }
     }
 

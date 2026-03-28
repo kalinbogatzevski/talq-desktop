@@ -60,6 +60,7 @@ qt_add_executable(talq
     src/painter/LayoutEngine.cpp
     src/painter/ChatPainter.cpp
     src/painter/SidebarPainter.cpp
+    src/painter/HeaderPainter.cpp
     resources/talq.rc
 )
 
