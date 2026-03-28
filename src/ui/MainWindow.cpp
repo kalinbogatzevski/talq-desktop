@@ -382,27 +382,28 @@ void MainWindow::buildChatPage()
 
     // Server info card
     auto *serverCard = new QWidget(m_welcomeWidget);
-    serverCard->setMaximumWidth(340);
-    serverCard->setStyleSheet("background: #1c1c1a; border-radius: 10px; border: 1px solid #3a3a36;");
+    serverCard->setMaximumWidth(420);
+    serverCard->setStyleSheet("background: #1c1c1a; border-radius: 12px; border: 1px solid #3a3a36;");
     auto *serverLayout = new QVBoxLayout(serverCard);
-    serverLayout->setContentsMargins(16, 12, 16, 12);
-    serverLayout->setSpacing(6);
+    serverLayout->setContentsMargins(20, 16, 20, 16);
+    serverLayout->setSpacing(10);
 
     auto addInfoRow = [&](const QString &icon, const QString &text, const QString &color = "#8a8680") {
         auto *row = new QHBoxLayout();
+        row->setSpacing(12);
         auto *iconLbl = new QLabel(icon, serverCard);
-        iconLbl->setFixedWidth(24);
-        iconLbl->setStyleSheet(QString("font-size: 14px; color: %1;").arg(color));
+        iconLbl->setFixedWidth(28);
+        iconLbl->setStyleSheet(QString("font-size: 16px; color: %1;").arg(color));
         row->addWidget(iconLbl);
         auto *textLbl = new QLabel(text, serverCard);
-        textLbl->setStyleSheet(QString("font-size: 12px; color: %1;").arg(color));
+        textLbl->setStyleSheet(QString("font-size: 14px; color: %1;").arg(color));
         row->addWidget(textLbl, 1);
         serverLayout->addLayout(row);
         return textLbl;
     };
 
     auto *sectionLbl = new QLabel("Server", serverCard);
-    sectionLbl->setStyleSheet("font-size: 10px; font-weight: bold; color: #5a5850; letter-spacing: 1px;");
+    sectionLbl->setStyleSheet("font-size: 11px; font-weight: bold; color: #6a6660; letter-spacing: 1px;");
     serverLayout->addWidget(sectionLbl);
 
     m_welcomeServerLabel = addInfoRow("\u2601", "", "#2ec4b6");
@@ -416,13 +417,13 @@ void MainWindow::buildChatPage()
         if (!m_welcomeSignalingLabel) return;
         bool on = m_signaling->isConnected();
         m_welcomeSignalingLabel->setText(on ? "Signaling connected" : "Signaling disconnected");
-        m_welcomeSignalingLabel->setStyleSheet(QString("font-size: 12px; color: %1;").arg(on ? "#5ec76a" : "#8a8680"));
+        m_welcomeSignalingLabel->setStyleSheet(QString("font-size: 14px; color: %1;").arg(on ? "#5ec76a" : "#8a8680"));
     });
     connect(m_push, &PushClient::connectedChanged, this, [this]() {
         if (!m_welcomePushLabel) return;
         bool on = m_push->isConnected();
         m_welcomePushLabel->setText(on ? "Push connected (real-time)" : "Push disconnected (polling)");
-        m_welcomePushLabel->setStyleSheet(QString("font-size: 12px; color: %1;").arg(on ? "#5ec76a" : "#8a8680"));
+        m_welcomePushLabel->setStyleSheet(QString("font-size: 14px; color: %1;").arg(on ? "#5ec76a" : "#8a8680"));
     });
 
     welcomeLayout->addWidget(serverCard, 0, Qt::AlignCenter);
