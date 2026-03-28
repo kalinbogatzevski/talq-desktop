@@ -116,6 +116,13 @@ private:
     QSplitter *m_splitter = nullptr;
     QWidget *m_sidebarCol = nullptr;
     QLabel *m_profileNameLabel = nullptr;
+    QWidget *m_welcomeWidget = nullptr;
+    QLabel *m_welcomeNameLabel = nullptr;
+    QLabel *m_welcomeServerLabel = nullptr;
+    QLabel *m_welcomeNcLabel = nullptr;
+    QLabel *m_welcomeTalkLabel = nullptr;
+    QLabel *m_welcomeSignalingLabel = nullptr;
+    QLabel *m_welcomePushLabel = nullptr;
 
     // State
     bool m_chatMode = false;

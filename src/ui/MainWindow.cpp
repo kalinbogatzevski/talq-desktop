@@ -365,16 +365,82 @@ void MainWindow::buildChatPage()
         m_callManager->startCall(m_messages->conversationToken(), true);
     });
 
+    // Welcome screen (shown when no conversation selected)
+    m_welcomeWidget = new QWidget(chatCol);
+    auto *welcomeLayout = new QVBoxLayout(m_welcomeWidget);
+    welcomeLayout->setAlignment(Qt::AlignCenter);
+    welcomeLayout->setSpacing(16);
+
+    auto *logoLabel = new QLabel(m_welcomeWidget);
+    QPixmap logo(":/logo.png");
+    if (!logo.isNull())
+        logoLabel->setPixmap(logo.scaled(80, 80, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    logoLabel->setAlignment(Qt::AlignCenter);
+    welcomeLayout->addWidget(logoLabel);
+
+    m_welcomeNameLabel = new QLabel(m_welcomeWidget);
+    m_welcomeNameLabel->setAlignment(Qt::AlignCenter);
+    m_welcomeNameLabel->setStyleSheet("font-size: 22px; font-weight: bold;");
+    welcomeLayout->addWidget(m_welcomeNameLabel);
+
+    auto *pickLabel = new QLabel("Pick a conversation from the sidebar", m_welcomeWidget);
+    pickLabel->setAlignment(Qt::AlignCenter);
+    pickLabel->setStyleSheet("font-size: 14px; color: #8a8680;");
+    welcomeLayout->addWidget(pickLabel);
+
+    auto *versionLabel = new QLabel("v" + QApplication::applicationVersion(), m_welcomeWidget);
+    versionLabel->setAlignment(Qt::AlignCenter);
+    versionLabel->setStyleSheet("font-size: 11px; color: #5a5850;");
+    welcomeLayout->addWidget(versionLabel);
+
+    // Server info card
+    auto *serverCard = new QWidget(m_welcomeWidget);
+    serverCard->setMaximumWidth(340);
+    serverCard->setStyleSheet("background: #222220; border-radius: 10px; border: 1px solid #2a2a26;");
+    auto *serverLayout = new QVBoxLayout(serverCard);
+    serverLayout->setContentsMargins(16, 12, 16, 12);
+    serverLayout->setSpacing(6);
+
+    auto addInfoRow = [&](const QString &icon, const QString &text, const QString &color = "#8a8680") {
+        auto *row = new QHBoxLayout();
+        auto *iconLbl = new QLabel(icon, serverCard);
+        iconLbl->setFixedWidth(24);
+        iconLbl->setStyleSheet(QString("font-size: 14px; color: %1;").arg(color));
+        row->addWidget(iconLbl);
+        auto *textLbl = new QLabel(text, serverCard);
+        textLbl->setStyleSheet(QString("font-size: 12px; color: %1;").arg(color));
+        row->addWidget(textLbl, 1);
+        serverLayout->addLayout(row);
+        return textLbl;
+    };
+
+    auto *sectionLbl = new QLabel("Server", serverCard);
+    sectionLbl->setStyleSheet("font-size: 10px; font-weight: bold; color: #5a5850; letter-spacing: 1px;");
+    serverLayout->addWidget(sectionLbl);
+
+    m_welcomeServerLabel = addInfoRow("\u2601", "", "#2ec4b6");
+    m_welcomeNcLabel = addInfoRow("\u24C3", "");
+    m_welcomeTalkLabel = addInfoRow("\u260E", "");
+    m_welcomeSignalingLabel = addInfoRow("\u26A1", "");
+    m_welcomePushLabel = addInfoRow("\u25CF", "");
+
+    welcomeLayout->addWidget(serverCard, 0, Qt::AlignCenter);
+
+    chatLayout->addWidget(m_welcomeWidget, 1);
+
+    // Chat content (hidden until conversation selected)
     m_chatPainter = new ChatPainter(chatCol);
     m_chatPainter->setModel(m_messages);
     m_chatPainter->setMyUserId(m_auth->userId());
     m_chatPainter->setDarkMode(m_darkMode);
     m_chatPainter->setFontScale(m_fontScale);
+    m_chatPainter->hide();
     chatLayout->addWidget(m_chatPainter, 1);
 
     m_composer = new ComposerWidget(chatCol);
     m_composer->setSignaling(m_signaling);
     m_composer->setMessageModel(m_messages);
+    m_composer->hide();
     chatLayout->addWidget(m_composer);
 
     connect(m_composer, &ComposerWidget::sendMessage, this, [this](const QString &text) {
@@ -464,6 +530,12 @@ void MainWindow::onConversationSelected(const QString &token, const QString &nam
                                          const QString &userStatus)
 {
     m_activeConvToken = token;
+
+    // Switch from welcome to chat
+    m_welcomeWidget->hide();
+    m_chatPainter->show();
+    m_composer->show();
+
     m_header->setConversationName(name);
     m_header->setConversationUserId(userId);
     m_header->setConversationType(convType);
@@ -539,6 +611,21 @@ void MainWindow::switchToChat()
     m_stack->setCurrentWidget(m_chatPage);
     restoreChatGeometry();
     m_conversations->refresh();
+
+    // Populate welcome screen
+    m_welcomeNameLabel->setText("Welcome, " + m_auth->displayName());
+    QString url = m_auth->serverUrl();
+    url.remove(QRegularExpression("^https?://"));
+    m_welcomeServerLabel->setText(url);
+    m_welcomeNcLabel->setText("Nextcloud " + m_auth->nextcloudVersion());
+    m_welcomeTalkLabel->setText("Talk " + m_auth->talkVersion());
+    m_welcomeSignalingLabel->setText(m_signaling->isConnected() ? "Signaling connected" : "Signaling disconnected");
+    m_welcomePushLabel->setText(m_push->isConnected() ? "Push connected (real-time)" : "Push disconnected (polling)");
+
+    // Show welcome, hide chat content
+    m_welcomeWidget->show();
+    m_chatPainter->hide();
+    m_composer->hide();
 }
 
 void MainWindow::switchToLogin()
