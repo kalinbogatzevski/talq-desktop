@@ -28,6 +28,8 @@
 #include <QScreen>
 #include <QMenu>
 #include <QDesktopServices>
+#include <QNetworkReply>
+#include <QLabel>
 #include <QUrl>
 
 #ifdef Q_OS_WIN
@@ -197,7 +199,76 @@ void MainWindow::buildChatPage()
     QFont sf; sf.setPixelSize(12);
     m_searchField->setFont(sf);
     m_searchField->setContentsMargins(6, 4, 6, 4);
+
+    // ── User profile header ──
+    auto *profileBar = new QWidget(sidebarCol);
+    profileBar->setFixedHeight(52);
+    profileBar->installEventFilter(this);  // for paint
+
+    auto *profileLayout = new QHBoxLayout(profileBar);
+    profileLayout->setContentsMargins(12, 8, 12, 8);
+    profileLayout->setSpacing(10);
+
+    // Avatar label (will be painted by SidebarPainter's avatar cache)
+    auto *profileAvatar = new QLabel(profileBar);
+    profileAvatar->setFixedSize(36, 36);
+    profileAvatar->setStyleSheet("border-radius: 18px; background: #2ec4b6;");
+    profileLayout->addWidget(profileAvatar);
+
+    // Display name
+    m_profileNameLabel = new QLabel(profileBar);
+    m_profileNameLabel->setStyleSheet("font-weight: bold; font-size: 14px;");
+    profileLayout->addWidget(m_profileNameLabel, 1);
+
+    // Settings button
+    auto *settingsBtn = new QPushButton("\u2699", profileBar);
+    settingsBtn->setFixedSize(28, 28);
+    settingsBtn->setFlat(true);
+    settingsBtn->setStyleSheet("font-size: 16px; border: none; border-radius: 14px;");
+    settingsBtn->setCursor(Qt::PointingHandCursor);
+    profileLayout->addWidget(settingsBtn);
+
+    sidebarLayout->addWidget(profileBar);
     sidebarLayout->addWidget(m_searchField);
+
+    // Update profile when auth changes
+    connect(m_auth, &AuthManager::loggedInChanged, this, [this, profileAvatar]() {
+        if (m_auth->isLoggedIn()) {
+            m_profileNameLabel->setText(m_auth->displayName());
+            // Load avatar
+            auto *reply = m_api->getAbsoluteUrl("/index.php/avatar/" + m_auth->userId() + "/64");
+            connect(reply, &QNetworkReply::finished, this, [reply, profileAvatar]() {
+                reply->deleteLater();
+                if (reply->error() == QNetworkReply::NoError) {
+                    QImage img;
+                    img.loadFromData(reply->readAll());
+                    if (!img.isNull()) {
+                        QImage circle = PainterTheme::cropToCircle(img, 36);
+                        profileAvatar->setPixmap(QPixmap::fromImage(circle));
+                        profileAvatar->setStyleSheet("");
+                    }
+                }
+            });
+        }
+    });
+
+    // Also set immediately if already logged in
+    if (m_auth->isLoggedIn()) {
+        m_profileNameLabel->setText(m_auth->displayName());
+        auto *reply = m_api->getAbsoluteUrl("/index.php/avatar/" + m_auth->userId() + "/64");
+        connect(reply, &QNetworkReply::finished, this, [reply, profileAvatar]() {
+            reply->deleteLater();
+            if (reply->error() == QNetworkReply::NoError) {
+                QImage img;
+                img.loadFromData(reply->readAll());
+                if (!img.isNull()) {
+                    QImage circle = PainterTheme::cropToCircle(img, 36);
+                    profileAvatar->setPixmap(QPixmap::fromImage(circle));
+                    profileAvatar->setStyleSheet("");
+                }
+            }
+        });
+    }
 
     m_sidebar = new SidebarPainter(sidebarCol);
     m_sidebar->setModel(m_conversations);
