@@ -778,27 +778,44 @@ void CallManager::joinCallOnServer(bool withVideo)
                             m_signaling->requestOffer(m_remoteSessionId, "video");
                             qDebug() << "CallManager: sent requestOffer for already-joined remote peer";
                         } else {
-                            // Discover who's already in the call and request their streams
-                            m_api->getArray("apps/spreed/api/v4/call/" + m_callToken,
-                                [this](bool ok, const QJsonArray &data, int) {
-                                    if (!ok) { qWarning() << "CallManager: failed to discover call participants"; return; }
-                                    if (m_state == Idle) return;  // call ended during request
-                                    for (const auto &val : data) {
-                                        QJsonObject p = val.toObject();
-                                        QString sid = p["sessionId"].toString();
-                                        int inCall = p["inCall"].toInt();
-                                        if (sid.isEmpty() || sid == m_signaling->sessionId() || inCall == 0)
-                                            continue;
-                                        if (m_remoteSessionId.isEmpty()) {
-                                            m_remoteSessionId = sid;
-                                            emit callInfoChanged();
-                                        }
-                                        if (!m_subscribePipelines.contains(sid)) {
-                                            m_signaling->requestOffer(sid, "video");
-                                            qDebug() << "CallManager: sent requestOffer for discovered peer" << sid.left(20);
-                                        }
+                            // Discover who's already in the call and request their streams.
+                            // Poll periodically since HPB participant events may not arrive
+                            // for mobile clients using internal signaling.
+                            auto pollParticipants = [this]() {
+                                if (m_state == Idle || !m_remoteSessionId.isEmpty()) return;
+                                TLOG_CALL("polling call participants for" << m_callToken);
+                                m_api->getArray("apps/spreed/api/v4/call/" + m_callToken,
+                                    [this](bool ok, const QJsonArray &data, int) {
+                                        if (!ok || m_state == Idle) return;
+                                        for (const auto &val : data) {
+                                            QJsonObject p = val.toObject();
+                                            QString sid = p["sessionId"].toString();
+                                            int inCall = p["inCall"].toInt();
+                                            if (sid.isEmpty() || sid == m_signaling->sessionId() || inCall == 0)
+                                                continue;
+                                            if (m_remoteSessionId.isEmpty()) {
+                                                m_remoteSessionId = sid;
+                                                TLOG_CALL("discovered remote peer via REST:" << sid.left(20));
+                                                setState(Connecting);
+                                                emit callInfoChanged();
+                                            }
+                                            if (!m_subscribePipelines.contains(sid)) {
+                                                m_signaling->requestOffer(sid, "video");
+                                                TLOG_CALL("sent requestOffer for discovered peer" << sid.left(20));
+                                            }
                                     }
                                 });
+                            };
+                            // Poll immediately + every 3 seconds until peer found
+                            pollParticipants();
+                            auto *pollTimer = new QTimer(this);
+                            pollTimer->setInterval(3000);
+                            connect(pollTimer, &QTimer::timeout, this, pollParticipants);
+                            connect(this, &CallManager::stateChanged, pollTimer, [pollTimer, this]() {
+                                if (m_state == Idle || m_state == Active)
+                                    pollTimer->deleteLater();
+                            });
+                            pollTimer->start();
                         }
 
                         // Video is now included in the initial pipeline (no delayed renegotiation)
