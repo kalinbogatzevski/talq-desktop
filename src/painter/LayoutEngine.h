@@ -35,7 +35,8 @@ public:
         const QString &myUserId,
         const QString &prevActorId,
         qint64 prevTimestamp,
-        bool prevIsSystem
+        bool prevIsSystem,
+        qreal imageAspectRatio = 0.75  // height/width, 0.75 default until image loads
     );
 
 private:

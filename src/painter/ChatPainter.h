@@ -126,5 +126,6 @@ private:
     QHash<QString, QImage> m_avatarCache;   // userId -> circular avatar
     QSet<QString> m_avatarPending;          // in-flight avatar requests
     QHash<int, QImage> m_previewCache;      // fileId -> preview image
-    QSet<int> m_previewPending;             // in-flight preview requests
+    QHash<int, qreal> m_previewAspect;     // fileId -> height/width ratio (0 = unknown)
+    QSet<int> m_previewPending;            // in-flight preview requests
 };

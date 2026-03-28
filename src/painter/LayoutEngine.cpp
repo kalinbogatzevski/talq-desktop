@@ -30,7 +30,8 @@ MessageLayout LayoutEngine::computeLayout(
     const QString &myUserId,
     const QString &prevActorId,
     qint64 prevTimestamp,
-    bool prevIsSystem)
+    bool prevIsSystem,
+    qreal imageAspectRatio)
 {
     MessageLayout ml;
     ml.modelRow = modelRow;
@@ -167,7 +168,7 @@ MessageLayout LayoutEngine::computeLayout(
         // File attachment area
         if (ml.hasFile) {
             bool isImage = ml.fileMime.startsWith(QLatin1String("image/"));
-            qreal fileH = isImage ? qMin(bubbleInnerW * 0.75, 300.0) : 44.0;
+            qreal fileH = isImage ? qMin(bubbleInnerW * imageAspectRatio, 300.0) : 44.0;
             ml.fileRect = QRectF(
                 bubbleX + PainterTheme::spacingNormal,
                 innerY,
