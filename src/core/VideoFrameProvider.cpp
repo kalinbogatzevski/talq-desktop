@@ -29,8 +29,6 @@ void VideoFrameProvider::feedFrame(GstSample *sample)
         emit hasVideoChanged();
     }
 
-    if (!m_videoSink) return;
-
     GstCaps *caps = gst_sample_get_caps(sample);
     if (!caps) return;
 
@@ -55,21 +53,49 @@ void VideoFrameProvider::feedFrame(GstSample *sample)
     GstMapInfo map;
     if (!gst_buffer_map(buf, &map, GST_MAP_READ)) return;
 
-    QVideoFrameFormat fmt(QSize(width, height), pixFmt);
-    QVideoFrame frame(fmt);
-    if (frame.map(QVideoFrame::WriteOnly)) {
+    // Convert I420/NV12 to QImage for widget display
+    if (pixFmt == QVideoFrameFormat::Format_YUV420P) {
         int ySize = width * height;
         int uvSize = (width / 2) * (height / 2);
-        const uchar *src = map.data;
         if ((qsizetype)(ySize + 2 * uvSize) <= (qsizetype)map.size) {
-            memcpy(frame.bits(0), src, ySize);
-            if (frame.planeCount() >= 3) {
-                memcpy(frame.bits(1), src + ySize, uvSize);
-                memcpy(frame.bits(2), src + ySize + uvSize, uvSize);
+            const uchar *yPlane = map.data;
+            const uchar *uPlane = map.data + ySize;
+            const uchar *vPlane = map.data + ySize + uvSize;
+            QImage img(width, height, QImage::Format_RGB32);
+            for (int row = 0; row < height; ++row) {
+                auto *dst = reinterpret_cast<QRgb*>(img.scanLine(row));
+                for (int col = 0; col < width; ++col) {
+                    int y = yPlane[row * width + col];
+                    int u = uPlane[(row / 2) * (width / 2) + col / 2] - 128;
+                    int v = vPlane[(row / 2) * (width / 2) + col / 2] - 128;
+                    int r = qBound(0, y + ((359 * v) >> 8), 255);
+                    int g = qBound(0, y - ((88 * u + 183 * v) >> 8), 255);
+                    int b = qBound(0, y + ((454 * u) >> 8), 255);
+                    dst[col] = qRgb(r, g, b);
+                }
             }
+            emit imageReady(img);
         }
-        frame.unmap();
-        m_videoSink->setVideoFrame(frame);
+    }
+
+    // Also feed QVideoSink if present
+    if (m_videoSink) {
+        QVideoFrameFormat fmt(QSize(width, height), pixFmt);
+        QVideoFrame frame(fmt);
+        if (frame.map(QVideoFrame::WriteOnly)) {
+            int ySize = width * height;
+            int uvSize = (width / 2) * (height / 2);
+            const uchar *src = map.data;
+            if ((qsizetype)(ySize + 2 * uvSize) <= (qsizetype)map.size) {
+                memcpy(frame.bits(0), src, ySize);
+                if (frame.planeCount() >= 3) {
+                    memcpy(frame.bits(1), src + ySize, uvSize);
+                    memcpy(frame.bits(2), src + ySize + uvSize, uvSize);
+                }
+            }
+            frame.unmap();
+            m_videoSink->setVideoFrame(frame);
+        }
     }
 
     gst_buffer_unmap(buf, &map);

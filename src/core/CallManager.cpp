@@ -130,7 +130,7 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
         if (m_state != Connecting && m_state != Active) return;
         bool hadVideo = (oldFlags & CALL_FLAG_WITH_VIDEO) != 0;
         bool hasVideo = (newFlags & CALL_FLAG_WITH_VIDEO) != 0;
-        if (!hadVideo && hasVideo && m_subscribePipelines.contains(sessionId)) {
+        if (!hadVideo && hasVideo) {
             qDebug() << "CallManager: peer" << sessionId.left(20) << "enabled video, re-requesting stream";
             m_signaling->requestOffer(sessionId, "video");
         }
@@ -148,6 +148,14 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
             m_signaling->requestOffer(sessionId, "video");
             qDebug() << "CallManager: requestOffer for room peer" << sessionId.left(20);
         }
+    });
+
+    // Remote mute/unmute tracking
+    connect(m_signaling, &SignalingClient::remoteMuteChanged,
+            this, [this](const QString &, const QString &media, bool muted) {
+        if (media == "video") { m_remoteVideoMuted = muted; emit remoteMediaChanged(); }
+        if (media == "audio") { m_remoteAudioMuted = muted; emit remoteMediaChanged(); }
+        qDebug() << "CallManager: remote" << media << (muted ? "muted" : "unmuted");
     });
 
     // HPB WebSocket signaling messages
@@ -745,7 +753,8 @@ void CallManager::joinCallOnServer(bool withVideo)
                         connect(m_publishPipeline, &PublishPipeline::iceStateChanged,
                                 this, [this](const QString &state) {
                             qDebug() << "CallManager: publisher ICE:" << state;
-                            setStatusDetail("Publisher ICE " + state);
+                            if (m_state != Active)
+                                setStatusDetail("Publisher ICE " + state);
                         });
 
                         connect(m_publishPipeline, &PublishPipeline::audioLevelUpdated,
@@ -885,6 +894,8 @@ void CallManager::teardown(const QString &reason)
     m_callDuration = 0;
     m_joinedCall = false;
     m_userActionReady = false;
+    m_remoteVideoMuted = true;
+    m_remoteAudioMuted = true;
 
     setState(Idle);
     emit callEnded(reason);
@@ -908,6 +919,10 @@ void CallManager::onParticipantJoinedCall(const QString &sessionId, int flags, c
         m_ringTimeout.stop();
         setState(Connecting);
         emit callInfoChanged();
+
+        // Broadcast media state now that remote peer can receive it
+        broadcastMediaState("audio", !m_muted);
+        broadcastMediaState("video", m_cameraOn);
 
         if (m_useP2P && m_peerPipeline) {
             m_peerPipeline->createOffer();

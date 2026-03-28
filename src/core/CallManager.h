@@ -27,6 +27,8 @@ class CallManager : public QObject
     Q_PROPERTY(QString statusDetail READ statusDetail NOTIFY statusDetailChanged)
     Q_PROPERTY(bool callsAvailable READ callsAvailable CONSTANT)
     Q_PROPERTY(QString callsUnavailableReason READ callsUnavailableReason CONSTANT)
+    Q_PROPERTY(bool remoteVideoMuted READ remoteVideoMuted NOTIFY remoteMediaChanged)
+    Q_PROPERTY(bool remoteAudioMuted READ remoteAudioMuted NOTIFY remoteMediaChanged)
 
 public:
     enum CallState { Idle, Outgoing, Incoming, Connecting, Active, Ending };
@@ -47,6 +49,8 @@ public:
     QString statusDetail() const { return m_statusDetail; }
     bool callsAvailable() const { return m_callsAvailable; }
     QString callsUnavailableReason() const { return m_callsUnavailableReason; }
+    bool remoteVideoMuted() const { return m_remoteVideoMuted; }
+    bool remoteAudioMuted() const { return m_remoteAudioMuted; }
 
     Q_INVOKABLE void startCall(const QString &token, bool withVideo);
     Q_INVOKABLE void setRemotePeerInfo(const QString &name, const QString &peerId);
@@ -71,6 +75,7 @@ signals:
     void remoteVideoProviderChanged();
     void localVideoProviderChanged();
     void statusDetailChanged();
+    void remoteMediaChanged();
 
 private slots:
     void onParticipantJoinedCall(const QString &sessionId, int flags, const QString &displayName);
@@ -136,6 +141,8 @@ private:
     QString m_lastDeclinedToken;
     QDateTime m_lastDeclinedTime;
     QDateTime m_incomingTime;  // when incoming call was detected
+    bool m_remoteVideoMuted = true;
+    bool m_remoteAudioMuted = true;
 
     VideoFrameProvider *m_remoteVideoProvider = nullptr;
     VideoFrameProvider *m_localVideoProvider = nullptr;

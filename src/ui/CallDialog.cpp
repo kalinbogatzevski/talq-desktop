@@ -1,16 +1,34 @@
 #include "CallDialog.h"
+#include "core/VideoFrameProvider.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QApplication>
 #include <QScreen>
+#include <QPainter>
+#include <QNetworkReply>
 
-CallDialog::CallDialog(CallManager *callManager, QWidget *parent)
+void VideoWidget::paintEvent(QPaintEvent *)
+{
+    QPainter p(this);
+    p.setRenderHint(QPainter::SmoothPixmapTransform);
+    p.fillRect(rect(), Qt::black);
+    if (!m_image.isNull()) {
+        QSize scaled = m_image.size().scaled(size(), Qt::KeepAspectRatio);
+        QRect dst((width() - scaled.width()) / 2, (height() - scaled.height()) / 2,
+                  scaled.width(), scaled.height());
+        p.drawImage(dst, m_image);
+    }
+}
+
+CallDialog::CallDialog(CallManager *callManager, ApiClient *api, QWidget *parent)
     : QDialog(parent, Qt::Dialog | Qt::WindowStaysOnTopHint)
     , m_callManager(callManager)
+    , m_api(api)
 {
     setWindowTitle("Call");
-    setFixedSize(300, 240);
+    setMinimumSize(300, 340);
+    resize(300, 340);
 
     buildUi();
 
@@ -20,9 +38,34 @@ CallDialog::CallDialog(CallManager *callManager, QWidget *parent)
     connect(m_callManager, &CallManager::cameraChanged, this, &CallDialog::onCameraChanged);
     connect(m_callManager, &CallManager::callInfoChanged, this, [this]() {
         m_peerLabel->setText(m_callManager->remotePeerName());
+        QString peerId = m_callManager->remotePeerId();
+        if (!peerId.isEmpty() && peerId != m_loadedAvatarUserId)
+            fetchAvatar(peerId);
     });
     connect(m_callManager, &CallManager::statusDetailChanged, this, [this]() {
         m_statusDetailLabel->setText(m_callManager->statusDetail());
+    });
+    connect(m_callManager, &CallManager::remoteVideoProviderChanged, this, &CallDialog::connectVideoProviders);
+    connect(m_callManager, &CallManager::localVideoProviderChanged, this, &CallDialog::connectVideoProviders);
+    connect(m_callManager, &CallManager::remoteMediaChanged, this, [this]() {
+        // When remote mutes video, show avatar in the video area instead of last frame
+        if (m_callManager->remoteVideoMuted() && m_remoteVideo->isVisible() && !m_avatarPixmap.isNull()) {
+            // Create avatar-on-dark-background image
+            QImage avatarBg(m_remoteVideo->width(), m_remoteVideo->height(), QImage::Format_RGB32);
+            avatarBg.fill(QColor(0x1c, 0x1c, 0x1a));
+            QPainter p(&avatarBg);
+            p.setRenderHint(QPainter::SmoothPixmapTransform);
+            int sz = qMin(m_remoteVideo->width(), m_remoteVideo->height()) / 2;
+            QPixmap scaled = m_avatarPixmap.scaled(sz, sz, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+            p.drawPixmap((avatarBg.width() - scaled.width()) / 2,
+                         (avatarBg.height() - scaled.height()) / 2, scaled);
+            m_remoteVideo->setImage(avatarBg);
+        }
+        // Update peer label to show remote mic state
+        QString name = m_callManager->remotePeerName();
+        if (m_callManager->remoteAudioMuted())
+            name += "  \xF0\x9F\x94\x87";  // 🔇
+        m_peerLabel->setText(name);
     });
 }
 
@@ -36,6 +79,13 @@ void CallDialog::buildUi()
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(20, 16, 20, 16);
     layout->setSpacing(12);
+
+    // Avatar
+    m_avatarLabel = new QLabel(this);
+    m_avatarLabel->setAlignment(Qt::AlignCenter);
+    m_avatarLabel->setFixedSize(64, 64);
+    m_avatarLabel->setStyleSheet("border-radius: 32px;");
+    layout->addWidget(m_avatarLabel, 0, Qt::AlignCenter);
 
     // Peer name
     m_peerLabel = new QLabel(this);
@@ -61,7 +111,18 @@ void CallDialog::buildUi()
     m_durationLabel->setStyleSheet("font-size: 22px; font-weight: bold; color: #2ec4b6;");
     layout->addWidget(m_durationLabel);
 
-    layout->addStretch();
+    // Spacer — fills space in audio-only mode, hidden when video is shown
+    layout->addStretch(1);
+
+    // Remote video display — hidden until real video frames arrive
+    m_remoteVideo = new VideoWidget(this);
+    m_remoteVideo->hide();
+    layout->addWidget(m_remoteVideo, 10);
+
+    // Local camera preview (small overlay, positioned in resizeEvent)
+    m_localPreview = new VideoWidget(this);
+    m_localPreview->setFixedSize(120, 90);
+    m_localPreview->hide();
 
     // ── Active call buttons row ──
     m_activeRow = new QWidget(this);
@@ -157,6 +218,12 @@ void CallDialog::onStateChanged()
 
     switch (state) {
     case CallManager::Idle:
+        m_remoteVideo->hide();
+        m_localPreview->hide();
+        m_videoConnected = false;
+        m_localConnected = false;
+        setMinimumSize(300, 340);
+        resize(300, 340);
         hide();
         return;
 
@@ -171,12 +238,14 @@ void CallDialog::onStateChanged()
         showActiveMode();
         m_stateLabel->setText("Calling...");
         m_durationLabel->clear();
+        connectVideoProviders();
         break;
 
     case CallManager::Connecting:
         showActiveMode();
         m_stateLabel->setText("Connecting...");
         m_durationLabel->clear();
+        connectVideoProviders();
         break;
 
     case CallManager::Active:
@@ -255,6 +324,74 @@ void CallDialog::onCameraChanged()
             "}"
             "QPushButton:hover { background: #4a4a46; }");
     }
+}
+
+void CallDialog::fetchAvatar(const QString &userId)
+{
+    m_loadedAvatarUserId = userId;
+    auto *reply = m_api->getAbsoluteUrl("/index.php/avatar/" + userId + "/128");
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError) return;
+        QPixmap pm;
+        if (!pm.loadFromData(reply->readAll())) return;
+        // Circular crop
+        int sz = qMin(pm.width(), pm.height());
+        QPixmap circle(sz, sz);
+        circle.fill(Qt::transparent);
+        QPainter p(&circle);
+        p.setRenderHint(QPainter::Antialiasing);
+        p.setBrush(QBrush(pm.scaled(sz, sz, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation)));
+        p.setPen(Qt::NoPen);
+        p.drawEllipse(0, 0, sz, sz);
+        m_avatarPixmap = circle.scaled(64, 64, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        m_avatarLabel->setPixmap(m_avatarPixmap);
+    });
+}
+
+void CallDialog::connectVideoProviders()
+{
+    auto *remote = m_callManager->remoteVideoProvider();
+    if (remote && !m_videoConnected) {
+        connect(remote, &VideoFrameProvider::imageReady, this, &CallDialog::onRemoteFrame);
+        m_videoConnected = true;
+        qDebug() << "CallDialog: connected to remote video provider";
+    }
+    auto *local = m_callManager->localVideoProvider();
+    if (local && !m_localConnected) {
+        connect(local, &VideoFrameProvider::imageReady, this, [this](const QImage &img) {
+            if (!m_localPreview->isVisible()) {
+                m_localPreview->show();
+                m_localPreview->raise();
+                if (!m_remoteVideo->isVisible()) {
+                    m_remoteVideo->show();
+                    resize(400, 500);
+                }
+            }
+            m_localPreview->setImage(img);
+            // Position bottom-right of remote video
+            m_localPreview->move(m_remoteVideo->x() + m_remoteVideo->width() - 128,
+                                m_remoteVideo->y() + m_remoteVideo->height() - 98);
+        });
+        m_localConnected = true;
+        qDebug() << "CallDialog: connected to local video provider";
+    }
+}
+
+void CallDialog::onRemoteFrame(const QImage &image)
+{
+    // Skip tiny frames (16x16 dummy black from MCU placeholder)
+    if (image.width() <= 32 && image.height() <= 32)
+        return;
+    // Don't show video if remote has muted their camera
+    if (m_callManager->remoteVideoMuted())
+        return;
+    if (!m_remoteVideo->isVisible()) {
+        m_remoteVideo->show();
+        setMinimumSize(400, 450);
+        resize(400, 500);
+    }
+    m_remoteVideo->setImage(image);
 }
 
 void CallDialog::showIncomingMode()
