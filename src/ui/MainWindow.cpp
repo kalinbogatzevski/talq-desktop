@@ -465,6 +465,13 @@ void MainWindow::buildChatPage()
         m_messages->sendMessage(text, replyId);
     });
 
+    // Paste confirmation — pasteReady from model or composer
+    connect(m_messages, &MessageListModel::pasteReady, this, [this](const QString &filePath, int w, int h) {
+        Q_UNUSED(w) Q_UNUSED(h)
+        // Send immediately (no confirmation bar for now)
+        m_messages->sendFileWithCaption(filePath, "");
+    });
+
     // Chat mouse interaction — wheel and click are handled by ChatPainter directly
     // Link/file clicks from ChatPainter signals
     connect(m_chatPainter, &ChatPainter::linkActivated, this, [](const QString &url) {
