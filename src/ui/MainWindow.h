@@ -31,6 +31,7 @@ class HeaderPainter;
 class ThreadsPainter;
 class ComposerWidget;
 class LoginWidget;
+class SettingsDialog;
 
 class MainWindow : public QMainWindow
 {
@@ -133,4 +134,5 @@ private:
 
     QSettings m_settings;
     QTimer m_saveGeometryTimer;
+    SettingsDialog *m_settingsDialog = nullptr;
 };
