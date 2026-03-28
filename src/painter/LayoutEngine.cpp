@@ -5,6 +5,19 @@
 #include <QRegularExpression>
 #include <QtMath>
 
+std::pair<qreal, qreal> LayoutEngine::fileRectSize(
+    const QString &mime, qreal maxWidth, qreal maxThumbW,
+    qreal maxThumbH, qreal imageAspectRatio)
+{
+    bool isImage = mime.startsWith(QLatin1String("image/"));
+    if (isImage && imageAspectRatio > 0.01) {
+        qreal w = qMin(maxWidth, maxThumbW);
+        qreal h = qMin(w * imageAspectRatio, maxThumbH);
+        return {w, h};
+    }
+    return {maxWidth, 44.0};
+}
+
 std::shared_ptr<QTextDocument> LayoutEngine::createBodyDoc(
     const QString &html, qreal maxWidth, const PainterTheme &theme)
 {
@@ -111,8 +124,6 @@ MessageLayout LayoutEngine::computeLayout(
         strippedBody.remove(QRegularExpression(QStringLiteral("<[^>]*>")));
         strippedBody = strippedBody.trimmed();
         bool hasRealFile = ml.hasFile && !ml.fileName.isEmpty();
-
-
         if (strippedBody.isEmpty() && !hasRealFile && ml.replyToText.isEmpty()) {
             ml.totalHeight = ml.showDateSep ? (y - startY) : 0;
             return ml;
@@ -143,13 +154,8 @@ MessageLayout LayoutEngine::computeLayout(
             neededW = qMax(neededW, qMin(quoteTextW, maxInnerW));
         }
         if (ml.hasFile) {
-            bool isImg = ml.fileMime.startsWith(QLatin1String("image/"));
-            if (isImg && imageAspectRatio > 0.01) {
-                qreal imgW = qMin(maxInnerW, 200.0);
-                neededW = qMax(neededW, imgW);
-            } else {
-                neededW = qMax(neededW, 200.0); // file pill needs some width
-            }
+            auto [fw, fh] = fileRectSize(ml.fileMime, maxInnerW, 200.0, 150.0, imageAspectRatio);
+            neededW = qMax(neededW, fw);
         }
         if (!ml.reactions.isEmpty()) neededW = qMax(neededW, 100.0);
 
@@ -181,13 +187,7 @@ MessageLayout LayoutEngine::computeLayout(
 
         // File attachment area
         if (ml.hasFile) {
-            bool isImage = ml.fileMime.startsWith(QLatin1String("image/"));
-            qreal fileW = bubbleInnerW;
-            qreal fileH = 44.0;
-            if (isImage && imageAspectRatio > 0.01) {
-                fileW = qMin(bubbleInnerW, 200.0);  // thumbnail width
-                fileH = qMin(fileW * imageAspectRatio, 150.0);  // thumbnail height
-            }
+            auto [fileW, fileH] = fileRectSize(ml.fileMime, bubbleInnerW, 200.0, 150.0, imageAspectRatio);
             ml.fileRect = QRectF(
                 bubbleX + PainterTheme::spacingNormal,
                 innerY,
@@ -274,11 +274,8 @@ MessageLayout LayoutEngine::computeLayout(
             neededW = qMax(neededW, qMin(quoteTextW, maxContentW));
         }
         if (ml.hasFile) {
-            bool isImg = ml.fileMime.startsWith(QLatin1String("image/"));
-            if (isImg && imageAspectRatio > 0.01)
-                neededW = qMax(neededW, qMin(maxContentW, 200.0));
-            else
-                neededW = qMax(neededW, 200.0);
+            auto [fw, fh] = fileRectSize(ml.fileMime, maxContentW, 350.0, 250.0, imageAspectRatio);
+            neededW = qMax(neededW, fw);
         }
         if (!ml.reactions.isEmpty()) neededW = qMax(neededW, 100.0);
         if (!ml.isGrouped) {
@@ -317,13 +314,7 @@ MessageLayout LayoutEngine::computeLayout(
 
         // File attachment area
         if (ml.hasFile) {
-            bool isImage = ml.fileMime.startsWith(QLatin1String("image/"));
-            qreal fileW = contentW;
-            qreal fileH = 44.0;
-            if (isImage && imageAspectRatio > 0.01) {
-                fileW = qMin(contentW, 350.0);
-                fileH = qMin(fileW * imageAspectRatio, 250.0);
-            }
+            auto [fileW, fileH] = fileRectSize(ml.fileMime, contentW, 350.0, 250.0, imageAspectRatio);
             ml.fileRect = QRectF(contentX, y, fileW, fileH);
             y += fileH + 4;
         }

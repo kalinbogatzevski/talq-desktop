@@ -245,43 +245,20 @@ void MainWindow::buildChatPage()
     sidebarLayout->addWidget(profileBar);
     sidebarLayout->addWidget(m_searchField);
 
+    m_profileAvatarLabel = profileAvatar;
+
     // Update profile when auth changes
-    connect(m_auth, &AuthManager::loggedInChanged, this, [this, profileAvatar]() {
+    connect(m_auth, &AuthManager::loggedInChanged, this, [this]() {
         if (m_auth->isLoggedIn()) {
             m_profileNameLabel->setText(m_auth->displayName());
-            // Load avatar
-            auto *reply = m_api->getAbsoluteUrl("/index.php/avatar/" + m_auth->userId() + "/64");
-            connect(reply, &QNetworkReply::finished, this, [reply, profileAvatar]() {
-                reply->deleteLater();
-                if (reply->error() == QNetworkReply::NoError) {
-                    QImage img;
-                    img.loadFromData(reply->readAll());
-                    if (!img.isNull()) {
-                        QImage circle = PainterTheme::cropToCircle(img, 36);
-                        profileAvatar->setPixmap(QPixmap::fromImage(circle));
-                        profileAvatar->setStyleSheet("");
-                    }
-                }
-            });
+            loadProfileAvatar(m_profileAvatarLabel);
         }
     });
 
     // Also set immediately if already logged in
     if (m_auth->isLoggedIn()) {
         m_profileNameLabel->setText(m_auth->displayName());
-        auto *reply = m_api->getAbsoluteUrl("/index.php/avatar/" + m_auth->userId() + "/64");
-        connect(reply, &QNetworkReply::finished, this, [reply, profileAvatar]() {
-            reply->deleteLater();
-            if (reply->error() == QNetworkReply::NoError) {
-                QImage img;
-                img.loadFromData(reply->readAll());
-                if (!img.isNull()) {
-                    QImage circle = PainterTheme::cropToCircle(img, 36);
-                    profileAvatar->setPixmap(QPixmap::fromImage(circle));
-                    profileAvatar->setStyleSheet("");
-                }
-            }
-        });
+        loadProfileAvatar(m_profileAvatarLabel);
     }
 
     m_sidebar = new SidebarPainter(sidebarCol);
@@ -427,18 +404,16 @@ void MainWindow::buildChatPage()
 
     // Live-update status labels when services connect/disconnect
     connect(m_signaling, &SignalingClient::connectedChanged, this, [this]() {
-        if (m_welcomeSignalingLabel)
-            m_welcomeSignalingLabel->setText(m_signaling->isConnected() ? "Signaling connected" : "Signaling disconnected");
-        if (m_welcomeSignalingLabel)
-            m_welcomeSignalingLabel->setStyleSheet(QString("font-size: 12px; color: %1;")
-                .arg(m_signaling->isConnected() ? "#5ec76a" : "#8a8680"));
+        if (!m_welcomeSignalingLabel) return;
+        bool on = m_signaling->isConnected();
+        m_welcomeSignalingLabel->setText(on ? "Signaling connected" : "Signaling disconnected");
+        m_welcomeSignalingLabel->setStyleSheet(QString("font-size: 12px; color: %1;").arg(on ? "#5ec76a" : "#8a8680"));
     });
     connect(m_push, &PushClient::connectedChanged, this, [this]() {
-        if (m_welcomePushLabel)
-            m_welcomePushLabel->setText(m_push->isConnected() ? "Push connected (real-time)" : "Push disconnected (polling)");
-        if (m_welcomePushLabel)
-            m_welcomePushLabel->setStyleSheet(QString("font-size: 12px; color: %1;")
-                .arg(m_push->isConnected() ? "#5ec76a" : "#8a8680"));
+        if (!m_welcomePushLabel) return;
+        bool on = m_push->isConnected();
+        m_welcomePushLabel->setText(on ? "Push connected (real-time)" : "Push disconnected (polling)");
+        m_welcomePushLabel->setStyleSheet(QString("font-size: 12px; color: %1;").arg(on ? "#5ec76a" : "#8a8680"));
     });
 
     welcomeLayout->addWidget(serverCard, 0, Qt::AlignCenter);
@@ -466,7 +441,7 @@ void MainWindow::buildChatPage()
     });
 
     // Drag-and-drop files onto chat → show confirmation in composer
-    connect(m_chatPainter, &ChatPainter::fileDropped, m_composer, &ComposerWidget::handlePastedFile);
+    connect(m_chatPainter, &ChatPainter::fileDropped, m_composer, &ComposerWidget::showPendingFile);
 
     // Chat mouse interaction — wheel and click are handled by ChatPainter directly
     // Link/file clicks from ChatPainter signals
@@ -803,6 +778,21 @@ void MainWindow::applyDarkPalette()
     pal.setColor(QPalette::PlaceholderText, theme.textMuted);
     pal.setColor(QPalette::Mid, theme.divider);
     QApplication::setPalette(pal);
+}
+
+void MainWindow::loadProfileAvatar(QLabel *avatarLabel)
+{
+    auto *reply = m_api->getAbsoluteUrl("/index.php/avatar/" + m_auth->userId() + "/64");
+    connect(reply, &QNetworkReply::finished, this, [reply, avatarLabel]() {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError) return;
+        QImage img;
+        img.loadFromData(reply->readAll());
+        if (img.isNull()) return;
+        QImage circle = PainterTheme::cropToCircle(img, 36);
+        avatarLabel->setPixmap(QPixmap::fromImage(circle));
+        avatarLabel->setStyleSheet("");
+    });
 }
 
 void MainWindow::moveEvent(QMoveEvent *)
