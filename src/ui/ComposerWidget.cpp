@@ -93,6 +93,11 @@ void ComposerWidget::setMessageModel(MessageListModel *model)
     m_model = model;
 }
 
+void ComposerWidget::setInputFont(const QFont &font)
+{
+    m_input->setFont(font);
+}
+
 void ComposerWidget::sendAction()
 {
     QString text = m_input->toPlainText().trimmed();

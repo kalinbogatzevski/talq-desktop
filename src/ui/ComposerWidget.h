@@ -20,6 +20,7 @@ public:
     void setTopicName(const QString &name);
     void setSignaling(SignalingClient *sig);
     void setMessageModel(MessageListModel *model);
+    void setInputFont(const QFont &font);
 
 signals:
     void sendMessage(const QString &text);

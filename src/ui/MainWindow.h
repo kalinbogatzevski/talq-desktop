@@ -113,6 +113,7 @@ private:
     ChatPainter *m_chatPainter = nullptr;
     ComposerWidget *m_composer = nullptr;
     QSplitter *m_splitter = nullptr;
+    QWidget *m_sidebarCol = nullptr;
     QLabel *m_profileNameLabel = nullptr;
 
     // State
