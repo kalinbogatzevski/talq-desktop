@@ -2,6 +2,10 @@
 #include <QIcon>
 #include <QRegularExpression>
 #include <QSharedMemory>
+#include <QStandardPaths>
+#include <QDir>
+#include <QFileInfo>
+#include <QTime>
 
 #ifdef Q_OS_WIN
 #include <windows.h>
@@ -41,9 +45,20 @@ int main(int argc, char *argv[])
 
     gst_init(&argc, &argv);
 
-    // Debug builds: force Qt debug output to stderr (visible in console)
+    // Debug builds: log to file + stderr
 #ifdef QT_DEBUG
     qputenv("QT_FORCE_STDERR_LOGGING", "1");
+    static FILE *logFile = nullptr;
+    {
+        QString logPath = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/talq_debug.log";
+        QDir().mkpath(QFileInfo(logPath).absolutePath());
+        logFile = fopen(logPath.toUtf8().constData(), "w");
+    }
+    qInstallMessageHandler([](QtMsgType type, const QMessageLogContext &, const QString &msg) {
+        QByteArray line = (QTime::currentTime().toString("HH:mm:ss.zzz") + " " + msg + "\n").toUtf8();
+        if (logFile) { fwrite(line.constData(), 1, line.size(), logFile); fflush(logFile); }
+        fprintf(stderr, "%s", line.constData());
+    });
 #endif
 
     QApplication app(argc, argv);
