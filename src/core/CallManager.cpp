@@ -282,6 +282,9 @@ void CallManager::setState(CallState newState)
 void CallManager::startCall(const QString &token, bool withVideo)
 {
     if (m_state != Idle) return;
+    TLOG_CALL("startCall token=" << token << "withVideo=" << withVideo
+              << "sigRoom=" << m_signaling->currentRoom()
+              << "sigSession=" << m_signaling->sessionId().left(20));
     m_callToken = token;
     m_withVideo = withVideo;
     m_cameraOn = withVideo;
@@ -289,9 +292,12 @@ void CallManager::startCall(const QString &token, bool withVideo)
     m_muted = false;
     m_callDuration = 0;
     setState(Outgoing);
+    setStatusDetail("Joining room");
+    m_ringTimeout.start();
+
+    // Join call — room should already be active from conversation selection
     setStatusDetail("Joining call");
     joinCallOnServer(withVideo);
-    m_ringTimeout.start();
 }
 
 void CallManager::onIncomingCallDetected(const QString &callerName, const QString &token, int callFlag)
@@ -861,8 +867,10 @@ void CallManager::teardown(const QString &reason)
 
 void CallManager::onParticipantJoinedCall(const QString &sessionId, int flags, const QString &displayName)
 {
+    TLOG_CALL("onParticipantJoinedCall sid=" << sessionId.left(20) << "flags=" << flags
+              << "name=" << displayName << "state=" << m_state << "callToken=" << m_callToken);
     if (sessionId == m_signaling->sessionId()) {
-        qDebug() << "CallManager: ignoring own session join";
+        TLOG_CALL("ignoring own session join");
         return;
     }
 
