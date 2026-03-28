@@ -36,8 +36,14 @@ void HeaderPainter::setConversationName(const QString &v) {
 void HeaderPainter::setConversationUserId(const QString &v) {
     if (m_conversationUserId == v) return;
     m_conversationUserId = v;
-    m_avatarCache.clear();
     update();
+}
+
+void HeaderPainter::setAvatarImage(const QImage &img) {
+    if (!img.isNull() && !m_conversationUserId.isEmpty()) {
+        m_avatarCache[m_conversationUserId] = img;
+        update();
+    }
 }
 
 void HeaderPainter::setConversationType(int v) {

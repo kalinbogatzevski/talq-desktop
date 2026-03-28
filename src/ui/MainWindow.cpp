@@ -456,6 +456,12 @@ void MainWindow::onConversationSelected(const QString &token, const QString &nam
     m_header->setConversationUserId(userId);
     m_header->setConversationType(convType);
     m_header->setPeerStatus(userStatus);
+
+    // Pass sidebar's cached avatar to header (avoids duplicate HTTP fetch)
+    QString avatarKey = (convType == 1) ? userId : ("room/" + token);
+    QImage cached = m_sidebar->cachedAvatar(avatarKey);
+    if (!cached.isNull())
+        m_header->setAvatarImage(cached);
     m_header->setActiveThreadId(0);
     m_header->setActiveThreadTitle("");
     m_header->setIsInTopicMode(false);

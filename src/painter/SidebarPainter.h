@@ -58,6 +58,8 @@ public:
     bool squeezed() const { return m_squeezed; }
     void setSqueezed(bool sq);
 
+    QImage cachedAvatar(const QString &key) const { return m_avatarCache.value(key); }
+
     QString filterText() const { return m_filterText; }
     void setFilterText(const QString &text);
 
