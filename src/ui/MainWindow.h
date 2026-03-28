@@ -140,6 +140,9 @@ private:
     QString m_activeThreadTitle;
     int m_activeThreadColor = 0;
     bool m_isInTopicMode = false;
+    int m_replyToId = 0;
+    QString m_replyToAuthor;
+    QString m_replyToText;
 
     QSettings m_settings;
     QTimer m_saveGeometryTimer;
