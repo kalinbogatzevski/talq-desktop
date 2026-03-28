@@ -4,8 +4,15 @@
 #include <QFileDialog>
 #include <QKeyEvent>
 #include <QTimer>
+#include <QMimeData>
+#include <QClipboard>
+#include <QApplication>
+#include <QImage>
+#include <QTemporaryFile>
+#include <QStandardPaths>
+#include <QDir>
 
-// Custom text edit that sends on Enter, newline on Shift+Enter
+// Custom text edit that sends on Enter, newline on Shift+Enter, handles image paste
 class ComposeTextEdit : public QTextEdit
 {
 public:
@@ -30,6 +37,33 @@ protected:
             return;
         }
         QTextEdit::keyPressEvent(e);
+    }
+
+    bool canInsertFromMimeData(const QMimeData *source) const override {
+        return source->hasImage() || source->hasUrls() || QTextEdit::canInsertFromMimeData(source);
+    }
+
+    void insertFromMimeData(const QMimeData *source) override {
+        if (source->hasImage()) {
+            QImage img = qvariant_cast<QImage>(source->imageData());
+            if (!img.isNull()) {
+                // Save to temp file and send via model
+                QString dir = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
+                QString path = dir + "/talq_paste_" + QString::number(QDateTime::currentMSecsSinceEpoch()) + ".png";
+                img.save(path, "PNG");
+                m_owner->handlePastedImage(path);
+                return;
+            }
+        }
+        if (source->hasUrls()) {
+            for (const QUrl &url : source->urls()) {
+                if (url.isLocalFile()) {
+                    m_owner->handlePastedFile(url.toLocalFile());
+                    return;
+                }
+            }
+        }
+        QTextEdit::insertFromMimeData(source);
     }
 
 private:
@@ -105,6 +139,18 @@ void ComposerWidget::setInputFont(const QFont &font)
     int btnFontSize = qMax(12, font.pixelSize());
     m_sendBtn->setStyleSheet(QString("font-size: %1px; border: none; border-radius: %2px; background: #2ec4b6; color: white;").arg(btnFontSize).arg(fieldH / 2));
     m_attachBtn->setStyleSheet(QString("font-size: %1px; border: none; border-radius: %2px;").arg(btnFontSize).arg(fieldH / 2));
+}
+
+void ComposerWidget::handlePastedImage(const QString &path)
+{
+    if (!m_model) return;
+    m_model->promptFileSend(QUrl::fromLocalFile(path).toString());
+}
+
+void ComposerWidget::handlePastedFile(const QString &path)
+{
+    if (!m_model) return;
+    m_model->promptFileSend(QUrl::fromLocalFile(path).toString());
 }
 
 void ComposerWidget::sendAction()
