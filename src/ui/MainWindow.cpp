@@ -1,4 +1,5 @@
 #include "MainWindow.h"
+#include "CallDialog.h"
 #include "SettingsDialog.h"
 #include "LoginWidget.h"
 #include "ComposerWidget.h"
@@ -712,6 +713,9 @@ void MainWindow::buildChatPage()
     connect(m_callManager, &CallManager::durationChanged, this, [this]() {
         m_header->setCallDuration(m_callManager->callDuration());
     });
+
+    // Call dialog (shows/hides automatically via CallManager::stateChanged)
+    m_callDialog = new CallDialog(m_callManager, this);
 
     // Update userId when logged in
     connect(m_auth, &AuthManager::userInfoChanged, this, [this]() {
