@@ -118,7 +118,8 @@ private:
 
     // Mouse drag state
     bool m_dragging = false;
-    bool m_dragMoved = false;  // true if mouse moved >4px during drag
+    bool m_dragMoved = false;
+    QString m_pressHit;  // hit test result saved at press time  // true if mouse moved >4px during drag
     QPointF m_pressCanvasPos;  // press position in canvas coordinates
     qreal m_dragStartY = 0;
     qreal m_dragStartScroll = 0;
