@@ -81,11 +81,10 @@ int main(int argc, char *argv[])
     DebugMonitor debug;
     AppSettings appSettings;
 
-    // Image providers (kept for potential future use, e.g. avatar widget)
+    // Legacy image providers (used for debug monitor cache stats)
     AvatarProvider avatarProvider(&api);
     FilePreviewProvider previewProvider(&api);
 
-    // Create main window (replaces QML engine entirely)
     MainWindow window(
         &api, &auth, &conversations, &messages, &threads,
         &notifications, &push, &signaling, &deviceManager,

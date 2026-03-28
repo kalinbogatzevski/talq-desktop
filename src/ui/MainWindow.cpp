@@ -27,12 +27,8 @@
 #include <QCloseEvent>
 #include <QScreen>
 #include <QMenu>
-#include <QFileDialog>
 #include <QDesktopServices>
 #include <QUrl>
-#include <QClipboard>
-#include <QRegularExpression>
-#include <QScrollBar>
 
 #ifdef Q_OS_WIN
 #include <windows.h>
@@ -70,9 +66,7 @@ MainWindow::MainWindow(
     , m_appSettings(appSettings)
     , m_avatarProvider(avatarProvider)
     , m_previewProvider(previewProvider)
-    , m_windowSettings("TalQ", "TalQ")
-    , m_themeSettings("TalQ", "TalQ")
-    , m_generalSettings("TalQ", "TalQ")
+    , m_settings("TalQ", "TalQ")
 {
     // Window setup
 #ifdef TALQ_BRAND_123NET
@@ -85,14 +79,14 @@ MainWindow::MainWindow(
     resize(380, 420);
 
     // Read settings
-    m_themeSettings.beginGroup("Theme");
-    m_darkMode = m_themeSettings.value("darkMode", true).toBool();
-    m_fontScale = m_themeSettings.value("fontScale", 1.0).toReal();
-    m_themeSettings.endGroup();
+    m_settings.beginGroup("Theme");
+    m_darkMode = m_settings.value("darkMode", true).toBool();
+    m_fontScale = m_settings.value("fontScale", 1.0).toReal();
+    m_settings.endGroup();
 
-    m_generalSettings.beginGroup("General");
-    m_closeToTray = m_generalSettings.value("closeToTray", true).toBool();
-    m_generalSettings.endGroup();
+    m_settings.beginGroup("General");
+    m_closeToTray = m_settings.value("closeToTray", true).toBool();
+    m_settings.endGroup();
 
     applyDarkPalette();
 
@@ -120,29 +114,17 @@ MainWindow::MainWindow(
     // ── Keyboard shortcuts ──
     auto *zoomIn = new QShortcut(QKeySequence("Ctrl+="), this);
     connect(zoomIn, &QShortcut::activated, this, [this]() {
-        m_fontScale = qMin(m_fontScale + 0.1, 2.0);
-        m_chatPainter->setFontScale(m_fontScale);
-        m_themeSettings.beginGroup("Theme");
-        m_themeSettings.setValue("fontScale", m_fontScale);
-        m_themeSettings.endGroup();
+        applyFontScale(qMin(m_fontScale + 0.1, 2.0));
     });
 
     auto *zoomOut = new QShortcut(QKeySequence("Ctrl+-"), this);
     connect(zoomOut, &QShortcut::activated, this, [this]() {
-        m_fontScale = qMax(m_fontScale - 0.1, 0.7);
-        m_chatPainter->setFontScale(m_fontScale);
-        m_themeSettings.beginGroup("Theme");
-        m_themeSettings.setValue("fontScale", m_fontScale);
-        m_themeSettings.endGroup();
+        applyFontScale(qMax(m_fontScale - 0.1, 0.7));
     });
 
     auto *zoomReset = new QShortcut(QKeySequence("Ctrl+0"), this);
     connect(zoomReset, &QShortcut::activated, this, [this]() {
-        m_fontScale = 1.0;
-        m_chatPainter->setFontScale(m_fontScale);
-        m_themeSettings.beginGroup("Theme");
-        m_themeSettings.setValue("fontScale", m_fontScale);
-        m_themeSettings.endGroup();
+        applyFontScale(1.0);
     });
 
     auto *toggleDark = new QShortcut(QKeySequence("Ctrl+D"), this);
@@ -153,9 +135,9 @@ MainWindow::MainWindow(
         m_chatPainter->setDarkMode(m_darkMode);
         m_threadsPainter->setDarkMode(m_darkMode);
         applyDarkPalette();
-        m_themeSettings.beginGroup("Theme");
-        m_themeSettings.setValue("darkMode", m_darkMode);
-        m_themeSettings.endGroup();
+        m_settings.beginGroup("Theme");
+        m_settings.setValue("darkMode", m_darkMode);
+        m_settings.endGroup();
     });
 
     // ── Auth signals ──
@@ -227,6 +209,7 @@ void MainWindow::buildChatPage()
     connect(m_sidebar, &SidebarPainter::conversationClicked, this, &MainWindow::onConversationSelected);
     connect(m_sidebar, &SidebarPainter::contextMenuRequested, this, [this](int modelIndex, int notifLevel, qreal, qreal) {
         auto *menu = new QMenu(this);
+        menu->setAttribute(Qt::WA_DeleteOnClose);
         auto *action = menu->addAction(notifLevel == 3 ? "Unmute" : "Mute");
         connect(action, &QAction::triggered, this, [this, modelIndex, notifLevel]() {
             int newLevel = (notifLevel == 3) ? 0 : 3;
@@ -382,11 +365,10 @@ void MainWindow::sidebarSqueezedChanged()
 {
     m_sidebar->setSqueezed(m_sidebarSqueezed);
     m_header->setSidebarSqueezed(m_sidebarSqueezed);
-    if (m_sidebarSqueezed) {
-        m_splitter->setSizes({56, m_showTopics ? 240 : 0, m_splitter->width() - 56 - (m_showTopics ? 240 : 0)});
-    } else {
-        m_splitter->setSizes({280, m_showTopics ? 240 : 0, m_splitter->width() - 280 - (m_showTopics ? 240 : 0)});
-    }
+
+    int sideW = m_sidebarSqueezed ? 56 : 280;
+    int topicsW = m_showTopics ? 240 : 0;
+    m_splitter->setSizes({sideW, topicsW, m_splitter->width() - sideW - topicsW});
 }
 
 void MainWindow::onConversationSelected(const QString &token, const QString &name,
@@ -480,12 +462,12 @@ void MainWindow::switchToLogin()
 
 void MainWindow::closeEvent(QCloseEvent *event)
 {
+    saveWindowState();  // always save, even when closing to tray
     if (m_chatMode && m_closeToTray) {
         event->ignore();
         m_wasMaximized = isMaximized();
         hide();
     } else {
-        saveWindowState();
         event->accept();
     }
 }
@@ -504,17 +486,17 @@ void MainWindow::saveWindowState()
 {
     if (!m_chatMode || !m_geometrySaveEnabled) return;
 
-    m_windowSettings.beginGroup("WindowGeometry");
+    m_settings.beginGroup("WindowGeometry");
     if (isMaximized()) {
-        m_windowSettings.setValue("savedVisibility", 4);
+        m_settings.setValue("savedVisibility", 4);
     } else {
-        m_windowSettings.setValue("savedX", x());
-        m_windowSettings.setValue("savedY", y());
-        m_windowSettings.setValue("savedWidth", width());
-        m_windowSettings.setValue("savedHeight", height());
-        m_windowSettings.setValue("savedVisibility", 2);
+        m_settings.setValue("savedX", x());
+        m_settings.setValue("savedY", y());
+        m_settings.setValue("savedWidth", width());
+        m_settings.setValue("savedHeight", height());
+        m_settings.setValue("savedVisibility", 2);
     }
-    m_windowSettings.endGroup();
+    m_settings.endGroup();
 }
 
 void MainWindow::restoreChatGeometry()
@@ -522,27 +504,52 @@ void MainWindow::restoreChatGeometry()
     m_geometrySaveEnabled = false;
     setMinimumWidth(500);
 
-    m_windowSettings.beginGroup("WindowGeometry");
-    int w = qMax(m_windowSettings.value("savedWidth", 1000).toInt(), 500);
-    int h = qMax(m_windowSettings.value("savedHeight", 700).toInt(), 400);
-    int sx = m_windowSettings.value("savedX", -1).toInt();
-    int sy = m_windowSettings.value("savedY", -1).toInt();
-    int vis = m_windowSettings.value("savedVisibility", 2).toInt();
-    m_windowSettings.endGroup();
+    m_settings.beginGroup("WindowGeometry");
+    int w = qMax(m_settings.value("savedWidth", 1000).toInt(), 500);
+    int h = qMax(m_settings.value("savedHeight", 700).toInt(), 400);
+    int sx = m_settings.value("savedX", -1).toInt();
+    int sy = m_settings.value("savedY", -1).toInt();
+    int vis = m_settings.value("savedVisibility", 2).toInt();
+    m_settings.endGroup();
 
+    // Clamp to screen bounds
+    if (auto *screen = QApplication::primaryScreen()) {
+        QRect avail = screen->availableGeometry();
+        w = qMin(w, avail.width());
+        h = qMin(h, avail.height());
+    }
+
+    // Set windowed geometry first
     resize(w, h);
-    if (sx != -1 || sy != -1)
+    if (sx != -1 || sy != -1) {
         move(sx, sy);
+    } else {
+        // First launch: center on screen
+        if (auto *screen = QApplication::primaryScreen()) {
+            QRect geo = screen->availableGeometry();
+            move(geo.center() - QPoint(w / 2, h / 2));
+        }
+    }
 
+    // Restore maximized state if that was the last state
     if (vis == 4)
         showMaximized();
     else
         show();
 
-    // Delay enabling geometry save
+    // Delay enabling geometry save to avoid saving during restore
     QTimer::singleShot(500, this, [this]() {
         m_geometrySaveEnabled = true;
     });
+}
+
+void MainWindow::applyFontScale(qreal scale)
+{
+    m_fontScale = scale;
+    m_chatPainter->setFontScale(m_fontScale);
+    m_settings.beginGroup("Theme");
+    m_settings.setValue("fontScale", m_fontScale);
+    m_settings.endGroup();
 }
 
 void MainWindow::applyDarkPalette()
