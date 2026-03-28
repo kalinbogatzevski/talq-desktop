@@ -1010,7 +1010,8 @@ void ChatPainter::requestFilePreview(int fileId)
 
         m_previewCache[fileId] = img;
         qreal aspect = img.width() > 0 ? (qreal)img.height() / img.width() : 0.75;
-        bool aspectChanged = !m_previewAspect.contains(fileId);
+        qreal oldAspect = m_previewAspect.value(fileId, 0.75);
+        bool aspectChanged = qAbs(oldAspect - aspect) > 0.01;
         m_previewAspect[fileId] = aspect;
 
         // Evict oldest if over 50 MB
