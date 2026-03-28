@@ -554,9 +554,12 @@ void MainWindow::buildChatPage()
             QString link = m_messages->messageLink(msgId);
             QApplication::clipboard()->setText(link);
         });
-        menu->addAction(QStringLiteral("\U0001F4AC  Thread"), this, [this, msgId]() {
-            openThread(msgId, "Thread");
-        });
+        // Thread action only for group conversations (type 2, 3)
+        if (m_header->conversationType() >= 2) {
+            menu->addAction(QStringLiteral("\U0001F4AC  Thread"), this, [this, msgId]() {
+                openThread(msgId, "Thread");
+            });
+        }
 
         if (isOwn) {
             menu->addSeparator();
