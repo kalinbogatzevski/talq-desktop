@@ -11,6 +11,8 @@
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QMimeData>
+#include <QFile>
+#include <QTextStream>
 #include <QTextDocument>
 #include <QAbstractTextDocumentLayout>
 #include <QRegularExpression>
@@ -323,6 +325,8 @@ void ChatPainter::mousePressEvent(QMouseEvent *event)
         m_pressCanvasPos = event->position();
         m_dragStartY = event->position().y();
         m_dragStartScroll = m_scrollY;
+        // Save hit test at press time (hover index is valid now)
+        m_pressHit = hitTestAt(event->position().x(), event->position().y());
         event->accept();
     }
 }
@@ -354,7 +358,8 @@ void ChatPainter::mouseReleaseEvent(QMouseEvent *event)
     m_dragging = false;
 
     if (!m_dragMoved && event->button() == Qt::LeftButton) {
-        QString hit = hitTestAt(event->position().x(), event->position().y());
+        // Use hit test from press time (hover index was valid at press, may change by release)
+        QString hit = m_pressHit;
         if (hit.startsWith("link:")) {
             QString url = hit.mid(5);
             if (url.startsWith("http://") || url.startsWith("https://"))
