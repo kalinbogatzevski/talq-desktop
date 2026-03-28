@@ -144,14 +144,13 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
     // MCU mode: ALWAYS include a video track in the publisher SDP.
     // Janus videoroom expects video from all publishers — without it, remote
     // subscribers get "not sending yet for video" and the call never connects.
-    // For audio-only calls, send a minimal 1-fps black frame instead of the camera.
+    // Try camera first if requested. If it fails, fall back to dummy black frame.
     if (withVideo) {
         enableCamera(videoDeviceIndex, hd1080);
-        if (m_cameraEnabled) {
-            qDebug() << "PublishPipeline: video included in initial pipeline";
-        } else {
-            qDebug() << "PublishPipeline: camera failed, starting audio-only";
-        }
+        if (m_cameraEnabled)
+            qDebug() << "PublishPipeline: camera included in initial pipeline";
+        else
+            qDebug() << "PublishPipeline: camera failed sync, using dummy video";
     }
     if (!m_cameraEnabled) {
         // Add a dummy black-frame video track so the MCU videoroom accepts us
@@ -323,8 +322,8 @@ void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)
 
     m_videoConvert = gst_element_factory_make("videoconvert", nullptr);
     m_videoCapsFilter = gst_element_factory_make("capsfilter", nullptr);
-    m_videoEncoder = gst_element_factory_make("openh264enc", nullptr);
-    m_videoPayloader = gst_element_factory_make("rtph264pay", nullptr);
+    m_videoEncoder = gst_element_factory_make("vp8enc", nullptr);
+    m_videoPayloader = gst_element_factory_make("rtpvp8pay", nullptr);
 
     if (!m_videoConvert || !m_videoCapsFilter || !m_videoEncoder || !m_videoPayloader) {
         emit cameraError("Failed to create video encoding elements");
@@ -349,14 +348,18 @@ void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)
         g_object_set(m_videoCapsFilter, "caps", caps, nullptr);
         gst_caps_unref(caps);
     } else {
-        m_jpegDec = gst_element_factory_make("jpegdec", nullptr);
-        QString capsStr = QString("image/jpeg,width=%1,height=%2,framerate=30/1").arg(w).arg(h);
-        GstCaps *caps = gst_caps_from_string(capsStr.toUtf8().constData());
+        // Camera → videoconvert → capsfilter → encoder
+        // No format/resolution hardcoding — let the camera negotiate its best.
+        // capsfilter just ensures we get raw video for the encoder.
+        m_jpegDec = nullptr;
+        GstCaps *caps = gst_caps_from_string("video/x-raw");
         g_object_set(m_videoCapsFilter, "caps", caps, nullptr);
         gst_caps_unref(caps);
+        qDebug() << "PublishPipeline: camera caps: auto-negotiate";
     }
 
-    g_object_set(m_videoEncoder, "bitrate", bitrate, "rate-control", 1, "complexity", 1, nullptr);
+    // VP8 encoder: deadline=1 for realtime, target-bitrate in bps
+    g_object_set(m_videoEncoder, "deadline", (gint64)1, "target-bitrate", bitrate, nullptr);
 
     // Create tee + preview branch elements
     m_tee = gst_element_factory_make("tee", "camera-tee");
@@ -473,13 +476,13 @@ void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)
     g_object_get(m_videoSinkPad, "transceiver", &transceiver, nullptr);
     if (transceiver) {
         GstCaps *videoCaps = gst_caps_from_string(
-            "application/x-rtp,media=video,encoding-name=H264,clock-rate=90000,payload=96");
+            "application/x-rtp,media=video,encoding-name=VP8,clock-rate=90000,payload=96");
         g_object_set(transceiver,
                      "direction", GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDONLY,
                      "codec-preferences", videoCaps,
                      nullptr);
         gst_caps_unref(videoCaps);
-        qDebug() << "PublishPipeline: configured video transceiver (sendonly, H264)";
+        qDebug() << "PublishPipeline: configured video transceiver (sendonly, VP8)";
         gst_object_unref(transceiver);
     } else {
         qWarning() << "PublishPipeline: could not get transceiver from video pad";

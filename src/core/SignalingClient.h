@@ -70,6 +70,7 @@ signals:
     void participantFlagsChanged(const QString &sessionId, int oldFlags, int newFlags);
     void roomPeerJoined(const QString &sessionId);
     void roomJoined();
+    void remoteMuteChanged(const QString &sessionId, const QString &media, bool muted);
 
 private:
     void fetchSettings();
