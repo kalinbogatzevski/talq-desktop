@@ -359,11 +359,21 @@ void ChatPainter::mouseReleaseEvent(QMouseEvent *event)
             QStringList rparts = hit.mid(9).split(":");
             if (rparts.size() >= 2)
                 emit reactionClicked(rparts[0].toInt(), rparts.mid(1).join(":"));
+        } else if (hit.startsWith("file:")) {
+            // file:ID:MIME:NAME
+            QStringList parts = hit.mid(5).split(":");
+            if (parts.size() >= 3) {
+                int fid = parts[0].toInt();
+                QString mime = parts[1];
+                QString fname = parts.mid(2).join(":");
+                emit fileClicked(fid, mime, fname);
+            }
         } else if (hit.startsWith("reply:")) {
-            // reply:MSGID:AUTHOR:TEXT - emit signal for MainWindow to handle
-            // For now, just log
+            QStringList rp = hit.mid(6).split(":");
+            if (rp.size() >= 3)
+                emit replyRequested(rp[0].toInt(), rp[1], rp.mid(2).join(":"));
         } else if (hit.startsWith("react:")) {
-            // Quick react button - would need emoji picker
+            emit reactRequested(hit.mid(6).toInt());
         }
     }
     event->accept();
