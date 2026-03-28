@@ -133,9 +133,9 @@ QString ChatPainter::hitTestAt(qreal x, qreal y)
 
     const auto &ml = m_layouts[idx];
 
-    // Hover bar buttons (check first — they overlay the message)
-    if (idx == m_hoveredIndex && !ml.isSystem && ml.sendStatus != QLatin1String("sending")
-        && ml.sendStatus != QLatin1String("failed")) {
+    // Hover bar buttons — check regardless of hover index (hover may clear during click)
+    if (!ml.isSystem && ml.sendStatus != QLatin1String("sending")
+        && ml.sendStatus != QLatin1String("failed") && ml.messageId > 0) {
         QRectF replyR = hoverBarReplyRect(ml);
         if (!ml.isOwn) {
             QRectF reactR = hoverBarReactRect(ml);
@@ -143,7 +143,7 @@ QString ChatPainter::hitTestAt(qreal x, qreal y)
                 return QStringLiteral("react:%1").arg(ml.messageId);
         }
         if (replyR.contains(canvasPos))
-            return QStringLiteral("reply:%1:%2:%3").arg(ml.messageId).arg(ml.actorName, ml.bodyHtml);
+            return QStringLiteral("reply:%1").arg(ml.messageId);
     }
 
     // Link
