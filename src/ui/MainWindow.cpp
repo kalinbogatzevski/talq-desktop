@@ -780,6 +780,10 @@ void MainWindow::onConversationSelected(const QString &token, const QString &nam
     m_isInTopicMode = false;
 
     m_conversations->clearUnreadForToken(token);
+    // Join room via REST (required for call API to work) + signaling
+    QJsonObject empty;
+    m_api->post("apps/spreed/api/v4/room/" + token + "/participants/active", empty,
+        [](bool, const QJsonObject &, int) {});
     m_signaling->joinRoom(token);
     m_threads->setConversationType(convType);
     m_threads->setConversationToken(token);
