@@ -1,6 +1,6 @@
 #include "core/CallManager.h"
+#include "core/TalqLog.h"
 #include <QJsonObject>
-#include <QDebug>
 #include <QDateTime>
 #include <QtMath>
 #include <QSet>
