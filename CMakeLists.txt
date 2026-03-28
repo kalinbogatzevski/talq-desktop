@@ -61,6 +61,7 @@ qt_add_executable(talq
     src/painter/ChatPainter.cpp
     src/painter/SidebarPainter.cpp
     src/painter/HeaderPainter.cpp
+    src/painter/ThreadsPainter.cpp
     resources/talq.rc
 )
 
@@ -78,17 +79,13 @@ qt_add_qml_module(talq
         src/qml/ConversationList.qml
         src/qml/ChatView.qml
         src/qml/Theme.qml
-        src/qml/ConversationItem.qml
         src/qml/MessageComposer.qml
-        src/qml/ThreadItem.qml
-        src/qml/ThreadListView.qml
         src/qml/CallWindow.qml
         src/qml/IncomingCallPopup.qml
         src/qml/DebugOverlay.qml
         src/qml/SettingsDialog.qml
         src/qml/TqAvatar.qml
         src/qml/TqIconButton.qml
-        src/qml/TqBadge.qml
         src/qml/TqSwitch.qml
         src/qml/TqComboBox.qml
         src/qml/TqIcon.qml

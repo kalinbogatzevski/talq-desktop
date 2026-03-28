@@ -609,12 +609,13 @@ ApplicationWindow {
                 }
             }
 
-            ThreadListView {
+            Item {
                 id: topicList
                 anchors.left: divider1.right
                 anchors.top: parent.top
                 anchors.bottom: parent.bottom
                 property real userWidth: 240
+                property string groupName: ""
                 width: chatLayout.showTopics ? Math.max(160, Math.min(400, userWidth)) : 0
                 clip: true
                 visible: width > 0
@@ -623,18 +624,80 @@ ApplicationWindow {
                     NumberAnimation { duration: Theme.animNormal; easing.type: Easing.OutCubic }
                 }
 
-                onBackToChats: convList.squeezed = false
+                ThreadsPainter {
+                    id: threadsPainter
+                    anchors.fill: parent
+                    model: threadModel
+                    darkMode: Theme.darkMode
+                    selectedThreadId: -1
+                    groupName: topicList.groupName
 
-                onThreadSelected: function(threadId, title) {
-                    if (threadId === 0) {
-                        chatView.closeThread()
-                        messageModel.hideThreadMessages = true
-                    } else {
-                        chatView.openThread(threadId, title)
-                        messageModel.hideThreadMessages = false
+                    onBackClicked: convList.squeezed = false
+
+                    onThreadClicked: function(threadId, title) {
+                        if (threadId === 0) {
+                            chatView.closeThread()
+                            messageModel.hideThreadMessages = true
+                        } else {
+                            chatView.openThread(threadId, title)
+                            messageModel.hideThreadMessages = false
+                        }
+                        threadModel.selectTopic(threadId)
+                        chatView.activeThreadColor = threadModel.colorForThread(threadId)
                     }
-                    threadModel.selectTopic(threadId)
-                    chatView.activeThreadColor = threadModel.colorForThread(threadId)
+
+                    onNewTopicClicked: {
+                        topicCreateInput.visible = true
+                        topicCreateInput.forceActiveFocus()
+                    }
+                }
+
+                // Inline topic creation input (overlay at the top, below header)
+                TextField {
+                    id: topicCreateInput
+                    anchors.top: parent.top
+                    anchors.topMargin: 54 + Theme.spacingSmall
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.leftMargin: Theme.spacingSmall
+                    anchors.rightMargin: Theme.spacingSmall
+                    visible: false
+                    placeholderText: "Topic name..."
+                    placeholderTextColor: Theme.textMuted
+                    font.pixelSize: Theme.fontSizeSmall
+                    color: Theme.textPrimary
+                    z: 10
+                    background: Rectangle {
+                        radius: Theme.radiusSmall
+                        color: Theme.bgInput
+                        border.color: topicCreateInput.activeFocus ? Theme.accent : "transparent"
+                        border.width: 1
+                    }
+                    padding: 8
+
+                    Keys.onReturnPressed: {
+                        var name = text.trim()
+                        if (name.length > 0 && name.length <= 128) {
+                            messageModel.createTopic(name)
+                            text = ""
+                            visible = false
+                            // Refresh after a delay to pick up new topic
+                            topicRefreshTimer.restart()
+                        }
+                    }
+                    Keys.onEscapePressed: {
+                        text = ""
+                        visible = false
+                    }
+                }
+
+                Timer {
+                    id: topicRefreshTimer
+                    interval: 2000
+                    onTriggered: {
+                        if (threadModel.conversationToken === chatLayout.activeConvToken)
+                            threadModel.refresh()
+                    }
                 }
             }
 

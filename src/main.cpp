@@ -33,6 +33,7 @@
 #include "painter/ChatPainter.h"
 #include "painter/SidebarPainter.h"
 #include "painter/HeaderPainter.h"
+#include "painter/ThreadsPainter.h"
 #include <gst/gst.h>
 
 int main(int argc, char *argv[])
@@ -99,6 +100,7 @@ int main(int argc, char *argv[])
     qmlRegisterType<ChatPainter>("TalkQt", 1, 0, "ChatPainter");
     qmlRegisterType<SidebarPainter>("TalkQt", 1, 0, "SidebarPainter");
     qmlRegisterType<HeaderPainter>("TalkQt", 1, 0, "HeaderPainter");
+    qmlRegisterType<ThreadsPainter>("TalkQt", 1, 0, "ThreadsPainter");
 
     // QML engine
     QQmlApplicationEngine engine;
