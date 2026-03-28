@@ -60,6 +60,7 @@ signals:
     void reactionClicked(int messageId, const QString &emoji);
     void replyRequested(int messageId, const QString &author, const QString &text);
     void reactRequested(int messageId);
+    void fileDropped(const QString &filePath);
 
 protected:
     void paintEvent(QPaintEvent *event) override;
@@ -69,6 +70,8 @@ protected:
     void mouseReleaseEvent(QMouseEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
     bool event(QEvent *event) override;
+    void dragEnterEvent(QDragEnterEvent *event) override;
+    void dropEvent(QDropEvent *event) override;
 
 private slots:
     void onRowsInserted(const QModelIndex &parent, int first, int last);

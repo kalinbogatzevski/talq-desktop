@@ -11,6 +11,7 @@
 #include <QTemporaryFile>
 #include <QStandardPaths>
 #include <QDir>
+#include <QFileInfo>
 
 // Custom text edit that sends on Enter, newline on Shift+Enter, handles image paste
 class ComposeTextEdit : public QTextEdit
@@ -98,14 +99,66 @@ ComposerWidget::ComposerWidget(QWidget *parent)
 
     connect(m_sendBtn, &QPushButton::clicked, this, &ComposerWidget::sendAction);
     connect(m_attachBtn, &QPushButton::clicked, this, [this]() {
-        if (!m_model) return;
         QString file = QFileDialog::getOpenFileName(this, "Send file");
-        if (!file.isEmpty()) {
-            m_model->promptFileSend(QUrl::fromLocalFile(file).toString());
-        }
+        if (!file.isEmpty())
+            showPendingFile(file);
     });
 
-    setMaximumHeight(140);
+    // ── Pending file confirmation bar (hidden by default) ──
+    m_pendingBar = new QWidget(this);
+    m_pendingBar->hide();
+    auto *pendingLayout = new QHBoxLayout(m_pendingBar);
+    pendingLayout->setContentsMargins(8, 4, 8, 4);
+    pendingLayout->setSpacing(8);
+
+    m_pendingPreview = new QLabel(m_pendingBar);
+    m_pendingPreview->setFixedSize(48, 48);
+    m_pendingPreview->setAlignment(Qt::AlignCenter);
+    m_pendingPreview->setStyleSheet("background: #222220; border-radius: 6px;");
+    pendingLayout->addWidget(m_pendingPreview);
+
+    auto *infoCol = new QVBoxLayout();
+    infoCol->setSpacing(2);
+    m_pendingName = new QLabel(m_pendingBar);
+    m_pendingName->setStyleSheet("font-size: 12px; color: #8a8680;");
+    infoCol->addWidget(m_pendingName);
+
+    m_captionInput = new QLineEdit(m_pendingBar);
+    m_captionInput->setPlaceholderText("Add a caption...");
+    m_captionInput->setStyleSheet("font-size: 13px; padding: 4px 8px; border-radius: 4px;");
+    connect(m_captionInput, &QLineEdit::returnPressed, this, &ComposerWidget::confirmSendFile);
+    infoCol->addWidget(m_captionInput);
+    pendingLayout->addLayout(infoCol, 1);
+
+    m_pendingSendBtn = new QPushButton("\u2713", m_pendingBar);
+    m_pendingSendBtn->setFixedSize(32, 32);
+    m_pendingSendBtn->setStyleSheet("font-size: 16px; border: none; border-radius: 16px; background: #2ec4b6; color: white;");
+    m_pendingSendBtn->setCursor(Qt::PointingHandCursor);
+    m_pendingSendBtn->setToolTip("Send");
+    connect(m_pendingSendBtn, &QPushButton::clicked, this, &ComposerWidget::confirmSendFile);
+    pendingLayout->addWidget(m_pendingSendBtn);
+
+    m_pendingCancelBtn = new QPushButton("\u2715", m_pendingBar);
+    m_pendingCancelBtn->setFixedSize(32, 32);
+    m_pendingCancelBtn->setStyleSheet("font-size: 14px; border: none; border-radius: 16px; background: #e06060; color: white;");
+    m_pendingCancelBtn->setCursor(Qt::PointingHandCursor);
+    m_pendingCancelBtn->setToolTip("Cancel");
+    connect(m_pendingCancelBtn, &QPushButton::clicked, this, &ComposerWidget::cancelPendingFile);
+    pendingLayout->addWidget(m_pendingCancelBtn);
+
+    // Insert pending bar above the input row
+    auto *mainLayout = new QVBoxLayout();
+    mainLayout->setContentsMargins(0, 0, 0, 0);
+    mainLayout->setSpacing(0);
+    mainLayout->addWidget(m_pendingBar);
+
+    // Re-parent the existing layout into the main layout
+    auto *inputRow = new QWidget(this);
+    inputRow->setLayout(layout);
+    mainLayout->addWidget(inputRow);
+    setLayout(mainLayout);
+
+    setMaximumHeight(200);
 }
 
 void ComposerWidget::setTopicName(const QString &name)
@@ -143,14 +196,49 @@ void ComposerWidget::setInputFont(const QFont &font)
 
 void ComposerWidget::handlePastedImage(const QString &path)
 {
-    if (!m_model) return;
-    m_model->promptFileSend(QUrl::fromLocalFile(path).toString());
+    showPendingFile(path);
 }
 
 void ComposerWidget::handlePastedFile(const QString &path)
 {
-    if (!m_model) return;
-    m_model->promptFileSend(QUrl::fromLocalFile(path).toString());
+    showPendingFile(path);
+}
+
+void ComposerWidget::showPendingFile(const QString &path)
+{
+    m_pendingFilePath = path;
+    QFileInfo fi(path);
+    m_pendingName->setText(fi.fileName());
+    m_captionInput->clear();
+
+    // Show thumbnail for images
+    QImage img(path);
+    if (!img.isNull()) {
+        QPixmap pix = QPixmap::fromImage(img.scaled(48, 48, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        m_pendingPreview->setPixmap(pix);
+    } else {
+        m_pendingPreview->setText("\U0001F4C4");
+        m_pendingPreview->setStyleSheet("background: #222220; border-radius: 6px; font-size: 24px;");
+    }
+
+    m_pendingBar->show();
+    m_captionInput->setFocus();
+}
+
+void ComposerWidget::confirmSendFile()
+{
+    if (m_pendingFilePath.isEmpty() || !m_model) return;
+    QString caption = m_captionInput->text().trimmed();
+    m_model->sendFileWithCaption(QUrl::fromLocalFile(m_pendingFilePath).toString(), caption);
+    cancelPendingFile();
+}
+
+void ComposerWidget::cancelPendingFile()
+{
+    m_pendingFilePath.clear();
+    m_pendingBar->hide();
+    m_captionInput->clear();
+    m_input->setFocus();
 }
 
 void ComposerWidget::sendAction()
