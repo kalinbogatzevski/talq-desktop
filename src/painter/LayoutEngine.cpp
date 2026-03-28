@@ -105,9 +105,8 @@ MessageLayout LayoutEngine::computeLayout(
     y += ml.isGrouped ? PainterTheme::messageSpacingGrouped
                       : PainterTheme::messageSpacingNormal;
 
-    // ── Own message ──
-    if (ml.isOwn) {
-        // Skip empty own messages (no text, no file, no reply) — prevents tiny green bar
+    // Skip empty messages (no text, no file, no reply) — prevents empty gaps
+    {
         QString strippedBody = ml.bodyHtml;
         strippedBody.remove(QRegularExpression(QStringLiteral("<[^>]*>")));
         strippedBody = strippedBody.trimmed();
@@ -115,6 +114,10 @@ MessageLayout LayoutEngine::computeLayout(
             ml.totalHeight = ml.showDateSep ? (y - startY) : 0;
             return ml;
         }
+    }
+
+    // ── Own message ──
+    if (ml.isOwn) {
 
         qreal maxInnerW = bubbleMaxWidth - 2 * PainterTheme::spacingNormal;
 
