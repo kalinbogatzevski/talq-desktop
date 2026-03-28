@@ -112,6 +112,8 @@ private slots:
     void onMessagesReceived(const QJsonArray &messages);
     void onLastCommonReadChanged(int messageId);
 
+    void updateReactions(int messageId, const QJsonObject &data);
+
 private:
     void startPoller();
     void trimOldMessages();

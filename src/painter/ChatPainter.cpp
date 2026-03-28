@@ -373,13 +373,24 @@ void ChatPainter::mouseReleaseEvent(QMouseEvent *event)
                 emit fileClicked(fid, mime, fname);
             }
         } else if (hit.startsWith("reply:")) {
-            // Get full message data instead of parsing colon-delimited string
-            QVariantMap msg = messageAt(event->position().x(), event->position().y());
-            emit replyRequested(msg.value("messageId").toInt(),
-                                msg.value("actorName").toString(),
-                                msg.value("messageText").toString());
+            // Get message data at the clicked position
+            qreal canvasY = event->position().y() + m_scrollY;
+            int clickIdx = layoutIndexAtY(canvasY);
+            if (clickIdx >= 0 && clickIdx < m_layouts.size()) {
+                const auto &clickMl = m_layouts[clickIdx];
+                emit replyRequested(clickMl.messageId, clickMl.actorName, clickMl.bodyHtml);
+            }
         } else if (hit.startsWith("react:")) {
-            emit reactRequested(hit.mid(6).toInt(), mapToGlobal(event->position().toPoint()));
+            int rMsgId = hit.mid(6).toInt();
+            // Find the react button rect for proper positioning
+            int rIdx = layoutIndexAtY(event->position().y() + m_scrollY);
+            if (rIdx >= 0 && rIdx < m_layouts.size()) {
+                QRectF reactR = hoverBarReactRect(m_layouts[rIdx]);
+                QPoint btnCenter = mapToGlobal(QPoint(
+                    qRound(reactR.center().x()),
+                    qRound(reactR.center().y() - m_scrollY)));
+                emit reactRequested(rMsgId, btnCenter);
+            }
         }
     }
 

@@ -673,34 +673,43 @@ void MessageListModel::addReaction(int messageId, const QString &emoji)
     body["reaction"] = emoji;
 
     QString currentToken = m_token;
-    m_api->post("apps/spreed/api/v1/reaction/" + currentToken + "/" + QString::number(messageId),
-        body, [this, messageId, currentToken](bool ok, const QJsonObject &data, int statusCode) {
-            qDebug() << "Reaction response: ok=" << ok << "status=" << statusCode << "data keys:" << data.keys();
+    QString reactionPath = "apps/spreed/api/v1/reaction/" + currentToken + "/" + QString::number(messageId);
+    m_api->post(reactionPath,
+        body, [this, messageId, currentToken, emoji, reactionPath](bool ok, const QJsonObject &data, int statusCode) {
+            // 409 = already reacted → remove it (toggle)
+            if (statusCode == 409) {
+                QUrlQuery params;
+                params.addQueryItem("reaction", emoji);
+                m_api->del(reactionPath, params, [this, messageId, currentToken](bool ok2, const QJsonObject &data2, int) {
+                    if (m_token != currentToken || !ok2) return;
+                    updateReactions(messageId, data2);
+                });
+                return;
+            }
             if (m_token != currentToken || !ok) return;
 
-            // Update reactions on the message from server response
-            int idx = -1;
-            for (int i = 0; i < m_messages.size(); ++i) {
-                if (m_messages[i].id == messageId) { idx = i; break; }
-            }
-            if (idx < 0) return;
-
-            // Server returns reactions as { "👍": [{...}], "❤️": [{...}] }
-            // We need to convert to { "👍": count, "❤️": count }
-            QJsonObject reactionsMap;
-            for (auto it = data.begin(); it != data.end(); ++it) {
-                if (it.value().isArray()) {
-                    reactionsMap[it.key()] = it.value().toArray().size();
-                } else {
-                    reactionsMap[it.key()] = it.value().toInt();
-                }
-            }
-            m_messages[idx].reactions = reactionsMap;
-            emit dataChanged(index(idx), index(idx), {ReactionsRole});
-
-            // Save updated message to cache
-            m_cache->saveMessages(m_token, {m_messages[idx]});
+            updateReactions(messageId, data);
         });
+}
+
+void MessageListModel::updateReactions(int messageId, const QJsonObject &data)
+{
+    int idx = -1;
+    for (int i = 0; i < m_messages.size(); ++i) {
+        if (m_messages[i].id == messageId) { idx = i; break; }
+    }
+    if (idx < 0) return;
+
+    QJsonObject reactionsMap;
+    for (auto it = data.begin(); it != data.end(); ++it) {
+        if (it.value().isArray())
+            reactionsMap[it.key()] = it.value().toArray().size();
+        else
+            reactionsMap[it.key()] = it.value().toInt();
+    }
+    m_messages[idx].reactions = reactionsMap;
+    emit dataChanged(index(idx), index(idx), {ReactionsRole});
+    m_cache->saveMessages(m_token, {m_messages[idx]});
 }
 
 void MessageListModel::createTopic(const QString &title)
