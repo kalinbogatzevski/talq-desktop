@@ -455,6 +455,12 @@ void MainWindow::buildChatPage()
         m_replyToId = 0;
         m_replyToAuthor.clear();
         m_replyToText.clear();
+        m_composer->hideReplyBar();
+    });
+    connect(m_composer, &ComposerWidget::replyBarCancelled, this, [this]() {
+        m_replyToId = 0;
+        m_replyToAuthor.clear();
+        m_replyToText.clear();
     });
 
     // Drag-and-drop files onto chat → show confirmation in composer
@@ -580,6 +586,12 @@ void MainWindow::buildChatPage()
         m_replyToId = msgId;
         m_replyToAuthor = author;
         m_replyToText = text;
+        // Show reply bar in composer
+        QString plain = text;
+        static const QRegularExpression htmlRe("<[^>]*>");
+        plain.remove(htmlRe);
+        if (plain.length() > 60) plain = plain.left(60) + "...";
+        m_composer->showReplyBar(author, plain);
         m_composer->setFocus();
     });
 
