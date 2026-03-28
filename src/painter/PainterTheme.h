@@ -16,6 +16,8 @@ public:
     // ── Backgrounds ──
     QColor bgPrimary;
     QColor bgSecondary;
+    QColor bgSidebar;
+    QColor bgSelected;
     QColor bgMessageOwn;
     QColor bgSurface;
     QColor bgHover;
@@ -28,6 +30,8 @@ public:
 
     // ── Accents ──
     QColor accent;
+    QColor unreadBadge;
+    QColor online;
     QColor danger;
     QColor success;
     QColor systemMsg;

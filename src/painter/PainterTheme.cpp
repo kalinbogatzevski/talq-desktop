@@ -13,6 +13,8 @@ PainterTheme::PainterTheme(bool darkMode, qreal fontScale)
     // ── Backgrounds ──
     bgPrimary    = darkMode ? QColor("#121210") : QColor("#ffffff");
     bgSecondary  = darkMode ? QColor("#1a1a16") : QColor("#f5f5f2");
+    bgSidebar    = darkMode ? QColor("#181814") : QColor("#f0f0ed");
+    bgSelected   = darkMode ? QColor("#33332e") : QColor("#e4e4de");
     bgMessageOwn = darkMode ? QColor("#1a302e") : QColor("#d4f0ed");
     bgSurface    = darkMode ? QColor("#222220") : QColor("#ffffff");
     bgHover      = darkMode ? QColor("#2c2c28") : QColor("#eeeee8");
@@ -24,10 +26,12 @@ PainterTheme::PainterTheme(bool darkMode, qreal fontScale)
     textMuted     = darkMode ? QColor("#5a5850") : QColor("#b0aca5");
 
     // ── Accents ──
-    accent    = darkMode ? QColor("#2ec4b6") : QColor("#1aab9d");
-    danger    = QColor("#e06060");
-    success   = QColor("#5ec76a");
-    systemMsg = darkMode ? QColor("#6a665e") : QColor("#9a968e");
+    accent      = darkMode ? QColor("#2ec4b6") : QColor("#1aab9d");
+    unreadBadge = darkMode ? QColor("#2ec4b6") : QColor("#1aab9d");
+    online      = QColor("#5ec76a");
+    danger      = QColor("#e06060");
+    success     = QColor("#5ec76a");
+    systemMsg   = darkMode ? QColor("#6a665e") : QColor("#9a968e");
 
     // ── Borders ──
     divider = darkMode ? QColor("#222220") : QColor("#eeeee8");
