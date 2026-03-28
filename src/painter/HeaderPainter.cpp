@@ -2,6 +2,7 @@
 #include "core/ApiClient.h"
 #include <QPainter>
 #include <QPainterPath>
+#include <QPaintEvent>
 #include <QMouseEvent>
 #include <QHoverEvent>
 #include <QNetworkReply>
@@ -19,13 +20,13 @@ static const QColor s_topicPalette[] = {
 // Constructor
 // ═══════════════════════════════════════════════════════
 
-HeaderPainter::HeaderPainter(QQuickItem *parent)
-    : QQuickPaintedItem(parent)
+HeaderPainter::HeaderPainter(QWidget *parent)
+    : QWidget(parent)
     , m_theme(m_darkMode, 1.0)
 {
-    setAcceptedMouseButtons(Qt::LeftButton);
-    setAcceptHoverEvents(true);
-    setImplicitHeight(HeaderHeight);
+    setAttribute(Qt::WA_Hover);
+    setMouseTracking(true);
+    setFixedHeight(HeaderHeight);
 }
 
 // ═══════════════════════════════════════════════════════
@@ -36,127 +37,109 @@ void HeaderPainter::setConversationName(const QString &v) {
     if (m_conversationName == v) return;
     m_conversationName = v;
     update();
-    emit conversationNameChanged();
 }
 
 void HeaderPainter::setConversationUserId(const QString &v) {
     if (m_conversationUserId == v) return;
     m_conversationUserId = v;
-    m_avatarCache.clear();  // new user, need new avatar
+    m_avatarCache.clear();
     update();
-    emit conversationUserIdChanged();
 }
 
 void HeaderPainter::setConversationType(int v) {
     if (m_conversationType == v) return;
     m_conversationType = v;
     update();
-    emit conversationTypeChanged();
 }
 
 void HeaderPainter::setPeerStatus(const QString &v) {
     if (m_peerStatus == v) return;
     m_peerStatus = v;
     update();
-    emit peerStatusChanged();
 }
 
 void HeaderPainter::setActiveThreadId(int v) {
     if (m_activeThreadId == v) return;
     m_activeThreadId = v;
     update();
-    emit activeThreadIdChanged();
 }
 
 void HeaderPainter::setActiveThreadTitle(const QString &v) {
     if (m_activeThreadTitle == v) return;
     m_activeThreadTitle = v;
     update();
-    emit activeThreadTitleChanged();
 }
 
 void HeaderPainter::setActiveThreadColor(int v) {
     if (m_activeThreadColor == v) return;
     m_activeThreadColor = v;
     update();
-    emit activeThreadColorChanged();
 }
 
 void HeaderPainter::setIsInTopicMode(bool v) {
     if (m_isInTopicMode == v) return;
     m_isInTopicMode = v;
     update();
-    emit isInTopicModeChanged();
 }
 
 void HeaderPainter::setSidebarSqueezed(bool v) {
     if (m_sidebarSqueezed == v) return;
     m_sidebarSqueezed = v;
     update();
-    emit sidebarSqueezedChanged();
 }
 
 void HeaderPainter::setConversationToken(const QString &v) {
     if (m_conversationToken == v) return;
     m_conversationToken = v;
     update();
-    emit conversationTokenChanged();
 }
 
 void HeaderPainter::setMessageCount(int v) {
     if (m_messageCount == v) return;
     m_messageCount = v;
     update();
-    emit messageCountChanged();
 }
 
 void HeaderPainter::setLoading(bool v) {
     if (m_loading == v) return;
     m_loading = v;
     update();
-    emit loadingChanged();
 }
 
 void HeaderPainter::setTypingUser(const QString &v) {
     if (m_typingUser == v) return;
     m_typingUser = v;
     update();
-    emit typingUserChanged();
 }
 
 void HeaderPainter::setIsTyping(bool v) {
     if (m_isTyping == v) return;
     m_isTyping = v;
     update();
-    emit isTypingChanged();
 }
 
 void HeaderPainter::setCallState(int v) {
     if (m_callState == v) return;
     m_callState = v;
     update();
-    emit callStateChanged();
 }
 
 void HeaderPainter::setCallDuration(int v) {
     if (m_callDuration == v) return;
     m_callDuration = v;
     update();
-    emit callDurationChanged();
 }
 
 void HeaderPainter::setCallsAvailable(bool v) {
     if (m_callsAvailable == v) return;
     m_callsAvailable = v;
     update();
-    emit callsAvailableChanged();
 }
 
 void HeaderPainter::setCallsUnavailableReason(const QString &v) {
     if (m_callsUnavailableReason == v) return;
     m_callsUnavailableReason = v;
     update();
-    emit callsUnavailableReasonChanged();
 }
 
 void HeaderPainter::setDarkMode(bool v) {
@@ -164,16 +147,11 @@ void HeaderPainter::setDarkMode(bool v) {
     m_darkMode = v;
     m_theme = PainterTheme(m_darkMode, 1.0);
     update();
-    emit darkModeChanged();
 }
 
-QObject *HeaderPainter::apiObject() const { return m_api; }
-
-void HeaderPainter::setApiObject(QObject *obj) {
-    auto *api = qobject_cast<ApiClient *>(obj);
+void HeaderPainter::setApi(ApiClient *api) {
     if (api == m_api) return;
     m_api = api;
-    emit apiChanged();
 }
 
 // ═══════════════════════════════════════════════════════
@@ -190,8 +168,10 @@ QColor HeaderPainter::topicColor(int index)
 // PAINT
 // ═══════════════════════════════════════════════════════
 
-void HeaderPainter::paint(QPainter *painter)
+void HeaderPainter::paintEvent(QPaintEvent *)
 {
+    QPainter p(this);
+    QPainter *painter = &p;
     painter->setRenderHint(QPainter::Antialiasing, true);
     painter->setRenderHint(QPainter::TextAntialiasing, true);
 
@@ -609,24 +589,28 @@ void HeaderPainter::mouseReleaseEvent(QMouseEvent *event)
     event->accept();
 }
 
-void HeaderPainter::hoverMoveEvent(QHoverEvent *event)
+bool HeaderPainter::event(QEvent *e)
 {
-    int btn = buttonAtPos(event->position());
-    if (btn != m_hoveredButton) {
-        m_hoveredButton = btn;
-        if (btn >= 0)
-            setCursor(QCursor(Qt::PointingHandCursor));
-        else
+    if (e->type() == QEvent::HoverMove) {
+        auto *he = static_cast<QHoverEvent *>(e);
+        int btn = buttonAtPos(he->position());
+        if (btn != m_hoveredButton) {
+            m_hoveredButton = btn;
+            if (btn >= 0)
+                setCursor(QCursor(Qt::PointingHandCursor));
+            else
+                setCursor(QCursor(Qt::ArrowCursor));
+            update();
+        }
+        return true;
+    }
+    if (e->type() == QEvent::HoverLeave) {
+        if (m_hoveredButton != -1) {
+            m_hoveredButton = -1;
             setCursor(QCursor(Qt::ArrowCursor));
-        update();
+            update();
+        }
+        return true;
     }
-}
-
-void HeaderPainter::hoverLeaveEvent(QHoverEvent *)
-{
-    if (m_hoveredButton != -1) {
-        m_hoveredButton = -1;
-        setCursor(QCursor(Qt::ArrowCursor));
-        update();
-    }
+    return QWidget::event(e);
 }

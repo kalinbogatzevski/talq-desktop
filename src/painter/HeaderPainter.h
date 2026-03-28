@@ -1,6 +1,6 @@
 #pragma once
 
-#include <QQuickPaintedItem>
+#include <QWidget>
 #include <QImage>
 #include <QSet>
 #include "PainterTheme.h"
@@ -9,48 +9,14 @@ class ApiClient;
 class QNetworkReply;
 
 /**
- * QQuickPaintedItem that renders the chat header bar via QPainter.
- * Replaces the QML Page header in ChatView.qml.
- *
- * Layout (left to right):
- *   [back-expand] [back-thread] [topic-dot] [avatar] [name + status] [call-buttons] [loading]
+ * QWidget that renders the chat header bar via QPainter.
  */
-class HeaderPainter : public QQuickPaintedItem
+class HeaderPainter : public QWidget
 {
     Q_OBJECT
 
-    // ── Data properties (bound from QML) ──
-    Q_PROPERTY(QString conversationName READ conversationName WRITE setConversationName NOTIFY conversationNameChanged)
-    Q_PROPERTY(QString conversationUserId READ conversationUserId WRITE setConversationUserId NOTIFY conversationUserIdChanged)
-    Q_PROPERTY(int conversationType READ conversationType WRITE setConversationType NOTIFY conversationTypeChanged)
-    Q_PROPERTY(QString peerStatus READ peerStatus WRITE setPeerStatus NOTIFY peerStatusChanged)
-    Q_PROPERTY(int activeThreadId READ activeThreadId WRITE setActiveThreadId NOTIFY activeThreadIdChanged)
-    Q_PROPERTY(QString activeThreadTitle READ activeThreadTitle WRITE setActiveThreadTitle NOTIFY activeThreadTitleChanged)
-    Q_PROPERTY(int activeThreadColor READ activeThreadColor WRITE setActiveThreadColor NOTIFY activeThreadColorChanged)
-    Q_PROPERTY(bool isInTopicMode READ isInTopicMode WRITE setIsInTopicMode NOTIFY isInTopicModeChanged)
-    Q_PROPERTY(bool sidebarSqueezed READ sidebarSqueezed WRITE setSidebarSqueezed NOTIFY sidebarSqueezedChanged)
-    Q_PROPERTY(QString conversationToken READ conversationToken WRITE setConversationToken NOTIFY conversationTokenChanged)
-    Q_PROPERTY(int messageCount READ messageCount WRITE setMessageCount NOTIFY messageCountChanged)
-    Q_PROPERTY(bool loading READ loading WRITE setLoading NOTIFY loadingChanged)
-
-    // ── Typing indicator ──
-    Q_PROPERTY(QString typingUser READ typingUser WRITE setTypingUser NOTIFY typingUserChanged)
-    Q_PROPERTY(bool isTyping READ isTyping WRITE setIsTyping NOTIFY isTypingChanged)
-
-    // ── Call state ──
-    Q_PROPERTY(int callState READ callState WRITE setCallState NOTIFY callStateChanged)
-    Q_PROPERTY(int callDuration READ callDuration WRITE setCallDuration NOTIFY callDurationChanged)
-    Q_PROPERTY(bool callsAvailable READ callsAvailable WRITE setCallsAvailable NOTIFY callsAvailableChanged)
-    Q_PROPERTY(QString callsUnavailableReason READ callsUnavailableReason WRITE setCallsUnavailableReason NOTIFY callsUnavailableReasonChanged)
-
-    // ── Theme ──
-    Q_PROPERTY(bool darkMode READ darkMode WRITE setDarkMode NOTIFY darkModeChanged)
-    Q_PROPERTY(QObject* api READ apiObject WRITE setApiObject NOTIFY apiChanged)
-
 public:
-    explicit HeaderPainter(QQuickItem *parent = nullptr);
-
-    void paint(QPainter *painter) override;
+    explicit HeaderPainter(QWidget *parent = nullptr);
 
     // ── Accessors ──
     QString conversationName() const { return m_conversationName; }
@@ -110,42 +76,19 @@ public:
     bool darkMode() const { return m_darkMode; }
     void setDarkMode(bool v);
 
-    QObject *apiObject() const;
-    void setApiObject(QObject *obj);
+    void setApi(ApiClient *api);
 
 signals:
-    void conversationNameChanged();
-    void conversationUserIdChanged();
-    void conversationTypeChanged();
-    void peerStatusChanged();
-    void activeThreadIdChanged();
-    void activeThreadTitleChanged();
-    void activeThreadColorChanged();
-    void isInTopicModeChanged();
-    void sidebarSqueezedChanged();
-    void conversationTokenChanged();
-    void messageCountChanged();
-    void loadingChanged();
-    void typingUserChanged();
-    void isTypingChanged();
-    void callStateChanged();
-    void callDurationChanged();
-    void callsAvailableChanged();
-    void callsUnavailableReasonChanged();
-    void darkModeChanged();
-    void apiChanged();
-
-    // ── Action signals (connected in ChatView.qml) ──
     void expandSidebarClicked();
-    void backClicked();            // close thread
+    void backClicked();
     void audioCallClicked();
     void videoCallClicked();
 
 protected:
+    void paintEvent(QPaintEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
-    void hoverMoveEvent(QHoverEvent *event) override;
-    void hoverLeaveEvent(QHoverEvent *event) override;
+    bool event(QEvent *event) override;
 
 private:
     // ── Layout constants ──

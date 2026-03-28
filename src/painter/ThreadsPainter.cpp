@@ -2,6 +2,7 @@
 #include "models/ThreadListModel.h"
 #include <QPainter>
 #include <QPainterPath>
+#include <QPaintEvent>
 #include <QWheelEvent>
 #include <QMouseEvent>
 #include <QHoverEvent>
@@ -20,26 +21,20 @@ static const QColor s_topicPalette[] = {
 // Constructor
 // ===============================================================
 
-ThreadsPainter::ThreadsPainter(QQuickItem *parent)
-    : QQuickPaintedItem(parent)
+ThreadsPainter::ThreadsPainter(QWidget *parent)
+    : QWidget(parent)
     , m_theme(m_darkMode, 1.0)
 {
-    setAcceptedMouseButtons(Qt::LeftButton);
-    setAcceptHoverEvents(true);
+    setAttribute(Qt::WA_Hover);
+    setMouseTracking(true);
 }
 
 // ===============================================================
 // Properties
 // ===============================================================
 
-QObject *ThreadsPainter::modelObject() const
+void ThreadsPainter::setModel(ThreadListModel *mdl)
 {
-    return m_model;
-}
-
-void ThreadsPainter::setModelObject(QObject *obj)
-{
-    auto *mdl = qobject_cast<ThreadListModel *>(obj);
     if (mdl == m_model) return;
 
     if (m_model) {
@@ -60,7 +55,6 @@ void ThreadsPainter::setModelObject(QObject *obj)
     }
 
     rebuildLayouts();
-    emit modelChanged();
 }
 
 void ThreadsPainter::setDarkMode(bool dark)
@@ -69,7 +63,6 @@ void ThreadsPainter::setDarkMode(bool dark)
     m_darkMode = dark;
     m_theme = PainterTheme(m_darkMode, 1.0);
     update();
-    emit darkModeChanged();
 }
 
 void ThreadsPainter::setSelectedThreadId(int id)
@@ -77,7 +70,6 @@ void ThreadsPainter::setSelectedThreadId(int id)
     if (m_selectedThreadId == id) return;
     m_selectedThreadId = id;
     update();
-    emit selectedThreadIdChanged();
 }
 
 void ThreadsPainter::setGroupName(const QString &name)
@@ -85,7 +77,6 @@ void ThreadsPainter::setGroupName(const QString &name)
     if (m_groupName == name) return;
     m_groupName = name;
     update();
-    emit groupNameChanged();
 }
 
 void ThreadsPainter::setCreating(bool c)
@@ -93,7 +84,6 @@ void ThreadsPainter::setCreating(bool c)
     if (m_creating == c) return;
     m_creating = c;
     update();
-    emit creatingChanged();
 }
 
 // ===============================================================
@@ -219,13 +209,11 @@ bool ThreadsPainter::isInBackButton(qreal x, qreal y) const
 // Geometry
 // ===============================================================
 
-void ThreadsPainter::geometryChange(const QRectF &newGeom, const QRectF &oldGeom)
+void ThreadsPainter::resizeEvent(QResizeEvent *event)
 {
-    QQuickPaintedItem::geometryChange(newGeom, oldGeom);
-    if (newGeom.width() != oldGeom.width() || newGeom.height() != oldGeom.height()) {
-        clampScroll();
-        update();
-    }
+    QWidget::resizeEvent(event);
+    clampScroll();
+    update();
 }
 
 // ===============================================================
@@ -271,7 +259,6 @@ void ThreadsPainter::mouseReleaseEvent(QMouseEvent *event)
     if (row >= 0 && row < m_layouts.size()) {
         const auto &tl = m_layouts[row];
         m_selectedThreadId = tl.threadId;
-        emit selectedThreadIdChanged();
         emit threadClicked(tl.threadId, tl.title);
         update();
     }
@@ -279,38 +266,41 @@ void ThreadsPainter::mouseReleaseEvent(QMouseEvent *event)
     event->accept();
 }
 
-void ThreadsPainter::hoverMoveEvent(QHoverEvent *event)
+bool ThreadsPainter::event(QEvent *e)
 {
-    qreal mx = event->position().x();
-    qreal my = event->position().y();
+    if (e->type() == QEvent::HoverMove) {
+        auto *he = static_cast<QHoverEvent *>(e);
+        qreal mx = he->position().x();
+        qreal my = he->position().y();
 
-    int newHover;
-    if (isInBackButton(mx, my)) {
-        newHover = -3;
-    } else if (isInNewTopicButton(my)) {
-        newHover = -2;
-    } else {
-        newHover = rowAtY(my);
-    }
+        int newHover;
+        if (isInBackButton(mx, my)) {
+            newHover = -3;
+        } else if (isInNewTopicButton(my)) {
+            newHover = -2;
+        } else {
+            newHover = rowAtY(my);
+        }
 
-    if (newHover != m_hoveredRow) {
-        m_hoveredRow = newHover;
-        // Set cursor
-        if (newHover == -3 || newHover == -2 || newHover >= 0)
-            setCursor(QCursor(Qt::PointingHandCursor));
-        else
-            setCursor(QCursor(Qt::ArrowCursor));
-        update();
+        if (newHover != m_hoveredRow) {
+            m_hoveredRow = newHover;
+            if (newHover == -3 || newHover == -2 || newHover >= 0)
+                setCursor(QCursor(Qt::PointingHandCursor));
+            else
+                setCursor(QCursor(Qt::ArrowCursor));
+            update();
+        }
+        return true;
     }
-}
-
-void ThreadsPainter::hoverLeaveEvent(QHoverEvent *)
-{
-    if (m_hoveredRow != -1) {
-        m_hoveredRow = -1;
-        setCursor(Qt::ArrowCursor);
-        update();
+    if (e->type() == QEvent::HoverLeave) {
+        if (m_hoveredRow != -1) {
+            m_hoveredRow = -1;
+            setCursor(Qt::ArrowCursor);
+            update();
+        }
+        return true;
     }
+    return QWidget::event(e);
 }
 
 // ===============================================================
@@ -327,8 +317,10 @@ QColor ThreadsPainter::topicColor(int index)
 // PAINT
 // ===============================================================
 
-void ThreadsPainter::paint(QPainter *painter)
+void ThreadsPainter::paintEvent(QPaintEvent *)
 {
+    QPainter p(this);
+    QPainter *painter = &p;
     painter->setRenderHint(QPainter::Antialiasing, true);
     painter->setRenderHint(QPainter::TextAntialiasing, true);
 
