@@ -7,10 +7,10 @@
 #include <QClipboard>
 #include <QApplication>
 #include <QImage>
-#include <QTemporaryFile>
 #include <QStandardPaths>
 #include <QDir>
 #include <QFileInfo>
+#include <QDateTime>
 
 // Custom text edit that sends on Enter, newline on Shift+Enter, handles image paste
 class ComposeTextEdit : public QTextEdit
