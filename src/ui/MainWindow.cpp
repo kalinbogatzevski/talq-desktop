@@ -425,6 +425,22 @@ void MainWindow::buildChatPage()
     m_welcomeSignalingLabel = addInfoRow("\u26A1", "");
     m_welcomePushLabel = addInfoRow("\u25CF", "");
 
+    // Live-update status labels when services connect/disconnect
+    connect(m_signaling, &SignalingClient::connectedChanged, this, [this]() {
+        if (m_welcomeSignalingLabel)
+            m_welcomeSignalingLabel->setText(m_signaling->isConnected() ? "Signaling connected" : "Signaling disconnected");
+        if (m_welcomeSignalingLabel)
+            m_welcomeSignalingLabel->setStyleSheet(QString("font-size: 12px; color: %1;")
+                .arg(m_signaling->isConnected() ? "#5ec76a" : "#8a8680"));
+    });
+    connect(m_push, &PushClient::connectedChanged, this, [this]() {
+        if (m_welcomePushLabel)
+            m_welcomePushLabel->setText(m_push->isConnected() ? "Push connected (real-time)" : "Push disconnected (polling)");
+        if (m_welcomePushLabel)
+            m_welcomePushLabel->setStyleSheet(QString("font-size: 12px; color: %1;")
+                .arg(m_push->isConnected() ? "#5ec76a" : "#8a8680"));
+    });
+
     welcomeLayout->addWidget(serverCard, 0, Qt::AlignCenter);
 
     chatLayout->addWidget(m_welcomeWidget, 1);
