@@ -23,9 +23,12 @@ public:
     void setMessageModel(MessageListModel *model);
     void setInputFont(const QFont &font);
     void showPendingFile(const QString &path);
+    void showReplyBar(const QString &author, const QString &preview);
+    void hideReplyBar();
 
 signals:
     void sendMessage(const QString &text);
+    void replyBarCancelled();
 
 private slots:
     void sendAction();
@@ -48,4 +51,8 @@ private:
     QPushButton *m_pendingSendBtn = nullptr;
     QPushButton *m_pendingCancelBtn = nullptr;
     QString m_pendingFilePath;
+
+    // Reply bar
+    QWidget *m_replyBar = nullptr;
+    QLabel *m_replyLabel = nullptr;
 };
