@@ -505,6 +505,19 @@ void SidebarPainter::paintRowSqueezed(QPainter *p, const ConversationLayout &cl,
 
 void SidebarPainter::paintAvatar(QPainter *p, const ConversationLayout &cl, const QRectF &rect)
 {
+    // Note to self (type 6) — special bookmark icon
+    if (cl.conversationType == 6) {
+        p->setPen(Qt::NoPen);
+        p->setBrush(QColor("#2ec4b6"));
+        p->drawEllipse(rect);
+        QFont iconFont;
+        iconFont.setPixelSize(static_cast<int>(rect.width() * 0.5));
+        p->setPen(Qt::white);
+        p->setFont(iconFont);
+        p->drawText(rect, Qt::AlignCenter, QStringLiteral("\U0001F516"));  // 🔖
+        return;
+    }
+
     int size = static_cast<int>(rect.width());
     QImage img = fetchAvatar(cl.participantUserId, cl.token, cl.conversationType, size);
 
