@@ -29,6 +29,7 @@
 #include <QScreen>
 #include <QMenu>
 #include <QDesktopServices>
+#include <QDialog>
 #include <QNetworkReply>
 #include <QLabel>
 #include <QUrl>
@@ -452,6 +453,34 @@ void MainWindow::buildChatPage()
     // Link/file clicks from ChatPainter signals
     connect(m_chatPainter, &ChatPainter::linkActivated, this, [](const QString &url) {
         QDesktopServices::openUrl(QUrl(url));
+    });
+    connect(m_chatPainter, &ChatPainter::fileClicked, this, [this](int fileId, const QString &mime, const QString &fileName) {
+        if (mime.startsWith("image/")) {
+            // Show image preview in a simple dialog
+            QImage img = m_chatPainter->cachedPreview(fileId);
+            if (!img.isNull()) {
+                auto *viewer = new QDialog(this);
+                viewer->setWindowTitle(fileName);
+                viewer->setAttribute(Qt::WA_DeleteOnClose);
+                viewer->setStyleSheet("background: #000000;");
+                auto *label = new QLabel(viewer);
+                QPixmap pix = QPixmap::fromImage(img);
+                QSize screenSize = screen()->availableSize() * 0.8;
+                pix = pix.scaled(screenSize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+                label->setPixmap(pix);
+                label->setAlignment(Qt::AlignCenter);
+                auto *layout = new QVBoxLayout(viewer);
+                layout->setContentsMargins(0, 0, 0, 0);
+                layout->addWidget(label);
+                viewer->resize(pix.size());
+                viewer->show();
+            }
+        } else {
+            m_messages->downloadFile(fileId, fileName);
+        }
+    });
+    connect(m_chatPainter, &ChatPainter::reactionClicked, this, [this](int msgId, const QString &emoji) {
+        m_messages->addReaction(msgId, emoji);
     });
 
     // Splitter: sidebar | topics | chat

@@ -47,6 +47,7 @@ public:
     QString hitTestAt(qreal x, qreal y);
     QVariantMap messageAt(qreal x, qreal y);
     void setHoveredPos(qreal x, qreal y);
+    QImage cachedPreview(int fileId) const { return m_previewCache.value(fileId); }
 
 signals:
     void atBottomChanged();
@@ -55,8 +56,10 @@ signals:
     void visibleHeightChanged();
     void hoveredIndexChanged();
     void linkActivated(const QString &url);
-    void fileClicked(int fileId, const QString &fileName);
+    void fileClicked(int fileId, const QString &mime, const QString &fileName);
     void reactionClicked(int messageId, const QString &emoji);
+    void replyRequested(int messageId, const QString &author, const QString &text);
+    void reactRequested(int messageId);
 
 protected:
     void paintEvent(QPaintEvent *event) override;
