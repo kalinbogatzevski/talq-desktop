@@ -174,12 +174,16 @@ MessageLayout LayoutEngine::computeLayout(
         // File attachment area
         if (ml.hasFile) {
             bool isImage = ml.fileMime.startsWith(QLatin1String("image/"));
-            // Image: use actual aspect if known (> 0), otherwise compact 44px placeholder
-            qreal fileH = isImage ? (imageAspectRatio > 0.01 ? qMin(bubbleInnerW * imageAspectRatio, 300.0) : 44.0) : 44.0;
+            qreal fileW = bubbleInnerW;
+            qreal fileH = 44.0;
+            if (isImage && imageAspectRatio > 0.01) {
+                fileW = qMin(bubbleInnerW, 350.0);  // cap image width
+                fileH = qMin(fileW * imageAspectRatio, 250.0);  // cap height
+            }
             ml.fileRect = QRectF(
                 bubbleX + PainterTheme::spacingNormal,
                 innerY,
-                bubbleInnerW,
+                fileW,
                 fileH
             );
             innerY += fileH + 4;
@@ -300,9 +304,13 @@ MessageLayout LayoutEngine::computeLayout(
         // File attachment area
         if (ml.hasFile) {
             bool isImage = ml.fileMime.startsWith(QLatin1String("image/"));
-            // Image: use actual aspect if known (> 0), otherwise compact 44px placeholder
-            qreal fileH = isImage ? (imageAspectRatio > 0.01 ? qMin(contentW * imageAspectRatio, 300.0) : 44.0) : 44.0;
-            ml.fileRect = QRectF(contentX, y, contentW, fileH);
+            qreal fileW = contentW;
+            qreal fileH = 44.0;
+            if (isImage && imageAspectRatio > 0.01) {
+                fileW = qMin(contentW, 350.0);
+                fileH = qMin(fileW * imageAspectRatio, 250.0);
+            }
+            ml.fileRect = QRectF(contentX, y, fileW, fileH);
             y += fileH + 4;
         }
 
