@@ -380,6 +380,14 @@ void ChatPainter::mouseReleaseEvent(QMouseEvent *event)
             emit reactRequested(hit.mid(6).toInt());
         }
     }
+
+    // Right-click → context menu
+    if (!m_dragMoved && event->button() == Qt::RightButton) {
+        QVariantMap msg = messageAt(event->position().x(), event->position().y());
+        if (msg.value("messageId").toInt() > 0) {
+            emit contextMenuRequested(msg, mapToGlobal(event->position().toPoint()));
+        }
+    }
     event->accept();
 }
 

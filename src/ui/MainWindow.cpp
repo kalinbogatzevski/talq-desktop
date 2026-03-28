@@ -30,6 +30,9 @@
 #include <QMenu>
 #include <QDesktopServices>
 #include <QDialog>
+#include <QClipboard>
+#include <QRegularExpression>
+#include <QWidgetAction>
 #include <QNetworkReply>
 #include <QLabel>
 #include <QUrl>
@@ -452,6 +455,78 @@ void MainWindow::buildChatPage()
 
     // Drag-and-drop files onto chat → show confirmation in composer
     connect(m_chatPainter, &ChatPainter::fileDropped, m_composer, &ComposerWidget::showPendingFile);
+
+    // Right-click context menu on messages
+    connect(m_chatPainter, &ChatPainter::contextMenuRequested, this, [this](const QVariantMap &msg, const QPoint &globalPos) {
+        int msgId = msg.value("messageId").toInt();
+        bool isOwn = msg.value("isOwn").toBool();
+        QString text = msg.value("messageText").toString();
+        QString author = msg.value("actorName").toString();
+        int fileId = msg.value("fileId").toInt();
+        QString fileName = msg.value("fileName").toString();
+        bool hasFile = msg.value("hasFile").toBool();
+
+        auto *menu = new QMenu(this);
+        menu->setAttribute(Qt::WA_DeleteOnClose);
+
+        // Emoji quick-react
+        auto *emojiRow = new QWidgetAction(menu);
+        auto *emojiWidget = new QWidget(menu);
+        auto *emojiLayout = new QHBoxLayout(emojiWidget);
+        emojiLayout->setContentsMargins(8, 4, 8, 4);
+        emojiLayout->setSpacing(2);
+        QStringList emojis = {"\U0001F44D", "\u2764\uFE0F", "\U0001F602", "\U0001F62E", "\U0001F622", "\U0001F389"};
+        for (const auto &emoji : emojis) {
+            auto *btn = new QPushButton(emoji, emojiWidget);
+            btn->setFixedSize(32, 32);
+            btn->setFlat(true);
+            btn->setCursor(Qt::PointingHandCursor);
+            btn->setStyleSheet("font-size: 18px; border: none; border-radius: 8px; QPushButton:hover { background: rgba(255,255,255,0.1); }");
+            connect(btn, &QPushButton::clicked, this, [this, msgId, emoji, menu]() {
+                m_messages->addReaction(msgId, emoji);
+                menu->close();
+            });
+            emojiLayout->addWidget(btn);
+        }
+        emojiRow->setDefaultWidget(emojiWidget);
+        menu->addAction(emojiRow);
+        menu->addSeparator();
+
+        // Actions
+        if (hasFile) {
+            menu->addAction("\u2B07 Download", this, [this, fileId, fileName]() {
+                m_messages->downloadFile(fileId, fileName);
+            });
+        }
+        menu->addAction("\U0001F4CB Copy", this, [text]() {
+            QString plain = text;
+            plain.remove(QRegularExpression("<[^>]*>"));
+            QApplication::clipboard()->setText(plain);
+        });
+        menu->addAction("\u21A9 Reply", this, [this, msgId, author, text]() {
+            // TODO: wire reply-to composer
+        });
+        if (isOwn) {
+            menu->addSeparator();
+            menu->addAction("\U0001F5D1 Delete", this, [this, msgId]() {
+                m_messages->deleteMessage(msgId);
+            });
+        }
+
+        menu->popup(globalPos);
+    });
+
+    // Reply from hover button
+    connect(m_chatPainter, &ChatPainter::replyRequested, this, [this](int msgId, const QString &author, const QString &text) {
+        Q_UNUSED(msgId) Q_UNUSED(author) Q_UNUSED(text)
+        // TODO: wire reply-to composer
+    });
+
+    // React from hover button
+    connect(m_chatPainter, &ChatPainter::reactRequested, this, [this](int msgId) {
+        Q_UNUSED(msgId)
+        // TODO: show emoji picker at hover button position
+    });
 
     // Chat mouse interaction — wheel and click are handled by ChatPainter directly
     // Link/file clicks from ChatPainter signals
