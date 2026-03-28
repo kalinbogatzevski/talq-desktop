@@ -481,50 +481,40 @@ void MessageListModel::refreshLatest()
         }
 
         if (!missing.isEmpty()) {
-            // Sort by ID descending (newest first) for our storage order
-            std::sort(missing.begin(), missing.end(), [](const Message &a, const Message &b) {
+            // Simple approach: merge missing messages into existing list,
+            // sort newest-first, and reset the model. This handles all cases:
+            // gaps, interleaved messages, edits, etc.
+            for (const auto &m : missing) {
+                m_messageIds.insert(m.id);
+                m_messages.append(m);
+            }
+
+            // Remove duplicates (by ID) and sort newest-first
+            QHash<int, int> seen;
+            QVector<Message> deduped;
+            deduped.reserve(m_messages.size());
+            for (const auto &m : m_messages) {
+                if (!seen.contains(m.id)) {
+                    seen[m.id] = 1;
+                    deduped.append(m);
+                }
+            }
+            std::sort(deduped.begin(), deduped.end(), [](const Message &a, const Message &b) {
                 return a.id > b.id;
             });
 
-            // Partition: newer than current newest → prepend at index 0
-            //            older than current oldest → append at end
-            int newestId = m_messages.isEmpty() ? 0 : m_messages.first().id;
-            int oldestId = m_messages.isEmpty() ? INT_MAX : m_messages.last().id;
-            QVector<Message> newer, older;
-            for (const auto &m : missing) {
-                if (m.id > newestId)
-                    newer.append(m);
-                else if (m.id < oldestId)
-                    older.append(m);
-            }
-
-            // Prepend newer messages at index 0 (appear at bottom in BottomToTop)
-            if (!newer.isEmpty()) {
-                for (const auto &m : newer)
-                    m_messageIds.insert(m.id);
-                beginInsertRows({}, 0, newer.size() - 1);
-                newer.append(std::move(m_messages));
-                m_messages = std::move(newer);
-                endInsertRows();
-                m_cache->saveMessages(m_token, m_messages.mid(0, m_messages.size()));  // save all
-                // Don't emit newMessagesAtEnd — BottomToTop naturally positions at bottom
-            }
-
-            // Append older messages at end (appear at top in BottomToTop)
-            if (!older.isEmpty()) {
-                for (const auto &m : older)
-                    m_messageIds.insert(m.id);
-                int first = m_messages.size();
-                beginInsertRows({}, first, first + older.size() - 1);
-                m_messages.append(older);
-                endInsertRows();
-                m_cache->saveMessages(m_token, older);
-            }
+            beginResetModel();
+            m_messages = std::move(deduped);
+            endResetModel();
 
             if (!m_messages.isEmpty())
                 m_oldestMessageId = m_messages.last().id;
 
-            qDebug() << "MessageListModel: refreshLatest found" << missing.size() << "missing messages";
+            // Save updated cache
+            m_cache->saveMessages(m_token, m_messages);
+
+            qDebug() << "MessageListModel: refreshLatest merged" << missing.size()
+                     << "missing, total=" << m_messages.size();
         }
 
         // Restart poller from the true latest message
