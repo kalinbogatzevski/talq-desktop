@@ -323,8 +323,11 @@ void HeaderPainter::paintEvent(QPaintEvent *)
 
     QFont titleFont;
     titleFont.setPixelSize(m_theme.fontSizeLarge);
-    if (!m_conversationName.isEmpty())
+    if (!m_conversationName.isEmpty()) {
         titleFont.setWeight(QFont::DemiBold);
+    } else if (m_activeThreadId <= 0) {
+        titleFont.setItalic(true);  // placeholder "Select a conversation"
+    }
     QFontMetrics titleFM(titleFont);
 
     // Decide if we have a subtitle

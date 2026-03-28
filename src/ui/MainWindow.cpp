@@ -255,6 +255,15 @@ void MainWindow::buildChatPage()
         }
     });
 
+    // Also reload avatar/name once user info is fetched (userId may arrive late)
+    connect(m_auth, &AuthManager::userInfoChanged, this, [this]() {
+        if (m_auth->isLoggedIn()) {
+            m_profileNameLabel->setText(m_auth->displayName());
+            if (!m_auth->userId().isEmpty())
+                loadProfileAvatar(m_profileAvatarLabel);
+        }
+    });
+
     // Also set immediately if already logged in
     if (m_auth->isLoggedIn()) {
         m_profileNameLabel->setText(m_auth->displayName());
@@ -374,7 +383,7 @@ void MainWindow::buildChatPage()
     // Server info card
     auto *serverCard = new QWidget(m_welcomeWidget);
     serverCard->setMaximumWidth(340);
-    serverCard->setStyleSheet("background: #222220; border-radius: 10px; border: 1px solid #2a2a26;");
+    serverCard->setStyleSheet("background: #1c1c1a; border-radius: 10px; border: 1px solid #3a3a36;");
     auto *serverLayout = new QVBoxLayout(serverCard);
     serverLayout->setContentsMargins(16, 12, 16, 12);
     serverLayout->setSpacing(6);
@@ -486,7 +495,8 @@ void MainWindow::buildChatPage()
     m_splitter->setStretchFactor(1, 0);
     m_splitter->setStretchFactor(2, 1);
     m_splitter->setSizes({280, 0, 700});
-    m_splitter->setHandleWidth(5);
+    m_splitter->setHandleWidth(1);
+    m_splitter->setStyleSheet("QSplitter::handle { background: #2a2a26; }");
 
     mainLayout->addWidget(m_splitter);
 
@@ -529,6 +539,20 @@ void MainWindow::buildChatPage()
     // Update userId when logged in
     connect(m_auth, &AuthManager::userInfoChanged, this, [this]() {
         m_chatPainter->setMyUserId(m_auth->userId());
+    });
+
+    // Update NC/Talk version labels when server info arrives (async after login)
+    connect(m_auth, &AuthManager::serverInfoChanged, this, [this]() {
+        if (m_welcomeNcLabel) {
+            QString ncVer = m_auth->nextcloudVersion();
+            m_welcomeNcLabel->setText(ncVer.isEmpty() ? QStringLiteral("Nextcloud")
+                                                      : QStringLiteral("Nextcloud ") + ncVer);
+        }
+        if (m_welcomeTalkLabel) {
+            QString talkVer = m_auth->talkVersion();
+            m_welcomeTalkLabel->setText(talkVer.isEmpty() ? QStringLiteral("Talk")
+                                                          : QStringLiteral("Talk ") + talkVer);
+        }
     });
 
     m_stack->addWidget(m_chatPage);

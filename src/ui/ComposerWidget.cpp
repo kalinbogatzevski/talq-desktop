@@ -73,27 +73,46 @@ private:
 ComposerWidget::ComposerWidget(QWidget *parent)
     : QWidget(parent)
 {
+    // Unified composer background
+    setStyleSheet("ComposerWidget { background: #1a1a18; border-top: 1px solid #2a2a26; }");
+
     auto *layout = new QHBoxLayout(this);
-    layout->setContentsMargins(8, 4, 8, 4);
-    layout->setSpacing(6);
+    layout->setContentsMargins(12, 8, 12, 8);
+    layout->setSpacing(8);
 
     m_attachBtn = new QPushButton(this);
     m_attachBtn->setText(QString::fromUtf8("\xF0\x9F\x93\x8E"));  // clip
-    m_attachBtn->setFixedSize(32, 32);
+    m_attachBtn->setFixedSize(38, 38);
     m_attachBtn->setFlat(true);
     m_attachBtn->setToolTip("Attach file");
+    m_attachBtn->setCursor(Qt::PointingHandCursor);
+    m_attachBtn->setStyleSheet(
+        "QPushButton { font-size: 18px; border: none; border-radius: 19px; background: transparent; }"
+        "QPushButton:hover { background: #2c2c28; }"
+    );
     layout->addWidget(m_attachBtn);
 
     m_input = new ComposeTextEdit(this);
-    m_input->setPlaceholderText("Message...");
+    m_input->setPlaceholderText("Write a message...");
     m_input->setMaximumHeight(120);
-    m_input->setMinimumHeight(36);
+    m_input->setMinimumHeight(38);
+    m_input->setStyleSheet(
+        "QTextEdit { background: #222220; border: 1px solid #2a2a26; border-radius: 19px;"
+        "  padding: 6px 14px; font-size: 14px; color: #e4e0da; }"
+        "QTextEdit:focus { border-color: #2ec4b6; }"
+    );
     layout->addWidget(m_input, 1);
 
     m_sendBtn = new QPushButton(this);
     m_sendBtn->setText(QString::fromUtf8("\xE2\x9E\xA4"));  // arrow
-    m_sendBtn->setFixedSize(36, 36);
+    m_sendBtn->setFixedSize(38, 38);
     m_sendBtn->setToolTip("Send message (Enter)");
+    m_sendBtn->setCursor(Qt::PointingHandCursor);
+    m_sendBtn->setStyleSheet(
+        "QPushButton { font-size: 18px; border: none; border-radius: 19px; background: #2ec4b6; color: white; }"
+        "QPushButton:hover { background: #3dd4c6; }"
+        "QPushButton:pressed { background: #25a99d; }"
+    );
     layout->addWidget(m_sendBtn);
 
     connect(m_sendBtn, &QPushButton::clicked, this, &ComposerWidget::sendAction);
