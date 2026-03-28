@@ -1,6 +1,34 @@
-# TalQ v0.9.x Continue Prompt
+# TalQ v0.11.x Continue Prompt
 
-## Next: ChatPainter — QPainter-based message rendering
+## Next: QWidget full rewrite — eliminate QML engine (~150MB)
+
+### Goal
+Replace ALL QML with QWidget/QPainter to drop from ~385MB to ~50MB. The QML engine itself takes ~150MB just being loaded.
+
+### Order (incremental)
+1. **Sidebar** (ConversationList + ConversationItem) — QPainter list like ChatPainter
+2. **Composer** (MessageComposer) — QLineEdit-based input with attach/reply bar
+3. **Header** — QPainter or QWidget bar
+4. **Main window** — QMainWindow replaces ApplicationWindow
+5. **Login** — QDialog or QWidget
+6. **Settings** — QDialog with tabs
+7. **Call window** — QWidget
+8. **Drop QML engine** — remove Qt Quick, Qt QML from dependencies
+
+### Current status
+ChatPainter (messages) is already pure QPainter. Sidebar is next.
+
+## What was done (v0.11.0, 2026-03-27)
+
+### ChatPainter — complete QPainter message renderer
+- Replaced QML ListView + MessageBubble with QQuickPaintedItem
+- 50% memory reduction (~385MB vs ~700MB+)
+- Dynamic bubble widths, async images, clickable links
+- Right-click context menu, hover action bar, emoji quick-react
+- Read status cached in SQLite, dark/light mode
+- Phase 10: old ListView removed, MessageBubble.qml dropped from build
+
+## What was done (v0.9.5+, 2026-03-27)
 
 ### Decision
 Replace QML `ListView + MessageBubble` with a single `QQuickPaintedItem` that renders messages via QPainter. This is the Telegram Desktop approach — zero delegate overhead, perfect scroll, ~50MB instead of ~700MB.

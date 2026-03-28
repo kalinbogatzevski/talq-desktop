@@ -31,6 +31,7 @@
 #include "core/DebugMonitor.h"
 #include "core/AppSettings.h"
 #include "painter/ChatPainter.h"
+#include "painter/SidebarPainter.h"
 #include <gst/gst.h>
 
 int main(int argc, char *argv[])
@@ -95,6 +96,7 @@ int main(int argc, char *argv[])
     qmlRegisterUncreatableType<CallManager>("TalkQt", 1, 0, "CallManager",
         "CallManager is not creatable, use callManager context property");
     qmlRegisterType<ChatPainter>("TalkQt", 1, 0, "ChatPainter");
+    qmlRegisterType<SidebarPainter>("TalkQt", 1, 0, "SidebarPainter");
 
     // QML engine
     QQmlApplicationEngine engine;

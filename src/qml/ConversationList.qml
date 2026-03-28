@@ -240,43 +240,55 @@ Item {
                 padding: 10
             }
 
-            // Conversation list
-            ListView {
-                id: convListView
+            // Conversation list (QPainter-based)
+            Item {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                model: conversationModel
-                clip: true
-                currentIndex: sidebar.selectedIndex
-                boundsBehavior: Flickable.StopAtBounds
 
-                ScrollBar.vertical: ScrollBar {
-                    policy: ScrollBar.AsNeeded
-                    width: 4
-                    contentItem: Rectangle {
-                        radius: 2
-                        color: Theme.textMuted
-                        opacity: 0.3
+                SidebarPainter {
+                    id: sidebarPainter
+                    anchors.fill: parent
+                    model: conversationModel
+                    api: api
+                    darkMode: Theme.darkMode
+                    selectedIndex: sidebar.selectedIndex
+                    squeezed: sidebar.squeezed
+                    filterText: searchField.text
+
+                    onConversationClicked: function(token, displayName, participantUserId, conversationType, userStatus) {
+                        sidebar.selectedIndex = sidebarPainter.selectedIndex
+                        sidebar.conversationSelected(token, displayName, participantUserId, conversationType, userStatus)
                     }
+
+                    onContextMenuRequested: function(modelIndex, notificationLevel, globalX, globalY) {
+                        ctxModelIndex = modelIndex
+                        ctxNotifLevel = notificationLevel
+                        sidebarContextMenu.popup()
+                    }
+
+                    property int ctxModelIndex: -1
+                    property int ctxNotifLevel: 0
                 }
 
-                delegate: ConversationItem {
-                    width: convListView.width
-                    selected: index === sidebar.selectedIndex
-                    filterText: searchField.text
-                    squeezed: sidebar.squeezed
-                    notificationLevel: notificationLevel
+                // Context menu (mute/unmute) — stays in QML
+                Menu {
+                    id: sidebarContextMenu
+                    palette.window: Theme.bgSurface
+                    palette.text: Theme.textPrimary
 
-                    onClicked: {
-                        sidebar.selectedIndex = index
-                        sidebar.conversationSelected(token, displayName, participantUserId, conversationType, userStatus)
+                    MenuItem {
+                        text: sidebarPainter.ctxNotifLevel === 3 ? "Unmute" : "Mute"
+                        onTriggered: {
+                            var newLevel = sidebarPainter.ctxNotifLevel === 3 ? 0 : 3
+                            conversationModel.setNotificationLevel(sidebarPainter.ctxModelIndex, newLevel)
+                        }
                     }
                 }
 
                 // Loading — only show on initial load when list is empty
                 BusyIndicator {
                     anchors.centerIn: parent
-                    running: conversationModel.loading && convListView.count === 0
+                    running: conversationModel.loading && conversationModel.count === 0
                     visible: running
                     palette.dark: Theme.accent
                 }
@@ -285,13 +297,8 @@ Item {
                 Column {
                     anchors.centerIn: parent
                     spacing: Theme.spacingSmall
-                    visible: !conversationModel.loading && convListView.count === 0
+                    visible: !conversationModel.loading && conversationModel.count === 0
 
-                    Label {
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        text: "📭"
-                        font.pixelSize: 32
-                    }
                     Label {
                         anchors.horizontalCenter: parent.horizontalCenter
                         text: "No conversations"
