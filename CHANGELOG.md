@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.12.1 (2026-03-28)
+
+### Fixes
+- **Push + signaling not starting on session restore** — services only started on fresh login, not when restoring a saved session. Now starts on both paths.
+- **Welcome screen status labels** — signaling and push status now update live when services connect/disconnect (was showing stale "disconnected" state).
+- **Image click → preview viewer** — clicking image previews now opens a full-size viewer dialog.
+- **Reaction clicks** — clicking reaction pills now toggles the reaction.
+
 ## v0.12.0 (2026-03-28)
 
 ### Full QWidget Conversion — QML Engine Eliminated
