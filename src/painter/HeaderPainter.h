@@ -24,6 +24,7 @@ public:
 
     QString conversationUserId() const { return m_conversationUserId; }
     void setConversationUserId(const QString &v);
+    void setAvatarImage(const QImage &img);
 
     int conversationType() const { return m_conversationType; }
     void setConversationType(int v);
