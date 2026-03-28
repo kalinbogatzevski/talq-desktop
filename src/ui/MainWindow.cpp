@@ -465,23 +465,50 @@ void MainWindow::buildChatPage()
         int fileId = msg.value("fileId").toInt();
         QString fileName = msg.value("fileName").toString();
         bool hasFile = msg.value("hasFile").toBool();
+        QString fileMime = msg.value("fileMime").toString();
 
         auto *menu = new QMenu(this);
         menu->setAttribute(Qt::WA_DeleteOnClose);
+        menu->setStyleSheet(
+            "QMenu {"
+            "  background: #262b34;"
+            "  border: 1px solid #363c48;"
+            "  border-radius: 10px;"
+            "  padding: 6px 0;"
+            "}"
+            "QMenu::item {"
+            "  padding: 6px 16px 6px 12px;"
+            "  color: #b0aca5;"
+            "  font-size: 13px;"
+            "}"
+            "QMenu::item:selected {"
+            "  background: rgba(255,255,255,0.08);"
+            "  color: #e4e0da;"
+            "}"
+            "QMenu::separator {"
+            "  height: 1px;"
+            "  background: rgba(255,255,255,0.08);"
+            "  margin: 4px 8px;"
+            "}"
+        );
 
-        // Emoji quick-react
+        // Emoji quick-react row
         auto *emojiRow = new QWidgetAction(menu);
         auto *emojiWidget = new QWidget(menu);
+        emojiWidget->setStyleSheet("background: rgba(255,255,255,0.04); border-radius: 8px; margin: 2px;");
         auto *emojiLayout = new QHBoxLayout(emojiWidget);
-        emojiLayout->setContentsMargins(8, 4, 8, 4);
+        emojiLayout->setContentsMargins(6, 4, 6, 4);
         emojiLayout->setSpacing(2);
         QStringList emojis = {"\U0001F44D", "\u2764\uFE0F", "\U0001F602", "\U0001F62E", "\U0001F622", "\U0001F389"};
         for (const auto &emoji : emojis) {
             auto *btn = new QPushButton(emoji, emojiWidget);
-            btn->setFixedSize(32, 32);
+            btn->setFixedSize(34, 34);
             btn->setFlat(true);
             btn->setCursor(Qt::PointingHandCursor);
-            btn->setStyleSheet("font-size: 18px; border: none; border-radius: 8px; QPushButton:hover { background: rgba(255,255,255,0.1); }");
+            btn->setStyleSheet(
+                "QPushButton { font-size: 18px; border: none; border-radius: 8px; background: transparent; }"
+                "QPushButton:hover { background: rgba(255,255,255,0.12); }"
+            );
             connect(btn, &QPushButton::clicked, this, [this, msgId, emoji, menu]() {
                 m_messages->addReaction(msgId, emoji);
                 menu->close();
@@ -492,25 +519,41 @@ void MainWindow::buildChatPage()
         menu->addAction(emojiRow);
         menu->addSeparator();
 
-        // Actions
+        // File actions
         if (hasFile) {
-            menu->addAction("\u2B07 Download", this, [this, fileId, fileName]() {
+            menu->addAction(QStringLiteral("\u2B07\uFE0F  Download"), this, [this, fileId, fileName]() {
                 m_messages->downloadFile(fileId, fileName);
             });
+            menu->addAction(QStringLiteral("\u2601\uFE0F  Open in Nextcloud"), this, [this, fileId]() {
+                QDesktopServices::openUrl(QUrl(m_api->serverUrl() + "/f/" + QString::number(fileId)));
+            });
         }
-        menu->addAction("\U0001F4CB Copy", this, [text]() {
+
+        // Standard actions
+        menu->addAction(QStringLiteral("\U0001F4CB  Copy"), this, [text]() {
             QString plain = text;
-            plain.remove(QRegularExpression("<[^>]*>"));
+            static const QRegularExpression htmlRe("<[^>]*>");
+            plain.remove(htmlRe);
             QApplication::clipboard()->setText(plain);
         });
-        menu->addAction("\u21A9 Reply", this, [this, msgId, author, text]() {
+        menu->addAction(QStringLiteral("\u21A9\uFE0F  Reply"), this, [this, msgId, author, text]() {
+            Q_UNUSED(msgId) Q_UNUSED(author) Q_UNUSED(text)
             // TODO: wire reply-to composer
         });
+        menu->addAction(QStringLiteral("\U0001F4CC  Pin"), this, [this, msgId]() {
+            m_messages->pinMessage(msgId);
+        });
+        menu->addAction(QStringLiteral("\U0001F517  Copy link"), this, [this, msgId]() {
+            QString link = m_messages->messageLink(msgId);
+            QApplication::clipboard()->setText(link);
+        });
+
         if (isOwn) {
             menu->addSeparator();
-            menu->addAction("\U0001F5D1 Delete", this, [this, msgId]() {
+            auto *delAction = menu->addAction(QStringLiteral("\U0001F5D1\uFE0F  Delete"), this, [this, msgId]() {
                 m_messages->deleteMessage(msgId);
             });
+            delAction->setProperty("destructive", true);
         }
 
         menu->popup(globalPos);
