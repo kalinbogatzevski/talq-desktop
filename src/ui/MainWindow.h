@@ -31,6 +31,7 @@ class HeaderPainter;
 class ThreadsPainter;
 class ComposerWidget;
 class LoginWidget;
+class CallDialog;
 class SettingsDialog;
 
 class MainWindow : public QMainWindow
@@ -146,5 +147,6 @@ private:
 
     QSettings m_settings;
     QTimer m_saveGeometryTimer;
+    CallDialog *m_callDialog = nullptr;
     SettingsDialog *m_settingsDialog = nullptr;
 };

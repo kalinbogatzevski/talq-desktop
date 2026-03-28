@@ -61,6 +61,7 @@ qt_add_executable(talq
     src/ui/ComposerWidget.cpp
     src/ui/LoginWidget.cpp
     src/ui/SettingsDialog.cpp
+    src/ui/CallDialog.cpp
     resources/resources.qrc
     resources/talq.rc
 )
