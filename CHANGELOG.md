@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.12.0 (2026-03-28)
+
+### Full QWidget Conversion — QML Engine Eliminated
+- **86% memory reduction** — 83MB private memory (was 600MB+ with QML)
+- **Qt Quick, Qt QML, Qt QuickControls2 dependencies removed** — build: 38 targets (was 86)
+- **QMainWindow** replaces QML ApplicationWindow — splitter layout, tray icon, shortcuts, geometry save/restore
+- **ComposerWidget** — QTextEdit-based message input with send/attach buttons, font zoom
+- **LoginWidget** — QWidget login form with server URL input
+- **SettingsDialog** — 4-tab QDialog: Audio/Video, Notifications, General, Account
+- **SidebarPainter** — QPainter conversation list with avatars, badges, search, squeeze mode
+- **HeaderPainter** — QPainter chat header with avatar, call buttons, typing indicator
+- **ThreadsPainter** — QPainter topics sidebar
+- **Welcome screen** — logo, server info card, push/signaling status
+- **User profile header** — avatar + display name + settings gear in sidebar
+
+### Fixes
+- **Missing messages after restart** — refreshLatest merge logic rewrote: dedup by ID, sort, reset model
+- **Read status broken** — refreshLatest wasn't reading X-Chat-Last-Common-Read header
+- **Image preview sizing** — uses actual aspect ratio from loaded image, compact placeholder until loaded
+- **Empty message gaps** — skip messages with no text/file/reply for all senders
+- **Shared avatar cache** — sidebar passes cached avatar to header (no duplicate HTTP fetch)
+- **Camera dropdown empty** — deploy winks + mediafoundation GStreamer plugins
+- **Font zoom scoped** — Ctrl+/- only affects chat messages + composer, not sidebar/header/settings
+- **Code review fixes** — sendAction slot, QMenu leak, djb2 unsigned overflow, consolidated QSettings
+
 ## v0.11.0 (2026-03-27)
 
 ### ChatPainter — QPainter-based Message Renderer
