@@ -130,12 +130,10 @@ void SignalingClient::onTextMessage(const QString &msg)
 
         // Check server features (MCU, etc.)
         QJsonArray features = helloObj["server"].toObject()["features"].toArray();
-        m_hasMcu = false;
         QStringList featureList;
-        for (const auto &f : features) {
+        for (const auto &f : features)
             featureList << f.toString();
-            if (f.toString() == "mcu") m_hasMcu = true;
-        }
+        m_hasMcu = featureList.contains("mcu");
         qDebug() << "Signaling: features:" << featureList.join(", ") << "MCU:" << m_hasMcu;
 
         emit connectedChanged();

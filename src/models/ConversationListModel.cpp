@@ -194,38 +194,40 @@ QString ConversationListModel::tokenAt(int index) const
     return {};
 }
 
-void ConversationListModel::clearUnreadForToken(const QString &token)
+int ConversationListModel::indexOfToken(const QString &token) const
 {
     for (int i = 0; i < m_conversations.size(); ++i) {
-        if (m_conversations[i].token == token && m_conversations[i].unreadMessages > 0) {
-            m_totalUnread = qMax(0, m_totalUnread - m_conversations[i].unreadMessages);
-            m_conversations[i].unreadMessages = 0;
-            m_conversations[i].unreadMention = false;
-            emit dataChanged(index(i), index(i), {UnreadCountRole, UnreadMentionRole});
-            emit totalUnreadChanged();
-            break;
-        }
+        if (m_conversations[i].token == token)
+            return i;
     }
+    return -1;
+}
+
+void ConversationListModel::clearUnreadForToken(const QString &token)
+{
+    int i = indexOfToken(token);
+    if (i < 0 || m_conversations[i].unreadMessages == 0) return;
+
+    m_totalUnread = qMax(0, m_totalUnread - m_conversations[i].unreadMessages);
+    m_conversations[i].unreadMessages = 0;
+    m_conversations[i].unreadMention = false;
+    emit dataChanged(index(i), index(i), {UnreadCountRole, UnreadMentionRole});
+    emit totalUnreadChanged();
 }
 
 int ConversationListModel::lastReadMessageForToken(const QString &token) const
 {
-    for (const auto &c : m_conversations) {
-        if (c.token == token)
-            return c.lastReadMessage;
-    }
-    return 0;
+    int i = indexOfToken(token);
+    return (i >= 0) ? m_conversations[i].lastReadMessage : 0;
 }
 
 void ConversationListModel::setHasTopics(const QString &token, bool has)
 {
-    for (int i = 0; i < m_conversations.size(); ++i) {
-        if (m_conversations[i].token == token && m_conversations[i].hasTopics != has) {
-            m_conversations[i].hasTopics = has;
-            emit dataChanged(index(i), index(i), {HasTopicsRole});
-            break;
-        }
-    }
+    int i = indexOfToken(token);
+    if (i < 0 || m_conversations[i].hasTopics == has) return;
+
+    m_conversations[i].hasTopics = has;
+    emit dataChanged(index(i), index(i), {HasTopicsRole});
 }
 
 void ConversationListModel::setNotificationLevel(int idx, int level)
@@ -235,12 +237,9 @@ void ConversationListModel::setNotificationLevel(int idx, int level)
     m_api->setNotificationLevel(token, level,
         [this, token, level](bool success, const QJsonObject &, int) {
             if (!success) return;
-            for (int i = 0; i < m_conversations.size(); ++i) {
-                if (m_conversations[i].token == token) {
-                    m_conversations[i].notificationLevel = level;
-                    emit dataChanged(index(i), index(i), {NotificationLevelRole});
-                    break;
-                }
-            }
+            int i = indexOfToken(token);
+            if (i < 0) return;
+            m_conversations[i].notificationLevel = level;
+            emit dataChanged(index(i), index(i), {NotificationLevelRole});
         });
 }
