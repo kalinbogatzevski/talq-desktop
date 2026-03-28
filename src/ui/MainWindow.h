@@ -81,6 +81,7 @@ private:
     void openThread(int threadId, const QString &title);
     void closeThread();
     void updateTopicMode(bool active);
+    void loadProfileAvatar(QLabel *avatarLabel);
 
     // ── Pointers to backend (not owned) ──
     ApiClient *m_api;
@@ -116,6 +117,7 @@ private:
     QSplitter *m_splitter = nullptr;
     QWidget *m_sidebarCol = nullptr;
     QLabel *m_profileNameLabel = nullptr;
+    QLabel *m_profileAvatarLabel = nullptr;
     QWidget *m_welcomeWidget = nullptr;
     QLabel *m_welcomeNameLabel = nullptr;
     QLabel *m_welcomeServerLabel = nullptr;

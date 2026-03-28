@@ -22,15 +22,13 @@ public:
     void setSignaling(SignalingClient *sig);
     void setMessageModel(MessageListModel *model);
     void setInputFont(const QFont &font);
-    void handlePastedImage(const QString &path);
-    void handlePastedFile(const QString &path);
+    void showPendingFile(const QString &path);
 
 signals:
     void sendMessage(const QString &text);
 
 private slots:
     void sendAction();
-    void showPendingFile(const QString &path);
     void confirmSendFile();
     void cancelPendingFile();
 

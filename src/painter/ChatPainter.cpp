@@ -209,10 +209,10 @@ void ChatPainter::rebuildAllLayouts()
     // Model is newest-first. We iterate oldest-first: row (count-1) down to row 0.
     for (int i = 0; i < count; ++i) {
         int modelRow = count - 1 - i;
+        auto idx = m_model->index(modelRow);
 
         // Look up actual image aspect ratio if cached
-        auto idx0 = m_model->index(modelRow);
-        int fileId = m_model->data(idx0, MessageListModel::FileIdRole).toInt();
+        int fileId = m_model->data(idx, MessageListModel::FileIdRole).toInt();
         qreal aspect = m_previewAspect.value(fileId, 0.0);  // 0 = unknown, show compact placeholder
 
         auto ml = LayoutEngine::computeLayout(
@@ -221,7 +221,6 @@ void ChatPainter::rebuildAllLayouts()
         );
 
         // Update prev for next iteration
-        auto idx = m_model->index(modelRow);
         prevActorId = m_model->data(idx, MessageListModel::ActorIdRole).toString();
         prevTimestamp = m_model->data(idx, MessageListModel::TimestampRole).toLongLong();
         prevIsSystem = m_model->data(idx, MessageListModel::IsSystemRole).toBool();

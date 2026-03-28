@@ -42,4 +42,9 @@ public:
 private:
     static std::shared_ptr<QTextDocument> createBodyDoc(
         const QString &html, qreal maxWidth, const PainterTheme &theme);
+
+    /** Compute file attachment rect size. Returns {width, height}. */
+    static std::pair<qreal, qreal> fileRectSize(
+        const QString &mime, qreal maxWidth, qreal maxThumbW,
+        qreal maxThumbH, qreal imageAspectRatio);
 };

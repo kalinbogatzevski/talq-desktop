@@ -3,7 +3,6 @@
 #include "models/MessageListModel.h"
 #include <QFileDialog>
 #include <QKeyEvent>
-#include <QTimer>
 #include <QMimeData>
 #include <QClipboard>
 #include <QApplication>
@@ -52,14 +51,14 @@ protected:
                 QString dir = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
                 QString path = dir + "/talq_paste_" + QString::number(QDateTime::currentMSecsSinceEpoch()) + ".png";
                 img.save(path, "PNG");
-                m_owner->handlePastedImage(path);
+                m_owner->showPendingFile(path);
                 return;
             }
         }
         if (source->hasUrls()) {
             for (const QUrl &url : source->urls()) {
                 if (url.isLocalFile()) {
-                    m_owner->handlePastedFile(url.toLocalFile());
+                    m_owner->showPendingFile(url.toLocalFile());
                     return;
                 }
             }
@@ -192,16 +191,6 @@ void ComposerWidget::setInputFont(const QFont &font)
     int btnFontSize = qMax(12, font.pixelSize());
     m_sendBtn->setStyleSheet(QString("font-size: %1px; border: none; border-radius: %2px; background: #2ec4b6; color: white;").arg(btnFontSize).arg(fieldH / 2));
     m_attachBtn->setStyleSheet(QString("font-size: %1px; border: none; border-radius: %2px;").arg(btnFontSize).arg(fieldH / 2));
-}
-
-void ComposerWidget::handlePastedImage(const QString &path)
-{
-    showPendingFile(path);
-}
-
-void ComposerWidget::handlePastedFile(const QString &path)
-{
-    showPendingFile(path);
 }
 
 void ComposerWidget::showPendingFile(const QString &path)
