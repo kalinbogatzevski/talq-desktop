@@ -33,6 +33,7 @@
 #include <QClipboard>
 #include <QRegularExpression>
 #include <QWidgetAction>
+#include <QMessageBox>
 #include <QNetworkReply>
 #include <QLabel>
 #include <QUrl>
@@ -449,8 +450,11 @@ void MainWindow::buildChatPage()
     chatLayout->addWidget(m_composer);
 
     connect(m_composer, &ComposerWidget::sendMessage, this, [this](const QString &text) {
-        int replyId = m_activeThreadId;
+        int replyId = m_replyToId > 0 ? m_replyToId : m_activeThreadId;
         m_messages->sendMessage(text, replyId);
+        m_replyToId = 0;
+        m_replyToAuthor.clear();
+        m_replyToText.clear();
     });
 
     // Drag-and-drop files onto chat → show confirmation in composer
@@ -537,8 +541,11 @@ void MainWindow::buildChatPage()
             QApplication::clipboard()->setText(plain);
         });
         menu->addAction(QStringLiteral("\u21A9\uFE0F  Reply"), this, [this, msgId, author, text]() {
-            Q_UNUSED(msgId) Q_UNUSED(author) Q_UNUSED(text)
-            // TODO: wire reply-to composer
+            m_replyToId = msgId;
+            m_replyToAuthor = author;
+            m_replyToText = text;
+            // Focus composer for reply
+            m_composer->setFocus();
         });
         menu->addAction(QStringLiteral("\U0001F4CC  Pin"), this, [this, msgId]() {
             m_messages->pinMessage(msgId);
@@ -547,13 +554,19 @@ void MainWindow::buildChatPage()
             QString link = m_messages->messageLink(msgId);
             QApplication::clipboard()->setText(link);
         });
+        menu->addAction(QStringLiteral("\U0001F4AC  Thread"), this, [this, msgId]() {
+            openThread(msgId, "Thread");
+        });
 
         if (isOwn) {
             menu->addSeparator();
-            auto *delAction = menu->addAction(QStringLiteral("\U0001F5D1\uFE0F  Delete"), this, [this, msgId]() {
-                m_messages->deleteMessage(msgId);
+            menu->addAction(QStringLiteral("\U0001F5D1\uFE0F  Delete"), this, [this, msgId]() {
+                auto reply = QMessageBox::question(this, "Delete message",
+                    "Are you sure you want to delete this message?",
+                    QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+                if (reply == QMessageBox::Yes)
+                    m_messages->deleteMessage(msgId);
             });
-            delAction->setProperty("destructive", true);
         }
 
         menu->popup(globalPos);
@@ -561,14 +574,43 @@ void MainWindow::buildChatPage()
 
     // Reply from hover button
     connect(m_chatPainter, &ChatPainter::replyRequested, this, [this](int msgId, const QString &author, const QString &text) {
-        Q_UNUSED(msgId) Q_UNUSED(author) Q_UNUSED(text)
-        // TODO: wire reply-to composer
+        m_replyToId = msgId;
+        m_replyToAuthor = author;
+        m_replyToText = text;
+        m_composer->setFocus();
     });
 
-    // React from hover button
+    // React from hover button — show quick emoji menu at cursor
     connect(m_chatPainter, &ChatPainter::reactRequested, this, [this](int msgId) {
-        Q_UNUSED(msgId)
-        // TODO: show emoji picker at hover button position
+        auto *menu = new QMenu(this);
+        menu->setAttribute(Qt::WA_DeleteOnClose);
+        menu->setStyleSheet(
+            "QMenu { background: #262b34; border: 1px solid #363c48; border-radius: 20px; padding: 4px; }"
+        );
+        auto *emojiRow = new QWidgetAction(menu);
+        auto *w = new QWidget(menu);
+        auto *layout = new QHBoxLayout(w);
+        layout->setContentsMargins(4, 2, 4, 2);
+        layout->setSpacing(2);
+        QStringList emojis = {"\U0001F44D", "\u2764\uFE0F", "\U0001F602", "\U0001F62E", "\U0001F622", "\U0001F389"};
+        for (const auto &emoji : emojis) {
+            auto *btn = new QPushButton(emoji, w);
+            btn->setFixedSize(34, 34);
+            btn->setFlat(true);
+            btn->setCursor(Qt::PointingHandCursor);
+            btn->setStyleSheet(
+                "QPushButton { font-size: 18px; border: none; border-radius: 8px; }"
+                "QPushButton:hover { background: rgba(255,255,255,0.12); }"
+            );
+            connect(btn, &QPushButton::clicked, this, [this, msgId, emoji, menu]() {
+                m_messages->addReaction(msgId, emoji);
+                menu->close();
+            });
+            layout->addWidget(btn);
+        }
+        emojiRow->setDefaultWidget(w);
+        menu->addAction(emojiRow);
+        menu->popup(QCursor::pos());
     });
 
     // Chat mouse interaction — wheel and click are handled by ChatPainter directly
