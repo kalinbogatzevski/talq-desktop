@@ -105,12 +105,15 @@ MessageLayout LayoutEngine::computeLayout(
     y += ml.isGrouped ? PainterTheme::messageSpacingGrouped
                       : PainterTheme::messageSpacingNormal;
 
-    // Skip empty messages (no text, no file, no reply) — prevents empty gaps
+    // Skip empty messages — prevents empty gaps
     {
         QString strippedBody = ml.bodyHtml;
         strippedBody.remove(QRegularExpression(QStringLiteral("<[^>]*>")));
         strippedBody = strippedBody.trimmed();
-        if (strippedBody.isEmpty() && !ml.hasFile && ml.replyToText.isEmpty()) {
+        bool hasRealFile = ml.hasFile && !ml.fileName.isEmpty();
+
+
+        if (strippedBody.isEmpty() && !hasRealFile && ml.replyToText.isEmpty()) {
             ml.totalHeight = ml.showDateSep ? (y - startY) : 0;
             return ml;
         }
@@ -171,7 +174,8 @@ MessageLayout LayoutEngine::computeLayout(
         // File attachment area
         if (ml.hasFile) {
             bool isImage = ml.fileMime.startsWith(QLatin1String("image/"));
-            qreal fileH = isImage ? qMin(bubbleInnerW * imageAspectRatio, 300.0) : 44.0;
+            // Image: use actual aspect if known (> 0), otherwise compact 44px placeholder
+            qreal fileH = isImage ? (imageAspectRatio > 0.01 ? qMin(bubbleInnerW * imageAspectRatio, 300.0) : 44.0) : 44.0;
             ml.fileRect = QRectF(
                 bubbleX + PainterTheme::spacingNormal,
                 innerY,
@@ -181,14 +185,16 @@ MessageLayout LayoutEngine::computeLayout(
             innerY += fileH + 4;
         }
 
-        // Body text
-        ml.bodyRect = QRectF(
-            bubbleX + PainterTheme::spacingNormal,
-            innerY,
-            bubbleInnerW,
-            bodyH
-        );
-        innerY += bodyH + 2;
+        // Body text (skip if empty — e.g., file-only messages)
+        if (bodyH > 2) {
+            ml.bodyRect = QRectF(
+                bubbleX + PainterTheme::spacingNormal,
+                innerY,
+                bubbleInnerW,
+                bodyH
+            );
+            innerY += bodyH + 2;
+        }
 
         // Reactions
         if (!ml.reactions.isEmpty()) {
@@ -294,14 +300,17 @@ MessageLayout LayoutEngine::computeLayout(
         // File attachment area
         if (ml.hasFile) {
             bool isImage = ml.fileMime.startsWith(QLatin1String("image/"));
-            qreal fileH = isImage ? qMin(contentW * 0.75, 300.0) : 44.0;
+            // Image: use actual aspect if known (> 0), otherwise compact 44px placeholder
+            qreal fileH = isImage ? (imageAspectRatio > 0.01 ? qMin(contentW * imageAspectRatio, 300.0) : 44.0) : 44.0;
             ml.fileRect = QRectF(contentX, y, contentW, fileH);
             y += fileH + 4;
         }
 
-        // Body text
-        ml.bodyRect = QRectF(contentX, y, contentW, bodyH);
-        y += bodyH;
+        // Body text (skip if empty — e.g., file-only messages)
+        if (bodyH > 2) {
+            ml.bodyRect = QRectF(contentX, y, contentW, bodyH);
+            y += bodyH;
+        }
 
         // Reactions
         if (!ml.reactions.isEmpty()) {
