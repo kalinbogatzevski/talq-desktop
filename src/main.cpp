@@ -134,8 +134,8 @@ int main(int argc, char *argv[])
         conversations.refresh();
     });
 
-    // Start push + signaling after login
-    QObject::connect(&auth, &AuthManager::loggedInChanged, &conversations, [&auth, &conversations, &push, &signaling]() {
+    // Start push + signaling after login (both fresh login AND session restore)
+    auto startServices = [&auth, &conversations, &push, &signaling]() {
         if (auth.isLoggedIn()) {
             push.start();
             signaling.start();
@@ -144,6 +144,11 @@ int main(int argc, char *argv[])
             signaling.stop();
             conversations.stopAutoRefresh();
         }
+    };
+    QObject::connect(&auth, &AuthManager::loggedInChanged, &conversations, startServices);
+    QObject::connect(&auth, &AuthManager::restoringChanged, &conversations, [&auth, startServices]() {
+        if (!auth.isRestoringSession() && auth.isLoggedIn())
+            startServices();
     });
 
     // User status heartbeat
