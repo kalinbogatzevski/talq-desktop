@@ -121,7 +121,8 @@ MessageLayout LayoutEngine::computeLayout(
     // Skip empty messages — prevents empty gaps
     {
         QString strippedBody = ml.bodyHtml;
-        strippedBody.remove(QRegularExpression(QStringLiteral("<[^>]*>")));
+        static const QRegularExpression htmlTagRe(QStringLiteral("<[^>]*>"));
+        strippedBody.remove(htmlTagRe);
         strippedBody = strippedBody.trimmed();
         bool hasRealFile = ml.hasFile && !ml.fileName.isEmpty();
         if (strippedBody.isEmpty() && !hasRealFile && ml.replyToText.isEmpty()) {

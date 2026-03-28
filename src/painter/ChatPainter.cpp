@@ -46,6 +46,7 @@ void ChatPainter::setModel(MessageListModel *mdl)
     // Clear file preview caches on model switch (avatars persist across conversations)
     m_previewCache.clear();
     m_previewPending.clear();
+    m_previewAspect.clear();
 
     // Connect new model
     if (m_model) {

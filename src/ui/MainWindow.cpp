@@ -459,7 +459,7 @@ void MainWindow::buildChatPage()
                 viewer->setStyleSheet("background: #000000;");
                 auto *label = new QLabel(viewer);
                 QPixmap pix = QPixmap::fromImage(img);
-                QSize screenSize = screen()->availableSize() * 0.8;
+                QSize screenSize = screen() ? screen()->availableSize() * 0.8 : QSize(800, 600);
                 pix = pix.scaled(screenSize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
                 label->setPixmap(pix);
                 label->setAlignment(Qt::AlignCenter);
