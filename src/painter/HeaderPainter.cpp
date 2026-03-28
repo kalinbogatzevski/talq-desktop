@@ -430,20 +430,21 @@ void HeaderPainter::paintBackButton(QPainter *p, const QRectF &rect, bool hovere
     p->drawLine(pts[0], pts[2]);
 }
 
-void HeaderPainter::paintCallButton(QPainter *p, const QRectF &rect, const QColor &bg,
+void HeaderPainter::paintCallButton(QPainter *p, const QRectF &rect, const QColor &iconColor,
                                      const QString &icon, bool hovered)
 {
-    // Circular colored button
-    QColor drawBg = hovered ? bg.lighter(120) : bg;
-    p->setPen(Qt::NoPen);
-    p->setBrush(drawBg);
-    p->drawRoundedRect(rect, rect.width() / 2, rect.height() / 2);
+    // Subtle transparent button — icon only, hover highlight
+    if (hovered) {
+        p->setPen(Qt::NoPen);
+        p->setBrush(QColor(255, 255, 255, 20));
+        p->drawRoundedRect(rect, rect.width() / 2, rect.height() / 2);
+    }
 
-    // Icon text (unicode symbol) centered
+    // Icon in muted color, brighter on hover
     QFont iconFont;
-    iconFont.setPixelSize(14);
+    iconFont.setPixelSize(16);
     p->setFont(iconFont);
-    p->setPen(Qt::white);
+    p->setPen(hovered ? iconColor : m_theme.textSecondary);
     p->drawText(rect, Qt::AlignCenter, icon);
 }
 
