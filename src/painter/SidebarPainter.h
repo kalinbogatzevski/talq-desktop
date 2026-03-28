@@ -88,7 +88,7 @@ private slots:
 
 private:
     // ── Layout ──
-    static constexpr int RowHeight = 76;       // matches Theme.conversationHeight
+    static constexpr int RowHeight = 62;       // compact, Telegram-style
     static constexpr int RowHeightSqueezed = 52;
     static constexpr int AvatarSize = 44;      // matches Theme.avatarSize
     static constexpr int AvatarSizeSqueezed = 40;
