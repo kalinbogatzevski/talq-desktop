@@ -1,4 +1,5 @@
 #include "MainWindow.h"
+#include "SettingsDialog.h"
 #include "LoginWidget.h"
 #include "ComposerWidget.h"
 #include "painter/ChatPainter.h"
@@ -228,6 +229,17 @@ void MainWindow::buildChatPage()
     settingsBtn->setStyleSheet("font-size: 16px; border: none; border-radius: 14px;");
     settingsBtn->setCursor(Qt::PointingHandCursor);
     profileLayout->addWidget(settingsBtn);
+
+    connect(settingsBtn, &QPushButton::clicked, this, [this]() {
+        if (!m_settingsDialog) {
+            m_settingsDialog = new SettingsDialog(
+                m_deviceManager, m_notifications, m_appSettings, m_auth, this);
+            connect(m_settingsDialog, &SettingsDialog::closeToTrayChanged,
+                    this, [this](bool enabled) { m_closeToTray = enabled; });
+        }
+        m_settingsDialog->refresh();
+        m_settingsDialog->exec();
+    });
 
     sidebarLayout->addWidget(profileBar);
     sidebarLayout->addWidget(m_searchField);
