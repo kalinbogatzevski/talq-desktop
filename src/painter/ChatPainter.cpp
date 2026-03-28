@@ -8,6 +8,9 @@
 #include <QMouseEvent>
 #include <QHoverEvent>
 #include <QCursor>
+#include <QDragEnterEvent>
+#include <QDropEvent>
+#include <QMimeData>
 #include <QTextDocument>
 #include <QAbstractTextDocumentLayout>
 #include <QRegularExpression>
@@ -21,6 +24,7 @@ ChatPainter::ChatPainter(QWidget *parent)
 {
     setAttribute(Qt::WA_Hover);
     setMouseTracking(true);
+    setAcceptDrops(true);
 }
 
 // ═══════════════════════════════════════════════════════
@@ -377,6 +381,23 @@ void ChatPainter::mouseReleaseEvent(QMouseEvent *event)
         }
     }
     event->accept();
+}
+
+void ChatPainter::dragEnterEvent(QDragEnterEvent *event)
+{
+    if (event->mimeData()->hasUrls())
+        event->acceptProposedAction();
+}
+
+void ChatPainter::dropEvent(QDropEvent *event)
+{
+    for (const QUrl &url : event->mimeData()->urls()) {
+        if (url.isLocalFile()) {
+            emit fileDropped(url.toLocalFile());
+            break;
+        }
+    }
+    event->acceptProposedAction();
 }
 
 QString ChatPainter::hitTestLink(const MessageLayout &ml, const QPointF &canvasPos) const
