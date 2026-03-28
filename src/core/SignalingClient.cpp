@@ -1,6 +1,6 @@
 #include "core/SignalingClient.h"
+#include "core/TalqLog.h"
 #include <QJsonDocument>
-#include <QDebug>
 
 SignalingClient::SignalingClient(ApiClient *api, QObject *parent)
     : QObject(parent)
@@ -245,12 +245,16 @@ void SignalingClient::onTextMessage(const QString &msg)
         if (target == "participants") {
             QJsonObject update = event["update"].toObject();
             QJsonArray users = update["users"].toArray();
+            TLOG_SIG("participants update:" << users.size() << "users in room" << update["roomid"].toString());
             for (const QJsonValue &val : users) {
                 QJsonObject user = val.toObject();
                 int inCall = user["inCall"].toInt();
                 QString sid = user["sessionId"].toString();
-                if (sid.isEmpty() || sid == m_sessionId)
-                    continue;  // skip self
+                if (sid.isEmpty()) continue;
+                if (sid == m_sessionId) {
+                    TLOG_SIG("  skip self sid=" << sid.left(20) << "inCall=" << inCall);
+                    continue;
+                }
 
                 // Cache userid → displayName for typing indicators
                 QString userId = user["actorId"].toString();
@@ -261,14 +265,16 @@ void SignalingClient::onTextMessage(const QString &msg)
                 int prevFlags = m_participantCallFlags.value(sid, 0);
                 m_participantCallFlags[sid] = inCall;
 
+                TLOG_SIG("  participant sid=" << sid.left(20) << "inCall=" << inCall << "prev=" << prevFlags << "name=" << displayName);
+
                 if (prevFlags == 0 && inCall > 0) {
-                    qDebug() << "Signaling: participant joined call" << sid.left(20) << "flags=" << inCall << "name=" << displayName;
+                    TLOG_CALL("participant JOINED call sid=" << sid.left(20) << "flags=" << inCall);
                     emit participantJoinedCall(sid, inCall, displayName);
                 } else if (prevFlags > 0 && inCall == 0) {
-                    qDebug() << "Signaling: participant left call" << sid.left(20);
+                    TLOG_CALL("participant LEFT call sid=" << sid.left(20));
                     emit participantLeftCall(sid);
                 } else if (prevFlags != inCall && inCall > 0) {
-                    qDebug() << "Signaling: participant flags changed" << sid.left(20) << prevFlags << "->" << inCall;
+                    TLOG_CALL("participant flags CHANGED sid=" << sid.left(20) << prevFlags << "->" << inCall);
                     emit participantFlagsChanged(sid, prevFlags, inCall);
                 }
             }

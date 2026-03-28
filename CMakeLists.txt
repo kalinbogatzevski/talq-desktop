@@ -99,7 +99,10 @@ target_link_libraries(talq PRIVATE
 
 # Windows-specific settings
 if(WIN32)
-    set_target_properties(talq PROPERTIES WIN32_EXECUTABLE TRUE)
+    # Debug builds: show console for logging. Release: GUI only (no console).
+    if(CMAKE_BUILD_TYPE STREQUAL "Release")
+        set_target_properties(talq PROPERTIES WIN32_EXECUTABLE TRUE)
+    endif()
     target_link_libraries(talq PRIVATE dwmapi winmm)
 endif()
 

@@ -40,6 +40,12 @@ int main(int argc, char *argv[])
     }
 
     gst_init(&argc, &argv);
+
+    // Debug builds: force Qt debug output to stderr (visible in console)
+#ifdef QT_DEBUG
+    qputenv("QT_FORCE_STDERR_LOGGING", "1");
+#endif
+
     QApplication app(argc, argv);
 
     // Single-instance guard
