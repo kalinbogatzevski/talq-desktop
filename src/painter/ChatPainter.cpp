@@ -206,9 +206,14 @@ void ChatPainter::rebuildAllLayouts()
     for (int i = 0; i < count; ++i) {
         int modelRow = count - 1 - i;
 
+        // Look up actual image aspect ratio if cached
+        auto idx0 = m_model->index(modelRow);
+        int fileId = m_model->data(idx0, MessageListModel::FileIdRole).toInt();
+        qreal aspect = m_previewAspect.value(fileId, 0.75);
+
         auto ml = LayoutEngine::computeLayout(
             m_model, modelRow, width(), m_theme, y,
-            m_myUserId, prevActorId, prevTimestamp, prevIsSystem
+            m_myUserId, prevActorId, prevTimestamp, prevIsSystem, aspect
         );
 
         // Update prev for next iteration
@@ -1004,6 +1009,9 @@ void ChatPainter::requestFilePreview(int fileId)
         }
 
         m_previewCache[fileId] = img;
+        qreal aspect = img.width() > 0 ? (qreal)img.height() / img.width() : 0.75;
+        bool aspectChanged = !m_previewAspect.contains(fileId);
+        m_previewAspect[fileId] = aspect;
 
         // Evict oldest if over 50 MB
         qint64 totalBytes = 0;
@@ -1015,6 +1023,9 @@ void ChatPainter::requestFilePreview(int fileId)
             m_previewCache.erase(oldest);
         }
 
-        update(); // repaint with the loaded preview
+        if (aspectChanged)
+            rebuildAllLayouts();  // aspect ratio now known — recalculate heights
+        else
+            update();  // just repaint with the loaded preview
     });
 }
