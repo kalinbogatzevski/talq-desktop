@@ -188,7 +188,8 @@ void MainWindow::buildChatPage()
     mainLayout->setSpacing(0);
 
     // ── Sidebar column ──
-    auto *sidebarCol = new QWidget(m_chatPage);
+    m_sidebarCol = new QWidget(m_chatPage);
+    auto *sidebarCol = m_sidebarCol;
     auto *sidebarLayout = new QVBoxLayout(sidebarCol);
     sidebarLayout->setContentsMargins(0, 0, 0, 0);
     sidebarLayout->setSpacing(0);
@@ -289,7 +290,7 @@ void MainWindow::buildChatPage()
         menu->popup(QCursor::pos());
     });
 
-    sidebarCol->setMinimumWidth(56);
+    sidebarCol->setMinimumWidth(200);
     sidebarCol->setMaximumWidth(500);
 
     // ── Topics panel ──
@@ -436,6 +437,10 @@ void MainWindow::sidebarSqueezedChanged()
 {
     m_sidebar->setSqueezed(m_sidebarSqueezed);
     m_header->setSidebarSqueezed(m_sidebarSqueezed);
+
+    // Adjust sidebar constraints for squeeze mode
+    m_sidebarCol->setMinimumWidth(m_sidebarSqueezed ? 56 : 200);
+    m_sidebarCol->setMaximumWidth(m_sidebarSqueezed ? 56 : 500);
 
     int sideW = m_sidebarSqueezed ? 56 : 280;
     int topicsW = m_showTopics ? 240 : 0;
@@ -618,6 +623,12 @@ void MainWindow::applyFontScale(qreal scale)
 {
     m_fontScale = scale;
     m_chatPainter->setFontScale(m_fontScale);
+
+    // Scale composer font to match chat zoom
+    QFont inputFont = m_composer->font();
+    inputFont.setPixelSize(qRound(14 * m_fontScale));
+    m_composer->setInputFont(inputFont);
+
     m_settings.beginGroup("Theme");
     m_settings.setValue("fontScale", m_fontScale);
     m_settings.endGroup();
