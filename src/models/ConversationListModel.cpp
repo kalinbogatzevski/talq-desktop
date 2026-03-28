@@ -120,13 +120,16 @@ void ConversationListModel::refresh()
             // Detect incoming calls — use persistent m_callState so two
             // overlapping refreshes (push + auto-refresh) can't both miss the
             // false→true transition.  Only emit once per transition.
+            // On the first load, seed m_callState silently (don't ring for
+            // calls that were already active before we started).
             bool prevCall = m_callState.value(c.token, false);
-            if (c.hasCall && !prevCall) {
+            if (c.hasCall && !prevCall && m_callStateSeeded) {
                 qDebug() << "ConversationListModel: call detected in" << c.displayName << "token=" << c.token;
                 emit incomingCallDetected(c.displayName, c.token, c.callFlag);
             }
             m_callState[c.token] = c.hasCall;
         }
+        if (!m_callStateSeeded) m_callStateSeeded = true;
 
         // Update model — use beginResetModel only when structure changes
         int oldSize = m_conversations.size();

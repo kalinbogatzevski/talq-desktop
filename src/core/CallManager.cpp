@@ -274,8 +274,15 @@ void CallManager::setState(CallState newState)
     qDebug() << "CallManager: state ->" << newState;
     if (newState == Outgoing || newState == Incoming) startRingtone();
     else stopRingtone();
-    if (newState == Active) { updateCallStats(); m_statsTimer.start(); }
-    else m_statsTimer.stop();
+    if (newState == Active) {
+        updateCallStats();
+        m_statsTimer.start();
+        // Broadcast initial media state so remote peers show correct mute/video status
+        broadcastMediaState("audio", !m_muted);
+        broadcastMediaState("video", m_cameraOn);
+    } else {
+        m_statsTimer.stop();
+    }
     emit stateChanged();
 }
 
@@ -828,7 +835,10 @@ void CallManager::joinCallOnServer(bool withVideo)
 void CallManager::leaveCallOnServer()
 {
     if (m_callToken.isEmpty()) return;
-    m_api->del("apps/spreed/api/v4/call/" + m_callToken,
+    // Pass all=true to end the call for all participants (1:1 call behavior)
+    QUrlQuery params;
+    params.addQueryItem("all", "true");
+    m_api->del("apps/spreed/api/v4/call/" + m_callToken, params,
         [](bool ok, const QJsonObject &, int statusCode) {
             if (!ok) qWarning() << "CallManager: failed to leave call on server, status=" << statusCode;
         });
@@ -978,6 +988,9 @@ void CallManager::onOfferReceived(const QString &fromSessionId, const QString &s
                     setState(Active);
                     m_durationTimer.start();
                 }
+                // Re-broadcast media state so the remote peer sees correct mute status
+                broadcastMediaState("audio", !m_muted);
+                broadcastMediaState("video", m_cameraOn);
             }
         });
 
