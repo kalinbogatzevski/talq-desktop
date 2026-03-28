@@ -209,7 +209,7 @@ void ChatPainter::rebuildAllLayouts()
         // Look up actual image aspect ratio if cached
         auto idx0 = m_model->index(modelRow);
         int fileId = m_model->data(idx0, MessageListModel::FileIdRole).toInt();
-        qreal aspect = m_previewAspect.value(fileId, 0.75);
+        qreal aspect = m_previewAspect.value(fileId, 0.0);  // 0 = unknown, show compact placeholder
 
         auto ml = LayoutEngine::computeLayout(
             m_model, modelRow, width(), m_theme, y,
@@ -1009,8 +1009,8 @@ void ChatPainter::requestFilePreview(int fileId)
         }
 
         m_previewCache[fileId] = img;
-        qreal aspect = img.width() > 0 ? (qreal)img.height() / img.width() : 0.75;
-        qreal oldAspect = m_previewAspect.value(fileId, 0.75);
+        qreal aspect = img.width() > 0 ? (qreal)img.height() / img.width() : 0.5;
+        qreal oldAspect = m_previewAspect.value(fileId, 0.0);
         bool aspectChanged = qAbs(oldAspect - aspect) > 0.01;
         m_previewAspect[fileId] = aspect;
 
