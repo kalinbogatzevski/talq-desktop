@@ -74,6 +74,7 @@ private:
     void saveWindowState();
     void restoreChatGeometry();
     void applyDarkPalette();
+    void applyFontScale(qreal scale);
     void openThread(int threadId, const QString &title);
     void closeThread();
     void updateTopicMode(bool active);
@@ -126,8 +127,6 @@ private:
     int m_activeThreadColor = 0;
     bool m_isInTopicMode = false;
 
-    QSettings m_windowSettings;
-    QSettings m_themeSettings;
-    QSettings m_generalSettings;
+    QSettings m_settings;
     QTimer m_saveGeometryTimer;
 };

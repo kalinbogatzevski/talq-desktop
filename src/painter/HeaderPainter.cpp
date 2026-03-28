@@ -10,12 +10,6 @@
 #include <QCursor>
 #include <QtMath>
 
-// Topic palette — matches Theme.qml topicPalette
-static const QColor s_topicPalette[] = {
-    QColor("#2ec4b6"), QColor("#e07060"), QColor("#f0a050"),
-    QColor("#5ec76a"), QColor("#9b7cd4"), QColor("#e87aae")
-};
-
 // ═══════════════════════════════════════════════════════
 // Constructor
 // ═══════════════════════════════════════════════════════
@@ -155,25 +149,15 @@ void HeaderPainter::setApi(ApiClient *api) {
 }
 
 // ═══════════════════════════════════════════════════════
-// Topic color
-// ═══════════════════════════════════════════════════════
-
-QColor HeaderPainter::topicColor(int index)
-{
-    constexpr int N = sizeof(s_topicPalette) / sizeof(s_topicPalette[0]);
-    return s_topicPalette[qAbs(index) % N];
-}
-
-// ═══════════════════════════════════════════════════════
 // PAINT
 // ═══════════════════════════════════════════════════════
 
 void HeaderPainter::paintEvent(QPaintEvent *)
 {
     QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setRenderHint(QPainter::TextAntialiasing, true);
     QPainter *painter = &p;
-    painter->setRenderHint(QPainter::Antialiasing, true);
-    painter->setRenderHint(QPainter::TextAntialiasing, true);
 
     const qreal w = width();
     const qreal h = height();
@@ -224,7 +208,7 @@ void HeaderPainter::paintEvent(QPaintEvent *)
     if (isViewingTopic) {
         qreal dotY = (h - TopicDotSize) / 2.0;
         painter->setPen(Qt::NoPen);
-        painter->setBrush(topicColor(m_activeThreadColor));
+        painter->setBrush(PainterTheme::topicColor(m_activeThreadColor));
         painter->drawEllipse(QRectF(x, dotY, TopicDotSize, TopicDotSize));
         x += TopicDotSize + spacing;
     }
@@ -534,26 +518,7 @@ void HeaderPainter::requestAvatar(const QString &userId)
             return;
         }
 
-        // Crop to circle
-        int sz = AvatarSize;
-        QImage scaled = img.scaled(sz, sz, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
-        int cx = (scaled.width() - sz) / 2;
-        int cy = (scaled.height() - sz) / 2;
-        if (cx > 0 || cy > 0)
-            scaled = scaled.copy(cx, cy, sz, sz);
-
-        QImage result(sz, sz, QImage::Format_ARGB32_Premultiplied);
-        result.fill(Qt::transparent);
-        {
-            QPainter painter(&result);
-            painter.setRenderHint(QPainter::Antialiasing);
-            QPainterPath path;
-            path.addEllipse(0, 0, sz, sz);
-            painter.setClipPath(path);
-            painter.drawImage(0, 0, scaled);
-        }
-
-        m_avatarCache[userId] = result;
+        m_avatarCache[userId] = PainterTheme::cropToCircle(img, AvatarSize);
         update();
     });
 }

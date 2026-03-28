@@ -8,7 +8,6 @@
 #include <QMouseEvent>
 #include <QHoverEvent>
 #include <QNetworkReply>
-#include <QDateTime>
 #include <QFontMetrics>
 #include <QtMath>
 
@@ -142,29 +141,8 @@ void SidebarPainter::rebuildLayouts()
         cl.lastActivity = m_model->data(idx, ConversationListModel::LastActivityRole).toLongLong();
         cl.notificationLevel = m_model->data(idx, ConversationListModel::NotificationLevelRole).toInt();
 
-        // Compute time string
-        if (cl.lastActivity > 0) {
-            QDateTime dt = QDateTime::fromSecsSinceEpoch(cl.lastActivity);
-            QDateTime now = QDateTime::currentDateTime();
-            if (dt.date() == now.date()) {
-                cl.timeString = dt.toString(QStringLiteral("HH:mm"));
-            } else {
-                QDate yesterday = now.date().addDays(-1);
-                if (dt.date() == yesterday) {
-                    cl.timeString = QStringLiteral("Yesterday");
-                } else {
-                    cl.timeString = dt.toString(QStringLiteral("dd MMM"));
-                }
-            }
-        }
-
-        // Compute preview text
-        if (!cl.lastMessage.isEmpty()) {
-            if (!cl.lastAuthor.isEmpty())
-                cl.previewText = cl.lastAuthor + QStringLiteral(": ") + cl.lastMessage;
-            else
-                cl.previewText = cl.lastMessage;
-        }
+        cl.timeString = PainterTheme::formatRelativeTime(cl.lastActivity);
+        cl.previewText = PainterTheme::formatPreviewText(cl.lastAuthor, cl.lastMessage);
 
         m_layouts.append(cl);
     }
@@ -286,12 +264,10 @@ void SidebarPainter::mouseReleaseEvent(QMouseEvent *event)
 void SidebarPainter::paintEvent(QPaintEvent *)
 {
     QPainter p(this);
-    QPainter *painter = &p;
-    painter->setRenderHint(QPainter::Antialiasing, true);
-    painter->setRenderHint(QPainter::TextAntialiasing, true);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setRenderHint(QPainter::TextAntialiasing, true);
 
-    // Background
-    painter->fillRect(QRectF(0, 0, width(), height()), m_theme.bgSidebar);
+    p.fillRect(QRectF(0, 0, width(), height()), m_theme.bgSidebar);
 
     if (m_visibleIndices.isEmpty())
         return;
@@ -304,7 +280,6 @@ void SidebarPainter::paintEvent(QPaintEvent *)
         qreal rowTop = vi * rowH;
         qreal rowBottom = rowTop + rowH;
 
-        // Skip if entirely outside viewport
         if (rowBottom < vpTop || rowTop > vpBottom)
             continue;
 
@@ -312,13 +287,12 @@ void SidebarPainter::paintEvent(QPaintEvent *)
         const auto &cl = m_layouts[modelIdx];
 
         if (m_squeezed)
-            paintRowSqueezed(painter, cl, vi);
+            paintRowSqueezed(&p, cl, vi);
         else
-            paintRowNormal(painter, cl, vi);
+            paintRowNormal(&p, cl, vi);
     }
 
-    // Scrollbar
-    paintScrollbar(painter);
+    paintScrollbar(&p);
 }
 
 // ═══════════════════════════════════════════════════════
@@ -673,25 +647,7 @@ void SidebarPainter::requestAvatar(const QString &userId, const QString &token, 
             return;
         }
 
-        // Crop to circle
-        QImage scaled = img.scaled(size, size, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
-        int cx = (scaled.width() - size) / 2;
-        int cy = (scaled.height() - size) / 2;
-        if (cx > 0 || cy > 0)
-            scaled = scaled.copy(cx, cy, size, size);
-
-        QImage result(size, size, QImage::Format_ARGB32_Premultiplied);
-        result.fill(Qt::transparent);
-        {
-            QPainter painter(&result);
-            painter.setRenderHint(QPainter::Antialiasing);
-            QPainterPath path;
-            path.addEllipse(0, 0, size, size);
-            painter.setClipPath(path);
-            painter.drawImage(0, 0, scaled);
-        }
-
-        m_avatarCache[key] = result;
+        m_avatarCache[key] = PainterTheme::cropToCircle(img, size);
         update(); // repaint with loaded avatar
     });
 }

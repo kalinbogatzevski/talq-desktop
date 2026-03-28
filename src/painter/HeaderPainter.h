@@ -106,9 +106,6 @@ private:
 
     int buttonAtPos(const QPointF &pos) const;
 
-    // ── Topic color palette (mirrors Theme.qml) ──
-    static QColor topicColor(int index);
-
     // ── Avatar loading ──
     QImage fetchAvatar(const QString &userId);
     void requestAvatar(const QString &userId);

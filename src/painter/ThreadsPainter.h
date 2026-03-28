@@ -97,9 +97,6 @@ private:
     void paintEmptyState(QPainter *p);
     void paintScrollbar(QPainter *p);
 
-    // Topic color from index
-    static QColor topicColor(int index);
-
     // State
     ThreadListModel *m_model = nullptr;
     bool m_darkMode = true;
