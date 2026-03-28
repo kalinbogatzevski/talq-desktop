@@ -167,11 +167,16 @@ ComposerWidget::ComposerWidget(QWidget *parent)
     // Reply bar (hidden by default)
     m_replyBar = new QWidget(this);
     m_replyBar->hide();
-    m_replyBar->setStyleSheet("background: #1e2a28; border-left: 3px solid #2ec4b6; border-top: 1px solid #2a2a26;");
+    m_replyBar->setStyleSheet("background: #1e2a28; border-top: 1px solid #2a2a26;");
+    // Teal accent bar on the left
+    auto *accentBar = new QWidget(m_replyBar);
+    accentBar->setFixedWidth(3);
+    accentBar->setStyleSheet("background: #2ec4b6;");
     m_replyBar->setFixedHeight(36);
     auto *replyBarLayout = new QHBoxLayout(m_replyBar);
-    replyBarLayout->setContentsMargins(14, 0, 8, 0);
+    replyBarLayout->setContentsMargins(0, 0, 8, 0);
     replyBarLayout->setSpacing(8);
+    replyBarLayout->addWidget(accentBar);
     m_replyLabel = new QLabel(m_replyBar);
     m_replyLabel->setStyleSheet("font-size: 13px; color: #b0aca5;");
     replyBarLayout->addWidget(m_replyLabel, 1);
