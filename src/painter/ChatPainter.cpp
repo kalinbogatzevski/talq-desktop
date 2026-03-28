@@ -455,6 +455,7 @@ void ChatPainter::paintEvent(QPaintEvent *)
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing, true);
     p.setRenderHint(QPainter::TextAntialiasing, true);
+    p.setRenderHint(QPainter::SmoothPixmapTransform, true);
 
     p.fillRect(QRectF(0, 0, width(), height()), m_theme.bgPrimary);
 
