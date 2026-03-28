@@ -5,6 +5,8 @@
 #include <QLineEdit>
 #include <QSettings>
 #include <QShortcut>
+#include <QLabel>
+#include <QPushButton>
 #include <QSplitter>
 #include <QTimer>
 
@@ -111,6 +113,7 @@ private:
     ChatPainter *m_chatPainter = nullptr;
     ComposerWidget *m_composer = nullptr;
     QSplitter *m_splitter = nullptr;
+    QLabel *m_profileNameLabel = nullptr;
 
     // State
     bool m_chatMode = false;
