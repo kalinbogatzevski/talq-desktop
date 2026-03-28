@@ -373,11 +373,13 @@ void ChatPainter::mouseReleaseEvent(QMouseEvent *event)
                 emit fileClicked(fid, mime, fname);
             }
         } else if (hit.startsWith("reply:")) {
-            QStringList rp = hit.mid(6).split(":");
-            if (rp.size() >= 3)
-                emit replyRequested(rp[0].toInt(), rp[1], rp.mid(2).join(":"));
+            // Get full message data instead of parsing colon-delimited string
+            QVariantMap msg = messageAt(event->position().x(), event->position().y());
+            emit replyRequested(msg.value("messageId").toInt(),
+                                msg.value("actorName").toString(),
+                                msg.value("messageText").toString());
         } else if (hit.startsWith("react:")) {
-            emit reactRequested(hit.mid(6).toInt());
+            emit reactRequested(hit.mid(6).toInt(), mapToGlobal(event->position().toPoint()));
         }
     }
 
