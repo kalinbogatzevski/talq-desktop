@@ -1,5 +1,6 @@
 #pragma once
 #include <QObject>
+#include <QImage>
 #include <QVideoSink>
 #include <QVideoFrame>
 #include <QVideoFrameFormat>
@@ -27,6 +28,7 @@ signals:
     void videoSinkChanged();
     void hasVideoChanged();
     void frameCountChanged();
+    void imageReady(const QImage &image);
 
 private:
     QVideoSink *m_videoSink = nullptr;

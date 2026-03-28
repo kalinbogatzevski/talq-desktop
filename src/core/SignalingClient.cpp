@@ -191,6 +191,12 @@ void SignalingClient::onTextMessage(const QString &msg)
             emit endOfCandidatesReceived(senderSessionId);
             return;
         }
+        if (msgType == "mute" || msgType == "unmute") {
+            QString media = msgData["payload"].toObject()["name"].toString();
+            bool muted = (msgType == "mute");
+            emit remoteMuteChanged(senderSessionId, media, muted);
+            return;
+        }
 
         // Room-scoped messages (typing indicators)
         QString senderRoom = messageObj["sender"].toObject()["roomid"].toString();

@@ -715,7 +715,7 @@ void MainWindow::buildChatPage()
     });
 
     // Call dialog (shows/hides automatically via CallManager::stateChanged)
-    m_callDialog = new CallDialog(m_callManager, this);
+    m_callDialog = new CallDialog(m_callManager, m_api, this);
 
     // Update userId when logged in
     connect(m_auth, &AuthManager::userInfoChanged, this, [this]() {
