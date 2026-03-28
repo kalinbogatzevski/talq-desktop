@@ -70,6 +70,7 @@ private:
     QVector<Conversation> m_conversations;
     QHash<QString, QString> m_userStatuses;  // userId → "online"/"away"/"dnd"/"offline"
     QHash<QString, bool> m_callState;        // persistent call state — survives across refreshes
+    bool m_callStateSeeded = false;          // true after first load — prevents ringing for stale calls
     QTimer m_autoRefreshTimer;
     bool m_loading = false;
     int m_totalUnread = 0;

@@ -1,12 +1,12 @@
 [Setup]
 AppName=TalQ
-AppVersion=0.12.2
+AppVersion=0.13.0
 AppPublisher=TalQ
 AppPublisherURL=https://gitlab.123net.link/kalin/talq-desktop
 DefaultDirName={autopf}\TalQ
 DefaultGroupName=TalQ
 OutputDir=..\dist
-OutputBaseFilename=TalQ-v0.12.2-Setup
+OutputBaseFilename=TalQ-v0.13.0-Setup
 SetupIconFile=..\resources\talq.ico
 UninstallDisplayIcon={app}\talq.exe
 WizardImageFile=..\resources\talq-wizard.bmp
@@ -27,7 +27,7 @@ Name: "startmenuicon"; Description: "Create a Start Menu shortcut"; GroupDescrip
 Name: "autostart"; Description: "Start TalQ when Windows starts"; GroupDescription: "System:"
 
 [Files]
-Source: "..\dist\TalQ-v0.12.2-win64\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\dist\TalQ-v0.13.0-win64\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\TalQ"; Filename: "{app}\talq.exe"; Tasks: startmenuicon
