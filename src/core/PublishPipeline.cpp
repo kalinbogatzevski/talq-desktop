@@ -122,18 +122,76 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         cleanup();
         return false;
     }
+
+    // Force standard OPUS (not MULTIOPUS) — Janus doesn't support multichannel Opus
+    GstWebRTCRTPTransceiver *audioTransceiver = nullptr;
+    g_object_get(sinkPad, "transceiver", &audioTransceiver, nullptr);
+    if (audioTransceiver) {
+        GstCaps *audioCaps = gst_caps_from_string(
+            "application/x-rtp,media=audio,encoding-name=OPUS,payload=111,clock-rate=48000");
+        g_object_set(audioTransceiver,
+                     "direction", GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDONLY,
+                     "codec-preferences", audioCaps,
+                     nullptr);
+        gst_caps_unref(audioCaps);
+        qDebug() << "PublishPipeline: configured audio transceiver (sendonly, OPUS)";
+        gst_object_unref(audioTransceiver);
+    }
+
     gst_object_unref(rtpSrcPad);
     gst_object_unref(sinkPad);
 
-    // If video call, add camera chain BEFORE starting the pipeline
-    // This ensures the initial SDP offer includes m=video with active port
-    // (no mid-session renegotiation needed — matches browser app behavior)
+    // MCU mode: ALWAYS include a video track in the publisher SDP.
+    // Janus videoroom expects video from all publishers — without it, remote
+    // subscribers get "not sending yet for video" and the call never connects.
+    // For audio-only calls, send a minimal 1-fps black frame instead of the camera.
     if (withVideo) {
         enableCamera(videoDeviceIndex, hd1080);
         if (m_cameraEnabled) {
             qDebug() << "PublishPipeline: video included in initial pipeline";
         } else {
             qDebug() << "PublishPipeline: camera failed, starting audio-only";
+        }
+    }
+    if (!m_cameraEnabled) {
+        // Add a dummy black-frame video track so the MCU videoroom accepts us
+        GstElement *testsrc = gst_element_factory_make("videotestsrc", "pub-dummyvideo");
+        GstElement *vconv = gst_element_factory_make("videoconvert", "pub-dummyconv");
+        GstElement *venc = gst_element_factory_make("vp8enc", "pub-dummyenc");
+        GstElement *vpay = gst_element_factory_make("rtpvp8pay", "pub-dummypay");
+        if (testsrc && vconv && venc && vpay) {
+            g_object_set(testsrc, "pattern", 2 /* black */, "is-live", TRUE, nullptr);
+            g_object_set(venc, "deadline", (gint64)1, "target-bitrate", 10000, nullptr);
+            gst_bin_add_many(GST_BIN(m_pipeline), testsrc, vconv, venc, vpay, nullptr);
+
+            GstCaps *lowCaps = gst_caps_from_string("video/x-raw,width=16,height=16,framerate=1/1");
+            gst_element_link(testsrc, vconv);
+            gst_element_link_filtered(vconv, venc, lowCaps);
+            gst_caps_unref(lowCaps);
+            gst_element_link(venc, vpay);
+
+            GstPad *vpSrc = gst_element_get_static_pad(vpay, "src");
+            m_videoSinkPad = gst_element_request_pad_simple(m_webrtcbin, "sink_%u");
+
+            GstWebRTCRTPTransceiver *vt = nullptr;
+            g_object_get(m_videoSinkPad, "transceiver", &vt, nullptr);
+            if (vt) {
+                GstCaps *vc = gst_caps_from_string(
+                    "application/x-rtp,media=video,encoding-name=VP8,clock-rate=90000,payload=96");
+                g_object_set(vt, "direction", GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDONLY,
+                             "codec-preferences", vc, nullptr);
+                gst_caps_unref(vc);
+                gst_object_unref(vt);
+            }
+            gst_pad_link(vpSrc, m_videoSinkPad);
+            gst_object_unref(vpSrc);
+            qDebug() << "PublishPipeline: added dummy video track (16x16 black, 1fps VP8)";
+        } else {
+            qWarning() << "PublishPipeline: could not create dummy video elements";
+            if (testsrc) gst_object_unref(testsrc);
+            if (vconv) gst_object_unref(vconv);
+            if (venc) gst_object_unref(venc);
+            if (vpay) gst_object_unref(vpay);
         }
     }
 

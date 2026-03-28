@@ -10,7 +10,7 @@ CallDialog::CallDialog(CallManager *callManager, QWidget *parent)
     , m_callManager(callManager)
 {
     setWindowTitle("Call");
-    setFixedSize(300, 200);
+    setFixedSize(300, 240);
 
     buildUi();
 
@@ -81,7 +81,7 @@ void CallDialog::buildUi()
     m_muteBtn->setStyleSheet(btnBase +
         "QPushButton { background: #3a3a36; color: #e4e0da; }"
         "QPushButton:hover { background: #4a4a46; }");
-    m_muteBtn->setText("\xF0\x9F\x94\x8A");  // speaker emoji
+    m_muteBtn->setText("\xF0\x9F\x8E\xA4");  // microphone emoji
     activeLayout->addStretch();
     activeLayout->addWidget(m_muteBtn);
 
@@ -164,6 +164,7 @@ void CallDialog::onStateChanged()
         showIncomingMode();
         m_stateLabel->setText("Incoming call...");
         m_durationLabel->clear();
+        m_callManager->setUserActionReady();
         break;
 
     case CallManager::Outgoing:
@@ -215,7 +216,7 @@ void CallDialog::onDurationChanged()
 void CallDialog::onMuteChanged()
 {
     if (m_callManager->isMuted()) {
-        m_muteBtn->setText("\xF0\x9F\x94\x87");  // muted speaker
+        m_muteBtn->setText("\xF0\x9F\x8E\xA4");  // microphone (muted — red bg)
         m_muteBtn->setStyleSheet(
             "QPushButton {"
             "  border: none; border-radius: 20px;"
@@ -224,7 +225,7 @@ void CallDialog::onMuteChanged()
             "}"
             "QPushButton:hover { background: #e84235; }");
     } else {
-        m_muteBtn->setText("\xF0\x9F\x94\x8A");  // speaker
+        m_muteBtn->setText("\xF0\x9F\x8E\xA4");  // microphone (unmuted)
         m_muteBtn->setStyleSheet(
             "QPushButton {"
             "  border: none; border-radius: 20px;"
