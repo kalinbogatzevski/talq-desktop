@@ -96,6 +96,15 @@ void ComposerWidget::setMessageModel(MessageListModel *model)
 void ComposerWidget::setInputFont(const QFont &font)
 {
     m_input->setFont(font);
+    // Scale the input field height to match the font
+    int lineH = QFontMetrics(font).height();
+    int fieldH = lineH + 16;
+    m_input->setFixedHeight(fieldH);
+    m_sendBtn->setFixedSize(fieldH, fieldH);
+    m_attachBtn->setFixedSize(fieldH, fieldH);
+    int btnFontSize = qMax(12, font.pixelSize());
+    m_sendBtn->setStyleSheet(QString("font-size: %1px; border: none; border-radius: %2px; background: #2ec4b6; color: white;").arg(btnFontSize).arg(fieldH / 2));
+    m_attachBtn->setStyleSheet(QString("font-size: %1px; border: none; border-radius: %2px;").arg(btnFontSize).arg(fieldH / 2));
 }
 
 void ComposerWidget::sendAction()
