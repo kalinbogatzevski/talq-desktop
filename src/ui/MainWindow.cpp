@@ -583,8 +583,8 @@ void MainWindow::buildChatPage()
         m_composer->setFocus();
     });
 
-    // React from hover button — show quick emoji menu at cursor
-    connect(m_chatPainter, &ChatPainter::reactRequested, this, [this](int msgId) {
+    // React from hover button — show quick emoji menu next to button
+    connect(m_chatPainter, &ChatPainter::reactRequested, this, [this](int msgId, const QPoint &globalPos) {
         auto *menu = new QMenu(this);
         menu->setAttribute(Qt::WA_DeleteOnClose);
         menu->setStyleSheet(
@@ -613,7 +613,8 @@ void MainWindow::buildChatPage()
         }
         emojiRow->setDefaultWidget(w);
         menu->addAction(emojiRow);
-        menu->popup(QCursor::pos());
+        // Position next to the button, not under it
+        menu->popup(QPoint(globalPos.x() + 16, globalPos.y() - 20));
     });
 
     // Chat mouse interaction — wheel and click are handled by ChatPainter directly
