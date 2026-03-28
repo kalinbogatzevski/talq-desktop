@@ -18,6 +18,15 @@ static constexpr int CALL_FLAG_IN_CALL    = 1;
 static constexpr int CALL_FLAG_WITH_AUDIO = 2;
 static constexpr int CALL_FLAG_WITH_VIDEO = 4;
 
+static QJsonObject makeCandidateJson(const QString &candidate, int mline, const QString &mid)
+{
+    QJsonObject c;
+    c["candidate"] = candidate;
+    c["sdpMLineIndex"] = mline;
+    c["sdpMid"] = mid;
+    return c;
+}
+
 // --- Ringtone ---
 
 static QByteArray buildWavHeader(int dataSize, int sampleRate)
@@ -201,7 +210,8 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
     m_ringTimeout.setSingleShot(true);
     m_ringTimeout.setInterval(60000);  // 60s — incoming call detection can take up to 30s
     connect(&m_ringTimeout, &QTimer::timeout, this, [this]() {
-        if (m_state == Incoming) declineCall();
+        // Bypass userActionReady — timeout is the safety net for when UI never shows
+        if (m_state == Incoming) teardown("Ring timeout");
         else if (m_state == Outgoing) teardown("No answer");
     });
 
@@ -478,11 +488,7 @@ void CallManager::forceReconnectPublisher()
 
     connect(m_publishPipeline, &PublishPipeline::iceCandidateReady,
             this, [this, pubSid](const QString &candidate, int mline, const QString &mid) {
-        QJsonObject c;
-        c["candidate"] = candidate;
-        c["sdpMLineIndex"] = mline;
-        c["sdpMid"] = mid;
-        m_signaling->sendCandidate(m_signaling->sessionId(), c, pubSid);
+        m_signaling->sendCandidate(m_signaling->sessionId(), makeCandidateJson(candidate, mline, mid), pubSid);
     });
 
     connect(m_publishPipeline, &PublishPipeline::iceStateChanged,
@@ -498,12 +504,7 @@ void CallManager::forceReconnectPublisher()
     });
 
     connect(m_publishPipeline, &PublishPipeline::audioLevelUpdated,
-            this, [this](double level) {
-        if (qAbs(m_audioLevel - level) > 0.02) {
-            m_audioLevel = level;
-            emit audioLevelChanged();
-        }
-    });
+            this, &CallManager::onAudioLevelUpdated);
 
     connect(m_publishPipeline, &PublishPipeline::error, this, [this](const QString &msg) {
         qWarning() << "CallManager: forceReconnect publish error:" << msg;
@@ -552,16 +553,20 @@ void CallManager::broadcastMediaState(const QString &media, bool enabled)
     qDebug() << "CallManager: broadcast" << type << media << "to" << peers.size() << "peer(s)";
 }
 
+static int callFlags(bool withVideo)
+{
+    int flags = CALL_FLAG_IN_CALL | CALL_FLAG_WITH_AUDIO;
+    if (withVideo) flags |= CALL_FLAG_WITH_VIDEO;
+    return flags;
+}
+
 void CallManager::updateCallFlags()
 {
     if (m_callToken.isEmpty() || (m_state != Connecting && m_state != Active))
         return;
 
-    int flags = CALL_FLAG_IN_CALL | CALL_FLAG_WITH_AUDIO;
-    if (m_cameraOn) flags |= CALL_FLAG_WITH_VIDEO;
-
     QJsonObject body;
-    body["flags"] = flags;
+    body["flags"] = callFlags(m_cameraOn);
     m_api->put("apps/spreed/api/v4/call/" + m_callToken, body,
         [](bool ok, const QJsonObject &, int statusCode) {
             if (!ok) qWarning() << "CallManager: failed to update call flags, status=" << statusCode;
@@ -570,11 +575,8 @@ void CallManager::updateCallFlags()
 
 void CallManager::joinCallOnServer(bool withVideo)
 {
-    int flags = CALL_FLAG_IN_CALL | CALL_FLAG_WITH_AUDIO;
-    if (withVideo) flags |= CALL_FLAG_WITH_VIDEO;
-
     QJsonObject body;
-    body["flags"] = flags;
+    body["flags"] = callFlags(withVideo);
 
     m_api->post("apps/spreed/api/v4/call/" + m_callToken, body,
         [this](bool ok, const QJsonObject &, int statusCode) {
@@ -657,11 +659,7 @@ void CallManager::joinCallOnServer(bool withVideo)
 
                         connect(m_peerPipeline, &PeerPipeline::iceCandidateReady,
                                 this, [this, p2pSid](const QString &candidate, int mline, const QString &mid) {
-                            QJsonObject c;
-                            c["candidate"] = candidate;
-                            c["sdpMLineIndex"] = mline;
-                            c["sdpMid"] = mid;
-                            m_signaling->sendCandidate(m_remoteSessionId, c, p2pSid);
+                            m_signaling->sendCandidate(m_remoteSessionId, makeCandidateJson(candidate, mline, mid), p2pSid);
                         });
 
                         connect(m_peerPipeline, &PeerPipeline::iceStateChanged,
@@ -691,12 +689,7 @@ void CallManager::joinCallOnServer(bool withVideo)
                         });
 
                         connect(m_peerPipeline, &PeerPipeline::audioLevelUpdated,
-                                this, [this](double level) {
-                            if (qAbs(m_audioLevel - level) > 0.02) {
-                                m_audioLevel = level;
-                                emit audioLevelChanged();
-                            }
-                        });
+                                this, &CallManager::onAudioLevelUpdated);
 
                         connect(m_peerPipeline, &PeerPipeline::cameraError, this, [this](const QString &reason) {
                             qWarning() << "CallManager: P2P camera error:" << reason;
@@ -743,11 +736,7 @@ void CallManager::joinCallOnServer(bool withVideo)
 
                         connect(m_publishPipeline, &PublishPipeline::iceCandidateReady,
                                 this, [this, pubSid](const QString &candidate, int mline, const QString &mid) {
-                            QJsonObject c;
-                            c["candidate"] = candidate;
-                            c["sdpMLineIndex"] = mline;
-                            c["sdpMid"] = mid;
-                            m_signaling->sendCandidate(m_signaling->sessionId(), c, pubSid);
+                            m_signaling->sendCandidate(m_signaling->sessionId(), makeCandidateJson(candidate, mline, mid), pubSid);
                         });
 
                         connect(m_publishPipeline, &PublishPipeline::iceStateChanged,
@@ -758,12 +747,7 @@ void CallManager::joinCallOnServer(bool withVideo)
                         });
 
                         connect(m_publishPipeline, &PublishPipeline::audioLevelUpdated,
-                                this, [this](double level) {
-                            if (qAbs(m_audioLevel - level) > 0.02) {
-                                m_audioLevel = level;
-                                emit audioLevelChanged();
-                            }
-                        });
+                                this, &CallManager::onAudioLevelUpdated);
 
                         connect(m_publishPipeline, &PublishPipeline::error, this, [this](const QString &msg) {
                             qWarning() << "CallManager: publish pipeline error:" << msg;
@@ -843,7 +827,7 @@ void CallManager::joinCallOnServer(bool withVideo)
 
 void CallManager::leaveCallOnServer()
 {
-    if (m_callToken.isEmpty()) return;
+    if (m_callToken.isEmpty() || !m_joinedCall) return;
     // Pass all=true to end the call for all participants (1:1 call behavior)
     QUrlQuery params;
     params.addQueryItem("all", "true");
@@ -899,6 +883,14 @@ void CallManager::teardown(const QString &reason)
 
     setState(Idle);
     emit callEnded(reason);
+}
+
+void CallManager::onAudioLevelUpdated(double level)
+{
+    if (qAbs(m_audioLevel - level) > 0.02) {
+        m_audioLevel = level;
+        emit audioLevelChanged();
+    }
 }
 
 // --- Participant events ---
@@ -986,11 +978,7 @@ void CallManager::onOfferReceived(const QString &fromSessionId, const QString &s
 
         connect(sub, &SubscribePipeline::iceCandidateReady,
                 this, [this, fromSessionId, mcuSid](const QString &candidate, int mline, const QString &mid) {
-            QJsonObject c;
-            c["candidate"] = candidate;
-            c["sdpMLineIndex"] = mline;
-            c["sdpMid"] = mid;
-            m_signaling->sendCandidate(fromSessionId, c, mcuSid);
+            m_signaling->sendCandidate(fromSessionId, makeCandidateJson(candidate, mline, mid), mcuSid);
         });
 
         connect(sub, &SubscribePipeline::iceStateChanged,

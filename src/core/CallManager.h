@@ -82,6 +82,7 @@ private slots:
     void onParticipantLeftCall(const QString &sessionId);
     void onOfferReceived(const QString &fromSessionId, const QString &sdp, const QString &sid);
     void onAnswerReceived(const QString &fromSessionId, const QString &sdp);
+    void onAudioLevelUpdated(double level);
 
 private:
     void setState(CallState newState);

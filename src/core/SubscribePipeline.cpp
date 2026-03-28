@@ -1,5 +1,6 @@
 #include "core/SubscribePipeline.h"
 #include <QDebug>
+#include <QPointer>
 #include <QRegularExpression>
 #include <QUrl>
 
@@ -34,7 +35,7 @@ bool SubscribePipeline::start(const QString &stunServer, const QList<TurnServer>
         // Nextcloud returns "stun:host:port" but GStreamer needs "stun://host:port"
         QString gstStun = stunServer;
         if (gstStun.startsWith("stun:") && !gstStun.startsWith("stun://"))
-            gstStun.replace("stun:", "stun://");
+            gstStun = "stun://" + gstStun.mid(5);
         qDebug() << "SubscribePipeline: STUN server:" << gstStun;
         g_object_set(m_webrtcbin, "stun-server", gstStun.toUtf8().constData(), nullptr);
     }
@@ -344,8 +345,10 @@ GstFlowReturn SubscribePipeline::onNewVideoSample(GstAppSink *sink, gpointer use
     GstSample *sample = gst_app_sink_pull_sample(sink);
     if (!sample) return GST_FLOW_OK;
 
-    QMetaObject::invokeMethod(self->m_videoProvider, [self, sample]() {
-        self->m_videoProvider->feedFrame(sample);
+    QPointer<SubscribePipeline> guard(self);
+    QMetaObject::invokeMethod(self, [guard, sample]() {
+        if (guard && guard->m_videoProvider)
+            guard->m_videoProvider->feedFrame(sample);
         gst_sample_unref(sample);
     }, Qt::QueuedConnection);
 

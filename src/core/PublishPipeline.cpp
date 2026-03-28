@@ -35,7 +35,7 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         // Nextcloud returns "stun:host:port" but GStreamer needs "stun://host:port"
         QString gstStun = stunServer;
         if (gstStun.startsWith("stun:") && !gstStun.startsWith("stun://"))
-            gstStun.replace("stun:", "stun://");
+            gstStun = "stun://" + gstStun.mid(5);
         qDebug() << "PublishPipeline: STUN server:" << gstStun;
         g_object_set(m_webrtcbin, "stun-server", gstStun.toUtf8().constData(), nullptr);
     }
@@ -67,25 +67,26 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         g_object_set(audiosrc, "is-live", TRUE, "wave", 0, "freq", 440.0, nullptr);
         qDebug() << "PublishPipeline: audio source: audiotestsrc (TEST MODE)";
     } else {
+        // Try sources in preference order
+        const char *srcName = "autoaudiosrc";
         audiosrc = gst_element_factory_make("wasapi2src", "pub-audiosrc");
         if (audiosrc) {
-            qDebug() << "PublishPipeline: audio source: wasapi2src";
-            if (!audioDeviceId.isEmpty())
-                g_object_set(audiosrc, "device", audioDeviceId.toUtf8().constData(), nullptr);
+            srcName = "wasapi2src";
         } else {
             audiosrc = gst_element_factory_make("wasapisrc", "pub-audiosrc");
             if (audiosrc) {
+                srcName = "wasapisrc";
                 g_object_set(audiosrc, "low-latency", FALSE, nullptr);
-                qDebug() << "PublishPipeline: audio source: wasapisrc";
-                if (!audioDeviceId.isEmpty())
-                    g_object_set(audiosrc, "device", audioDeviceId.toUtf8().constData(), nullptr);
             } else {
                 audiosrc = gst_element_factory_make("autoaudiosrc", "pub-audiosrc");
-                qDebug() << "PublishPipeline: audio source: autoaudiosrc";
             }
         }
-        if (!audioDeviceId.isEmpty())
+        qDebug() << "PublishPipeline: audio source:" << srcName;
+
+        if (audiosrc && !audioDeviceId.isEmpty()) {
+            g_object_set(audiosrc, "device", audioDeviceId.toUtf8().constData(), nullptr);
             qDebug() << "PublishPipeline: using audio input device" << audioDeviceId;
+        }
     }
 
     GstElement *audioconvert = gst_element_factory_make("audioconvert", nullptr);
@@ -342,16 +343,13 @@ void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)
     // In test mode, videotestsrc outputs raw video — no jpegdec needed.
     // In real mode, camera outputs JPEG at high res, raw only at 640x480.
     if (testVideo) {
-        m_jpegDec = nullptr;
         QString capsStr = QString("video/x-raw,width=%1,height=%2,framerate=30/1").arg(w).arg(h);
         GstCaps *caps = gst_caps_from_string(capsStr.toUtf8().constData());
         g_object_set(m_videoCapsFilter, "caps", caps, nullptr);
         gst_caps_unref(caps);
     } else {
-        // Camera → videoconvert → capsfilter → encoder
-        // No format/resolution hardcoding — let the camera negotiate its best.
-        // capsfilter just ensures we get raw video for the encoder.
-        m_jpegDec = nullptr;
+        // Camera -> videoconvert -> capsfilter -> encoder
+        // No format/resolution hardcoding -- let the camera negotiate its best.
         GstCaps *caps = gst_caps_from_string("video/x-raw");
         g_object_set(m_videoCapsFilter, "caps", caps, nullptr);
         gst_caps_unref(caps);
@@ -393,43 +391,24 @@ void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)
             G_CALLBACK(onPreviewSample), this);
     }
 
-    if (!m_jpegDec) {
-        qWarning() << "PublishPipeline: jpegdec not available, trying raw capture";
-        // Fallback: raw capture (640x480 max)
-        GstCaps *rawCaps = gst_caps_from_string("video/x-raw,framerate=30/1");
-        g_object_set(m_videoCapsFilter, "caps", rawCaps, nullptr);
-        gst_caps_unref(rawCaps);
-
-        if (m_tee) {
-            gst_bin_add_many(GST_BIN(m_pipeline), m_cameraSrc, m_videoConvert, m_videoCapsFilter,
-                m_tee, m_encQueue, m_videoEncoder, m_videoPayloader,
-                m_previewQueue, m_previewConvert, m_previewAppsink, nullptr);
-        } else {
-            gst_bin_add_many(GST_BIN(m_pipeline), m_cameraSrc, m_videoConvert, m_videoCapsFilter,
-                m_videoEncoder, m_videoPayloader, nullptr);
-        }
+    // Add elements to pipeline and link the video chain
+    // (raw capture path -- jpegdec is unused in PublishPipeline)
+    if (m_tee) {
+        gst_bin_add_many(GST_BIN(m_pipeline), m_cameraSrc, m_videoConvert, m_videoCapsFilter,
+            m_tee, m_encQueue, m_videoEncoder, m_videoPayloader,
+            m_previewQueue, m_previewConvert, m_previewAppsink, nullptr);
     } else {
-        if (m_tee) {
-            gst_bin_add_many(GST_BIN(m_pipeline), m_cameraSrc, m_videoCapsFilter, m_jpegDec, m_videoConvert,
-                m_tee, m_encQueue, m_videoEncoder, m_videoPayloader,
-                m_previewQueue, m_previewConvert, m_previewAppsink, nullptr);
-        } else {
-            gst_bin_add_many(GST_BIN(m_pipeline), m_cameraSrc, m_videoCapsFilter, m_jpegDec, m_videoConvert,
-                m_videoEncoder, m_videoPayloader, nullptr);
-        }
+        gst_bin_add_many(GST_BIN(m_pipeline), m_cameraSrc, m_videoConvert, m_videoCapsFilter,
+            m_videoEncoder, m_videoPayloader, nullptr);
     }
 
     gboolean linked;
     if (m_tee) {
-        // Link capture chain up to tee
-        if (m_jpegDec) {
-            linked = gst_element_link_many(m_cameraSrc, m_videoCapsFilter, m_jpegDec, m_videoConvert, m_tee, nullptr);
-        } else {
-            linked = gst_element_link_many(m_cameraSrc, m_videoConvert, m_videoCapsFilter, m_tee, nullptr);
-        }
-        // Link encoder branch: encQueue -> encoder -> payloader
+        // Link: cameraSrc -> videoConvert -> capsFilter -> tee
+        linked = gst_element_link_many(m_cameraSrc, m_videoConvert, m_videoCapsFilter, m_tee, nullptr);
+        // Encoder branch: encQueue -> encoder -> payloader
         linked = linked && gst_element_link_many(m_encQueue, m_videoEncoder, m_videoPayloader, nullptr);
-        // Link preview branch: previewQueue -> previewConvert -> previewAppsink
+        // Preview branch: previewQueue -> previewConvert -> previewAppsink
         linked = linked && gst_element_link_many(m_previewQueue, m_previewConvert, m_previewAppsink, nullptr);
 
         if (linked) {
@@ -452,12 +431,8 @@ void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)
             }
         }
     } else {
-        // No tee fallback: original direct path
-        if (m_jpegDec) {
-            linked = gst_element_link_many(m_cameraSrc, m_videoCapsFilter, m_jpegDec, m_videoConvert, m_videoEncoder, m_videoPayloader, nullptr);
-        } else {
-            linked = gst_element_link_many(m_cameraSrc, m_videoConvert, m_videoCapsFilter, m_videoEncoder, m_videoPayloader, nullptr);
-        }
+        // No tee fallback: direct path
+        linked = gst_element_link_many(m_cameraSrc, m_videoConvert, m_videoCapsFilter, m_videoEncoder, m_videoPayloader, nullptr);
     }
 
     if (!linked) {
@@ -502,7 +477,6 @@ void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)
     gst_element_sync_state_with_parent(m_cameraSrc);
     gst_element_sync_state_with_parent(m_videoConvert);
     gst_element_sync_state_with_parent(m_videoCapsFilter);
-    if (m_jpegDec) gst_element_sync_state_with_parent(m_jpegDec);
     if (m_tee) {
         gst_element_sync_state_with_parent(m_tee);
         gst_element_sync_state_with_parent(m_encQueue);
@@ -560,7 +534,6 @@ void PublishPipeline::disableCamera()
     removeElement(m_videoPayloader);
     removeElement(m_videoEncoder);
     removeElement(m_videoCapsFilter);
-    removeElement(m_jpegDec);
     removeElement(m_videoConvert);
     removeElement(m_cameraSrc);
 

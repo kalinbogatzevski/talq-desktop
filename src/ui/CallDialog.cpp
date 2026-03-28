@@ -8,6 +8,17 @@
 #include <QPainter>
 #include <QNetworkReply>
 
+static QString circleButtonStyle(const QString &bg, const QString &fg, const QString &hoverBg)
+{
+    return QStringLiteral(
+        "QPushButton {"
+        "  border: none; border-radius: 20px;"
+        "  font-size: 16px; min-width: 40px; min-height: 40px; max-width: 40px; max-height: 40px;"
+        "  background: %1; color: %2;"
+        "}"
+        "QPushButton:hover { background: %3; }").arg(bg, fg, hoverBg);
+}
+
 void VideoWidget::paintEvent(QPaintEvent *)
 {
     QPainter p(this);
@@ -45,8 +56,14 @@ CallDialog::CallDialog(CallManager *callManager, ApiClient *api, QWidget *parent
     connect(m_callManager, &CallManager::statusDetailChanged, this, [this]() {
         m_statusDetailLabel->setText(m_callManager->statusDetail());
     });
-    connect(m_callManager, &CallManager::remoteVideoProviderChanged, this, &CallDialog::connectVideoProviders);
-    connect(m_callManager, &CallManager::localVideoProviderChanged, this, &CallDialog::connectVideoProviders);
+    connect(m_callManager, &CallManager::remoteVideoProviderChanged, this, [this]() {
+        m_videoConnected = false;  // new provider — reconnect
+        connectVideoProviders();
+    });
+    connect(m_callManager, &CallManager::localVideoProviderChanged, this, [this]() {
+        m_localConnected = false;
+        connectVideoProviders();
+    });
     connect(m_callManager, &CallManager::remoteMediaChanged, this, [this]() {
         // When remote mutes video, show avatar in the video area instead of last frame
         if (m_callManager->remoteVideoMuted() && m_remoteVideo->isVisible() && !m_avatarPixmap.isNull()) {
@@ -130,18 +147,10 @@ void CallDialog::buildUi()
     activeLayout->setContentsMargins(0, 0, 0, 0);
     activeLayout->setSpacing(12);
 
-    const QString btnBase =
-        "QPushButton {"
-        "  border: none; border-radius: 20px;"
-        "  font-size: 16px; min-width: 40px; min-height: 40px; max-width: 40px; max-height: 40px;"
-        "}";
-
     m_muteBtn = new QPushButton(m_activeRow);
     m_muteBtn->setCursor(Qt::PointingHandCursor);
     m_muteBtn->setToolTip("Toggle mute");
-    m_muteBtn->setStyleSheet(btnBase +
-        "QPushButton { background: #3a3a36; color: #e4e0da; }"
-        "QPushButton:hover { background: #4a4a46; }");
+    m_muteBtn->setStyleSheet(circleButtonStyle("#3a3a36", "#e4e0da", "#4a4a46"));
     m_muteBtn->setText("\xF0\x9F\x8E\xA4");  // microphone emoji
     activeLayout->addStretch();
     activeLayout->addWidget(m_muteBtn);
@@ -149,18 +158,14 @@ void CallDialog::buildUi()
     m_hangupBtn = new QPushButton(m_activeRow);
     m_hangupBtn->setCursor(Qt::PointingHandCursor);
     m_hangupBtn->setToolTip("Hang up");
-    m_hangupBtn->setStyleSheet(btnBase +
-        "QPushButton { background: #d93025; color: white; }"
-        "QPushButton:hover { background: #e84235; }");
+    m_hangupBtn->setStyleSheet(circleButtonStyle("#d93025", "white", "#e84235"));
     m_hangupBtn->setText("\xE2\x9C\x96");  // X mark
     activeLayout->addWidget(m_hangupBtn);
 
     m_cameraBtn = new QPushButton(m_activeRow);
     m_cameraBtn->setCursor(Qt::PointingHandCursor);
     m_cameraBtn->setToolTip("Toggle camera");
-    m_cameraBtn->setStyleSheet(btnBase +
-        "QPushButton { background: #3a3a36; color: #e4e0da; }"
-        "QPushButton:hover { background: #4a4a46; }");
+    m_cameraBtn->setStyleSheet(circleButtonStyle("#3a3a36", "#e4e0da", "#4a4a46"));
     m_cameraBtn->setText("\xF0\x9F\x8E\xA5");  // camera emoji
     activeLayout->addWidget(m_cameraBtn);
     activeLayout->addStretch();
@@ -284,46 +289,18 @@ void CallDialog::onDurationChanged()
 
 void CallDialog::onMuteChanged()
 {
-    if (m_callManager->isMuted()) {
-        m_muteBtn->setText("\xF0\x9F\x8E\xA4");  // microphone (muted — red bg)
-        m_muteBtn->setStyleSheet(
-            "QPushButton {"
-            "  border: none; border-radius: 20px;"
-            "  font-size: 16px; min-width: 40px; min-height: 40px; max-width: 40px; max-height: 40px;"
-            "  background: #d93025; color: white;"
-            "}"
-            "QPushButton:hover { background: #e84235; }");
-    } else {
-        m_muteBtn->setText("\xF0\x9F\x8E\xA4");  // microphone (unmuted)
-        m_muteBtn->setStyleSheet(
-            "QPushButton {"
-            "  border: none; border-radius: 20px;"
-            "  font-size: 16px; min-width: 40px; min-height: 40px; max-width: 40px; max-height: 40px;"
-            "  background: #3a3a36; color: #e4e0da;"
-            "}"
-            "QPushButton:hover { background: #4a4a46; }");
-    }
+    if (m_callManager->isMuted())
+        m_muteBtn->setStyleSheet(circleButtonStyle("#d93025", "white", "#e84235"));
+    else
+        m_muteBtn->setStyleSheet(circleButtonStyle("#3a3a36", "#e4e0da", "#4a4a46"));
 }
 
 void CallDialog::onCameraChanged()
 {
-    if (m_callManager->isCameraOn()) {
-        m_cameraBtn->setStyleSheet(
-            "QPushButton {"
-            "  border: none; border-radius: 20px;"
-            "  font-size: 16px; min-width: 40px; min-height: 40px; max-width: 40px; max-height: 40px;"
-            "  background: #2ec4b6; color: white;"
-            "}"
-            "QPushButton:hover { background: #3ed4c6; }");
-    } else {
-        m_cameraBtn->setStyleSheet(
-            "QPushButton {"
-            "  border: none; border-radius: 20px;"
-            "  font-size: 16px; min-width: 40px; min-height: 40px; max-width: 40px; max-height: 40px;"
-            "  background: #3a3a36; color: #e4e0da;"
-            "}"
-            "QPushButton:hover { background: #4a4a46; }");
-    }
+    if (m_callManager->isCameraOn())
+        m_cameraBtn->setStyleSheet(circleButtonStyle("#2ec4b6", "white", "#3ed4c6"));
+    else
+        m_cameraBtn->setStyleSheet(circleButtonStyle("#3a3a36", "#e4e0da", "#4a4a46"));
 }
 
 void CallDialog::fetchAvatar(const QString &userId)

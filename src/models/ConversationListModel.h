@@ -64,6 +64,7 @@ signals:
     void incomingCallDetected(const QString &conversationName, const QString &token, int callFlag);
 
 private:
+    int indexOfToken(const QString &token) const;
     void fetchUserStatuses();
 
     ApiClient *m_api;

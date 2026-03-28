@@ -54,14 +54,12 @@ private:
     GstElement *m_pipeline = nullptr;
     GstElement *m_webrtcbin = nullptr;
     bool m_running = false;
-    guint m_busWatchId = 0;
 
     // Video elements
     GstElement *m_cameraSrc = nullptr;
     GstElement *m_videoConvert = nullptr;
     GstElement *m_videoCapsFilter = nullptr;
     GstElement *m_videoEncoder = nullptr;
-    GstElement *m_jpegDec = nullptr;
     GstElement *m_videoPayloader = nullptr;
     GstPad *m_videoSinkPad = nullptr;
     bool m_cameraEnabled = false;
