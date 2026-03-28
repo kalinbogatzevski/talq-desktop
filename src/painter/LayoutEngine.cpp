@@ -142,7 +142,15 @@ MessageLayout LayoutEngine::computeLayout(
             qreal quoteTextW = fmTiny.horizontalAdvance(ml.replyToAuthor + ": " + ml.replyToText) + 20;
             neededW = qMax(neededW, qMin(quoteTextW, maxInnerW));
         }
-        if (ml.hasFile) neededW = maxInnerW; // files use full width
+        if (ml.hasFile) {
+            bool isImg = ml.fileMime.startsWith(QLatin1String("image/"));
+            if (isImg && imageAspectRatio > 0.01) {
+                qreal imgW = qMin(maxInnerW, 200.0);
+                neededW = qMax(neededW, imgW);
+            } else {
+                neededW = qMax(neededW, 200.0); // file pill needs some width
+            }
+        }
         if (!ml.reactions.isEmpty()) neededW = qMax(neededW, 100.0);
 
         // Clamp: min 80, max bubbleMaxWidth inner
@@ -177,8 +185,8 @@ MessageLayout LayoutEngine::computeLayout(
             qreal fileW = bubbleInnerW;
             qreal fileH = 44.0;
             if (isImage && imageAspectRatio > 0.01) {
-                fileW = qMin(bubbleInnerW, 350.0);  // cap image width
-                fileH = qMin(fileW * imageAspectRatio, 250.0);  // cap height
+                fileW = qMin(bubbleInnerW, 200.0);  // thumbnail width
+                fileH = qMin(fileW * imageAspectRatio, 150.0);  // thumbnail height
             }
             ml.fileRect = QRectF(
                 bubbleX + PainterTheme::spacingNormal,
@@ -265,7 +273,13 @@ MessageLayout LayoutEngine::computeLayout(
             qreal quoteTextW = fmTime.horizontalAdvance(ml.replyToAuthor + ": " + ml.replyToText) + 20;
             neededW = qMax(neededW, qMin(quoteTextW, maxContentW));
         }
-        if (ml.hasFile) neededW = maxContentW;
+        if (ml.hasFile) {
+            bool isImg = ml.fileMime.startsWith(QLatin1String("image/"));
+            if (isImg && imageAspectRatio > 0.01)
+                neededW = qMax(neededW, qMin(maxContentW, 200.0));
+            else
+                neededW = qMax(neededW, 200.0);
+        }
         if (!ml.reactions.isEmpty()) neededW = qMax(neededW, 100.0);
         if (!ml.isGrouped) {
             qreal groupedTimeW = fmTime.horizontalAdvance(ml.timeString);
