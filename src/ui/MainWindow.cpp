@@ -848,6 +848,9 @@ void MainWindow::buildChatPage()
         if (m_chatPainter->atBottom())
             m_chatPainter->scrollToBottom();
     });
+    connect(m_messages, &MessageListModel::errorOccurred, this, [this](const QString &error) {
+        QMessageBox::warning(this, "Error", error);
+    });
     connect(m_messages, &MessageListModel::messageSent, this, [this]() {
         m_chatPainter->scrollToBottom();
     });

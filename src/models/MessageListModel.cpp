@@ -808,19 +808,41 @@ void MessageListModel::sendFileWithCaption(const QString &filePath, const QStrin
 {
     if (m_token.isEmpty() || filePath.isEmpty()) return;
 
-    QUrl fileUrl(filePath);
-    QString localPath = fileUrl.isLocalFile() ? fileUrl.toLocalFile() : filePath;
+    // Accept both raw paths and file:// URLs
+    QString localPath = filePath;
+    if (localPath.startsWith("file:///"))
+        localPath = QUrl(localPath).toLocalFile();
+    qDebug() << "sendFileWithCaption: localPath=" << localPath;
 
-    QFile file(localPath);
+    // If the path traverses a junction/symlink, copy to temp first
+    // (Windows blocks junction traversal from protected dirs like Program Files)
+    QString readPath = localPath;
+    QString tempCopy;
+    QFile file(readPath);
     if (!file.open(QIODevice::ReadOnly)) {
-        emit errorOccurred("Cannot open file: " + localPath);
-        return;
+        // Try copying to temp as fallback
+        tempCopy = QDir::tempPath() + "/talq_upload_" + QFileInfo(localPath).fileName();
+        if (QFile::copy(localPath, tempCopy)) {
+            readPath = tempCopy;
+            file.setFileName(readPath);
+            if (!file.open(QIODevice::ReadOnly)) {
+                emit errorOccurred("Cannot open file: " + readPath + "\n" + file.errorString());
+                QFile::remove(tempCopy);
+                return;
+            }
+        } else {
+            emit errorOccurred("Cannot open file: " + localPath + "\n" + file.errorString());
+            return;
+        }
     }
 
     QString fileName = QFileInfo(localPath).fileName();
     fileName.remove(QRegularExpression("[/\\\\]"));  // sanitize for WebDAV path safety
     if (fileName.isEmpty()) fileName = "upload";
     QByteArray fileData = file.readAll();
+    file.close();
+    if (!tempCopy.isEmpty())
+        QFile::remove(tempCopy);
 
     qDebug() << "Uploading file:" << fileName << "(" << fileData.size() << "bytes)";
 
