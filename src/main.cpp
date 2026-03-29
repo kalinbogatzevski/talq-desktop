@@ -136,7 +136,7 @@ int main(int argc, char *argv[])
     QObject::connect(&messages, &MessageListModel::newMessagesAtEnd, &notifications, [&messages, &notifications, &auth]() {
         int count = messages.rowCount();
         if (count == 0) return;
-        auto idx = messages.index(count - 1);
+        auto idx = messages.index(0);  // model is newest-first, index 0 = latest message
         QString actorId = messages.data(idx, MessageListModel::ActorIdRole).toString();
         if (actorId == auth.userId()) return;
         QString actorName = messages.data(idx, MessageListModel::ActorNameRole).toString();
