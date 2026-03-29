@@ -36,11 +36,13 @@ ConversationPickerDialog::ConversationPickerDialog(ConversationListModel *model,
     populateList();
 
     connect(m_searchField, &QLineEdit::textChanged, this, &ConversationPickerDialog::populateList);
-    connect(m_list, &QListWidget::itemClicked, this, [this](QListWidgetItem *item) {
+    auto selectItem = [this](QListWidgetItem *item) {
         m_selectedToken = item->data(Qt::UserRole).toString();
         m_selectedName = item->text();
         accept();
-    });
+    };
+    connect(m_list, &QListWidget::itemClicked, this, selectItem);
+    connect(m_list, &QListWidget::itemActivated, this, selectItem);
 }
 
 void ConversationPickerDialog::populateList(const QString &filter)
