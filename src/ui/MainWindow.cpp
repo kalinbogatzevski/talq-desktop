@@ -377,12 +377,29 @@ void MainWindow::buildChatPage()
     welcomeLayout->setAlignment(Qt::AlignCenter);
     welcomeLayout->setSpacing(16);
 
+#ifdef TALQ_BRAND_123NET
+    // Branded: show 123NET logo + smaller TalQ logo below
+    auto *brandLabel = new QLabel(m_welcomeWidget);
+    QPixmap brandLogo(":/123net-logo.png");
+    if (!brandLogo.isNull())
+        brandLabel->setPixmap(brandLogo.scaled(80, 80, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    brandLabel->setAlignment(Qt::AlignCenter);
+    welcomeLayout->addWidget(brandLabel);
+
+    auto *logoLabel = new QLabel(m_welcomeWidget);
+    QPixmap logo(":/logo.png");
+    if (!logo.isNull())
+        logoLabel->setPixmap(logo.scaled(48, 48, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    logoLabel->setAlignment(Qt::AlignCenter);
+    welcomeLayout->addWidget(logoLabel);
+#else
     auto *logoLabel = new QLabel(m_welcomeWidget);
     QPixmap logo(":/logo.png");
     if (!logo.isNull())
         logoLabel->setPixmap(logo.scaled(80, 80, Qt::KeepAspectRatio, Qt::SmoothTransformation));
     logoLabel->setAlignment(Qt::AlignCenter);
     welcomeLayout->addWidget(logoLabel);
+#endif
 
     m_welcomeNameLabel = new QLabel(m_welcomeWidget);
     m_welcomeNameLabel->setAlignment(Qt::AlignCenter);

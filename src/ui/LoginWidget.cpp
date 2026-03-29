@@ -32,10 +32,19 @@ LoginWidget::LoginWidget(AuthManager *auth, QWidget *parent)
 
     // Logo
     auto *logoLabel = new QLabel(centerWidget);
-    QPixmap logo(":/logo.png");
+    QPixmap logo(m_isBranded ? ":/123net-logo.png" : ":/logo.png");
     logoLabel->setPixmap(logo.scaled(72, 72, Qt::KeepAspectRatio, Qt::SmoothTransformation));
     logoLabel->setAlignment(Qt::AlignCenter);
     layout->addWidget(logoLabel);
+
+    // Brand sub-logo (show TalQ logo below brand logo)
+    if (m_isBranded) {
+        auto *subLogoLabel = new QLabel(centerWidget);
+        QPixmap subLogo(":/logo.png");
+        subLogoLabel->setPixmap(subLogo.scaled(40, 40, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        subLogoLabel->setAlignment(Qt::AlignCenter);
+        layout->addWidget(subLogoLabel);
+    }
 
     // Brand name
     auto *nameLabel = new QLabel(m_brandName, centerWidget);
