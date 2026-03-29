@@ -59,6 +59,7 @@ public:
     );
 
     void restoreFromTray();
+    void openConversation(const QString &token);
 
     // Must be public for sidebarSqueezedChanged call in cpp
     void sidebarSqueezedChanged();

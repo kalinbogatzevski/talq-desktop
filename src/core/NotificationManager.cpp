@@ -137,9 +137,10 @@ void NotificationManager::notify(const QString &title, const QString &message, b
 
     if (!m_notificationsEnabled) return;
 
-    if (!windowActive && m_trayIcon) {
-        // Show Windows toast notification via system tray
-        m_trayIcon->showMessage(title, message, QSystemTrayIcon::Information, 5000);
+    // Always show popup for cross-chat messages (alwaysSound = true means different conversation)
+    // Only skip for messages in the active conversation when window is focused
+    if (alwaysSound || !windowActive) {
+        emit desktopPopupRequested(title, message, token);
     }
 }
 

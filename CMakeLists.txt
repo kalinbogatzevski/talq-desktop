@@ -66,6 +66,8 @@ qt_add_executable(talq
     src/ui/SelectionBarWidget.cpp
     src/ui/ConversationPickerDialog.h
     src/ui/ConversationPickerDialog.cpp
+    src/ui/NotificationPopup.h
+    src/ui/NotificationPopup.cpp
     resources/resources.qrc
     resources/talq.rc
 )

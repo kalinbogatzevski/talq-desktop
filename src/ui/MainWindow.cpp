@@ -1046,6 +1046,37 @@ void MainWindow::restoreFromTray()
     activateWindow();
 }
 
+void MainWindow::openConversation(const QString &token)
+{
+    // Bring window to front without changing its state
+    if (isMinimized()) {
+        if (m_wasMaximized)
+            showMaximized();
+        else
+            showNormal();
+    }
+    raise();
+    activateWindow();
+
+    if (token.isEmpty()) return;
+
+    // Find the conversation in the model and select it
+    int count = m_conversations->rowCount();
+    for (int i = 0; i < count; ++i) {
+        QModelIndex idx = m_conversations->index(i, 0);
+        QString t = idx.data(ConversationListModel::TokenRole).toString();
+        if (t == token) {
+            QString name = idx.data(ConversationListModel::DisplayNameRole).toString();
+            QString userId = idx.data(ConversationListModel::ActorIdRole).toString();
+            int convType = idx.data(ConversationListModel::TypeRole).toInt();
+            QString status = idx.data(ConversationListModel::UserStatusRole).toString();
+            m_sidebar->setSelectedIndex(i);
+            onConversationSelected(token, name, userId, convType, status);
+            return;
+        }
+    }
+}
+
 void MainWindow::saveWindowState()
 {
     if (!m_chatMode || !m_geometrySaveEnabled) return;
