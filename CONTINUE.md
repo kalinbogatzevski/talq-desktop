@@ -52,9 +52,12 @@ Unified left-aligned chat layout with proper bubble padding and avatars for all 
 
 ## Next steps
 - Camera doesn't work on this laptop (mfvideosrc COM/STA issue) — test on work laptop
+- **Screen sharing** — d3d11screencapturesrc for full display or window-handle for specific app
+- **Background blur** — Windows Studio Effects API (Win11) or MediaPipe segmentation + GStreamer
 - In-bubble text selection (click-drag to select words within a message)
 - Notification stacking (multiple popups queue instead of replacing)
 - Notification on correct monitor (currently always primary screen)
+- Duplicate message flash on send (optimistic send + poller race)
 - Hardcoded dark theme colors in SelectionBarWidget/ConversationPickerDialog — use PainterTheme
 
 ## Architecture notes
