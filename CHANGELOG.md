@@ -1,5 +1,58 @@
 # Changelog
 
+## v0.13.1 (2026-03-29)
+
+### Bidirectional Video Calls
+- **Remote video display** — I420→QImage conversion via QPainter in CallDialog VideoWidget
+- **Camera sends VP8** — matches Janus MCU (was H264), auto-negotiates caps (no hardcoded format/resolution/framerate)
+- **Camera preview** — local VideoFrameProvider with 120x90 overlay at bottom-right of remote video
+- **Dialog auto-resize** — expands to 400x500 when remote enables camera, shrinks to 300x340 when disabled
+- **Remote avatar** — replaces video area when remote camera is muted
+- **Dummy video track** — 16x16 black VP8 frame for audio-only calls (Janus MCU requires video from all publishers)
+- **Skip dummy frames** — only show remote video when frames >32px
+
+### Remote Media State Tracking
+- **Mute/unmute signaling** — parse incoming mute/unmute messages, emit remoteMuteChanged signal
+- **Mic muted indicator** — show muted icon on peer name when remote mic is muted
+- **remoteVideoMuted/remoteAudioMuted** properties tracked on CallManager
+
+### Call Dialog UX
+- **Circular avatar** of remote party in header
+- **circleButtonStyle()** helper for consistent button styling
+- **Publisher ICE status** doesn't overwrite "Connected" when Active
+
+### Code Review Fixes
+- Ring timeout bypasses userActionReady (was stalling call forever)
+- SubscribePipeline::onNewVideoSample uses QPointer guard (was use-after-free)
+- leaveCallOnServer checks m_joinedCall (was double-DELETE on decline)
+- STUN URL prefix replacement uses mid() (was corrupting mid-string matches)
+- Video provider flags reset on provider change (was freezing after camera toggle)
+
+### Code Simplification
+- Extracted helpers: circleButtonStyle, indexOfToken, makeCandidateJson, callFlags, onAudioLevelUpdated
+- Removed dead m_jpegDec code path and unused m_busWatchId
+- Net -67 lines
+
+## v0.13.0 (2026-03-28)
+
+### Audio Calls — Fully Working with MCU/HPB
+- **CallDialog** — QWidget-based call window with status breadcrumbs, mic/hangup/camera buttons
+- **OPUS codec fix** — was MULTIOPUS, Janus rejected it
+- **Accept/Decline** — setUserActionReady wiring for incoming call popup
+- **Hangup** — DELETE /call with all=true to end call for both parties
+- **Initial media state broadcast** — sent when remote peer joins (not just on ICE)
+- **Stale call detection** — first conversation load seeds call state silently
+- **Re-request subscriber stream** — when remote enables video mid-call
+
+### Logging
+- **TalqLog** — build-type-controlled logging system with file-based debug output
+- Debug logs written to file for call troubleshooting
+
+### Fixes
+- Fixed crash on conversation select during active call
+- Fixed call 404 errors from participant polling
+- Fixed Janus codec config and participant polling that was breaking calls
+
 ## v0.12.2 (2026-03-28)
 
 ### UI Polish
