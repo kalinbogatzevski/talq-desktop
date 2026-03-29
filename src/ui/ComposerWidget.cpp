@@ -136,18 +136,9 @@ ComposerWidget::ComposerWidget(QWidget *parent)
     m_pendingPreview->setStyleSheet("background: #222220; border-radius: 6px;");
     pendingLayout->addWidget(m_pendingPreview);
 
-    auto *infoCol = new QVBoxLayout();
-    infoCol->setSpacing(2);
     m_pendingName = new QLabel(m_pendingBar);
-    m_pendingName->setStyleSheet("font-size: 12px; color: #8a8680;");
-    infoCol->addWidget(m_pendingName);
-
-    m_captionInput = new QLineEdit(m_pendingBar);
-    m_captionInput->setPlaceholderText("Add a caption...");
-    m_captionInput->setStyleSheet("font-size: 13px; padding: 4px 8px; border-radius: 4px;");
-    connect(m_captionInput, &QLineEdit::returnPressed, this, &ComposerWidget::confirmSendFile);
-    infoCol->addWidget(m_captionInput);
-    pendingLayout->addLayout(infoCol, 1);
+    m_pendingName->setStyleSheet("font-size: 12px; color: #b0aca5;");
+    pendingLayout->addWidget(m_pendingName, 1);
 
     m_pendingSendBtn = new QPushButton("\u2713", m_pendingBar);
     m_pendingSendBtn->setFixedSize(32, 32);
@@ -245,7 +236,6 @@ void ComposerWidget::showPendingFile(const QString &path)
     m_pendingFilePath = path;
     QFileInfo fi(path);
     m_pendingName->setText(fi.fileName());
-    m_captionInput->clear();
 
     // Show thumbnail for images
     QImage img(path);
@@ -258,14 +248,16 @@ void ComposerWidget::showPendingFile(const QString &path)
     }
 
     m_pendingBar->show();
-    m_captionInput->setFocus();
+    m_input->setPlaceholderText("Add a caption...");
+    m_input->setFocus();
 }
 
 void ComposerWidget::confirmSendFile()
 {
     if (m_pendingFilePath.isEmpty() || !m_model) return;
-    QString caption = m_captionInput->text().trimmed();
+    QString caption = m_input->toPlainText().trimmed();
     m_model->sendFileWithCaption(QUrl::fromLocalFile(m_pendingFilePath).toString(), caption);
+    m_input->clear();
     cancelPendingFile();
 }
 
@@ -273,7 +265,9 @@ void ComposerWidget::cancelPendingFile()
 {
     m_pendingFilePath.clear();
     m_pendingBar->hide();
-    m_captionInput->clear();
+    m_input->setPlaceholderText(m_topicName.isEmpty()
+        ? QStringLiteral("Write a message...")
+        : QStringLiteral("Reply in %1...").arg(m_topicName));
     m_input->setFocus();
 }
 
