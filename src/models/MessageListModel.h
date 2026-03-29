@@ -94,6 +94,7 @@ public:
     double uploadProgress() const { return m_uploadProgress; }
     QString uploadFileName() const { return m_uploadFileName; }
     Q_INVOKABLE void createTopic(const QString &title);
+    Q_INVOKABLE void refresh();  // trigger immediate poll for read status, new messages
     Q_INVOKABLE void sendMessageToToken(const QString &targetToken, const QString &text);
 
 signals:
