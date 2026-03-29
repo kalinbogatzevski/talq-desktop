@@ -1,4 +1,4 @@
-# TalQ v0.14.2 Continue Prompt
+# TalQ v0.14.3 Continue Prompt
 
 ## Current status
 Full QWidget app with working audio + video calls via HPB/Janus MCU. Released v0.14.2.
