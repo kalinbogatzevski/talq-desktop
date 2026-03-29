@@ -76,7 +76,7 @@ ComposerWidget::ComposerWidget(QWidget *parent)
     // Unified composer background
     setStyleSheet("ComposerWidget { background: #1a1a18; border-top: 1px solid #2a2a26; }");
 
-    auto *layout = new QHBoxLayout(this);
+    auto *layout = new QHBoxLayout();
     layout->setContentsMargins(12, 8, 12, 8);
     layout->setSpacing(8);
 
