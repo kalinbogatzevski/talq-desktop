@@ -62,6 +62,8 @@ qt_add_executable(talq
     src/ui/LoginWidget.cpp
     src/ui/SettingsDialog.cpp
     src/ui/CallDialog.cpp
+    src/ui/SelectionBarWidget.h
+    src/ui/SelectionBarWidget.cpp
     resources/resources.qrc
     resources/talq.rc
 )
