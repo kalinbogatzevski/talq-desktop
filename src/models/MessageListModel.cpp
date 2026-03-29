@@ -1041,6 +1041,18 @@ void MessageListModel::cleanupTempFile(const QString &filePath)
     }
 }
 
+void MessageListModel::sendMessageToToken(const QString &targetToken, const QString &text)
+{
+    QJsonObject body;
+    body["message"] = text;
+    body["replyTo"] = 0;
+
+    QString path = QStringLiteral("apps/spreed/api/v1/chat/%1").arg(targetToken);
+    m_api->post(path, body, [](bool, const QJsonObject &, int) {
+        // Fire and forget
+    });
+}
+
 void MessageListModel::markAsRead()
 {
     if (m_token.isEmpty()) return;
