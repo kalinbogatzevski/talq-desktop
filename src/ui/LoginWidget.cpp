@@ -65,7 +65,7 @@ LoginWidget::LoginWidget(AuthManager *auth, QWidget *parent)
     }
 
     m_serverInput = new QLineEdit(centerWidget);
-    m_serverInput->setText(m_isBranded ? m_brandServer : "https://ncloud.123net.link");
+    m_serverInput->setText(m_isBranded ? m_brandServer : "");
     m_serverInput->setPlaceholderText("https://cloud.example.com");
     m_serverInput->setVisible(!m_isBranded);
     QFont inputFont; inputFont.setPixelSize(14);

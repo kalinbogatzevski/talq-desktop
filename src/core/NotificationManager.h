@@ -47,7 +47,6 @@ signals:
     void notificationsEnabledChanged();
     void notifStyleChanged();
     void showRequested();
-    void popupRequested(const QString &title, const QString &message, const QString &token);
     void desktopPopupRequested(const QString &title, const QString &message, const QString &token);
 
 private:

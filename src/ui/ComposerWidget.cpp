@@ -93,7 +93,7 @@ ComposerWidget::ComposerWidget(QWidget *parent)
     layout->addWidget(m_attachBtn);
 
     m_input = new ComposeTextEdit(this);
-    m_input->setPlaceholderText("Write a message...");
+    m_input->setPlaceholderText("Message...");
     m_input->setMaximumHeight(120);
     m_input->setMinimumHeight(38);
     setFocusProxy(m_input);
@@ -266,7 +266,7 @@ void ComposerWidget::cancelPendingFile()
     m_pendingFilePath.clear();
     m_pendingBar->hide();
     m_input->setPlaceholderText(m_topicName.isEmpty()
-        ? QStringLiteral("Write a message...")
+        ? QStringLiteral("Message...")
         : QStringLiteral("Reply in %1...").arg(m_topicName));
     m_input->setFocus();
 }
@@ -287,6 +287,11 @@ void ComposerWidget::hideReplyBar()
 
 void ComposerWidget::sendAction()
 {
+    // If a file is pending, Enter sends the file (with caption from composer)
+    if (!m_pendingFilePath.isEmpty()) {
+        confirmSendFile();
+        return;
+    }
     QString text = m_input->toPlainText().trimmed();
     if (text.isEmpty()) return;
     if (m_signaling) m_signaling->sendStoppedTyping();
