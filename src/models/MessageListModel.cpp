@@ -1043,6 +1043,8 @@ void MessageListModel::cleanupTempFile(const QString &filePath)
 
 void MessageListModel::sendMessageToToken(const QString &targetToken, const QString &text)
 {
+    if (targetToken.isEmpty() || text.trimmed().isEmpty()) return;
+
     QJsonObject body;
     body["message"] = text;
     body["replyTo"] = 0;

@@ -46,6 +46,18 @@
 #include <dwmapi.h>
 #endif
 
+// Strip HTML tags from message text, substituting a file placeholder when empty.
+static QString plainBodyText(const QVariantMap &msg)
+{
+    QString html = msg.value("messageText").toString();
+    QTextDocument doc;
+    doc.setHtml(html);
+    QString body = doc.toPlainText().trimmed();
+    if (body.isEmpty() && msg.value("hasFile").toBool())
+        body = QStringLiteral("[File: %1]").arg(msg.value("fileName").toString());
+    return body;
+}
+
 MainWindow::MainWindow(
     ApiClient *api,
     AuthManager *auth,
@@ -488,14 +500,7 @@ void MainWindow::buildChatPage()
 
     connect(m_chatPainter, &ChatPainter::selectionChanged, this, [this](int count) {
         m_selectionBar->setCount(count);
-        bool allOwn = true;
-        for (const auto &msg : m_chatPainter->selectedMessages()) {
-            if (!msg.value("isOwn").toBool()) {
-                allOwn = false;
-                break;
-            }
-        }
-        m_selectionBar->setDeleteVisible(allOwn && count > 0);
+        m_selectionBar->setDeleteVisible(m_chatPainter->allSelectedOwn());
     });
 
     connect(m_selectionBar, &SelectionBarWidget::cancelClicked, this, [this]() {
@@ -504,16 +509,13 @@ void MainWindow::buildChatPage()
 
     connect(m_selectionBar, &SelectionBarWidget::copyClicked, this, [this]() {
         auto messages = m_chatPainter->selectedMessages();
-        static const QRegularExpression htmlRe("<[^>]*>");
         QString text;
         for (const auto &msg : messages) {
-            QString author = msg.value("actorName").toString();
-            QString time = msg.value("timeString").toString();
-            QString body = msg.value("messageText").toString();
-            body.remove(htmlRe);
-            if (msg.value("hasFile").toBool() && body.isEmpty())
-                body = QStringLiteral("[File: %1]").arg(msg.value("fileName").toString());
-            text += QStringLiteral("[%1, %2]\n%3\n\n").arg(author, time, body);
+            QString body = plainBodyText(msg);
+            text += QStringLiteral("[%1, %2]\n%3\n\n")
+                .arg(msg.value("actorName").toString(),
+                     msg.value("timeString").toString(),
+                     body);
         }
         if (!text.isEmpty())
             QApplication::clipboard()->setText(text.trimmed());
@@ -542,12 +544,8 @@ void MainWindow::buildChatPage()
         auto *picker = new ConversationPickerDialog(m_conversations, m_activeConvToken, this);
         if (picker->exec() == QDialog::Accepted) {
             QString targetToken = picker->selectedToken();
-            static const QRegularExpression htmlRe("<[^>]*>");
             for (const auto &msg : messages) {
-                QString body = msg.value("messageText").toString();
-                body.remove(htmlRe);
-                if (body.isEmpty() && msg.value("hasFile").toBool())
-                    body = QStringLiteral("[File: %1]").arg(msg.value("fileName").toString());
+                QString body = plainBodyText(msg);
                 if (!body.isEmpty())
                     m_messages->sendMessageToToken(targetToken, body);
             }
