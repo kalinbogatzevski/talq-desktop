@@ -10,6 +10,7 @@
 #include <QCursor>
 #include <QDragEnterEvent>
 #include <QDropEvent>
+#include <QKeyEvent>
 #include <QMimeData>
 #include <QFile>
 #include <QTextStream>
@@ -37,6 +38,9 @@ void ChatPainter::setModel(MessageListModel *mdl)
 {
     if (mdl == m_model)
         return;
+
+    if (m_selectionMode)
+        exitSelectionMode();
 
     // Disconnect old model
     if (m_model) {
@@ -103,6 +107,71 @@ void ChatPainter::setScrollY(qreal y)
 void ChatPainter::scrollToBottom()
 {
     setScrollY(qMax(0.0, m_contentHeight - height()));
+}
+
+void ChatPainter::enterSelectionMode(int firstMessageId)
+{
+    if (m_selectionMode) return;
+    m_selectionMode = true;
+    m_selectedIds.clear();
+    m_selectedIds.insert(firstMessageId);
+    m_hoveredIndex = -1;
+    emit selectionModeChanged(true);
+    emit selectionChanged(1);
+    update();
+}
+
+void ChatPainter::exitSelectionMode()
+{
+    if (!m_selectionMode) return;
+    m_selectionMode = false;
+    m_selectedIds.clear();
+    emit selectionModeChanged(false);
+    emit selectionChanged(0);
+    update();
+}
+
+void ChatPainter::toggleMessageSelection(int messageId)
+{
+    if (m_selectedIds.contains(messageId))
+        m_selectedIds.remove(messageId);
+    else
+        m_selectedIds.insert(messageId);
+
+    if (m_selectedIds.isEmpty()) {
+        exitSelectionMode();
+        return;
+    }
+
+    emit selectionChanged(m_selectedIds.size());
+    update();
+}
+
+void ChatPainter::clearSelection()
+{
+    m_selectedIds.clear();
+    exitSelectionMode();
+}
+
+QVector<QVariantMap> ChatPainter::selectedMessages() const
+{
+    QVector<QVariantMap> result;
+    for (const auto &ml : m_layouts) {
+        if (m_selectedIds.contains(ml.messageId)) {
+            QVariantMap m;
+            m["messageId"] = ml.messageId;
+            m["isOwn"] = ml.isOwn;
+            m["actorName"] = ml.actorName;
+            m["messageText"] = ml.bodyHtml;
+            m["timeString"] = ml.timeString;
+            m["hasFile"] = ml.hasFile;
+            m["fileId"] = ml.fileId;
+            m["fileName"] = ml.fileName;
+            m["fileMime"] = ml.fileMime;
+            result.append(m);
+        }
+    }
+    return result;
 }
 
 QVariantMap ChatPainter::messageAt(qreal x, qreal y)
@@ -341,14 +410,16 @@ void ChatPainter::mouseMoveEvent(QMouseEvent *event)
         }
         event->accept();
     } else {
-        // Update hover
-        setHoveredPos(event->position().x(), event->position().y());
-        // Update cursor
-        QString hit = hitTestAt(event->position().x(), event->position().y());
-        if (!hit.isEmpty())
-            setCursor(Qt::PointingHandCursor);
-        else
+        if (!m_selectionMode) {
+            setHoveredPos(event->position().x(), event->position().y());
+            QString hit = hitTestAt(event->position().x(), event->position().y());
+            if (!hit.isEmpty())
+                setCursor(Qt::PointingHandCursor);
+            else
+                setCursor(Qt::ArrowCursor);
+        } else {
             setCursor(Qt::ArrowCursor);
+        }
     }
 }
 
@@ -358,52 +429,77 @@ void ChatPainter::mouseReleaseEvent(QMouseEvent *event)
     m_dragging = false;
 
     if (!m_dragMoved && event->button() == Qt::LeftButton) {
-        // Use hit test from press time (hover index was valid at press, may change by release)
-        QString hit = m_pressHit;
-        if (hit.startsWith("link:")) {
-            QString url = hit.mid(5);
-            if (url.startsWith("http://") || url.startsWith("https://"))
-                emit linkActivated(url);
-        } else if (hit.startsWith("reaction:")) {
-            QStringList rparts = hit.mid(9).split(":");
-            if (rparts.size() >= 2)
-                emit reactionClicked(rparts[0].toInt(), rparts.mid(1).join(":"));
-        } else if (hit.startsWith("file:")) {
-            // file:ID:MIME:NAME
-            QStringList parts = hit.mid(5).split(":");
-            if (parts.size() >= 3) {
-                int fid = parts[0].toInt();
-                QString mime = parts[1];
-                QString fname = parts.mid(2).join(":");
-                emit fileClicked(fid, mime, fname);
-            }
-        } else if (hit.startsWith("reply:")) {
-            // Get message data at the clicked position
+        // Selection mode: click toggles selection on entire row
+        if (m_selectionMode) {
             qreal canvasY = event->position().y() + m_scrollY;
-            int clickIdx = layoutIndexAtY(canvasY);
-            if (clickIdx >= 0 && clickIdx < m_layouts.size()) {
-                const auto &clickMl = m_layouts[clickIdx];
-                emit replyRequested(clickMl.messageId, clickMl.actorName, clickMl.bodyHtml);
+            int idx = layoutIndexAtY(canvasY);
+            if (idx >= 0 && idx < m_layouts.size()) {
+                const auto &ml = m_layouts[idx];
+                if (!ml.isSystem && ml.messageId > 0)
+                    toggleMessageSelection(ml.messageId);
             }
-        } else if (hit.startsWith("react:")) {
-            int rMsgId = hit.mid(6).toInt();
-            // Find the react button rect for proper positioning
-            int rIdx = layoutIndexAtY(event->position().y() + m_scrollY);
-            if (rIdx >= 0 && rIdx < m_layouts.size()) {
-                QRectF reactR = hoverBarReactRect(m_layouts[rIdx]);
-                QPoint btnCenter = mapToGlobal(QPoint(
-                    qRound(reactR.center().x()),
-                    qRound(reactR.center().y() - m_scrollY)));
-                emit reactRequested(rMsgId, btnCenter);
+        }
+        // Ctrl+Click: toggle selection (enter mode if needed)
+        else if (event->modifiers() & Qt::ControlModifier) {
+            qreal canvasY = event->position().y() + m_scrollY;
+            int idx = layoutIndexAtY(canvasY);
+            if (idx >= 0 && idx < m_layouts.size()) {
+                const auto &ml = m_layouts[idx];
+                if (!ml.isSystem && ml.messageId > 0) {
+                    if (!m_selectionMode)
+                        enterSelectionMode(ml.messageId);
+                    else
+                        toggleMessageSelection(ml.messageId);
+                }
+            }
+        }
+        // Normal click: existing hit-test logic
+        else {
+            QString hit = m_pressHit;
+            if (hit.startsWith("link:")) {
+                QString url = hit.mid(5);
+                if (url.startsWith("http://") || url.startsWith("https://"))
+                    emit linkActivated(url);
+            } else if (hit.startsWith("reaction:")) {
+                QStringList rparts = hit.mid(9).split(":");
+                if (rparts.size() >= 2)
+                    emit reactionClicked(rparts[0].toInt(), rparts.mid(1).join(":"));
+            } else if (hit.startsWith("file:")) {
+                QStringList parts = hit.mid(5).split(":");
+                if (parts.size() >= 3) {
+                    int fid = parts[0].toInt();
+                    QString mime = parts[1];
+                    QString fname = parts.mid(2).join(":");
+                    emit fileClicked(fid, mime, fname);
+                }
+            } else if (hit.startsWith("reply:")) {
+                qreal canvasY = event->position().y() + m_scrollY;
+                int clickIdx = layoutIndexAtY(canvasY);
+                if (clickIdx >= 0 && clickIdx < m_layouts.size()) {
+                    const auto &clickMl = m_layouts[clickIdx];
+                    emit replyRequested(clickMl.messageId, clickMl.actorName, clickMl.bodyHtml);
+                }
+            } else if (hit.startsWith("react:")) {
+                int rMsgId = hit.mid(6).toInt();
+                int rIdx = layoutIndexAtY(event->position().y() + m_scrollY);
+                if (rIdx >= 0 && rIdx < m_layouts.size()) {
+                    QRectF reactR = hoverBarReactRect(m_layouts[rIdx]);
+                    QPoint btnCenter = mapToGlobal(QPoint(
+                        qRound(reactR.center().x()),
+                        qRound(reactR.center().y() - m_scrollY)));
+                    emit reactRequested(rMsgId, btnCenter);
+                }
             }
         }
     }
 
     // Right-click → context menu
     if (!m_dragMoved && event->button() == Qt::RightButton) {
-        QVariantMap msg = messageAt(event->position().x(), event->position().y());
-        if (msg.value("messageId").toInt() > 0) {
-            emit contextMenuRequested(msg, mapToGlobal(event->position().toPoint()));
+        if (!m_selectionMode) {
+            QVariantMap msg = messageAt(event->position().x(), event->position().y());
+            if (msg.value("messageId").toInt() > 0) {
+                emit contextMenuRequested(msg, mapToGlobal(event->position().toPoint()));
+            }
         }
     }
     event->accept();
@@ -424,6 +520,16 @@ void ChatPainter::dropEvent(QDropEvent *event)
         }
     }
     event->acceptProposedAction();
+}
+
+void ChatPainter::keyPressEvent(QKeyEvent *event)
+{
+    if (m_selectionMode && event->key() == Qt::Key_Escape) {
+        exitSelectionMode();
+        event->accept();
+        return;
+    }
+    QWidget::keyPressEvent(event);
 }
 
 QString ChatPainter::hitTestLink(const MessageLayout &ml, const QPointF &canvasPos) const
@@ -498,6 +604,35 @@ void ChatPainter::paintEvent(QPaintEvent *)
         if (ml.totalY + ml.totalHeight < vpTop || ml.totalY > vpBottom)
             continue;
 
+        // Selection highlight — full-width teal tint
+        if (m_selectionMode && m_selectedIds.contains(ml.messageId)) {
+            p.setPen(Qt::NoPen);
+            p.setBrush(QColor(46, 196, 182, 30));
+            p.drawRect(QRectF(0, ml.totalY + offsetY, width(), ml.totalHeight));
+        }
+
+        // Selection checkbox
+        if (m_selectionMode && !ml.isSystem) {
+            bool selected = m_selectedIds.contains(ml.messageId);
+            qreal ckSize = 18;
+            qreal ckY = ml.totalY + offsetY + (ml.totalHeight - ckSize) / 2.0;
+            qreal ckX = ml.isOwn ? (width() - ckSize - 8) : 8;
+
+            if (selected) {
+                p.setPen(Qt::NoPen);
+                p.setBrush(m_theme.accent);
+                p.drawEllipse(QRectF(ckX, ckY, ckSize, ckSize));
+                p.setPen(QPen(Qt::white, 2));
+                QPointF c(ckX + ckSize / 2.0, ckY + ckSize / 2.0);
+                p.drawLine(QPointF(c.x() - 4, c.y()), QPointF(c.x() - 1, c.y() + 3));
+                p.drawLine(QPointF(c.x() - 1, c.y() + 3), QPointF(c.x() + 4, c.y() - 3));
+            } else {
+                p.setPen(QPen(QColor(85, 85, 85), 1.5));
+                p.setBrush(Qt::NoBrush);
+                p.drawEllipse(QRectF(ckX, ckY, ckSize, ckSize));
+            }
+        }
+
         if (ml.showDateSep)
             paintDateSep(&p, ml, offsetY);
 
@@ -508,7 +643,7 @@ void ChatPainter::paintEvent(QPaintEvent *)
         else
             paintOtherMessage(&p, ml, offsetY);
 
-        if (i == m_hoveredIndex && !ml.isSystem
+        if (!m_selectionMode && i == m_hoveredIndex && !ml.isSystem
             && ml.sendStatus != QLatin1String("sending")
             && ml.sendStatus != QLatin1String("failed"))
             paintHoverBar(&p, ml, offsetY);

@@ -49,6 +49,15 @@ public:
     void setHoveredPos(qreal x, qreal y);
     QImage cachedPreview(int fileId) const { return m_previewCache.value(fileId); }
 
+    // ── Selection ──
+    bool selectionMode() const { return m_selectionMode; }
+    QSet<int> selectedIds() const { return m_selectedIds; }
+    void enterSelectionMode(int firstMessageId);
+    void exitSelectionMode();
+    void toggleMessageSelection(int messageId);
+    void clearSelection();
+    QVector<QVariantMap> selectedMessages() const;
+
 signals:
     void atBottomChanged();
     void scrollYChanged();
@@ -62,6 +71,8 @@ signals:
     void reactRequested(int messageId, const QPoint &globalPos);
     void contextMenuRequested(const QVariantMap &msgData, const QPoint &globalPos);
     void fileDropped(const QString &filePath);
+    void selectionModeChanged(bool active);
+    void selectionChanged(int count);
 
 protected:
     void paintEvent(QPaintEvent *event) override;
@@ -73,6 +84,7 @@ protected:
     bool event(QEvent *event) override;
     void dragEnterEvent(QDragEnterEvent *event) override;
     void dropEvent(QDropEvent *event) override;
+    void keyPressEvent(QKeyEvent *event) override;
 
 private slots:
     void onRowsInserted(const QModelIndex &parent, int first, int last);
@@ -136,4 +148,8 @@ private:
     QHash<int, QImage> m_previewCache;      // fileId -> preview image
     QHash<int, qreal> m_previewAspect;     // fileId -> height/width ratio (0 = unknown)
     QSet<int> m_previewPending;            // in-flight preview requests
+
+    // ── Selection state ──
+    bool m_selectionMode = false;
+    QSet<int> m_selectedIds;
 };
