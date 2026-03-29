@@ -14,32 +14,28 @@ SelectionBarWidget::SelectionBarWidget(QWidget *parent)
     layout->addWidget(m_countLabel);
     layout->addStretch();
 
-    auto makeBtn = [this](const QString &text, const QString &style) {
+    const QString normalStyle =
+        "QPushButton { background: #2a2a3e; color: #e0e0e0; border: none; border-radius: 8px; padding: 7px 14px; font-size: 12px; }"
+        "QPushButton:hover { background: #353550; }";
+
+    auto makeBtn = [this, layout](const QString &text, const QString &style) {
         auto *btn = new QPushButton(text, this);
         btn->setCursor(Qt::PointingHandCursor);
         btn->setStyleSheet(style);
+        layout->addWidget(btn);
         return btn;
     };
 
-    m_forwardBtn = makeBtn(QStringLiteral("\u2197\uFE0F Forward"),
-        "QPushButton { background: #2a2a3e; color: #e0e0e0; border: none; border-radius: 8px; padding: 7px 14px; font-size: 12px; }"
-        "QPushButton:hover { background: #353550; }");
-    layout->addWidget(m_forwardBtn);
-
-    m_copyBtn = makeBtn(QStringLiteral("\U0001F4CB Copy"),
-        "QPushButton { background: #2a2a3e; color: #e0e0e0; border: none; border-radius: 8px; padding: 7px 14px; font-size: 12px; }"
-        "QPushButton:hover { background: #353550; }");
-    layout->addWidget(m_copyBtn);
+    m_forwardBtn = makeBtn(QStringLiteral("\u2197\uFE0F Forward"), normalStyle);
+    m_copyBtn = makeBtn(QStringLiteral("\U0001F4CB Copy"), normalStyle);
 
     m_deleteBtn = makeBtn(QStringLiteral("\U0001F5D1\uFE0F Delete"),
         "QPushButton { background: rgba(248,81,73,0.15); color: #f85149; border: none; border-radius: 8px; padding: 7px 14px; font-size: 12px; }"
         "QPushButton:hover { background: rgba(248,81,73,0.25); }");
-    layout->addWidget(m_deleteBtn);
 
     m_cancelBtn = makeBtn(QStringLiteral("\u2715 Cancel"),
         "QPushButton { background: #2a2a3e; color: #888; border: none; border-radius: 8px; padding: 7px 14px; font-size: 12px; }"
         "QPushButton:hover { background: #353550; color: #bbb; }");
-    layout->addWidget(m_cancelBtn);
 
     connect(m_forwardBtn, &QPushButton::clicked, this, &SelectionBarWidget::forwardClicked);
     connect(m_copyBtn, &QPushButton::clicked, this, &SelectionBarWidget::copyClicked);
