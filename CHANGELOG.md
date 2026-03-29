@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.14.0 (2026-03-29)
+
+### Multi-Message Selection (Telegram-style)
+- **Selection mode** — right-click → "Select" or Ctrl+Click to enter, Esc to exit
+- **Full-row click targets** — click anywhere on a message row to toggle selection
+- **Visual feedback** — teal row highlight + circular checkboxes (filled when selected)
+- **Action bar** — replaces composer with Forward, Copy, Delete, Cancel buttons
+- **Copy** — formats as `[Author, HH:MM]\nMessage` for each selected message
+- **Forward** — conversation picker dialog, sends messages as text to target conversation
+- **Delete** — bulk delete with confirmation (only available when all selected are own)
+- **Ctrl+C** shortcut copies selected messages when in selection mode
+
 ## v0.13.1 (2026-03-29)
 
 ### Bidirectional Video Calls
