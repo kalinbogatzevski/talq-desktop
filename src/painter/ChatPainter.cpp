@@ -147,29 +147,21 @@ void ChatPainter::toggleMessageSelection(int messageId)
     update();
 }
 
-void ChatPainter::clearSelection()
+bool ChatPainter::allSelectedOwn() const
 {
-    m_selectedIds.clear();
-    exitSelectionMode();
+    for (const auto &ml : m_layouts) {
+        if (m_selectedIds.contains(ml.messageId) && !ml.isOwn)
+            return false;
+    }
+    return !m_selectedIds.isEmpty();
 }
 
 QVector<QVariantMap> ChatPainter::selectedMessages() const
 {
     QVector<QVariantMap> result;
     for (const auto &ml : m_layouts) {
-        if (m_selectedIds.contains(ml.messageId)) {
-            QVariantMap m;
-            m["messageId"] = ml.messageId;
-            m["isOwn"] = ml.isOwn;
-            m["actorName"] = ml.actorName;
-            m["messageText"] = ml.bodyHtml;
-            m["timeString"] = ml.timeString;
-            m["hasFile"] = ml.hasFile;
-            m["fileId"] = ml.fileId;
-            m["fileName"] = ml.fileName;
-            m["fileMime"] = ml.fileMime;
-            result.append(m);
-        }
+        if (m_selectedIds.contains(ml.messageId))
+            result.append(variantMapFromLayout(ml));
     }
     return result;
 }
@@ -179,18 +171,22 @@ QVariantMap ChatPainter::messageAt(qreal x, qreal y)
     qreal canvasY = y + m_scrollY;
     int idx = layoutIndexAtY(canvasY);
     if (idx < 0 || idx >= m_layouts.size()) return {};
+    return variantMapFromLayout(m_layouts[idx]);
+}
 
-    const auto &ml = m_layouts[idx];
-    QVariantMap m;
-    m["messageId"] = ml.messageId;
-    m["isOwn"] = ml.isOwn;
-    m["actorName"] = ml.actorName;
-    m["messageText"] = ml.bodyHtml;
-    m["hasFile"] = ml.hasFile;
-    m["fileId"] = ml.fileId;
-    m["fileName"] = ml.fileName;
-    m["fileMime"] = ml.fileMime;
-    return m;
+QVariantMap ChatPainter::variantMapFromLayout(const MessageLayout &ml) const
+{
+    return {
+        {"messageId", ml.messageId},
+        {"isOwn", ml.isOwn},
+        {"actorName", ml.actorName},
+        {"messageText", ml.bodyHtml},
+        {"timeString", ml.timeString},
+        {"hasFile", ml.hasFile},
+        {"fileId", ml.fileId},
+        {"fileName", ml.fileName},
+        {"fileMime", ml.fileMime},
+    };
 }
 
 QString ChatPainter::hitTestAt(qreal x, qreal y)
@@ -614,32 +610,34 @@ void ChatPainter::paintEvent(QPaintEvent *)
         if (ml.totalY + ml.totalHeight < vpTop || ml.totalY > vpBottom)
             continue;
 
-        // Selection highlight — full-width teal tint
-        if (m_selectionMode && m_selectedIds.contains(ml.messageId)) {
-            p.setPen(Qt::NoPen);
-            p.setBrush(QColor(46, 196, 182, 30));
-            p.drawRect(QRectF(0, ml.totalY + offsetY, width(), ml.totalHeight));
-        }
-
-        // Selection checkbox
-        if (m_selectionMode && !ml.isSystem) {
+        // Selection highlight and checkbox
+        if (m_selectionMode) {
             bool selected = m_selectedIds.contains(ml.messageId);
-            qreal ckSize = 18;
-            qreal ckY = ml.totalY + offsetY + (ml.totalHeight - ckSize) / 2.0;
-            qreal ckX = ml.isOwn ? (width() - ckSize - 8) : 8;
 
             if (selected) {
                 p.setPen(Qt::NoPen);
-                p.setBrush(m_theme.accent);
-                p.drawEllipse(QRectF(ckX, ckY, ckSize, ckSize));
-                p.setPen(QPen(Qt::white, 2));
-                QPointF c(ckX + ckSize / 2.0, ckY + ckSize / 2.0);
-                p.drawLine(QPointF(c.x() - 4, c.y()), QPointF(c.x() - 1, c.y() + 3));
-                p.drawLine(QPointF(c.x() - 1, c.y() + 3), QPointF(c.x() + 4, c.y() - 3));
-            } else {
-                p.setPen(QPen(QColor(85, 85, 85), 1.5));
-                p.setBrush(Qt::NoBrush);
-                p.drawEllipse(QRectF(ckX, ckY, ckSize, ckSize));
+                p.setBrush(QColor(46, 196, 182, 30));
+                p.drawRect(QRectF(0, ml.totalY + offsetY, width(), ml.totalHeight));
+            }
+
+            if (!ml.isSystem) {
+                qreal ckSize = 18;
+                qreal ckY = ml.totalY + offsetY + (ml.totalHeight - ckSize) / 2.0;
+                qreal ckX = ml.isOwn ? (width() - ckSize - 8) : 8;
+
+                if (selected) {
+                    p.setPen(Qt::NoPen);
+                    p.setBrush(m_theme.accent);
+                    p.drawEllipse(QRectF(ckX, ckY, ckSize, ckSize));
+                    p.setPen(QPen(Qt::white, 2));
+                    QPointF c(ckX + ckSize / 2.0, ckY + ckSize / 2.0);
+                    p.drawLine(QPointF(c.x() - 4, c.y()), QPointF(c.x() - 1, c.y() + 3));
+                    p.drawLine(QPointF(c.x() - 1, c.y() + 3), QPointF(c.x() + 4, c.y() - 3));
+                } else {
+                    p.setPen(QPen(QColor(85, 85, 85), 1.5));
+                    p.setBrush(Qt::NoBrush);
+                    p.drawEllipse(QRectF(ckX, ckY, ckSize, ckSize));
+                }
             }
         }
 

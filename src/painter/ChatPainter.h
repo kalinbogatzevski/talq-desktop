@@ -55,7 +55,7 @@ public:
     void enterSelectionMode(int firstMessageId);
     void exitSelectionMode();
     void toggleMessageSelection(int messageId);
-    void clearSelection();
+    bool allSelectedOwn() const;
     QVector<QVariantMap> selectedMessages() const;
 
 signals:
@@ -98,6 +98,7 @@ private:
     int layoutIndexAtY(qreal viewportY) const;
     QString hitTestLink(const MessageLayout &ml, const QPointF &localPos) const;
     QString hitTestReaction(const MessageLayout &ml, const QPointF &localPos) const;
+    QVariantMap variantMapFromLayout(const MessageLayout &ml) const;
 
     // ── Painting helpers ──
     void paintDateSep(QPainter *p, const MessageLayout &ml, qreal offsetY);
