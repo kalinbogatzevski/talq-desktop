@@ -150,9 +150,10 @@ int main(int argc, char *argv[])
     });
 
     // Push events -> refresh
-    QObject::connect(&push, &PushClient::pushReceived, &conversations, [&conversations](const QString &type) {
-        qDebug() << "Push event received:" << type << "-- refreshing conversations";
+    QObject::connect(&push, &PushClient::pushReceived, &conversations, [&conversations, &messages](const QString &type) {
+        qDebug() << "Push event received:" << type << "-- refreshing conversations + messages";
         conversations.refresh();
+        messages.refresh();  // instant read status + new message pickup
     });
 
     // Start push + signaling after login (both fresh login AND session restore)

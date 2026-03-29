@@ -416,6 +416,11 @@ void MessageListModel::trimOldMessages()
     emit hasMoreHistoryChanged();
 }
 
+void MessageListModel::refresh()
+{
+    refreshLatest();
+}
+
 void MessageListModel::refreshLatest()
 {
     if (m_token.isEmpty()) return;
