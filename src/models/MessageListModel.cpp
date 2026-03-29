@@ -121,7 +121,8 @@ QVariant MessageListModel::data(const QModelIndex &index, int role) const
         case ReactionsRole: {
             QStringList parts;
             for (auto it = m.reactions.begin(); it != m.reactions.end(); ++it) {
-                parts << QString("%1 %2").arg(it.key()).arg(it.value().toInt());
+                int count = it.value().isArray() ? it.value().toArray().size() : it.value().toInt();
+                parts << QString("%1 %2").arg(it.key()).arg(count);
             }
             return parts.join("  ");
         }
