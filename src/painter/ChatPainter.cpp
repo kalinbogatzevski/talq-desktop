@@ -660,8 +660,8 @@ void ChatPainter::paintEvent(QPaintEvent *)
         if (m_selectionMode && !ml.isSystem) {
             bool selected = m_selectedIds.contains(ml.messageId);
             qreal ckSize = 24;
-            // Position over the avatar area (centered on avatar column)
-            qreal ckX = 12 + (PainterTheme::avatarSize - ckSize) / 2.0;
+            // Far right of the chat row
+            qreal ckX = width() - ckSize - 12;
             qreal ckY = ml.totalY + offsetY + (ml.totalHeight - ckSize) / 2.0;
 
             if (selected) {
@@ -720,14 +720,11 @@ void ChatPainter::paintSystemMessage(QPainter *p, const MessageLayout &ml, qreal
 
 void ChatPainter::paintOwnMessage(QPainter *p, const MessageLayout &ml, qreal offsetY)
 {
-    // In selection mode, shift own messages left to align with others
-    qreal selShiftX = 0;
-    if (m_selectionMode) {
-        qreal leftAlignX = 12 + PainterTheme::avatarSize + PainterTheme::avatarGap;
-        selShiftX = leftAlignX - ml.bubbleRect.left();
-        p->save();
-        p->translate(selShiftX, 0);
-    }
+    // Shift own messages left to align with others (Telegram-style)
+    qreal leftAlignX = 12 + PainterTheme::avatarSize + PainterTheme::avatarGap;
+    qreal shiftX = leftAlignX - ml.bubbleRect.left();
+    p->save();
+    p->translate(shiftX, 0);
 
     // Bubble background
     QRectF bubble = ml.bubbleRect.translated(0, offsetY);
@@ -807,15 +804,45 @@ void ChatPainter::paintOwnMessage(QPainter *p, const MessageLayout &ml, qreal of
     }
 
     p->setOpacity(oldOpacity);
-
-    if (m_selectionMode)
-        p->restore();
+    p->restore();
 }
 
 // ─── Other person's message ─────────────────────────
 
 void ChatPainter::paintOtherMessage(QPainter *p, const MessageLayout &ml, qreal offsetY)
 {
+    // Bubble background for other messages
+    {
+        // Find content bounds (union of all content rects)
+        qreal top = ml.totalY + ml.totalHeight;  // start high
+        qreal bottom = ml.totalY;
+        qreal left = width();
+        qreal right = 0;
+
+        auto expandWith = [&](const QRectF &r) {
+            if (r.isNull()) return;
+            top = qMin(top, r.top());
+            bottom = qMax(bottom, r.bottom());
+            left = qMin(left, r.left());
+            right = qMax(right, r.right());
+        };
+
+        expandWith(ml.nameRect);
+        expandWith(ml.bodyRect);
+        expandWith(ml.quoteRect);
+        expandWith(ml.fileRect);
+        expandWith(ml.reactBarRect);
+        if (ml.isGrouped) expandWith(ml.timeRect);
+
+        if (right > left) {
+            QRectF bubble(left - 8, top - 6, right - left + 16, bottom - top + 12);
+            bubble.translate(0, offsetY);
+            p->setPen(Qt::NoPen);
+            p->setBrush(m_darkMode ? QColor(255, 255, 255, 15) : QColor(0, 0, 0, 12));
+            p->drawRoundedRect(bubble, PainterTheme::radiusNormal, PainterTheme::radiusNormal);
+        }
+    }
+
     // Avatar (non-grouped)
     if (!ml.isGrouped && !ml.avatarRect.isNull()) {
         QRectF ar = ml.avatarRect.translated(0, offsetY);
