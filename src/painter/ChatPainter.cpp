@@ -739,28 +739,12 @@ void ChatPainter::paintOwnMessage(QPainter *p, const MessageLayout &ml, qreal of
         }
     }
 
-    // Bubble background (computed from content rects, same as other messages)
-    {
-        qreal top = ml.totalY + ml.totalHeight, bottom = ml.totalY;
-        qreal left = width(), right = 0;
-        auto expandWith = [&](const QRectF &r) {
-            if (r.isNull()) return;
-            top = qMin(top, r.top()); bottom = qMax(bottom, r.bottom());
-            left = qMin(left, r.left()); right = qMax(right, r.right());
-        };
-        expandWith(ml.bodyRect);
-        expandWith(ml.quoteRect);
-        expandWith(ml.fileRect);
-        expandWith(ml.reactBarRect);
-        expandWith(ml.timeRect);
-        if (right > left) {
-            qreal padTop = ml.isGrouped ? 1 : 5;
-            QRectF bubble(left - 8, top - padTop, right - left + 16, bottom - top + padTop + 3);
-            bubble.translate(0, offsetY);
-            p->setPen(Qt::NoPen);
-            p->setBrush(m_theme.bgMessageOwn);
-            p->drawRoundedRect(bubble, PainterTheme::radiusNormal, PainterTheme::radiusNormal);
-        }
+    // Bubble background
+    if (!ml.bubbleRect.isNull()) {
+        QRectF bubble = ml.bubbleRect.translated(0, offsetY);
+        p->setPen(Qt::NoPen);
+        p->setBrush(m_theme.bgMessageOwn);
+        p->drawRoundedRect(bubble, PainterTheme::radiusNormal, PainterTheme::radiusNormal);
     }
 
     // Sending state opacity
@@ -841,38 +825,12 @@ void ChatPainter::paintOwnMessage(QPainter *p, const MessageLayout &ml, qreal of
 
 void ChatPainter::paintOtherMessage(QPainter *p, const MessageLayout &ml, qreal offsetY)
 {
-    // Bubble background for other messages
-    {
-        // Find content bounds (union of all content rects)
-        qreal top = ml.totalY + ml.totalHeight;  // start high
-        qreal bottom = ml.totalY;
-        qreal left = width();
-        qreal right = 0;
-
-        auto expandWith = [&](const QRectF &r) {
-            if (r.isNull()) return;
-            top = qMin(top, r.top());
-            bottom = qMax(bottom, r.bottom());
-            left = qMin(left, r.left());
-            right = qMax(right, r.right());
-        };
-
-        // Bubble wraps only content — not author name/time (those sit above)
-        expandWith(ml.bodyRect);
-        expandWith(ml.quoteRect);
-        expandWith(ml.fileRect);
-        expandWith(ml.reactBarRect);
-        expandWith(ml.timeRect);
-
-        if (right > left) {
-            qreal padTop = ml.isGrouped ? 1 : 5;
-            qreal padBottom = 3;
-            QRectF bubble(left - 8, top - padTop, right - left + 16, bottom - top + padTop + padBottom);
-            bubble.translate(0, offsetY);
-            p->setPen(Qt::NoPen);
-            p->setBrush(m_darkMode ? QColor(255, 255, 255, 15) : QColor(0, 0, 0, 12));
-            p->drawRoundedRect(bubble, PainterTheme::radiusNormal, PainterTheme::radiusNormal);
-        }
+    // Bubble background
+    if (!ml.bubbleRect.isNull()) {
+        QRectF bubble = ml.bubbleRect.translated(0, offsetY);
+        p->setPen(Qt::NoPen);
+        p->setBrush(m_darkMode ? QColor(255, 255, 255, 15) : QColor(0, 0, 0, 12));
+        p->drawRoundedRect(bubble, PainterTheme::radiusNormal, PainterTheme::radiusNormal);
     }
 
     // Avatar (non-grouped)
@@ -939,7 +897,7 @@ void ChatPainter::paintOtherMessage(QPainter *p, const MessageLayout &ml, qreal 
         QRectF tr = ml.timeRect.translated(0, offsetY);
         p->setPen(m_theme.textTime);
         p->setFont(m_theme.timeFont());
-        p->drawText(tr, Qt::AlignLeft | Qt::AlignVCenter, ml.timeString);
+        p->drawText(tr, Qt::AlignRight | Qt::AlignVCenter, ml.timeString);
     }
 }
 
@@ -1112,10 +1070,8 @@ QRectF ChatPainter::hoverBarReactRect(const MessageLayout &ml) const
     const qreal btnSize = 28;
     const qreal gap = 8;
 
-    // First button position: right of bubble/content
-    qreal x = ml.isOwn
-        ? ml.bubbleRect.right() + gap
-        : ml.contentRight + gap;
+    // Right of bubble
+    qreal x = ml.contentRight + gap;
     qreal refTop = ml.bodyRect.isNull() ? ml.totalY : ml.bodyRect.top();
     qreal refBottom = ml.bodyRect.isNull() ? ml.totalY + ml.totalHeight : ml.bodyRect.bottom();
     qreal y = refTop + (refBottom - refTop - btnSize) / 2.0;
