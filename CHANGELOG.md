@@ -1,17 +1,28 @@
 # Changelog
 
-## v0.14.1 (2026-03-29)
+## v0.14.2 (2026-03-29)
 
-### Fixes
-- **Custom notification popup** — Telegram-style dark rounded popup at bottom-right, replaces Windows toast
+### Notifications
+- **Custom notification popup** — Telegram-style dark rounded popup at bottom-right of screen
 - **Click notification opens conversation** — restores window and switches to the chat
-- **Notification for cross-chat messages** — shows even when app is focused (different conversation)
+- **Cross-chat notifications** — shows even when app is focused (different conversation)
 - **Notification text fix** — was showing oldest message instead of newest (model index bug)
-- **Upload progress bar** — shows filename + percentage with teal progress line above composer
+
+### File Upload
+- **Upload progress bar** — filename + percentage + teal progress line above composer
+- **Caption via composer** — type caption in main input, no separate field
+- **Enter sends file** — pending file sent on Enter key (with caption from composer)
+- **Simplified pending bar** — file preview + name + cancel only, send via composer
+- **Scroll to bottom** — chat scrolls down after file upload completes
+
+### Other Fixes
 - **123NET branding** — brand logo + TalQ sub-logo on login and welcome screens
 - **Instant read status** — push events trigger message refresh
 - **Chat scrollbar** — thin scrollbar thumb on right edge
 - **Reaction counts** — fixed showing 0 (array length, not toInt)
+- **Placeholder consistency** — unified to "Message..." across all code paths
+- **Non-branded login** — empty server URL (was hardcoded to 123NET)
+- **Dead signal removed** — unused `popupRequested` from NotificationManager
 
 ## v0.14.0 (2026-03-29)
 
