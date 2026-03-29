@@ -377,12 +377,29 @@ void MainWindow::buildChatPage()
     welcomeLayout->setAlignment(Qt::AlignCenter);
     welcomeLayout->setSpacing(16);
 
+#ifdef TALQ_BRANDED
+    // Branded: show BRAND logo + smaller TalQ logo below
+    auto *brandLabel = new QLabel(m_welcomeWidget);
+    QPixmap brandLogo(":/brand-logo.png");
+    if (!brandLogo.isNull())
+        brandLabel->setPixmap(brandLogo.scaled(80, 80, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    brandLabel->setAlignment(Qt::AlignCenter);
+    welcomeLayout->addWidget(brandLabel);
+
+    auto *logoLabel = new QLabel(m_welcomeWidget);
+    QPixmap logo(":/logo.png");
+    if (!logo.isNull())
+        logoLabel->setPixmap(logo.scaled(48, 48, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    logoLabel->setAlignment(Qt::AlignCenter);
+    welcomeLayout->addWidget(logoLabel);
+#else
     auto *logoLabel = new QLabel(m_welcomeWidget);
     QPixmap logo(":/logo.png");
     if (!logo.isNull())
         logoLabel->setPixmap(logo.scaled(80, 80, Qt::KeepAspectRatio, Qt::SmoothTransformation));
     logoLabel->setAlignment(Qt::AlignCenter);
     welcomeLayout->addWidget(logoLabel);
+#endif
 
     m_welcomeNameLabel = new QLabel(m_welcomeWidget);
     m_welcomeNameLabel->setAlignment(Qt::AlignCenter);
