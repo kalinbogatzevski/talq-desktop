@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.14.4 (2026-03-29)
+
+### Fixes
+- **File upload from installed app** — Windows blocked junction traversal from Program Files; now installs to AppData\Local\Programs (per-user, no admin required)
+- **Temp-copy fallback** — if direct file open fails, copies to temp before uploading
+- **Error dialog** — file upload errors now shown to user instead of silently failing
+
 ## v0.14.3 (2026-03-29)
 
 ### Fixes
