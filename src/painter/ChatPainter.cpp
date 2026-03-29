@@ -28,6 +28,7 @@ ChatPainter::ChatPainter(QWidget *parent)
     setAttribute(Qt::WA_Hover);
     setMouseTracking(true);
     setAcceptDrops(true);
+
 }
 
 // ═══════════════════════════════════════════════════════
@@ -404,7 +405,6 @@ void ChatPainter::mousePressEvent(QMouseEvent *event)
         m_pressCanvasPos = event->position();
         m_dragStartY = event->position().y();
         m_dragStartScroll = m_scrollY;
-        // Save hit test at press time (hover index is valid now)
         m_pressHit = hitTestAt(event->position().x(), event->position().y());
         event->accept();
     }
@@ -413,23 +413,52 @@ void ChatPainter::mousePressEvent(QMouseEvent *event)
 void ChatPainter::mouseMoveEvent(QMouseEvent *event)
 {
     if (m_dragging) {
-        qreal dy = m_dragStartY - event->position().y();
-        if (qAbs(dy) > 4) m_dragMoved = true;
-        if (m_dragMoved) {
-            setScrollY(m_dragStartScroll + dy);
+        qreal dy = event->position().y() - m_dragStartY;
+        if (!m_dragMoved && qAbs(dy) > 4)
+            m_dragMoved = true;
+
+        if (m_dragMoved && event->buttons() & Qt::LeftButton) {
+            // Drag-to-select: enter selection mode on first drag, then sweep
+            if (!m_selectionMode) {
+                // Select the message at press position first
+                qreal pressCanvasY = m_pressCanvasPos.y() + m_scrollY;
+                int pressIdx = layoutIndexAtY(pressCanvasY);
+                if (pressIdx >= 0 && pressIdx < m_layouts.size()) {
+                    const auto &ml = m_layouts[pressIdx];
+                    if (!ml.isSystem && ml.messageId > 0)
+                        enterSelectionMode(ml.messageId);
+                }
+            }
+
+            if (m_selectionMode) {
+                // Select/deselect messages as cursor sweeps over them
+                qreal canvasY = event->position().y() + m_scrollY;
+                int idx = layoutIndexAtY(canvasY);
+                if (idx >= 0 && idx < m_layouts.size()) {
+                    const auto &ml = m_layouts[idx];
+                    if (!ml.isSystem && ml.messageId > 0
+                        && !m_selectedIds.contains(ml.messageId)) {
+                        m_selectedIds.insert(ml.messageId);
+                        emit selectionChanged(m_selectedIds.size());
+                        update();
+                    }
+                }
+            }
         }
+
         event->accept();
-    } else {
-        if (!m_selectionMode) {
-            setHoveredPos(event->position().x(), event->position().y());
-            QString hit = hitTestAt(event->position().x(), event->position().y());
-            if (!hit.isEmpty())
-                setCursor(Qt::PointingHandCursor);
-            else
-                setCursor(Qt::ArrowCursor);
-        } else {
+        return;
+    }
+
+    if (!m_selectionMode) {
+        setHoveredPos(event->position().x(), event->position().y());
+        QString hit = hitTestAt(event->position().x(), event->position().y());
+        if (!hit.isEmpty())
+            setCursor(Qt::PointingHandCursor);
+        else
             setCursor(Qt::ArrowCursor);
-        }
+    } else {
+        setCursor(Qt::ArrowCursor);
     }
 }
 
@@ -610,35 +639,11 @@ void ChatPainter::paintEvent(QPaintEvent *)
         if (ml.totalY + ml.totalHeight < vpTop || ml.totalY > vpBottom)
             continue;
 
-        // Selection highlight and checkbox
-        if (m_selectionMode) {
-            bool selected = m_selectedIds.contains(ml.messageId);
-
-            if (selected) {
-                p.setPen(Qt::NoPen);
-                p.setBrush(QColor(46, 196, 182, 30));
-                p.drawRect(QRectF(0, ml.totalY + offsetY, width(), ml.totalHeight));
-            }
-
-            if (!ml.isSystem) {
-                qreal ckSize = 18;
-                qreal ckY = ml.totalY + offsetY + (ml.totalHeight - ckSize) / 2.0;
-                qreal ckX = ml.isOwn ? (width() - ckSize - 8) : 8;
-
-                if (selected) {
-                    p.setPen(Qt::NoPen);
-                    p.setBrush(m_theme.accent);
-                    p.drawEllipse(QRectF(ckX, ckY, ckSize, ckSize));
-                    p.setPen(QPen(Qt::white, 2));
-                    QPointF c(ckX + ckSize / 2.0, ckY + ckSize / 2.0);
-                    p.drawLine(QPointF(c.x() - 4, c.y()), QPointF(c.x() - 1, c.y() + 3));
-                    p.drawLine(QPointF(c.x() - 1, c.y() + 3), QPointF(c.x() + 4, c.y() - 3));
-                } else {
-                    p.setPen(QPen(QColor(85, 85, 85), 1.5));
-                    p.setBrush(Qt::NoBrush);
-                    p.drawEllipse(QRectF(ckX, ckY, ckSize, ckSize));
-                }
-            }
+        // Selection row highlight (painted as background, before message)
+        if (m_selectionMode && m_selectedIds.contains(ml.messageId)) {
+            p.setPen(Qt::NoPen);
+            p.setBrush(QColor(46, 196, 182, 30));
+            p.drawRect(QRectF(0, ml.totalY + offsetY, width(), ml.totalHeight));
         }
 
         if (ml.showDateSep)
@@ -650,6 +655,30 @@ void ChatPainter::paintEvent(QPaintEvent *)
             paintOwnMessage(&p, ml, offsetY);
         else
             paintOtherMessage(&p, ml, offsetY);
+
+        // Selection checkbox (painted ON TOP of message content)
+        if (m_selectionMode && !ml.isSystem) {
+            bool selected = m_selectedIds.contains(ml.messageId);
+            qreal ckSize = 24;
+            // Position over the avatar area (centered on avatar column)
+            qreal ckX = 12 + (PainterTheme::avatarSize - ckSize) / 2.0;
+            qreal ckY = ml.totalY + offsetY + (ml.totalHeight - ckSize) / 2.0;
+
+            if (selected) {
+                // Filled teal circle with white checkmark
+                p.setPen(QPen(Qt::white, 2));
+                p.setBrush(m_theme.accent);
+                p.drawEllipse(QRectF(ckX, ckY, ckSize, ckSize));
+                QPointF c(ckX + ckSize / 2.0, ckY + ckSize / 2.0);
+                p.drawLine(QPointF(c.x() - 5, c.y()), QPointF(c.x() - 1, c.y() + 4));
+                p.drawLine(QPointF(c.x() - 1, c.y() + 4), QPointF(c.x() + 5, c.y() - 4));
+            } else {
+                // Dark filled circle with light border
+                p.setPen(QPen(QColor(160, 160, 160), 2));
+                p.setBrush(QColor(30, 30, 46, 220));
+                p.drawEllipse(QRectF(ckX, ckY, ckSize, ckSize));
+            }
+        }
 
         if (!m_selectionMode && i == m_hoveredIndex && !ml.isSystem
             && ml.sendStatus != QLatin1String("sending")
@@ -691,6 +720,15 @@ void ChatPainter::paintSystemMessage(QPainter *p, const MessageLayout &ml, qreal
 
 void ChatPainter::paintOwnMessage(QPainter *p, const MessageLayout &ml, qreal offsetY)
 {
+    // In selection mode, shift own messages left to align with others
+    qreal selShiftX = 0;
+    if (m_selectionMode) {
+        qreal leftAlignX = 12 + PainterTheme::avatarSize + PainterTheme::avatarGap;
+        selShiftX = leftAlignX - ml.bubbleRect.left();
+        p->save();
+        p->translate(selShiftX, 0);
+    }
+
     // Bubble background
     QRectF bubble = ml.bubbleRect.translated(0, offsetY);
     p->setPen(Qt::NoPen);
@@ -769,6 +807,9 @@ void ChatPainter::paintOwnMessage(QPainter *p, const MessageLayout &ml, qreal of
     }
 
     p->setOpacity(oldOpacity);
+
+    if (m_selectionMode)
+        p->restore();
 }
 
 // ─── Other person's message ─────────────────────────
