@@ -140,14 +140,6 @@ ComposerWidget::ComposerWidget(QWidget *parent)
     m_pendingName->setStyleSheet("font-size: 12px; color: #b0aca5;");
     pendingLayout->addWidget(m_pendingName, 1);
 
-    m_pendingSendBtn = new QPushButton("\u2713", m_pendingBar);
-    m_pendingSendBtn->setFixedSize(32, 32);
-    m_pendingSendBtn->setStyleSheet("font-size: 16px; border: none; border-radius: 16px; background: #2ec4b6; color: white;");
-    m_pendingSendBtn->setCursor(Qt::PointingHandCursor);
-    m_pendingSendBtn->setToolTip("Send");
-    connect(m_pendingSendBtn, &QPushButton::clicked, this, &ComposerWidget::confirmSendFile);
-    pendingLayout->addWidget(m_pendingSendBtn);
-
     m_pendingCancelBtn = new QPushButton("\u2715", m_pendingBar);
     m_pendingCancelBtn->setFixedSize(32, 32);
     m_pendingCancelBtn->setStyleSheet("font-size: 14px; border: none; border-radius: 16px; background: #e06060; color: white;");
