@@ -812,7 +812,25 @@ void MessageListModel::sendFileWithCaption(const QString &filePath, const QStrin
     QString localPath = filePath;
     if (localPath.startsWith("file:///"))
         localPath = QUrl(localPath).toLocalFile();
-    qDebug() << "sendFileWithCaption: localPath=" << localPath;
+
+    // Resolve junctions in path (Qt 6 blocks traversal of untrusted mount points)
+    {
+        QFileInfo fi(localPath);
+        QString absPath = fi.absoluteFilePath();
+        QStringList parts = absPath.split('/', Qt::SkipEmptyParts);
+        if (!parts.isEmpty()) {
+            QString resolved = parts.first() + "/";
+            for (int i = 1; i < parts.size(); ++i) {
+                resolved += parts[i];
+                QFileInfo info(resolved);
+                if (info.isJunction())
+                    resolved = info.junctionTarget();
+                if (i < parts.size() - 1)
+                    resolved += "/";
+            }
+            localPath = resolved;
+        }
+    }
 
     // If the path traverses a junction/symlink, copy to temp first
     // (Windows blocks junction traversal from protected dirs like Program Files)
