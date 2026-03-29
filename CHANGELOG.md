@@ -3,14 +3,30 @@
 ## v0.14.0 (2026-03-29)
 
 ### Multi-Message Selection (Telegram-style)
+- **Drag-to-select** — click and drag to sweep-select messages
 - **Selection mode** — right-click → "Select" or Ctrl+Click to enter, Esc to exit
-- **Full-row click targets** — click anywhere on a message row to toggle selection
-- **Visual feedback** — teal row highlight + circular checkboxes (filled when selected)
+- **Visual feedback** — teal row highlight + circular checkboxes on the right
 - **Action bar** — replaces composer with Forward, Copy, Delete, Cancel buttons
 - **Copy** — formats as `[Author, HH:MM]\nMessage` for each selected message
 - **Forward** — conversation picker dialog, sends messages as text to target conversation
 - **Delete** — bulk delete with confirmation (only available when all selected are own)
 - **Ctrl+C** shortcut copies selected messages when in selection mode
+
+### Chat Layout Redesign
+- **Unified left-aligned layout** — all messages (own + others) left-aligned with avatar column
+- **Own message avatars** — shown for non-grouped messages, same as other users
+- **Author name above bubble** — not inside the bubble, with proper full-width display
+- **Bubble backgrounds** — own (teal), others (subtle transparent gray), with proper internal padding
+- **Timestamp inside bubble** — right-aligned, with read status icon for own messages
+- **Proper spacing** — consistent gaps between messages, no bubble overlap
+
+### Fixes
+- **Instant read status** — push events trigger message refresh for near-instant read indicators
+- **Chat scrollbar** — thin scrollbar thumb on right edge
+- **Reaction counts** — fixed showing 0 (was using toInt on array, now uses array length)
+- **Drag-to-scroll removed** — scroll via mouse wheel and scrollbar only
+- **HTML stripping** — uses QTextDocument::toPlainText() instead of fragile regex
+- **Composer focus** — reply button focuses the text input via focusProxy
 
 ## v0.13.1 (2026-03-29)
 
