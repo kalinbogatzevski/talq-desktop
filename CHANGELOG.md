@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.14.3 (2026-03-29)
+
+### Fixes
+- **Online status live updates** — header status refreshes when user statuses change (was stale after select)
+- **File size in attachments** — file pills show size (KB/MB) below filename
+- **Sidebar last message** — preview updates instantly when new messages arrive
+- **Notification click restore** — uses SetForegroundWindow on Windows to force-bring to front
+
 ## v0.14.2 (2026-03-29)
 
 ### Notifications
