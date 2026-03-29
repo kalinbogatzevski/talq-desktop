@@ -47,7 +47,6 @@ private:
     QWidget *m_pendingBar = nullptr;
     QLabel *m_pendingPreview = nullptr;
     QLabel *m_pendingName = nullptr;
-    QLineEdit *m_captionInput = nullptr;
     QPushButton *m_pendingSendBtn = nullptr;
     QPushButton *m_pendingCancelBtn = nullptr;
     QString m_pendingFilePath;
