@@ -362,8 +362,10 @@ void ChatPainter::resizeEvent(QResizeEvent *event)
 bool ChatPainter::event(QEvent *e)
 {
     if (e->type() == QEvent::HoverMove) {
-        auto *he = static_cast<QHoverEvent *>(e);
-        setHoveredPos(he->position().x(), he->position().y());
+        if (!m_selectionMode) {
+            auto *he = static_cast<QHoverEvent *>(e);
+            setHoveredPos(he->position().x(), he->position().y());
+        }
         return true;
     }
     if (e->type() == QEvent::HoverLeave) {
@@ -439,18 +441,14 @@ void ChatPainter::mouseReleaseEvent(QMouseEvent *event)
                     toggleMessageSelection(ml.messageId);
             }
         }
-        // Ctrl+Click: toggle selection (enter mode if needed)
+        // Ctrl+Click: enter selection mode with this message
         else if (event->modifiers() & Qt::ControlModifier) {
             qreal canvasY = event->position().y() + m_scrollY;
             int idx = layoutIndexAtY(canvasY);
             if (idx >= 0 && idx < m_layouts.size()) {
                 const auto &ml = m_layouts[idx];
-                if (!ml.isSystem && ml.messageId > 0) {
-                    if (!m_selectionMode)
-                        enterSelectionMode(ml.messageId);
-                    else
-                        toggleMessageSelection(ml.messageId);
-                }
+                if (!ml.isSystem && ml.messageId > 0)
+                    enterSelectionMode(ml.messageId);
             }
         }
         // Normal click: existing hit-test logic
