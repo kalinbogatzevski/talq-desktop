@@ -246,9 +246,17 @@ void ComposerWidget::showPendingFile(const QString &path)
 
 void ComposerWidget::confirmSendFile()
 {
-    if (m_pendingFilePath.isEmpty() || !m_model) return;
+    if (m_pendingFilePath.isEmpty()) {
+        qWarning() << "confirmSendFile: no pending file path";
+        return;
+    }
+    if (!m_model) {
+        qWarning() << "confirmSendFile: no model";
+        return;
+    }
     QString caption = m_input->toPlainText().trimmed();
-    m_model->sendFileWithCaption(QUrl::fromLocalFile(m_pendingFilePath).toString(), caption);
+    qDebug() << "confirmSendFile: path=" << m_pendingFilePath << "caption=" << caption;
+    m_model->sendFileWithCaption(m_pendingFilePath, caption);
     m_input->clear();
     cancelPendingFile();
 }
