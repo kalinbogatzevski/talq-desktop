@@ -856,6 +856,22 @@ void MainWindow::buildChatPage()
         m_header->setLoading(m_messages->isLoading());
     });
 
+    // Update header peer status when user statuses refresh
+    connect(m_conversations, &QAbstractItemModel::dataChanged, this, [this](const QModelIndex &, const QModelIndex &, const QList<int> &roles) {
+        if (!roles.contains(ConversationListModel::UserStatusRole) || m_activeConvToken.isEmpty())
+            return;
+        // Find the active conversation and update the header
+        int count = m_conversations->rowCount();
+        for (int i = 0; i < count; ++i) {
+            QModelIndex idx = m_conversations->index(i, 0);
+            if (idx.data(ConversationListModel::TokenRole).toString() == m_activeConvToken) {
+                QString status = idx.data(ConversationListModel::UserStatusRole).toString();
+                m_header->setPeerStatus(status);
+                break;
+            }
+        }
+    });
+
     // Topic mode detection
     connect(m_threads, &ThreadListModel::hasTopicsChanged, this, [this]() {
         bool active = m_threads->hasTopics() && m_auth->hasThreadsSupport();
@@ -1060,8 +1076,8 @@ void MainWindow::restoreFromTray()
 
 void MainWindow::openConversation(const QString &token)
 {
-    // Bring window to front without changing its state
-    if (isMinimized()) {
+    // Bring window to front — Windows blocks focus stealing, so use SetForegroundWindow
+    if (isMinimized() || !isVisible()) {
         if (m_wasMaximized)
             showMaximized();
         else
@@ -1069,6 +1085,10 @@ void MainWindow::openConversation(const QString &token)
     }
     raise();
     activateWindow();
+#ifdef Q_OS_WIN
+    // Force foreground on Windows (bypasses focus stealing prevention)
+    SetForegroundWindow(reinterpret_cast<HWND>(winId()));
+#endif
 
     if (token.isEmpty()) return;
 

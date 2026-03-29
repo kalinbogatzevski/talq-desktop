@@ -49,6 +49,7 @@ public:
     Q_INVOKABLE void clearUnreadForToken(const QString &token);
     Q_INVOKABLE void setHasTopics(const QString &token, bool has);
     Q_INVOKABLE void setNotificationLevel(int index, int level);
+    Q_INVOKABLE void updateLastMessage(const QString &token, const QString &author, const QString &text);
 
     bool isLoading() const { return m_loading; }
     int totalUnread() const { return m_totalUnread; }

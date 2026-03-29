@@ -243,3 +243,12 @@ void ConversationListModel::setNotificationLevel(int idx, int level)
             emit dataChanged(index(i), index(i), {NotificationLevelRole});
         });
 }
+
+void ConversationListModel::updateLastMessage(const QString &token, const QString &author, const QString &text)
+{
+    int i = indexOfToken(token);
+    if (i < 0) return;
+    m_conversations[i].lastMessageText = text;
+    m_conversations[i].lastMessageAuthor = author;
+    emit dataChanged(index(i), index(i), {LastMessageRole, LastAuthorRole});
+}
