@@ -49,11 +49,9 @@ Full QWidget app with working audio + video calls via HPB/Janus MCU. Released v0
 
 ## Next steps
 - Camera doesn't work on this laptop (mfvideosrc COM/STA issue) — test on work laptop
-- Local camera preview (picture-in-picture) during video calls
 - Multi-message selection (Telegram-style)
-- Read status not updating when remote reads
-- 123NET branded version branding verification
-- File metadata in cache, messageModel.count property
+- messageModel.count Q_PROPERTY (count used in QML but not a declared property)
+- Changelog was missing v0.13.0–v0.13.1 entries — now added
 
 ## Architecture notes
 
