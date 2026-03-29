@@ -3,6 +3,8 @@
 #include "SettingsDialog.h"
 #include "LoginWidget.h"
 #include "ComposerWidget.h"
+#include "SelectionBarWidget.h"
+#include "ConversationPickerDialog.h"
 #include "painter/ChatPainter.h"
 #include "painter/SidebarPainter.h"
 #include "painter/HeaderPainter.h"
@@ -450,6 +452,10 @@ void MainWindow::buildChatPage()
     m_composer->hide();
     chatLayout->addWidget(m_composer);
 
+    m_selectionBar = new SelectionBarWidget(chatCol);
+    m_selectionBar->hide();
+    chatLayout->addWidget(m_selectionBar);
+
     connect(m_composer, &ComposerWidget::sendMessage, this, [this](const QString &text) {
         int replyId = m_replyToId > 0 ? m_replyToId : m_activeThreadId;
         m_messages->sendMessage(text, replyId);
@@ -466,6 +472,95 @@ void MainWindow::buildChatPage()
 
     // Drag-and-drop files onto chat → show confirmation in composer
     connect(m_chatPainter, &ChatPainter::fileDropped, m_composer, &ComposerWidget::showPendingFile);
+
+    // Selection mode
+    connect(m_chatPainter, &ChatPainter::selectionModeChanged, this, [this](bool active) {
+        if (active) {
+            m_composer->hide();
+            m_selectionBar->show();
+            m_chatPainter->setFocus();
+        } else {
+            m_selectionBar->hide();
+            if (m_chatMode)
+                m_composer->show();
+        }
+    });
+
+    connect(m_chatPainter, &ChatPainter::selectionChanged, this, [this](int count) {
+        m_selectionBar->setCount(count);
+        bool allOwn = true;
+        for (const auto &msg : m_chatPainter->selectedMessages()) {
+            if (!msg.value("isOwn").toBool()) {
+                allOwn = false;
+                break;
+            }
+        }
+        m_selectionBar->setDeleteVisible(allOwn && count > 0);
+    });
+
+    connect(m_selectionBar, &SelectionBarWidget::cancelClicked, this, [this]() {
+        m_chatPainter->exitSelectionMode();
+    });
+
+    connect(m_selectionBar, &SelectionBarWidget::copyClicked, this, [this]() {
+        auto messages = m_chatPainter->selectedMessages();
+        static const QRegularExpression htmlRe("<[^>]*>");
+        QString text;
+        for (const auto &msg : messages) {
+            QString author = msg.value("actorName").toString();
+            QString time = msg.value("timeString").toString();
+            QString body = msg.value("messageText").toString();
+            body.remove(htmlRe);
+            if (msg.value("hasFile").toBool() && body.isEmpty())
+                body = QStringLiteral("[File: %1]").arg(msg.value("fileName").toString());
+            text += QStringLiteral("[%1, %2]\n%3\n\n").arg(author, time, body);
+        }
+        if (!text.isEmpty())
+            QApplication::clipboard()->setText(text.trimmed());
+        m_chatPainter->exitSelectionMode();
+    });
+
+    connect(m_selectionBar, &SelectionBarWidget::deleteClicked, this, [this]() {
+        auto messages = m_chatPainter->selectedMessages();
+        int count = messages.size();
+        auto reply = QMessageBox::question(this,
+            QStringLiteral("Delete %1 message%2").arg(count).arg(count == 1 ? "" : "s"),
+            QStringLiteral("Are you sure you want to delete %1 message%2?")
+                .arg(count).arg(count == 1 ? "" : "s"),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        if (reply == QMessageBox::Yes) {
+            for (const auto &msg : messages)
+                m_messages->deleteMessage(msg.value("messageId").toInt());
+            m_chatPainter->exitSelectionMode();
+        }
+    });
+
+    connect(m_selectionBar, &SelectionBarWidget::forwardClicked, this, [this]() {
+        auto messages = m_chatPainter->selectedMessages();
+        if (messages.isEmpty()) return;
+
+        auto *picker = new ConversationPickerDialog(m_conversations, m_activeConvToken, this);
+        if (picker->exec() == QDialog::Accepted) {
+            QString targetToken = picker->selectedToken();
+            static const QRegularExpression htmlRe("<[^>]*>");
+            for (const auto &msg : messages) {
+                QString body = msg.value("messageText").toString();
+                body.remove(htmlRe);
+                if (body.isEmpty() && msg.value("hasFile").toBool())
+                    body = QStringLiteral("[File: %1]").arg(msg.value("fileName").toString());
+                if (!body.isEmpty())
+                    m_messages->sendMessageToToken(targetToken, body);
+            }
+            m_chatPainter->exitSelectionMode();
+        }
+        picker->deleteLater();
+    });
+
+    auto *copyShortcut = new QShortcut(QKeySequence::Copy, m_chatPainter);
+    connect(copyShortcut, &QShortcut::activated, this, [this]() {
+        if (m_chatPainter->selectionMode())
+            emit m_selectionBar->copyClicked();
+    });
 
     // Right-click context menu on messages
     connect(m_chatPainter, &ChatPainter::contextMenuRequested, this, [this](const QVariantMap &msg, const QPoint &globalPos) {
@@ -578,6 +673,11 @@ void MainWindow::buildChatPage()
                     m_messages->deleteMessage(msgId);
             });
         }
+
+        menu->addSeparator();
+        menu->addAction(QStringLiteral("\u2610  Select"), this, [this, msgId]() {
+            m_chatPainter->enterSelectionMode(msgId);
+        });
 
         menu->popup(globalPos);
     });
@@ -757,6 +857,9 @@ void MainWindow::onConversationSelected(const QString &token, const QString &nam
                                          const QString &userId, int convType,
                                          const QString &userStatus)
 {
+    if (m_chatPainter->selectionMode())
+        m_chatPainter->exitSelectionMode();
+
     m_activeConvToken = token;
 
     // Switch from welcome to chat

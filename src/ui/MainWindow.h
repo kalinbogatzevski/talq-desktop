@@ -33,6 +33,7 @@ class ComposerWidget;
 class LoginWidget;
 class CallDialog;
 class SettingsDialog;
+class SelectionBarWidget;
 
 class MainWindow : public QMainWindow
 {
@@ -115,6 +116,7 @@ private:
     HeaderPainter *m_header = nullptr;
     ChatPainter *m_chatPainter = nullptr;
     ComposerWidget *m_composer = nullptr;
+    SelectionBarWidget *m_selectionBar = nullptr;
     QSplitter *m_splitter = nullptr;
     QWidget *m_sidebarCol = nullptr;
     QLabel *m_profileNameLabel = nullptr;
