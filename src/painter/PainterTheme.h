@@ -63,8 +63,8 @@ public:
     static constexpr int avatarGap = 8;
 
     // ── Layout ──
-    static constexpr int messageSpacingGrouped = 2;
-    static constexpr int messageSpacingNormal = 8;
+    static constexpr int messageSpacingGrouped = 6;
+    static constexpr int messageSpacingNormal = 10;
     static constexpr int dateSepHeight = 40;
     static constexpr int datePillHeight = 26;
 

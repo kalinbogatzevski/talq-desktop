@@ -96,6 +96,7 @@ ComposerWidget::ComposerWidget(QWidget *parent)
     m_input->setPlaceholderText("Write a message...");
     m_input->setMaximumHeight(120);
     m_input->setMinimumHeight(38);
+    setFocusProxy(m_input);
     m_input->setStyleSheet(
         "QTextEdit { background: #222220; border: 1px solid #2a2a26; border-radius: 19px;"
         "  padding: 6px 14px; font-size: 14px; color: #e4e0da; }"

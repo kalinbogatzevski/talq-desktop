@@ -720,17 +720,48 @@ void ChatPainter::paintSystemMessage(QPainter *p, const MessageLayout &ml, qreal
 
 void ChatPainter::paintOwnMessage(QPainter *p, const MessageLayout &ml, qreal offsetY)
 {
-    // Shift own messages left to align with others (Telegram-style)
-    qreal leftAlignX = 12 + PainterTheme::avatarSize + PainterTheme::avatarGap;
-    qreal shiftX = leftAlignX - ml.bubbleRect.left();
-    p->save();
-    p->translate(shiftX, 0);
+    // Avatar (non-grouped)
+    if (!ml.isGrouped && !ml.avatarRect.isNull()) {
+        QRectF ar = ml.avatarRect.translated(0, offsetY);
+        QImage avatarImg = fetchAvatar(m_myUserId);
+        if (!avatarImg.isNull()) {
+            p->drawImage(ar, avatarImg);
+        } else {
+            p->setPen(Qt::NoPen);
+            p->setBrush(m_theme.accent);
+            p->drawEllipse(ar);
+            QFont letterFont;
+            letterFont.setPixelSize(14);
+            letterFont.setWeight(QFont::DemiBold);
+            p->setFont(letterFont);
+            p->setPen(Qt::white);
+            p->drawText(ar, Qt::AlignCenter, QStringLiteral("Me"));
+        }
+    }
 
-    // Bubble background
-    QRectF bubble = ml.bubbleRect.translated(0, offsetY);
-    p->setPen(Qt::NoPen);
-    p->setBrush(m_theme.bgMessageOwn);
-    p->drawRoundedRect(bubble, PainterTheme::radiusNormal, PainterTheme::radiusNormal);
+    // Bubble background (computed from content rects, same as other messages)
+    {
+        qreal top = ml.totalY + ml.totalHeight, bottom = ml.totalY;
+        qreal left = width(), right = 0;
+        auto expandWith = [&](const QRectF &r) {
+            if (r.isNull()) return;
+            top = qMin(top, r.top()); bottom = qMax(bottom, r.bottom());
+            left = qMin(left, r.left()); right = qMax(right, r.right());
+        };
+        expandWith(ml.bodyRect);
+        expandWith(ml.quoteRect);
+        expandWith(ml.fileRect);
+        expandWith(ml.reactBarRect);
+        expandWith(ml.timeRect);
+        if (right > left) {
+            qreal padTop = ml.isGrouped ? 1 : 5;
+            QRectF bubble(left - 8, top - padTop, right - left + 16, bottom - top + padTop + 3);
+            bubble.translate(0, offsetY);
+            p->setPen(Qt::NoPen);
+            p->setBrush(m_theme.bgMessageOwn);
+            p->drawRoundedRect(bubble, PainterTheme::radiusNormal, PainterTheme::radiusNormal);
+        }
+    }
 
     // Sending state opacity
     qreal oldOpacity = p->opacity();
@@ -804,7 +835,6 @@ void ChatPainter::paintOwnMessage(QPainter *p, const MessageLayout &ml, qreal of
     }
 
     p->setOpacity(oldOpacity);
-    p->restore();
 }
 
 // ─── Other person's message ─────────────────────────
@@ -827,15 +857,17 @@ void ChatPainter::paintOtherMessage(QPainter *p, const MessageLayout &ml, qreal 
             right = qMax(right, r.right());
         };
 
-        expandWith(ml.nameRect);
+        // Bubble wraps only content — not author name/time (those sit above)
         expandWith(ml.bodyRect);
         expandWith(ml.quoteRect);
         expandWith(ml.fileRect);
         expandWith(ml.reactBarRect);
-        if (ml.isGrouped) expandWith(ml.timeRect);
+        expandWith(ml.timeRect);
 
         if (right > left) {
-            QRectF bubble(left - 8, top - 6, right - left + 16, bottom - top + 12);
+            qreal padTop = ml.isGrouped ? 1 : 5;
+            qreal padBottom = 3;
+            QRectF bubble(left - 8, top - padTop, right - left + 16, bottom - top + padTop + padBottom);
             bubble.translate(0, offsetY);
             p->setPen(Qt::NoPen);
             p->setBrush(m_darkMode ? QColor(255, 255, 255, 15) : QColor(0, 0, 0, 12));
@@ -870,18 +902,12 @@ void ChatPainter::paintOtherMessage(QPainter *p, const MessageLayout &ml, qreal 
         }
     }
 
-    // Author name (non-grouped)
+    // Author name (non-grouped, above bubble)
     if (!ml.isGrouped && !ml.nameRect.isNull()) {
         QRectF nr = ml.nameRect.translated(0, offsetY);
         p->setPen(PainterTheme::authorColor(ml.actorId));
         p->setFont(m_theme.nameFont());
         p->drawText(nr, Qt::AlignLeft | Qt::AlignVCenter, ml.actorName);
-
-        // Time next to name
-        QRectF tr = ml.timeRect.translated(0, offsetY);
-        p->setPen(m_theme.textTime);
-        p->setFont(m_theme.timeFont());
-        p->drawText(tr, Qt::AlignLeft | Qt::AlignVCenter, ml.timeString);
     }
 
     // Reply quote
@@ -908,8 +934,8 @@ void ChatPainter::paintOtherMessage(QPainter *p, const MessageLayout &ml, qreal 
     if (!ml.reactions.isEmpty() && !ml.reactBarRect.isNull())
         paintReactions(p, ml, offsetY);
 
-    // Grouped: time below body
-    if (ml.isGrouped && !ml.timeRect.isNull()) {
+    // Time (inside bubble, below body)
+    if (!ml.timeRect.isNull()) {
         QRectF tr = ml.timeRect.translated(0, offsetY);
         p->setPen(m_theme.textTime);
         p->setFont(m_theme.timeFont());
@@ -1084,33 +1110,29 @@ void ChatPainter::paintReactions(QPainter *p, const MessageLayout &ml, qreal off
 QRectF ChatPainter::hoverBarReactRect(const MessageLayout &ml) const
 {
     const qreal btnSize = 28;
-    const qreal gap = 6;
+    const qreal gap = 8;
 
-    if (ml.isOwn) {
-        // Left of bubble — single button width (reply only)
-        qreal x = ml.bubbleRect.left() - gap - btnSize;
-        qreal y = ml.bubbleRect.top() + (ml.bubbleRect.height() - btnSize) / 2.0;
-        y = qBound(ml.totalY, y, ml.totalY + ml.totalHeight - btnSize);
-        return QRectF(x, y, btnSize, btnSize);
-    } else {
-        // Right of actual content (uses dynamic contentRight)
-        qreal x = ml.contentRight + gap;
-        qreal refTop = ml.isGrouped ? ml.bodyRect.top() : (ml.nameRect.isNull() ? ml.bodyRect.top() : ml.nameRect.top());
-        qreal refBottom = ml.bodyRect.bottom();
-        qreal y = refTop + (refBottom - refTop - btnSize) / 2.0;
-        y = qBound(ml.totalY, y, ml.totalY + ml.totalHeight - btnSize);
-        return QRectF(x, y, btnSize, btnSize);
-    }
+    // First button position: right of bubble/content
+    qreal x = ml.isOwn
+        ? ml.bubbleRect.right() + gap
+        : ml.contentRight + gap;
+    qreal refTop = ml.bodyRect.isNull() ? ml.totalY : ml.bodyRect.top();
+    qreal refBottom = ml.bodyRect.isNull() ? ml.totalY + ml.totalHeight : ml.bodyRect.bottom();
+    qreal y = refTop + (refBottom - refTop - btnSize) / 2.0;
+    y = qBound(ml.totalY, y, ml.totalY + ml.totalHeight - btnSize);
+    return QRectF(x, y, btnSize, btnSize);
 }
 
 QRectF ChatPainter::hoverBarReplyRect(const MessageLayout &ml) const
 {
+    const qreal btnSize = 28;
     if (ml.isOwn) {
-        // Own messages: reply is the only button, takes the react position
+        // Own messages: reply is the only button, goes at first position
         return hoverBarReactRect(ml);
     }
+    // Others: reply goes after react button
     QRectF reactR = hoverBarReactRect(ml);
-    return QRectF(reactR.right() + 4, reactR.top(), reactR.width(), reactR.height());
+    return QRectF(reactR.right() + 4, reactR.top(), btnSize, btnSize);
 }
 
 // ─── Hover bar painting ─────────────────────────────
