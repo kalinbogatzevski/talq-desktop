@@ -1,12 +1,8 @@
 #include "NotificationPopup.h"
 #include <QPainter>
-#include <QPainterPath>
 #include <QMouseEvent>
-#include <QScreen>
-#include <QApplication>
 #include <QHBoxLayout>
 #include <QVBoxLayout>
-#include <QPropertyAnimation>
 
 NotificationPopup::NotificationPopup(QWidget *parent)
     : QWidget(nullptr, Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint | Qt::WindowDoesNotAcceptFocus)
