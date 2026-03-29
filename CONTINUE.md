@@ -1,8 +1,9 @@
-# TalQ v0.14.0 Continue Prompt
+# TalQ v0.14.2 Continue Prompt
 
 ## Current status
-Full QWidget app with working audio + video calls via HPB/Janus MCU. Released v0.14.0.
+Full QWidget app with working audio + video calls via HPB/Janus MCU. Released v0.14.2.
 Multi-message selection (Telegram-style drag-to-select) with Forward/Copy/Delete.
+Custom notification popups, upload progress bar, unified left-aligned chat layout.
 Unified left-aligned chat layout with proper bubble padding and avatars for all users.
 
 ## What was done (v0.13.0–v0.13.1, 2026-03-28/29)
@@ -52,7 +53,8 @@ Unified left-aligned chat layout with proper bubble padding and avatars for all 
 ## Next steps
 - Camera doesn't work on this laptop (mfvideosrc COM/STA issue) — test on work laptop
 - In-bubble text selection (click-drag to select words within a message)
-- Message/event notifications (were in QML version, need to restore)
+- Notification stacking (multiple popups queue instead of replacing)
+- Notification on correct monitor (currently always primary screen)
 - Hardcoded dark theme colors in SelectionBarWidget/ConversationPickerDialog — use PainterTheme
 
 ## Architecture notes
