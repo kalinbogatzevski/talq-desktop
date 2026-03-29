@@ -71,6 +71,7 @@ MessageLayout LayoutEngine::computeLayout(
     ml.fileId   = model->data(idx, MessageListModel::FileIdRole).toInt();
     ml.fileName = model->data(idx, MessageListModel::FileNameRole).toString();
     ml.fileMime = model->data(idx, MessageListModel::FileMimeRole).toString();
+    ml.fileSize = model->data(idx, MessageListModel::FileSizeRole).toLongLong();
 
     ml.isOwn = (ml.actorId == myUserId);
 

@@ -132,6 +132,18 @@ int main(int argc, char *argv[])
         window.openConversation(token);
     });
 
+    // Update conversation list preview when new messages arrive
+    QObject::connect(&messages, &MessageListModel::newMessagesAtEnd, &conversations, [&messages, &conversations]() {
+        int count = messages.rowCount();
+        if (count == 0) return;
+        auto idx = messages.index(0);
+        QString author = messages.data(idx, MessageListModel::ActorNameRole).toString();
+        QString text = messages.data(idx, MessageListModel::MessageTextRole).toString();
+        text.remove(QRegularExpression("<[^>]*>"));
+        if (text.length() > 80) text = text.left(80) + "...";
+        conversations.updateLastMessage(messages.conversationToken(), author, text);
+    });
+
     // Notify on new polled messages in active conversation
     QObject::connect(&messages, &MessageListModel::newMessagesAtEnd, &notifications, [&messages, &notifications, &auth]() {
         int count = messages.rowCount();

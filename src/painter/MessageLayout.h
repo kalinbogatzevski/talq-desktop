@@ -52,6 +52,7 @@ struct MessageLayout
     int fileId = 0;
     QString fileName;
     QString fileMime;
+    qint64 fileSize = 0;
 
     // ── Geometry (absolute Y in document space) ──
     qreal totalY = 0;

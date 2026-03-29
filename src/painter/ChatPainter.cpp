@@ -1006,13 +1006,38 @@ void ChatPainter::paintFileAttachment(QPainter *p, const MessageLayout &ml, qrea
         p->setFont(iconFont);
         p->drawText(iconR, Qt::AlignCenter, QStringLiteral("\U0001F4C4"));
 
-        // Filename text
+        // Filename + size
         QRectF textR(iconR.right() + 4, fr.top(), fr.width() - 52, fr.height());
-        p->setPen(m_theme.textPrimary);
-        p->setFont(m_theme.bodyFont());
-        QFontMetrics fm(m_theme.bodyFont());
-        QString elided = fm.elidedText(ml.fileName, Qt::ElideMiddle, qRound(textR.width()));
-        p->drawText(textR, Qt::AlignLeft | Qt::AlignVCenter, elided);
+        QString sizeStr;
+        if (ml.fileSize > 0) {
+            if (ml.fileSize < 1024) sizeStr = QString::number(ml.fileSize) + " B";
+            else if (ml.fileSize < 1024 * 1024) sizeStr = QString::number(ml.fileSize / 1024) + " KB";
+            else sizeStr = QString::number(ml.fileSize / (1024.0 * 1024.0), 'f', 1) + " MB";
+        }
+
+        if (sizeStr.isEmpty()) {
+            // Just filename
+            p->setPen(m_theme.textPrimary);
+            p->setFont(m_theme.bodyFont());
+            QFontMetrics fm(m_theme.bodyFont());
+            p->drawText(textR, Qt::AlignLeft | Qt::AlignVCenter,
+                         fm.elidedText(ml.fileName, Qt::ElideMiddle, qRound(textR.width())));
+        } else {
+            // Filename on top, size below
+            qreal halfH = textR.height() / 2.0;
+            QRectF nameR(textR.left(), textR.top(), textR.width(), halfH);
+            QRectF sizeR(textR.left(), textR.top() + halfH, textR.width(), halfH);
+
+            p->setPen(m_theme.textPrimary);
+            p->setFont(m_theme.bodyFont());
+            QFontMetrics fm(m_theme.bodyFont());
+            p->drawText(nameR, Qt::AlignLeft | Qt::AlignBottom,
+                         fm.elidedText(ml.fileName, Qt::ElideMiddle, qRound(nameR.width())));
+
+            p->setPen(m_theme.textMuted);
+            p->setFont(m_theme.timeFont());
+            p->drawText(sizeR, Qt::AlignLeft | Qt::AlignTop, sizeStr);
+        }
     }
 }
 
