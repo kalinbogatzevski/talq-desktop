@@ -685,6 +685,23 @@ void ChatPainter::paintEvent(QPaintEvent *)
             && ml.sendStatus != QLatin1String("failed"))
             paintHoverBar(&p, ml, offsetY);
     }
+
+    // ── Scrollbar thumb ──
+    if (m_contentHeight > height()) {
+        qreal viewH = height();
+        qreal thumbH = qMax(20.0, (viewH / m_contentHeight) * viewH);
+        qreal maxScroll = m_contentHeight - viewH;
+        qreal thumbY = (m_scrollY / maxScroll) * (viewH - thumbH);
+
+        qreal scrollbarW = 4;
+        qreal scrollbarX = width() - scrollbarW - 2;
+
+        p.setPen(Qt::NoPen);
+        QColor thumbColor = m_theme.textMuted;
+        thumbColor.setAlphaF(0.3f);
+        p.setBrush(thumbColor);
+        p.drawRoundedRect(QRectF(scrollbarX, thumbY, scrollbarW, thumbH), 2, 2);
+    }
 }
 
 // ─── Date separator ─────────────────────────────────
