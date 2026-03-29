@@ -316,6 +316,18 @@ void ChatPainter::rebuildAllLayouts()
         scrollToBottom();
 
     update();
+
+    // Clean up selection — remove IDs that are no longer in the model
+    if (m_selectionMode) {
+        QSet<int> validIds;
+        for (const auto &ml : m_layouts)
+            validIds.insert(ml.messageId);
+        m_selectedIds &= validIds;
+        if (m_selectedIds.isEmpty())
+            exitSelectionMode();
+        else
+            emit selectionChanged(m_selectedIds.size());
+    }
 }
 
 void ChatPainter::clampScroll()
