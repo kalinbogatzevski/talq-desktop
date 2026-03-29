@@ -2,6 +2,7 @@
 #include <QIcon>
 #include <QRegularExpression>
 #include <QSharedMemory>
+#include <QScreen>
 #include <QStandardPaths>
 #include <QDir>
 #include <QFileInfo>
@@ -30,6 +31,7 @@
 #include "core/DebugMonitor.h"
 #include "core/AppSettings.h"
 #include "ui/MainWindow.h"
+#include "ui/NotificationPopup.h"
 #include <gst/gst.h>
 
 int main(int argc, char *argv[])
@@ -112,6 +114,23 @@ int main(int argc, char *argv[])
         &callManager, &debug, &appSettings,
         &avatarProvider, &previewProvider
     );
+
+    // Custom notification popup
+    NotificationPopup notifPopup;
+    QObject::connect(&notifications, &NotificationManager::desktopPopupRequested,
+                     &notifPopup, [&notifPopup, &window](const QString &title, const QString &message, const QString &token) {
+        // Position at bottom-right of primary screen
+        QScreen *screen = QApplication::primaryScreen();
+        if (!screen) return;
+        QRect screenGeom = screen->availableGeometry();
+        QPoint pos(screenGeom.right() - notifPopup.width() - 16,
+                   screenGeom.bottom() - notifPopup.height() - 16);
+        notifPopup.showNotification(title, message, token, pos);
+    });
+    QObject::connect(&notifPopup, &NotificationPopup::clicked,
+                     &window, [&window](const QString &token) {
+        window.openConversation(token);
+    });
 
     // Notify on new polled messages in active conversation
     QObject::connect(&messages, &MessageListModel::newMessagesAtEnd, &notifications, [&messages, &notifications, &auth]() {
