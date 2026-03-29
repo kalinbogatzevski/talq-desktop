@@ -475,6 +475,42 @@ void MainWindow::buildChatPage()
     m_chatPainter->hide();
     chatLayout->addWidget(m_chatPainter, 1);
 
+    // Upload progress bar
+    m_uploadBar = new QWidget(chatCol);
+    m_uploadBar->setFixedHeight(32);
+    m_uploadBar->setStyleSheet("background: #1a1a16;");
+    m_uploadBar->hide();
+    auto *uploadLayout = new QHBoxLayout(m_uploadBar);
+    uploadLayout->setContentsMargins(16, 0, 16, 0);
+    uploadLayout->setSpacing(8);
+    auto *clipIcon = new QLabel(QStringLiteral("\U0001F4CE"), m_uploadBar);
+    clipIcon->setStyleSheet("font-size: 14px; background: transparent;");
+    uploadLayout->addWidget(clipIcon);
+    m_uploadLabel = new QLabel(m_uploadBar);
+    m_uploadLabel->setStyleSheet("font-size: 11px; color: #8a8680; background: transparent;");
+    uploadLayout->addWidget(m_uploadLabel, 1);
+    m_uploadProgress = new QWidget(m_uploadBar);
+    m_uploadProgress->setFixedHeight(2);
+    m_uploadProgress->setStyleSheet("background: #2ec4b6;");
+    // Position at bottom of upload bar
+    m_uploadProgress->setParent(m_uploadBar);
+    chatLayout->addWidget(m_uploadBar);
+
+    connect(m_messages, &MessageListModel::uploadProgressChanged, this, [this]() {
+        double progress = m_messages->uploadProgress();
+        if (progress < 0) {
+            m_uploadBar->hide();
+            return;
+        }
+        m_uploadBar->show();
+        m_uploadLabel->setText(QStringLiteral("%1  %2%")
+            .arg(m_messages->uploadFileName())
+            .arg(qRound(progress * 100)));
+        // Resize progress line
+        int barW = qRound(m_uploadBar->width() * qMax(0.0, progress));
+        m_uploadProgress->setGeometry(0, m_uploadBar->height() - 2, barW, 2);
+    });
+
     m_composer = new ComposerWidget(chatCol);
     m_composer->setSignaling(m_signaling);
     m_composer->setMessageModel(m_messages);

@@ -137,9 +137,9 @@ void NotificationManager::notify(const QString &title, const QString &message, b
 
     if (!m_notificationsEnabled) return;
 
-    if (!windowActive) {
-        // Always show desktop popup when window is not focused
-        emit desktopPopupRequested(title, message, token);
+    if (!windowActive && m_trayIcon) {
+        // Show Windows toast notification via system tray
+        m_trayIcon->showMessage(title, message, QSystemTrayIcon::Information, 5000);
     }
 }
 

@@ -117,6 +117,9 @@ private:
     ChatPainter *m_chatPainter = nullptr;
     ComposerWidget *m_composer = nullptr;
     SelectionBarWidget *m_selectionBar = nullptr;
+    QWidget *m_uploadBar = nullptr;
+    QLabel *m_uploadLabel = nullptr;
+    QWidget *m_uploadProgress = nullptr;
     QSplitter *m_splitter = nullptr;
     QWidget *m_sidebarCol = nullptr;
     QLabel *m_profileNameLabel = nullptr;
