@@ -653,19 +653,43 @@ void PublishPipeline::onOfferCreated(GstPromise *promise, gpointer userData)
         return;
     }
 
-    // Sync payloader SSRC with SDP — GStreamer webrtcbin doesn't always rewrite
-    // the payloader's SSRC to match the SDP, causing Janus to drop RTP packets
-    // ("Unknown SSRC") because it expects the SSRC advertised in the offer.
+    // Sync payloader SSRCs with SDP — GStreamer webrtcbin may assign different
+    // SSRCs in the payloader vs what it advertises in the SDP offer. Janus drops
+    // RTP packets with unknown SSRCs, so we force the payloaders to match.
     {
-        QRegularExpression ssrcRe("a=ssrc:(\\d+)\\s");
-        auto match = ssrcRe.match(sdp);
-        if (match.hasMatch()) {
-            guint32 sdpSsrc = match.captured(1).toUInt();
+        // Extract SSRC per media section
+        auto extractSsrc = [](const QString &sdp, const QString &mediaType) -> guint32 {
+            // Find the m=audio or m=video section, then the first a=ssrc in that section
+            int mIdx = sdp.indexOf("m=" + mediaType);
+            if (mIdx < 0) return 0;
+            // Find next m= line (start of next section) or end
+            int nextM = sdp.indexOf("\nm=", mIdx + 1);
+            QString section = (nextM > 0) ? sdp.mid(mIdx, nextM - mIdx) : sdp.mid(mIdx);
+            QRegularExpression ssrcRe("a=ssrc:(\\d+)\\s");
+            auto match = ssrcRe.match(section);
+            return match.hasMatch() ? match.captured(1).toUInt() : 0;
+        };
+
+        guint32 audioSsrc = extractSsrc(sdp, "audio");
+        guint32 videoSsrc = extractSsrc(sdp, "video");
+
+        if (audioSsrc) {
             GstElement *pay = gst_bin_get_by_name(GST_BIN(self->m_pipeline), "pub-rtpopuspay");
             if (pay) {
-                g_object_set(pay, "ssrc", sdpSsrc, nullptr);
+                g_object_set(pay, "ssrc", audioSsrc, nullptr);
                 gst_object_unref(pay);
-                qDebug() << "PublishPipeline: synced audio payloader SSRC to" << sdpSsrc;
+                qDebug() << "PublishPipeline: synced audio SSRC to" << audioSsrc;
+            }
+        }
+        if (videoSsrc) {
+            // Try camera payloader first, then dummy video payloader
+            GstElement *pay = gst_bin_get_by_name(GST_BIN(self->m_pipeline), "pub-rtpvp8pay");
+            if (!pay)
+                pay = gst_bin_get_by_name(GST_BIN(self->m_pipeline), "pub-dummypay");
+            if (pay) {
+                g_object_set(pay, "ssrc", videoSsrc, nullptr);
+                gst_object_unref(pay);
+                qDebug() << "PublishPipeline: synced video SSRC to" << videoSsrc;
             }
         }
     }
