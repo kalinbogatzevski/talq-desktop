@@ -44,6 +44,7 @@ signals:
     void audioLevelUpdated(double level);  // 0.0 to 1.0
     void error(const QString &message);
     void cameraError(const QString &reason);
+    void cameraChanged();  // emitted when camera source swaps in/out
 
 public slots:
     void pollBus();  // called from CallManager's GLib timer
