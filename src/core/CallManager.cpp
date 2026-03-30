@@ -441,15 +441,19 @@ void CallManager::toggleCamera() {
     m_cameraOn = !m_cameraOn;
     emit cameraChanged();
 
+    // In-place source swap — no pipeline teardown, same as browser's replaceTrack
     if (m_useP2P && m_peerPipeline) {
-        // P2P: renegotiate on existing pipeline (no MCU involved)
         m_cameraOn ? m_peerPipeline->enableCamera(videoDeviceIndex(), preferHd1080())
                    : m_peerPipeline->disableCamera();
-    } else if (!m_useP2P) {
-        // MCU: forceReconnect — tear down publisher and recreate with/without video.
-        // The MCU only forwards what the publisher includes at offer time.
-        // Renegotiating video onto an existing connection doesn't update MCU routing.
-        forceReconnectPublisher();
+    } else if (m_publishPipeline) {
+        if (m_cameraOn) {
+            m_publishPipeline->enableCamera(videoDeviceIndex(), preferHd1080());
+            m_localVideoProvider = m_publishPipeline->localVideoProvider();
+        } else {
+            m_publishPipeline->disableCamera();
+            m_localVideoProvider = nullptr;
+        }
+        emit localVideoProviderChanged();
     }
 
     // Broadcast video state + update call flags on server
