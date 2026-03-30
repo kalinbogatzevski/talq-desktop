@@ -65,18 +65,13 @@ CallDialog::CallDialog(CallManager *callManager, ApiClient *api, QWidget *parent
         connectVideoProviders();
     });
     connect(m_callManager, &CallManager::remoteMediaChanged, this, [this]() {
-        // When remote mutes video, show avatar in the video area instead of last frame
-        if (m_callManager->remoteVideoMuted() && m_remoteVideo->isVisible() && !m_avatarPixmap.isNull()) {
-            // Create avatar-on-dark-background image
-            QImage avatarBg(m_remoteVideo->width(), m_remoteVideo->height(), QImage::Format_RGB32);
-            avatarBg.fill(QColor(0x1c, 0x1c, 0x1a));
-            QPainter p(&avatarBg);
-            p.setRenderHint(QPainter::SmoothPixmapTransform);
-            int sz = qMin(m_remoteVideo->width(), m_remoteVideo->height()) / 2;
-            QPixmap scaled = m_avatarPixmap.scaled(sz, sz, Qt::KeepAspectRatio, Qt::SmoothTransformation);
-            p.drawPixmap((avatarBg.width() - scaled.width()) / 2,
-                         (avatarBg.height() - scaled.height()) / 2, scaled);
-            m_remoteVideo->setImage(avatarBg);
+        if (m_callManager->remoteVideoMuted()) {
+            // Remote stopped camera — hide video, show avatar, shrink dialog
+            if (m_remoteVideo->isVisible()) {
+                m_remoteVideo->hide();
+                setMinimumSize(300, 300);
+                resize(300, 340);
+            }
         }
         // Update peer label to show remote mic state
         QString name = m_callManager->remotePeerName();
