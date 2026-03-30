@@ -1,10 +1,10 @@
-# TalQ v0.14.4 Continue Prompt
+# TalQ v0.14.5 Continue Prompt
 
 ## Current status
-Full QWidget app with working audio + video calls via HPB/Janus MCU. Released v0.14.4.
-All rendering via QPainter — no QML engine. Unified left-aligned chat layout.
-All GitLab releases up to date (v0.1.0 through v0.14.4) with changelog descriptions.
-v0.14.4 installers uploaded to GitLab package registry.
+Full QWidget app. Released v0.14.5. QPainter rendering, no QML.
+Installers now ship all GStreamer transitive DLLs (23 were missing — calls unavailable on clean machines).
+**Audio calls still broken via MCU** — Janus says `Unsupported codec 'none'` because the HPB signaling server creates rooms without specifying audiocodec. See "Active bug" below.
+Ilko confirmed: call notifications now working (auto-refresh fix), hangup no longer freezes (async teardown).
 
 ## Machine setup
 
@@ -62,6 +62,22 @@ claude
 | `C:\Qt\6.8.2\mingw_64` | Qt SDK |
 | `C:\Users\bogat\.claude\projects\C--src\memory\` | Claude memories |
 
+## What was done (v0.14.5, 2026-03-30)
+
+### Installer — GStreamer DLLs
+- Installer was missing 23 transitive DLLs (libnice, libopus, libsrtp2, OpenSSL, GnuTLS chain etc.)
+- build-release.sh and deploy-dev.sh now copy all deps; plugins sourced directly from MSYS2
+
+### Call fixes
+- `conversations.startAutoRefresh()` added to startServices (was never called)
+- ICE candidate queuing in all 3 pipeline types (Peer/Publish/Subscribe)
+- Audio pad link return check (was silently failing)
+- Async pipeline teardown (gst_element_set_state off UI thread)
+- SSRC sync: payloader SSRC set to match SDP after offer creation
+
+### File caption
+- Captions now sent via `talkMetaData.caption` in share API (not separate message)
+
 ## What was done (v0.14.0–v0.14.4, 2026-03-29)
 
 ### Multi-message selection (Telegram-style)
@@ -114,12 +130,43 @@ claude
 - build-release.sh script for reliable installer builds
 - All GitLab releases created with changelog (v0.1.0–v0.14.4)
 
+## Active bug: MCU audio calls — Janus `codec 'none'`
+
+### Symptoms
+- TalQ call connects (ICE+DTLS succeed) but no audio flows
+- Janus logs: `Unsupported codec 'none'` and `Unknown SSRC, dropping packet`
+- Web client (browser) calls work fine through the same server
+
+### Root cause chain
+1. HPB signaling server (v2.0.4) creates Janus videoroom rooms via API **without specifying `audiocodec`**
+2. Janus 1.1.4 sets room audiocodec to `none` for API-created rooms (general config section only applies to config-file rooms)
+3. When publisher joins, Janus can't match the audio codec → rejects audio → drops RTP
+4. Additionally, GStreamer webrtcbin's rtpopuspay generates random SSRC that doesn't match the SDP → Janus drops packets as "Unknown SSRC" (partially fixed with SSRC sync in onOfferCreated)
+
+### Why it worked before (v0.13.0)
+Commit `6db3bab` fixed the same Janus config issue. The Docker container was rebuilt since then, resetting the config. But the `general` section fix no longer works because the signaling server creates rooms via API (bypasses config-file defaults).
+
+### What was tried (2026-03-30)
+- Added `audiocodec=opus` to Janus `general` section → no effect (API rooms ignore it)
+- Switched to P2P mode → timing issue (offer sent before remote peer joins)
+- SSRC sync (payloader SSRC forced to match SDP) → addresses one issue but codec 'none' is the blocker
+
+### Next steps to fix
+1. **Check signaling server config** — the nextcloud-spreed-signaling Go binary has `audiocodec`/`videocodec` JSON fields. There may be an `[mcu]` config option for default codecs. Check the [signaling server repo](https://github.com/strukturag/nextcloud-spreed-signaling) for config docs.
+2. **Alternative: P2P for 1:1 calls** — change `m_useP2P = !m_signaling->hasMcu()` to `m_useP2P = true` and fix the timing: `onParticipantJoinedCall` should trigger `createOffer()` when P2P pipeline exists but no offer sent yet.
+3. **Server access**: `ssh -i ~/.ssh/id_ncloud root@ncloud.123net.link`
+   - Janus config: `/opt/talk-hpb/janus.plugin.videoroom.jcfg`
+   - Signaling config: mounted into `talk-hpb_signaling_1` at `/config/server.conf`
+   - Janus logs: `docker logs talk-hpb_janus_1 2>&1 | grep -v "Unknown SSRC"`
+
 ## Known bugs
+- **MCU audio calls broken** — see "Active bug" above
 - Duplicate message flash on send (optimistic send + poller overlap race)
 - Notification stacking — single popup replaces previous, doesn't queue
 - Notification always appears on primary screen, not the app's screen
 
 ## Next steps
+- **Fix MCU audio** — priority #1, see "Active bug" section
 - Camera doesn't work on this laptop (mfvideosrc COM/STA issue) — test on work laptop
 - **Screen sharing** — d3d11screencapturesrc for full display or window-handle for specific app
 - **Background blur** — Windows Studio Effects API (Win11) or MediaPipe segmentation + GStreamer

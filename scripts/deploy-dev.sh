@@ -43,7 +43,8 @@ GST_RUNTIME_DLLS=(
     libgstreamer-1.0-0 libgstbase-1.0-0 libgstapp-1.0-0
     libgstsdp-1.0-0 libgstwebrtc-1.0-0 libgstrtp-1.0-0
     libgstpbutils-1.0-0 libgstaudio-1.0-0 libgsttag-1.0-0
-    libgstvideo-1.0-0
+    libgstvideo-1.0-0 libgstnet-1.0-0 libgstsctp-1.0-0
+    libgstwebrtcnice-1.0-0
     libglib-2.0-0 libgobject-2.0-0 libgio-2.0-0 libgmodule-2.0-0
     libintl-8 libiconv-2 libffi-8 libpcre2-8-0 libz
 )
@@ -74,9 +75,17 @@ echo "[4/4] Copying MSYS2 MinGW runtime DLLs..."
 cp "$MSYS2_DIR/bin/libstdc++-6.dll"       "$BUILD_DIR/"
 cp "$MSYS2_DIR/bin/libgcc_s_seh-1.dll"    "$BUILD_DIR/"
 cp "$MSYS2_DIR/bin/libwinpthread-1.dll"   "$BUILD_DIR/"
-# Transitive deps needed by GStreamer
-cp "$MSYS2_DIR/bin/liborc-0.4-0.dll"      "$BUILD_DIR/" 2>/dev/null
-cp "$MSYS2_DIR/bin/zlib1.dll"             "$BUILD_DIR/" 2>/dev/null
+# Transitive deps needed by GStreamer plugins
+for dll in liborc-0.4-0.dll zlib1.dll \
+    libnice-10.dll libsrtp2-1.dll libopus-0.dll \
+    libssl-3-x64.dll libcrypto-3-x64.dll \
+    libjpeg-8.dll libopenh264-7.dll libvpx-1.dll \
+    libgnutls-30.dll libhogweed-6.dll libgmp-10.dll \
+    libidn2-0.dll libnettle-8.dll libp11-kit-0.dll \
+    libtasn1-6.dll libunistring-5.dll libzstd.dll \
+    libbrotlicommon.dll libbrotlidec.dll libbrotlienc.dll; do
+    cp "$MSYS2_DIR/bin/$dll" "$BUILD_DIR/" 2>/dev/null || true
+done
 
 echo "Deploy complete."
 

@@ -192,6 +192,7 @@ int main(int argc, char *argv[])
         if (auth.isLoggedIn()) {
             push.start();
             signaling.start();
+            conversations.startAutoRefresh();
         } else {
             push.stop();
             signaling.stop();

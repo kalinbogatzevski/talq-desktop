@@ -906,18 +906,21 @@ void MessageListModel::sendFileWithCaption(const QString &filePath, const QStrin
         body["path"] = QString("Talk/" + fileName);
         body["permissions"] = 1;  // read permission for recipients
 
+        // Attach caption via talkMetaData (server capability: media-caption)
+        if (!caption.isEmpty()) {
+            QJsonObject metaData;
+            metaData["caption"] = caption;
+            body["talkMetaData"] = QString::fromUtf8(QJsonDocument(metaData).toJson(QJsonDocument::Compact));
+        }
+
         m_api->post("apps/files_sharing/api/v1/shares", body,
-            [this, fileName, token, caption](bool ok, const QJsonObject &, int) {
+            [this, fileName, token](bool ok, const QJsonObject &, int) {
                 m_uploadProgress = -1;
                 m_uploadFileName.clear();
                 emit uploadProgressChanged();
 
                 if (ok) {
                     qDebug() << "File shared:" << fileName;
-                    // Send caption as a follow-up message if provided
-                    if (!caption.isEmpty() && m_token == token) {
-                        sendMessage(caption, 0);
-                    }
                     // Refresh to pick up the server-generated file share message
                     // (file shares don't create an optimistic placeholder)
                     if (m_token == token) {
