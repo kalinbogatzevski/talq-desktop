@@ -3,6 +3,48 @@
 ## Current status
 Full QWidget app with working audio + video calls via HPB/Janus MCU. Released v0.14.4.
 All rendering via QPainter — no QML engine. Unified left-aligned chat layout.
+All GitLab releases up to date (v0.1.0 through v0.14.4) with changelog descriptions.
+v0.14.4 installers uploaded to GitLab package registry.
+
+## Machine setup
+
+### HOME machine (primary dev)
+- **Repo:** `C:\Users\bogat\Desktop\My Projects\talk-desktop-qt`
+- **Junction:** `C:\src\talk-desktop-qt` → above path
+- **Claude Code working dir:** `C:\src` (start claude from here)
+- **Claude memories:** `C:\Users\bogat\.claude\projects\C--src\memory\`
+- **MSYS2:** `C:\msys64` (GStreamer packages installed)
+- **Qt:** `C:\Qt\6.8.2\mingw_64`
+- **Build dirs:** `C:\build\talq` (debug), `C:\build\talq-release`, `C:\build\talq-123net`
+
+### OFFICE machine
+- **Repo:** `C:\Users\bogat\Desktop\My Projects\talk-desktop-qt` (same path, no junction)
+- **Qt:** installed via aqt (check exact path on that machine)
+- **Note:** Qt6Multimedia had ABI mismatch from aqt on office machine — may need MSYS2 setup
+
+### Setting up Claude Code on a new working directory
+If switching from `C:\Users\bogat` to `C:\src` (or any other dir) as the Claude Code working directory:
+
+1. **Copy memories** to the new project directory:
+   ```bash
+   # Claude stores memories per working directory at:
+   # C:\Users\bogat\.claude\projects\{encoded-path}\memory\
+   # The path is encoded: C:\src → C--src, C:\Users\bogat → C--Users-bogat
+
+   # Copy from old to new:
+   cp -r ~/.claude/projects/C--Users-bogat/memory/* ~/.claude/projects/C--src/memory/
+   ```
+
+2. **Start Claude Code from the new directory:**
+   ```bash
+   cd C:\src
+   claude
+   ```
+   Claude will automatically create `C:\Users\bogat\.claude\projects\C--src\` on first run.
+
+3. **Say "init"** or **"read the continue.md"** to restore context.
+
+4. **CLAUDE.md** is in the repo root (`C:\src\talk-desktop-qt\CLAUDE.md`) — Claude reads it automatically.
 
 ## What was done (v0.14.0–v0.14.4, 2026-03-29)
 
@@ -54,12 +96,7 @@ All rendering via QPainter — no QML engine. Unified left-aligned chat layout.
 - File size displayed in attachment pills (KB/MB)
 - Sidebar last message preview updates when new messages arrive
 - build-release.sh script for reliable installer builds
-
-### Code quality
-- allSelectedOwn() helper avoids O(n) QVariantMap build on every toggle
-- variantMapFromLayout() shared between messageAt() and selectedMessages()
-- plainBodyText() helper for HTML stripping (copy + forward)
-- Dead code removed: clearSelection(), popupRequested signal, unused includes
+- All GitLab releases created with changelog (v0.1.0–v0.14.4)
 
 ## Known bugs
 - Duplicate message flash on send (optimistic send + poller overlap race)
@@ -75,9 +112,25 @@ All rendering via QPainter — no QML engine. Unified left-aligned chat layout.
 - Notification on correct monitor
 - Hardcoded dark theme colors in SelectionBarWidget/ConversationPickerDialog — use PainterTheme
 - Cancel upload button on progress bar
-- File attachment size not showing (fileSize parsed but might not reach paint for all cases)
 
 ## Architecture notes
+
+### Key files
+| File | Purpose |
+|------|---------|
+| `src/painter/ChatPainter.cpp` | QPainter message rendering, selection, hover bar, scrollbar |
+| `src/painter/LayoutEngine.cpp` | Message layout computation (unified left-aligned) |
+| `src/painter/PainterTheme.h` | Theme constants, colors, fonts, spacing |
+| `src/ui/MainWindow.cpp` | Main window, signal wiring, context menu, selection bar |
+| `src/ui/ComposerWidget.cpp` | Message input, file paste/attach, pending bar |
+| `src/ui/SelectionBarWidget.cpp` | Selection mode action bar (Forward/Copy/Delete/Cancel) |
+| `src/ui/ConversationPickerDialog.cpp` | Forward target picker |
+| `src/ui/NotificationPopup.cpp` | Custom notification popup |
+| `src/models/MessageListModel.cpp` | Messages (newest-first), upload, forward |
+| `src/models/ConversationListModel.cpp` | Conversation list, unread, user status |
+| `src/main.cpp` | App init, push→refresh wiring, notification wiring |
+| `scripts/build-release.sh` | Release installer build script |
+| `scripts/deploy-dev.sh` | Debug build deployment |
 
 ### Message rendering
 - ChatPainter: QPainter-based, all messages left-aligned
@@ -87,13 +140,34 @@ All rendering via QPainter — no QML engine. Unified left-aligned chat layout.
 - contentRight = bubbleLeft + bubbleW — hover buttons positioned from this
 - Selection state: m_selectionMode + m_selectedIds (QSet<int>)
 
-### Installer build (scripts/build-release.sh)
+### Build commands
 ```bash
+# Debug build + run
+/c/Qt/Tools/CMake_64/bin/cmake.exe --build /c/build/talq --target talq
+cd /c/build/talq && bash /c/src/talk-desktop-qt/scripts/deploy-dev.sh
+
+# Kill running TalQ
+cmd.exe //c "taskkill /IM talq.exe /F"
+
+# Release installers (nukes build dir, full clean build)
 bash scripts/build-release.sh              # generic
 bash scripts/build-release.sh --brand 123NET  # branded
+
+# Upload to GitLab package registry
+PAT=$(echo "protocol=https\nhost=gitlab.123net.link\n" | git credential fill | grep password | cut -d= -f2)
+curl --header "PRIVATE-TOKEN: $PAT" --upload-file dist/TalQ-v{VER}-Setup.exe \
+  "https://gitlab.123net.link/api/v4/projects/13/packages/generic/talq/{VER}/TalQ-v{VER}-Setup.exe"
 ```
-Requires: Qt 6.8.2, MSYS2 at C:\msys64, Inno Setup, debug build's gst-plugins dir.
-Installs to AppData\Local\Programs (per-user, no admin, no junction issues).
+
+### Installer
+- Inno Setup: `C:\Users\bogat\InnoSetup\ISCC.exe`
+- Generic: `installer/talq-setup.iss` → installs to `{localappdata}\Programs\TalQ`
+- 123NET: `installer/123net-talk-setup.iss` → installs to `{localappdata}\Programs\123NET TalQ`
+- Per-user install (PrivilegesRequired=lowest), no admin, no junction traversal issues
+
+### Testers
+- **Ilko** (Talk token: `ycy3ht4n`) — gets **generic** TalQ installer
+- **Rakesh** (Talk token: `bv86wo4c`) — gets **123NET branded** installer
 
 ### Call flow (MCU mode)
 1. startCall → POST /call/{token} → join call on server
