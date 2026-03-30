@@ -629,7 +629,7 @@ void CallManager::joinCallOnServer(bool withVideo)
                     qDebug() << "CallManager: found" << turnServers.size() << "TURN servers";
                     m_turnServers = turnServers;
 
-                    // P2P for 1:1 calls when no MCU, MCU when server has it
+                    // Use MCU when HPB has it, P2P otherwise
                     m_useP2P = !m_signaling->hasMcu();
                     setStatusDetail("Starting pipeline");
                     qDebug() << "CallManager: call mode =" << (m_useP2P ? "P2P" : "MCU");

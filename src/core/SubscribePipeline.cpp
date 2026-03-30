@@ -3,6 +3,7 @@
 #include <QPointer>
 #include <QRegularExpression>
 #include <QUrl>
+#include <thread>
 
 SubscribePipeline::SubscribePipeline(const QString &remoteSessionId, QObject *parent)
     : QObject(parent)
@@ -111,11 +112,16 @@ void SubscribePipeline::cleanup()
     if (m_webrtcbin)
         g_signal_handlers_disconnect_by_data(m_webrtcbin, this);
     if (m_pipeline) {
-        gst_element_set_state(m_pipeline, GST_STATE_NULL);
-        gst_object_unref(m_pipeline);
+        GstElement *pipeline = m_pipeline;
         m_pipeline = nullptr;
+        std::thread([pipeline]() {
+            gst_element_set_state(pipeline, GST_STATE_NULL);
+            gst_object_unref(pipeline);
+        }).detach();
     }
     m_webrtcbin = nullptr;
+    m_remoteDescSet = false;
+    m_pendingCandidates.clear();
 }
 
 void SubscribePipeline::setRemoteOffer(const QString &sdp)
@@ -134,10 +140,14 @@ void SubscribePipeline::setRemoteOffer(const QString &sdp)
     g_signal_emit_by_name(m_webrtcbin, "set-remote-description", desc, nullptr);
     gst_webrtc_session_description_free(desc);
 
-    // Log SDP content for debugging
+    m_remoteDescSet = true;
     qDebug() << "SubscribePipeline: remote offer SDP:\n" << sdp.left(2000);
-    qDebug() << "SubscribePipeline: set remote offer, creating answer...";
+    qDebug() << "SubscribePipeline: set remote offer, flushing" << m_pendingCandidates.size() << "queued candidates";
+    for (const auto &c : m_pendingCandidates)
+        g_signal_emit_by_name(m_webrtcbin, "add-ice-candidate", c.first, c.second.toUtf8().constData());
+    m_pendingCandidates.clear();
 
+    qDebug() << "SubscribePipeline: creating answer...";
     GstPromise *answerPromise = gst_promise_new_with_change_func(
         onAnswerCreated, this, nullptr);
     g_signal_emit_by_name(m_webrtcbin, "create-answer", nullptr, answerPromise);
@@ -145,8 +155,12 @@ void SubscribePipeline::setRemoteOffer(const QString &sdp)
 
 void SubscribePipeline::addIceCandidate(const QString &candidate, int sdpMLineIndex, const QString &sdpMid)
 {
-    if (!m_webrtcbin) return;
     Q_UNUSED(sdpMid)
+    if (!m_webrtcbin) return;
+    if (!m_remoteDescSet) {
+        m_pendingCandidates.append({sdpMLineIndex, candidate});
+        return;
+    }
     g_signal_emit_by_name(m_webrtcbin, "add-ice-candidate",
                           sdpMLineIndex, candidate.toUtf8().constData());
 }
@@ -247,10 +261,13 @@ void SubscribePipeline::createAudioChain(GstPad *pad)
     gst_element_sync_state_with_parent(sink);
 
     GstPad *sinkPad = gst_element_get_static_pad(depay, "sink");
-    gst_pad_link(pad, sinkPad);
+    GstPadLinkReturn ret = gst_pad_link(pad, sinkPad);
     gst_object_unref(sinkPad);
 
-    qDebug() << "SubscribePipeline: audio receive chain linked";
+    if (ret != GST_PAD_LINK_OK)
+        qWarning() << "SubscribePipeline: audio receive pad link failed:" << ret;
+    else
+        qDebug() << "SubscribePipeline: audio receive chain linked successfully";
 }
 
 void SubscribePipeline::createVideoChain(GstPad *pad, const gchar *encoding)
