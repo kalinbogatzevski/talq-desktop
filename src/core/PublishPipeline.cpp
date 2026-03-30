@@ -616,25 +616,29 @@ void PublishPipeline::onOfferCreated(GstPromise *promise, gpointer userData)
         guint32 audioSsrc = extractSsrc(sdp, "audio");
         guint32 videoSsrc = extractSsrc(sdp, "video");
 
-        if (audioSsrc) {
-            GstElement *pay = gst_bin_get_by_name(GST_BIN(self->m_pipeline), "pub-rtpopuspay");
-            if (pay) {
-                g_object_set(pay, "ssrc", audioSsrc, nullptr);
-                gst_object_unref(pay);
-                qDebug() << "PublishPipeline: synced audio SSRC to" << audioSsrc;
+        qDebug() << "PublishPipeline: SDP SSRCs — audio:" << audioSsrc << "video:" << videoSsrc;
+
+        // Fix 1: Video m-line port — webrtcbin uses "m=video 0" with "a=bundle-only"
+        // but Janus 1.1.4 doesn't support bundle-only. Use port 9 like browsers do.
+        sdp.replace(QRegularExpression("m=video 0 "), "m=video 9 ");
+        sdp.remove(QRegularExpression("a=bundle-only\r?\n"));
+
+        // Fix 2: Remove video a=ssrc lines — GStreamer's rtpbin rewrites the SSRC
+        // on the wire to a different value than in the SDP. Without a=ssrc lines,
+        // Janus learns the SSRC from the first RTP packet (like it does for audio,
+        // which has no a=ssrc lines and works fine).
+        {
+            int vidIdx = sdp.indexOf("m=video");
+            if (vidIdx >= 0) {
+                int nextM = sdp.indexOf("\nm=", vidIdx + 1);
+                QString before = sdp.left(vidIdx);
+                QString vidSection = (nextM > 0) ? sdp.mid(vidIdx, nextM - vidIdx + 1) : sdp.mid(vidIdx);
+                QString after = (nextM > 0) ? sdp.mid(nextM + 1) : QString();
+                vidSection.remove(QRegularExpression("a=ssrc[^\r\n]*[\r\n]+"));
+                sdp = before + vidSection + after;
             }
         }
-        if (videoSsrc) {
-            // Try camera payloader first, then dummy video payloader
-            GstElement *pay = gst_bin_get_by_name(GST_BIN(self->m_pipeline), "pub-rtpvp8pay");
-            if (!pay)
-                pay = gst_bin_get_by_name(GST_BIN(self->m_pipeline), "pub-dummypay");
-            if (pay) {
-                g_object_set(pay, "ssrc", videoSsrc, nullptr);
-                gst_object_unref(pay);
-                qDebug() << "PublishPipeline: synced video SSRC to" << videoSsrc;
-            }
-        }
+        qDebug() << "PublishPipeline: SDP munged — port 9, no bundle-only, no video ssrc";
     }
 
     QMetaObject::invokeMethod(self, [self, sdp]() {
