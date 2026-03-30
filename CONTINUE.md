@@ -17,34 +17,50 @@ v0.14.4 installers uploaded to GitLab package registry.
 - **Qt:** `C:\Qt\6.8.2\mingw_64`
 - **Build dirs:** `C:\build\talq` (debug), `C:\build\talq-release`, `C:\build\talq-123net`
 
-### OFFICE machine
-- **Repo:** `C:\Users\bogat\Desktop\My Projects\talk-desktop-qt` (same path, no junction)
-- **Qt:** installed via aqt (check exact path on that machine)
-- **Note:** Qt6Multimedia had ABI mismatch from aqt on office machine — may need MSYS2 setup
+### OFFICE machine (first-time setup)
+Run these once from an **admin** command prompt to create the same directory layout:
 
-### Setting up Claude Code on a new working directory
-If switching from `C:\Users\bogat` to `C:\src` (or any other dir) as the Claude Code working directory:
+```cmd
+:: Create C:\src junction (same as home machine)
+mkdir C:\src 2>nul
+mklink /J C:\src\talk-desktop-qt "C:\Users\bogat\Desktop\My Projects\talk-desktop-qt"
 
-1. **Copy memories** to the new project directory:
-   ```bash
-   # Claude stores memories per working directory at:
-   # C:\Users\bogat\.claude\projects\{encoded-path}\memory\
-   # The path is encoded: C:\src → C--src, C:\Users\bogat → C--Users-bogat
+:: Create C:\build for build output
+mkdir C:\build 2>nul
+mkdir C:\build\talq 2>nul
 
-   # Copy from old to new:
-   cp -r ~/.claude/projects/C--Users-bogat/memory/* ~/.claude/projects/C--src/memory/
-   ```
+:: Install MSYS2 if not present (needed for GStreamer + runtime DLLs)
+:: Download from https://msys2.org, install to C:\msys64
+:: Then in MSYS2 terminal:
+:: pacman -S mingw-w64-x86_64-gstreamer mingw-w64-x86_64-gst-plugins-base mingw-w64-x86_64-gst-plugins-good mingw-w64-x86_64-gst-plugins-bad mingw-w64-x86_64-gst-plugins-ugly
+```
 
-2. **Start Claude Code from the new directory:**
-   ```bash
-   cd C:\src
-   claude
-   ```
-   Claude will automatically create `C:\Users\bogat\.claude\projects\C--src\` on first run.
+**IMPORTANT:** Create the junction from an **admin** prompt. Junctions created by non-admin users get "untrusted mount point" status in Qt6 — admin-created junctions are trusted.
 
-3. **Say "init"** or **"read the continue.md"** to restore context.
+Then set up Claude Code:
+```bash
+# Create Claude memory dir for C:\src working directory
+mkdir -p ~/.claude/projects/C--src/memory
 
-4. **CLAUDE.md** is in the repo root (`C:\src\talk-desktop-qt\CLAUDE.md`) — Claude reads it automatically.
+# Copy memories from old working dir (if any exist)
+cp -r ~/.claude/projects/C--Users-bogat/memory/* ~/.claude/projects/C--src/memory/ 2>/dev/null
+
+# Start Claude from C:\src
+cd /c/src
+claude
+# Say: "read the continue.md"
+```
+
+### Unified paths (both machines)
+| Path | Purpose |
+|------|---------|
+| `C:\src\talk-desktop-qt` | Source (junction on both machines) |
+| `C:\build\talq` | Debug build |
+| `C:\build\talq-release` | Generic release build |
+| `C:\build\talq-123net` | 123NET branded release build |
+| `C:\msys64` | MSYS2 (GStreamer, runtime DLLs) |
+| `C:\Qt\6.8.2\mingw_64` | Qt SDK |
+| `C:\Users\bogat\.claude\projects\C--src\memory\` | Claude memories |
 
 ## What was done (v0.14.0–v0.14.4, 2026-03-29)
 
