@@ -201,7 +201,6 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
 void PublishPipeline::stop()
 {
     if (!m_running) return;
-    disableCamera();
     cleanup();
     m_running = false;
     qDebug() << "PublishPipeline: stopped";
@@ -212,6 +211,18 @@ void PublishPipeline::cleanup()
     // Disconnect GStreamer signals to prevent callbacks with stale userData
     if (m_webrtcbin)
         g_signal_handlers_disconnect_by_data(m_webrtcbin, this);
+
+    // Clean up swappable video sources
+    if (m_cameraEnabled)
+        deactivateCameraSource();
+    if (m_dummyActive)
+        deactivateDummySource();
+
+    // Permanent tail cleaned up by pipeline teardown below
+    m_videoEncoder = nullptr;
+    m_videoPayloader = nullptr;
+    m_videoSinkPad = nullptr;
+
     if (m_pipeline) {
         GstElement *pipeline = m_pipeline;
         m_pipeline = nullptr;
@@ -363,53 +374,81 @@ void PublishPipeline::deactivateDummySource()
     qDebug() << "PublishPipeline: dummy video source deactivated";
 }
 
+// ── Pad-probe swap infrastructure ──
+
+struct SwapData {
+    PublishPipeline *self;
+    int deviceIndex;
+    bool hd1080;
+};
+
+GstPadProbeReturn PublishPipeline::onSwapProbe(GstPad *pad, GstPadProbeInfo *info, gpointer userData)
+{
+    Q_UNUSED(pad)
+    Q_UNUSED(info)
+    auto *data = static_cast<SwapData *>(userData);
+    auto *self = data->self;
+
+    // 1. Remove dummy source (we're on the streaming thread, pipeline is blocked)
+    self->deactivateDummySource();
+
+    // 2. Build and activate camera source
+    self->activateCameraSource(data->deviceIndex, data->hd1080);
+
+    delete data;
+
+    // Remove probe (let data flow again)
+    return GST_PAD_PROBE_REMOVE;
+}
+
 void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)
 {
-    if (m_cameraEnabled || !m_pipeline) return;
+    if (m_cameraEnabled || !m_pipeline || !m_videoEncoder) return;
 
-    qDebug() << "PublishPipeline: enabling camera, device" << deviceIndex << (hd1080 ? "1080p" : "720p");
+    qDebug() << "PublishPipeline: enabling camera, device" << deviceIndex;
 
+    if (m_dummyActive) {
+        // Pipeline is running — use pad probe to safely swap on streaming thread
+        GstPad *encSink = gst_element_get_static_pad(m_videoEncoder, "sink");
+        auto *data = new SwapData{this, deviceIndex, hd1080};
+        gst_pad_add_probe(encSink, GST_PAD_PROBE_TYPE_BLOCK_DOWNSTREAM,
+                          onSwapProbe, data, nullptr);
+        gst_object_unref(encSink);
+    } else {
+        // Pipeline not yet playing (called from start()) — direct setup
+        activateCameraSource(deviceIndex, hd1080);
+    }
+}
+
+void PublishPipeline::activateCameraSource(int deviceIndex, bool hd1080)
+{
     bool testVideo = !qEnvironmentVariableIsEmpty("TALQ_TEST_AUDIO");
 
+    // Create camera source
     if (testVideo) {
         m_cameraSrc = gst_element_factory_make("videotestsrc", nullptr);
-        if (m_cameraSrc) {
+        if (m_cameraSrc)
             g_object_set(m_cameraSrc, "is-live", TRUE, "pattern", 0 /* SMPTE */, nullptr);
-            qDebug() << "PublishPipeline: using videotestsrc (test mode)";
-        }
     }
     if (!m_cameraSrc) {
-        // Use mfvideosrc (Media Foundation) — works in shared mode, compatible with GUI apps.
-        // ksvideosrc (Kernel Streaming) requires exclusive access and fails inside Qt's COM/STA apartment.
         m_cameraSrc = gst_element_factory_make("mfvideosrc", nullptr);
         if (!m_cameraSrc)
             m_cameraSrc = gst_element_factory_make("ksvideosrc", nullptr);
     }
     if (!m_cameraSrc) {
-        emit cameraError("No camera capture plugin available");
+        QMetaObject::invokeMethod(this, [this]() { emit cameraError("No camera plugin"); }, Qt::QueuedConnection);
+        // Reactivate dummy if we deactivated it
+        if (!m_dummyActive) activateDummySource();
         return;
     }
     if (!testVideo)
         g_object_set(m_cameraSrc, "device-index", deviceIndex, nullptr);
 
-    // OLD enableCamera — to be rewritten in Task 4.
-    // For now, use new member names and link into the permanent tail.
     m_cameraConv = gst_element_factory_make("videoconvert", nullptr);
     m_cameraCaps = gst_element_factory_make("capsfilter", nullptr);
 
-    if (!m_cameraConv || !m_cameraCaps) {
-        emit cameraError("Failed to create video encoding elements");
-        if (m_cameraSrc) { gst_object_unref(m_cameraSrc); m_cameraSrc = nullptr; }
-        if (m_cameraConv) { gst_object_unref(m_cameraConv); m_cameraConv = nullptr; }
-        if (m_cameraCaps) { gst_object_unref(m_cameraCaps); m_cameraCaps = nullptr; }
-        return;
-    }
-
-    int w = hd1080 ? 1920 : 1280;
-    int h = hd1080 ? 1080 : 720;
-    int bitrate = hd1080 ? 3000000 : 1500000;
-
     if (testVideo) {
+        int w = hd1080 ? 1920 : 1280, h = hd1080 ? 1080 : 720;
         QString capsStr = QString("video/x-raw,width=%1,height=%2,framerate=30/1").arg(w).arg(h);
         GstCaps *caps = gst_caps_from_string(capsStr.toUtf8().constData());
         g_object_set(m_cameraCaps, "caps", caps, nullptr);
@@ -418,117 +457,78 @@ void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)
         GstCaps *caps = gst_caps_from_string("video/x-raw");
         g_object_set(m_cameraCaps, "caps", caps, nullptr);
         gst_caps_unref(caps);
-        qDebug() << "PublishPipeline: camera caps: auto-negotiate";
     }
 
-    // Reconfigure permanent encoder for camera bitrate
-    g_object_set(m_videoEncoder, "target-bitrate", bitrate, nullptr);
-
-    // Create tee + preview branch elements
+    // Create tee + preview branch
     m_tee = gst_element_factory_make("tee", "camera-tee");
     m_encQueue = gst_element_factory_make("queue", "enc-queue");
     m_previewQueue = gst_element_factory_make("queue", "preview-queue");
-    if (m_encQueue) g_object_set(m_encQueue, "leaky", 2 /* downstream */, "max-size-buffers", 3, nullptr);
-    if (m_previewQueue) g_object_set(m_previewQueue, "leaky", 2, "max-size-buffers", 2, nullptr);
     m_previewConvert = gst_element_factory_make("videoconvert", "preview-convert");
     m_previewAppsink = gst_element_factory_make("appsink", "preview-sink");
 
-    if (!m_tee || !m_encQueue || !m_previewQueue || !m_previewConvert || !m_previewAppsink) {
-        qWarning() << "PublishPipeline: failed to create preview elements, continuing without preview";
-        if (m_tee) { gst_object_unref(m_tee); m_tee = nullptr; }
-        if (m_encQueue) { gst_object_unref(m_encQueue); m_encQueue = nullptr; }
-        if (m_previewQueue) { gst_object_unref(m_previewQueue); m_previewQueue = nullptr; }
-        if (m_previewConvert) { gst_object_unref(m_previewConvert); m_previewConvert = nullptr; }
-        if (m_previewAppsink) { gst_object_unref(m_previewAppsink); m_previewAppsink = nullptr; }
-    }
+    if (m_encQueue) g_object_set(m_encQueue, "leaky", 2, "max-size-buffers", 3, nullptr);
+    if (m_previewQueue) g_object_set(m_previewQueue, "leaky", 2, "max-size-buffers", 2, nullptr);
 
-    if (m_previewAppsink) {
+    bool hasTee = m_tee && m_encQueue && m_previewQueue && m_previewConvert && m_previewAppsink;
+
+    if (hasTee) {
         GstCaps *previewCaps = gst_caps_from_string("video/x-raw,format=I420");
-        g_object_set(m_previewAppsink,
-            "emit-signals", TRUE, "caps", previewCaps, "drop", TRUE, "max-buffers", 1, nullptr);
+        g_object_set(m_previewAppsink, "emit-signals", TRUE, "caps", previewCaps,
+                     "drop", TRUE, "max-buffers", 1, nullptr);
         gst_caps_unref(previewCaps);
-        g_signal_connect(m_previewAppsink, "new-sample",
-            G_CALLBACK(onPreviewSample), this);
-    }
+        g_signal_connect(m_previewAppsink, "new-sample", G_CALLBACK(onPreviewSample), this);
 
-    // Add elements and link — camera chain feeds into permanent encoder
-    if (m_tee) {
         gst_bin_add_many(GST_BIN(m_pipeline), m_cameraSrc, m_cameraConv, m_cameraCaps,
-            m_tee, m_encQueue,
-            m_previewQueue, m_previewConvert, m_previewAppsink, nullptr);
+            m_tee, m_encQueue, m_previewQueue, m_previewConvert, m_previewAppsink, nullptr);
+
+        gst_element_link_many(m_cameraSrc, m_cameraConv, m_cameraCaps, m_tee, nullptr);
+        gst_element_link_many(m_encQueue, m_videoEncoder, nullptr);
+        gst_element_link_many(m_previewQueue, m_previewConvert, m_previewAppsink, nullptr);
+
+        // Link tee src pads
+        GstPad *teeSrcEnc = gst_element_request_pad_simple(m_tee, "src_%u");
+        GstPad *encQueueSink = gst_element_get_static_pad(m_encQueue, "sink");
+        gst_pad_link(teeSrcEnc, encQueueSink);
+        gst_object_unref(teeSrcEnc);
+        gst_object_unref(encQueueSink);
+
+        GstPad *teeSrcPreview = gst_element_request_pad_simple(m_tee, "src_%u");
+        GstPad *previewQueueSink = gst_element_get_static_pad(m_previewQueue, "sink");
+        gst_pad_link(teeSrcPreview, previewQueueSink);
+        gst_object_unref(teeSrcPreview);
+        gst_object_unref(previewQueueSink);
     } else {
+        // No preview — direct chain
         gst_bin_add_many(GST_BIN(m_pipeline), m_cameraSrc, m_cameraConv, m_cameraCaps, nullptr);
+        gst_element_link_many(m_cameraSrc, m_cameraConv, m_cameraCaps, m_videoEncoder, nullptr);
     }
 
-    gboolean linked;
-    if (m_tee) {
-        linked = gst_element_link_many(m_cameraSrc, m_cameraConv, m_cameraCaps, m_tee, nullptr);
-        linked = linked && gst_element_link_many(m_encQueue, m_videoEncoder, nullptr);
-        linked = linked && gst_element_link_many(m_previewQueue, m_previewConvert, m_previewAppsink, nullptr);
+    // Sync all new elements to pipeline state
+    auto syncEl = [](GstElement *el) { if (el) gst_element_sync_state_with_parent(el); };
+    syncEl(m_cameraSrc);
+    syncEl(m_cameraConv);
+    syncEl(m_cameraCaps);
+    syncEl(m_tee);
+    syncEl(m_encQueue);
+    syncEl(m_previewQueue);
+    syncEl(m_previewConvert);
+    syncEl(m_previewAppsink);
 
-        if (linked) {
-            GstPad *teeSrcEnc = gst_element_request_pad_simple(m_tee, "src_%u");
-            GstPad *encQueueSink = gst_element_get_static_pad(m_encQueue, "sink");
-            GstPadLinkReturn r1 = gst_pad_link(teeSrcEnc, encQueueSink);
-            gst_object_unref(teeSrcEnc);
-            gst_object_unref(encQueueSink);
-
-            GstPad *teeSrcPreview = gst_element_request_pad_simple(m_tee, "src_%u");
-            GstPad *previewQueueSink = gst_element_get_static_pad(m_previewQueue, "sink");
-            GstPadLinkReturn r2 = gst_pad_link(teeSrcPreview, previewQueueSink);
-            gst_object_unref(teeSrcPreview);
-            gst_object_unref(previewQueueSink);
-
-            if (r1 != GST_PAD_LINK_OK || r2 != GST_PAD_LINK_OK) {
-                qWarning() << "PublishPipeline: tee pad link failed:" << r1 << r2;
-                linked = false;
-            }
-        }
-    } else {
-        // No tee fallback: direct path into permanent encoder
-        linked = gst_element_link_many(m_cameraSrc, m_cameraConv, m_cameraCaps, m_videoEncoder, nullptr);
-    }
-
-    if (!linked) {
-        qWarning() << "PublishPipeline: failed to link video chain";
-        emit cameraError("Failed to link video pipeline");
-        disableCamera();
-        return;
-    }
-
-    gst_element_sync_state_with_parent(m_cameraSrc);
-    gst_element_sync_state_with_parent(m_cameraConv);
-    gst_element_sync_state_with_parent(m_cameraCaps);
-    if (m_tee) {
-        gst_element_sync_state_with_parent(m_tee);
-        gst_element_sync_state_with_parent(m_encQueue);
-        gst_element_sync_state_with_parent(m_previewQueue);
-        gst_element_sync_state_with_parent(m_previewConvert);
-        gst_element_sync_state_with_parent(m_previewAppsink);
-    }
+    // Reconfigure encoder for camera bitrate
+    int bitrate = hd1080 ? 3000000 : 1500000;
+    g_object_set(m_videoEncoder, "target-bitrate", bitrate, nullptr);
 
     m_cameraEnabled = true;
-    qDebug() << "PublishPipeline: camera enabled successfully";
+    qDebug() << "PublishPipeline: camera source activated, bitrate=" << bitrate;
+
+    QMetaObject::invokeMethod(this, [this]() {
+        emit cameraChanged();
+    }, Qt::QueuedConnection);
 }
 
-void PublishPipeline::disableCamera()
+void PublishPipeline::deactivateCameraSource()
 {
-    // OLD disableCamera — to be rewritten in Task 5.
-    // Updated for new member layout: only tear down swappable camera elements,
-    // leave permanent tail (encoder + payloader + webrtcbin pad) intact.
-    if (!m_cameraEnabled && !m_cameraSrc) return;
-
-    qDebug() << "PublishPipeline: disabling camera";
-
-    auto removeElement = [this](GstElement *&el) {
-        if (el) {
-            gst_element_set_state(el, GST_STATE_NULL);
-            gst_bin_remove(GST_BIN(m_pipeline), el);
-            el = nullptr;
-        }
-    };
-
-    // Unlink camera chain from permanent encoder
+    // Unlink camera chain from encoder
     if (m_encQueue)
         gst_element_unlink(m_encQueue, m_videoEncoder);
     else if (m_cameraCaps)
@@ -536,16 +536,53 @@ void PublishPipeline::disableCamera()
 
     if (m_previewAppsink)
         g_signal_handlers_disconnect_by_data(m_previewAppsink, this);
-    removeElement(m_previewAppsink);
-    removeElement(m_previewConvert);
-    removeElement(m_previewQueue);
-    removeElement(m_tee);
-    removeElement(m_encQueue);
-    removeElement(m_cameraCaps);
-    removeElement(m_cameraConv);
-    removeElement(m_cameraSrc);
+
+    auto remove = [this](GstElement *&el) {
+        if (!el) return;
+        gst_element_set_state(el, GST_STATE_NULL);
+        gst_bin_remove(GST_BIN(m_pipeline), el);
+        el = nullptr;
+    };
+
+    remove(m_previewAppsink);
+    remove(m_previewConvert);
+    remove(m_previewQueue);
+    remove(m_tee);
+    remove(m_encQueue);
+    remove(m_cameraCaps);
+    remove(m_cameraConv);
+    remove(m_cameraSrc);
 
     m_cameraEnabled = false;
+    qDebug() << "PublishPipeline: camera source deactivated";
+}
+
+void PublishPipeline::disableCamera()
+{
+    if (!m_cameraEnabled) return;
+
+    qDebug() << "PublishPipeline: disabling camera";
+
+    if (m_pipeline && m_videoEncoder) {
+        // Pipeline is running — use pad probe to safely swap
+        GstPad *encSink = gst_element_get_static_pad(m_videoEncoder, "sink");
+        gst_pad_add_probe(encSink, GST_PAD_PROBE_TYPE_BLOCK_DOWNSTREAM,
+            [](GstPad *, GstPadProbeInfo *, gpointer userData) -> GstPadProbeReturn {
+                auto *self = static_cast<PublishPipeline *>(userData);
+                self->deactivateCameraSource();
+                self->activateDummySource();
+                return GST_PAD_PROBE_REMOVE;
+            }, this, nullptr);
+        gst_object_unref(encSink);
+    } else {
+        // Not running — direct teardown
+        deactivateCameraSource();
+    }
+
+    QMetaObject::invokeMethod(this, [this]() {
+        m_localVideoProvider->feedFrame(nullptr);  // clear preview
+        emit cameraChanged();
+    }, Qt::QueuedConnection);
 }
 
 void PublishPipeline::pollBus()
@@ -676,10 +713,7 @@ void PublishPipeline::onOfferCreated(GstPromise *promise, gpointer userData)
             }
         }
         if (videoSsrc) {
-            // Try camera payloader first, then dummy video payloader
-            GstElement *pay = gst_bin_get_by_name(GST_BIN(self->m_pipeline), "pub-rtpvp8pay");
-            if (!pay)
-                pay = gst_bin_get_by_name(GST_BIN(self->m_pipeline), "pub-dummypay");
+            GstElement *pay = gst_bin_get_by_name(GST_BIN(self->m_pipeline), "pub-videopay");
             if (pay) {
                 g_object_set(pay, "ssrc", videoSsrc, nullptr);
                 gst_object_unref(pay);
