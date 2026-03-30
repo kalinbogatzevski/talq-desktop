@@ -57,21 +57,29 @@ private:
     bool m_remoteDescSet = false;
     QList<QPair<int, QString>> m_pendingCandidates;
 
-    // Video elements
-    GstElement *m_cameraSrc = nullptr;
-    GstElement *m_videoConvert = nullptr;
-    GstElement *m_videoCapsFilter = nullptr;
-    GstElement *m_videoEncoder = nullptr;
-    GstElement *m_videoPayloader = nullptr;
-    GstPad *m_videoSinkPad = nullptr;
-    bool m_cameraEnabled = false;
+    // ── Video: permanent tail (pipeline lifetime) ──
+    GstElement *m_videoEncoder = nullptr;   // vp8enc "pub-videoenc"
+    GstElement *m_videoPayloader = nullptr; // rtpvp8pay "pub-videopay"
+    GstPad *m_videoSinkPad = nullptr;       // permanent webrtcbin sink pad
 
-    // Local preview (tee branch)
+    // ── Video: dummy source (active when camera off) ──
+    GstElement *m_dummySrc = nullptr;       // videotestsrc "pub-dummyvideo"
+    GstElement *m_dummyConv = nullptr;      // videoconvert "pub-dummyconv"
+    GstElement *m_dummyCaps = nullptr;      // capsfilter (16x16@1fps)
+    bool m_dummyActive = false;
+
+    // ── Video: camera source (active when camera on) ──
+    GstElement *m_cameraSrc = nullptr;
+    GstElement *m_cameraConv = nullptr;
+    GstElement *m_cameraCaps = nullptr;
     GstElement *m_tee = nullptr;
     GstElement *m_encQueue = nullptr;
     GstElement *m_previewQueue = nullptr;
     GstElement *m_previewConvert = nullptr;
     GstElement *m_previewAppsink = nullptr;
+    bool m_cameraEnabled = false;
+
+    // ── Local preview ──
     VideoFrameProvider *m_localVideoProvider = nullptr;
 
     static void onNegotiationNeeded(GstElement *webrtc, gpointer userData);
@@ -79,4 +87,11 @@ private:
     static void onOfferCreated(GstPromise *promise, gpointer userData);
     static void onIceStateChanged(GObject *obj, GParamSpec *pspec, gpointer userData);
     static GstFlowReturn onPreviewSample(GstAppSink *sink, gpointer userData);
+
+    void setupPermanentVideoTail();
+    void activateDummySource();
+    void deactivateDummySource();
+    void activateCameraSource(int deviceIndex, bool hd1080);
+    void deactivateCameraSource();
+    static GstPadProbeReturn onSwapProbe(GstPad *pad, GstPadProbeInfo *info, gpointer userData);
 };
