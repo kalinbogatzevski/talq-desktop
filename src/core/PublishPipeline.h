@@ -44,7 +44,6 @@ signals:
     void audioLevelUpdated(double level);  // 0.0 to 1.0
     void error(const QString &message);
     void cameraError(const QString &reason);
-    void cameraChanged();  // emitted when camera source swaps in/out
 
 public slots:
     void pollBus();  // called from CallManager's GLib timer
@@ -58,31 +57,21 @@ private:
     bool m_remoteDescSet = false;
     QList<QPair<int, QString>> m_pendingCandidates;
 
-    // ── Video: permanent chain (pipeline lifetime) ──
-    GstElement *m_inputSelector = nullptr;  // input-selector: switches dummy/camera
-    GstElement *m_selectorConv = nullptr;   // videoconvert after selector (format normalization)
-    GstElement *m_videoEncoder = nullptr;   // vp8enc "pub-videoenc"
-    GstElement *m_videoPayloader = nullptr; // rtpvp8pay "pub-videopay"
-    GstPad *m_videoSinkPad = nullptr;       // permanent webrtcbin sink pad
-    GstPad *m_dummySelectorPad = nullptr;   // input-selector sink_0 (dummy)
-    GstPad *m_cameraSelectorPad = nullptr;  // input-selector sink_1 (camera)
-
-    // ── Video: dummy source (always present) ──
-    GstElement *m_dummySrc = nullptr;       // videotestsrc "pub-dummyvideo"
-    GstElement *m_dummyCaps = nullptr;      // capsfilter (16x16@1fps)
-
-    // ── Video: camera source (created on enableCamera, destroyed on disableCamera) ──
+    // Video elements
     GstElement *m_cameraSrc = nullptr;
-    GstElement *m_cameraConv = nullptr;
-    GstElement *m_cameraCaps = nullptr;
+    GstElement *m_videoConvert = nullptr;
+    GstElement *m_videoCapsFilter = nullptr;
+    GstElement *m_videoEncoder = nullptr;
+    GstElement *m_videoPayloader = nullptr;
+    GstPad *m_videoSinkPad = nullptr;
+    bool m_cameraEnabled = false;
+
+    // Local preview (tee branch)
     GstElement *m_tee = nullptr;
     GstElement *m_encQueue = nullptr;
     GstElement *m_previewQueue = nullptr;
     GstElement *m_previewConvert = nullptr;
     GstElement *m_previewAppsink = nullptr;
-    bool m_cameraEnabled = false;
-
-    // ── Local preview ──
     VideoFrameProvider *m_localVideoProvider = nullptr;
 
     static void onNegotiationNeeded(GstElement *webrtc, gpointer userData);
@@ -90,6 +79,4 @@ private:
     static void onOfferCreated(GstPromise *promise, gpointer userData);
     static void onIceStateChanged(GObject *obj, GParamSpec *pspec, gpointer userData);
     static GstFlowReturn onPreviewSample(GstAppSink *sink, gpointer userData);
-
-    void setupPermanentVideoTail();
 };
