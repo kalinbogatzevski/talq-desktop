@@ -58,18 +58,20 @@ private:
     bool m_remoteDescSet = false;
     QList<QPair<int, QString>> m_pendingCandidates;
 
-    // ── Video: permanent tail (pipeline lifetime) ──
+    // ── Video: permanent chain (pipeline lifetime) ──
+    GstElement *m_inputSelector = nullptr;  // input-selector: switches dummy/camera
+    GstElement *m_selectorConv = nullptr;   // videoconvert after selector (format normalization)
     GstElement *m_videoEncoder = nullptr;   // vp8enc "pub-videoenc"
     GstElement *m_videoPayloader = nullptr; // rtpvp8pay "pub-videopay"
     GstPad *m_videoSinkPad = nullptr;       // permanent webrtcbin sink pad
+    GstPad *m_dummySelectorPad = nullptr;   // input-selector sink_0 (dummy)
+    GstPad *m_cameraSelectorPad = nullptr;  // input-selector sink_1 (camera)
 
-    // ── Video: dummy source (active when camera off) ──
+    // ── Video: dummy source (always present) ──
     GstElement *m_dummySrc = nullptr;       // videotestsrc "pub-dummyvideo"
-    GstElement *m_dummyConv = nullptr;      // videoconvert "pub-dummyconv"
     GstElement *m_dummyCaps = nullptr;      // capsfilter (16x16@1fps)
-    bool m_dummyActive = false;
 
-    // ── Video: camera source (active when camera on) ──
+    // ── Video: camera source (created on enableCamera, destroyed on disableCamera) ──
     GstElement *m_cameraSrc = nullptr;
     GstElement *m_cameraConv = nullptr;
     GstElement *m_cameraCaps = nullptr;
@@ -90,9 +92,4 @@ private:
     static GstFlowReturn onPreviewSample(GstAppSink *sink, gpointer userData);
 
     void setupPermanentVideoTail();
-    void activateDummySource();
-    void deactivateDummySource();
-    void activateCameraSource(int deviceIndex, bool hd1080);
-    void deactivateCameraSource();
-    static GstPadProbeReturn onSwapProbe(GstPad *pad, GstPadProbeInfo *info, gpointer userData);
 };
