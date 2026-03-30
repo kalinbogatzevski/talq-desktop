@@ -130,49 +130,66 @@ claude
 - build-release.sh script for reliable installer builds
 - All GitLab releases created with changelog (v0.1.0–v0.14.4)
 
-## Active bug: MCU audio calls — Janus `codec 'none'`
+## Active bug: Video SSRC mismatch — Janus drops TalQ's video RTP
 
-### Symptoms
-- TalQ call connects (ICE+DTLS succeed) but no audio flows
-- Janus logs: `Unsupported codec 'none'` and `Unknown SSRC, dropping packet`
-- Web client (browser) calls work fine through the same server
+### What works
+- **Audio calls**: bidirectional through MCU ✓
+- **Receiving browser video in TalQ**: subscriber pipeline ✓
+- **Camera toggle**: no freeze (permanent encoder + source swap) ✓
+- **Camera preview**: local appsink preview ✓
 
-### Root cause chain
-1. HPB signaling server (v2.0.4) creates Janus videoroom rooms via API **without specifying `audiocodec`**
-2. Janus 1.1.4 sets room audiocodec to `none` for API-created rooms (general config section only applies to config-file rooms)
-3. When publisher joins, Janus can't match the audio codec → rejects audio → drops RTP
-4. Additionally, GStreamer webrtcbin's rtpopuspay generates random SSRC that doesn't match the SDP → Janus drops packets as "Unknown SSRC" (partially fixed with SSRC sync in onOfferCreated)
+### What doesn't work
+- **TalQ's camera video → browser**: Janus drops all video RTP with "Unknown SSRC"
 
-### Why it worked before (v0.13.0)
-Commit `6db3bab` fixed the same Janus config issue. The Docker container was rebuilt since then, resetting the config. But the `general` section fix no longer works because the signaling server creates rooms via API (bypasses config-file defaults).
+### Root cause (confirmed with debugging)
+GStreamer's `webrtcbin` internal `rtpbin` **rewrites the SSRC on the wire** to a different value than what appears in the SDP offer. The payloader's SSRC matches the SDP, but rtpbin overrides it.
 
-### What was tried (2026-03-30)
-- Added `audiocodec=opus` to Janus `general` section → no effect (API rooms ignore it)
-- Switched to P2P mode → timing issue (offer sent before remote peer joins)
-- SSRC sync (payloader SSRC forced to match SDP) → addresses one issue but codec 'none' is the blocker
+Evidence from debug logging:
+- Payloader caps SSRC = SDP SSRC (4190602365) — they match
+- But Janus sees SSRC 793065202 — rtpbin's internal session SSRC
+- Audio has NO `a=ssrc` lines in SDP and works (Janus learns SSRC from first packet)
+- Video HAS `a=ssrc` lines in SDP and fails (Janus validates against them)
+
+### What was tried
+1. Sync payloader SSRC to match SDP → rtpbin overwrites it anyway
+2. Pre-set payloader SSRC before pipeline starts → webrtcbin ignores it in SDP
+3. Strip video `a=ssrc` from SDP → Janus still rejects (may need `mid` extension)
+4. Rewrite SDP with rtpbin's internal SSRC → can't access (webrtcbin doesn't expose rtpbin property, session 1 returns NULL)
+5. Input-selector approach → worked for test sources, SSRC still wrong on wire
+
+### Browser comparison
+- Browser: `RTCPeerConnection` owns the whole pipeline, SSRC is consistent by design
+- GStreamer: separate elements (payloader, rtpbin) with independent SSRC management
+- Browser offer has `m=video <real-port>`, GStreamer uses `m=video 0` with `a=bundle-only`
+- Janus 1.1.4 may not support `a=bundle-only` → fixed by munging to port 9
 
 ### Next steps to fix
-1. **Check signaling server config** — the nextcloud-spreed-signaling Go binary has `audiocodec`/`videocodec` JSON fields. There may be an `[mcu]` config option for default codecs. Check the [signaling server repo](https://github.com/strukturag/nextcloud-spreed-signaling) for config docs.
-2. **Alternative: P2P for 1:1 calls** — change `m_useP2P = !m_signaling->hasMcu()` to `m_useP2P = true` and fix the timing: `onParticipantJoinedCall` should trigger `createOffer()` when P2P pipeline exists but no offer sent yet.
-3. **Server access**: `ssh -i ~/.ssh/id_ncloud root@ncloud.123net.link`
-   - Janus config: `/opt/talk-hpb/janus.plugin.videoroom.jcfg`
-   - Signaling config: mounted into `talk-hpb_signaling_1` at `/config/server.conf`
-   - Janus logs: `docker logs talk-hpb_janus_1 2>&1 | grep -v "Unknown SSRC"`
+1. **Enable Janus verbose logging** (`debug_level=7`) to see exactly what Janus expects vs receives
+2. **Capture browser's SDP** from Chrome DevTools → compare line-by-line with TalQ's
+3. **Try `janusvrwebrtcsink`** from gst-plugins-rs — handles all Janus quirks
+4. **Try disabling rtpbin SSRC rewriting** — set `internal-ssrc` on rtpbin session to match SDP
+5. **Alternative: P2P for 1:1 calls** — bypasses Janus entirely
+
+### Server access
+- SSH: `ssh root@ncloud.123net.link`
+- Janus config: `/opt/talk-hpb/janus.plugin.videoroom.jcfg`
+- Signaling config: docker `talk-hpb_signaling_1` at `/config/server.conf`
+- Janus logs: `docker logs talk-hpb_janus_1 2>&1`
+- NC Talk source (cloned): `C:\src\spreed`
 
 ## Known bugs
-- **MCU audio calls broken** — see "Active bug" above
+- **Video SSRC mismatch** — see "Active bug" above
+- "Unsupported codec 'none'" on subscriber — server config issue (affects all clients)
 - Duplicate message flash on send (optimistic send + poller overlap race)
 - Notification stacking — single popup replaces previous, doesn't queue
 - Notification always appears on primary screen, not the app's screen
 
 ## Next steps
-- **Fix MCU audio** — priority #1, see "Active bug" section
-- Camera doesn't work on this laptop (mfvideosrc COM/STA issue) — test on work laptop
-- **Screen sharing** — d3d11screencapturesrc for full display or window-handle for specific app
-- **Background blur** — Windows Studio Effects API (Win11) or MediaPipe segmentation + GStreamer
-- In-bubble text selection (click-drag to select words within a message)
-- Notification stacking (queue multiple popups)
-- Notification on correct monitor
+- **Fix video SSRC** — priority #1, see "Active bug" section
+- **Screen sharing** — d3d11screencapturesrc
+- **Background blur** — Windows Studio Effects API or MediaPipe
+- In-bubble text selection
+- Notification stacking/monitor
 - Hardcoded dark theme colors in SelectionBarWidget/ConversationPickerDialog — use PainterTheme
 - Cancel upload button on progress bar
 
