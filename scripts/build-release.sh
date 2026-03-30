@@ -35,7 +35,7 @@ DIST_DIR="$SRC_DIR/dist/TalQ-v${VERSION}-win64${DIST_SUFFIX}"
 # Tool paths
 CMAKE="/c/Qt/Tools/CMake_64/bin/cmake.exe"
 WINDEPLOYQT="/c/Qt/6.8.2/mingw_64/bin/windeployqt6.exe"
-ISCC="/c/Users/$USER/InnoSetup/ISCC.exe"
+ISCC="/c/Users/${USER:-${USERNAME}}/InnoSetup/ISCC.exe"
 NINJA="/c/Qt/Tools/Ninja"
 MINGW="/c/Qt/Tools/mingw1310_64/bin"
 MSYS2="/c/msys64/mingw64/bin"
@@ -65,16 +65,28 @@ for dll in libstdc++-6.dll libgcc_s_seh-1.dll libwinpthread-1.dll \
     libgstrtp-1.0-0.dll libgstsdp-1.0-0.dll libgstwebrtc-1.0-0.dll \
     libgstrtsp-1.0-0.dll libgsttag-1.0-0.dll \
     libgobject-2.0-0.dll libglib-2.0-0.dll libgio-2.0-0.dll \
-    libgmodule-2.0-0.dll libintl-8.dll libffi-8.dll libpcre2-8-0.dll; do
+    libgmodule-2.0-0.dll libintl-8.dll libffi-8.dll libpcre2-8-0.dll \
+    libgstnet-1.0-0.dll libgstsctp-1.0-0.dll libgstwebrtcnice-1.0-0.dll \
+    libnice-10.dll libsrtp2-1.dll libopus-0.dll \
+    libssl-3-x64.dll libcrypto-3-x64.dll \
+    libjpeg-8.dll libopenh264-7.dll libvpx-1.dll \
+    libgnutls-30.dll libhogweed-6.dll libgmp-10.dll \
+    libidn2-0.dll libnettle-8.dll libp11-kit-0.dll \
+    libtasn1-6.dll libunistring-5.dll libzstd.dll \
+    libbrotlicommon.dll libbrotlidec.dll libbrotlienc.dll; do
     cp "$MSYS2/$dll" . 2>/dev/null || true
 done
 
-# GStreamer plugins (use debug build's plugins or MSYS2's)
-if [ -d "/c/build/talq/gst-plugins" ]; then
-    cp -r /c/build/talq/gst-plugins . 2>/dev/null || true
-elif [ -d "$SRC_DIR/gst-plugins" ]; then
-    cp -r "$SRC_DIR/gst-plugins" . 2>/dev/null || true
-fi
+# GStreamer plugins (copy directly from MSYS2)
+mkdir -p gst-plugins
+for p in coreelements audioconvert audioresample autodetect audiotestsrc videotestsrc \
+    dtls nice opus rtp rtpmanager srtp \
+    wasapi wasapi2 webrtc app level \
+    vpx openh264 videoconvertscale sctp jpeg \
+    winks mediafoundation; do
+    src="$MSYS2/../lib/gstreamer-1.0/libgst${p}.dll"
+    [ -f "$src" ] && cp "$src" gst-plugins/
+done
 
 echo "[5/6] Packaging dist..."
 rm -rf "$DIST_DIR"

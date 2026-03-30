@@ -62,6 +62,8 @@ private:
     GstElement *m_pipeline = nullptr;
     GstElement *m_webrtcbin = nullptr;
     bool m_running = false;
+    bool m_remoteDescSet = false;
+    QList<QPair<int, QString>> m_pendingCandidates;
     QString m_audioOutputDeviceId;
 
     // Video send elements

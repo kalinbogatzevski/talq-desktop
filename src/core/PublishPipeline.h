@@ -54,6 +54,8 @@ private:
     GstElement *m_pipeline = nullptr;
     GstElement *m_webrtcbin = nullptr;
     bool m_running = false;
+    bool m_remoteDescSet = false;
+    QList<QPair<int, QString>> m_pendingCandidates;
 
     // Video elements
     GstElement *m_cameraSrc = nullptr;

@@ -3,6 +3,7 @@
 #include <QPointer>
 #include <QRegularExpression>
 #include <QUrl>
+#include <thread>
 
 PeerPipeline::PeerPipeline(QObject *parent)
     : QObject(parent)
@@ -94,7 +95,7 @@ bool PeerPipeline::start(const QString &stunServer, const QList<TurnServer> &tur
     GstElement *capsfilter = gst_element_factory_make("capsfilter", nullptr);
     GstElement *level = gst_element_factory_make("level", "peer-level");
     GstElement *opusenc = gst_element_factory_make("opusenc", nullptr);
-    GstElement *rtpopuspay = gst_element_factory_make("rtpopuspay", nullptr);
+    GstElement *rtpopuspay = gst_element_factory_make("rtpopuspay", "peer-rtpopuspay");
 
     if (!audiosrc || !audioconvert || !audioresample || !capsfilter || !level || !opusenc || !rtpopuspay) {
         emit error("Failed to create audio capture elements");
@@ -175,11 +176,17 @@ void PeerPipeline::cleanup()
     if (m_webrtcbin)
         g_signal_handlers_disconnect_by_data(m_webrtcbin, this);
     if (m_pipeline) {
-        gst_element_set_state(m_pipeline, GST_STATE_NULL);
-        gst_object_unref(m_pipeline);
+        // Move blocking GST_STATE_NULL off the UI thread
+        GstElement *pipeline = m_pipeline;
         m_pipeline = nullptr;
+        std::thread([pipeline]() {
+            gst_element_set_state(pipeline, GST_STATE_NULL);
+            gst_object_unref(pipeline);
+        }).detach();
     }
     m_webrtcbin = nullptr;
+    m_remoteDescSet = false;
+    m_pendingCandidates.clear();
 }
 
 void PeerPipeline::createOffer()
@@ -206,9 +213,14 @@ void PeerPipeline::setRemoteOffer(const QString &sdp)
     g_signal_emit_by_name(m_webrtcbin, "set-remote-description", desc, nullptr);
     gst_webrtc_session_description_free(desc);
 
+    m_remoteDescSet = true;
     qDebug() << "PeerPipeline: remote offer SDP:\n" << sdp.left(2000);
-    qDebug() << "PeerPipeline: set remote offer, creating answer...";
+    qDebug() << "PeerPipeline: set remote offer, flushing" << m_pendingCandidates.size() << "queued candidates";
+    for (const auto &c : m_pendingCandidates)
+        g_signal_emit_by_name(m_webrtcbin, "add-ice-candidate", c.first, c.second.toUtf8().constData());
+    m_pendingCandidates.clear();
 
+    qDebug() << "PeerPipeline: creating answer...";
     GstPromise *answerPromise = gst_promise_new_with_change_func(
         onAnswerCreated, this, nullptr);
     g_signal_emit_by_name(m_webrtcbin, "create-answer", nullptr, answerPromise);
@@ -230,13 +242,21 @@ void PeerPipeline::setRemoteAnswer(const QString &sdp)
     g_signal_emit_by_name(m_webrtcbin, "set-remote-description", desc, nullptr);
     gst_webrtc_session_description_free(desc);
 
-    qDebug() << "PeerPipeline: set remote answer";
+    m_remoteDescSet = true;
+    qDebug() << "PeerPipeline: set remote answer, flushing" << m_pendingCandidates.size() << "queued candidates";
+    for (const auto &c : m_pendingCandidates)
+        g_signal_emit_by_name(m_webrtcbin, "add-ice-candidate", c.first, c.second.toUtf8().constData());
+    m_pendingCandidates.clear();
 }
 
 void PeerPipeline::addIceCandidate(const QString &candidate, int sdpMLineIndex, const QString &sdpMid)
 {
-    if (!m_webrtcbin) return;
     Q_UNUSED(sdpMid)
+    if (!m_webrtcbin) return;
+    if (!m_remoteDescSet) {
+        m_pendingCandidates.append({sdpMLineIndex, candidate});
+        return;
+    }
     g_signal_emit_by_name(m_webrtcbin, "add-ice-candidate",
                           sdpMLineIndex, candidate.toUtf8().constData());
 }
@@ -625,10 +645,13 @@ void PeerPipeline::createAudioReceiveChain(GstPad *pad)
     gst_element_sync_state_with_parent(sink);
 
     GstPad *sinkPad = gst_element_get_static_pad(depay, "sink");
-    gst_pad_link(pad, sinkPad);
+    GstPadLinkReturn ret = gst_pad_link(pad, sinkPad);
     gst_object_unref(sinkPad);
 
-    qDebug() << "PeerPipeline: audio receive chain linked";
+    if (ret != GST_PAD_LINK_OK)
+        qWarning() << "PeerPipeline: audio receive pad link failed:" << ret;
+    else
+        qDebug() << "PeerPipeline: audio receive chain linked successfully";
 }
 
 void PeerPipeline::createVideoReceiveChain(GstPad *pad, const gchar *encoding)
@@ -726,6 +749,22 @@ void PeerPipeline::onOfferCreated(GstPromise *promise, gpointer userData)
     gst_promise_unref(promise);
 
     qDebug() << "PeerPipeline: offer created, SDP length=" << sdp.length();
+
+    // Sync payloader SSRC with SDP (see PublishPipeline for explanation)
+    {
+        QRegularExpression ssrcRe("a=ssrc:(\\d+)\\s");
+        auto match = ssrcRe.match(sdp);
+        if (match.hasMatch()) {
+            guint32 sdpSsrc = match.captured(1).toUInt();
+            GstElement *pay = gst_bin_get_by_name(GST_BIN(self->m_pipeline), "peer-rtpopuspay");
+            if (pay) {
+                g_object_set(pay, "ssrc", sdpSsrc, nullptr);
+                gst_object_unref(pay);
+                qDebug() << "PeerPipeline: synced audio payloader SSRC to" << sdpSsrc;
+            }
+        }
+    }
+
     QMetaObject::invokeMethod(self, [self, sdp]() {
         emit self->localOfferReady(sdp);
     }, Qt::QueuedConnection);

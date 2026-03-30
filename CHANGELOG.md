@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.14.5 (2026-03-30)
+
+### Installer fix — calls were unavailable on clean machines
+- **GStreamer transitive DLLs** — installer was missing 23 DLLs that GStreamer plugins depend on (libnice, libopus, libsrtp2, OpenSSL, GnuTLS chain). Worked at home because MSYS2 was in PATH; failed on clean installs.
+- **build-release.sh** — now copies all transitive deps and pulls GStreamer plugins directly from MSYS2 (no longer depends on a prior debug build)
+- **deploy-dev.sh** — same DLL additions for dev build consistency
+- **$USER fallback** — uses $USERNAME when $USER is unset (Windows bash)
+
+### Call fixes (in progress)
+- **Auto-refresh for call detection** — `startAutoRefresh()` was never called; incoming calls relied 100% on push notifications with no polling fallback
+- **ICE candidate queuing** — candidates arriving before remote SDP is set are now queued and flushed after setRemoteOffer/setRemoteAnswer (all 3 pipeline types)
+- **Audio pad link diagnostics** — audio receive chain now checks gst_pad_link return value (was silently failing)
+- **Hangup freeze fix** — moved gst_element_set_state(GST_STATE_NULL) to background thread (was blocking UI for 20+ seconds during WebRTC teardown)
+- **SSRC sync** — publisher payloader SSRC now synced to SDP offer value (Janus drops packets with mismatched SSRC)
+
+### File sharing
+- **Caption with file** — captions now sent via talkMetaData.caption in the share API (was sent as a separate message)
+
 ## v0.14.4 (2026-03-29)
 
 ### Fixes

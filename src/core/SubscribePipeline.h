@@ -45,6 +45,8 @@ private:
     QString m_remoteSessionId;
     QString m_audioOutputDeviceId;
     bool m_running = false;
+    bool m_remoteDescSet = false;
+    QList<QPair<int, QString>> m_pendingCandidates;
     guint m_busWatchId = 0;
 
     VideoFrameProvider *m_videoProvider = nullptr;

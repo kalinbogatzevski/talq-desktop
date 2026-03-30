@@ -3,6 +3,7 @@
 #include <QPointer>
 #include <QRegularExpression>
 #include <QUrl>
+#include <thread>
 #include <gst/app/gstappsink.h>
 
 PublishPipeline::PublishPipeline(QObject *parent)
@@ -93,7 +94,7 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
     GstElement *audioresample = gst_element_factory_make("audioresample", nullptr);
     GstElement *level = gst_element_factory_make("level", "pub-level");
     GstElement *opusenc = gst_element_factory_make("opusenc", nullptr);
-    GstElement *rtpopuspay = gst_element_factory_make("rtpopuspay", nullptr);
+    GstElement *rtpopuspay = gst_element_factory_make("rtpopuspay", "pub-rtpopuspay");
 
     if (!audiosrc || !audioconvert || !audioresample || !level || !opusenc || !rtpopuspay) {
         emit error("Failed to create audio capture elements");
@@ -248,11 +249,16 @@ void PublishPipeline::cleanup()
     if (m_webrtcbin)
         g_signal_handlers_disconnect_by_data(m_webrtcbin, this);
     if (m_pipeline) {
-        gst_element_set_state(m_pipeline, GST_STATE_NULL);
-        gst_object_unref(m_pipeline);
+        GstElement *pipeline = m_pipeline;
         m_pipeline = nullptr;
+        std::thread([pipeline]() {
+            gst_element_set_state(pipeline, GST_STATE_NULL);
+            gst_object_unref(pipeline);
+        }).detach();
     }
     m_webrtcbin = nullptr;
+    m_remoteDescSet = false;
+    m_pendingCandidates.clear();
 }
 
 void PublishPipeline::setRemoteAnswer(const QString &sdp)
@@ -271,13 +277,21 @@ void PublishPipeline::setRemoteAnswer(const QString &sdp)
     g_signal_emit_by_name(m_webrtcbin, "set-remote-description", desc, nullptr);
     gst_webrtc_session_description_free(desc);
 
-    qDebug() << "PublishPipeline: set remote answer";
+    m_remoteDescSet = true;
+    qDebug() << "PublishPipeline: set remote answer, flushing" << m_pendingCandidates.size() << "queued candidates";
+    for (const auto &c : m_pendingCandidates)
+        g_signal_emit_by_name(m_webrtcbin, "add-ice-candidate", c.first, c.second.toUtf8().constData());
+    m_pendingCandidates.clear();
 }
 
 void PublishPipeline::addIceCandidate(const QString &candidate, int sdpMLineIndex, const QString &sdpMid)
 {
-    if (!m_webrtcbin) return;
     Q_UNUSED(sdpMid)
+    if (!m_webrtcbin) return;
+    if (!m_remoteDescSet) {
+        m_pendingCandidates.append({sdpMLineIndex, candidate});
+        return;
+    }
     g_signal_emit_by_name(m_webrtcbin, "add-ice-candidate",
                           sdpMLineIndex, candidate.toUtf8().constData());
 }
@@ -637,6 +651,23 @@ void PublishPipeline::onOfferCreated(GstPromise *promise, gpointer userData)
     if (!sdp.contains("m=audio") && !sdp.contains("m=video")) {
         qWarning() << "PublishPipeline: offer has no media lines, not sending (audio source may have failed)";
         return;
+    }
+
+    // Sync payloader SSRC with SDP — GStreamer webrtcbin doesn't always rewrite
+    // the payloader's SSRC to match the SDP, causing Janus to drop RTP packets
+    // ("Unknown SSRC") because it expects the SSRC advertised in the offer.
+    {
+        QRegularExpression ssrcRe("a=ssrc:(\\d+)\\s");
+        auto match = ssrcRe.match(sdp);
+        if (match.hasMatch()) {
+            guint32 sdpSsrc = match.captured(1).toUInt();
+            GstElement *pay = gst_bin_get_by_name(GST_BIN(self->m_pipeline), "pub-rtpopuspay");
+            if (pay) {
+                g_object_set(pay, "ssrc", sdpSsrc, nullptr);
+                gst_object_unref(pay);
+                qDebug() << "PublishPipeline: synced audio payloader SSRC to" << sdpSsrc;
+            }
+        }
     }
 
     QMetaObject::invokeMethod(self, [self, sdp]() {
