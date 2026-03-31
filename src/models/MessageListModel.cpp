@@ -404,14 +404,15 @@ void MessageListModel::trimOldMessages()
     if (m_messages.size() <= MAX_MESSAGES) return;
 
     int trimCount = m_messages.size() - MAX_MESSAGES;
-    beginRemoveRows({}, 0, trimCount - 1);
-    for (int i = 0; i < trimCount; ++i)
+    int first = m_messages.size() - trimCount;
+    for (int i = first; i < m_messages.size(); ++i)
         m_messageIds.remove(m_messages[i].id);
-    m_messages.remove(0, trimCount);
+    beginRemoveRows({}, first, m_messages.size() - 1);
+    m_messages.remove(first, trimCount);
     endRemoveRows();
 
     if (!m_messages.isEmpty())
-        m_oldestMessageId = m_messages.first().id;
+        m_oldestMessageId = m_messages.last().id;
     m_hasMoreHistory = true;  // can re-fetch trimmed messages on scroll-up
     emit hasMoreHistoryChanged();
 }
@@ -555,7 +556,7 @@ void MessageListModel::onMessagesReceived(const QJsonArray &messages)
     m_messages = std::move(newMsgs);
     endInsertRows();
 
-    m_cache->saveMessages(m_token, newMsgs);
+    m_cache->saveMessages(m_token, m_messages);
 
     // Trim old messages to prevent unbounded memory growth
     trimOldMessages();
