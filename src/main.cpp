@@ -3,7 +3,10 @@
 #include <QRegularExpression>
 #include <QSharedMemory>
 #include <QScreen>
+#include <QPainter>
+#include <QSplashScreen>
 #include <QStandardPaths>
+#include <QTimer>
 #include <QDir>
 #include <QFileInfo>
 #include <QTime>
@@ -86,6 +89,53 @@ int main(int argc, char *argv[])
 #else
     app.setApplicationVersion(TALQ_VERSION);
 #endif
+
+    // Splash screen — dark themed, centered logo, smooth rendering
+    {
+#ifdef TALQ_BRAND_123NET
+        QPixmap logoPix(":/123net-logo.png");
+#else
+        QPixmap logoPix(":/logo.png");
+#endif
+        // Create a dark splash canvas
+        QPixmap splashCanvas(380, 280);
+        splashCanvas.fill(QColor("#121210"));
+        QPainter p(&splashCanvas);
+        p.setRenderHint(QPainter::SmoothPixmapTransform);
+        p.setRenderHint(QPainter::Antialiasing);
+
+        // Draw logo centered
+        QPixmap logo = logoPix.scaled(96, 96, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        p.drawPixmap((380 - logo.width()) / 2, 60, logo);
+
+        // App name
+        QFont nameFont;
+        nameFont.setPixelSize(24);
+        nameFont.setWeight(QFont::DemiBold);
+        p.setFont(nameFont);
+        p.setPen(QColor("#e4e0da"));
+        p.drawText(QRect(0, 170, 380, 30), Qt::AlignCenter, app.applicationName());
+
+        // Version
+        QFont verFont;
+        verFont.setPixelSize(12);
+        p.setFont(verFont);
+        p.setPen(QColor("#8a8680"));
+        p.drawText(QRect(0, 200, 380, 20), Qt::AlignCenter, "v" + app.applicationVersion());
+
+        // Connecting status
+        p.drawText(QRect(0, 240, 380, 20), Qt::AlignCenter, "Connecting...");
+        p.end();
+
+        static QSplashScreen splash(splashCanvas);
+        splash.show();
+        app.processEvents();
+
+        // Splash stays at least 1.5s for branding visibility
+        QTimer::singleShot(1500, &splash, [&splash]() {
+            splash.close();
+        });
+    }
 
     // Core services
     ApiClient api;
