@@ -379,13 +379,24 @@ void CallManager::acceptCall(bool withVideo) {
         [this, withVideo](bool, const QJsonObject &, int) {
             // Wait for HPB room join confirmation before calling the API
             auto *conn = new QMetaObject::Connection;
+            auto *fired = new bool(false);
             *conn = connect(m_signaling, &SignalingClient::roomJoined,
-                this, [this, withVideo, conn]() {
+                this, [this, withVideo, conn, fired]() {
+                    *fired = true;
                     disconnect(*conn);
                     delete conn;
+                    delete fired;
                     qDebug() << "CallManager: signaling room joined, now joining call";
                     joinCallOnServer(withVideo);
                 });
+            QTimer::singleShot(15000, this, [conn, fired]() {
+                if (!*fired) {
+                    QObject::disconnect(*conn);
+                    delete conn;
+                    delete fired;
+                    qWarning() << "CallManager: roomJoined timeout — cleaning up connection";
+                }
+            });
             m_signaling->joinRoom(m_callToken);
         });
 }

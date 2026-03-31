@@ -37,6 +37,7 @@ signals:
 private:
     void poll();
     void sendMessage(const QJsonObject &data);
+    void flushPending();
 
     ApiClient *m_api;
     QString m_token;

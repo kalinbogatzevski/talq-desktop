@@ -54,7 +54,10 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
             QString escapedUser = QString(QUrl::toPercentEncoding(turn.username));
             QString escapedCred = QString(QUrl::toPercentEncoding(turn.credential));
             gstUrl.replace("://", QString("://%1:%2@").arg(escapedUser, escapedCred));
-            qDebug() << "PublishPipeline: adding TURN server" << gstUrl;
+            // Mask credentials in log output
+            QString logUrl = gstUrl;
+            logUrl.replace(QRegularExpression("://[^@]+@"), "://***@");
+            qDebug() << "PublishPipeline: adding TURN server" << logUrl;
             gboolean ret = FALSE;
             g_signal_emit_by_name(m_webrtcbin, "add-turn-server", gstUrl.toUtf8().constData(), &ret);
         }
@@ -343,10 +346,12 @@ void PublishPipeline::setMuted(bool muted)
 {
     if (!m_pipeline) return;
     GstElement *src = gst_bin_get_by_name(GST_BIN(m_pipeline), "pub-audiosrc");
-    if (src) {
+    if (!src) return;
+    if (g_object_class_find_property(G_OBJECT_GET_CLASS(src), "mute"))
         g_object_set(src, "mute", muted, nullptr);
-        gst_object_unref(src);
-    }
+    else
+        qDebug() << "PublishPipeline: audio source does not support mute property";
+    gst_object_unref(src);
 }
 
 void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)

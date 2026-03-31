@@ -54,7 +54,10 @@ bool PeerPipeline::start(const QString &stunServer, const QList<TurnServer> &tur
             QString escapedUser = QString(QUrl::toPercentEncoding(turn.username));
             QString escapedCred = QString(QUrl::toPercentEncoding(turn.credential));
             gstUrl.replace("://", QString("://%1:%2@").arg(escapedUser, escapedCred));
-            qDebug() << "PeerPipeline: adding TURN server" << gstUrl;
+            // Mask credentials in log output
+            QString logUrl = gstUrl;
+            logUrl.replace(QRegularExpression("://[^@]+@"), "://***@");
+            qDebug() << "PeerPipeline: adding TURN server" << logUrl;
             gboolean ret = FALSE;
             g_signal_emit_by_name(m_webrtcbin, "add-turn-server", gstUrl.toUtf8().constData(), &ret);
         }
@@ -265,10 +268,12 @@ void PeerPipeline::setMuted(bool muted)
 {
     if (!m_pipeline) return;
     GstElement *src = gst_bin_get_by_name(GST_BIN(m_pipeline), "peer-audiosrc");
-    if (src) {
+    if (!src) return;
+    if (g_object_class_find_property(G_OBJECT_GET_CLASS(src), "mute"))
         g_object_set(src, "mute", muted, nullptr);
-        gst_object_unref(src);
-    }
+    else
+        qDebug() << "PeerPipeline: audio source does not support mute property";
+    gst_object_unref(src);
 }
 
 void PeerPipeline::enableCamera(int deviceIndex, bool hd1080)
@@ -634,6 +639,11 @@ void PeerPipeline::createAudioReceiveChain(GstPad *pad)
 
     if (!depay || !dec || !convert || !resample || !sink) {
         qWarning() << "PeerPipeline: failed to create audio receive chain";
+        if (depay) gst_object_unref(depay);
+        if (dec) gst_object_unref(dec);
+        if (convert) gst_object_unref(convert);
+        if (resample) gst_object_unref(resample);
+        if (sink) gst_object_unref(sink);
         return;
     }
 
@@ -675,6 +685,10 @@ void PeerPipeline::createVideoReceiveChain(GstPad *pad, const gchar *encoding)
 
     if (!depay || !decoder || !convert || !appsink) {
         qWarning() << "PeerPipeline: failed to create video receive elements";
+        if (depay) gst_object_unref(depay);
+        if (decoder) gst_object_unref(decoder);
+        if (convert) gst_object_unref(convert);
+        if (appsink) gst_object_unref(appsink);
         return;
     }
 
