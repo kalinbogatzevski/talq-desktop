@@ -172,8 +172,10 @@ void SubscribePipeline::onIceCandidate(GstElement *, guint mlineIndex, gchar *ca
     auto *self = static_cast<SubscribePipeline *>(userData);
     QString c = QString::fromUtf8(candidate);
     int ml = static_cast<int>(mlineIndex);
-    QMetaObject::invokeMethod(self, [self, c, ml]() {
-        emit self->iceCandidateReady(c, ml, QString("0"));
+    QPointer<SubscribePipeline> guard(self);
+    QMetaObject::invokeMethod(self, [guard, c, ml]() {
+        if (!guard) return;
+        emit guard->iceCandidateReady(c, ml, QString("0"));
     }, Qt::QueuedConnection);
 }
 
@@ -396,8 +398,10 @@ void SubscribePipeline::onAnswerCreated(GstPromise *promise, gpointer userData)
 
     qDebug() << "SubscribePipeline: answer SDP:\n" << sdp.left(2000);
     qDebug() << "SubscribePipeline: answer created, SDP length=" << sdp.length();
-    QMetaObject::invokeMethod(self, [self, sdp]() {
-        emit self->localAnswerReady(sdp);
+    QPointer<SubscribePipeline> guard(self);
+    QMetaObject::invokeMethod(self, [guard, sdp]() {
+        if (!guard) return;
+        emit guard->localAnswerReady(sdp);
     }, Qt::QueuedConnection);
 }
 
@@ -409,8 +413,10 @@ void SubscribePipeline::onIceStateChanged(GObject *obj, GParamSpec *, gpointer u
     const char *names[] = {"new", "checking", "connected", "completed", "failed", "disconnected", "closed"};
     int idx = static_cast<int>(state);
     QString stateName = (idx < 7) ? names[idx] : "unknown";
-    QMetaObject::invokeMethod(self, [self, stateName]() {
+    QPointer<SubscribePipeline> guard(self);
+    QMetaObject::invokeMethod(self, [guard, stateName]() {
+        if (!guard) return;
         qDebug() << "SubscribePipeline: ICE ->" << stateName;
-        emit self->iceStateChanged(stateName);
+        emit guard->iceStateChanged(stateName);
     }, Qt::QueuedConnection);
 }
