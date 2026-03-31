@@ -11,6 +11,7 @@ Message Message::fromJson(const QJsonObject &json)
     m.actorId = json["actorId"].toString();
     m.actorDisplayName = json["actorDisplayName"].toString();
     m.message = json["message"].toString();
+    m.message = m.message.toHtmlEscaped();
     m.timestamp = json["timestamp"].toInteger();
     m.messageType = json["messageType"].toString();
     m.isSystem = (m.messageType == "system");
