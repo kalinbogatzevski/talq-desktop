@@ -46,4 +46,5 @@ private:
     QTimer m_pollTimer;
     QList<QJsonObject> m_pendingMessages;
     bool m_sending = false;
+    bool m_retrying = false;
 };

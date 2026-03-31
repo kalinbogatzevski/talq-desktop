@@ -62,7 +62,7 @@ MessageListModel::MessageListModel(ApiClient *api, MessageCache *cache, QObject 
     });
 
     connect(m_cache, &MessageCache::messagesLoaded, this, [this](const QString &token, const QVector<Message> &messages) {
-        if (m_token != token) return;  // stale result
+        if (m_token != token) return;  // stale result (different conversation)
 
         // Display cached messages instantly (even if empty — still trigger API fetch)
         // Cache returns oldest-first; reverse to newest-first for BottomToTop display.
@@ -235,6 +235,7 @@ void MessageListModel::setConversationToken(const QString &token)
     }
 
     m_token = token;
+    m_generation++;  // invalidate all in-flight async callbacks
     m_oldestMessageId = 0;
     m_threadId = 0;
     m_lastCommonRead = 0;  // async load below; will update via lastCommonReadLoaded signal
@@ -447,12 +448,14 @@ void MessageListModel::refreshLatest()
         params.addQueryItem("threadId", QString::number(m_threadId));
 
     QString currentToken = m_token;
+    int capturedGen = m_generation;
     auto *reply = m_api->getRaw("apps/spreed/api/v1/chat/" + m_token, params);
     m_refreshReply = reply;
 
-    connect(reply, &QNetworkReply::finished, this, [this, reply, currentToken]() {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, currentToken, capturedGen]() {
         if (m_refreshReply == reply) m_refreshReply = nullptr;
         reply->deleteLater();
+        if (m_generation != capturedGen) return;  // conversation switched — discard
         if (m_token != currentToken) return;
 
         // Read receipt header — must be read before error check

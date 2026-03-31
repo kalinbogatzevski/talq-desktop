@@ -636,6 +636,15 @@ void PublishPipeline::disableCamera()
     removeElement(m_previewQueue);
     removeElement(m_tee);
     removeElement(m_encQueue);
+
+    // Remove the camera SSRC capsfilter created in enableCamera (not tracked as a member)
+    GstElement *ssrcFilter = gst_bin_get_by_name(GST_BIN(m_pipeline), "pub-cam-ssrc-filter");
+    if (ssrcFilter) {
+        gst_element_set_state(ssrcFilter, GST_STATE_NULL);
+        gst_bin_remove(GST_BIN(m_pipeline), ssrcFilter);
+        gst_object_unref(ssrcFilter);
+    }
+
     removeElement(m_videoPayloader);
     removeElement(m_videoEncoder);
     removeElement(m_videoCapsFilter);
