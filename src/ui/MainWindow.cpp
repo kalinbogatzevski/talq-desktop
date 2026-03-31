@@ -223,7 +223,8 @@ void MainWindow::buildChatPage()
     m_searchField->setContentsMargins(6, 4, 6, 4);
 
     // ── User profile header ──
-    auto *profileBar = new QWidget(sidebarCol);
+    m_profileBar = new QWidget(sidebarCol);
+    auto *profileBar = m_profileBar;
     profileBar->setFixedHeight(52);
     profileBar->installEventFilter(this);  // for paint
 
@@ -243,7 +244,8 @@ void MainWindow::buildChatPage()
     profileLayout->addWidget(m_profileNameLabel, 1);
 
     // Settings button
-    auto *settingsBtn = new QPushButton("\u2699", profileBar);
+    m_settingsBtn = new QPushButton("\u2699", profileBar);
+    auto *settingsBtn = m_settingsBtn;
     settingsBtn->setFixedSize(28, 28);
     settingsBtn->setFlat(true);
     settingsBtn->setStyleSheet("font-size: 16px; border: none; border-radius: 14px;");
@@ -265,6 +267,8 @@ void MainWindow::buildChatPage()
     sidebarLayout->addWidget(m_searchField);
 
     m_profileAvatarLabel = profileAvatar;
+    m_profileAvatarLabel->installEventFilter(this);
+    m_profileAvatarLabel->setCursor(Qt::PointingHandCursor);
 
     // Update profile when auth changes
     connect(m_auth, &AuthManager::loggedInChanged, this, [this]() {
@@ -921,10 +925,42 @@ void MainWindow::buildChatPage()
     m_stack->addWidget(m_chatPage);
 }
 
+bool MainWindow::eventFilter(QObject *obj, QEvent *event)
+{
+    // Avatar click in squeezed mode -> open settings
+    if (obj == m_profileAvatarLabel && event->type() == QEvent::MouseButtonRelease
+        && m_sidebarSqueezed) {
+        if (!m_settingsDialog) {
+            m_settingsDialog = new SettingsDialog(
+                m_deviceManager, m_notifications, m_appSettings, m_auth, this);
+            connect(m_settingsDialog, &SettingsDialog::closeToTrayChanged,
+                    this, [this](bool enabled) { m_closeToTray = enabled; });
+        }
+        m_settingsDialog->refresh();
+        m_settingsDialog->exec();
+        return true;
+    }
+    return QMainWindow::eventFilter(obj, event);
+}
+
 void MainWindow::sidebarSqueezedChanged()
 {
     m_sidebar->setSqueezed(m_sidebarSqueezed);
     m_header->setSidebarSqueezed(m_sidebarSqueezed);
+
+    // In squeezed mode: hide search and settings, keep avatar only
+    m_searchField->setVisible(!m_sidebarSqueezed);
+    m_settingsBtn->setVisible(!m_sidebarSqueezed);
+    m_profileNameLabel->setVisible(!m_sidebarSqueezed);
+
+    if (m_sidebarSqueezed) {
+        // Center avatar in the narrow bar
+        auto *lay = qobject_cast<QHBoxLayout *>(m_profileBar->layout());
+        if (lay) lay->setContentsMargins(0, 8, 0, 8);
+    } else {
+        auto *lay = qobject_cast<QHBoxLayout *>(m_profileBar->layout());
+        if (lay) lay->setContentsMargins(12, 8, 12, 8);
+    }
 
     // Adjust sidebar constraints for squeeze mode
     m_sidebarCol->setMinimumWidth(m_sidebarSqueezed ? 56 : 200);

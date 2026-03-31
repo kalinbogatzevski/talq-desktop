@@ -64,6 +64,12 @@ CallDialog::CallDialog(CallManager *callManager, ApiClient *api, QWidget *parent
         m_localConnected = false;
         connectVideoProviders();
     });
+    connect(m_callManager, &CallManager::audioLevelChanged, this, [this]() {
+        double level = qBound(0.0, m_callManager->audioLevel(), 1.0);
+        int maxW = m_activeRow->isVisible() ? m_activeRow->width() : 200;
+        int w = qRound(maxW * level);
+        m_micLevel->setFixedWidth(w);
+    });
     connect(m_callManager, &CallManager::remoteMediaChanged, this, [this]() {
         if (m_callManager->remoteVideoMuted()) {
             // Remote stopped camera — hide video, show avatar, shrink dialog
@@ -146,7 +152,7 @@ void CallDialog::buildUi()
     m_muteBtn->setCursor(Qt::PointingHandCursor);
     m_muteBtn->setToolTip("Toggle mute");
     m_muteBtn->setStyleSheet(circleButtonStyle("#3a3a36", "#e4e0da", "#4a4a46"));
-    m_muteBtn->setText("\xF0\x9F\x8E\xA4");  // microphone emoji
+    m_muteBtn->setText("Mic");
     activeLayout->addStretch();
     activeLayout->addWidget(m_muteBtn);
 
@@ -166,6 +172,13 @@ void CallDialog::buildUi()
     activeLayout->addStretch();
 
     layout->addWidget(m_activeRow);
+
+    // ── Mic level indicator ──
+    m_micLevel = new QWidget(this);
+    m_micLevel->setFixedHeight(3);
+    m_micLevel->setStyleSheet("background: #2ec4b6;");
+    m_micLevel->setFixedWidth(0);
+    layout->addWidget(m_micLevel, 0, Qt::AlignLeft);
 
     // ── Incoming call buttons row ──
     m_incomingRow = new QWidget(this);
@@ -263,11 +276,11 @@ void CallDialog::onStateChanged()
     m_peerLabel->setText(m_callManager->remotePeerName());
 
     if (!isVisible()) {
-        // Position near top-right of parent
-        if (parentWidget()) {
-            QPoint topRight = parentWidget()->mapToGlobal(
-                QPoint(parentWidget()->width() - width() - 20, 20));
-            move(topRight);
+        // Center on primary screen
+        QScreen *screen = QApplication::primaryScreen();
+        if (screen) {
+            QRect geom = screen->availableGeometry();
+            move(geom.center() - rect().center());
         }
         show();
         raise();
@@ -284,10 +297,13 @@ void CallDialog::onDurationChanged()
 
 void CallDialog::onMuteChanged()
 {
-    if (m_callManager->isMuted())
+    if (m_callManager->isMuted()) {
+        m_muteBtn->setText("Muted");
         m_muteBtn->setStyleSheet(circleButtonStyle("#d93025", "white", "#e84235"));
-    else
+    } else {
+        m_muteBtn->setText("Mic");
         m_muteBtn->setStyleSheet(circleButtonStyle("#3a3a36", "#e4e0da", "#4a4a46"));
+    }
 }
 
 void CallDialog::onCameraChanged()
