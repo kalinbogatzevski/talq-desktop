@@ -65,6 +65,7 @@ void SidebarPainter::setSelectedIndex(int idx)
 {
     if (m_selectedIndex == idx) return;
     m_selectedIndex = idx;
+    m_selectedToken = (idx >= 0 && idx < m_layouts.size()) ? m_layouts[idx].token : QString();
     update();
     emit selectedIndexChanged();
 }
@@ -114,6 +115,11 @@ void SidebarPainter::onRowsRemoved(const QModelIndex &, int, int)
 
 void SidebarPainter::rebuildLayouts()
 {
+    // Preserve selection across rebuilds: save the selected token
+    QString prevSelectedToken = m_selectedToken;
+    if (prevSelectedToken.isEmpty() && m_selectedIndex >= 0 && m_selectedIndex < m_layouts.size())
+        prevSelectedToken = m_layouts[m_selectedIndex].token;
+
     m_layouts.clear();
     m_visibleIndices.clear();
 
@@ -153,6 +159,18 @@ void SidebarPainter::rebuildLayouts()
             m_layouts[i].displayName.contains(m_filterText, Qt::CaseInsensitive)) {
             m_visibleIndices.append(i);
         }
+    }
+
+    // Restore selection: find the new index for the previously selected token
+    if (!prevSelectedToken.isEmpty()) {
+        m_selectedIndex = -1;
+        for (int i = 0; i < m_layouts.size(); ++i) {
+            if (m_layouts[i].token == prevSelectedToken) {
+                m_selectedIndex = i;
+                break;
+            }
+        }
+        m_selectedToken = prevSelectedToken;
     }
 
     clampScroll();
@@ -246,6 +264,7 @@ void SidebarPainter::mouseReleaseEvent(QMouseEvent *event)
         emit contextMenuRequested(modelIdx, cl.notificationLevel, global.x(), global.y());
     } else if (event->button() == Qt::LeftButton) {
         m_selectedIndex = modelIdx;
+        m_selectedToken = cl.token;
         emit selectedIndexChanged();
         emit conversationClicked(cl.token, cl.displayName, cl.participantUserId,
                                  cl.conversationType, cl.userStatus);

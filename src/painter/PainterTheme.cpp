@@ -54,7 +54,7 @@ PainterTheme::PainterTheme(bool darkMode, qreal fontScale)
 QColor PainterTheme::authorColor(const QString &actorId)
 {
     // djb2 hash -- matches Theme.qml stringHash / MessageBubble.qml authorColor
-    uint32_t hash = 0;
+    uint32_t hash = 5381;
     for (int i = 0; i < actorId.length(); ++i) {
         hash = ((hash << 5) - hash) + actorId.at(i).unicode();
     }

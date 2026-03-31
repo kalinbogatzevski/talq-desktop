@@ -17,6 +17,7 @@ PushClient::PushClient(ApiClient *api, QObject *parent)
 void PushClient::start()
 {
     if (m_api->serverUrl().isEmpty()) return;
+    m_stopped = false;
 
     QString wsUrl = m_api->serverUrl();
     wsUrl.replace("https://", "wss://").replace("http://", "ws://");
@@ -29,6 +30,7 @@ void PushClient::start()
 
 void PushClient::stop()
 {
+    m_stopped = true;
     m_reconnectTimer.stop();
     m_ws.close();
     m_authenticated = false;
@@ -84,7 +86,8 @@ void PushClient::onDisconnected()
         m_connected = false;
         emit connectedChanged();
     }
-    reconnect();
+    if (!m_stopped)
+        reconnect();
 }
 
 void PushClient::onTextMessageReceived(const QString &message)
