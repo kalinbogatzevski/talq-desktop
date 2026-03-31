@@ -53,7 +53,8 @@ public:
     void sendEndOfCandidates(const QString &toSessionId, const QString &sid);
     void requestOffer(const QString &sessionId, const QString &roomType = "video");
     void sendSessionMessage(const QString &toSessionId, const QString &type,
-                            const QJsonObject &payload, const QString &sid);
+                            const QJsonObject &payload, const QString &sid,
+                            const QJsonObject &extraData = {});
     bool hasMcu() const { return m_hasMcu; }
 
 signals:

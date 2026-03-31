@@ -750,23 +750,30 @@ void PeerPipeline::onOfferCreated(GstPromise *promise, gpointer userData)
 
     qDebug() << "PeerPipeline: offer created, SDP length=" << sdp.length();
 
-    // Sync payloader SSRC with SDP (see PublishPipeline for explanation)
-    {
-        QRegularExpression ssrcRe("a=ssrc:(\\d+)\\s");
-        auto match = ssrcRe.match(sdp);
-        if (match.hasMatch()) {
-            guint32 sdpSsrc = match.captured(1).toUInt();
-            GstElement *pay = gst_bin_get_by_name(GST_BIN(self->m_pipeline), "peer-rtpopuspay");
-            if (pay) {
-                g_object_set(pay, "ssrc", sdpSsrc, nullptr);
-                gst_object_unref(pay);
-                qDebug() << "PeerPipeline: synced audio payloader SSRC to" << sdpSsrc;
-            }
+    // Strip a=ssrc/a=ssrc-group lines — see PublishPipeline::onOfferCreated
+    // for full explanation. rtpbin rewrites wire SSRC; stripping forces the
+    // remote end (browser or Janus) to learn SSRC from the first RTP packet.
+    QString mungedSdp;
+    int stripped = 0;
+    const auto lines = sdp.split('\n');
+    for (const QString &line : lines) {
+        QString trimmed = line.trimmed();
+        if (trimmed.startsWith("a=ssrc:") || trimmed.startsWith("a=ssrc-group:")) {
+            stripped++;
+            continue;
         }
+        mungedSdp += line + '\n';
     }
+    while (mungedSdp.endsWith("\n\n"))
+        mungedSdp.chop(1);
+    if (!mungedSdp.endsWith('\n'))
+        mungedSdp += '\n';
 
-    QMetaObject::invokeMethod(self, [self, sdp]() {
-        emit self->localOfferReady(sdp);
+    if (stripped > 0)
+        qDebug() << "PeerPipeline: stripped" << stripped << "a=ssrc lines from offer SDP";
+
+    QMetaObject::invokeMethod(self, [self, mungedSdp]() {
+        emit self->localOfferReady(mungedSdp);
     }, Qt::QueuedConnection);
 }
 
@@ -792,10 +799,33 @@ void PeerPipeline::onAnswerCreated(GstPromise *promise, gpointer userData)
     gst_webrtc_session_description_free(answer);
     gst_promise_unref(promise);
 
-    qDebug() << "PeerPipeline: answer SDP:\n" << sdp.left(2000);
     qDebug() << "PeerPipeline: answer created, SDP length=" << sdp.length();
-    QMetaObject::invokeMethod(self, [self, sdp]() {
-        emit self->localAnswerReady(sdp);
+
+    // Strip a=ssrc/a=ssrc-group lines from answer too — same rtpbin SSRC
+    // rewrite issue applies when we are the answerer in P2P calls.
+    QString mungedSdp;
+    int stripped = 0;
+    const auto lines = sdp.split('\n');
+    for (const QString &line : lines) {
+        QString trimmed = line.trimmed();
+        if (trimmed.startsWith("a=ssrc:") || trimmed.startsWith("a=ssrc-group:")) {
+            stripped++;
+            continue;
+        }
+        mungedSdp += line + '\n';
+    }
+    while (mungedSdp.endsWith("\n\n"))
+        mungedSdp.chop(1);
+    if (!mungedSdp.endsWith('\n'))
+        mungedSdp += '\n';
+
+    if (stripped > 0)
+        qDebug() << "PeerPipeline: stripped" << stripped << "a=ssrc lines from answer SDP";
+
+    qDebug() << "PeerPipeline: answer SDP:\n" << mungedSdp.left(2000);
+
+    QMetaObject::invokeMethod(self, [self, mungedSdp]() {
+        emit self->localAnswerReady(mungedSdp);
     }, Qt::QueuedConnection);
 }
 

@@ -33,57 +33,23 @@ Then: `cd C:\src && claude` → "read the continue.md"
 | `C:\msys64` | MSYS2 (GStreamer, runtime DLLs) |
 | `C:\Qt\6.8.2\mingw_64` | Qt SDK |
 
-## Active bug: Video SSRC mismatch — PRIORITY #1
+## SSRC mismatch fix (2026-03-31)
 
-### What works
-- Audio calls bidirectional through MCU ✓
-- Receiving browser/phone video in TalQ (subscriber) ✓
-- Camera preview locally ✓
-- Call dialog remote video hide/show ✓
-- Camera toggle without freeze (source swap on permanent encoder) ✓
+### Problem
+GStreamer `webrtcbin` internal `rtpbin` rewrites the SSRC on the wire to its own session SSRC, different from what the SDP advertises. Setting the payloader SSRC property does not help -- rtpbin overrides it. Janus validates incoming RTP SSRCs against the SDP and drops mismatches ("Unknown SSRC, dropping packet").
 
-### What doesn't work
-- TalQ outbound video → browser: Janus drops all video RTP with "Unknown SSRC"
+### Fix applied
+Strip ALL `a=ssrc:` and `a=ssrc-group:` lines from the SDP offer/answer before sending to signaling. This forces Janus into dynamic SSRC learning mode (learns from first RTP packet), which works regardless of what rtpbin chose.
 
-### Root cause (confirmed)
-GStreamer `webrtcbin` internal `rtpbin` **rewrites the SSRC on the wire** to a different value than the SDP. Browser WebRTC doesn't have this problem (monolithic implementation).
+**Files modified:**
+- `PublishPipeline.cpp` `onOfferCreated` -- replaced old SSRC sync code with SDP stripping
+- `PeerPipeline.cpp` `onOfferCreated` + `onAnswerCreated` -- same SDP stripping
 
-Evidence:
-- Payloader caps SSRC = SDP SSRC (they match)
-- But Janus receives a DIFFERENT SSRC on the wire (rtpbin's internal session SSRC)
-- Audio has NO `a=ssrc` lines in SDP → works (Janus learns from first packet)
-- Video HAS `a=ssrc` lines → fails (Janus validates against them)
-- Browser-to-browser calls: ZERO "Unknown SSRC" errors in Janus logs
-- TalQ calls: constant "Unknown SSRC" errors
+The local description (set on webrtcbin) retains original SSRCs. Only the signaling-bound copy is munged.
 
-### v0.13.1 video DID work — here's why
-In v0.13.1, `enableCamera` created a **new** encoder + payloader + webrtcbin pad and triggered **renegotiation**. The `forceReconnectPublisher` in CallManager tore down the entire pipeline and recreated it. The fresh pipeline's SDP had matching SSRCs because webrtcbin read the SSRC from the new payloader's caps.
-
-**The freeze** was from `gst_element_set_state(NULL)` blocking the UI thread during teardown (ICE/DTLS shutdown takes seconds).
-
-### What was tried (2026-03-30)
-1. ✗ Source swap (permanent encoder, swap upstream) — no renegotiation → SSRC mismatch
-2. ✗ Pad probes for swap — deadlock with wasapi2src
-3. ✗ Input-selector — worked with test sources, SSRC still wrong on wire
-4. ✗ Pre-set payloader SSRC — webrtcbin ignores it
-5. ✗ Strip video `a=ssrc` from SDP — Janus still rejects
-6. ✗ Rewrite SDP with rtpbin internal SSRC — can't access (session returns NULL)
-7. ✓ Renegotiation after source swap — SSRC errors stopped! But subscriber froze.
-
-### RECOMMENDED FIX (next session)
-**Use v0.13.1's `forceReconnectPublisher` approach (confirmed working) but fix the freeze:**
-
-1. Run `gst_element_set_state(NULL)` on a **QThread** (not the UI thread)
-2. Emit a `pipelineStopped()` signal when cleanup finishes
-3. `CallManager` connects to `pipelineStopped` and creates the new pipeline in the callback
-4. No timers, no delays — proper signal/slot callback chain
-5. `forceReconnectPublisher` becomes async: stop old → (callback) → create new
-
-This preserves the working v0.13.1 video flow (new pad + renegotiation) while eliminating the UI freeze.
-
-**Key files to modify:**
-- `PublishPipeline.h/cpp` — add `pipelineStopped` signal, async cleanup
-- `CallManager.cpp` — split `forceReconnectPublisher` into stop + callback
+### Status: NEEDS LIVE TESTING
+Build succeeds. Check Janus logs after a test call for "Unknown SSRC" errors.
+If Janus still drops packets, the fallback is the `forceReconnectPublisher` approach (see git history).
 
 ### Server-side issue (separate)
 Janus logs `Unsupported codec 'none'` on subscriber path. This affects ALL clients (browser too) but doesn't block video. The HPB signaling server creates Janus rooms without specifying `audiocodec`. Fix: update HPB or patch Janus config.
