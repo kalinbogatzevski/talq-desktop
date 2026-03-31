@@ -306,7 +306,9 @@ void SignalingClient::sendHello()
     helloData["auth"] = auth;
     hello["hello"] = helloData;
 
-    m_ws.sendTextMessage(QJsonDocument(hello).toJson(QJsonDocument::Compact));
+    QString json = QJsonDocument(hello).toJson(QJsonDocument::Compact);
+    qDebug() << "Signaling: WS >> hello (ticket redacted)";
+    m_ws.sendTextMessage(json);
 }
 
 void SignalingClient::joinRoom(const QString &token)
