@@ -146,7 +146,7 @@ MessageLayout LayoutEngine::computeLayout(
 
     qreal bubbleLeft = margin + avatarCol;          // where bubble background starts
     qreal contentX = bubbleLeft + bubblePadX;        // where text/content starts
-    qreal maxContentW = bubbleMaxWidth - avatarCol - margin - 2 * bubblePadX;
+    qreal maxContentW = qMax(40.0, bubbleMaxWidth - avatarCol - margin - 2 * bubblePadX);
 
     QFontMetrics fmName(theme.nameFont());
     QFontMetrics fmTime(theme.timeFont());
