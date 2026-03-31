@@ -147,4 +147,9 @@ private:
 
     VideoFrameProvider *m_remoteVideoProvider = nullptr;
     VideoFrameProvider *m_localVideoProvider = nullptr;
+
+    // Offers received before ICE servers are available (P3 race guard)
+    struct PendingOffer { QString fromSessionId; QString sdp; QString sid; };
+    QList<PendingOffer> m_pendingOffers;
+    void processPendingOffers();
 };
