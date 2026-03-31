@@ -267,8 +267,10 @@ void MainWindow::buildChatPage()
     sidebarLayout->addWidget(m_searchField);
 
     m_profileAvatarLabel = profileAvatar;
-    m_profileAvatarLabel->installEventFilter(this);
     m_profileAvatarLabel->setCursor(Qt::PointingHandCursor);
+    // Make avatar clickable — open settings on click
+    m_profileAvatarLabel->setAttribute(Qt::WA_TransparentForMouseEvents, false);
+    m_profileAvatarLabel->installEventFilter(this);
 
     // Update profile when auth changes
     connect(m_auth, &AuthManager::loggedInChanged, this, [this]() {
@@ -927,9 +929,8 @@ void MainWindow::buildChatPage()
 
 bool MainWindow::eventFilter(QObject *obj, QEvent *event)
 {
-    // Avatar click in squeezed mode -> open settings
-    if (obj == m_profileAvatarLabel && event->type() == QEvent::MouseButtonRelease
-        && m_sidebarSqueezed) {
+    // Avatar click -> open settings (in any mode)
+    if (obj == m_profileAvatarLabel && event->type() == QEvent::MouseButtonRelease) {
         if (!m_settingsDialog) {
             m_settingsDialog = new SettingsDialog(
                 m_deviceManager, m_notifications, m_appSettings, m_auth, this);
