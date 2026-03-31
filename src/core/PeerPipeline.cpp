@@ -497,6 +497,7 @@ void PeerPipeline::enableCamera(int deviceIndex, bool hd1080)
 
 void PeerPipeline::disableCamera()
 {
+    if (!m_pipeline) return;
     if (!m_cameraEnabled && !m_cameraSrc) return;
 
     qDebug() << "PeerPipeline: disabling camera";

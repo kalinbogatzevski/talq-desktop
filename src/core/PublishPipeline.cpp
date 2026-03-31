@@ -598,6 +598,7 @@ void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)
 
 void PublishPipeline::disableCamera()
 {
+    if (!m_pipeline) return;
     if (!m_cameraEnabled && !m_cameraSrc) return;
 
     qDebug() << "PublishPipeline: disabling camera";
