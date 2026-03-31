@@ -54,7 +54,10 @@ bool SubscribePipeline::start(const QString &stunServer, const QList<TurnServer>
             QString escapedUser = QString(QUrl::toPercentEncoding(turn.username));
             QString escapedCred = QString(QUrl::toPercentEncoding(turn.credential));
             gstUrl.replace("://", QString("://%1:%2@").arg(escapedUser, escapedCred));
-            qDebug() << "SubscribePipeline: adding TURN server" << gstUrl;
+            // Mask credentials in log output
+            QString logUrl = gstUrl;
+            logUrl.replace(QRegularExpression("://[^@]+@"), "://***@");
+            qDebug() << "SubscribePipeline: adding TURN server" << logUrl;
             gboolean ret = FALSE;
             g_signal_emit_by_name(m_webrtcbin, "add-turn-server", gstUrl.toUtf8().constData(), &ret);
         }
@@ -264,6 +267,11 @@ void SubscribePipeline::createAudioChain(GstPad *pad)
 
     if (!depay || !dec || !convert || !resample || !sink) {
         qWarning() << "SubscribePipeline: failed to create audio receive chain";
+        if (depay) gst_object_unref(depay);
+        if (dec) gst_object_unref(dec);
+        if (convert) gst_object_unref(convert);
+        if (resample) gst_object_unref(resample);
+        if (sink) gst_object_unref(sink);
         return;
     }
 
@@ -305,6 +313,10 @@ void SubscribePipeline::createVideoChain(GstPad *pad, const gchar *encoding)
 
     if (!depay || !decoder || !convert || !appsink) {
         qWarning() << "SubscribePipeline: failed to create video elements";
+        if (depay) gst_object_unref(depay);
+        if (decoder) gst_object_unref(decoder);
+        if (convert) gst_object_unref(convert);
+        if (appsink) gst_object_unref(appsink);
         return;
     }
 

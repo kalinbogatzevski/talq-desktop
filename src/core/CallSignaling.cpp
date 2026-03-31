@@ -100,9 +100,34 @@ void CallSignaling::sendMessage(const QJsonObject &data)
                 if (!ok)
                     qWarning() << "CallSignaling: send failed, status=" << status;
                 m_sending = false;
+                // Flush any messages queued while this send was in flight
+                if (!m_pendingMessages.isEmpty())
+                    flushPending();
             });
         m_pendingMessages.clear();
     }
+}
+
+void CallSignaling::flushPending()
+{
+    if (m_sending || m_pendingMessages.isEmpty()) return;
+    m_sending = true;
+    QJsonArray messages;
+    for (const auto &m : m_pendingMessages)
+        messages.append(m);
+
+    QJsonObject body;
+    body["messages"] = QString::fromUtf8(QJsonDocument(messages).toJson(QJsonDocument::Compact));
+
+    m_api->post("apps/spreed/api/v3/signaling/" + m_token, body,
+        [this](bool ok, const QJsonObject &, int status) {
+            if (!ok)
+                qWarning() << "CallSignaling: send failed, status=" << status;
+            m_sending = false;
+            if (!m_pendingMessages.isEmpty())
+                flushPending();
+        });
+    m_pendingMessages.clear();
 }
 
 void CallSignaling::poll()
