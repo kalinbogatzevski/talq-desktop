@@ -53,6 +53,7 @@ private:
     GstElement *m_videoAppsink = nullptr;
     GstElement *m_videoDepay = nullptr;
     QTimer *m_pliTimer = nullptr;
+    bool m_audioChainCreated = false;
 
     void createAudioChain(GstPad *pad);
     void createVideoChain(GstPad *pad, const gchar *encoding);

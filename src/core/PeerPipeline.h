@@ -80,6 +80,9 @@ private:
     GstElement *m_previewAppsink = nullptr;
     GstPad *m_videoSinkPad = nullptr;
     bool m_cameraEnabled = false;
+    bool m_audioChainCreated = false;
+    bool m_videoChainCreated = false;
+    int m_lvlDbg = 0;
 
     // Video providers
     VideoFrameProvider *m_localVideoProvider = nullptr;

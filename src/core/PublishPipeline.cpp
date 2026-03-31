@@ -304,6 +304,7 @@ void PublishPipeline::cleanup()
     }
     m_webrtcbin = nullptr;
     m_remoteDescSet = false;
+    m_lvlDbg = 0;
     m_pendingCandidates.clear();
 }
 
@@ -665,8 +666,7 @@ void PublishPipeline::pollBus()
             const GstStructure *s = gst_message_get_structure(msg);
             const gchar *name = gst_structure_get_name(s);
             if (g_strcmp0(name, "level") == 0) {
-                static int lvlDbg = 0;
-                if (++lvlDbg <= 2) {
+                if (++m_lvlDbg <= 2) {
                     gchar *str = gst_structure_to_string(s);
                     qDebug() << "PublishPipeline: level raw:" << QString::fromUtf8(str).left(300);
                     g_free(str);
@@ -743,6 +743,11 @@ void PublishPipeline::onOfferCreated(GstPromise *promise, gpointer userData)
         return;
     }
 
+    if (!self->m_webrtcbin) {
+        gst_webrtc_session_description_free(offer);
+        gst_promise_unref(promise);
+        return;
+    }
     g_signal_emit_by_name(self->m_webrtcbin, "set-local-description", offer, nullptr);
 
     gchar *sdpText = gst_sdp_message_as_text(offer->sdp);
@@ -793,7 +798,7 @@ GstFlowReturn PublishPipeline::onPreviewSample(GstAppSink *sink, gpointer userDa
     if (!sample) return GST_FLOW_OK;
 
     QPointer<PublishPipeline> guard(self);
-    QMetaObject::invokeMethod(self->m_localVideoProvider, [guard, sample]() {
+    QMetaObject::invokeMethod(self, [guard, sample]() {
         if (guard && guard->m_localVideoProvider)
             guard->m_localVideoProvider->feedFrame(sample);
         gst_sample_unref(sample);

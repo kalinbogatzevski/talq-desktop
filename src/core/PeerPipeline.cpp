@@ -189,6 +189,9 @@ void PeerPipeline::cleanup()
     }
     m_webrtcbin = nullptr;
     m_remoteDescSet = false;
+    m_audioChainCreated = false;
+    m_videoChainCreated = false;
+    m_lvlDbg = 0;
     m_pendingCandidates.clear();
 }
 
@@ -555,8 +558,7 @@ void PeerPipeline::pollBus()
             const GstStructure *s = gst_message_get_structure(msg);
             const gchar *name = gst_structure_get_name(s);
             if (g_strcmp0(name, "level") == 0) {
-                static int lvlDbg = 0;
-                if (++lvlDbg <= 2) {
+                if (++m_lvlDbg <= 2) {
                     gchar *str = gst_structure_to_string(s);
                     qDebug() << "PeerPipeline: level raw:" << QString::fromUtf8(str).left(300);
                     g_free(str);
@@ -757,6 +759,11 @@ void PeerPipeline::onOfferCreated(GstPromise *promise, gpointer userData)
         return;
     }
 
+    if (!self->m_webrtcbin) {
+        gst_webrtc_session_description_free(offer);
+        gst_promise_unref(promise);
+        return;
+    }
     g_signal_emit_by_name(self->m_webrtcbin, "set-local-description", offer, nullptr);
 
     gchar *sdpText = gst_sdp_message_as_text(offer->sdp);
@@ -810,6 +817,11 @@ void PeerPipeline::onAnswerCreated(GstPromise *promise, gpointer userData)
         return;
     }
 
+    if (!self->m_webrtcbin) {
+        gst_webrtc_session_description_free(answer);
+        gst_promise_unref(promise);
+        return;
+    }
     g_signal_emit_by_name(self->m_webrtcbin, "set-local-description", answer, nullptr);
 
     gchar *sdpText = gst_sdp_message_as_text(answer->sdp);
@@ -887,10 +899,12 @@ void PeerPipeline::onPadAdded(GstElement *, GstPad *pad, gpointer userData)
         if (!guard) { gst_object_unref(pad); return; }
         auto *self = guard.data();
 
-        if (isAudio) {
+        if (isAudio && !self->m_audioChainCreated) {
             self->createAudioReceiveChain(pad);
-        } else if (isVideo) {
+            self->m_audioChainCreated = true;
+        } else if (isVideo && !self->m_videoChainCreated) {
             self->createVideoReceiveChain(pad, encodingCopy.constData());
+            self->m_videoChainCreated = true;
         }
         gst_object_unref(pad);
     }, Qt::QueuedConnection);
@@ -919,7 +933,7 @@ GstFlowReturn PeerPipeline::onPreviewSample(GstAppSink *sink, gpointer userData)
     if (!sample) return GST_FLOW_OK;
 
     QPointer<PeerPipeline> guard(self);
-    QMetaObject::invokeMethod(self->m_localVideoProvider, [guard, sample]() {
+    QMetaObject::invokeMethod(self, [guard, sample]() {
         if (guard && guard->m_localVideoProvider)
             guard->m_localVideoProvider->feedFrame(sample);
         gst_sample_unref(sample);
@@ -935,7 +949,7 @@ GstFlowReturn PeerPipeline::onRemoteVideoSample(GstAppSink *sink, gpointer userD
     if (!sample) return GST_FLOW_OK;
 
     QPointer<PeerPipeline> guard(self);
-    QMetaObject::invokeMethod(self->m_remoteVideoProvider, [guard, sample]() {
+    QMetaObject::invokeMethod(self, [guard, sample]() {
         if (guard && guard->m_remoteVideoProvider)
             guard->m_remoteVideoProvider->feedFrame(sample);
         gst_sample_unref(sample);
