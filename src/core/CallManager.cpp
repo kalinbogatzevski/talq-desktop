@@ -385,6 +385,8 @@ void CallManager::acceptCall(bool withVideo) {
                 this, [this, withVideo, conn, fired]() {
                     *fired = true;
                     disconnect(*conn);
+                    // Guard: call may have been hung up while waiting for room join
+                    if (m_state != Incoming && m_state != Connecting) return;
                     qDebug() << "CallManager: signaling room joined, now joining call";
                     joinCallOnServer(withVideo);
                 });
@@ -474,6 +476,11 @@ void CallManager::forceReconnectPublisher()
     qDebug() << "CallManager: forceReconnect publisher, cameraOn=" << m_cameraOn;
 
     // 1. Stop existing publish pipeline
+    // NOTE: Known race — stop() moves GStreamer GST_STATE_NULL to a detached thread
+    // which may still be releasing the audio device (wasapi2src) when the new pipeline
+    // tries to open it. The detached thread will release it "soon" and the new pipeline
+    // should recover via GStreamer's internal retry. Using deleteLater (not immediate
+    // delete) because GStreamer callbacks may still reference the old object briefly.
     if (m_publishPipeline) {
         m_publishPipeline->stop();
         m_publishPipeline->deleteLater();
@@ -703,8 +710,16 @@ void CallManager::joinCallOnServer(bool withVideo)
                                 emit localVideoProviderChanged();
                                 m_remoteVideoProvider = nullptr;
                                 emit remoteVideoProviderChanged();
-                                // Re-enter joinCallOnServer which will now use MCU
+                                // Skip the server join POST if already joined (avoid double-join)
+                                if (m_joinedCall) {
+                                    // Already joined on server; just create MCU pipelines.
+                                    // Re-fetch ICE servers and create publisher directly.
+                                    setStatusDetail("Falling back to MCU");
+                                }
                                 joinCallOnServer(m_withVideo);
+                            } else if (state == "failed") {
+                                qWarning() << "CallManager: P2P ICE failed, no MCU available, tearing down";
+                                hangUp();
                             }
                         });
 
@@ -764,6 +779,10 @@ void CallManager::joinCallOnServer(bool withVideo)
                             qDebug() << "CallManager: publisher ICE:" << state;
                             if (m_state != Active)
                                 setStatusDetail("Publisher ICE " + state);
+                            if (state == "failed") {
+                                qWarning() << "CallManager: publisher ICE failed, tearing down call";
+                                hangUp();
+                            }
                         });
 
                         connect(m_publishPipeline, &PublishPipeline::audioLevelUpdated,
@@ -1040,6 +1059,10 @@ void CallManager::onOfferReceived(const QString &fromSessionId, const QString &s
                 // Re-broadcast media state so the remote peer sees correct mute status
                 broadcastMediaState("audio", !m_muted);
                 broadcastMediaState("video", m_cameraOn);
+            }
+            if (state == "failed") {
+                qWarning() << "CallManager: subscriber ICE failed, tearing down call";
+                hangUp();
             }
         });
 

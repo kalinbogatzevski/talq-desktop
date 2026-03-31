@@ -96,9 +96,25 @@ void CallSignaling::sendMessage(const QJsonObject &data)
         body["messages"] = QString::fromUtf8(QJsonDocument(messages).toJson(QJsonDocument::Compact));
 
         m_api->post("apps/spreed/api/v3/signaling/" + m_token, body,
-            [this](bool ok, const QJsonObject &, int status) {
-                if (!ok)
+            [this, body](bool ok, const QJsonObject &, int status) {
+                if (!ok) {
                     qWarning() << "CallSignaling: send failed, status=" << status;
+                    // Retry once on server/network errors (5xx, 0); don't retry client errors (4xx)
+                    if ((status >= 500 || status == 0) && !m_retrying) {
+                        m_retrying = true;
+                        qDebug() << "CallSignaling: retrying send once";
+                        m_api->post("apps/spreed/api/v3/signaling/" + m_token, body,
+                            [this](bool ok2, const QJsonObject &, int status2) {
+                                m_retrying = false;
+                                if (!ok2)
+                                    qWarning() << "CallSignaling: retry also failed, status=" << status2;
+                                m_sending = false;
+                                if (!m_pendingMessages.isEmpty())
+                                    flushPending();
+                            });
+                        return;
+                    }
+                }
                 m_sending = false;
                 // Flush any messages queued while this send was in flight
                 if (!m_pendingMessages.isEmpty())
@@ -120,9 +136,23 @@ void CallSignaling::flushPending()
     body["messages"] = QString::fromUtf8(QJsonDocument(messages).toJson(QJsonDocument::Compact));
 
     m_api->post("apps/spreed/api/v3/signaling/" + m_token, body,
-        [this](bool ok, const QJsonObject &, int status) {
-            if (!ok)
-                qWarning() << "CallSignaling: send failed, status=" << status;
+        [this, body](bool ok, const QJsonObject &, int status) {
+            if (!ok) {
+                qWarning() << "CallSignaling: flush send failed, status=" << status;
+                if ((status >= 500 || status == 0) && !m_retrying) {
+                    m_retrying = true;
+                    m_api->post("apps/spreed/api/v3/signaling/" + m_token, body,
+                        [this](bool ok2, const QJsonObject &, int status2) {
+                            m_retrying = false;
+                            if (!ok2)
+                                qWarning() << "CallSignaling: flush retry also failed, status=" << status2;
+                            m_sending = false;
+                            if (!m_pendingMessages.isEmpty())
+                                flushPending();
+                        });
+                    return;
+                }
+            }
             m_sending = false;
             if (!m_pendingMessages.isEmpty())
                 flushPending();
@@ -134,11 +164,14 @@ void CallSignaling::poll()
 {
     if (!m_running || m_token.isEmpty()) return;
 
+    QString currentToken = m_token;
     auto *reply = m_api->getRaw("apps/spreed/api/v3/signaling/" + m_token);
 
-    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, currentToken]() {
         reply->deleteLater();
         if (!m_running) return;
+        // Token changed (conversation switch) — stop this poll chain
+        if (m_token != currentToken) return;
 
         int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         if (reply->error() != QNetworkReply::NoError) {
@@ -201,8 +234,8 @@ void CallSignaling::poll()
             }
         }
 
-        // Poll again immediately
+        // Poll again after a short delay to avoid busy-looping
         if (m_running)
-            poll();
+            QTimer::singleShot(100, this, &CallSignaling::poll);
     });
 }

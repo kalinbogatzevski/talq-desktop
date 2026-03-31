@@ -131,6 +131,14 @@ void ConversationListModel::refresh()
         }
         if (!m_callStateSeeded) m_callStateSeeded = true;
 
+        // Prune stale call state entries for conversations no longer in the list
+        QSet<QString> activeTokens;
+        for (const auto &c : newConversations) activeTokens.insert(c.token);
+        for (auto it = m_callState.begin(); it != m_callState.end(); ) {
+            if (!activeTokens.contains(it.key())) it = m_callState.erase(it);
+            else ++it;
+        }
+
         // Update model — use beginResetModel only when structure changes
         int oldSize = m_conversations.size();
         int newSize = newConversations.size();
