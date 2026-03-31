@@ -44,9 +44,16 @@
 - **Duplicate chain guard** — onPadAdded won't create duplicate audio/video chains
 - **trimOldMessages** — now trims oldest (was incorrectly trimming newest)
 
+#### UX Polish
+- **Branded splash screen** — dark theme, logo, app name, version, 1.5s minimum display
+- **Call dialog centered** on primary screen
+- **Mic icon** — text labels "Mic"/"Muted" (was emoji that looked like a light)
+- **Squeezed sidebar** — search and settings hidden, avatar only in narrow mode
+- **Avatar click** opens settings in all modes
+- **Mic level indicator** — teal bar showing live audio signal during calls
+
 #### Other
 - **Dead QML provider code** removed (273 lines)
-- **Branded splash screen** — dark theme, logo, version, 1.5s minimum display
 - **Remote video** hides and dialog shrinks when remote stops camera
 - **Reaction counts** fixed (array length, not toInt)
 
