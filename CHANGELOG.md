@@ -1,5 +1,55 @@
 # Changelog
 
+## v0.15.0 (2026-03-31)
+
+### Code Review — 59 issues fixed across 6 review rounds
+
+#### Security
+- **HTML injection** — server message content now HTML-escaped before rendering (prevents pixel tracking/IP disclosure)
+- **TURN credentials** masked in debug logs
+- **Signaling ticket** redacted from log output
+- **WebDAV path** sanitization hardened (`?`, `#`, `%`, `..` stripped)
+- **HTTPS warning** shown when user enters HTTP server URL
+- **File size guard** — uploads over 100MB rejected before loading into memory
+
+#### Crash/Stability
+- **QPointer guards** on all 13 GStreamer→Qt callback marshalling sites (use-after-free race)
+- **QTimer thread affinity** — onPadAdded marshalled to Qt thread (SubscribePipeline, PeerPipeline)
+- **Null pipeline guard** in disableCamera
+- **SDP null guard** — set-local-description protected against concurrent cleanup
+- **Video provider disconnect** — old provider disconnected before connecting new one
+- **invokeMethod target** — onPreviewSample uses QPointer-guarded target
+- **Integer overflow** guard in YUV buffer size calculation
+
+#### Protocol Compliance
+- **DELETE /call** sends `{all: true}` as JSON body (was query param — hangup was broken for remote)
+- **Subscriber re-offer** — stale subscriber evicted and recreated on new offer
+- **ICE server race** — offers queued until STUN/TURN servers are fetched
+
+#### Performance
+- **Async cache init** — SQLite init no longer blocks UI at startup
+- **Async lastCommonRead** — conversation switch no longer blocks on SQLite query
+- **Cache saves only new messages** (was saving all 200 on every poll)
+- **DebugMonitor** uses QStringList instead of O(n) string trimming
+
+#### Robustness
+- **CallSignaling poll delay** — 100ms minimum between polls (was busy-loop)
+- **ICE failure recovery** — hangUp on ICE failed in MCU mode
+- **acceptCall state guard** — roomJoined callback checks state before proceeding
+- **PushClient stop race** — m_stopped flag prevents reconnect after logout
+- **Conversation generation counter** — stale async callbacks bail out
+- **Participant map pruning** — SignalingClient removes entries when participants leave
+- **Camera SSRC capsfilter** cleaned up on disableCamera
+- **Subscriber cleanup** — m_pliTimer, m_videoAppsink, m_videoDepay properly nulled
+- **Duplicate chain guard** — onPadAdded won't create duplicate audio/video chains
+- **trimOldMessages** — now trims oldest (was incorrectly trimming newest)
+
+#### Other
+- **Dead QML provider code** removed (273 lines)
+- **Branded splash screen** — dark theme, logo, version, 1.5s minimum display
+- **Remote video** hides and dialog shrinks when remote stops camera
+- **Reaction counts** fixed (array length, not toInt)
+
 ## v0.14.7 (2026-03-31)
 
 ### Audio calls FIXED — bidirectional through MCU
