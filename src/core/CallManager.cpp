@@ -563,6 +563,11 @@ void CallManager::broadcastMediaState(const QString &media, bool enabled)
     for (const QString &peerId : peers)
         m_signaling->sendSessionMessage(peerId, type, payload, QString());
     qDebug() << "CallManager: broadcast" << type << media << "to" << peers.size() << "peer(s)";
+
+    // TODO: Also send media state via the publisher data channel ("status" label).
+    // The browser sends "audioOn"/"audioOff" and "videoOn"/"videoOff" as plain
+    // strings on the GStreamer data channel created with create-data-channel "status".
+    // This requires GStreamer data channel send APIs; signaling path works for now.
 }
 
 static int callFlags(bool withVideo)
@@ -640,6 +645,9 @@ void CallManager::joinCallOnServer(bool withVideo)
                     }
                     qDebug() << "CallManager: found" << turnServers.size() << "TURN servers";
                     m_turnServers = turnServers;
+
+                    // Process any offers that arrived before ICE servers were available
+                    processPendingOffers();
 
                     // Use MCU when HPB has it, P2P otherwise
                     m_useP2P = !m_signaling->hasMcu();
@@ -840,10 +848,10 @@ void CallManager::joinCallOnServer(bool withVideo)
 void CallManager::leaveCallOnServer()
 {
     if (m_callToken.isEmpty() || !m_joinedCall) return;
-    // Pass all=true to end the call for all participants (1:1 call behavior)
-    QUrlQuery params;
-    params.addQueryItem("all", "true");
-    m_api->del("apps/spreed/api/v4/call/" + m_callToken, params,
+    // NC Talk API reads "all" from the request body, not query params
+    QJsonObject body;
+    body["all"] = true;
+    m_api->del("apps/spreed/api/v4/call/" + m_callToken, body,
         [](bool ok, const QJsonObject &, int statusCode) {
             if (!ok) qWarning() << "CallManager: failed to leave call on server, status=" << statusCode;
         });
@@ -892,6 +900,7 @@ void CallManager::teardown(const QString &reason)
     m_userActionReady = false;
     m_remoteVideoMuted = true;
     m_remoteAudioMuted = true;
+    m_pendingOffers.clear();
 
     setState(Idle);
     emit callEnded(reason);
@@ -965,6 +974,16 @@ void CallManager::onParticipantLeftCall(const QString &sessionId)
 
 // --- SDP events ---
 
+void CallManager::processPendingOffers()
+{
+    if (m_pendingOffers.isEmpty()) return;
+    qDebug() << "CallManager: processing" << m_pendingOffers.size() << "pending offer(s)";
+    auto pending = m_pendingOffers;
+    m_pendingOffers.clear();
+    for (const auto &o : pending)
+        onOfferReceived(o.fromSessionId, o.sdp, o.sid);
+}
+
 void CallManager::onOfferReceived(const QString &fromSessionId, const QString &sdp, const QString &sid)
 {
     setStatusDetail("Received offer");
@@ -975,11 +994,26 @@ void CallManager::onOfferReceived(const QString &fromSessionId, const QString &s
         return;
     }
 
+    // Guard: don't create subscribers until ICE servers are available
+    if (m_stunServer.isEmpty()) {
+        m_pendingOffers.append({fromSessionId, sdp, sid});
+        qDebug() << "CallManager: queuing offer — ICE servers not yet available";
+        return;
+    }
+
     // Use the MCU's sid for all subscriber messages (answer + candidates)
     QString mcuSid = sid;
 
+    // Tear down stale subscriber on re-offer (new SID = new publisher session)
+    if (m_subscribePipelines.contains(fromSessionId)) {
+        qDebug() << "CallManager: re-offer for" << fromSessionId.left(20) << "— tearing down old subscriber";
+        m_subscribePipelines[fromSessionId]->stop();
+        m_subscribePipelines[fromSessionId]->deleteLater();
+        m_subscribePipelines.remove(fromSessionId);
+    }
+
     // MCU sends offer for subscriber stream (from the remote session ID)
-    if (!m_subscribePipelines.contains(fromSessionId)) {
+    {
         auto *sub = new SubscribePipeline(fromSessionId, this);
 
         connect(sub, &SubscribePipeline::localAnswerReady,
