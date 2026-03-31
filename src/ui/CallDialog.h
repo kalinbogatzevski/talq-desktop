@@ -65,6 +65,9 @@ private:
     QPushButton *m_hangupBtn = nullptr;
     QPushButton *m_cameraBtn = nullptr;
 
+    // Mic level indicator
+    QWidget *m_micLevel = nullptr;
+
     // Incoming call buttons
     QPushButton *m_acceptBtn = nullptr;
     QPushButton *m_declineBtn = nullptr;
