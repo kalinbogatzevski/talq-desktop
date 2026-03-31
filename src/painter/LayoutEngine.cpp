@@ -5,6 +5,8 @@
 #include <QRegularExpression>
 #include <QtMath>
 
+static const QRegularExpression s_htmlTagRe(QStringLiteral("<[^>]*>"));
+
 std::pair<qreal, qreal> LayoutEngine::fileRectSize(
     const QString &mime, qreal maxWidth, qreal maxThumbW,
     qreal maxThumbH, qreal imageAspectRatio)
@@ -126,8 +128,7 @@ MessageLayout LayoutEngine::computeLayout(
     // Skip empty messages — prevents empty gaps
     {
         QString strippedBody = ml.bodyHtml;
-        static const QRegularExpression htmlTagRe(QStringLiteral("<[^>]*>"));
-        strippedBody.remove(htmlTagRe);
+        strippedBody.remove(s_htmlTagRe);
         strippedBody = strippedBody.trimmed();
         bool hasRealFile = ml.hasFile && !ml.fileName.isEmpty();
         if (strippedBody.isEmpty() && !hasRealFile && ml.replyToText.isEmpty()) {

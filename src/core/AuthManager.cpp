@@ -83,10 +83,6 @@ void AuthManager::tryRestore()
 
     if (server.isEmpty() || user.isEmpty() || password.isEmpty()) {
         qDebug() << "No saved credentials";
-        m_restoringSession = true;
-        emit restoringChanged();
-        m_restoringSession = false;
-        emit restoringChanged();
         return;
     }
 

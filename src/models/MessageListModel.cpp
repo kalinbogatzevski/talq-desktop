@@ -546,6 +546,9 @@ void MessageListModel::onMessagesReceived(const QJsonArray &messages)
 
     if (newMsgs.isEmpty()) return;
 
+    // Save only the newly received messages to cache (not the full list)
+    QVector<Message> toCache = newMsgs;
+
     // Prepend new messages at index 0 (newest-first: new = front)
     // In BottomToTop view, index 0 is at the bottom — new messages appear at bottom
     for (const auto &m : newMsgs)
@@ -556,7 +559,7 @@ void MessageListModel::onMessagesReceived(const QJsonArray &messages)
     m_messages = std::move(newMsgs);
     endInsertRows();
 
-    m_cache->saveMessages(m_token, m_messages);
+    m_cache->saveMessages(m_token, toCache);
 
     // Trim old messages to prevent unbounded memory growth
     trimOldMessages();

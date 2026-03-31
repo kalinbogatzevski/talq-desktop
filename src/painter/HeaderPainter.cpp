@@ -192,7 +192,6 @@ void HeaderPainter::paintEvent(QPaintEvent *)
     // ── Expand sidebar button (visible when sidebar squeezed and conversation active) ──
     bool showExpandBtn = m_sidebarSqueezed && !m_conversationName.isEmpty();
     if (showExpandBtn) {
-        qreal btnY = (h - ButtonSize) / 2.0;
         // Draw a smaller 30px button for the arrow
         qreal smallBtn = 30;
         qreal btnYSmall = (h - smallBtn) / 2.0;
