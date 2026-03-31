@@ -119,6 +119,7 @@ private:
     ApiClient *m_api = nullptr;
     bool m_darkMode = true;
     int m_selectedIndex = -1;
+    QString m_selectedToken;
     bool m_squeezed = false;
     QString m_filterText;
     qreal m_scrollY = 0;
