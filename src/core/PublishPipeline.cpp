@@ -4,6 +4,7 @@
 #include <QRegularExpression>
 #include <QUrl>
 #include <gst/app/gstappsink.h>
+#include <thread>
 
 PublishPipeline::PublishPipeline(QObject *parent)
     : QObject(parent)
@@ -92,7 +93,7 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
     GstElement *audioresample = gst_element_factory_make("audioresample", nullptr);
     GstElement *level = gst_element_factory_make("level", "pub-level");
     GstElement *opusenc = gst_element_factory_make("opusenc", nullptr);
-    GstElement *rtpopuspay = gst_element_factory_make("rtpopuspay", nullptr);
+    GstElement *rtpopuspay = gst_element_factory_make("rtpopuspay", "pub-rtpopuspay");
 
     if (!audiosrc || !audioconvert || !audioresample || !level || !opusenc || !rtpopuspay) {
         emit error("Failed to create audio capture elements");
@@ -113,7 +114,23 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         return false;
     }
 
-    GstPad *rtpSrcPad = gst_element_get_static_pad(rtpopuspay, "src");
+    // Force a known SSRC via capsfilter between payloader and webrtcbin.
+    // This ensures webrtcbin's internal rtpbin uses the SAME SSRC in both
+    // the SDP and on the wire. Without this, rtpbin generates its own SSRC
+    // which doesn't match the SDP, causing Janus to drop packets.
+    guint32 audioSsrc = g_random_int();
+    g_object_set(rtpopuspay, "ssrc", audioSsrc, nullptr);
+    GstElement *audioCapsFilter = gst_element_factory_make("capsfilter", "pub-audio-ssrc-filter");
+    {
+        GstCaps *ssrcCaps = gst_caps_from_string("application/x-rtp");
+        gst_caps_set_simple(ssrcCaps, "ssrc", G_TYPE_UINT, audioSsrc, nullptr);
+        g_object_set(audioCapsFilter, "caps", ssrcCaps, nullptr);
+        gst_caps_unref(ssrcCaps);
+    }
+    gst_bin_add(GST_BIN(m_pipeline), audioCapsFilter);
+    gst_element_link(rtpopuspay, audioCapsFilter);
+
+    GstPad *rtpSrcPad = gst_element_get_static_pad(audioCapsFilter, "src");
     GstPad *sinkPad = gst_element_request_pad_simple(m_webrtcbin, "sink_%u");
     if (gst_pad_link(rtpSrcPad, sinkPad) != GST_PAD_LINK_OK) {
         emit error("Failed to link RTP to webrtcbin");
@@ -122,13 +139,14 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         cleanup();
         return false;
     }
+    qDebug() << "PublishPipeline: forced audio SSRC" << audioSsrc << "via capsfilter";
 
     // Force standard OPUS (not MULTIOPUS) — Janus doesn't support multichannel Opus
     GstWebRTCRTPTransceiver *audioTransceiver = nullptr;
     g_object_get(sinkPad, "transceiver", &audioTransceiver, nullptr);
     if (audioTransceiver) {
         GstCaps *audioCaps = gst_caps_from_string(
-            "application/x-rtp,media=audio,encoding-name=OPUS,payload=111,clock-rate=48000");
+            "application/x-rtp,media=audio,encoding-name=OPUS,payload=111,clock-rate=48000,encoding-params=(string)2");
         g_object_set(audioTransceiver,
                      "direction", GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDONLY,
                      "codec-preferences", audioCaps,
@@ -161,15 +179,28 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         if (testsrc && vconv && venc && vpay) {
             g_object_set(testsrc, "pattern", 2 /* black */, "is-live", TRUE, nullptr);
             g_object_set(venc, "deadline", (gint64)1, "target-bitrate", 10000, nullptr);
-            gst_bin_add_many(GST_BIN(m_pipeline), testsrc, vconv, venc, vpay, nullptr);
+            // Force video SSRC — same approach as audio
+            guint32 videoSsrc = g_random_int();
+            g_object_set(vpay, "ssrc", videoSsrc, nullptr);
+
+            GstElement *videoCapsFilter = gst_element_factory_make("capsfilter", "pub-video-ssrc-filter");
+            {
+                GstCaps *vssrcCaps = gst_caps_from_string("application/x-rtp");
+                gst_caps_set_simple(vssrcCaps, "ssrc", G_TYPE_UINT, videoSsrc, nullptr);
+                g_object_set(videoCapsFilter, "caps", vssrcCaps, nullptr);
+                gst_caps_unref(vssrcCaps);
+            }
+            gst_bin_add_many(GST_BIN(m_pipeline), testsrc, vconv, venc, vpay, videoCapsFilter, nullptr);
 
             GstCaps *lowCaps = gst_caps_from_string("video/x-raw,width=16,height=16,framerate=1/1");
             gst_element_link(testsrc, vconv);
             gst_element_link_filtered(vconv, venc, lowCaps);
             gst_caps_unref(lowCaps);
             gst_element_link(venc, vpay);
+            gst_element_link(vpay, videoCapsFilter);
+            qDebug() << "PublishPipeline: forced dummy video SSRC" << videoSsrc;
 
-            GstPad *vpSrc = gst_element_get_static_pad(vpay, "src");
+            GstPad *vpSrc = gst_element_get_static_pad(videoCapsFilter, "src");
             m_videoSinkPad = gst_element_request_pad_simple(m_webrtcbin, "sink_%u");
 
             GstWebRTCRTPTransceiver *vt = nullptr;
@@ -191,6 +222,19 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
             if (vconv) gst_object_unref(vconv);
             if (venc) gst_object_unref(venc);
             if (vpay) gst_object_unref(vpay);
+        }
+    }
+
+    // Add a data channel — Janus videoroom requires it for publisher registration.
+    // The browser's Talk client creates "status" + "simplewebrtc" data channels.
+    // Without at least one, Janus doesn't properly initialize the publisher
+    // and drops all incoming RTP as "Unknown SSRC".
+    {
+        GstWebRTCDataChannel *dc = nullptr;
+        g_signal_emit_by_name(m_webrtcbin, "create-data-channel", "status", nullptr, &dc);
+        if (dc) {
+            qDebug() << "PublishPipeline: created data channel 'status'";
+            g_object_unref(dc);
         }
     }
 
@@ -247,11 +291,17 @@ void PublishPipeline::cleanup()
     if (m_webrtcbin)
         g_signal_handlers_disconnect_by_data(m_webrtcbin, this);
     if (m_pipeline) {
-        gst_element_set_state(m_pipeline, GST_STATE_NULL);
-        gst_object_unref(m_pipeline);
+        // Move blocking GST_STATE_NULL off the UI thread
+        GstElement *pipeline = m_pipeline;
         m_pipeline = nullptr;
+        std::thread([pipeline]() {
+            gst_element_set_state(pipeline, GST_STATE_NULL);
+            gst_object_unref(pipeline);
+        }).detach();
     }
     m_webrtcbin = nullptr;
+    m_remoteDescSet = false;
+    m_pendingCandidates.clear();
 }
 
 void PublishPipeline::setRemoteAnswer(const QString &sdp)
@@ -270,13 +320,21 @@ void PublishPipeline::setRemoteAnswer(const QString &sdp)
     g_signal_emit_by_name(m_webrtcbin, "set-remote-description", desc, nullptr);
     gst_webrtc_session_description_free(desc);
 
-    qDebug() << "PublishPipeline: set remote answer";
+    m_remoteDescSet = true;
+    qDebug() << "PublishPipeline: set remote answer, flushing" << m_pendingCandidates.size() << "queued candidates";
+    for (const auto &c : m_pendingCandidates)
+        g_signal_emit_by_name(m_webrtcbin, "add-ice-candidate", c.first, c.second.toUtf8().constData());
+    m_pendingCandidates.clear();
 }
 
 void PublishPipeline::addIceCandidate(const QString &candidate, int sdpMLineIndex, const QString &sdpMid)
 {
-    if (!m_webrtcbin) return;
     Q_UNUSED(sdpMid)
+    if (!m_webrtcbin) return;
+    if (!m_remoteDescSet) {
+        m_pendingCandidates.append({sdpMLineIndex, candidate});
+        return;
+    }
     g_signal_emit_by_name(m_webrtcbin, "add-ice-candidate",
                           sdpMLineIndex, candidate.toUtf8().constData());
 }
@@ -323,7 +381,7 @@ void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)
     m_videoConvert = gst_element_factory_make("videoconvert", nullptr);
     m_videoCapsFilter = gst_element_factory_make("capsfilter", nullptr);
     m_videoEncoder = gst_element_factory_make("vp8enc", nullptr);
-    m_videoPayloader = gst_element_factory_make("rtpvp8pay", nullptr);
+    m_videoPayloader = gst_element_factory_make("rtpvp8pay", "pub-rtpvp8pay");
 
     if (!m_videoConvert || !m_videoCapsFilter || !m_videoEncoder || !m_videoPayloader) {
         emit cameraError("Failed to create video encoding elements");
@@ -488,7 +546,20 @@ void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)
         qWarning() << "PublishPipeline: could not get transceiver from video pad";
     }
 
-    GstPad *payloaderSrc = gst_element_get_static_pad(m_videoPayloader, "src");
+    // Force video SSRC — same approach as audio
+    guint32 camSsrc = g_random_int();
+    g_object_set(m_videoPayloader, "ssrc", camSsrc, nullptr);
+    GstElement *camSsrcFilter = gst_element_factory_make("capsfilter", "pub-cam-ssrc-filter");
+    {
+        GstCaps *vsc = gst_caps_from_string("application/x-rtp");
+        gst_caps_set_simple(vsc, "ssrc", G_TYPE_UINT, camSsrc, nullptr);
+        g_object_set(camSsrcFilter, "caps", vsc, nullptr);
+        gst_caps_unref(vsc);
+    }
+    gst_bin_add(GST_BIN(m_pipeline), camSsrcFilter);
+    gst_element_link(m_videoPayloader, camSsrcFilter);
+
+    GstPad *payloaderSrc = gst_element_get_static_pad(camSsrcFilter, "src");
     GstPadLinkReturn ret = gst_pad_link(payloaderSrc, m_videoSinkPad);
     gst_object_unref(payloaderSrc);
 
@@ -498,7 +569,9 @@ void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)
         disableCamera();
         return;
     }
+    qDebug() << "PublishPipeline: forced camera video SSRC" << camSsrc;
 
+    gst_element_sync_state_with_parent(camSsrcFilter);
     gst_element_sync_state_with_parent(m_cameraSrc);
     gst_element_sync_state_with_parent(m_videoConvert);
     gst_element_sync_state_with_parent(m_videoCapsFilter);
@@ -665,6 +738,10 @@ void PublishPipeline::onOfferCreated(GstPromise *promise, gpointer userData)
         qWarning() << "PublishPipeline: offer has no media lines, not sending (audio source may have failed)";
         return;
     }
+
+    // Keep a=ssrc lines in the SDP — Janus requires them to map publisher SSRCs.
+    // The capsfilter before webrtcbin forces a consistent SSRC that matches
+    // both the SDP and the wire. (Browser keeps a=ssrc lines and it works.)
 
     QMetaObject::invokeMethod(self, [self, sdp]() {
         emit self->localOfferReady(sdp);
