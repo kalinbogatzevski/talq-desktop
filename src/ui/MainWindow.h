@@ -68,6 +68,7 @@ protected:
     void closeEvent(QCloseEvent *event) override;
     void moveEvent(QMoveEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
+    bool eventFilter(QObject *obj, QEvent *event) override;
 
 private:
     void buildChatPage();
@@ -125,6 +126,8 @@ private:
     QWidget *m_sidebarCol = nullptr;
     QLabel *m_profileNameLabel = nullptr;
     QLabel *m_profileAvatarLabel = nullptr;
+    QPushButton *m_settingsBtn = nullptr;
+    QWidget *m_profileBar = nullptr;
     QWidget *m_welcomeWidget = nullptr;
     QLabel *m_welcomeNameLabel = nullptr;
     QLabel *m_welcomeServerLabel = nullptr;
