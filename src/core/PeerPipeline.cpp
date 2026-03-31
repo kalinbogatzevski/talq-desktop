@@ -721,8 +721,10 @@ void PeerPipeline::onIceCandidate(GstElement *, guint mlineIndex, gchar *candida
     auto *self = static_cast<PeerPipeline *>(userData);
     QString c = QString::fromUtf8(candidate);
     int ml = static_cast<int>(mlineIndex);
-    QMetaObject::invokeMethod(self, [self, c, ml]() {
-        emit self->iceCandidateReady(c, ml, QString("0"));
+    QPointer<PeerPipeline> guard(self);
+    QMetaObject::invokeMethod(self, [guard, c, ml]() {
+        if (!guard) return;
+        emit guard->iceCandidateReady(c, ml, QString("0"));
     }, Qt::QueuedConnection);
 }
 
@@ -772,8 +774,10 @@ void PeerPipeline::onOfferCreated(GstPromise *promise, gpointer userData)
     if (stripped > 0)
         qDebug() << "PeerPipeline: stripped" << stripped << "a=ssrc lines from offer SDP";
 
-    QMetaObject::invokeMethod(self, [self, mungedSdp]() {
-        emit self->localOfferReady(mungedSdp);
+    QPointer<PeerPipeline> guard(self);
+    QMetaObject::invokeMethod(self, [guard, mungedSdp]() {
+        if (!guard) return;
+        emit guard->localOfferReady(mungedSdp);
     }, Qt::QueuedConnection);
 }
 
@@ -824,8 +828,10 @@ void PeerPipeline::onAnswerCreated(GstPromise *promise, gpointer userData)
 
     qDebug() << "PeerPipeline: answer SDP:\n" << mungedSdp.left(2000);
 
-    QMetaObject::invokeMethod(self, [self, mungedSdp]() {
-        emit self->localAnswerReady(mungedSdp);
+    QPointer<PeerPipeline> guard(self);
+    QMetaObject::invokeMethod(self, [guard, mungedSdp]() {
+        if (!guard) return;
+        emit guard->localAnswerReady(mungedSdp);
     }, Qt::QueuedConnection);
 }
 
@@ -870,9 +876,11 @@ void PeerPipeline::onIceStateChanged(GObject *obj, GParamSpec *, gpointer userDa
     const char *names[] = {"new", "checking", "connected", "completed", "failed", "disconnected", "closed"};
     int idx = static_cast<int>(state);
     QString stateName = (idx < 7) ? names[idx] : "unknown";
-    QMetaObject::invokeMethod(self, [self, stateName]() {
+    QPointer<PeerPipeline> guard(self);
+    QMetaObject::invokeMethod(self, [guard, stateName]() {
+        if (!guard) return;
         qDebug() << "PeerPipeline: ICE ->" << stateName;
-        emit self->iceStateChanged(stateName);
+        emit guard->iceStateChanged(stateName);
     }, Qt::QueuedConnection);
 }
 

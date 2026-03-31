@@ -691,7 +691,10 @@ void PublishPipeline::pollBus()
 void PublishPipeline::onNegotiationNeeded(GstElement *, gpointer userData)
 {
     auto *self = static_cast<PublishPipeline *>(userData);
-    QMetaObject::invokeMethod(self, [self]() {
+    QPointer<PublishPipeline> guard(self);
+    QMetaObject::invokeMethod(self, [guard]() {
+        if (!guard) return;
+        auto *self = guard.data();
         if (!self->m_webrtcbin) return;
         qDebug() << "PublishPipeline: negotiation needed, creating offer";
         GstPromise *promise = gst_promise_new_with_change_func(onOfferCreated, self, nullptr);
@@ -704,8 +707,10 @@ void PublishPipeline::onIceCandidate(GstElement *, guint mlineIndex, gchar *cand
     auto *self = static_cast<PublishPipeline *>(userData);
     QString c = QString::fromUtf8(candidate);
     int ml = static_cast<int>(mlineIndex);
-    QMetaObject::invokeMethod(self, [self, c, ml]() {
-        emit self->iceCandidateReady(c, ml, QString("0"));
+    QPointer<PublishPipeline> guard(self);
+    QMetaObject::invokeMethod(self, [guard, c, ml]() {
+        if (!guard) return;
+        emit guard->iceCandidateReady(c, ml, QString("0"));
     }, Qt::QueuedConnection);
 }
 
@@ -743,8 +748,10 @@ void PublishPipeline::onOfferCreated(GstPromise *promise, gpointer userData)
     // The capsfilter before webrtcbin forces a consistent SSRC that matches
     // both the SDP and the wire. (Browser keeps a=ssrc lines and it works.)
 
-    QMetaObject::invokeMethod(self, [self, sdp]() {
-        emit self->localOfferReady(sdp);
+    QPointer<PublishPipeline> guard(self);
+    QMetaObject::invokeMethod(self, [guard, sdp]() {
+        if (!guard) return;
+        emit guard->localOfferReady(sdp);
     }, Qt::QueuedConnection);
 }
 
@@ -756,9 +763,11 @@ void PublishPipeline::onIceStateChanged(GObject *obj, GParamSpec *, gpointer use
     const char *names[] = {"new", "checking", "connected", "completed", "failed", "disconnected", "closed"};
     int idx = static_cast<int>(state);
     QString stateName = (idx < 7) ? names[idx] : "unknown";
-    QMetaObject::invokeMethod(self, [self, stateName]() {
+    QPointer<PublishPipeline> guard(self);
+    QMetaObject::invokeMethod(self, [guard, stateName]() {
+        if (!guard) return;
         qDebug() << "PublishPipeline: ICE ->" << stateName;
-        emit self->iceStateChanged(stateName);
+        emit guard->iceStateChanged(stateName);
     }, Qt::QueuedConnection);
 }
 
