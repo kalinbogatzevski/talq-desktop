@@ -859,13 +859,26 @@ void PeerPipeline::onPadAdded(GstElement *, GstPad *pad, gpointer userData)
     QByteArray encodingCopy = encoding ? QByteArray(encoding) : QByteArray();
     gst_caps_unref(caps);
 
-    if (isAudio) {
-        self->createAudioReceiveChain(pad);
-    } else if (isVideo) {
-        self->createVideoReceiveChain(pad, encodingCopy.constData());
-    } else {
+    if (!isAudio && !isVideo) {
         qDebug() << "PeerPipeline: skipping unknown pad type";
+        return;
     }
+
+    // Ref the pad so it survives until the Qt thread processes it
+    gst_object_ref(pad);
+
+    QPointer<PeerPipeline> guard(self);
+    QMetaObject::invokeMethod(self, [guard, pad, isAudio, isVideo, encodingCopy]() {
+        if (!guard) { gst_object_unref(pad); return; }
+        auto *self = guard.data();
+
+        if (isAudio) {
+            self->createAudioReceiveChain(pad);
+        } else if (isVideo) {
+            self->createVideoReceiveChain(pad, encodingCopy.constData());
+        }
+        gst_object_unref(pad);
+    }, Qt::QueuedConnection);
 }
 
 void PeerPipeline::onIceStateChanged(GObject *obj, GParamSpec *, gpointer userData)

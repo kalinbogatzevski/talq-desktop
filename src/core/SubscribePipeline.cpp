@@ -203,13 +203,26 @@ void SubscribePipeline::onPadAdded(GstElement *, GstPad *pad, gpointer userData)
     QByteArray encodingCopy = encoding ? QByteArray(encoding) : QByteArray();
     gst_caps_unref(caps);
 
-    if (isAudio) {
-        self->createAudioChain(pad);
-    } else if (isVideo) {
-        self->createVideoChain(pad, encodingCopy.constData());
-    } else {
+    if (!isAudio && !isVideo) {
         qDebug() << "SubscribePipeline: skipping unknown pad type";
+        return;
     }
+
+    // Ref the pad so it survives until the Qt thread processes it
+    gst_object_ref(pad);
+
+    QPointer<SubscribePipeline> guard(self);
+    QMetaObject::invokeMethod(self, [guard, pad, isAudio, isVideo, encodingCopy]() {
+        if (!guard) { gst_object_unref(pad); return; }
+        auto *self = guard.data();
+
+        if (isAudio) {
+            self->createAudioChain(pad);
+        } else if (isVideo) {
+            self->createVideoChain(pad, encodingCopy.constData());
+        }
+        gst_object_unref(pad);
+    }, Qt::QueuedConnection);
 }
 
 void SubscribePipeline::createAudioChain(GstPad *pad)
