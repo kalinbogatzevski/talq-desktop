@@ -67,6 +67,7 @@ private:
     GstElement *m_videoPayloader = nullptr;
     GstPad *m_videoSinkPad = nullptr;
     bool m_cameraEnabled = false;
+    int m_lvlDbg = 0;
 
     // Local preview (tee branch)
     GstElement *m_tee = nullptr;

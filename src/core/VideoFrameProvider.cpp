@@ -53,9 +53,9 @@ void VideoFrameProvider::feedFrame(GstSample *sample)
     GstMapInfo map;
     if (!gst_buffer_map(buf, &map, GST_MAP_READ)) return;
 
-    const int ySize = width * height;
-    const int uvSize = (width / 2) * (height / 2);
-    const bool bufferValid = (qsizetype)(ySize + 2 * uvSize) <= (qsizetype)map.size;
+    const qint64 ySize = (qint64)width * height;
+    const qint64 uvSize = (qint64)(width / 2) * (height / 2);
+    const bool bufferValid = (qint64)(ySize + 2 * uvSize) <= (qint64)map.size;
 
     // Convert I420 to QImage for widget display
     if (bufferValid && pixFmt == QVideoFrameFormat::Format_YUV420P) {

@@ -114,6 +114,9 @@ void SubscribePipeline::cleanup()
         g_source_remove(m_busWatchId);
         m_busWatchId = 0;
     }
+    if (m_pliTimer) { m_pliTimer->stop(); delete m_pliTimer; m_pliTimer = nullptr; }
+    if (m_videoAppsink)
+        g_signal_handlers_disconnect_by_data(m_videoAppsink, this);
     if (m_webrtcbin)
         g_signal_handlers_disconnect_by_data(m_webrtcbin, this);
     if (m_pipeline) {
@@ -125,6 +128,9 @@ void SubscribePipeline::cleanup()
         }).detach();
     }
     m_webrtcbin = nullptr;
+    m_videoAppsink = nullptr;
+    m_videoDepay = nullptr;
+    m_audioChainCreated = false;
     m_remoteDescSet = false;
     m_pendingCandidates.clear();
 }
@@ -221,9 +227,10 @@ void SubscribePipeline::onPadAdded(GstElement *, GstPad *pad, gpointer userData)
         if (!guard) { gst_object_unref(pad); return; }
         auto *self = guard.data();
 
-        if (isAudio) {
+        if (isAudio && !self->m_audioChainCreated) {
             self->createAudioChain(pad);
-        } else if (isVideo) {
+            self->m_audioChainCreated = true;
+        } else if (isVideo && !self->m_videoAppsink) {
             self->createVideoChain(pad, encodingCopy.constData());
         }
         gst_object_unref(pad);
@@ -415,6 +422,11 @@ void SubscribePipeline::onAnswerCreated(GstPromise *promise, gpointer userData)
         return;
     }
 
+    if (!self->m_webrtcbin) {
+        gst_webrtc_session_description_free(answer);
+        gst_promise_unref(promise);
+        return;
+    }
     g_signal_emit_by_name(self->m_webrtcbin, "set-local-description", answer, nullptr);
 
     gchar *sdpText = gst_sdp_message_as_text(answer->sdp);

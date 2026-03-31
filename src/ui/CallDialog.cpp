@@ -325,12 +325,17 @@ void CallDialog::connectVideoProviders()
 {
     auto *remote = m_callManager->remoteVideoProvider();
     if (remote && !m_videoConnected) {
+        if (m_lastRemoteProvider)
+            disconnect(m_lastRemoteProvider, nullptr, this, nullptr);
         connect(remote, &VideoFrameProvider::imageReady, this, &CallDialog::onRemoteFrame);
+        m_lastRemoteProvider = remote;
         m_videoConnected = true;
         qDebug() << "CallDialog: connected to remote video provider";
     }
     auto *local = m_callManager->localVideoProvider();
     if (local && !m_localConnected) {
+        if (m_lastLocalProvider)
+            disconnect(m_lastLocalProvider, nullptr, this, nullptr);
         connect(local, &VideoFrameProvider::imageReady, this, [this](const QImage &img) {
             if (!m_localPreview->isVisible()) {
                 m_localPreview->show();
@@ -345,6 +350,7 @@ void CallDialog::connectVideoProviders()
             m_localPreview->move(m_remoteVideo->x() + m_remoteVideo->width() - 128,
                                 m_remoteVideo->y() + m_remoteVideo->height() - 98);
         });
+        m_lastLocalProvider = local;
         m_localConnected = true;
         qDebug() << "CallDialog: connected to local video provider";
     }
