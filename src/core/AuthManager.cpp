@@ -111,6 +111,9 @@ void AuthManager::startLogin(const QString &serverUrl)
     if (!url.startsWith("http://") && !url.startsWith("https://"))
         url.prepend("https://");
 
+    if (url.startsWith("http://"))
+        qWarning() << "AuthManager: WARNING — using unencrypted HTTP connection. Credentials will be sent in cleartext.";
+
     m_serverUrl = url;
     m_api->setServerUrl(url);
     emit serverUrlChanged();

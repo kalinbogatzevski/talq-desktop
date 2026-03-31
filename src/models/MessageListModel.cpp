@@ -51,6 +51,16 @@ MessageListModel::MessageListModel(ApiClient *api, MessageCache *cache, QObject 
     });
 
     // Async cache results
+    connect(m_cache, &MessageCache::lastCommonReadLoaded, this, [this](const QString &token, int messageId) {
+        if (m_token != token) return;  // stale result
+        if (messageId > m_lastCommonRead) {
+            m_lastCommonRead = messageId;
+            // Refresh read indicators for all messages
+            if (!m_messages.isEmpty())
+                emit dataChanged(index(0), index(m_messages.size() - 1), {IsReadRole});
+        }
+    });
+
     connect(m_cache, &MessageCache::messagesLoaded, this, [this](const QString &token, const QVector<Message> &messages) {
         if (m_token != token) return;  // stale result
 
@@ -227,7 +237,8 @@ void MessageListModel::setConversationToken(const QString &token)
     m_token = token;
     m_oldestMessageId = 0;
     m_threadId = 0;
-    m_lastCommonRead = m_cache ? m_cache->loadLastCommonRead(token) : 0;
+    m_lastCommonRead = 0;  // async load below; will update via lastCommonReadLoaded signal
+    if (m_cache) m_cache->loadLastCommonRead(token);
     m_loading = false;
     m_hasMoreHistory = true;
     emit hasMoreHistoryChanged();
@@ -859,8 +870,16 @@ void MessageListModel::sendFileWithCaption(const QString &filePath, const QStrin
     }
 
     QString fileName = QFileInfo(localPath).fileName();
-    fileName.remove(QRegularExpression("[/\\\\]"));  // sanitize for WebDAV path safety
+    fileName.remove(QRegularExpression("[/\\\\?#%]"));  // sanitize for WebDAV path safety (S5)
+    fileName.replace("..", "_");
     if (fileName.isEmpty()) fileName = "upload";
+
+    // D3: reject files over 100 MB to avoid freezing the main thread on readAll
+    // TODO: replace readAll with chunked/streaming upload for large files
+    if (file.size() > 100 * 1024 * 1024) {
+        emit errorOccurred("File too large (max 100 MB)");
+        return;
+    }
     QByteArray fileData = file.readAll();
     file.close();
     if (!tempCopy.isEmpty())

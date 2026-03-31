@@ -16,9 +16,8 @@ class MessageCacheWorker;
  * Thread-safe message cache backed by SQLite.
  * All database operations run on a worker thread — never blocks the UI.
  *
- * loadMessages() is the only synchronous call (needs the result immediately),
- * but runs on the worker thread via QMetaObject::invokeMethod with BlockingQueuedConnection.
- * saveMessages() is fire-and-forget (queued to worker thread).
+ * All calls are fully asynchronous — results arrive via signals.
+ * saveMessages(), saveLastCommonRead() are fire-and-forget (queued to worker thread).
  */
 class MessageCache : public QObject
 {
@@ -33,11 +32,12 @@ public:
     void saveThreadIndex(const QString &token, const QVector<QJsonObject> &threads);
     void loadThreadIndex(const QString &token);
     void saveLastCommonRead(const QString &token, int messageId);
-    int loadLastCommonRead(const QString &token);
+    void loadLastCommonRead(const QString &token);  // result via lastCommonReadLoaded signal
 
 signals:
     void messagesLoaded(const QString &token, const QVector<Message> &messages);
     void threadIndexLoaded(const QString &token, const QVector<QJsonObject> &threads);
+    void lastCommonReadLoaded(const QString &token, int messageId);
 
 public slots:
     void clearConversation(const QString &token);
