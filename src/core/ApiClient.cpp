@@ -1,4 +1,5 @@
 #include "core/ApiClient.h"
+#include <QBuffer>
 #include <QNetworkRequest>
 #include <QUrlQuery>
 #include <QJsonDocument>
@@ -178,13 +179,26 @@ void ApiClient::put(const QString &path, const QJsonObject &body, Callback callb
 
 void ApiClient::del(const QString &path, Callback callback)
 {
-    del(path, {}, callback);
+    del(path, QUrlQuery(), callback);
 }
 
 void ApiClient::del(const QString &path, const QUrlQuery &params, Callback callback)
 {
     auto req = makeRequest(path, params);
     auto *reply = m_nam.deleteResource(req);
+    m_pendingReplies.append(reply);
+    handleReply(reply, callback);
+}
+
+void ApiClient::del(const QString &path, const QJsonObject &body, Callback callback)
+{
+    auto req = makeRequest(path);
+    QByteArray data = QJsonDocument(body).toJson(QJsonDocument::Compact);
+    auto *buf = new QBuffer();
+    buf->setData(data);
+    buf->open(QIODevice::ReadOnly);
+    auto *reply = m_nam.sendCustomRequest(req, "DELETE", buf);
+    buf->setParent(reply);  // ensure buffer lives until reply completes
     m_pendingReplies.append(reply);
     handleReply(reply, callback);
 }
