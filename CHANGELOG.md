@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.14.7 (2026-03-31)
+
+### Audio calls FIXED — bidirectional through MCU
+Root cause: three protocol compliance issues found by comparing TalQ's SDP with browser WebRTC-internals dump:
+- **Opus codec format** — GStreamer generated `OPUS/48000` (missing channel count), Janus requires `opus/48000/2`
+- **Codec declaration** — signaling offer must include `audiocodec: "opus"` in message data for Janus room creation
+- **SSRC consistency** — GStreamer's webrtcbin internal rtpbin rewrites SSRC on the wire; fixed by forcing matching SSRC on both payloader and capsfilter before webrtcbin
+- **Data channel** — Janus publisher requires an `m=application` section (data channel) in the SDP; added `status` channel matching browser behavior
+- **SSRC lines kept** — `a=ssrc` lines must be present in SDP (not stripped); Janus validates incoming RTP against them
+
+### Video SSRC fix
+- Same capsfilter SSRC approach applied to dummy video and camera video pipelines
+- Camera SSRC forced via capsfilter between payloader and webrtcbin
+
+### Other improvements
+- File caption sent inline via `talkMetaData.caption` (not as separate message)
+- Auto-refresh polling for incoming call detection
+- ICE candidate queuing (all 3 pipeline types)
+- Async pipeline teardown (no more UI freeze on hangup)
+
 ## v0.14.5 (2026-03-30)
 
 ### Installer fix — calls were unavailable on clean machines

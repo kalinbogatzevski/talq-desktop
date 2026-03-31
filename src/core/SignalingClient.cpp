@@ -384,7 +384,8 @@ void SignalingClient::sendRoomMessage(const QString &msgType)
 // --- WebRTC call signaling ---
 
 void SignalingClient::sendSessionMessage(const QString &toSessionId, const QString &type,
-                                          const QJsonObject &payload, const QString &sid)
+                                          const QJsonObject &payload, const QString &sid,
+                                          const QJsonObject &extraData)
 {
     if (!m_authenticated) return;
 
@@ -403,11 +404,16 @@ void SignalingClient::sendSessionMessage(const QString &toSessionId, const QStri
     data["sid"] = sid;
     data["roomType"] = QString("video");
     data["payload"] = payload;
+    // Merge extra fields (e.g. audiocodec, videocodec for Janus room creation)
+    for (auto it = extraData.begin(); it != extraData.end(); ++it)
+        data[it.key()] = it.value();
     message["data"] = data;
 
     msg["message"] = message;
 
-    m_ws.sendTextMessage(QJsonDocument(msg).toJson(QJsonDocument::Compact));
+    QString json = QJsonDocument(msg).toJson(QJsonDocument::Compact);
+    qDebug() << "Signaling: WS >>" << type << json.left(500);
+    m_ws.sendTextMessage(json);
 }
 
 void SignalingClient::sendOffer(const QString &toSessionId, const QString &sdp,
@@ -417,7 +423,13 @@ void SignalingClient::sendOffer(const QString &toSessionId, const QString &sdp,
     payload["type"] = QString("offer");
     payload["sdp"] = sdp;
     if (!nick.isEmpty()) payload["nick"] = nick;
-    sendSessionMessage(toSessionId, "offer", payload, sid);
+    // Include codec preferences so the signaling server passes them to Janus
+    // when creating the videoroom. Without these, Janus sets codec to 'none'
+    // and rejects all audio/video.
+    QJsonObject extra;
+    extra["audiocodec"] = QString("opus");
+    extra["videocodec"] = QString("vp8");
+    sendSessionMessage(toSessionId, "offer", payload, sid, extra);
     qDebug() << "Signaling: sent offer to" << toSessionId.left(20) << "sid=" << sid.left(10);
 }
 
