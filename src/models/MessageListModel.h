@@ -139,4 +139,5 @@ private:
     QString m_uploadFileName;
     QNetworkReply *m_historyReply = nullptr;   // cancel on chat switch
     QNetworkReply *m_refreshReply = nullptr;   // cancel on chat switch
+    int m_generation = 0;  // incremented on conversation switch; stale callbacks bail out
 };

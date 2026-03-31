@@ -3,6 +3,7 @@
 #include <QObject>
 #include <QTimer>
 #include <QElapsedTimer>
+#include <QStringList>
 
 class DebugMonitor : public QObject
 {
@@ -27,7 +28,7 @@ public:
     qint64 previewCacheBytes() const { return m_previewCacheBytes; }
     int pendingRequests() const { return m_pendingRequests; }
     int conversationCount() const { return m_conversationCount; }
-    QString log() const { return m_log; }
+    QString log() const { return m_logLines.join('\n'); }
     bool visible() const { return m_visible; }
 
     void setMessageCount(int v) { m_messageCount = v; }
@@ -67,6 +68,6 @@ private:
     int m_conversationCount = 0;
     bool m_visible = false;
 
-    QString m_log;
+    QStringList m_logLines;
     static const int MAX_LOG_LINES = 200;
 };

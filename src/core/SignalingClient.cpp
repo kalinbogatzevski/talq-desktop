@@ -276,6 +276,10 @@ void SignalingClient::onTextMessage(const QString &msg)
                     emit participantJoinedCall(sid, inCall, displayName);
                 } else if (prevFlags > 0 && inCall == 0) {
                     TLOG_CALL("participant LEFT call sid=" << sid.left(20));
+                    // Prune maps to prevent unbounded growth
+                    m_participantCallFlags.remove(sid);
+                    if (!userId.isEmpty())
+                        m_participantNames.remove(userId);
                     emit participantLeftCall(sid);
                 } else if (prevFlags != inCall && inCall > 0) {
                     TLOG_CALL("participant flags CHANGED sid=" << sid.left(20) << prevFlags << "->" << inCall);

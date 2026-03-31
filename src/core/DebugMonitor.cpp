@@ -75,14 +75,11 @@ void DebugMonitor::addLog(const QString &msg)
     QString ts = QDateTime::currentDateTime().toString("HH:mm:ss");
     QString line = ts + " " + msg;
 
-    // Keep log bounded
-    if (m_log.count('\n') >= MAX_LOG_LINES) {
-        int firstNewline = m_log.indexOf('\n');
-        if (firstNewline >= 0)
-            m_log = m_log.mid(firstNewline + 1);
-    }
+    // O(1) append + trim from front (QStringList, not O(n) QString::mid)
+    m_logLines.append(line);
+    while (m_logLines.size() > MAX_LOG_LINES)
+        m_logLines.removeFirst();
 
-    m_log += line + "\n";
     emit logChanged();
 }
 

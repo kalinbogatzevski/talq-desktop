@@ -108,6 +108,8 @@ void SubscribePipeline::stop()
 
 void SubscribePipeline::cleanup()
 {
+    // Remove bus watch on the main thread BEFORE the detached cleanup thread.
+    // This prevents the bus watch callback from firing on a half-torn-down pipeline.
     if (m_busWatchId > 0) {
         g_source_remove(m_busWatchId);
         m_busWatchId = 0;
