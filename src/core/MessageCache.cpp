@@ -17,8 +17,8 @@ MessageCache::MessageCache(QObject *parent)
     connect(&m_workerThread, &QThread::finished, m_worker, &QObject::deleteLater);
     m_workerThread.start();
 
-    // Initialize DB on worker thread
-    QMetaObject::invokeMethod(m_worker, "doInit", Qt::BlockingQueuedConnection);
+    // Initialize DB on worker thread (async — subsequent calls queue behind this)
+    QMetaObject::invokeMethod(m_worker, "doInit", Qt::QueuedConnection);
 }
 
 MessageCache::~MessageCache()
@@ -67,12 +67,15 @@ void MessageCache::saveLastCommonRead(const QString &token, int messageId)
         Q_ARG(QString, token), Q_ARG(int, messageId));
 }
 
-int MessageCache::loadLastCommonRead(const QString &token)
+void MessageCache::loadLastCommonRead(const QString &token)
 {
-    int result = 0;
-    QMetaObject::invokeMethod(m_worker, "doLoadLastCommonRead", Qt::BlockingQueuedConnection,
-        Q_RETURN_ARG(int, result), Q_ARG(QString, token));
-    return result;
+    // Async — result emitted via lastCommonReadLoaded signal
+    QMetaObject::invokeMethod(m_worker, [this, token]() {
+        int result = m_worker->doLoadLastCommonRead(token);
+        QMetaObject::invokeMethod(this, [this, token, result]() {
+            emit lastCommonReadLoaded(token, result);
+        }, Qt::QueuedConnection);
+    }, Qt::QueuedConnection);
 }
 
 void MessageCache::clearConversation(const QString &token)
