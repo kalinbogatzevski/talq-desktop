@@ -21,6 +21,15 @@ Full QWidget app. Released v0.15.0. QPainter rendering, no QML.
 - Same layout via junction `C:\src\talk-desktop-qt`
 - `cd C:\src && claude` → "read the continue.md"
 
+### Keeping machines in sync
+Both machines must have matching MSYS2/GStreamer packages. Mismatched DLLs cause silent audio failure and crashes.
+```bash
+# Run on each machine when starting work (from MSYS2 terminal):
+pacman -Syu
+# Then re-deploy debug DLLs:
+cd /c/build/talq && bash /c/src/talk-desktop-qt/scripts/deploy-dev.sh --no-run
+```
+
 ## What was done
 
 ### Session 5 (v0.15.0, 2026-03-31 home)

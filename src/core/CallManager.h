@@ -95,7 +95,6 @@ private:
     int videoDeviceIndex() const;
     bool preferHd1080() const;
     void broadcastMediaState(const QString &media, bool enabled);
-    void forceReconnectPublisher();
     void updateCallFlags();
 
     ApiClient *m_api;
@@ -104,6 +103,7 @@ private:
     // MCU dual pipelines
     PublishPipeline *m_publishPipeline = nullptr;
     QHash<QString, SubscribePipeline*> m_subscribePipelines;
+    QHash<QString, QString> m_subscriberSids;  // sessionId -> current MCU sid
     // P2P single pipeline
     PeerPipeline *m_peerPipeline = nullptr;
     bool m_useP2P = false;

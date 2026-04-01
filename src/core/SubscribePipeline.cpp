@@ -219,22 +219,15 @@ void SubscribePipeline::onPadAdded(GstElement *, GstPad *pad, gpointer userData)
         return;
     }
 
-    // Ref the pad so it survives until the Qt thread processes it
-    gst_object_ref(pad);
-
-    QPointer<SubscribePipeline> guard(self);
-    QMetaObject::invokeMethod(self, [guard, pad, isAudio, isVideo, encodingCopy]() {
-        if (!guard) { gst_object_unref(pad); return; }
-        auto *self = guard.data();
-
-        if (isAudio && !self->m_audioChainCreated) {
-            self->createAudioChain(pad);
-            self->m_audioChainCreated = true;
-        } else if (isVideo && !self->m_videoAppsink) {
-            self->createVideoChain(pad, encodingCopy.constData());
-        }
-        gst_object_unref(pad);
-    }, Qt::QueuedConnection);
+    // Link pads synchronously on the GStreamer thread — deferring to the Qt
+    // thread causes a race where data arrives before the pad is linked,
+    // producing "not-linked" errors that kill audio.
+    if (isAudio && !self->m_audioChainCreated) {
+        self->createAudioChain(pad);
+        self->m_audioChainCreated = true;
+    } else if (isVideo && !self->m_videoAppsink) {
+        self->createVideoChain(pad, encodingCopy.constData());
+    }
 }
 
 void SubscribePipeline::createAudioChain(GstPad *pad)
