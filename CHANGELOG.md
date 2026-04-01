@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.15.1 (2026-04-01)
+
+### Audio fix — v0.15.0 review regression
+- **Synchronous pad linking** — v0.15.0 marshalled `onPadAdded` to the Qt thread, creating a race where RTP data arrived before the audio chain was linked. GStreamer returned `NOT_LINKED`, killing all audio. Reverted to synchronous linking on the GStreamer thread.
+
+### Camera toggle fix
+- **Dummy video removal** — `enableCamera()` now removes the dummy 16x16 black video track before adding the real camera, preventing a second conflicting video transceiver
+- **Transceiver reuse** — camera on/off reuses the same webrtcbin pad instead of creating new ones, avoiding accumulating `m=video 0` lines in the SDP
+
+### Subscriber improvements
+- **Re-offer reuse** — MCU re-offers reuse the existing subscriber pipeline (preserves ICE/DTLS connection) instead of tearing down and rebuilding
+- **SID tracking** — subscriber signal connections use hash lookup for MCU session IDs, enabling seamless re-offer support
+- Removed dead `forceReconnectPublisher()` and unnecessary subscriber re-request on publisher renegotiation
+
 ## v0.15.0 (2026-03-31)
 
 ### Code Review — 59 issues fixed across 6 review rounds
