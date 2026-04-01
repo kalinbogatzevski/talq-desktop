@@ -471,80 +471,6 @@ void CallManager::toggleCamera() {
     updateCallFlags();
 }
 
-void CallManager::forceReconnectPublisher()
-{
-    qDebug() << "CallManager: forceReconnect publisher, cameraOn=" << m_cameraOn;
-
-    // 1. Stop existing publish pipeline
-    // NOTE: Known race — stop() moves GStreamer GST_STATE_NULL to a detached thread
-    // which may still be releasing the audio device (wasapi2src) when the new pipeline
-    // tries to open it. The detached thread will release it "soon" and the new pipeline
-    // should recover via GStreamer's internal retry. Using deleteLater (not immediate
-    // delete) because GStreamer callbacks may still reference the old object briefly.
-    if (m_publishPipeline) {
-        m_publishPipeline->stop();
-        m_publishPipeline->deleteLater();
-        m_publishPipeline = nullptr;
-    }
-
-    // 2. Stop all subscriber pipelines (MCU will re-offer after new publisher connects)
-    for (auto *sub : m_subscribePipelines)
-        sub->deleteLater();
-    m_subscribePipelines.clear();
-
-    // 3. Create new publisher with video included from the start
-    QString pubSid = QString::number(QDateTime::currentMSecsSinceEpoch());
-
-    m_publishPipeline = new PublishPipeline(this);
-    m_localVideoProvider = m_publishPipeline->localVideoProvider();
-    emit localVideoProviderChanged();
-
-    connect(m_publishPipeline, &PublishPipeline::localOfferReady,
-            this, [this, pubSid](const QString &sdp) {
-        m_signaling->sendOffer(m_signaling->sessionId(), sdp, pubSid);
-        qDebug() << "CallManager: forceReconnect — sent new publish offer, sid=" << pubSid;
-    });
-
-    connect(m_publishPipeline, &PublishPipeline::iceCandidateReady,
-            this, [this, pubSid](const QString &candidate, int mline, const QString &mid) {
-        m_signaling->sendCandidate(m_signaling->sessionId(), makeCandidateJson(candidate, mline, mid), pubSid);
-    });
-
-    connect(m_publishPipeline, &PublishPipeline::iceStateChanged,
-            this, [this](const QString &state) {
-        qDebug() << "CallManager: forceReconnect publisher ICE:" << state;
-        if (state == "connected" || state == "completed") {
-            // Re-request subscriber streams for all known remote peers
-            if (!m_remoteSessionId.isEmpty()) {
-                m_signaling->requestOffer(m_remoteSessionId, "video");
-                qDebug() << "CallManager: forceReconnect — re-requested subscriber for" << m_remoteSessionId.left(20);
-            }
-        }
-    });
-
-    connect(m_publishPipeline, &PublishPipeline::audioLevelUpdated,
-            this, &CallManager::onAudioLevelUpdated);
-
-    connect(m_publishPipeline, &PublishPipeline::error, this, [this](const QString &msg) {
-        qWarning() << "CallManager: forceReconnect publish error:" << msg;
-    });
-
-    connect(m_publishPipeline, &PublishPipeline::cameraError, this, [this](const QString &reason) {
-        qWarning() << "CallManager: forceReconnect camera error:" << reason;
-        m_cameraOn = false;
-        emit cameraChanged();
-    });
-
-    if (!m_publishPipeline->start(m_stunServer, m_turnServers,
-            m_deviceManager ? m_deviceManager->selectedInputDeviceId() : QString(),
-            m_cameraOn, videoDeviceIndex(), preferHd1080())) {
-        qWarning() << "CallManager: forceReconnect — failed to start publisher";
-        return;
-    }
-
-    qDebug() << "CallManager: forceReconnect — new publisher started, withVideo=" << m_cameraOn;
-}
-
 int CallManager::videoDeviceIndex() const
 {
     return m_deviceManager ? qMax(0, m_deviceManager->selectedVideoInput()) : 0;
@@ -894,6 +820,7 @@ void CallManager::stopAllPipelines()
         sub->deleteLater();
     }
     m_subscribePipelines.clear();
+    m_subscriberSids.clear();
 
     m_remoteVideoProvider = nullptr;
     emit remoteVideoProviderChanged();
@@ -982,6 +909,7 @@ void CallManager::onParticipantLeftCall(const QString &sessionId)
         m_subscribePipelines[sessionId]->stop();
         m_subscribePipelines[sessionId]->deleteLater();
         m_subscribePipelines.remove(sessionId);
+        m_subscriberSids.remove(sessionId);
         qDebug() << "CallManager: removed subscriber for" << sessionId.left(20);
     }
 
@@ -1020,69 +948,68 @@ void CallManager::onOfferReceived(const QString &fromSessionId, const QString &s
         return;
     }
 
-    // Use the MCU's sid for all subscriber messages (answer + candidates)
-    QString mcuSid = sid;
+    // Track the MCU's sid — signals use the hash so re-offers update seamlessly
+    m_subscriberSids[fromSessionId] = sid;
 
-    // Tear down stale subscriber on re-offer (new SID = new publisher session)
+    // Re-offer on existing subscriber: reuse the pipeline (preserves ICE/DTLS)
     if (m_subscribePipelines.contains(fromSessionId)) {
-        qDebug() << "CallManager: re-offer for" << fromSessionId.left(20) << "— tearing down old subscriber";
-        m_subscribePipelines[fromSessionId]->stop();
-        m_subscribePipelines[fromSessionId]->deleteLater();
-        m_subscribePipelines.remove(fromSessionId);
+        qDebug() << "CallManager: re-offer for" << fromSessionId.left(20) << "— reusing subscriber, new sid=" << sid;
+        m_subscribePipelines[fromSessionId]->setRemoteOffer(sdp);
+        return;
     }
 
-    // MCU sends offer for subscriber stream (from the remote session ID)
-    {
-        auto *sub = new SubscribePipeline(fromSessionId, this);
+    // New subscriber
+    auto *sub = new SubscribePipeline(fromSessionId, this);
 
-        connect(sub, &SubscribePipeline::localAnswerReady,
-                this, [this, fromSessionId, mcuSid](const QString &sdp) {
-            m_signaling->sendAnswer(fromSessionId, sdp, mcuSid);
-            qDebug() << "CallManager: sent subscriber answer to" << fromSessionId.left(20) << "sid=" << mcuSid;
-        });
+    connect(sub, &SubscribePipeline::localAnswerReady,
+            this, [this, fromSessionId](const QString &sdp) {
+        QString currentSid = m_subscriberSids.value(fromSessionId);
+        m_signaling->sendAnswer(fromSessionId, sdp, currentSid);
+        qDebug() << "CallManager: sent subscriber answer to" << fromSessionId.left(20) << "sid=" << currentSid;
+    });
 
-        connect(sub, &SubscribePipeline::iceCandidateReady,
-                this, [this, fromSessionId, mcuSid](const QString &candidate, int mline, const QString &mid) {
-            m_signaling->sendCandidate(fromSessionId, makeCandidateJson(candidate, mline, mid), mcuSid);
-        });
+    connect(sub, &SubscribePipeline::iceCandidateReady,
+            this, [this, fromSessionId](const QString &candidate, int mline, const QString &mid) {
+        QString currentSid = m_subscriberSids.value(fromSessionId);
+        m_signaling->sendCandidate(fromSessionId, makeCandidateJson(candidate, mline, mid), currentSid);
+    });
 
-        connect(sub, &SubscribePipeline::iceStateChanged,
-                this, [this](const QString &state) {
-            qDebug() << "CallManager: subscriber ICE:" << state;
-            setStatusDetail("Subscriber ICE " + state);
-            if (state == "connected" || state == "completed") {
-                setStatusDetail("Connected");
-                if (m_state == Connecting) {
-                    setState(Active);
-                    m_durationTimer.start();
-                }
-                // Re-broadcast media state so the remote peer sees correct mute status
-                broadcastMediaState("audio", !m_muted);
-                broadcastMediaState("video", m_cameraOn);
+    connect(sub, &SubscribePipeline::iceStateChanged,
+            this, [this](const QString &state) {
+        qDebug() << "CallManager: subscriber ICE:" << state;
+        setStatusDetail("Subscriber ICE " + state);
+        if (state == "connected" || state == "completed") {
+            setStatusDetail("Connected");
+            if (m_state == Connecting) {
+                setState(Active);
+                m_durationTimer.start();
             }
-            if (state == "failed") {
-                qWarning() << "CallManager: subscriber ICE failed, tearing down call";
-                hangUp();
-            }
-        });
-
-        connect(sub, &SubscribePipeline::error, this, [this, fromSessionId](const QString &msg) {
-            qWarning() << "CallManager: subscriber pipeline error for" << fromSessionId.left(20) << ":" << msg;
-        });
-
-        m_subscribePipelines[fromSessionId] = sub;
-        if (!sub->start(m_stunServer, m_turnServers, m_deviceManager ? m_deviceManager->selectedOutputDeviceId() : QString())) {
-            qWarning() << "CallManager: failed to start subscriber pipeline for" << fromSessionId.left(20);
-            m_subscribePipelines.remove(fromSessionId);
-            sub->deleteLater();
-            return;
+            broadcastMediaState("audio", !m_muted);
+            broadcastMediaState("video", m_cameraOn);
         }
+        if (state == "failed") {
+            qWarning() << "CallManager: subscriber ICE failed, tearing down call";
+            hangUp();
+        }
+    });
 
-        m_remoteVideoProvider = sub->videoProvider();
-        emit remoteVideoProviderChanged();
+    connect(sub, &SubscribePipeline::error, this, [this, fromSessionId](const QString &msg) {
+        qWarning() << "CallManager: subscriber pipeline error for" << fromSessionId.left(20) << ":" << msg;
+    });
+
+    m_subscribePipelines[fromSessionId] = sub;
+    if (!sub->start(m_stunServer, m_turnServers, m_deviceManager ? m_deviceManager->selectedOutputDeviceId() : QString())) {
+        qWarning() << "CallManager: failed to start subscriber pipeline for" << fromSessionId.left(20);
+        m_subscribePipelines.remove(fromSessionId);
+        m_subscriberSids.remove(fromSessionId);
+        sub->deleteLater();
+        return;
     }
 
-    m_subscribePipelines[fromSessionId]->setRemoteOffer(sdp);
+    m_remoteVideoProvider = sub->videoProvider();
+    emit remoteVideoProviderChanged();
+
+    sub->setRemoteOffer(sdp);
 }
 
 void CallManager::onAnswerReceived(const QString &fromSessionId, const QString &sdp)
@@ -1101,20 +1028,7 @@ void CallManager::onAnswerReceived(const QString &fromSessionId, const QString &
         m_publishPipeline->setRemoteAnswer(sdp);
         qDebug() << "CallManager: set publisher remote answer";
 
-        // If this answer includes video (renegotiation after enableCamera),
-        // re-request all existing subscriber streams so MCU sends video too.
-        // Don't tear down existing subscribers — just request new offers.
-        // onOfferReceived handles re-offers for existing subscribers.
-        // Check for active video line (port > 0; "m=video 0" means rejected)
-        bool hasActiveVideo = sdp.contains(QRegularExpression("m=video [1-9]"));
-        if (m_cameraOn && hasActiveVideo && !m_subscribePipelines.isEmpty()) {
-            QStringList peerIds = m_subscribePipelines.keys();
-            qDebug() << "CallManager: video renegotiation accepted, re-requesting"
-                     << peerIds.size() << "subscriber stream(s)";
-            for (const QString &peerId : peerIds) {
-                m_signaling->requestOffer(peerId, "video");
-                qDebug() << "CallManager: re-requested stream for" << peerId.left(20);
-            }
-        }
+        // Publisher renegotiation (e.g. camera toggle) doesn't affect subscribers.
+        // Subscribers receive from the MCU independently — no re-request needed.
     }
 }
