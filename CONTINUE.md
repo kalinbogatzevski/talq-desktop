@@ -1,11 +1,11 @@
-# TalQ v0.15.0 Continue Prompt
+# TalQ v0.15.1 Continue Prompt
 
 ## Current status
-Full QWidget app. Released v0.15.0. QPainter rendering, no QML.
-**Audio calls WORKING** — bidirectional through MCU/Janus, confirmed with Ilko.
-**Video calls WORKING** — outbound video reaches browser. Confirmed with Ilko.
-**59 code review fixes** applied across 6 review rounds (security, crashes, protocol, robustness).
-**Known issue**: starting local camera disrupts incoming video stream (forceReconnect side effect).
+Full QWidget app. Released v0.15.1. QPainter rendering, no QML.
+**Audio calls WORKING** — bidirectional through MCU/Janus, confirmed with Ilko (v0.15.1 fix).
+**Video calls WORKING** — outbound video reaches browser. First camera enable works. Confirmed with Ilko.
+**Camera toggle** — first on/off cycle works; second enable sends still image (needs testing with transceiver reuse fix, not yet confirmed).
+**59 code review fixes** from v0.15.0 retained, except onPadAdded marshalling reverted to synchronous.
 
 ## Machine setup
 
@@ -31,6 +31,24 @@ cd /c/build/talq && bash /c/src/talk-desktop-qt/scripts/deploy-dev.sh --no-run
 ```
 
 ## What was done
+
+### Session 6 (v0.15.1, 2026-04-01 office)
+**Audio regression fix:**
+- v0.15.0 review marshalled onPadAdded to Qt thread → race condition → audio silence
+- Fix: synchronous pad linking on GStreamer thread (reverted that one review change)
+- Root cause took ~2h to isolate: first suspected GStreamer DLL mismatch between machines
+
+**Camera toggle fix:**
+- enableCamera() now removes dummy video before adding real camera (was creating second transceiver)
+- disableCamera() keeps webrtcbin pad alive for reuse (no more accumulating m=video 0 lines)
+- Transceiver reuse across on/off cycles (untested — Ilko on lunch break)
+
+**Subscriber improvements:**
+- Re-offer reuses existing pipeline (preserves ICE/DTLS) instead of teardown/rebuild
+- SID tracked via hash for seamless re-offer support
+- Removed dead forceReconnectPublisher() and unnecessary subscriber re-request
+
+**MSYS2 sync:** office machine updated GStreamer 1.26.9→1.28.1, libvpx 1.15→1.16, opus, srtp, orc, openssl
 
 ### Session 5 (v0.15.0, 2026-03-31 home)
 **6 review rounds, 59 issues found and fixed:**
@@ -65,10 +83,6 @@ Round 6 (11): SDP null guard, subscriber cleanup, video provider disconnect, inv
 ### Session 1 (v0.14.0–v0.14.4, 2026-03-29)
 - Multi-message selection, chat layout, notifications, upload progress
 
-## Known bug: camera start disrupts incoming stream
-
-When TalQ starts camera, `forceReconnectPublisher` tears down entire publisher + subscribers. Fix: async forceReconnect (QThread + completion signal).
-
 ## Build commands
 ```bash
 # Debug build + run
@@ -89,7 +103,7 @@ docker logs talk-hpb_janus_1 2>&1 | tail -20
 ```
 
 ## Next steps
-- **Fix camera disrupting incoming stream** — async forceReconnectPublisher
+- **Test camera toggle** — second enable showed still image; transceiver reuse fix committed but untested
 - **Screen sharing** — d3d11screencapturesrc
 - **Background blur** — Windows Studio Effects API
 - **Data channel media state** — browser sends audioOn/Off via data channel

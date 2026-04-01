@@ -355,9 +355,44 @@ void PublishPipeline::setMuted(bool muted)
     gst_object_unref(src);
 }
 
+void PublishPipeline::removeDummyVideo()
+{
+    if (!m_pipeline) return;
+
+    auto remove = [this](const char *name) {
+        GstElement *el = gst_bin_get_by_name(GST_BIN(m_pipeline), name);
+        if (el) {
+            gst_element_set_state(el, GST_STATE_NULL);
+            gst_bin_remove(GST_BIN(m_pipeline), el);
+            gst_object_unref(el);
+        }
+    };
+
+    // Unlink dummy SSRC filter from webrtcbin pad (keep pad alive for camera reuse)
+    GstElement *ssrcFilter = gst_bin_get_by_name(GST_BIN(m_pipeline), "pub-video-ssrc-filter");
+    if (ssrcFilter && m_videoSinkPad) {
+        GstPad *src = gst_element_get_static_pad(ssrcFilter, "src");
+        if (src) { gst_pad_unlink(src, m_videoSinkPad); gst_object_unref(src); }
+        gst_object_unref(ssrcFilter);
+    } else if (ssrcFilter) {
+        gst_object_unref(ssrcFilter);
+    }
+
+    remove("pub-video-ssrc-filter");
+    remove("pub-dummypay");
+    remove("pub-dummyenc");
+    remove("pub-dummyconv");
+    remove("pub-dummyvideo");
+
+    qDebug() << "PublishPipeline: removed dummy video elements";
+}
+
 void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)
 {
     if (m_cameraEnabled || !m_pipeline) return;
+
+    // Remove dummy video track before adding real camera
+    removeDummyVideo();
 
     qDebug() << "PublishPipeline: enabling camera, device" << deviceIndex << (hd1080 ? "1080p" : "720p");
 
@@ -531,25 +566,27 @@ void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)
         return;
     }
 
-    // Request a webrtcbin sink pad for video, then configure its transceiver
-    // with H264 caps so renegotiation SDP gets an active m=video line (not port 0).
-    m_videoSinkPad = gst_element_request_pad_simple(m_webrtcbin, "sink_%u");
+    // Reuse existing webrtcbin video pad if available (from dummy or previous camera).
+    // Requesting a new pad each time creates extra transceivers that accumulate as
+    // m=video 0 lines in the SDP, confusing the MCU.
+    if (!m_videoSinkPad) {
+        m_videoSinkPad = gst_element_request_pad_simple(m_webrtcbin, "sink_%u");
 
-    // Get the transceiver for this pad and set codec-preferences + direction
-    GstWebRTCRTPTransceiver *transceiver = nullptr;
-    g_object_get(m_videoSinkPad, "transceiver", &transceiver, nullptr);
-    if (transceiver) {
-        GstCaps *videoCaps = gst_caps_from_string(
-            "application/x-rtp,media=video,encoding-name=VP8,clock-rate=90000,payload=96");
-        g_object_set(transceiver,
-                     "direction", GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDONLY,
-                     "codec-preferences", videoCaps,
-                     nullptr);
-        gst_caps_unref(videoCaps);
-        qDebug() << "PublishPipeline: configured video transceiver (sendonly, VP8)";
-        gst_object_unref(transceiver);
+        GstWebRTCRTPTransceiver *transceiver = nullptr;
+        g_object_get(m_videoSinkPad, "transceiver", &transceiver, nullptr);
+        if (transceiver) {
+            GstCaps *videoCaps = gst_caps_from_string(
+                "application/x-rtp,media=video,encoding-name=VP8,clock-rate=90000,payload=96");
+            g_object_set(transceiver,
+                         "direction", GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDONLY,
+                         "codec-preferences", videoCaps,
+                         nullptr);
+            gst_caps_unref(videoCaps);
+            qDebug() << "PublishPipeline: configured video transceiver (sendonly, VP8)";
+            gst_object_unref(transceiver);
+        }
     } else {
-        qWarning() << "PublishPipeline: could not get transceiver from video pad";
+        qDebug() << "PublishPipeline: reusing existing video transceiver";
     }
 
     // Force video SSRC — same approach as audio
@@ -617,17 +654,16 @@ void PublishPipeline::disableCamera()
         }
     };
 
-    if (m_videoPayloader && m_videoSinkPad) {
-        GstPad *src = gst_element_get_static_pad(m_videoPayloader, "src");
-        if (src) {
-            gst_pad_unlink(src, m_videoSinkPad);
-            gst_object_unref(src);
-        }
-    }
-    if (m_videoSinkPad) {
-        gst_element_release_request_pad(m_webrtcbin, m_videoSinkPad);
-        gst_object_unref(m_videoSinkPad);
-        m_videoSinkPad = nullptr;
+    // Unlink camera from webrtcbin pad but keep the pad alive for reuse.
+    // Releasing the pad would create a new transceiver on next enable,
+    // accumulating m=video 0 lines that confuse the MCU.
+    GstElement *camSsrcFilter = gst_bin_get_by_name(GST_BIN(m_pipeline), "pub-cam-ssrc-filter");
+    if (camSsrcFilter && m_videoSinkPad) {
+        GstPad *src = gst_element_get_static_pad(camSsrcFilter, "src");
+        if (src) { gst_pad_unlink(src, m_videoSinkPad); gst_object_unref(src); }
+        gst_object_unref(camSsrcFilter);
+    } else if (camSsrcFilter) {
+        gst_object_unref(camSsrcFilter);
     }
 
     if (m_previewAppsink)
