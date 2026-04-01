@@ -23,8 +23,8 @@ bool SubscribePipeline::start(const QString &stunServer, const QList<TurnServer>
     if (m_running) return false;
     m_audioOutputDeviceId = audioOutputDeviceId;
 
-    m_pipeline = gst_pipeline_new("subscribe-pipeline");
-    m_webrtcbin = gst_element_factory_make("webrtcbin", "sub-webrtcbin");
+    m_pipeline = gst_pipeline_new(nullptr);
+    m_webrtcbin = gst_element_factory_make("webrtcbin", nullptr);
 
     if (!m_pipeline || !m_webrtcbin) {
         emit error("Failed to create subscribe pipeline elements");
@@ -120,12 +120,9 @@ void SubscribePipeline::cleanup()
     if (m_webrtcbin)
         g_signal_handlers_disconnect_by_data(m_webrtcbin, this);
     if (m_pipeline) {
-        GstElement *pipeline = m_pipeline;
+        gst_element_set_state(m_pipeline, GST_STATE_NULL);
+        gst_object_unref(m_pipeline);
         m_pipeline = nullptr;
-        std::thread([pipeline]() {
-            gst_element_set_state(pipeline, GST_STATE_NULL);
-            gst_object_unref(pipeline);
-        }).detach();
     }
     m_webrtcbin = nullptr;
     m_videoAppsink = nullptr;
