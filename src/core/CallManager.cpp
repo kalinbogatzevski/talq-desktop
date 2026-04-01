@@ -822,6 +822,12 @@ void CallManager::stopAllPipelines()
     m_subscribePipelines.clear();
     m_subscriberSids.clear();
 
+    // Flush stale GLib sources from destroyed pipelines (libnice agents,
+    // DTLS timers, etc.). Without this, creating a new webrtcbin on the
+    // next call can crash because pending callbacks reference freed state.
+    for (int i = 0; i < 50; i++)
+        g_main_context_iteration(nullptr, FALSE);
+
     m_remoteVideoProvider = nullptr;
     emit remoteVideoProviderChanged();
 
