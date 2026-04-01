@@ -1,10 +1,11 @@
-# TalQ v0.15.1 Continue Prompt
+# TalQ v0.15.2 Continue Prompt
 
 ## Current status
-Full QWidget app. Released v0.15.1. QPainter rendering, no QML.
-**Audio calls WORKING** — bidirectional through MCU/Janus, confirmed with Ilko (v0.15.1 fix).
-**Video calls WORKING** — outbound video reaches browser. First camera enable works. Confirmed with Ilko.
-**Camera toggle** — first on/off cycle works; second enable sends still image (needs testing with transceiver reuse fix, not yet confirmed).
+Full QWidget app. QPainter rendering, no QML.
+**Audio calls WORKING** — bidirectional through MCU/Janus, confirmed with Ilko.
+**Video calls WORKING** — outbound video reaches browser on first camera enable.
+**BLOCKING BUG: crash on 2nd call** — TalQ crashes (segfault) when starting the publisher pipeline on the 2nd or 3rd call in a session. Crash point: right after "call mode = MCU", during PublishPipeline::start() or gst_pipeline_new/gst_element_factory_make("webrtcbin"). Tried: synchronous cleanup (no detached threads), unique pipeline names, GLib context flush — none fixed it. Likely a GStreamer 1.28.1 or libnice bug with repeated webrtcbin creation/destruction. Next step: add pinpoint logging to find exact crash line, or test with GStreamer 1.26.9 to confirm version regression.
+**Camera toggle** — first on/off works; second enable sends still image (transceiver reuse fix committed but untested due to crash bug).
 **59 code review fixes** from v0.15.0 retained, except onPadAdded marshalling reverted to synchronous.
 
 ## Machine setup
@@ -47,6 +48,12 @@ cd /c/build/talq && bash /c/src/talk-desktop-qt/scripts/deploy-dev.sh --no-run
 - Re-offer reuses existing pipeline (preserves ICE/DTLS) instead of teardown/rebuild
 - SID tracked via hash for seamless re-offer support
 - Removed dead forceReconnectPublisher() and unnecessary subscriber re-request
+
+**2nd-call crash investigation (UNRESOLVED):**
+- Crash: segfault in PublishPipeline::start() on 2nd/3rd call
+- Tried: sync cleanup (no detached threads), unique names, GLib context flush — all still crash
+- Detached thread cleanup was also reverted to synchronous in PeerPipeline
+- Suspect: GStreamer 1.28.1 or libnice bug with repeated webrtcbin lifecycle
 
 **MSYS2 sync:** office machine updated GStreamer 1.26.9→1.28.1, libvpx 1.15→1.16, opus, srtp, orc, openssl
 
@@ -103,7 +110,8 @@ docker logs talk-hpb_janus_1 2>&1 | tail -20
 ```
 
 ## Next steps
-- **Test camera toggle** — second enable showed still image; transceiver reuse fix committed but untested
+- **FIX: 2nd-call crash** — segfault in publisher start. Add pinpoint logging or bisect GStreamer version (try 1.26.9)
+- **Test camera toggle** — transceiver reuse fix committed but untested (blocked by crash bug)
 - **Screen sharing** — d3d11screencapturesrc
 - **Background blur** — Windows Studio Effects API
 - **Data channel media state** — browser sends audioOn/Off via data channel

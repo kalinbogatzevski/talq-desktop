@@ -23,8 +23,8 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
 {
     if (m_running) return false;
 
-    m_pipeline = gst_pipeline_new("publish-pipeline");
-    m_webrtcbin = gst_element_factory_make("webrtcbin", "pub-webrtcbin");
+    m_pipeline = gst_pipeline_new(nullptr);
+    m_webrtcbin = gst_element_factory_make("webrtcbin", nullptr);
 
     if (!m_pipeline || !m_webrtcbin) {
         emit error("Failed to create publish pipeline elements");
@@ -294,13 +294,9 @@ void PublishPipeline::cleanup()
     if (m_webrtcbin)
         g_signal_handlers_disconnect_by_data(m_webrtcbin, this);
     if (m_pipeline) {
-        // Move blocking GST_STATE_NULL off the UI thread
-        GstElement *pipeline = m_pipeline;
+        gst_element_set_state(m_pipeline, GST_STATE_NULL);
+        gst_object_unref(m_pipeline);
         m_pipeline = nullptr;
-        std::thread([pipeline]() {
-            gst_element_set_state(pipeline, GST_STATE_NULL);
-            gst_object_unref(pipeline);
-        }).detach();
     }
     m_webrtcbin = nullptr;
     m_remoteDescSet = false;
