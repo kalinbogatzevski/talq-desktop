@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.15.3 (2026-04-02)
+
+### Camera toggle — fully working
+- **Direct pad swap** — camera on/off swaps SSRC filters on the same webrtcbin pad. No input-selector, no renegotiation, no element recreation. Instant switch.
+- **mfvideosrc fixed** — Media Foundation camera source now loads (added libgstd3d11/libgstd3dshader DLLs). Shared-mode access = no device contention on toggle.
+- **Camera capped at 720p** — prevents memory explosion from raw 1080p frames
+- **Leaky queues** — max 3 buffers, drops old frames when encoder can't keep up
+- **Valve blocks encoding** when camera is off (saves CPU)
+- **Camera source paused** on disable (releases device gracefully)
+- **Preview hides** on camera off
+- **Dialog stays large** when remote stops video but local camera is still on
+
+### Stability
+- **2nd-call crash fixed** — QPointer for video provider pointers in CallDialog (use-after-free)
+- **Synchronous pipeline cleanup** — all three pipelines (Publish, Subscribe, Peer) use synchronous GST_STATE_NULL instead of detached threads
+- **PLI timer thread fix** — QTimer created on Qt thread (was GStreamer thread → crash)
+- **SRTP error filtering** — transient transport errors during renegotiation no longer kill camera
+- **Pipeline recovery** — audio survives camera errors
+
 ## v0.15.1 (2026-04-01)
 
 ### Audio fix — v0.15.0 review regression
