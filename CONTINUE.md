@@ -1,16 +1,26 @@
-# TalQ v0.15.2 Continue Prompt
+# TalQ v0.15.3 Continue Prompt
 
 ## Current status
 Full QWidget app. QPainter rendering, no QML.
-**Audio calls WORKING** — bidirectional through MCU/Janus. Multiple calls per session work.
-**Video receiving WORKING** — incoming video from browser/Android displays correctly.
-**Video sending** — first camera enable works. Repeated toggle unreliable (SRTP transient errors + ksvideosrc device contention).
-**2nd-call crash FIXED** — root cause was `m_lastRemoteProvider` dangling pointer in CallDialog (QPointer fix).
+**Audio calls WORKING** — bidirectional MCU/Janus. Multi-call, no crash.
+**Video receiving WORKING** — incoming video from browser/Android/TalQ displays correctly.
+**Video sending — ALMOST:** Preview works, camera captures, but remote doesn't see video.
+**mfvideosrc FIXED** — added libgstd3d11/libgstd3dshader DLLs to deploy scripts.
 
-### Remaining camera issues
-1. **mfvideosrc not loading** at runtime (plugin exists, gst-inspect finds it, but `gst_element_factory_make` returns NULL). Falls back to ksvideosrc which requires exclusive device access.
-2. **Repeated camera toggle** — ksvideosrc can't reopen device fast enough between off→on. SRTP errors during renegotiation are now filtered (not fatal), but ksvideosrc device errors still kill the camera.
-3. Fix: either resolve mfvideosrc loading issue, or keep camera source alive across toggles instead of destroy/recreate.
+### Current camera architecture (direct pad swap, no input-selector)
+- Dummy branch creates the video transceiver at startup, then STOPS immediately
+- Camera branch built lazily on first enableCamera() (avoids blocking startup)
+- enableCamera: sync camera elements to PLAYING, link camSsrcFilter→webrtcbin pad
+- disableCamera: valve drop=TRUE, pause camera, unlink from pad
+- Camera elements stay alive — no recreation on toggle
+- Same SSRC across dummy and camera
+
+### Remaining camera issue
+**Video not reaching remote** despite preview working and no memory leak:
+- Dummy `videotestsrc` posts `not-linked` error even after being set to NULL + unlinked
+- This error likely puts webrtcbin's video transport in error state
+- The camera frames flow (preview works) but webrtcbin doesn't forward them to MCU
+- **Probable fix**: remove dummy elements from the pipeline bin entirely after stopping them (not just NULL state — actually `gst_bin_remove`). Or: don't use a dummy at all — see if Janus accepts audio-only publisher and add video transceiver via codec-preferences without needing actual data.
 
 ## Machine setup
 
@@ -37,13 +47,32 @@ cd /c/build/talq && bash /c/src/talk-desktop-qt/scripts/deploy-dev.sh --no-run
 
 ## What was done
 
-### Session 8 (2026-04-02 office)
+### Session 8 (2026-04-02 office — all day)
 **2nd-call crash — FIXED:**
 - Root cause: `m_lastRemoteProvider` raw pointer in CallDialog → use-after-free on 2nd call
-- Fix: changed to QPointer (auto-nulls when subscriber is deleted)
-- Session 7's `deleteLater→delete` change helped but the QPointer was the actual fix
+- Fix: QPointer (auto-nulls when subscriber is deleted)
 
-**Camera source swap (replaceTrack equivalent):**
+**mfvideosrc — FIXED:**
+- Missing `libgstd3d11-1.0-0.dll` and `libgstd3dshader-1.0-0.dll` in deploy scripts
+- mfvideosrc now loads correctly (shared-mode camera access)
+
+**Camera architecture rewrite:**
+- Tried input-selector approach → RTP latency (sync-streams), abandoned
+- Final approach: direct pad swap, dummy stops at startup, camera links to idle pad
+- Camera elements built lazily on first enable, paused on disable, reused on re-enable
+- Preview works, no memory leak, no freeze, no crash
+- **But**: video not reaching remote. Dummy's `not-linked` error poisons webrtcbin video transport
+- Next: remove dummy from pipeline bin entirely after stopping, or skip dummy and add video transceiver without data
+
+**Other fixes:**
+- PLI QTimer deferred to Qt thread (was crashing on GStreamer thread)
+- SRTP transport errors filtered as non-fatal
+- Dialog stays large when remote stops video but local camera still on
+- Preview hides on camera off
+
+**Released v0.15.3** — audio works, incoming video works, camera toggle works for preview but not remote
+
+**Camera source swap (replaceTrack equivalent) — earlier attempt:**
 - enableCamera/disableCamera now swap dummy↔camera on the SAME webrtcbin pad
 - addDummyVideo() re-adds dummy on disable, removeDummyVideo() removes on enable
 - Single transceiver, single SSRC across all swaps — no more accumulating m=video 0
@@ -133,7 +162,7 @@ docker logs talk-hpb_janus_1 2>&1 | tail -20
 ```
 
 ## Next steps
-- **FIX: mfvideosrc loading** — plugin exists but `gst_element_factory_make` returns NULL. Likely a missing runtime dependency or GST_PLUGIN_PATH issue. Once fixed, camera toggle will be reliable (mfvideosrc supports shared mode).
+- **FIX: outbound video** — preview works but remote doesn't see camera. Dummy videotestsrc `not-linked` error poisons webrtcbin video transport. Try: (1) `gst_bin_remove` dummy elements after stopping them, or (2) skip dummy entirely and configure video transceiver via codec-preferences only, or (3) send one dummy frame then stop before pipeline error propagates.
 - **Screen sharing** — d3d11screencapturesrc
 - **Background blur** — Windows Studio Effects API
 - **Data channel media state** — browser sends audioOn/Off via data channel
