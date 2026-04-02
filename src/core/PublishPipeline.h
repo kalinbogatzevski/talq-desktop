@@ -51,6 +51,7 @@ public slots:
 private:
     void cleanup();
     void removeDummyVideo();
+    void addDummyVideo();
 
     GstElement *m_pipeline = nullptr;
     GstElement *m_webrtcbin = nullptr;
