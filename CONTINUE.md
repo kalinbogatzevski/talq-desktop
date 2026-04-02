@@ -1,26 +1,20 @@
-# TalQ v0.15.3 Continue Prompt
+# TalQ v0.15.4 Continue Prompt
 
 ## Current status
 Full QWidget app. QPainter rendering, no QML.
 **Audio calls WORKING** — bidirectional MCU/Janus. Multi-call, no crash.
 **Video receiving WORKING** — incoming video from browser/Android/TalQ displays correctly.
-**Video sending — ALMOST:** Preview works, camera captures, but remote doesn't see video.
+**Video sending WORKING** — camera video reaches remote (TalQ→browser confirmed).
 **mfvideosrc FIXED** — added libgstd3d11/libgstd3dshader DLLs to deploy scripts.
 
 ### Current camera architecture (direct pad swap, no input-selector)
-- Dummy branch creates the video transceiver at startup, then STOPS immediately
+- Dummy branch runs continuously at startup (16x16 black, 1fps VP8, negligible bandwidth)
+- Dummy keeps webrtcbin's video transport warm (DTLS/SRTP session active)
 - Camera branch built lazily on first enableCamera() (avoids blocking startup)
-- enableCamera: sync camera elements to PLAYING, link camSsrcFilter→webrtcbin pad
+- enableCamera: stop dummy, gst_bin_remove dummy, link camera to same pad, same SSRC
 - disableCamera: valve drop=TRUE, pause camera, unlink from pad
 - Camera elements stay alive — no recreation on toggle
 - Same SSRC across dummy and camera
-
-### Remaining camera issue
-**Video not reaching remote** despite preview working and no memory leak:
-- Dummy `videotestsrc` posts `not-linked` error even after being set to NULL + unlinked
-- This error likely puts webrtcbin's video transport in error state
-- The camera frames flow (preview works) but webrtcbin doesn't forward them to MCU
-- **Probable fix**: remove dummy elements from the pipeline bin entirely after stopping them (not just NULL state — actually `gst_bin_remove`). Or: don't use a dummy at all — see if Janus accepts audio-only publisher and add video transceiver via codec-preferences without needing actual data.
 
 ## Machine setup
 
@@ -46,6 +40,13 @@ cd /c/build/talq && bash /c/src/talk-desktop-qt/scripts/deploy-dev.sh --no-run
 ```
 
 ## What was done
+
+### Session 9 (2026-04-02 home — evening)
+**Outbound video — FIXED:**
+- Root cause: v0.15.3 stopped dummy videotestsrc immediately after pipeline start, leaving webrtcbin's video transport dead (rtpbin never saw a video frame → camera frames linked later never forwarded to DTLS/SRTP)
+- Fix: dummy runs continuously (keeps transport warm), removed via `gst_bin_remove` when camera enables
+- Confirmed: TalQ→browser video call works bidirectionally
+- **Released v0.15.4**
 
 ### Session 8 (2026-04-02 office — all day)
 **2nd-call crash — FIXED:**
@@ -162,7 +163,7 @@ docker logs talk-hpb_janus_1 2>&1 | tail -20
 ```
 
 ## Next steps
-- **FIX: outbound video** — preview works but remote doesn't see camera. Dummy videotestsrc `not-linked` error poisons webrtcbin video transport. Try: (1) `gst_bin_remove` dummy elements after stopping them, or (2) skip dummy entirely and configure video transceiver via codec-preferences only, or (3) send one dummy frame then stop before pipeline error propagates.
+- **Test TalQ→TalQ video** — confirmed TalQ→browser works, need to verify TalQ→TalQ
 - **Screen sharing** — d3d11screencapturesrc
 - **Background blur** — Windows Studio Effects API
 - **Data channel media state** — browser sends audioOn/Off via data channel
