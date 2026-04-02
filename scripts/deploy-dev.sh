@@ -45,6 +45,7 @@ GST_RUNTIME_DLLS=(
     libgstpbutils-1.0-0 libgstaudio-1.0-0 libgsttag-1.0-0
     libgstvideo-1.0-0 libgstnet-1.0-0 libgstsctp-1.0-0
     libgstwebrtcnice-1.0-0
+    libgstd3d11-1.0-0 libgstd3dshader-1.0-0
     libglib-2.0-0 libgobject-2.0-0 libgio-2.0-0 libgmodule-2.0-0
     libintl-8 libiconv-2 libffi-8 libpcre2-8-0 libz
 )

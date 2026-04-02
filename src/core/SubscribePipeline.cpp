@@ -374,17 +374,19 @@ void SubscribePipeline::createVideoChain(GstPad *pad, const gchar *encoding)
             }
         };
         sendPLI();
-        QTimer::singleShot(500, this, sendPLI);
-        QTimer::singleShot(1500, this, sendPLI);
-        QTimer::singleShot(3000, this, sendPLI);
-
-        // Periodic PLI every 5 seconds to recover from packet loss mid-call.
-        // VP8 without keyframes scrambles on any lost packet and never recovers
-        // until the next keyframe. MCU/Janus doesn't send keyframes automatically.
-        m_pliTimer = new QTimer(this);
-        m_pliTimer->setInterval(5000);
-        connect(m_pliTimer, &QTimer::timeout, this, sendPLI);
-        m_pliTimer->start();
+        // Defer QTimer creation to the Qt thread (createVideoChain runs on GStreamer thread)
+        QPointer<SubscribePipeline> guard(this);
+        QMetaObject::invokeMethod(this, [guard, sendPLI]() {
+            if (!guard) return;
+            auto *self = guard.data();
+            QTimer::singleShot(500, self, sendPLI);
+            QTimer::singleShot(1500, self, sendPLI);
+            QTimer::singleShot(3000, self, sendPLI);
+            self->m_pliTimer = new QTimer(self);
+            self->m_pliTimer->setInterval(5000);
+            QObject::connect(self->m_pliTimer, &QTimer::timeout, self, sendPLI);
+            self->m_pliTimer->start();
+        }, Qt::QueuedConnection);
     }
 }
 
