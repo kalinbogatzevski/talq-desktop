@@ -807,17 +807,20 @@ void CallManager::stopAllPipelines()
     m_glibTimer.stop();
     if (m_peerPipeline) {
         m_peerPipeline->stop();
-        m_peerPipeline->deleteLater();
+        delete m_peerPipeline;
         m_peerPipeline = nullptr;
     }
     if (m_publishPipeline) {
+        qDebug() << "CallManager::teardown — stopping publish pipeline";
         m_publishPipeline->stop();
-        m_publishPipeline->deleteLater();
+        qDebug() << "CallManager::teardown — deleting publish pipeline";
+        delete m_publishPipeline;
         m_publishPipeline = nullptr;
+        qDebug() << "CallManager::teardown — publish pipeline deleted";
     }
     for (auto *sub : m_subscribePipelines) {
         sub->stop();
-        sub->deleteLater();
+        delete sub;
     }
     m_subscribePipelines.clear();
     m_subscriberSids.clear();
@@ -825,8 +828,10 @@ void CallManager::stopAllPipelines()
     // Flush stale GLib sources from destroyed pipelines (libnice agents,
     // DTLS timers, etc.). Without this, creating a new webrtcbin on the
     // next call can crash because pending callbacks reference freed state.
-    for (int i = 0; i < 50; i++)
+    qDebug() << "CallManager::teardown — flushing GLib context";
+    for (int i = 0; i < 200; i++)
         g_main_context_iteration(nullptr, FALSE);
+    qDebug() << "CallManager::teardown — GLib flush done";
 
     m_remoteVideoProvider = nullptr;
     emit remoteVideoProviderChanged();
