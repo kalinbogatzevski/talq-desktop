@@ -74,11 +74,14 @@ CallDialog::CallDialog(CallManager *callManager, ApiClient *api, QWidget *parent
     });
     connect(m_callManager, &CallManager::remoteMediaChanged, this, [this]() {
         if (m_callManager->remoteVideoMuted()) {
-            // Remote stopped camera — hide video, show avatar, shrink dialog
-            if (m_remoteVideo->isVisible()) {
+            // Remote stopped camera — hide remote video, but keep dialog large
+            // if local camera is still streaming (preview needs the space)
+            if (m_remoteVideo->isVisible() && !m_callManager->isCameraOn()) {
                 m_remoteVideo->hide();
                 setMinimumSize(300, 300);
                 resize(300, 340);
+            } else if (m_remoteVideo->isVisible()) {
+                m_remoteVideo->hide();
             }
         }
         // Update peer label to show remote mic state

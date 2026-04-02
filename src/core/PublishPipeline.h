@@ -12,8 +12,9 @@
  * Captures local audio, encodes as Opus, sends via RTP to the MCU.
  * Creates an offer; MCU answers back.
  *
- * Thread safety: all GStreamer callbacks marshal signals to the Qt main
- * thread via QMetaObject::invokeMethod(Qt::QueuedConnection).
+ * Video architecture: dummy and camera branches share the same webrtcbin
+ * sink pad (m_videoSinkPad). Camera toggle unlinks one SSRC filter and
+ * links the other — direct pad swap, no input-selector, no renegotiation.
  */
 class PublishPipeline : public QObject
 {
@@ -50,8 +51,7 @@ public slots:
 
 private:
     void cleanup();
-    void removeDummyVideo();
-    void addDummyVideo();
+    bool buildCameraChain(int deviceIndex, bool hd1080);
 
     GstElement *m_pipeline = nullptr;
     GstElement *m_webrtcbin = nullptr;
@@ -60,19 +60,30 @@ private:
     QList<QPair<int, QString>> m_pendingCandidates;
     guint m_busWatchId = 0;
 
-    // Video elements
+    // Video: direct pad swap between dummy and camera SSRC filters
+    GstPad *m_videoSinkPad = nullptr;
+    guint32 m_videoSsrc = 0;
+    bool m_cameraEnabled = false;
+    int m_lvlDbg = 0;
+
+    // Dummy branch elements (16x16 black, 1fps VP8)
+    GstElement *m_dummySrc = nullptr;
+    GstElement *m_dummyConv = nullptr;
+    GstElement *m_dummyEnc = nullptr;
+    GstElement *m_dummyPay = nullptr;
+    GstElement *m_dummySsrcFilter = nullptr;
+
+    // Camera branch elements (built once in buildCameraChain(), stay alive)
     GstElement *m_cameraSrc = nullptr;
     GstElement *m_videoConvert = nullptr;
     GstElement *m_videoCapsFilter = nullptr;
     GstElement *m_videoEncoder = nullptr;
     GstElement *m_jpegDec = nullptr;
     GstElement *m_videoPayloader = nullptr;
-    GstPad *m_videoSinkPad = nullptr;
-    guint32 m_videoSsrc = 0;  // shared between dummy and camera
-    bool m_cameraEnabled = false;
-    int m_lvlDbg = 0;
+    GstElement *m_camSsrcFilter = nullptr;
+    GstElement *m_cameraValve = nullptr;  // drops frames when camera is off (saves CPU)
 
-    // Local preview (tee branch)
+    // Local preview (tee branch off camera)
     GstElement *m_tee = nullptr;
     GstElement *m_encQueue = nullptr;
     GstElement *m_previewQueue = nullptr;
