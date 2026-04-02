@@ -76,6 +76,6 @@ private:
     QWidget *m_incomingRow = nullptr;
     bool m_videoConnected = false;
     bool m_localConnected = false;
-    QObject *m_lastRemoteProvider = nullptr;
-    QObject *m_lastLocalProvider = nullptr;
+    QPointer<QObject> m_lastRemoteProvider;
+    QPointer<QObject> m_lastLocalProvider;
 };
