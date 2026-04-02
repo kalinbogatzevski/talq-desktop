@@ -2,20 +2,15 @@
 
 ## Current status
 Full QWidget app. QPainter rendering, no QML.
-**Audio calls WORKING** — bidirectional through MCU/Janus, confirmed with Ilko.
-**Video calls WORKING** — outbound video reaches browser on first camera enable.
-**BLOCKING BUG: crash on 2nd call** — segfault in PublishPipeline::start() on 2nd/3rd call.
+**Audio calls WORKING** — bidirectional through MCU/Janus. Multiple calls per session work.
+**Video receiving WORKING** — incoming video from browser/Android displays correctly.
+**Video sending** — first camera enable works. Repeated toggle unreliable (SRTP transient errors + ksvideosrc device contention).
+**2nd-call crash FIXED** — root cause was `m_lastRemoteProvider` dangling pointer in CallDialog (QPointer fix).
 
-Latest changes (home session 7, 2026-04-01):
-- Added pinpoint qDebug logging to start() and cleanup() to find exact crash line
-- Changed `deleteLater` to direct `delete` in stopAllPipelines (eliminates queued delete race)
-- Increased GLib context flush from 50→200 iterations
-- **UNTESTED** — needs someone to make two calls in one session and check the debug log
-
-Previous attempts (office session 6): sync cleanup, unique names, GLib flush — none fixed it.
-Suspect: GStreamer 1.28.1 / libnice bug with repeated webrtcbin create/destroy.
-**Camera toggle** — first on/off works; second enable sends still image (transceiver reuse fix committed but untested due to crash bug).
-**59 code review fixes** from v0.15.0 retained, except onPadAdded marshalling reverted to synchronous.
+### Remaining camera issues
+1. **mfvideosrc not loading** at runtime (plugin exists, gst-inspect finds it, but `gst_element_factory_make` returns NULL). Falls back to ksvideosrc which requires exclusive device access.
+2. **Repeated camera toggle** — ksvideosrc can't reopen device fast enough between off→on. SRTP errors during renegotiation are now filtered (not fatal), but ksvideosrc device errors still kill the camera.
+3. Fix: either resolve mfvideosrc loading issue, or keep camera source alive across toggles instead of destroy/recreate.
 
 ## Machine setup
 
@@ -42,12 +37,24 @@ cd /c/build/talq && bash /c/src/talk-desktop-qt/scripts/deploy-dev.sh --no-run
 
 ## What was done
 
+### Session 8 (2026-04-02 office)
+**2nd-call crash — FIXED:**
+- Root cause: `m_lastRemoteProvider` raw pointer in CallDialog → use-after-free on 2nd call
+- Fix: changed to QPointer (auto-nulls when subscriber is deleted)
+- Session 7's `deleteLater→delete` change helped but the QPointer was the actual fix
+
+**Camera source swap (replaceTrack equivalent):**
+- enableCamera/disableCamera now swap dummy↔camera on the SAME webrtcbin pad
+- addDummyVideo() re-adds dummy on disable, removeDummyVideo() removes on enable
+- Single transceiver, single SSRC across all swaps — no more accumulating m=video 0
+- SRTP/DTLS transport errors filtered (transient during renegotiation)
+- Pipeline recovered to PLAYING after camera errors (audio survives)
+- Local preview hides when camera disabled
+
+**Remaining:** mfvideosrc not loading (falls back to ksvideosrc → device contention on rapid toggle)
+
 ### Session 7 (2026-04-01 home — late night)
-**2nd-call crash debugging:**
-- Added pinpoint qDebug in PublishPipeline::start() and cleanup() — logs each GStreamer API call
-- Changed deleteLater → direct delete in stopAllPipelines (eliminates deferred delete race)
-- Increased GLib context flush 50→200 iterations
-- NOT YET TESTED — needs two calls in one session to reproduce
+- Pinpoint logging, deleteLater→delete, GLib flush 50→200
 
 ### Session 6 (v0.15.1, 2026-04-01 office)
 **Audio regression fix:**
@@ -126,8 +133,7 @@ docker logs talk-hpb_janus_1 2>&1 | tail -20
 ```
 
 ## Next steps
-- **FIX: 2nd-call crash** — segfault in publisher start. Add pinpoint logging or bisect GStreamer version (try 1.26.9)
-- **Test camera toggle** — transceiver reuse fix committed but untested (blocked by crash bug)
+- **FIX: mfvideosrc loading** — plugin exists but `gst_element_factory_make` returns NULL. Likely a missing runtime dependency or GST_PLUGIN_PATH issue. Once fixed, camera toggle will be reliable (mfvideosrc supports shared mode).
 - **Screen sharing** — d3d11screencapturesrc
 - **Background blur** — Windows Studio Effects API
 - **Data channel media state** — browser sends audioOn/Off via data channel
