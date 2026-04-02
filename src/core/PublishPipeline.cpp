@@ -376,7 +376,7 @@ void PublishPipeline::removeDummyVideo()
         }
     };
 
-    // Unlink and release the webrtcbin pad
+    // Unlink dummy SSRC filter from the webrtcbin pad — keep the pad alive
     GstElement *ssrcFilter = gst_bin_get_by_name(GST_BIN(m_pipeline), "pub-video-ssrc-filter");
     if (ssrcFilter && m_videoSinkPad) {
         GstPad *src = gst_element_get_static_pad(ssrcFilter, "src");
@@ -385,11 +385,6 @@ void PublishPipeline::removeDummyVideo()
     } else if (ssrcFilter) {
         gst_object_unref(ssrcFilter);
     }
-    if (m_videoSinkPad) {
-        gst_element_release_request_pad(m_webrtcbin, m_videoSinkPad);
-        gst_object_unref(m_videoSinkPad);
-        m_videoSinkPad = nullptr;
-    }
 
     remove("pub-video-ssrc-filter");
     remove("pub-dummypay");
@@ -397,7 +392,53 @@ void PublishPipeline::removeDummyVideo()
     remove("pub-dummyconv");
     remove("pub-dummyvideo");
 
-    qDebug() << "PublishPipeline: removed dummy video elements";
+    qDebug() << "PublishPipeline: removed dummy video elements (pad kept)";
+}
+
+void PublishPipeline::addDummyVideo()
+{
+    if (!m_pipeline || !m_videoSinkPad) return;
+
+    GstElement *testsrc = gst_element_factory_make("videotestsrc", "pub-dummyvideo");
+    GstElement *vconv = gst_element_factory_make("videoconvert", "pub-dummyconv");
+    GstElement *venc = gst_element_factory_make("vp8enc", "pub-dummyenc");
+    GstElement *vpay = gst_element_factory_make("rtpvp8pay", "pub-dummypay");
+    if (!testsrc || !vconv || !venc || !vpay) {
+        if (testsrc) gst_object_unref(testsrc);
+        if (vconv) gst_object_unref(vconv);
+        if (venc) gst_object_unref(venc);
+        if (vpay) gst_object_unref(vpay);
+        return;
+    }
+    g_object_set(testsrc, "pattern", 2, "is-live", TRUE, nullptr);
+    g_object_set(venc, "deadline", (gint64)1, "target-bitrate", 10000, nullptr);
+    g_object_set(vpay, "ssrc", m_videoSsrc, nullptr);
+
+    GstElement *capsFilter = gst_element_factory_make("capsfilter", "pub-video-ssrc-filter");
+    GstCaps *vsc = gst_caps_from_string("application/x-rtp");
+    gst_caps_set_simple(vsc, "ssrc", G_TYPE_UINT, m_videoSsrc, nullptr);
+    g_object_set(capsFilter, "caps", vsc, nullptr);
+    gst_caps_unref(vsc);
+
+    gst_bin_add_many(GST_BIN(m_pipeline), testsrc, vconv, venc, vpay, capsFilter, nullptr);
+    GstCaps *lowCaps = gst_caps_from_string("video/x-raw,width=16,height=16,framerate=1/1");
+    gst_element_link(testsrc, vconv);
+    gst_element_link_filtered(vconv, venc, lowCaps);
+    gst_caps_unref(lowCaps);
+    gst_element_link(venc, vpay);
+    gst_element_link(vpay, capsFilter);
+
+    GstPad *src = gst_element_get_static_pad(capsFilter, "src");
+    gst_pad_link(src, m_videoSinkPad);
+    gst_object_unref(src);
+
+    gst_element_sync_state_with_parent(testsrc);
+    gst_element_sync_state_with_parent(vconv);
+    gst_element_sync_state_with_parent(venc);
+    gst_element_sync_state_with_parent(vpay);
+    gst_element_sync_state_with_parent(capsFilter);
+
+    qDebug() << "PublishPipeline: re-added dummy video (SSRC" << m_videoSsrc << ")";
 }
 
 void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)
@@ -406,6 +447,16 @@ void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)
 
     // Remove dummy video track before adding real camera
     removeDummyVideo();
+
+    // Drain stale bus errors from the dummy teardown — otherwise pollBus
+    // will see them after camera is enabled and auto-disable it.
+    {
+        GstBus *bus = gst_element_get_bus(m_pipeline);
+        GstMessage *msg;
+        while ((msg = gst_bus_pop_filtered(bus, GST_MESSAGE_ERROR)) != nullptr)
+            gst_message_unref(msg);
+        gst_object_unref(bus);
+    }
 
     qDebug() << "PublishPipeline: enabling camera, device" << deviceIndex << (hd1080 ? "1080p" : "720p");
 
@@ -422,8 +473,12 @@ void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)
         // Use mfvideosrc (Media Foundation) — works in shared mode, compatible with GUI apps.
         // ksvideosrc (Kernel Streaming) requires exclusive access and fails inside Qt's COM/STA apartment.
         m_cameraSrc = gst_element_factory_make("mfvideosrc", nullptr);
-        if (!m_cameraSrc)
+        if (m_cameraSrc)
+            qDebug() << "PublishPipeline: camera source: mfvideosrc";
+        if (!m_cameraSrc) {
             m_cameraSrc = gst_element_factory_make("ksvideosrc", nullptr);
+            if (m_cameraSrc) qDebug() << "PublishPipeline: camera source: ksvideosrc (fallback)";
+        }
     }
     if (!m_cameraSrc) {
         emit cameraError("No camera capture plugin available");
@@ -579,20 +634,22 @@ void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)
         return;
     }
 
-    m_videoSinkPad = gst_element_request_pad_simple(m_webrtcbin, "sink_%u");
-
-    GstWebRTCRTPTransceiver *transceiver = nullptr;
-    g_object_get(m_videoSinkPad, "transceiver", &transceiver, nullptr);
-    if (transceiver) {
-        GstCaps *videoCaps = gst_caps_from_string(
-            "application/x-rtp,media=video,encoding-name=VP8,clock-rate=90000,payload=96");
-        g_object_set(transceiver,
-                     "direction", GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDONLY,
-                     "codec-preferences", videoCaps,
-                     nullptr);
-        gst_caps_unref(videoCaps);
-        qDebug() << "PublishPipeline: configured video transceiver (sendonly, VP8)";
-        gst_object_unref(transceiver);
+    // Reuse the existing webrtcbin pad (created with the dummy video at start).
+    // Never release it — releasing creates dead m=video 0 transceivers.
+    if (!m_videoSinkPad) {
+        m_videoSinkPad = gst_element_request_pad_simple(m_webrtcbin, "sink_%u");
+        GstWebRTCRTPTransceiver *transceiver = nullptr;
+        g_object_get(m_videoSinkPad, "transceiver", &transceiver, nullptr);
+        if (transceiver) {
+            GstCaps *videoCaps = gst_caps_from_string(
+                "application/x-rtp,media=video,encoding-name=VP8,clock-rate=90000,payload=96");
+            g_object_set(transceiver,
+                         "direction", GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDONLY,
+                         "codec-preferences", videoCaps,
+                         nullptr);
+            gst_caps_unref(videoCaps);
+            gst_object_unref(transceiver);
+        }
     }
 
     // Reuse the video SSRC assigned at pipeline start (dummy) so
@@ -662,6 +719,7 @@ void PublishPipeline::disableCamera()
         }
     };
 
+    // Unlink camera SSRC filter from webrtcbin pad — keep pad alive
     GstElement *camSsrcFilter = gst_bin_get_by_name(GST_BIN(m_pipeline), "pub-cam-ssrc-filter");
     if (camSsrcFilter && m_videoSinkPad) {
         GstPad *src = gst_element_get_static_pad(camSsrcFilter, "src");
@@ -670,11 +728,7 @@ void PublishPipeline::disableCamera()
     } else if (camSsrcFilter) {
         gst_object_unref(camSsrcFilter);
     }
-    if (m_videoSinkPad) {
-        gst_element_release_request_pad(m_webrtcbin, m_videoSinkPad);
-        gst_object_unref(m_videoSinkPad);
-        m_videoSinkPad = nullptr;
-    }
+    // Do NOT release m_videoSinkPad — reused by dummy/camera swap
 
     if (m_previewAppsink)
         g_signal_handlers_disconnect_by_data(m_previewAppsink, this);
@@ -684,7 +738,6 @@ void PublishPipeline::disableCamera()
     removeElement(m_tee);
     removeElement(m_encQueue);
 
-    // Remove the camera SSRC capsfilter created in enableCamera (not tracked as a member)
     GstElement *ssrcFilter = gst_bin_get_by_name(GST_BIN(m_pipeline), "pub-cam-ssrc-filter");
     if (ssrcFilter) {
         gst_element_set_state(ssrcFilter, GST_STATE_NULL);
@@ -700,6 +753,14 @@ void PublishPipeline::disableCamera()
     removeElement(m_cameraSrc);
 
     m_cameraEnabled = false;
+
+    // Re-add dummy video to keep the transceiver active (prevents m=video 0)
+    addDummyVideo();
+
+    // Renegotiate so MCU sees the source change
+    GstPromise *promise = gst_promise_new_with_change_func(onOfferCreated, this, nullptr);
+    g_signal_emit_by_name(m_webrtcbin, "create-offer", nullptr, promise);
+    qDebug() << "PublishPipeline: camera disabled, swapped back to dummy";
 }
 
 void PublishPipeline::pollBus()
@@ -735,10 +796,16 @@ void PublishPipeline::pollBus()
             GError *err = nullptr; gchar *dbg = nullptr;
             gst_message_parse_error(msg, &err, &dbg);
             QString errMsg = QString::fromUtf8(err->message);
-            qWarning() << "PublishPipeline ERROR:" << errMsg << (dbg ? dbg : "");
+            QString dbgStr = dbg ? QString::fromUtf8(dbg) : QString();
+            qWarning() << "PublishPipeline ERROR:" << errMsg << dbgStr;
             g_clear_error(&err); g_free(dbg);
-            if (m_cameraEnabled) {
+            // SRTP/DTLS transport errors are transient during renegotiation — ignore them.
+            // Only disable camera for actual camera/encoder errors.
+            bool isTransportError = dbgStr.contains("srtpenc") || dbgStr.contains("dtls");
+            if (m_cameraEnabled && !isTransportError) {
                 disableCamera();
+                // Recover pipeline to PLAYING — camera error must not kill audio
+                gst_element_set_state(m_pipeline, GST_STATE_PLAYING);
                 emit cameraError(errMsg);
             }
         }
