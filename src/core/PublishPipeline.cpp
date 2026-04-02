@@ -278,9 +278,29 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
     }
 
     m_running = true;
-    qDebug() << "PublishPipeline: started (send-only)";
 
-    // Enable camera now that pipeline is PLAYING (direct pad swap)
+    // Dummy's job is done — it established the video transceiver in the SDP.
+    // Stop it now so camera enable/disable never competes with a running source.
+    gst_element_set_state(m_dummySrc, GST_STATE_NULL);
+    gst_element_set_state(m_dummyConv, GST_STATE_NULL);
+    gst_element_set_state(m_dummyEnc, GST_STATE_NULL);
+    gst_element_set_state(m_dummyPay, GST_STATE_NULL);
+    gst_element_set_state(m_dummySsrcFilter, GST_STATE_NULL);
+    {
+        GstPad *dummySrc = gst_element_get_static_pad(m_dummySsrcFilter, "src");
+        gst_pad_unlink(dummySrc, m_videoSinkPad);
+        gst_object_unref(dummySrc);
+    }
+    // Drain any errors from the stop
+    {
+        GstBus *bus = gst_element_get_bus(m_pipeline);
+        GstMessage *msg;
+        while ((msg = gst_bus_pop_filtered(bus, GST_MESSAGE_ERROR)) != nullptr)
+            gst_message_unref(msg);
+        gst_object_unref(bus);
+    }
+    qDebug() << "PublishPipeline: started (send-only), dummy stopped";
+
     if (withVideo)
         enableCamera(videoDeviceIndex, hd1080);
 
@@ -549,19 +569,9 @@ void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)
         }
     }
 
-    // 1. Unlink dummy from webrtcbin
-    GstPad *dummySrc = gst_element_get_static_pad(m_dummySsrcFilter, "src");
-    gst_pad_unlink(dummySrc, m_videoSinkPad);
-    gst_object_unref(dummySrc);
+    // Dummy was already stopped in start(). Just link camera to the idle pad.
 
-    // 2. Pause dummy elements (stop encoding, save CPU)
-    gst_element_set_state(m_dummySrc, GST_STATE_PAUSED);
-    gst_element_set_state(m_dummyConv, GST_STATE_PAUSED);
-    gst_element_set_state(m_dummyEnc, GST_STATE_PAUSED);
-    gst_element_set_state(m_dummyPay, GST_STATE_PAUSED);
-    gst_element_set_state(m_dummySsrcFilter, GST_STATE_PAUSED);
-
-    // 3. Sync camera elements to PLAYING (start capture + encoding)
+    // 1. Sync camera elements to PLAYING (start capture + encoding)
     gst_element_sync_state_with_parent(m_cameraSrc);
     gst_element_sync_state_with_parent(m_videoConvert);
     gst_element_sync_state_with_parent(m_videoCapsFilter);
@@ -584,36 +594,21 @@ void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)
     g_object_set(m_cameraValve, "drop", FALSE, nullptr);
 
     m_cameraEnabled = true;
-    qDebug() << "PublishPipeline: camera enabled (direct pad swap)";
+    qDebug() << "PublishPipeline: camera enabled";
 }
 
 void PublishPipeline::disableCamera()
 {
     if (!m_pipeline || !m_cameraEnabled) return;
 
-    // 1. Unlink camera from webrtcbin
+    // 1. Close valve + pause camera (stop data flow before unlinking)
+    if (m_cameraValve) g_object_set(m_cameraValve, "drop", TRUE, nullptr);
+    if (m_cameraSrc) gst_element_set_state(m_cameraSrc, GST_STATE_PAUSED);
+
+    // 2. Unlink camera from webrtcbin (pad stays idle — no dummy needed)
     GstPad *camSrc = gst_element_get_static_pad(m_camSsrcFilter, "src");
     gst_pad_unlink(camSrc, m_videoSinkPad);
     gst_object_unref(camSrc);
-
-    // 2. Pause camera source (stop capture, save CPU)
-    if (m_cameraSrc) gst_element_set_state(m_cameraSrc, GST_STATE_PAUSED);
-
-    // 3. Close valve — stop frames reaching encoder
-    if (m_cameraValve)
-        g_object_set(m_cameraValve, "drop", TRUE, nullptr);
-
-    // 4. Resume dummy elements
-    gst_element_set_state(m_dummySrc, GST_STATE_PLAYING);
-    gst_element_set_state(m_dummyConv, GST_STATE_PLAYING);
-    gst_element_set_state(m_dummyEnc, GST_STATE_PLAYING);
-    gst_element_set_state(m_dummyPay, GST_STATE_PLAYING);
-    gst_element_set_state(m_dummySsrcFilter, GST_STATE_PLAYING);
-
-    // 5. Link dummy SSRC filter back to webrtcbin
-    GstPad *dummySrc = gst_element_get_static_pad(m_dummySsrcFilter, "src");
-    gst_pad_link(dummySrc, m_videoSinkPad);
-    gst_object_unref(dummySrc);
 
     m_cameraEnabled = false;
     qDebug() << "PublishPipeline: camera disabled (direct pad swap)";
