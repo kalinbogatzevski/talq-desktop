@@ -279,27 +279,13 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
 
     m_running = true;
 
-    // Dummy's job is done — it established the video transceiver in the SDP.
-    // Stop it now so camera enable/disable never competes with a running source.
-    gst_element_set_state(m_dummySrc, GST_STATE_NULL);
-    gst_element_set_state(m_dummyConv, GST_STATE_NULL);
-    gst_element_set_state(m_dummyEnc, GST_STATE_NULL);
-    gst_element_set_state(m_dummyPay, GST_STATE_NULL);
-    gst_element_set_state(m_dummySsrcFilter, GST_STATE_NULL);
-    {
-        GstPad *dummySrc = gst_element_get_static_pad(m_dummySsrcFilter, "src");
-        gst_pad_unlink(dummySrc, m_videoSinkPad);
-        gst_object_unref(dummySrc);
-    }
-    // Drain any errors from the stop
-    {
-        GstBus *bus = gst_element_get_bus(m_pipeline);
-        GstMessage *msg;
-        while ((msg = gst_bus_pop_filtered(bus, GST_MESSAGE_ERROR)) != nullptr)
-            gst_message_unref(msg);
-        gst_object_unref(bus);
-    }
-    qDebug() << "PublishPipeline: started (send-only), dummy stopped";
+    // Dummy stays RUNNING — keeps webrtcbin's video transport warm.
+    // In v0.14.7 the dummy ran continuously and video worked. Stopping it
+    // early (as v0.15.3 did) left the video transport dead: webrtcbin's
+    // internal rtpbin never saw a video frame, so camera frames linked
+    // later were never forwarded to the DTLS/SRTP transport.
+    // 16x16 black @ 1fps VP8 ≈ negligible bandwidth.
+    qDebug() << "PublishPipeline: started (send-only), dummy running";
 
     if (withVideo)
         enableCamera(videoDeviceIndex, hd1080);
@@ -569,9 +555,33 @@ void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)
         }
     }
 
-    // Dummy was already stopped in start(). Just link camera to the idle pad.
+    // 1. Stop dummy and remove it from the bin so it can't interfere.
+    //    Dummy was keeping the video transport warm — now camera takes over.
+    if (m_dummySrc) {
+        gst_element_set_state(m_dummySsrcFilter, GST_STATE_NULL);
+        gst_element_set_state(m_dummyPay, GST_STATE_NULL);
+        gst_element_set_state(m_dummyEnc, GST_STATE_NULL);
+        gst_element_set_state(m_dummyConv, GST_STATE_NULL);
+        gst_element_set_state(m_dummySrc, GST_STATE_NULL);
+        // Unlink from webrtcbin
+        GstPad *dSrc = gst_element_get_static_pad(m_dummySsrcFilter, "src");
+        gst_pad_unlink(dSrc, m_videoSinkPad);
+        gst_object_unref(dSrc);
+        // Remove from pipeline bin entirely (prevents state sync back to PLAYING)
+        gst_bin_remove(GST_BIN(m_pipeline), m_dummySsrcFilter);
+        gst_bin_remove(GST_BIN(m_pipeline), m_dummyPay);
+        gst_bin_remove(GST_BIN(m_pipeline), m_dummyEnc);
+        gst_bin_remove(GST_BIN(m_pipeline), m_dummyConv);
+        gst_bin_remove(GST_BIN(m_pipeline), m_dummySrc);
+        m_dummySrc = nullptr;
+        m_dummyConv = nullptr;
+        m_dummyEnc = nullptr;
+        m_dummyPay = nullptr;
+        m_dummySsrcFilter = nullptr;
+        qDebug() << "PublishPipeline: dummy stopped and removed from bin";
+    }
 
-    // 1. Sync camera elements to PLAYING (start capture + encoding)
+    // 2. Sync camera elements to PLAYING (start capture + encoding)
     gst_element_sync_state_with_parent(m_cameraSrc);
     gst_element_sync_state_with_parent(m_videoConvert);
     gst_element_sync_state_with_parent(m_videoCapsFilter);
@@ -585,16 +595,16 @@ void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)
     gst_element_sync_state_with_parent(m_previewConvert);
     gst_element_sync_state_with_parent(m_previewAppsink);
 
-    // 4. Link camera SSRC filter to webrtcbin
+    // 3. Link camera SSRC filter to webrtcbin (same pad, same SSRC as dummy)
     GstPad *camSrc = gst_element_get_static_pad(m_camSsrcFilter, "src");
     gst_pad_link(camSrc, m_videoSinkPad);
     gst_object_unref(camSrc);
 
-    // 5. Open valve — let camera frames flow to encoder
+    // 4. Open valve — let camera frames flow to encoder
     g_object_set(m_cameraValve, "drop", FALSE, nullptr);
 
     m_cameraEnabled = true;
-    qDebug() << "PublishPipeline: camera enabled";
+    qDebug() << "PublishPipeline: camera enabled (replaced dummy on same SSRC)";
 }
 
 void PublishPipeline::disableCamera()

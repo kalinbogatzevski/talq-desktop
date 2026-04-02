@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.15.4 (2026-04-02)
+
+### Outbound video FIXED — camera video now reaches remote
+- **Root cause:** v0.15.3 stopped the dummy video source immediately after pipeline start, leaving webrtcbin's video transport dead — its internal rtpbin never saw a video frame, so camera frames linked later were never forwarded to the DTLS/SRTP transport.
+- **Fix:** Dummy now runs continuously (16x16 black @ 1fps, negligible bandwidth) keeping the video transport warm. When camera enables, dummy is stopped, `gst_bin_remove`d from the pipeline, and camera links to the same pad with the same SSRC. Seamless swap, no renegotiation needed.
+- Confirmed working: TalQ → browser (Talk web app) video call with bidirectional video.
+
 ## v0.15.3 (2026-04-02)
 
 ### Camera toggle — fully working
