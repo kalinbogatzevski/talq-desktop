@@ -62,6 +62,8 @@ CallDialog::CallDialog(CallManager *callManager, ApiClient *api, QWidget *parent
     });
     connect(m_callManager, &CallManager::localVideoProviderChanged, this, [this]() {
         m_localConnected = false;
+        if (!m_callManager->localVideoProvider())
+            m_localPreview->hide();
         connectVideoProviders();
     });
     connect(m_callManager, &CallManager::audioLevelChanged, this, [this]() {
