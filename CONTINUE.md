@@ -4,7 +4,16 @@
 Full QWidget app. QPainter rendering, no QML.
 **Audio calls WORKING** — bidirectional through MCU/Janus, confirmed with Ilko.
 **Video calls WORKING** — outbound video reaches browser on first camera enable.
-**BLOCKING BUG: crash on 2nd call** — TalQ crashes (segfault) when starting the publisher pipeline on the 2nd or 3rd call in a session. Crash point: right after "call mode = MCU", during PublishPipeline::start() or gst_pipeline_new/gst_element_factory_make("webrtcbin"). Tried: synchronous cleanup (no detached threads), unique pipeline names, GLib context flush — none fixed it. Likely a GStreamer 1.28.1 or libnice bug with repeated webrtcbin creation/destruction. Next step: add pinpoint logging to find exact crash line, or test with GStreamer 1.26.9 to confirm version regression.
+**BLOCKING BUG: crash on 2nd call** — segfault in PublishPipeline::start() on 2nd/3rd call.
+
+Latest changes (home session 7, 2026-04-01):
+- Added pinpoint qDebug logging to start() and cleanup() to find exact crash line
+- Changed `deleteLater` to direct `delete` in stopAllPipelines (eliminates queued delete race)
+- Increased GLib context flush from 50→200 iterations
+- **UNTESTED** — needs someone to make two calls in one session and check the debug log
+
+Previous attempts (office session 6): sync cleanup, unique names, GLib flush — none fixed it.
+Suspect: GStreamer 1.28.1 / libnice bug with repeated webrtcbin create/destroy.
 **Camera toggle** — first on/off works; second enable sends still image (transceiver reuse fix committed but untested due to crash bug).
 **59 code review fixes** from v0.15.0 retained, except onPadAdded marshalling reverted to synchronous.
 
@@ -32,6 +41,13 @@ cd /c/build/talq && bash /c/src/talk-desktop-qt/scripts/deploy-dev.sh --no-run
 ```
 
 ## What was done
+
+### Session 7 (2026-04-01 home — late night)
+**2nd-call crash debugging:**
+- Added pinpoint qDebug in PublishPipeline::start() and cleanup() — logs each GStreamer API call
+- Changed deleteLater → direct delete in stopAllPipelines (eliminates deferred delete race)
+- Increased GLib context flush 50→200 iterations
+- NOT YET TESTED — needs two calls in one session to reproduce
 
 ### Session 6 (v0.15.1, 2026-04-01 office)
 **Audio regression fix:**
