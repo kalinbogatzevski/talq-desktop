@@ -108,8 +108,7 @@ void SubscribePipeline::stop()
 
 void SubscribePipeline::cleanup()
 {
-    // Remove bus watch on the main thread BEFORE the detached cleanup thread.
-    // This prevents the bus watch callback from firing on a half-torn-down pipeline.
+    qDebug() << "SubscribePipeline::cleanup() — begin, pipeline=" << (void*)m_pipeline;
     if (m_busWatchId > 0) {
         g_source_remove(m_busWatchId);
         m_busWatchId = 0;
@@ -120,9 +119,12 @@ void SubscribePipeline::cleanup()
     if (m_webrtcbin)
         g_signal_handlers_disconnect_by_data(m_webrtcbin, this);
     if (m_pipeline) {
+        qDebug() << "SubscribePipeline::cleanup() — setting NULL state";
         gst_element_set_state(m_pipeline, GST_STATE_NULL);
+        qDebug() << "SubscribePipeline::cleanup() — unrefing pipeline";
         gst_object_unref(m_pipeline);
         m_pipeline = nullptr;
+        qDebug() << "SubscribePipeline::cleanup() — pipeline freed";
     }
     m_webrtcbin = nullptr;
     m_videoAppsink = nullptr;
@@ -136,16 +138,20 @@ void SubscribePipeline::setRemoteOffer(const QString &sdp)
 {
     if (!m_webrtcbin) return;
 
+    qDebug() << "SubscribePipeline::setRemoteOffer — parsing SDP...";
     QByteArray sdpUtf8 = sdp.toUtf8();
     GstSDPMessage *sdpMsg;
     gst_sdp_message_new(&sdpMsg);
     gst_sdp_message_parse_buffer((const guint8 *)sdpUtf8.constData(),
                                   sdpUtf8.size(), sdpMsg);
 
+    qDebug() << "SubscribePipeline::setRemoteOffer — creating session description...";
     GstWebRTCSessionDescription *desc = gst_webrtc_session_description_new(
         GST_WEBRTC_SDP_TYPE_OFFER, sdpMsg);
 
+    qDebug() << "SubscribePipeline::setRemoteOffer — setting remote description on webrtcbin...";
     g_signal_emit_by_name(m_webrtcbin, "set-remote-description", desc, nullptr);
+    qDebug() << "SubscribePipeline::setRemoteOffer — remote description set OK";
     gst_webrtc_session_description_free(desc);
 
     m_remoteDescSet = true;

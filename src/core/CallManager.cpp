@@ -683,7 +683,9 @@ void CallManager::joinCallOnServer(bool withVideo)
                         QString pubSid = QString::number(QDateTime::currentMSecsSinceEpoch());
 
                         // Start publisher (send our audio to MCU)
+                        qDebug() << "CallManager: creating PublishPipeline...";
                         m_publishPipeline = new PublishPipeline(this);
+                        qDebug() << "CallManager: PublishPipeline created, connecting signals...";
                         m_localVideoProvider = m_publishPipeline->localVideoProvider();
                         emit localVideoProviderChanged();
 
@@ -728,6 +730,7 @@ void CallManager::joinCallOnServer(bool withVideo)
                             qDebug() << "CallManager: camera disabled, continuing audio-only";
                         });
 
+                        qDebug() << "CallManager: calling PublishPipeline::start()...";
                         if (!m_publishPipeline->start(m_stunServer, turnServers,
                             m_deviceManager ? m_deviceManager->selectedInputDeviceId() : QString(),
                             m_withVideo, videoDeviceIndex(), preferHd1080())) {
@@ -1017,10 +1020,13 @@ void CallManager::onOfferReceived(const QString &fromSessionId, const QString &s
         return;
     }
 
+    qDebug() << "CallManager: subscriber started, setting video provider...";
     m_remoteVideoProvider = sub->videoProvider();
     emit remoteVideoProviderChanged();
 
+    qDebug() << "CallManager: calling setRemoteOffer...";
     sub->setRemoteOffer(sdp);
+    qDebug() << "CallManager: setRemoteOffer returned";
 }
 
 void CallManager::onAnswerReceived(const QString &fromSessionId, const QString &sdp)
