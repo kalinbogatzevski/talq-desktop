@@ -23,8 +23,13 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
 {
     if (m_running) return false;
 
+    qDebug() << "PublishPipeline::start() — creating pipeline...";
     m_pipeline = gst_pipeline_new(nullptr);
+    qDebug() << "PublishPipeline::start() — pipeline created:" << (void*)m_pipeline;
+
+    qDebug() << "PublishPipeline::start() — creating webrtcbin...";
     m_webrtcbin = gst_element_factory_make("webrtcbin", nullptr);
+    qDebug() << "PublishPipeline::start() — webrtcbin created:" << (void*)m_webrtcbin;
 
     if (!m_pipeline || !m_webrtcbin) {
         emit error("Failed to create publish pipeline elements");
@@ -290,13 +295,19 @@ void PublishPipeline::stop()
 
 void PublishPipeline::cleanup()
 {
+    qDebug() << "PublishPipeline::cleanup() — begin, pipeline=" << (void*)m_pipeline << "webrtcbin=" << (void*)m_webrtcbin;
     // Disconnect GStreamer signals to prevent callbacks with stale userData
-    if (m_webrtcbin)
+    if (m_webrtcbin) {
+        qDebug() << "PublishPipeline::cleanup() — disconnecting signals";
         g_signal_handlers_disconnect_by_data(m_webrtcbin, this);
+    }
     if (m_pipeline) {
+        qDebug() << "PublishPipeline::cleanup() — setting NULL state";
         gst_element_set_state(m_pipeline, GST_STATE_NULL);
+        qDebug() << "PublishPipeline::cleanup() — unrefing pipeline";
         gst_object_unref(m_pipeline);
         m_pipeline = nullptr;
+        qDebug() << "PublishPipeline::cleanup() — pipeline freed";
     }
     m_webrtcbin = nullptr;
     m_remoteDescSet = false;
