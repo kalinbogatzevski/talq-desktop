@@ -67,6 +67,7 @@ private:
     GstElement *m_jpegDec = nullptr;
     GstElement *m_videoPayloader = nullptr;
     GstPad *m_videoSinkPad = nullptr;
+    guint32 m_videoSsrc = 0;  // shared between dummy and camera
     bool m_cameraEnabled = false;
     int m_lvlDbg = 0;
 
