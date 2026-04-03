@@ -64,6 +64,7 @@ private:
     QPushButton *m_muteBtn = nullptr;
     QPushButton *m_hangupBtn = nullptr;
     QPushButton *m_cameraBtn = nullptr;
+    QPushButton *m_shareBtn = nullptr;
 
     // Mic level indicator
     QWidget *m_micLevel = nullptr;

@@ -63,6 +63,7 @@ public:
     Q_INVOKABLE void toggleCamera();
     Q_INVOKABLE void toggleScreenShare();
     bool isScreenSharing() const { return m_screenSharing; }
+    VideoFrameProvider *remoteScreenProvider() const { return m_remoteScreenProvider; }
     void onIncomingCallDetected(const QString &callerName, const QString &token, int callFlag);
 
 signals:
