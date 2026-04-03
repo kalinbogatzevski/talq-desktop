@@ -44,6 +44,8 @@ public:
 
     VideoFrameProvider *localVideoProvider() const { return m_localVideoProvider; }
 
+    void sendStatusMessage(const QByteArray &json);
+
 signals:
     void localOfferReady(const QString &sdp);
     void iceCandidateReady(const QString &candidate, int sdpMLineIndex, const QString &sdpMid);
@@ -76,6 +78,7 @@ private:
     guint32 m_videoSsrc = 0;
     bool m_cameraEnabled = false;
     int m_lvlDbg = 0;
+    GstWebRTCDataChannel *m_statusDataChannel = nullptr;
 
     // Dummy source (16x16 black, 1fps — feeds funnel when camera is off)
     GstElement *m_dummySrc = nullptr;
