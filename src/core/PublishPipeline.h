@@ -12,9 +12,12 @@
  * Captures local audio, encodes as Opus, sends via RTP to the MCU.
  * Creates an offer; MCU answers back.
  *
- * Video architecture: dummy and camera branches share the same webrtcbin
- * sink pad (m_videoSinkPad). Camera toggle unlinks one SSRC filter and
- * links the other — direct pad swap, no input-selector, no renegotiation.
+ * Video architecture (source-level swap, like browser's replaceTrack):
+ * A single shared encoder chain (vp8enc → rtpvp8pay → ssrcFilter → webrtcbin)
+ * is built once at startup and NEVER torn down. Only the SOURCE feeding the
+ * encoder changes: dummy videotestsrc when camera is off, mfvideosrc when on.
+ * The encoder maintains RTP sequence number continuity — no SRTP issues,
+ * no renegotiation, instant switch.
  */
 class PublishPipeline : public QObject
 {
@@ -32,6 +35,7 @@ public:
     void addIceCandidate(const QString &candidate, int sdpMLineIndex, const QString &sdpMid);
     void setMuted(bool muted);
     bool isRunning() const { return m_running; }
+    bool isCameraOn() const { return m_cameraEnabled; }
 
     void enableCamera(int deviceIndex, bool hd1080 = true);
     void disableCamera();
@@ -60,32 +64,30 @@ private:
     QList<QPair<int, QString>> m_pendingCandidates;
     guint m_busWatchId = 0;
 
-    // Video: direct pad swap between dummy and camera SSRC filters
-    GstPad *m_videoSinkPad = nullptr;
+    // Shared encoder chain (built once, never torn down):
+    // [source] → vp8enc → rtpvp8pay → videoSsrcFilter → webrtcbin
+    GstElement *m_videoEncoder = nullptr;
+    GstElement *m_videoPayloader = nullptr;
+    GstElement *m_videoSsrcFilter = nullptr;
+    GstPad *m_encoderSinkPad = nullptr;   // vp8enc's sink pad — the swap point
+    GstPad *m_videoSinkPad = nullptr;     // webrtcbin's video sink pad
     guint32 m_videoSsrc = 0;
     bool m_cameraEnabled = false;
     int m_lvlDbg = 0;
 
-    // Dummy branch elements (16x16 black, 1fps VP8)
+    // Dummy source (16x16 black, 1fps — feeds encoder when camera is off)
     GstElement *m_dummySrc = nullptr;
     GstElement *m_dummyConv = nullptr;
-    GstElement *m_dummyEnc = nullptr;
-    GstElement *m_dummyPay = nullptr;
-    GstElement *m_dummySsrcFilter = nullptr;
 
-    // Camera branch elements (built once in buildCameraChain(), stay alive)
+    // Camera branch elements (built lazily in buildCameraChain(), stay alive)
     GstElement *m_cameraSrc = nullptr;
     GstElement *m_videoConvert = nullptr;
     GstElement *m_videoCapsFilter = nullptr;
-    GstElement *m_videoEncoder = nullptr;
-    GstElement *m_jpegDec = nullptr;
-    GstElement *m_videoPayloader = nullptr;
-    GstElement *m_camSsrcFilter = nullptr;
-    GstElement *m_cameraValve = nullptr;  // drops frames when camera is off (saves CPU)
-
-    // Local preview (tee branch off camera)
     GstElement *m_tee = nullptr;
     GstElement *m_encQueue = nullptr;
+    GstElement *m_cameraValve = nullptr;
+
+    // Local preview (tee branch off camera)
     GstElement *m_previewQueue = nullptr;
     GstElement *m_previewConvert = nullptr;
     GstElement *m_previewAppsink = nullptr;

@@ -171,47 +171,62 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
     // Janus videoroom expects video from all publishers — without it, remote
     // subscribers get "not sending yet for video" and the call never connects.
     //
-    // Architecture: dummy and camera SSRC filters link directly to the same
-    // webrtcbin sink pad. Camera toggle swaps which one is connected —
-    // no input-selector overhead, no renegotiation.
+    // Architecture (source-level swap): a single shared encoder chain
+    // (vp8enc → rtpvp8pay → ssrcFilter → webrtcbin) is built once. Only the
+    // source feeding the encoder changes: dummy when camera off, real camera
+    // when on. The encoder maintains RTP sequence number continuity — no SRTP
+    // issues, no renegotiation, instant switch.
     m_videoSsrc = g_random_int();
 
-    // --- Dummy branch: videotestsrc → videoconvert → vp8enc → rtpvp8pay → dummySsrcFilter ---
-    m_dummySrc        = gst_element_factory_make("videotestsrc", "pub-dummyvideo");
-    m_dummyConv       = gst_element_factory_make("videoconvert", "pub-dummyconv");
-    m_dummyEnc        = gst_element_factory_make("vp8enc", "pub-dummyenc");
-    m_dummyPay        = gst_element_factory_make("rtpvp8pay", "pub-dummypay");
-    m_dummySsrcFilter = gst_element_factory_make("capsfilter", "pub-dummy-ssrc-filter");
-    if (!m_dummySrc || !m_dummyConv || !m_dummyEnc || !m_dummyPay || !m_dummySsrcFilter) {
-        emit error("Failed to create dummy video elements");
+    // --- Shared encoder chain: vp8enc → rtpvp8pay → videoSsrcFilter ---
+    m_videoEncoder    = gst_element_factory_make("vp8enc", "pub-vp8enc");
+    m_videoPayloader  = gst_element_factory_make("rtpvp8pay", "pub-rtpvp8pay");
+    m_videoSsrcFilter = gst_element_factory_make("capsfilter", "pub-video-ssrc-filter");
+    if (!m_videoEncoder || !m_videoPayloader || !m_videoSsrcFilter) {
+        emit error("Failed to create shared video encoder chain");
+        cleanup();
+        return false;
+    }
+    g_object_set(m_videoEncoder, "deadline", (gint64)1, "target-bitrate", 1500000, nullptr);
+    g_object_set(m_videoPayloader, "ssrc", m_videoSsrc, nullptr);
+    {
+        GstCaps *sc = gst_caps_from_string("application/x-rtp");
+        gst_caps_set_simple(sc, "ssrc", G_TYPE_UINT, m_videoSsrc, nullptr);
+        g_object_set(m_videoSsrcFilter, "caps", sc, nullptr);
+        gst_caps_unref(sc);
+    }
+
+    // --- Dummy source: videotestsrc(black, 16x16, 1fps) → dummyConvert ---
+    m_dummySrc  = gst_element_factory_make("videotestsrc", "pub-dummyvideo");
+    m_dummyConv = gst_element_factory_make("videoconvert", "pub-dummyconv");
+    if (!m_dummySrc || !m_dummyConv) {
+        emit error("Failed to create dummy video source");
         cleanup();
         return false;
     }
     g_object_set(m_dummySrc, "pattern", 2 /* black */, "is-live", TRUE, nullptr);
-    g_object_set(m_dummyEnc, "deadline", (gint64)1, "target-bitrate", 10000, nullptr);
-    g_object_set(m_dummyPay, "ssrc", m_videoSsrc, nullptr);
-    {
-        GstCaps *sc = gst_caps_from_string("application/x-rtp");
-        gst_caps_set_simple(sc, "ssrc", G_TYPE_UINT, m_videoSsrc, nullptr);
-        g_object_set(m_dummySsrcFilter, "caps", sc, nullptr);
-        gst_caps_unref(sc);
-    }
-    gst_bin_add_many(GST_BIN(m_pipeline), m_dummySrc, m_dummyConv, m_dummyEnc,
-                     m_dummyPay, m_dummySsrcFilter, nullptr);
 
+    // Add shared chain + dummy to pipeline
+    gst_bin_add_many(GST_BIN(m_pipeline), m_videoEncoder, m_videoPayloader,
+                     m_videoSsrcFilter, m_dummySrc, m_dummyConv, nullptr);
+
+    // Link dummy: dummySrc → dummyConv (with 16x16 1fps caps) → vp8enc
     GstCaps *lowCaps = gst_caps_from_string("video/x-raw,width=16,height=16,framerate=1/1");
     gst_element_link(m_dummySrc, m_dummyConv);
-    gst_element_link_filtered(m_dummyConv, m_dummyEnc, lowCaps);
+    gst_element_link_filtered(m_dummyConv, m_videoEncoder, lowCaps);
     gst_caps_unref(lowCaps);
-    gst_element_link(m_dummyEnc, m_dummyPay);
-    gst_element_link(m_dummyPay, m_dummySsrcFilter);
 
-    qDebug() << "PublishPipeline: dummy branch built (16x16 black, 1fps VP8, SSRC" << m_videoSsrc << ")";
+    // Link shared chain: vp8enc → rtpvp8pay → videoSsrcFilter
+    gst_element_link(m_videoEncoder, m_videoPayloader);
+    gst_element_link(m_videoPayloader, m_videoSsrcFilter);
 
-    // Camera branch is built lazily in buildCameraChain() to avoid blocking
-    // startup with camera device initialization (mfvideosrc COM/MF init).
+    // Store the encoder's sink pad — this is the swap point
+    m_encoderSinkPad = gst_element_get_static_pad(m_videoEncoder, "sink");
 
-    // --- Link dummySsrcFilter output directly to webrtcbin video sink pad ---
+    qDebug() << "PublishPipeline: shared encoder chain built (vp8enc → rtpvp8pay → ssrcFilter, SSRC"
+             << m_videoSsrc << "), dummy linked";
+
+    // --- Link videoSsrcFilter to webrtcbin video sink pad ---
     m_videoSinkPad = gst_element_request_pad_simple(m_webrtcbin, "sink_%u");
 
     GstWebRTCRTPTransceiver *vt = nullptr;
@@ -225,11 +240,11 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         gst_object_unref(vt);
     }
 
-    GstPad *dummySrc = gst_element_get_static_pad(m_dummySsrcFilter, "src");
-    gst_pad_link(dummySrc, m_videoSinkPad);
-    gst_object_unref(dummySrc);
+    GstPad *ssrcSrc = gst_element_get_static_pad(m_videoSsrcFilter, "src");
+    gst_pad_link(ssrcSrc, m_videoSinkPad);
+    gst_object_unref(ssrcSrc);
 
-    qDebug() << "PublishPipeline: dummy linked directly to webrtcbin video pad";
+    qDebug() << "PublishPipeline: shared chain linked to webrtcbin video pad";
 
     // Add a data channel — Janus videoroom requires it for publisher registration.
     // The browser's Talk client creates "status" + "simplewebrtc" data channels.
@@ -279,16 +294,15 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
 
     m_running = true;
 
-    // Dummy stays RUNNING — keeps webrtcbin's video transport warm.
-    // In v0.14.7 the dummy ran continuously and video worked. Stopping it
-    // early (as v0.15.3 did) left the video transport dead: webrtcbin's
-    // internal rtpbin never saw a video frame, so camera frames linked
-    // later were never forwarded to the DTLS/SRTP transport.
-    // 16x16 black @ 1fps VP8 ≈ negligible bandwidth.
-    qDebug() << "PublishPipeline: started (send-only), dummy running";
+    // Dummy feeds the shared encoder continuously — keeps webrtcbin's video
+    // transport warm. 16x16 black @ 1fps VP8 through the shared encoder
+    // uses negligible bandwidth but maintains RTP sequence number continuity.
+    qDebug() << "PublishPipeline: started (send-only), dummy feeding shared encoder";
 
-    if (withVideo)
-        enableCamera(videoDeviceIndex, hd1080);
+    // Don't enable camera during start() — it blocks the UI thread.
+    // CallManager will call enableCamera() after the call connects.
+    // For "start with video" calls, CallManager enables camera via toggleCamera.
+    Q_UNUSED(withVideo)
 
     return true;
 }
@@ -313,6 +327,12 @@ void PublishPipeline::cleanup()
     if (m_previewAppsink)
         g_signal_handlers_disconnect_by_data(m_previewAppsink, this);
 
+    // Release the encoder sink pad ref before pipeline teardown
+    if (m_encoderSinkPad) {
+        gst_object_unref(m_encoderSinkPad);
+        m_encoderSinkPad = nullptr;
+    }
+
     if (m_pipeline) {
         qDebug() << "PublishPipeline::cleanup() — setting NULL state";
         gst_element_set_state(m_pipeline, GST_STATE_NULL);
@@ -323,24 +343,20 @@ void PublishPipeline::cleanup()
     }
     // Pipeline owns all elements — just null out the pointers
     m_webrtcbin = nullptr;
-    m_dummySrc = nullptr;
-    m_dummyConv = nullptr;
-    m_dummyEnc = nullptr;
-    m_dummyPay = nullptr;
-    m_dummySsrcFilter = nullptr;
+    m_videoEncoder = nullptr;
+    m_videoPayloader = nullptr;
+    m_videoSsrcFilter = nullptr;
     m_videoSinkPad = nullptr;
     m_videoSsrc = 0;
     m_cameraEnabled = false;
+    m_dummySrc = nullptr;
+    m_dummyConv = nullptr;
     m_cameraSrc = nullptr;
     m_videoConvert = nullptr;
     m_videoCapsFilter = nullptr;
-    m_videoEncoder = nullptr;
-    m_jpegDec = nullptr;
-    m_videoPayloader = nullptr;
-    m_camSsrcFilter = nullptr;
-    m_cameraValve = nullptr;
     m_tee = nullptr;
     m_encQueue = nullptr;
+    m_cameraValve = nullptr;
     m_previewQueue = nullptr;
     m_previewConvert = nullptr;
     m_previewAppsink = nullptr;
@@ -417,30 +433,18 @@ bool PublishPipeline::buildCameraChain(int deviceIndex, bool hd1080)
     }
     g_object_set(m_cameraSrc, "device-index", deviceIndex, nullptr);
 
-    int bitrate = hd1080 ? 3000000 : 1500000;
-
-    // Create all camera branch elements
+    // Create camera branch elements
     m_videoConvert    = gst_element_factory_make("videoconvert", nullptr);
     m_videoCapsFilter = gst_element_factory_make("capsfilter", nullptr);
     m_tee             = gst_element_factory_make("tee", "camera-tee");
     m_encQueue        = gst_element_factory_make("queue", "enc-queue");
     m_cameraValve     = gst_element_factory_make("valve", "camera-valve");
-    m_videoEncoder    = gst_element_factory_make("vp8enc", nullptr);
-    m_videoPayloader  = gst_element_factory_make("rtpvp8pay", "pub-rtpvp8pay");
-    m_camSsrcFilter   = gst_element_factory_make("capsfilter", "pub-cam-ssrc-filter");
     m_previewQueue    = gst_element_factory_make("queue", "preview-queue");
     m_previewConvert  = gst_element_factory_make("videoconvert", "preview-convert");
     m_previewAppsink  = gst_element_factory_make("appsink", "preview-sink");
 
-    // Prevent frame pileup — drop old frames when downstream can't keep up
-    if (m_encQueue) g_object_set(m_encQueue, "leaky", 2, "max-size-buffers", 3, nullptr);
-    if (m_previewQueue) g_object_set(m_previewQueue, "leaky", 2, "max-size-buffers", 2, nullptr);
-    // Valve starts closed — camera frames don't reach encoder until enableCamera
-    if (m_cameraValve) g_object_set(m_cameraValve, "drop", TRUE, nullptr);
-
     if (!m_videoConvert || !m_videoCapsFilter || !m_tee || !m_encQueue ||
-        !m_cameraValve || !m_videoEncoder || !m_videoPayloader || !m_camSsrcFilter ||
-        !m_previewQueue || !m_previewConvert || !m_previewAppsink) {
+        !m_cameraValve || !m_previewQueue || !m_previewConvert || !m_previewAppsink) {
         qWarning() << "PublishPipeline: failed to create camera branch elements";
         // Clean up any elements that were created (not yet added to pipeline)
         auto freeIf = [](GstElement *&el) { if (el) { gst_object_unref(el); el = nullptr; } };
@@ -450,9 +454,6 @@ bool PublishPipeline::buildCameraChain(int deviceIndex, bool hd1080)
         freeIf(m_tee);
         freeIf(m_encQueue);
         freeIf(m_cameraValve);
-        freeIf(m_videoEncoder);
-        freeIf(m_videoPayloader);
-        freeIf(m_camSsrcFilter);
         freeIf(m_previewQueue);
         freeIf(m_previewConvert);
         freeIf(m_previewAppsink);
@@ -460,7 +461,7 @@ bool PublishPipeline::buildCameraChain(int deviceIndex, bool hd1080)
     }
 
     // Configure elements
-    // Camera capsfilter: cap resolution to avoid memory explosion from raw 1080p frames
+    // Camera capsfilter: cap resolution to avoid memory explosion from raw frames
     {
         int w = hd1080 ? 1280 : 640;
         int h = hd1080 ? 720 : 480;
@@ -473,19 +474,8 @@ bool PublishPipeline::buildCameraChain(int deviceIndex, bool hd1080)
     // Queues: leaky downstream to prevent blocking
     g_object_set(m_encQueue, "leaky", 2 /* downstream */, "max-size-buffers", 3, nullptr);
     g_object_set(m_previewQueue, "leaky", 2, "max-size-buffers", 2, nullptr);
-    // Valve: drop=TRUE initially (camera off, saves encoding CPU)
+    // Valve starts closed — camera frames don't reach encoder until enableCamera
     g_object_set(m_cameraValve, "drop", TRUE, nullptr);
-    // VP8 encoder
-    g_object_set(m_videoEncoder, "deadline", (gint64)1, "target-bitrate", bitrate, nullptr);
-    // Payloader SSRC must match dummy branch
-    g_object_set(m_videoPayloader, "ssrc", m_videoSsrc, nullptr);
-    // Camera SSRC capsfilter
-    {
-        GstCaps *sc = gst_caps_from_string("application/x-rtp");
-        gst_caps_set_simple(sc, "ssrc", G_TYPE_UINT, m_videoSsrc, nullptr);
-        g_object_set(m_camSsrcFilter, "caps", sc, nullptr);
-        gst_caps_unref(sc);
-    }
     // Preview appsink
     {
         GstCaps *previewCaps = gst_caps_from_string("video/x-raw,format=I420");
@@ -500,17 +490,17 @@ bool PublishPipeline::buildCameraChain(int deviceIndex, bool hd1080)
             G_CALLBACK(onPreviewSample), this);
     }
 
-    // Add all to pipeline
+    // Add all camera elements to pipeline
     gst_bin_add_many(GST_BIN(m_pipeline),
         m_cameraSrc, m_videoConvert, m_videoCapsFilter, m_tee,
-        m_encQueue, m_cameraValve, m_videoEncoder, m_videoPayloader, m_camSsrcFilter,
+        m_encQueue, m_cameraValve,
         m_previewQueue, m_previewConvert, m_previewAppsink, nullptr);
 
     // Link capture chain: cameraSrc → videoconvert → capsfilter → tee
     gboolean linked = gst_element_link_many(m_cameraSrc, m_videoConvert, m_videoCapsFilter, m_tee, nullptr);
 
-    // Link encoder branch: encQueue → valve → vp8enc → rtpvp8pay → camSsrcFilter
-    linked = linked && gst_element_link_many(m_encQueue, m_cameraValve, m_videoEncoder, m_videoPayloader, m_camSsrcFilter, nullptr);
+    // Link encoder branch: tee → encQueue → cameraValve (NOT linked to encoder — enableCamera does that)
+    linked = linked && gst_element_link_many(m_encQueue, m_cameraValve, nullptr);
 
     // Link preview branch: previewQueue → previewConvert → previewAppsink
     linked = linked && gst_element_link_many(m_previewQueue, m_previewConvert, m_previewAppsink, nullptr);
@@ -538,9 +528,9 @@ bool PublishPipeline::buildCameraChain(int deviceIndex, bool hd1080)
         return false;
     }
 
-    // Camera branch is fully built but NOT linked to webrtcbin yet.
-    // enableCamera() will link m_camSsrcFilter to m_videoSinkPad.
-    qDebug() << "PublishPipeline: camera branch built (SSRC" << m_videoSsrc << ")";
+    // Camera chain is fully built but NOT linked to the shared encoder.
+    // enableCamera() will link cameraValve output → m_encoderSinkPad.
+    qDebug() << "PublishPipeline: camera chain built (not yet linked to encoder)";
     return true;
 }
 
@@ -548,6 +538,7 @@ void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)
 {
     if (m_cameraEnabled || !m_pipeline) return;
 
+    // 1. Build camera chain if not yet built
     if (!m_cameraSrc) {
         if (!buildCameraChain(deviceIndex, hd1080)) {
             emit cameraError("No camera available");
@@ -555,83 +546,76 @@ void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)
         }
     }
 
-    // 1. Stop dummy and remove it from the bin so it can't interfere.
-    //    Dummy was keeping the video transport warm — now camera takes over.
-    if (m_dummySrc) {
-        // Read dummy payloader's current seqnum+timestamp BEFORE stopping.
-        // Camera payloader must continue from here so SRTP doesn't reject
-        // the sequence jump as a replay attack.
-        guint dummySeq = 0, dummyTs = 0;
-        g_object_get(m_dummyPay, "seqnum", &dummySeq, nullptr);
-        g_object_get(m_dummyPay, "timestamp", &dummyTs, nullptr);
-        g_object_set(m_videoPayloader, "seqnum-offset", dummySeq + 1, nullptr);
-        g_object_set(m_videoPayloader, "timestamp-offset", dummyTs + 1, nullptr);
-        qDebug() << "PublishPipeline: camera continues from dummy seq=" << dummySeq << "ts=" << dummyTs;
-
-        gst_element_set_state(m_dummySsrcFilter, GST_STATE_NULL);
-        gst_element_set_state(m_dummyPay, GST_STATE_NULL);
-        gst_element_set_state(m_dummyEnc, GST_STATE_NULL);
-        gst_element_set_state(m_dummyConv, GST_STATE_NULL);
-        gst_element_set_state(m_dummySrc, GST_STATE_NULL);
-        // Unlink from webrtcbin
-        GstPad *dSrc = gst_element_get_static_pad(m_dummySsrcFilter, "src");
-        gst_pad_unlink(dSrc, m_videoSinkPad);
-        gst_object_unref(dSrc);
-        // Remove from pipeline bin entirely (prevents state sync back to PLAYING)
-        gst_bin_remove(GST_BIN(m_pipeline), m_dummySsrcFilter);
-        gst_bin_remove(GST_BIN(m_pipeline), m_dummyPay);
-        gst_bin_remove(GST_BIN(m_pipeline), m_dummyEnc);
-        gst_bin_remove(GST_BIN(m_pipeline), m_dummyConv);
-        gst_bin_remove(GST_BIN(m_pipeline), m_dummySrc);
-        m_dummySrc = nullptr;
-        m_dummyConv = nullptr;
-        m_dummyEnc = nullptr;
-        m_dummyPay = nullptr;
-        m_dummySsrcFilter = nullptr;
-        qDebug() << "PublishPipeline: dummy stopped and removed from bin";
-    }
-
-    // 2. Sync camera elements to PLAYING (start capture + encoding)
-    gst_element_sync_state_with_parent(m_cameraSrc);
+    // 2. Sync all camera elements to PLAYING
     gst_element_sync_state_with_parent(m_videoConvert);
     gst_element_sync_state_with_parent(m_videoCapsFilter);
     gst_element_sync_state_with_parent(m_tee);
     gst_element_sync_state_with_parent(m_encQueue);
     gst_element_sync_state_with_parent(m_cameraValve);
-    gst_element_sync_state_with_parent(m_videoEncoder);
-    gst_element_sync_state_with_parent(m_videoPayloader);
-    gst_element_sync_state_with_parent(m_camSsrcFilter);
     gst_element_sync_state_with_parent(m_previewQueue);
     gst_element_sync_state_with_parent(m_previewConvert);
     gst_element_sync_state_with_parent(m_previewAppsink);
+    // Start camera source LAST and async — mfvideosrc COM init blocks ~1s
+    gst_element_set_state(m_cameraSrc, GST_STATE_PLAYING);
 
-    // 3. Link camera SSRC filter to webrtcbin (same pad, same SSRC as dummy)
-    GstPad *camSrc = gst_element_get_static_pad(m_camSsrcFilter, "src");
-    gst_pad_link(camSrc, m_videoSinkPad);
-    gst_object_unref(camSrc);
-
-    // 4. Open valve — let camera frames flow to encoder
+    // 3. Open valve — camera frames start flowing (into cameraValve output)
     g_object_set(m_cameraValve, "drop", FALSE, nullptr);
 
+    // 4. Swap source: disconnect dummy, connect camera valve to shared encoder
+    //    Pause dummy first (stops producing frames), then unlink, then link camera.
+    gst_element_set_state(m_dummySrc, GST_STATE_PAUSED);
+    gst_element_set_state(m_dummyConv, GST_STATE_PAUSED);
+
+    GstPad *dummyConvSrc = gst_element_get_static_pad(m_dummyConv, "src");
+    gst_pad_unlink(dummyConvSrc, m_encoderSinkPad);
+    gst_object_unref(dummyConvSrc);
+
+    GstPad *valveSrc = gst_element_get_static_pad(m_cameraValve, "src");
+    GstPadLinkReturn lr = gst_pad_link(valveSrc, m_encoderSinkPad);
+    gst_object_unref(valveSrc);
+
+    if (lr != GST_PAD_LINK_OK) {
+        qWarning() << "PublishPipeline: failed to link camera valve to encoder:" << lr;
+        // Revert: relink dummy
+        GstPad *dSrc = gst_element_get_static_pad(m_dummyConv, "src");
+        gst_pad_link(dSrc, m_encoderSinkPad);
+        gst_object_unref(dSrc);
+        gst_element_set_state(m_dummySrc, GST_STATE_PLAYING);
+        gst_element_set_state(m_dummyConv, GST_STATE_PLAYING);
+        g_object_set(m_cameraValve, "drop", TRUE, nullptr);
+        emit cameraError("Failed to link camera to encoder");
+        return;
+    }
+
     m_cameraEnabled = true;
-    qDebug() << "PublishPipeline: camera enabled";
+    qDebug() << "PublishPipeline: camera enabled (source-level swap, encoder maintains continuity)";
 }
 
 void PublishPipeline::disableCamera()
 {
     if (!m_pipeline || !m_cameraEnabled) return;
 
-    // 1. Close valve + pause camera (stop data flow before unlinking)
+    // 1. Close valve — stops camera frames reaching encoder
     if (m_cameraValve) g_object_set(m_cameraValve, "drop", TRUE, nullptr);
+
+    // 2. Pause camera source
     if (m_cameraSrc) gst_element_set_state(m_cameraSrc, GST_STATE_PAUSED);
 
-    // 2. Unlink camera from webrtcbin (pad stays idle — no dummy needed)
-    GstPad *camSrc = gst_element_get_static_pad(m_camSsrcFilter, "src");
-    gst_pad_unlink(camSrc, m_videoSinkPad);
-    gst_object_unref(camSrc);
+    // 3. Swap source: disconnect camera valve, reconnect dummy to encoder
+    GstPad *valveSrc = gst_element_get_static_pad(m_cameraValve, "src");
+    gst_pad_unlink(valveSrc, m_encoderSinkPad);
+    gst_object_unref(valveSrc);
+
+    // Resume dummy source + convert to PLAYING, then link to encoder
+    gst_element_set_state(m_dummyConv, GST_STATE_PLAYING);
+    gst_element_set_state(m_dummySrc, GST_STATE_PLAYING);
+
+    GstPad *dummyConvSrc = gst_element_get_static_pad(m_dummyConv, "src");
+    gst_pad_link(dummyConvSrc, m_encoderSinkPad);
+    gst_object_unref(dummyConvSrc);
 
     m_cameraEnabled = false;
-    qDebug() << "PublishPipeline: camera disabled (direct pad swap)";
+    qDebug() << "PublishPipeline: camera disabled (dummy resumed, encoder maintains continuity)";
 }
 
 void PublishPipeline::pollBus()
@@ -671,7 +655,6 @@ void PublishPipeline::pollBus()
             qWarning() << "PublishPipeline ERROR:" << errMsg << dbgStr;
             g_clear_error(&err); g_free(dbg);
             // Camera stays alive — just log the error.
-            // Dummy branch will resume sending frames if camera is toggled off.
         }
         gst_message_unref(msg);
     }
