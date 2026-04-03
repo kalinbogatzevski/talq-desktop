@@ -220,6 +220,16 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
     m_statsTimer.setInterval(2000);
     connect(&m_statsTimer, &QTimer::timeout, this, &CallManager::updateCallStats);
 
+    m_speakingGrace.setSingleShot(true);
+    m_speakingGrace.setInterval(500);
+    connect(&m_speakingGrace, &QTimer::timeout, this, [this]() {
+        if (m_speaking && m_audioLevel <= 0.05) {
+            m_speaking = false;
+            if (m_publishPipeline && m_publishPipeline->isRunning())
+                m_publishPipeline->sendStatusMessage(R"({"type":"stoppedSpeaking"})");
+        }
+    });
+
     // Check GStreamer plugins on startup
     checkGStreamerPlugins();
 }
@@ -448,6 +458,14 @@ void CallManager::toggleMute() {
     if (m_useP2P && m_peerPipeline) m_peerPipeline->setMuted(m_muted);
     else if (m_publishPipeline) m_publishPipeline->setMuted(m_muted);
     emit muteChanged();
+
+    // Stop speaking broadcast immediately on mute
+    if (m_muted && m_speaking) {
+        m_speakingGrace.stop();
+        m_speaking = false;
+        if (m_publishPipeline && m_publishPipeline->isRunning())
+            m_publishPipeline->sendStatusMessage(R"({"type":"stoppedSpeaking"})");
+    }
 
     // Broadcast mute/unmute state to peers via signaling (NC Talk compatibility)
     broadcastMediaState("audio", !m_muted);
@@ -870,6 +888,8 @@ void CallManager::teardown(const QString &reason)
     m_userActionReady = false;
     m_remoteVideoMuted = true;
     m_remoteAudioMuted = true;
+    m_speaking = false;
+    m_speakingGrace.stop();
     m_pendingOffers.clear();
 
     setState(Idle);
@@ -881,6 +901,19 @@ void CallManager::onAudioLevelUpdated(double level)
     if (qAbs(m_audioLevel - level) > 0.02) {
         m_audioLevel = level;
         emit audioLevelChanged();
+    }
+
+    // Speaking detection — only when not muted and publish pipeline is active
+    if (m_muted || !m_publishPipeline || !m_publishPipeline->isRunning()) return;
+
+    if (level > 0.05) {
+        m_speakingGrace.stop();
+        if (!m_speaking) {
+            m_speaking = true;
+            m_publishPipeline->sendStatusMessage(R"({"type":"speaking"})");
+        }
+    } else if (m_speaking && !m_speakingGrace.isActive()) {
+        m_speakingGrace.start();
     }
 }
 

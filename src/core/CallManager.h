@@ -118,6 +118,8 @@ private:
     QString m_remotePeerId;
     bool m_muted = false;
     bool m_cameraOn = false;
+    bool m_speaking = false;
+    QTimer m_speakingGrace;
     bool m_cameraFallbackTried = false;
     bool m_withVideo = false;
     int m_callDuration = 0;
