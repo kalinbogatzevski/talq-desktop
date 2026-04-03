@@ -45,16 +45,20 @@ public:
     QString sessionId() const { return m_sessionId; }
     QString currentRoom() const { return m_currentRoom; }
     void sendOffer(const QString &toSessionId, const QString &sdp,
-                   const QString &sid, const QString &nick = {});
+                   const QString &sid, const QString &nick = {},
+                   const QString &roomType = "video");
     void sendAnswer(const QString &toSessionId, const QString &sdp,
-                    const QString &sid, const QString &nick = {});
+                    const QString &sid, const QString &nick = {},
+                    const QString &roomType = "video");
     void sendCandidate(const QString &toSessionId, const QJsonObject &candidate,
-                       const QString &sid);
+                       const QString &sid, const QString &roomType = "video");
     void sendEndOfCandidates(const QString &toSessionId, const QString &sid);
     void requestOffer(const QString &sessionId, const QString &roomType = "video");
     void sendSessionMessage(const QString &toSessionId, const QString &type,
                             const QJsonObject &payload, const QString &sid,
-                            const QJsonObject &extraData = {});
+                            const QJsonObject &extraData = {},
+                            const QString &roomType = "video");
+    void sendBroadcastMessage(const QJsonObject &data);
     bool hasMcu() const { return m_hasMcu; }
 
 signals:
@@ -62,8 +66,8 @@ signals:
     void typingUserChanged();
 
     // WebRTC signaling signals
-    void offerReceived(const QString &fromSessionId, const QString &sdp, const QString &sid);
-    void answerReceived(const QString &fromSessionId, const QString &sdp);
+    void offerReceived(const QString &fromSessionId, const QString &sdp, const QString &sid, const QString &roomType);
+    void answerReceived(const QString &fromSessionId, const QString &sdp, const QString &roomType);
     void candidateReceived(const QString &fromSessionId, const QJsonObject &candidate);
     void endOfCandidatesReceived(const QString &fromSessionId);
     void participantJoinedCall(const QString &sessionId, int flags, const QString &displayName);

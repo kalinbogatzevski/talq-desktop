@@ -170,9 +170,9 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
 
     // HPB WebSocket signaling messages
     connect(m_signaling, &SignalingClient::offerReceived,
-            this, &CallManager::onOfferReceived);
+            this, [this](const QString &from, const QString &sdp, const QString &sid, const QString &roomType) { Q_UNUSED(roomType); onOfferReceived(from, sdp, sid); });
     connect(m_signaling, &SignalingClient::answerReceived,
-            this, &CallManager::onAnswerReceived);
+            this, [this](const QString &from, const QString &sdp, const QString &roomType) { Q_UNUSED(roomType); onAnswerReceived(from, sdp); });
     connect(m_signaling, &SignalingClient::candidateReceived,
             this, [this](const QString &fromSessionId, const QJsonObject &candidate) {
         // Unwrap: payload may be {candidate: {candidate, sdpMLineIndex, sdpMid}}
