@@ -191,4 +191,7 @@ private:
     // ── Text selection state (character-level, Telegram-style) ──
     TextSelection m_textSelection;
     bool m_textAnchorSet = false;  // true if mousePress landed on body text
+    bool m_wordSelectMode = false; // true after double-click (extend by whole words)
+    int m_wordAnchorStart = 0;     // original double-clicked word start
+    int m_wordAnchorEnd = 0;       // original double-clicked word end
 };

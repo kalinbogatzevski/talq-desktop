@@ -22,6 +22,7 @@
 #include <QApplication>
 #include <QClipboard>
 #include <QTextCursor>
+#include <QMenu>
 #include "core/ApiClient.h"
 
 ChatPainter::ChatPainter(QWidget *parent)
@@ -31,6 +32,7 @@ ChatPainter::ChatPainter(QWidget *parent)
     setAttribute(Qt::WA_Hover);
     setMouseTracking(true);
     setAcceptDrops(true);
+    setFocusPolicy(Qt::ClickFocus);
 
 }
 
@@ -373,6 +375,15 @@ void ChatPainter::resizeEvent(QResizeEvent *event)
 
 bool ChatPainter::event(QEvent *e)
 {
+    // Intercept Ctrl+C when we have a text selection — claim the shortcut
+    // so it doesn't go to the composer or other widgets
+    if (e->type() == QEvent::ShortcutOverride) {
+        auto *ke = static_cast<QKeyEvent *>(e);
+        if (ke->matches(QKeySequence::Copy) && m_textSelection.hasSelection()) {
+            e->accept();
+            return true;
+        }
+    }
     if (e->type() == QEvent::HoverMove) {
         if (!m_selectionMode) {
             auto *he = static_cast<QHoverEvent *>(e);
@@ -412,6 +423,7 @@ void ChatPainter::mousePressEvent(QMouseEvent *event)
 
         // Check if press lands on body text (for text selection)
         m_textAnchorSet = false;
+        m_wordSelectMode = false;
         if (event->button() == Qt::LeftButton && !m_selectionMode
             && !(event->modifiers() & Qt::ControlModifier)) {
             QPointF canvasPos(event->position().x(), event->position().y() + m_scrollY);
@@ -434,8 +446,9 @@ void ChatPainter::mousePressEvent(QMouseEvent *event)
             }
         }
 
-        // Click clears any existing text selection (unless we just set a new anchor)
-        if (!m_textAnchorSet && m_textSelection.hasSelection()) {
+        // Left click clears any existing text selection (unless we just set a new anchor)
+        // Right click preserves selection (for future context menu)
+        if (event->button() == Qt::LeftButton && !m_textAnchorSet && m_textSelection.hasSelection()) {
             m_textSelection.clear();
             update();
         }
@@ -447,14 +460,16 @@ void ChatPainter::mousePressEvent(QMouseEvent *event)
 void ChatPainter::mouseMoveEvent(QMouseEvent *event)
 {
     if (m_dragging) {
+        qreal dx = event->position().x() - m_pressCanvasPos.x();
         qreal dy = event->position().y() - m_dragStartY;
-        if (!m_dragMoved && qAbs(dy) > 4)
+        if (!m_dragMoved && (qAbs(dx) > 4 || qAbs(dy) > 4))
             m_dragMoved = true;
 
         if (m_dragMoved && event->buttons() & Qt::LeftButton) {
             // Text selection: drag started on body text
             if (m_textAnchorSet) {
                 m_textSelection.active = true;
+                setFocus(Qt::MouseFocusReason);
                 QPointF canvasPos(event->position().x(), event->position().y() + m_scrollY);
                 int idx = layoutIndexAtY(canvasPos.y());
 
@@ -473,6 +488,28 @@ void ChatPainter::mouseMoveEvent(QMouseEvent *event)
                             else
                                 cursorPos = ml.bodyDoc->characterCount() - 1;
                         }
+
+                        // Word-select mode: snap to word boundaries
+                        if (m_wordSelectMode && ml.bodyDoc) {
+                            QTextCursor wc(ml.bodyDoc.get());
+                            wc.setPosition(cursorPos);
+                            wc.select(QTextCursor::WordUnderCursor);
+
+                            int anchorIdx = m_textSelection.anchorLayoutIdx;
+                            // Determine direction: is active before or after anchor?
+                            bool before = (idx < anchorIdx)
+                                || (idx == anchorIdx && cursorPos < m_wordAnchorStart);
+                            if (before) {
+                                // Dragging backward: anchor at word end, active at word start
+                                m_textSelection.anchorCursorPos = m_wordAnchorEnd;
+                                cursorPos = wc.selectionStart();
+                            } else {
+                                // Dragging forward: anchor at word start, active at word end
+                                m_textSelection.anchorCursorPos = m_wordAnchorStart;
+                                cursorPos = wc.selectionEnd();
+                            }
+                        }
+
                         m_textSelection.activeLayoutIdx = idx;
                         m_textSelection.activeCursorPos = cursorPos;
                     } else {
@@ -561,16 +598,17 @@ void ChatPainter::mouseReleaseEvent(QMouseEvent *event)
     if (!m_dragging) return;
     m_dragging = false;
 
-    // Text selection: if drag happened on body text, freeze selection and done
-    if (m_textAnchorSet && m_dragMoved && m_textSelection.active) {
+    // Text selection: if selection is active (from drag or double-click), freeze and done
+    if (m_textAnchorSet && m_textSelection.active) {
         m_textAnchorSet = false;
         event->accept();
         return;
     }
     m_textAnchorSet = false;
 
-    // If we had a text selection and user clicked (no drag), clear it
-    if (!m_dragMoved && m_textSelection.hasSelection()) {
+    // If we had a text selection and user left-clicked (no drag), clear it
+    // Right-click preserves selection (for context menu / copy)
+    if (!m_dragMoved && event->button() == Qt::LeftButton && m_textSelection.hasSelection()) {
         m_textSelection.clear();
         update();
     }
@@ -636,9 +674,17 @@ void ChatPainter::mouseReleaseEvent(QMouseEvent *event)
         }
     }
 
-    // Right-click → context menu
+    // Right-click → copy menu for selected text, or normal context menu
     if (!m_dragMoved && event->button() == Qt::RightButton) {
-        if (!m_selectionMode) {
+        if (m_textSelection.hasSelection()) {
+            QMenu menu(this);
+            QAction *copyAction = menu.addAction(tr("Copy"));
+            if (menu.exec(mapToGlobal(event->position().toPoint())) == copyAction) {
+                copySelectedText();
+            }
+            m_textSelection.clear();
+            update();
+        } else if (!m_selectionMode) {
             QVariantMap msg = messageAt(event->position().x(), event->position().y());
             if (msg.value("messageId").toInt() > 0) {
                 emit contextMenuRequested(msg, mapToGlobal(event->position().toPoint()));
@@ -674,6 +720,21 @@ void ChatPainter::mouseDoubleClickEvent(QMouseEvent *event)
     m_textSelection.activeLayoutIdx = idx;
     m_textSelection.activeCursorPos = cursor.selectionEnd();
     m_textSelection.active = true;
+    setFocus(Qt::MouseFocusReason);
+
+    // Save word boundaries for word-by-word extension
+    m_wordSelectMode = true;
+    m_wordAnchorStart = cursor.selectionStart();
+    m_wordAnchorEnd = cursor.selectionEnd();
+
+    // Set up drag state so the user can extend selection by continuing to drag
+    m_dragging = true;
+    m_dragMoved = false;
+    m_textAnchorSet = true;
+    m_pressCanvasPos = event->position();
+    m_dragStartY = event->position().y();
+    m_dragStartScroll = m_scrollY;
+
     update();
     event->accept();
 }
