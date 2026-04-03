@@ -503,10 +503,14 @@ void CallManager::broadcastMediaState(const QString &media, bool enabled)
         m_signaling->sendSessionMessage(peerId, type, payload, QString());
     qDebug() << "CallManager: broadcast" << type << media << "to" << peers.size() << "peer(s)";
 
-    // TODO: Also send media state via the publisher data channel ("status" label).
-    // The browser sends "audioOn"/"audioOff" and "videoOn"/"videoOff" as plain
-    // strings on the GStreamer data channel created with create-data-channel "status".
-    // This requires GStreamer data channel send APIs; signaling path works for now.
+    // Send via data channel (matches browser Talk protocol)
+    if (m_publishPipeline && m_publishPipeline->isRunning()) {
+        QByteArray dcType;
+        if (media == "audio") dcType = enabled ? R"({"type":"audioOn"})" : R"({"type":"audioOff"})";
+        else if (media == "video") dcType = enabled ? R"({"type":"videoOn"})" : R"({"type":"videoOff"})";
+        if (!dcType.isEmpty())
+            m_publishPipeline->sendStatusMessage(dcType);
+    }
 }
 
 static int callFlags(bool withVideo)
