@@ -10,6 +10,7 @@
 #include "core/PeerPipeline.h"
 #include "core/MediaDeviceManager.h"
 #include "core/VideoFrameProvider.h"
+#include "core/ScreenSharePipeline.h"
 
 class CallManager : public QObject
 {
@@ -60,6 +61,8 @@ public:
     Q_INVOKABLE void hangUp();
     Q_INVOKABLE void toggleMute();
     Q_INVOKABLE void toggleCamera();
+    Q_INVOKABLE void toggleScreenShare();
+    bool isScreenSharing() const { return m_screenSharing; }
     void onIncomingCallDetected(const QString &callerName, const QString &token, int callFlag);
 
 signals:
@@ -76,6 +79,8 @@ signals:
     void localVideoProviderChanged();
     void statusDetailChanged();
     void remoteMediaChanged();
+    void screenShareChanged();
+    void remoteScreenProviderChanged();
 
 private slots:
     void onParticipantJoinedCall(const QString &sessionId, int flags, const QString &displayName);
@@ -149,6 +154,13 @@ private:
 
     VideoFrameProvider *m_remoteVideoProvider = nullptr;
     VideoFrameProvider *m_localVideoProvider = nullptr;
+
+    // Screen sharing
+    ScreenSharePipeline *m_screenSharePipeline = nullptr;
+    bool m_screenSharing = false;
+    QString m_screenShareSid;
+    VideoFrameProvider *m_remoteScreenProvider = nullptr;
+    QHash<QString, SubscribePipeline*> m_screenSubscribers;
 
     // Offers received before ICE servers are available (P3 race guard)
     struct PendingOffer { QString fromSessionId; QString sdp; QString sid; };
