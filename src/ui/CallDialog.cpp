@@ -84,6 +84,9 @@ CallDialog::CallDialog(CallManager *callManager, ApiClient *api, QWidget *parent
                 setMinimumSize(300, 300);
                 resize(300, 340);
             }
+        } else {
+            // Remote unmuted — reconnect video provider
+            connectVideoProviders();
         }
         // Update peer label to show remote mic state
         QString name = m_callManager->remotePeerName();
