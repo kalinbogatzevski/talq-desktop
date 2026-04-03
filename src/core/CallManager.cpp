@@ -296,6 +296,12 @@ void CallManager::setState(CallState newState)
     if (newState == Active) {
         updateCallStats();
         m_statsTimer.start();
+        // Enable camera now that call is connected (deferred from start() to avoid UI block)
+        if (m_cameraOn && m_publishPipeline && !m_publishPipeline->isCameraOn()) {
+            m_publishPipeline->enableCamera(videoDeviceIndex(), preferHd1080());
+            m_localVideoProvider = m_publishPipeline->localVideoProvider();
+            emit localVideoProviderChanged();
+        }
         // Broadcast initial media state so remote peers show correct mute/video status
         broadcastMediaState("audio", !m_muted);
         broadcastMediaState("video", m_cameraOn);
