@@ -19,6 +19,9 @@
 #include <QRegularExpression>
 #include <QNetworkReply>
 #include <QtMath>
+#include <QApplication>
+#include <QClipboard>
+#include <QTextCursor>
 #include "core/ApiClient.h"
 
 ChatPainter::ChatPainter(QWidget *parent)
@@ -600,6 +603,60 @@ QString ChatPainter::hitTestReaction(const MessageLayout &ml, const QPointF &can
         x += pillW + 4;
     }
     return {};
+}
+
+int ChatPainter::hitTestBodyCursor(const MessageLayout &ml, const QPointF &canvasPos) const
+{
+    if (!ml.bodyDoc || ml.bodyRect.isNull()) return -1;
+    QPointF bodyLocal(canvasPos.x() - ml.bodyRect.x(), canvasPos.y() - ml.bodyRect.y());
+    if (bodyLocal.x() < 0 || bodyLocal.y() < 0
+        || bodyLocal.x() > ml.bodyRect.width() || bodyLocal.y() > ml.bodyRect.height())
+        return -1;
+    return ml.bodyDoc->documentLayout()->hitTest(bodyLocal, Qt::FuzzyHit);
+}
+
+bool ChatPainter::isOnBodyText(const QPointF &canvasPos, int layoutIdx) const
+{
+    if (layoutIdx < 0 || layoutIdx >= m_layouts.size()) return false;
+    const auto &ml = m_layouts[layoutIdx];
+    if (ml.isSystem || !ml.bodyDoc || ml.bodyRect.isNull()) return false;
+    return ml.bodyRect.contains(canvasPos);
+}
+
+void ChatPainter::copySelectedText()
+{
+    if (!m_textSelection.hasSelection()) return;
+    auto range = m_textSelection.normalized();
+
+    QStringList parts;
+    for (int i = range.startIdx; i <= range.endIdx; ++i) {
+        if (i < 0 || i >= m_layouts.size()) continue;
+        const auto &ml = m_layouts[i];
+        if (!ml.bodyDoc) continue;
+
+        QTextCursor cursor(ml.bodyDoc.get());
+        if (i == range.startIdx && i == range.endIdx) {
+            cursor.setPosition(range.startPos);
+            cursor.setPosition(range.endPos, QTextCursor::KeepAnchor);
+        } else if (i == range.startIdx) {
+            cursor.setPosition(range.startPos);
+            cursor.movePosition(QTextCursor::End, QTextCursor::KeepAnchor);
+        } else if (i == range.endIdx) {
+            cursor.setPosition(0);
+            cursor.setPosition(range.endPos, QTextCursor::KeepAnchor);
+        } else {
+            cursor.setPosition(0);
+            cursor.movePosition(QTextCursor::End, QTextCursor::KeepAnchor);
+        }
+
+        QString text = cursor.selectedText();
+        text.replace(QChar(0x2029), QChar('\n'));  // paragraph separator → newline
+        if (!text.isEmpty())
+            parts.append(text);
+    }
+
+    if (!parts.isEmpty())
+        QApplication::clipboard()->setText(parts.join(QStringLiteral("\n")));
 }
 
 int ChatPainter::layoutIndexAtY(qreal viewportY) const
