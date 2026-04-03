@@ -944,10 +944,38 @@ void ChatPainter::paintOwnMessage(QPainter *p, const MessageLayout &ml, qreal of
         p->save();
         QRectF bodyR = ml.bodyRect.translated(0, offsetY);
         p->translate(bodyR.topLeft());
-        // Set default text color for QTextDocument
         QAbstractTextDocumentLayout::PaintContext ctx;
         ctx.palette.setColor(QPalette::Text, m_theme.textPrimary);
         ctx.clip = QRectF(0, 0, bodyR.width(), bodyR.height());
+
+        // Text selection highlight
+        if (m_textSelection.hasSelection()) {
+            auto range = m_textSelection.normalized();
+            int layoutIdx = &ml - m_layouts.constData();
+            if (layoutIdx >= range.startIdx && layoutIdx <= range.endIdx) {
+                QTextCursor cursor(ml.bodyDoc.get());
+                if (layoutIdx == range.startIdx && layoutIdx == range.endIdx) {
+                    cursor.setPosition(range.startPos);
+                    cursor.setPosition(range.endPos, QTextCursor::KeepAnchor);
+                } else if (layoutIdx == range.startIdx) {
+                    cursor.setPosition(range.startPos);
+                    cursor.movePosition(QTextCursor::End, QTextCursor::KeepAnchor);
+                } else if (layoutIdx == range.endIdx) {
+                    cursor.setPosition(0);
+                    cursor.setPosition(range.endPos, QTextCursor::KeepAnchor);
+                } else {
+                    cursor.setPosition(0);
+                    cursor.movePosition(QTextCursor::End, QTextCursor::KeepAnchor);
+                }
+                QAbstractTextDocumentLayout::Selection sel;
+                sel.cursor = cursor;
+                QTextCharFormat fmt;
+                fmt.setBackground(QColor(46, 196, 182, 77));
+                sel.format = fmt;
+                ctx.selections.append(sel);
+            }
+        }
+
         ml.bodyDoc->documentLayout()->draw(p, ctx);
         p->restore();
     }
@@ -1063,6 +1091,35 @@ void ChatPainter::paintOtherMessage(QPainter *p, const MessageLayout &ml, qreal 
         QAbstractTextDocumentLayout::PaintContext ctx;
         ctx.palette.setColor(QPalette::Text, m_theme.textPrimary);
         ctx.clip = QRectF(0, 0, bodyR.width(), bodyR.height());
+
+        // Text selection highlight
+        if (m_textSelection.hasSelection()) {
+            auto range = m_textSelection.normalized();
+            int layoutIdx = &ml - m_layouts.constData();
+            if (layoutIdx >= range.startIdx && layoutIdx <= range.endIdx) {
+                QTextCursor cursor(ml.bodyDoc.get());
+                if (layoutIdx == range.startIdx && layoutIdx == range.endIdx) {
+                    cursor.setPosition(range.startPos);
+                    cursor.setPosition(range.endPos, QTextCursor::KeepAnchor);
+                } else if (layoutIdx == range.startIdx) {
+                    cursor.setPosition(range.startPos);
+                    cursor.movePosition(QTextCursor::End, QTextCursor::KeepAnchor);
+                } else if (layoutIdx == range.endIdx) {
+                    cursor.setPosition(0);
+                    cursor.setPosition(range.endPos, QTextCursor::KeepAnchor);
+                } else {
+                    cursor.setPosition(0);
+                    cursor.movePosition(QTextCursor::End, QTextCursor::KeepAnchor);
+                }
+                QAbstractTextDocumentLayout::Selection sel;
+                sel.cursor = cursor;
+                QTextCharFormat fmt;
+                fmt.setBackground(QColor(46, 196, 182, 77));
+                sel.format = fmt;
+                ctx.selections.append(sel);
+            }
+        }
+
         ml.bodyDoc->documentLayout()->draw(p, ctx);
         p->restore();
     }
