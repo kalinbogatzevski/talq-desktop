@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.15.6 (2026-04-03)
+
+### Camera architecture — funnel + valve (replaceTrack equivalent)
+Based on studying Nextcloud Talk browser source (spreed repo BlackVideoEnforcer):
+- **Funnel element** merges dummy and camera sources into shared encoder chain
+- Both sources permanently linked — **zero unlinking, zero relinking, zero SRTP errors**
+- Camera toggle = two valve property flips (instant, no element recreation)
+- **videoconvert + videoscale** between funnel and encoder handles resolution changes
+- Camera auto-negotiates resolution (no fixed 720p cap)
+- Camera auto-enabled when call reaches Active state (no UI blocking at startup)
+- Camera source paused on disable (saves CPU), resumed on enable
+- Preview signal disconnected on camera off (prevents frozen frame)
+- Remote video reconnects on remote unmute
+
+### Stability
+- SRTP seqnum continuity for dummy→camera transition
+- `gst_element_link_filtered` invisible capsfilter bug fixed
+- Pipeline recovery to PLAYING after transient errors
+- cameraChanged signal emitted after disable completes
+
 ## v0.15.4 (2026-04-02)
 
 ### Outbound video FIXED — camera video now reaches remote
