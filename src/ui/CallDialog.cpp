@@ -94,6 +94,28 @@ CallDialog::CallDialog(CallManager *callManager, ApiClient *api, QWidget *parent
             name += "  \xF0\x9F\x94\x87";  // 🔇
         m_peerLabel->setText(name);
     });
+    connect(m_callManager, &CallManager::screenShareChanged, this, [this]() {
+        if (m_callManager->isScreenSharing()) {
+            m_shareBtn->setStyleSheet(circleButtonStyle("#2ec4b6", "white", "#3ed4c6"));
+        } else {
+            m_shareBtn->setStyleSheet(circleButtonStyle("#3a3a36", "#e4e0da", "#4a4a46"));
+        }
+    });
+    connect(m_callManager, &CallManager::remoteScreenProviderChanged, this, [this]() {
+        auto *provider = m_callManager->remoteScreenProvider();
+        if (provider) {
+            connect(provider, &VideoFrameProvider::imageReady, this, [this](const QImage &img) {
+                if (img.width() > 32 && img.height() > 32) {
+                    if (!m_remoteVideo->isVisible()) {
+                        m_remoteVideo->show();
+                        setMinimumSize(600, 450);
+                        resize(800, 600);
+                    }
+                    m_remoteVideo->setImage(img);
+                }
+            });
+        }
+    });
 }
 
 void CallDialog::buildUi()
@@ -178,6 +200,13 @@ void CallDialog::buildUi()
     m_cameraBtn->setStyleSheet(circleButtonStyle("#3a3a36", "#e4e0da", "#4a4a46"));
     m_cameraBtn->setText("\xF0\x9F\x8E\xA5");  // camera emoji
     activeLayout->addWidget(m_cameraBtn);
+
+    m_shareBtn = new QPushButton(m_activeRow);
+    m_shareBtn->setCursor(Qt::PointingHandCursor);
+    m_shareBtn->setToolTip("Share screen");
+    m_shareBtn->setStyleSheet(circleButtonStyle("#3a3a36", "#e4e0da", "#4a4a46"));
+    m_shareBtn->setText("\xF0\x9F\x96\xA5");  // desktop monitor emoji
+    activeLayout->addWidget(m_shareBtn);
     activeLayout->addStretch();
 
     layout->addWidget(m_activeRow);
@@ -228,6 +257,7 @@ void CallDialog::buildUi()
     connect(m_muteBtn, &QPushButton::clicked, m_callManager, &CallManager::toggleMute);
     connect(m_hangupBtn, &QPushButton::clicked, m_callManager, &CallManager::hangUp);
     connect(m_cameraBtn, &QPushButton::clicked, m_callManager, &CallManager::toggleCamera);
+    connect(m_shareBtn, &QPushButton::clicked, m_callManager, &CallManager::toggleScreenShare);
     connect(m_acceptBtn, &QPushButton::clicked, this, [this]() {
         m_callManager->acceptCall(false);
     });
