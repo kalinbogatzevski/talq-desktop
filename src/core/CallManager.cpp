@@ -449,9 +449,8 @@ void CallManager::toggleMute() {
 
 void CallManager::toggleCamera() {
     m_cameraOn = !m_cameraOn;
-    emit cameraChanged();
 
-    // In-place source swap — no pipeline teardown, same as browser's replaceTrack
+    // Do the actual swap BEFORE emitting signals
     if (m_useP2P && m_peerPipeline) {
         m_cameraOn ? m_peerPipeline->enableCamera(videoDeviceIndex(), preferHd1080())
                    : m_peerPipeline->disableCamera();
@@ -465,6 +464,7 @@ void CallManager::toggleCamera() {
         }
         emit localVideoProviderChanged();
     }
+    emit cameraChanged();
 
     // Broadcast video state + update call flags on server
     broadcastMediaState("video", m_cameraOn);

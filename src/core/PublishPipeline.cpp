@@ -558,6 +558,16 @@ void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)
     // 1. Stop dummy and remove it from the bin so it can't interfere.
     //    Dummy was keeping the video transport warm — now camera takes over.
     if (m_dummySrc) {
+        // Read dummy payloader's current seqnum+timestamp BEFORE stopping.
+        // Camera payloader must continue from here so SRTP doesn't reject
+        // the sequence jump as a replay attack.
+        guint dummySeq = 0, dummyTs = 0;
+        g_object_get(m_dummyPay, "seqnum", &dummySeq, nullptr);
+        g_object_get(m_dummyPay, "timestamp", &dummyTs, nullptr);
+        g_object_set(m_videoPayloader, "seqnum-offset", dummySeq + 1, nullptr);
+        g_object_set(m_videoPayloader, "timestamp-offset", dummyTs + 1, nullptr);
+        qDebug() << "PublishPipeline: camera continues from dummy seq=" << dummySeq << "ts=" << dummyTs;
+
         gst_element_set_state(m_dummySsrcFilter, GST_STATE_NULL);
         gst_element_set_state(m_dummyPay, GST_STATE_NULL);
         gst_element_set_state(m_dummyEnc, GST_STATE_NULL);
@@ -604,7 +614,7 @@ void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)
     g_object_set(m_cameraValve, "drop", FALSE, nullptr);
 
     m_cameraEnabled = true;
-    qDebug() << "PublishPipeline: camera enabled (replaced dummy on same SSRC)";
+    qDebug() << "PublishPipeline: camera enabled";
 }
 
 void PublishPipeline::disableCamera()

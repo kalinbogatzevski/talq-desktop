@@ -74,14 +74,15 @@ CallDialog::CallDialog(CallManager *callManager, ApiClient *api, QWidget *parent
     });
     connect(m_callManager, &CallManager::remoteMediaChanged, this, [this]() {
         if (m_callManager->remoteVideoMuted()) {
-            // Remote stopped camera — hide remote video, but keep dialog large
-            // if local camera is still streaming (preview needs the space)
-            if (m_remoteVideo->isVisible() && !m_callManager->isCameraOn()) {
-                m_remoteVideo->hide();
+            // Disconnect remote video signal so stale frames don't re-show it
+            if (m_lastRemoteProvider)
+                disconnect(m_lastRemoteProvider, nullptr, this, nullptr);
+            m_lastRemoteProvider = nullptr;
+            m_videoConnected = false;
+            m_remoteVideo->hide();
+            if (!m_callManager->isCameraOn()) {
                 setMinimumSize(300, 300);
                 resize(300, 340);
-            } else if (m_remoteVideo->isVisible()) {
-                m_remoteVideo->hide();
             }
         }
         // Update peer label to show remote mic state
@@ -313,10 +314,22 @@ void CallDialog::onMuteChanged()
 
 void CallDialog::onCameraChanged()
 {
-    if (m_callManager->isCameraOn())
+    if (m_callManager->isCameraOn()) {
         m_cameraBtn->setStyleSheet(circleButtonStyle("#2ec4b6", "white", "#3ed4c6"));
-    else
+    } else {
         m_cameraBtn->setStyleSheet(circleButtonStyle("#3a3a36", "#e4e0da", "#4a4a46"));
+        // Disconnect local preview signal so stale frames don't re-show it
+        if (m_lastLocalProvider)
+            disconnect(m_lastLocalProvider, nullptr, this, nullptr);
+        m_lastLocalProvider = nullptr;
+        m_localConnected = false;
+        m_localPreview->hide();
+        // Shrink dialog if remote video also not showing
+        if (!m_remoteVideo->isVisible()) {
+            setMinimumSize(300, 300);
+            resize(300, 340);
+        }
+    }
 }
 
 void CallDialog::fetchAvatar(const QString &userId)
@@ -363,6 +376,7 @@ void CallDialog::connectVideoProviders()
                 m_localPreview->raise();
                 if (!m_remoteVideo->isVisible()) {
                     m_remoteVideo->show();
+                    setMinimumSize(400, 400);
                     resize(400, 500);
                 }
             }
