@@ -161,14 +161,16 @@ void SignalingClient::onTextMessage(const QString &msg)
         if (msgType == "offer") {
             QString sdp = msgData["payload"].toObject()["sdp"].toString();
             QString sid = msgData["sid"].toString();
+            QString roomType = msgData["roomType"].toString("video");
             qDebug() << "Signaling: received offer from" << senderSessionId.left(20) << "sid=" << sid;
-            emit offerReceived(senderSessionId, sdp, sid);
+            emit offerReceived(senderSessionId, sdp, sid, roomType);
             return;
         }
         if (msgType == "answer") {
             QString sdp = msgData["payload"].toObject()["sdp"].toString();
+            QString roomType = msgData["roomType"].toString("video");
             qDebug() << "Signaling: received answer from" << senderSessionId.left(20);
-            emit answerReceived(senderSessionId, sdp);
+            emit answerReceived(senderSessionId, sdp, roomType);
             return;
         }
         if (msgType == "candidate") {
@@ -391,7 +393,7 @@ void SignalingClient::sendRoomMessage(const QString &msgType)
 
 void SignalingClient::sendSessionMessage(const QString &toSessionId, const QString &type,
                                           const QJsonObject &payload, const QString &sid,
-                                          const QJsonObject &extraData)
+                                          const QJsonObject &extraData, const QString &roomType)
 {
     if (!m_authenticated) return;
 
@@ -408,7 +410,7 @@ void SignalingClient::sendSessionMessage(const QString &toSessionId, const QStri
     data["type"] = type;
     data["to"] = toSessionId;
     data["sid"] = sid;
-    data["roomType"] = QString("video");
+    data["roomType"] = roomType;
     data["payload"] = payload;
     // Merge extra fields (e.g. audiocodec, videocodec for Janus room creation)
     for (auto it = extraData.begin(); it != extraData.end(); ++it)
@@ -423,7 +425,7 @@ void SignalingClient::sendSessionMessage(const QString &toSessionId, const QStri
 }
 
 void SignalingClient::sendOffer(const QString &toSessionId, const QString &sdp,
-                                const QString &sid, const QString &nick)
+                                const QString &sid, const QString &nick, const QString &roomType)
 {
     QJsonObject payload;
     payload["type"] = QString("offer");
@@ -435,32 +437,50 @@ void SignalingClient::sendOffer(const QString &toSessionId, const QString &sdp,
     QJsonObject extra;
     extra["audiocodec"] = QString("opus");
     extra["videocodec"] = QString("vp8");
-    sendSessionMessage(toSessionId, "offer", payload, sid, extra);
+    sendSessionMessage(toSessionId, "offer", payload, sid, extra, roomType);
     qDebug() << "Signaling: sent offer to" << toSessionId.left(20) << "sid=" << sid.left(10);
 }
 
 void SignalingClient::sendAnswer(const QString &toSessionId, const QString &sdp,
-                                  const QString &sid, const QString &nick)
+                                  const QString &sid, const QString &nick, const QString &roomType)
 {
     QJsonObject payload;
     payload["type"] = QString("answer");
     payload["sdp"] = sdp;
     if (!nick.isEmpty()) payload["nick"] = nick;
-    sendSessionMessage(toSessionId, "answer", payload, sid);
+    sendSessionMessage(toSessionId, "answer", payload, sid, {}, roomType);
     qDebug() << "Signaling: sent answer to" << toSessionId.left(20) << "sid=" << sid.left(10);
 }
 
 void SignalingClient::sendCandidate(const QString &toSessionId, const QJsonObject &candidate,
-                                     const QString &sid)
+                                     const QString &sid, const QString &roomType)
 {
     QJsonObject payload;
     payload["candidate"] = candidate;
-    sendSessionMessage(toSessionId, "candidate", payload, sid);
+    sendSessionMessage(toSessionId, "candidate", payload, sid, {}, roomType);
 }
 
 void SignalingClient::sendEndOfCandidates(const QString &toSessionId, const QString &sid)
 {
     sendSessionMessage(toSessionId, "endOfCandidates", QJsonObject(), sid);
+}
+
+void SignalingClient::sendBroadcastMessage(const QJsonObject &data)
+{
+    if (!m_authenticated || m_currentRoom.isEmpty()) return;
+
+    QJsonObject msg;
+    msg["type"] = QString("message");
+
+    QJsonObject message;
+    QJsonObject recipient;
+    recipient["type"] = QString("room");
+    message["recipient"] = recipient;
+    message["data"] = data;
+    msg["message"] = message;
+
+    m_ws.sendTextMessage(QJsonDocument(msg).toJson(QJsonDocument::Compact));
+    qDebug() << "Signaling: sent broadcast message" << data["type"].toString();
 }
 
 void SignalingClient::requestOffer(const QString &sessionId, const QString &roomType)
