@@ -36,6 +36,7 @@ signals:
     void iceCandidateReady(const QString &candidate, int sdpMLineIndex, const QString &sdpMid);
     void iceStateChanged(const QString &state);
     void error(const QString &message);
+    void mediaStateReceived(const QString &type);
 
 private:
     void cleanup();
@@ -63,4 +64,6 @@ private:
     static void onAnswerCreated(GstPromise *promise, gpointer userData);
     static void onIceStateChanged(GObject *obj, GParamSpec *pspec, gpointer userData);
     static GstFlowReturn onNewVideoSample(GstAppSink *sink, gpointer userData);
+    static void onDataChannel(GstElement *webrtc, GstWebRTCDataChannel *channel, gpointer userData);
+    static void onDataChannelMessage(GstWebRTCDataChannel *channel, gchar *str, gpointer userData);
 };
