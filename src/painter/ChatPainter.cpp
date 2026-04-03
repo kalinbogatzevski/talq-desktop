@@ -409,6 +409,37 @@ void ChatPainter::mousePressEvent(QMouseEvent *event)
         m_dragStartY = event->position().y();
         m_dragStartScroll = m_scrollY;
         m_pressHit = hitTestAt(event->position().x(), event->position().y());
+
+        // Check if press lands on body text (for text selection)
+        m_textAnchorSet = false;
+        if (event->button() == Qt::LeftButton && !m_selectionMode
+            && !(event->modifiers() & Qt::ControlModifier)) {
+            QPointF canvasPos(event->position().x(), event->position().y() + m_scrollY);
+            int idx = layoutIndexAtY(canvasPos.y());
+            if (isOnBodyText(canvasPos, idx)) {
+                // Don't start text selection if clicking a link
+                const auto &ml = m_layouts[idx];
+                QString link = hitTestLink(ml, canvasPos);
+                if (link.isEmpty()) {
+                    int cursorPos = hitTestBodyCursor(ml, canvasPos);
+                    if (cursorPos >= 0) {
+                        m_textAnchorSet = true;
+                        m_textSelection.anchorLayoutIdx = idx;
+                        m_textSelection.anchorCursorPos = cursorPos;
+                        m_textSelection.activeLayoutIdx = idx;
+                        m_textSelection.activeCursorPos = cursorPos;
+                        m_textSelection.active = false;  // not yet — wait for drag
+                    }
+                }
+            }
+        }
+
+        // Click clears any existing text selection (unless we just set a new anchor)
+        if (!m_textAnchorSet && m_textSelection.hasSelection()) {
+            m_textSelection.clear();
+            update();
+        }
+
         event->accept();
     }
 }
@@ -421,29 +452,82 @@ void ChatPainter::mouseMoveEvent(QMouseEvent *event)
             m_dragMoved = true;
 
         if (m_dragMoved && event->buttons() & Qt::LeftButton) {
-            // Drag-to-select: enter selection mode on first drag, then sweep
-            if (!m_selectionMode) {
-                // Select the message at press position first
-                qreal pressCanvasY = m_pressCanvasPos.y() + m_scrollY;
-                int pressIdx = layoutIndexAtY(pressCanvasY);
-                if (pressIdx >= 0 && pressIdx < m_layouts.size()) {
-                    const auto &ml = m_layouts[pressIdx];
-                    if (!ml.isSystem && ml.messageId > 0)
-                        enterSelectionMode(ml.messageId);
-                }
-            }
+            // Text selection: drag started on body text
+            if (m_textAnchorSet) {
+                m_textSelection.active = true;
+                QPointF canvasPos(event->position().x(), event->position().y() + m_scrollY);
+                int idx = layoutIndexAtY(canvasPos.y());
 
-            if (m_selectionMode) {
-                // Select/deselect messages as cursor sweeps over them
-                qreal canvasY = event->position().y() + m_scrollY;
-                int idx = layoutIndexAtY(canvasY);
+                // Clamp to valid range
+                if (idx < 0) idx = 0;
+                if (idx >= m_layouts.size()) idx = m_layouts.size() - 1;
+
                 if (idx >= 0 && idx < m_layouts.size()) {
                     const auto &ml = m_layouts[idx];
-                    if (!ml.isSystem && ml.messageId > 0
-                        && !m_selectedIds.contains(ml.messageId)) {
-                        m_selectedIds.insert(ml.messageId);
-                        emit selectionChanged(m_selectedIds.size());
-                        update();
+                    if (ml.bodyDoc && !ml.isSystem) {
+                        int cursorPos = hitTestBodyCursor(ml, canvasPos);
+                        if (cursorPos < 0) {
+                            // Mouse is outside body rect — clamp to start or end
+                            if (canvasPos.y() < ml.bodyRect.top())
+                                cursorPos = 0;
+                            else
+                                cursorPos = ml.bodyDoc->characterCount() - 1;
+                        }
+                        m_textSelection.activeLayoutIdx = idx;
+                        m_textSelection.activeCursorPos = cursorPos;
+                    } else {
+                        // System message or no body — clamp to nearest boundary
+                        if (idx < m_textSelection.anchorLayoutIdx) {
+                            // Dragging upward past a system msg — use the message above it
+                            for (int j = idx; j >= 0; --j) {
+                                if (!m_layouts[j].isSystem && m_layouts[j].bodyDoc) {
+                                    m_textSelection.activeLayoutIdx = j;
+                                    m_textSelection.activeCursorPos = 0;
+                                    break;
+                                }
+                            }
+                        } else {
+                            // Dragging downward past a system msg
+                            for (int j = idx; j < m_layouts.size(); ++j) {
+                                if (!m_layouts[j].isSystem && m_layouts[j].bodyDoc) {
+                                    m_textSelection.activeLayoutIdx = j;
+                                    m_textSelection.activeCursorPos = m_layouts[j].bodyDoc->characterCount() - 1;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                setCursor(Qt::IBeamCursor);
+                update();
+                event->accept();
+                return;
+            }
+
+            // Whole-message selection: drag NOT on body text + Ctrl held, or already in selection mode
+            if (event->modifiers() & Qt::ControlModifier || m_selectionMode) {
+                if (!m_selectionMode) {
+                    qreal pressCanvasY = m_pressCanvasPos.y() + m_scrollY;
+                    int pressIdx = layoutIndexAtY(pressCanvasY);
+                    if (pressIdx >= 0 && pressIdx < m_layouts.size()) {
+                        const auto &ml = m_layouts[pressIdx];
+                        if (!ml.isSystem && ml.messageId > 0)
+                            enterSelectionMode(ml.messageId);
+                    }
+                }
+
+                if (m_selectionMode) {
+                    qreal canvasY = event->position().y() + m_scrollY;
+                    int idx = layoutIndexAtY(canvasY);
+                    if (idx >= 0 && idx < m_layouts.size()) {
+                        const auto &ml = m_layouts[idx];
+                        if (!ml.isSystem && ml.messageId > 0
+                            && !m_selectedIds.contains(ml.messageId)) {
+                            m_selectedIds.insert(ml.messageId);
+                            emit selectionChanged(m_selectedIds.size());
+                            update();
+                        }
                     }
                 }
             }
@@ -453,11 +537,18 @@ void ChatPainter::mouseMoveEvent(QMouseEvent *event)
         return;
     }
 
+    // Not dragging — update hover state and cursor
     if (!m_selectionMode) {
         setHoveredPos(event->position().x(), event->position().y());
+        QPointF canvasPos(event->position().x(), event->position().y() + m_scrollY);
+        int idx = layoutIndexAtY(canvasPos.y());
+
+        // IBeam cursor over body text, pointing hand over links
         QString hit = hitTestAt(event->position().x(), event->position().y());
         if (!hit.isEmpty())
             setCursor(Qt::PointingHandCursor);
+        else if (isOnBodyText(canvasPos, idx))
+            setCursor(Qt::IBeamCursor);
         else
             setCursor(Qt::ArrowCursor);
     } else {
@@ -469,6 +560,20 @@ void ChatPainter::mouseReleaseEvent(QMouseEvent *event)
 {
     if (!m_dragging) return;
     m_dragging = false;
+
+    // Text selection: if drag happened on body text, freeze selection and done
+    if (m_textAnchorSet && m_dragMoved && m_textSelection.active) {
+        m_textAnchorSet = false;
+        event->accept();
+        return;
+    }
+    m_textAnchorSet = false;
+
+    // If we had a text selection and user clicked (no drag), clear it
+    if (!m_dragMoved && m_textSelection.hasSelection()) {
+        m_textSelection.clear();
+        update();
+    }
 
     if (!m_dragMoved && event->button() == Qt::LeftButton) {
         // Selection mode: click toggles selection on entire row
