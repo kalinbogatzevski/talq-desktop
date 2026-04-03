@@ -1017,6 +1017,18 @@ void CallManager::onOfferReceived(const QString &fromSessionId, const QString &s
         }
     });
 
+    connect(sub, &SubscribePipeline::mediaStateReceived,
+            this, [this](const QString &type) {
+        if (type == "audioOn")       { m_remoteAudioMuted = false; emit remoteMediaChanged(); }
+        else if (type == "audioOff") { m_remoteAudioMuted = true;  emit remoteMediaChanged(); }
+        else if (type == "videoOn")  { m_remoteVideoMuted = false; emit remoteMediaChanged(); }
+        else if (type == "videoOff") { m_remoteVideoMuted = true;  emit remoteMediaChanged(); }
+        else if (type == "speaking" || type == "stoppedSpeaking") {
+            // Received but no UI action yet — future: highlight active speaker
+            qDebug() << "CallManager: remote" << type;
+        }
+    });
+
     connect(sub, &SubscribePipeline::error, this, [this, fromSessionId](const QString &msg) {
         qWarning() << "CallManager: subscriber pipeline error for" << fromSessionId.left(20) << ":" << msg;
     });
