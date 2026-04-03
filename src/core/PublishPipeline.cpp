@@ -273,8 +273,8 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         GstWebRTCDataChannel *dc = nullptr;
         g_signal_emit_by_name(m_webrtcbin, "create-data-channel", "status", nullptr, &dc);
         if (dc) {
+            m_statusDataChannel = dc;  // takes ownership of the ref
             qDebug() << "PublishPipeline: created data channel 'status'";
-            g_object_unref(dc);
         }
     }
 
@@ -345,6 +345,11 @@ void PublishPipeline::cleanup()
     }
     if (m_previewAppsink)
         g_signal_handlers_disconnect_by_data(m_previewAppsink, this);
+
+    if (m_statusDataChannel) {
+        g_object_unref(m_statusDataChannel);
+        m_statusDataChannel = nullptr;
+    }
 
     if (m_pipeline) {
         qDebug() << "PublishPipeline::cleanup() — setting NULL state";
@@ -652,6 +657,12 @@ void PublishPipeline::pollBus()
         gst_message_unref(msg);
     }
     gst_object_unref(bus);
+}
+
+void PublishPipeline::sendStatusMessage(const QByteArray &json)
+{
+    if (!m_statusDataChannel || !m_running) return;
+    gst_webrtc_data_channel_send_string(m_statusDataChannel, json.constData());
 }
 
 // --- GStreamer callbacks (marshal to Qt thread) ---
