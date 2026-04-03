@@ -648,6 +648,36 @@ void ChatPainter::mouseReleaseEvent(QMouseEvent *event)
     event->accept();
 }
 
+void ChatPainter::mouseDoubleClickEvent(QMouseEvent *event)
+{
+    if (event->button() != Qt::LeftButton || m_selectionMode) {
+        QWidget::mouseDoubleClickEvent(event);
+        return;
+    }
+
+    QPointF canvasPos(event->position().x(), event->position().y() + m_scrollY);
+    int idx = layoutIndexAtY(canvasPos.y());
+    if (idx < 0 || idx >= m_layouts.size()) return;
+
+    const auto &ml = m_layouts[idx];
+    if (ml.isSystem || !ml.bodyDoc) return;
+
+    int cursorPos = hitTestBodyCursor(ml, canvasPos);
+    if (cursorPos < 0) return;
+
+    QTextCursor cursor(ml.bodyDoc.get());
+    cursor.setPosition(cursorPos);
+    cursor.select(QTextCursor::WordUnderCursor);
+
+    m_textSelection.anchorLayoutIdx = idx;
+    m_textSelection.anchorCursorPos = cursor.selectionStart();
+    m_textSelection.activeLayoutIdx = idx;
+    m_textSelection.activeCursorPos = cursor.selectionEnd();
+    m_textSelection.active = true;
+    update();
+    event->accept();
+}
+
 void ChatPainter::dragEnterEvent(QDragEnterEvent *event)
 {
     if (event->mimeData()->hasUrls())
@@ -669,6 +699,19 @@ void ChatPainter::keyPressEvent(QKeyEvent *event)
 {
     if (m_selectionMode && event->key() == Qt::Key_Escape) {
         exitSelectionMode();
+        event->accept();
+        return;
+    }
+    // Ctrl+C: copy selected text
+    if (event->matches(QKeySequence::Copy) && m_textSelection.hasSelection()) {
+        copySelectedText();
+        event->accept();
+        return;
+    }
+    // Escape clears text selection
+    if (event->key() == Qt::Key_Escape && m_textSelection.hasSelection()) {
+        m_textSelection.clear();
+        update();
         event->accept();
         return;
     }
