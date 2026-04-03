@@ -8,6 +8,36 @@
 #include "MessageLayout.h"
 #include "PainterTheme.h"
 
+/**
+ * Character-level text selection state, spanning one or more messages.
+ * Anchor = where the mouse was pressed. Active = where the mouse is now.
+ */
+struct TextSelection {
+    int anchorLayoutIdx = -1;
+    int anchorCursorPos = 0;
+    int activeLayoutIdx = -1;
+    int activeCursorPos = 0;
+    bool active = false;
+
+    bool hasSelection() const {
+        return active && !(anchorLayoutIdx == activeLayoutIdx
+                           && anchorCursorPos == activeCursorPos);
+    }
+    void clear() {
+        anchorLayoutIdx = activeLayoutIdx = -1;
+        anchorCursorPos = activeCursorPos = 0;
+        active = false;
+    }
+
+    struct Range { int startIdx, startPos, endIdx, endPos; };
+    Range normalized() const {
+        if (anchorLayoutIdx < activeLayoutIdx
+            || (anchorLayoutIdx == activeLayoutIdx && anchorCursorPos <= activeCursorPos))
+            return {anchorLayoutIdx, anchorCursorPos, activeLayoutIdx, activeCursorPos};
+        return {activeLayoutIdx, activeCursorPos, anchorLayoutIdx, anchorCursorPos};
+    }
+};
+
 class MessageListModel;
 class QNetworkReply;
 
@@ -98,6 +128,9 @@ private:
     int layoutIndexAtY(qreal viewportY) const;
     QString hitTestLink(const MessageLayout &ml, const QPointF &localPos) const;
     QString hitTestReaction(const MessageLayout &ml, const QPointF &localPos) const;
+    int hitTestBodyCursor(const MessageLayout &ml, const QPointF &canvasPos) const;
+    bool isOnBodyText(const QPointF &canvasPos, int layoutIdx) const;
+    void copySelectedText();
     QVariantMap variantMapFromLayout(const MessageLayout &ml) const;
 
     // ── Painting helpers ──
@@ -153,4 +186,8 @@ private:
     // ── Selection state ──
     bool m_selectionMode = false;
     QSet<int> m_selectedIds;
+
+    // ── Text selection state (character-level, Telegram-style) ──
+    TextSelection m_textSelection;
+    bool m_textAnchorSet = false;  // true if mousePress landed on body text
 };
