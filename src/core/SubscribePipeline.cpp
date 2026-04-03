@@ -1,5 +1,7 @@
 #include "core/SubscribePipeline.h"
 #include <QDebug>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QPointer>
 #include <QRegularExpression>
 #include <QUrl>
@@ -72,6 +74,8 @@ bool SubscribePipeline::start(const QString &stunServer, const QList<TurnServer>
                      G_CALLBACK(onPadAdded), this);
     g_signal_connect(m_webrtcbin, "notify::ice-connection-state",
                      G_CALLBACK(onIceStateChanged), this);
+    g_signal_connect(m_webrtcbin, "on-data-channel",
+                     G_CALLBACK(onDataChannel), this);
 
     // Bus watch — track ID for cleanup
     GstBus *bus = gst_element_get_bus(m_pipeline);
@@ -455,5 +459,31 @@ void SubscribePipeline::onIceStateChanged(GObject *obj, GParamSpec *, gpointer u
         if (!guard) return;
         qDebug() << "SubscribePipeline: ICE ->" << stateName;
         emit guard->iceStateChanged(stateName);
+    }, Qt::QueuedConnection);
+}
+
+void SubscribePipeline::onDataChannel(GstElement *, GstWebRTCDataChannel *channel, gpointer userData)
+{
+    auto *self = static_cast<SubscribePipeline *>(userData);
+    qDebug() << "SubscribePipeline: incoming data channel";
+    g_signal_connect(channel, "on-message-string",
+                     G_CALLBACK(onDataChannelMessage), self);
+}
+
+void SubscribePipeline::onDataChannelMessage(GstWebRTCDataChannel *, gchar *str, gpointer userData)
+{
+    auto *self = static_cast<SubscribePipeline *>(userData);
+    QByteArray raw(str);
+    QJsonDocument doc = QJsonDocument::fromJson(raw);
+    if (doc.isNull()) return;
+
+    QString type = doc.object().value("type").toString();
+    if (type.isEmpty()) return;
+
+    QPointer<SubscribePipeline> guard(self);
+    QMetaObject::invokeMethod(self, [guard, type]() {
+        if (!guard) return;
+        qDebug() << "SubscribePipeline: DC message:" << type;
+        emit guard->mediaStateReceived(type);
     }, Qt::QueuedConnection);
 }
