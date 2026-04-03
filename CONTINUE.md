@@ -1,20 +1,30 @@
-# TalQ v0.15.4 Continue Prompt
+# TalQ v0.15.6 Continue Prompt
 
 ## Current status
 Full QWidget app. QPainter rendering, no QML.
 **Audio calls WORKING** — bidirectional MCU/Janus. Multi-call, no crash.
 **Video receiving WORKING** — incoming video from browser/Android/TalQ displays correctly.
-**Video sending WORKING** — camera video reaches remote (TalQ→browser confirmed).
+**Video sending** — TalQ→browser works. TalQ→TalQ untested with latest funnel fix.
 **mfvideosrc FIXED** — added libgstd3d11/libgstd3dshader DLLs to deploy scripts.
 
-### Current camera architecture (direct pad swap, no input-selector)
-- Dummy branch runs continuously at startup (16x16 black, 1fps VP8, negligible bandwidth)
-- Dummy keeps webrtcbin's video transport warm (DTLS/SRTP session active)
-- Camera branch built lazily on first enableCamera() (avoids blocking startup)
-- enableCamera: stop dummy, gst_bin_remove dummy, link camera to same pad, same SSRC
-- disableCamera: valve drop=TRUE, pause camera, unlink from pad
-- Camera elements stay alive — no recreation on toggle
-- Same SSRC across dummy and camera
+### Current camera architecture (funnel + valve flips)
+Matches browser's replaceTrack() approach — studied from NC Talk spreed source code.
+- **Funnel** merges dummy and camera sources into shared encoder chain
+- **Both sources permanently linked** — zero unlinking, zero relinking
+- **Valve flips** control which source feeds the encoder
+- Shared chain: funnel → videoconvert → videoscale → vp8enc → rtpvp8pay → ssrcFilter → webrtcbin
+- Camera OFF: dummyValve=pass, cameraValve=drop
+- Camera ON: dummyValve=drop, cameraValve=pass, cameraSrc→PLAYING
+- **Zero SRTP errors** — encoder maintains continuous RTP sequence numbers
+- Camera source paused on disable (saves CPU), resumed on enable
+- Camera built lazily on first enableCamera (avoids blocking startup)
+- Camera auto-negotiates resolution (no fixed 720p cap)
+- videoconvert+videoscale between funnel and encoder handles resolution changes (16x16→native)
+
+### What needs testing
+- TalQ→TalQ video with funnel architecture (TalQ→browser confirmed working)
+- Camera toggle off/on/off/on (should work — no relinking, just valve flips)
+- Verify Janus DTLS timeout was caused by old code, not network issue
 
 ## Machine setup
 
@@ -41,14 +51,32 @@ cd /c/build/talq && bash /c/src/talk-desktop-qt/scripts/deploy-dev.sh --no-run
 
 ## What was done
 
+### Session 10 (2026-04-03 office)
+**Funnel architecture — final camera approach:**
+- Studied NC Talk browser source (spreed repo): uses replaceTrack() with BlackVideoEnforcer
+- Key insight: never unlink/relink — just swap the source feeding the encoder
+- Implemented funnel+valve: both dummy and camera permanently linked to funnel
+- enableCamera/disableCamera reduced to two valve flips (3 lines each)
+- Zero SRTP errors, zero not-linked errors, zero pipeline crashes
+- Added videoconvert+videoscale between funnel and encoder (handles 16x16→native resolution change)
+- Camera auto-negotiates resolution (removed 720p cap)
+- Camera auto-enabled when call reaches Active state (deferred from start())
+- Preview signal disconnect on camera off (prevents frozen frame re-show)
+- Remote video reconnects on remote unmute
+- Janus logs checked: DTLS timeout was symptom of old code not sending valid video RTP
+- **Released v0.15.5, v0.15.6**
+
+**Other fixes:**
+- SRTP seqnum continuity (dummy→camera sequence bridge) — superseded by funnel approach
+- `gst_element_link_filtered` invisible capsfilter bug found and fixed
+- cameraChanged signal emitted after disable (not before)
+- Ilko's installer rebuilt multiple times for iterative testing
+
 ### Session 9 (2026-04-02 home — evening)
-**Outbound video — FIXED:**
-- Root cause: v0.15.3 stopped dummy videotestsrc immediately after pipeline start, leaving webrtcbin's video transport dead (rtpbin never saw a video frame → camera frames linked later never forwarded to DTLS/SRTP)
-- Fix: dummy runs continuously (keeps transport warm), removed via `gst_bin_remove` when camera enables
-- Confirmed: TalQ→browser video call works bidirectionally
+- Outbound video fixed: dummy runs continuously, removed on camera enable
 - **Released v0.15.4**
 
-### Session 8 (2026-04-02 office — all day)
+### Session 8 (2026-04-02 office)
 **2nd-call crash — FIXED:**
 - Root cause: `m_lastRemoteProvider` raw pointer in CallDialog → use-after-free on 2nd call
 - Fix: QPointer (auto-nulls when subscriber is deleted)
@@ -163,7 +191,8 @@ docker logs talk-hpb_janus_1 2>&1 | tail -20
 ```
 
 ## Next steps
-- **Test TalQ→TalQ video** — confirmed TalQ→browser works, need to verify TalQ→TalQ
+- **Test TalQ→TalQ video** — v0.15.6 has funnel+videoscale fix, needs testing with Ilko
+- **Test camera toggle cycles** — on/off/on/off should be instant with valve flips
 - **Screen sharing** — d3d11screencapturesrc
 - **Background blur** — Windows Studio Effects API
 - **Data channel media state** — browser sends audioOn/Off via data channel

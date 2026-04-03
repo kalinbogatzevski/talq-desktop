@@ -12,12 +12,14 @@
  * Captures local audio, encodes as Opus, sends via RTP to the MCU.
  * Creates an offer; MCU answers back.
  *
- * Video architecture (source-level swap, like browser's replaceTrack):
- * A single shared encoder chain (vp8enc → rtpvp8pay → ssrcFilter → webrtcbin)
- * is built once at startup and NEVER torn down. Only the SOURCE feeding the
- * encoder changes: dummy videotestsrc when camera is off, mfvideosrc when on.
- * The encoder maintains RTP sequence number continuity — no SRTP issues,
- * no renegotiation, instant switch.
+ * Video architecture (funnel + valve flips):
+ * Both dummy (16x16 black) and camera sources are PERMANENTLY linked to a
+ * funnel element via valves. Only one valve is open at a time. Switching
+ * between dummy and camera is a pair of g_object_set("drop") calls — no
+ * unlinking, no relinking, no pad swaps. The encoder chain downstream of
+ * the funnel (vp8enc → rtpvp8pay → ssrcFilter → webrtcbin) is built once
+ * and never torn down. RTP sequence number continuity is maintained across
+ * all switches.
  */
 class PublishPipeline : public QObject
 {
@@ -65,19 +67,21 @@ private:
     guint m_busWatchId = 0;
 
     // Shared encoder chain (built once, never torn down):
-    // [source] → vp8enc → rtpvp8pay → videoSsrcFilter → webrtcbin
+    // funnel → vp8enc → rtpvp8pay → videoSsrcFilter → webrtcbin
+    GstElement *m_funnel = nullptr;
     GstElement *m_videoEncoder = nullptr;
     GstElement *m_videoPayloader = nullptr;
     GstElement *m_videoSsrcFilter = nullptr;
-    GstPad *m_encoderSinkPad = nullptr;   // vp8enc's sink pad — the swap point
     GstPad *m_videoSinkPad = nullptr;     // webrtcbin's video sink pad
     guint32 m_videoSsrc = 0;
     bool m_cameraEnabled = false;
     int m_lvlDbg = 0;
 
-    // Dummy source (16x16 black, 1fps — feeds encoder when camera is off)
+    // Dummy source (16x16 black, 1fps — feeds funnel when camera is off)
     GstElement *m_dummySrc = nullptr;
+    GstElement *m_dummyCaps = nullptr;
     GstElement *m_dummyConv = nullptr;
+    GstElement *m_dummyValve = nullptr;
 
     // Camera branch elements (built lazily in buildCameraChain(), stay alive)
     GstElement *m_cameraSrc = nullptr;
