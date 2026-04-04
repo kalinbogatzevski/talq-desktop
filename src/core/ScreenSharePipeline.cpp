@@ -14,7 +14,8 @@ ScreenSharePipeline::~ScreenSharePipeline()
     stop();
 }
 
-bool ScreenSharePipeline::start(const QString &stunServer, const QList<TurnServer> &turnServers)
+bool ScreenSharePipeline::start(const QString &stunServer, const QList<TurnServer> &turnServers,
+                                int monitorIndex, quintptr windowHandle)
 {
     if (m_running) return false;
 
@@ -52,18 +53,33 @@ bool ScreenSharePipeline::start(const QString &stunServer, const QList<TurnServe
         }
     }
 
-    // Screen capture source — dx9screencapsrc is most reliable across GPU configs.
-    // d3d11screencapturesrc crashes on discrete GPU (DXGI duplication requires iGPU).
-    GstElement *screenSrc = gst_element_factory_make("dx9screencapsrc", nullptr);
-    if (screenSrc) {
-        g_object_set(screenSrc, "monitor", 0, nullptr);
-        qDebug() << "ScreenSharePipeline: using dx9screencapsrc";
+    // Screen capture source
+    GstElement *screenSrc = nullptr;
+
+    if (windowHandle != 0) {
+        // Window capture — try d3d11screencapturesrc with window-handle
+        // (Windows Graphics Capture API works even on discrete GPU for windows)
+        screenSrc = gst_element_factory_make("d3d11screencapturesrc", nullptr);
+        if (screenSrc) {
+            g_object_set(screenSrc, "window-handle", (guint64)windowHandle,
+                         "show-cursor", TRUE, nullptr);
+            qDebug() << "ScreenSharePipeline: window capture via d3d11screencapturesrc, hwnd=" << windowHandle;
+        }
+    }
+
+    if (!screenSrc) {
+        // Monitor capture — dx9screencapsrc is most reliable across GPU configs
+        screenSrc = gst_element_factory_make("dx9screencapsrc", nullptr);
+        if (screenSrc) {
+            g_object_set(screenSrc, "monitor", monitorIndex, "cursor", TRUE, nullptr);
+            qDebug() << "ScreenSharePipeline: monitor" << monitorIndex << "via dx9screencapsrc";
+        }
     }
     if (!screenSrc) {
         screenSrc = gst_element_factory_make("gdiscreencapsrc", nullptr);
         if (screenSrc) {
-            g_object_set(screenSrc, "monitor", 0, nullptr);
-            qDebug() << "ScreenSharePipeline: using gdiscreencapsrc";
+            g_object_set(screenSrc, "monitor", monitorIndex, "cursor", TRUE, nullptr);
+            qDebug() << "ScreenSharePipeline: monitor" << monitorIndex << "via gdiscreencapsrc";
         }
     }
     if (!screenSrc) {

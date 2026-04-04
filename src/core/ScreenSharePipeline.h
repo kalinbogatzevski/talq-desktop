@@ -20,7 +20,8 @@ public:
     explicit ScreenSharePipeline(QObject *parent = nullptr);
     ~ScreenSharePipeline() override;
 
-    bool start(const QString &stunServer, const QList<TurnServer> &turnServers = {});
+    bool start(const QString &stunServer, const QList<TurnServer> &turnServers = {},
+                int monitorIndex = 0, quintptr windowHandle = 0);
     void stop();
     void setRemoteAnswer(const QString &sdp);
     void addIceCandidate(const QString &candidate, int sdpMLineIndex, const QString &sdpMid);
