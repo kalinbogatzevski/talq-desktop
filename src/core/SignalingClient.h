@@ -59,6 +59,7 @@ public:
                             const QJsonObject &extraData = {},
                             const QString &roomType = "video");
     void sendBroadcastMessage(const QJsonObject &data);
+    void sendMinimalMessage(const QString &toSessionId, const QJsonObject &data);
     bool hasMcu() const { return m_hasMcu; }
 
 signals:
