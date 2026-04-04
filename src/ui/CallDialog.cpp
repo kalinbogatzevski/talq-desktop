@@ -7,6 +7,8 @@
 #include <QScreen>
 #include <QPainter>
 #include <QNetworkReply>
+#include <QDesktopServices>
+#include <QUrl>
 
 static QString circleButtonStyle(const QString &bg, const QString &fg, const QString &hoverBg)
 {
@@ -207,6 +209,16 @@ void CallDialog::buildUi()
     m_shareBtn->setStyleSheet(circleButtonStyle("#3a3a36", "#e4e0da", "#4a4a46"));
     m_shareBtn->setText("\xF0\x9F\x96\xA5");  // desktop monitor emoji
     activeLayout->addWidget(m_shareBtn);
+
+    auto *blurBtn = new QPushButton(m_activeRow);
+    blurBtn->setCursor(Qt::PointingHandCursor);
+    blurBtn->setToolTip("Open Windows Camera Settings\n(Background blur via Studio Effects)");
+    blurBtn->setStyleSheet(circleButtonStyle("#3a3a36", "#e4e0da", "#4a4a46"));
+    blurBtn->setText("\xF0\x9F\x8C\x80");  // cyclone emoji (blur)
+    activeLayout->addWidget(blurBtn);
+    connect(blurBtn, &QPushButton::clicked, this, []() {
+        QDesktopServices::openUrl(QUrl("ms-settings:camera"));
+    });
     activeLayout->addStretch();
 
     layout->addWidget(m_activeRow);
