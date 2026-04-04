@@ -106,23 +106,30 @@ CallDialog::CallDialog(CallManager *callManager, ApiClient *api, QWidget *parent
     connect(m_callManager, &CallManager::remoteScreenProviderChanged, this, [this]() {
         auto *provider = m_callManager->remoteScreenProvider();
         if (provider) {
-            // Screen share started — show screen frames in remote video area
+            // Screen share started — maximize dialog for readability
+            if (!m_remoteVideo->isVisible())
+                m_remoteVideo->show();
+            m_avatarLabel->hide();
+            m_stateLabel->hide();
+            m_statusDetailLabel->hide();
+            m_durationLabel->hide();
+            showMaximized();
             connect(provider, &VideoFrameProvider::imageReady, this, [this](const QImage &img) {
-                if (img.width() > 32 && img.height() > 32) {
-                    if (!m_remoteVideo->isVisible()) {
-                        m_remoteVideo->show();
-                        setMinimumSize(600, 450);
-                        resize(800, 600);
-                    }
+                if (img.width() > 32 && img.height() > 32)
                     m_remoteVideo->setImage(img);
-                }
             });
         } else {
-            // Screen share stopped — disconnect screen provider, reconnect camera
+            // Screen share stopped — restore dialog, reconnect camera
             if (m_lastRemoteProvider)
                 disconnect(m_lastRemoteProvider, nullptr, this, nullptr);
             m_lastRemoteProvider = nullptr;
             m_videoConnected = false;
+            m_avatarLabel->show();
+            m_stateLabel->show();
+            m_statusDetailLabel->show();
+            m_durationLabel->show();
+            showNormal();
+            resize(400, 500);
             connectVideoProviders();
         }
     });
