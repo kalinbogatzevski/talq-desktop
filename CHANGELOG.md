@@ -1,5 +1,32 @@
 # Changelog
 
+## v0.16.0 (2026-04-04)
+
+### Screen sharing
+- Receive screen shares from browser users (full MCU signaling support)
+- Share button in call dialog (monitor icon)
+- Dialog maximizes when viewing screen share, restores when stopped
+- Remote camera hidden during screen share (no fighting frames)
+- Handles unshareScreen message — clean teardown when remote stops sharing
+- dx9screencapsrc capture source (d3d11 fallback for discrete GPU)
+- ScreenSharePipeline with roomType "screen" signaling
+- SignalingClient extended: roomType on all methods, sendMinimalMessage, sendBroadcastMessage
+
+### Hardware acceleration
+- NVIDIA NVDEC VP8 hardware decoding (GPU) with Intel DXVA fallback
+- BGRx direct frame path — no CPU YUV→RGB conversion
+- Pre-scale large frames in VideoWidget to reduce QPainter load
+- GStreamer plugin status pills on welcome page (green=loaded, red=missing)
+- GPU acceleration status on welcome page
+- Codec + decoder pills in call dialog (VP8/NVDEC/DXVA/Software)
+
+### Video fullscreen
+- Double-click any video widget to go fullscreen
+- Esc to return to normal view
+
+### Background blur
+- Button opens Windows Camera Settings for Studio Effects (NPU hardware)
+
 ## v0.15.8 (2026-04-04)
 
 ### Data channel media state

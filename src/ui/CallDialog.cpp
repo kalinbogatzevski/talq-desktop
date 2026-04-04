@@ -39,6 +39,7 @@ void VideoWidget::paintEvent(QPaintEvent *)
 void VideoWidget::mouseDoubleClickEvent(QMouseEvent *)
 {
     if (m_fullscreen) {
+        if (m_escHint) m_escHint->hide();
         setWindowFlags(Qt::SubWindow);
         showNormal();
         m_fullscreen = false;
@@ -46,13 +47,43 @@ void VideoWidget::mouseDoubleClickEvent(QMouseEvent *)
         setWindowFlags(Qt::Window | Qt::FramelessWindowHint);
         showFullScreen();
         setFocus();
+        setMouseTracking(true);
         m_fullscreen = true;
+
+        if (!m_escHint) {
+            m_escHint = new QLabel(this);
+            m_escHint->setText("Press Esc to exit full screen");
+            m_escHint->setStyleSheet(
+                "QLabel { background: rgba(0,0,0,180); color: #e4e0da;"
+                " border-radius: 12px; padding: 8px 16px; font-size: 13px; }");
+            m_escHint->setAlignment(Qt::AlignCenter);
+            m_escHint->adjustSize();
+            m_escHintTimer = new QTimer(this);
+            m_escHintTimer->setSingleShot(true);
+            m_escHintTimer->setInterval(2000);
+            connect(m_escHintTimer, &QTimer::timeout, m_escHint, &QLabel::hide);
+        }
+        m_escHint->move((width() - m_escHint->width()) / 2, 20);
+        m_escHint->show();
+        m_escHint->raise();
+        m_escHintTimer->start();
+    }
+}
+
+void VideoWidget::mouseMoveEvent(QMouseEvent *)
+{
+    if (m_fullscreen && m_escHint) {
+        m_escHint->move((width() - m_escHint->width()) / 2, 20);
+        m_escHint->show();
+        m_escHint->raise();
+        m_escHintTimer->start();
     }
 }
 
 void VideoWidget::keyPressEvent(QKeyEvent *event)
 {
     if (m_fullscreen && event->key() == Qt::Key_Escape) {
+        if (m_escHint) m_escHint->hide();
         setWindowFlags(Qt::SubWindow);
         showNormal();
         m_fullscreen = false;
