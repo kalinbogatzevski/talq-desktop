@@ -196,14 +196,18 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
                 qDebug() << "CallManager: screen subscriber ICE:" << state;
             });
             m_screenSubscribers[from] = sub;
+            qDebug() << "CallManager: starting screen subscriber, STUN:" << m_stunServer;
             if (!sub->start(m_stunServer, m_turnServers)) {
+                qWarning() << "CallManager: failed to start screen subscriber pipeline";
                 m_screenSubscribers.remove(from);
                 sub->deleteLater();
                 return;
             }
+            qDebug() << "CallManager: screen subscriber started, setting offer...";
             m_remoteScreenProvider = sub->videoProvider();
             emit remoteScreenProviderChanged();
             sub->setRemoteOffer(sdp);
+            qDebug() << "CallManager: screen subscriber offer set";
             return;
         }
         onOfferReceived(from, sdp, sid);
@@ -556,11 +560,13 @@ void CallManager::toggleScreenShare()
             qDebug() << "CallManager: sent screen share offer, sid=" << m_screenShareSid;
 
             // Tell MCU to create screen share subscribers for each remote peer.
-            // Browser sends "sendoffer" with roomType "screen" to trigger MCU
-            // subscriber creation. See spreed signaling.js sendOffer().
+            // Browser sends minimal {type:"sendoffer", roomType:"screen"} to each peer.
+            // See spreed signaling.js Signaling.Standalone.prototype.sendOffer().
             for (const QString &peerId : m_subscribePipelines.keys()) {
-                m_signaling->sendSessionMessage(peerId, "sendoffer", QJsonObject(),
-                                                QString(), {}, "screen");
+                QJsonObject data;
+                data["type"] = QString("sendoffer");
+                data["roomType"] = QString("screen");
+                m_signaling->sendMinimalMessage(peerId, data);
                 qDebug() << "CallManager: sent sendoffer screen to" << peerId.left(20);
             }
         });
