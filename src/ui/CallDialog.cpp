@@ -456,6 +456,17 @@ void CallDialog::onRemoteFrame(const QImage &image)
     // Skip tiny frames (16x16 dummy black from MCU placeholder)
     if (image.width() <= 32 && image.height() <= 32)
         return;
+    // During screen share: show camera in small local preview overlay
+    if (m_callManager->remoteScreenProvider()) {
+        if (!m_localPreview->isVisible()) {
+            m_localPreview->show();
+            m_localPreview->raise();
+        }
+        m_localPreview->setImage(image);
+        m_localPreview->move(m_remoteVideo->x() + m_remoteVideo->width() - 128,
+                             m_remoteVideo->y() + m_remoteVideo->height() - 98);
+        return;
+    }
     // Don't show video if remote has muted their camera
     if (m_callManager->remoteVideoMuted())
         return;
