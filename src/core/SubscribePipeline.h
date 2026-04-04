@@ -30,6 +30,8 @@ public:
     QString remoteSessionId() const { return m_remoteSessionId; }
     bool isRunning() const { return m_running; }
     VideoFrameProvider *videoProvider() const { return m_videoProvider; }
+    QString videoCodec() const { return m_videoCodec; }
+    QString videoDecoder() const { return m_videoDecoder; }
 
 signals:
     void localAnswerReady(const QString &sdp);
@@ -55,6 +57,8 @@ private:
     GstElement *m_videoDepay = nullptr;
     QTimer *m_pliTimer = nullptr;
     bool m_audioChainCreated = false;
+    QString m_videoCodec;    // "VP8", "H264"
+    QString m_videoDecoder;  // "NVDEC", "DXVA", "Software"
 
     void createAudioChain(GstPad *pad);
     void createVideoChain(GstPad *pad, const gchar *encoding);

@@ -238,12 +238,37 @@ void CallDialog::buildUi()
 
     layout->addWidget(m_activeRow);
 
-    // ── Mic level indicator ──
-    m_micLevel = new QWidget(this);
+    // ── Mic level + info pills row ──
+    m_micRow = new QWidget(this);
+    auto *micRowLayout = new QHBoxLayout(m_micRow);
+    micRowLayout->setContentsMargins(0, 0, 0, 0);
+    micRowLayout->setSpacing(6);
+
+    m_micLevel = new QWidget(m_micRow);
     m_micLevel->setFixedHeight(3);
     m_micLevel->setStyleSheet("background: #2ec4b6;");
     m_micLevel->setFixedWidth(0);
-    layout->addWidget(m_micLevel, 0, Qt::AlignLeft);
+    micRowLayout->addWidget(m_micLevel);
+    micRowLayout->addStretch();
+
+    auto pillStyle = QStringLiteral(
+        "QLabel { background: #2a2a26; color: #8a8680; border-radius: 8px;"
+        " padding: 2px 8px; font-size: 10px; font-weight: bold; }");
+    auto pillStyleGreen = QStringLiteral(
+        "QLabel { background: #1a3a2a; color: #5ec76a; border-radius: 8px;"
+        " padding: 2px 8px; font-size: 10px; font-weight: bold; }");
+
+    m_codecPill = new QLabel(m_micRow);
+    m_codecPill->setStyleSheet(pillStyle);
+    m_codecPill->hide();
+    micRowLayout->addWidget(m_codecPill);
+
+    m_decoderPill = new QLabel(m_micRow);
+    m_decoderPill->setStyleSheet(pillStyleGreen);
+    m_decoderPill->hide();
+    micRowLayout->addWidget(m_decoderPill);
+
+    layout->addWidget(m_micRow);
 
     // ── Incoming call buttons row ──
     m_incomingRow = new QWidget(this);
@@ -299,6 +324,8 @@ void CallDialog::onStateChanged()
     case CallManager::Idle:
         m_remoteVideo->hide();
         m_localPreview->hide();
+        m_codecPill->hide();
+        m_decoderPill->hide();
         m_videoConnected = false;
         m_localConnected = false;
         setMinimumSize(300, 340);
@@ -330,6 +357,23 @@ void CallDialog::onStateChanged()
     case CallManager::Active:
         showActiveMode();
         m_stateLabel->setText("In call");
+        // Show codec/decoder pills after short delay (subscriber needs time to negotiate)
+        QTimer::singleShot(2000, this, [this]() {
+            QString codec = m_callManager->activeVideoCodec();
+            QString decoder = m_callManager->activeVideoDecoder();
+            if (!codec.isEmpty()) {
+                m_codecPill->setText(codec);
+                m_codecPill->show();
+            }
+            if (!decoder.isEmpty()) {
+                m_decoderPill->setText(decoder);
+                bool hw = (decoder != "Software");
+                m_decoderPill->setStyleSheet(hw
+                    ? "QLabel { background: #1a3a2a; color: #5ec76a; border-radius: 8px; padding: 2px 8px; font-size: 10px; font-weight: bold; }"
+                    : "QLabel { background: #3a1a1a; color: #d93025; border-radius: 8px; padding: 2px 8px; font-size: 10px; font-weight: bold; }");
+                m_decoderPill->show();
+            }
+        });
         break;
 
     case CallManager::Ending:

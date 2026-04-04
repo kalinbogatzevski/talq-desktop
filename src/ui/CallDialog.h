@@ -74,8 +74,11 @@ private:
     QPushButton *m_cameraBtn = nullptr;
     QPushButton *m_shareBtn = nullptr;
 
-    // Mic level indicator
+    // Mic level indicator + info pills
     QWidget *m_micLevel = nullptr;
+    QWidget *m_micRow = nullptr;
+    QLabel *m_codecPill = nullptr;
+    QLabel *m_decoderPill = nullptr;
 
     // Incoming call buttons
     QPushButton *m_acceptBtn = nullptr;
