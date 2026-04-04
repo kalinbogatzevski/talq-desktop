@@ -222,7 +222,7 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
         onAnswerReceived(from, sdp);
     });
     connect(m_signaling, &SignalingClient::candidateReceived,
-            this, [this](const QString &fromSessionId, const QJsonObject &candidate) {
+            this, [this](const QString &fromSessionId, const QJsonObject &candidate, const QString &roomType) {
         // Unwrap: payload may be {candidate: {candidate, sdpMLineIndex, sdpMid}}
         QJsonObject c = candidate.contains("candidate") && candidate["candidate"].isObject()
             ? candidate["candidate"].toObject() : candidate;
@@ -234,14 +234,22 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
             m_peerPipeline->addIceCandidate(cStr, mline, mid);
             return;
         }
+
+        // Route by roomType: screen candidates go to screen pipelines
+        if (roomType == "screen") {
+            if (m_screenSubscribers.contains(fromSessionId)) {
+                m_screenSubscribers[fromSessionId]->addIceCandidate(cStr, mline, mid);
+            } else if (m_screenSharePipeline) {
+                m_screenSharePipeline->addIceCandidate(cStr, mline, mid);
+            }
+            return;
+        }
+
+        // Video candidates
         if (fromSessionId == m_signaling->sessionId() && m_publishPipeline) {
             m_publishPipeline->addIceCandidate(cStr, mline, mid);
-        } else if (fromSessionId == m_signaling->sessionId() && m_screenSharePipeline) {
-            m_screenSharePipeline->addIceCandidate(cStr, mline, mid);
         } else if (m_subscribePipelines.contains(fromSessionId)) {
             m_subscribePipelines[fromSessionId]->addIceCandidate(cStr, mline, mid);
-        } else if (m_screenSubscribers.contains(fromSessionId)) {
-            m_screenSubscribers[fromSessionId]->addIceCandidate(cStr, mline, mid);
         }
     });
 

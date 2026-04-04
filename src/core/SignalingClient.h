@@ -69,7 +69,7 @@ signals:
     // WebRTC signaling signals
     void offerReceived(const QString &fromSessionId, const QString &sdp, const QString &sid, const QString &roomType);
     void answerReceived(const QString &fromSessionId, const QString &sdp, const QString &roomType);
-    void candidateReceived(const QString &fromSessionId, const QJsonObject &candidate);
+    void candidateReceived(const QString &fromSessionId, const QJsonObject &candidate, const QString &roomType);
     void endOfCandidatesReceived(const QString &fromSessionId);
     void participantJoinedCall(const QString &sessionId, int flags, const QString &displayName);
     void participantLeftCall(const QString &sessionId);
