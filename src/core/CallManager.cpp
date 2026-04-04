@@ -626,17 +626,7 @@ void CallManager::toggleScreenShare()
             m_screenShareSid = QString::number(qHash(sdp)).left(10);
             m_signaling->sendOffer(m_signaling->sessionId(), sdp, m_screenShareSid, {}, "screen");
             qDebug() << "CallManager: sent screen share offer, sid=" << m_screenShareSid;
-
-            // Tell MCU to create screen share subscribers for each remote peer.
-            // Browser sends minimal {type:"sendoffer", roomType:"screen"} to each peer.
-            // See spreed signaling.js Signaling.Standalone.prototype.sendOffer().
-            for (const QString &peerId : m_subscribePipelines.keys()) {
-                QJsonObject data;
-                data["type"] = QString("sendoffer");
-                data["roomType"] = QString("screen");
-                m_signaling->sendMinimalMessage(peerId, data);
-                qDebug() << "CallManager: sent sendoffer screen to" << peerId.left(20);
-            }
+            // sendoffer to peers is deferred until ICE connects (publisher must exist in Janus first)
         });
 
         connect(m_screenSharePipeline, &ScreenSharePipeline::iceCandidateReady,
@@ -651,6 +641,18 @@ void CallManager::toggleScreenShare()
         connect(m_screenSharePipeline, &ScreenSharePipeline::iceStateChanged,
                 this, [this](const QString &state) {
             qDebug() << "CallManager: screen share ICE:" << state;
+            if (state == "connected" || state == "completed") {
+                // Publisher is now established in Janus — notify remote peers to subscribe.
+                // Must be deferred until after ICE connects, otherwise Janus hasn't
+                // registered the publisher yet and GetOrCreateSubscriber fails.
+                for (const QString &peerId : m_subscribePipelines.keys()) {
+                    QJsonObject data;
+                    data["type"] = QString("sendoffer");
+                    data["roomType"] = QString("screen");
+                    m_signaling->sendMinimalMessage(peerId, data);
+                    qDebug() << "CallManager: sent sendoffer screen to" << peerId.left(20);
+                }
+            }
             if (state == "failed") {
                 qWarning() << "CallManager: screen share ICE failed";
                 m_screenSharing = false;
