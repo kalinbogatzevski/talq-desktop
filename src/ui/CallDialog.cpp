@@ -106,6 +106,7 @@ CallDialog::CallDialog(CallManager *callManager, ApiClient *api, QWidget *parent
     connect(m_callManager, &CallManager::remoteScreenProviderChanged, this, [this]() {
         auto *provider = m_callManager->remoteScreenProvider();
         if (provider) {
+            // Screen share started — show screen frames in remote video area
             connect(provider, &VideoFrameProvider::imageReady, this, [this](const QImage &img) {
                 if (img.width() > 32 && img.height() > 32) {
                     if (!m_remoteVideo->isVisible()) {
@@ -116,6 +117,10 @@ CallDialog::CallDialog(CallManager *callManager, ApiClient *api, QWidget *parent
                     m_remoteVideo->setImage(img);
                 }
             });
+        } else {
+            // Screen share stopped — reconnect to regular camera video
+            m_videoConnected = false;
+            connectVideoProviders();
         }
     });
 }
