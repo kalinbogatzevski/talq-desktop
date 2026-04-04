@@ -52,17 +52,41 @@ bool ScreenSharePipeline::start(const QString &stunServer, const QList<TurnServe
         }
     }
 
-    // Screen capture source
+    // Screen capture source — try d3d11 (best), then dx9, then GDI
     GstElement *screenSrc = gst_element_factory_make("d3d11screencapturesrc", nullptr);
+    if (screenSrc) {
+        g_object_set(screenSrc, "monitor-index", -1, "show-cursor", TRUE, nullptr);
+        // Test if it can start (fails on discrete GPU — DXGI requires iGPU)
+        if (gst_element_set_state(screenSrc, GST_STATE_READY) == GST_STATE_CHANGE_FAILURE) {
+            qDebug() << "ScreenSharePipeline: d3d11screencapturesrc failed (GPU mismatch?), trying fallback";
+            gst_object_unref(screenSrc);
+            screenSrc = nullptr;
+        } else {
+            gst_element_set_state(screenSrc, GST_STATE_NULL);
+            qDebug() << "ScreenSharePipeline: using d3d11screencapturesrc";
+        }
+    }
     if (!screenSrc) {
-        emit error("d3d11screencapturesrc not available");
+        screenSrc = gst_element_factory_make("dx9screencapsrc", nullptr);
+        if (screenSrc) {
+            g_object_set(screenSrc, "monitor", 0, nullptr);
+            qDebug() << "ScreenSharePipeline: using dx9screencapsrc (fallback)";
+        }
+    }
+    if (!screenSrc) {
+        screenSrc = gst_element_factory_make("gdiscreencapsrc", nullptr);
+        if (screenSrc) {
+            g_object_set(screenSrc, "monitor", 0, nullptr);
+            qDebug() << "ScreenSharePipeline: using gdiscreencapsrc (fallback)";
+        }
+    }
+    if (!screenSrc) {
+        emit error("No screen capture plugin available");
         cleanup();
         return false;
     }
-    g_object_set(screenSrc, "monitor-index", -1, "show-cursor", TRUE, nullptr);
 
     GstElement *videoRate = gst_element_factory_make("videorate", nullptr);
-    GstElement *rateCaps = gst_element_factory_make("capsfilter", nullptr);
     GstElement *videoConvert = gst_element_factory_make("videoconvert", nullptr);
     GstElement *videoScale = gst_element_factory_make("videoscale", nullptr);
     GstElement *scaleCaps = gst_element_factory_make("capsfilter", nullptr);
@@ -70,19 +94,15 @@ bool ScreenSharePipeline::start(const QString &stunServer, const QList<TurnServe
     GstElement *rtpvp8pay = gst_element_factory_make("rtpvp8pay", nullptr);
     GstElement *ssrcFilter = gst_element_factory_make("capsfilter", nullptr);
 
-    if (!videoRate || !rateCaps || !videoConvert || !videoScale || !scaleCaps
+    if (!videoRate || !videoConvert || !videoScale || !scaleCaps
         || !vp8enc || !rtpvp8pay || !ssrcFilter) {
         emit error("Failed to create screen share encoding elements");
         cleanup();
         return false;
     }
 
-    // Cap framerate to 30fps
-    {
-        GstCaps *rc = gst_caps_from_string("video/x-raw,framerate=30/1");
-        g_object_set(rateCaps, "caps", rc, nullptr);
-        gst_caps_unref(rc);
-    }
+    // Cap framerate to 15fps (screen share doesn't need high fps, saves bandwidth)
+    g_object_set(videoRate, "max-rate", 15, nullptr);
 
     // Cap resolution to 1080p
     {
@@ -105,11 +125,11 @@ bool ScreenSharePipeline::start(const QString &stunServer, const QList<TurnServe
         gst_caps_unref(ssrcCaps);
     }
 
-    gst_bin_add_many(GST_BIN(m_pipeline), screenSrc, videoRate, rateCaps,
+    gst_bin_add_many(GST_BIN(m_pipeline), screenSrc, videoRate,
                      videoConvert, videoScale, scaleCaps,
                      vp8enc, rtpvp8pay, ssrcFilter, m_webrtcbin, nullptr);
 
-    if (!gst_element_link_many(screenSrc, videoRate, rateCaps, videoConvert,
+    if (!gst_element_link_many(screenSrc, videoRate, videoConvert,
                                videoScale, scaleCaps, vp8enc, rtpvp8pay,
                                ssrcFilter, nullptr)) {
         emit error("Failed to link screen share chain");
