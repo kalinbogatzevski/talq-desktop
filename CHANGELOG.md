@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.15.8 (2026-04-04)
+
+### Data channel media state
+- Send audioOn/Off, videoOn/Off on publisher "status" data channel (matches browser Talk protocol)
+- Receive media state from subscriber data channels (browser mute/unmute reflected in TalQ)
+- Speaking detection with 500ms grace timer — sends speaking/stoppedSpeaking to peers
+
+### In-bubble text selection (Telegram-style)
+- Click and drag on message text selects characters with teal highlight
+- Drag across messages extends selection seamlessly
+- Double-click selects a word; continue dragging extends word-by-word
+- Ctrl+C copies selected text; right-click shows Copy menu
+- Escape clears selection; links and reactions still clickable
+
+### Screen sharing
+- New ScreenSharePipeline: d3d11screencapturesrc (primary monitor, 1080p cap, 30fps, VP8 2Mbps)
+- Separate webrtcbin with roomType "screen" (matches browser protocol)
+- Share button in call dialog (monitor icon, teal when active)
+- Receive screen shares from browser users
+- SignalingClient extended with roomType parameter on all methods
+
 ## v0.15.6 (2026-04-03)
 
 ### Camera architecture — funnel + valve (replaceTrack equivalent)
