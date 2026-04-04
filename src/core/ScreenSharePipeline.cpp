@@ -72,36 +72,26 @@ bool ScreenSharePipeline::start(const QString &stunServer, const QList<TurnServe
         return false;
     }
 
-    GstElement *videoRate = gst_element_factory_make("videorate", nullptr);
+    // Simple chain: screenSrc → videoconvert → vp8enc → rtpvp8pay → capsfilter(ssrc)
+    // No videorate/videoscale — let encoder handle what it gets
     GstElement *videoConvert = gst_element_factory_make("videoconvert", nullptr);
-    GstElement *videoScale = gst_element_factory_make("videoscale", nullptr);
-    GstElement *scaleCaps = gst_element_factory_make("capsfilter", nullptr);
     GstElement *vp8enc = gst_element_factory_make("vp8enc", nullptr);
     GstElement *rtpvp8pay = gst_element_factory_make("rtpvp8pay", nullptr);
     GstElement *ssrcFilter = gst_element_factory_make("capsfilter", nullptr);
 
-    if (!videoRate || !videoConvert || !videoScale || !scaleCaps
-        || !vp8enc || !rtpvp8pay || !ssrcFilter) {
+    if (!videoConvert || !vp8enc || !rtpvp8pay || !ssrcFilter) {
         emit error("Failed to create screen share encoding elements");
         cleanup();
         return false;
     }
 
-    // Cap framerate to 15fps (screen share doesn't need high fps, saves bandwidth)
-    g_object_set(videoRate, "max-rate", 15, nullptr);
+    qDebug() << "ScreenSharePipeline: elements created";
 
-    // Cap resolution to 1080p
-    {
-        GstCaps *sc = gst_caps_from_string("video/x-raw,width=[1,1920],height=[1,1080]");
-        g_object_set(scaleCaps, "caps", sc, nullptr);
-        gst_caps_unref(sc);
-    }
-
-    // Encoder settings
+    // Encoder: realtime, low bitrate for screen content
     g_object_set(vp8enc, "deadline", (gint64)1, "threads", 4,
-                 "target-bitrate", 2000000, nullptr);
+                 "target-bitrate", 1500000, nullptr);
 
-    // SSRC
+    // SSRC capsfilter
     guint32 videoSsrc = g_random_int();
     g_object_set(rtpvp8pay, "ssrc", videoSsrc, nullptr);
     {
@@ -111,17 +101,19 @@ bool ScreenSharePipeline::start(const QString &stunServer, const QList<TurnServe
         gst_caps_unref(ssrcCaps);
     }
 
-    gst_bin_add_many(GST_BIN(m_pipeline), screenSrc, videoRate,
-                     videoConvert, videoScale, scaleCaps,
+    gst_bin_add_many(GST_BIN(m_pipeline), screenSrc, videoConvert,
                      vp8enc, rtpvp8pay, ssrcFilter, m_webrtcbin, nullptr);
 
-    if (!gst_element_link_many(screenSrc, videoRate, videoConvert,
-                               videoScale, scaleCaps, vp8enc, rtpvp8pay,
-                               ssrcFilter, nullptr)) {
+    qDebug() << "ScreenSharePipeline: elements added to pipeline";
+
+    if (!gst_element_link_many(screenSrc, videoConvert,
+                               vp8enc, rtpvp8pay, ssrcFilter, nullptr)) {
         emit error("Failed to link screen share chain");
         cleanup();
         return false;
     }
+
+    qDebug() << "ScreenSharePipeline: chain linked";
 
     // Link to webrtcbin
     GstPad *ssrcSrcPad = gst_element_get_static_pad(ssrcFilter, "src");
@@ -160,7 +152,9 @@ bool ScreenSharePipeline::start(const QString &stunServer, const QList<TurnServe
     g_signal_connect(m_webrtcbin, "notify::ice-connection-state",
                      G_CALLBACK(onIceStateChanged), this);
 
+    qDebug() << "ScreenSharePipeline: setting pipeline to PLAYING...";
     GstStateChangeReturn ret = gst_element_set_state(m_pipeline, GST_STATE_PLAYING);
+    qDebug() << "ScreenSharePipeline: set_state returned" << ret;
     if (ret == GST_STATE_CHANGE_FAILURE) {
         emit error("Failed to start screen share pipeline");
         cleanup();
