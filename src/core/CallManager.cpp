@@ -554,6 +554,14 @@ void CallManager::toggleScreenShare()
             m_screenShareSid = QString::number(qHash(sdp)).left(10);
             m_signaling->sendOffer(m_signaling->sessionId(), sdp, m_screenShareSid, {}, "screen");
             qDebug() << "CallManager: sent screen share offer, sid=" << m_screenShareSid;
+
+            // Notify remote peers to subscribe to our screen share.
+            // In MCU mode, sendOffer with roomType "screen" tells the MCU
+            // to create screen subscriptions for each remote participant.
+            for (const QString &peerId : m_subscribePipelines.keys()) {
+                m_signaling->sendOffer(peerId, sdp, m_screenShareSid, {}, "screen");
+                qDebug() << "CallManager: sent screen share offer to peer" << peerId.left(20);
+            }
         });
 
         connect(m_screenSharePipeline, &ScreenSharePipeline::iceCandidateReady,
