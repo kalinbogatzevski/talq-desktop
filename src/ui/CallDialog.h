@@ -29,10 +29,13 @@ public:
 protected:
     void paintEvent(QPaintEvent *) override;
     void mouseDoubleClickEvent(QMouseEvent *) override;
+    void mouseMoveEvent(QMouseEvent *) override;
     void keyPressEvent(QKeyEvent *) override;
 private:
     QImage m_image;
     bool m_fullscreen = false;
+    QLabel *m_escHint = nullptr;
+    QTimer *m_escHintTimer = nullptr;
 };
 
 class CallDialog : public QDialog
