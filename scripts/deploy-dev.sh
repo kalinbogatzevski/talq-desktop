@@ -63,6 +63,7 @@ GST_PLUGINS=(
     wasapi wasapi2 webrtc app level
     vpx openh264 videoconvertscale sctp jpeg
     winks mediafoundation winscreencap
+    d3d11 nvcodec
 )
 for p in "${GST_PLUGINS[@]}"; do
     src="$MSYS2_DIR/lib/gstreamer-1.0/libgst${p}.dll"
