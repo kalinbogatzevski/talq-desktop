@@ -77,6 +77,7 @@ signals:
     void roomPeerJoined(const QString &sessionId);
     void roomJoined();
     void remoteMuteChanged(const QString &sessionId, const QString &media, bool muted);
+    void screenShareStopped(const QString &sessionId);
 
 private:
     void fetchSettings();
