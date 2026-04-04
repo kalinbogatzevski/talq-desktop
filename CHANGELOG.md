@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.16.3 (2026-04-04)
+
+### Screen sharing — bidirectional
+- TalQ→browser screen sharing now works (defer sendoffer until ICE connected)
+- Screen/window picker dialog with Screens and Windows tabs
+- Monitor selection across multiple displays
+- Window capture via d3d11screencapturesrc window-handle
+- Proper unshareScreen cleanup (send to self for HPB publisher teardown)
+- Camera/share/blur buttons hidden until call reaches Active state
+
+### Bugfixes
+- Fixed sendoffer timing — publisher must exist in Janus before notifying peers
+- Fixed re-share: send unshareScreen to own session to trigger HPB cleanup
+- Single sendoffer on ICE connected (no over-offering/flickering)
+- Video fullscreen exits cleanly on call end
+
 ## v0.16.0 (2026-04-04)
 
 ### Screen sharing
