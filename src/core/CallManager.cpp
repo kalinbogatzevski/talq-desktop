@@ -555,12 +555,13 @@ void CallManager::toggleScreenShare()
             m_signaling->sendOffer(m_signaling->sessionId(), sdp, m_screenShareSid, {}, "screen");
             qDebug() << "CallManager: sent screen share offer, sid=" << m_screenShareSid;
 
-            // Notify remote peers to subscribe to our screen share.
-            // In MCU mode, sendOffer with roomType "screen" tells the MCU
-            // to create screen subscriptions for each remote participant.
+            // Tell MCU to create screen share subscribers for each remote peer.
+            // Browser sends "sendoffer" with roomType "screen" to trigger MCU
+            // subscriber creation. See spreed signaling.js sendOffer().
             for (const QString &peerId : m_subscribePipelines.keys()) {
-                m_signaling->sendOffer(peerId, sdp, m_screenShareSid, {}, "screen");
-                qDebug() << "CallManager: sent screen share offer to peer" << peerId.left(20);
+                m_signaling->sendSessionMessage(peerId, "sendoffer", QJsonObject(),
+                                                QString(), {}, "screen");
+                qDebug() << "CallManager: sent sendoffer screen to" << peerId.left(20);
             }
         });
 
