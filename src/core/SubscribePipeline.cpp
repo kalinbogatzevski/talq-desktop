@@ -311,10 +311,30 @@ void SubscribePipeline::createVideoChain(GstPad *pad, const gchar *encoding)
 
     if (encoding && g_ascii_strcasecmp(encoding, "VP8") == 0) {
         depay = gst_element_factory_make("rtpvp8depay", nullptr);
-        decoder = gst_element_factory_make("vp8dec", nullptr);
+        // Try hardware VP8 decoders: NVIDIA NVDEC → Intel D3D11/DXVA → software fallback
+        decoder = gst_element_factory_make("nvvp8dec", nullptr);
+        if (decoder) {
+            qDebug() << "SubscribePipeline: using nvvp8dec (NVIDIA hardware)";
+        } else {
+            decoder = gst_element_factory_make("d3d11vp8dec", nullptr);
+            if (decoder)
+                qDebug() << "SubscribePipeline: using d3d11vp8dec (Intel hardware)";
+        }
+        if (!decoder) {
+            decoder = gst_element_factory_make("vp8dec", nullptr);
+            if (decoder)
+                qDebug() << "SubscribePipeline: using vp8dec (software fallback)";
+        }
     } else {
         depay = gst_element_factory_make("rtph264depay", nullptr);
-        decoder = gst_element_factory_make("openh264dec", nullptr);
+        decoder = gst_element_factory_make("d3d11h264dec", nullptr);
+        if (decoder) {
+            qDebug() << "SubscribePipeline: using d3d11h264dec (hardware)";
+        } else {
+            decoder = gst_element_factory_make("openh264dec", nullptr);
+            if (decoder)
+                qDebug() << "SubscribePipeline: using openh264dec (software fallback)";
+        }
     }
 
     GstElement *convert = gst_element_factory_make("videoconvert", nullptr);
