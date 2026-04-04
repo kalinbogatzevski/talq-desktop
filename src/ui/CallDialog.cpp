@@ -376,10 +376,13 @@ void CallDialog::buildUi()
             SharePickerDialog picker(this);
             if (picker.exec() == QDialog::Accepted) {
                 auto target = picker.selectedTarget();
-                if (target.type == ShareTarget::Window)
-                    m_callManager->startScreenShare(0, target.windowHandle);
-                else
-                    m_callManager->startScreenShare(target.monitorIndex);
+                // Delay start to let HPB clean up the old screen publisher (1s cleanup delay in HPB)
+                QTimer::singleShot(1500, this, [this, target]() {
+                    if (target.type == ShareTarget::Window)
+                        m_callManager->startScreenShare(0, target.windowHandle);
+                    else
+                        m_callManager->startScreenShare(target.monitorIndex);
+                });
             }
         }
     });
