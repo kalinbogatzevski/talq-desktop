@@ -172,13 +172,17 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
     connect(m_signaling, &SignalingClient::screenShareStopped,
             this, [this](const QString &sessionId) {
         qDebug() << "CallManager: remote screen share stopped from" << sessionId.left(20);
+        // Disconnect video provider BEFORE deleting subscriber
+        if (m_remoteScreenProvider) {
+            m_remoteScreenProvider->disconnect();
+            m_remoteScreenProvider = nullptr;
+        }
+        emit remoteScreenProviderChanged();
         if (m_screenSubscribers.contains(sessionId)) {
             m_screenSubscribers[sessionId]->stop();
             m_screenSubscribers[sessionId]->deleteLater();
             m_screenSubscribers.remove(sessionId);
         }
-        m_remoteScreenProvider = nullptr;
-        emit remoteScreenProviderChanged();
     });
 
     // HPB WebSocket signaling messages
