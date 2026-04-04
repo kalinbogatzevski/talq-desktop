@@ -38,6 +38,7 @@ public:
     void setMuted(bool muted);
     bool isRunning() const { return m_running; }
     bool isCameraOn() const { return m_cameraEnabled; }
+    bool usesH264() const { return m_useH264; }
 
     void enableCamera(int deviceIndex, bool hd1080 = true);
     void disableCamera();
@@ -77,6 +78,7 @@ private:
     GstPad *m_videoSinkPad = nullptr;     // webrtcbin's video sink pad
     guint32 m_videoSsrc = 0;
     bool m_cameraEnabled = false;
+    bool m_useH264 = false;
     int m_lvlDbg = 0;
     GstWebRTCDataChannel *m_statusDataChannel = nullptr;
 

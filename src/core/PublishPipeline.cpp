@@ -177,17 +177,33 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
     // No unlinking, no relinking, no pad swaps.
     m_videoSsrc = g_random_int();
 
-    // --- Shared encoder chain: funnel → vp8enc → rtpvp8pay → videoSsrcFilter ---
+    // --- Shared encoder chain: funnel → encoder → payloader → videoSsrcFilter ---
+    // Try NVENC H264 (GPU) → software VP8 (fallback)
     m_funnel          = gst_element_factory_make("funnel", "pub-funnel");
-    m_videoEncoder    = gst_element_factory_make("vp8enc", "pub-vp8enc");
-    m_videoPayloader  = gst_element_factory_make("rtpvp8pay", "pub-rtpvp8pay");
     m_videoSsrcFilter = gst_element_factory_make("capsfilter", "pub-video-ssrc-filter");
+
+    m_videoEncoder = gst_element_factory_make("nvh264enc", nullptr);
+    if (m_videoEncoder) {
+        m_videoPayloader = gst_element_factory_make("rtph264pay", nullptr);
+        g_object_set(m_videoEncoder, "bitrate", 2000, "preset", 5 /* low-latency-hq */,
+                     "rc-mode", 2 /* cbr */, "gop-size", 30, nullptr);
+        m_useH264 = true;
+        qDebug() << "PublishPipeline: using nvh264enc (NVIDIA NVENC hardware)";
+    } else {
+        m_videoEncoder = gst_element_factory_make("vp8enc", nullptr);
+        m_videoPayloader = gst_element_factory_make("rtpvp8pay", nullptr);
+        if (m_videoEncoder)
+            g_object_set(m_videoEncoder, "deadline", (gint64)1, "target-bitrate", 1500000,
+                         "cpu-used", 8, "threads", 4, nullptr);
+        m_useH264 = false;
+        qDebug() << "PublishPipeline: using vp8enc (software fallback)";
+    }
+
     if (!m_funnel || !m_videoEncoder || !m_videoPayloader || !m_videoSsrcFilter) {
         emit error("Failed to create shared video encoder chain");
         cleanup();
         return false;
     }
-    g_object_set(m_videoEncoder, "deadline", (gint64)1, "target-bitrate", 1500000, nullptr);
     g_object_set(m_videoPayloader, "ssrc", m_videoSsrc, nullptr);
     {
         GstCaps *sc = gst_caps_from_string("application/x-rtp");
@@ -251,8 +267,9 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
     GstWebRTCRTPTransceiver *vt = nullptr;
     g_object_get(m_videoSinkPad, "transceiver", &vt, nullptr);
     if (vt) {
-        GstCaps *vc = gst_caps_from_string(
-            "application/x-rtp,media=video,encoding-name=VP8,clock-rate=90000,payload=96");
+        GstCaps *vc = m_useH264
+            ? gst_caps_from_string("application/x-rtp,media=video,encoding-name=H264,clock-rate=90000,payload=102")
+            : gst_caps_from_string("application/x-rtp,media=video,encoding-name=VP8,clock-rate=90000,payload=96");
         g_object_set(vt, "direction", GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDONLY,
                      "codec-preferences", vc, nullptr);
         gst_caps_unref(vc);
