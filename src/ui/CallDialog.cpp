@@ -9,6 +9,8 @@
 #include <QNetworkReply>
 #include <QDesktopServices>
 #include <QUrl>
+#include <QMouseEvent>
+#include <QKeyEvent>
 
 static QString circleButtonStyle(const QString &bg, const QString &fg, const QString &hoverBg)
 {
@@ -32,6 +34,32 @@ void VideoWidget::paintEvent(QPaintEvent *)
                   scaled.width(), scaled.height());
         p.drawImage(dst, m_image);
     }
+}
+
+void VideoWidget::mouseDoubleClickEvent(QMouseEvent *)
+{
+    if (m_fullscreen) {
+        setWindowFlags(Qt::SubWindow);
+        showNormal();
+        m_fullscreen = false;
+    } else {
+        setWindowFlags(Qt::Window | Qt::FramelessWindowHint);
+        showFullScreen();
+        setFocus();
+        m_fullscreen = true;
+    }
+}
+
+void VideoWidget::keyPressEvent(QKeyEvent *event)
+{
+    if (m_fullscreen && event->key() == Qt::Key_Escape) {
+        setWindowFlags(Qt::SubWindow);
+        showNormal();
+        m_fullscreen = false;
+        event->accept();
+        return;
+    }
+    QWidget::keyPressEvent(event);
 }
 
 CallDialog::CallDialog(CallManager *callManager, ApiClient *api, QWidget *parent)

@@ -77,6 +77,7 @@ private:
     GstElement *m_videoSsrcFilter = nullptr;
     GstPad *m_videoSinkPad = nullptr;     // webrtcbin's video sink pad
     guint32 m_videoSsrc = 0;
+    GstElement *m_videoParser = nullptr;  // h264parse (only when using NVENC H264)
     bool m_cameraEnabled = false;
     bool m_useH264 = false;
     int m_lvlDbg = 0;
