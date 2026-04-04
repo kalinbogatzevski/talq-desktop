@@ -165,9 +165,6 @@ private:
     ScreenSharePipeline *m_screenSharePipeline = nullptr;
     bool m_screenSharing = false;
     QString m_screenShareSid;
-    int m_screenOfferRetries = 0;
-    QTimer m_screenOfferRetryTimer;
-    void sendScreenOfferToAll();
     VideoFrameProvider *m_remoteScreenProvider = nullptr;
     QHash<QString, SubscribePipeline*> m_screenSubscribers;
 
