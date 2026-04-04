@@ -52,32 +52,18 @@ bool ScreenSharePipeline::start(const QString &stunServer, const QList<TurnServe
         }
     }
 
-    // Screen capture source — try d3d11 (best), then dx9, then GDI
-    GstElement *screenSrc = gst_element_factory_make("d3d11screencapturesrc", nullptr);
+    // Screen capture source — dx9screencapsrc is most reliable across GPU configs.
+    // d3d11screencapturesrc crashes on discrete GPU (DXGI duplication requires iGPU).
+    GstElement *screenSrc = gst_element_factory_make("dx9screencapsrc", nullptr);
     if (screenSrc) {
-        g_object_set(screenSrc, "monitor-index", -1, "show-cursor", TRUE, nullptr);
-        // Test if it can start (fails on discrete GPU — DXGI requires iGPU)
-        if (gst_element_set_state(screenSrc, GST_STATE_READY) == GST_STATE_CHANGE_FAILURE) {
-            qDebug() << "ScreenSharePipeline: d3d11screencapturesrc failed (GPU mismatch?), trying fallback";
-            gst_object_unref(screenSrc);
-            screenSrc = nullptr;
-        } else {
-            gst_element_set_state(screenSrc, GST_STATE_NULL);
-            qDebug() << "ScreenSharePipeline: using d3d11screencapturesrc";
-        }
-    }
-    if (!screenSrc) {
-        screenSrc = gst_element_factory_make("dx9screencapsrc", nullptr);
-        if (screenSrc) {
-            g_object_set(screenSrc, "monitor", 0, nullptr);
-            qDebug() << "ScreenSharePipeline: using dx9screencapsrc (fallback)";
-        }
+        g_object_set(screenSrc, "monitor", 0, nullptr);
+        qDebug() << "ScreenSharePipeline: using dx9screencapsrc";
     }
     if (!screenSrc) {
         screenSrc = gst_element_factory_make("gdiscreencapsrc", nullptr);
         if (screenSrc) {
             g_object_set(screenSrc, "monitor", 0, nullptr);
-            qDebug() << "ScreenSharePipeline: using gdiscreencapsrc (fallback)";
+            qDebug() << "ScreenSharePipeline: using gdiscreencapsrc";
         }
     }
     if (!screenSrc) {
