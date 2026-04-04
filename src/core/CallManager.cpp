@@ -682,10 +682,14 @@ void CallManager::stopScreenShare()
     }
     m_screenSharing = false;
 
+    // Send unshareScreen as room message (browser compatibility) AND
+    // to ourselves (triggers HPB to close the screen publisher in Janus).
     QJsonObject data;
     data["roomType"] = QString("screen");
     data["type"] = QString("unshareScreen");
     m_signaling->sendBroadcastMessage(data);
+    // Also send to own session — HPB only cleans up publisher when recipient == self
+    m_signaling->sendMinimalMessage(m_signaling->sessionId(), data);
     qDebug() << "CallManager: stopped screen sharing";
 
     emit screenShareChanged();
