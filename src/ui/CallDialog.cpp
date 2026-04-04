@@ -381,12 +381,14 @@ void CallDialog::onStateChanged()
 
     switch (state) {
     case CallManager::Idle:
+        m_remoteVideo->exitFullscreen();
         m_remoteVideo->hide();
         m_localPreview->hide();
         m_codecPill->hide();
         m_decoderPill->hide();
         m_videoConnected = false;
         m_localConnected = false;
+        showNormal();  // exit maximized state if screen sharing was active
         setMinimumSize(300, 340);
         resize(300, 340);
         hide();
