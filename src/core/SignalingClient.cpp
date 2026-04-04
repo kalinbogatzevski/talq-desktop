@@ -483,6 +483,25 @@ void SignalingClient::sendBroadcastMessage(const QJsonObject &data)
     qDebug() << "Signaling: sent broadcast message" << data["type"].toString();
 }
 
+void SignalingClient::sendMinimalMessage(const QString &toSessionId, const QJsonObject &data)
+{
+    if (!m_authenticated) return;
+
+    QJsonObject msg;
+    msg["type"] = QString("message");
+
+    QJsonObject message;
+    QJsonObject recipient;
+    recipient["type"] = QString("session");
+    recipient["sessionid"] = toSessionId;
+    message["recipient"] = recipient;
+    message["data"] = data;
+    msg["message"] = message;
+
+    m_ws.sendTextMessage(QJsonDocument(msg).toJson(QJsonDocument::Compact));
+    qDebug() << "Signaling: sent minimal message" << data["type"].toString() << "to" << toSessionId.left(20);
+}
+
 void SignalingClient::requestOffer(const QString &sessionId, const QString &roomType)
 {
     if (!m_authenticated) return;
