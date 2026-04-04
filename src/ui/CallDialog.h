@@ -17,6 +17,14 @@ public:
         setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
         setMinimumSize(160, 120);
     }
+    void exitFullscreen() {
+        if (m_fullscreen) {
+            if (m_escHint) m_escHint->hide();
+            setWindowFlags(Qt::SubWindow);
+            showNormal();
+            m_fullscreen = false;
+        }
+    }
     void setImage(const QImage &img) {
         // Pre-scale to widget size to avoid expensive scaling in paintEvent
         if (!img.isNull() && (img.width() > width() * 2 || img.height() > height() * 2)) {
