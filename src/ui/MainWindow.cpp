@@ -21,6 +21,7 @@
 #include "core/AvatarProvider.h"
 #include "core/FilePreviewProvider.h"
 #include "core/MediaDeviceManager.h"
+#include <gst/gst.h>
 #include "models/ConversationListModel.h"
 #include "models/MessageListModel.h"
 #include "models/ThreadListModel.h"
@@ -454,6 +455,35 @@ void MainWindow::buildChatPage()
     m_welcomeSignalingLabel = addInfoRow("\u26A1", "");
     m_welcomePushLabel = addInfoRow("\u25CF", "");
     m_welcomeGpuLabel = addInfoRow("\u2B22", "");  // hexagon for GPU
+
+    // GStreamer plugin pills
+    {
+        auto *pillContainer = new QWidget(serverCard);
+        pillContainer->setStyleSheet("background: transparent;");
+        auto *pillsLayout = new QHBoxLayout(pillContainer);
+        pillsLayout->setContentsMargins(40, 0, 0, 0);
+        pillsLayout->setSpacing(4);
+        pillsLayout->setAlignment(Qt::AlignLeft);
+
+        static const char *pluginNames[] = {
+            "webrtc", "opus", "vpx", "d3d11", "nvcodec",
+            "srtp", "dtls", "nice", "wasapi2", "mediafoundation",
+            "winscreencap", nullptr
+        };
+        for (int i = 0; pluginNames[i]; ++i) {
+            GstPlugin *plugin = gst_registry_find_plugin(gst_registry_get(), pluginNames[i]);
+            bool ok = (plugin != nullptr);
+            if (plugin) gst_object_unref(plugin);
+            auto *pill = new QLabel(pluginNames[i], pillContainer);
+            pill->setStyleSheet(QString(
+                "QLabel { background: %1; color: %2; border-radius: 6px;"
+                " padding: 1px 6px; font-size: 9px; font-weight: bold; }")
+                .arg(ok ? "#1a3a2a" : "#3a1a1a", ok ? "#5ec76a" : "#d93025"));
+            pillsLayout->addWidget(pill);
+        }
+        pillsLayout->addStretch();
+        serverLayout->addWidget(pillContainer);
+    }
 
     // Live-update status labels when services connect/disconnect
     connect(m_signaling, &SignalingClient::connectedChanged, this, [this]() {
