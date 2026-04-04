@@ -307,10 +307,6 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
         }
     });
 
-    // Screen share sendoffer retry timer
-    m_screenOfferRetryTimer.setInterval(1000);
-    connect(&m_screenOfferRetryTimer, &QTimer::timeout, this, &CallManager::sendScreenOfferToAll);
-
     // Check GStreamer plugins on startup
     checkGStreamerPlugins();
 }
@@ -643,8 +639,14 @@ void CallManager::startScreenShare(int monitorIndex, quintptr windowHandle)
             this, [this](const QString &state) {
         qDebug() << "CallManager: screen share ICE:" << state;
         if (state == "connected") {
-            m_screenOfferRetries = 0;
-            sendScreenOfferToAll();
+            // Send sendoffer once — HPB creates subscriber for each peer
+            for (const QString &peerId : m_subscribePipelines.keys()) {
+                QJsonObject data;
+                data["type"] = QString("sendoffer");
+                data["roomType"] = QString("screen");
+                m_signaling->sendMinimalMessage(peerId, data);
+                qDebug() << "CallManager: sent sendoffer screen to" << peerId.left(20);
+            }
         }
         if (state == "failed") {
             qWarning() << "CallManager: screen share ICE failed";
@@ -670,37 +672,8 @@ void CallManager::startScreenShare(int monitorIndex, quintptr windowHandle)
     emit screenShareChanged();
 }
 
-void CallManager::sendScreenOfferToAll()
-{
-    if (!m_screenSharing || !m_screenSharePipeline) {
-        m_screenOfferRetryTimer.stop();
-        return;
-    }
-
-    m_screenOfferRetries++;
-    qDebug() << "CallManager: sendoffer screen attempt" << m_screenOfferRetries;
-
-    for (const QString &peerId : m_subscribePipelines.keys()) {
-        QJsonObject data;
-        data["type"] = QString("sendoffer");
-        data["roomType"] = QString("screen");
-        m_signaling->sendMinimalMessage(peerId, data);
-    }
-
-    if (m_screenOfferRetries >= 10) {
-        qWarning() << "CallManager: screen share sendoffer failed after 10 retries, giving up";
-        m_screenOfferRetryTimer.stop();
-        stopScreenShare();
-        return;
-    }
-
-    // Keep retrying every 1s until we reach max or stopScreenShare is called
-    m_screenOfferRetryTimer.start();
-}
-
 void CallManager::stopScreenShare()
 {
-    m_screenOfferRetryTimer.stop();
     if (!m_screenSharing) return;
 
     if (m_screenSharePipeline) {

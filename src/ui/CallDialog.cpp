@@ -417,6 +417,8 @@ void CallDialog::onStateChanged()
 
     case CallManager::Outgoing:
         showActiveMode();
+        m_cameraBtn->hide();
+        m_shareBtn->hide();
         m_stateLabel->setText("Calling...");
         m_durationLabel->clear();
         connectVideoProviders();
@@ -424,12 +426,16 @@ void CallDialog::onStateChanged()
 
     case CallManager::Connecting:
         showActiveMode();
+        m_cameraBtn->hide();
+        m_shareBtn->hide();
         m_stateLabel->setText("Connecting...");
         m_durationLabel->clear();
         connectVideoProviders();
         break;
 
     case CallManager::Active:
+        m_cameraBtn->show();
+        m_shareBtn->show();
         showActiveMode();
         m_stateLabel->setText("In call");
         // Show codec/decoder pills after short delay (subscriber needs time to negotiate)
