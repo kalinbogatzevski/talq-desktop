@@ -64,7 +64,8 @@ public:
     Q_INVOKABLE void hangUp();
     Q_INVOKABLE void toggleMute();
     Q_INVOKABLE void toggleCamera();
-    Q_INVOKABLE void toggleScreenShare();
+    Q_INVOKABLE void startScreenShare(int monitorIndex = 0, quintptr windowHandle = 0);
+    Q_INVOKABLE void stopScreenShare();
     bool isScreenSharing() const { return m_screenSharing; }
     VideoFrameProvider *remoteScreenProvider() const { return m_remoteScreenProvider; }
     void onIncomingCallDetected(const QString &callerName, const QString &token, int callFlag);
