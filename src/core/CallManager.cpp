@@ -236,8 +236,12 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
         }
         if (fromSessionId == m_signaling->sessionId() && m_publishPipeline) {
             m_publishPipeline->addIceCandidate(cStr, mline, mid);
+        } else if (fromSessionId == m_signaling->sessionId() && m_screenSharePipeline) {
+            m_screenSharePipeline->addIceCandidate(cStr, mline, mid);
         } else if (m_subscribePipelines.contains(fromSessionId)) {
             m_subscribePipelines[fromSessionId]->addIceCandidate(cStr, mline, mid);
+        } else if (m_screenSubscribers.contains(fromSessionId)) {
+            m_screenSubscribers[fromSessionId]->addIceCandidate(cStr, mline, mid);
         }
     });
 
