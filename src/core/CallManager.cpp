@@ -337,6 +337,45 @@ void CallManager::checkGStreamerPlugins()
     } else {
         qDebug() << "CallManager: all required GStreamer plugins found";
     }
+
+    // Detect GPU hardware acceleration
+    GstElementFactory *nvvp8 = gst_element_factory_find("nvvp8dec");
+    GstElementFactory *dxvaVp8 = gst_element_factory_find("d3d11vp8dec");
+    GstElementFactory *dxvaH264 = gst_element_factory_find("d3d11h264dec");
+    if (nvvp8) {
+        m_gpuAccelStatus = "NVIDIA NVDEC";
+        gst_object_unref(nvvp8);
+    } else if (dxvaVp8) {
+        m_gpuAccelStatus = "Intel DXVA";
+        gst_object_unref(dxvaVp8);
+    } else if (dxvaH264) {
+        m_gpuAccelStatus = "DXVA (H264 only)";
+        gst_object_unref(dxvaH264);
+    } else {
+        m_gpuAccelStatus = "Software only";
+    }
+    if (dxvaVp8 && !nvvp8) gst_object_unref(dxvaVp8);
+    if (dxvaH264 && !nvvp8 && !dxvaVp8) gst_object_unref(dxvaH264);
+    qDebug() << "CallManager: GPU accel:" << m_gpuAccelStatus;
+}
+
+QString CallManager::activeVideoCodec() const
+{
+    // Return codec from the first active subscriber
+    for (auto *sub : m_subscribePipelines) {
+        if (sub->isRunning() && !sub->videoCodec().isEmpty())
+            return sub->videoCodec();
+    }
+    return {};
+}
+
+QString CallManager::activeVideoDecoder() const
+{
+    for (auto *sub : m_subscribePipelines) {
+        if (sub->isRunning() && !sub->videoDecoder().isEmpty())
+            return sub->videoDecoder();
+    }
+    return {};
 }
 
 void CallManager::updateCallStats()
