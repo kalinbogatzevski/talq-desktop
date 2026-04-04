@@ -847,7 +847,7 @@ void CallManager::joinCallOnServer(bool withVideo)
                                 this, [this](const QString &state) {
                             qDebug() << "CallManager: P2P ICE:" << state;
                             setStatusDetail("ICE " + state);
-                            if (state == "connected" || state == "completed") {
+                            if (state == "connected") {
                                 setStatusDetail("Connected");
                                 if (m_state == Connecting) {
                                     setState(Active);
