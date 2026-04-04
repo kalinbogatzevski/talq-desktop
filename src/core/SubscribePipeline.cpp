@@ -329,7 +329,7 @@ void SubscribePipeline::createVideoChain(GstPad *pad, const gchar *encoding)
         return;
     }
 
-    GstCaps *sinkCaps = gst_caps_from_string("video/x-raw,format=I420");
+    GstCaps *sinkCaps = gst_caps_from_string("video/x-raw,format=BGRx");
     g_object_set(appsink,
         "emit-signals", TRUE,
         "caps", sinkCaps,
