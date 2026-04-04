@@ -1,4 +1,5 @@
 #include "CallDialog.h"
+#include "SharePickerDialog.h"
 #include "core/VideoFrameProvider.h"
 
 #include <QVBoxLayout>
@@ -368,7 +369,20 @@ void CallDialog::buildUi()
     connect(m_muteBtn, &QPushButton::clicked, m_callManager, &CallManager::toggleMute);
     connect(m_hangupBtn, &QPushButton::clicked, m_callManager, &CallManager::hangUp);
     connect(m_cameraBtn, &QPushButton::clicked, m_callManager, &CallManager::toggleCamera);
-    connect(m_shareBtn, &QPushButton::clicked, m_callManager, &CallManager::toggleScreenShare);
+    connect(m_shareBtn, &QPushButton::clicked, this, [this]() {
+        if (m_callManager->isScreenSharing()) {
+            m_callManager->stopScreenShare();
+        } else {
+            SharePickerDialog picker(this);
+            if (picker.exec() == QDialog::Accepted) {
+                auto target = picker.selectedTarget();
+                if (target.type == ShareTarget::Window)
+                    m_callManager->startScreenShare(0, target.windowHandle);
+                else
+                    m_callManager->startScreenShare(target.monitorIndex);
+            }
+        }
+    });
     connect(m_acceptBtn, &QPushButton::clicked, this, [this]() {
         m_callManager->acceptCall(false);
     });

@@ -611,91 +611,82 @@ void CallManager::toggleCamera() {
     updateCallFlags();
 }
 
-void CallManager::toggleScreenShare()
+void CallManager::startScreenShare(int monitorIndex, quintptr windowHandle)
 {
     if (m_state != Active && m_state != Connecting) return;
+    if (m_screenSharing) return;
 
-    m_screenSharing = !m_screenSharing;
+    m_screenSharing = true;
+    m_screenSharePipeline = new ScreenSharePipeline(this);
 
-    if (m_screenSharing) {
-        m_screenSharePipeline = new ScreenSharePipeline(this);
+    connect(m_screenSharePipeline, &ScreenSharePipeline::localOfferReady,
+            this, [this](const QString &sdp) {
+        m_screenShareSid = QString::number(qHash(sdp)).left(10);
+        m_signaling->sendOffer(m_signaling->sessionId(), sdp, m_screenShareSid, {}, "screen");
+        qDebug() << "CallManager: sent screen share offer, sid=" << m_screenShareSid;
+    });
 
-        connect(m_screenSharePipeline, &ScreenSharePipeline::localOfferReady,
-                this, [this](const QString &sdp) {
-            // Send offer to ourselves (MCU mode: publisher sends to own session)
-            m_screenShareSid = QString::number(qHash(sdp)).left(10);
-            m_signaling->sendOffer(m_signaling->sessionId(), sdp, m_screenShareSid, {}, "screen");
-            qDebug() << "CallManager: sent screen share offer, sid=" << m_screenShareSid;
-            // sendoffer to peers is deferred until ICE connects (publisher must exist in Janus first)
-        });
+    connect(m_screenSharePipeline, &ScreenSharePipeline::iceCandidateReady,
+            this, [this](const QString &candidate, int mline, const QString &mid) {
+        QJsonObject c;
+        c["candidate"] = candidate;
+        c["sdpMLineIndex"] = mline;
+        c["sdpMid"] = mid;
+        m_signaling->sendCandidate(m_signaling->sessionId(), c, m_screenShareSid, "screen");
+    });
 
-        connect(m_screenSharePipeline, &ScreenSharePipeline::iceCandidateReady,
-                this, [this](const QString &candidate, int mline, const QString &mid) {
-            QJsonObject c;
-            c["candidate"] = candidate;
-            c["sdpMLineIndex"] = mline;
-            c["sdpMid"] = mid;
-            m_signaling->sendCandidate(m_signaling->sessionId(), c, m_screenShareSid, "screen");
-        });
-
-        connect(m_screenSharePipeline, &ScreenSharePipeline::iceStateChanged,
-                this, [this](const QString &state) {
-            qDebug() << "CallManager: screen share ICE:" << state;
-            if (state == "connected" || state == "completed") {
-                // Publisher is now established in Janus — notify remote peers to subscribe.
-                // Must be deferred until after ICE connects, otherwise Janus hasn't
-                // registered the publisher yet and GetOrCreateSubscriber fails.
-                for (const QString &peerId : m_subscribePipelines.keys()) {
-                    QJsonObject data;
-                    data["type"] = QString("sendoffer");
-                    data["roomType"] = QString("screen");
-                    m_signaling->sendMinimalMessage(peerId, data);
-                    qDebug() << "CallManager: sent sendoffer screen to" << peerId.left(20);
-                }
+    connect(m_screenSharePipeline, &ScreenSharePipeline::iceStateChanged,
+            this, [this](const QString &state) {
+        qDebug() << "CallManager: screen share ICE:" << state;
+        if (state == "connected" || state == "completed") {
+            for (const QString &peerId : m_subscribePipelines.keys()) {
+                QJsonObject data;
+                data["type"] = QString("sendoffer");
+                data["roomType"] = QString("screen");
+                m_signaling->sendMinimalMessage(peerId, data);
+                qDebug() << "CallManager: sent sendoffer screen to" << peerId.left(20);
             }
-            if (state == "failed") {
-                qWarning() << "CallManager: screen share ICE failed";
-                m_screenSharing = false;
-                m_screenSharePipeline->stop();
-                m_screenSharePipeline->deleteLater();
-                m_screenSharePipeline = nullptr;
-                emit screenShareChanged();
-            }
-        });
-
-        connect(m_screenSharePipeline, &ScreenSharePipeline::error,
-                this, [this](const QString &msg) {
-            qWarning() << "CallManager: screen share error:" << msg;
-            m_screenSharing = false;
-            m_screenSharePipeline->stop();
-            m_screenSharePipeline->deleteLater();
-            m_screenSharePipeline = nullptr;
-            emit screenShareChanged();
-        });
-
-        // Connect pollBus to the existing GLib timer
-        connect(&m_glibTimer, &QTimer::timeout, m_screenSharePipeline, &ScreenSharePipeline::pollBus);
-
-        if (!m_screenSharePipeline->start(m_stunServer, m_turnServers)) {
-            qWarning() << "CallManager: failed to start screen share pipeline";
-            m_screenSharing = false;
-            m_screenSharePipeline->deleteLater();
-            m_screenSharePipeline = nullptr;
         }
-    } else {
-        // Stop sharing
-        if (m_screenSharePipeline) {
-            m_screenSharePipeline->stop();
-            m_screenSharePipeline->deleteLater();
-            m_screenSharePipeline = nullptr;
+        if (state == "failed") {
+            qWarning() << "CallManager: screen share ICE failed";
+            stopScreenShare();
         }
-        // Broadcast unshareScreen
-        QJsonObject data;
-        data["roomType"] = QString("screen");
-        data["type"] = QString("unshareScreen");
-        m_signaling->sendBroadcastMessage(data);
-        qDebug() << "CallManager: stopped screen sharing";
+    });
+
+    connect(m_screenSharePipeline, &ScreenSharePipeline::error,
+            this, [this](const QString &msg) {
+        qWarning() << "CallManager: screen share error:" << msg;
+        stopScreenShare();
+    });
+
+    connect(&m_glibTimer, &QTimer::timeout, m_screenSharePipeline, &ScreenSharePipeline::pollBus);
+
+    if (!m_screenSharePipeline->start(m_stunServer, m_turnServers, monitorIndex, windowHandle)) {
+        qWarning() << "CallManager: failed to start screen share pipeline";
+        m_screenSharing = false;
+        m_screenSharePipeline->deleteLater();
+        m_screenSharePipeline = nullptr;
     }
+
+    emit screenShareChanged();
+}
+
+void CallManager::stopScreenShare()
+{
+    if (!m_screenSharing) return;
+
+    if (m_screenSharePipeline) {
+        m_screenSharePipeline->stop();
+        m_screenSharePipeline->deleteLater();
+        m_screenSharePipeline = nullptr;
+    }
+    m_screenSharing = false;
+
+    QJsonObject data;
+    data["roomType"] = QString("screen");
+    data["type"] = QString("unshareScreen");
+    m_signaling->sendBroadcastMessage(data);
+    qDebug() << "CallManager: stopped screen sharing";
 
     emit screenShareChanged();
 }
