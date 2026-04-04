@@ -118,7 +118,10 @@ CallDialog::CallDialog(CallManager *callManager, ApiClient *api, QWidget *parent
                 }
             });
         } else {
-            // Screen share stopped — reconnect to regular camera video
+            // Screen share stopped — disconnect screen provider, reconnect camera
+            if (m_lastRemoteProvider)
+                disconnect(m_lastRemoteProvider, nullptr, this, nullptr);
+            m_lastRemoteProvider = nullptr;
             m_videoConnected = false;
             connectVideoProviders();
         }
