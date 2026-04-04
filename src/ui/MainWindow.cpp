@@ -453,6 +453,7 @@ void MainWindow::buildChatPage()
     m_welcomeTalkLabel = addInfoRow("\u260E", "");
     m_welcomeSignalingLabel = addInfoRow("\u26A1", "");
     m_welcomePushLabel = addInfoRow("\u25CF", "");
+    m_welcomeGpuLabel = addInfoRow("\u2B22", "");  // hexagon for GPU
 
     // Live-update status labels when services connect/disconnect
     connect(m_signaling, &SignalingClient::connectedChanged, this, [this]() {
@@ -1072,6 +1073,10 @@ void MainWindow::switchToChat()
     m_welcomeTalkLabel->setText("Talk " + m_auth->talkVersion());
     m_welcomeSignalingLabel->setText(m_signaling->isConnected() ? "Signaling connected" : "Signaling disconnected");
     m_welcomePushLabel->setText(m_push->isConnected() ? "Push connected (real-time)" : "Push disconnected (polling)");
+    QString gpu = m_callManager->gpuAccelStatus();
+    bool hwAccel = (gpu != "Software only");
+    m_welcomeGpuLabel->setText("GPU: " + gpu);
+    m_welcomeGpuLabel->setStyleSheet(QString("font-size: 14px; color: %1;").arg(hwAccel ? "#5ec76a" : "#d93025"));
 
     // Show welcome, hide chat content
     m_welcomeWidget->show();

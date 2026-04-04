@@ -52,6 +52,9 @@ public:
     QString callsUnavailableReason() const { return m_callsUnavailableReason; }
     bool remoteVideoMuted() const { return m_remoteVideoMuted; }
     bool remoteAudioMuted() const { return m_remoteAudioMuted; }
+    QString gpuAccelStatus() const { return m_gpuAccelStatus; }
+    QString activeVideoCodec() const;
+    QString activeVideoDecoder() const;
 
     Q_INVOKABLE void startCall(const QString &token, bool withVideo);
     Q_INVOKABLE void setRemotePeerInfo(const QString &name, const QString &peerId);
@@ -134,6 +137,7 @@ private:
     QString m_statusDetail;
     bool m_callsAvailable = true;
     QString m_callsUnavailableReason;
+    QString m_gpuAccelStatus;
     void checkGStreamerPlugins();
     void updateCallStats();
     void setStatusDetail(const QString &detail) {

@@ -135,6 +135,7 @@ private:
     QLabel *m_welcomeTalkLabel = nullptr;
     QLabel *m_welcomeSignalingLabel = nullptr;
     QLabel *m_welcomePushLabel = nullptr;
+    QLabel *m_welcomeGpuLabel = nullptr;
 
     // State
     bool m_chatMode = false;
