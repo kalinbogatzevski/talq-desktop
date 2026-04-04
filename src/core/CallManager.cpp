@@ -1102,10 +1102,16 @@ void CallManager::teardown(const QString &reason)
         m_screenSharePipeline = nullptr;
     }
     m_screenSharing = false;
-    for (auto *sub : m_screenSubscribers)
+    if (m_remoteScreenProvider) {
+        m_remoteScreenProvider->disconnect();
+        m_remoteScreenProvider = nullptr;
+        emit remoteScreenProviderChanged();
+    }
+    for (auto *sub : m_screenSubscribers) {
+        sub->stop();
         sub->deleteLater();
+    }
     m_screenSubscribers.clear();
-    m_remoteScreenProvider = nullptr;
 
     setState(Idle);
     emit callEnded(reason);
