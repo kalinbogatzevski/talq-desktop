@@ -201,6 +201,12 @@ void SignalingClient::onTextMessage(const QString &msg)
             return;
         }
 
+        if (msgType == "unshareScreen") {
+            qDebug() << "Signaling: received unshareScreen from" << senderSessionId.left(20);
+            emit screenShareStopped(senderSessionId);
+            return;
+        }
+
         // Room-scoped messages (typing indicators)
         QString senderRoom = messageObj["sender"].toObject()["roomid"].toString();
         if (!senderRoom.isEmpty() && senderRoom != m_currentRoom) {

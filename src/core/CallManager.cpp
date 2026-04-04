@@ -168,6 +168,19 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
         qDebug() << "CallManager: remote" << media << (muted ? "muted" : "unmuted");
     });
 
+    // Remote screen share stopped
+    connect(m_signaling, &SignalingClient::screenShareStopped,
+            this, [this](const QString &sessionId) {
+        qDebug() << "CallManager: remote screen share stopped from" << sessionId.left(20);
+        if (m_screenSubscribers.contains(sessionId)) {
+            m_screenSubscribers[sessionId]->stop();
+            m_screenSubscribers[sessionId]->deleteLater();
+            m_screenSubscribers.remove(sessionId);
+        }
+        m_remoteScreenProvider = nullptr;
+        emit remoteScreenProviderChanged();
+    });
+
     // HPB WebSocket signaling messages
     connect(m_signaling, &SignalingClient::offerReceived,
             this, [this](const QString &from, const QString &sdp, const QString &sid, const QString &roomType) {
