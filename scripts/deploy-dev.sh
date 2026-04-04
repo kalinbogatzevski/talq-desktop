@@ -62,7 +62,7 @@ GST_PLUGINS=(
     dtls nice opus rtp rtpmanager srtp
     wasapi wasapi2 webrtc app level
     vpx openh264 videoconvertscale sctp jpeg
-    winks mediafoundation
+    winks mediafoundation winscreencap
 )
 for p in "${GST_PLUGINS[@]}"; do
     src="$MSYS2_DIR/lib/gstreamer-1.0/libgst${p}.dll"
