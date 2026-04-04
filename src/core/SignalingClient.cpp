@@ -184,7 +184,10 @@ void SignalingClient::onTextMessage(const QString &msg)
             } else {
                 candidate = payload;
             }
-            emit candidateReceived(senderSessionId, candidate);
+            QString candRoomType = msgData["roomType"].toString("video");
+            qDebug() << "Signaling: received candidate from" << senderSessionId.left(20)
+                     << "roomType=" << candRoomType;
+            emit candidateReceived(senderSessionId, candidate, candRoomType);
             return;
         }
         if (msgType == "endOfCandidates") {
