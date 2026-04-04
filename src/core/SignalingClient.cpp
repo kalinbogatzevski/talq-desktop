@@ -445,7 +445,8 @@ void SignalingClient::sendOffer(const QString &toSessionId, const QString &sdp,
     // and rejects all audio/video.
     QJsonObject extra;
     extra["audiocodec"] = QString("opus");
-    extra["videocodec"] = QString("vp8");
+    // Detect codec from SDP
+    extra["videocodec"] = sdp.contains("H264") ? QString("h264") : QString("vp8");
     sendSessionMessage(toSessionId, "offer", payload, sid, extra, roomType);
     qDebug() << "Signaling: sent offer to" << toSessionId.left(20) << "sid=" << sid.left(10);
 }
