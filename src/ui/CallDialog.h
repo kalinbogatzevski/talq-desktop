@@ -17,7 +17,15 @@ public:
         setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
         setMinimumSize(160, 120);
     }
-    void setImage(const QImage &img) { m_image = img; update(); }
+    void setImage(const QImage &img) {
+        // Pre-scale to widget size to avoid expensive scaling in paintEvent
+        if (!img.isNull() && (img.width() > width() * 2 || img.height() > height() * 2)) {
+            m_image = img.scaled(size(), Qt::KeepAspectRatio, Qt::FastTransformation);
+        } else {
+            m_image = img;
+        }
+        update();
+    }
 protected:
     void paintEvent(QPaintEvent *) override;
 private:

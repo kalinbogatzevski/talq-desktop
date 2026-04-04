@@ -40,7 +40,9 @@ void VideoFrameProvider::feedFrame(GstSample *sample)
 
     const gchar *format = gst_structure_get_string(s, "format");
     QVideoFrameFormat::PixelFormat pixFmt = QVideoFrameFormat::Format_Invalid;
-    if (format && g_strcmp0(format, "I420") == 0)
+    if (format && g_strcmp0(format, "BGRx") == 0)
+        pixFmt = QVideoFrameFormat::Format_BGRX8888;
+    else if (format && g_strcmp0(format, "I420") == 0)
         pixFmt = QVideoFrameFormat::Format_YUV420P;
     else if (format && g_strcmp0(format, "NV12") == 0)
         pixFmt = QVideoFrameFormat::Format_NV12;
@@ -53,11 +55,20 @@ void VideoFrameProvider::feedFrame(GstSample *sample)
     GstMapInfo map;
     if (!gst_buffer_map(buf, &map, GST_MAP_READ)) return;
 
+    // BGRx: direct memcpy to QImage (no color conversion needed — fastest path)
+    if (pixFmt == QVideoFrameFormat::Format_BGRX8888) {
+        const qint64 expectedSize = (qint64)width * height * 4;
+        if ((qint64)map.size >= expectedSize) {
+            QImage img(map.data, width, height, width * 4, QImage::Format_RGB32);
+            emit imageReady(img.copy());  // copy because map.data is released below
+        }
+    }
+
+    // I420: pixel-by-pixel YUV→RGB conversion (fallback for local preview)
     const qint64 ySize = (qint64)width * height;
     const qint64 uvSize = (qint64)(width / 2) * (height / 2);
     const bool bufferValid = (qint64)(ySize + 2 * uvSize) <= (qint64)map.size;
 
-    // Convert I420 to QImage for widget display
     if (bufferValid && pixFmt == QVideoFrameFormat::Format_YUV420P) {
         const uchar *yPlane = map.data;
         const uchar *uPlane = map.data + ySize;

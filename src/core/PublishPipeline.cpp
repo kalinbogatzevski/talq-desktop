@@ -496,7 +496,7 @@ bool PublishPipeline::buildCameraChain(int deviceIndex, bool hd1080)
     g_object_set(m_cameraValve, "drop", TRUE, nullptr);
     // Preview appsink
     {
-        GstCaps *previewCaps = gst_caps_from_string("video/x-raw,format=I420");
+        GstCaps *previewCaps = gst_caps_from_string("video/x-raw,format=BGRx");
         g_object_set(m_previewAppsink,
             "emit-signals", TRUE,
             "caps", previewCaps,
