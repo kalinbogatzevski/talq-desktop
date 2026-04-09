@@ -84,7 +84,8 @@ for p in coreelements audioconvert audioresample autodetect audiotestsrc videote
     dtls nice opus rtp rtpmanager srtp \
     wasapi wasapi2 webrtc app level \
     vpx openh264 videoconvertscale sctp jpeg \
-    winks mediafoundation; do
+    winks mediafoundation winscreencap \
+    d3d11 nvcodec; do
     src="$MSYS2/../lib/gstreamer-1.0/libgst${p}.dll"
     [ -f "$src" ] && cp "$src" gst-plugins/
 done
