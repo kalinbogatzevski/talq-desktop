@@ -3,6 +3,7 @@
 #include <QRectF>
 #include <QString>
 #include <QTextDocument>
+#include <QVector>
 #include <memory>
 
 /**
@@ -13,6 +14,16 @@ struct HitRegion {
     Type type = None;
     QRectF rect;
     QString data;  // URL for links, emoji for reactions, etc.
+};
+
+/**
+ * One emoji cluster substituted with a placeholder space in the body document.
+ * Populated by LayoutEngine (Task 15) and consumed by ChatPainter (Task 16).
+ */
+struct EmojiRun {
+    int docPosition;       // char offset in the QTextDocument's plain text (after substitution)
+    QString codepoints;    // the full grapheme cluster (original emoji)
+    qreal widthPx;         // advance used by the placeholder space
 };
 
 /**
@@ -89,6 +100,9 @@ struct MessageLayout
 
     // ── Cached rich-text document for body ──
     std::shared_ptr<QTextDocument> bodyDoc;
+
+    // ── Emoji runs (populated by LayoutEngine, consumed by ChatPainter) ──
+    QVector<EmojiRun> emojiRuns;
 
     // ── Hit regions (populated for future phases) ──
     // Kept minimal for now
