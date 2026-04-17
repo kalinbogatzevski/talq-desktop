@@ -227,6 +227,25 @@ void MainWindow::buildChatPage()
     m_searchField->setFont(sf);
     m_searchField->setContentsMargins(6, 4, 6, 4);
 
+    // Home button — placed to the left of the search field
+    m_homeBtn = new QPushButton(QStringLiteral("\U0001F3E0"), sidebarCol);
+    m_homeBtn->setFlat(true);
+    m_homeBtn->setFixedSize(32, 32);
+    m_homeBtn->setCursor(Qt::PointingHandCursor);
+    m_homeBtn->setToolTip(tr("Home"));
+    m_homeBtn->setStyleSheet(
+        "QPushButton { background: transparent; font-size: 16px; color: #ccc; border: none; }"
+        "QPushButton:hover { background: rgba(255,255,255,0.08); border-radius: 6px; }"
+    );
+
+    m_searchRow = new QWidget(sidebarCol);
+    auto *searchRowLayout = new QHBoxLayout(m_searchRow);
+    searchRowLayout->setContentsMargins(0, 0, 0, 0);
+    searchRowLayout->setSpacing(2);
+    searchRowLayout->addWidget(m_homeBtn);
+    searchRowLayout->addWidget(m_searchField, 1);
+    auto *searchRow = m_searchRow;
+
     // ── User profile header ──
     m_profileBar = new QWidget(sidebarCol);
     auto *profileBar = m_profileBar;
@@ -269,7 +288,7 @@ void MainWindow::buildChatPage()
     });
 
     sidebarLayout->addWidget(profileBar);
-    sidebarLayout->addWidget(m_searchField);
+    sidebarLayout->addWidget(searchRow);
 
     m_profileAvatarLabel = profileAvatar;
     m_profileAvatarLabel->setCursor(Qt::PointingHandCursor);
@@ -308,6 +327,21 @@ void MainWindow::buildChatPage()
 
     connect(m_searchField, &QLineEdit::textChanged, m_sidebar, &SidebarPainter::setFilterText);
     connect(m_sidebar, &SidebarPainter::conversationClicked, this, &MainWindow::onConversationSelected);
+
+    // Home button and clickable-logo → return to welcome screen
+    connect(m_homeBtn, &QPushButton::clicked, m_sidebar, &SidebarPainter::homeRequested);
+    connect(m_sidebar, &SidebarPainter::homeRequested, this, [this]() {
+        m_sidebar->setSelectedIndex(-1);
+        if (m_chatPainter->selectionMode())
+            m_chatPainter->exitSelectionMode();
+        closeThread();
+        // Clear the active conversation in the message model (empty token = no conversation)
+        m_messages->setConversationToken(QString());
+        m_activeConvToken.clear();
+        m_chatPainter->hide();
+        if (m_composer) m_composer->hide();
+        m_welcomeWidget->show();
+    });
     connect(m_sidebar, &SidebarPainter::contextMenuRequested, this, [this](int modelIndex, int notifLevel, qreal, qreal) {
         auto *menu = new QMenu(this);
         menu->setAttribute(Qt::WA_DeleteOnClose);
@@ -1006,6 +1040,7 @@ void MainWindow::sidebarSqueezedChanged()
 
     // In squeezed mode: hide search and settings, keep avatar only
     m_searchField->setVisible(!m_sidebarSqueezed);
+    if (m_homeBtn) m_homeBtn->setVisible(!m_sidebarSqueezed);
     m_settingsBtn->setVisible(!m_sidebarSqueezed);
     m_profileNameLabel->setVisible(!m_sidebarSqueezed);
 
