@@ -34,6 +34,7 @@ private slots:
     void sendAction();
     void confirmSendFile();
     void cancelPendingFile();
+    void handleAutoreplace();
 
 private:
     QTextEdit *m_input = nullptr;

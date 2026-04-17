@@ -1,5 +1,6 @@
 #include "ComposerWidget.h"
 #include "core/SignalingClient.h"
+#include "core/EmojiData.h"
 #include "models/MessageListModel.h"
 #include <QFileDialog>
 #include <QKeyEvent>
@@ -117,6 +118,7 @@ ComposerWidget::ComposerWidget(QWidget *parent)
     layout->addWidget(m_sendBtn);
 
     connect(m_sendBtn, &QPushButton::clicked, this, &ComposerWidget::sendAction);
+    connect(m_input, &QTextEdit::textChanged, this, &ComposerWidget::handleAutoreplace);
     connect(m_attachBtn, &QPushButton::clicked, this, [this]() {
         QString file = QFileDialog::getOpenFileName(this, "Send file");
         if (!file.isEmpty())
@@ -297,4 +299,34 @@ void ComposerWidget::sendAction()
     if (m_signaling) m_signaling->sendStoppedTyping();
     emit sendMessage(text);
     m_input->clear();
+}
+
+void ComposerWidget::handleAutoreplace()
+{
+    QTextCursor cur = m_input->textCursor();
+    int pos = cur.position();
+    if (pos < 3) return;  // need at least ":) " or similar
+
+    QString text = m_input->toPlainText();
+    // Only trigger on trailing space (or newline).
+    if (pos == 0 || !(text[pos - 1] == QLatin1Char(' ') || text[pos - 1] == QLatin1Char('\n'))) return;
+
+    // Look back up to 10 chars for a short-form before the space.
+    int start = qMax(0, pos - 11);
+    QString tail = text.mid(start, pos - 1 - start);
+
+    // Try short-form candidates (2–3 chars, e.g. ":)", ":-D", "<3").
+    for (int n = qMin(3, tail.size()); n >= 2; --n) {
+        QString cand = tail.right(n);
+        const auto *e = EmojiData::findByShortForm(cand);
+        if (e) {
+            QTextCursor c = m_input->textCursor();
+            c.beginEditBlock();
+            c.setPosition(pos - 1 - n);
+            c.setPosition(pos - 1, QTextCursor::KeepAnchor);
+            c.insertText(e->codepoints);
+            c.endEditBlock();
+            return;
+        }
+    }
 }
