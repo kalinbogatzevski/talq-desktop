@@ -1,5 +1,6 @@
 #include "ThreadsPainter.h"
 #include "models/ThreadListModel.h"
+#include "EmojiTextRenderer.h"
 #include <QPainter>
 #include <QPainterPath>
 #include <QPaintEvent>
@@ -455,14 +456,13 @@ void ThreadsPainter::paintRow(QPainter *p, const ThreadLayout &tl, int rowIdx)
     // Preview text
     QFont previewFont;
     previewFont.setPixelSize(m_theme.fontSizeSmall);
-    QFontMetrics previewFM(previewFont);
     qreal previewRight = textRight - rightStuffW;
-    QString elidedPreview = previewFM.elidedText(tl.previewText, Qt::ElideRight,
-                                                  static_cast<int>(previewRight - textLeft));
     p->setPen(m_theme.textMuted);
     p->setFont(previewFont);
-    p->drawText(QRectF(textLeft, bottomY, previewRight - textLeft, m_theme.fontSizeSmall + 4),
-                Qt::AlignLeft | Qt::AlignVCenter, elidedPreview);
+    EmojiTextRenderer::drawElided(p,
+        QRectF(textLeft, bottomY, previewRight - textLeft, m_theme.fontSizeSmall + 4),
+        tl.previewText,
+        Qt::ElideRight);
 
     // Unread badge
     if (tl.unreadCount > 0 && !selected) {
