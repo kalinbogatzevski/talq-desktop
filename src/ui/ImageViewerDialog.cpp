@@ -10,10 +10,13 @@
 #include <QGraphicsPixmapItem>
 #include <QGraphicsScene>
 #include <QGraphicsView>
+#include <QHBoxLayout>
 #include <QKeyEvent>
 #include <QLabel>
+#include <QMenu>
 #include <QMessageBox>
 #include <QMouseEvent>
+#include <QPushButton>
 #include <QScreen>
 #include <QSettings>
 #include <QTimer>
@@ -30,10 +33,28 @@ ImageViewerDialog::ImageViewerDialog(ApiClient *api, QWidget *parent)
     root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(0);
 
-    m_titleBar = new QLabel(this);
-    m_titleBar->setStyleSheet("background: rgba(0,0,0,0.6); padding: 6px 12px; font-size: 13px;");
+    auto *titleRow = new QWidget(this);
+    titleRow->setStyleSheet("background: rgba(0,0,0,0.6);");
+    auto *titleRowLayout = new QHBoxLayout(titleRow);
+    titleRowLayout->setContentsMargins(12, 6, 6, 6);
+    titleRowLayout->setSpacing(6);
+
+    m_titleBar = new QLabel(titleRow);
+    m_titleBar->setStyleSheet("font-size: 13px; background: transparent;");
     m_titleBar->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-    root->addWidget(m_titleBar);
+    titleRowLayout->addWidget(m_titleBar, 1);
+
+    m_menuBtn = new QPushButton(QStringLiteral("\u22EF"), titleRow); // ⋯
+    m_menuBtn->setFlat(true);
+    m_menuBtn->setFixedSize(28, 24);
+    m_menuBtn->setCursor(Qt::PointingHandCursor);
+    m_menuBtn->setStyleSheet(
+        "QPushButton { background: transparent; color: #eee; font-size: 16px; border: none; }"
+        "QPushButton:hover { background: rgba(255,255,255,0.08); border-radius: 4px; }"
+    );
+    titleRowLayout->addWidget(m_menuBtn);
+
+    root->addWidget(titleRow);
 
     m_scene = new QGraphicsScene(this);
     m_view  = new QGraphicsView(m_scene, this);
@@ -47,6 +68,16 @@ ImageViewerDialog::ImageViewerDialog(ApiClient *api, QWidget *parent)
     root->addWidget(m_view, 1);
 
     m_view->viewport()->installEventFilter(this);
+
+    connect(m_menuBtn, &QPushButton::clicked, this, [this]() {
+        QMenu menu(this);
+        menu.addAction(tr("Copy image"), QKeySequence(QKeySequence::Copy),
+                       this, &ImageViewerDialog::copyImage);
+        menu.addAction(tr("Save as\u2026"), QKeySequence(QKeySequence::Save),
+                       this, &ImageViewerDialog::saveAs);
+        QPoint p = m_menuBtn->mapToGlobal(QPoint(0, m_menuBtn->height()));
+        menu.exec(p);
+    });
 
     QSettings s;
     QRect g = s.value(QStringLiteral("imageViewer/geometry")).toRect();
