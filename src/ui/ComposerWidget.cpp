@@ -1,4 +1,5 @@
 #include "ComposerWidget.h"
+#include "EmojiPickerWidget.h"
 #include "core/SignalingClient.h"
 #include "core/EmojiData.h"
 #include "models/MessageListModel.h"
@@ -104,6 +105,17 @@ ComposerWidget::ComposerWidget(QWidget *parent)
         "QTextEdit:focus { border-color: #2ec4b6; }"
     );
     layout->addWidget(m_input, 1);
+
+    m_emojiBtn = new QPushButton(QStringLiteral("\U0001F600"), this);
+    m_emojiBtn->setFlat(true);
+    m_emojiBtn->setFixedSize(32, 32);
+    m_emojiBtn->setCursor(Qt::PointingHandCursor);
+    m_emojiBtn->setStyleSheet(
+        "QPushButton { background: transparent; font-size: 18px; border: none; }"
+        "QPushButton:hover { background: rgba(255,255,255,0.08); border-radius: 6px; }"
+    );
+    layout->addWidget(m_emojiBtn);
+    connect(m_emojiBtn, &QPushButton::clicked, this, &ComposerWidget::openEmojiPicker);
 
     m_sendBtn = new QPushButton(this);
     m_sendBtn->setText(QString::fromUtf8("\xE2\x9E\xA4"));  // arrow
@@ -299,6 +311,26 @@ void ComposerWidget::sendAction()
     if (m_signaling) m_signaling->sendStoppedTyping();
     emit sendMessage(text);
     m_input->clear();
+}
+
+void ComposerWidget::openEmojiPicker()
+{
+    if (!m_picker) {
+        m_picker = new EmojiPickerWidget(this->window());
+        m_picker->setWindowFlags(Qt::Popup);
+        connect(m_picker, &EmojiPickerWidget::emojiSelected, this,
+                [this](const QString &cp) {
+            if (cp.isEmpty()) return;
+            m_input->insertPlainText(cp);
+            m_picker->close();
+        });
+    }
+    QPoint anchor = m_emojiBtn->mapToGlobal(QPoint(0, 0));
+    m_picker->move(anchor.x() - m_picker->width() + m_emojiBtn->width(),
+                   anchor.y() - m_picker->height() - 4);
+    m_picker->show();
+    m_picker->raise();
+    m_picker->activateWindow();
 }
 
 void ComposerWidget::handleAutoreplace()
