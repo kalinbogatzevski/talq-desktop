@@ -2,6 +2,7 @@
 
 #include <QWidget>
 #include <QVector>
+#include <QHash>
 
 class QLineEdit;
 class QScrollArea;
@@ -26,10 +27,12 @@ protected:
 private:
     void rebuild();
     void onCellClicked(const EmojiData::EmojiEntry *e);
+    void scrollToCategory(EmojiData::Category c);
 
     QLineEdit *m_search = nullptr;
     QScrollArea *m_scroll = nullptr;
     QWidget *m_gridHost = nullptr;
     QVBoxLayout *m_gridLayout = nullptr;
     QString m_filter;
+    QHash<int, QWidget*> m_sectionAnchors;  // keyed by int(Category)
 };
