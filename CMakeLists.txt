@@ -70,6 +70,9 @@ qt_add_executable(talq
     src/ui/ConversationPickerDialog.cpp
     src/ui/NotificationPopup.h
     src/ui/NotificationPopup.cpp
+    src/core/EmojiData.h
+    src/core/EmojiData.cpp
+    src/core/EmojiData_generated.cpp
     resources/resources.qrc
     resources/talq.rc
 )
