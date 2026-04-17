@@ -27,6 +27,19 @@ set(GST_INCLUDE_DIRS
 set(GST_LIBRARY_DIRS "${GSTREAMER_ROOT}/lib")
 set(GST_LIBRARIES gstreamer-1.0 gstsdp-1.0 gstwebrtc-1.0 gstapp-1.0 gobject-2.0 glib-2.0 intl)
 
+find_package(Python3 COMPONENTS Interpreter)
+
+add_custom_command(
+    OUTPUT  ${CMAKE_SOURCE_DIR}/src/core/EmojiData_generated.cpp
+    COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_SOURCE_DIR}/scripts/gen-emoji-data.py
+            ${CMAKE_SOURCE_DIR}/resources/emoji-data-source.json
+            ${CMAKE_SOURCE_DIR}/src/core/EmojiData_generated.cpp
+    DEPENDS ${CMAKE_SOURCE_DIR}/resources/emoji-data-source.json
+            ${CMAKE_SOURCE_DIR}/scripts/gen-emoji-data.py
+    COMMENT "Regenerating EmojiData_generated.cpp"
+)
+
 qt_add_executable(talq
     src/main.cpp
     src/core/ApiClient.cpp
