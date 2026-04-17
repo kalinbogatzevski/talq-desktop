@@ -1437,10 +1437,17 @@ void ChatPainter::paintReactions(QPainter *p, const MessageLayout &ml, qreal off
         p->drawRoundedRect(pill, pillH / 2.0, pillH / 2.0);
 
         // Emoji
-        p->setPen(m_theme.textPrimary);
-        p->setFont(emojiFont);
-        p->drawText(QRectF(x + pillPadX, bar.top(), emojiW, pillH),
-                     Qt::AlignCenter, emoji);
+        QPixmap emojiPix = EmojiData::pixmapFor(emoji, 18);
+        if (!emojiPix.isNull()) {
+            qreal px = x + pillPadX + (emojiW - emojiPix.width()) / 2.0;
+            qreal py = bar.top() + (pillH - emojiPix.height()) / 2.0;
+            p->drawPixmap(QPointF(px, py), emojiPix);
+        } else {
+            p->setPen(m_theme.textPrimary);
+            p->setFont(emojiFont);
+            p->drawText(QRectF(x + pillPadX, bar.top(), emojiW, pillH),
+                         Qt::AlignCenter, emoji);
+        }
 
         // Count
         p->setPen(countColor);
