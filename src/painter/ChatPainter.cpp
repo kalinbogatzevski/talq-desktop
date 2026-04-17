@@ -24,6 +24,11 @@
 #include <QTextCursor>
 #include <QMenu>
 #include "core/ApiClient.h"
+#include "core/EmojiData.h"
+#include <QTextBlock>
+#include <QTextLayout>
+#include <QTextLine>
+#include <QFontMetricsF>
 
 ChatPainter::ChatPainter(QWidget *parent)
     : QWidget(parent)
@@ -1100,6 +1105,7 @@ void ChatPainter::paintOwnMessage(QPainter *p, const MessageLayout &ml, qreal of
         ml.bodyDoc->documentLayout()->draw(p, ctx);
         p->restore();
     }
+    paintMessageEmojis(p, ml, offsetY);
 
     // Reactions
     if (!ml.reactions.isEmpty() && !ml.reactBarRect.isNull())
@@ -1244,6 +1250,7 @@ void ChatPainter::paintOtherMessage(QPainter *p, const MessageLayout &ml, qreal 
         ml.bodyDoc->documentLayout()->draw(p, ctx);
         p->restore();
     }
+    paintMessageEmojis(p, ml, offsetY);
 
     // Reactions
     if (!ml.reactions.isEmpty() && !ml.reactBarRect.isNull())
@@ -1658,4 +1665,61 @@ void ChatPainter::requestFilePreview(int fileId)
         else
             update();  // just repaint with the loaded preview
     });
+}
+
+// ─── Twemoji overlay ────────────────────────────────
+
+void ChatPainter::drawEmoji(QPainter *p, const QString &codepoints, const QRectF &rect)
+{
+    QPixmap pm = EmojiData::pixmapFor(codepoints, int(rect.height()));
+    if (pm.isNull()) {
+        // Fallback: leave the system glyph that's already drawn. Nothing to do.
+        return;
+    }
+    // Fill the rect with bubble background first so we occlude the system glyph.
+    // We deliberately use the current background — caller positioned the rect to match.
+    // In practice a fully opaque Twemoji PNG will cover the system glyph if widths match;
+    // only needed if there's a slight width mismatch.
+    p->drawPixmap(rect.topLeft(), pm.scaled(int(rect.width()), int(rect.height()),
+                                             Qt::KeepAspectRatio, Qt::SmoothTransformation));
+}
+
+void ChatPainter::paintMessageEmojis(QPainter *p, const MessageLayout &ml, qreal offsetY)
+{
+    if (ml.emojiRuns.isEmpty() || !ml.bodyDoc) return;
+
+    QAbstractTextDocumentLayout *layout = ml.bodyDoc->documentLayout();
+    (void)layout;
+
+    const qreal bodyLeft = ml.bodyRect.left();
+    const qreal bodyTop  = ml.bodyRect.top() + offsetY;
+
+    for (const auto &r : ml.emojiRuns) {
+        QTextBlock block = ml.bodyDoc->findBlock(r.docPosition);
+        if (!block.isValid()) continue;
+        QTextLayout *blkLay = block.layout();
+        if (!blkLay) continue;
+
+        int relPos = r.docPosition - block.position();
+        QTextLine line;
+        for (int li = 0; li < blkLay->lineCount(); ++li) {
+            QTextLine candidate = blkLay->lineAt(li);
+            int ts = candidate.textStart();
+            int te = ts + candidate.textLength();
+            if (relPos >= ts && relPos < te) { line = candidate; break; }
+        }
+        if (!line.isValid()) continue;
+
+        qreal x = bodyLeft + blkLay->position().x() + line.cursorToX(relPos);
+        qreal y = bodyTop + blkLay->position().y() + line.y();
+        qreal h = line.height();
+
+        // Measure advance width of the original cluster in the body font.
+        QFontMetricsF fm(ml.bodyDoc->defaultFont());
+        qreal w = fm.horizontalAdvance(r.codepoints);
+        if (w <= 0) w = h * 1.1;
+
+        QRectF dst(x, y, w, h);
+        drawEmoji(p, r.codepoints, dst);
+    }
 }
