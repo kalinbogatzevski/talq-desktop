@@ -10,6 +10,8 @@ QVector<EmojiEntry> g_entries;
 QHash<QString, const EmojiEntry*> g_byShortcode;
 QHash<QString, const EmojiEntry*> g_byShortForm;
 QHash<QString, QPixmap> g_pixmapCache;
+QStringList g_recentCodepoints;
+const int kRecentMax = 24;
 } // namespace
 
 // Defined in EmojiData_generated.cpp; fills g_entries when called.
@@ -22,7 +24,7 @@ void initialize()
         for (const QString &sc : e.shortcodes) g_byShortcode.insert(sc, &e);
         for (const QString &sf : e.shortForms) g_byShortForm.insert(sf, &e);
     }
-
+    g_recentCodepoints = QSettings().value("emoji/recent").toStringList();
 }
 
 const QVector<EmojiEntry> &allEntries() { return g_entries; }
@@ -91,7 +93,24 @@ QPixmap pixmapFor(const QString &codepoints, int sizePx)
     g_pixmapCache.insert(key, pm);
     return pm;
 }
-QVector<const EmojiEntry*> recent() { return {}; }
-void pushRecent(const EmojiEntry *) {}
+QVector<const EmojiEntry*> recent()
+{
+    QVector<const EmojiEntry*> out;
+    for (const QString &cp : g_recentCodepoints) {
+        for (const auto &e : g_entries)
+            if (e.codepoints == cp) { out.append(&e); break; }
+    }
+    return out;
+}
+
+void pushRecent(const EmojiEntry *e)
+{
+    if (!e) return;
+    g_recentCodepoints.removeAll(e->codepoints);
+    g_recentCodepoints.prepend(e->codepoints);
+    while (g_recentCodepoints.size() > kRecentMax)
+        g_recentCodepoints.removeLast();
+    QSettings().setValue("emoji/recent", g_recentCodepoints);
+}
 
 } // namespace EmojiData
