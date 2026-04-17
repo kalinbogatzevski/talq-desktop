@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QImage>
 #include <QWidget>
 #include <QPointer>
 
@@ -30,12 +31,15 @@ private:
     void fitToWindow();
     void actualSize();
     void zoomByStep(bool zoomIn);
+    void copyImage();
+    void saveAs();
 
     ApiClient *m_api;
     QGraphicsScene *m_scene;
     QGraphicsView *m_view;
     QGraphicsPixmapItem *m_item = nullptr;
     QLabel *m_titleBar;
+    QImage m_currentImage;
     int m_currentFileId = 0;
     bool m_at100 = false;
 };
