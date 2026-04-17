@@ -10,6 +10,7 @@
 
 class SignalingClient;
 class MessageListModel;
+class EmojiPickerWidget;
 
 class ComposerWidget : public QWidget
 {
@@ -35,11 +36,14 @@ private slots:
     void confirmSendFile();
     void cancelPendingFile();
     void handleAutoreplace();
+    void openEmojiPicker();
 
 private:
     QTextEdit *m_input = nullptr;
     QPushButton *m_sendBtn = nullptr;
     QPushButton *m_attachBtn = nullptr;
+    QPushButton *m_emojiBtn = nullptr;
+    EmojiPickerWidget *m_picker = nullptr;
     SignalingClient *m_signaling = nullptr;
     MessageListModel *m_model = nullptr;
     QString m_topicName;
