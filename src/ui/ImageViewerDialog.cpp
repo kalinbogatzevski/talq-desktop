@@ -55,6 +55,7 @@ ImageViewerDialog::ImageViewerDialog(ApiClient *api, QWidget *parent)
 
 void ImageViewerDialog::applyPixmap(const QImage &img)
 {
+    m_currentImage = img;
     m_scene->clear();
     m_item = m_scene->addPixmap(QPixmap::fromImage(img));
     m_scene->setSceneRect(m_item->boundingRect());
