@@ -28,7 +28,37 @@ const EmojiEntry *findByShortcode(const QString &s) { return g_byShortcode.value
 const EmojiEntry *findByShortForm(const QString &s) { return g_byShortForm.value(s, nullptr); }
 QVector<const EmojiEntry*> search(const QString &) { return {}; }
 QVector<const EmojiEntry*> inCategory(Category) { return {}; }
-QPixmap pixmapFor(const QString &, int) { return QPixmap(); }
+QPixmap pixmapFor(const QString &codepoints, int sizePx)
+{
+    QString key = codepoints + QLatin1Char(':') + QString::number(sizePx);
+    auto it = g_pixmapCache.constFind(key);
+    if (it != g_pixmapCache.constEnd())
+        return it.value();
+
+    // Build the hex filename used by Twemoji: codepoints joined by '-', lowercased,
+    // U+FE0F (variation selector) stripped because Twemoji filenames omit it.
+    QString hex;
+    for (int i = 0; i < codepoints.size(); ) {
+        uint cp = codepoints[i].unicode();
+        if (QChar::isHighSurrogate(cp) && i + 1 < codepoints.size()) {
+            cp = QChar::surrogateToUcs4(codepoints[i], codepoints[i+1]);
+            i += 2;
+        } else {
+            ++i;
+        }
+        if (cp == 0xFE0F) continue;  // variation selector — omitted in filenames
+        if (!hex.isEmpty()) hex += '-';
+        hex += QString::number(cp, 16);
+    }
+
+    QString path = QStringLiteral(":/twemoji/72x72/%1.png").arg(hex);
+    QPixmap pm(path);
+    if (!pm.isNull() && pm.height() != sizePx)
+        pm = pm.scaled(sizePx, sizePx, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+
+    g_pixmapCache.insert(key, pm);
+    return pm;
+}
 QVector<const EmojiEntry*> recent() { return {}; }
 void pushRecent(const EmojiEntry *) {}
 
