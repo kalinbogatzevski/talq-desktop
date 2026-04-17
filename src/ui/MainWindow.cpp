@@ -42,6 +42,9 @@
 #include <QNetworkReply>
 #include <QLabel>
 #include <QUrl>
+#include <QTextBrowser>
+#include <QFile>
+#include <QResizeEvent>
 
 #ifdef Q_OS_WIN
 #include <windows.h>
@@ -500,7 +503,30 @@ void MainWindow::buildChatPage()
         m_welcomePushLabel->setStyleSheet(QString("font-size: 14px; color: %1;").arg(on ? "#5ec76a" : "#8a8680"));
     });
 
-    welcomeLayout->addWidget(serverCard, 0, Qt::AlignCenter);
+    auto *changelog = new QTextBrowser(m_welcomeWidget);
+    changelog->setStyleSheet(
+        "QTextBrowser { background: #161616; color: #d8d2c8; border: 1px solid #2a2a26;"
+        " border-radius: 10px; padding: 16px; font-size: 13px; }"
+    );
+    {
+        QFile f(QStringLiteral(":/docs/CHANGELOG.md"));
+        if (f.open(QIODevice::ReadOnly))
+            changelog->setMarkdown(QString::fromUtf8(f.readAll()));
+    }
+    changelog->setReadOnly(true);
+    changelog->setOpenExternalLinks(true);
+
+    m_welcomeSplit = new QSplitter(Qt::Horizontal, m_welcomeWidget);
+    m_welcomeSplit->setHandleWidth(1);
+    m_welcomeSplit->setStyleSheet("QSplitter::handle { background: #2a2a26; }");
+    m_welcomeSplit->addWidget(serverCard);
+    m_welcomeSplit->addWidget(changelog);
+    m_welcomeSplit->setStretchFactor(0, 0);
+    m_welcomeSplit->setStretchFactor(1, 1);
+    m_welcomeSplit->setSizes({420, 800});
+    welcomeLayout->addWidget(m_welcomeSplit, 1);
+
+    m_welcomeWidget->installEventFilter(this);
 
     chatLayout->addWidget(m_welcomeWidget, 1);
 
@@ -963,6 +989,12 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
         m_settingsDialog->refresh();
         m_settingsDialog->exec();
         return true;
+    }
+    // Welcome split orientation: horizontal above 1100px, vertical below
+    if (obj == m_welcomeWidget && event->type() == QEvent::Resize && m_welcomeSplit) {
+        auto *re = static_cast<QResizeEvent*>(event);
+        m_welcomeSplit->setOrientation(re->size().width() < 1100
+                                       ? Qt::Vertical : Qt::Horizontal);
     }
     return QMainWindow::eventFilter(obj, event);
 }
