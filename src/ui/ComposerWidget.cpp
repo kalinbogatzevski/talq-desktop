@@ -329,4 +329,28 @@ void ComposerWidget::handleAutoreplace()
             return;
         }
     }
+
+    // Try :shortcode: — scan back for a matching ':' pair.
+    int colonEnd = pos - 1;          // the space we just typed sits at pos-1
+    int wordEnd  = colonEnd - 1;     // last char of shortcode, should be ':'
+    if (wordEnd < 1 || text[wordEnd] != QLatin1Char(':')) return;
+
+    int wordStart = wordEnd - 1;
+    while (wordStart >= 0 && (text[wordStart].isLetterOrNumber()
+           || text[wordStart] == QLatin1Char('_')
+           || text[wordStart] == QLatin1Char('+')
+           || text[wordStart] == QLatin1Char('-')))
+        --wordStart;
+    if (wordStart < 0 || text[wordStart] != QLatin1Char(':')) return;
+
+    QString shortcode = text.mid(wordStart, wordEnd - wordStart + 1); // ":word:"
+    const auto *e = EmojiData::findByShortcode(shortcode);
+    if (!e) return;
+
+    QTextCursor c = m_input->textCursor();
+    c.beginEditBlock();
+    c.setPosition(wordStart);
+    c.setPosition(colonEnd, QTextCursor::KeepAnchor);
+    c.insertText(e->codepoints);
+    c.endEditBlock();
 }
