@@ -3,11 +3,15 @@
 #include "core/EmojiData.h"
 
 #include <QAbstractButton>
+#include <QContextMenuEvent>
+#include <QElapsedTimer>
 #include <QGridLayout>
 #include <QHBoxLayout>
+#include <QIcon>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMouseEvent>
 #include <QPainter>
 #include <QPushButton>
 #include <QScrollArea>
@@ -25,6 +29,10 @@ public:
         setToolTip(e->shortcodes.isEmpty() ? e->name : e->shortcodes.first());
     }
     const EmojiData::EmojiEntry *entry() const { return m_entry; }
+
+signals:
+    void variantChosen(const QString &codepoints);
+
 protected:
     void paintEvent(QPaintEvent *) override
     {
@@ -37,8 +45,60 @@ protected:
         if (!pm.isNull())
             p.drawPixmap((width()-32)/2, (height()-32)/2, pm);
     }
+
+    void mousePressEvent(QMouseEvent *event) override
+    {
+        m_pressTimer.restart();
+        QAbstractButton::mousePressEvent(event);
+    }
+    void mouseReleaseEvent(QMouseEvent *event) override
+    {
+        if (!m_entry->skinToneVariants.isEmpty() && m_pressTimer.elapsed() > 300) {
+            showVariants(event->globalPosition().toPoint());
+            return;   // swallow the click — user is browsing variants
+        }
+        QAbstractButton::mouseReleaseEvent(event);
+    }
+    void contextMenuEvent(QContextMenuEvent *event) override
+    {
+        if (!m_entry->skinToneVariants.isEmpty())
+            showVariants(event->globalPos());
+    }
+
 private:
+    void showVariants(const QPoint &globalPos)
+    {
+        auto *popup = new QWidget(this, Qt::Popup);
+        popup->setAttribute(Qt::WA_DeleteOnClose);
+        popup->setStyleSheet("background: #262636; border-radius: 6px; padding: 4px;");
+        auto *lay = new QHBoxLayout(popup);
+        lay->setContentsMargins(6, 6, 6, 6);
+        lay->setSpacing(4);
+
+        auto addBtn = [this, lay, popup](const QString &cp) {
+            auto *b = new QPushButton(popup);
+            b->setFixedSize(34, 34);
+            b->setFlat(true);
+            b->setCursor(Qt::PointingHandCursor);
+            QPixmap pm = EmojiData::pixmapFor(cp, 28);
+            if (!pm.isNull()) b->setIcon(QIcon(pm));
+            b->setIconSize(QSize(28, 28));
+            connect(b, &QPushButton::clicked, this, [this, cp, popup]() {
+                emit variantChosen(cp);
+                popup->close();
+            });
+            lay->addWidget(b);
+        };
+        addBtn(m_entry->codepoints);           // base (no tone)
+        for (const QString &v : m_entry->skinToneVariants) addBtn(v);
+
+        popup->adjustSize();
+        popup->move(globalPos - QPoint(popup->width()/2, popup->height() + 8));
+        popup->show();
+    }
+
     const EmojiData::EmojiEntry *m_entry;
+    QElapsedTimer m_pressTimer;
 };
 
 EmojiPickerWidget::EmojiPickerWidget(QWidget *parent)
@@ -146,6 +206,10 @@ void EmojiPickerWidget::rebuild()
         for (int i = 0; i < items.size(); ++i) {
             auto *cell = new EmojiCell(items[i], rowHost);
             connect(cell, &QAbstractButton::clicked, this, [this, cell]() { onCellClicked(cell->entry()); });
+            connect(cell, &EmojiCell::variantChosen, this, [this](const QString &cp) {
+                // Emit directly; skip pushRecent for variants (recent tracks base entries only).
+                emit emojiSelected(cp);
+            });
             grid->addWidget(cell, i / cols, i % cols);
         }
         m_gridLayout->addWidget(rowHost);
