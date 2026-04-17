@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.16.5 (2026-04-17)
+
+### Emoji
+- **Twemoji everywhere** — chat messages, reactions, composer all render via bundled Twemoji (Nextcloud Talk style). Consistent across Windows versions.
+- **Autoreplace** — `:)`, `:D`, `<3`, `:P`, `;)`, etc. → emoji on space. Also `:shortcode:` (Slack-style): `:smile:`, `:rocket:`, `:heart:`, …
+- **Emoji picker** — new 😀 button in the composer opens a Telegram-style picker: 9 category tabs, search, recents (24), skin-tone variants via long-press/right-click.
+- **Shortcode autocomplete** — typing `:smi` shows a popup of matches; Up/Down/Enter/Tab to pick, Esc to dismiss.
+
+### Image viewer
+- New standalone image viewer: **Esc closes**, single-instance (no more stacked viewers on repeated clicks), click-drag to **pan**, Ctrl+wheel to **zoom**, `+`/`-` keys, `0` fits, `1` is 100%, double-click toggles. Opens as its own top-level window with its own taskbar entry. Remembers last geometry.
+
+### Welcome screen
+- **What's New panel** — scrollable changelog (this file) rendered as Markdown beside the existing server status card. Collapses to single column below 1100 px.
+- **Home navigation** — 🏠 button in the sidebar (next to search) returns to the welcome screen from any open chat.
+
 ## v0.16.4 (2026-04-17)
 
 ### Bugfixes
