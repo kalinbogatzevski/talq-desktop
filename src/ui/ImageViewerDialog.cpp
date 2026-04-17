@@ -2,17 +2,23 @@
 
 #include "core/ApiClient.h"
 
+#include <QApplication>
+#include <QClipboard>
 #include <QCloseEvent>
+#include <QFileDialog>
+#include <QFileInfo>
 #include <QGraphicsPixmapItem>
 #include <QGraphicsScene>
 #include <QGraphicsView>
 #include <QKeyEvent>
 #include <QLabel>
+#include <QMessageBox>
+#include <QMouseEvent>
 #include <QScreen>
 #include <QSettings>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <QWheelEvent>
-#include <QMouseEvent>
 
 ImageViewerDialog::ImageViewerDialog(ApiClient *api, QWidget *parent)
     : QWidget(parent, Qt::Window), m_api(api)
@@ -98,8 +104,53 @@ void ImageViewerDialog::setImage(int fileId, const QString &fileName, const QIma
     }
 }
 
+void ImageViewerDialog::copyImage()
+{
+    if (m_currentImage.isNull()) return;
+    QApplication::clipboard()->setImage(m_currentImage);
+
+    // Brief visual confirmation in title bar.
+    QString restore = m_titleBar->text();
+    m_titleBar->setText(restore + QStringLiteral("  —  copied to clipboard"));
+    QTimer::singleShot(2000, this, [this, restore]() {
+        if (!m_titleBar) return;
+        m_titleBar->setText(restore);
+    });
+}
+
+void ImageViewerDialog::saveAs()
+{
+    if (m_currentImage.isNull()) return;
+
+    QString title = m_titleBar->text();
+    // Strip any " — ..." suffix we may have appended.
+    int sep = title.indexOf(QStringLiteral("  —  "));
+    QString defaultName = sep >= 0 ? title.left(sep) : title;
+    if (defaultName.isEmpty()) defaultName = QStringLiteral("image.png");
+    // If no extension, default to .png.
+    if (!QFileInfo(defaultName).suffix().length())
+        defaultName += QStringLiteral(".png");
+
+    QString path = QFileDialog::getSaveFileName(
+        this, tr("Save image"), defaultName,
+        tr("Images (*.png *.jpg *.jpeg *.bmp)"));
+    if (path.isEmpty()) return;
+
+    if (!m_currentImage.save(path)) {
+        QMessageBox::warning(this, tr("Save failed"),
+            tr("Could not save image to:\n%1").arg(path));
+    }
+}
+
 void ImageViewerDialog::keyPressEvent(QKeyEvent *event)
 {
+    if (event->modifiers() & Qt::ControlModifier) {
+        switch (event->key()) {
+        case Qt::Key_C: copyImage(); return;
+        case Qt::Key_S: saveAs();    return;
+        default: break;
+        }
+    }
     switch (event->key()) {
     case Qt::Key_Escape: close(); return;
     case Qt::Key_Plus:
