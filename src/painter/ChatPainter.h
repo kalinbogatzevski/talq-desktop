@@ -144,6 +144,8 @@ private:
     void paintFileAttachment(QPainter *p, const MessageLayout &ml, qreal offsetY);
     void paintReactions(QPainter *p, const MessageLayout &ml, qreal offsetY);
     void paintHoverBar(QPainter *p, const MessageLayout &ml, qreal offsetY);
+    void drawEmoji(QPainter *p, const QString &codepoints, const QRectF &rect);
+    void paintMessageEmojis(QPainter *p, const MessageLayout &ml, qreal offsetY);
 
     // ── Hover bar geometry ──
     QRectF hoverBarReactRect(const MessageLayout &ml) const;
