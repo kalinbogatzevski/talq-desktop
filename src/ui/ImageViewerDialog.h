@@ -8,6 +8,8 @@ class QGraphicsScene;
 class QGraphicsView;
 class QGraphicsPixmapItem;
 class QLabel;
+class QPushButton;
+class QMenu;
 class ApiClient;
 class QKeyEvent;
 class QMouseEvent;
@@ -39,6 +41,7 @@ private:
     QGraphicsView *m_view;
     QGraphicsPixmapItem *m_item = nullptr;
     QLabel *m_titleBar;
+    QPushButton *m_menuBtn = nullptr;
     QImage m_currentImage;
     int m_currentFileId = 0;
     bool m_at100 = false;
