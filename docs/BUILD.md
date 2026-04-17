@@ -138,6 +138,12 @@ These plugins must be deployed with TalQ. Both `deploy-dev.sh` and `build-releas
 | `libgstwebrtcnice-1.0-0.dll` | ICE/libnice |
 | `libgstd3d11-1.0-0.dll` | Direct3D 11 |
 | `libgstd3dshader-1.0-0.dll` | D3D shader |
+| `libgstd3d12-1.0-0.dll` | Direct3D 12 (nvcodec transitive) |
+| `libgstcodecs-1.0-0.dll` | Codec base (needed by d3d11/nvcodec) |
+| `libgstcodecparsers-1.0-0.dll` | Codec bitstream parsers (needed by nvcodec) |
+| `libgstcuda-1.0-0.dll` | CUDA runtime wrapper (needed by nvcodec) |
+| `libgstdxva-1.0-0.dll` | DXVA decode (needed by d3d11) |
+| `libgstgl-1.0-0.dll` | OpenGL support (needed by nvcodec) |
 
 ### GStreamer Plugins (in `gst-plugins/` subdirectory)
 
@@ -204,7 +210,11 @@ After deploying, launch TalQ and check the welcome page:
 1. **GStreamer plugin pills** — all should be green. Red = missing DLL.
 2. **GPU acceleration status** — should show "NVIDIA NVDEC" or "Intel DXVA". "Software only" = missing `d3d11`/`nvcodec` plugins.
 
-If any pills are red, copy the missing DLL from `C:\msys64\mingw64\lib\gstreamer-1.0\` to the `gst-plugins\` directory next to `talq.exe`.
+If any pills are red, check both locations:
+- GStreamer plugins live in `C:\msys64\mingw64\lib\gstreamer-1.0\` — copy missing `libgstXXX.dll` into `gst-plugins\` next to `talq.exe`.
+- Plugin support libraries (e.g. `libgstcodecs-1.0-0.dll`, `libgstcuda-1.0-0.dll`, `libgstdxva-1.0-0.dll`, `libgstd3d12-1.0-0.dll`) live in `C:\msys64\mingw64\bin\` — copy them into the main app directory.
+
+The `d3d11` and `nvcodec` plugins in particular each depend on several of these support DLLs and will fail silently (red pill) if any are missing.
 
 ## Publishing a Release
 

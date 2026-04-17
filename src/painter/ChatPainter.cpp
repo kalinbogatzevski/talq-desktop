@@ -107,6 +107,12 @@ void ChatPainter::setScrollY(qreal y)
     if (wasAtBottom != atBottom())
         emit atBottomChanged();
     emit scrollYChanged();
+
+    // Near the top (oldest visible): request more history.
+    // Debounced implicitly because MessageListModel ignores re-entrant loads while m_loading.
+    if (m_scrollY < 200.0 && m_contentHeight > height())
+        emit moreHistoryRequested();
+
     update();
 }
 
@@ -261,6 +267,9 @@ void ChatPainter::setHoveredPos(qreal x, qreal y)
 
 void ChatPainter::rebuildAllLayouts()
 {
+    // Preserve scroll position when older messages are prepended at the top
+    // (model appends at end; layouts reverse model, so older = top).
+    qreal preH = m_contentHeight;
     m_layouts.clear();
 
     if (!m_model || m_model->rowCount() == 0 || width() <= 0) {
@@ -308,6 +317,12 @@ void ChatPainter::rebuildAllLayouts()
     bool wasAtBottom = atBottom();
     qreal oldH = m_contentHeight;
     m_contentHeight = y;
+
+    // If content grew at the top (older history loaded) and we weren't at the bottom,
+    // shift scrollY by the delta so the user's viewport stays anchored to the same messages.
+    if (!wasAtBottom && preH > 0 && m_contentHeight > preH && m_scrollY > 0)
+        m_scrollY += (m_contentHeight - preH);
+
     clampScroll();
 
     if (!qFuzzyCompare(oldH, m_contentHeight))
@@ -542,8 +557,10 @@ void ChatPainter::mouseMoveEvent(QMouseEvent *event)
                 return;
             }
 
-            // Whole-message selection: drag NOT on body text + Ctrl held, or already in selection mode
-            if (event->modifiers() & Qt::ControlModifier || m_selectionMode) {
+            // Whole-message selection: drag NOT on body text (text selection returned above),
+            // or already in selection mode. Dragging across messages enters selection mode
+            // even without Ctrl — Ctrl is optional.
+            {
                 if (!m_selectionMode) {
                     qreal pressCanvasY = m_pressCanvasPos.y() + m_scrollY;
                     int pressIdx = layoutIndexAtY(pressCanvasY);

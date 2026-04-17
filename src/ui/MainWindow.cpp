@@ -584,6 +584,9 @@ void MainWindow::buildChatPage()
     // Drag-and-drop files onto chat → show confirmation in composer
     connect(m_chatPainter, &ChatPainter::fileDropped, m_composer, &ComposerWidget::showPendingFile);
 
+    // Infinite scroll: load older history when user scrolls near top.
+    connect(m_chatPainter, &ChatPainter::moreHistoryRequested, m_messages, &MessageListModel::loadHistory);
+
     // Selection mode
     connect(m_chatPainter, &ChatPainter::selectionModeChanged, this, [this](bool active) {
         if (active) {
