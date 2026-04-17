@@ -130,6 +130,8 @@ private:
     QLabel *m_profileAvatarLabel = nullptr;
     QPushButton *m_settingsBtn = nullptr;
     QWidget *m_profileBar = nullptr;
+    QWidget *m_searchRow = nullptr;
+    QPushButton *m_homeBtn = nullptr;
     QWidget *m_welcomeWidget = nullptr;
     QSplitter *m_welcomeSplit = nullptr;
     QLabel *m_welcomeNameLabel = nullptr;
