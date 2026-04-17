@@ -131,6 +131,7 @@ private:
     QPushButton *m_settingsBtn = nullptr;
     QWidget *m_profileBar = nullptr;
     QWidget *m_welcomeWidget = nullptr;
+    QSplitter *m_welcomeSplit = nullptr;
     QLabel *m_welcomeNameLabel = nullptr;
     QLabel *m_welcomeServerLabel = nullptr;
     QLabel *m_welcomeNcLabel = nullptr;
