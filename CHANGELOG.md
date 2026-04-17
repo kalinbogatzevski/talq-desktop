@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.16.6 (2026-04-18)
+
+### Polish
+- **Twemoji in sidebar + thread previews** — the conversation list's last-message preview now renders Twemoji instead of the system emoji font, matching the chat view.
+- **Image viewer Ctrl+C / Ctrl+S** — copy the displayed image to the clipboard or save it to disk. A new ⋯ menu button in the viewer's title strip exposes both for mouse users.
+
 ## v0.16.5 (2026-04-17)
 
 ### Emoji
