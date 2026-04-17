@@ -71,6 +71,8 @@ qt_add_executable(talq
     src/painter/SidebarPainter.cpp
     src/painter/HeaderPainter.cpp
     src/painter/ThreadsPainter.cpp
+    src/painter/EmojiTextRenderer.h
+    src/painter/EmojiTextRenderer.cpp
     src/ui/MainWindow.cpp
     src/ui/ComposerWidget.cpp
     src/ui/LoginWidget.cpp
