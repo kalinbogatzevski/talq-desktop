@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QMainWindow>
+#include <QPointer>
 #include <QStackedWidget>
 #include <QLineEdit>
 #include <QSettings>
@@ -34,6 +35,7 @@ class LoginWidget;
 class CallDialog;
 class SettingsDialog;
 class SelectionBarWidget;
+class ImageViewerDialog;
 
 class MainWindow : public QMainWindow
 {
@@ -159,4 +161,5 @@ private:
     QTimer m_saveGeometryTimer;
     CallDialog *m_callDialog = nullptr;
     SettingsDialog *m_settingsDialog = nullptr;
+    QPointer<ImageViewerDialog> m_imageViewer;
 };

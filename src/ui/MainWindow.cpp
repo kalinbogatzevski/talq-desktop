@@ -5,6 +5,7 @@
 #include "ComposerWidget.h"
 #include "SelectionBarWidget.h"
 #include "ConversationPickerDialog.h"
+#include "ImageViewerDialog.h"
 #include "painter/ChatPainter.h"
 #include "painter/SidebarPainter.h"
 #include "painter/HeaderPainter.h"
@@ -837,25 +838,13 @@ void MainWindow::buildChatPage()
     });
     connect(m_chatPainter, &ChatPainter::fileClicked, this, [this](int fileId, const QString &mime, const QString &fileName) {
         if (mime.startsWith("image/")) {
-            // Show image preview in a simple dialog
-            QImage img = m_chatPainter->cachedPreview(fileId);
-            if (!img.isNull()) {
-                auto *viewer = new QDialog(this);
-                viewer->setWindowTitle(fileName);
-                viewer->setAttribute(Qt::WA_DeleteOnClose);
-                viewer->setStyleSheet("background: #000000;");
-                auto *label = new QLabel(viewer);
-                QPixmap pix = QPixmap::fromImage(img);
-                QSize screenSize = screen() ? screen()->availableSize() * 0.8 : QSize(800, 600);
-                pix = pix.scaled(screenSize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
-                label->setPixmap(pix);
-                label->setAlignment(Qt::AlignCenter);
-                auto *layout = new QVBoxLayout(viewer);
-                layout->setContentsMargins(0, 0, 0, 0);
-                layout->addWidget(label);
-                viewer->resize(pix.size());
-                viewer->show();
-            }
+            QImage placeholder = m_chatPainter->cachedPreview(fileId);
+            if (!m_imageViewer)
+                m_imageViewer = new ImageViewerDialog(m_api, nullptr);
+            m_imageViewer->setImage(fileId, fileName, placeholder);
+            m_imageViewer->show();
+            m_imageViewer->raise();
+            m_imageViewer->activateWindow();
         } else {
             m_messages->downloadFile(fileId, fileName);
         }
