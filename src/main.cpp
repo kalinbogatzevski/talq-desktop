@@ -33,6 +33,7 @@
 #include "core/CallManager.h"
 #include "core/DebugMonitor.h"
 #include "core/AppSettings.h"
+#include "core/EmojiData.h"
 #include "ui/MainWindow.h"
 #include "ui/NotificationPopup.h"
 #include <gst/gst.h>
@@ -67,6 +68,8 @@ int main(int argc, char *argv[])
 #endif
 
     QApplication app(argc, argv);
+
+    EmojiData::initialize();
 
     // Single-instance guard
     QSharedMemory singleInstance("TalQ_SingleInstance_Lock");
