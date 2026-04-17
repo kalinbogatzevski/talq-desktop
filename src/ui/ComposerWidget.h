@@ -11,6 +11,7 @@
 class SignalingClient;
 class MessageListModel;
 class EmojiPickerWidget;
+class QListWidget;
 
 class ComposerWidget : public QWidget
 {
@@ -37,6 +38,11 @@ private slots:
     void cancelPendingFile();
     void handleAutoreplace();
     void openEmojiPicker();
+    void maybeShowCompletion();
+    void applyCompletion(int row);
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
     QTextEdit *m_input = nullptr;
@@ -58,4 +64,6 @@ private:
     // Reply bar
     QWidget *m_replyBar = nullptr;
     QLabel *m_replyLabel = nullptr;
+
+    QListWidget *m_completion = nullptr;
 };

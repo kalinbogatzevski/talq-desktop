@@ -5,6 +5,7 @@
 #include "models/MessageListModel.h"
 #include <QFileDialog>
 #include <QKeyEvent>
+#include <QListWidget>
 #include <QMimeData>
 #include <QClipboard>
 #include <QApplication>
@@ -131,6 +132,8 @@ ComposerWidget::ComposerWidget(QWidget *parent)
 
     connect(m_sendBtn, &QPushButton::clicked, this, &ComposerWidget::sendAction);
     connect(m_input, &QTextEdit::textChanged, this, &ComposerWidget::handleAutoreplace);
+    connect(m_input, &QTextEdit::textChanged, this, &ComposerWidget::maybeShowCompletion);
+    m_input->installEventFilter(this);
     connect(m_attachBtn, &QPushButton::clicked, this, [this]() {
         QString file = QFileDialog::getOpenFileName(this, "Send file");
         if (!file.isEmpty())
@@ -385,4 +388,115 @@ void ComposerWidget::handleAutoreplace()
     c.setPosition(colonEnd, QTextCursor::KeepAnchor);
     c.insertText(e->codepoints);
     c.endEditBlock();
+}
+
+void ComposerWidget::maybeShowCompletion()
+{
+    QTextCursor cur = m_input->textCursor();
+    int pos = cur.position();
+    QString text = m_input->toPlainText();
+
+    // Look backward for ':' introducing a partial shortcode.
+    int i = pos - 1;
+    while (i >= 0 && (text[i].isLetterOrNumber()
+           || text[i] == QLatin1Char('_')
+           || text[i] == QLatin1Char('+')
+           || text[i] == QLatin1Char('-')))
+        --i;
+    if (i < 0 || text[i] != QLatin1Char(':')) {
+        if (m_completion) m_completion->hide();
+        return;
+    }
+    QString word = text.mid(i + 1, pos - i - 1);
+    if (word.length() < 2) {
+        if (m_completion) m_completion->hide();
+        return;
+    }
+
+    auto hits = EmojiData::search(word);
+    if (hits.isEmpty()) { if (m_completion) m_completion->hide(); return; }
+
+    if (!m_completion) {
+        m_completion = new QListWidget(this->window());
+        m_completion->setWindowFlags(Qt::Popup);
+        m_completion->setStyleSheet(
+            "QListWidget { background: #222230; color: #eee; border: 1px solid #333; border-radius: 6px; }"
+            "QListWidget::item { padding: 4px 8px; }"
+            "QListWidget::item:selected { background: #3a3a55; }"
+        );
+        connect(m_completion, &QListWidget::itemActivated, this,
+                [this](QListWidgetItem *it) { applyCompletion(m_completion->row(it)); });
+    }
+    m_completion->clear();
+    int limit = qMin(6, int(hits.size()));
+    for (int k = 0; k < limit; ++k) {
+        const auto *e = hits[k];
+        QString label = (e->shortcodes.isEmpty() ? e->name : e->shortcodes.first());
+        auto *it = new QListWidgetItem(QIcon(EmojiData::pixmapFor(e->codepoints, 18)),
+                                       QString("%1  %2").arg(e->codepoints, label));
+        it->setData(Qt::UserRole, QVariant::fromValue<quintptr>(reinterpret_cast<quintptr>(e)));
+        m_completion->addItem(it);
+    }
+    m_completion->setCurrentRow(0);
+
+    QPoint p = m_input->mapToGlobal(m_input->rect().topLeft());
+    m_completion->resize(260, 24 * limit + 8);
+    m_completion->move(p.x(), p.y() - m_completion->height() - 4);
+    m_completion->show();
+}
+
+void ComposerWidget::applyCompletion(int row)
+{
+    if (!m_completion || row < 0 || row >= m_completion->count()) return;
+    auto *it = m_completion->item(row);
+    const auto *e = reinterpret_cast<const EmojiData::EmojiEntry*>(
+        it->data(Qt::UserRole).value<quintptr>());
+    if (!e) return;
+
+    QString text = m_input->toPlainText();
+    int pos = m_input->textCursor().position();
+    int i = pos - 1;
+    while (i >= 0 && (text[i].isLetterOrNumber()
+           || text[i] == QLatin1Char('_')
+           || text[i] == QLatin1Char('+')
+           || text[i] == QLatin1Char('-')))
+        --i;
+    if (i < 0 || text[i] != QLatin1Char(':')) { m_completion->hide(); return; }
+
+    QTextCursor c = m_input->textCursor();
+    c.beginEditBlock();
+    c.setPosition(i);
+    c.setPosition(pos, QTextCursor::KeepAnchor);
+    c.insertText(e->codepoints + QStringLiteral(" "));
+    c.endEditBlock();
+    EmojiData::pushRecent(e);
+    m_completion->hide();
+}
+
+bool ComposerWidget::eventFilter(QObject *watched, QEvent *event)
+{
+    if (watched == m_input && m_completion && m_completion->isVisible()
+        && event->type() == QEvent::KeyPress) {
+        auto *k = static_cast<QKeyEvent*>(event);
+        switch (k->key()) {
+        case Qt::Key_Up:
+            m_completion->setCurrentRow(qMax(0, m_completion->currentRow() - 1));
+            return true;
+        case Qt::Key_Down:
+            m_completion->setCurrentRow(qMin(m_completion->count() - 1,
+                                             m_completion->currentRow() + 1));
+            return true;
+        case Qt::Key_Return:
+        case Qt::Key_Enter:
+        case Qt::Key_Tab:
+            applyCompletion(m_completion->currentRow());
+            return true;
+        case Qt::Key_Escape:
+            m_completion->hide();
+            return true;
+        default:
+            break;
+        }
+    }
+    return QWidget::eventFilter(watched, event);
 }
