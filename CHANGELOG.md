@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.16.4 (2026-04-17)
+
+### Bugfixes
+- **Multi-message selection** — dragging across messages now enters selection mode without needing to hold Ctrl (regression from v0.15.x char-level text selection work). Drag on body text still does character-level text selection; drag elsewhere (avatar/timestamp/padding) selects whole messages.
+- **Infinite scroll history** — scrolling to the top of loaded messages now triggers loading of older history from the server. Viewport position is preserved when older messages are prepended.
+- **Installer GPU plugins** — release installer now ships the GStreamer support libraries needed by the `d3d11` and `nvcodec` plugins: `libgstcodecs`, `libgstcodecparsers`, `libgstcuda`, `libgstd3d12`, `libgstdxva`, `libgstgl`. Fixes red "d3d11" and "nvcodec" pills on fresh installs without MSYS2.
+- BUILD.md updated to document the full DLL dependency set for the GPU plugins.
+
 ## v0.16.3 (2026-04-04)
 
 ### Screen sharing — bidirectional

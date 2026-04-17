@@ -103,6 +103,7 @@ signals:
     void fileDropped(const QString &filePath);
     void selectionModeChanged(bool active);
     void selectionChanged(int count);
+    void moreHistoryRequested();
 
 protected:
     void paintEvent(QPaintEvent *event) override;

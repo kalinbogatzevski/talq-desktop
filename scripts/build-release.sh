@@ -67,7 +67,9 @@ for dll in libstdc++-6.dll libgcc_s_seh-1.dll libwinpthread-1.dll \
     libgobject-2.0-0.dll libglib-2.0-0.dll libgio-2.0-0.dll \
     libgmodule-2.0-0.dll libintl-8.dll libffi-8.dll libpcre2-8-0.dll \
     libgstnet-1.0-0.dll libgstsctp-1.0-0.dll libgstwebrtcnice-1.0-0.dll \
-    libgstd3d11-1.0-0.dll libgstd3dshader-1.0-0.dll \
+    libgstd3d11-1.0-0.dll libgstd3dshader-1.0-0.dll libgstd3d12-1.0-0.dll \
+    libgstcodecs-1.0-0.dll libgstcodecparsers-1.0-0.dll \
+    libgstcuda-1.0-0.dll libgstdxva-1.0-0.dll libgstgl-1.0-0.dll \
     libnice-10.dll libsrtp2-1.dll libopus-0.dll \
     libssl-3-x64.dll libcrypto-3-x64.dll \
     libjpeg-8.dll libopenh264-7.dll libvpx-1.dll \
