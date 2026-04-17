@@ -1,6 +1,7 @@
 #include "EmojiData.h"
 
 #include <QSettings>
+#include <algorithm>
 
 namespace EmojiData {
 
@@ -21,13 +22,44 @@ void initialize()
         for (const QString &sc : e.shortcodes) g_byShortcode.insert(sc, &e);
         for (const QString &sf : e.shortForms) g_byShortForm.insert(sf, &e);
     }
+
 }
 
 const QVector<EmojiEntry> &allEntries() { return g_entries; }
 const EmojiEntry *findByShortcode(const QString &s) { return g_byShortcode.value(s, nullptr); }
 const EmojiEntry *findByShortForm(const QString &s) { return g_byShortForm.value(s, nullptr); }
-QVector<const EmojiEntry*> search(const QString &) { return {}; }
-QVector<const EmojiEntry*> inCategory(Category) { return {}; }
+QVector<const EmojiEntry*> inCategory(Category c)
+{
+    QVector<const EmojiEntry*> out;
+    for (const auto &e : g_entries)
+        if (e.category == c) out.append(&e);
+    return out;
+}
+
+QVector<const EmojiEntry*> search(const QString &query)
+{
+    QString q = query.trimmed().toLower();
+    if (q.isEmpty()) return {};
+
+    QVector<QPair<int, const EmojiEntry*>> ranked;
+    for (const auto &e : g_entries) {
+        int score = 0;
+        if (e.name.contains(q)) score += (e.name.startsWith(q) ? 10 : 5);
+        for (const QString &k : e.keywords)
+            if (k.contains(q)) score += (k == q ? 8 : 2);
+        for (const QString &sc : e.shortcodes)
+            if (sc.contains(q)) score += (sc == ":" + q + ":" ? 15 : 3);
+        if (score > 0) ranked.append({score, &e});
+    }
+
+    std::sort(ranked.begin(), ranked.end(),
+              [](const auto &a, const auto &b) { return a.first > b.first; });
+
+    QVector<const EmojiEntry*> out;
+    out.reserve(ranked.size());
+    for (const auto &p : ranked) out.append(p.second);
+    return out;
+}
 QPixmap pixmapFor(const QString &codepoints, int sizePx)
 {
     QString key = codepoints + QLatin1Char(':') + QString::number(sizePx);
