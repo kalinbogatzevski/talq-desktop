@@ -1,5 +1,6 @@
 #include "core/ApiClient.h"
 #include <QBuffer>
+#include <QImage>
 #include <QNetworkRequest>
 #include <QUrlQuery>
 #include <QJsonDocument>
@@ -263,6 +264,39 @@ QNetworkReply *ApiClient::postAbsoluteUrl(const QString &path, const QByteArray 
     }
     auto *reply = m_nam.post(req, body);
     return reply;
+}
+
+void ApiClient::fetchFileImage(int fileId,
+                               std::function<void(const QImage &, const QString &)> callback)
+{
+    // Nextcloud's preview endpoint returns a full image rendering at requested size.
+    // a=1 keeps aspect ratio; x/y are max dimensions.
+    QUrl url(m_serverUrl + "/index.php/core/preview");
+    QUrlQuery q;
+    q.addQueryItem("fileId", QString::number(fileId));
+    q.addQueryItem("x", "4096");
+    q.addQueryItem("y", "4096");
+    q.addQueryItem("a", "1");
+    url.setQuery(q);
+
+    QNetworkRequest req(url);
+    req.setRawHeader("OCS-APIRequest", "true");
+    // Auth: same inline basic-auth pattern as getAbsoluteUrl / putAbsoluteUrl / postAbsoluteUrl
+    if (!m_user.isEmpty()) {
+        QString credentials = m_user + ":" + m_password;
+        req.setRawHeader("Authorization", "Basic " + credentials.toUtf8().toBase64());
+    }
+
+    auto *reply = m_nam.get(req);
+    connect(reply, &QNetworkReply::finished, this, [reply, callback]() {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError) {
+            callback(QImage(), reply->errorString());
+            return;
+        }
+        QImage img = QImage::fromData(reply->readAll());
+        callback(img, img.isNull() ? QStringLiteral("decode failed") : QString());
+    });
 }
 
 void ApiClient::trackReply(QNetworkReply *reply)

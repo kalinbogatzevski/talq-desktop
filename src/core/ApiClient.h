@@ -6,6 +6,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
+#include <QImage>
 #include <QUrl>
 #include <QUrlQuery>
 #include <functional>
@@ -60,6 +61,10 @@ public:
 
     // GET with absolute path (no OCS prefix, no OCS headers)
     QNetworkReply *getAbsoluteUrl(const QString &path);
+
+    // Fetch full-resolution image from Nextcloud preview endpoint (up to 4096×4096)
+    void fetchFileImage(int fileId,
+                        std::function<void(const QImage &, const QString &error)> callback);
 
     // Long-poll (custom timeout)
     QNetworkReply *getLongPoll(const QString &path, const QUrlQuery &params, int timeoutSecs);
