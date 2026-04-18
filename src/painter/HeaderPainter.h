@@ -84,6 +84,7 @@ signals:
     void backClicked();
     void audioCallClicked();
     void videoCallClicked();
+    void searchRequested();
 
 protected:
     void paintEvent(QPaintEvent *event) override;
@@ -103,7 +104,8 @@ private:
     QRectF m_backBtnRect;
     QRectF m_audioCallRect;
     QRectF m_videoCallRect;
-    int m_hoveredButton = -1;   // 0=expand, 1=back, 2=audio, 3=video
+    QRectF m_searchBtnRect;
+    int m_hoveredButton = -1;   // 0=expand, 1=back, 2=audio, 3=video, 4=search
 
     int buttonAtPos(const QPointF &pos) const;
 
