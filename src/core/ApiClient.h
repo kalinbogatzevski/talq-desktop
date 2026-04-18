@@ -12,6 +12,7 @@
 #include <QVector>
 #include <functional>
 #include "MentionCandidate.h"
+#include "SearchHit.h"
 
 /**
  * HTTP client for Nextcloud OCS API.
@@ -75,6 +76,11 @@ public:
     // context-safety contract as fetchFileImage.
     void fetchMentions(const QString &token, const QString &search, QObject *context,
                        std::function<void(const QVector<MentionCandidate> &)> callback);
+
+    // Full-text search within a conversation via Nextcloud unified-search.
+    void searchInConversation(const QString &token, const QString &query,
+                              QObject *context,
+                              std::function<void(bool ok, const QVector<SearchHit> &)> callback);
 
     // Long-poll (custom timeout)
     QNetworkReply *getLongPoll(const QString &path, const QUrlQuery &params, int timeoutSecs);

@@ -353,6 +353,51 @@ void ApiClient::fetchMentions(const QString &token, const QString &search,
     });
 }
 
+void ApiClient::searchInConversation(const QString &token, const QString &query,
+                                     QObject *context,
+                                     std::function<void(bool, const QVector<SearchHit> &)> callback)
+{
+    QUrl url(m_serverUrl + QStringLiteral("/ocs/v2.php/search/providers/talk-message-current/search"));
+    QUrlQuery q;
+    q.addQueryItem(QStringLiteral("term"), query);
+    q.addQueryItem(QStringLiteral("from"), QStringLiteral("/call/") + token);
+    q.addQueryItem(QStringLiteral("limit"), QStringLiteral("30"));
+    url.setQuery(q);
+
+    QNetworkRequest req(url);
+    req.setRawHeader("OCS-APIRequest", "true");
+    req.setRawHeader("Accept", "application/json");
+    applyBasicAuth(req);
+
+    QNetworkReply *reply = m_nam.get(req);
+    connect(reply, &QNetworkReply::finished, context ? context : this,
+            [reply, callback]() {
+        reply->deleteLater();
+        QVector<SearchHit> hits;
+        if (reply->error() != QNetworkReply::NoError) {
+            int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+            qWarning() << "searchInConversation: HTTP" << status << reply->errorString();
+            callback(false, hits);
+            return;
+        }
+        QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
+        QJsonArray entries = doc.object().value("ocs").toObject()
+                                .value("data").toObject()
+                                .value("entries").toArray();
+        for (const QJsonValue &v : entries) {
+            QJsonObject e = v.toObject();
+            QJsonObject attrs = e.value("attributes").toObject();
+            SearchHit h;
+            h.messageId = attrs.value("messageId").toString().toInt();
+            h.timestamp = attrs.value("timestamp").toString().toLongLong();
+            h.actorName = e.value("title").toString();
+            h.snippet   = e.value("subline").toString();
+            if (h.messageId > 0) hits.append(h);
+        }
+        callback(true, hits);
+    });
+}
+
 void ApiClient::trackReply(QNetworkReply *reply)
 {
     m_pendingReplies.append(reply);
