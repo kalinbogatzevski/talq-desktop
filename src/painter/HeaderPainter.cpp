@@ -348,17 +348,23 @@ void HeaderPainter::paintEvent(QPaintEvent *)
         subtitleItalic = true;
     } else if (m_conversationType == 1 && !m_peerStatus.isEmpty()) {
         hasSubtitle = true;
-        if (m_peerStatus == QStringLiteral("online")) {
-            subtitleText = QStringLiteral("online");
+        // Prefer rich status message/icon over plain state label
+        if (!m_peerStatusMessage.isEmpty()) {
+            subtitleText = m_peerStatusIcon.isEmpty()
+                ? m_peerStatusMessage
+                : m_peerStatusIcon + QLatin1Char(' ') + m_peerStatusMessage;
+            subtitleColor = m_theme.textMuted;
+        } else if (m_peerStatus == QStringLiteral("online")) {
+            subtitleText = tr("Online");
             subtitleColor = m_theme.online;
         } else if (m_peerStatus == QStringLiteral("away")) {
-            subtitleText = QStringLiteral("away");
+            subtitleText = tr("Away");
             subtitleColor = QColor("#f0a050");  // warning color
         } else if (m_peerStatus == QStringLiteral("dnd")) {
-            subtitleText = QStringLiteral("do not disturb");
+            subtitleText = tr("Do not disturb");
             subtitleColor = m_theme.danger;
         } else {
-            subtitleText = QStringLiteral("offline");
+            subtitleText = tr("Offline");
             subtitleColor = m_theme.textMuted;
         }
     } else if (isViewingTopic && !m_isTyping) {
