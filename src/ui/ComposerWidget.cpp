@@ -619,7 +619,7 @@ void ComposerWidget::fetchMentionsDebounced()
     if (token.isEmpty()) return;
 
     QString query = m_pendingMentionQuery;
-    api->fetchMentions(token, query,
+    api->fetchMentions(token, query, this,
         [this, query, token](const QVector<MentionCandidate> &candidates) {
             if (m_mentionWordStart < 0) return;
             if (m_pendingMentionQuery != query) return;

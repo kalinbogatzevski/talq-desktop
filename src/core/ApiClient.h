@@ -64,13 +64,15 @@ public:
     // GET with absolute path (no OCS prefix, no OCS headers)
     QNetworkReply *getAbsoluteUrl(const QString &path);
 
-    // Fetch full-resolution image from Nextcloud preview endpoint (up to 4096×4096)
-    void fetchFileImage(int fileId,
+    // Fetch full-resolution image from Nextcloud preview endpoint (up to 4096×4096).
+    // `context` is the QObject that owns the callback — if it dies before the
+    // reply arrives, the callback is auto-disconnected (prevents use-after-free).
+    void fetchFileImage(int fileId, QObject *context,
                         std::function<void(const QImage &, const QString &error)> callback);
 
-    // Fetch mention candidates for a room (Nextcloud Talk v4 API)
-    void fetchMentions(const QString &token,
-                       const QString &search,
+    // Fetch mention candidates for a room (Nextcloud Talk v4 API). Same
+    // context-safety contract as fetchFileImage.
+    void fetchMentions(const QString &token, const QString &search, QObject *context,
                        std::function<void(const QVector<MentionCandidate> &)> callback);
 
     // Long-poll (custom timeout)

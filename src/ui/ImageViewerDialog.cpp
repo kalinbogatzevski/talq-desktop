@@ -126,7 +126,8 @@ void ImageViewerDialog::setImage(int fileId, const QString &fileName, const QIma
     if (!placeholder.isNull()) applyPixmap(placeholder);
 
     if (m_api) {
-        m_api->fetchFileImage(fileId, [this, fileId, fileName](const QImage &img, const QString &err) {
+        m_api->fetchFileImage(fileId, this,
+            [this, fileId, fileName](const QImage &img, const QString &err) {
             if (fileId != m_currentFileId) return; // user navigated away
             if (!img.isNull()) applyPixmap(img);
             else if (!err.isEmpty())
