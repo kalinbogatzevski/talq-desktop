@@ -981,8 +981,10 @@ void MainWindow::buildChatPage()
         for (int i = 0; i < count; ++i) {
             QModelIndex idx = m_conversations->index(i, 0);
             if (idx.data(ConversationListModel::TokenRole).toString() == m_activeConvToken) {
-                QString status = idx.data(ConversationListModel::UserStatusRole).toString();
-                m_header->setPeerStatus(status);
+                QString status  = idx.data(ConversationListModel::UserStatusRole).toString();
+                QString message = idx.data(ConversationListModel::UserStatusMessageRole).toString();
+                QString icon    = idx.data(ConversationListModel::UserStatusIconRole).toString();
+                m_header->setPeerStatus(status, message, icon);
                 break;
             }
         }
@@ -1088,7 +1090,9 @@ void MainWindow::sidebarSqueezedChanged()
 
 void MainWindow::onConversationSelected(const QString &token, const QString &name,
                                          const QString &userId, int convType,
-                                         const QString &userStatus)
+                                         const QString &userStatus,
+                                         const QString &statusMessage,
+                                         const QString &statusIcon)
 {
     if (m_chatPainter->selectionMode())
         m_chatPainter->exitSelectionMode();
@@ -1103,7 +1107,7 @@ void MainWindow::onConversationSelected(const QString &token, const QString &nam
     m_header->setConversationName(name);
     m_header->setConversationUserId(userId);
     m_header->setConversationType(convType);
-    m_header->setPeerStatus(userStatus);
+    m_header->setPeerStatus(userStatus, statusMessage, statusIcon);
 
     // Pass sidebar's cached avatar to header (avoids duplicate HTTP fetch)
     QString avatarKey = (convType == 1) ? userId : ("room/" + token);
@@ -1256,12 +1260,14 @@ void MainWindow::openConversation(const QString &token)
         QModelIndex idx = m_conversations->index(i, 0);
         QString t = idx.data(ConversationListModel::TokenRole).toString();
         if (t == token) {
-            QString name = idx.data(ConversationListModel::DisplayNameRole).toString();
-            QString userId = idx.data(ConversationListModel::ActorIdRole).toString();
-            int convType = idx.data(ConversationListModel::TypeRole).toInt();
-            QString status = idx.data(ConversationListModel::UserStatusRole).toString();
+            QString name    = idx.data(ConversationListModel::DisplayNameRole).toString();
+            QString userId  = idx.data(ConversationListModel::ActorIdRole).toString();
+            int convType    = idx.data(ConversationListModel::TypeRole).toInt();
+            QString status  = idx.data(ConversationListModel::UserStatusRole).toString();
+            QString statusMessage = m_conversations->userStatusMessageForToken(token);
+            QString statusIcon    = m_conversations->userStatusIconForToken(token);
             m_sidebar->setSelectedIndex(i);
-            onConversationSelected(token, name, userId, convType, status);
+            onConversationSelected(token, name, userId, convType, status, statusMessage, statusIcon);
             return;
         }
     }

@@ -30,7 +30,7 @@ public:
     void setConversationType(int v);
 
     QString peerStatus() const { return m_peerStatus; }
-    void setPeerStatus(const QString &v);
+    void setPeerStatus(const QString &state, const QString &message, const QString &icon);
 
     int activeThreadId() const { return m_activeThreadId; }
     void setActiveThreadId(int v);
@@ -124,6 +124,8 @@ private:
     QString m_conversationUserId;
     int m_conversationType = 0;
     QString m_peerStatus;
+    QString m_peerStatusMessage;
+    QString m_peerStatusIcon;
     int m_activeThreadId = 0;
     QString m_activeThreadTitle;
     int m_activeThreadColor = 0;
