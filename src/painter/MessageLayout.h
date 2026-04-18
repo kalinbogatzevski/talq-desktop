@@ -76,6 +76,9 @@ struct MessageLayout
     QRectF dateSepRect;     // the pill background
     QRectF dateSepTextRect; // text inside the pill
 
+    bool showUnreadSep = false;
+    QRectF unreadSepRect;   // horizontal strip where the "New messages" pill sits
+
     // Avatar (others, non-grouped only)
     QRectF avatarRect;
 
