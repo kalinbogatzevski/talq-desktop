@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.18.0 (2026-04-18)
+
+### Presence
+- **Rich status line** — chat header now shows the peer's custom status message + icon (e.g. "🎯 in a meeting") under the conversation title. Falls back to "Online" / "Away" / "Do not disturb" / "Offline" when no custom message is set. Typing state still takes precedence.
+- **Multi-color sidebar dots** — away shows amber, DND red, offline hidden; previously only online was surfaced.
+- **Dedicated 60-second poll** — status now refreshes on its own timer instead of riding on the conversation-list poll, so changes appear faster.
+
+### Message search
+- **In-conversation search** — 🔍 button in the chat header opens a search bar. Results dropdown shows actor + snippet. Click a result to scroll to the message with a 2-second teal flash. If the message is older than what's loaded, history pages backward up to 5 pages automatically.
+
+### Silent send
+- **Right-click Send** or **Alt+Enter / Alt+Click Send** to send without triggering notifications. Uses NC Talk server's `silent=true` flag. Send button flashes 🔕 briefly to confirm.
+
+### Time on hover
+- Hovering a message's time now shows the full date and time in a tooltip, including the edit timestamp for edited messages.
+
 ## v0.17.4 (2026-04-18)
 
 ### Fixes
