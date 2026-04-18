@@ -396,6 +396,9 @@ void ComposerWidget::handleAutoreplace()
     QString tail = text.mid(start, pos - 1 - start);
 
     // Try short-form candidates (2–3 chars, e.g. ":)", ":-D", "<3").
+    // Include the trailing space in the selection and re-insert it so the
+    // cursor lands past the space — otherwise the next char is typed between
+    // the emoji and the space.
     for (int n = qMin(3, tail.size()); n >= 2; --n) {
         QString cand = tail.right(n);
         const auto *e = EmojiData::findByShortForm(cand);
@@ -403,8 +406,8 @@ void ComposerWidget::handleAutoreplace()
             QTextCursor c = m_input->textCursor();
             c.beginEditBlock();
             c.setPosition(pos - 1 - n);
-            c.setPosition(pos - 1, QTextCursor::KeepAnchor);
-            c.insertText(e->codepoints);
+            c.setPosition(pos, QTextCursor::KeepAnchor);
+            c.insertText(e->codepoints + QStringLiteral(" "));
             c.endEditBlock();
             return;
         }
@@ -425,8 +428,8 @@ void ComposerWidget::handleAutoreplace()
     QTextCursor c = m_input->textCursor();
     c.beginEditBlock();
     c.setPosition(wordStart);
-    c.setPosition(colonEnd, QTextCursor::KeepAnchor);
-    c.insertText(e->codepoints);
+    c.setPosition(pos, QTextCursor::KeepAnchor);  // include trailing space
+    c.insertText(e->codepoints + QStringLiteral(" "));
     c.endEditBlock();
 }
 
