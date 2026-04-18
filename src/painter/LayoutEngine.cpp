@@ -61,6 +61,7 @@ MessageLayout LayoutEngine::computeLayout(
     ml.actorId      = model->data(idx, MessageListModel::ActorIdRole).toString();
     ml.bodyHtml     = model->data(idx, MessageListModel::MessageTextRole).toString();
     ml.timeString          = model->data(idx, MessageListModel::TimeStringRole).toString();
+    ml.timestamp           = model->data(idx, MessageListModel::TimestampRole).toLongLong();
     ml.lastEditTimestamp   = model->data(idx, MessageListModel::LastEditTimestampRole).toLongLong();
     ml.isSystem     = model->data(idx, MessageListModel::IsSystemRole).toBool();
     ml.showDateSep  = model->data(idx, MessageListModel::ShowDateSeparatorRole).toBool();
