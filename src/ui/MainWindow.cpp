@@ -645,6 +645,15 @@ void MainWindow::buildChatPage()
         m_replyToAuthor.clear();
         m_replyToText.clear();
     });
+    connect(m_composer, &ComposerWidget::editMessageRequested, this,
+            [this](const QString &newText) {
+        if (m_editingMessageId <= 0) return;
+        m_messages->editMessage(m_editingMessageId, newText);
+        m_editingMessageId = 0;
+    });
+    connect(m_composer, &ComposerWidget::editingBarCancelled, this, [this]() {
+        m_editingMessageId = 0;
+    });
 
     // Drag-and-drop files onto chat → show confirmation in composer
     connect(m_chatPainter, &ChatPainter::fileDropped, m_composer, &ComposerWidget::showPendingFile);
@@ -830,6 +839,13 @@ void MainWindow::buildChatPage()
 
         if (isOwn) {
             menu->addSeparator();
+            if (!hasFile) {
+                menu->addAction(QStringLiteral("\u270F\uFE0F  Edit"), this, [this, msgId, msg]() {
+                    m_editingMessageId = msgId;
+                    QString plain = plainBodyText(msg);
+                    m_composer->showEditingBar(plain);
+                });
+            }
             menu->addAction(QStringLiteral("\U0001F5D1\uFE0F  Delete"), this, [this, msgId]() {
                 auto reply = QMessageBox::question(this, "Delete message",
                     "Are you sure you want to delete this message?",
