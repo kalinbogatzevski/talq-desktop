@@ -251,7 +251,7 @@ QNetworkReply *ApiClient::postAbsoluteUrl(const QString &path, const QByteArray 
     return m_nam.post(req, body);
 }
 
-void ApiClient::fetchFileImage(int fileId,
+void ApiClient::fetchFileImage(int fileId, QObject *context,
                                std::function<void(const QImage &, const QString &)> callback)
 {
     // Nextcloud's preview endpoint returns a full image rendering at requested size.
@@ -269,19 +269,27 @@ void ApiClient::fetchFileImage(int fileId,
     applyBasicAuth(req);
 
     auto *reply = m_nam.get(req);
-    connect(reply, &QNetworkReply::finished, this, [reply, callback]() {
+    // Use `context` as the receiver so the lambda is auto-disconnected if
+    // the caller (e.g. ImageViewerDialog) is destroyed mid-flight.
+    connect(reply, &QNetworkReply::finished, context ? context : this,
+            [reply, callback]() {
         reply->deleteLater();
         if (reply->error() != QNetworkReply::NoError) {
+            int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+            qWarning() << "fetchFileImage: HTTP" << status << reply->errorString();
             callback(QImage(), reply->errorString());
             return;
         }
         QImage img = QImage::fromData(reply->readAll());
+        if (img.isNull())
+            qWarning() << "fetchFileImage: decode failed — content-type:"
+                       << reply->header(QNetworkRequest::ContentTypeHeader).toString();
         callback(img, img.isNull() ? QStringLiteral("decode failed") : QString());
     });
 }
 
-void ApiClient::fetchMentions(const QString &token,
-                              const QString &search,
+void ApiClient::fetchMentions(const QString &token, const QString &search,
+                              QObject *context,
                               std::function<void(const QVector<MentionCandidate> &)> callback)
 {
     // Build the full URL as a string so Nextcloud subpath installations
@@ -299,7 +307,8 @@ void ApiClient::fetchMentions(const QString &token,
     applyBasicAuth(req);
 
     QNetworkReply *reply = m_nam.get(req);
-    connect(reply, &QNetworkReply::finished, this, [reply, callback]() {
+    connect(reply, &QNetworkReply::finished, context ? context : this,
+            [reply, callback]() {
         reply->deleteLater();
         QVector<MentionCandidate> out;
 
