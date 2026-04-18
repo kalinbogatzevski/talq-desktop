@@ -9,7 +9,9 @@
 #include <QImage>
 #include <QUrl>
 #include <QUrlQuery>
+#include <QVector>
 #include <functional>
+#include "MentionCandidate.h"
 
 /**
  * HTTP client for Nextcloud OCS API.
@@ -65,6 +67,11 @@ public:
     // Fetch full-resolution image from Nextcloud preview endpoint (up to 4096×4096)
     void fetchFileImage(int fileId,
                         std::function<void(const QImage &, const QString &error)> callback);
+
+    // Fetch mention candidates for a room (Nextcloud Talk v4 API)
+    void fetchMentions(const QString &token,
+                       const QString &search,
+                       std::function<void(const QVector<MentionCandidate> &)> callback);
 
     // Long-poll (custom timeout)
     QNetworkReply *getLongPoll(const QString &path, const QUrlQuery &params, int timeoutSecs);
