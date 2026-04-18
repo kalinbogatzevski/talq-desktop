@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.17.0 (2026-04-18)
+
+### Mentions
+- **Compose @mentions** — typing `@` in the chat composer opens an autocomplete popup of conversation participants (with avatars) plus `@all`. Picking a row inserts `@userid` (quoted for ids with spaces) into the message; the server then notifies the mentioned user and renders the pill on all clients. Typing `foo@bar.com` does not trigger — email fragments are ignored.
+
 ## v0.16.6 (2026-04-18)
 
 ### Polish
