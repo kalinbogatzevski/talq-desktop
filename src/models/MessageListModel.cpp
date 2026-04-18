@@ -828,19 +828,14 @@ void MessageListModel::editMessage(int messageId, const QString &newText)
         [this, messageId, token](bool ok, const QJsonObject &data, int status) {
             if (m_token != token) return;
             if (!ok) {
-                QString err = data.value("ocs").toObject()
-                                  .value("meta").toObject()
-                                  .value("message").toString();
-                emit errorOccurred(err.isEmpty()
-                    ? QStringLiteral("Failed to edit message (HTTP %1)").arg(status)
-                    : QStringLiteral("Failed to edit: %1").arg(err));
+                emit errorOccurred(
+                    QStringLiteral("Failed to edit message (HTTP %1)").arg(status));
                 return;
             }
-            QJsonObject updated = data.value("ocs").toObject()
-                                      .value("data").toObject();
+            // `data` is already the unwrapped ocs.data payload (the updated message).
             for (int i = 0; i < m_messages.size(); ++i) {
                 if (m_messages[i].id == messageId) {
-                    m_messages[i] = Message::fromJson(updated);
+                    m_messages[i] = Message::fromJson(data);
                     QModelIndex mi = index(i);
                     emit dataChanged(mi, mi);
                     break;
