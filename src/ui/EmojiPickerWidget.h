@@ -20,6 +20,7 @@ public:
 
 signals:
     void emojiSelected(const QString &codepoints);
+    void cancelled();
 
 protected:
     void keyPressEvent(QKeyEvent *event) override;
