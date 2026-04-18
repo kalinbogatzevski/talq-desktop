@@ -90,6 +90,8 @@ private:
     void closeThread();
     void updateTopicMode(bool active);
     void loadProfileAvatar(QLabel *avatarLabel);
+    void buildSearchBar(QWidget *chatCol);
+    void runSearchQuery();
 
     // ── Pointers to backend (not owned) ──
     ApiClient *m_api;
@@ -143,6 +145,12 @@ private:
     QLabel *m_welcomeSignalingLabel = nullptr;
     QLabel *m_welcomePushLabel = nullptr;
     QLabel *m_welcomeGpuLabel = nullptr;
+
+    // Search bar
+    class QWidget *m_searchBar = nullptr;
+    class QLineEdit *m_searchInput = nullptr;
+    class QListWidget *m_searchResults = nullptr;
+    class QTimer *m_searchDebounce = nullptr;
 
     // State
     bool m_chatMode = false;
