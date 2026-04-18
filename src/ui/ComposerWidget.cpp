@@ -657,7 +657,7 @@ void ComposerWidget::fetchMentionsDebounced()
                 item->setData(Qt::UserRole, c.id);
                 item->setData(Qt::UserRole + 1, c.id);
                 item->setData(Qt::UserRole + 2, c.label);
-                item->setData(Qt::UserRole + 3, c.source);
+                item->setData(Qt::UserRole + 3, int(c.source));
 
                 if (c.id != QStringLiteral("all")) {
                     QImage img = fetchMentionAvatar(c.id);

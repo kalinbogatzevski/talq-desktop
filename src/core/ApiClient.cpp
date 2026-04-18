@@ -344,7 +344,8 @@ void ApiClient::fetchMentions(const QString &token, const QString &search,
             MentionCandidate c;
             c.id     = o.value(QStringLiteral("id")).toString();
             c.label  = o.value(QStringLiteral("label")).toString();
-            c.source = o.value(QStringLiteral("source")).toString();
+            c.source = MentionCandidate::parseSource(
+                          o.value(QStringLiteral("source")).toString());
             if (!c.id.isEmpty()) out.append(c);
         }
         callback(out);
