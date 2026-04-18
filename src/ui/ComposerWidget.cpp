@@ -530,7 +530,121 @@ void ComposerWidget::maybeShowMentionCompletion()
     m_pendingMentionQuery = partial;
     m_mentionDebounce->start();
 }
-void ComposerWidget::fetchMentionsDebounced() { /* Task 4 */ }
+QImage ComposerWidget::fetchMentionAvatar(const QString &userId)
+{
+    if (userId.isEmpty() || userId == QStringLiteral("all"))
+        return QImage();
+    auto it = m_mentionAvatarCache.constFind(userId);
+    if (it != m_mentionAvatarCache.constEnd()) return it.value();
+    requestMentionAvatar(userId);
+    return QImage();
+}
+
+void ComposerWidget::requestMentionAvatar(const QString &userId)
+{
+    if (m_mentionAvatarPending.contains(userId)) return;
+    auto *api = m_model ? m_model->api() : nullptr;
+    if (!api) return;
+    m_mentionAvatarPending.insert(userId);
+
+    QString path = QStringLiteral("/index.php/avatar/") + userId + QStringLiteral("/32");
+    QNetworkReply *reply = api->getAbsoluteUrl(path);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, userId]() {
+        reply->deleteLater();
+        m_mentionAvatarPending.remove(userId);
+        if (reply->error() != QNetworkReply::NoError) {
+            m_mentionAvatarCache[userId] = QImage();
+            return;
+        }
+        QImage img;
+        if (!img.loadFromData(reply->readAll())) {
+            m_mentionAvatarCache[userId] = QImage();
+            return;
+        }
+        m_mentionAvatarCache[userId] = img;
+
+        // Live-update visible popup rows.
+        if (m_mentionPopup && m_mentionPopup->isVisible()) {
+            for (int i = 0; i < m_mentionPopup->count(); ++i) {
+                QListWidgetItem *it = m_mentionPopup->item(i);
+                if (it->data(Qt::UserRole + 1).toString() == userId) {
+                    it->setIcon(QIcon(QPixmap::fromImage(img).scaled(
+                        24, 24, Qt::KeepAspectRatio, Qt::SmoothTransformation)));
+                }
+            }
+        }
+    });
+}
+
+void ComposerWidget::fetchMentionsDebounced()
+{
+    if (m_mentionWordStart < 0) return;
+    auto *api = m_model ? m_model->api() : nullptr;
+    if (!api) return;
+    QString token = m_model ? m_model->conversationToken() : QString();
+    if (token.isEmpty()) return;
+
+    QString query = m_pendingMentionQuery;
+    api->fetchMentions(token, query,
+        [this, query](const QVector<MentionCandidate> &candidates) {
+            if (m_mentionWordStart < 0) return;
+            if (m_pendingMentionQuery != query) return;
+
+            if (candidates.isEmpty()) {
+                if (m_mentionPopup) m_mentionPopup->hide();
+                return;
+            }
+
+            if (!m_mentionPopup) {
+                m_mentionPopup = new QListWidget(this->window());
+                m_mentionPopup->setWindowFlags(Qt::Popup);
+                m_mentionPopup->setStyleSheet(
+                    "QListWidget { background: #222230; color: #eee; border: 1px solid #333; border-radius: 6px; }"
+                    "QListWidget::item { padding: 4px 8px; }"
+                    "QListWidget::item:selected { background: #3a3a55; }"
+                );
+                m_mentionPopup->setIconSize(QSize(24, 24));
+                connect(m_mentionPopup, &QListWidget::itemActivated, this,
+                        [this](QListWidgetItem *it) {
+                            applyMentionCompletion(m_mentionPopup->row(it));
+                        });
+            }
+            m_mentionPopup->clear();
+
+            int limit = qMin(6, int(candidates.size()));
+            for (int k = 0; k < limit; ++k) {
+                const MentionCandidate &c = candidates[k];
+                QString primary = c.label.isEmpty() ? c.id : c.label;
+                QString rowText;
+                if (c.id == QStringLiteral("all")) {
+                    rowText = QStringLiteral("Everyone\n@all");
+                } else {
+                    rowText = QStringLiteral("%1\n@%2").arg(primary, c.id);
+                }
+                auto *item = new QListWidgetItem(rowText);
+                item->setData(Qt::UserRole, c.id);
+                item->setData(Qt::UserRole + 1, c.id);
+                item->setData(Qt::UserRole + 2, c.label);
+                item->setData(Qt::UserRole + 3, c.source);
+
+                if (c.id != QStringLiteral("all")) {
+                    QImage img = fetchMentionAvatar(c.id);
+                    if (!img.isNull()) {
+                        item->setIcon(QIcon(QPixmap::fromImage(img).scaled(
+                            24, 24, Qt::KeepAspectRatio, Qt::SmoothTransformation)));
+                    }
+                }
+                m_mentionPopup->addItem(item);
+            }
+            m_mentionPopup->setCurrentRow(0);
+
+            QPoint p = m_input->mapToGlobal(m_input->rect().topLeft());
+            m_mentionPopup->resize(300, 44 * limit + 8);
+            m_mentionPopup->move(p.x(), p.y() - m_mentionPopup->height() - 4);
+            m_mentionPopup->show();
+        });
+}
+
 void ComposerWidget::applyMentionCompletion(int /*row*/) { /* Task 5 */ }
 
 bool ComposerWidget::eventFilter(QObject *watched, QEvent *event)
