@@ -70,7 +70,9 @@ signals:
 
     void conversationClicked(const QString &token, const QString &displayName,
                              const QString &participantUserId, int conversationType,
-                             const QString &userStatus);
+                             const QString &userStatus,
+                             const QString &statusMessage,
+                             const QString &statusIcon);
 
     void contextMenuRequested(int modelIndex, int notificationLevel, qreal globalX, qreal globalY);
 

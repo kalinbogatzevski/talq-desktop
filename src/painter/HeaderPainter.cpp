@@ -53,9 +53,13 @@ void HeaderPainter::setConversationType(int v) {
     update();
 }
 
-void HeaderPainter::setPeerStatus(const QString &v) {
-    if (m_peerStatus == v) return;
-    m_peerStatus = v;
+void HeaderPainter::setPeerStatus(const QString &state, const QString &message, const QString &icon)
+{
+    if (m_peerStatus == state && m_peerStatusMessage == message && m_peerStatusIcon == icon)
+        return;
+    m_peerStatus = state;
+    m_peerStatusMessage = message;
+    m_peerStatusIcon = icon;
     update();
 }
 
