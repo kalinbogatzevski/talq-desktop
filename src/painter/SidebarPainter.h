@@ -116,9 +116,6 @@ private:
     void requestAvatar(const QString &userId, const QString &token, int convType, int size);
     QString avatarCacheKey(const QString &userId, const QString &token, int convType) const;
 
-    // ── Title click rect (for homeRequested) ──
-    QRectF m_titleRect;
-
     // ── State ──
     ConversationListModel *m_model = nullptr;
     ApiClient *m_api = nullptr;
