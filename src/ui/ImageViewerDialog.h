@@ -43,6 +43,7 @@ private:
     QLabel *m_titleBar;
     QPushButton *m_menuBtn = nullptr;
     QImage m_currentImage;
+    QString m_currentFileName;   // source of truth for the filename; title bar may show a toast suffix
     int m_currentFileId = 0;
     bool m_at100 = false;
 };
