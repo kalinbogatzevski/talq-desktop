@@ -794,6 +794,49 @@ void MessageListModel::deleteMessage(int messageId)
     });
 }
 
+void MessageListModel::editMessage(int messageId, const QString &newText)
+{
+    if (m_token.isEmpty() || messageId <= 0) return;
+
+    int idx = -1;
+    for (int i = 0; i < m_messages.size(); ++i) {
+        if (m_messages[i].id == messageId) { idx = i; break; }
+    }
+    if (idx < 0) {
+        emit errorOccurred(QStringLiteral("Cannot edit: message not found locally"));
+        return;
+    }
+
+    QJsonObject body;
+    body["message"] = newText;
+    QString path = "apps/spreed/api/v1/chat/" + m_token + "/" + QString::number(messageId);
+    QString token = m_token;  // stale-callback guard
+
+    m_api->put(path, body,
+        [this, messageId, token](bool ok, const QJsonObject &data, int status) {
+            if (m_token != token) return;
+            if (!ok) {
+                QString err = data.value("ocs").toObject()
+                                  .value("meta").toObject()
+                                  .value("message").toString();
+                emit errorOccurred(err.isEmpty()
+                    ? QStringLiteral("Failed to edit message (HTTP %1)").arg(status)
+                    : QStringLiteral("Failed to edit: %1").arg(err));
+                return;
+            }
+            QJsonObject updated = data.value("ocs").toObject()
+                                      .value("data").toObject();
+            for (int i = 0; i < m_messages.size(); ++i) {
+                if (m_messages[i].id == messageId) {
+                    m_messages[i] = Message::fromJson(updated);
+                    QModelIndex mi = index(i);
+                    emit dataChanged(mi, mi);
+                    break;
+                }
+            }
+        });
+}
+
 void MessageListModel::pinMessage(int messageId)
 {
     if (m_token.isEmpty() || messageId <= 0) return;
