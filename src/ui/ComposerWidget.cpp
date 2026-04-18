@@ -2,6 +2,7 @@
 #include "EmojiPickerWidget.h"
 #include "core/SignalingClient.h"
 #include "core/EmojiData.h"
+#include "core/MentionCandidate.h"
 #include "models/MessageListModel.h"
 #include <QFileDialog>
 #include <QKeyEvent>
@@ -14,6 +15,11 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QDateTime>
+#include <QTimer>
+#include <QIcon>
+#include <QNetworkReply>
+#include <QPixmap>
+#include <QRegularExpression>
 
 // Custom text edit that sends on Enter, newline on Shift+Enter, handles image paste
 class ComposeTextEdit : public QTextEdit
@@ -133,6 +139,14 @@ ComposerWidget::ComposerWidget(QWidget *parent)
     connect(m_sendBtn, &QPushButton::clicked, this, &ComposerWidget::sendAction);
     connect(m_input, &QTextEdit::textChanged, this, &ComposerWidget::handleAutoreplace);
     connect(m_input, &QTextEdit::textChanged, this, &ComposerWidget::maybeShowCompletion);
+    connect(m_input, &QTextEdit::textChanged, this, &ComposerWidget::maybeShowMentionCompletion);
+
+    m_mentionDebounce = new QTimer(this);
+    m_mentionDebounce->setSingleShot(true);
+    m_mentionDebounce->setInterval(150);
+    connect(m_mentionDebounce, &QTimer::timeout,
+            this, &ComposerWidget::fetchMentionsDebounced);
+
     m_input->installEventFilter(this);
     connect(m_attachBtn, &QPushButton::clicked, this, [this]() {
         QString file = QFileDialog::getOpenFileName(this, "Send file");
@@ -472,6 +486,10 @@ void ComposerWidget::applyCompletion(int row)
     EmojiData::pushRecent(e);
     m_completion->hide();
 }
+
+void ComposerWidget::maybeShowMentionCompletion() { /* Task 3 */ }
+void ComposerWidget::fetchMentionsDebounced() { /* Task 4 */ }
+void ComposerWidget::applyMentionCompletion(int /*row*/) { /* Task 5 */ }
 
 bool ComposerWidget::eventFilter(QObject *watched, QEvent *event)
 {

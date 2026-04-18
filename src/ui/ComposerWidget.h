@@ -7,11 +7,15 @@
 #include <QLineEdit>
 #include <QHBoxLayout>
 #include <QVBoxLayout>
+#include <QHash>
+#include <QSet>
+#include <QImage>
 
 class SignalingClient;
 class MessageListModel;
 class EmojiPickerWidget;
 class QListWidget;
+class QTimer;
 
 class ComposerWidget : public QWidget
 {
@@ -40,6 +44,9 @@ private slots:
     void openEmojiPicker();
     void maybeShowCompletion();
     void applyCompletion(int row);
+    void maybeShowMentionCompletion();
+    void fetchMentionsDebounced();
+    void applyMentionCompletion(int row);
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
@@ -66,4 +73,15 @@ private:
     QLabel *m_replyLabel = nullptr;
 
     QListWidget *m_completion = nullptr;
+
+    // Mention popup
+    QListWidget *m_mentionPopup = nullptr;
+    QTimer      *m_mentionDebounce = nullptr;
+    QString      m_pendingMentionQuery;
+    int          m_mentionWordStart = -1;
+    QHash<QString, QImage> m_mentionAvatarCache;
+    QSet<QString>          m_mentionAvatarPending;
+
+    QImage fetchMentionAvatar(const QString &userId);
+    void requestMentionAvatar(const QString &userId);
 };
