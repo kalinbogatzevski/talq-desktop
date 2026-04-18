@@ -49,6 +49,7 @@ struct MessageLayout
     QString actorId;
     QString bodyHtml;       // message text (HTML)
     QString timeString;
+    qint64 lastEditTimestamp = 0;
     QString dateString;
     QString sendStatus;
     bool isRead = false;
