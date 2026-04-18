@@ -30,6 +30,9 @@
 #include <QTextLayout>
 #include <QTextLine>
 #include <QFontMetricsF>
+#include <QDateTime>
+#include <QHelpEvent>
+#include <QToolTip>
 
 ChatPainter::ChatPainter(QWidget *parent)
     : QWidget(parent)
@@ -486,6 +489,25 @@ void ChatPainter::resizeEvent(QResizeEvent *event)
 
 bool ChatPainter::event(QEvent *e)
 {
+    if (e->type() == QEvent::ToolTip) {
+        auto *he = static_cast<QHelpEvent*>(e);
+        QPointF canvas(he->pos().x(), he->pos().y() + m_scrollY);
+        for (const auto &ml : m_layouts) {
+            if (ml.isSystem || ml.showDateSep) continue;
+            if (!ml.timeRect.contains(canvas)) continue;
+            QString full = QDateTime::fromSecsSinceEpoch(ml.timestamp)
+                              .toString(QStringLiteral("dddd, d MMMM yyyy 'at' HH:mm:ss"));
+            if (ml.lastEditTimestamp > 0) {
+                QString edited = QDateTime::fromSecsSinceEpoch(ml.lastEditTimestamp)
+                                   .toString(QStringLiteral("dddd, d MMMM yyyy 'at' HH:mm"));
+                full += QStringLiteral("\nedited ") + edited;
+            }
+            QToolTip::showText(he->globalPos(), full, this);
+            return true;
+        }
+        QToolTip::hideText();
+        return true;
+    }
     // Intercept Ctrl+C when we have a text selection — claim the shortcut
     // so it doesn't go to the composer or other widgets
     if (e->type() == QEvent::ShortcutOverride) {
