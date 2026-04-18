@@ -69,8 +69,6 @@ int main(int argc, char *argv[])
 
     QApplication app(argc, argv);
 
-    EmojiData::initialize();
-
     // Single-instance guard
     QSharedMemory singleInstance("TalQ_SingleInstance_Lock");
     singleInstance.attach();
@@ -87,6 +85,10 @@ int main(int argc, char *argv[])
     app.setOrganizationName("TalQ");
 #endif
     app.setWindowIcon(QIcon(":/logo.png"));
+
+    // EmojiData reads/writes recents via QSettings — must run after
+    // setApplicationName/setOrganizationName so the right storage is used.
+    EmojiData::initialize();
 #ifdef TALQ_BUILD_TS
     app.setApplicationVersion(TALQ_VERSION "-" TALQ_BUILD_TS);
 #else
