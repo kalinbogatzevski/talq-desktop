@@ -544,8 +544,12 @@ void MainWindow::buildChatPage()
     );
     {
         QFile f(QStringLiteral(":/docs/CHANGELOG.md"));
-        if (f.open(QIODevice::ReadOnly))
+        if (f.open(QIODevice::ReadOnly)) {
             changelog->setMarkdown(QString::fromUtf8(f.readAll()));
+        } else {
+            qWarning() << "welcome: :/docs/CHANGELOG.md missing —" << f.errorString();
+            changelog->setPlainText(tr("Release notes unavailable."));
+        }
     }
     changelog->setReadOnly(true);
     changelog->setOpenExternalLinks(true);
