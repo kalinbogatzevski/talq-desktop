@@ -21,6 +21,37 @@
 #include <QPixmap>
 #include <QRegularExpression>
 
+namespace {
+
+// Shortcode / short-form characters: letters, digits, '_', '+', '-'.
+// Used to walk backward from the cursor when detecting ":word[:]".
+bool isShortcodeChar(QChar c)
+{
+    return c.isLetterOrNumber()
+        || c == QLatin1Char('_')
+        || c == QLatin1Char('+')
+        || c == QLatin1Char('-');
+}
+
+// Walk backward from `from` (exclusive) while the char matches `isShortcodeChar`.
+// Returns the index of the first char that does not match, or -1 if we walked
+// past the start. Callers then check whether text[result] is ':'.
+int walkShortcodeBack(const QString &text, int from)
+{
+    int i = from - 1;
+    while (i >= 0 && isShortcodeChar(text[i]))
+        --i;
+    return i;
+}
+
+// Shared stylesheet for shortcode and mention autocomplete popups.
+constexpr auto kPopupStyle =
+    "QListWidget { background: #222230; color: #eee; border: 1px solid #333; border-radius: 6px; }"
+    "QListWidget::item { padding: 4px 8px; }"
+    "QListWidget::item:selected { background: #3a3a55; }";
+
+} // namespace
+
 // Custom text edit that sends on Enter, newline on Shift+Enter, handles image paste
 class ComposeTextEdit : public QTextEdit
 {
@@ -384,12 +415,7 @@ void ComposerWidget::handleAutoreplace()
     int wordEnd  = colonEnd - 1;     // last char of shortcode, should be ':'
     if (wordEnd < 1 || text[wordEnd] != QLatin1Char(':')) return;
 
-    int wordStart = wordEnd - 1;
-    while (wordStart >= 0 && (text[wordStart].isLetterOrNumber()
-           || text[wordStart] == QLatin1Char('_')
-           || text[wordStart] == QLatin1Char('+')
-           || text[wordStart] == QLatin1Char('-')))
-        --wordStart;
+    int wordStart = walkShortcodeBack(text, wordEnd);
     if (wordStart < 0 || text[wordStart] != QLatin1Char(':')) return;
 
     QString shortcode = text.mid(wordStart, wordEnd - wordStart + 1); // ":word:"
@@ -411,12 +437,7 @@ void ComposerWidget::maybeShowCompletion()
     QString text = m_input->toPlainText();
 
     // Look backward for ':' introducing a partial shortcode.
-    int i = pos - 1;
-    while (i >= 0 && (text[i].isLetterOrNumber()
-           || text[i] == QLatin1Char('_')
-           || text[i] == QLatin1Char('+')
-           || text[i] == QLatin1Char('-')))
-        --i;
+    int i = walkShortcodeBack(text, pos);
     if (i < 0 || text[i] != QLatin1Char(':')) {
         if (m_completion) m_completion->hide();
         return;
@@ -433,11 +454,7 @@ void ComposerWidget::maybeShowCompletion()
     if (!m_completion) {
         m_completion = new QListWidget(this->window());
         m_completion->setWindowFlags(Qt::Popup);
-        m_completion->setStyleSheet(
-            "QListWidget { background: #222230; color: #eee; border: 1px solid #333; border-radius: 6px; }"
-            "QListWidget::item { padding: 4px 8px; }"
-            "QListWidget::item:selected { background: #3a3a55; }"
-        );
+        m_completion->setStyleSheet(kPopupStyle);
         connect(m_completion, &QListWidget::itemActivated, this,
                 [this](QListWidgetItem *it) { applyCompletion(m_completion->row(it)); });
     }
@@ -469,12 +486,7 @@ void ComposerWidget::applyCompletion(int row)
 
     QString text = m_input->toPlainText();
     int pos = m_input->textCursor().position();
-    int i = pos - 1;
-    while (i >= 0 && (text[i].isLetterOrNumber()
-           || text[i] == QLatin1Char('_')
-           || text[i] == QLatin1Char('+')
-           || text[i] == QLatin1Char('-')))
-        --i;
+    int i = walkShortcodeBack(text, pos);
     if (i < 0 || text[i] != QLatin1Char(':')) { m_completion->hide(); return; }
 
     QTextCursor c = m_input->textCursor();
@@ -598,11 +610,7 @@ void ComposerWidget::fetchMentionsDebounced()
             if (!m_mentionPopup) {
                 m_mentionPopup = new QListWidget(this->window());
                 m_mentionPopup->setWindowFlags(Qt::Popup);
-                m_mentionPopup->setStyleSheet(
-                    "QListWidget { background: #222230; color: #eee; border: 1px solid #333; border-radius: 6px; }"
-                    "QListWidget::item { padding: 4px 8px; }"
-                    "QListWidget::item:selected { background: #3a3a55; }"
-                );
+                m_mentionPopup->setStyleSheet(kPopupStyle);
                 m_mentionPopup->setIconSize(QSize(24, 24));
                 connect(m_mentionPopup, &QListWidget::itemActivated, this,
                         [this](QListWidgetItem *it) {
