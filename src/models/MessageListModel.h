@@ -84,6 +84,7 @@ public:
     Q_INVOKABLE void retryMessage(int tempId);
     Q_INVOKABLE void addReaction(int messageId, const QString &emoji);
     Q_INVOKABLE void loadHistory();
+    Q_INVOKABLE void loadHistoryUntil(int messageId);
     Q_INVOKABLE void deleteMessage(int messageId);
     Q_INVOKABLE void editMessage(int messageId, const QString &newText);
     Q_INVOKABLE void pinMessage(int messageId);
@@ -104,6 +105,7 @@ public:
     Q_INVOKABLE void sendMessageToToken(const QString &targetToken, const QString &text);
 
 signals:
+    void historyUntilSettled(int messageId, bool found);
     void loadingChanged();
     void conversationTokenChanged();
     void messageSent();
@@ -149,4 +151,6 @@ private:
     QNetworkReply *m_historyReply = nullptr;   // cancel on chat switch
     QNetworkReply *m_refreshReply = nullptr;   // cancel on chat switch
     int m_generation = 0;  // incremented on conversation switch; stale callbacks bail out
+    int m_historyUntilTargetId = 0;
+    int m_historyUntilRemainingPages = 0;
 };
