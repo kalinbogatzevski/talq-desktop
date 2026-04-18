@@ -21,6 +21,8 @@ struct ConversationLayout {
     QString lastMessage;
     QString lastAuthor;
     QString userStatus;      // "online", "away", "dnd", "offline"
+    QString userStatusMessage;
+    QString userStatusIcon;
     QString participantUserId;
     int conversationType = 0;
     int unreadCount = 0;

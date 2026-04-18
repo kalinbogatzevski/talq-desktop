@@ -140,6 +140,8 @@ void SidebarPainter::rebuildLayouts()
         cl.lastMessage = m_model->data(idx, ConversationListModel::LastMessageRole).toString();
         cl.lastAuthor = m_model->data(idx, ConversationListModel::LastAuthorRole).toString();
         cl.userStatus = m_model->data(idx, ConversationListModel::UserStatusRole).toString();
+        cl.userStatusMessage = m_model->data(idx, ConversationListModel::UserStatusMessageRole).toString();
+        cl.userStatusIcon    = m_model->data(idx, ConversationListModel::UserStatusIconRole).toString();
         cl.participantUserId = m_model->data(idx, ConversationListModel::ActorIdRole).toString();
         cl.conversationType = m_model->data(idx, ConversationListModel::TypeRole).toInt();
         cl.unreadCount = m_model->data(idx, ConversationListModel::UnreadCountRole).toInt();
@@ -358,19 +360,24 @@ void SidebarPainter::paintRowNormal(QPainter *p, const ConversationLayout &cl, i
     QRectF avatarRect(padLeft, avatarY, AvatarSize, AvatarSize);
     paintAvatar(p, cl, avatarRect);
 
-    // ── Online status dot (1:1 conversations only) ──
-    if (cl.conversationType == 1 && cl.userStatus == QStringLiteral("online")) {
-        qreal dotSize = StatusDotSize;
-        qreal dotX = avatarRect.right() - dotSize + 1;
-        qreal dotY = avatarRect.bottom() - dotSize + 1;
-
-        // White border
-        p->setPen(Qt::NoPen);
-        p->setBrush(m_theme.bgSidebar);
-        p->drawEllipse(QRectF(dotX - 1.5, dotY - 1.5, dotSize + 3, dotSize + 3));
-        // Green dot
-        p->setBrush(m_theme.online);
-        p->drawEllipse(QRectF(dotX, dotY, dotSize, dotSize));
+    // ── Status dot (1:1 conversations only, colored by presence) ──
+    if (cl.conversationType == 1) {
+        QColor dotColor;
+        if (cl.userStatus == QStringLiteral("online")) dotColor = QColor("#5ec76a");
+        else if (cl.userStatus == QStringLiteral("away")) dotColor = QColor("#e0a040");
+        else if (cl.userStatus == QStringLiteral("dnd")) dotColor = QColor("#d93025");
+        if (dotColor.isValid()) {
+            qreal dotSize = StatusDotSize;
+            qreal dotX = avatarRect.right() - dotSize + 1;
+            qreal dotY = avatarRect.bottom() - dotSize + 1;
+            // Border ring
+            p->setPen(Qt::NoPen);
+            p->setBrush(m_theme.bgSidebar);
+            p->drawEllipse(QRectF(dotX - 1.5, dotY - 1.5, dotSize + 3, dotSize + 3));
+            // Colored dot
+            p->setBrush(dotColor);
+            p->drawEllipse(QRectF(dotX, dotY, dotSize, dotSize));
+        }
     }
 
     // ── Top row: [fav dot] Name ............ Time ──
