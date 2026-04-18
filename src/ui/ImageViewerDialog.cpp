@@ -127,7 +127,12 @@ void ImageViewerDialog::setImage(int fileId, const QString &fileName, const QIma
     if (!placeholder.isNull()) applyPixmap(placeholder);
 
     if (m_api) {
-        m_api->fetchFileImage(fileId, this,
+        // Size the fetch to the available screen so we don't pull 4K for a
+        // viewer that might only be 1080px wide.
+        int maxDim = 2048;
+        if (auto *s = screen())
+            maxDim = qMax(s->availableSize().width(), s->availableSize().height());
+        m_api->fetchFileImage(fileId, maxDim, this,
             [this, fileId](const QImage &img, const QString &err) {
             if (fileId != m_currentFileId) return; // user navigated away
             if (!img.isNull()) applyPixmap(img);
