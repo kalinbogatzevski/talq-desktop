@@ -1691,15 +1691,26 @@ void ChatPainter::drawEmoji(QPainter *p, const QString &codepoints, const QRectF
                                              Qt::KeepAspectRatio, Qt::SmoothTransformation));
 }
 
+// Find the QTextLine within `layout` that contains the character offset `relPos`.
+// Returns an invalid line if none matches (e.g. offset past the layout).
+static QTextLine findLineForOffset(QTextLayout *layout, int relPos)
+{
+    for (int li = 0; li < layout->lineCount(); ++li) {
+        QTextLine candidate = layout->lineAt(li);
+        int ts = candidate.textStart();
+        if (relPos >= ts && relPos < ts + candidate.textLength())
+            return candidate;
+    }
+    return QTextLine();
+}
+
 void ChatPainter::paintMessageEmojis(QPainter *p, const MessageLayout &ml, qreal offsetY)
 {
     if (ml.emojiRuns.isEmpty() || !ml.bodyDoc) return;
 
-    QAbstractTextDocumentLayout *layout = ml.bodyDoc->documentLayout();
-    (void)layout;
-
     const qreal bodyLeft = ml.bodyRect.left();
     const qreal bodyTop  = ml.bodyRect.top() + offsetY;
+    const QFontMetricsF fm(ml.bodyDoc->defaultFont());
 
     for (const auto &r : ml.emojiRuns) {
         QTextBlock block = ml.bodyDoc->findBlock(r.docPosition);
@@ -1708,13 +1719,7 @@ void ChatPainter::paintMessageEmojis(QPainter *p, const MessageLayout &ml, qreal
         if (!blkLay) continue;
 
         int relPos = r.docPosition - block.position();
-        QTextLine line;
-        for (int li = 0; li < blkLay->lineCount(); ++li) {
-            QTextLine candidate = blkLay->lineAt(li);
-            int ts = candidate.textStart();
-            int te = ts + candidate.textLength();
-            if (relPos >= ts && relPos < te) { line = candidate; break; }
-        }
+        QTextLine line = findLineForOffset(blkLay, relPos);
         if (!line.isValid()) continue;
 
         qreal x = bodyLeft + blkLay->position().x() + line.cursorToX(relPos);
@@ -1722,11 +1727,9 @@ void ChatPainter::paintMessageEmojis(QPainter *p, const MessageLayout &ml, qreal
         qreal h = line.height();
 
         // Measure advance width of the original cluster in the body font.
-        QFontMetricsF fm(ml.bodyDoc->defaultFont());
         qreal w = fm.horizontalAdvance(r.codepoints);
         if (w <= 0) w = h * 1.1;
 
-        QRectF dst(x, y, w, h);
-        drawEmoji(p, r.codepoints, dst);
+        drawEmoji(p, r.codepoints, QRectF(x, y, w, h));
     }
 }
