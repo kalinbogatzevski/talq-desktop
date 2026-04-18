@@ -8,6 +8,9 @@ ConversationListModel::ConversationListModel(ApiClient *api, QObject *parent)
 {
     m_autoRefreshTimer.setInterval(30000); // 30s fallback — push provides real-time
     connect(&m_autoRefreshTimer, &QTimer::timeout, this, &ConversationListModel::refresh);
+
+    m_statusPollTimer.setInterval(60 * 1000);
+    connect(&m_statusPollTimer, &QTimer::timeout, this, &ConversationListModel::fetchUserStatuses);
 }
 
 int ConversationListModel::rowCount(const QModelIndex &) const
@@ -35,11 +38,21 @@ QVariant ConversationListModel::data(const QModelIndex &index, int role) const
         case UserStatusRole: {
             // For 1:1 chats — prefer user_status API, fallback to room API
             if (c.type == 1 && !c.name.isEmpty()) {
-                QString status = m_userStatuses.value(c.name);
-                if (status.isEmpty())
-                    status = c.status;
-                return status.isEmpty() ? "offline" : status;
+                QString state = m_userStatuses.value(c.name).state;
+                if (state.isEmpty())
+                    state = c.status;
+                return state.isEmpty() ? "offline" : state;
             }
+            return QString();
+        }
+        case UserStatusMessageRole: {
+            if (c.type == 1 && !c.name.isEmpty())
+                return m_userStatuses.value(c.name).message;
+            return QString();
+        }
+        case UserStatusIconRole: {
+            if (c.type == 1 && !c.name.isEmpty())
+                return m_userStatuses.value(c.name).icon;
             return QString();
         }
         case HasTopicsRole:     return c.hasTopics;
@@ -60,9 +73,11 @@ QHash<int, QByteArray> ConversationListModel::roleNames() const
         {LastMessageRole,   "lastMessage"},
         {LastAuthorRole,    "lastAuthor"},
         {LastActivityRole,  "lastActivity"},
-        {ActorIdRole,       "participantUserId"},
-        {UserStatusRole,    "userStatus"},
-        {HasTopicsRole,     "hasTopics"},
+        {ActorIdRole,            "participantUserId"},
+        {UserStatusRole,         "userStatus"},
+        {UserStatusMessageRole,  "userStatusMessage"},
+        {UserStatusIconRole,     "userStatusIcon"},
+        {HasTopicsRole,          "hasTopics"},
         {NotificationLevelRole, "notificationLevel"},
     };
 }
@@ -169,18 +184,21 @@ void ConversationListModel::fetchUserStatuses()
     m_api->getArray("apps/user_status/api/v1/statuses",
         [this](bool ok, const QJsonArray &data, int) {
             if (!ok) return;
-
-            QHash<QString, QString> statuses;
+            QHash<QString, UserStatus> statuses;
             for (const auto &val : data) {
-                QJsonObject u = val.toObject();
-                statuses[u["userId"].toString()] = u["status"].toString();
+                QJsonObject o = val.toObject();
+                UserStatus u;
+                u.state   = o.value("status").toString();
+                u.message = o.value("message").toString();
+                u.icon    = o.value("icon").toString();
+                statuses[o.value("userId").toString()] = u;
             }
-
             if (statuses != m_userStatuses) {
                 m_userStatuses = statuses;
-                // Notify all 1:1 conversations that status may have changed
-                if (!m_conversations.isEmpty())
-                    emit dataChanged(index(0), index(m_conversations.size() - 1), {UserStatusRole});
+                if (!m_conversations.isEmpty()) {
+                    emit dataChanged(index(0), index(m_conversations.size() - 1),
+                                     {UserStatusRole, UserStatusMessageRole, UserStatusIconRole});
+                }
             }
         });
 }
@@ -188,11 +206,13 @@ void ConversationListModel::fetchUserStatuses()
 void ConversationListModel::startAutoRefresh()
 {
     m_autoRefreshTimer.start();
+    m_statusPollTimer.start();
 }
 
 void ConversationListModel::stopAutoRefresh()
 {
     m_autoRefreshTimer.stop();
+    m_statusPollTimer.stop();
 }
 
 QString ConversationListModel::tokenAt(int index) const
@@ -227,6 +247,33 @@ int ConversationListModel::lastReadMessageForToken(const QString &token) const
 {
     int i = indexOfToken(token);
     return (i >= 0) ? m_conversations[i].lastReadMessage : 0;
+}
+
+QString ConversationListModel::userStatusForToken(const QString &token) const
+{
+    for (const auto &c : m_conversations) {
+        if (c.token == token)
+            return m_userStatuses.value(c.name).state;
+    }
+    return {};
+}
+
+QString ConversationListModel::userStatusMessageForToken(const QString &token) const
+{
+    for (const auto &c : m_conversations) {
+        if (c.token == token)
+            return m_userStatuses.value(c.name).message;
+    }
+    return {};
+}
+
+QString ConversationListModel::userStatusIconForToken(const QString &token) const
+{
+    for (const auto &c : m_conversations) {
+        if (c.token == token)
+            return m_userStatuses.value(c.name).icon;
+    }
+    return {};
 }
 
 void ConversationListModel::setHasTopics(const QString &token, bool has)
