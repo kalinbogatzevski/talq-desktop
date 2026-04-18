@@ -49,6 +49,7 @@ public:
         FilePreviewRole,
         HasFileRole,
         FileIdRole,
+        LastEditTimestampRole,
     };
 
     explicit MessageListModel(ApiClient *api, MessageCache *cache, QObject *parent = nullptr);

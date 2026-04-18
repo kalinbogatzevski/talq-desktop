@@ -176,6 +176,8 @@ QVariant MessageListModel::data(const QModelIndex &index, int role) const
             return m.hasFile();
         case FileIdRole:
             return m.fileId;
+        case LastEditTimestampRole:
+            return m.lastEditTimestamp;
         default:
             return {};
     }
@@ -207,7 +209,8 @@ QHash<int, QByteArray> MessageListModel::roleNames() const
         {FileLinkRole,      "fileLink"},
         {FilePreviewRole,   "filePreview"},
         {HasFileRole,       "hasFile"},
-        {FileIdRole,        "fileId"},
+        {FileIdRole,            "fileId"},
+        {LastEditTimestampRole, "lastEditTimestamp"},
     };
 }
 
