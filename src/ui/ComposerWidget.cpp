@@ -387,10 +387,11 @@ void ComposerWidget::openEmojiPicker()
         m_picker->setWindowFlags(Qt::Popup);
         connect(m_picker, &EmojiPickerWidget::emojiSelected, this,
                 [this](const QString &cp) {
-            if (cp.isEmpty()) return;
             m_input->insertPlainText(cp);
             m_picker->close();
         });
+        connect(m_picker, &EmojiPickerWidget::cancelled, this,
+                [this]() { m_picker->close(); });
     }
     QPoint anchor = m_emojiBtn->mapToGlobal(QPoint(0, 0));
     m_picker->move(anchor.x() - m_picker->width() + m_emojiBtn->width(),
