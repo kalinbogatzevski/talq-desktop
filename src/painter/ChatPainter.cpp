@@ -958,6 +958,23 @@ void ChatPainter::paintEvent(QPaintEvent *)
     qreal vpBottom = m_scrollY + height();
     qreal offsetY = -m_scrollY;
 
+    // Subtle teal tint behind the unread region, reinforcing the divider.
+    qreal unreadY = -1;
+    for (const auto &ml : m_layouts) {
+        if (ml.showUnreadSep) {
+            unreadY = ml.unreadSepRect.top();
+            break;
+        }
+    }
+    if (unreadY >= 0) {
+        qreal topOnScreen = unreadY - m_scrollY;
+        qreal visibleTop = qMax(qreal(0), topOnScreen);
+        if (visibleTop < height()) {
+            p.fillRect(QRectF(0, visibleTop, width(), height() - visibleTop),
+                       QColor(46, 196, 182, 10));  // ~4% opacity teal
+        }
+    }
+
     for (int i = 0; i < m_layouts.size(); ++i) {
         const auto &ml = m_layouts[i];
 
@@ -970,6 +987,9 @@ void ChatPainter::paintEvent(QPaintEvent *)
             p.setBrush(QColor(46, 196, 182, 30));
             p.drawRect(QRectF(0, ml.totalY + offsetY, width(), ml.totalHeight));
         }
+
+        if (ml.showUnreadSep)
+            paintUnreadSep(&p, ml, offsetY);
 
         if (ml.showDateSep)
             paintDateSep(&p, ml, offsetY);
@@ -1042,6 +1062,37 @@ void ChatPainter::paintDateSep(QPainter *p, const MessageLayout &ml, qreal offse
     p->setPen(m_theme.textSecondary);
     p->setFont(m_theme.dateSepFont());
     p->drawText(pill, Qt::AlignCenter, ml.dateString);
+}
+
+void ChatPainter::paintUnreadSep(QPainter *p, const MessageLayout &ml, qreal offsetY)
+{
+    if (!ml.showUnreadSep || ml.unreadSepRect.isEmpty()) return;
+
+    QRectF strip = ml.unreadSepRect.translated(0, offsetY);
+
+    QFont pillFont = m_theme.dateSepFont();
+    QFontMetrics fm(pillFont);
+    QString text = tr("New messages");
+    int textW = fm.horizontalAdvance(text);
+    int pillW = textW + 20;
+
+    qreal cy = strip.center().y();
+
+    // Teal accent line across the full strip.
+    p->setPen(QPen(m_theme.accent, 1));
+    p->drawLine(QPointF(strip.left(), cy), QPointF(strip.right(), cy));
+
+    // Centered pill with teal text over the conversation background.
+    QRectF pill((strip.width() - pillW) / 2.0 + strip.left(),
+                cy - PainterTheme::unreadPillHeight / 2.0,
+                pillW, PainterTheme::unreadPillHeight);
+    p->setPen(Qt::NoPen);
+    p->setBrush(m_theme.bgPrimary);
+    p->drawRoundedRect(pill, pill.height() / 2.0, pill.height() / 2.0);
+
+    p->setPen(m_theme.accent);
+    p->setFont(pillFont);
+    p->drawText(pill, Qt::AlignCenter, text);
 }
 
 // ─── System message ─────────────────────────────────
