@@ -641,9 +641,9 @@ void MainWindow::buildChatPage()
     m_selectionBar->hide();
     chatLayout->addWidget(m_selectionBar);
 
-    connect(m_composer, &ComposerWidget::sendMessage, this, [this](const QString &text) {
+    connect(m_composer, &ComposerWidget::sendMessage, this, [this](const QString &text, bool silent) {
         int replyId = m_replyToId > 0 ? m_replyToId : m_activeThreadId;
-        m_messages->sendMessage(text, replyId);
+        m_messages->sendMessage(text, replyId, silent);
         m_replyToId = 0;
         m_replyToAuthor.clear();
         m_replyToText.clear();

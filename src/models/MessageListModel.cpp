@@ -674,7 +674,7 @@ void MessageListModel::postAndReplace(const QString &token, const QJsonObject &b
         });
 }
 
-void MessageListModel::sendMessage(const QString &text, int replyToId)
+void MessageListModel::sendMessage(const QString &text, int replyToId, bool silent)
 {
     if (text.trimmed().isEmpty() || m_token.isEmpty())
         return;
@@ -706,6 +706,7 @@ void MessageListModel::sendMessage(const QString &text, int replyToId)
     body["message"] = text;
     if (replyToId > 0)
         body["replyTo"] = replyToId;
+    if (silent) body["silent"] = true;
 
     postAndReplace(m_token, body, tempId);
 }
