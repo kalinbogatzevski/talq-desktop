@@ -18,6 +18,7 @@
 #include <QAbstractTextDocumentLayout>
 #include <QRegularExpression>
 #include <QNetworkReply>
+#include <QTimer>
 #include <QtMath>
 #include <QApplication>
 #include <QClipboard>
@@ -39,6 +40,13 @@ ChatPainter::ChatPainter(QWidget *parent)
     setAcceptDrops(true);
     setFocusPolicy(Qt::ClickFocus);
 
+    m_unreadSepDismissTimer = new QTimer(this);
+    m_unreadSepDismissTimer->setSingleShot(true);
+    m_unreadSepDismissTimer->setInterval(2000);
+    connect(m_unreadSepDismissTimer, &QTimer::timeout, this, [this]() {
+        m_unreadSepDismissed = true;
+        rebuildAllLayouts();
+    });
 }
 
 // ═══════════════════════════════════════════════════════
@@ -91,6 +99,8 @@ void ChatPainter::setUnreadBoundary(int id)
 {
     if (m_unreadBoundary == id) return;
     m_unreadBoundary = id;
+    m_unreadSepDismissed = false;
+    if (m_unreadSepDismissTimer) m_unreadSepDismissTimer->stop();
     rebuildAllLayouts();
 }
 
@@ -128,6 +138,26 @@ void ChatPainter::setScrollY(qreal y)
     // Debounced implicitly because MessageListModel ignores re-entrant loads while m_loading.
     if (m_scrollY < 200.0 && m_contentHeight > height())
         emit moreHistoryRequested();
+
+    // Unread divider auto-clear: if the separator has scrolled above the
+    // viewport top, start a 2-second dismissal timer. If the user scrolls
+    // back before it fires, cancel.
+    if (!m_unreadSepDismissed && m_unreadSepDismissTimer) {
+        qreal sepBottom = -1;
+        for (const auto &ml : m_layouts) {
+            if (ml.showUnreadSep) {
+                sepBottom = ml.unreadSepRect.bottom();
+                break;
+            }
+        }
+        if (sepBottom > 0) {
+            bool aboveViewport = sepBottom < m_scrollY;
+            if (aboveViewport && !m_unreadSepDismissTimer->isActive())
+                m_unreadSepDismissTimer->start();
+            else if (!aboveViewport && m_unreadSepDismissTimer->isActive())
+                m_unreadSepDismissTimer->stop();
+        }
+    }
 
     update();
 }
@@ -306,13 +336,16 @@ void ChatPainter::rebuildAllLayouts()
     bool prevIsSystem = false;
 
     // Find the first layout position (oldest-first iteration) whose message.id
-    // exceeds the unread boundary. If none, no separator is drawn.
+    // exceeds the unread boundary. If none, or the user has dismissed the
+    // divider by scrolling past it, no separator is drawn.
     int firstUnreadLayoutIdx = -1;
-    for (int i = 0; i < count; ++i) {
-        int modelRow = count - 1 - i;
-        int id = m_model->data(m_model->index(modelRow),
-                               MessageListModel::IdRole).toInt();
-        if (id > m_unreadBoundary) { firstUnreadLayoutIdx = i; break; }
+    if (!m_unreadSepDismissed) {
+        for (int i = 0; i < count; ++i) {
+            int modelRow = count - 1 - i;
+            int id = m_model->data(m_model->index(modelRow),
+                                   MessageListModel::IdRole).toInt();
+            if (id > m_unreadBoundary) { firstUnreadLayoutIdx = i; break; }
+        }
     }
 
     // Model is newest-first. We iterate oldest-first: row (count-1) down to row 0.

@@ -165,6 +165,9 @@ private:
     MessageListModel *m_model = nullptr;
     QString m_myUserId;
     int m_unreadBoundary = 0;
+    bool m_unreadSepDismissed = false;
+    class QTimer *m_unreadSepDismissTimer = nullptr;   // single-shot 2s
+
     bool m_darkMode = true;
     qreal m_fontScale = 1.0;
     qreal m_scrollY = 0;
