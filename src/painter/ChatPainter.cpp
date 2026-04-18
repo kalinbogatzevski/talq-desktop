@@ -305,6 +305,16 @@ void ChatPainter::rebuildAllLayouts()
     qint64 prevTimestamp = 0;
     bool prevIsSystem = false;
 
+    // Find the first layout position (oldest-first iteration) whose message.id
+    // exceeds the unread boundary. If none, no separator is drawn.
+    int firstUnreadLayoutIdx = -1;
+    for (int i = 0; i < count; ++i) {
+        int modelRow = count - 1 - i;
+        int id = m_model->data(m_model->index(modelRow),
+                               MessageListModel::IdRole).toInt();
+        if (id > m_unreadBoundary) { firstUnreadLayoutIdx = i; break; }
+    }
+
     // Model is newest-first. We iterate oldest-first: row (count-1) down to row 0.
     for (int i = 0; i < count; ++i) {
         int modelRow = count - 1 - i;
@@ -314,10 +324,26 @@ void ChatPainter::rebuildAllLayouts()
         int fileId = m_model->data(idx, MessageListModel::FileIdRole).toInt();
         qreal aspect = m_previewAspect.value(fileId, 0.0);  // 0 = unknown, show compact placeholder
 
+        qreal sepY = 0;
+        bool isUnreadSepRow = (i == firstUnreadLayoutIdx);
+        if (isUnreadSepRow) {
+            sepY = y;
+            y += PainterTheme::unreadSepHeight;
+        }
+
         auto ml = LayoutEngine::computeLayout(
             m_model, modelRow, width(), m_theme, y,
             m_myUserId, prevActorId, prevTimestamp, prevIsSystem, aspect
         );
+
+        if (isUnreadSepRow) {
+            ml.showUnreadSep = true;
+            ml.unreadSepRect = QRectF(PainterTheme::spacingNormal, sepY,
+                                      width() - 2 * PainterTheme::spacingNormal,
+                                      qreal(PainterTheme::unreadSepHeight));
+            ml.totalY = sepY;
+            ml.totalHeight += PainterTheme::unreadSepHeight;
+        }
 
         // Update prev for next iteration
         prevActorId = m_model->data(idx, MessageListModel::ActorIdRole).toString();
