@@ -299,6 +299,55 @@ void ApiClient::fetchFileImage(int fileId,
     });
 }
 
+void ApiClient::fetchMentions(const QString &token,
+                              const QString &search,
+                              std::function<void(const QVector<MentionCandidate> &)> callback)
+{
+    QUrl url(m_serverUrl);
+    url.setPath(QStringLiteral("/ocs/v2.php/apps/spreed/api/v4/chat/") + token
+                + QStringLiteral("/mentions"));
+    QUrlQuery q;
+    q.addQueryItem(QStringLiteral("search"), search);
+    q.addQueryItem(QStringLiteral("limit"), QStringLiteral("20"));
+    url.setQuery(q);
+
+    QNetworkRequest req(url);
+    req.setRawHeader("OCS-APIRequest", "true");
+    req.setRawHeader("Accept", "application/json");
+    if (!m_user.isEmpty()) {
+        QString credentials = m_user + ":" + m_password;
+        req.setRawHeader("Authorization",
+                         "Basic " + credentials.toUtf8().toBase64());
+    }
+
+    QNetworkReply *reply = m_nam.get(req);
+    connect(reply, &QNetworkReply::finished, this, [reply, callback]() {
+        reply->deleteLater();
+        QVector<MentionCandidate> out;
+
+        if (reply->error() != QNetworkReply::NoError) {
+            int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+            if (status == 403 || status == 404)
+                qWarning() << "fetchMentions:" << status << reply->errorString();
+            callback(out);
+            return;
+        }
+
+        QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
+        QJsonArray data = doc.object().value(QStringLiteral("ocs")).toObject()
+                              .value(QStringLiteral("data")).toArray();
+        for (const QJsonValue &v : data) {
+            QJsonObject o = v.toObject();
+            MentionCandidate c;
+            c.id     = o.value(QStringLiteral("id")).toString();
+            c.label  = o.value(QStringLiteral("label")).toString();
+            c.source = o.value(QStringLiteral("source")).toString();
+            if (!c.id.isEmpty()) out.append(c);
+        }
+        callback(out);
+    });
+}
+
 void ApiClient::trackReply(QNetworkReply *reply)
 {
     m_pendingReplies.append(reply);

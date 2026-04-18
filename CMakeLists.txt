@@ -92,6 +92,7 @@ qt_add_executable(talq
     src/core/EmojiData.h
     src/core/EmojiData.cpp
     src/core/EmojiData_generated.cpp
+    src/core/MentionCandidate.h
     resources/resources.qrc
     resources/twemoji.qrc
     resources/changelog.qrc
