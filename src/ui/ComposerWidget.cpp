@@ -645,31 +645,94 @@ void ComposerWidget::fetchMentionsDebounced()
         });
 }
 
-void ComposerWidget::applyMentionCompletion(int /*row*/) { /* Task 5 */ }
+void ComposerWidget::applyMentionCompletion(int row)
+{
+    if (!m_mentionPopup || row < 0 || row >= m_mentionPopup->count()) return;
+    if (m_mentionWordStart < 0) return;
+
+    QListWidgetItem *it = m_mentionPopup->item(row);
+    QString id = it->data(Qt::UserRole).toString();
+    if (id.isEmpty()) { m_mentionPopup->hide(); return; }
+
+    QString replacement;
+    if (id == QStringLiteral("all")) {
+        replacement = QStringLiteral("@all ");
+    } else {
+        static const QRegularExpression simple(
+            QStringLiteral("^[A-Za-z0-9._-]+$"));
+        if (simple.match(id).hasMatch())
+            replacement = QStringLiteral("@") + id + QStringLiteral(" ");
+        else
+            replacement = QStringLiteral("@\"") + id + QStringLiteral("\" ");
+    }
+
+    int start = m_mentionWordStart;
+    int end = m_input->textCursor().position();
+    QTextCursor c = m_input->textCursor();
+    c.beginEditBlock();
+    c.setPosition(start);
+    c.setPosition(end, QTextCursor::KeepAnchor);
+    c.insertText(replacement);
+    c.endEditBlock();
+
+    m_mentionPopup->hide();
+    m_mentionWordStart = -1;
+}
 
 bool ComposerWidget::eventFilter(QObject *watched, QEvent *event)
 {
-    if (watched == m_input && m_completion && m_completion->isVisible()
-        && event->type() == QEvent::KeyPress) {
+    if (watched == m_input && event->type() == QEvent::KeyPress) {
         auto *k = static_cast<QKeyEvent*>(event);
-        switch (k->key()) {
-        case Qt::Key_Up:
-            m_completion->setCurrentRow(qMax(0, m_completion->currentRow() - 1));
-            return true;
-        case Qt::Key_Down:
-            m_completion->setCurrentRow(qMin(m_completion->count() - 1,
-                                             m_completion->currentRow() + 1));
-            return true;
-        case Qt::Key_Return:
-        case Qt::Key_Enter:
-        case Qt::Key_Tab:
-            applyCompletion(m_completion->currentRow());
-            return true;
-        case Qt::Key_Escape:
-            m_completion->hide();
-            return true;
-        default:
-            break;
+
+        // Mention popup first (if visible).
+        if (m_mentionPopup && m_mentionPopup->isVisible()) {
+            switch (k->key()) {
+            case Qt::Key_Up:
+                m_mentionPopup->setCurrentRow(
+                    qMax(0, m_mentionPopup->currentRow() - 1));
+                return true;
+            case Qt::Key_Down:
+                m_mentionPopup->setCurrentRow(
+                    qMin(m_mentionPopup->count() - 1,
+                         m_mentionPopup->currentRow() + 1));
+                return true;
+            case Qt::Key_Return:
+            case Qt::Key_Enter:
+            case Qt::Key_Tab:
+                applyMentionCompletion(m_mentionPopup->currentRow());
+                return true;
+            case Qt::Key_Escape:
+                m_mentionPopup->hide();
+                m_mentionWordStart = -1;
+                return true;
+            default:
+                break;
+            }
+        }
+
+        // Shortcode popup (existing behavior).
+        if (m_completion && m_completion->isVisible()) {
+            switch (k->key()) {
+            case Qt::Key_Up:
+                m_completion->setCurrentRow(
+                    qMax(0, m_completion->currentRow() - 1));
+                return true;
+            case Qt::Key_Down:
+                m_completion->setCurrentRow(
+                    qMin(m_completion->count() - 1,
+                         m_completion->currentRow() + 1));
+                return true;
+            case Qt::Key_Return:
+            case Qt::Key_Enter:
+            case Qt::Key_Tab:
+                applyCompletion(m_completion->currentRow());
+                return true;
+            case Qt::Key_Escape:
+                m_completion->hide();
+                return true;
+            default:
+                break;
+            }
         }
     }
     return QWidget::eventFilter(watched, event);
