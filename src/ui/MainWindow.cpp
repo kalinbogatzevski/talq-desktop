@@ -12,6 +12,7 @@
 #include "painter/ThreadsPainter.h"
 #include "painter/PainterTheme.h"
 #include "core/ApiClient.h"
+#include "core/SearchHit.h"
 #include "core/AuthManager.h"
 #include "core/NotificationManager.h"
 #include "core/PushClient.h"
@@ -41,10 +42,12 @@
 #include <QMessageBox>
 #include <QNetworkReply>
 #include <QLabel>
+#include <QListWidget>
 #include <QUrl>
 #include <QTextBrowser>
 #include <QFile>
 #include <QResizeEvent>
+#include <QKeyEvent>
 
 #ifdef Q_OS_WIN
 #include <windows.h>
@@ -581,6 +584,8 @@ void MainWindow::buildChatPage()
     m_chatPainter->hide();
     chatLayout->addWidget(m_chatPainter, 1);
 
+    buildSearchBar(chatCol);
+
     // Upload progress bar
     m_uploadBar = new QWidget(chatCol);
     m_uploadBar->setFixedHeight(36);
@@ -1036,8 +1041,121 @@ void MainWindow::buildChatPage()
     m_stack->addWidget(m_chatPage);
 }
 
+void MainWindow::buildSearchBar(QWidget *chatCol)
+{
+    m_searchBar = new QWidget(chatCol);
+    m_searchBar->hide();
+    auto *lay = new QHBoxLayout(m_searchBar);
+    lay->setContentsMargins(8, 4, 8, 4);
+    m_searchInput = new QLineEdit(m_searchBar);
+    m_searchInput->setPlaceholderText(tr("Search in this conversation\u2026"));
+    lay->addWidget(m_searchInput, 1);
+    auto *closeBtn = new QPushButton("\u2715", m_searchBar);
+    closeBtn->setFixedSize(28, 28);
+    closeBtn->setFlat(true);
+    connect(closeBtn, &QPushButton::clicked, this, [this]() {
+        m_searchBar->hide();
+        if (m_searchResults) m_searchResults->hide();
+    });
+    lay->addWidget(closeBtn);
+
+    auto *v = qobject_cast<QVBoxLayout*>(chatCol->layout());
+    if (v) v->insertWidget(0, m_searchBar);
+
+    m_searchDebounce = new QTimer(this);
+    m_searchDebounce->setSingleShot(true);
+    m_searchDebounce->setInterval(300);
+    connect(m_searchDebounce, &QTimer::timeout, this, &MainWindow::runSearchQuery);
+    connect(m_searchInput, &QLineEdit::textChanged, this, [this](const QString &) {
+        m_searchDebounce->start();
+    });
+
+    m_searchResults = new QListWidget(this);
+    m_searchResults->setWindowFlags(Qt::Popup);
+    m_searchResults->setStyleSheet(
+        "QListWidget { background: #222230; color: #eee; border: 1px solid #333; border-radius: 6px; }"
+        "QListWidget::item { padding: 6px 10px; }"
+        "QListWidget::item:selected { background: #3a3a55; }"
+    );
+
+    connect(m_searchResults, &QListWidget::itemActivated, this, [this](QListWidgetItem *it) {
+        int msgId = it->data(Qt::UserRole).toInt();
+        if (msgId <= 0) return;
+        m_searchResults->hide();
+        m_chatPainter->scrollToMessage(msgId);
+        if (!m_messages) return;
+        bool foundLocal = false;
+        for (int i = 0; i < m_messages->rowCount(); ++i) {
+            if (m_messages->data(m_messages->index(i), MessageListModel::IdRole).toInt() == msgId) {
+                foundLocal = true; break;
+            }
+        }
+        if (!foundLocal) {
+            auto *c = new QMetaObject::Connection;
+            *c = connect(m_messages, &MessageListModel::historyUntilSettled, this,
+                [this, msgId, c](int settledId, bool ok) {
+                    if (settledId != msgId) return;
+                    QObject::disconnect(*c);
+                    delete c;
+                    if (ok) m_chatPainter->scrollToMessage(msgId);
+                });
+            m_messages->loadHistoryUntil(msgId);
+        }
+    });
+
+    connect(m_header, &HeaderPainter::searchRequested, this, [this]() {
+        m_searchBar->show();
+        m_searchInput->setFocus();
+        m_searchInput->selectAll();
+    });
+
+    m_searchInput->installEventFilter(this);
+}
+
+void MainWindow::runSearchQuery()
+{
+    QString q = m_searchInput->text().trimmed();
+    if (q.length() < 2 || !m_messages || m_messages->conversationToken().isEmpty()) {
+        m_searchResults->hide();
+        return;
+    }
+    QString token = m_messages->conversationToken();
+    m_api->searchInConversation(token, q, this,
+        [this, token](bool ok, const QVector<SearchHit> &hits) {
+            if (!m_messages || m_messages->conversationToken() != token) return;
+            if (!ok) { m_searchResults->hide(); return; }
+            m_searchResults->clear();
+            int limit = qMin(30, int(hits.size()));
+            for (int i = 0; i < limit; ++i) {
+                const SearchHit &h = hits[i];
+                QString rowText = QStringLiteral("%1\n%2").arg(h.actorName, h.snippet);
+                auto *it = new QListWidgetItem(rowText);
+                it->setData(Qt::UserRole, h.messageId);
+                m_searchResults->addItem(it);
+            }
+            if (m_searchResults->count() == 0) {
+                m_searchResults->hide();
+                return;
+            }
+            QPoint p = m_searchInput->mapToGlobal(QPoint(0, m_searchInput->height()));
+            m_searchResults->resize(m_searchInput->width(),
+                                    qMin(6, m_searchResults->count()) * 46 + 8);
+            m_searchResults->move(p);
+            m_searchResults->show();
+        });
+}
+
 bool MainWindow::eventFilter(QObject *obj, QEvent *event)
 {
+    // Escape in search input — close search bar
+    if (obj == m_searchInput && event->type() == QEvent::KeyPress) {
+        auto *k = static_cast<QKeyEvent*>(event);
+        if (k->key() == Qt::Key_Escape) {
+            m_searchBar->hide();
+            if (m_searchResults) m_searchResults->hide();
+            return true;
+        }
+    }
     // Avatar click -> open settings (in any mode)
     if (obj == m_profileAvatarLabel && event->type() == QEvent::MouseButtonRelease) {
         if (!m_settingsDialog) {

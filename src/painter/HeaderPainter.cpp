@@ -190,6 +190,7 @@ void HeaderPainter::paintEvent(QPaintEvent *)
     m_backBtnRect = QRectF();
     m_audioCallRect = QRectF();
     m_videoCallRect = QRectF();
+    m_searchBtnRect = QRectF();
 
     qreal x = padLeft;
 
@@ -307,6 +308,16 @@ void HeaderPainter::paintEvent(QPaintEvent *)
         m_audioCallRect = QRectF(rightX, btnY, ButtonSize, ButtonSize);
         paintCallButton(painter, m_audioCallRect, m_theme.success,
                         QStringLiteral("\u260E"), m_hoveredButton == 2);  // ☎ as phone icon
+        rightX -= spacing;
+    }
+
+    // Search button (shown when a conversation is active)
+    if (!m_conversationToken.isEmpty()) {
+        qreal btnY = (h - ButtonSize) / 2.0;
+        rightX -= ButtonSize;
+        m_searchBtnRect = QRectF(rightX, btnY, ButtonSize, ButtonSize);
+        paintCallButton(painter, m_searchBtnRect, m_theme.textSecondary,
+                        QStringLiteral("\U0001F50D"), m_hoveredButton == 4);  // 🔍
         rightX -= spacing;
     }
 
@@ -554,6 +565,7 @@ int HeaderPainter::buttonAtPos(const QPointF &pos) const
     if (m_backBtnRect.isValid() && m_backBtnRect.contains(pos)) return 1;
     if (m_audioCallRect.isValid() && m_audioCallRect.contains(pos)) return 2;
     if (m_videoCallRect.isValid() && m_videoCallRect.contains(pos)) return 3;
+    if (m_searchBtnRect.isValid() && m_searchBtnRect.contains(pos)) return 4;
     return -1;
 }
 
@@ -570,6 +582,7 @@ void HeaderPainter::mouseReleaseEvent(QMouseEvent *event)
     case 1: emit backClicked(); break;
     case 2: emit audioCallClicked(); break;
     case 3: emit videoCallClicked(); break;
+    case 4: emit searchRequested(); break;
     default: break;
     }
     event->accept();
@@ -595,6 +608,7 @@ bool HeaderPainter::event(QEvent *e)
             case 1: tip = "Back"; break;
             case 2: tip = "Audio call"; break;
             case 3: tip = "Video call"; break;
+            case 4: tip = "Search in conversation"; break;
             }
             if (!tip.isEmpty())
                 QToolTip::showText(mapToGlobal(he->position().toPoint()), tip, this);
