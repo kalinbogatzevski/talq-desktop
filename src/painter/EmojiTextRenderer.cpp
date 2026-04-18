@@ -17,23 +17,6 @@ struct Run {
     qreal width;
 };
 
-bool isEmojiCluster(const QString &cluster)
-{
-    for (int i = 0; i < cluster.size(); ) {
-        uint cp = cluster[i].unicode();
-        if (QChar::isHighSurrogate(cp) && i + 1 < cluster.size()) {
-            cp = QChar::surrogateToUcs4(cluster[i], cluster[i + 1]);
-            i += 2;
-        } else ++i;
-        if ((cp >= 0x1F300 && cp <= 0x1FAFF) ||
-            (cp >= 0x2600  && cp <= 0x27BF)  ||
-            (cp >= 0x1F1E6 && cp <= 0x1F1FF) ||
-            cp == 0x00A9 || cp == 0x00AE)
-            return true;
-    }
-    return false;
-}
-
 QVector<Run> buildRuns(const QString &text, qreal emojiSize, const QFontMetricsF &fm)
 {
     QVector<Run> runs;
@@ -43,7 +26,7 @@ QVector<Run> buildRuns(const QString &text, qreal emojiSize, const QFontMetricsF
     QString currentText;
     while (next != -1) {
         QString cluster = text.mid(start, next - start);
-        bool emoji = isEmojiCluster(cluster);
+        bool emoji = EmojiData::isEmojiCluster(cluster);
         if (emoji) {
             if (!currentText.isEmpty()) {
                 runs.append({false, currentText, fm.horizontalAdvance(currentText)});
