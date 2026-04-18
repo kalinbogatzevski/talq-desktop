@@ -1,5 +1,6 @@
 #include "models/MessageListModel.h"
 #include "core/MessageCache.h"
+#include "models/ConversationListModel.h"
 #include <QSet>
 #include <QUrlQuery>
 #include <QJsonObject>
@@ -218,6 +219,14 @@ void MessageListModel::setConversationToken(const QString &token)
 {
     if (m_token == token)
         return;
+
+    int newBoundary = (m_conversations && !token.isEmpty())
+        ? m_conversations->lastReadMessageForToken(token)
+        : 0;
+    if (newBoundary != m_unreadBoundary) {
+        m_unreadBoundary = newBoundary;
+        emit unreadBoundaryChanged();
+    }
 
     m_poller->stop();
 

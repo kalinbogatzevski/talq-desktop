@@ -8,6 +8,7 @@
 #include "core/MessagePoller.h"
 
 class MessageCache;
+class ConversationListModel;
 
 /**
  * QAbstractListModel for chat messages in a conversation.
@@ -74,6 +75,9 @@ public:
     bool hideThreadMessages() const { return m_hideThreadMessages; }
     void setHideThreadMessages(bool hide);
 
+    int unreadBoundary() const { return m_unreadBoundary; }
+    void setConversationListModel(ConversationListModel *c) { m_conversations = c; }
+
     Q_INVOKABLE void sendMessage(const QString &text, int replyToId = 0);
     Q_INVOKABLE void markAsRead();
     Q_INVOKABLE void sendFile(const QString &filePath);
@@ -111,6 +115,7 @@ signals:
     void uploadProgressChanged();
     void hasMoreHistoryChanged();
     void pasteReady(const QString &filePath, int width, int height);
+    void unreadBoundaryChanged();
 
 private slots:
     void onMessagesReceived(const QJsonArray &messages);
@@ -134,6 +139,8 @@ private:
     bool m_hasMoreHistory = true;
     int m_oldestMessageId = 0;
     int m_lastCommonRead = 0;
+    int m_unreadBoundary = 0;
+    ConversationListModel *m_conversations = nullptr;
     int m_threadId = 0;
     bool m_hideThreadMessages = false;
     bool m_connected = true;  // assume connected until proven otherwise
