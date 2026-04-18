@@ -88,6 +88,7 @@ signals:
 
 private:
     QNetworkRequest makeRequest(const QString &path, const QUrlQuery &params = QUrlQuery()) const;
+    void applyBasicAuth(QNetworkRequest &req) const;
     void handleReply(QNetworkReply *reply, Callback callback);
     void handleArrayReply(QNetworkReply *reply, ArrayCallback callback);
     void trackReply(QNetworkReply *reply);
