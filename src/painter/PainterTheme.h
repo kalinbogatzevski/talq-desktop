@@ -67,6 +67,8 @@ public:
     static constexpr int messageSpacingNormal = 10;
     static constexpr int dateSepHeight = 40;
     static constexpr int datePillHeight = 26;
+    static constexpr int unreadSepHeight = 28;
+    static constexpr int unreadPillHeight = 22;
 
     // ── Author color from actorId (djb2 hash -> 8-color palette) ──
     static QColor authorColor(const QString &actorId);
