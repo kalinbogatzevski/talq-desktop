@@ -243,12 +243,45 @@ ComposerWidget::ComposerWidget(QWidget *parent)
     connect(replyCancelBtn, &QPushButton::clicked, this, &ComposerWidget::hideReplyBar);
     replyBarLayout->addWidget(replyCancelBtn);
 
+    // Editing bar (hidden by default)
+    m_editingBar = new QWidget(this);
+    m_editingBar->hide();
+    m_editingBar->setStyleSheet("background: #2a241e; border-top: 1px solid #2a2a26;");
+    auto *editAccent = new QWidget(m_editingBar);
+    editAccent->setFixedWidth(3);
+    editAccent->setStyleSheet("background: #e0a040;"); // warm amber (vs reply's teal)
+    m_editingBar->setFixedHeight(36);
+    auto *editBarLayout = new QHBoxLayout(m_editingBar);
+    editBarLayout->setContentsMargins(0, 0, 8, 0);
+    editBarLayout->setSpacing(8);
+    editBarLayout->addWidget(editAccent);
+
+    auto *editIcon = new QLabel(QStringLiteral("\u270F\uFE0F"), m_editingBar); // ✏️
+    editIcon->setStyleSheet("font-size: 14px;");
+    editBarLayout->addWidget(editIcon);
+
+    m_editingPreview = new QLabel(m_editingBar);
+    m_editingPreview->setStyleSheet("font-size: 13px; color: #b0aca5;");
+    editBarLayout->addWidget(m_editingPreview, 1);
+
+    auto *editCancelBtn = new QPushButton("\u2715", m_editingBar);
+    editCancelBtn->setFixedSize(28, 28);
+    editCancelBtn->setFlat(true);
+    editCancelBtn->setCursor(Qt::PointingHandCursor);
+    editCancelBtn->setStyleSheet(
+        "QPushButton { font-size: 14px; border: none; border-radius: 14px; color: #8a8680; }"
+        "QPushButton:hover { background: rgba(255,255,255,0.1); color: #e4e0da; }"
+    );
+    connect(editCancelBtn, &QPushButton::clicked, this, &ComposerWidget::hideEditingBar);
+    editBarLayout->addWidget(editCancelBtn);
+
     // Insert bars above the input row
     auto *mainLayout = new QVBoxLayout();
     mainLayout->setContentsMargins(0, 0, 0, 0);
     mainLayout->setSpacing(0);
     mainLayout->addWidget(m_pendingBar);
     mainLayout->addWidget(m_replyBar);
+    mainLayout->addWidget(m_editingBar);
 
     auto *inputRow = new QWidget(this);
     inputRow->setLayout(layout);
@@ -364,6 +397,35 @@ void ComposerWidget::hideReplyBar()
 {
     m_replyBar->hide();
     emit replyBarCancelled();
+}
+
+void ComposerWidget::showEditingBar(const QString &originalText)
+{
+    // Editing and replying are mutually exclusive.
+    if (m_replyBar && m_replyBar->isVisible())
+        hideReplyBar();
+
+    QString preview = originalText;
+    preview.replace(QLatin1Char('\n'), QLatin1Char(' '));
+    if (preview.size() > 120) preview = preview.left(120) + QStringLiteral("…");
+    m_editingPreview->setText(preview.toHtmlEscaped());
+    m_editingBar->show();
+
+    m_input->setPlainText(originalText);
+    QTextCursor c = m_input->textCursor();
+    c.movePosition(QTextCursor::End);
+    m_input->setTextCursor(c);
+    m_input->setFocus();
+    m_editing = true;
+}
+
+void ComposerWidget::hideEditingBar()
+{
+    if (!m_editing && (!m_editingBar || !m_editingBar->isVisible())) return;
+    m_editing = false;
+    m_editingBar->hide();
+    m_input->clear();
+    emit editingBarCancelled();
 }
 
 void ComposerWidget::sendAction()
