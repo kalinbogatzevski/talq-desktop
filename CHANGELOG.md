@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.17.3 (2026-04-18)
+
+### Unread divider
+- **"New messages" pill** — reopening a conversation with unread messages draws a teal accent pill across the chat above the first unread, with a subtle tinted region below it. Matches Nextcloud Talk web.
+- Divider is anchored by message id, so scrolling up to load older history keeps it in place.
+- Divider is session-frozen: it stays put until you leave the conversation; on the next visit it's at the new boundary or absent.
+
 ## v0.17.2 (2026-04-18)
 
 ### Message edit
