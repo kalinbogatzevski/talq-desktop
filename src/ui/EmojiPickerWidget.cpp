@@ -170,7 +170,7 @@ EmojiPickerWidget::EmojiPickerWidget(QWidget *parent)
 
 void EmojiPickerWidget::keyPressEvent(QKeyEvent *event)
 {
-    if (event->key() == Qt::Key_Escape) { emit emojiSelected(QString()); close(); return; }
+    if (event->key() == Qt::Key_Escape) { emit cancelled(); close(); return; }
     QWidget::keyPressEvent(event);
 }
 
