@@ -122,16 +122,17 @@ void ImageViewerDialog::zoomByStep(bool zoomIn)
 void ImageViewerDialog::setImage(int fileId, const QString &fileName, const QImage &placeholder)
 {
     m_currentFileId = fileId;
-    m_titleBar->setText(fileName);
+    m_currentFileName = fileName;
+    m_titleBar->setText(m_currentFileName);
     if (!placeholder.isNull()) applyPixmap(placeholder);
 
     if (m_api) {
         m_api->fetchFileImage(fileId, this,
-            [this, fileId, fileName](const QImage &img, const QString &err) {
+            [this, fileId](const QImage &img, const QString &err) {
             if (fileId != m_currentFileId) return; // user navigated away
             if (!img.isNull()) applyPixmap(img);
             else if (!err.isEmpty())
-                m_titleBar->setText(fileName + QStringLiteral("  —  ") + err);
+                m_titleBar->setText(m_currentFileName + QStringLiteral("  —  ") + err);
         });
     }
 }
@@ -141,12 +142,12 @@ void ImageViewerDialog::copyImage()
     if (m_currentImage.isNull()) return;
     QApplication::clipboard()->setImage(m_currentImage);
 
-    // Brief visual confirmation in title bar.
-    QString restore = m_titleBar->text();
-    m_titleBar->setText(restore + QStringLiteral("  —  copied to clipboard"));
-    QTimer::singleShot(2000, this, [this, restore]() {
+    // Brief visual confirmation — restore from m_currentFileName (source of
+    // truth) rather than whatever suffix the title bar happens to show.
+    m_titleBar->setText(m_currentFileName + QStringLiteral("  —  copied to clipboard"));
+    QTimer::singleShot(2000, this, [this]() {
         if (!m_titleBar) return;
-        m_titleBar->setText(restore);
+        m_titleBar->setText(m_currentFileName);
     });
 }
 
@@ -154,13 +155,9 @@ void ImageViewerDialog::saveAs()
 {
     if (m_currentImage.isNull()) return;
 
-    QString title = m_titleBar->text();
-    // Strip any " — ..." suffix we may have appended.
-    int sep = title.indexOf(QStringLiteral("  —  "));
-    QString defaultName = sep >= 0 ? title.left(sep) : title;
-    if (defaultName.isEmpty()) defaultName = QStringLiteral("image.png");
-    // If no extension, default to .png.
-    if (!QFileInfo(defaultName).suffix().length())
+    QString defaultName = m_currentFileName.isEmpty()
+        ? QStringLiteral("image.png") : m_currentFileName;
+    if (QFileInfo(defaultName).suffix().isEmpty())
         defaultName += QStringLiteral(".png");
 
     QString path = QFileDialog::getSaveFileName(
