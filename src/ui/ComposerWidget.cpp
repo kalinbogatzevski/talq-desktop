@@ -21,6 +21,9 @@
 #include <QNetworkReply>
 #include <QPixmap>
 #include <QRegularExpression>
+#include <QMenu>
+#include <QAction>
+#include <QCursor>
 
 namespace {
 
@@ -78,6 +81,8 @@ protected:
                 QTextEdit::keyPressEvent(e);
             } else {
                 e->accept();
+                if (e->modifiers() & Qt::AltModifier)
+                    m_owner->setNextSendSilent(true);
                 QMetaObject::invokeMethod(m_owner, "sendAction", Qt::QueuedConnection);
             }
             return;
@@ -179,6 +184,26 @@ ComposerWidget::ComposerWidget(QWidget *parent)
     layout->addWidget(m_sendBtn);
 
     connect(m_sendBtn, &QPushButton::clicked, this, &ComposerWidget::sendAction);
+
+    m_sendBtn->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_sendBtn, &QPushButton::customContextMenuRequested, this, [this](const QPoint &) {
+        QMenu menu(this);
+        QFont boldF = menu.font(); boldF.setBold(true);
+        QAction *sendAct = menu.addAction(tr("Send"));
+        sendAct->setFont(boldF);
+        QAction *silentAct = menu.addAction(QStringLiteral("\U0001F515  ")
+            + tr("Send silently") + QStringLiteral(" \u2014 ") + tr("no notification"));
+        QAction *picked = menu.exec(QCursor::pos());
+        if (picked == silentAct) {
+            m_nextSendSilent = true;
+            sendAction();
+        } else if (picked == sendAct) {
+            sendAction();
+        }
+    });
+
+    m_sendBtn->installEventFilter(this);
+
     connect(m_input, &QTextEdit::textChanged, this, &ComposerWidget::handleAutoreplace);
     connect(m_input, &QTextEdit::textChanged, this, &ComposerWidget::maybeShowCompletion);
     connect(m_input, &QTextEdit::textChanged, this, &ComposerWidget::maybeShowMentionCompletion);
@@ -451,7 +476,18 @@ void ComposerWidget::sendAction()
         return;
     }
 
-    emit sendMessage(text);
+    bool silent = m_nextSendSilent;
+    m_nextSendSilent = false;
+    emit sendMessage(text, silent);
+
+    if (silent) {
+        QString original = m_sendBtn->text();
+        m_sendBtn->setText(QStringLiteral("\U0001F515"));
+        QTimer::singleShot(500, this, [this, original]() {
+            if (m_sendBtn) m_sendBtn->setText(original);
+        });
+    }
+
     m_input->clear();
 }
 
@@ -789,6 +825,14 @@ void ComposerWidget::applyMentionCompletion(int row)
 
 bool ComposerWidget::eventFilter(QObject *watched, QEvent *event)
 {
+    if (watched == m_sendBtn && event->type() == QEvent::MouseButtonRelease) {
+        auto *me = static_cast<QMouseEvent*>(event);
+        if (me->modifiers() & Qt::AltModifier) {
+            m_nextSendSilent = true;
+            sendAction();
+            return true;
+        }
+    }
     if (watched == m_input && event->type() == QEvent::KeyPress) {
         auto *k = static_cast<QKeyEvent*>(event);
 

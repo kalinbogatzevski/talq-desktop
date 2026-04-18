@@ -78,7 +78,7 @@ public:
     int unreadBoundary() const { return m_unreadBoundary; }
     void setConversationListModel(ConversationListModel *c) { m_conversations = c; }
 
-    Q_INVOKABLE void sendMessage(const QString &text, int replyToId = 0);
+    Q_INVOKABLE void sendMessage(const QString &text, int replyToId = 0, bool silent = false);
     Q_INVOKABLE void markAsRead();
     Q_INVOKABLE void sendFile(const QString &filePath);
     Q_INVOKABLE void retryMessage(int tempId);

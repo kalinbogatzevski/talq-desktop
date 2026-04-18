@@ -29,6 +29,8 @@ public:
     void setMessageModel(MessageListModel *model);
     void setInputFont(const QFont &font);
     void showPendingFile(const QString &path);
+    void setNextSendSilent(bool s) { m_nextSendSilent = s; }
+    bool isNextSendSilent() const { return m_nextSendSilent; }
     void showReplyBar(const QString &author, const QString &preview);
     void hideReplyBar();
     void showEditingBar(const QString &originalText);
@@ -36,7 +38,7 @@ public:
     bool isEditing() const { return m_editing; }
 
 signals:
-    void sendMessage(const QString &text);
+    void sendMessage(const QString &text, bool silent);
     void replyBarCancelled();
     void editMessageRequested(const QString &newText);
     void editingBarCancelled();
@@ -57,6 +59,8 @@ protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
+    bool m_nextSendSilent = false;
+
     QTextEdit *m_input = nullptr;
     QPushButton *m_sendBtn = nullptr;
     QPushButton *m_attachBtn = nullptr;
