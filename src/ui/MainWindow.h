@@ -79,7 +79,9 @@ private:
     void switchToLogin();
     void onConversationSelected(const QString &token, const QString &name,
                                  const QString &userId, int convType,
-                                 const QString &userStatus);
+                                 const QString &userStatus,
+                                 const QString &statusMessage,
+                                 const QString &statusIcon);
     void saveWindowState();
     void restoreChatGeometry();
     void applyDarkPalette();

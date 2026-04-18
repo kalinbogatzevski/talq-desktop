@@ -270,7 +270,8 @@ void SidebarPainter::mouseReleaseEvent(QMouseEvent *event)
         m_selectedToken = cl.token;
         emit selectedIndexChanged();
         emit conversationClicked(cl.token, cl.displayName, cl.participantUserId,
-                                 cl.conversationType, cl.userStatus);
+                                 cl.conversationType, cl.userStatus,
+                                 cl.userStatusMessage, cl.userStatusIcon);
         update();
     }
 
