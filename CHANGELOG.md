@@ -1,5 +1,34 @@
 # Changelog
 
+## v0.17.1 (2026-04-18)
+
+### Critical fixes
+- **Emoji recents persist across restarts** — `EmojiData::initialize()` now runs after the app/organization names are set, so `QSettings` reads from the correct storage.
+- **Mention popup no longer leaks across conversations** — the callback now checks the active token at response time, and switching conversations hides both autocomplete popups and clears pending state.
+- **Autoreplace cursor position** — after `:) ` → 🙂, the cursor now sits past the trailing space. Previously the next typed char landed between the emoji and the space.
+- **Nextcloud subpath installations supported for mentions** — `fetchMentions` now preserves the URL prefix (e.g. `/nextcloud/...`) instead of stripping it.
+- **Paste-image save failure reported** — if Qt can't write the temp file on paste, the user sees a dialog instead of an error when they try to send.
+
+### Important fixes
+- **Async callbacks can't use-after-free** — `fetchFileImage` and `fetchMentions` take a `QObject *context` parameter; the connection is severed automatically if the caller widget dies mid-flight. Failures also log HTTP status for debugging.
+- **OCS envelope status checked** — `fetchMentions` honors the `ocs.meta.statuscode` so server-side errors (403/404/429 wrapped in HTTP 200) no longer appear as an empty candidate list.
+- **Profile avatar failures logged** — the top-right avatar's fetch errors are now visible in the debug log (canary for auth/session problems).
+- **`MentionCandidate::Source` is now an enum** — scoped enum with `parseSource()`; prevents future silent classification bugs.
+
+### Polish
+- `EmojiRun::widthPx` dead field removed; struct docblock refreshed.
+- `ImageViewerDialog` tracks the filename in a dedicated member instead of round-tripping through the title bar's text (fixes rapid-double Ctrl+C visual glitch).
+- Phantom 4-pixel home-click strip at the top of the sidebar removed; the 🏠 button is the real entry point.
+- Welcome screen shows "Release notes unavailable" instead of an empty panel when the `CHANGELOG.md` resource is missing.
+- `fetchFileImage` takes a `maxDim` parameter — the image viewer now sizes requests to the actual screen instead of always asking for 4096×4096.
+- `EmojiPickerWidget` emits a dedicated `cancelled()` signal on Esc instead of an empty-string sentinel via `emojiSelected`.
+
+### Refactors (no behavior change)
+- `isEmojiCluster` consolidated into `EmojiData` (previously duplicated across `LayoutEngine` and `EmojiTextRenderer`).
+- Basic auth extracted to `ApiClient::applyBasicAuth` helper; five callers dedup'd.
+- Shortcode walk-back and autocomplete popup stylesheet deduplicated in the composer.
+- `ChatPainter::paintMessageEmojis` tightened (dead variable removed, font metrics hoisted out of the loop, line-search extracted as a helper).
+
 ## v0.17.0 (2026-04-18)
 
 ### Mentions
