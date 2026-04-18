@@ -80,6 +80,7 @@ public:
     Q_INVOKABLE void addReaction(int messageId, const QString &emoji);
     Q_INVOKABLE void loadHistory();
     Q_INVOKABLE void deleteMessage(int messageId);
+    Q_INVOKABLE void editMessage(int messageId, const QString &newText);
     Q_INVOKABLE void pinMessage(int messageId);
     Q_INVOKABLE QString messageLink(int messageId) const;
     Q_INVOKABLE bool pasteClipboardImage();
