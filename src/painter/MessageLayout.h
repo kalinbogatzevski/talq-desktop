@@ -17,13 +17,15 @@ struct HitRegion {
 };
 
 /**
- * One emoji cluster substituted with a placeholder space in the body document.
- * Populated by LayoutEngine (Task 15) and consumed by ChatPainter (Task 16).
+ * Location of one emoji grapheme cluster inside a message's body document.
+ * LayoutEngine scans the document at layout time and records the position
+ * without mutating the text; ChatPainter overlays a Twemoji pixmap at that
+ * position during paintEvent. docPosition is valid as long as bodyDoc is
+ * not re-laid-out after the runs are populated.
  */
 struct EmojiRun {
-    int docPosition;       // char offset in the QTextDocument's plain text (after substitution)
-    QString codepoints;    // the full grapheme cluster (original emoji)
-    qreal widthPx;         // advance used by the placeholder space
+    int docPosition;       // char offset in bodyDoc->toPlainText()
+    QString codepoints;    // the full grapheme cluster
 };
 
 /**
