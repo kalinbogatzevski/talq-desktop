@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.17.2 (2026-04-18)
+
+### Message edit
+- **Edit your own messages** — right-click an own text message → "✏️ Edit" to open an amber editing bar above the composer pre-filled with the original text. Change the text and hit Enter to update; Esc or the ✕ button cancels. Switching conversations mid-edit cancels safely.
+- **"(edited)" marker** — edited messages show `(edited)` prefixed to the time label in the chat, matching Nextcloud Talk web.
+- Server enforces the edit window (~6 hours for regular users) and permission rules; failures surface as a toast with the server's error message.
+- Edit is not offered on messages with file attachments — server doesn't permit it.
+
 ## v0.17.1 (2026-04-18)
 
 ### Critical fixes
