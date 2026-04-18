@@ -177,6 +177,8 @@ private:
     // Mouse drag state
     bool m_dragging = false;
     bool m_dragMoved = false;
+    bool m_draggingScrollbar = false;
+    qreal m_scrollbarThumbOffset = 0;   // Y offset from thumb top at press
     QString m_pressHit;  // hit test result saved at press time  // true if mouse moved >4px during drag
     QPointF m_pressCanvasPos;  // press position in canvas coordinates
     qreal m_dragStartY = 0;

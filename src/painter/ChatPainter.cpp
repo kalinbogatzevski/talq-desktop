@@ -506,10 +506,37 @@ void ChatPainter::mousePressEvent(QMouseEvent *event)
     if (event->button() == Qt::LeftButton || event->button() == Qt::RightButton) {
         m_dragging = true;
         m_dragMoved = false;
+        m_draggingScrollbar = false;
         m_pressCanvasPos = event->position();
         m_dragStartY = event->position().y();
         m_dragStartScroll = m_scrollY;
         m_pressHit = hitTestAt(event->position().x(), event->position().y());
+
+        // Scrollbar grab: left-button press in the rightmost ~14 px column,
+        // when content overflows. This pre-empts drag-to-select / text-anchor.
+        if (event->button() == Qt::LeftButton
+            && m_contentHeight > height()
+            && event->position().x() >= width() - 14) {
+            qreal viewH = height();
+            qreal thumbH = qMax(20.0, (viewH / m_contentHeight) * viewH);
+            qreal maxScroll = m_contentHeight - viewH;
+            qreal thumbY = (m_scrollY / maxScroll) * (viewH - thumbH);
+            qreal cy = event->position().y();
+            // If press lands on the thumb, keep the relative offset so dragging
+            // feels natural. If it lands on empty track, jump the thumb center
+            // to the cursor.
+            if (cy >= thumbY && cy <= thumbY + thumbH) {
+                m_scrollbarThumbOffset = cy - thumbY;
+            } else {
+                m_scrollbarThumbOffset = thumbH / 2.0;
+                // Immediate jump for track clicks.
+                qreal newThumbY = qBound(0.0, cy - thumbH / 2.0, viewH - thumbH);
+                setScrollY((newThumbY / (viewH - thumbH)) * maxScroll);
+            }
+            m_draggingScrollbar = true;
+            event->accept();
+            return;
+        }
 
         // Check if press lands on body text (for text selection)
         m_textAnchorSet = false;
@@ -549,6 +576,19 @@ void ChatPainter::mousePressEvent(QMouseEvent *event)
 
 void ChatPainter::mouseMoveEvent(QMouseEvent *event)
 {
+    // Scrollbar drag: translate cursor Y into a new scroll position.
+    if (m_draggingScrollbar && (event->buttons() & Qt::LeftButton)) {
+        qreal viewH = height();
+        qreal thumbH = qMax(20.0, (viewH / m_contentHeight) * viewH);
+        qreal maxScroll = m_contentHeight - viewH;
+        qreal newThumbY = qBound(0.0,
+            event->position().y() - m_scrollbarThumbOffset,
+            viewH - thumbH);
+        setScrollY((newThumbY / (viewH - thumbH)) * maxScroll);
+        event->accept();
+        return;
+    }
+
     if (m_dragging) {
         qreal dx = event->position().x() - m_pressCanvasPos.x();
         qreal dy = event->position().y() - m_dragStartY;
@@ -689,6 +729,13 @@ void ChatPainter::mouseReleaseEvent(QMouseEvent *event)
 {
     if (!m_dragging) return;
     m_dragging = false;
+
+    // End-of-scrollbar-drag: swallow and return without touching selection state.
+    if (m_draggingScrollbar) {
+        m_draggingScrollbar = false;
+        event->accept();
+        return;
+    }
 
     // Text selection: if selection is active (from drag or double-click), freeze and done
     if (m_textAnchorSet && m_textSelection.active) {
