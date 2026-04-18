@@ -88,6 +88,9 @@ public:
     bool allSelectedOwn() const;
     QVector<QVariantMap> selectedMessages() const;
 
+public slots:
+    void setUnreadBoundary(int id);
+
 signals:
     void atBottomChanged();
     void scrollYChanged();
@@ -137,6 +140,7 @@ private:
 
     // ── Painting helpers ──
     void paintDateSep(QPainter *p, const MessageLayout &ml, qreal offsetY);
+    void paintUnreadSep(QPainter *p, const MessageLayout &ml, qreal offsetY);
     void paintSystemMessage(QPainter *p, const MessageLayout &ml, qreal offsetY);
     void paintOwnMessage(QPainter *p, const MessageLayout &ml, qreal offsetY);
     void paintOtherMessage(QPainter *p, const MessageLayout &ml, qreal offsetY);
@@ -160,6 +164,7 @@ private:
     // ── State ──
     MessageListModel *m_model = nullptr;
     QString m_myUserId;
+    int m_unreadBoundary = 0;
     bool m_darkMode = true;
     qreal m_fontScale = 1.0;
     qreal m_scrollY = 0;

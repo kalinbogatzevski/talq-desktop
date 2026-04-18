@@ -71,6 +71,10 @@ void ChatPainter::setModel(MessageListModel *mdl)
         connect(m_model, &QAbstractItemModel::rowsRemoved, this, &ChatPainter::onRowsRemoved);
         connect(m_model, &QAbstractItemModel::dataChanged, this, &ChatPainter::onDataChanged);
         connect(m_model, &QAbstractItemModel::modelReset, this, &ChatPainter::onModelReset);
+        connect(m_model, &MessageListModel::unreadBoundaryChanged, this, [this]() {
+            setUnreadBoundary(m_model->unreadBoundary());
+        });
+        setUnreadBoundary(m_model->unreadBoundary());  // initial pull
     }
 
     rebuildAllLayouts();
@@ -80,6 +84,13 @@ void ChatPainter::setMyUserId(const QString &id)
 {
     if (m_myUserId == id) return;
     m_myUserId = id;
+    rebuildAllLayouts();
+}
+
+void ChatPainter::setUnreadBoundary(int id)
+{
+    if (m_unreadBoundary == id) return;
+    m_unreadBoundary = id;
     rebuildAllLayouts();
 }
 
