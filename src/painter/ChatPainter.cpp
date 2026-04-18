@@ -1680,13 +1680,10 @@ void ChatPainter::drawEmoji(QPainter *p, const QString &codepoints, const QRectF
 {
     QPixmap pm = EmojiData::pixmapFor(codepoints, int(rect.height()));
     if (pm.isNull()) {
-        // Fallback: leave the system glyph that's already drawn. Nothing to do.
+        // No Twemoji asset for this cluster — leave the system glyph visible.
         return;
     }
-    // Fill the rect with bubble background first so we occlude the system glyph.
-    // We deliberately use the current background — caller positioned the rect to match.
-    // In practice a fully opaque Twemoji PNG will cover the system glyph if widths match;
-    // only needed if there's a slight width mismatch.
+    // A fully opaque Twemoji PNG at the measured advance covers the system glyph.
     p->drawPixmap(rect.topLeft(), pm.scaled(int(rect.width()), int(rect.height()),
                                              Qt::KeepAspectRatio, Qt::SmoothTransformation));
 }
