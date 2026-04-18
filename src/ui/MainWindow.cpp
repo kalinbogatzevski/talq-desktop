@@ -1342,10 +1342,16 @@ void MainWindow::loadProfileAvatar(QLabel *avatarLabel)
     auto *reply = m_api->getAbsoluteUrl("/index.php/avatar/" + m_auth->userId() + "/64");
     connect(reply, &QNetworkReply::finished, this, [reply, avatarLabel]() {
         reply->deleteLater();
-        if (reply->error() != QNetworkReply::NoError) return;
+        if (reply->error() != QNetworkReply::NoError) {
+            int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+            qWarning() << "loadProfileAvatar: HTTP" << status << reply->errorString();
+            return;
+        }
         QImage img;
-        img.loadFromData(reply->readAll());
-        if (img.isNull()) return;
+        if (!img.loadFromData(reply->readAll())) {
+            qWarning() << "loadProfileAvatar: failed to decode avatar payload";
+            return;
+        }
         QImage circle = PainterTheme::cropToCircle(img, 36);
         avatarLabel->setPixmap(QPixmap::fromImage(circle));
         avatarLabel->setStyleSheet("");
