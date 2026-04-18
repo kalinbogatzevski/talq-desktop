@@ -68,6 +68,11 @@ public:
 
 protected:
     void keyPressEvent(QKeyEvent *e) override {
+        if (e->key() == Qt::Key_Escape && m_owner->isEditing()) {
+            m_owner->hideEditingBar();
+            e->accept();
+            return;
+        }
         if (e->key() == Qt::Key_Return || e->key() == Qt::Key_Enter) {
             if (e->modifiers() & Qt::ShiftModifier) {
                 QTextEdit::keyPressEvent(e);
@@ -438,6 +443,13 @@ void ComposerWidget::sendAction()
     QString text = m_input->toPlainText().trimmed();
     if (text.isEmpty()) return;
     if (m_signaling) m_signaling->sendStoppedTyping();
+
+    if (m_editing) {
+        emit editMessageRequested(text);
+        hideEditingBar();
+        return;
+    }
+
     emit sendMessage(text);
     m_input->clear();
 }
