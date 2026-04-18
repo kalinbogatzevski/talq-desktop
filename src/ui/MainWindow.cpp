@@ -568,6 +568,10 @@ void MainWindow::buildChatPage()
 
     chatLayout->addWidget(m_welcomeWidget, 1);
 
+    // Give MessageListModel access to ConversationListModel so it can snapshot
+    // the per-user lastReadMessage on conversation switch (for the unread divider).
+    m_messages->setConversationListModel(m_conversations);
+
     // Chat content (hidden until conversation selected)
     m_chatPainter = new ChatPainter(chatCol);
     m_chatPainter->setModel(m_messages);
