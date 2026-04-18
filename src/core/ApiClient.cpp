@@ -284,9 +284,10 @@ void ApiClient::fetchMentions(const QString &token,
                               const QString &search,
                               std::function<void(const QVector<MentionCandidate> &)> callback)
 {
-    QUrl url(m_serverUrl);
-    url.setPath(QStringLiteral("/ocs/v2.php/apps/spreed/api/v4/chat/") + token
-                + QStringLiteral("/mentions"));
+    // Build the full URL as a string so Nextcloud subpath installations
+    // (e.g. https://host/nextcloud) don't have their prefix stripped by QUrl::setPath.
+    QUrl url(m_serverUrl + QStringLiteral("/ocs/v2.php/apps/spreed/api/v4/chat/")
+             + token + QStringLiteral("/mentions"));
     QUrlQuery q;
     q.addQueryItem(QStringLiteral("search"), search);
     q.addQueryItem(QStringLiteral("limit"), QStringLiteral("20"));
@@ -311,8 +312,24 @@ void ApiClient::fetchMentions(const QString &token,
         }
 
         QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
-        QJsonArray data = doc.object().value(QStringLiteral("ocs")).toObject()
-                              .value(QStringLiteral("data")).toArray();
+        if (doc.isNull()) {
+            qWarning() << "fetchMentions: non-JSON response (reverse proxy HTML login page?)";
+            callback(out);
+            return;
+        }
+        // Nextcloud OCS returns HTTP 200 even for server-side errors; the real
+        // status lives in ocs.meta.statuscode. 100 and 200 are success.
+        QJsonObject ocs = doc.object().value(QStringLiteral("ocs")).toObject();
+        int ocsStatus = ocs.value(QStringLiteral("meta")).toObject()
+                           .value(QStringLiteral("statuscode")).toInt(200);
+        if (ocsStatus != 100 && ocsStatus != 200) {
+            QString msg = ocs.value(QStringLiteral("meta")).toObject()
+                             .value(QStringLiteral("message")).toString();
+            qWarning() << "fetchMentions: OCS status" << ocsStatus << msg;
+            callback(out);
+            return;
+        }
+        QJsonArray data = ocs.value(QStringLiteral("data")).toArray();
         for (const QJsonValue &v : data) {
             QJsonObject o = v.toObject();
             MentionCandidate c;
