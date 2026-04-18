@@ -159,6 +159,7 @@ private:
     int m_replyToId = 0;
     QString m_replyToAuthor;
     QString m_replyToText;
+    int m_editingMessageId = 0;
 
     QSettings m_settings;
     QTimer m_saveGeometryTimer;
