@@ -269,6 +269,19 @@ void ComposerWidget::setSignaling(SignalingClient *sig)
 void ComposerWidget::setMessageModel(MessageListModel *model)
 {
     m_model = model;
+    if (m_model) {
+        // Hide autocomplete popups and clear pending state whenever the
+        // active conversation changes — prevents stale responses from one
+        // room surfacing candidates in another.
+        connect(m_model, &MessageListModel::conversationTokenChanged,
+                this, [this]() {
+            if (m_mentionPopup) m_mentionPopup->hide();
+            if (m_completion) m_completion->hide();
+            m_mentionWordStart = -1;
+            m_pendingMentionQuery.clear();
+            if (m_mentionDebounce) m_mentionDebounce->stop();
+        });
+    }
 }
 
 void ComposerWidget::setInputFont(const QFont &font)
@@ -601,9 +614,11 @@ void ComposerWidget::fetchMentionsDebounced()
 
     QString query = m_pendingMentionQuery;
     api->fetchMentions(token, query,
-        [this, query](const QVector<MentionCandidate> &candidates) {
+        [this, query, token](const QVector<MentionCandidate> &candidates) {
             if (m_mentionWordStart < 0) return;
             if (m_pendingMentionQuery != query) return;
+            // Guard against stale response after conversation switch.
+            if (!m_model || m_model->conversationToken() != token) return;
 
             if (candidates.isEmpty()) {
                 if (m_mentionPopup) m_mentionPopup->hide();
