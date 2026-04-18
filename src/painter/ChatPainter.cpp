@@ -47,6 +47,14 @@ ChatPainter::ChatPainter(QWidget *parent)
         m_unreadSepDismissed = true;
         rebuildAllLayouts();
     });
+
+    m_highlightTimer = new QTimer(this);
+    m_highlightTimer->setSingleShot(true);
+    m_highlightTimer->setInterval(2000);
+    connect(m_highlightTimer, &QTimer::timeout, this, [this]() {
+        m_highlightMessageId = 0;
+        update();
+    });
 }
 
 // ═══════════════════════════════════════════════════════
@@ -102,6 +110,19 @@ void ChatPainter::setUnreadBoundary(int id)
     m_unreadSepDismissed = false;
     if (m_unreadSepDismissTimer) m_unreadSepDismissTimer->stop();
     rebuildAllLayouts();
+}
+
+void ChatPainter::scrollToMessage(int messageId)
+{
+    for (const auto &ml : m_layouts) {
+        if (ml.messageId != messageId) continue;
+        qreal target = ml.totalY + ml.totalHeight / 2.0 - height() / 2.0;
+        setScrollY(qBound(0.0, target, qMax(0.0, m_contentHeight - qreal(height()))));
+        m_highlightMessageId = messageId;
+        m_highlightTimer->start();
+        update();
+        return;
+    }
 }
 
 void ChatPainter::setDarkMode(bool dark)
@@ -1218,6 +1239,9 @@ void ChatPainter::paintOwnMessage(QPainter *p, const MessageLayout &ml, qreal of
         p->setPen(Qt::NoPen);
         p->setBrush(m_theme.bgMessageOwn);
         p->drawRoundedRect(bubble, PainterTheme::radiusNormal, PainterTheme::radiusNormal);
+        if (ml.messageId == m_highlightMessageId && m_highlightTimer && m_highlightTimer->isActive()) {
+            p->fillRect(bubble, QColor(46, 196, 182, 50));
+        }
     }
 
     // Sending state opacity
@@ -1336,6 +1360,9 @@ void ChatPainter::paintOtherMessage(QPainter *p, const MessageLayout &ml, qreal 
         p->setPen(Qt::NoPen);
         p->setBrush(m_darkMode ? QColor(255, 255, 255, 15) : QColor(0, 0, 0, 12));
         p->drawRoundedRect(bubble, PainterTheme::radiusNormal, PainterTheme::radiusNormal);
+        if (ml.messageId == m_highlightMessageId && m_highlightTimer && m_highlightTimer->isActive()) {
+            p->fillRect(bubble, QColor(46, 196, 182, 50));
+        }
     }
 
     // Avatar (non-grouped)
