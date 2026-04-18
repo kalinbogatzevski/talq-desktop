@@ -251,16 +251,17 @@ QNetworkReply *ApiClient::postAbsoluteUrl(const QString &path, const QByteArray 
     return m_nam.post(req, body);
 }
 
-void ApiClient::fetchFileImage(int fileId, QObject *context,
+void ApiClient::fetchFileImage(int fileId, int maxDim, QObject *context,
                                std::function<void(const QImage &, const QString &)> callback)
 {
-    // Nextcloud's preview endpoint returns a full image rendering at requested size.
-    // a=1 keeps aspect ratio; x/y are max dimensions.
+    // Nextcloud's preview endpoint returns a rendering capped to (x,y); a=1
+    // preserves aspect ratio. maxDim controls the larger edge — callers pass
+    // the viewport size so we don't waste bandwidth on 4K thumbnails.
     QUrl url(m_serverUrl + "/index.php/core/preview");
     QUrlQuery q;
     q.addQueryItem("fileId", QString::number(fileId));
-    q.addQueryItem("x", "4096");
-    q.addQueryItem("y", "4096");
+    q.addQueryItem("x", QString::number(maxDim));
+    q.addQueryItem("y", QString::number(maxDim));
     q.addQueryItem("a", "1");
     url.setQuery(q);
 

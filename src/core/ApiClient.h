@@ -64,10 +64,11 @@ public:
     // GET with absolute path (no OCS prefix, no OCS headers)
     QNetworkReply *getAbsoluteUrl(const QString &path);
 
-    // Fetch full-resolution image from Nextcloud preview endpoint (up to 4096×4096).
-    // `context` is the QObject that owns the callback — if it dies before the
-    // reply arrives, the callback is auto-disconnected (prevents use-after-free).
-    void fetchFileImage(int fileId, QObject *context,
+    // Fetch a rendering from Nextcloud's preview endpoint. `maxDim` caps the
+    // larger edge in pixels (aspect ratio is preserved). `context` is the
+    // QObject that owns the callback — if it dies before the reply arrives,
+    // the callback is auto-disconnected (prevents use-after-free).
+    void fetchFileImage(int fileId, int maxDim, QObject *context,
                         std::function<void(const QImage &, const QString &error)> callback);
 
     // Fetch mention candidates for a room (Nextcloud Talk v4 API). Same
