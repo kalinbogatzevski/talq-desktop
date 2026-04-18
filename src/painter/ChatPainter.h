@@ -90,6 +90,7 @@ public:
 
 public slots:
     void setUnreadBoundary(int id);
+    void scrollToMessage(int messageId);
 
 signals:
     void atBottomChanged();
@@ -167,6 +168,9 @@ private:
     int m_unreadBoundary = 0;
     bool m_unreadSepDismissed = false;
     class QTimer *m_unreadSepDismissTimer = nullptr;   // single-shot 2s
+
+    int m_highlightMessageId = 0;
+    class QTimer *m_highlightTimer = nullptr;
 
     bool m_darkMode = true;
     qreal m_fontScale = 1.0;

@@ -407,8 +407,41 @@ void MessageListModel::loadHistory()
         // Don't emit newMessagesAtEnd() — these are OLDER messages appended
         // at the end (top of BottomToTop view). No scroll needed.
         // would jump the user away from what they were reading.
+
+        if (m_historyUntilTargetId > 0) {
+            bool found = false;
+            for (const auto &m : m_messages) {
+                if (m.id == m_historyUntilTargetId) { found = true; break; }
+            }
+            if (found || --m_historyUntilRemainingPages <= 0) {
+                int id = m_historyUntilTargetId;
+                m_historyUntilTargetId = 0;
+                m_historyUntilRemainingPages = 0;
+                emit historyUntilSettled(id, found);
+                if (!found)
+                    emit errorOccurred(QStringLiteral("Message not found in recent history"));
+            } else {
+                loadHistory();
+                return;
+            }
+        }
+
         startPoller();
     });
+}
+
+void MessageListModel::loadHistoryUntil(int messageId)
+{
+    for (const auto &m : m_messages) {
+        if (m.id == messageId) {
+            emit historyUntilSettled(messageId, true);
+            return;
+        }
+    }
+    static constexpr int kMaxPages = 5;
+    m_historyUntilTargetId = messageId;
+    m_historyUntilRemainingPages = kMaxPages;
+    loadHistory();
 }
 
 void MessageListModel::startPoller()
