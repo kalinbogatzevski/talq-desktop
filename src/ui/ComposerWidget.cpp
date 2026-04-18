@@ -324,6 +324,7 @@ void ComposerWidget::setMessageModel(MessageListModel *model)
             m_mentionWordStart = -1;
             m_pendingMentionQuery.clear();
             if (m_mentionDebounce) m_mentionDebounce->stop();
+            hideEditingBar();
         });
     }
 }
