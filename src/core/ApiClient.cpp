@@ -47,15 +47,15 @@ QNetworkRequest ApiClient::makeRequest(const QString &path, const QUrlQuery &par
     req.setRawHeader("OCS-APIRequest", "true");
     req.setRawHeader("Accept", "application/json");
     req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-
-    // Basic auth
-    if (!m_user.isEmpty()) {
-        QString credentials = m_user + ":" + m_password;
-        QByteArray encoded = credentials.toUtf8().toBase64();
-        req.setRawHeader("Authorization", "Basic " + encoded);
-    }
-
+    applyBasicAuth(req);
     return req;
+}
+
+void ApiClient::applyBasicAuth(QNetworkRequest &req) const
+{
+    if (m_user.isEmpty()) return;
+    QString credentials = m_user + ":" + m_password;
+    req.setRawHeader("Authorization", "Basic " + credentials.toUtf8().toBase64());
 }
 
 void ApiClient::handleReply(QNetworkReply *reply, Callback callback)
@@ -231,39 +231,24 @@ QNetworkReply *ApiClient::getLongPoll(const QString &path, const QUrlQuery &para
 
 QNetworkReply *ApiClient::getAbsoluteUrl(const QString &path)
 {
-    QUrl url(m_serverUrl + path);
-    QNetworkRequest req(url);
-    if (!m_user.isEmpty()) {
-        QString credentials = m_user + ":" + m_password;
-        req.setRawHeader("Authorization", "Basic " + credentials.toUtf8().toBase64());
-    }
-    auto *reply = m_nam.get(req);
+    QNetworkRequest req{QUrl(m_serverUrl + path)};
+    applyBasicAuth(req);
     // Not added to m_pendingReplies — caller manages lifetime
-    return reply;
+    return m_nam.get(req);
 }
 
 QNetworkReply *ApiClient::putAbsoluteUrl(const QString &path, const QByteArray &body)
 {
-    QUrl url(m_serverUrl + path);
-    QNetworkRequest req(url);
-    if (!m_user.isEmpty()) {
-        QString credentials = m_user + ":" + m_password;
-        req.setRawHeader("Authorization", "Basic " + credentials.toUtf8().toBase64());
-    }
-    auto *reply = m_nam.put(req, body);
-    return reply;
+    QNetworkRequest req{QUrl(m_serverUrl + path)};
+    applyBasicAuth(req);
+    return m_nam.put(req, body);
 }
 
 QNetworkReply *ApiClient::postAbsoluteUrl(const QString &path, const QByteArray &body)
 {
-    QUrl url(m_serverUrl + path);
-    QNetworkRequest req(url);
-    if (!m_user.isEmpty()) {
-        QString credentials = m_user + ":" + m_password;
-        req.setRawHeader("Authorization", "Basic " + credentials.toUtf8().toBase64());
-    }
-    auto *reply = m_nam.post(req, body);
-    return reply;
+    QNetworkRequest req{QUrl(m_serverUrl + path)};
+    applyBasicAuth(req);
+    return m_nam.post(req, body);
 }
 
 void ApiClient::fetchFileImage(int fileId,
@@ -281,11 +266,7 @@ void ApiClient::fetchFileImage(int fileId,
 
     QNetworkRequest req(url);
     req.setRawHeader("OCS-APIRequest", "true");
-    // Auth: same inline basic-auth pattern as getAbsoluteUrl / putAbsoluteUrl / postAbsoluteUrl
-    if (!m_user.isEmpty()) {
-        QString credentials = m_user + ":" + m_password;
-        req.setRawHeader("Authorization", "Basic " + credentials.toUtf8().toBase64());
-    }
+    applyBasicAuth(req);
 
     auto *reply = m_nam.get(req);
     connect(reply, &QNetworkReply::finished, this, [reply, callback]() {
@@ -314,11 +295,7 @@ void ApiClient::fetchMentions(const QString &token,
     QNetworkRequest req(url);
     req.setRawHeader("OCS-APIRequest", "true");
     req.setRawHeader("Accept", "application/json");
-    if (!m_user.isEmpty()) {
-        QString credentials = m_user + ":" + m_password;
-        req.setRawHeader("Authorization",
-                         "Basic " + credentials.toUtf8().toBase64());
-    }
+    applyBasicAuth(req);
 
     QNetworkReply *reply = m_nam.get(req);
     connect(reply, &QNetworkReply::finished, this, [reply, callback]() {
