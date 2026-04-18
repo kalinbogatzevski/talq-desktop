@@ -487,7 +487,49 @@ void ComposerWidget::applyCompletion(int row)
     m_completion->hide();
 }
 
-void ComposerWidget::maybeShowMentionCompletion() { /* Task 3 */ }
+void ComposerWidget::maybeShowMentionCompletion()
+{
+    QTextCursor cur = m_input->textCursor();
+    int pos = cur.position();
+    QString text = m_input->toPlainText();
+
+    // Walk backward looking for '@'.
+    int i = pos - 1;
+    while (i >= 0) {
+        QChar c = text[i];
+        if (c == QLatin1Char('@')) break;
+        bool ok = c.isLetterOrNumber()
+               || c == QLatin1Char('.') || c == QLatin1Char('_')
+               || c == QLatin1Char('+') || c == QLatin1Char('-');
+        if (!ok) { i = -1; break; }
+        --i;
+    }
+    if (i < 0) {
+        if (m_mentionPopup) m_mentionPopup->hide();
+        m_mentionWordStart = -1;
+        return;
+    }
+    // '@' must be start-of-text or after whitespace (else it's an email fragment).
+    if (i > 0) {
+        QChar prev = text[i - 1];
+        if (!prev.isSpace()) {
+            if (m_mentionPopup) m_mentionPopup->hide();
+            m_mentionWordStart = -1;
+            return;
+        }
+    }
+    // If the shortcode popup is visible, mentions yield.
+    if (m_completion && m_completion->isVisible()) {
+        if (m_mentionPopup) m_mentionPopup->hide();
+        m_mentionWordStart = -1;
+        return;
+    }
+
+    m_mentionWordStart = i;
+    QString partial = text.mid(i + 1, pos - i - 1);
+    m_pendingMentionQuery = partial;
+    m_mentionDebounce->start();
+}
 void ComposerWidget::fetchMentionsDebounced() { /* Task 4 */ }
 void ComposerWidget::applyMentionCompletion(int /*row*/) { /* Task 5 */ }
 
