@@ -1,4 +1,5 @@
 #include "LayoutEngine.h"
+#include "core/EmojiData.h"
 #include "models/MessageListModel.h"
 #include <QFontMetrics>
 #include <QTextBoundaryFinder>
@@ -7,24 +8,6 @@
 #include <QtMath>
 
 static const QRegularExpression s_htmlTagRe(QStringLiteral("<[^>]*>"));
-
-static bool isEmojiCluster(const QString &cluster)
-{
-    // Heuristic: any codepoint in a known emoji range makes this an emoji cluster.
-    for (int i = 0; i < cluster.size(); ) {
-        uint cp = cluster[i].unicode();
-        if (QChar::isHighSurrogate(cp) && i + 1 < cluster.size()) {
-            cp = QChar::surrogateToUcs4(cluster[i], cluster[i+1]);
-            i += 2;
-        } else ++i;
-        if ((cp >= 0x1F300 && cp <= 0x1FAFF) ||   // Misc + Supplemental Symbols
-            (cp >= 0x2600  && cp <= 0x27BF)  ||   // Misc Symbols + Dingbats
-            (cp >= 0x1F1E6 && cp <= 0x1F1FF) ||   // Regional Indicators (flag halves)
-            cp == 0x00A9 || cp == 0x00AE)         // © ®
-            return true;
-    }
-    return false;
-}
 
 std::pair<qreal, qreal> LayoutEngine::fileRectSize(
     const QString &mime, qreal maxWidth, qreal maxThumbW,
@@ -221,7 +204,7 @@ MessageLayout LayoutEngine::computeLayout(
         while (next != -1) {
             int end = next;
             QString cluster = plain.mid(start, end - start);
-            if (isEmojiCluster(cluster)) {
+            if (EmojiData::isEmojiCluster(cluster)) {
                 EmojiRun r;
                 r.docPosition = start;
                 r.codepoints = cluster;

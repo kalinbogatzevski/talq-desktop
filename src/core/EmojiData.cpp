@@ -62,6 +62,24 @@ QVector<const EmojiEntry*> search(const QString &query)
     for (const auto &p : ranked) out.append(p.second);
     return out;
 }
+bool isEmojiCluster(const QString &cluster)
+{
+    // Heuristic: any codepoint in a known emoji range makes this an emoji cluster.
+    for (int i = 0; i < cluster.size(); ) {
+        uint cp = cluster[i].unicode();
+        if (QChar::isHighSurrogate(cp) && i + 1 < cluster.size()) {
+            cp = QChar::surrogateToUcs4(cluster[i], cluster[i + 1]);
+            i += 2;
+        } else ++i;
+        if ((cp >= 0x1F300 && cp <= 0x1FAFF) ||   // Misc + Supplemental Symbols
+            (cp >= 0x2600  && cp <= 0x27BF)  ||   // Misc Symbols + Dingbats
+            (cp >= 0x1F1E6 && cp <= 0x1F1FF) ||   // Regional Indicators (flag halves)
+            cp == 0x00A9 || cp == 0x00AE)         // © ®
+            return true;
+    }
+    return false;
+}
+
 QPixmap pixmapFor(const QString &codepoints, int sizePx)
 {
     QString key = codepoints + QLatin1Char(':') + QString::number(sizePx);
