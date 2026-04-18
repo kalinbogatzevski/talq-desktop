@@ -31,10 +31,15 @@ public:
     void showPendingFile(const QString &path);
     void showReplyBar(const QString &author, const QString &preview);
     void hideReplyBar();
+    void showEditingBar(const QString &originalText);
+    void hideEditingBar();
+    bool isEditing() const { return m_editing; }
 
 signals:
     void sendMessage(const QString &text);
     void replyBarCancelled();
+    void editMessageRequested(const QString &newText);
+    void editingBarCancelled();
 
 private slots:
     void sendAction();
@@ -71,6 +76,11 @@ private:
     // Reply bar
     QWidget *m_replyBar = nullptr;
     QLabel *m_replyLabel = nullptr;
+
+    // Editing bar
+    QWidget *m_editingBar = nullptr;
+    QLabel  *m_editingPreview = nullptr;
+    bool     m_editing = false;
 
     QListWidget *m_completion = nullptr;
 
