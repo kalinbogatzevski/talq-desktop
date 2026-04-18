@@ -245,11 +245,6 @@ void SidebarPainter::wheelEvent(QWheelEvent *event)
 
 void SidebarPainter::mousePressEvent(QMouseEvent *event)
 {
-    if (!m_titleRect.isNull() && m_titleRect.contains(event->position())) {
-        emit homeRequested();
-        event->accept();
-        return;
-    }
     event->accept(); // claim the event so release fires
 }
 
@@ -294,13 +289,6 @@ void SidebarPainter::paintEvent(QPaintEvent *)
     p.setRenderHint(QPainter::SmoothPixmapTransform, true);
 
     p.fillRect(QRectF(0, 0, width(), height()), m_theme.bgSidebar);
-
-    // Record a thin title-click zone at the very top of the painter widget.
-    // The actual brand header lives in MainWindow's m_profileBar above this widget,
-    // but we expose a 4-pixel-tall invisible strip at y=0 so that a click propagated
-    // to this widget from that area can still emit homeRequested().  The real entry
-    // point for the home action is the 🏠 QPushButton in the sidebar column header.
-    m_titleRect = QRectF(0, 0, width(), 4);
 
     if (m_visibleIndices.isEmpty())
         return;
