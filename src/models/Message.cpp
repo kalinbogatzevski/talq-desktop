@@ -13,6 +13,8 @@ Message Message::fromJson(const QJsonObject &json)
     m.message = json["message"].toString();
     m.message = m.message.toHtmlEscaped();
     m.timestamp = json["timestamp"].toInteger();
+    m.lastEditTimestamp = json["lastEditTimestamp"].toInteger();
+    m.lastEditActorId   = json["lastEditActorId"].toString();
     m.messageType = json["messageType"].toString();
     m.isSystem = (m.messageType == "system");
     m.systemMessage = json["systemMessage"].toString();

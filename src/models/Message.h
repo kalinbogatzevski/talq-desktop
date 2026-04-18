@@ -29,6 +29,8 @@ public:
     QString actorDisplayName;
     QString message;
     qint64 timestamp = 0;
+    qint64 lastEditTimestamp = 0;  // 0 = never edited
+    QString lastEditActorId;
     QString messageType;   // "comment", "system", "command"
     bool isSystem = false;
     int replyToId = 0;
