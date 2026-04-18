@@ -205,11 +205,7 @@ MessageLayout LayoutEngine::computeLayout(
             int end = next;
             QString cluster = plain.mid(start, end - start);
             if (EmojiData::isEmojiCluster(cluster)) {
-                EmojiRun r;
-                r.docPosition = start;
-                r.codepoints = cluster;
-                r.widthPx = 0;   // unused in revised approach; kept for ABI
-                ml.emojiRuns.append(r);
+                ml.emojiRuns.append({start, cluster});
             }
             start = end;
             next = bf.toNextBoundary();
