@@ -6,6 +6,7 @@
 #include "models/MessageListModel.h"
 #include <QFileDialog>
 #include <QKeyEvent>
+#include <QMessageBox>
 #include <QListWidget>
 #include <QMimeData>
 #include <QClipboard>
@@ -90,7 +91,12 @@ protected:
                 // Save to temp file and send via model
                 QString dir = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
                 QString path = dir + "/talq_paste_" + QString::number(QDateTime::currentMSecsSinceEpoch()) + ".png";
-                img.save(path, "PNG");
+                if (!img.save(path, "PNG")) {
+                    qWarning() << "paste: failed to save image to" << path;
+                    QMessageBox::warning(m_owner, tr("Paste failed"),
+                        tr("Could not save pasted image to temporary file:\n%1").arg(path));
+                    return;
+                }
                 m_owner->showPendingFile(path);
                 return;
             }
