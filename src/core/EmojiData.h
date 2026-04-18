@@ -41,6 +41,11 @@ QVector<const EmojiEntry*> inCategory(Category c);
 
 QPixmap pixmapFor(const QString &codepoints, int sizePx);
 
+// Heuristic: does this grapheme cluster fall inside a known emoji codepoint range?
+// Used by LayoutEngine (message body) and EmojiTextRenderer (sidebar/thread previews)
+// to decide whether to substitute a Twemoji pixmap for the system glyph.
+bool isEmojiCluster(const QString &cluster);
+
 // Recents — persisted in QSettings under "emoji/recent".
 QVector<const EmojiEntry*> recent();
 void pushRecent(const EmojiEntry *e);
