@@ -56,7 +56,6 @@ NextcloudFilePickerDialog::NextcloudFilePickerDialog(ApiClient *api, QWidget *pa
     outer->setContentsMargins(16, 16, 16, 16);
     outer->setSpacing(12);
 
-    // Breadcrumb row — rebuilt on navigation.
     auto *crumbRow = new QWidget(this);
     m_crumbLayout = new QHBoxLayout(crumbRow);
     m_crumbLayout->setContentsMargins(0, 0, 0, 0);
@@ -102,17 +101,19 @@ void NextcloudFilePickerDialog::navigateTo(const QString &path)
     m_status->setText(tr("Loading\u2026"));
     rebuildBreadcrumb();
 
-    if (!m_api) {
-        m_status->setText(tr("No API client configured."));
-        return;
-    }
     m_api->listNextcloudFolder(m_currentPath, this,
-        [this](bool ok, const QVector<NcFileEntry> &entries) {
-            if (!ok) {
-                m_status->setText(tr("Couldn\u2019t load folder. Are you offline?"));
-                return;
-            }
-            populate(entries);
+        [this](bool ok, const QVector<NcFileEntry> &entries,
+               int status, const QString &error) {
+            if (ok) { populate(entries); return; }
+            QString msg;
+            if (status == 0)          msg = tr("Couldn\u2019t reach Nextcloud \u2014 check your connection.");
+            else if (status == 401)   msg = tr("Your Nextcloud session has expired. Please sign in again.");
+            else if (status == 403)   msg = tr("This app password doesn\u2019t have permission to list files.");
+            else if (status == 404)   msg = tr("That folder no longer exists.");
+            else if (status == 503)   msg = tr("Nextcloud is in maintenance mode.");
+            else if (!error.isEmpty()) msg = tr("Couldn\u2019t load folder: %1").arg(error);
+            else                       msg = tr("Couldn\u2019t load folder (HTTP %1).").arg(status);
+            m_status->setText(msg);
         });
 }
 

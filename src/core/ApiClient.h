@@ -85,13 +85,24 @@ public:
 
     // WebDAV PROPFIND on /remote.php/dav/files/<user>/<path>. Lists immediate
     // children. `path` is the user-root-relative path, empty for root.
+    // Callback gets the HTTP status and an error string on failure so the UI
+    // can distinguish offline / auth-expired / server-error.
     void listNextcloudFolder(const QString &path, QObject *context,
-                             std::function<void(bool ok, const QVector<NcFileEntry> &)> callback);
+                             std::function<void(bool ok,
+                                                const QVector<NcFileEntry> &entries,
+                                                int httpStatus,
+                                                const QString &error)> callback);
 
     // Share an existing Nextcloud file/folder into the given Talk room.
-    // Server creates the share link and posts it as a chat message.
+    // `context` owns the callback — if it dies before the reply arrives,
+    // the callback is auto-disconnected (prevents use-after-free). The
+    // callback's `message` is the server-provided human-readable reason on
+    // failure (from OCS meta.message or the network error string).
     void shareNextcloudFileToChat(const QString &token, const QString &path,
-                                  Callback callback);
+                                  QObject *context,
+                                  std::function<void(bool ok,
+                                                     int httpStatus,
+                                                     const QString &message)> callback);
 
     // Long-poll (custom timeout)
     QNetworkReply *getLongPoll(const QString &path, const QUrlQuery &params, int timeoutSecs);

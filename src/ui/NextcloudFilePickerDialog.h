@@ -40,7 +40,6 @@ private:
     static QString formatSize(qint64 bytes);
 
     ApiClient    *m_api = nullptr;
-    QLabel       *m_breadcrumb = nullptr;
     QHBoxLayout  *m_crumbLayout = nullptr;
     QListWidget  *m_list = nullptr;
     QPushButton  *m_shareBtn = nullptr;
