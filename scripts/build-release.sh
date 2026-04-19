@@ -113,3 +113,50 @@ echo ""
 echo "=== Release complete ==="
 echo "Dist: $DIST_DIR"
 ls -lh "$SRC_DIR/dist/"*"v${VERSION}"*Setup* 2>/dev/null || echo "(no installer built)"
+
+# ── [7/7] Auto-upload to ncloud update channel (optional) ──
+NC_USER="kalin"
+NC_FOLDER="https://ncloud.123net.link/remote.php/dav/files/${NC_USER}/TalQ-updates"
+
+if [ -n "${NC_APP_PASSWORD:-}" ]; then
+    echo "[7/7] Uploading to ncloud update channel..."
+    GEN_INSTALLER="$SRC_DIR/dist/TalQ-v${VERSION}-Setup.exe"
+    BRAND_INSTALLER="$SRC_DIR/dist/123NET-TalQ-v${VERSION}-Setup.exe"
+
+    if [ -f "$GEN_INSTALLER" ] && [ -f "$BRAND_INSTALLER" ]; then
+        GEN_SHA=$(sha256sum "$GEN_INSTALLER" | awk '{print $1}')
+        BRAND_SHA=$(sha256sum "$BRAND_INSTALLER" | awk '{print $1}')
+
+        NOTES=$(awk '/^## v/ { if (found) exit; found=1; next } found { print }' \
+                "$SRC_DIR/CHANGELOG.md" | head -c 500 | tr '\n' ' ' | sed 's/"/\\"/g')
+
+        cat > /tmp/talq-latest.json <<MANIFEST
+{
+  "version": "${VERSION}",
+  "releaseDate": "$(date +%Y-%m-%d)",
+  "notes": "${NOTES}",
+  "assets": {
+    "generic": "TalQ-v${VERSION}-Setup.exe",
+    "123net":  "123NET-TalQ-v${VERSION}-Setup.exe"
+  },
+  "sha256": {
+    "generic": "${GEN_SHA}",
+    "123net":  "${BRAND_SHA}"
+  }
+}
+MANIFEST
+
+        curl -sS -u "${NC_USER}:${NC_APP_PASSWORD}" -T "$GEN_INSTALLER" \
+            "${NC_FOLDER}/TalQ-v${VERSION}-Setup.exe" >/dev/null
+        curl -sS -u "${NC_USER}:${NC_APP_PASSWORD}" -T "$BRAND_INSTALLER" \
+            "${NC_FOLDER}/123NET-TalQ-v${VERSION}-Setup.exe" >/dev/null
+        curl -sS -u "${NC_USER}:${NC_APP_PASSWORD}" -T /tmp/talq-latest.json \
+            "${NC_FOLDER}/talq-latest.json" >/dev/null
+
+        echo "  uploaded v${VERSION} generic + 123NET + manifest to ncloud"
+    else
+        echo "  skipped manifest push: need both generic + 123NET installers in dist"
+    fi
+else
+    echo "[7/7] Skipped ncloud upload (NC_APP_PASSWORD not set)"
+fi
