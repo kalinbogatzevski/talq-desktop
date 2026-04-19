@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.19.0 (2026-04-19)
+
+### Auto-upgrade
+- **Auto-update from ncloud** — TalQ now checks a manifest on `ncloud.123net.link` at startup and every 4 hours. When a newer version is available, a teal banner appears at the top of the chat: "Install now", "Later", or "What's new" (release notes popover). Downloads stream to the temp folder, verify against SHA-256 from the manifest, then launch Inno Setup silently (`/VERYSILENT /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS`) so the session restarts into the new version automatically.
+- **Call-safe** — if you're in a call or sharing your screen when the update is ready, the launch is deferred until the call ends; the banner says so.
+- **Opt-out** — Settings → Updates → "Automatically check for updates" toggle. On by default.
+- **Release script integration** — `scripts/build-release.sh` uploads both installers + a freshly generated manifest when `NC_APP_PASSWORD` is set, so every future release reaches clients automatically.
+
 ## v0.18.0 (2026-04-18)
 
 ### Presence
