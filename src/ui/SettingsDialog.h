@@ -39,6 +39,7 @@ private:
     QWidget *buildNotificationsTab();
     QWidget *buildGeneralTab();
     QWidget *buildAccountTab();
+    QWidget *buildUpdatesTab();
     void populateDeviceCombos();
     void loadNotificationSettings();
     void loadGeneralSettings();
@@ -71,6 +72,9 @@ private:
     QCheckBox *m_autoStart = nullptr;
     QCheckBox *m_startMinimized = nullptr;
     QCheckBox *m_closeToTray = nullptr;
+
+    // Updates tab
+    QCheckBox *m_updatesAutoCheck = nullptr;
 
     // Account tab
     QLabel *m_displayNameLabel = nullptr;

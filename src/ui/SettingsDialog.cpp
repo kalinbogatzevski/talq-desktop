@@ -72,6 +72,7 @@ SettingsDialog::SettingsDialog(
     m_tabs = new QTabWidget(this);
     m_tabs->addTab(buildAudioVideoTab(), "Audio && Video");
     m_tabs->addTab(buildNotificationsTab(), "Notifications");
+    m_tabs->addTab(buildUpdatesTab(), tr("Updates"));
     m_tabs->addTab(buildGeneralTab(), "General");
     m_tabs->addTab(buildAccountTab(), "Account");
     mainLayout->addWidget(m_tabs);
@@ -375,7 +376,38 @@ QWidget *SettingsDialog::buildGeneralTab()
 }
 
 // ============================================================
-// Tab 4: Account
+// Tab 4: Updates
+// ============================================================
+
+QWidget *SettingsDialog::buildUpdatesTab()
+{
+    auto *w = new QWidget(this);
+    auto *lay = new QVBoxLayout(w);
+    lay->setContentsMargins(24, 20, 24, 20);
+
+    m_updatesAutoCheck = new QCheckBox(tr("Automatically check for updates"), w);
+    m_updatesAutoCheck->setChecked(
+        QSettings().value(QStringLiteral("updates/autoCheck"), true).toBool());
+    connect(m_updatesAutoCheck, &QCheckBox::toggled, this,
+            [](bool checked) {
+        QSettings().setValue(QStringLiteral("updates/autoCheck"), checked);
+    });
+    lay->addWidget(m_updatesAutoCheck);
+
+    auto *note = new QLabel(
+        tr("TalQ checks once at startup and then every 4 hours. "
+           "When a new version is available, a banner appears at the top of the chat."),
+        w);
+    note->setWordWrap(true);
+    note->setStyleSheet("color: #8a8680; font-size: 11px;");
+    lay->addWidget(note);
+
+    lay->addStretch();
+    return w;
+}
+
+// ============================================================
+// Tab 5: Account
 // ============================================================
 
 QWidget *SettingsDialog::buildAccountTab()
