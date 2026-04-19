@@ -95,8 +95,60 @@ bool UpdateChecker::versionNewer(const QString &candidate, const QString &curren
     return false;
 }
 
-void UpdateChecker::fetchManifest() { /* Task 2 */ }
-void UpdateChecker::onManifestFetched(QNetworkReply *) { /* Task 2 */ }
+void UpdateChecker::fetchManifest()
+{
+    if (!m_nam) return;
+    QNetworkRequest req((QUrl(TalQUpdates::kManifestUrl)));
+    QString creds = QStringLiteral("%1:%2")
+                        .arg(QString::fromLatin1(TalQUpdates::kShareToken),
+                             QString::fromLatin1(TalQUpdates::kSharePassword));
+    req.setRawHeader("Authorization",
+                     "Basic " + creds.toUtf8().toBase64());
+    req.setTransferTimeout(30 * 1000);
+
+    QNetworkReply *reply = m_nam->get(req);
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        onManifestFetched(reply);
+    });
+}
+
+void UpdateChecker::onManifestFetched(QNetworkReply *reply)
+{
+    reply->deleteLater();
+    if (reply->error() != QNetworkReply::NoError) {
+        qWarning() << "UpdateChecker: manifest fetch failed" << reply->errorString();
+        return;
+    }
+    QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
+    if (!doc.isObject()) {
+        qWarning() << "UpdateChecker: manifest not a JSON object";
+        return;
+    }
+    QJsonObject root = doc.object();
+
+    Manifest m;
+    m.version     = root.value(QStringLiteral("version")).toString();
+    m.releaseDate = root.value(QStringLiteral("releaseDate")).toString();
+    m.notes       = root.value(QStringLiteral("notes")).toString();
+
+    QString brand = brandKeyForThisBuild();
+    m.assetFilename = root.value(QStringLiteral("assets")).toObject()
+                          .value(brand).toString();
+    m.assetSha256   = root.value(QStringLiteral("sha256")).toObject()
+                          .value(brand).toString();
+
+    if (m.version.isEmpty() || m.assetFilename.isEmpty()) {
+        qWarning() << "UpdateChecker: manifest missing version or asset. brand=" << brand;
+        return;
+    }
+
+    const QString currentVersion = QStringLiteral(TALQ_VERSION);
+    if (versionNewer(m.version, currentVersion)) {
+        m_lastManifest = m;
+        m_hasPendingUpdate = true;
+        emit updateAvailable(m);
+    }
+}
 void UpdateChecker::startDownload() { /* Task 3 */ }
 void UpdateChecker::onDownloadProgress(qint64, qint64) { /* Task 3 */ }
 void UpdateChecker::onDownloadFinished(QNetworkReply *, QFile *) { /* Task 3 */ }
