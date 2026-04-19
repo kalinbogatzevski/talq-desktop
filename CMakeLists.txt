@@ -65,6 +65,8 @@ qt_add_executable(talq
     src/core/CallSignaling.cpp
     src/core/DebugMonitor.cpp
     src/core/AppSettings.cpp
+    src/core/UpdateChecker.h
+    src/core/UpdateChecker.cpp
     src/painter/PainterTheme.cpp
     src/painter/LayoutEngine.cpp
     src/painter/ChatPainter.cpp
