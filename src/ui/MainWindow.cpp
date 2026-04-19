@@ -23,6 +23,7 @@
 #include "core/AvatarProvider.h"
 #include "core/FilePreviewProvider.h"
 #include "core/MediaDeviceManager.h"
+#include "core/UpdateChecker.h"
 #include <gst/gst.h>
 #include "models/ConversationListModel.h"
 #include "models/MessageListModel.h"
@@ -48,6 +49,8 @@
 #include <QFile>
 #include <QResizeEvent>
 #include <QKeyEvent>
+#include <QProgressBar>
+#include <QProcess>
 
 #ifdef Q_OS_WIN
 #include <windows.h>
@@ -584,6 +587,59 @@ void MainWindow::buildChatPage()
     m_chatPainter->hide();
     chatLayout->addWidget(m_chatPainter, 1);
 
+    // ── Auto-update banner ──
+    m_updateBanner = new QWidget(chatCol);
+    m_updateBanner->hide();
+    m_updateBanner->setStyleSheet(
+        "QWidget { background: #1a2e2c; border-bottom: 1px solid #243d3a; }");
+    m_updateBanner->setFixedHeight(36);
+    auto *ubLay = new QHBoxLayout(m_updateBanner);
+    ubLay->setContentsMargins(12, 4, 8, 4);
+    ubLay->setSpacing(8);
+
+    auto *ubAccent = new QWidget(m_updateBanner);
+    ubAccent->setFixedWidth(3);
+    ubAccent->setStyleSheet("background: #2ec4b6;");
+    ubLay->addWidget(ubAccent);
+
+    m_updateLabel = new QLabel(m_updateBanner);
+    m_updateLabel->setStyleSheet("color: #e4e0da; font-size: 13px;");
+    ubLay->addWidget(m_updateLabel, 1);
+
+    m_updateProgress = new QProgressBar(m_updateBanner);
+    m_updateProgress->setRange(0, 100);
+    m_updateProgress->setFixedWidth(180);
+    m_updateProgress->hide();
+    ubLay->addWidget(m_updateProgress);
+
+    m_updateWhatsNewBtn = new QPushButton(tr("What's new"), m_updateBanner);
+    m_updateWhatsNewBtn->setFlat(true);
+    m_updateWhatsNewBtn->setStyleSheet(
+        "QPushButton { color: #2ec4b6; border: none; padding: 4px 8px; }"
+        "QPushButton:hover { color: #5ee3d6; }");
+    ubLay->addWidget(m_updateWhatsNewBtn);
+
+    m_updateInstallBtn = new QPushButton(tr("Install now"), m_updateBanner);
+    m_updateInstallBtn->setStyleSheet(
+        "QPushButton { background: #2ec4b6; color: #0e1817; border: none;"
+        "  padding: 4px 14px; border-radius: 4px; font-weight: 600; }"
+        "QPushButton:hover { background: #4edad0; }");
+    ubLay->addWidget(m_updateInstallBtn);
+
+    m_updateLaterBtn = new QPushButton(tr("Later"), m_updateBanner);
+    m_updateLaterBtn->setFlat(true);
+    m_updateLaterBtn->setStyleSheet(
+        "QPushButton { color: #b0aca5; border: none; padding: 4px 8px; }");
+    ubLay->addWidget(m_updateLaterBtn);
+
+    m_updateCloseBtn = new QPushButton(QStringLiteral("\u2715"), m_updateBanner);
+    m_updateCloseBtn->setFlat(true);
+    m_updateCloseBtn->setFixedSize(24, 24);
+    m_updateCloseBtn->setStyleSheet("QPushButton { color: #8a8680; border: none; }");
+    ubLay->addWidget(m_updateCloseBtn);
+
+    chatLayout->insertWidget(0, m_updateBanner);
+
     buildSearchBar(chatCol);
 
     // Upload progress bar
@@ -1037,6 +1093,67 @@ void MainWindow::buildChatPage()
                                                           : QStringLiteral("Talk ") + talkVer);
         }
     });
+
+    // Auto-upgrade: share the existing network manager used by ApiClient.
+    m_updateChecker = new UpdateChecker(m_api->networkAccessManager(), this);
+
+    connect(m_updateChecker, &UpdateChecker::updateAvailable,
+            this, [this](const UpdateChecker::Manifest &m) {
+        m_pendingUpdateNotes = m.notes;
+        m_updateLabel->setText(tr("Update available: v%1").arg(m.version));
+        m_updateProgress->hide();
+        m_updateInstallBtn->setText(tr("Install now"));
+        m_updateInstallBtn->show();
+        m_updateLaterBtn->show();
+        m_updateWhatsNewBtn->show();
+        m_updateBanner->show();
+    });
+    connect(m_updateChecker, &UpdateChecker::downloadProgress,
+            this, [this](qreal pct) {
+        m_updateProgress->setValue(int(pct));
+        m_updateProgress->show();
+        m_updateInstallBtn->hide();
+        m_updateLaterBtn->hide();
+        m_updateWhatsNewBtn->hide();
+        m_updateLabel->setText(tr("Downloading update\u2026"));
+    });
+    connect(m_updateChecker, &UpdateChecker::downloadFailed,
+            this, [this](const QString &reason) {
+        m_updateLabel->setText(tr("Update failed: %1").arg(reason));
+        m_updateProgress->hide();
+        m_updateInstallBtn->setText(tr("Retry"));
+        m_updateInstallBtn->show();
+        m_updateLaterBtn->show();
+        m_updateWhatsNewBtn->hide();
+    });
+    connect(m_updateChecker, &UpdateChecker::readyToLaunch,
+            this, &MainWindow::onUpdateReadyToLaunch);
+
+    connect(m_updateInstallBtn, &QPushButton::clicked, this, [this]() {
+        m_updateChecker->acceptUpdate();
+    });
+    connect(m_updateLaterBtn, &QPushButton::clicked, this, [this]() {
+        m_updateBanner->hide();
+        m_updateChecker->deferUpdate();
+    });
+    connect(m_updateCloseBtn, &QPushButton::clicked, this, [this]() {
+        m_updateBanner->hide();
+        m_updateChecker->deferUpdate();
+    });
+    connect(m_updateWhatsNewBtn, &QPushButton::clicked, this, [this]() {
+        auto *dlg = new QDialog(this);
+        dlg->setWindowTitle(tr("What's new"));
+        dlg->setAttribute(Qt::WA_DeleteOnClose);
+        auto *lay = new QVBoxLayout(dlg);
+        auto *tb = new QTextBrowser(dlg);
+        tb->setMarkdown(m_pendingUpdateNotes);
+        tb->setMinimumSize(520, 360);
+        tb->setOpenExternalLinks(true);
+        lay->addWidget(tb);
+        dlg->show();
+    });
+
+    m_updateChecker->start();
 
     m_stack->addWidget(m_chatPage);
 }
@@ -1516,3 +1633,9 @@ void MainWindow::resizeEvent(QResizeEvent *e)
     QMainWindow::resizeEvent(e);
     m_saveGeometryTimer.start();
 }
+
+void MainWindow::onUpdateReadyToLaunch(const QString &installerPath)
+{
+    m_pendingInstallerPath = installerPath;  // Task 5 fills in the rest
+}
+void MainWindow::maybeLaunchPendingInstaller() { /* Task 5 */ }

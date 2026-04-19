@@ -91,6 +91,9 @@ public:
     // Debug: number of pending network replies
     int pendingCount() const { return m_pendingReplies.size(); }
 
+    // Expose the shared NAM so co-located components can reuse it
+    QNetworkAccessManager *networkAccessManager() { return &m_nam; }
+
 signals:
     void serverUrlChanged();
     void authenticatedChanged();
