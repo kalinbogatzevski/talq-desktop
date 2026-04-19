@@ -90,6 +90,7 @@ public:
 
 public slots:
     void setUnreadBoundary(int id);
+    void dismissUnreadSeparator();
     void scrollToMessage(int messageId);
 
 signals:
