@@ -149,7 +149,84 @@ void UpdateChecker::onManifestFetched(QNetworkReply *reply)
         emit updateAvailable(m);
     }
 }
-void UpdateChecker::startDownload() { /* Task 3 */ }
-void UpdateChecker::onDownloadProgress(qint64, qint64) { /* Task 3 */ }
-void UpdateChecker::onDownloadFinished(QNetworkReply *, QFile *) { /* Task 3 */ }
-bool UpdateChecker::verifySha256(const QString &, const QString &) { return true; /* Task 3 */ }
+void UpdateChecker::startDownload()
+{
+    const QString tmp = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
+    m_downloadPath = tmp + QStringLiteral("/talq-update.exe");
+
+    auto *out = new QFile(m_downloadPath);
+    if (!out->open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        emit downloadFailed(QStringLiteral("Cannot open temp file: %1")
+                                .arg(out->errorString()));
+        out->deleteLater();
+        return;
+    }
+
+    QUrl url(QString::fromLatin1(TalQUpdates::kAssetBaseUrl)
+             + m_lastManifest.assetFilename);
+    QNetworkRequest req(url);
+    QString creds = QStringLiteral("%1:%2")
+                        .arg(QString::fromLatin1(TalQUpdates::kShareToken),
+                             QString::fromLatin1(TalQUpdates::kSharePassword));
+    req.setRawHeader("Authorization",
+                     "Basic " + creds.toUtf8().toBase64());
+    req.setTransferTimeout(10 * 60 * 1000);
+
+    QNetworkReply *reply = m_nam->get(req);
+    connect(reply, &QNetworkReply::readyRead, this, [reply, out]() {
+        out->write(reply->readAll());
+    });
+    connect(reply, &QNetworkReply::downloadProgress,
+            this, &UpdateChecker::onDownloadProgress);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, out]() {
+        onDownloadFinished(reply, out);
+    });
+}
+
+void UpdateChecker::onDownloadProgress(qint64 received, qint64 total)
+{
+    if (total <= 0) return;
+    emit downloadProgress(100.0 * double(received) / double(total));
+}
+
+void UpdateChecker::onDownloadFinished(QNetworkReply *reply, QFile *out)
+{
+    out->write(reply->readAll());
+    out->flush();
+    out->close();
+
+    const bool net_ok = (reply->error() == QNetworkReply::NoError);
+    const QString path = m_downloadPath;
+    const QString netErr = reply->errorString();
+    out->deleteLater();
+    reply->deleteLater();
+
+    if (!net_ok) {
+        QFile::remove(path);
+        emit downloadFailed(netErr);
+        return;
+    }
+
+    if (!verifySha256(path, m_lastManifest.assetSha256)) {
+        QFile::remove(path);
+        emit downloadFailed(QStringLiteral("Checksum verification failed"));
+        return;
+    }
+
+    emit readyToLaunch(path);
+}
+
+bool UpdateChecker::verifySha256(const QString &filePath, const QString &expectedHex)
+{
+    QFile f(filePath);
+    if (!f.open(QIODevice::ReadOnly)) return false;
+    QCryptographicHash h(QCryptographicHash::Sha256);
+    constexpr qint64 chunk = 64 * 1024;
+    QByteArray buf;
+    while (!f.atEnd()) {
+        buf = f.read(chunk);
+        h.addData(buf);
+    }
+    const QString got = QString::fromLatin1(h.result().toHex()).toLower();
+    return got == expectedHex.toLower();
+}
