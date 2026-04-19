@@ -719,6 +719,14 @@ void MainWindow::buildChatPage()
     connect(m_composer, &ComposerWidget::editingBarCancelled, this, [this]() {
         m_editingMessageId = 0;
     });
+    // Dismiss the "New messages" divider the moment the user engages with
+    // the composer (click, focus, type, or send).
+    connect(m_composer, &ComposerWidget::userInteracted,
+            m_chatPainter, &ChatPainter::dismissUnreadSeparator);
+    connect(m_composer, &ComposerWidget::sendMessage,
+            m_chatPainter, [this](const QString &, bool) {
+        m_chatPainter->dismissUnreadSeparator();
+    });
 
     // Drag-and-drop files onto chat → show confirmation in composer
     connect(m_chatPainter, &ChatPainter::fileDropped, m_composer, &ComposerWidget::showPendingFile);

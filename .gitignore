@@ -8,3 +8,4 @@ dist/
 CMakeUserPresets.json
 .cache/
 aqtinstall.log
+.superpowers/

@@ -115,6 +115,14 @@ void ChatPainter::setUnreadBoundary(int id)
     rebuildAllLayouts();
 }
 
+void ChatPainter::dismissUnreadSeparator()
+{
+    if (m_unreadSepDismissed) return;
+    m_unreadSepDismissed = true;
+    if (m_unreadSepDismissTimer) m_unreadSepDismissTimer->stop();
+    rebuildAllLayouts();
+}
+
 void ChatPainter::scrollToMessage(int messageId)
 {
     for (const auto &ml : m_layouts) {

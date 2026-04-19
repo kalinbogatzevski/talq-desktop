@@ -35,7 +35,11 @@ DIST_DIR="$SRC_DIR/dist/TalQ-v${VERSION}-win64${DIST_SUFFIX}"
 # Tool paths
 CMAKE="/c/Qt/Tools/CMake_64/bin/cmake.exe"
 WINDEPLOYQT="/c/Qt/6.8.2/mingw_64/bin/windeployqt6.exe"
-ISCC="/c/Users/${USER:-${USERNAME}}/InnoSetup/ISCC.exe"
+# Inno Setup lives under the *home* directory, which isn't reliably
+# reflected in $USER/$USERNAME on this setup (git-bash leaves USER empty,
+# USERNAME sometimes points at a different account). $HOME is the
+# trustworthy one.
+ISCC="$HOME/InnoSetup/ISCC.exe"
 NINJA="/c/Qt/Tools/Ninja"
 MINGW="/c/Qt/Tools/mingw1310_64/bin"
 MSYS2="/c/msys64/mingw64/bin"

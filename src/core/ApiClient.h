@@ -12,6 +12,7 @@
 #include <QVector>
 #include <functional>
 #include "MentionCandidate.h"
+#include "NcFileEntry.h"
 #include "SearchHit.h"
 
 /**
@@ -81,6 +82,16 @@ public:
     void searchInConversation(const QString &token, const QString &query,
                               QObject *context,
                               std::function<void(bool ok, const QVector<SearchHit> &)> callback);
+
+    // WebDAV PROPFIND on /remote.php/dav/files/<user>/<path>. Lists immediate
+    // children. `path` is the user-root-relative path, empty for root.
+    void listNextcloudFolder(const QString &path, QObject *context,
+                             std::function<void(bool ok, const QVector<NcFileEntry> &)> callback);
+
+    // Share an existing Nextcloud file/folder into the given Talk room.
+    // Server creates the share link and posts it as a chat message.
+    void shareNextcloudFileToChat(const QString &token, const QString &path,
+                                  Callback callback);
 
     // Long-poll (custom timeout)
     QNetworkReply *getLongPoll(const QString &path, const QUrlQuery &params, int timeoutSecs);

@@ -1,5 +1,6 @@
 #include "ComposerWidget.h"
 #include "EmojiPickerWidget.h"
+#include "NextcloudFilePickerDialog.h"
 #include "core/SignalingClient.h"
 #include "core/EmojiData.h"
 #include "core/MentionCandidate.h"
@@ -23,6 +24,7 @@
 #include <QRegularExpression>
 #include <QMenu>
 #include <QAction>
+#include <cmath>
 #include <QCursor>
 
 namespace {
@@ -150,8 +152,8 @@ ComposerWidget::ComposerWidget(QWidget *parent)
 
     m_input = new ComposeTextEdit(this);
     m_input->setPlaceholderText("Message...");
-    m_input->setMaximumHeight(120);
-    m_input->setMinimumHeight(38);
+    m_input->setMinimumHeight(m_minInputH);
+    m_input->setMaximumHeight(m_maxInputH);
     setFocusProxy(m_input);
     m_input->setStyleSheet(
         "QTextEdit { background: #222220; border: 1px solid #2a2a26; border-radius: 19px;"
@@ -208,6 +210,14 @@ ComposerWidget::ComposerWidget(QWidget *parent)
     connect(m_input, &QTextEdit::textChanged, this, &ComposerWidget::maybeShowCompletion);
     connect(m_input, &QTextEdit::textChanged, this, &ComposerWidget::maybeShowMentionCompletion);
 
+    // Grow the text area as content spans multiple lines, capped by m_maxInputH.
+    connect(m_input->document(), &QTextDocument::contentsChanged,
+            this, &ComposerWidget::autoResizeInput);
+    // Interacting with the composer dismisses the "New messages" divider.
+    connect(m_input, &QTextEdit::textChanged, this, [this]() {
+        emit userInteracted();
+    });
+
     m_mentionDebounce = new QTimer(this);
     m_mentionDebounce->setSingleShot(true);
     m_mentionDebounce->setInterval(150);
@@ -216,9 +226,40 @@ ComposerWidget::ComposerWidget(QWidget *parent)
 
     m_input->installEventFilter(this);
     connect(m_attachBtn, &QPushButton::clicked, this, [this]() {
-        QString file = QFileDialog::getOpenFileName(this, "Send file");
-        if (!file.isEmpty())
-            showPendingFile(file);
+        QMenu menu(this);
+        QAction *fromDevice = menu.addAction(
+            QStringLiteral("\U0001F4BB  ") + tr("From this device\u2026"));
+        QAction *fromNc = menu.addAction(
+            QStringLiteral("\u2601\uFE0F  ") + tr("From Nextcloud\u2026"));
+        // "From Nextcloud" only works when we have a conversation to share into
+        // and an API client to talk to.
+        const bool canShareFromNc = m_model && m_model->api() && m_model->api()->isAuthenticated()
+                                    && !m_model->conversationToken().isEmpty();
+        fromNc->setEnabled(canShareFromNc);
+
+        QPoint pos = m_attachBtn->mapToGlobal(QPoint(0, -menu.sizeHint().height()));
+        QAction *picked = menu.exec(pos);
+        if (picked == fromDevice) {
+            QString file = QFileDialog::getOpenFileName(this, tr("Send file"));
+            if (!file.isEmpty())
+                showPendingFile(file);
+        } else if (picked == fromNc) {
+            auto *dlg = new NextcloudFilePickerDialog(m_model->api(), this);
+            dlg->setAttribute(Qt::WA_DeleteOnClose);
+            const QString convToken = m_model->conversationToken();
+            connect(dlg, &QDialog::accepted, this, [this, dlg, convToken]() {
+                const QString path = dlg->pickedPath();
+                if (path.isEmpty() || !m_model) return;
+                m_model->api()->shareNextcloudFileToChat(convToken, path,
+                    [this](bool ok, const QJsonObject &, int status) {
+                        if (!ok) {
+                            QMessageBox::warning(this, tr("Couldn\u2019t share"),
+                                tr("Nextcloud refused the share (HTTP %1).").arg(status));
+                        }
+                    });
+            });
+            dlg->show();
+        }
     });
 
     // ── Pending file confirmation bar (hidden by default) ──
@@ -318,7 +359,17 @@ ComposerWidget::ComposerWidget(QWidget *parent)
     mainLayout->addWidget(inputRow);
     setLayout(mainLayout);
 
-    setMaximumHeight(200);
+    setMaximumHeight(280);   // enough for ~5-line input + reply/edit bars
+}
+
+void ComposerWidget::autoResizeInput()
+{
+    if (!m_input) return;
+    const int docH = int(std::ceil(m_input->document()->size().height()));
+    const int frame = m_input->frameWidth() * 2;
+    const int newH = qBound(m_minInputH, docH + frame + 4, m_maxInputH);
+    if (m_input->height() != newH)
+        m_input->setFixedHeight(newH);
 }
 
 void ComposerWidget::setTopicName(const QString &name)
@@ -357,15 +408,20 @@ void ComposerWidget::setMessageModel(MessageListModel *model)
 void ComposerWidget::setInputFont(const QFont &font)
 {
     m_input->setFont(font);
-    // Scale the input field height to match the font
-    int lineH = QFontMetrics(font).height();
-    int fieldH = lineH + 16;
-    m_input->setFixedHeight(fieldH);
-    m_sendBtn->setFixedSize(fieldH, fieldH);
-    m_attachBtn->setFixedSize(fieldH, fieldH);
+    // Scale the input-row sizing to match the font. One-line height is the
+    // minimum; the input grows up to five lines via autoResizeInput().
+    const int lineH = QFontMetrics(font).height();
+    m_minInputH = lineH + 16;
+    m_maxInputH = m_minInputH * 5 + 12;
+    m_input->setMinimumHeight(m_minInputH);
+    m_input->setMaximumHeight(m_maxInputH);
+    m_sendBtn->setFixedSize(m_minInputH, m_minInputH);
+    m_attachBtn->setFixedSize(m_minInputH, m_minInputH);
     int btnFontSize = qMax(12, font.pixelSize());
-    m_sendBtn->setStyleSheet(QString("font-size: %1px; border: none; border-radius: %2px; background: #2ec4b6; color: white;").arg(btnFontSize).arg(fieldH / 2));
-    m_attachBtn->setStyleSheet(QString("font-size: %1px; border: none; border-radius: %2px;").arg(btnFontSize).arg(fieldH / 2));
+    m_sendBtn->setStyleSheet(QString("font-size: %1px; border: none; border-radius: %2px; background: #2ec4b6; color: white;").arg(btnFontSize).arg(m_minInputH / 2));
+    m_attachBtn->setStyleSheet(QString("font-size: %1px; border: none; border-radius: %2px;").arg(btnFontSize).arg(m_minInputH / 2));
+    setMaximumHeight(m_maxInputH + 120);   // room for bars above the input row
+    autoResizeInput();
 }
 
 void ComposerWidget::showPendingFile(const QString &path)
@@ -832,6 +888,13 @@ bool ComposerWidget::eventFilter(QObject *watched, QEvent *event)
             sendAction();
             return true;
         }
+    }
+    // Click or focus on the composer counts as interaction — dismiss the
+    // "New messages" divider immediately.
+    if (watched == m_input
+        && (event->type() == QEvent::MouseButtonPress
+            || event->type() == QEvent::FocusIn)) {
+        emit userInteracted();
     }
     if (watched == m_input && event->type() == QEvent::KeyPress) {
         auto *k = static_cast<QKeyEvent*>(event);

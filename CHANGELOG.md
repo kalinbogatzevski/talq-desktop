@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.20.1 (2026-04-19)
+
+### Fix
+- **Share from Nextcloud now actually works** — v0.20.0 used the wrong endpoint (`/chat/{token}/share`, which is for generic objects like polls). Switched to the Files Sharing API (`/apps/files_sharing/api/v1/shares`) with `shareType=10` (Talk conversation) + `shareWith=<roomToken>` — same call the official NC Talk web frontend makes. Server rejected the old call with HTTP 400.
+
+## v0.20.0 (2026-04-19)
+
+### Share from Nextcloud
+- **Attach → From Nextcloud** — the 📎 button now opens a menu with "From this device…" and "From Nextcloud…". The Nextcloud path opens a file browser showing your Nextcloud Files; pick a file and TalQ tells the server to create a share link and post it into the chat (matching how the official NC Talk client works). WebDAV `PROPFIND` for listings, POST to `/ocs/v2.php/apps/spreed/api/v1/chat/{token}/share` to post the link.
+- **Breadcrumb navigation** — clickable path segments at the top; double-click a folder to dive in, double-click a file to share immediately.
+
+## v0.19.2 (2026-04-19)
+
+### Fixes
+- **Auto-upgrade now actually relaunches** — the `[Run]` section of the installer had the `skipifsilent` flag, which made Inno Setup skip the post-install launch during `/VERYSILENT` installs. After an auto-upgrade, the old TalQ quit but the new one never came back up. Removed the flag so silent installs auto-launch the freshly installed binary.
+
+## v0.19.1 (2026-04-19)
+
+### Composer polish
+- **Multi-line input that actually grows** — the message box now expands as you add lines (up to ~5) instead of staying locked at one line. Existing line still hidden behind paragraph returns finally visible.
+- **"New messages" divider clears on engagement** — clicking in the composer, typing, or sending a message now dismisses the divider immediately. Previously only scrolling past it dismissed it, which felt stale when you'd clearly acknowledged the new messages.
+
+### Diagnostic
+- **`--debug` CLI flag** — Release builds now accept `--debug` (or `-d`) to write a verbose log to `%APPDATA%/talq_debug.log` including GStreamer/Qt warnings. Helpful for remotely diagnosing startup problems on tester machines. Also redirects stderr into the same file so anything printed at C-level is captured.
+
 ## v0.19.0 (2026-04-19)
 
 ### Auto-upgrade
