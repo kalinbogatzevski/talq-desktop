@@ -2,9 +2,11 @@
 #include <QBuffer>
 #include <QImage>
 #include <QNetworkRequest>
+#include <QPointer>
 #include <QUrlQuery>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QXmlStreamReader>
 #include <QDebug>
 
 ApiClient::ApiClient(QObject *parent)
@@ -396,6 +398,126 @@ void ApiClient::searchInConversation(const QString &token, const QString &query,
         }
         callback(true, hits);
     });
+}
+
+void ApiClient::listNextcloudFolder(const QString &path, QObject *context,
+                                    std::function<void(bool, const QVector<NcFileEntry> &)> callback)
+{
+    // Normalize path: ensure exactly one leading slash, no trailing slash.
+    QString p = path;
+    while (p.startsWith(QLatin1Char('/'))) p.remove(0, 1);
+    while (p.endsWith(QLatin1Char('/'))) p.chop(1);
+
+    const QString userPrefix = QStringLiteral("/remote.php/dav/files/") + m_user;
+    const QString encPath = p.isEmpty() ? QString() : QString::fromLatin1(QUrl::toPercentEncoding(p, "/"));
+    QUrl url(m_serverUrl + userPrefix + (encPath.isEmpty() ? "/" : "/" + encPath));
+
+    QNetworkRequest req(url);
+    req.setHeader(QNetworkRequest::ContentTypeHeader, "application/xml; charset=utf-8");
+    req.setRawHeader("Depth", "1");
+    applyBasicAuth(req);
+
+    static const QByteArray body =
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+        "<d:propfind xmlns:d=\"DAV:\" xmlns:oc=\"http://owncloud.org/ns\">\n"
+        "  <d:prop>\n"
+        "    <d:resourcetype/>\n"
+        "    <d:getcontentlength/>\n"
+        "    <d:getcontenttype/>\n"
+        "    <d:getlastmodified/>\n"
+        "    <d:displayname/>\n"
+        "    <oc:fileid/>\n"
+        "  </d:prop>\n"
+        "</d:propfind>\n";
+
+    QBuffer *buf = new QBuffer();
+    buf->setData(body);
+    buf->open(QIODevice::ReadOnly);
+
+    QNetworkReply *reply = m_nam.sendCustomRequest(req, "PROPFIND", buf);
+    buf->setParent(reply);   // buffer lives until reply dies
+    trackReply(reply);
+
+    const QString requestPathNormalized = p.isEmpty() ? QStringLiteral("/") : "/" + p;
+    connect(reply, &QNetworkReply::finished, context ? context : this,
+            [reply, callback, userPrefix, requestPathNormalized]() {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError) {
+            qWarning() << "listNextcloudFolder:" << reply->errorString()
+                       << "status:" << reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+            callback(false, {});
+            return;
+        }
+        QVector<NcFileEntry> entries;
+        QXmlStreamReader r(reply->readAll());
+        NcFileEntry cur;
+        bool inResponse = false;
+        bool inResourceType = false;
+        while (!r.atEnd()) {
+            r.readNext();
+            if (r.isStartElement()) {
+                const auto name = r.name();
+                if (name == QLatin1String("response")) {
+                    cur = NcFileEntry();
+                    inResponse = true;
+                } else if (inResponse) {
+                    if (name == QLatin1String("href")) {
+                        QString decoded = QUrl::fromPercentEncoding(r.readElementText().toUtf8());
+                        if (decoded.startsWith(userPrefix))
+                            decoded = decoded.mid(userPrefix.size());
+                        if (decoded.endsWith(QLatin1Char('/')) && decoded.size() > 1)
+                            decoded.chop(1);
+                        cur.path = decoded.isEmpty() ? QStringLiteral("/") : decoded;
+                        cur.name = cur.path.section(QLatin1Char('/'), -1);
+                    } else if (name == QLatin1String("displayname")) {
+                        QString d = r.readElementText();
+                        if (!d.isEmpty()) cur.name = d;
+                    } else if (name == QLatin1String("resourcetype")) {
+                        inResourceType = true;
+                    } else if (inResourceType && name == QLatin1String("collection")) {
+                        cur.isDir = true;
+                    } else if (name == QLatin1String("getcontentlength")) {
+                        cur.size = r.readElementText().toLongLong();
+                    } else if (name == QLatin1String("getcontenttype")) {
+                        cur.mimeType = r.readElementText();
+                    } else if (name == QLatin1String("getlastmodified")) {
+                        cur.lastModified = QDateTime::fromString(
+                            r.readElementText(), Qt::RFC2822Date);
+                    } else if (name == QLatin1String("fileid")) {
+                        cur.fileId = r.readElementText().toInt();
+                    }
+                }
+            } else if (r.isEndElement()) {
+                const auto name = r.name();
+                if (name == QLatin1String("resourcetype")) {
+                    inResourceType = false;
+                } else if (name == QLatin1String("response")) {
+                    inResponse = false;
+                    // Drop the parent directory entry that PROPFIND returns first.
+                    if (cur.path != requestPathNormalized
+                        && !(requestPathNormalized == QStringLiteral("/") && cur.path.isEmpty())) {
+                        entries.push_back(cur);
+                    }
+                }
+            }
+        }
+        callback(true, entries);
+    });
+}
+
+void ApiClient::shareNextcloudFileToChat(const QString &token, const QString &path,
+                                         Callback callback)
+{
+    // Use the Files Sharing API with shareType=10 (Talk conversation).
+    // This is what the official NC Talk web frontend uses — the Spreed
+    // /chat/{token}/share endpoint is for generic objects (polls etc.),
+    // not files.
+    QJsonObject body;
+    body["path"]      = path;
+    body["shareType"] = 10;      // OCS share type: Room / Talk conversation
+    body["shareWith"] = token;   // the conversation token
+    post(QStringLiteral("apps/files_sharing/api/v1/shares"), body,
+         callback ? callback : Callback{[](bool, const QJsonObject &, int) {}});
 }
 
 void ApiClient::trackReply(QNetworkReply *reply)

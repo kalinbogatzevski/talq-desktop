@@ -2,9 +2,13 @@
 
 #include <QDebug>
 
-// TalQ logging macros — always present in code, controlled by build type.
-// Debug builds: all logs print to stderr.
-// Release builds: only warnings and errors print.
+// TalQ logging macros. Gated by a runtime flag:
+//   - Debug builds: verbose flag defaults to true.
+//   - Release builds: defaults to false, turned on by passing --debug on
+//     the command line (see main.cpp).
+//
+// TWARN/TERR always print regardless — captured by the message handler
+// installed in main.cpp.
 //
 // Usage:
 //   TLOG("message")                    — general debug log
@@ -12,23 +16,23 @@
 //   TLOG_SIG("event:" << type)         — signaling debug
 //   TLOG_NET("request:" << path)       — network debug
 //   TLOG_UI("click:" << widget)        — UI debug
-//   TWARN("problem:" << err)           — always prints (both Debug and Release)
+//   TWARN("problem:" << err)           — always prints
 //   TERR("fatal:" << msg)              — always prints
 
+namespace TalqLog {
+    inline bool g_verbose =
 #ifdef QT_DEBUG
-  #define TLOG(msg)       qDebug().noquote() << "[TalQ]" << msg
-  #define TLOG_CALL(msg)  qDebug().noquote() << "[CALL]" << msg
-  #define TLOG_SIG(msg)   qDebug().noquote() << "[SIG]" << msg
-  #define TLOG_NET(msg)   qDebug().noquote() << "[NET]" << msg
-  #define TLOG_UI(msg)    qDebug().noquote() << "[UI]" << msg
+        true;
 #else
-  #define TLOG(msg)       qt_noop()
-  #define TLOG_CALL(msg)  qt_noop()
-  #define TLOG_SIG(msg)   qt_noop()
-  #define TLOG_NET(msg)   qt_noop()
-  #define TLOG_UI(msg)    qt_noop()
+        false;
 #endif
+}
 
-// Warnings and errors always print regardless of build type
-#define TWARN(msg)  qWarning().noquote() << "[TalQ WARN]" << msg
-#define TERR(msg)   qCritical().noquote() << "[TalQ ERR]" << msg
+#define TLOG(msg)       do { if (TalqLog::g_verbose) qDebug().noquote() << "[TalQ]" << msg; } while (0)
+#define TLOG_CALL(msg)  do { if (TalqLog::g_verbose) qDebug().noquote() << "[CALL]" << msg; } while (0)
+#define TLOG_SIG(msg)   do { if (TalqLog::g_verbose) qDebug().noquote() << "[SIG]"  << msg; } while (0)
+#define TLOG_NET(msg)   do { if (TalqLog::g_verbose) qDebug().noquote() << "[NET]"  << msg; } while (0)
+#define TLOG_UI(msg)    do { if (TalqLog::g_verbose) qDebug().noquote() << "[UI]"   << msg; } while (0)
+
+#define TWARN(msg)  qWarning().noquote()  << "[TalQ WARN]" << msg
+#define TERR(msg)   qCritical().noquote() << "[TalQ ERR]"  << msg

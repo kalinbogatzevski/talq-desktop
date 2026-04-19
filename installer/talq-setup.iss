@@ -1,13 +1,13 @@
 [Setup]
 AppName=TalQ
-AppVersion=0.19.0
+AppVersion=0.20.1
 AppPublisher=TalQ
 AppPublisherURL=https://gitlab.123net.link/kalin/talq-desktop
 DefaultDirName={localappdata}\Programs\TalQ
 PrivilegesRequired=lowest
 DefaultGroupName=TalQ
 OutputDir=..\dist
-OutputBaseFilename=TalQ-v0.19.0-Setup
+OutputBaseFilename=TalQ-v0.20.1-Setup
 SetupIconFile=..\resources\talq.ico
 UninstallDisplayIcon={app}\talq.exe
 WizardImageFile=..\resources\talq-wizard.bmp
@@ -28,7 +28,7 @@ Name: "startmenuicon"; Description: "Create a Start Menu shortcut"; GroupDescrip
 Name: "autostart"; Description: "Start TalQ when Windows starts"; GroupDescription: "System:"
 
 [Files]
-Source: "..\dist\TalQ-v0.19.0-win64\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\dist\TalQ-v0.20.1-win64\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\TalQ"; Filename: "{app}\talq.exe"; Tasks: startmenuicon
@@ -39,4 +39,4 @@ Name: "{autodesktop}\TalQ"; Filename: "{app}\talq.exe"; Tasks: desktopicon
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueName: "TalQ"; ValueType: string; ValueData: """{app}\talq.exe"""; Flags: uninsdeletevalue; Tasks: autostart
 
 [Run]
-Filename: "{app}\talq.exe"; Description: "Launch TalQ"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\talq.exe"; Description: "Launch TalQ"; Flags: nowait postinstall

@@ -42,9 +42,11 @@ signals:
     void replyBarCancelled();
     void editMessageRequested(const QString &newText);
     void editingBarCancelled();
+    void userInteracted();   // user clicked/typed in composer — divider can dismiss
 
 private slots:
     void sendAction();
+    void autoResizeInput();
     void confirmSendFile();
     void cancelPendingFile();
     void handleAutoreplace();
@@ -60,6 +62,8 @@ protected:
 
 private:
     bool m_nextSendSilent = false;
+    int  m_minInputH = 38;
+    int  m_maxInputH = 160;
 
     QTextEdit *m_input = nullptr;
     QPushButton *m_sendBtn = nullptr;

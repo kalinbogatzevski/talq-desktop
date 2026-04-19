@@ -34,12 +34,26 @@
 #include "core/DebugMonitor.h"
 #include "core/AppSettings.h"
 #include "core/EmojiData.h"
+#include "core/TalqLog.h"
 #include "ui/MainWindow.h"
 #include "ui/NotificationPopup.h"
 #include <gst/gst.h>
 
 int main(int argc, char *argv[])
 {
+    // Detect --debug flag before anything else so verbose logging is on
+    // from the very first line executed.
+    bool debugRequested = false;
+    for (int i = 1; i < argc; ++i) {
+        QByteArray a(argv[i]);
+        if (a == "--debug" || a == "-d") { debugRequested = true; break; }
+    }
+    bool enableFileLogging = debugRequested;
+#ifdef QT_DEBUG
+    enableFileLogging = true;
+#endif
+    if (enableFileLogging) TalqLog::g_verbose = true;
+
     // Set GStreamer plugin path relative to the exe (before gst_init)
     {
         std::string exePath(argv[0]);
@@ -49,23 +63,24 @@ int main(int argc, char *argv[])
         qputenv("GST_PLUGIN_PATH", QByteArray::fromStdString(gstPath));
     }
 
-    gst_init(&argc, &argv);
-
-    // Debug builds: log to file + stderr
-#ifdef QT_DEBUG
-    qputenv("QT_FORCE_STDERR_LOGGING", "1");
-    static FILE *logFile = nullptr;
-    {
-        QString logPath = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/talq_debug.log";
+    QString logPath;
+    if (enableFileLogging) {
+        qputenv("QT_FORCE_STDERR_LOGGING", "1");
+        qputenv("GST_DEBUG", "2");  // gst warnings into the log
+        logPath = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/talq_debug.log";
         QDir().mkpath(QFileInfo(logPath).absolutePath());
-        logFile = fopen(logPath.toUtf8().constData(), "w");
+        // Redirect C stderr to a log file (Release builds have no console,
+        // so this is the only way to capture GStreamer / any fprintf output).
+        freopen(logPath.toUtf8().constData(), "w", stderr);
+        qInstallMessageHandler([](QtMsgType, const QMessageLogContext &, const QString &msg) {
+            QByteArray line = (QTime::currentTime().toString("HH:mm:ss.zzz") + " " + msg + "\n").toUtf8();
+            fwrite(line.constData(), 1, line.size(), stderr);
+            fflush(stderr);
+        });
+        qInfo().noquote() << "[TalQ] verbose logging enabled; log at" << logPath;
     }
-    qInstallMessageHandler([](QtMsgType type, const QMessageLogContext &, const QString &msg) {
-        QByteArray line = (QTime::currentTime().toString("HH:mm:ss.zzz") + " " + msg + "\n").toUtf8();
-        if (logFile) { fwrite(line.constData(), 1, line.size(), logFile); fflush(logFile); }
-        fprintf(stderr, "%s", line.constData());
-    });
-#endif
+
+    gst_init(&argc, &argv);
 
     QApplication app(argc, argv);
 
