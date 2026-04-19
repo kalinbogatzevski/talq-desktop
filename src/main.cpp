@@ -1,6 +1,7 @@
 #include <QApplication>
 #include <QIcon>
 #include <QRegularExpression>
+#include <cerrno>
 #include <QSharedMemory>
 #include <QScreen>
 #include <QPainter>
@@ -41,8 +42,8 @@
 
 int main(int argc, char *argv[])
 {
-    // Detect --debug flag before anything else so verbose logging is on
-    // from the very first line executed.
+    // Scan argv manually (before QApplication/gst_init) so verbose logging
+    // is active during startup, including gst_init plugin-scan output.
     bool debugRequested = false;
     for (int i = 1; i < argc; ++i) {
         QByteArray a(argv[i]);
@@ -69,15 +70,33 @@ int main(int argc, char *argv[])
         qputenv("GST_DEBUG", "2");  // gst warnings into the log
         logPath = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/talq_debug.log";
         QDir().mkpath(QFileInfo(logPath).absolutePath());
-        // Redirect C stderr to a log file (Release builds have no console,
-        // so this is the only way to capture GStreamer / any fprintf output).
-        freopen(logPath.toUtf8().constData(), "w", stderr);
-        qInstallMessageHandler([](QtMsgType, const QMessageLogContext &, const QString &msg) {
-            QByteArray line = (QTime::currentTime().toString("HH:mm:ss.zzz") + " " + msg + "\n").toUtf8();
-            fwrite(line.constData(), 1, line.size(), stderr);
-            fflush(stderr);
-        });
-        qInfo().noquote() << "[TalQ] verbose logging enabled; log at" << logPath;
+        // Redirect C stderr so GStreamer / any fprintf output is captured
+        // (Release builds have no attached console). If freopen fails, stderr
+        // is now closed per POSIX — skip installing our handler so subsequent
+        // writes don't go to a dead FD, and let Qt's default handler remain.
+        FILE *fp = freopen(logPath.toUtf8().constData(), "w", stderr);
+        if (fp) {
+            qInstallMessageHandler([](QtMsgType, const QMessageLogContext &, const QString &msg) {
+                QByteArray line = (QTime::currentTime().toString("HH:mm:ss.zzz") + " " + msg + "\n").toUtf8();
+                fwrite(line.constData(), 1, line.size(), stderr);
+                fflush(stderr);
+            });
+            qInfo().noquote() << "[TalQ] verbose logging enabled; log at" << logPath;
+        } else {
+            const int savedErrno = errno;
+#ifdef Q_OS_WIN
+            const QString msg = QStringLiteral(
+                "TalQ couldn't open the --debug log at:\n\n%1\n\nerrno=%2.\n\n"
+                "This usually means AppData is on an unreachable network share, "
+                "or antivirus/policy is blocking writes. The app will continue "
+                "without a log file.").arg(logPath).arg(savedErrno);
+            MessageBoxW(nullptr,
+                reinterpret_cast<const wchar_t*>(msg.utf16()),
+                L"TalQ — diagnostic log setup failed",
+                MB_OK | MB_ICONWARNING);
+#endif
+            logPath.clear();
+        }
     }
 
     gst_init(&argc, &argv);

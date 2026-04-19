@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.20.2 (2026-04-19)
+
+### Hardening from PR review
+
+- **Share errors now say what actually went wrong** — the picker and the share dialog both branch on HTTP status (401 "session expired", 403 "not permitted", 404 "no longer exists", 503 "maintenance", …) and include the server's OCS `meta.message` when present. Previously everything collapsed to "Are you offline?" / "HTTP 400".
+- **Context-safe share callback** — `ApiClient::shareNextcloudFileToChat` now takes a `QObject *context` and disconnects automatically if the caller dies, matching `listNextcloudFolder`'s existing contract. Prevents a theoretical dangling-`this` crash if the composer were destroyed mid-share.
+- **PROPFIND treats non-207 responses as failure** — an HTML captive-portal page (common on corporate networks that intercept) used to parse as "empty folder"; now surfaces as an explicit error.
+- **PROPFIND checks `QXmlStreamReader::hasError()`** — malformed/truncated XML was silently producing a short list reported as success; now fails loudly.
+- **`--debug` log-setup failure is visible** — if `freopen(stderr)` fails (AppData on unreachable share, permissions, AV holding the file), TalQ now shows a `MessageBox` explaining why there's no log, instead of silently running with logging defeated.
+- **fileId widened to `qint64`** — NC fileids routinely exceed 2³¹ on busy instances.
+
 ## v0.20.1 (2026-04-19)
 
 ### Fix

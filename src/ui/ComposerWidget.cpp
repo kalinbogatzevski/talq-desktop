@@ -210,10 +210,8 @@ ComposerWidget::ComposerWidget(QWidget *parent)
     connect(m_input, &QTextEdit::textChanged, this, &ComposerWidget::maybeShowCompletion);
     connect(m_input, &QTextEdit::textChanged, this, &ComposerWidget::maybeShowMentionCompletion);
 
-    // Grow the text area as content spans multiple lines, capped by m_maxInputH.
     connect(m_input->document(), &QTextDocument::contentsChanged,
             this, &ComposerWidget::autoResizeInput);
-    // Interacting with the composer dismisses the "New messages" divider.
     connect(m_input, &QTextEdit::textChanged, this, [this]() {
         emit userInteracted();
     });
@@ -231,8 +229,6 @@ ComposerWidget::ComposerWidget(QWidget *parent)
             QStringLiteral("\U0001F4BB  ") + tr("From this device\u2026"));
         QAction *fromNc = menu.addAction(
             QStringLiteral("\u2601\uFE0F  ") + tr("From Nextcloud\u2026"));
-        // "From Nextcloud" only works when we have a conversation to share into
-        // and an API client to talk to.
         const bool canShareFromNc = m_model && m_model->api() && m_model->api()->isAuthenticated()
                                     && !m_model->conversationToken().isEmpty();
         fromNc->setEnabled(canShareFromNc);
@@ -250,12 +246,19 @@ ComposerWidget::ComposerWidget(QWidget *parent)
             connect(dlg, &QDialog::accepted, this, [this, dlg, convToken]() {
                 const QString path = dlg->pickedPath();
                 if (path.isEmpty() || !m_model) return;
-                m_model->api()->shareNextcloudFileToChat(convToken, path,
-                    [this](bool ok, const QJsonObject &, int status) {
-                        if (!ok) {
-                            QMessageBox::warning(this, tr("Couldn\u2019t share"),
-                                tr("Nextcloud refused the share (HTTP %1).").arg(status));
-                        }
+                m_model->api()->shareNextcloudFileToChat(convToken, path, this,
+                    [this](bool ok, int status, const QString &message) {
+                        if (ok) return;
+                        QString reason;
+                        if (status == 0)        reason = tr("Couldn\u2019t reach Nextcloud \u2014 check your connection.");
+                        else if (status == 401) reason = tr("Your Nextcloud session has expired.");
+                        else if (status == 403) reason = tr("Sharing isn\u2019t permitted on this server.");
+                        else if (status == 404) reason = tr("That file no longer exists on Nextcloud.");
+                        else if (!message.isEmpty())
+                            reason = tr("Nextcloud refused the share: %1").arg(message);
+                        else
+                            reason = tr("Nextcloud refused the share (HTTP %1).").arg(status);
+                        QMessageBox::warning(this, tr("Couldn\u2019t share"), reason);
                     });
             });
             dlg->show();
@@ -359,8 +362,12 @@ ComposerWidget::ComposerWidget(QWidget *parent)
     mainLayout->addWidget(inputRow);
     setLayout(mainLayout);
 
-    setMaximumHeight(280);   // enough for ~5-line input + reply/edit bars
+    setMaximumHeight(280);
 }
+
+// Reserve vertical space above the input row for any combination of the
+// pending-file / reply / editing bars (each is 36-56px; total ≤120).
+static constexpr int kComposerBarsReserve = 120;
 
 void ComposerWidget::autoResizeInput()
 {
@@ -408,8 +415,6 @@ void ComposerWidget::setMessageModel(MessageListModel *model)
 void ComposerWidget::setInputFont(const QFont &font)
 {
     m_input->setFont(font);
-    // Scale the input-row sizing to match the font. One-line height is the
-    // minimum; the input grows up to five lines via autoResizeInput().
     const int lineH = QFontMetrics(font).height();
     m_minInputH = lineH + 16;
     m_maxInputH = m_minInputH * 5 + 12;
@@ -420,7 +425,7 @@ void ComposerWidget::setInputFont(const QFont &font)
     int btnFontSize = qMax(12, font.pixelSize());
     m_sendBtn->setStyleSheet(QString("font-size: %1px; border: none; border-radius: %2px; background: #2ec4b6; color: white;").arg(btnFontSize).arg(m_minInputH / 2));
     m_attachBtn->setStyleSheet(QString("font-size: %1px; border: none; border-radius: %2px;").arg(btnFontSize).arg(m_minInputH / 2));
-    setMaximumHeight(m_maxInputH + 120);   // room for bars above the input row
+    setMaximumHeight(m_maxInputH + kComposerBarsReserve);
     autoResizeInput();
 }
 
@@ -889,8 +894,6 @@ bool ComposerWidget::eventFilter(QObject *watched, QEvent *event)
             return true;
         }
     }
-    // Click or focus on the composer counts as interaction — dismiss the
-    // "New messages" divider immediately.
     if (watched == m_input
         && (event->type() == QEvent::MouseButtonPress
             || event->type() == QEvent::FocusIn)) {
