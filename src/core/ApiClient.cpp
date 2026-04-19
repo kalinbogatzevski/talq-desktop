@@ -401,9 +401,14 @@ void ApiClient::searchInConversation(const QString &token, const QString &query,
 }
 
 void ApiClient::listNextcloudFolder(const QString &path, QObject *context,
-                                    std::function<void(bool, const QVector<NcFileEntry> &)> callback)
+                                    std::function<void(bool, const QVector<NcFileEntry> &,
+                                                       int, const QString &)> callback)
 {
-    // Normalize path: ensure exactly one leading slash, no trailing slash.
+    if (m_user.isEmpty() || m_serverUrl.isEmpty()) {
+        callback(false, {}, 0, tr("Not signed in to Nextcloud"));
+        return;
+    }
+
     QString p = path;
     while (p.startsWith(QLatin1Char('/'))) p.remove(0, 1);
     while (p.endsWith(QLatin1Char('/'))) p.chop(1);
@@ -435,20 +440,30 @@ void ApiClient::listNextcloudFolder(const QString &path, QObject *context,
     buf->open(QIODevice::ReadOnly);
 
     QNetworkReply *reply = m_nam.sendCustomRequest(req, "PROPFIND", buf);
-    buf->setParent(reply);   // buffer lives until reply dies
+    buf->setParent(reply);
     trackReply(reply);
 
     const QString requestPathNormalized = p.isEmpty() ? QStringLiteral("/") : "/" + p;
     connect(reply, &QNetworkReply::finished, context ? context : this,
             [reply, callback, userPrefix, requestPathNormalized]() {
         reply->deleteLater();
+        const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         if (reply->error() != QNetworkReply::NoError) {
-            qWarning() << "listNextcloudFolder:" << reply->errorString()
-                       << "status:" << reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-            callback(false, {});
+            qWarning() << "listNextcloudFolder:" << reply->errorString() << "status:" << status;
+            callback(false, {}, status, reply->errorString());
+            return;
+        }
+        // PROPFIND success is HTTP 207 Multi-Status. A plain 200 is almost
+        // certainly an auth redirect or captive-portal HTML page — the XML
+        // parser would quietly produce zero entries, which the UI then shows
+        // as "Empty folder." Reject up front.
+        if (status != 207) {
+            callback(false, {}, status,
+                tr("Nextcloud returned HTTP %1 instead of 207 Multi-Status").arg(status));
             return;
         }
         QVector<NcFileEntry> entries;
+        int responseCount = 0;
         QXmlStreamReader r(reply->readAll());
         NcFileEntry cur;
         bool inResponse = false;
@@ -460,6 +475,7 @@ void ApiClient::listNextcloudFolder(const QString &path, QObject *context,
                 if (name == QLatin1String("response")) {
                     cur = NcFileEntry();
                     inResponse = true;
+                    ++responseCount;
                 } else if (inResponse) {
                     if (name == QLatin1String("href")) {
                         QString decoded = QUrl::fromPercentEncoding(r.readElementText().toUtf8());
@@ -484,7 +500,7 @@ void ApiClient::listNextcloudFolder(const QString &path, QObject *context,
                         cur.lastModified = QDateTime::fromString(
                             r.readElementText(), Qt::RFC2822Date);
                     } else if (name == QLatin1String("fileid")) {
-                        cur.fileId = r.readElementText().toInt();
+                        cur.fileId = r.readElementText().toLongLong();
                     }
                 }
             } else if (r.isEndElement()) {
@@ -493,7 +509,8 @@ void ApiClient::listNextcloudFolder(const QString &path, QObject *context,
                     inResourceType = false;
                 } else if (name == QLatin1String("response")) {
                     inResponse = false;
-                    // Drop the parent directory entry that PROPFIND returns first.
+                    // PROPFIND Depth:1 echoes the requested folder itself as the first
+                    // <response> — skip it so the caller only sees children.
                     if (cur.path != requestPathNormalized
                         && !(requestPathNormalized == QStringLiteral("/") && cur.path.isEmpty())) {
                         entries.push_back(cur);
@@ -501,23 +518,59 @@ void ApiClient::listNextcloudFolder(const QString &path, QObject *context,
                 }
             }
         }
-        callback(true, entries);
+        if (r.hasError()) {
+            qWarning() << "listNextcloudFolder: XML parse error:" << r.errorString();
+            callback(false, {}, status,
+                tr("Nextcloud returned an unexpected response (%1)").arg(r.errorString()));
+            return;
+        }
+        if (responseCount == 0) {
+            // 207 with no <response> is not "empty folder" — an empty folder
+            // still returns the parent entry. Surface this as a real failure.
+            callback(false, {}, status, tr("Nextcloud returned no folder entries"));
+            return;
+        }
+        callback(true, entries, status, QString());
     });
 }
 
 void ApiClient::shareNextcloudFileToChat(const QString &token, const QString &path,
-                                         Callback callback)
+                                         QObject *context,
+                                         std::function<void(bool, int, const QString &)> callback)
 {
-    // Use the Files Sharing API with shareType=10 (Talk conversation).
-    // This is what the official NC Talk web frontend uses — the Spreed
-    // /chat/{token}/share endpoint is for generic objects (polls etc.),
-    // not files.
+    // Files Sharing API, shareType=10 (Talk room). Spreed's /chat/{token}/share
+    // endpoint only accepts generic shareable objects (polls etc.) and 400s on
+    // file paths.
     QJsonObject body;
     body["path"]      = path;
-    body["shareType"] = 10;      // OCS share type: Room / Talk conversation
-    body["shareWith"] = token;   // the conversation token
-    post(QStringLiteral("apps/files_sharing/api/v1/shares"), body,
-         callback ? callback : Callback{[](bool, const QJsonObject &, int) {}});
+    body["shareType"] = 10;
+    body["shareWith"] = token;
+
+    auto req = makeRequest(QStringLiteral("apps/files_sharing/api/v1/shares"));
+    QNetworkReply *reply = m_nam.post(req, QJsonDocument(body).toJson());
+    trackReply(reply);
+
+    connect(reply, &QNetworkReply::finished, context ? context : this,
+            [reply, callback]() {
+        reply->deleteLater();
+        const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if (reply->error() != QNetworkReply::NoError && status == 0) {
+            qWarning() << "shareNextcloudFileToChat: network error:" << reply->errorString();
+            callback(false, 0, reply->errorString());
+            return;
+        }
+        QJsonObject ocs = QJsonDocument::fromJson(reply->readAll()).object()
+                              .value(QStringLiteral("ocs")).toObject();
+        QJsonObject meta = ocs.value(QStringLiteral("meta")).toObject();
+        const int ocsStatus = meta.value(QStringLiteral("statuscode")).toInt();
+        const QString message = meta.value(QStringLiteral("message")).toString();
+        if (ocsStatus >= 200 && ocsStatus < 300) {
+            callback(true, ocsStatus, QString());
+        } else {
+            qWarning() << "shareNextcloudFileToChat: OCS" << ocsStatus << message;
+            callback(false, ocsStatus, message);
+        }
+    });
 }
 
 void ApiClient::trackReply(QNetworkReply *reply)
