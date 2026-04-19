@@ -36,6 +36,8 @@ class CallDialog;
 class SettingsDialog;
 class SelectionBarWidget;
 class ImageViewerDialog;
+class UpdateChecker;
+class QProgressBar;
 
 class MainWindow : public QMainWindow
 {
@@ -71,6 +73,10 @@ protected:
     void moveEvent(QMoveEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
     bool eventFilter(QObject *obj, QEvent *event) override;
+
+private slots:
+    void onUpdateReadyToLaunch(const QString &installerPath);
+    void maybeLaunchPendingInstaller();
 
 private:
     void buildChatPage();
@@ -145,6 +151,18 @@ private:
     QLabel *m_welcomeSignalingLabel = nullptr;
     QLabel *m_welcomePushLabel = nullptr;
     QLabel *m_welcomeGpuLabel = nullptr;
+
+    // Auto-update banner
+    UpdateChecker *m_updateChecker = nullptr;
+    QWidget       *m_updateBanner = nullptr;
+    class QLabel  *m_updateLabel = nullptr;
+    QProgressBar  *m_updateProgress = nullptr;
+    class QPushButton  *m_updateInstallBtn = nullptr;
+    class QPushButton  *m_updateLaterBtn = nullptr;
+    class QPushButton  *m_updateWhatsNewBtn = nullptr;
+    class QPushButton  *m_updateCloseBtn = nullptr;
+    QString        m_pendingInstallerPath;
+    QString        m_pendingUpdateNotes;
 
     // Search bar
     class QWidget *m_searchBar = nullptr;
