@@ -1068,6 +1068,8 @@ void MainWindow::buildChatPage()
     connect(m_callManager, &CallManager::stateChanged, this, [this]() {
         m_header->setCallState(m_callManager->state());
     });
+    connect(m_callManager, &CallManager::stateChanged,
+            this, &MainWindow::maybeLaunchPendingInstaller);
     connect(m_callManager, &CallManager::durationChanged, this, [this]() {
         m_header->setCallDuration(m_callManager->callDuration());
     });
@@ -1636,6 +1638,42 @@ void MainWindow::resizeEvent(QResizeEvent *e)
 
 void MainWindow::onUpdateReadyToLaunch(const QString &installerPath)
 {
-    m_pendingInstallerPath = installerPath;  // Task 5 fills in the rest
+    m_pendingInstallerPath = installerPath;
+    m_updateLabel->setText(tr("Update downloaded \u2014 relaunching\u2026"));
+    m_updateProgress->hide();
+    m_updateInstallBtn->hide();
+    m_updateLaterBtn->hide();
+    m_updateWhatsNewBtn->hide();
+    maybeLaunchPendingInstaller();
 }
-void MainWindow::maybeLaunchPendingInstaller() { /* Task 5 */ }
+
+void MainWindow::maybeLaunchPendingInstaller()
+{
+    if (m_pendingInstallerPath.isEmpty()) return;
+
+    if (m_callManager) {
+        if (m_callManager->state() != CallManager::Idle
+            || m_callManager->isScreenSharing()) {
+            m_updateLabel->setText(
+                tr("You\u2019re in a call \u2014 update will start when the call ends."));
+            return;  // slot re-runs on callStateChanged
+        }
+    }
+
+    const QStringList args{
+        QStringLiteral("/VERYSILENT"),
+        QStringLiteral("/SUPPRESSMSGBOXES"),
+        QStringLiteral("/CLOSEAPPLICATIONS"),
+        QStringLiteral("/RESTARTAPPLICATIONS"),
+        QStringLiteral("/NORESTART"),
+    };
+    bool ok = QProcess::startDetached(m_pendingInstallerPath, args);
+    if (!ok) {
+        m_updateLabel->setText(tr("Could not launch installer."));
+        m_updateInstallBtn->setText(tr("Retry"));
+        m_updateInstallBtn->show();
+        m_pendingInstallerPath.clear();
+        return;
+    }
+    QTimer::singleShot(500, qApp, &QApplication::quit);
+}
