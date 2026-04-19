@@ -115,6 +115,14 @@ echo "Dist: $DIST_DIR"
 ls -lh "$SRC_DIR/dist/"*"v${VERSION}"*Setup* 2>/dev/null || echo "(no installer built)"
 
 # ── [7/7] Auto-upload to ncloud update channel (optional) ──
+# Credentials: either export NC_APP_PASSWORD inline, or store it once in
+#   ~/.talq-release.env  (shell syntax: NC_APP_PASSWORD=xxxx-xxxx-xxxx-xxxx)
+# The dotfile is sourced if present; an already-exported env var wins.
+if [ -z "${NC_APP_PASSWORD:-}" ] && [ -f "$HOME/.talq-release.env" ]; then
+    # shellcheck disable=SC1090
+    . "$HOME/.talq-release.env"
+fi
+
 NC_USER="kalin"
 NC_FOLDER="https://ncloud.123net.link/remote.php/dav/files/${NC_USER}/TalQ-updates"
 
