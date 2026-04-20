@@ -651,6 +651,95 @@ void ApiClient::fetchUpcomingReminders(QObject *context,
     });
 }
 
+void ApiClient::searchNcUsers(const QString &query, QObject *context,
+                              std::function<void(bool, const QVector<NcUser> &)> callback)
+{
+    QUrlQuery q;
+    q.addQueryItem(QStringLiteral("search"), query);
+    q.addQueryItem(QStringLiteral("itemType"), QStringLiteral("call"));
+    q.addQueryItem(QStringLiteral("shareTypes[]"), QStringLiteral("0"));   // user
+    q.addQueryItem(QStringLiteral("limit"), QStringLiteral("25"));
+    auto req = makeRequest(QStringLiteral("core/autocomplete/get"), q);
+    QNetworkReply *reply = m_nam.get(req);
+    trackReply(reply);
+    connect(reply, &QNetworkReply::finished, context ? context : this,
+            [reply, callback]() {
+        reply->deleteLater();
+        QVector<NcUser> out;
+        if (reply->error() != QNetworkReply::NoError) {
+            qWarning() << "searchNcUsers:" << reply->errorString();
+            callback(false, out);
+            return;
+        }
+        QJsonArray arr = QJsonDocument::fromJson(reply->readAll()).object()
+                             .value(QStringLiteral("ocs")).toObject()
+                             .value(QStringLiteral("data")).toArray();
+        for (const QJsonValue &v : arr) {
+            QJsonObject o = v.toObject();
+            if (o.value(QStringLiteral("source")).toString() != QStringLiteral("users")) continue;
+            NcUser u;
+            u.id          = o.value(QStringLiteral("id")).toString();
+            u.displayName = o.value(QStringLiteral("label")).toString();
+            if (!u.id.isEmpty()) out.push_back(u);
+        }
+        callback(true, out);
+    });
+}
+
+void ApiClient::createRoom(int roomType, const QString &roomName, const QString &invite,
+                           QObject *context,
+                           std::function<void(bool, const QString &, const QString &)> callback)
+{
+    QJsonObject body;
+    body["roomType"] = roomType;
+    if (!roomName.isEmpty()) body["roomName"] = roomName;
+    if (!invite.isEmpty())   body["invite"]   = invite;
+
+    auto req = makeRequest(QStringLiteral("apps/spreed/api/v4/room"));
+    QNetworkReply *reply = m_nam.post(req, QJsonDocument(body).toJson());
+    trackReply(reply);
+    connect(reply, &QNetworkReply::finished, context ? context : this,
+            [reply, callback]() {
+        reply->deleteLater();
+        QJsonObject ocs = QJsonDocument::fromJson(reply->readAll()).object()
+                              .value(QStringLiteral("ocs")).toObject();
+        QJsonObject meta = ocs.value(QStringLiteral("meta")).toObject();
+        const int ocsStatus = meta.value(QStringLiteral("statuscode")).toInt();
+        if (ocsStatus >= 200 && ocsStatus < 300) {
+            QString token = ocs.value(QStringLiteral("data")).toObject()
+                                .value(QStringLiteral("token")).toString();
+            callback(true, token, QString());
+        } else {
+            const QString msg = meta.value(QStringLiteral("message")).toString();
+            qWarning() << "createRoom: OCS" << ocsStatus << msg;
+            callback(false, QString(), msg);
+        }
+    });
+}
+
+void ApiClient::addRoomParticipant(const QString &token, const QString &userId,
+                                   QObject *context,
+                                   std::function<void(bool, const QString &)> callback)
+{
+    QJsonObject body;
+    body["newParticipant"] = userId;
+    body["source"]         = QStringLiteral("users");
+
+    auto req = makeRequest(QStringLiteral("apps/spreed/api/v4/room/") + token + "/participants");
+    QNetworkReply *reply = m_nam.post(req, QJsonDocument(body).toJson());
+    trackReply(reply);
+    connect(reply, &QNetworkReply::finished, context ? context : this,
+            [reply, callback]() {
+        reply->deleteLater();
+        QJsonObject ocs = QJsonDocument::fromJson(reply->readAll()).object()
+                              .value(QStringLiteral("ocs")).toObject();
+        QJsonObject meta = ocs.value(QStringLiteral("meta")).toObject();
+        const int ocsStatus = meta.value(QStringLiteral("statuscode")).toInt();
+        if (ocsStatus >= 200 && ocsStatus < 300) { callback(true, QString()); return; }
+        callback(false, meta.value(QStringLiteral("message")).toString());
+    });
+}
+
 void ApiClient::trackReply(QNetworkReply *reply)
 {
     m_pendingReplies.append(reply);
