@@ -6,6 +6,7 @@
 #include "SelectionBarWidget.h"
 #include "ConversationPickerDialog.h"
 #include "ImageViewerDialog.h"
+#include "UpcomingRemindersDialog.h"
 #include "painter/ChatPainter.h"
 #include "painter/SidebarPainter.h"
 #include "painter/HeaderPainter.h"
@@ -46,6 +47,8 @@
 #include <QListWidget>
 #include <QUrl>
 #include <QTextBrowser>
+#include <QDateTimeEdit>
+#include <QDialogButtonBox>
 #include <QFile>
 #include <QResizeEvent>
 #include <QKeyEvent>
@@ -910,6 +913,31 @@ void MainWindow::buildChatPage()
             });
         }
 
+        auto *remindSubmenu = menu->addMenu(QStringLiteral("\u23F0  Remind me\u2026"));
+        remindSubmenu->setStyleSheet(menu->styleSheet());
+        struct QuickPick { const char *label; int hours; };
+        const auto addQuick = [this, msgId, remindSubmenu](const QString &label,
+                                                            const QDateTime &when) {
+            remindSubmenu->addAction(label, this, [this, msgId, when]() {
+                scheduleReminder(msgId, when);
+            });
+        };
+        QDateTime now = QDateTime::currentDateTime();
+        addQuick(tr("In 20 minutes"), now.addSecs(20 * 60));
+        addQuick(tr("In 1 hour"),      now.addSecs(60 * 60));
+        addQuick(tr("In 3 hours"),     now.addSecs(3 * 60 * 60));
+        QDateTime tomorrow = now.addDays(1);
+        tomorrow.setTime(QTime(8, 0));
+        addQuick(tr("Tomorrow 8:00"), tomorrow);
+        QDateTime nextWeek = now.addDays(7 - now.date().dayOfWeek() + 1);   // next Monday
+        nextWeek.setTime(QTime(9, 0));
+        addQuick(tr("Next Monday 9:00"), nextWeek);
+        remindSubmenu->addSeparator();
+        remindSubmenu->addAction(tr("Custom time\u2026"), this, [this, msgId]() {
+            QDateTime when = askReminderTime();
+            if (when.isValid()) scheduleReminder(msgId, when);
+        });
+
         if (isOwn) {
             menu->addSeparator();
             if (!hasFile) {
@@ -1235,6 +1263,9 @@ void MainWindow::buildSearchBar(QWidget *chatCol)
         m_searchInput->setFocus();
         m_searchInput->selectAll();
     });
+
+    connect(m_header, &HeaderPainter::remindersRequested,
+            this, &MainWindow::openUpcomingReminders);
 
     m_searchInput->installEventFilter(this);
 }
@@ -1684,4 +1715,67 @@ void MainWindow::maybeLaunchPendingInstaller()
         return;
     }
     QTimer::singleShot(500, qApp, &QApplication::quit);
+}
+
+void MainWindow::scheduleReminder(int messageId, const QDateTime &when)
+{
+    const QString token = m_messages ? m_messages->conversationToken() : QString();
+    if (token.isEmpty() || messageId <= 0 || !when.isValid()) return;
+    m_api->setMessageReminder(token, messageId, when, this,
+        [this, when](bool ok, const QString &error) {
+            if (ok) {
+                m_notifications->notify(tr("Reminder set"),
+                    tr("You'll be reminded at %1")
+                        .arg(when.toString(QStringLiteral("ddd d MMM, HH:mm"))),
+                    false, QString());
+            } else {
+                QMessageBox::warning(this, tr("Reminder not set"),
+                    error.isEmpty() ? tr("Nextcloud refused the reminder.") : error);
+            }
+        });
+}
+
+QDateTime MainWindow::askReminderTime()
+{
+    QDialog dlg(this);
+    dlg.setWindowTitle(tr("Remind me at\u2026"));
+    dlg.setStyleSheet(
+        "QDialog { background: #1a1a18; color: #e4e0da; }"
+        "QLabel, QDateTimeEdit { color: #e4e0da; }"
+        "QDateTimeEdit { background: #222220; border: 1px solid #2a2a26;"
+        " border-radius: 6px; padding: 6px 8px; font-size: 14px; }"
+        "QPushButton { background: #2a2a26; color: #e4e0da; border: none;"
+        " border-radius: 6px; padding: 6px 16px; }"
+        "QPushButton:default { background: #2ec4b6; color: white; }"
+    );
+    auto *lay = new QVBoxLayout(&dlg);
+    lay->setContentsMargins(16, 16, 16, 16);
+    lay->setSpacing(12);
+    lay->addWidget(new QLabel(tr("Pick a date and time:"), &dlg));
+
+    auto *edit = new QDateTimeEdit(QDateTime::currentDateTime().addSecs(60 * 60), &dlg);
+    edit->setCalendarPopup(true);
+    edit->setDisplayFormat(QStringLiteral("ddd d MMM yyyy  HH:mm"));
+    edit->setMinimumDateTime(QDateTime::currentDateTime().addSecs(60));
+    lay->addWidget(edit);
+
+    auto *box = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    connect(box, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    connect(box, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    lay->addWidget(box);
+
+    if (dlg.exec() != QDialog::Accepted) return {};
+    return edit->dateTime();
+}
+
+void MainWindow::openUpcomingReminders()
+{
+    auto *dlg = new UpcomingRemindersDialog(m_api, this);
+    dlg->setAttribute(Qt::WA_DeleteOnClose);
+    connect(dlg, &UpcomingRemindersDialog::openConversationAt,
+            this, [this](const QString &token, int messageId) {
+        openConversation(token);
+        if (m_chatPainter) m_chatPainter->scrollToMessage(messageId);
+    });
+    dlg->show();
 }
