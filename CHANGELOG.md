@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.22.1 (2026-04-20)
+
+### Fixes
+- **Chat header clears when returning to Home** — stale conversation name stayed visible; `m_header` now hides on Home navigation and shows on conversation open.
+- **Update banner stays visible across navigation** — switching between Home and a chat used to leave the banner in an unpredictable state. Added an internal active flag so once the banner is shown, it's re-shown and Z-raised whenever the chat-column contents switch.
+
 ## v0.22.0 (2026-04-20)
 
 ### New chats
