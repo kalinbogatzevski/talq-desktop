@@ -167,6 +167,7 @@ private:
     class QPushButton  *m_updateCloseBtn = nullptr;
     QString        m_pendingInstallerPath;
     QString        m_pendingUpdateNotes;
+    bool           m_updateBannerActive = false;   // true from updateAvailable until user dismisses
 
     // Search bar
     class QWidget *m_searchBar = nullptr;
