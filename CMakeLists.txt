@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(talq VERSION 0.20.2 LANGUAGES CXX)
+project(talq VERSION 0.21.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -96,9 +96,12 @@ qt_add_executable(talq
     src/core/EmojiData_generated.cpp
     src/core/MentionCandidate.h
     src/core/NcFileEntry.h
+    src/core/Reminder.h
     src/core/SearchHit.h
     src/ui/NextcloudFilePickerDialog.h
     src/ui/NextcloudFilePickerDialog.cpp
+    src/ui/UpcomingRemindersDialog.h
+    src/ui/UpcomingRemindersDialog.cpp
     resources/resources.qrc
     resources/twemoji.qrc
     resources/changelog.qrc

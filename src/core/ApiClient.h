@@ -13,6 +13,7 @@
 #include <functional>
 #include "MentionCandidate.h"
 #include "NcFileEntry.h"
+#include "Reminder.h"
 #include "SearchHit.h"
 
 /**
@@ -103,6 +104,19 @@ public:
                                   std::function<void(bool ok,
                                                      int httpStatus,
                                                      const QString &message)> callback);
+
+    // Schedule a reminder for a chat message. NC Talk server persists this
+    // and sends a notification when the time comes.
+    void setMessageReminder(const QString &token, int messageId,
+                            const QDateTime &when,
+                            QObject *context,
+                            std::function<void(bool ok, const QString &error)> callback);
+    void cancelMessageReminder(const QString &token, int messageId,
+                               QObject *context,
+                               std::function<void(bool ok, const QString &error)> callback);
+    void fetchUpcomingReminders(QObject *context,
+                                std::function<void(bool ok,
+                                                   const QVector<Reminder> &)> callback);
 
     // Long-poll (custom timeout)
     QNetworkReply *getLongPoll(const QString &path, const QUrlQuery &params, int timeoutSecs);

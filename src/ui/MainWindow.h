@@ -98,6 +98,9 @@ private:
     void loadProfileAvatar(QLabel *avatarLabel);
     void buildSearchBar(QWidget *chatCol);
     void runSearchQuery();
+    void scheduleReminder(int messageId, const QDateTime &when);
+    QDateTime askReminderTime();
+    void openUpcomingReminders();
 
     // ── Pointers to backend (not owned) ──
     ApiClient *m_api;
