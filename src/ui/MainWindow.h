@@ -101,6 +101,7 @@ private:
     void scheduleReminder(int messageId, const QDateTime &when);
     QDateTime askReminderTime();
     void openUpcomingReminders();
+    void openNewChatDialog();
 
     // ── Pointers to backend (not owned) ──
     ApiClient *m_api;

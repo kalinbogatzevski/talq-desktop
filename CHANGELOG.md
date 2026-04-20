@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.22.0 (2026-04-20)
+
+### New chats
+- **Create new conversations from TalQ** — ➕ button in the sidebar (next to ⚙ settings) opens a **New chat** dialog.
+  - **Direct:** search for a user, double-click → creates a 1-on-1 conversation and opens it.
+  - **Group:** name the group, search and add multiple participants, create → room is created and everyone invited in one step.
+  - User autocomplete via `GET /ocs/v2.php/core/autocomplete/get?itemType=call`.
+  - Room creation via `POST /ocs/v2.php/apps/spreed/api/v4/room` (`roomType=1` for direct, `2` for group).
+  - Group participants added via `POST /room/{token}/participants`.
+
 ## v0.21.0 (2026-04-20)
 
 ### Reminders

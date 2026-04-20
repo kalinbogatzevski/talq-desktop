@@ -6,6 +6,7 @@
 #include "SelectionBarWidget.h"
 #include "ConversationPickerDialog.h"
 #include "ImageViewerDialog.h"
+#include "NewChatDialog.h"
 #include "UpcomingRemindersDialog.h"
 #include "painter/ChatPainter.h"
 #include "painter/SidebarPainter.h"
@@ -275,6 +276,16 @@ void MainWindow::buildChatPage()
     m_profileNameLabel = new QLabel(profileBar);
     m_profileNameLabel->setStyleSheet("font-weight: bold; font-size: 14px;");
     profileLayout->addWidget(m_profileNameLabel, 1);
+
+    // New-chat button
+    auto *newChatBtn = new QPushButton(QStringLiteral("\u2795"), profileBar);  // ➕
+    newChatBtn->setFixedSize(28, 28);
+    newChatBtn->setFlat(true);
+    newChatBtn->setToolTip(tr("New chat"));
+    newChatBtn->setStyleSheet("font-size: 14px; border: none; border-radius: 14px;");
+    newChatBtn->setCursor(Qt::PointingHandCursor);
+    profileLayout->addWidget(newChatBtn);
+    connect(newChatBtn, &QPushButton::clicked, this, &MainWindow::openNewChatDialog);
 
     // Settings button
     m_settingsBtn = new QPushButton("\u2699", profileBar);
@@ -1778,4 +1789,19 @@ void MainWindow::openUpcomingReminders()
         if (m_chatPainter) m_chatPainter->scrollToMessage(messageId);
     });
     dlg->show();
+}
+
+void MainWindow::openNewChatDialog()
+{
+    auto *dlg = new NewChatDialog(m_api, this);
+    dlg->setAttribute(Qt::WA_DeleteOnClose);
+    connect(dlg, &QDialog::accepted, this, [this, dlg]() {
+        const QString token = dlg->createdToken();
+        if (token.isEmpty()) return;
+        // Refresh the sidebar so the new room appears, then open it once the
+        // conversation row is known to the model.
+        m_conversations->refresh();
+        QTimer::singleShot(300, this, [this, token]() { openConversation(token); });
+    });
+    dlg->exec();
 }
