@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.21.0 (2026-04-20)
+
+### Reminders
+- **Right-click any message → "Remind me…"** with quick presets (20 min, 1 h, 3 h, Tomorrow 8:00, Next Monday 9:00) and a custom date/time picker. Server persists the reminder and sends a push notification when the time comes.
+- **⏰ Upcoming reminders** button in the chat header opens a list of all pending reminders across conversations. Double-click to jump to the original message.
+- Internal `Reminder` struct carries a `source` enum (`NextcloudTalk`, `Erp`) so future ERP integration can contribute entries into the same upcoming-reminders view.
+
 ## v0.20.2 (2026-04-19)
 
 ### Hardening from PR review

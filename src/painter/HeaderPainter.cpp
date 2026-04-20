@@ -191,6 +191,7 @@ void HeaderPainter::paintEvent(QPaintEvent *)
     m_audioCallRect = QRectF();
     m_videoCallRect = QRectF();
     m_searchBtnRect = QRectF();
+    m_remindersBtnRect = QRectF();
 
     qreal x = padLeft;
 
@@ -318,6 +319,16 @@ void HeaderPainter::paintEvent(QPaintEvent *)
         m_searchBtnRect = QRectF(rightX, btnY, ButtonSize, ButtonSize);
         paintCallButton(painter, m_searchBtnRect, m_theme.textSecondary,
                         QStringLiteral("\U0001F50D"), m_hoveredButton == 4);  // 🔍
+        rightX -= spacing;
+    }
+
+    // Reminders button (always available when a chat is open)
+    if (!m_conversationToken.isEmpty()) {
+        qreal btnY = (h - ButtonSize) / 2.0;
+        rightX -= ButtonSize;
+        m_remindersBtnRect = QRectF(rightX, btnY, ButtonSize, ButtonSize);
+        paintCallButton(painter, m_remindersBtnRect, m_theme.textSecondary,
+                        QStringLiteral("\u23F0"), m_hoveredButton == 5);  // ⏰
         rightX -= spacing;
     }
 
@@ -566,6 +577,7 @@ int HeaderPainter::buttonAtPos(const QPointF &pos) const
     if (m_audioCallRect.isValid() && m_audioCallRect.contains(pos)) return 2;
     if (m_videoCallRect.isValid() && m_videoCallRect.contains(pos)) return 3;
     if (m_searchBtnRect.isValid() && m_searchBtnRect.contains(pos)) return 4;
+    if (m_remindersBtnRect.isValid() && m_remindersBtnRect.contains(pos)) return 5;
     return -1;
 }
 
@@ -583,6 +595,7 @@ void HeaderPainter::mouseReleaseEvent(QMouseEvent *event)
     case 2: emit audioCallClicked(); break;
     case 3: emit videoCallClicked(); break;
     case 4: emit searchRequested(); break;
+    case 5: emit remindersRequested(); break;
     default: break;
     }
     event->accept();

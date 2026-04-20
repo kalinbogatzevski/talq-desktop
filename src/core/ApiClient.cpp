@@ -573,6 +573,84 @@ void ApiClient::shareNextcloudFileToChat(const QString &token, const QString &pa
     });
 }
 
+void ApiClient::setMessageReminder(const QString &token, int messageId,
+                                   const QDateTime &when,
+                                   QObject *context,
+                                   std::function<void(bool, const QString &)> callback)
+{
+    QJsonObject body;
+    body["timestamp"] = static_cast<qint64>(when.toSecsSinceEpoch());
+
+    auto req = makeRequest(QStringLiteral("apps/spreed/api/v1/chat/")
+                           + token + "/" + QString::number(messageId) + "/reminder");
+    QNetworkReply *reply = m_nam.post(req, QJsonDocument(body).toJson());
+    trackReply(reply);
+    connect(reply, &QNetworkReply::finished, context ? context : this,
+            [reply, callback]() {
+        reply->deleteLater();
+        QJsonObject ocs = QJsonDocument::fromJson(reply->readAll()).object()
+                              .value(QStringLiteral("ocs")).toObject();
+        QJsonObject meta = ocs.value(QStringLiteral("meta")).toObject();
+        const int ocsStatus = meta.value(QStringLiteral("statuscode")).toInt();
+        if (ocsStatus >= 200 && ocsStatus < 300) { callback(true, QString()); return; }
+        callback(false, meta.value(QStringLiteral("message")).toString());
+    });
+}
+
+void ApiClient::cancelMessageReminder(const QString &token, int messageId,
+                                      QObject *context,
+                                      std::function<void(bool, const QString &)> callback)
+{
+    auto req = makeRequest(QStringLiteral("apps/spreed/api/v1/chat/")
+                           + token + "/" + QString::number(messageId) + "/reminder");
+    QNetworkReply *reply = m_nam.sendCustomRequest(req, "DELETE");
+    trackReply(reply);
+    connect(reply, &QNetworkReply::finished, context ? context : this,
+            [reply, callback]() {
+        reply->deleteLater();
+        QJsonObject ocs = QJsonDocument::fromJson(reply->readAll()).object()
+                              .value(QStringLiteral("ocs")).toObject();
+        QJsonObject meta = ocs.value(QStringLiteral("meta")).toObject();
+        const int ocsStatus = meta.value(QStringLiteral("statuscode")).toInt();
+        if (ocsStatus >= 200 && ocsStatus < 300) { callback(true, QString()); return; }
+        callback(false, meta.value(QStringLiteral("message")).toString());
+    });
+}
+
+void ApiClient::fetchUpcomingReminders(QObject *context,
+                                       std::function<void(bool, const QVector<Reminder> &)> callback)
+{
+    auto req = makeRequest(QStringLiteral("apps/spreed/api/v1/chat/upcoming-reminders"));
+    QNetworkReply *reply = m_nam.get(req);
+    trackReply(reply);
+    connect(reply, &QNetworkReply::finished, context ? context : this,
+            [reply, callback]() {
+        reply->deleteLater();
+        QVector<Reminder> out;
+        if (reply->error() != QNetworkReply::NoError) {
+            qWarning() << "fetchUpcomingReminders:" << reply->errorString();
+            callback(false, out);
+            return;
+        }
+        QJsonArray arr = QJsonDocument::fromJson(reply->readAll()).object()
+                             .value(QStringLiteral("ocs")).toObject()
+                             .value(QStringLiteral("data")).toArray();
+        for (const QJsonValue &v : arr) {
+            QJsonObject o = v.toObject();
+            Reminder r;
+            r.source      = Reminder::NextcloudTalk;
+            r.when        = QDateTime::fromSecsSinceEpoch(
+                o.value(QStringLiteral("reminderTimestamp")).toVariant().toLongLong());
+            r.token       = o.value(QStringLiteral("token")).toString();
+            r.messageId   = o.value(QStringLiteral("id")).toInt();
+            r.actorName   = o.value(QStringLiteral("actorDisplayName")).toString();
+            r.messageText = o.value(QStringLiteral("message")).toString();
+            out.push_back(r);
+        }
+        callback(true, out);
+    });
+}
+
 void ApiClient::trackReply(QNetworkReply *reply)
 {
     m_pendingReplies.append(reply);
