@@ -360,7 +360,12 @@ void MainWindow::buildChatPage()
         m_activeConvToken.clear();
         m_chatPainter->hide();
         if (m_composer) m_composer->hide();
+        m_header->hide();
         m_welcomeWidget->show();
+        if (m_updateBannerActive) {
+            m_updateBanner->show();
+            m_updateBanner->raise();
+        }
     });
     connect(m_sidebar, &SidebarPainter::contextMenuRequested, this, [this](int modelIndex, int notifLevel, qreal, qreal) {
         auto *menu = new QMenu(this);
@@ -1155,7 +1160,9 @@ void MainWindow::buildChatPage()
         m_updateInstallBtn->show();
         m_updateLaterBtn->show();
         m_updateWhatsNewBtn->show();
+        m_updateBannerActive = true;
         m_updateBanner->show();
+        m_updateBanner->raise();    // ensure it's above sibling painters on Z-order
     });
     connect(m_updateChecker, &UpdateChecker::downloadProgress,
             this, [this](qreal pct) {
@@ -1182,10 +1189,12 @@ void MainWindow::buildChatPage()
         m_updateChecker->acceptUpdate();
     });
     connect(m_updateLaterBtn, &QPushButton::clicked, this, [this]() {
+        m_updateBannerActive = false;
         m_updateBanner->hide();
         m_updateChecker->deferUpdate();
     });
     connect(m_updateCloseBtn, &QPushButton::clicked, this, [this]() {
+        m_updateBannerActive = false;
         m_updateBanner->hide();
         m_updateChecker->deferUpdate();
     });
@@ -1388,8 +1397,13 @@ void MainWindow::onConversationSelected(const QString &token, const QString &nam
 
     // Switch from welcome to chat
     m_welcomeWidget->hide();
+    m_header->show();
     m_chatPainter->show();
     m_composer->show();
+    if (m_updateBannerActive) {
+        m_updateBanner->show();
+        m_updateBanner->raise();
+    }
 
     m_header->setConversationName(name);
     m_header->setConversationUserId(userId);
