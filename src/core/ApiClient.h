@@ -13,6 +13,7 @@
 #include <functional>
 #include "MentionCandidate.h"
 #include "NcFileEntry.h"
+#include "NcUser.h"
 #include "Reminder.h"
 #include "SearchHit.h"
 
@@ -117,6 +118,25 @@ public:
     void fetchUpcomingReminders(QObject *context,
                                 std::function<void(bool ok,
                                                    const QVector<Reminder> &)> callback);
+
+    // User autocomplete for starting new chats (`itemType=call` scopes to
+    // users the caller is allowed to start a conversation with).
+    void searchNcUsers(const QString &query, QObject *context,
+                       std::function<void(bool ok, const QVector<NcUser> &)> callback);
+
+    // Create a new Talk room. For a one-to-one, pass roomType=1 + invite=<userId>.
+    // For a group, pass roomType=2 + roomName; invite participants afterwards
+    // via addRoomParticipant. Callback receives the new room's token.
+    void createRoom(int roomType, const QString &roomName, const QString &invite,
+                    QObject *context,
+                    std::function<void(bool ok,
+                                       const QString &token,
+                                       const QString &error)> callback);
+
+    // Add a user to an existing room.
+    void addRoomParticipant(const QString &token, const QString &userId,
+                            QObject *context,
+                            std::function<void(bool ok, const QString &error)> callback);
 
     // Long-poll (custom timeout)
     QNetworkReply *getLongPoll(const QString &path, const QUrlQuery &params, int timeoutSecs);
