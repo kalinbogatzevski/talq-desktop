@@ -5,6 +5,10 @@
 ### Notifications
 - **Notification stack** — multiple toasts no longer overwrite each other. New `NotificationStack` widget stacks popups bottom-up on the primary screen, caps at 4 visible, ages out the oldest when a 5th arrives. Rapid repeats from the same conversation (within 3 s) coalesce into "N new messages" instead of stacking separately.
 - Clicking any toast opens that conversation + removes that specific toast; the rest reposition to fill the gap.
+- **Toast layout rebuilt** — 360×92 body with warm-dispatch palette, title elided with `…` instead of hard-cut, message linebreaks flattened so the 2-line budget shows real content. `Qt::Tool` so toasts no longer steal focus or show in the taskbar.
+
+### Sidebar / thread list
+- **Preview text flattens newlines** — last-message previews collapse `\r\n\t` to spaces and squeeze runs of whitespace, so multi-line messages show their first real content instead of getting cut at the first linebreak.
 
 ### Platform / support
 - **AppData writability probe at startup** — if the app can't write to its data folder (common on corporate Windows profiles where Roaming is redirected to an unreachable network share), a `QMessageBox` surfaces the path and explains what's wrong, instead of silently running with broken caching.
