@@ -38,7 +38,9 @@
 #include "core/TalqLog.h"
 #include "ui/MainWindow.h"
 #include "ui/NotificationPopup.h"
+#include "ui/NotificationStack.h"
 #include <QFontDatabase>
+#include <QMessageBox>
 #include <gst/gst.h>
 
 int main(int argc, char *argv[])
@@ -124,6 +126,27 @@ int main(int argc, char *argv[])
     // EmojiData reads/writes recents via QSettings — must run after
     // setApplicationName/setOrganizationName so the right storage is used.
     EmojiData::initialize();
+
+    // Probe AppData writability. Corporate Windows profiles sometimes
+    // redirect Roaming to a network share that's unreachable (or read-only
+    // from sandboxed apps) — silently failing to write the message cache
+    // would make the app feel broken. Surface it once at startup.
+    {
+        QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+        QDir().mkpath(dir);
+        QFile probe(dir + QStringLiteral("/.talq-writeprobe"));
+        if (!probe.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            QMessageBox::warning(nullptr, QObject::tr("TalQ — storage warning"),
+                QObject::tr("TalQ couldn't write to its data folder:\n\n%1\n\n"
+                            "Message cache and local state won't persist across restarts. "
+                            "This usually means your Windows profile is on a network share "
+                            "that's currently unreachable, or group policy is blocking the app. "
+                            "Contact your IT admin if this keeps happening.").arg(dir));
+        } else {
+            probe.close();
+            probe.remove();
+        }
+    }
 
     // Bundled body font — Inter (SIL OFL). Registered once for the whole
     // app so every widget inherits a consistent, screen-optimised type.
@@ -221,18 +244,13 @@ int main(int argc, char *argv[])
     );
 
     // Custom notification popup
-    NotificationPopup notifPopup;
+    // Notification stack — multiple toasts stack at the bottom-right,
+    // rapid repeats from the same conversation coalesce, oldest ages out
+    // when a 5th arrives.
+    NotificationStack notifStack;
     QObject::connect(&notifications, &NotificationManager::desktopPopupRequested,
-                     &notifPopup, [&notifPopup, &window](const QString &title, const QString &message, const QString &token) {
-        // Position at bottom-right of primary screen
-        QScreen *screen = QApplication::primaryScreen();
-        if (!screen) return;
-        QRect screenGeom = screen->availableGeometry();
-        QPoint pos(screenGeom.right() - notifPopup.width() - 16,
-                   screenGeom.bottom() - notifPopup.height() - 16);
-        notifPopup.showNotification(title, message, token, pos);
-    });
-    QObject::connect(&notifPopup, &NotificationPopup::clicked,
+                     &notifStack, &NotificationStack::notify);
+    QObject::connect(&notifStack, &NotificationStack::clicked,
                      &window, [&window](const QString &token) {
         window.openConversation(token);
     });

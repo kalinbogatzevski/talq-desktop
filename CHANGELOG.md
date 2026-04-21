@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Notifications
+- **Notification stack** — multiple toasts no longer overwrite each other. New `NotificationStack` widget stacks popups bottom-up on the primary screen, caps at 4 visible, ages out the oldest when a 5th arrives. Rapid repeats from the same conversation (within 3 s) coalesce into "N new messages" instead of stacking separately.
+- Clicking any toast opens that conversation + removes that specific toast; the rest reposition to fill the gap.
+
+### Platform / support
+- **AppData writability probe at startup** — if the app can't write to its data folder (common on corporate Windows profiles where Roaming is redirected to an unreachable network share), a `QMessageBox` surfaces the path and explains what's wrong, instead of silently running with broken caching.
+
 ### Chat header icon polish
 - All five header icons (video, phone, search, bell, info) render at matching optical size (16 px for SVGs, 18 px font for glyphs).
 - Phone + video redrawn from tight-viewBox inline SVGs with stroke-widths compensated for aspect-ratio differences, so both land at ~1.4 px rendered stroke and match the Fluent Icons weight.
