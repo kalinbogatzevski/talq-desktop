@@ -24,6 +24,8 @@
 #include <QRegularExpression>
 #include <QMenu>
 #include <QAction>
+#include <QFutureWatcher>
+#include <QtConcurrent>
 #include <cmath>
 #include <QCursor>
 
@@ -100,16 +102,34 @@ protected:
         if (source->hasImage()) {
             QImage img = qvariant_cast<QImage>(source->imageData());
             if (!img.isNull()) {
-                // Save to temp file and send via model
-                QString dir = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
-                QString path = dir + "/talq_paste_" + QString::number(QDateTime::currentMSecsSinceEpoch()) + ".png";
-                if (!img.save(path, "PNG")) {
-                    qWarning() << "paste: failed to save image to" << path;
-                    QMessageBox::warning(m_owner, tr("Paste failed"),
-                        tr("Could not save pasted image to temporary file:\n%1").arg(path));
-                    return;
-                }
-                m_owner->showPendingFile(path);
+                const QString dir = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
+                const QString path = dir + QStringLiteral("/talq_paste_")
+                                   + QString::number(QDateTime::currentMSecsSinceEpoch())
+                                   + QStringLiteral(".png");
+
+                // Immediate feedback — show "Preparing image…" so the user
+                // knows something's happening. Large pastes used to freeze
+                // the UI while PNG encoding ran on the main thread.
+                m_owner->showPendingEncoding();
+
+                auto *watcher = new QFutureWatcher<bool>(m_owner);
+                QObject::connect(watcher, &QFutureWatcher<bool>::finished, m_owner,
+                    [owner = m_owner, watcher, path]() {
+                        const bool ok = watcher->result();
+                        watcher->deleteLater();
+                        if (!ok) {
+                            owner->cancelPendingFile();
+                            qWarning() << "paste: failed to save image to" << path;
+                            QMessageBox::warning(owner, tr("Paste failed"),
+                                tr("Could not save pasted image to temporary file:\n%1")
+                                    .arg(path));
+                            return;
+                        }
+                        owner->showPendingFile(path);
+                    });
+                watcher->setFuture(QtConcurrent::run([img, path]() {
+                    return img.save(path, "PNG");
+                }));
                 return;
             }
         }
@@ -452,19 +472,33 @@ void ComposerWidget::showPendingFile(const QString &path)
     QFileInfo fi(path);
     m_pendingName->setText(fi.fileName());
 
-    // Show thumbnail for images
+    // Clear any "Preparing image…" styling left from showPendingEncoding().
+    m_pendingPreview->setText(QString());
+    m_pendingPreview->setStyleSheet("background: #1a1613; border-radius: 6px;");
+
     QImage img(path);
     if (!img.isNull()) {
         QPixmap pix = QPixmap::fromImage(img.scaled(48, 48, Qt::KeepAspectRatio, Qt::SmoothTransformation));
         m_pendingPreview->setPixmap(pix);
     } else {
         m_pendingPreview->setText("\U0001F4C4");
-        m_pendingPreview->setStyleSheet("background: #222220; border-radius: 6px; font-size: 24px;");
+        m_pendingPreview->setStyleSheet("background: #1a1613; border-radius: 6px; font-size: 24px;");
     }
 
     m_pendingBar->show();
-    m_input->setPlaceholderText("Add a caption...");
+    m_input->setPlaceholderText(tr("Add a caption\u2026"));
     m_input->setFocus();
+}
+
+void ComposerWidget::showPendingEncoding()
+{
+    m_pendingFilePath.clear();
+    m_pendingPreview->setPixmap(QPixmap());
+    m_pendingPreview->setText(QStringLiteral("\u23F3"));                       // ⏳ hourglass
+    m_pendingPreview->setStyleSheet(
+        "background: #1a1613; border-radius: 6px; color: #14b8a6; font-size: 22px;");
+    m_pendingName->setText(tr("Preparing image\u2026"));
+    m_pendingBar->show();
 }
 
 void ComposerWidget::confirmSendFile()

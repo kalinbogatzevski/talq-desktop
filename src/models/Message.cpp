@@ -32,7 +32,7 @@ Message Message::fromJson(const QJsonObject &json)
             if (type == "user" || type == "call" || type == "guest") {
                 // Wrap in styled span for rich text rendering
                 m.message.replace(placeholder,
-                    "<b style='color:#2ec4b6'>@" + name.toHtmlEscaped() + "</b>");
+                    "<b style='color:#14b8a6'>@" + name.toHtmlEscaped() + "</b>");
             } else if (type == "file") {
                 m.fileName = param["name"].toString();
                 m.fileMimetype = param["mimetype"].toString();
@@ -50,7 +50,7 @@ Message Message::fromJson(const QJsonObject &json)
                     m.message.replace(placeholder, "");  // image will show as preview
                 } else {
                     m.message.replace(placeholder,
-                        "<b style='color:#2ec4b6'>\xF0\x9F\x93\x84 " + name.toHtmlEscaped() + "</b>");
+                        "<b style='color:#14b8a6'>\xF0\x9F\x93\x84 " + name.toHtmlEscaped() + "</b>");
                 }
             } else {
                 m.message.replace(placeholder, name);
