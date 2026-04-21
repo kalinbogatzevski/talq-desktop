@@ -1,7 +1,10 @@
 #include "HeaderPainter.h"
 #include "core/ApiClient.h"
+#include <QFile>
+#include <QHash>
 #include <QPainter>
 #include <QPainterPath>
+#include <QSvgRenderer>
 #include <QPaintEvent>
 #include <QMouseEvent>
 #include <QHoverEvent>
@@ -239,30 +242,9 @@ void HeaderPainter::paintEvent(QPaintEvent *)
     // Compute right-side content first so we know where text area ends
     qreal rightX = w - padRight;
 
-    // Loading spinner placeholder (simple text)
-    if (m_loading && m_messageCount == 0) {
-        // BusyIndicator equivalent: just show "..." for now
-        QFont smallFont;
-        smallFont.setPixelSize(m_theme.fontSizeTiny);
-        painter->setFont(smallFont);
-        painter->setPen(m_theme.accent);
-        QString loadText = QStringLiteral("\u2022\u2022\u2022");
-        QFontMetrics fm(smallFont);
-        qreal textW = fm.horizontalAdvance(loadText);
-        rightX -= textW + spacing;
-        painter->drawText(QRectF(rightX, 0, textW, h), Qt::AlignCenter, loadText);
-    } else if (m_loading && m_messageCount > 0) {
-        // Sync indicator
-        QFont smallFont;
-        smallFont.setPixelSize(14);
-        painter->setFont(smallFont);
-        painter->setPen(m_theme.textMuted);
-        QString syncText = QStringLiteral("\u21BB");  // ↻
-        QFontMetrics fm(smallFont);
-        qreal textW = fm.horizontalAdvance(syncText);
-        rightX -= textW + spacing;
-        painter->drawText(QRectF(rightX, 0, textW, h), Qt::AlignCenter, syncText);
-    }
+    // Background polling doesn't need a header indicator — the sidebar row
+    // already surfaces new-message state. Earlier builds drew "•••" or "↻"
+    // here; both read as out-of-place menu chrome next to the call buttons.
 
     // Active call indicator
     if (m_callState > 0) {
@@ -490,51 +472,81 @@ void HeaderPainter::paintCallButton(QPainter *p, const QRectF &rect, const QColo
     // to a missing-glyph box on systems that lack the expected Fluent/MDL2
     // codepoint. Other icons (search, bell, info) use the font path — those
     // are common enough to render reliably everywhere we ship.
+    // Phone + video rendered from Feather-style SVGs with viewBoxes already
+    // trimmed to their content bounds, so neither has empty padding inside
+    // the rendered rect. Tinted + cached per color.
+    //   phone: content lives in roughly (2,2)–(22,22) of the 24x24 original
+    //   video: content lives in (1,5)–(23,19) of the 24x24 original
+    // Both rendered at 18x18 with "preserve aspect but crop empty padding"
+    // behaviour — the video path is wider than tall, so for visual parity
+    // with the square phone we render it centred in an 18-tall band.
+    auto renderTintedSvg = [&](const QByteArray &inlineFallback,
+                                const char *resourcePath,
+                                QHash<QString, QByteArray> *cache,
+                                qreal targetH) {
+        const QString colorKey = drawColor.name(QColor::HexRgb);
+        auto it = cache->find(colorKey);
+        if (it == cache->end()) {
+            QByteArray data = inlineFallback;
+            if (resourcePath) {
+                QFile f(QString::fromLatin1(resourcePath));
+                if (f.open(QIODevice::ReadOnly)) data = f.readAll();
+            }
+            data.replace("#e0e0e0", colorKey.toUtf8());
+            it = cache->insert(colorKey, data);
+        }
+        QSvgRenderer svg(it.value());
+        const QSizeF vb = svg.viewBoxF().size();
+        const qreal aspect = vb.isEmpty() ? 1.0 : vb.width() / vb.height();
+        const qreal h = targetH;
+        const qreal w = h * aspect;
+        svg.render(p, QRectF(c.x() - w / 2, c.y() - h / 2, w, h));
+    };
+
+    // Target visual height for SVG icons. The font glyphs below are
+    // pixelSize 18; Segoe Fluent typically renders ~14px of visible glyph
+    // inside that, so 16 here ends up reading at the same optical size.
+    constexpr qreal kSvgH = 16.0;
+
     if (icon == QStringLiteral("\uE717")) {
-        // Telephone handset — rounded tilted rectangle with two dots.
-        p->save();
-        p->translate(c);
-        p->rotate(-35);
-        QPen pen(drawColor, 1.8, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
-        p->setPen(pen);
-        p->setBrush(Qt::NoBrush);
-        const qreal hw = 5.5, hh = 9.5;
-        QRectF body(-hw, -hh, hw * 2, hh * 2);
-        p->drawRoundedRect(body, 2.8, 2.8);
-        // Earpiece + microphone dots
-        p->setBrush(drawColor);
-        p->setPen(Qt::NoPen);
-        p->drawEllipse(QPointF(0, -hh + 2.4), 1.2, 1.2);
-        p->drawEllipse(QPointF(0,  hh - 2.4), 1.2, 1.2);
-        p->restore();
+        static QHash<QString, QByteArray> phoneCache;
+        // Stroke picked so the rendered stroke-width matches the video
+        // icon at the same display height: both land at ~1.4 px on screen.
+        static const QByteArray phoneSvg = QByteArrayLiteral(
+            "<svg xmlns='http://www.w3.org/2000/svg' viewBox='2 2 20 20' "
+            "fill='none' stroke='#e0e0e0' stroke-width='1.75' "
+            "stroke-linecap='round' stroke-linejoin='round'>"
+            "<path d='M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 "
+            "19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3 "
+            "a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91 "
+            "a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7 "
+            "A2 2 0 0 1 22 16.92z'/></svg>");
+        renderTintedSvg(phoneSvg, nullptr, &phoneCache, kSvgH);
         return;
     }
     if (icon == QStringLiteral("\uE714")) {
-        // Video camera — rounded body + small triangle lens on the right.
-        p->save();
-        QPen pen(drawColor, 1.8, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
-        p->setPen(pen);
-        p->setBrush(Qt::NoBrush);
-        QRectF body(c.x() - 8, c.y() - 5, 12, 10);
-        p->drawRoundedRect(body, 2.2, 2.2);
-        // Lens wedge — a simple triangle pointing right
-        QPainterPath wedge;
-        wedge.moveTo(body.right(),           c.y() - 3.2);
-        wedge.lineTo(body.right() + 4.8,     c.y() - 4.6);
-        wedge.lineTo(body.right() + 4.8,     c.y() + 4.6);
-        wedge.lineTo(body.right(),           c.y() + 3.2);
-        wedge.closeSubpath();
-        p->drawPath(wedge);
-        p->restore();
+        static QHash<QString, QByteArray> videoCache;
+        // Video's viewBox is taller-relative (14 tall vs phone's 20), so it
+        // scales up more at the same display height — stroke-width is
+        // reduced to compensate so the rendered stroke matches phone's.
+        static const QByteArray videoSvg = QByteArrayLiteral(
+            "<svg xmlns='http://www.w3.org/2000/svg' viewBox='1 5 22 14' "
+            "fill='none' stroke='#e0e0e0' stroke-width='1.25' "
+            "stroke-linecap='round' stroke-linejoin='round'>"
+            "<polygon points='23 7 16 12 23 17 23 7'/>"
+            "<rect x='1' y='5' width='15' height='14' rx='2' ry='2'/>"
+            "</svg>");
+        renderTintedSvg(videoSvg, nullptr, &videoCache, kSvgH);
         return;
     }
 
-    // Text glyphs (search, bell, info…) via Segoe Fluent / MDL2.
+    // Text glyphs (search, bell, info) via Segoe Fluent / MDL2. Pixel size
+    // picked to match the 18 px visual height of the tight SVGs.
     QFont iconFont(QStringLiteral("Segoe Fluent Icons"));
     iconFont.insertSubstitutions(QStringLiteral("Segoe Fluent Icons"),
                                  {QStringLiteral("Segoe MDL2 Assets"),
                                   QStringLiteral("Segoe UI Symbol")});
-    iconFont.setPixelSize(15);
+    iconFont.setPixelSize(18);
     p->setFont(iconFont);
     p->setPen(drawColor);
     p->drawText(rect, Qt::AlignCenter, icon);
