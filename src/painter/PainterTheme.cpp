@@ -5,44 +5,44 @@
 
 // 8-color palette matching MessageBubble.qml authorColor()
 static const QColor s_authorPalette[] = {
-    QColor("#2ec4b6"), QColor("#e07060"), QColor("#f0a050"), QColor("#5ec76a"),
+    QColor("#14b8a6"), QColor("#e07060"), QColor("#f0a050"), QColor("#5ec76a"),
     QColor("#9b7cd4"), QColor("#e87aae"), QColor("#50b8c8"), QColor("#5a9ecf")
 };
 
 // 6-color topic palette matching Theme.qml topicPalette
 static const QColor s_topicPalette[] = {
-    QColor("#2ec4b6"), QColor("#e07060"), QColor("#f0a050"),
+    QColor("#14b8a6"), QColor("#e07060"), QColor("#f0a050"),
     QColor("#5ec76a"), QColor("#9b7cd4"), QColor("#e87aae")
 };
 
 PainterTheme::PainterTheme(bool darkMode, qreal fontScale)
     : m_fontScale(fontScale)
 {
-    // ── Backgrounds ──
-    bgPrimary    = darkMode ? QColor("#121210") : QColor("#ffffff");
-    bgSecondary  = darkMode ? QColor("#1a1a16") : QColor("#f5f5f2");
-    bgSidebar    = darkMode ? QColor("#181814") : QColor("#f0f0ed");
-    bgSelected   = darkMode ? QColor("#33332e") : QColor("#e4e4de");
-    bgMessageOwn = darkMode ? QColor("#1a302e") : QColor("#d4f0ed");
-    bgSurface    = darkMode ? QColor("#222220") : QColor("#ffffff");
-    bgHover      = darkMode ? QColor("#2c2c28") : QColor("#eeeee8");
+    // ── Backgrounds — warm dispatch, paper-like depth ──
+    bgPrimary    = darkMode ? QColor("#141210") : QColor("#fbf9f5");
+    bgSecondary  = darkMode ? QColor("#1a1613") : QColor("#f3f0e9");
+    bgSidebar    = darkMode ? QColor("#18140f") : QColor("#ede9e1");
+    bgSelected   = darkMode ? QColor("#2a211a") : QColor("#ded8cb");
+    bgMessageOwn = darkMode ? QColor("#1c3330") : QColor("#d4ebe7");
+    bgSurface    = darkMode ? QColor("#221d19") : QColor("#ffffff");
+    bgHover      = darkMode ? QColor("#241f1a") : QColor("#ebe6dd");
 
-    // ── Text ──
-    textPrimary   = darkMode ? QColor("#e4e0da") : QColor("#1a1a16");
-    textSecondary = darkMode ? QColor("#8a8680") : QColor("#6b6860");
-    textTime      = darkMode ? QColor("#6a665e") : QColor("#9a968e");
-    textMuted     = darkMode ? QColor("#5a5850") : QColor("#b0aca5");
+    // ── Text — warmer cream on dark ──
+    textPrimary   = darkMode ? QColor("#f4efe6") : QColor("#1a1613");
+    textSecondary = darkMode ? QColor("#a8a096") : QColor("#65605a");
+    textTime      = darkMode ? QColor("#7a726a") : QColor("#8e887f");
+    textMuted     = darkMode ? QColor("#5a5348") : QColor("#b0aca5");
 
-    // ── Accents ──
-    accent      = darkMode ? QColor("#2ec4b6") : QColor("#1aab9d");
-    unreadBadge = darkMode ? QColor("#2ec4b6") : QColor("#1aab9d");
+    // ── Accents — teal primary, amber secondary for emphasis ──
+    accent      = darkMode ? QColor("#14b8a6") : QColor("#0d9488");
+    unreadBadge = darkMode ? QColor("#14b8a6") : QColor("#0d9488");
     online      = QColor("#5ec76a");
-    danger      = QColor("#e06060");
+    danger      = QColor("#e8866b");
     success     = QColor("#5ec76a");
-    systemMsg   = darkMode ? QColor("#6a665e") : QColor("#9a968e");
+    systemMsg   = darkMode ? QColor("#7a726a") : QColor("#8e887f");
 
-    // ── Borders ──
-    divider = darkMode ? QColor("#222220") : QColor("#eeeee8");
+    // ── Borders — warm-tinted so panels don't read as gray ──
+    divider = darkMode ? QColor("#2a241f") : QColor("#e8e2d6");
 
     // ── Font sizes ──
     fontSizeTiny   = qRound(11 * fontScale);
@@ -116,16 +116,25 @@ QString PainterTheme::formatPreviewText(const QString &author, const QString &me
     return author + QStringLiteral(": ") + message;
 }
 
+static QFont interFont()
+{
+    // Inter is registered in main.cpp. If the registration failed for some
+    // reason, Qt's default font is used as a silent fallback.
+    QFont f(QStringLiteral("Inter"));
+    f.setHintingPreference(QFont::PreferFullHinting);
+    return f;
+}
+
 QFont PainterTheme::bodyFont() const
 {
-    QFont f;
+    QFont f = interFont();
     f.setPixelSize(fontSizeNormal);
     return f;
 }
 
 QFont PainterTheme::nameFont() const
 {
-    QFont f;
+    QFont f = interFont();
     f.setPixelSize(fontSizeSmall);
     f.setWeight(QFont::DemiBold);
     return f;
@@ -133,14 +142,14 @@ QFont PainterTheme::nameFont() const
 
 QFont PainterTheme::timeFont() const
 {
-    QFont f;
+    QFont f = interFont();
     f.setPixelSize(fontSizeTiny);
     return f;
 }
 
 QFont PainterTheme::systemFont() const
 {
-    QFont f;
+    QFont f = interFont();
     f.setPixelSize(fontSizeTiny);
     f.setItalic(true);
     return f;
@@ -148,7 +157,7 @@ QFont PainterTheme::systemFont() const
 
 QFont PainterTheme::dateSepFont() const
 {
-    QFont f;
+    QFont f = interFont();
     f.setPixelSize(fontSizeTiny);
     f.setWeight(QFont::DemiBold);
     return f;

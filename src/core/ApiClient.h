@@ -15,6 +15,7 @@
 #include "NcFileEntry.h"
 #include "NcUser.h"
 #include "Reminder.h"
+#include "RoomParticipant.h"
 #include "SearchHit.h"
 
 /**
@@ -135,6 +136,48 @@ public:
 
     // Add a user to an existing room.
     void addRoomParticipant(const QString &token, const QString &userId,
+                            QObject *context,
+                            std::function<void(bool ok, const QString &error)> callback);
+
+    // Room management — rename, description, delete, leave.
+    void setRoomName(const QString &token, const QString &name,
+                     QObject *context,
+                     std::function<void(bool ok, const QString &error)> callback);
+    void setRoomDescription(const QString &token, const QString &description,
+                            QObject *context,
+                            std::function<void(bool ok, const QString &error)> callback);
+    void deleteRoom(const QString &token, QObject *context,
+                    std::function<void(bool ok, const QString &error)> callback);
+    void leaveRoom(const QString &token, QObject *context,
+                   std::function<void(bool ok, const QString &error)> callback);
+
+    // Participants.
+    void fetchRoomParticipants(const QString &token, QObject *context,
+                               std::function<void(bool ok,
+                                                  const QVector<RoomParticipant> &)> callback);
+    void removeRoomParticipant(const QString &token, qint64 attendeeId,
+                               QObject *context,
+                               std::function<void(bool ok, const QString &error)> callback);
+
+    // Promote a user-type participant to moderator (or demote back).
+    void promoteModerator(const QString &token, qint64 attendeeId,
+                          QObject *context,
+                          std::function<void(bool ok, const QString &error)> callback);
+    void demoteModerator(const QString &token, qint64 attendeeId,
+                         QObject *context,
+                         std::function<void(bool ok, const QString &error)> callback);
+
+    // Send a chat message and get its new server-side id back — used to
+    // seed a topic/thread root when the user hasn't typed anything yet.
+    void sendChatMessage(const QString &token, const QString &text,
+                         QObject *context,
+                         std::function<void(bool ok, int messageId,
+                                            const QString &error)> callback);
+
+    // Set the title on a thread rooted at `messageId`. This is what makes a
+    // message a named topic instead of just a reply-thread.
+    void setChatThreadTitle(const QString &token, int messageId,
+                            const QString &title,
                             QObject *context,
                             std::function<void(bool ok, const QString &error)> callback);
 

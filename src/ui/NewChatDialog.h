@@ -5,23 +5,23 @@
 #include "core/NcUser.h"
 
 class ApiClient;
-class QButtonGroup;
 class QLabel;
 class QLineEdit;
 class QListWidget;
 class QListWidgetItem;
 class QPushButton;
-class QRadioButton;
+class QScrollArea;
 class QTimer;
 class QWidget;
+class QHBoxLayout;
 
 /**
- * Dialog for creating a new Nextcloud Talk room. Two modes: Direct (pick a
- * single user → one-to-one room) and Group (name + multi-select users →
- * private group).
+ * Create a new Nextcloud Talk room.
  *
- * On accept, the created room's token is available via createdToken();
- * caller opens that conversation.
+ * Direct tab — one click on a person starts a 1-on-1.
+ * Group tab  — name the group; added people show as removable chips
+ *              above the search. Click a result to add (row gets a
+ *              ✓), click a chip to remove.
  */
 class NewChatDialog : public QDialog
 {
@@ -32,31 +32,38 @@ public:
     QString createdToken() const { return m_createdToken; }
 
 private slots:
-    void onModeChanged();
-    void onSearchTextChanged();
-    void onResultDoubleClicked(QListWidgetItem *item);
+    void onResultClicked(QListWidgetItem *item);
     void onCreateClicked();
 
 private:
+    void setMode(bool group);
     void runSearch();
-    void refreshSelectedView();
-    void setStatus(const QString &text, bool isError = false);
+    void rebuildChips();
+    void refreshCreateEnabled();
+    void addResultRow(const NcUser &u);
+    void replaceResultRow(QListWidgetItem *item, const NcUser &u);
+    bool isPicked(const QString &id) const;
 
     ApiClient    *m_api = nullptr;
-    QRadioButton *m_directRadio = nullptr;
-    QRadioButton *m_groupRadio = nullptr;
-    QWidget      *m_groupNameRow = nullptr;
-    QLineEdit    *m_groupNameEdit = nullptr;
+    QPushButton  *m_directTab = nullptr;
+    QPushButton  *m_groupTab  = nullptr;
+
+    QWidget      *m_groupNameBlock = nullptr;
+    QLineEdit    *m_groupNameEdit  = nullptr;
+
+    QWidget      *m_chipsBlock   = nullptr;
+    QLabel       *m_chipsEyebrow = nullptr;
+    QScrollArea  *m_chipsScroll  = nullptr;
+    QWidget      *m_chipsHost    = nullptr;
+    QHBoxLayout  *m_chipsLayout  = nullptr;
+
     QLineEdit    *m_searchEdit = nullptr;
-    QListWidget  *m_results = nullptr;
-    QLabel       *m_selectedLabel = nullptr;
-    QPushButton  *m_createBtn = nullptr;
-    QPushButton  *m_cancelBtn = nullptr;
-    QLabel       *m_status = nullptr;
+    QListWidget  *m_results    = nullptr;
+    QLabel       *m_status     = nullptr;
+    QPushButton  *m_createBtn  = nullptr;
+    QPushButton  *m_cancelBtn  = nullptr;
     QTimer       *m_searchDebounce = nullptr;
 
-    // Selected users (Direct: exactly one; Group: any number).
     QVector<NcUser> m_selected;
-
-    QString       m_createdToken;
+    QString         m_createdToken;
 };

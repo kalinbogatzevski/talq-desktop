@@ -38,6 +38,7 @@
 #include "core/TalqLog.h"
 #include "ui/MainWindow.h"
 #include "ui/NotificationPopup.h"
+#include <QFontDatabase>
 #include <gst/gst.h>
 
 int main(int argc, char *argv[])
@@ -123,6 +124,21 @@ int main(int argc, char *argv[])
     // EmojiData reads/writes recents via QSettings — must run after
     // setApplicationName/setOrganizationName so the right storage is used.
     EmojiData::initialize();
+
+    // Bundled body font — Inter (SIL OFL). Registered once for the whole
+    // app so every widget inherits a consistent, screen-optimised type.
+    {
+        int id = QFontDatabase::addApplicationFont(QStringLiteral(":/fonts/Inter.ttf"));
+        if (id >= 0) {
+            const auto families = QFontDatabase::applicationFontFamilies(id);
+            if (!families.isEmpty()) {
+                QFont inter(families.first());
+                inter.setPixelSize(13);
+                inter.setHintingPreference(QFont::PreferFullHinting);
+                QApplication::setFont(inter);
+            }
+        }
+    }
 #ifdef TALQ_BUILD_TS
     app.setApplicationVersion(TALQ_VERSION "-" TALQ_BUILD_TS);
 #else

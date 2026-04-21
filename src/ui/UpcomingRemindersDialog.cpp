@@ -20,17 +20,18 @@ UpcomingRemindersDialog::UpcomingRemindersDialog(ApiClient *api, QWidget *parent
     setWindowTitle(tr("Upcoming reminders"));
     resize(520, 420);
     setStyleSheet(
-        "QDialog { background: #1a1a18; color: #e4e0da; }"
-        "QLabel { color: #e4e0da; }"
-        "QListWidget { background: #222220; border: 1px solid #2a2a26;"
-        " border-radius: 6px; color: #e4e0da; padding: 4px; }"
-        "QListWidget::item { padding: 10px 12px; border-radius: 4px; }"
-        "QListWidget::item:hover { background: #2a2a26; }"
-        "QListWidget::item:selected { background: #2a2a26; }"
-        "QPushButton { background: #2a2a26; color: #e4e0da; border: none;"
-        " border-radius: 6px; padding: 6px 16px; font-size: 13px; }"
-        "QPushButton:hover { background: #3a3a34; }"
-        "QPushButton#danger { color: #ff6b6b; }"
+        "QDialog { background: #141210; color: #f4efe6; }"
+        "QLabel  { color: #f4efe6; }"
+        "QListWidget { background: #1a1613; border: 1px solid #2a241f;"
+        "  border-radius: 12px; color: #f4efe6; padding: 4px; outline: none; }"
+        "QListWidget::item { padding: 10px 12px; border-radius: 8px; color: #f4efe6; }"
+        "QListWidget::item:hover    { background: #241f1a; }"
+        "QListWidget::item:selected { background: #241f1a; }"
+        "QPushButton { background: #241f1a; color: #f4efe6; border: none;"
+        "  border-radius: 8px; padding: 8px 16px; font-size: 13px; font-weight: 500; }"
+        "QPushButton:hover   { background: #2e271f; }"
+        "QPushButton:pressed { background: #2a241f; }"
+        "QPushButton#danger  { color: #e8866b; }"
     );
 
     auto *outer = new QVBoxLayout(this);
