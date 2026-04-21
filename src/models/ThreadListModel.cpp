@@ -113,11 +113,21 @@ void ThreadListModel::setConversationToken(const QString &token)
     m_token = token;
     emit tokenChanged();
 
+    // Blank the list immediately — without this, the previous room's topics
+    // stay visible (and also gate out the cache path, which bails when
+    // m_threads isn't empty).
+    const bool hadTopics = m_threads.size() > 1;
+    beginResetModel();
+    m_threads.clear();
+    endResetModel();
+    emit countChanged();
+    if (hadTopics) emit hasTopicsChanged();
+
     if (!m_token.isEmpty()) {
-        // Load from cache first for instant display
+        // Cache load is async and paints instantly when it returns;
+        // fetchThreads then overwrites with fresh server data.
         if (m_cache)
             m_cache->loadThreadIndex(m_token);
-        // Then fetch from API for fresh data
         fetchThreads();
     }
 }

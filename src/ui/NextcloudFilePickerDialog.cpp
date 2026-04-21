@@ -37,19 +37,23 @@ NextcloudFilePickerDialog::NextcloudFilePickerDialog(ApiClient *api, QWidget *pa
     setWindowTitle(tr("Share from Nextcloud"));
     resize(640, 480);
     setStyleSheet(
-        "QDialog { background: #1a1a18; color: #e4e0da; }"
-        "QLabel { color: #e4e0da; }"
-        "QListWidget { background: #222220; border: 1px solid #2a2a26; border-radius: 6px;"
-        "  color: #e4e0da; padding: 4px; }"
-        "QListWidget::item { padding: 8px 12px; border-radius: 4px; }"
-        "QListWidget::item:hover { background: #2a2a26; }"
-        "QListWidget::item:selected { background: #2ec4b6; color: white; }"
-        "QPushButton { background: #2a2a26; color: #e4e0da; border: none;"
-        "  border-radius: 6px; padding: 6px 16px; font-size: 13px; }"
-        "QPushButton:hover { background: #3a3a34; }"
-        "QPushButton#share { background: #2ec4b6; color: white; }"
-        "QPushButton#share:hover { background: #3dd4c6; }"
-        "QPushButton#share:disabled { background: #2a2a26; color: #8a8680; }"
+        "QDialog { background: #141210; color: #f4efe6; }"
+        "QLabel  { color: #f4efe6; }"
+        "QListWidget { background: #1a1613; border: 1px solid #2a241f;"
+        "  border-radius: 12px; color: #f4efe6; padding: 4px; outline: none; }"
+        "QListWidget::item { padding: 8px 12px; border-radius: 8px; color: #f4efe6; }"
+        "QListWidget::item:hover    { background: #241f1a; }"
+        "QListWidget::item:selected { background: #14b8a6; color: #0e1817; }"
+        "QPushButton { background: #241f1a; color: #f4efe6; border: none;"
+        "  border-radius: 8px; padding: 8px 16px; font-size: 13px; font-weight: 500; }"
+        "QPushButton:hover   { background: #2e271f; }"
+        "QPushButton:pressed { background: #2a241f; }"
+        "QPushButton#share   { background: #14b8a6; color: #0e1817;"
+        "  font-weight: 700; letter-spacing: 0.5px;"
+        "  text-transform: uppercase; font-size: 12px; padding: 8px 18px; }"
+        "QPushButton#share:hover    { background: #2dd4bf; }"
+        "QPushButton#share:pressed  { background: #0d9488; }"
+        "QPushButton#share:disabled { background: #1c2b2a; color: #546361; }"
     );
 
     auto *outer = new QVBoxLayout(this);
@@ -134,9 +138,9 @@ void NextcloudFilePickerDialog::rebuildBreadcrumb()
             ? QStringLiteral("QPushButton { color: #e4e0da; font-weight: 600; padding: 4px 6px;"
                              " background: transparent; border: none; }"
                              "QPushButton:disabled { color: #e4e0da; }")
-            : QStringLiteral("QPushButton { color: #2ec4b6; padding: 4px 6px;"
+            : QStringLiteral("QPushButton { color: #14b8a6; padding: 4px 6px;"
                              " background: transparent; border: none; text-decoration: underline; }"
-                             "QPushButton:hover { color: #3dd4c6; }"));
+                             "QPushButton:hover { color: #2dd4bf; }"));
         if (!active) {
             connect(btn, &QPushButton::clicked, this, [this, target]() { navigateTo(target); });
         }

@@ -35,6 +35,7 @@ public:
         UserStatusIconRole,
         HasTopicsRole,
         NotificationLevelRole,
+        ParticipantTypeRole,
     };
 
     explicit ConversationListModel(ApiClient *api, QObject *parent = nullptr);

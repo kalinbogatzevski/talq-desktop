@@ -6,7 +6,9 @@
 #include "SelectionBarWidget.h"
 #include "ConversationPickerDialog.h"
 #include "ImageViewerDialog.h"
+#include "ConversationInfoDialog.h"
 #include "NewChatDialog.h"
+#include "TopicTabBar.h"
 #include "UpcomingRemindersDialog.h"
 #include "painter/ChatPainter.h"
 #include "painter/SidebarPainter.h"
@@ -230,28 +232,33 @@ void MainWindow::buildChatPage()
     sidebarLayout->setContentsMargins(0, 0, 0, 0);
     sidebarLayout->setSpacing(0);
 
+    // Warm-dispatch search field — pill-shaped, low-contrast until focused.
     m_searchField = new QLineEdit(sidebarCol);
-    m_searchField->setPlaceholderText("Search conversations...");
+    m_searchField->setPlaceholderText(tr("Search conversations\u2026"));
     m_searchField->setMinimumHeight(32);
-    QFont sf; sf.setPixelSize(12);
-    m_searchField->setFont(sf);
-    m_searchField->setContentsMargins(6, 4, 6, 4);
+    m_searchField->setStyleSheet(
+        "QLineEdit { background: #1f1b17; border: 1px solid #2a241f;"
+        "  border-radius: 16px; padding: 4px 14px; font-size: 13px;"
+        "  color: #f4efe6; }"
+        "QLineEdit:focus { border-color: #14b8a6; background: #221e1a; }"
+    );
 
-    // Home button — placed to the left of the search field
-    m_homeBtn = new QPushButton(QStringLiteral("\U0001F3E0"), sidebarCol);
-    m_homeBtn->setFlat(true);
+    m_homeBtn = new QPushButton(QStringLiteral("\uE80F"), sidebarCol);  // Home
     m_homeBtn->setFixedSize(32, 32);
+    m_homeBtn->setFocusPolicy(Qt::NoFocus);
     m_homeBtn->setCursor(Qt::PointingHandCursor);
     m_homeBtn->setToolTip(tr("Home"));
     m_homeBtn->setStyleSheet(
-        "QPushButton { background: transparent; font-size: 16px; color: #ccc; border: none; }"
-        "QPushButton:hover { background: rgba(255,255,255,0.08); border-radius: 6px; }"
+        "QPushButton { background: transparent; color: #a8a096; border: none;"
+        "  border-radius: 8px; font-size: 14px;"
+        "  font-family: 'Segoe Fluent Icons', 'Segoe MDL2 Assets', 'Segoe UI Symbol'; }"
+        "QPushButton:hover { background: #241f1a; color: #f4efe6; }"
     );
 
     m_searchRow = new QWidget(sidebarCol);
     auto *searchRowLayout = new QHBoxLayout(m_searchRow);
-    searchRowLayout->setContentsMargins(0, 0, 0, 0);
-    searchRowLayout->setSpacing(2);
+    searchRowLayout->setContentsMargins(10, 6, 10, 6);
+    searchRowLayout->setSpacing(6);
     searchRowLayout->addWidget(m_homeBtn);
     searchRowLayout->addWidget(m_searchField, 1);
     auto *searchRow = m_searchRow;
@@ -259,41 +266,48 @@ void MainWindow::buildChatPage()
     // ── User profile header ──
     m_profileBar = new QWidget(sidebarCol);
     auto *profileBar = m_profileBar;
-    profileBar->setFixedHeight(52);
-    profileBar->installEventFilter(this);  // for paint
+    profileBar->setFixedHeight(56);
+    profileBar->installEventFilter(this);
 
     auto *profileLayout = new QHBoxLayout(profileBar);
-    profileLayout->setContentsMargins(12, 8, 12, 8);
+    profileLayout->setContentsMargins(14, 10, 10, 10);
     profileLayout->setSpacing(10);
 
-    // Avatar label (will be painted by SidebarPainter's avatar cache)
     auto *profileAvatar = new QLabel(profileBar);
     profileAvatar->setFixedSize(36, 36);
-    profileAvatar->setStyleSheet("border-radius: 18px; background: #2ec4b6;");
+    profileAvatar->setStyleSheet("border-radius: 18px; background: #14b8a6;");
     profileLayout->addWidget(profileAvatar);
 
-    // Display name
     m_profileNameLabel = new QLabel(profileBar);
-    m_profileNameLabel->setStyleSheet("font-weight: bold; font-size: 14px;");
+    m_profileNameLabel->setStyleSheet(
+        "color: #f4efe6; font-size: 14px; font-weight: 600; letter-spacing: 0.1px;"
+    );
     profileLayout->addWidget(m_profileNameLabel, 1);
 
-    // New-chat button
-    auto *newChatBtn = new QPushButton(QStringLiteral("\u2795"), profileBar);  // ➕
-    newChatBtn->setFixedSize(28, 28);
-    newChatBtn->setFlat(true);
+    // Icon-font for the sidebar controls so they match the chat header.
+    const QString sidebarIconQSS =
+        "QPushButton { background: transparent; color: #a8a096; border: none;"
+        "  border-radius: 8px; font-size: 14px;"
+        "  font-family: 'Segoe Fluent Icons', 'Segoe MDL2 Assets', 'Segoe UI Symbol'; }"
+        "QPushButton:hover   { background: #241f1a; color: #f4efe6; }"
+        "QPushButton:pressed { background: #2a241f; }";
+
+    auto *newChatBtn = new QPushButton(QStringLiteral("\uE710"), profileBar);  // Add
+    newChatBtn->setFixedSize(30, 30);
+    newChatBtn->setFocusPolicy(Qt::NoFocus);
     newChatBtn->setToolTip(tr("New chat"));
-    newChatBtn->setStyleSheet("font-size: 14px; border: none; border-radius: 14px;");
     newChatBtn->setCursor(Qt::PointingHandCursor);
+    newChatBtn->setStyleSheet(sidebarIconQSS);
     profileLayout->addWidget(newChatBtn);
     connect(newChatBtn, &QPushButton::clicked, this, &MainWindow::openNewChatDialog);
 
-    // Settings button
-    m_settingsBtn = new QPushButton("\u2699", profileBar);
+    m_settingsBtn = new QPushButton(QStringLiteral("\uE713"), profileBar);     // Settings (gear)
     auto *settingsBtn = m_settingsBtn;
-    settingsBtn->setFixedSize(28, 28);
-    settingsBtn->setFlat(true);
-    settingsBtn->setStyleSheet("font-size: 16px; border: none; border-radius: 14px;");
+    settingsBtn->setFixedSize(30, 30);
+    settingsBtn->setFocusPolicy(Qt::NoFocus);
+    settingsBtn->setToolTip(tr("Settings"));
     settingsBtn->setCursor(Qt::PointingHandCursor);
+    settingsBtn->setStyleSheet(sidebarIconQSS);
     profileLayout->addWidget(settingsBtn);
 
     connect(settingsBtn, &QPushButton::clicked, this, [this]() {
@@ -412,9 +426,8 @@ void MainWindow::buildChatPage()
         m_header->setActiveThreadColor(m_activeThreadColor);
     });
 
-    connect(m_threadsPainter, &ThreadsPainter::newTopicClicked, this, [this]() {
-        // TODO: inline topic creation input
-    });
+    connect(m_threadsPainter, &ThreadsPainter::newTopicClicked,
+            this, &MainWindow::createNewTopic);
 
     // ── Chat area ──
     auto *chatCol = new QWidget(m_chatPage);
@@ -426,6 +439,17 @@ void MainWindow::buildChatPage()
     m_header->setDarkMode(m_darkMode);
     m_header->setApi(m_api);
     chatLayout->addWidget(m_header);
+
+    // Topic tabs (Telegram-style horizontal strip below the header).
+    m_topicTabBar = new TopicTabBar(chatCol);
+    m_topicTabBar->setModel(m_threads);
+    chatLayout->addWidget(m_topicTabBar);
+    connect(m_topicTabBar, &TopicTabBar::threadSelected, this,
+            [this](int threadId, const QString &title) { openThread(threadId, title); });
+    connect(m_topicTabBar, &TopicTabBar::allMessagesSelected, this,
+            &MainWindow::closeThread);
+    connect(m_topicTabBar, &TopicTabBar::newTopicRequested,
+            this, &MainWindow::createNewTopic);
 
     connect(m_header, &HeaderPainter::expandSidebarClicked, this, [this]() {
         m_sidebarSqueezed = false;
@@ -512,7 +536,7 @@ void MainWindow::buildChatPage()
     sectionLbl->setStyleSheet("font-size: 11px; font-weight: bold; color: #6a6660; letter-spacing: 1px;");
     serverLayout->addWidget(sectionLbl);
 
-    m_welcomeServerLabel = addInfoRow("\u2601", "", "#2ec4b6");
+    m_welcomeServerLabel = addInfoRow("\u2601", "", "#14b8a6");
     m_welcomeNcLabel = addInfoRow("\u24C3", "");
     m_welcomeTalkLabel = addInfoRow("\u260E", "");
     m_welcomeSignalingLabel = addInfoRow("\u26A1", "");
@@ -618,7 +642,7 @@ void MainWindow::buildChatPage()
 
     auto *ubAccent = new QWidget(m_updateBanner);
     ubAccent->setFixedWidth(3);
-    ubAccent->setStyleSheet("background: #2ec4b6;");
+    ubAccent->setStyleSheet("background: #14b8a6;");
     ubLay->addWidget(ubAccent);
 
     m_updateLabel = new QLabel(m_updateBanner);
@@ -634,13 +658,13 @@ void MainWindow::buildChatPage()
     m_updateWhatsNewBtn = new QPushButton(tr("What's new"), m_updateBanner);
     m_updateWhatsNewBtn->setFlat(true);
     m_updateWhatsNewBtn->setStyleSheet(
-        "QPushButton { color: #2ec4b6; border: none; padding: 4px 8px; }"
+        "QPushButton { color: #14b8a6; border: none; padding: 4px 8px; }"
         "QPushButton:hover { color: #5ee3d6; }");
     ubLay->addWidget(m_updateWhatsNewBtn);
 
     m_updateInstallBtn = new QPushButton(tr("Install now"), m_updateBanner);
     m_updateInstallBtn->setStyleSheet(
-        "QPushButton { background: #2ec4b6; color: #0e1817; border: none;"
+        "QPushButton { background: #14b8a6; color: #0e1817; border: none;"
         "  padding: 4px 14px; border-radius: 4px; font-weight: 600; }"
         "QPushButton:hover { background: #4edad0; }");
     ubLay->addWidget(m_updateInstallBtn);
@@ -681,13 +705,13 @@ void MainWindow::buildChatPage()
     m_uploadLabel->setStyleSheet("font-size: 12px; color: #b0aca5; background: transparent;");
     uploadLayout->addWidget(m_uploadLabel, 1);
     auto *percentLabel = new QLabel(uploadRow);
-    percentLabel->setStyleSheet("font-size: 12px; font-weight: 600; color: #2ec4b6; background: transparent;");
+    percentLabel->setStyleSheet("font-size: 12px; font-weight: 600; color: #14b8a6; background: transparent;");
     uploadLayout->addWidget(percentLabel);
     uploadOuterLayout->addWidget(uploadRow, 1);
 
     // Teal progress line (positioned absolutely at bottom of m_uploadBar)
     m_uploadProgress = new QWidget(m_uploadBar);
-    m_uploadProgress->setStyleSheet("background: #2ec4b6;");
+    m_uploadProgress->setStyleSheet("background: #14b8a6;");
     m_uploadProgress->setGeometry(0, 34, 0, 2);
 
     chatLayout->addWidget(m_uploadBar);
@@ -1103,9 +1127,12 @@ void MainWindow::buildChatPage()
         }
     });
 
-    // Topic mode detection
+    // Topics panel visibility: show in any group/public room the server allows
+    // threads in, regardless of whether topics exist yet — otherwise users
+    // can't discover the "+ New topic" button to create the first one.
     connect(m_threads, &ThreadListModel::hasTopicsChanged, this, [this]() {
-        bool active = m_threads->hasTopics() && m_auth->hasThreadsSupport();
+        const bool isGroup = m_header->conversationType() >= 2;
+        const bool active  = isGroup && m_auth->hasThreadsSupport();
         updateTopicMode(active);
     });
 
@@ -1287,6 +1314,9 @@ void MainWindow::buildSearchBar(QWidget *chatCol)
     connect(m_header, &HeaderPainter::remindersRequested,
             this, &MainWindow::openUpcomingReminders);
 
+    connect(m_header, &HeaderPainter::infoRequested,
+            this, &MainWindow::openConversationInfo);
+
     m_searchInput->installEventFilter(this);
 }
 
@@ -1435,6 +1465,12 @@ void MainWindow::onConversationSelected(const QString &token, const QString &nam
     m_header->setMessageCount(m_messages->rowCount());
     m_header->setCallsAvailable(m_callManager->callsAvailable());
     m_header->setCallsUnavailableReason(m_callManager->callsUnavailableReason());
+
+    // Show the topics panel for any group/public room once threads are
+    // supported. The panel hosts the "+ New topic" button — if we wait
+    // for m_threads to signal hasTopicsChanged, empty rooms never get it.
+    const bool topicsVisible = (convType >= 2) && m_auth->hasThreadsSupport();
+    updateTopicMode(topicsVisible);
 }
 
 void MainWindow::openThread(int threadId, const QString &title)
@@ -1463,15 +1499,14 @@ void MainWindow::updateTopicMode(bool active)
     m_isInTopicMode = active;
     m_header->setIsInTopicMode(active);
     m_messages->setHideThreadMessages(active);
-    m_threadsPanel->setVisible(active);
+    // The old 3rd column is gone — topics live in m_topicTabBar above the
+    // chat now. Keep m_threadsPanel hidden unconditionally so the two UIs
+    // don't double up.
+    m_threadsPanel->setVisible(false);
+    if (m_topicTabBar) m_topicTabBar->setVisible(active);
 
     if (active) {
-        m_sidebarSqueezed = true;
-        sidebarSqueezedChanged();
         m_conversations->setHasTopics(m_activeConvToken, true);
-        setMinimumWidth(600);
-    } else {
-        setMinimumWidth(500);
     }
 }
 
@@ -1771,7 +1806,7 @@ QDateTime MainWindow::askReminderTime()
         " border-radius: 6px; padding: 6px 8px; font-size: 14px; }"
         "QPushButton { background: #2a2a26; color: #e4e0da; border: none;"
         " border-radius: 6px; padding: 6px 16px; }"
-        "QPushButton:default { background: #2ec4b6; color: white; }"
+        "QPushButton:default { background: #14b8a6; color: white; }"
     );
     auto *lay = new QVBoxLayout(&dlg);
     lay->setContentsMargins(16, 16, 16, 16);
@@ -1816,6 +1851,120 @@ void MainWindow::openNewChatDialog()
         // conversation row is known to the model.
         m_conversations->refresh();
         QTimer::singleShot(300, this, [this, token]() { openConversation(token); });
+    });
+    dlg->exec();
+}
+
+void MainWindow::createNewTopic()
+{
+    if (m_activeConvToken.isEmpty() || !m_messages) return;
+
+    QDialog dlg(this);
+    dlg.setWindowTitle(tr("New topic"));
+    dlg.setMinimumWidth(380);
+    dlg.setStyleSheet(
+        "QDialog { background: #161614; color: #e4e0da; }"
+        "QLabel { color: #e4e0da; }"
+        "QLabel#eyebrow { color: #6f6a62; font-size: 10px; letter-spacing: 2px;"
+        "  text-transform: uppercase; font-weight: 600; }"
+        "QLineEdit { background: transparent; border: none;"
+        "  border-bottom: 1px solid #2a2a26; padding: 8px 0; color: #f4f0ea;"
+        "  font-size: 18px; font-weight: 500; }"
+        "QLineEdit:focus { border-bottom-color: #14b8a6; }"
+        "QPushButton { background: transparent; color: #8a8680; border: none;"
+        "  padding: 8px 14px; font-size: 12px; letter-spacing: 1px;"
+        "  text-transform: uppercase; font-weight: 600; }"
+        "QPushButton:hover { color: #e4e0da; }"
+        "QPushButton#primary { background: #14b8a6; color: #0e1817; border-radius: 6px; }"
+        "QPushButton#primary:hover { background: #2dd4bf; }"
+        "QPushButton#primary:disabled { background: #1c2b2a; color: #546361; }"
+    );
+    auto *lay = new QVBoxLayout(&dlg);
+    lay->setContentsMargins(20, 18, 20, 16);
+    lay->setSpacing(10);
+    auto *eyebrow = new QLabel(tr("TOPIC NAME"), &dlg);
+    eyebrow->setObjectName("eyebrow");
+    lay->addWidget(eyebrow);
+    auto *input = new QLineEdit(&dlg);
+    input->setPlaceholderText(tr("e.g. Design review"));
+    lay->addWidget(input);
+    lay->addSpacing(6);
+    auto *row = new QHBoxLayout();
+    row->addStretch();
+    auto *cancel = new QPushButton(tr("Cancel"), &dlg);
+    auto *create = new QPushButton(tr("Create topic"), &dlg);
+    create->setObjectName("primary");
+    create->setEnabled(false);
+    create->setDefault(true);
+    row->addWidget(cancel);
+    row->addWidget(create);
+    lay->addLayout(row);
+
+    connect(input, &QLineEdit::textChanged, &dlg, [input, create]() {
+        create->setEnabled(!input->text().trimmed().isEmpty());
+    });
+    connect(cancel, &QPushButton::clicked, &dlg, &QDialog::reject);
+    connect(create, &QPushButton::clicked, &dlg, &QDialog::accept);
+    connect(input, &QLineEdit::returnPressed, &dlg, [&dlg, create]() {
+        if (create->isEnabled()) dlg.accept();
+    });
+
+    if (dlg.exec() != QDialog::Accepted) return;
+
+    const QString title = input->text().trimmed();
+    const QString token = m_activeConvToken;
+    // Seed message — shows up as the first visible message in the new topic.
+    // Keep it short and recognizable so no one wonders where it came from.
+    const QString seed = QStringLiteral("\U0001F4CC  ") + title;
+
+    m_api->sendChatMessage(token, seed, this,
+        [this, token, title](bool ok, int messageId, const QString &err) {
+            if (!ok || messageId <= 0) {
+                QMessageBox::warning(this, tr("Couldn't create topic"),
+                    err.isEmpty() ? tr("The server refused the seed message.")
+                                  : err);
+                return;
+            }
+            // Best-effort: try to set a named thread title. Different NC Talk
+            // versions accept different endpoint shapes — if all of them 404,
+            // we still have a working thread rooted at the seed message (the
+            // topic will display its seed-message text as the label).
+            m_api->setChatThreadTitle(token, messageId, title, this,
+                [this, messageId, title](bool /*ok2*/, const QString & /*err2*/) {
+                    m_threads->refresh();
+                    openThread(messageId, title);
+                });
+        });
+}
+
+void MainWindow::openConversationInfo()
+{
+    if (m_activeConvToken.isEmpty()) return;
+    // Pull roomType + my participant role from the conversation list model.
+    int roomType = 0;
+    int myType = RoomParticipant::User;
+    QString name;
+    for (int i = 0; i < m_conversations->rowCount(); ++i) {
+        QModelIndex idx = m_conversations->index(i, 0);
+        if (idx.data(ConversationListModel::TokenRole).toString() == m_activeConvToken) {
+            roomType = idx.data(ConversationListModel::TypeRole).toInt();
+            name     = idx.data(ConversationListModel::DisplayNameRole).toString();
+            const auto v = idx.data(ConversationListModel::ParticipantTypeRole);
+            if (v.isValid()) myType = v.toInt();
+            break;
+        }
+    }
+    auto *dlg = new ConversationInfoDialog(m_api, m_activeConvToken,
+                                           name, QString(),
+                                           roomType, myType, this);
+    dlg->setAttribute(Qt::WA_DeleteOnClose);
+    connect(dlg, &ConversationInfoDialog::roomChanged, this, [this]() {
+        m_conversations->refresh();
+    });
+    connect(dlg, &ConversationInfoDialog::roomDeleted, this, [this]() {
+        m_conversations->refresh();
+        // Drop the user back to Home — the room they were viewing is gone.
+        emit m_sidebar->homeRequested();
     });
     dlg->exec();
 }

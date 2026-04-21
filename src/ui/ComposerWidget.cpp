@@ -131,57 +131,77 @@ private:
 ComposerWidget::ComposerWidget(QWidget *parent)
     : QWidget(parent)
 {
-    // Unified composer background
-    setStyleSheet("ComposerWidget { background: #1a1a18; border-top: 1px solid #2a2a26; }");
+    // Warm surface with a subtle top hairline to separate from the chat.
+    setStyleSheet(
+        "ComposerWidget { background: #18140f; border-top: 1px solid #2a241f; }"
+    );
 
     auto *layout = new QHBoxLayout();
-    layout->setContentsMargins(12, 8, 12, 8);
+    layout->setContentsMargins(14, 10, 14, 10);
     layout->setSpacing(8);
 
+    // MDL2 / Fluent Icons for all composer buttons so typography reads
+    // consistently (same weight, same baseline as the header icons).
+    const QString iconFont =
+        "font-family: 'Segoe Fluent Icons', 'Segoe MDL2 Assets', 'Segoe UI Symbol';";
+
     m_attachBtn = new QPushButton(this);
-    m_attachBtn->setText(QString::fromUtf8("\xF0\x9F\x93\x8E"));  // clip
+    m_attachBtn->setText(QStringLiteral("\uE723"));         // paperclip
     m_attachBtn->setFixedSize(38, 38);
-    m_attachBtn->setFlat(true);
-    m_attachBtn->setToolTip("Attach file");
+    m_attachBtn->setFocusPolicy(Qt::NoFocus);
+    m_attachBtn->setToolTip(tr("Attach file"));
     m_attachBtn->setCursor(Qt::PointingHandCursor);
     m_attachBtn->setStyleSheet(
-        "QPushButton { font-size: 18px; border: none; border-radius: 19px; background: transparent; }"
-        "QPushButton:hover { background: #2c2c28; }"
+        "QPushButton { background: transparent; color: #a8a096; border: none;"
+        "  border-radius: 19px; font-size: 16px; " + iconFont + " }"
+        "QPushButton:hover   { background: #241f1a; color: #f4efe6; }"
+        "QPushButton:pressed { background: #2a241f; }"
     );
     layout->addWidget(m_attachBtn);
 
     m_input = new ComposeTextEdit(this);
-    m_input->setPlaceholderText("Message...");
+    m_input->setPlaceholderText(tr("Write a message\u2026"));
     m_input->setMinimumHeight(m_minInputH);
     m_input->setMaximumHeight(m_maxInputH);
     setFocusProxy(m_input);
     m_input->setStyleSheet(
-        "QTextEdit { background: #222220; border: 1px solid #2a2a26; border-radius: 19px;"
-        "  padding: 6px 14px; font-size: 14px; color: #e4e0da; }"
-        "QTextEdit:focus { border-color: #2ec4b6; }"
+        // QTextEdit border-radius requires viewport transparency — otherwise
+        // the inner viewport paints a rectangle over the rounded corners.
+        "QTextEdit { background: #1f1b17; border: 1px solid #3a3228;"
+        "  border-radius: 20px; padding: 8px 16px; font-size: 14px;"
+        "  color: #f4efe6; selection-background-color: #14b8a6;"
+        "  selection-color: #0e1817; }"
+        "QTextEdit:focus { border-color: #14b8a6; background: #221e1a; }"
+        "QTextEdit > QWidget { background: transparent; }"
     );
     layout->addWidget(m_input, 1);
 
-    m_emojiBtn = new QPushButton(QStringLiteral("\U0001F600"), this);
-    m_emojiBtn->setFlat(true);
-    m_emojiBtn->setFixedSize(32, 32);
+    m_emojiBtn = new QPushButton(this);
+    m_emojiBtn->setText(QStringLiteral("\uE76E"));          // emoji face
+    m_emojiBtn->setFixedSize(34, 34);
+    m_emojiBtn->setFocusPolicy(Qt::NoFocus);
     m_emojiBtn->setCursor(Qt::PointingHandCursor);
+    m_emojiBtn->setToolTip(tr("Emoji"));
     m_emojiBtn->setStyleSheet(
-        "QPushButton { background: transparent; font-size: 18px; border: none; }"
-        "QPushButton:hover { background: rgba(255,255,255,0.08); border-radius: 6px; }"
+        "QPushButton { background: transparent; color: #a8a096; border: none;"
+        "  border-radius: 17px; font-size: 16px; " + iconFont + " }"
+        "QPushButton:hover   { background: #241f1a; color: #f4efe6; }"
     );
     layout->addWidget(m_emojiBtn);
     connect(m_emojiBtn, &QPushButton::clicked, this, &ComposerWidget::openEmojiPicker);
 
     m_sendBtn = new QPushButton(this);
-    m_sendBtn->setText(QString::fromUtf8("\xE2\x9E\xA4"));  // arrow
+    m_sendBtn->setText(QStringLiteral("\uE724"));           // send
     m_sendBtn->setFixedSize(38, 38);
-    m_sendBtn->setToolTip("Send message (Enter)");
+    m_sendBtn->setFocusPolicy(Qt::NoFocus);
+    m_sendBtn->setToolTip(tr("Send — Enter"));
     m_sendBtn->setCursor(Qt::PointingHandCursor);
     m_sendBtn->setStyleSheet(
-        "QPushButton { font-size: 18px; border: none; border-radius: 19px; background: #2ec4b6; color: white; }"
-        "QPushButton:hover { background: #3dd4c6; }"
-        "QPushButton:pressed { background: #25a99d; }"
+        "QPushButton { background: #14b8a6; color: #0e1817; border: none;"
+        "  border-radius: 19px; font-size: 15px; font-weight: 700;"
+        "  " + iconFont + " }"
+        "QPushButton:hover   { background: #2dd4bf; }"
+        "QPushButton:pressed { background: #0d9488; }"
     );
     layout->addWidget(m_sendBtn);
 
@@ -297,7 +317,7 @@ ComposerWidget::ComposerWidget(QWidget *parent)
     // Teal accent bar on the left
     auto *accentBar = new QWidget(m_replyBar);
     accentBar->setFixedWidth(3);
-    accentBar->setStyleSheet("background: #2ec4b6;");
+    accentBar->setStyleSheet("background: #14b8a6;");
     m_replyBar->setFixedHeight(36);
     auto *replyBarLayout = new QHBoxLayout(m_replyBar);
     replyBarLayout->setContentsMargins(0, 0, 8, 0);
@@ -422,9 +442,6 @@ void ComposerWidget::setInputFont(const QFont &font)
     m_input->setMaximumHeight(m_maxInputH);
     m_sendBtn->setFixedSize(m_minInputH, m_minInputH);
     m_attachBtn->setFixedSize(m_minInputH, m_minInputH);
-    int btnFontSize = qMax(12, font.pixelSize());
-    m_sendBtn->setStyleSheet(QString("font-size: %1px; border: none; border-radius: %2px; background: #2ec4b6; color: white;").arg(btnFontSize).arg(m_minInputH / 2));
-    m_attachBtn->setStyleSheet(QString("font-size: %1px; border: none; border-radius: %2px;").arg(btnFontSize).arg(m_minInputH / 2));
     setMaximumHeight(m_maxInputH + kComposerBarsReserve);
     autoResizeInput();
 }
@@ -479,7 +496,7 @@ void ComposerWidget::cancelPendingFile()
 
 void ComposerWidget::showReplyBar(const QString &author, const QString &preview)
 {
-    m_replyLabel->setText(QStringLiteral("<span style='color:#2ec4b6; font-weight:600;'>%1</span>  %2")
+    m_replyLabel->setText(QStringLiteral("<span style='color:#14b8a6; font-weight:600;'>%1</span>  %2")
         .arg(author.toHtmlEscaped(), preview.toHtmlEscaped()));
     m_replyLabel->setTextFormat(Qt::RichText);
     m_replyBar->show();
