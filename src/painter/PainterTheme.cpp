@@ -111,9 +111,18 @@ QString PainterTheme::formatPreviewText(const QString &author, const QString &me
 {
     if (message.isEmpty())
         return {};
+    // Collapse line breaks and tabs so the single-line preview shows the
+    // first real content rather than bailing out at the first CRLF.
+    QString flat = message;
+    flat.replace(QLatin1Char('\r'), QLatin1Char(' '));
+    flat.replace(QLatin1Char('\n'), QLatin1Char(' '));
+    flat.replace(QLatin1Char('\t'), QLatin1Char(' '));
+    while (flat.contains(QStringLiteral("  ")))
+        flat.replace(QStringLiteral("  "), QStringLiteral(" "));
+    flat = flat.trimmed();
     if (author.isEmpty())
-        return message;
-    return author + QStringLiteral(": ") + message;
+        return flat;
+    return author + QStringLiteral(": ") + flat;
 }
 
 static QFont interFont()
