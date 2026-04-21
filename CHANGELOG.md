@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Chat header icon polish
+- All five header icons (video, phone, search, bell, info) render at matching optical size (16 px for SVGs, 18 px font for glyphs).
+- Phone + video redrawn from tight-viewBox inline SVGs with stroke-widths compensated for aspect-ratio differences, so both land at ~1.4 px rendered stroke and match the Fluent Icons weight.
+- Removed the legacy `•••` (and follow-up `↻`) loading indicator that sat next to the call buttons — polling doesn't need header chrome; the sidebar already surfaces new-message state.
+- `Qt6::Svg` linked for color-tinted SVG rendering.
+
 ## v0.23.1 (2026-04-21)
 
 ### Fixes — image paste
