@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## v0.23.2 (2026-04-21)
+
 ### Notifications
 - **Notification stack** — multiple toasts no longer overwrite each other. New `NotificationStack` widget stacks popups bottom-up on the primary screen, caps at 4 visible, ages out the oldest when a 5th arrives. Rapid repeats from the same conversation (within 3 s) coalesce into "N new messages" instead of stacking separately.
 - Clicking any toast opens that conversation + removes that specific toast; the rest reposition to fill the gap.
