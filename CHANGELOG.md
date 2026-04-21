@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.23.1 (2026-04-21)
+
+### Fixes — image paste
+- **No more UI freeze on paste** — PNG encoding moved off the main thread (`QtConcurrent::run` + `QFutureWatcher`). Large clipboard images no longer lock up the window.
+- **Visible "Preparing image…" feedback** — the pending-file bar now shows an hourglass immediately when you paste, replaced with the real thumbnail when encoding finishes.
+- **Thumbnails appear for freshly sent images** — Nextcloud's preview service is async and 404s for a few seconds after upload. Thumbs used to get cached as empty on that first miss and never retry. Now retries with `1.5s → 3s → 6s → 12s` backoff (4 attempts, capped at 30s).
+
+### Fixes — PR-review backlog
+- **Teal accent now consistent everywhere** — swept `#2ec4b6` → `#14b8a6` in Message/CallDialog/SharePicker/SelectionBar/ConversationPicker that earlier missed the warm-dispatch refactor.
+- **Memory leak fix — `setChatThreadTitle`** — the `shared_ptr<function>` self-reference cycle from v0.23.0 is gone; the endpoint-chain is now a heap state machine that explicitly self-deletes on terminal.
+- **Memory leak fix — group creation** — the shared counter/errors used while inviting participants now use `shared_ptr`, so they're freed if the dialog is dismissed mid-flight.
+- **Wrong-conversation race fix — new topic** — creating a topic while switching rooms no longer yanks you into the topic view on the wrong conversation.
+- **Member list UX — right-click for actions** — left-clicking a member row no longer pops a context menu on every click. The promote/demote/remove menu is on right-click only, and doesn't appear at all on non-actionable rows (yourself, owner, or if you're not a moderator).
+
 ## v0.23.0 (2026-04-21)
 
 ### Conversation management

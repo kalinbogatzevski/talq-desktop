@@ -14,7 +14,7 @@ ConversationPickerDialog::ConversationPickerDialog(ConversationListModel *model,
         "QDialog { background: #1e1e2e; }"
         "QLineEdit { background: #2a2a3e; color: #e0e0e0; border: 1px solid #363c48;"
         "  border-radius: 8px; padding: 8px 12px; font-size: 13px; }"
-        "QLineEdit:focus { border-color: #2ec4b6; }"
+        "QLineEdit:focus { border-color: #14b8a6; }"
         "QListWidget { background: transparent; border: none; outline: none; }"
         "QListWidget::item { color: #e0e0e0; padding: 10px 12px; border-radius: 8px;"
         "  font-size: 13px; }"

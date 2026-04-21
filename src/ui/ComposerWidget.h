@@ -29,6 +29,13 @@ public:
     void setMessageModel(MessageListModel *model);
     void setInputFont(const QFont &font);
     void showPendingFile(const QString &path);
+    // Show an "encoding image…" placeholder while a pasted image is being
+    // saved to disk on a worker thread. Replaced by showPendingFile() when
+    // the encode finishes, or cleared by cancelPendingFile() on error.
+    void showPendingEncoding();
+    // Exposed so the inner ComposeTextEdit can clear the pending bar when
+    // an async paste-encode fails.
+    void cancelPendingFile();
     void setNextSendSilent(bool s) { m_nextSendSilent = s; }
     bool isNextSendSilent() const { return m_nextSendSilent; }
     void showReplyBar(const QString &author, const QString &preview);
@@ -48,7 +55,6 @@ private slots:
     void sendAction();
     void autoResizeInput();
     void confirmSendFile();
-    void cancelPendingFile();
     void handleAutoreplace();
     void openEmojiPicker();
     void maybeShowCompletion();

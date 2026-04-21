@@ -158,7 +158,7 @@ CallDialog::CallDialog(CallManager *callManager, ApiClient *api, QWidget *parent
     });
     connect(m_callManager, &CallManager::screenShareChanged, this, [this]() {
         if (m_callManager->isScreenSharing()) {
-            m_shareBtn->setStyleSheet(circleButtonStyle("#2ec4b6", "white", "#3ed4c6"));
+            m_shareBtn->setStyleSheet(circleButtonStyle("#14b8a6", "white", "#2dd4bf"));
         } else {
             m_shareBtn->setStyleSheet(circleButtonStyle("#3a3a36", "#e4e0da", "#4a4a46"));
         }
@@ -234,7 +234,7 @@ void CallDialog::buildUi()
     // Duration
     m_durationLabel = new QLabel(this);
     m_durationLabel->setAlignment(Qt::AlignCenter);
-    m_durationLabel->setStyleSheet("font-size: 22px; font-weight: bold; color: #2ec4b6;");
+    m_durationLabel->setStyleSheet("font-size: 22px; font-weight: bold; color: #14b8a6;");
     layout->addWidget(m_durationLabel);
 
     // Spacer — fills space in audio-only mode, hidden when video is shown
@@ -306,7 +306,7 @@ void CallDialog::buildUi()
 
     m_micLevel = new QWidget(m_micRow);
     m_micLevel->setFixedHeight(3);
-    m_micLevel->setStyleSheet("background: #2ec4b6;");
+    m_micLevel->setStyleSheet("background: #14b8a6;");
     m_micLevel->setFixedWidth(0);
     micRowLayout->addWidget(m_micLevel);
     micRowLayout->addStretch();
@@ -500,7 +500,7 @@ void CallDialog::onMuteChanged()
 void CallDialog::onCameraChanged()
 {
     if (m_callManager->isCameraOn()) {
-        m_cameraBtn->setStyleSheet(circleButtonStyle("#2ec4b6", "white", "#3ed4c6"));
+        m_cameraBtn->setStyleSheet(circleButtonStyle("#14b8a6", "white", "#2dd4bf"));
     } else {
         m_cameraBtn->setStyleSheet(circleButtonStyle("#3a3a36", "#e4e0da", "#4a4a46"));
         // Disconnect local preview signal so stale frames don't re-show it

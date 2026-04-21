@@ -1871,7 +1871,20 @@ void ChatPainter::requestFilePreview(int fileId)
         m_previewPending.remove(fileId);
 
         if (reply->error() != QNetworkReply::NoError) {
-            m_previewCache[fileId] = QImage();
+            // Don't cache on failure — NC's preview service often 404s the
+            // first request for a just-uploaded file while it's still
+            // generating the thumbnail. Retry with backoff, give up after
+            // a few attempts.
+            int attempts = m_previewAttempts.value(fileId, 0) + 1;
+            m_previewAttempts[fileId] = attempts;
+            if (attempts <= 4) {
+                const int delayMs = qMin(30000, 1500 * (1 << (attempts - 1)));
+                QTimer::singleShot(delayMs, this, [this, fileId]() {
+                    requestFilePreview(fileId);
+                });
+            } else {
+                m_previewCache[fileId] = QImage();
+            }
             return;
         }
 
@@ -1881,6 +1894,7 @@ void ChatPainter::requestFilePreview(int fileId)
             m_previewCache[fileId] = QImage();
             return;
         }
+        m_previewAttempts.remove(fileId);
 
         m_previewCache[fileId] = img;
         qreal aspect = img.width() > 0 ? (qreal)img.height() / img.width() : 0.5;
