@@ -1,5 +1,35 @@
 # Changelog
 
+## v0.23.0 (2026-04-21)
+
+### Conversation management
+- **Group info dialog** — new ℹ button in the chat header opens a modal to rename the group, edit description, add/remove members, promote/demote moderators, leave, or (owner only) delete. Reachable from any group or public room.
+- **Promote & demote** — click a member in the info dialog → context menu with promote-to-moderator, demote-to-member, or remove actions.
+
+### Topics, properly
+- **Telegram-style topic strip** replaces the old 3-column threads panel. Horizontal chip bar above the chat: "All messages", every topic as its own chip with unread count, trailing "+" for new.
+- **One-click topic creation** — click +, type a name, done. TalQ sends a silent seed message and best-effort sets the thread title; you land in the new topic ready to chat.
+- **Threads clear on group switch** — the old list no longer leaks into the new group during the fetch round-trip; cache path now actually runs on switch.
+- **1-on-1 chats correctly hide the topic strip** — previously flickered visible during model reset.
+
+### Design — "warm dispatch" identity
+- **Inter** bundled as the body font across the entire app; consistent typography from sidebar to composer.
+- Warm paper-dark palette replaces flat gray.
+- **Electric teal** accent (`#14b8a6`) with proper hover/pressed states.
+- **Segoe Fluent Icons** for all chrome (sidebar controls, header buttons, composer). Bell icon for reminders now renders consistently across Windows versions.
+- Dialogs (New Chat, Conversation Info, Upcoming Reminders, Nextcloud File Picker) share a token system — same eyebrow labels, same primary-button shape, same rounded corners.
+- Composer input corners round properly now (QTextEdit viewport transparency fix).
+- Sidebar preview (last message under chat name) uses readable secondary text color.
+- `EmojiTextRenderer::elide` bug fix — long one-word previews used to collapse to just "…"; now they trim character-by-character.
+
+### ApiClient additions
+- `setRoomName`, `setRoomDescription`, `deleteRoom`, `leaveRoom`
+- `fetchRoomParticipants`, `removeRoomParticipant`, `promoteModerator`, `demoteModerator`
+- `sendChatMessage` (returns new message id), `setChatThreadTitle` (best-effort chained endpoint attempts)
+
+### Fixes
+- Description field can no longer silently overwrite the server value with an empty string on focus change (guard via `QLineEdit::isModified`).
+
 ## v0.22.1 (2026-04-20)
 
 ### Fixes

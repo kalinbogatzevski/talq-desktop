@@ -58,7 +58,10 @@ void elide(QVector<Run> &runs, qreal maxWidth, const QFontMetricsF &fm)
     const QString ell = QStringLiteral("…");
     qreal ellW = fm.horizontalAdvance(ell);
 
-    while (!runs.isEmpty() && totalWidth(runs) + ellW > maxWidth)
+    // Keep at least one run so the peel loop below can trim it char-by-char.
+    // Previously this was `!runs.isEmpty()` — a single long-word preview
+    // would get removed entirely, leaving the UI to render just "…".
+    while (runs.size() > 1 && totalWidth(runs) + ellW > maxWidth)
         runs.removeLast();
 
     // If we still don't fit, peel chars off the last text run.

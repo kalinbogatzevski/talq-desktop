@@ -192,6 +192,7 @@ void HeaderPainter::paintEvent(QPaintEvent *)
     m_videoCallRect = QRectF();
     m_searchBtnRect = QRectF();
     m_remindersBtnRect = QRectF();
+    m_infoBtnRect = QRectF();
 
     qreal x = padLeft;
 
@@ -301,14 +302,14 @@ void HeaderPainter::paintEvent(QPaintEvent *)
         rightX -= ButtonSize;
         m_videoCallRect = QRectF(rightX, btnY, ButtonSize, ButtonSize);
         paintCallButton(painter, m_videoCallRect, m_theme.accent,
-                        QStringLiteral("\U0001F4F9"), m_hoveredButton == 3);  // 📹 camera
+                        QStringLiteral("\uE714"), m_hoveredButton == 3);   // Video camera
         rightX -= spacing;
 
         // Audio call button
         rightX -= ButtonSize;
         m_audioCallRect = QRectF(rightX, btnY, ButtonSize, ButtonSize);
         paintCallButton(painter, m_audioCallRect, m_theme.success,
-                        QStringLiteral("\u260E"), m_hoveredButton == 2);  // ☎ as phone icon
+                        QStringLiteral("\uE717"), m_hoveredButton == 2);   // Phone
         rightX -= spacing;
     }
 
@@ -318,7 +319,7 @@ void HeaderPainter::paintEvent(QPaintEvent *)
         rightX -= ButtonSize;
         m_searchBtnRect = QRectF(rightX, btnY, ButtonSize, ButtonSize);
         paintCallButton(painter, m_searchBtnRect, m_theme.textSecondary,
-                        QStringLiteral("\U0001F50D"), m_hoveredButton == 4);  // 🔍
+                        QStringLiteral("\uE721"), m_hoveredButton == 4);   // Search / magnifier
         rightX -= spacing;
     }
 
@@ -328,7 +329,17 @@ void HeaderPainter::paintEvent(QPaintEvent *)
         rightX -= ButtonSize;
         m_remindersBtnRect = QRectF(rightX, btnY, ButtonSize, ButtonSize);
         paintCallButton(painter, m_remindersBtnRect, m_theme.textSecondary,
-                        QStringLiteral("\u23F0"), m_hoveredButton == 5);  // ⏰
+                        QStringLiteral("\uEA8F"), m_hoveredButton == 5);   // Reminder (bell)
+        rightX -= spacing;
+    }
+
+    // Conversation info button (always available when a chat is open)
+    if (!m_conversationToken.isEmpty()) {
+        qreal btnY = (h - ButtonSize) / 2.0;
+        rightX -= ButtonSize;
+        m_infoBtnRect = QRectF(rightX, btnY, ButtonSize, ButtonSize);
+        paintCallButton(painter, m_infoBtnRect, m_theme.textSecondary,
+                        QStringLiteral("\uE946"), m_hoveredButton == 6);   // Info (circle-i)
         rightX -= spacing;
     }
 
@@ -466,18 +477,66 @@ void HeaderPainter::paintBackButton(QPainter *p, const QRectF &rect, bool hovere
 void HeaderPainter::paintCallButton(QPainter *p, const QRectF &rect, const QColor &iconColor,
                                      const QString &icon, bool hovered)
 {
-    // Subtle transparent button — icon only, hover highlight
     if (hovered) {
         p->setPen(Qt::NoPen);
         p->setBrush(QColor(255, 255, 255, 20));
         p->drawRoundedRect(rect, rect.width() / 2, rect.height() / 2);
     }
 
-    // Icon in muted color, brighter on hover
-    QFont iconFont;
-    iconFont.setPixelSize(16);
+    const QColor drawColor = hovered ? iconColor : m_theme.textSecondary;
+    const QPointF c = rect.center();
+
+    // Phone and video are drawn as geometric paths so they can't fall back
+    // to a missing-glyph box on systems that lack the expected Fluent/MDL2
+    // codepoint. Other icons (search, bell, info) use the font path — those
+    // are common enough to render reliably everywhere we ship.
+    if (icon == QStringLiteral("\uE717")) {
+        // Telephone handset — rounded tilted rectangle with two dots.
+        p->save();
+        p->translate(c);
+        p->rotate(-35);
+        QPen pen(drawColor, 1.8, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+        p->setPen(pen);
+        p->setBrush(Qt::NoBrush);
+        const qreal hw = 5.5, hh = 9.5;
+        QRectF body(-hw, -hh, hw * 2, hh * 2);
+        p->drawRoundedRect(body, 2.8, 2.8);
+        // Earpiece + microphone dots
+        p->setBrush(drawColor);
+        p->setPen(Qt::NoPen);
+        p->drawEllipse(QPointF(0, -hh + 2.4), 1.2, 1.2);
+        p->drawEllipse(QPointF(0,  hh - 2.4), 1.2, 1.2);
+        p->restore();
+        return;
+    }
+    if (icon == QStringLiteral("\uE714")) {
+        // Video camera — rounded body + small triangle lens on the right.
+        p->save();
+        QPen pen(drawColor, 1.8, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+        p->setPen(pen);
+        p->setBrush(Qt::NoBrush);
+        QRectF body(c.x() - 8, c.y() - 5, 12, 10);
+        p->drawRoundedRect(body, 2.2, 2.2);
+        // Lens wedge — a simple triangle pointing right
+        QPainterPath wedge;
+        wedge.moveTo(body.right(),           c.y() - 3.2);
+        wedge.lineTo(body.right() + 4.8,     c.y() - 4.6);
+        wedge.lineTo(body.right() + 4.8,     c.y() + 4.6);
+        wedge.lineTo(body.right(),           c.y() + 3.2);
+        wedge.closeSubpath();
+        p->drawPath(wedge);
+        p->restore();
+        return;
+    }
+
+    // Text glyphs (search, bell, info…) via Segoe Fluent / MDL2.
+    QFont iconFont(QStringLiteral("Segoe Fluent Icons"));
+    iconFont.insertSubstitutions(QStringLiteral("Segoe Fluent Icons"),
+                                 {QStringLiteral("Segoe MDL2 Assets"),
+                                  QStringLiteral("Segoe UI Symbol")});
+    iconFont.setPixelSize(15);
     p->setFont(iconFont);
-    p->setPen(hovered ? iconColor : m_theme.textSecondary);
+    p->setPen(drawColor);
     p->drawText(rect, Qt::AlignCenter, icon);
 }
 
@@ -578,6 +637,7 @@ int HeaderPainter::buttonAtPos(const QPointF &pos) const
     if (m_videoCallRect.isValid() && m_videoCallRect.contains(pos)) return 3;
     if (m_searchBtnRect.isValid() && m_searchBtnRect.contains(pos)) return 4;
     if (m_remindersBtnRect.isValid() && m_remindersBtnRect.contains(pos)) return 5;
+    if (m_infoBtnRect.isValid() && m_infoBtnRect.contains(pos)) return 6;
     return -1;
 }
 
@@ -596,6 +656,7 @@ void HeaderPainter::mouseReleaseEvent(QMouseEvent *event)
     case 3: emit videoCallClicked(); break;
     case 4: emit searchRequested(); break;
     case 5: emit remindersRequested(); break;
+    case 6: emit infoRequested(); break;
     default: break;
     }
     event->accept();
@@ -617,11 +678,13 @@ bool HeaderPainter::event(QEvent *e)
             // Tooltips
             QString tip;
             switch (btn) {
-            case 0: tip = "Expand sidebar"; break;
-            case 1: tip = "Back"; break;
-            case 2: tip = "Audio call"; break;
-            case 3: tip = "Video call"; break;
-            case 4: tip = "Search in conversation"; break;
+            case 0: tip = tr("Expand sidebar"); break;
+            case 1: tip = tr("Back"); break;
+            case 2: tip = tr("Audio call"); break;
+            case 3: tip = tr("Video call"); break;
+            case 4: tip = tr("Search in conversation"); break;
+            case 5: tip = tr("Upcoming reminders"); break;
+            case 6: tip = tr("Conversation info"); break;
             }
             if (!tip.isEmpty())
                 QToolTip::showText(mapToGlobal(he->position().toPoint()), tip, this);

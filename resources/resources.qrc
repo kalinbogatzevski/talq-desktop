@@ -9,5 +9,6 @@
         <file>icons/phone-off.svg</file>
         <file>icons/mic.svg</file>
         <file>icons/mic-off.svg</file>
+        <file>fonts/Inter.ttf</file>
     </qresource>
 </RCC>

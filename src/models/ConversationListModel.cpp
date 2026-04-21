@@ -57,6 +57,7 @@ QVariant ConversationListModel::data(const QModelIndex &index, int role) const
         }
         case HasTopicsRole:     return c.hasTopics;
         case NotificationLevelRole: return c.notificationLevel;
+        case ParticipantTypeRole:   return c.participantType;
         default:                return {};
     }
 }
@@ -79,6 +80,7 @@ QHash<int, QByteArray> ConversationListModel::roleNames() const
         {UserStatusIconRole,     "userStatusIcon"},
         {HasTopicsRole,          "hasTopics"},
         {NotificationLevelRole, "notificationLevel"},
+        {ParticipantTypeRole,   "participantType"},
     };
 }
 

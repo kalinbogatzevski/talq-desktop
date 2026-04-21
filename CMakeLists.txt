@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(talq VERSION 0.22.1 LANGUAGES CXX)
+project(talq VERSION 0.23.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -98,11 +98,16 @@ qt_add_executable(talq
     src/core/NcFileEntry.h
     src/core/NcUser.h
     src/core/Reminder.h
+    src/core/RoomParticipant.h
     src/core/SearchHit.h
+    src/ui/ConversationInfoDialog.h
+    src/ui/ConversationInfoDialog.cpp
     src/ui/NewChatDialog.h
     src/ui/NewChatDialog.cpp
     src/ui/NextcloudFilePickerDialog.h
     src/ui/NextcloudFilePickerDialog.cpp
+    src/ui/TopicTabBar.h
+    src/ui/TopicTabBar.cpp
     src/ui/UpcomingRemindersDialog.h
     src/ui/UpcomingRemindersDialog.cpp
     resources/resources.qrc

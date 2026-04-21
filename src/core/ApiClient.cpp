@@ -654,11 +654,17 @@ void ApiClient::fetchUpcomingReminders(QObject *context,
 void ApiClient::searchNcUsers(const QString &query, QObject *context,
                               std::function<void(bool, const QVector<NcUser> &)> callback)
 {
+    // Autocomplete for new-conversation invite. Nextcloud's core endpoint
+    // expects itemId=new when itemType=call has no existing room — matches
+    // what the NC Talk web frontend sends. shareTypes 0/1/7 = user/group/circle.
     QUrlQuery q;
-    q.addQueryItem(QStringLiteral("search"), query);
-    q.addQueryItem(QStringLiteral("itemType"), QStringLiteral("call"));
-    q.addQueryItem(QStringLiteral("shareTypes[]"), QStringLiteral("0"));   // user
-    q.addQueryItem(QStringLiteral("limit"), QStringLiteral("25"));
+    q.addQueryItem(QStringLiteral("search"),       query);
+    q.addQueryItem(QStringLiteral("itemType"),     QStringLiteral("call"));
+    q.addQueryItem(QStringLiteral("itemId"),       QStringLiteral("new"));
+    q.addQueryItem(QStringLiteral("shareTypes[]"), QStringLiteral("0"));
+    q.addQueryItem(QStringLiteral("shareTypes[]"), QStringLiteral("1"));
+    q.addQueryItem(QStringLiteral("shareTypes[]"), QStringLiteral("7"));
+    q.addQueryItem(QStringLiteral("limit"),        QStringLiteral("25"));
     auto req = makeRequest(QStringLiteral("core/autocomplete/get"), q);
     QNetworkReply *reply = m_nam.get(req);
     trackReply(reply);
@@ -666,8 +672,10 @@ void ApiClient::searchNcUsers(const QString &query, QObject *context,
             [reply, callback]() {
         reply->deleteLater();
         QVector<NcUser> out;
+        const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         if (reply->error() != QNetworkReply::NoError) {
-            qWarning() << "searchNcUsers:" << reply->errorString();
+            qWarning() << "searchNcUsers: HTTP" << status << reply->errorString()
+                       << "body:" << reply->readAll().left(500);
             callback(false, out);
             return;
         }
@@ -676,10 +684,16 @@ void ApiClient::searchNcUsers(const QString &query, QObject *context,
                              .value(QStringLiteral("data")).toArray();
         for (const QJsonValue &v : arr) {
             QJsonObject o = v.toObject();
-            if (o.value(QStringLiteral("source")).toString() != QStringLiteral("users")) continue;
+            const QString source = o.value(QStringLiteral("source")).toString();
+            // Accept users directly, and circles/groups as collective invitees
+            // (for direct mode the NewChatDialog will filter to source=users).
+            if (source != QStringLiteral("users")
+                && source != QStringLiteral("groups")
+                && source != QStringLiteral("circles")) continue;
             NcUser u;
             u.id          = o.value(QStringLiteral("id")).toString();
             u.displayName = o.value(QStringLiteral("label")).toString();
+            u.source      = source;
             if (!u.id.isEmpty()) out.push_back(u);
         }
         callback(true, out);
@@ -738,6 +752,264 @@ void ApiClient::addRoomParticipant(const QString &token, const QString &userId,
         if (ocsStatus >= 200 && ocsStatus < 300) { callback(true, QString()); return; }
         callback(false, meta.value(QStringLiteral("message")).toString());
     });
+}
+
+void ApiClient::setRoomName(const QString &token, const QString &name,
+                            QObject *context,
+                            std::function<void(bool, const QString &)> callback)
+{
+    QJsonObject body;
+    body["roomName"] = name;
+    auto req = makeRequest(QStringLiteral("apps/spreed/api/v4/room/") + token);
+    QNetworkReply *reply = m_nam.sendCustomRequest(req, "PUT", QJsonDocument(body).toJson());
+    trackReply(reply);
+    connect(reply, &QNetworkReply::finished, context ? context : this,
+            [reply, callback]() {
+        reply->deleteLater();
+        QJsonObject meta = QJsonDocument::fromJson(reply->readAll()).object()
+                               .value(QStringLiteral("ocs")).toObject()
+                               .value(QStringLiteral("meta")).toObject();
+        const int s = meta.value(QStringLiteral("statuscode")).toInt();
+        if (s >= 200 && s < 300) { callback(true, QString()); return; }
+        callback(false, meta.value(QStringLiteral("message")).toString());
+    });
+}
+
+void ApiClient::setRoomDescription(const QString &token, const QString &description,
+                                   QObject *context,
+                                   std::function<void(bool, const QString &)> callback)
+{
+    QJsonObject body;
+    body["description"] = description;
+    auto req = makeRequest(QStringLiteral("apps/spreed/api/v4/room/") + token + "/description");
+    QNetworkReply *reply = m_nam.sendCustomRequest(req, "PUT", QJsonDocument(body).toJson());
+    trackReply(reply);
+    connect(reply, &QNetworkReply::finished, context ? context : this,
+            [reply, callback]() {
+        reply->deleteLater();
+        QJsonObject meta = QJsonDocument::fromJson(reply->readAll()).object()
+                               .value(QStringLiteral("ocs")).toObject()
+                               .value(QStringLiteral("meta")).toObject();
+        const int s = meta.value(QStringLiteral("statuscode")).toInt();
+        if (s >= 200 && s < 300) { callback(true, QString()); return; }
+        callback(false, meta.value(QStringLiteral("message")).toString());
+    });
+}
+
+void ApiClient::deleteRoom(const QString &token, QObject *context,
+                           std::function<void(bool, const QString &)> callback)
+{
+    auto req = makeRequest(QStringLiteral("apps/spreed/api/v4/room/") + token);
+    QNetworkReply *reply = m_nam.sendCustomRequest(req, "DELETE");
+    trackReply(reply);
+    connect(reply, &QNetworkReply::finished, context ? context : this,
+            [reply, callback]() {
+        reply->deleteLater();
+        QJsonObject meta = QJsonDocument::fromJson(reply->readAll()).object()
+                               .value(QStringLiteral("ocs")).toObject()
+                               .value(QStringLiteral("meta")).toObject();
+        const int s = meta.value(QStringLiteral("statuscode")).toInt();
+        if (s >= 200 && s < 300) { callback(true, QString()); return; }
+        callback(false, meta.value(QStringLiteral("message")).toString());
+    });
+}
+
+void ApiClient::leaveRoom(const QString &token, QObject *context,
+                          std::function<void(bool, const QString &)> callback)
+{
+    auto req = makeRequest(QStringLiteral("apps/spreed/api/v4/room/") + token + "/participants/self");
+    QNetworkReply *reply = m_nam.sendCustomRequest(req, "DELETE");
+    trackReply(reply);
+    connect(reply, &QNetworkReply::finished, context ? context : this,
+            [reply, callback]() {
+        reply->deleteLater();
+        QJsonObject meta = QJsonDocument::fromJson(reply->readAll()).object()
+                               .value(QStringLiteral("ocs")).toObject()
+                               .value(QStringLiteral("meta")).toObject();
+        const int s = meta.value(QStringLiteral("statuscode")).toInt();
+        if (s >= 200 && s < 300) { callback(true, QString()); return; }
+        callback(false, meta.value(QStringLiteral("message")).toString());
+    });
+}
+
+void ApiClient::fetchRoomParticipants(const QString &token, QObject *context,
+                                      std::function<void(bool, const QVector<RoomParticipant> &)> callback)
+{
+    auto req = makeRequest(QStringLiteral("apps/spreed/api/v4/room/") + token + "/participants");
+    QNetworkReply *reply = m_nam.get(req);
+    trackReply(reply);
+    connect(reply, &QNetworkReply::finished, context ? context : this,
+            [reply, callback]() {
+        reply->deleteLater();
+        QVector<RoomParticipant> out;
+        if (reply->error() != QNetworkReply::NoError) {
+            qWarning() << "fetchRoomParticipants:" << reply->errorString();
+            callback(false, out);
+            return;
+        }
+        QJsonArray arr = QJsonDocument::fromJson(reply->readAll()).object()
+                             .value(QStringLiteral("ocs")).toObject()
+                             .value(QStringLiteral("data")).toArray();
+        for (const QJsonValue &v : arr) {
+            QJsonObject o = v.toObject();
+            RoomParticipant p;
+            p.userId          = o.value(QStringLiteral("actorId")).toString();
+            p.displayName     = o.value(QStringLiteral("displayName")).toString();
+            p.participantType = o.value(QStringLiteral("participantType")).toInt();
+            p.attendeeId      = o.value(QStringLiteral("attendeeId")).toVariant().toLongLong();
+            p.status          = o.value(QStringLiteral("status")).toString();
+            out.push_back(p);
+        }
+        callback(true, out);
+    });
+}
+
+void ApiClient::removeRoomParticipant(const QString &token, qint64 attendeeId,
+                                      QObject *context,
+                                      std::function<void(bool, const QString &)> callback)
+{
+    QJsonObject body;
+    body["attendeeId"] = attendeeId;
+    auto req = makeRequest(QStringLiteral("apps/spreed/api/v4/room/") + token + "/attendees");
+    QNetworkReply *reply = m_nam.sendCustomRequest(req, "DELETE", QJsonDocument(body).toJson());
+    trackReply(reply);
+    connect(reply, &QNetworkReply::finished, context ? context : this,
+            [reply, callback]() {
+        reply->deleteLater();
+        QJsonObject meta = QJsonDocument::fromJson(reply->readAll()).object()
+                               .value(QStringLiteral("ocs")).toObject()
+                               .value(QStringLiteral("meta")).toObject();
+        const int s = meta.value(QStringLiteral("statuscode")).toInt();
+        if (s >= 200 && s < 300) { callback(true, QString()); return; }
+        callback(false, meta.value(QStringLiteral("message")).toString());
+    });
+}
+
+void ApiClient::promoteModerator(const QString &token, qint64 attendeeId,
+                                 QObject *context,
+                                 std::function<void(bool, const QString &)> callback)
+{
+    QJsonObject body;
+    body["attendeeId"] = attendeeId;
+    auto req = makeRequest(QStringLiteral("apps/spreed/api/v4/room/") + token + "/moderators");
+    QNetworkReply *reply = m_nam.post(req, QJsonDocument(body).toJson());
+    trackReply(reply);
+    connect(reply, &QNetworkReply::finished, context ? context : this,
+            [reply, callback]() {
+        reply->deleteLater();
+        QJsonObject meta = QJsonDocument::fromJson(reply->readAll()).object()
+                               .value(QStringLiteral("ocs")).toObject()
+                               .value(QStringLiteral("meta")).toObject();
+        const int s = meta.value(QStringLiteral("statuscode")).toInt();
+        if (s >= 200 && s < 300) { callback(true, QString()); return; }
+        callback(false, meta.value(QStringLiteral("message")).toString());
+    });
+}
+
+void ApiClient::demoteModerator(const QString &token, qint64 attendeeId,
+                                QObject *context,
+                                std::function<void(bool, const QString &)> callback)
+{
+    QJsonObject body;
+    body["attendeeId"] = attendeeId;
+    auto req = makeRequest(QStringLiteral("apps/spreed/api/v4/room/") + token + "/moderators");
+    QNetworkReply *reply = m_nam.sendCustomRequest(req, "DELETE", QJsonDocument(body).toJson());
+    trackReply(reply);
+    connect(reply, &QNetworkReply::finished, context ? context : this,
+            [reply, callback]() {
+        reply->deleteLater();
+        QJsonObject meta = QJsonDocument::fromJson(reply->readAll()).object()
+                               .value(QStringLiteral("ocs")).toObject()
+                               .value(QStringLiteral("meta")).toObject();
+        const int s = meta.value(QStringLiteral("statuscode")).toInt();
+        if (s >= 200 && s < 300) { callback(true, QString()); return; }
+        callback(false, meta.value(QStringLiteral("message")).toString());
+    });
+}
+
+void ApiClient::sendChatMessage(const QString &token, const QString &text,
+                                QObject *context,
+                                std::function<void(bool, int, const QString &)> callback)
+{
+    QJsonObject body;
+    body["message"] = text;
+    auto req = makeRequest(QStringLiteral("apps/spreed/api/v1/chat/") + token);
+    QNetworkReply *reply = m_nam.post(req, QJsonDocument(body).toJson());
+    trackReply(reply);
+    connect(reply, &QNetworkReply::finished, context ? context : this,
+            [reply, callback]() {
+        reply->deleteLater();
+        QJsonObject ocs = QJsonDocument::fromJson(reply->readAll()).object()
+                              .value(QStringLiteral("ocs")).toObject();
+        QJsonObject meta = ocs.value(QStringLiteral("meta")).toObject();
+        const int s = meta.value(QStringLiteral("statuscode")).toInt();
+        if (s >= 200 && s < 300) {
+            const int id = ocs.value(QStringLiteral("data")).toObject()
+                              .value(QStringLiteral("id")).toInt();
+            callback(true, id, QString());
+        } else {
+            callback(false, 0, meta.value(QStringLiteral("message")).toString());
+        }
+    });
+}
+
+void ApiClient::setChatThreadTitle(const QString &token, int messageId,
+                                   const QString &title,
+                                   QObject *context,
+                                   std::function<void(bool, const QString &)> callback)
+{
+    // Spreed thread endpoint. Different server versions have disagreed on
+    // path/verb/param over time, so we attempt the documented combinations
+    // in a chain, reporting success the moment any one succeeds.
+    struct Attempt {
+        QString path;
+        QByteArray verb;        // "POST" or "PUT"
+        QString paramName;      // "title" or "threadTitle"
+        QString apiVersion;     // for logging only
+    };
+    QVector<Attempt> attempts = {
+        { QStringLiteral("apps/spreed/api/v4/chat/") + token + "/" + QString::number(messageId) + "/thread",
+          "POST", QStringLiteral("title"), QStringLiteral("v4") },
+        { QStringLiteral("apps/spreed/api/v1/chat/") + token + "/" + QString::number(messageId) + "/thread",
+          "POST", QStringLiteral("title"), QStringLiteral("v1") },
+        { QStringLiteral("apps/spreed/api/v4/chat/") + token + "/" + QString::number(messageId) + "/thread",
+          "POST", QStringLiteral("threadTitle"), QStringLiteral("v4/threadTitle") },
+        { QStringLiteral("apps/spreed/api/v4/chat/") + token + "/" + QString::number(messageId) + "/thread",
+          "PUT",  QStringLiteral("title"), QStringLiteral("v4-PUT") },
+    };
+
+    auto tryNext = std::make_shared<std::function<void(int)>>();
+    *tryNext = [this, attempts, title, context, callback, tryNext](int idx) mutable {
+        if (idx >= attempts.size()) {
+            callback(false, tr("Server rejected every known thread endpoint shape."));
+            return;
+        }
+        const Attempt &a = attempts[idx];
+        QJsonObject body;
+        body[a.paramName] = title;
+        auto req = makeRequest(a.path);
+        QNetworkReply *reply = (a.verb == "POST")
+            ? m_nam.post(req, QJsonDocument(body).toJson())
+            : m_nam.sendCustomRequest(req, a.verb, QJsonDocument(body).toJson());
+        trackReply(reply);
+        connect(reply, &QNetworkReply::finished, context ? context : this,
+                [this, reply, callback, tryNext, idx, ver = a.apiVersion]() mutable {
+            reply->deleteLater();
+            QJsonObject meta = QJsonDocument::fromJson(reply->readAll()).object()
+                                   .value(QStringLiteral("ocs")).toObject()
+                                   .value(QStringLiteral("meta")).toObject();
+            const int s = meta.value(QStringLiteral("statuscode")).toInt();
+            if (s >= 200 && s < 300) {
+                qDebug() << "setChatThreadTitle: succeeded via" << ver;
+                callback(true, QString());
+                return;
+            }
+            qDebug() << "setChatThreadTitle:" << ver << "rejected with" << s
+                     << meta.value(QStringLiteral("message")).toString();
+            (*tryNext)(idx + 1);
+        });
+    };
+    (*tryNext)(0);
 }
 
 void ApiClient::trackReply(QNetworkReply *reply)

@@ -445,11 +445,12 @@ void SidebarPainter::paintRowNormal(QPainter *p, const ConversationLayout &cl, i
         rightStuffW += mfm.horizontalAdvance(QStringLiteral("Muted")) + PainterTheme::spacingSmall;
     }
 
-    // Preview text
+    // Preview text — textSecondary gives readable contrast against the warm
+    // sidebar bg; textMuted is reserved for disabled-looking states.
     QFont previewFont;
     previewFont.setPixelSize(m_theme.fontSizeSmall);
     qreal previewRight = textRight - rightStuffW;
-    p->setPen(m_theme.textMuted);
+    p->setPen(m_theme.textSecondary);
     p->setFont(previewFont);
     EmojiTextRenderer::drawElided(p,
         QRectF(textLeft, bottomY, previewRight - textLeft, m_theme.fontSizeSmall + 4),

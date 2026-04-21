@@ -102,6 +102,8 @@ private:
     QDateTime askReminderTime();
     void openUpcomingReminders();
     void openNewChatDialog();
+    void openConversationInfo();
+    void createNewTopic();
 
     // ── Pointers to backend (not owned) ──
     ApiClient *m_api;
@@ -130,6 +132,7 @@ private:
     SidebarPainter *m_sidebar = nullptr;
     QLineEdit *m_searchField = nullptr;
     ThreadsPainter *m_threadsPainter = nullptr;
+    class TopicTabBar *m_topicTabBar = nullptr;
     QWidget *m_threadsPanel = nullptr;
     HeaderPainter *m_header = nullptr;
     ChatPainter *m_chatPainter = nullptr;
