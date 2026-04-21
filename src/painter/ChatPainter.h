@@ -201,6 +201,7 @@ private:
     QHash<int, QImage> m_previewCache;      // fileId -> preview image
     QHash<int, qreal> m_previewAspect;     // fileId -> height/width ratio (0 = unknown)
     QSet<int> m_previewPending;            // in-flight preview requests
+    QHash<int, int> m_previewAttempts;     // fileId -> retry count (NC generates previews async)
 
     // ── Selection state ──
     bool m_selectionMode = false;

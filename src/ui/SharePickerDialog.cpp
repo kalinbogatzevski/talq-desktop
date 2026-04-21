@@ -47,7 +47,7 @@ SharePickerDialog::SharePickerDialog(QWidget *parent)
     // Share button
     m_shareBtn = new QPushButton("Share", this);
     m_shareBtn->setStyleSheet(
-        "QPushButton { background: #2ec4b6; color: white; border: none; border-radius: 8px;"
+        "QPushButton { background: #14b8a6; color: white; border: none; border-radius: 8px;"
         " font-size: 14px; font-weight: bold; padding: 10px 24px; }"
         "QPushButton:hover { background: #3ed4c6; }"
         "QPushButton:disabled { background: #3a3a36; color: #6a6660; }");

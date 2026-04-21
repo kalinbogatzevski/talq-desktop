@@ -524,8 +524,11 @@ void NewChatDialog::onCreateClicked()
                 return;
             }
             m_createdToken = token;
-            auto *remaining = new int(m_selected.size());
-            auto *errors    = new QStringList();
+            // Shared counter + error list — owned by lambdas via shared_ptr so
+            // they're freed automatically if the dialog is dismissed mid-flight
+            // (Qt disconnects the context-bound lambdas and their captures).
+            auto remaining = std::make_shared<int>(m_selected.size());
+            auto errors    = std::make_shared<QStringList>();
             for (const NcUser &u : m_selected) {
                 m_api->addRoomParticipant(token, u.id, this,
                     [this, remaining, errors, u](bool addOk, const QString &err) {
@@ -539,8 +542,6 @@ void NewChatDialog::onCreateClicked()
                                 m_status->setText(tr("Room created, some invites failed: %1")
                                                       .arg(errors->join(QStringLiteral("; "))));
                             }
-                            delete remaining;
-                            delete errors;
                             accept();
                         }
                     });

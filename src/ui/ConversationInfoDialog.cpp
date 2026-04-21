@@ -135,6 +135,7 @@ ConversationInfoDialog::ConversationInfoDialog(ApiClient *api,
 
     m_memberList = new QListWidget(this);
     m_memberList->setSelectionMode(QAbstractItemView::NoSelection);
+    m_memberList->setContextMenuPolicy(Qt::CustomContextMenu);
     outer->addWidget(m_memberList, 1);
 
     // Inline add-people panel (hidden until "+ Add people" is clicked)
@@ -191,8 +192,12 @@ ConversationInfoDialog::ConversationInfoDialog(ApiClient *api,
     connect(m_addDebounce, &QTimer::timeout, this, &ConversationInfoDialog::runAddSearch);
     connect(m_addResults, &QListWidget::itemClicked,
             this, &ConversationInfoDialog::onAddResultClicked);
-    connect(m_memberList, &QListWidget::itemClicked,
-            this, &ConversationInfoDialog::onRemoveMember);
+    // Right-click a member row for the promote/demote/remove menu — left-clicks
+    // don't do anything so tapping names doesn't keep popping menus.
+    connect(m_memberList, &QListWidget::customContextMenuRequested,
+            this, [this](const QPoint &pos) {
+        if (auto *item = m_memberList->itemAt(pos)) onRemoveMember(item);
+    });
     connect(m_leaveBtn,  &QPushButton::clicked, this, &ConversationInfoDialog::onLeaveClicked);
     connect(m_deleteBtn, &QPushButton::clicked, this, &ConversationInfoDialog::onDeleteClicked);
     connect(m_closeBtn,  &QPushButton::clicked, this, &QDialog::accept);
@@ -287,27 +292,21 @@ void ConversationInfoDialog::onRemoveMember(QListWidgetItem *item)
 
     const bool canManage = m_amOwnerOrMod && !isMe
                            && type != RoomParticipant::Owner;
+    if (!canManage) return;  // no actions possible → don't pop an empty menu
 
     QAction *promote = nullptr;
     QAction *demote  = nullptr;
     QAction *remove  = nullptr;
-
-    if (canManage) {
-        if (type == RoomParticipant::Moderator
-            || type == RoomParticipant::GuestModerator) {
-            demote  = menu.addAction(QStringLiteral("\u2B07\uFE0F  ") + tr("Demote to member"));
-        } else if (type == RoomParticipant::User
-                   || type == RoomParticipant::UserSelfJoined
-                   || type == RoomParticipant::Guest) {
-            promote = menu.addAction(QStringLiteral("\u2B06\uFE0F  ") + tr("Promote to moderator"));
-        }
-        menu.addSeparator();
-        remove  = menu.addAction(QStringLiteral("\u2716\uFE0F  ") + tr("Remove from conversation"));
-    } else {
-        // Non-actionable — show a placeholder so the menu isn't empty.
-        QAction *info = menu.addAction(isMe ? tr("This is you") : tr("No actions available"));
-        info->setEnabled(false);
+    if (type == RoomParticipant::Moderator
+        || type == RoomParticipant::GuestModerator) {
+        demote = menu.addAction(QStringLiteral("\u2193  ") + tr("Demote to member"));
+    } else if (type == RoomParticipant::User
+               || type == RoomParticipant::UserSelfJoined
+               || type == RoomParticipant::Guest) {
+        promote = menu.addAction(QStringLiteral("\u2191  ") + tr("Promote to moderator"));
     }
+    menu.addSeparator();
+    remove = menu.addAction(QStringLiteral("\u00D7  ") + tr("Remove from conversation"));
 
     QAction *picked = menu.exec(QCursor::pos());
     if (!picked) return;

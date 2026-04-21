@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(talq VERSION 0.23.0 LANGUAGES CXX)
+project(talq VERSION 0.23.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -7,6 +7,7 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
 find_package(Qt6 REQUIRED COMPONENTS
+    Concurrent
     Core
     Gui
     Multimedia
@@ -143,6 +144,7 @@ target_link_libraries(talq PRIVATE
     Qt6::Sql
     Qt6::WebSockets
     Qt6::Widgets
+    Qt6::Concurrent
     Qt6::Multimedia
     ${GST_LIBRARIES}
 )

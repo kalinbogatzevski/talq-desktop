@@ -10,7 +10,7 @@ SelectionBarWidget::SelectionBarWidget(QWidget *parent)
     setStyleSheet("background: #252536;");
 
     m_countLabel = new QLabel(this);
-    m_countLabel->setStyleSheet("color: #2ec4b6; font-weight: 600; font-size: 13px; background: transparent;");
+    m_countLabel->setStyleSheet("color: #14b8a6; font-weight: 600; font-size: 13px; background: transparent;");
     layout->addWidget(m_countLabel);
     layout->addStretch();
 

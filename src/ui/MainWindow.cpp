@@ -1930,7 +1930,11 @@ void MainWindow::createNewTopic()
             // we still have a working thread rooted at the seed message (the
             // topic will display its seed-message text as the label).
             m_api->setChatThreadTitle(token, messageId, title, this,
-                [this, messageId, title](bool /*ok2*/, const QString & /*err2*/) {
+                [this, token, messageId, title](bool /*ok2*/, const QString & /*err2*/) {
+                    // User may have switched rooms while the two-step create
+                    // was in flight — don't yank them into a topic on a
+                    // different room.
+                    if (m_activeConvToken != token) return;
                     m_threads->refresh();
                     openThread(messageId, title);
                 });
