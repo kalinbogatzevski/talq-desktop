@@ -13,6 +13,7 @@ find_package(Qt6 REQUIRED COMPONENTS
     Multimedia
     Network
     Sql
+    Svg
     WebSockets
     Widgets
 )
@@ -144,6 +145,7 @@ target_link_libraries(talq PRIVATE
     Qt6::Sql
     Qt6::WebSockets
     Qt6::Widgets
+    Qt6::Svg
     Qt6::Concurrent
     Qt6::Multimedia
     ${GST_LIBRARIES}
