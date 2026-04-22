@@ -56,6 +56,7 @@ private slots:
     void autoResizeInput();
     void confirmSendFile();
     void handleAutoreplace();
+    void flushAutoreplace();
     void openEmojiPicker();
     void maybeShowCompletion();
     void applyCompletion(int row);

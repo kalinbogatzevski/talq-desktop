@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## v0.23.3 (2026-04-22)
+
+### Fixes
+- **Emoji autoreplace on Enter-send** — `:)`, `:D`, `:shortcode:` etc. used to substitute only on trailing space, so hitting Enter right after the shortcut sent the literal text. `sendAction()` now flushes a pending substitution before sending, so `:) <Enter>` goes out as 🙂.
+
 ## v0.23.2 (2026-04-21)
 
 ### Notifications

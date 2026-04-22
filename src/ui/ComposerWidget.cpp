@@ -578,6 +578,9 @@ void ComposerWidget::sendAction()
         confirmSendFile();
         return;
     }
+    // Flush pending :)/:shortcode: substitutions — handleAutoreplace normally
+    // requires a trailing space, which isn't there when sending via Enter.
+    flushAutoreplace();
     QString text = m_input->toPlainText().trimmed();
     if (text.isEmpty()) return;
     if (m_signaling) m_signaling->sendStoppedTyping();
@@ -674,6 +677,23 @@ void ComposerWidget::handleAutoreplace()
     c.setPosition(pos, QTextCursor::KeepAnchor);  // include trailing space
     c.insertText(e->codepoints + QStringLiteral(" "));
     c.endEditBlock();
+}
+
+void ComposerWidget::flushAutoreplace()
+{
+    QString text = m_input->toPlainText();
+    if (text.isEmpty()) return;
+    QChar last = text[text.size() - 1];
+    if (last == QLatin1Char(' ') || last == QLatin1Char('\n')) return;
+
+    // Append a synthetic space at the end and move the cursor there, so the
+    // existing handleAutoreplace() logic (which keys off a trailing space)
+    // sees the short-form/:shortcode:. trimmed() in sendAction drops the
+    // trailing space afterwards.
+    QTextCursor c = m_input->textCursor();
+    c.movePosition(QTextCursor::End);
+    c.insertText(QStringLiteral(" "));
+    handleAutoreplace();
 }
 
 void ComposerWidget::maybeShowCompletion()
