@@ -92,6 +92,7 @@ private:
     void restoreChatGeometry();
     void applyDarkPalette();
     void applyFontScale(qreal scale);
+    void applyTheme(bool dark);     // toggle + persist + propagate to all painters
     void openThread(int threadId, const QString &title);
     void closeThread();
     void updateTopicMode(bool active);

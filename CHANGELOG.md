@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## v0.23.4 (2026-04-25)
+
+### Performance
+- **Long-chat scroll lag fixed** — `ChatPainter::rebuildAllLayouts()` was redoing every message's `QTextDocument::setHtml` + grapheme scan on every model change, including read-receipt-only updates from polling. With ~1000 messages this could block the UI thread for a second or more, several times in a row, producing the multi-second freezes during scrollback.
+  - **Per-message layout cache.** Each `MessageLayout` is keyed on width/theme/font and a content fingerprint; rows whose key matches are reused with a y-translation instead of recomputed. Steady-state rebuilds drop from O(N · HTML-parse) to O(N · hash-compare).
+  - **Role-filtered `dataChanged`.** When the only changed roles are `IsReadRole` / `SendStatusRole` (paint-only), we skip the rebuild and just `update()`. This kills the polling-induced rebuild storm.
+  - **Resize debounce.** Window-drag resize ticks now coalesce through a 50 ms single-shot timer instead of rebuilding on every pixel.
+  - **`--debug` instrumentation.** Each rebuild now logs `[layout] N msgs in X ms (cached/fresh)` to `talq_debug.log` so future regressions are easy to spot.
+
+### Appearance
+- **Theme switch in Settings** — Settings → General now has an "APPEARANCE" section with a "Dark theme" checkbox. Toggle it to switch live; choice persists. Ctrl+D shortcut is unchanged.
+
 ## v0.23.3 (2026-04-22)
 
 ### Fixes
