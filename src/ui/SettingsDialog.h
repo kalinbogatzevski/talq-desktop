@@ -32,6 +32,7 @@ public:
 
 signals:
     void closeToTrayChanged(bool enabled);
+    void themeChanged(bool darkMode);
     void logoutRequested();
 
 private:
@@ -72,6 +73,7 @@ private:
     QCheckBox *m_autoStart = nullptr;
     QCheckBox *m_startMinimized = nullptr;
     QCheckBox *m_closeToTray = nullptr;
+    QCheckBox *m_darkTheme = nullptr;
 
     // Updates tab
     QCheckBox *m_updatesAutoCheck = nullptr;

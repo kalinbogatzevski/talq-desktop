@@ -33,6 +33,8 @@
 #include <QDateTime>
 #include <QHelpEvent>
 #include <QToolTip>
+#include <QElapsedTimer>
+#include "core/TalqLog.h"
 
 ChatPainter::ChatPainter(QWidget *parent)
     : QWidget(parent)
@@ -58,6 +60,15 @@ ChatPainter::ChatPainter(QWidget *parent)
         m_highlightMessageId = 0;
         update();
     });
+
+    // Coalesce resize-driven rebuilds — window drags fire resizeEvent every
+    // pixel. 50ms idle is below human "delay" threshold but well above the
+    // ~16ms drag-event cadence.
+    m_resizeDebounceTimer = new QTimer(this);
+    m_resizeDebounceTimer->setSingleShot(true);
+    m_resizeDebounceTimer->setInterval(50);
+    connect(m_resizeDebounceTimer, &QTimer::timeout,
+            this, &ChatPainter::rebuildAllLayouts);
 }
 
 // ═══════════════════════════════════════════════════════
@@ -83,6 +94,7 @@ void ChatPainter::setModel(MessageListModel *mdl)
     m_previewCache.clear();
     m_previewPending.clear();
     m_previewAspect.clear();
+    m_layoutCache.clear();
 
     // Connect new model
     if (m_model) {
@@ -103,6 +115,7 @@ void ChatPainter::setMyUserId(const QString &id)
 {
     if (m_myUserId == id) return;
     m_myUserId = id;
+    m_layoutCache.clear();          // isOwn flips → all rows invalid
     rebuildAllLayouts();
 }
 
@@ -112,6 +125,7 @@ void ChatPainter::setUnreadBoundary(int id)
     m_unreadBoundary = id;
     m_unreadSepDismissed = false;
     if (m_unreadSepDismissTimer) m_unreadSepDismissTimer->stop();
+    m_layoutCache.clear();          // unread-sep row identity changes
     rebuildAllLayouts();
 }
 
@@ -120,6 +134,7 @@ void ChatPainter::dismissUnreadSeparator()
     if (m_unreadSepDismissed) return;
     m_unreadSepDismissed = true;
     if (m_unreadSepDismissTimer) m_unreadSepDismissTimer->stop();
+    m_layoutCache.clear();
     rebuildAllLayouts();
 }
 
@@ -141,6 +156,7 @@ void ChatPainter::setDarkMode(bool dark)
     if (m_darkMode == dark) return;
     m_darkMode = dark;
     m_theme = PainterTheme(m_darkMode, m_fontScale);
+    m_layoutCache.clear();          // colors only affect paint, but bodyDoc fonts are theme-bound
     rebuildAllLayouts();
 }
 
@@ -149,6 +165,7 @@ void ChatPainter::setFontScale(qreal scale)
     if (qFuzzyCompare(m_fontScale, scale)) return;
     m_fontScale = scale;
     m_theme = PainterTheme(m_darkMode, m_fontScale);
+    m_layoutCache.clear();
     rebuildAllLayouts();
 }
 
@@ -343,8 +360,69 @@ void ChatPainter::setHoveredPos(qreal x, qreal y)
 // Layout rebuild
 // ═══════════════════════════════════════════════════════
 
+// Build a per-message cache key from every input that affects this message's
+// computed layout. If two rebuilds produce the same key for a given messageId,
+// the cached MessageLayout can be reused (with a y-translation) instead of
+// re-running QTextDocument::setHtml + grapheme scan.
+static QString makeLayoutCacheKey(QAbstractListModel *model, int modelRow,
+                                  qreal width, qreal fontScale, bool darkMode,
+                                  const QString &myUserId,
+                                  const QString &prevActorId, qint64 prevTimestamp,
+                                  bool prevIsSystem, qreal aspect)
+{
+    auto idx = model->index(modelRow);
+    auto get = [&](int role) { return model->data(idx, role); };
+
+    // Note: IsReadRole and SendStatusRole are intentionally absent — they
+    // don't affect any rect or text geometry, only paint colors/icons.
+    return QString::number(qint64(width * 10)) + '|'
+        + QString::number(qint64(fontScale * 1000)) + '|'
+        + (darkMode ? '1' : '0') + '|'
+        + myUserId + '|'
+        + prevActorId + '|'
+        + QString::number(prevTimestamp) + '|'
+        + (prevIsSystem ? '1' : '0') + '|'
+        + QString::number(qint64(aspect * 1000)) + '|'
+        + get(MessageListModel::MessageTextRole).toString() + '|'
+        + (get(MessageListModel::IsSystemRole).toBool() ? '1' : '0') + '|'
+        + (get(MessageListModel::ShowDateSeparatorRole).toBool() ? '1' : '0') + '|'
+        + get(MessageListModel::DateStringRole).toString() + '|'
+        + get(MessageListModel::ActorNameRole).toString() + '|'
+        + get(MessageListModel::ActorIdRole).toString() + '|'
+        + get(MessageListModel::TimeStringRole).toString() + '|'
+        + QString::number(get(MessageListModel::LastEditTimestampRole).toLongLong()) + '|'
+        + get(MessageListModel::ReplyToAuthorRole).toString() + '|'
+        + get(MessageListModel::ReplyToTextRole).toString() + '|'
+        + get(MessageListModel::ReactionsRole).toString() + '|'
+        + (get(MessageListModel::HasFileRole).toBool() ? '1' : '0') + '|'
+        + get(MessageListModel::FileNameRole).toString() + '|'
+        + get(MessageListModel::FileMimeRole).toString();
+}
+
+// Translate every absolute rect inside `ml` by `dy` so a cached layout can
+// slide to a new vertical position without re-running computeLayout.
+static void translateLayoutY(MessageLayout &ml, qreal dy)
+{
+    if (qFuzzyIsNull(dy)) return;
+    ml.totalY += dy;
+    ml.dateSepRect.translate(0, dy);
+    ml.dateSepTextRect.translate(0, dy);
+    ml.unreadSepRect.translate(0, dy);
+    ml.avatarRect.translate(0, dy);
+    ml.nameRect.translate(0, dy);
+    ml.bodyRect.translate(0, dy);
+    ml.bubbleRect.translate(0, dy);
+    ml.timeRect.translate(0, dy);
+    ml.quoteRect.translate(0, dy);
+    ml.fileRect.translate(0, dy);
+    ml.reactBarRect.translate(0, dy);
+}
+
 void ChatPainter::rebuildAllLayouts()
 {
+    QElapsedTimer timer;
+    if (TalqLog::g_verbose) timer.start();
+
     // Preserve scroll position when older messages are prepended at the top
     // (model appends at end; layouts reverse model, so older = top).
     qreal preH = m_contentHeight;
@@ -380,34 +458,67 @@ void ChatPainter::rebuildAllLayouts()
         }
     }
 
+    QSet<int> liveIds;
+    int cacheHits = 0;
+
     // Model is newest-first. We iterate oldest-first: row (count-1) down to row 0.
     for (int i = 0; i < count; ++i) {
         int modelRow = count - 1 - i;
         auto idx = m_model->index(modelRow);
 
+        int messageId = m_model->data(idx, MessageListModel::IdRole).toInt();
+        liveIds.insert(messageId);
+
         // Look up actual image aspect ratio if cached
         int fileId = m_model->data(idx, MessageListModel::FileIdRole).toInt();
         qreal aspect = m_previewAspect.value(fileId, 0.0);  // 0 = unknown, show compact placeholder
-
-        qreal sepY = 0;
         bool isUnreadSepRow = (i == firstUnreadLayoutIdx);
-        if (isUnreadSepRow) {
-            sepY = y;
-            y += PainterTheme::unreadSepHeight;
+
+        MessageLayout ml;
+        bool cacheHit = false;
+
+        // Cache lookup. The unread-separator row is not cached: it shifts
+        // totalY off the bubble's startY in a way that's awkward to translate
+        // and there's at most one such row per rebuild. Also skip caching for
+        // not-yet-acked synthetic rows (messageId <= 0) since they have no
+        // stable identity.
+        QString key;
+        if (!isUnreadSepRow && messageId > 0) {
+            key = makeLayoutCacheKey(m_model, modelRow, width(), m_fontScale,
+                                     m_darkMode, m_myUserId,
+                                     prevActorId, prevTimestamp, prevIsSystem, aspect);
+            auto it = m_layoutCache.constFind(messageId);
+            if (it != m_layoutCache.constEnd() && it->first == key) {
+                ml = it->second;
+                translateLayoutY(ml, y - ml.totalY);
+                cacheHit = true;
+                ++cacheHits;
+            }
         }
 
-        auto ml = LayoutEngine::computeLayout(
-            m_model, modelRow, width(), m_theme, y,
-            m_myUserId, prevActorId, prevTimestamp, prevIsSystem, aspect
-        );
+        if (!cacheHit) {
+            // Cache miss (or sep row, or synthetic row) — compute fresh.
+            qreal sepY = 0;
+            if (isUnreadSepRow) {
+                sepY = y;
+                y += PainterTheme::unreadSepHeight;
+            }
 
-        if (isUnreadSepRow) {
-            ml.showUnreadSep = true;
-            ml.unreadSepRect = QRectF(PainterTheme::spacingNormal, sepY,
-                                      width() - 2 * PainterTheme::spacingNormal,
-                                      qreal(PainterTheme::unreadSepHeight));
-            ml.totalY = sepY;
-            ml.totalHeight += PainterTheme::unreadSepHeight;
+            ml = LayoutEngine::computeLayout(
+                m_model, modelRow, width(), m_theme, y,
+                m_myUserId, prevActorId, prevTimestamp, prevIsSystem, aspect
+            );
+
+            if (isUnreadSepRow) {
+                ml.showUnreadSep = true;
+                ml.unreadSepRect = QRectF(PainterTheme::spacingNormal, sepY,
+                                          width() - 2 * PainterTheme::spacingNormal,
+                                          qreal(PainterTheme::unreadSepHeight));
+                ml.totalY = sepY;
+                ml.totalHeight += PainterTheme::unreadSepHeight;
+            } else if (messageId > 0) {
+                m_layoutCache.insert(messageId, qMakePair(key, ml));
+            }
         }
 
         // Update prev for next iteration
@@ -417,6 +528,16 @@ void ChatPainter::rebuildAllLayouts()
 
         y += ml.totalHeight;
         m_layouts.append(ml);
+    }
+
+    // Trim cache: drop entries for messages that are no longer in the model.
+    if (m_layoutCache.size() > liveIds.size()) {
+        for (auto it = m_layoutCache.begin(); it != m_layoutCache.end();) {
+            if (!liveIds.contains(it.key()))
+                it = m_layoutCache.erase(it);
+            else
+                ++it;
+        }
     }
 
     y += PainterTheme::spacingLarge; // bottom margin
@@ -452,6 +573,12 @@ void ChatPainter::rebuildAllLayouts()
         else
             emit selectionChanged(m_selectedIds.size());
     }
+
+    if (TalqLog::g_verbose) {
+        TLOG(QString("[layout] %1 msgs in %2 ms (%3 cached, %4 fresh)")
+                .arg(count).arg(timer.elapsed())
+                .arg(cacheHits).arg(count - cacheHits));
+    }
 }
 
 void ChatPainter::clampScroll()
@@ -474,13 +601,33 @@ void ChatPainter::onRowsRemoved(const QModelIndex &, int, int)
     rebuildAllLayouts();
 }
 
-void ChatPainter::onDataChanged(const QModelIndex &, const QModelIndex &)
+void ChatPainter::onDataChanged(const QModelIndex &, const QModelIndex &,
+                                const QList<int> &roles)
 {
+    // Read-receipts and send-status are paint-only — they don't affect any
+    // rect or text in the layout. During polling these fire constantly; a
+    // full rebuild here is what produced the multi-second freezes on long
+    // chats. Skip the rebuild and just repaint.
+    if (!roles.isEmpty()) {
+        bool onlyPaintRoles = true;
+        for (int role : roles) {
+            if (role != MessageListModel::IsReadRole
+             && role != MessageListModel::SendStatusRole) {
+                onlyPaintRoles = false;
+                break;
+            }
+        }
+        if (onlyPaintRoles) {
+            update();
+            return;
+        }
+    }
     rebuildAllLayouts();
 }
 
 void ChatPainter::onModelReset()
 {
+    m_layoutCache.clear();
     rebuildAllLayouts();
 }
 
@@ -491,7 +638,12 @@ void ChatPainter::onModelReset()
 void ChatPainter::resizeEvent(QResizeEvent *event)
 {
     QWidget::resizeEvent(event);
-    rebuildAllLayouts();
+    if (qAbs(qreal(width()) - m_lastWidth) > 0.5) {
+        m_lastWidth = width();
+        m_layoutCache.clear();      // every layout is width-dependent
+    }
+    // Defer the rebuild — coalesces a window-drag's worth of resize ticks.
+    m_resizeDebounceTimer->start();
     emit visibleHeightChanged();
 }
 
