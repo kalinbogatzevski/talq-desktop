@@ -1,7 +1,5 @@
 # Changelog
 
-## [Unreleased]
-
 ## v0.23.4 (2026-04-25)
 
 ### Performance
