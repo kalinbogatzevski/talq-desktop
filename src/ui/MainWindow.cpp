@@ -169,15 +169,7 @@ MainWindow::MainWindow(
 
     auto *toggleDark = new QShortcut(QKeySequence("Ctrl+D"), this);
     connect(toggleDark, &QShortcut::activated, this, [this]() {
-        m_darkMode = !m_darkMode;
-        m_sidebar->setDarkMode(m_darkMode);
-        m_header->setDarkMode(m_darkMode);
-        m_chatPainter->setDarkMode(m_darkMode);
-        m_threadsPainter->setDarkMode(m_darkMode);
-        applyDarkPalette();
-        m_settings.beginGroup("Theme");
-        m_settings.setValue("darkMode", m_darkMode);
-        m_settings.endGroup();
+        applyTheme(!m_darkMode);
     });
 
     // ── Auth signals ──
@@ -316,6 +308,8 @@ void MainWindow::buildChatPage()
                 m_deviceManager, m_notifications, m_appSettings, m_auth, this);
             connect(m_settingsDialog, &SettingsDialog::closeToTrayChanged,
                     this, [this](bool enabled) { m_closeToTray = enabled; });
+            connect(m_settingsDialog, &SettingsDialog::themeChanged,
+                    this, &MainWindow::applyTheme);
         }
         m_settingsDialog->refresh();
         m_settingsDialog->exec();
@@ -1371,6 +1365,8 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
                 m_deviceManager, m_notifications, m_appSettings, m_auth, this);
             connect(m_settingsDialog, &SettingsDialog::closeToTrayChanged,
                     this, [this](bool enabled) { m_closeToTray = enabled; });
+            connect(m_settingsDialog, &SettingsDialog::themeChanged,
+                    this, &MainWindow::applyTheme);
         }
         m_settingsDialog->refresh();
         m_settingsDialog->exec();
@@ -1682,6 +1678,20 @@ void MainWindow::applyFontScale(qreal scale)
 
     m_settings.beginGroup("Theme");
     m_settings.setValue("fontScale", m_fontScale);
+    m_settings.endGroup();
+}
+
+void MainWindow::applyTheme(bool dark)
+{
+    if (m_darkMode == dark) return;
+    m_darkMode = dark;
+    m_sidebar->setDarkMode(dark);
+    m_header->setDarkMode(dark);
+    m_chatPainter->setDarkMode(dark);
+    m_threadsPainter->setDarkMode(dark);
+    applyDarkPalette();
+    m_settings.beginGroup("Theme");
+    m_settings.setValue("darkMode", dark);
     m_settings.endGroup();
 }
 

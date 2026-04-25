@@ -126,7 +126,8 @@ protected:
 private slots:
     void onRowsInserted(const QModelIndex &parent, int first, int last);
     void onRowsRemoved(const QModelIndex &parent, int first, int last);
-    void onDataChanged(const QModelIndex &topLeft, const QModelIndex &bottomRight);
+    void onDataChanged(const QModelIndex &topLeft, const QModelIndex &bottomRight,
+                       const QList<int> &roles);
     void onModelReset();
 
 private:
@@ -194,6 +195,16 @@ private:
     // Layouts: index 0 = oldest message (top of view)
     // Model is newest-first, so m_layouts[i] corresponds to model row (rowCount - 1 - i)
     QVector<MessageLayout> m_layouts;
+
+    // Per-message layout cache — messageId -> (cacheKey, layout). On rebuild,
+    // a row whose key matches the cached entry is reused (with y-translation)
+    // instead of re-running QTextDocument::setHtml + grapheme scan. Cleared
+    // when width/theme/font changes invalidate every entry.
+    QHash<int, QPair<QString, MessageLayout>> m_layoutCache;
+
+    // Resize debounce — avoid full rebuild on every pixel of a window drag.
+    class QTimer *m_resizeDebounceTimer = nullptr;
+    qreal m_lastWidth = 0;
 
     // ── Image caches ──
     QHash<QString, QImage> m_avatarCache;   // userId -> circular avatar

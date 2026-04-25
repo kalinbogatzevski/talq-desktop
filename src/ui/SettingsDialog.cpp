@@ -329,6 +329,33 @@ QWidget *SettingsDialog::buildGeneralTab()
     layout->setContentsMargins(20, 20, 20, 20);
     layout->setSpacing(8);
 
+    // Appearance section
+    layout->addWidget(makeSectionHeader("APPEARANCE"));
+
+    m_darkTheme = new QCheckBox(tr("Dark theme"));
+    m_settings.beginGroup("Theme");
+    m_darkTheme->setChecked(m_settings.value("darkMode", true).toBool());
+    m_settings.endGroup();
+    layout->addWidget(m_darkTheme);
+
+    auto *themeHint = new QLabel(tr("Toggle with Ctrl+D"));
+    QFont thf = themeHint->font();
+    thf.setPixelSize(11);
+    themeHint->setFont(thf);
+    {
+        PainterTheme th(true, 1.0);
+        QPalette tp = themeHint->palette();
+        tp.setColor(QPalette::WindowText, th.textSecondary);
+        themeHint->setPalette(tp);
+    }
+    layout->addWidget(themeHint);
+
+    connect(m_darkTheme, &QCheckBox::toggled, this, [this](bool dark) {
+        emit themeChanged(dark);
+    });
+
+    layout->addSpacing(8);
+
     // Startup section
     layout->addWidget(makeSectionHeader("STARTUP"));
 
@@ -591,4 +618,13 @@ void SettingsDialog::loadGeneralSettings()
     m_closeToTray->blockSignals(true);
     m_closeToTray->setChecked(closeTray);
     m_closeToTray->blockSignals(false);
+
+    if (m_darkTheme) {
+        m_settings.beginGroup("Theme");
+        bool dark = m_settings.value("darkMode", true).toBool();
+        m_settings.endGroup();
+        m_darkTheme->blockSignals(true);
+        m_darkTheme->setChecked(dark);
+        m_darkTheme->blockSignals(false);
+    }
 }
