@@ -601,13 +601,14 @@ void ChatPainter::onRowsRemoved(const QModelIndex &, int, int)
     rebuildAllLayouts();
 }
 
-void ChatPainter::onDataChanged(const QModelIndex &, const QModelIndex &,
+void ChatPainter::onDataChanged(const QModelIndex &topLeft, const QModelIndex &bottomRight,
                                 const QList<int> &roles)
 {
     // Read-receipts and send-status are paint-only — they don't affect any
     // rect or text in the layout. During polling these fire constantly; a
     // full rebuild here is what produced the multi-second freezes on long
-    // chats. Skip the rebuild and just repaint.
+    // chats. Skip the rebuild, refresh the stale fields on the cached
+    // layouts in-place, then repaint.
     if (!roles.isEmpty()) {
         bool onlyPaintRoles = true;
         for (int role : roles) {
@@ -618,6 +619,36 @@ void ChatPainter::onDataChanged(const QModelIndex &, const QModelIndex &,
             }
         }
         if (onlyPaintRoles) {
+            // Without this, the cached MessageLayout entries keep their
+            // baked-in isRead/sendStatus from the original computeLayout
+            // call, so the read-tick glyph wouldn't update until a full
+            // rebuild (e.g. on chat switch).
+            int first = topLeft.isValid() ? topLeft.row() : 0;
+            int last  = bottomRight.isValid() ? bottomRight.row()
+                                              : m_model->rowCount() - 1;
+            QHash<int, QPair<bool, QString>> updates;
+            for (int r = first; r <= last; ++r) {
+                auto idx = m_model->index(r);
+                int id = m_model->data(idx, MessageListModel::IdRole).toInt();
+                if (id <= 0) continue;
+                updates.insert(id, qMakePair(
+                    m_model->data(idx, MessageListModel::IsReadRole).toBool(),
+                    m_model->data(idx, MessageListModel::SendStatusRole).toString()));
+            }
+            for (auto &ml : m_layouts) {
+                auto it = updates.constFind(ml.messageId);
+                if (it != updates.constEnd()) {
+                    ml.isRead = it->first;
+                    ml.sendStatus = it->second;
+                }
+            }
+            for (auto it = updates.constBegin(); it != updates.constEnd(); ++it) {
+                auto cit = m_layoutCache.find(it.key());
+                if (cit != m_layoutCache.end()) {
+                    cit->second.isRead = it->first;
+                    cit->second.sendStatus = it->second;
+                }
+            }
             update();
             return;
         }

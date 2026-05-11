@@ -79,6 +79,14 @@ signals:
     void remoteMuteChanged(const QString &sessionId, const QString &media, bool muted);
     void screenShareStopped(const QString &sessionId);
 
+    // HPB-broadcast chat refresh hint: emitted for any room-scoped chat
+    // event from the standalone signaling server (new message, read marker
+    // advance, edit, reaction, deletion). Listeners should treat it as
+    // "the chat in this room changed — pull fresh state." This is the
+    // mechanism the official web client uses; without it we'd only see
+    // read-receipt advances when a new message also arrives.
+    void chatRefreshNeeded(const QString &roomToken);
+
 private:
     void fetchSettings();
     void connectWebSocket();
