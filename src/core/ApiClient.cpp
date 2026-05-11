@@ -223,10 +223,13 @@ QNetworkReply *ApiClient::postRaw(const QString &path, const QByteArray &body)
     return reply;
 }
 
-QNetworkReply *ApiClient::getLongPoll(const QString &path, const QUrlQuery &params, int timeoutSecs)
+QNetworkReply *ApiClient::getLongPoll(const QString &path, const QUrlQuery &params, int timeoutSecs,
+                                      const QMap<QByteArray, QByteArray> &headers)
 {
     auto req = makeRequest(path, params);
     req.setTransferTimeout((timeoutSecs + 5) * 1000); // extra 5s grace
+    for (auto it = headers.constBegin(); it != headers.constEnd(); ++it)
+        req.setRawHeader(it.key(), it.value());
     auto *reply = m_nam.get(req);
     trackReply(reply);
     return reply;

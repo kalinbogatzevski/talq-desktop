@@ -181,8 +181,11 @@ public:
                             QObject *context,
                             std::function<void(bool ok, const QString &error)> callback);
 
-    // Long-poll (custom timeout)
-    QNetworkReply *getLongPoll(const QString &path, const QUrlQuery &params, int timeoutSecs);
+    // Long-poll (custom timeout). The headers map lets callers send hints like
+    // X-Chat-Last-Common-Read so the server can break the long-poll early when
+    // that value changes (a 304 cannot carry custom headers — RFC restriction).
+    QNetworkReply *getLongPoll(const QString &path, const QUrlQuery &params, int timeoutSecs,
+                               const QMap<QByteArray, QByteArray> &headers = {});
 
     // Cancel all pending requests
     void cancelAll();

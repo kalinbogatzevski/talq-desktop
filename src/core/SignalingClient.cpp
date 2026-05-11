@@ -246,6 +246,27 @@ void SignalingClient::onTextMessage(const QString &msg)
         QString eventType = event["type"].toString();
         qDebug() << "Signaling: event target=" << target << "type=" << eventType;
 
+        // HPB broadcasts chat events as room messages with data.type=="chat".
+        // The payload looks like:
+        //   { target: "room", type: "message",
+        //     message: { roomid: "<token>",
+        //                data: { type: "chat", chat: { refresh: true, comment: {...} } } } }
+        // Emit a refresh signal so MessageListModel can pull the latest state
+        // (which includes the X-Chat-Last-Common-Read header). Without this
+        // we only learn about read-marker advances when a new message also
+        // arrives via the chat long-poll.
+        if (target == "room" && eventType == "message") {
+            QJsonObject msgObj = event["message"].toObject();
+            QJsonObject data = msgObj["data"].toObject();
+            if (data["type"].toString() == "chat") {
+                QString roomToken = msgObj["roomid"].toString();
+                if (!roomToken.isEmpty()) {
+                    TLOG_SIG("chat refresh hint for room" << roomToken);
+                    emit chatRefreshNeeded(roomToken);
+                }
+            }
+        }
+
         if (target == "room" && eventType == "join") {
             QJsonArray joins = event["join"].toArray();
             for (const auto &j : joins) {

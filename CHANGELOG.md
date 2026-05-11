@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.23.5 (2026-05-11)
+
+### Fixes — read receipts
+- **Read tick (◉) now updates in near real-time** instead of only when the correspondent sends a reply or you switch conversations. Four cooperating fixes:
+  - **Stale layout cache.** `ChatPainter`'s per-message layout cache (introduced in v0.23.4) bakes `isRead` into each cached `MessageLayout`. The role-filtered `dataChanged({IsReadRole})` shortcut correctly skipped the layout rebuild, but never refreshed the baked-in value — so `update()` repainted the same stale glyph. The fix walks the affected model range and patches `isRead`/`sendStatus` on both `m_layouts` and `m_layoutCache` before repainting.
+  - **`X-Chat-Last-Common-Read` request header.** `MessagePoller` now sends the last known common-read value as a request header on the chat long-poll. Per the NC Talk docs this is the hint the server uses to break the long-poll early when the room's read marker advances (a 304 cannot carry custom response headers, so without the request hint the server has nothing to compare against).
+  - **HPB signaling chat-event handler.** `SignalingClient` now recognizes `target=room, type=message, data.type=chat` events from the standalone signaling server and emits `chatRefreshNeeded(roomToken)`. `main.cpp` wires this to `messages.refresh()` for the open chat. This is the channel the official spreed client uses for instant chat updates — without it we'd only see new messages via the slower chat long-poll.
+  - **5 s periodic read-marker pull.** A small `QTimer` in `MessageListModel` issues a tiny `lookIntoFuture=0&limit=1&setReadMarker=0` request every 5 s while a chat is open, just to harvest a fresh `X-Chat-Last-Common-Read`. Reliable fallback for servers whose HPB only relays new-message events (not read-marker advances).
+
+### Build / packaging
+- **`ccache` integration in `build-release.sh`.** If `ccache.exe` is found at `$MSYS2/ccache.exe`, the configure pass adds `-DCMAKE_C_COMPILER_LAUNCHER` / `-DCMAKE_CXX_COMPILER_LAUNCHER`. Cold release builds take the same ~3 min as before; repeat clean rebuilds drop to ~30–60 s (>95 % cache hits, bit-identical output).
+
 ## v0.23.4 (2026-04-25)
 
 ### Performance

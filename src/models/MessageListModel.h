@@ -3,6 +3,7 @@
 #include <QAbstractListModel>
 #include <QVector>
 #include <QJsonArray>
+#include <QTimer>
 #include "models/Message.h"
 #include "core/ApiClient.h"
 #include "core/MessagePoller.h"
@@ -129,6 +130,11 @@ private:
     void startPoller();
     void trimOldMessages();
     void refreshLatest();
+    // Lightweight pull just to refresh X-Chat-Last-Common-Read.
+    // Used by m_readMarkerTimer because this server's HPB doesn't relay
+    // read-marker events (only new-message events), so the long-poll never
+    // breaks early on a pure-read advance.
+    void refreshReadMarker();
     void postAndReplace(const QString &token, const QJsonObject &body, int tempId);
 
     ApiClient *m_api;
@@ -150,6 +156,8 @@ private:
     QString m_uploadFileName;
     QNetworkReply *m_historyReply = nullptr;   // cancel on chat switch
     QNetworkReply *m_refreshReply = nullptr;   // cancel on chat switch
+    QNetworkReply *m_readMarkerReply = nullptr;   // light read-marker probe
+    QTimer m_readMarkerTimer;  // 5s tick while a chat is open
     int m_generation = 0;  // incremented on conversation switch; stale callbacks bail out
     int m_historyUntilTargetId = 0;
     int m_historyUntilRemainingPages = 0;

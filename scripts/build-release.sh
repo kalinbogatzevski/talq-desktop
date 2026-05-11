@@ -45,6 +45,13 @@ MINGW="/c/Qt/Tools/mingw1310_64/bin"
 MSYS2="/c/msys64/mingw64/bin"
 export PATH="$NINJA:$MINGW:$PATH"
 
+# ccache: caches object files across clean rebuilds. Output is bit-identical
+# on cache hit; cold first build is unaffected. Skip silently if not installed.
+CCACHE_LAUNCHER=""
+if [ -x "$MSYS2/ccache.exe" ]; then
+    CCACHE_LAUNCHER="-DCMAKE_C_COMPILER_LAUNCHER=$MSYS2/ccache.exe -DCMAKE_CXX_COMPILER_LAUNCHER=$MSYS2/ccache.exe"
+fi
+
 echo "[1/6] Configuring..."
 rm -rf "$BUILD_DIR"
 "$CMAKE" -B "$BUILD_DIR" -S "$SRC_DIR" -G Ninja \
@@ -52,6 +59,7 @@ rm -rf "$BUILD_DIR"
     -DCMAKE_PREFIX_PATH=C:/Qt/6.8.2/mingw_64 \
     -DCMAKE_C_COMPILER="$MINGW/gcc.exe" \
     -DCMAKE_CXX_COMPILER="$MINGW/g++.exe" \
+    $CCACHE_LAUNCHER \
     $BRAND_FLAG 2>&1 | tail -1
 
 echo "[2/6] Building..."

@@ -310,6 +310,21 @@ int main(int argc, char *argv[])
         messages.refresh();  // instant read status + new message pickup
     });
 
+    // HPB signaling chat events -> refresh. This is the channel the official
+    // NC Talk client uses for instant chat updates (including read receipts).
+    // On servers where notify_push is silent for chat (no events fire on the
+    // /push/ws WebSocket), this is the only mechanism that delivers read-
+    // marker advances without a follow-up message from the other party.
+    QObject::connect(&signaling, &SignalingClient::chatRefreshNeeded,
+                     &messages, [&messages, &conversations](const QString &roomToken) {
+        conversations.refresh();
+        // Only refresh the open chat if the event is for that room — refreshing
+        // a different room would just fetch+discard 50 messages of someone
+        // else's conversation.
+        if (messages.conversationToken() == roomToken)
+            messages.refresh();
+    });
+
     // Start push + signaling after login (both fresh login AND session restore)
     auto startServices = [&auth, &conversations, &push, &signaling]() {
         if (auth.isLoggedIn()) {
