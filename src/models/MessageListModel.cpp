@@ -39,6 +39,13 @@ MessageListModel::MessageListModel(ApiClient *api, MessageCache *cache, QObject 
     , m_cache(cache)
     , m_poller(new MessagePoller(api, this))
 {
+    // 5s pull while a chat is open. This is the only way to learn that the
+    // other party read our messages on servers whose HPB doesn't broadcast
+    // read-marker events (only new-message events). The cost is one tiny
+    // HTTP call every 5s carrying just the latest message + headers.
+    m_readMarkerTimer.setInterval(5000);
+    connect(&m_readMarkerTimer, &QTimer::timeout, this, &MessageListModel::refreshReadMarker);
+
     connect(m_poller, &MessagePoller::messagesReceived,
             this, &MessageListModel::onMessagesReceived);
     connect(m_poller, &MessagePoller::lastCommonReadChanged,
@@ -56,6 +63,10 @@ MessageListModel::MessageListModel(ApiClient *api, MessageCache *cache, QObject 
         if (m_token != token) return;  // stale result
         if (messageId > m_lastCommonRead) {
             m_lastCommonRead = messageId;
+            // Keep poller's request-side hint in sync — important if cache
+            // load races behind startPoller(), so the very next request
+            // already carries the right header.
+            m_poller->setLastKnownCommonRead(messageId);
             // Refresh read indicators for all messages
             if (!m_messages.isEmpty())
                 emit dataChanged(index(0), index(m_messages.size() - 1), {IsReadRole});
@@ -229,6 +240,7 @@ void MessageListModel::setConversationToken(const QString &token)
     }
 
     m_poller->stop();
+    m_readMarkerTimer.stop();
 
     // Cancel any in-flight requests (disconnect first to prevent re-entry)
     if (m_historyReply) {
@@ -241,6 +253,13 @@ void MessageListModel::setConversationToken(const QString &token)
     if (m_refreshReply) {
         auto *oldReply = m_refreshReply;
         m_refreshReply = nullptr;
+        oldReply->disconnect(this);
+        oldReply->abort();
+        oldReply->deleteLater();
+    }
+    if (m_readMarkerReply) {
+        auto *oldReply = m_readMarkerReply;
+        m_readMarkerReply = nullptr;
         oldReply->disconnect(this);
         oldReply->abort();
         oldReply->deleteLater();
@@ -277,6 +296,9 @@ void MessageListModel::setConversationToken(const QString &token)
     QJsonObject body;
     m_api->post("apps/spreed/api/v1/chat/" + token + "/read", body,
         [](bool, const QJsonObject &, int) {});
+
+    // Begin the periodic read-marker pull while this chat is open.
+    m_readMarkerTimer.start();
 }
 
 void MessageListModel::setThreadId(int id)
@@ -452,6 +474,7 @@ void MessageListModel::startPoller()
         return;  // never poll with lastKnown=0, it downloads entire history
     }
     m_poller->setThreadId(m_threadId);
+    m_poller->setLastKnownCommonRead(m_lastCommonRead);
     m_poller->start(m_token, lastId);
 }
 
@@ -477,6 +500,36 @@ void MessageListModel::trimOldMessages()
 void MessageListModel::refresh()
 {
     refreshLatest();
+}
+
+void MessageListModel::refreshReadMarker()
+{
+    if (m_token.isEmpty()) return;
+    if (m_readMarkerReply) return;  // a probe is already in flight
+
+    // Cheapest possible chat request: 1 message back, no read-marker side
+    // effects. We only care about the X-Chat-Last-Common-Read header.
+    QUrlQuery params;
+    params.addQueryItem("lookIntoFuture", "0");
+    params.addQueryItem("limit", "1");
+    params.addQueryItem("setReadMarker", "0");
+
+    QString currentToken = m_token;
+    int capturedGen = m_generation;
+    auto *reply = m_api->getRaw("apps/spreed/api/v1/chat/" + m_token, params);
+    m_readMarkerReply = reply;
+
+    connect(reply, &QNetworkReply::finished, this, [this, reply, currentToken, capturedGen]() {
+        if (m_readMarkerReply == reply) m_readMarkerReply = nullptr;
+        reply->deleteLater();
+        if (m_generation != capturedGen) return;  // conversation switched
+        if (m_token != currentToken) return;
+        if (reply->error() != QNetworkReply::NoError) return;
+
+        QByteArray lastCommonRead = reply->rawHeader("X-Chat-Last-Common-Read");
+        if (!lastCommonRead.isEmpty())
+            onLastCommonReadChanged(lastCommonRead.toInt());
+    });
 }
 
 void MessageListModel::refreshLatest()
@@ -1050,6 +1103,11 @@ void MessageListModel::onLastCommonReadChanged(int messageId)
 
     int oldRead = m_lastCommonRead;
     m_lastCommonRead = messageId;
+
+    // Keep the poller's request-side hint in sync. Without this the poller
+    // would keep telling the server "I know value 0" and the server would
+    // wake the long-poll on every read advance forever (cheap but noisy).
+    m_poller->setLastKnownCommonRead(messageId);
 
     // Persist to cache
     if (m_cache && !m_token.isEmpty())

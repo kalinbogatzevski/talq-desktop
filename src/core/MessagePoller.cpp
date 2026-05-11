@@ -53,7 +53,16 @@ void MessagePoller::poll()
         params.addQueryItem("threadId", QString::number(m_threadId));
 
     QString path = "apps/spreed/api/v1/chat/" + m_token;
-    m_currentReply = m_api->getLongPoll(path, params, POLL_TIMEOUT_SECS);
+    QMap<QByteArray, QByteArray> headers;
+    if (m_lastKnownCommonRead > 0) {
+        // Hint to the server so it can break the long-poll early when the
+        // room's common-read marker advances (otherwise reads-only events
+        // are invisible until a real chat message arrives). Not all NC Talk
+        // servers honor this — we keep a periodic pull in MessageListModel
+        // as a fallback.
+        headers["X-Chat-Last-Common-Read"] = QByteArray::number(m_lastKnownCommonRead);
+    }
+    m_currentReply = m_api->getLongPoll(path, params, POLL_TIMEOUT_SECS, headers);
 
     connect(m_currentReply, &QNetworkReply::finished, this, &MessagePoller::handlePollResponse);
 }
@@ -93,10 +102,16 @@ void MessagePoller::handlePollResponse()
         m_lastKnownMessageId = lastGiven.toInt();
     }
 
-    // Read receipt: last message all participants have read
+    // Read receipt: last message all participants have read.
+    // Only arrives on 200 responses — 304 cannot carry custom headers (RFC
+    // restriction). The periodic refreshReadMarker() in MessageListModel
+    // is the reliable path for pure-read updates on servers whose HPB does
+    // not broadcast read-marker events.
     QByteArray lastCommonRead = reply->rawHeader("X-Chat-Last-Common-Read");
     if (!lastCommonRead.isEmpty()) {
-        emit lastCommonReadChanged(lastCommonRead.toInt());
+        int v = lastCommonRead.toInt();
+        if (v > m_lastKnownCommonRead) m_lastKnownCommonRead = v;
+        emit lastCommonReadChanged(v);
     }
 
     reply->deleteLater();

@@ -30,6 +30,13 @@ public:
     void setThreadId(int id) { m_threadId = id; }
     int threadId() const { return m_threadId; }
 
+    // Tells the server which X-Chat-Last-Common-Read value we already know.
+    // The server will then break the long-poll early when the room's common
+    // read marker advances past this value (otherwise we'd only learn on the
+    // next new message). Per NC Talk docs, a 304 cannot carry custom headers
+    // so the server has to round-trip a 200 to deliver the new value.
+    void setLastKnownCommonRead(int messageId) { m_lastKnownCommonRead = messageId; }
+
 signals:
     void messagesReceived(const QJsonArray &messages);
     void lastCommonReadChanged(int messageId);
@@ -44,6 +51,7 @@ private:
     QNetworkReply *m_currentReply = nullptr;
     QString m_token;
     int m_lastKnownMessageId = 0;
+    int m_lastKnownCommonRead = 0;
     bool m_polling = false;
     int m_threadId = 0;
     static constexpr int POLL_TIMEOUT_SECS = 15;
