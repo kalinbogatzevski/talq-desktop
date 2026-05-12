@@ -1084,6 +1084,7 @@ void CallManager::teardown(const QString &reason)
     m_remoteSessionId.clear();
     m_remotePeerName.clear();
     m_remotePeerId.clear();
+    m_remotePeerClient.clear();
     m_callDuration = 0;
     m_joinedCall = false;
     m_userActionReady = false;
@@ -1262,6 +1263,14 @@ void CallManager::onOfferReceived(const QString &fromSessionId, const QString &s
             }
             broadcastMediaState("audio", !m_muted);
             broadcastMediaState("video", m_cameraOn);
+            // Announce our TalQ version on the data channel so other TalQ
+            // peers can show it. Re-sent here because a new subscriber may
+            // have just come up and missed our earlier publish-side message.
+            if (m_publishPipeline && m_publishPipeline->isRunning()) {
+                const QByteArray hello = QByteArray(R"({"type":"talq.client","client":"TalQ","version":")")
+                    + TALQ_VERSION + R"("})";
+                m_publishPipeline->sendStatusMessage(hello);
+            }
         }
         if (state == "failed") {
             qWarning() << "CallManager: subscriber ICE failed, tearing down call";
@@ -1278,6 +1287,16 @@ void CallManager::onOfferReceived(const QString &fromSessionId, const QString &s
         else if (type == "speaking" || type == "stoppedSpeaking") {
             // Received but no UI action yet — future: highlight active speaker
             qDebug() << "CallManager: remote" << type;
+        }
+    });
+
+    connect(sub, &SubscribePipeline::peerClientInfo,
+            this, [this](const QString &client, const QString &version) {
+        const QString info = client + "/" + version;
+        if (m_remotePeerClient != info) {
+            m_remotePeerClient = info;
+            qDebug() << "CallManager: peer client" << info;
+            emit callInfoChanged();
         }
     });
 

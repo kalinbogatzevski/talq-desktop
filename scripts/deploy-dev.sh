@@ -10,7 +10,6 @@ BUILD_DIR="/c/build/talq"
 QT_DIR="/c/Qt/6.8.2/mingw_64"
 MINGW_DIR="/c/Qt/Tools/mingw1310_64"
 MSYS2_DIR="/c/msys64/mingw64"
-SRC_QML="/c/src/talk-desktop-qt/src/qml"
 
 NO_RUN=false
 CLEAN=false
@@ -28,10 +27,10 @@ fi
 
 export PATH="$MINGW_DIR/bin:$QT_DIR/bin:$MSYS2_DIR/bin:$PATH"
 
-# Step 1: windeployqt (Qt DLLs + QML imports)
+# Step 1: windeployqt (Qt DLLs)
 if [ "$CLEAN" = true ] || [ ! -f "$BUILD_DIR/Qt6Core.dll" ]; then
     echo "[1/4] Running windeployqt..."
-    windeployqt6.exe --qmldir "$SRC_QML" "$BUILD_DIR/talq.exe" > /dev/null 2>&1
+    windeployqt6.exe --no-qml-import-scan "$BUILD_DIR/talq.exe" > /dev/null 2>&1
 else
     echo "[1/4] Qt DLLs already deployed (use --clean to redo)"
 fi

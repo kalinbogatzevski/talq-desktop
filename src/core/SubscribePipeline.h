@@ -39,6 +39,9 @@ signals:
     void iceStateChanged(const QString &state);
     void error(const QString &message);
     void mediaStateReceived(const QString &type);
+    // Emitted when peer sends a `{"type":"talq.client",...}` data channel
+    // message. Used to display "TalQ/X.Y.Z" in the call UI.
+    void peerClientInfo(const QString &client, const QString &version);
 
 private:
     void cleanup();

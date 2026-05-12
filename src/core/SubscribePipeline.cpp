@@ -503,10 +503,22 @@ void SubscribePipeline::onDataChannelMessage(GstWebRTCDataChannel *, gchar *str,
     QJsonDocument doc = QJsonDocument::fromJson(raw);
     if (doc.isNull()) return;
 
-    QString type = doc.object().value("type").toString();
+    QJsonObject obj = doc.object();
+    QString type = obj.value("type").toString();
     if (type.isEmpty()) return;
 
     QPointer<SubscribePipeline> guard(self);
+    if (type == "talq.client") {
+        const QString client = obj.value("client").toString();
+        const QString version = obj.value("version").toString();
+        QMetaObject::invokeMethod(self, [guard, client, version]() {
+            if (!guard) return;
+            qDebug() << "SubscribePipeline: peer client" << client << version;
+            emit guard->peerClientInfo(client, version);
+        }, Qt::QueuedConnection);
+        return;
+    }
+
     QMetaObject::invokeMethod(self, [guard, type]() {
         if (!guard) return;
         qDebug() << "SubscribePipeline: DC message:" << type;

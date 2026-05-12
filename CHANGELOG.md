@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.25.0 (2026-05-12)
+
+### Features — peer-client identification
+- **TalQ users now identify themselves to other TalQ peers.** Two-channel announcement:
+  - **HPB room broadcast** — on every room join (and re-broadcast when a new peer joins the room), TalQ sends a transient `{type:"talq.client", client:"TalQ", version:"X.Y.Z"}` message to the room. The signaling backend's "sender" annotation lets receivers cache the version by NC userId. Works regardless of call state.
+  - **WebRTC data channel** — during a call, the same payload is sent on the existing status data channel (audioOn/videoOn/speaking already uses it). Each new subscriber triggers a fresh announcement so latecomers don't miss it.
+- **Visible identification:**
+  - **Sidebar avatar badge** — small blue circular "Q" overlay on the avatar bottom-right for 1-on-1 contacts whose userId is in the TalQ peer cache. Non-TalQ peers show nothing (no false positives).
+  - **Chat author tag** — `· TalQ/X.Y.Z` appears next to the author name on incoming messages from known TalQ users. Muted color, smaller font, doesn't compete with the name itself.
+- **Cache survives room switches** because TalQ identity is keyed on NC userId, not signaling sessionId. Once you've seen "user X uses TalQ/0.24.0" in any room, the badge sticks.
+- **Cross-version compatibility** — v0.24.0 and earlier clients don't broadcast and don't display badges. v0.25.0 sees v0.25.0 only; older peers appear non-identified until they upgrade.
+
+### Performance / memory
+- **Emoji pixmap cache cap** — `EmojiData::g_pixmapCache` is now FIFO-capped at 800 entries (~20MB worst case). Previously unbounded; in long sessions with many rendered glyphs at multiple sizes the cache could quietly accumulate.
+- **Real cache stats in DebugMonitor** — the `[MEM-DETAIL]` line (once/minute in `talq_debug.log`) now reflects the actual painter-side caches (sidebar avatars, chat avatars, layout cache, preview cache, emoji cache) instead of the dead QML-era providers that always reported zero. Use this to chase memory growth without guessing.
+
+### Cleanup — dead code purge
+- **Removed `src/qml/` (20 files)** — all QML views from the pre-QPainter era, never referenced by any source file or build target.
+- **Removed `installer/qtifw/`** — 87 MB / 1300 files of a Qt Installer Framework bundle from before we standardized on Inno Setup. Tracked in git so recoverable if ever needed.
+- **Removed `cmake/win64-mingw-cross.cmake` and `scripts/package-windows.sh`** — the Linux→Windows cross-compile workflow, unused since we moved to native Windows builds.
+- **Removed `core/AvatarProvider.{h,cpp}` and `core/FilePreviewProvider.{h,cpp}`** — QML image providers that became no-op stubs; their cache-size accessors fed 0 to DebugMonitor for months.
+- **Removed `DebugMonitor::visible` property** — paired with the deleted QML overlay; Ctrl+D now controls the theme toggle only.
+- **Scripts: `--qmldir` → `--no-qml-import-scan`** in `deploy-dev.sh` / `build-release.sh`. windeployqt no longer scans for a directory that doesn't exist.
+- **README rewritten** to describe the actual QPainter-on-QWidget architecture (was still documenting the QML structure).
+
 ## v0.24.0 (2026-05-12)
 
 ### Features — message lifecycle
