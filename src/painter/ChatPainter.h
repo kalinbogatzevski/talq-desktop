@@ -109,6 +109,12 @@ signals:
     void selectionModeChanged(bool active);
     void selectionChanged(int count);
     void moreHistoryRequested();
+    // Fired when the user has effectively "seen" the unread region — either
+    // the dismiss timer expired with the divider above the viewport, or the
+    // user interacted with the composer / sent a message. Listeners should
+    // advance the server-side read marker so the divider doesn't reappear
+    // on the next conversation switch.
+    void unreadSeparatorDismissed();
 
 protected:
     void paintEvent(QPaintEvent *event) override;

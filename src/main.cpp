@@ -274,6 +274,10 @@ int main(int argc, char *argv[])
         auto idx = messages.index(0);  // model is newest-first, index 0 = latest message
         QString actorId = messages.data(idx, MessageListModel::ActorIdRole).toString();
         if (actorId == auth.userId()) return;
+        // Honor the sender's "Send silently" choice — same wire flag the
+        // web client checks. Without this, a scheduled-silent or right-click
+        // silent message would still pop a desktop toast on the recipient.
+        if (messages.data(idx, MessageListModel::SilentRole).toBool()) return;
         QString actorName = messages.data(idx, MessageListModel::ActorNameRole).toString();
         QString text = messages.data(idx, MessageListModel::MessageTextRole).toString();
         text.remove(QRegularExpression("<[^>]*>"));

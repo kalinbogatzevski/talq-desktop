@@ -130,8 +130,11 @@ void ConversationListModel::refresh()
 
             int prev = oldUnread.value(c.token, 0);
             if (c.unreadMessages > prev && prev >= 0 && !oldUnread.isEmpty()) {
-                // This conversation has new unread messages since last check
-                emit newUnreadMessage(c.displayName, c.lastMessageText, c.token);
+                // This conversation has new unread messages since last check.
+                // Skip emitting if the last message was sent silently — the
+                // sender explicitly opted out of notifying us.
+                if (!c.lastMessageSilent)
+                    emit newUnreadMessage(c.displayName, c.lastMessageText, c.token);
             }
 
             // Detect incoming calls — use persistent m_callState so two
@@ -243,6 +246,27 @@ void ConversationListModel::clearUnreadForToken(const QString &token)
     m_conversations[i].unreadMention = false;
     emit dataChanged(index(i), index(i), {UnreadCountRole, UnreadMentionRole});
     emit totalUnreadChanged();
+}
+
+void ConversationListModel::markReadAt(const QString &token, int lastReadMessageId)
+{
+    int i = indexOfToken(token);
+    if (i < 0) return;
+    bool changed = false;
+    if (lastReadMessageId > m_conversations[i].lastReadMessage) {
+        m_conversations[i].lastReadMessage = lastReadMessageId;
+        changed = true;
+    }
+    if (m_conversations[i].unreadMessages > 0) {
+        m_totalUnread = qMax(0, m_totalUnread - m_conversations[i].unreadMessages);
+        m_conversations[i].unreadMessages = 0;
+        m_conversations[i].unreadMention = false;
+        changed = true;
+        emit totalUnreadChanged();
+    }
+    if (changed) {
+        emit dataChanged(index(i), index(i), {UnreadCountRole, UnreadMentionRole});
+    }
 }
 
 int ConversationListModel::lastReadMessageForToken(const QString &token) const

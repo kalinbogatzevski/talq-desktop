@@ -50,9 +50,16 @@ signals:
     void editMessageRequested(const QString &newText);
     void editingBarCancelled();
     void userInteracted();   // user clicked/typed in composer — divider can dismiss
+    // Right-click on the send button → user picked a future delivery time.
+    // sendAt is an absolute unix timestamp (seconds since epoch).
+    void scheduleRequested(const QString &text, qint64 sendAt, bool silent);
+    // "Manage scheduled…" entry in the send button's right-click menu.
+    // MainWindow opens ScheduledMessagesDialog in response.
+    void manageScheduledRequested();
 
 private slots:
     void sendAction();
+    void openScheduleMenu();
     void autoResizeInput();
     void confirmSendFile();
     void handleAutoreplace();

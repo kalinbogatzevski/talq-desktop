@@ -41,6 +41,8 @@ public:
     QJsonObject reactions;
     QString sendStatus;
     QString systemMessage;
+    bool silent = false;   // sender used "Send silently" — receivers must
+                           // not raise desktop notifications for this message
 
     // File attachment (from messageParameters)
     QString fileName;
