@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.24.0 (2026-05-12)
+
+### Features — message lifecycle
+- **Mark a message as unread** — right-click any incoming message → "📩 Mark as unread". POSTs `lastReadMessage = id - 1` to `/chat/{token}/read`, refreshes the "New messages" divider immediately above the targeted message, and mirrors the new value into the ConversationListModel cache so the sidebar badge and unread divider don't pop back on a chat switch. The entry is hidden for own messages — those are read by definition the moment they're sent. Side-fix: `ChatPainter`'s unread divider used to re-summon on chat switch because the server-side `lastReadMessage` never advanced when the user dismissed the divider visually; the painter now emits `unreadSeparatorDismissed`, `MainWindow` wires that to `markAsRead`, and `ConversationListModel::markReadAt` mirrors the result locally.
+- **Forward from the message context menu** — "↗️ Forward" between Reply and Pin opens the existing ConversationPickerDialog. Previously you had to enter selection mode first.
+- **Scheduled messages** — right-click the Send button → "⏰ Send later" with presets (in 1 h / 3 h, tomorrow 08:00, tomorrow 18:00, next Monday 09:00) and a custom QDateTimeEdit picker. POSTs `/chat/{token}/schedule`. Confirmation tooltip "✓ Scheduled for …" pops near the Send button once the server accepts. The reply target carries through, same as a normal send.
+- **Scheduled-message manager** — "📋 Manage scheduled…" in the same menu opens a non-modal dialog listing pending items with per-row **Edit** and **Cancel** buttons. Edit pops a popup with message text + datetime (`POST /chat/{token}/schedule/{id}`); Cancel deletes (`DELETE /chat/{token}/schedule/{id}`). Empty state and live reload after each mutation.
+- **Silent-message receipt** — the sender's "Send silently" flag is now honored on the receiver. `Message::silent` is parsed from the wire, `Conversation::lastMessageSilent` from `lastMessage.silent` in the room API. The active-chat notifier and `ConversationListModel::newUnreadMessage` both skip emitting when the latest message is silent, so right-click → "Send silently" stops popping desktop toasts on the other end.
+
+### Features — image viewer
+- **Right-click on the image** pops the same Copy / Save-as menu the ⋯ button shows. Most people reach for right-click first; the ⋯ stays as a fallback.
+- **"Copied to clipboard" pill** — Ctrl+C / "Copy image" now flashes a bottom-centered toast for ~1.4 s instead of mutating the title-bar suffix. Repositions on resize.
+
+### Fixes — main window
+- **Fullscreen survives a notification click or tray-restore** — `MainWindow` now tracks `m_wasFullScreen` alongside `m_wasMaximized` (the latter is `false` while fullscreen, which is why a fullscreen user got dropped to normal on restore). `openConversation` clears `WindowMinimized` from the state when un-minimizing — Qt retains the prior fullscreen/maximized bit through the minimize cycle, so the window resumes in whatever state you left it. `restoreFromTray` branches `m_wasFullScreen → m_wasMaximized → showNormal`. Visible-but-not-focused was already correct; the regression was specifically minimize/hidden → restore.
+
 ## v0.23.5 (2026-05-11)
 
 ### Fixes — read receipts

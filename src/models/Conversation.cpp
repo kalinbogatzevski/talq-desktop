@@ -24,6 +24,7 @@ Conversation Conversation::fromJson(const QJsonObject &json)
     if (!lastMsg.isEmpty()) {
         c.lastMessageText = lastMsg["message"].toString();
         c.lastMessageAuthor = lastMsg["actorDisplayName"].toString();
+        c.lastMessageSilent = lastMsg["silent"].toBool();
     }
 
     return c;

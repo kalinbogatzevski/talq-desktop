@@ -18,6 +18,9 @@ Message Message::fromJson(const QJsonObject &json)
     m.messageType = json["messageType"].toString();
     m.isSystem = (m.messageType == "system");
     m.systemMessage = json["systemMessage"].toString();
+    // NC Talk marks "silent" messages at the top level of the JSON. Missing
+    // field == false, which is the right default for old servers.
+    m.silent = json["silent"].toBool();
 
     // Resolve messageParameters — replace {placeholder} with styled mentions
     QJsonObject params = json["messageParameters"].toObject();

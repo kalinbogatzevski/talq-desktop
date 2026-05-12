@@ -187,6 +187,7 @@ private:
     bool m_sidebarSqueezed = false;
     bool m_closeToTray = true;
     bool m_wasMaximized = false;
+    bool m_wasFullScreen = false;  // remembered separately because isMaximized() is false in fullscreen
     bool m_geometrySaveEnabled = false;
     QString m_activeConvToken;
     int m_activeThreadId = 0;

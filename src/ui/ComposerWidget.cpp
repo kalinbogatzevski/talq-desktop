@@ -24,6 +24,9 @@
 #include <QRegularExpression>
 #include <QMenu>
 #include <QAction>
+#include <QDialog>
+#include <QDateTimeEdit>
+#include <QDialogButtonBox>
 #include <QFutureWatcher>
 #include <QtConcurrent>
 #include <cmath>
@@ -228,21 +231,8 @@ ComposerWidget::ComposerWidget(QWidget *parent)
     connect(m_sendBtn, &QPushButton::clicked, this, &ComposerWidget::sendAction);
 
     m_sendBtn->setContextMenuPolicy(Qt::CustomContextMenu);
-    connect(m_sendBtn, &QPushButton::customContextMenuRequested, this, [this](const QPoint &) {
-        QMenu menu(this);
-        QFont boldF = menu.font(); boldF.setBold(true);
-        QAction *sendAct = menu.addAction(tr("Send"));
-        sendAct->setFont(boldF);
-        QAction *silentAct = menu.addAction(QStringLiteral("\U0001F515  ")
-            + tr("Send silently") + QStringLiteral(" \u2014 ") + tr("no notification"));
-        QAction *picked = menu.exec(QCursor::pos());
-        if (picked == silentAct) {
-            m_nextSendSilent = true;
-            sendAction();
-        } else if (picked == sendAct) {
-            sendAction();
-        }
-    });
+    connect(m_sendBtn, &QPushButton::customContextMenuRequested,
+            this, &ComposerWidget::openScheduleMenu);
 
     m_sendBtn->installEventFilter(this);
 
@@ -603,6 +593,106 @@ void ComposerWidget::sendAction()
         });
     }
 
+    m_input->clear();
+}
+
+void ComposerWidget::openScheduleMenu()
+{
+    QMenu menu(this);
+    QFont boldF = menu.font(); boldF.setBold(true);
+
+    // Primary actions: send now / send silent — same as the legacy menu, so
+    // a right-click is still the discoverable path for "send silently".
+    QAction *sendAct   = menu.addAction(tr("Send"));
+    sendAct->setFont(boldF);
+    QAction *silentAct = menu.addAction(QStringLiteral("\U0001F515  ")
+        + tr("Send silently") + QStringLiteral(" — ") + tr("no notification"));
+
+    menu.addSeparator();
+
+    QMenu *later = menu.addMenu(QStringLiteral("⏰  ") + tr("Send later"));
+
+    // Build the same quick presets as the message-level "Remind me" submenu
+    // so users see a consistent vocabulary. All are emitted as absolute unix
+    // seconds — the server is the source of truth for timing.
+    const QDateTime now = QDateTime::currentDateTime();
+    struct Preset { QString label; QDateTime when; };
+    QVector<Preset> presets;
+    presets.push_back({tr("In 1 hour"),       now.addSecs(60 * 60)});
+    presets.push_back({tr("In 3 hours"),      now.addSecs(3 * 60 * 60)});
+    {
+        QDateTime tomorrow = now.addDays(1);
+        tomorrow.setTime(QTime(8, 0));
+        presets.push_back({tr("Tomorrow 8:00"), tomorrow});
+    }
+    {
+        QDateTime tomorrowEve = now.addDays(1);
+        tomorrowEve.setTime(QTime(18, 0));
+        presets.push_back({tr("Tomorrow 18:00"), tomorrowEve});
+    }
+    {
+        // Next Monday at 09:00 — addDays(7 - dayOfWeek() + 1) jumps from
+        // any weekday to the upcoming Monday. dayOfWeek() returns 1 (Mon)
+        // through 7 (Sun).
+        QDateTime nextMon = now.addDays(7 - now.date().dayOfWeek() + 1);
+        nextMon.setTime(QTime(9, 0));
+        presets.push_back({tr("Next Monday 9:00"), nextMon});
+    }
+    QVector<QAction *> presetActs;
+    for (const auto &p : presets) {
+        QString label = QStringLiteral("%1  —  %2")
+            .arg(p.label, p.when.toString(QStringLiteral("ddd dd MMM, HH:mm")));
+        presetActs.push_back(later->addAction(label));
+    }
+    later->addSeparator();
+    QAction *customAct = later->addAction(tr("Custom time…"));
+
+    menu.addSeparator();
+    QAction *manageAct = menu.addAction(QStringLiteral("\U0001F4CB  ") + tr("Manage scheduled…"));
+
+    QAction *picked = menu.exec(QCursor::pos());
+    if (!picked) return;
+
+    if (picked == sendAct) { sendAction(); return; }
+    if (picked == silentAct) { m_nextSendSilent = true; sendAction(); return; }
+    if (picked == manageAct) { emit manageScheduledRequested(); return; }
+
+    // Below: a scheduling branch. We resolve to a sendAt unix timestamp and
+    // emit scheduleRequested. The actual API call lives in MainWindow so it
+    // can attach the current reply context and react to the response toast.
+    QDateTime sendAt;
+    if (picked == customAct) {
+        QDialog dlg(this);
+        dlg.setWindowTitle(tr("Send at"));
+        auto *layout = new QVBoxLayout(&dlg);
+        auto *edit = new QDateTimeEdit(now.addSecs(60 * 60), &dlg);
+        edit->setCalendarPopup(true);
+        edit->setMinimumDateTime(now.addSecs(60));  // at least a minute out
+        edit->setDisplayFormat(QStringLiteral("ddd dd MMM yyyy   HH:mm"));
+        layout->addWidget(edit);
+        auto *buttons = new QDialogButtonBox(
+            QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+        layout->addWidget(buttons);
+        connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+        connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+        if (dlg.exec() != QDialog::Accepted) return;
+        sendAt = edit->dateTime();
+    } else {
+        int idx = presetActs.indexOf(picked);
+        if (idx < 0) return;
+        sendAt = presets[idx].when;
+    }
+
+    // Reuse the same flush-and-grab dance as sendAction so :)/:shortcode:
+    // gets substituted even when the user never typed a trailing space.
+    flushAutoreplace();
+    QString text = m_input->toPlainText().trimmed();
+    if (text.isEmpty()) return;
+
+    bool silent = m_nextSendSilent;
+    m_nextSendSilent = false;
+    if (m_signaling) m_signaling->sendStoppedTyping();
+    emit scheduleRequested(text, sendAt.toSecsSinceEpoch(), silent);
     m_input->clear();
 }
 

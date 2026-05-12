@@ -43,6 +43,7 @@ public:
     bool favorite = false;
     QString lastMessageText;
     QString lastMessageAuthor;
+    bool lastMessageSilent = false;  // sender chose to suppress notifications
     qint64 lastActivity = 0;
     int lastReadMessage = 0;
     int participantType = 0;
