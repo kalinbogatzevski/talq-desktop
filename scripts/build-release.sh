@@ -67,7 +67,7 @@ echo "[2/6] Building..."
 
 echo "[3/6] Deploying Qt DLLs..."
 cd "$BUILD_DIR"
-"$WINDEPLOYQT" --qmldir "$SRC_DIR" talq.exe 2>&1 | tail -1
+"$WINDEPLOYQT" --no-qml-import-scan talq.exe 2>&1 | tail -1
 
 echo "[4/6] Copying MSYS2 + GStreamer DLLs..."
 for dll in libstdc++-6.dll libgcc_s_seh-1.dll libwinpthread-1.dll \

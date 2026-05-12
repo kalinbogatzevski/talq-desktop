@@ -120,39 +120,34 @@ src/
     Message.cpp/.h            # Message data model
     ConversationListModel.cpp/.h  # QAbstractListModel for conversations
     MessageListModel.cpp/.h       # QAbstractListModel for messages
-  qml/
-    Main.qml                  # App window, splash, navigation
-    LoginView.qml             # Login screen
-    ConversationList.qml      # Sidebar conversation list
-    ConversationItem.qml      # Single conversation row delegate
-    ChatView.qml              # Chat area with message list
-    MessageBubble.qml         # Message bubble delegate
-    MessageComposer.qml       # Message input area
-    Theme.qml                 # Singleton with colors, spacing, animation constants
+  painter/
+    ChatPainter.cpp/.h        # QPainter-based message list rendering
+    SidebarPainter.cpp/.h     # Conversation sidebar rendering
+    HeaderPainter.cpp/.h      # Chat header
+    LayoutEngine.cpp/.h       # Message layout computation
+  ui/
+    MainWindow.cpp/.h         # QMainWindow shell
+    ComposerWidget.cpp/.h     # Message input area
+    LoginWidget.cpp/.h        # Login screen
+    SettingsDialog.cpp/.h     # Settings tabs
+    CallDialog.cpp/.h         # In-call window
 resources/
     resources.qrc             # Qt resource file
     talq.ico                  # Windows app icon
     talq.rc                   # Windows resource script for icon
-cmake/
-    win64-mingw-cross.cmake   # Toolchain file for Linux cross-compilation
 scripts/
-    package-windows.sh        # Creates distributable Windows package
+    build-release.sh          # Production build + installer + ncloud upload
+    deploy-dev.sh             # Dev build: Qt + GStreamer DLL deploy
 ```
 
-## Key Qt6/QML Notes
+## Notes
 
-- **Uppercase QML filenames** are required for `qt_add_qml_module` to register types (e.g. `Main.qml`, not `main.qml`)
-- **`set_source_files_properties(... QT_QML_SINGLETON_TYPE TRUE)`** must appear BEFORE `qt_add_qml_module`
-- **`QTP0001 NEW`** sets the correct `:/qt/qml/` resource prefix for module resolution
-- All QML files need `import TalkQt` to access the `Theme` singleton
-- The `QT_FORCE_STDERR_LOGGING=1` env var is essential for debugging — without it, GUI apps on Windows send debug output to `OutputDebugString` (invisible)
-
-## Cross-Compilation (Linux to Windows)
-
-See `cmake/win64-mingw-cross.cmake` and `scripts/package-windows.sh` for the cross-compile setup using mingw-w64 + aqtinstall on Linux.
+- The `QT_FORCE_STDERR_LOGGING=1` env var is essential for debugging — without it, GUI apps on Windows send debug output to `OutputDebugString` (invisible).
+- The UI is rendered with QPainter on QWidget (no QML / QtQuick). Earlier versions used QML but it was replaced for performance and rendering control.
 
 ## Tech Stack
 
-- **Qt 6.8.2** (QtQuick, QML, QtNetwork, QtWebSockets)
+- **Qt 6.8.2 Widgets** (QtNetwork, QtWebSockets, QtMultimedia, QtSvg)
 - **C++20** with MinGW 13.1
+- **GStreamer** for WebRTC calls
 - **Nextcloud Talk API** (OCS v2, Login Flow v2, Chat API v1/v4)

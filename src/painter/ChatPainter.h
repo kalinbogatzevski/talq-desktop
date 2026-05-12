@@ -39,6 +39,7 @@ struct TextSelection {
 };
 
 class MessageListModel;
+class SignalingClient;
 class QNetworkReply;
 
 /**
@@ -54,6 +55,7 @@ public:
     // ── Property accessors ──
     void setModel(MessageListModel *model);
     MessageListModel *model() const { return m_model; }
+    void setSignaling(SignalingClient *signaling);
 
     QString myUserId() const { return m_myUserId; }
     void setMyUserId(const QString &id);
@@ -78,6 +80,14 @@ public:
     QVariantMap messageAt(qreal x, qreal y);
     void setHoveredPos(qreal x, qreal y);
     QImage cachedPreview(int fileId) const { return m_previewCache.value(fileId); }
+
+    // ── Cache stats (for DebugMonitor) ──
+    int avatarCacheCount() const { return m_avatarCache.size(); }
+    qint64 avatarCacheBytes() const;
+    int previewCacheCount() const { return m_previewCache.size(); }
+    qint64 previewCacheBytes() const;
+    int layoutCacheCount() const { return m_layoutCache.size(); }
+    qint64 layoutCacheBytes() const;
 
     // ── Selection ──
     bool selectionMode() const { return m_selectionMode; }
@@ -172,6 +182,7 @@ private:
 
     // ── State ──
     MessageListModel *m_model = nullptr;
+    SignalingClient *m_signaling = nullptr;
     QString m_myUserId;
     int m_unreadBoundary = 0;
     bool m_unreadSepDismissed = false;

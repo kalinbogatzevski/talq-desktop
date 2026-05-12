@@ -53,6 +53,30 @@ void DebugMonitor::tick()
     if (m_memoryMB > 1000 && m_prevMemoryMB <= 1000) {
         addLog("WARNING: Memory exceeded 1 GB");
     }
+
+    // Every 30 ticks (60s at 2s cadence) emit a detailed cache breakdown.
+    // This is the line you scan when chasing a memory growth bug.
+    if (++m_summaryTickCounter >= 30) {
+        m_summaryTickCounter = 0;
+        summaryLog();
+    }
+}
+
+void DebugMonitor::summaryLog()
+{
+    auto kb = [](qint64 b) { return b / 1024; };
+    QString line = QString("[MEM-DETAIL] rss=%1MB | sidebar-av:%2(%3KB) chat-av:%4(%5KB) "
+                           "preview:%6(%7KB) layout:%8(%9KB) emoji:%10(%11KB) "
+                           "msgs:%12 convos:%13 netreq:%14")
+        .arg(m_memoryMB)
+        .arg(m_sidebarAvatarCount).arg(kb(m_sidebarAvatarBytes))
+        .arg(m_chatAvatarCount).arg(kb(m_chatAvatarBytes))
+        .arg(m_previewCacheCount).arg(kb(m_previewCacheBytes))
+        .arg(m_layoutCacheCount).arg(kb(m_layoutCacheBytes))
+        .arg(m_emojiCacheCount).arg(kb(m_emojiCacheBytes))
+        .arg(m_messageCount).arg(m_conversationCount).arg(m_pendingRequests);
+    addLog(line);
+    qDebug().noquote() << line;
 }
 
 void DebugMonitor::snapshot(const QString &label)

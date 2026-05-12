@@ -62,9 +62,14 @@ public:
     void sendMinimalMessage(const QString &toSessionId, const QJsonObject &data);
     bool hasMcu() const { return m_hasMcu; }
 
+    // TalQ peer client info: userId -> "TalQ/X.Y.Z". Populated from HPB
+    // talq.client broadcasts. Returns empty for non-TalQ peers or unknown.
+    QString peerClientInfo(const QString &userId) const { return m_peerClientInfo.value(userId); }
+
 signals:
     void connectedChanged();
     void typingUserChanged();
+    void peerClientInfoChanged(const QString &userId, const QString &info);
 
     // WebRTC signaling signals
     void offerReceived(const QString &fromSessionId, const QString &sdp, const QString &sid, const QString &roomType);
@@ -117,4 +122,11 @@ private:
     QHash<QString, int> m_participantCallFlags;
     QHash<QString, QString> m_participantNames;  // userId → displayName
 
+    // TalQ peer client info — userId → "TalQ/X.Y.Z". Populated from HPB
+    // broadcasts. Survives room switches because TalQ identity travels with
+    // the user, not the session.
+    QHash<QString, QString> m_peerClientInfo;
+    QHash<QString, QString> m_sessionToUserId;  // sessionId → userId (for DC-only fallback)
+
+    void sendTalqClientHello();
 };

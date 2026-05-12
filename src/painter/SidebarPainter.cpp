@@ -1,6 +1,7 @@
 #include "SidebarPainter.h"
 #include "models/ConversationListModel.h"
 #include "core/ApiClient.h"
+#include "core/SignalingClient.h"
 #include "EmojiTextRenderer.h"
 #include <QPainter>
 #include <QPainterPath>
@@ -22,6 +23,14 @@ SidebarPainter::SidebarPainter(QWidget *parent)
 {
     setAttribute(Qt::WA_Hover);
     setMouseTracking(true);
+}
+
+qint64 SidebarPainter::avatarCacheBytes() const
+{
+    qint64 total = 0;
+    for (auto it = m_avatarCache.cbegin(); it != m_avatarCache.cend(); ++it)
+        total += it.value().sizeInBytes();
+    return total;
 }
 
 // ═══════════════════════════════════════════════════════
@@ -52,6 +61,18 @@ void SidebarPainter::setApi(ApiClient *api)
 {
     if (api == m_api) return;
     m_api = api;
+}
+
+void SidebarPainter::setSignaling(SignalingClient *signaling)
+{
+    if (signaling == m_signaling) return;
+    m_signaling = signaling;
+    // Repaint when peer client info arrives so the TalQ badge appears
+    // without waiting for the next model update.
+    if (m_signaling) {
+        connect(m_signaling, &SignalingClient::peerClientInfoChanged,
+                this, [this]() { update(); });
+    }
 }
 
 void SidebarPainter::setDarkMode(bool dark)
@@ -567,6 +588,28 @@ void SidebarPainter::paintAvatar(QPainter *p, const ConversationLayout &cl, cons
         p->setPen(Qt::white);
         p->setFont(initFont);
         p->drawText(rect, Qt::AlignCenter, QString(initial));
+    }
+
+    // TalQ marker: small "Q" pill on the bottom-right of the avatar when
+    // this conversation's primary participant is known to be using TalQ.
+    // Only meaningful for 1-on-1 chats (conversationType == 1).
+    if (m_signaling && cl.conversationType == 1 && !cl.participantUserId.isEmpty()) {
+        const QString info = m_signaling->peerClientInfo(cl.participantUserId);
+        if (info.startsWith("TalQ")) {
+            const qreal badgeSize = qMax(qreal(12), rect.width() * 0.35);
+            QRectF badge(rect.right() - badgeSize, rect.bottom() - badgeSize,
+                         badgeSize, badgeSize);
+            p->setPen(QPen(m_theme.bgSidebar, qMax(1.0, badgeSize * 0.08)));
+            p->setBrush(QColor("#2563eb"));   // TalQ blue
+            p->drawEllipse(badge);
+
+            QFont qFont;
+            qFont.setPixelSize(int(badgeSize * 0.7));
+            qFont.setWeight(QFont::Bold);
+            p->setPen(Qt::white);
+            p->setFont(qFont);
+            p->drawText(badge, Qt::AlignCenter, QStringLiteral("Q"));
+        }
     }
 }
 
