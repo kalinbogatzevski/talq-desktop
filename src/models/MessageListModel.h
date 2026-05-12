@@ -52,6 +52,7 @@ public:
         HasFileRole,
         FileIdRole,
         LastEditTimestampRole,
+        SilentRole,             // sender suppressed notifications for this message
     };
 
     explicit MessageListModel(ApiClient *api, MessageCache *cache, QObject *parent = nullptr);
@@ -80,7 +81,18 @@ public:
     void setConversationListModel(ConversationListModel *c) { m_conversations = c; }
 
     Q_INVOKABLE void sendMessage(const QString &text, int replyToId = 0, bool silent = false);
+    // Schedule a message for future delivery via POST /chat/{token}/schedule.
+    // sendAt is the absolute unix timestamp (seconds) when the server should
+    // deliver. silent==true suppresses notifications for the recipient.
+    Q_INVOKABLE void scheduleMessage(const QString &text, qint64 sendAt,
+                                      int replyToId = 0, bool silent = false);
     Q_INVOKABLE void markAsRead();
+    // Mark this message and everything newer as unread. Implemented as a
+    // POST /read with lastReadMessage = messageId - 1 (the docs accept any
+    // integer; server clamps to existing IDs). The conversation's unread
+    // count and the "New messages" divider both update on the next
+    // conversation refresh.
+    Q_INVOKABLE void markAsUnread(int messageId);
     Q_INVOKABLE void sendFile(const QString &filePath);
     Q_INVOKABLE void retryMessage(int tempId);
     Q_INVOKABLE void addReaction(int messageId, const QString &emoji);
@@ -119,6 +131,9 @@ signals:
     void hasMoreHistoryChanged();
     void pasteReady(const QString &filePath, int width, int height);
     void unreadBoundaryChanged();
+    // Emitted after POST /chat/{token}/schedule succeeds — UI uses this to
+    // confirm the schedule (toast / banner) without polling the queue.
+    void messageScheduled(qint64 sendAt);
 
 private slots:
     void onMessagesReceived(const QJsonArray &messages);

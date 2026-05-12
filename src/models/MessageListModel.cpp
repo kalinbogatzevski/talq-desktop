@@ -190,6 +190,8 @@ QVariant MessageListModel::data(const QModelIndex &index, int role) const
             return m.fileId;
         case LastEditTimestampRole:
             return m.lastEditTimestamp;
+        case SilentRole:
+            return m.silent;
         default:
             return {};
     }
@@ -223,6 +225,7 @@ QHash<int, QByteArray> MessageListModel::roleNames() const
         {HasFileRole,       "hasFile"},
         {FileIdRole,            "fileId"},
         {LastEditTimestampRole, "lastEditTimestamp"},
+        {SilentRole,            "silent"},
     };
 }
 
@@ -1287,11 +1290,87 @@ void MessageListModel::markAsRead()
 
     if (lastId <= 0) return;
 
+    QString token = m_token;
+
     // POST /apps/spreed/api/v1/chat/{token}/read
     QJsonObject body;
     body["lastReadMessage"] = lastId;
-    m_api->post("apps/spreed/api/v1/chat/" + m_token + "/read", body,
-        [](bool, const QJsonObject &, int) {
-            // Fire and forget
+    m_api->post("apps/spreed/api/v1/chat/" + token + "/read", body,
+        [this, token, lastId](bool ok, const QJsonObject &, int) {
+            if (!ok || !m_conversations) return;
+            // Mirror the server-side state into our cache. Without this the
+            // ConversationListModel would still think this room had old
+            // unread messages until the next 30 s auto-refresh — and a
+            // chat switch in that window would re-show the divider.
+            m_conversations->markReadAt(token, lastId);
+        });
+}
+
+void MessageListModel::scheduleMessage(const QString &text, qint64 sendAt,
+                                       int replyToId, bool silent)
+{
+    if (m_token.isEmpty() || text.trimmed().isEmpty()) return;
+    if (sendAt <= QDateTime::currentSecsSinceEpoch()) {
+        // Refuse to schedule in the past — the server would reject anyway,
+        // but giving an inline error here is friendlier than waiting for the
+        // OCS round-trip.
+        emit errorOccurred(tr("Send time must be in the future"));
+        return;
+    }
+
+    QJsonObject body;
+    body["message"]  = text;
+    body["sendAt"]   = sendAt;
+    if (replyToId > 0) body["replyTo"] = replyToId;
+    if (silent)        body["silent"]  = true;
+    if (m_threadId > 0) body["threadId"] = m_threadId;
+
+    QString token = m_token;
+    m_api->post("apps/spreed/api/v1/chat/" + token + "/schedule", body,
+        [this, sendAt, token](bool ok, const QJsonObject &data, int status) {
+            if (!ok) {
+                QString msg = data.value(QStringLiteral("ocs")).toObject()
+                                  .value(QStringLiteral("meta")).toObject()
+                                  .value(QStringLiteral("message")).toString();
+                emit errorOccurred(msg.isEmpty()
+                    ? tr("Could not schedule message (HTTP %1)").arg(status)
+                    : tr("Could not schedule message: %1").arg(msg));
+                return;
+            }
+            if (m_token == token)
+                emit messageScheduled(sendAt);
+        });
+}
+
+void MessageListModel::markAsUnread(int messageId)
+{
+    if (m_token.isEmpty() || messageId <= 0) return;
+
+    // Setting lastReadMessage to (messageId - 1) effectively makes messageId
+    // and everything newer "unread" from the server's perspective. The IDs
+    // aren't guaranteed sequential client-side (reactions/joins are filtered
+    // out of m_messages) but they are sequential server-side, and the server
+    // accepts any integer here — it just compares numerically.
+    const int newBoundary = messageId - 1;
+
+    // Update the local unread divider immediately so the "New messages"
+    // pill pops in above the targeted message — otherwise the only visible
+    // signal would be the sidebar's unread badge, which is easy to miss
+    // while you're still looking at the chat you just acted on.
+    if (newBoundary != m_unreadBoundary) {
+        m_unreadBoundary = newBoundary;
+        emit unreadBoundaryChanged();
+    }
+
+    QString token = m_token;
+    QJsonObject body;
+    body["lastReadMessage"] = newBoundary;
+    m_api->post("apps/spreed/api/v1/chat/" + token + "/read", body,
+        [this, token](bool ok, const QJsonObject &, int) {
+            if (!ok) return;
+            // Refresh the conversation list so the sidebar's unread badge
+            // and last-read pointer pick up the change immediately, without
+            // waiting for the next 30 s auto-refresh.
+            if (m_conversations) m_conversations->refresh();
         });
 }

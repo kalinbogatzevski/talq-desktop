@@ -53,6 +53,12 @@ public:
     Q_INVOKABLE QString userStatusMessageForToken(const QString &token) const;
     Q_INVOKABLE QString userStatusIconForToken(const QString &token) const;
     Q_INVOKABLE void clearUnreadForToken(const QString &token);
+    // Mirror a server-side read advance into our cache without a round-trip:
+    // sets lastReadMessage and clears unreadMessages for `token`. Used after
+    // a successful POST /chat/{token}/read so the next conversation switch
+    // doesn't reload a stale lastReadMessage (which would re-show the
+    // "New messages" divider).
+    Q_INVOKABLE void markReadAt(const QString &token, int lastReadMessageId);
     Q_INVOKABLE void setHasTopics(const QString &token, bool has);
     Q_INVOKABLE void setNotificationLevel(int index, int level);
     Q_INVOKABLE void updateLastMessage(const QString &token, const QString &author, const QString &text);

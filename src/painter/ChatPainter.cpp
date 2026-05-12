@@ -51,6 +51,7 @@ ChatPainter::ChatPainter(QWidget *parent)
     connect(m_unreadSepDismissTimer, &QTimer::timeout, this, [this]() {
         m_unreadSepDismissed = true;
         rebuildAllLayouts();
+        emit unreadSeparatorDismissed();
     });
 
     m_highlightTimer = new QTimer(this);
@@ -136,6 +137,7 @@ void ChatPainter::dismissUnreadSeparator()
     if (m_unreadSepDismissTimer) m_unreadSepDismissTimer->stop();
     m_layoutCache.clear();
     rebuildAllLayouts();
+    emit unreadSeparatorDismissed();
 }
 
 void ChatPainter::scrollToMessage(int messageId)

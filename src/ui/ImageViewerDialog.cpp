@@ -5,6 +5,7 @@
 #include <QApplication>
 #include <QClipboard>
 #include <QCloseEvent>
+#include <QContextMenuEvent>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QGraphicsPixmapItem>
@@ -17,6 +18,7 @@
 #include <QMessageBox>
 #include <QMouseEvent>
 #include <QPushButton>
+#include <QResizeEvent>
 #include <QScreen>
 #include <QSettings>
 #include <QTimer>
@@ -68,6 +70,27 @@ ImageViewerDialog::ImageViewerDialog(ApiClient *api, QWidget *parent)
     root->addWidget(m_view, 1);
 
     m_view->viewport()->installEventFilter(this);
+
+    // Centered confirmation pill. Parented to the dialog so it floats above
+    // the QGraphicsView regardless of where the user has scrolled/zoomed.
+    m_toast = new QLabel(this);
+    m_toast->setStyleSheet(
+        "background: rgba(0,0,0,0.78);"
+        "color: #ffffff;"
+        "font-size: 14px;"
+        "padding: 10px 18px;"
+        "border-radius: 18px;"
+    );
+    m_toast->setAlignment(Qt::AlignCenter);
+    m_toast->setAttribute(Qt::WA_TransparentForMouseEvents);  // never steals clicks
+    m_toast->hide();
+
+    m_toastHideTimer = new QTimer(this);
+    m_toastHideTimer->setSingleShot(true);
+    m_toastHideTimer->setInterval(1400);
+    connect(m_toastHideTimer, &QTimer::timeout, this, [this]() {
+        if (m_toast) m_toast->hide();
+    });
 
     connect(m_menuBtn, &QPushButton::clicked, this, [this]() {
         QMenu menu(this);
@@ -146,14 +169,47 @@ void ImageViewerDialog::copyImage()
 {
     if (m_currentImage.isNull()) return;
     QApplication::clipboard()->setImage(m_currentImage);
+    showToast(tr("Copied to clipboard"));
+}
 
-    // Brief visual confirmation — restore from m_currentFileName (source of
-    // truth) rather than whatever suffix the title bar happens to show.
-    m_titleBar->setText(m_currentFileName + QStringLiteral("  —  copied to clipboard"));
-    QTimer::singleShot(2000, this, [this]() {
-        if (!m_titleBar) return;
-        m_titleBar->setText(m_currentFileName);
-    });
+void ImageViewerDialog::showToast(const QString &text)
+{
+    if (!m_toast) return;
+    m_toast->setText(text);
+    m_toast->adjustSize();
+    positionToast();
+    m_toast->show();
+    m_toast->raise();
+    if (m_toastHideTimer) m_toastHideTimer->start();
+}
+
+void ImageViewerDialog::positionToast()
+{
+    if (!m_toast) return;
+    const QSize hint = m_toast->sizeHint();
+    // Bottom-centered: feels native (matches OS-level toast positioning)
+    // and stays out of the title-bar / menu region.
+    const int x = (width() - hint.width()) / 2;
+    const int y = height() - hint.height() - 40;
+    m_toast->setGeometry(x, y, hint.width(), hint.height());
+}
+
+void ImageViewerDialog::resizeEvent(QResizeEvent *event)
+{
+    QWidget::resizeEvent(event);
+    if (m_toast && m_toast->isVisible()) positionToast();
+}
+
+void ImageViewerDialog::contextMenuEvent(QContextMenuEvent *event)
+{
+    // Right-click anywhere over the viewer pops the same menu as the ⋯
+    // button — that's the discoverability path most users reach for first.
+    QMenu menu(this);
+    menu.addAction(tr("Copy image"), QKeySequence(QKeySequence::Copy),
+                   this, &ImageViewerDialog::copyImage);
+    menu.addAction(tr("Save as…"), QKeySequence(QKeySequence::Save),
+                   this, &ImageViewerDialog::saveAs);
+    menu.exec(event->globalPos());
 }
 
 void ImageViewerDialog::saveAs()

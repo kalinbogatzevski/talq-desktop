@@ -5,6 +5,7 @@
 #include "ComposerWidget.h"
 #include "SelectionBarWidget.h"
 #include "ConversationPickerDialog.h"
+#include "ScheduledMessagesDialog.h"
 #include "ImageViewerDialog.h"
 #include "ConversationInfoDialog.h"
 #include "NewChatDialog.h"
@@ -43,6 +44,7 @@
 #include <QDialog>
 #include <QClipboard>
 #include <QRegularExpression>
+#include <QToolTip>
 #include <QWidgetAction>
 #include <QMessageBox>
 #include <QNetworkReply>
@@ -742,6 +744,35 @@ void MainWindow::buildChatPage()
         m_replyToText.clear();
         m_composer->hideReplyBar();
     });
+    connect(m_composer, &ComposerWidget::scheduleRequested, this,
+            [this](const QString &text, qint64 sendAt, bool silent) {
+        // Reply context behaves the same as sendMessage — picking a future
+        // delivery time shouldn't drop the in-flight reply target.
+        int replyId = m_replyToId > 0 ? m_replyToId : m_activeThreadId;
+        m_messages->scheduleMessage(text, sendAt, replyId, silent);
+        m_replyToId = 0;
+        m_replyToAuthor.clear();
+        m_replyToText.clear();
+        m_composer->hideReplyBar();
+    });
+    connect(m_composer, &ComposerWidget::manageScheduledRequested, this, [this]() {
+        if (!m_messages || m_messages->conversationToken().isEmpty()) return;
+        auto *dlg = new ScheduledMessagesDialog(m_api, m_messages->conversationToken(), this);
+        dlg->setAttribute(Qt::WA_DeleteOnClose);
+        dlg->open();  // non-modal; user can keep typing while reviewing the queue
+    });
+    connect(m_messages, &MessageListModel::messageScheduled, this,
+            [this](qint64 sendAt) {
+        // Quick visual confirmation — the scheduled message won't appear in
+        // the chat until the server delivers it, so users need something
+        // immediate to know the schedule landed. A tooltip near the send
+        // button is unobtrusive and self-dismissing.
+        const QString when = QDateTime::fromSecsSinceEpoch(sendAt)
+                                .toString(QStringLiteral("ddd dd MMM, HH:mm"));
+        QToolTip::showText(QCursor::pos(),
+                           tr("✓ Scheduled for %1").arg(when),
+                           m_composer, QRect(), 3000);
+    });
     connect(m_composer, &ComposerWidget::replyBarCancelled, this, [this]() {
         m_replyToId = 0;
         m_replyToAuthor.clear();
@@ -763,6 +794,14 @@ void MainWindow::buildChatPage()
     connect(m_composer, &ComposerWidget::sendMessage,
             m_chatPainter, [this](const QString &, bool) {
         m_chatPainter->dismissUnreadSeparator();
+    });
+    // Dismissing the divider visually isn't enough: the server still has
+    // the old lastReadMessage, so a chat switch round-trips through
+    // setUnreadBoundary and re-shows the divider. Advance the server marker
+    // so the next conversation refresh records the chat as fully read.
+    connect(m_chatPainter, &ChatPainter::unreadSeparatorDismissed,
+            this, [this]() {
+        if (m_messages) m_messages->markAsRead();
     });
 
     // Drag-and-drop files onto chat → show confirmation in composer
@@ -933,6 +972,15 @@ void MainWindow::buildChatPage()
             // Focus composer for reply
             m_composer->setFocus();
         });
+        menu->addAction(QStringLiteral("\u2197\uFE0F  Forward"), this, [this, msg]() {
+            QString body = plainBodyText(msg);
+            if (body.isEmpty()) return;
+            auto *picker = new ConversationPickerDialog(m_conversations, m_activeConvToken, this);
+            if (picker->exec() == QDialog::Accepted) {
+                m_messages->sendMessageToToken(picker->selectedToken(), body);
+            }
+            picker->deleteLater();
+        });
         menu->addAction(QStringLiteral("\U0001F4CC  Pin"), this, [this, msgId]() {
             m_messages->pinMessage(msgId);
         });
@@ -940,6 +988,14 @@ void MainWindow::buildChatPage()
             QString link = m_messages->messageLink(msgId);
             QApplication::clipboard()->setText(link);
         });
+        // "Mark as unread" only makes sense for incoming messages — your own
+        // messages are read by definition the moment you send them, and the
+        // server's lastReadMessage tracks the current user only.
+        if (!isOwn) {
+            menu->addAction(QStringLiteral("\U0001F4E9  Mark as unread"), this, [this, msgId]() {
+                m_messages->markAsUnread(msgId);
+            });
+        }
         // Thread action only for group conversations (type 2, 3)
         if (m_header->conversationType() >= 2) {
             menu->addAction(QStringLiteral("\U0001F4AC  Thread"), this, [this, msgId]() {
@@ -1551,7 +1607,11 @@ void MainWindow::closeEvent(QCloseEvent *event)
     saveWindowState();  // always save, even when closing to tray
     if (m_chatMode && m_closeToTray) {
         event->ignore();
-        m_wasMaximized = isMaximized();
+        // Capture fullscreen separately — isMaximized() returns false while
+        // fullscreen, so without this we'd silently downgrade fullscreen
+        // users to "normal" on restore from tray.
+        m_wasFullScreen = isFullScreen();
+        m_wasMaximized = !m_wasFullScreen && isMaximized();
         hide();
     } else {
         event->accept();
@@ -1560,7 +1620,9 @@ void MainWindow::closeEvent(QCloseEvent *event)
 
 void MainWindow::restoreFromTray()
 {
-    if (m_wasMaximized)
+    if (m_wasFullScreen)
+        showFullScreen();
+    else if (m_wasMaximized)
         showMaximized();
     else
         showNormal();
@@ -1570,9 +1632,21 @@ void MainWindow::restoreFromTray()
 
 void MainWindow::openConversation(const QString &token)
 {
-    // Bring window to front — Windows blocks focus stealing, so use SetForegroundWindow
-    if (isMinimized() || !isVisible()) {
-        if (m_wasMaximized)
+    // Bring window to front — Windows blocks focus stealing, so use SetForegroundWindow.
+    // Restore path branches on three cases so fullscreen/maximized survive:
+    //   1. Minimized: clear the WindowMinimized flag — Qt retains the
+    //      prior fullscreen/maximized bit through the minimize cycle, so
+    //      we resume in whatever state we left.
+    //   2. Hidden (close-to-tray): consult the explicit m_wasFullScreen /
+    //      m_wasMaximized snapshot captured in closeEvent.
+    //   3. Already visible: just raise() — don't touch state at all,
+    //      otherwise we'd drop fullscreen on a click-while-visible.
+    if (isMinimized()) {
+        setWindowState(windowState() & ~Qt::WindowMinimized);
+    } else if (!isVisible()) {
+        if (m_wasFullScreen)
+            showFullScreen();
+        else if (m_wasMaximized)
             showMaximized();
         else
             showNormal();
