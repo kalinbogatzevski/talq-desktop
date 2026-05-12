@@ -10,8 +10,10 @@ QVector<EmojiEntry> g_entries;
 QHash<QString, const EmojiEntry*> g_byShortcode;
 QHash<QString, const EmojiEntry*> g_byShortForm;
 QHash<QString, QPixmap> g_pixmapCache;
+QStringList g_pixmapCacheInsertion;   // FIFO eviction order
 QStringList g_recentCodepoints;
 const int kRecentMax = 24;
+const int kPixmapCacheMax = 800;       // FIFO cap, ~20MB worst case
 } // namespace
 
 // Defined in EmojiData_generated.cpp; fills g_entries when called.
@@ -109,7 +111,27 @@ QPixmap pixmapFor(const QString &codepoints, int sizePx)
         pm = pm.scaled(sizePx, sizePx, Qt::KeepAspectRatio, Qt::SmoothTransformation);
 
     g_pixmapCache.insert(key, pm);
+    g_pixmapCacheInsertion.append(key);
+    if (g_pixmapCacheInsertion.size() > kPixmapCacheMax) {
+        // Drop oldest 20% so we don't churn on every insert
+        int toDrop = kPixmapCacheMax / 5;
+        for (int i = 0; i < toDrop && !g_pixmapCacheInsertion.isEmpty(); ++i)
+            g_pixmapCache.remove(g_pixmapCacheInsertion.takeFirst());
+    }
     return pm;
+}
+
+int pixmapCacheCount() { return g_pixmapCache.size(); }
+
+qint64 pixmapCacheBytes()
+{
+    qint64 total = 0;
+    for (auto it = g_pixmapCache.cbegin(); it != g_pixmapCache.cend(); ++it) {
+        const QPixmap &pm = it.value();
+        // Approx: width × height × 4 bytes (ARGB32)
+        total += qint64(pm.width()) * pm.height() * 4;
+    }
+    return total;
 }
 QVector<const EmojiEntry*> recent()
 {

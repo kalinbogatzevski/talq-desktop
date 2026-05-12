@@ -9,6 +9,7 @@
 
 class ConversationListModel;
 class ApiClient;
+class SignalingClient;
 class QNetworkReply;
 
 /**
@@ -50,6 +51,7 @@ public:
     // ── Property accessors ──
     void setModel(ConversationListModel *model);
     void setApi(ApiClient *api);
+    void setSignaling(SignalingClient *signaling);
 
     bool darkMode() const { return m_darkMode; }
     void setDarkMode(bool dark);
@@ -61,6 +63,10 @@ public:
     void setSqueezed(bool sq);
 
     QImage cachedAvatar(const QString &key) const { return m_avatarCache.value(key); }
+
+    // Cache stats (for DebugMonitor)
+    int avatarCacheCount() const { return m_avatarCache.size(); }
+    qint64 avatarCacheBytes() const;
 
     QString filterText() const { return m_filterText; }
     void setFilterText(const QString &text);
@@ -123,6 +129,7 @@ private:
     // ── State ──
     ConversationListModel *m_model = nullptr;
     ApiClient *m_api = nullptr;
+    SignalingClient *m_signaling = nullptr;
     bool m_darkMode = true;
     int m_selectedIndex = -1;
     QString m_selectedToken;

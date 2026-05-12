@@ -25,8 +25,6 @@
 #include "core/CallManager.h"
 #include "core/DebugMonitor.h"
 #include "core/AppSettings.h"
-#include "core/AvatarProvider.h"
-#include "core/FilePreviewProvider.h"
 #include "core/MediaDeviceManager.h"
 #include "core/UpdateChecker.h"
 #include <gst/gst.h>
@@ -90,8 +88,6 @@ MainWindow::MainWindow(
     CallManager *callManager,
     DebugMonitor *debug,
     AppSettings *appSettings,
-    AvatarProvider *avatarProvider,
-    FilePreviewProvider *previewProvider,
     QWidget *parent)
     : QMainWindow(parent)
     , m_api(api)
@@ -106,8 +102,6 @@ MainWindow::MainWindow(
     , m_callManager(callManager)
     , m_debug(debug)
     , m_appSettings(appSettings)
-    , m_avatarProvider(avatarProvider)
-    , m_previewProvider(previewProvider)
     , m_settings("TalQ", "TalQ")
 {
     // Window setup
@@ -352,6 +346,7 @@ void MainWindow::buildChatPage()
     m_sidebar = new SidebarPainter(sidebarCol);
     m_sidebar->setModel(m_conversations);
     m_sidebar->setApi(m_api);
+    m_sidebar->setSignaling(m_signaling);
     m_sidebar->setDarkMode(m_darkMode);
     sidebarLayout->addWidget(m_sidebar, 1);
 
@@ -621,6 +616,7 @@ void MainWindow::buildChatPage()
     m_chatPainter = new ChatPainter(chatCol);
     m_chatPainter->setModel(m_messages);
     m_chatPainter->setMyUserId(m_auth->userId());
+    m_chatPainter->setSignaling(m_signaling);
     m_chatPainter->setDarkMode(m_darkMode);
     m_chatPainter->setFontScale(m_fontScale);
     m_chatPainter->hide();

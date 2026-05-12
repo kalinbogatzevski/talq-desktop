@@ -258,24 +258,55 @@ void SignalingClient::onTextMessage(const QString &msg)
         if (target == "room" && eventType == "message") {
             QJsonObject msgObj = event["message"].toObject();
             QJsonObject data = msgObj["data"].toObject();
-            if (data["type"].toString() == "chat") {
+            const QString dataType = data["type"].toString();
+            if (dataType == "chat") {
                 QString roomToken = msgObj["roomid"].toString();
                 if (!roomToken.isEmpty()) {
                     TLOG_SIG("chat refresh hint for room" << roomToken);
                     emit chatRefreshNeeded(roomToken);
+                }
+            } else if (dataType == "talq.client") {
+                // Identify the sender. HPB annotates broadcast messages with
+                // sender.{sessionid,userid,type} on the receiving side.
+                QJsonObject sender = msgObj["sender"].toObject();
+                const QString senderSid = sender["sessionid"].toString();
+                const QString senderUid = sender["userid"].toString();
+                if (senderSid == m_sessionId) {
+                    // Echo of our own broadcast — ignore.
+                } else {
+                    const QString client = data["client"].toString();
+                    const QString version = data["version"].toString();
+                    const QString info = client + "/" + version;
+                    if (!senderUid.isEmpty()) {
+                        const QString prev = m_peerClientInfo.value(senderUid);
+                        if (prev != info) {
+                            m_peerClientInfo[senderUid] = info;
+                            TLOG_SIG("peer client info: user" << senderUid << "=" << info);
+                            emit peerClientInfoChanged(senderUid, info);
+                        }
+                    }
+                    if (!senderSid.isEmpty())
+                        m_sessionToUserId[senderSid] = senderUid;
                 }
             }
         }
 
         if (target == "room" && eventType == "join") {
             QJsonArray joins = event["join"].toArray();
+            bool anyNonSelf = false;
             for (const auto &j : joins) {
                 QString sid = j.toObject()["sessionid"].toString();
                 if (!sid.isEmpty() && sid != m_sessionId) {
                     qDebug() << "Signaling: room peer joined:" << sid.left(20);
                     emit roomPeerJoined(sid);
+                    anyNonSelf = true;
                 }
             }
+            // Re-announce our TalQ version so the newcomer learns about us.
+            // (HPB broadcasts are one-shot — peers that joined before our
+            // initial hello already cached it.)
+            if (anyNonSelf)
+                sendTalqClientHello();
         }
 
         if (target == "participants") {
@@ -385,7 +416,21 @@ void SignalingClient::joinRoom(const QString &token)
 
             m_ws.sendTextMessage(QJsonDocument(msg).toJson(QJsonDocument::Compact));
             qDebug() << "Signaling: joining room" << token << "with session" << ncSessionId.left(20) + "...";
+
+            // Announce our TalQ version to other room participants. Other
+            // TalQ clients cache it (by userId) and display it in conversation
+            // info / call dialog. The official web client ignores it.
+            sendTalqClientHello();
         });
+}
+
+void SignalingClient::sendTalqClientHello()
+{
+    QJsonObject data;
+    data["type"] = QStringLiteral("talq.client");
+    data["client"] = QStringLiteral("TalQ");
+    data["version"] = QStringLiteral(TALQ_VERSION);
+    sendBroadcastMessage(data);
 }
 
 void SignalingClient::sendStartedTyping()

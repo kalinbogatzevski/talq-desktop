@@ -26,6 +26,7 @@
 #include <QMenu>
 #include "core/ApiClient.h"
 #include "core/EmojiData.h"
+#include "core/SignalingClient.h"
 #include <QTextBlock>
 #include <QTextLayout>
 #include <QTextLine>
@@ -35,6 +36,46 @@
 #include <QToolTip>
 #include <QElapsedTimer>
 #include "core/TalqLog.h"
+
+void ChatPainter::setSignaling(SignalingClient *signaling)
+{
+    if (signaling == m_signaling) return;
+    m_signaling = signaling;
+    if (m_signaling) {
+        connect(m_signaling, &SignalingClient::peerClientInfoChanged,
+                this, [this]() { update(); });
+    }
+}
+
+qint64 ChatPainter::avatarCacheBytes() const
+{
+    qint64 total = 0;
+    for (auto it = m_avatarCache.cbegin(); it != m_avatarCache.cend(); ++it)
+        total += it.value().sizeInBytes();
+    return total;
+}
+
+qint64 ChatPainter::previewCacheBytes() const
+{
+    qint64 total = 0;
+    for (auto it = m_previewCache.cbegin(); it != m_previewCache.cend(); ++it)
+        total += it.value().sizeInBytes();
+    return total;
+}
+
+qint64 ChatPainter::layoutCacheBytes() const
+{
+    // QTextDocument size is hard to query exactly. Estimate as
+    // characters × 2 (UTF-16) + layout overhead (~200 bytes per doc).
+    qint64 total = 0;
+    for (auto it = m_layoutCache.cbegin(); it != m_layoutCache.cend(); ++it) {
+        const auto &ml = it.value().second;
+        if (ml.bodyDoc)
+            total += ml.bodyDoc->characterCount() * 2 + 200;
+        total += sizeof(MessageLayout);
+    }
+    return total;
+}
 
 ChatPainter::ChatPainter(QWidget *parent)
     : QWidget(parent)
@@ -1607,12 +1648,27 @@ void ChatPainter::paintOtherMessage(QPainter *p, const MessageLayout &ml, qreal 
         }
     }
 
-    // Author name (non-grouped, above bubble)
+    // Author name (non-grouped, above bubble) + optional TalQ tag
     if (!ml.isGrouped && !ml.nameRect.isNull()) {
         QRectF nr = ml.nameRect.translated(0, offsetY);
         p->setPen(PainterTheme::authorColor(ml.actorId));
         p->setFont(m_theme.nameFont());
         p->drawText(nr, Qt::AlignLeft | Qt::AlignVCenter, ml.actorName);
+
+        if (m_signaling && !ml.actorId.isEmpty()) {
+            const QString info = m_signaling->peerClientInfo(ml.actorId);
+            if (info.startsWith("TalQ")) {
+                QFontMetricsF fm(m_theme.nameFont());
+                qreal nameW = fm.horizontalAdvance(ml.actorName);
+                QFont tagFont = m_theme.nameFont();
+                tagFont.setPointSizeF(qMax(7.0, tagFont.pointSizeF() - 1.5));
+                p->setFont(tagFont);
+                p->setPen(m_theme.textMuted);
+                QRectF tagRect = nr.adjusted(nameW + 8, 0, 200, 0);
+                p->drawText(tagRect, Qt::AlignLeft | Qt::AlignVCenter,
+                            QStringLiteral("· ") + info);
+            }
+        }
     }
 
     // Reply quote

@@ -50,4 +50,8 @@ bool isEmojiCluster(const QString &cluster);
 QVector<const EmojiEntry*> recent();
 void pushRecent(const EmojiEntry *e);
 
+// Cache stats (for DebugMonitor)
+int pixmapCacheCount();
+qint64 pixmapCacheBytes();
+
 } // namespace EmojiData

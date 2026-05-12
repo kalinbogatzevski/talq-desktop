@@ -23,8 +23,6 @@ class MediaDeviceManager;
 class CallManager;
 class DebugMonitor;
 class AppSettings;
-class AvatarProvider;
-class FilePreviewProvider;
 
 class ChatPainter;
 class SidebarPainter;
@@ -57,8 +55,6 @@ public:
         CallManager *callManager,
         DebugMonitor *debug,
         AppSettings *appSettings,
-        AvatarProvider *avatarProvider,
-        FilePreviewProvider *previewProvider,
         QWidget *parent = nullptr
     );
 
@@ -67,6 +63,10 @@ public:
 
     // Must be public for sidebarSqueezedChanged call in cpp
     void sidebarSqueezedChanged();
+
+    // Accessors for DebugMonitor instrumentation
+    ChatPainter *chatPainter() const { return m_chatPainter; }
+    SidebarPainter *sidebar() const { return m_sidebar; }
 
 protected:
     void closeEvent(QCloseEvent *event) override;
@@ -119,8 +119,6 @@ private:
     CallManager *m_callManager;
     DebugMonitor *m_debug;
     AppSettings *m_appSettings;
-    AvatarProvider *m_avatarProvider;
-    FilePreviewProvider *m_previewProvider;
 
     // ── UI ──
     QStackedWidget *m_stack = nullptr;

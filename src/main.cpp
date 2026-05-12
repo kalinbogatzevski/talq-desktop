@@ -20,13 +20,11 @@
 #endif
 
 #include "core/ApiClient.h"
-#include "core/AvatarProvider.h"
 #include "core/AuthManager.h"
 #include "core/MessageCache.h"
 #include "core/NotificationManager.h"
 #include "core/PushClient.h"
 #include "core/SignalingClient.h"
-#include "core/FilePreviewProvider.h"
 #include "models/ConversationListModel.h"
 #include "models/MessageListModel.h"
 #include "models/ThreadListModel.h"
@@ -39,6 +37,8 @@
 #include "ui/MainWindow.h"
 #include "ui/NotificationPopup.h"
 #include "ui/NotificationStack.h"
+#include "painter/ChatPainter.h"
+#include "painter/SidebarPainter.h"
 #include <QFontDatabase>
 #include <QMessageBox>
 #include <gst/gst.h>
@@ -232,15 +232,10 @@ int main(int argc, char *argv[])
     DebugMonitor debug;
     AppSettings appSettings;
 
-    // Legacy image providers (used for debug monitor cache stats)
-    AvatarProvider avatarProvider(&api);
-    FilePreviewProvider previewProvider(&api);
-
     MainWindow window(
         &api, &auth, &conversations, &messages, &threads,
         &notifications, &push, &signaling, &deviceManager,
-        &callManager, &debug, &appSettings,
-        &avatarProvider, &previewProvider
+        &callManager, &debug, &appSettings
     );
 
     // Custom notification popup
@@ -373,14 +368,25 @@ int main(int argc, char *argv[])
     // Restore session
     auth.tryRestore();
 
-    // Debug monitor feed
+    // Debug monitor feed — pull cache stats from the real painters so the
+    // [MEM-DETAIL] line in talq_debug.log reflects what's actually growing.
     QObject::connect(&debug, &DebugMonitor::updated, [&]() {
         debug.setMessageCount(messages.rowCount());
         debug.setConversationCount(conversations.rowCount());
-        debug.setAvatarCacheCount(avatarProvider.cacheCount());
-        debug.setPreviewCacheCount(previewProvider.cacheCount());
-        debug.setPreviewCacheBytes(previewProvider.cacheBytes());
         debug.setPendingRequests(api.pendingCount());
+        debug.setEmojiCacheStats(EmojiData::pixmapCacheCount(),
+                                 EmojiData::pixmapCacheBytes());
+        if (auto *cp = window.chatPainter()) {
+            debug.setChatAvatarStats(cp->avatarCacheCount(), cp->avatarCacheBytes());
+            debug.setPreviewCacheCount(cp->previewCacheCount());
+            debug.setPreviewCacheBytes(cp->previewCacheBytes());
+            debug.setLayoutCacheStats(cp->layoutCacheCount(), cp->layoutCacheBytes());
+            // Aggregate avatar count for the top-row UI shows chat-side cache.
+            debug.setAvatarCacheCount(cp->avatarCacheCount());
+        }
+        if (auto *sb = window.sidebar()) {
+            debug.setSidebarAvatarStats(sb->avatarCacheCount(), sb->avatarCacheBytes());
+        }
     });
 
     return app.exec();

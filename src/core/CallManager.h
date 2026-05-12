@@ -30,6 +30,7 @@ class CallManager : public QObject
     Q_PROPERTY(QString callsUnavailableReason READ callsUnavailableReason CONSTANT)
     Q_PROPERTY(bool remoteVideoMuted READ remoteVideoMuted NOTIFY remoteMediaChanged)
     Q_PROPERTY(bool remoteAudioMuted READ remoteAudioMuted NOTIFY remoteMediaChanged)
+    Q_PROPERTY(QString remotePeerClient READ remotePeerClient NOTIFY callInfoChanged)
 
 public:
     enum CallState { Idle, Outgoing, Incoming, Connecting, Active, Ending };
@@ -52,6 +53,7 @@ public:
     QString callsUnavailableReason() const { return m_callsUnavailableReason; }
     bool remoteVideoMuted() const { return m_remoteVideoMuted; }
     bool remoteAudioMuted() const { return m_remoteAudioMuted; }
+    QString remotePeerClient() const { return m_remotePeerClient; }
     QString gpuAccelStatus() const { return m_gpuAccelStatus; }
     QString activeVideoCodec() const;
     QString activeVideoDecoder() const;
@@ -126,6 +128,7 @@ private:
     QString m_remoteSessionId;
     QString m_remotePeerName;
     QString m_remotePeerId;
+    QString m_remotePeerClient;  // "TalQ/X.Y.Z" or empty for non-TalQ peers
     bool m_muted = false;
     bool m_cameraOn = false;
     bool m_speaking = false;
