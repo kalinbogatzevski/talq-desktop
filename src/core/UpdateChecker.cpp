@@ -19,7 +19,11 @@
 UpdateChecker::UpdateChecker(QNetworkAccessManager *nam, QObject *parent)
     : QObject(parent), m_nam(nam)
 {
-    m_pollTimer.setInterval(4 * 60 * 60 * 1000);
+    // 5-min poll — the manifest fetch is a single sub-1KB JSON GET, so CPU
+    // and bandwidth cost is negligible. Short interval matters during active
+    // development (rapid 0.25.x point releases) so testers see fresh builds
+    // without restarting the app.
+    m_pollTimer.setInterval(5 * 60 * 1000);
     connect(&m_pollTimer, &QTimer::timeout, this, &UpdateChecker::checkNow);
 }
 

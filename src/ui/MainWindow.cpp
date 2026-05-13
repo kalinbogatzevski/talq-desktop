@@ -306,6 +306,10 @@ void MainWindow::buildChatPage()
                     this, [this](bool enabled) { m_closeToTray = enabled; });
             connect(m_settingsDialog, &SettingsDialog::themeChanged,
                     this, &MainWindow::applyTheme);
+            connect(m_settingsDialog, &SettingsDialog::checkForUpdatesRequested,
+                    this, [this]() {
+                if (m_updateChecker) m_updateChecker->checkNow();
+            });
         }
         m_settingsDialog->refresh();
         m_settingsDialog->exec();
@@ -1423,6 +1427,10 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
                     this, [this](bool enabled) { m_closeToTray = enabled; });
             connect(m_settingsDialog, &SettingsDialog::themeChanged,
                     this, &MainWindow::applyTheme);
+            connect(m_settingsDialog, &SettingsDialog::checkForUpdatesRequested,
+                    this, [this]() {
+                if (m_updateChecker) m_updateChecker->checkNow();
+            });
         }
         m_settingsDialog->refresh();
         m_settingsDialog->exec();
