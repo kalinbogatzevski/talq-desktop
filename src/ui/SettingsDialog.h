@@ -34,6 +34,7 @@ signals:
     void closeToTrayChanged(bool enabled);
     void themeChanged(bool darkMode);
     void logoutRequested();
+    void checkForUpdatesRequested();
 
 private:
     QWidget *buildAudioVideoTab();
