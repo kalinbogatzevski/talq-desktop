@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.25.5 (2026-05-13)
+
+### Features
+- **One-click theme toggle in the sidebar.** A small sun/moon icon button sits between New-chat and Settings in the top of the sidebar profile bar. Shows a sun while in dark mode (click to switch to light) and a moon in light mode (click to switch to dark). Same code path as the existing Ctrl+D shortcut and the Settings → General "Dark theme" checkbox — `MainWindow::applyTheme` keeps all three in sync.
+
 ## v0.25.4 (2026-05-13)
 
 ### Changes — update channel
