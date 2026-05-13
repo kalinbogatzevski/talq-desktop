@@ -11,6 +11,8 @@
 #include <QListWidgetItem>
 #include <QMenu>
 #include <QMessageBox>
+#include <QPainter>
+#include <QPixmap>
 #include <QPushButton>
 #include <QVBoxLayout>
 #include <QTimer>
@@ -19,6 +21,24 @@ namespace {
 constexpr int kAttendeeIdRole    = Qt::UserRole + 1;
 constexpr int kActorIdRole       = Qt::UserRole + 2;
 constexpr int kParticipantTypeRole = Qt::UserRole + 3;
+
+QPixmap makeBotIcon(int sizePx)
+{
+    QPixmap pm(sizePx, sizePx);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.setPen(Qt::NoPen);
+    p.setBrush(QColor("#14b8a6"));
+    p.drawEllipse(0, 0, sizePx, sizePx);
+    QFont f;
+    f.setPixelSize(int(sizePx * 0.55));
+    f.setWeight(QFont::Black);
+    p.setFont(f);
+    p.setPen(QColor("#0e1817"));
+    p.drawText(QRect(0, 0, sizePx, sizePx), Qt::AlignCenter, QStringLiteral("B"));
+    return pm;
+}
 
 QString roleLabel(int pt)
 {
@@ -32,7 +52,8 @@ QString roleLabel(int pt)
     default:                return QObject::tr("Member");
     }
 }
-}
+
+} // namespace
 
 ConversationInfoDialog::ConversationInfoDialog(ApiClient *api,
                                                const QString &token,
@@ -157,6 +178,36 @@ ConversationInfoDialog::ConversationInfoDialog(ApiClient *api,
     m_addDebounce->setSingleShot(true);
     m_addDebounce->setInterval(250);
 
+    // ── Bots section ──────────────────────────────────────
+    // Everyone in the room can SEE which bots are enabled (transparent ID of
+    // automated participants). Only moderators get the +Add button — the API
+    // would reject a non-moderator's enable call anyway, so showing the
+    // button is a permissions-leak / dead-button trap.
+    outer->addSpacing(16);
+    auto *botRow = new QHBoxLayout();
+    m_botsHeader = new QLabel(tr("BOTS"), this);
+    m_botsHeader->setObjectName("eyebrow");
+    botRow->addWidget(m_botsHeader);
+    botRow->addStretch();
+    m_addBotBtn = new QPushButton(tr("+ Add bot"), this);
+    m_addBotBtn->setObjectName("primary");
+    m_addBotBtn->setCursor(Qt::PointingHandCursor);
+    m_addBotBtn->setVisible(m_amOwnerOrMod);
+    botRow->addWidget(m_addBotBtn);
+    outer->addLayout(botRow);
+    outer->addSpacing(6);
+
+    m_botsContainer = new QWidget(this);
+    m_botsContainer->setStyleSheet(
+        "background: #1a1613; border: 1px solid #2a241f; border-radius: 12px;");
+    m_botsLayout = new QVBoxLayout(m_botsContainer);
+    m_botsLayout->setContentsMargins(4, 4, 4, 4);
+    m_botsLayout->setSpacing(2);
+    outer->addWidget(m_botsContainer);
+
+    connect(m_addBotBtn, &QPushButton::clicked,
+            this, &ConversationInfoDialog::onAddBotClicked);
+
     outer->addSpacing(8);
     m_status = new QLabel(QString(), this);
     m_status->setStyleSheet("color: #6f6a62; font-size: 12px;");
@@ -203,6 +254,7 @@ ConversationInfoDialog::ConversationInfoDialog(ApiClient *api,
     connect(m_closeBtn,  &QPushButton::clicked, this, &QDialog::accept);
 
     refreshParticipants();
+    refreshBots();
 }
 
 void ConversationInfoDialog::saveName()
@@ -436,4 +488,222 @@ void ConversationInfoDialog::onDeleteClicked()
             emit roomDeleted();
             accept();
         });
+}
+
+// \u2500\u2500\u2500 Bots \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+
+void ConversationInfoDialog::refreshBots()
+{
+    // Clear the bots container.
+    while (auto *item = m_botsLayout->takeAt(0)) {
+        if (auto *w = item->widget()) w->deleteLater();
+        delete item;
+    }
+    // Bump the sequence so any in-flight callback from a previous refresh
+    // (e.g. user clicked Remove twice in quick succession) bails out before
+    // appending stale rows on top of our freshly cleared layout.
+    const int seq = ++m_botsRefreshSeq;
+    m_api->fetchEnabledBots(m_token, this,
+        [this, seq](bool ok, const QVector<BotInfo> &bots) {
+            if (seq != m_botsRefreshSeq) return;
+            if (!ok) {
+                auto *l = new QLabel(tr("(couldn't load bots)"), m_botsContainer);
+                l->setStyleSheet("color: #8a8680; padding: 8px;");
+                m_botsLayout->addWidget(l);
+                return;
+            }
+            if (bots.isEmpty()) {
+                auto *l = new QLabel(tr("No bots enabled in this conversation."),
+                                     m_botsContainer);
+                l->setStyleSheet("color: #8a8680; padding: 8px;");
+                m_botsLayout->addWidget(l);
+                return;
+            }
+            for (const BotInfo &b : bots) populateBotRow(b);
+        });
+}
+
+void ConversationInfoDialog::populateBotRow(const BotInfo &bot)
+{
+    auto *row = new QWidget(m_botsContainer);
+    row->setStyleSheet("background: transparent;");
+    auto *lay = new QHBoxLayout(row);
+    lay->setContentsMargins(8, 6, 8, 6);
+    lay->setSpacing(10);
+
+    auto *iconLbl = new QLabel(row);
+    iconLbl->setPixmap(makeBotIcon(28));
+    iconLbl->setFixedSize(28, 28);
+    iconLbl->setStyleSheet("background: transparent;");
+    lay->addWidget(iconLbl);
+
+    auto *label = new QLabel(bot.name, row);
+    label->setStyleSheet("color: #f4efe6; background: transparent; font-weight: 500;");
+    if (!bot.description.isEmpty()) label->setToolTip(bot.description);
+    lay->addWidget(label, 1);
+
+    if (bot.state == 3 && !bot.errorMessage.isEmpty()) {
+        auto *err = new QLabel(bot.errorMessage, row);
+        err->setStyleSheet("color: #ff6b6b; font-size: 11px; background: transparent;");
+        err->setToolTip(bot.errorMessage);
+        lay->addWidget(err);
+    } else if (!bot.isEnabled()) {
+        auto *note = new QLabel(tr("disabled"), row);
+        note->setStyleSheet("color: #8a8680; font-size: 11px; background: transparent;");
+        lay->addWidget(note);
+    }
+
+    if (m_amOwnerOrMod) {
+        auto *removeBtn = new QPushButton(tr("Remove"), row);
+        removeBtn->setObjectName("danger");
+        removeBtn->setCursor(Qt::PointingHandCursor);
+        const int botId = bot.id;
+        const QString botName = bot.name;
+        connect(removeBtn, &QPushButton::clicked, this, [this, botId, botName]() {
+            auto reply = QMessageBox::question(
+                this, tr("Remove bot"),
+                tr("Remove %1 from this conversation?").arg(botName),
+                QMessageBox::Yes | QMessageBox::No);
+            if (reply != QMessageBox::Yes) return;
+            m_status->setText(tr("Removing bot\u2026"));
+            m_api->setBotEnabled(m_token, botId, false, this,
+                [this](bool ok, int httpStatus) {
+                    if (!ok) {
+                        m_status->setStyleSheet("color: #ff6b6b; font-size: 12px;");
+                        m_status->setText(tr("Couldn't remove (HTTP %1).").arg(httpStatus));
+                    } else {
+                        m_status->setText(tr("Bot removed."));
+                        refreshBots();
+                    }
+                });
+        });
+        lay->addWidget(removeBtn);
+    }
+
+    m_botsLayout->addWidget(row);
+}
+
+void ConversationInfoDialog::onAddBotClicked()
+{
+    // Build a small modal: admin gets the full server list with Enable
+    // buttons; non-admin moderators get a "Bot ID" input (admin still
+    // needs to share that ID out-of-band \u2014 the /bot/admin endpoint is
+    // admin-only).
+    auto *dlg = new QDialog(this);
+    dlg->setWindowTitle(tr("Add bot"));
+    dlg->setAttribute(Qt::WA_DeleteOnClose);
+    dlg->resize(420, 360);
+    dlg->setStyleSheet(this->styleSheet());
+
+    auto *lay = new QVBoxLayout(dlg);
+    lay->setContentsMargins(20, 16, 20, 16);
+
+    auto *info = new QLabel(tr("Select a server-installed bot to enable in this "
+                               "conversation. If the list is empty, you may not "
+                               "have admin permission \u2014 enter a bot ID below."),
+                            dlg);
+    info->setWordWrap(true);
+    info->setStyleSheet("color: #8a8680; font-size: 11px;");
+    lay->addWidget(info);
+
+    auto *list = new QListWidget(dlg);
+    list->setSelectionMode(QAbstractItemView::NoSelection);
+    lay->addWidget(list, 1);
+
+    auto *idRow = new QHBoxLayout;
+    auto *idLabel = new QLabel(tr("Bot ID:"), dlg);
+    auto *idEdit = new QLineEdit(dlg);
+    idEdit->setPlaceholderText(tr("e.g. 3"));
+    auto *idBtn = new QPushButton(tr("Enable"), dlg);
+    idBtn->setObjectName("primary");
+    idBtn->setCursor(Qt::PointingHandCursor);
+    idRow->addWidget(idLabel);
+    idRow->addWidget(idEdit, 1);
+    idRow->addWidget(idBtn);
+    lay->addLayout(idRow);
+
+    auto *status = new QLabel(QString(), dlg);
+    status->setStyleSheet("color: #6f6a62; font-size: 11px;");
+    lay->addWidget(status);
+
+    // Populate the list with server bots (admin only)
+    list->addItem(tr("Loading\u2026"));
+    m_api->fetchAllBots(dlg, [this, list, status, dlg](bool ok, const QVector<BotInfo> &bots) {
+        list->clear();
+        if (!ok) {
+            auto *it = new QListWidgetItem(tr("(error loading bot list)"));
+            it->setFlags(Qt::NoItemFlags);
+            list->addItem(it);
+            return;
+        }
+        if (bots.isEmpty()) {
+            auto *it = new QListWidgetItem(tr("(no bots visible \u2014 admin only; "
+                                              "use the Bot ID input below)"));
+            it->setFlags(Qt::NoItemFlags);
+            list->addItem(it);
+            return;
+        }
+        for (const BotInfo &b : bots) {
+            auto *row = new QWidget;
+            auto *rl = new QHBoxLayout(row);
+            rl->setContentsMargins(8, 6, 8, 6);
+            rl->setSpacing(10);
+            auto *icon2 = new QLabel(row);
+            icon2->setPixmap(makeBotIcon(28));
+            icon2->setFixedSize(28, 28);
+            rl->addWidget(icon2);
+            auto *txt = new QLabel(b.name + QStringLiteral("  ·  #")
+                                  + QString::number(b.id), row);
+            txt->setStyleSheet("color: #f4efe6; font-weight: 500;");
+            rl->addWidget(txt, 1);
+            auto *enableBtn = new QPushButton(tr("Enable"), row);
+            enableBtn->setObjectName("primary");
+            enableBtn->setCursor(Qt::PointingHandCursor);
+            const int botId = b.id;
+            connect(enableBtn, &QPushButton::clicked, dlg, [this, botId, status, dlg]() {
+                status->setText(tr("Enabling\u2026"));
+                m_api->setBotEnabled(m_token, botId, true, dlg,
+                    [this, status, dlg](bool ok, int httpStatus) {
+                        if (ok) {
+                            refreshBots();
+                            dlg->accept();
+                        } else {
+                            status->setStyleSheet("color: #ff6b6b; font-size: 11px;");
+                            status->setText(tr("Failed (HTTP %1).").arg(httpStatus));
+                        }
+                    });
+            });
+            rl->addWidget(enableBtn);
+            auto *item = new QListWidgetItem(list);
+            item->setSizeHint(row->sizeHint());
+            item->setFlags(Qt::NoItemFlags);
+            list->setItemWidget(item, row);
+        }
+    });
+
+    // Manual ID input
+    connect(idBtn, &QPushButton::clicked, dlg, [this, idEdit, status, dlg]() {
+        bool ok = false;
+        const int botId = idEdit->text().trimmed().toInt(&ok);
+        if (!ok || botId <= 0) {
+            status->setStyleSheet("color: #ff6b6b; font-size: 11px;");
+            status->setText(tr("Enter a positive integer."));
+            return;
+        }
+        status->setStyleSheet("color: #6f6a62; font-size: 11px;");
+        status->setText(tr("Enabling\u2026"));
+        m_api->setBotEnabled(m_token, botId, true, dlg,
+            [this, status, dlg](bool apiOk, int httpStatus) {
+                if (apiOk) {
+                    refreshBots();
+                    dlg->accept();
+                } else {
+                    status->setStyleSheet("color: #ff6b6b; font-size: 11px;");
+                    status->setText(tr("Failed (HTTP %1) \u2014 bot may not exist or "
+                                       "you lack permission.").arg(httpStatus));
+                }
+            });
+    });
+
+    dlg->open();
 }

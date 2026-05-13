@@ -3,6 +3,7 @@
 #include <QDialog>
 #include <QVector>
 #include "core/RoomParticipant.h"
+#include "core/BotInfo.h"
 
 class ApiClient;
 class QLabel;
@@ -10,6 +11,8 @@ class QLineEdit;
 class QListWidget;
 class QListWidgetItem;
 class QPushButton;
+class QWidget;
+class QVBoxLayout;
 
 /**
  * Manage an existing Nextcloud Talk room: rename, edit description,
@@ -44,11 +47,14 @@ private slots:
     void onRemoveMember(QListWidgetItem *item);
     void onLeaveClicked();
     void onDeleteClicked();
+    void onAddBotClicked();
 
 private:
     void refreshParticipants();
     void populateParticipants(const QVector<RoomParticipant> &items);
     void runAddSearch();
+    void refreshBots();
+    void populateBotRow(const BotInfo &bot);
 
     ApiClient   *m_api = nullptr;
     QString      m_token;
@@ -71,4 +77,14 @@ private:
     QPushButton *m_deleteBtn = nullptr;
     QPushButton *m_closeBtn = nullptr;
     QLabel      *m_status = nullptr;
+
+    // Bots panel (everyone can view; only moderators see the +Add control).
+    // Plain QWidget + QVBoxLayout, not a QListWidget — list-widget rows take
+    // their width from sizeHint() which gives a too-narrow row when the bot
+    // name is short, clipping any extras (a "Remove" button, a state label).
+    QWidget     *m_botsContainer = nullptr;
+    QVBoxLayout *m_botsLayout = nullptr;
+    QPushButton *m_addBotBtn = nullptr;
+    QLabel      *m_botsHeader = nullptr;
+    int          m_botsRefreshSeq = 0;   // guards async-callback races
 };

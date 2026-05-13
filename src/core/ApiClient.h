@@ -12,6 +12,7 @@
 #include <QVector>
 #include <functional>
 #include "MentionCandidate.h"
+#include "BotInfo.h"
 #include "NcFileEntry.h"
 #include "NcUser.h"
 #include "Reminder.h"
@@ -80,6 +81,18 @@ public:
     // context-safety contract as fetchFileImage.
     void fetchMentions(const QString &token, const QString &search, QObject *context,
                        std::function<void(const QVector<MentionCandidate> &)> callback);
+
+    // NC Talk bot framework. fetchEnabledBots returns bots configured for
+    // the given conversation (available to room participants). fetchAllBots
+    // returns every bot installed on the server (admin-only — non-admins
+    // get an empty list with ok=true). setBotEnabled flips the state
+    // (POST to enable, DELETE to disable; moderator+ required).
+    void fetchEnabledBots(const QString &token, QObject *context,
+                          std::function<void(bool ok, const QVector<BotInfo> &)> callback);
+    void fetchAllBots(QObject *context,
+                      std::function<void(bool ok, const QVector<BotInfo> &)> callback);
+    void setBotEnabled(const QString &token, int botId, bool enabled, QObject *context,
+                       std::function<void(bool ok, int httpStatus)> callback);
 
     // Full-text search within a conversation via Nextcloud unified-search.
     void searchInConversation(const QString &token, const QString &query,

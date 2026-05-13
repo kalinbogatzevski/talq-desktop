@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(talq VERSION 0.25.5 LANGUAGES CXX)
+project(talq VERSION 0.25.6 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -101,6 +101,7 @@ qt_add_executable(talq
     src/core/EmojiData.cpp
     src/core/EmojiData_generated.cpp
     src/core/MentionCandidate.h
+    src/core/BotInfo.h
     src/core/NcFileEntry.h
     src/core/NcUser.h
     src/core/Reminder.h

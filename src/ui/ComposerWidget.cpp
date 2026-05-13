@@ -808,9 +808,16 @@ void ComposerWidget::maybeShowCompletion()
     if (hits.isEmpty()) { if (m_completion) m_completion->hide(); return; }
 
     if (!m_completion) {
+        // Match the mention popup — non-focus-stealing so the composer keeps
+        // receiving characters while the user refines the shortcode.
         m_completion = new QListWidget(this->window());
-        m_completion->setWindowFlags(Qt::Popup);
+        m_completion->setWindowFlags(Qt::FramelessWindowHint | Qt::Tool
+                                    | Qt::WindowDoesNotAcceptFocus);
+        m_completion->setAttribute(Qt::WA_ShowWithoutActivating);
+        m_completion->setFocusPolicy(Qt::NoFocus);
         m_completion->setStyleSheet(kPopupStyle);
+        connect(m_completion, &QListWidget::itemClicked, this,
+                [this](QListWidgetItem *it) { applyCompletion(m_completion->row(it)); });
         connect(m_completion, &QListWidget::itemActivated, this,
                 [this](QListWidgetItem *it) { applyCompletion(m_completion->row(it)); });
     }
@@ -954,60 +961,96 @@ void ComposerWidget::fetchMentionsDebounced()
 
     QString query = m_pendingMentionQuery;
     api->fetchMentions(token, query, this,
-        [this, query, token](const QVector<MentionCandidate> &candidates) {
+        [this, api, query, token](const QVector<MentionCandidate> &serverCandidates) {
             if (m_mentionWordStart < 0) return;
             if (m_pendingMentionQuery != query) return;
-            // Guard against stale response after conversation switch.
             if (!m_model || m_model->conversationToken() != token) return;
 
-            if (candidates.isEmpty()) {
-                if (m_mentionPopup) m_mentionPopup->hide();
-                return;
-            }
+            // Also fetch bots enabled in this room and merge them as
+            // mention candidates. NC's /mentions endpoint doesn't always
+            // include bots, and the user explicitly wants to @-address them.
+            api->fetchEnabledBots(token, this,
+                [this, query, token, serverCandidates](bool botOk, const QVector<BotInfo> &bots) {
+                    if (m_mentionWordStart < 0) return;
+                    if (m_pendingMentionQuery != query) return;
+                    if (!m_model || m_model->conversationToken() != token) return;
 
-            if (!m_mentionPopup) {
-                m_mentionPopup = new QListWidget(this->window());
-                m_mentionPopup->setWindowFlags(Qt::Popup);
-                m_mentionPopup->setStyleSheet(kPopupStyle);
-                m_mentionPopup->setIconSize(QSize(24, 24));
-                connect(m_mentionPopup, &QListWidget::itemActivated, this,
-                        [this](QListWidgetItem *it) {
-                            applyMentionCompletion(m_mentionPopup->row(it));
-                        });
-            }
-            m_mentionPopup->clear();
-
-            int limit = qMin(6, int(candidates.size()));
-            for (int k = 0; k < limit; ++k) {
-                const MentionCandidate &c = candidates[k];
-                QString primary = c.label.isEmpty() ? c.id : c.label;
-                QString rowText;
-                if (c.id == QStringLiteral("all")) {
-                    rowText = QStringLiteral("Everyone\n@all");
-                } else {
-                    rowText = QStringLiteral("%1\n@%2").arg(primary, c.id);
-                }
-                auto *item = new QListWidgetItem(rowText);
-                item->setData(Qt::UserRole, c.id);
-                item->setData(Qt::UserRole + 1, c.id);
-                item->setData(Qt::UserRole + 2, c.label);
-                item->setData(Qt::UserRole + 3, int(c.source));
-
-                if (c.id != QStringLiteral("all")) {
-                    QImage img = fetchMentionAvatar(c.id);
-                    if (!img.isNull()) {
-                        item->setIcon(QIcon(QPixmap::fromImage(img).scaled(
-                            24, 24, Qt::KeepAspectRatio, Qt::SmoothTransformation)));
+                    QVector<MentionCandidate> candidates = serverCandidates;
+                    if (botOk) {
+                        for (const BotInfo &b : bots) {
+                            if (!b.isEnabled()) continue;
+                            if (!query.isEmpty()
+                                && !b.name.contains(query, Qt::CaseInsensitive))
+                                continue;
+                            MentionCandidate mc;
+                            mc.id = b.name;
+                            mc.label = b.name + QStringLiteral(" (bot)");
+                            candidates.append(mc);
+                        }
                     }
-                }
-                m_mentionPopup->addItem(item);
-            }
-            m_mentionPopup->setCurrentRow(0);
 
-            QPoint p = m_input->mapToGlobal(m_input->rect().topLeft());
-            m_mentionPopup->resize(300, 44 * limit + 8);
-            m_mentionPopup->move(p.x(), p.y() - m_mentionPopup->height() - 4);
-            m_mentionPopup->show();
+                    if (candidates.isEmpty()) {
+                        if (m_mentionPopup) m_mentionPopup->hide();
+                        return;
+                    }
+
+                    if (!m_mentionPopup) {
+                        // Non-focus-stealing popup — Qt::Popup would grab
+                        // keyboard input and the composer would stop receiving
+                        // characters. Tool + WindowDoesNotAcceptFocus
+                        // + WA_ShowWithoutActivating keeps the QTextEdit
+                        // focused while the popup floats above.
+                        m_mentionPopup = new QListWidget(this->window());
+                        m_mentionPopup->setWindowFlags(Qt::FramelessWindowHint | Qt::Tool
+                                                      | Qt::WindowDoesNotAcceptFocus);
+                        m_mentionPopup->setAttribute(Qt::WA_ShowWithoutActivating);
+                        m_mentionPopup->setFocusPolicy(Qt::NoFocus);
+                        m_mentionPopup->setStyleSheet(kPopupStyle);
+                        m_mentionPopup->setIconSize(QSize(24, 24));
+                        connect(m_mentionPopup, &QListWidget::itemClicked, this,
+                                [this](QListWidgetItem *it) {
+                                    applyMentionCompletion(m_mentionPopup->row(it));
+                                });
+                        connect(m_mentionPopup, &QListWidget::itemActivated, this,
+                                [this](QListWidgetItem *it) {
+                                    applyMentionCompletion(m_mentionPopup->row(it));
+                                });
+                    }
+                    m_mentionPopup->clear();
+
+                    int limit = qMin(6, int(candidates.size()));
+                    for (int k = 0; k < limit; ++k) {
+                        const MentionCandidate &c = candidates[k];
+                        QString primary = c.label.isEmpty() ? c.id : c.label;
+                        QString rowText;
+                        if (c.id == QStringLiteral("all")) {
+                            rowText = QStringLiteral("Everyone\n@all");
+                        } else {
+                            rowText = QStringLiteral("%1\n@%2").arg(primary, c.id);
+                        }
+                        auto *item = new QListWidgetItem(rowText);
+                        item->setData(Qt::UserRole, c.id);
+                        item->setData(Qt::UserRole + 1, c.id);
+                        item->setData(Qt::UserRole + 2, c.label);
+                        item->setData(Qt::UserRole + 3, int(c.source));
+
+                        if (c.id != QStringLiteral("all")) {
+                            QImage img = fetchMentionAvatar(c.id);
+                            if (!img.isNull()) {
+                                item->setIcon(QIcon(QPixmap::fromImage(img).scaled(
+                                    24, 24, Qt::KeepAspectRatio, Qt::SmoothTransformation)));
+                            }
+                        }
+                        m_mentionPopup->addItem(item);
+                    }
+                    m_mentionPopup->setCurrentRow(0);
+
+                    QPoint p = m_input->mapToGlobal(m_input->rect().topLeft());
+                    m_mentionPopup->resize(300, 44 * limit + 8);
+                    m_mentionPopup->move(p.x(), p.y() - m_mentionPopup->height() - 4);
+                    m_mentionPopup->show();
+                    m_mentionPopup->raise();
+                });
         });
 }
 
@@ -1059,6 +1102,17 @@ bool ComposerWidget::eventFilter(QObject *watched, QEvent *event)
         && (event->type() == QEvent::MouseButtonPress
             || event->type() == QEvent::FocusIn)) {
         emit userInteracted();
+    }
+    // Composer lost focus (user clicked the chat list / message / elsewhere
+    // in TalQ) — dismiss both popups. Safe because the popups don't accept
+    // focus, so clicking ON a popup item doesn't trigger this branch.
+    if (watched == m_input && event->type() == QEvent::FocusOut) {
+        if (m_mentionPopup && m_mentionPopup->isVisible()) {
+            m_mentionPopup->hide();
+            m_mentionWordStart = -1;
+        }
+        if (m_completion && m_completion->isVisible())
+            m_completion->hide();
     }
     if (watched == m_input && event->type() == QEvent::KeyPress) {
         auto *k = static_cast<QKeyEvent*>(event);

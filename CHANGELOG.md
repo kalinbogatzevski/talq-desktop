@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.25.6 (2026-05-13)
+
+### Fixes — @-mention composer
+- **Mention popup now actually appears.** `ApiClient::fetchMentions` was hitting `apps/spreed/api/v4/chat/{token}/mentions`, but the NC Talk chat API mounts mentions under `v1` — `v4` is for the room API. Every request returned HTTP 404 with an empty body, which the code treated as "no candidates" and silently hid the popup. Net effect: typing `@` did nothing visible. Fixed to `v1`.
+- **Popup no longer steals keyboard input.** The mention popup (and the emoji-shortcode popup, which had the same code) was created with `Qt::Popup` window flag. That flag is appropriate for combo-box dropdowns where the user MUST commit, but wrong for autocomplete-style popups where the user wants to keep typing past the trigger character. Replaced with `Qt::FramelessWindowHint | Qt::Tool | Qt::WindowDoesNotAcceptFocus` + `WA_ShowWithoutActivating` so the composer keeps receiving keystrokes while the popup floats. Single-click now selects (was double-click only). The popup auto-dismisses when the composer loses focus.
+
+### Features — NC Talk bot framework support
+- **Bots panel in Conversation Info dialog.** Lists every bot currently enabled in the conversation, with a "Remove" button per row for moderators. Each row shows a teal "B" badge as the default bot icon (no font dependency).
+- **"+ Add bot" sub-dialog.** Admins see the full server-installed bot list via `/api/v1/bot/admin` with per-row "Enable" buttons. Non-admin moderators get a manual "Bot ID" input (since `/admin` is admin-only); they can still enable a bot by ID if shared out-of-band.
+- **Bots appear in @-mention popup.** When the user types `@`, TalQ now fetches `/api/v1/bot/{token}` in parallel with the mention candidates and merges enabled bots into the dropdown with a "(bot)" suffix on the label. This works even on NC server versions whose `/mentions` endpoint doesn't include bots. Mention text is sent as `@<bot-name>`; whether the server resolves that into a structured mention parameter depends on the server's bot framework version. The bot receives the message via its webhook regardless.
+- **New `ApiClient` methods:** `fetchEnabledBots(token, …)`, `fetchAllBots(…)` (admin), `setBotEnabled(token, botId, on, …)`. New header `core/BotInfo.h` for the data type.
+
+### Note on bot interaction
+The NC Talk bot framework does not allow user-initiated 1-on-1 conversations with bots — bots aren't real NC users and don't appear in user search. For a "personal assistant" feel, install the bot with `occ talk:bot:install --no-setup` so it auto-attaches to every conversation, or have an admin pre-create a per-user room with the bot enabled.
+
 ## v0.25.5 (2026-05-13)
 
 ### Features
