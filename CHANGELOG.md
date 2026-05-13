@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.25.2 (2026-05-13)
+
+### Features — message rendering
+- **Markdown subset in chat messages.** Bold (`**text**`), italic (`*text*` / `_text_`), strikethrough (`~~text~~`), inline code (`` `text` ``), and fenced code blocks (` ```...``` `) now render formatted instead of literal. Implemented in `Message::fromJson` between HTML escape and `messageParameters` substitution; code content is stashed under sentinel tokens so its inner `**` / `_` aren't re-interpreted as emphasis. Italic rules follow CommonMark "flanking delimiter" — `*` must be adjacent to non-whitespace and not be part of a bold pair; `_` requires word boundary so snake_case_names survive. Headings, lists, and horizontal rules are deliberately not parsed: people don't use them in chat and they invite false positives on punctuation-heavy plain text. Compatible with messages from the official NC web client (which renders the same subset).
+
 ## v0.25.1 (2026-05-12)
 
 ### Fixes
