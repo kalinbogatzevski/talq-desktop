@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.25.4 (2026-05-13)
+
+### Changes — update channel
+- **Poll interval reduced from 4 h to 5 min.** During active development we ship multiple point releases per day, and a 4 h window meant testers stayed on the previous build until they restarted the app. The check is a single sub-1KB JSON GET against the update manifest — CPU and bandwidth cost is negligible. Initial 30 s on-launch check is unchanged.
+- **"Check for updates now" button in Settings → Updates.** Triggers an immediate manifest fetch via `UpdateChecker::checkNow()` over a signal so testers don't have to wait out the poll interval. Button shows "Checking…" while in flight, then a neutral "if no banner appeared, you're on the latest version" message — relying on the existing update banner for positive signal.
+
 ## v0.25.3 (2026-05-13)
 
 ### Fixes

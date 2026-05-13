@@ -13,6 +13,7 @@
 #include <QFrame>
 #include <QFont>
 #include <QRegularExpression>
+#include <QTimer>
 
 // Helper: section header label matching QML SectionHeader style
 static QLabel *makeSectionHeader(const QString &text)
@@ -422,12 +423,34 @@ QWidget *SettingsDialog::buildUpdatesTab()
     lay->addWidget(m_updatesAutoCheck);
 
     auto *note = new QLabel(
-        tr("TalQ checks once at startup and then every 4 hours. "
+        tr("TalQ checks once at startup and then every 5 minutes. "
            "When a new version is available, a banner appears at the top of the chat."),
         w);
     note->setWordWrap(true);
     note->setStyleSheet("color: #8a8680; font-size: 11px;");
     lay->addWidget(note);
+
+    auto *btnRow = new QHBoxLayout;
+    auto *checkBtn = new QPushButton(tr("Check for updates now"), w);
+    auto *checkStatus = new QLabel(w);
+    checkStatus->setStyleSheet("color: #8a8680; font-size: 11px;");
+    btnRow->addWidget(checkBtn);
+    btnRow->addWidget(checkStatus, 1);
+    lay->addLayout(btnRow);
+
+    connect(checkBtn, &QPushButton::clicked, this, [this, checkBtn, checkStatus]() {
+        checkBtn->setEnabled(false);
+        checkStatus->setText(tr("Checking…"));
+        emit checkForUpdatesRequested();
+        // No checkFinished signal on UpdateChecker — re-enable + show neutral
+        // status after a delay. If an update IS found, the existing banner
+        // mechanism shows it at the top of the chat regardless.
+        QTimer::singleShot(3500, this, [checkBtn, checkStatus]() {
+            checkBtn->setEnabled(true);
+            checkStatus->setText(tr("Last checked just now — if no banner appeared, "
+                                    "you're on the latest version."));
+        });
+    });
 
     lay->addStretch();
     return w;
