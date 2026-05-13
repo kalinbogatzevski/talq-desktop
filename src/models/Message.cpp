@@ -1,5 +1,105 @@
 #include "models/Message.h"
 #include <QRegularExpression>
+#include <QVector>
+
+namespace {
+
+// Render the inline-markdown subset we support: code blocks, inline code,
+// bold, italic, strikethrough. Input must already be HTML-escaped; output
+// is HTML. Code blocks/inline code are stashed under sentinel tokens before
+// emphasis runs, so their content isn't re-parsed (a literal `**` inside a
+// code block must stay literal).
+//
+// Limited to a chat-message subset on purpose: no headings, no lists, no
+// horizontal rules, no images. People don't use those in chat, and adding
+// them invites false positives on punctuation-heavy plain text.
+QString applyMarkdown(QString text)
+{
+    if (text.isEmpty()) return text;
+
+    QVector<QString> stash;
+    auto park = [&](const QString &html) {
+        const int n = stash.size();
+        stash.append(html);
+        return QStringLiteral("\x01M%1\x02").arg(n);
+    };
+
+    // ── Fenced code blocks: ```lang\nbody``` ──
+    // Greedy-min body, optional language tag is dropped. Multiline OK.
+    static const QRegularExpression codeBlockRx(
+        QStringLiteral(R"(```[A-Za-z0-9_+-]*\n?([\s\S]*?)```)"));
+    {
+        QString out;
+        int pos = 0;
+        auto it = codeBlockRx.globalMatch(text);
+        while (it.hasNext()) {
+            auto m = it.next();
+            out += QStringView{text}.mid(pos, m.capturedStart() - pos);
+            out += park(QStringLiteral("<pre style='background:#1f2937;border-radius:6px;"
+                                      "padding:8px;font-family:Consolas,monospace'>")
+                        + m.captured(1).trimmed()
+                        + QStringLiteral("</pre>"));
+            pos = m.capturedEnd();
+        }
+        if (pos > 0) {
+            out += QStringView{text}.mid(pos);
+            text = out;
+        }
+    }
+
+    // ── Inline code: `body` ──
+    static const QRegularExpression inlineCodeRx(
+        QStringLiteral(R"(`([^`\n]+)`)"));
+    {
+        QString out;
+        int pos = 0;
+        auto it = inlineCodeRx.globalMatch(text);
+        while (it.hasNext()) {
+            auto m = it.next();
+            out += QStringView{text}.mid(pos, m.capturedStart() - pos);
+            out += park(QStringLiteral("<code style='background:#1f2937;"
+                                      "border-radius:3px;padding:1px 4px;"
+                                      "font-family:Consolas,monospace'>")
+                        + m.captured(1)
+                        + QStringLiteral("</code>"));
+            pos = m.capturedEnd();
+        }
+        if (pos > 0) {
+            out += QStringView{text}.mid(pos);
+            text = out;
+        }
+    }
+
+    // ── Bold: **body** ──  no internal '*', no newline
+    static const QRegularExpression boldRx(
+        QStringLiteral(R"(\*\*([^*\n]+?)\*\*)"));
+    text.replace(boldRx, QStringLiteral("<b>\\1</b>"));
+
+    // ── Strikethrough: ~~body~~ ──
+    static const QRegularExpression strikeRx(
+        QStringLiteral(R"(~~([^~\n]+?)~~)"));
+    text.replace(strikeRx, QStringLiteral("<s>\\1</s>"));
+
+    // ── Italic: *body* ──  CommonMark "flanking delimiter" rule: opening
+    // '*' must be followed by non-whitespace and not be a leftover '**'.
+    // (?<!\*) and (?!\*) prevent matching across a bold pair.
+    static const QRegularExpression italicStarRx(
+        QStringLiteral(R"((?<!\*)\*(\S[^*\n]*?\S|\S)\*(?!\*))"));
+    text.replace(italicStarRx, QStringLiteral("<i>\\1</i>"));
+
+    // ── Italic: _body_ ──  word-boundary so we don't eat snake_case_names.
+    static const QRegularExpression italicUnderRx(
+        QStringLiteral(R"(\b_(\S[^_\n]*?\S|\S)_\b)"));
+    text.replace(italicUnderRx, QStringLiteral("<i>\\1</i>"));
+
+    // Restore stashed code segments verbatim.
+    for (int i = 0; i < stash.size(); ++i)
+        text.replace(QStringLiteral("\x01M%1\x02").arg(i), stash[i]);
+
+    return text;
+}
+
+} // namespace
 
 Message Message::fromJson(const QJsonObject &json)
 {
@@ -12,6 +112,10 @@ Message Message::fromJson(const QJsonObject &json)
     m.actorDisplayName = json["actorDisplayName"].toString();
     m.message = json["message"].toString();
     m.message = m.message.toHtmlEscaped();
+    // Markdown subset (bold/italic/strike/inline-code/code-block) runs on the
+    // escaped text, before mentions/files are substituted. Code-block content
+    // is stashed first so its inner '**' / '_' aren't re-interpreted.
+    m.message = applyMarkdown(m.message);
     m.timestamp = json["timestamp"].toInteger();
     m.lastEditTimestamp = json["lastEditTimestamp"].toInteger();
     m.lastEditActorId   = json["lastEditActorId"].toString();
