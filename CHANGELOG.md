@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.25.3 (2026-05-13)
+
+### Fixes
+- **Topic tab bar lingers after Home.** Clicking the Home button while inside a group chat with topics ("All messages / General / …") left the tab bar visible above the welcome screen. The `homeRequested` handler in `MainWindow` reset the message model and hid the chat painter but never called `updateTopicMode(false)`, so `m_showTopics`, the header flag, and the tab bar widget visibility all stayed in the previous group's state. Fix: invoke `updateTopicMode(false)` from the home handler, before clearing the active conversation.
+
 ## v0.25.2 (2026-05-13)
 
 ### Features — message rendering

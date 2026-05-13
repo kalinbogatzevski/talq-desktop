@@ -360,6 +360,10 @@ void MainWindow::buildChatPage()
         if (m_chatPainter->selectionMode())
             m_chatPainter->exitSelectionMode();
         closeThread();
+        // Drop topic-mode state. Otherwise the "All messages / General / …"
+        // tab bar from the previous group chat stays visible over the welcome
+        // screen until the user picks another conversation.
+        updateTopicMode(false);
         // Clear the active conversation in the message model (empty token = no conversation)
         m_messages->setConversationToken(QString());
         m_activeConvToken.clear();
