@@ -8,6 +8,10 @@
 
 class QWidget;
 
+#ifdef Q_OS_WIN
+struct ITaskbarList3;
+#endif
+
 /**
  * Manages system tray icon, desktop notifications, and notification sounds.
  *
@@ -64,4 +68,11 @@ private:
     int m_unreadCount = 0;
     QByteArray m_wavData;  // embedded WAV loaded from resources
     QPixmap m_baseIcon;
+
+#ifdef Q_OS_WIN
+    // Taskbar overlay (the small badge on the app's taskbar button).
+    // Qt6 dropped QtWinExtras, so we go straight to ITaskbarList3.
+    void updateTaskbarOverlay(int count);
+    ITaskbarList3 *m_taskbar = nullptr;
+#endif
 };

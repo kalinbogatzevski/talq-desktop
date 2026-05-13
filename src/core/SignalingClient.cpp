@@ -239,6 +239,36 @@ void SignalingClient::onTextMessage(const QString &msg)
                 m_typingClearTimer.stop();
             }
         }
+        else if (msgType == "talq.client") {
+            // Client-originated TalQ identification broadcast. Travels the
+            // same path as typing indicators (recipient.type=room → echoed
+            // back to all room participants as type="message").
+            //
+            // Prefer userId from the payload itself (we put it there in
+            // sendTalqClientHello); fall back to the sender annotation
+            // added by the spreedbackend.
+            QJsonObject senderObj = messageObj["sender"].toObject();
+            QString senderUid = msgData["userid"].toString();
+            if (senderUid.isEmpty())
+                senderUid = senderObj["userid"].toString();
+            const QString senderSid = senderObj["sessionid"].toString();
+            if (senderSid == m_sessionId || senderUid == m_userId) {
+                // Echo of our own broadcast — ignore.
+            } else if (!senderUid.isEmpty()) {
+                const QString client = msgData["client"].toString();
+                const QString version = msgData["version"].toString();
+                const QString info = client + "/" + version;
+                if (m_peerClientInfo.value(senderUid) != info) {
+                    m_peerClientInfo[senderUid] = info;
+                    qDebug() << "Signaling: peer TalQ client" << senderUid << "=" << info;
+                    emit peerClientInfoChanged(senderUid, info);
+                }
+                if (!senderSid.isEmpty())
+                    m_sessionToUserId[senderSid] = senderUid;
+            } else {
+                qDebug() << "Signaling: received talq.client without userId — sender=" << senderObj;
+            }
+        }
     }
     else if (type == "event") {
         QJsonObject event = obj["event"].toObject();
@@ -266,27 +296,23 @@ void SignalingClient::onTextMessage(const QString &msg)
                     emit chatRefreshNeeded(roomToken);
                 }
             } else if (dataType == "talq.client") {
-                // Identify the sender. HPB annotates broadcast messages with
-                // sender.{sessionid,userid,type} on the receiving side.
+                // Defense-in-depth fallback path. The real delivery channel
+                // for client-originated room broadcasts is the top-level
+                // type="message" branch above (same path typing indicators
+                // travel). This event/room/message branch is kept in case a
+                // future server variant routes such messages here instead.
                 QJsonObject sender = msgObj["sender"].toObject();
                 const QString senderSid = sender["sessionid"].toString();
-                const QString senderUid = sender["userid"].toString();
-                if (senderSid == m_sessionId) {
-                    // Echo of our own broadcast — ignore.
-                } else {
-                    const QString client = data["client"].toString();
-                    const QString version = data["version"].toString();
-                    const QString info = client + "/" + version;
-                    if (!senderUid.isEmpty()) {
-                        const QString prev = m_peerClientInfo.value(senderUid);
-                        if (prev != info) {
-                            m_peerClientInfo[senderUid] = info;
-                            TLOG_SIG("peer client info: user" << senderUid << "=" << info);
-                            emit peerClientInfoChanged(senderUid, info);
-                        }
+                QString senderUid = data["userid"].toString();
+                if (senderUid.isEmpty()) senderUid = sender["userid"].toString();
+                if (senderUid.isEmpty()) senderUid = m_sessionToUserId.value(senderSid);
+                if (senderSid != m_sessionId && senderUid != m_userId && !senderUid.isEmpty()) {
+                    const QString info = data["client"].toString() + "/" + data["version"].toString();
+                    if (m_peerClientInfo.value(senderUid) != info) {
+                        m_peerClientInfo[senderUid] = info;
+                        qDebug() << "Signaling: peer TalQ client (event-path)" << senderUid << "=" << info;
+                        emit peerClientInfoChanged(senderUid, info);
                     }
-                    if (!senderSid.isEmpty())
-                        m_sessionToUserId[senderSid] = senderUid;
                 }
             }
         }
@@ -323,11 +349,16 @@ void SignalingClient::onTextMessage(const QString &msg)
                     continue;
                 }
 
-                // Cache userid → displayName for typing indicators
+                // Cache userid → displayName for typing indicators, and
+                // sessionId → userid for the TalQ peer-identification fallback
+                // (so we can resolve a sender's NC userId even on servers that
+                // omit userid from broadcast sender annotations).
                 QString userId = user["actorId"].toString();
                 QString displayName = user["displayName"].toString();
                 if (!userId.isEmpty() && !displayName.isEmpty())
                     m_participantNames[userId] = displayName;
+                if (!userId.isEmpty())
+                    m_sessionToUserId[sid] = userId;
 
                 int prevFlags = m_participantCallFlags.value(sid, 0);
                 m_participantCallFlags[sid] = inCall;
@@ -426,10 +457,19 @@ void SignalingClient::joinRoom(const QString &token)
 
 void SignalingClient::sendTalqClientHello()
 {
+    if (m_userId.isEmpty()) {
+        TLOG_SIG("sendTalqClientHello skipped — no userId yet");
+        return;
+    }
     QJsonObject data;
     data["type"] = QStringLiteral("talq.client");
     data["client"] = QStringLiteral("TalQ");
     data["version"] = QStringLiteral(TALQ_VERSION);
+    // Self-identify in the payload itself — the spreedbackend's sender
+    // annotation on room-broadcasts is unreliable (sessionid only, no userid
+    // on some configs), so receivers should prefer this field.
+    data["userid"] = m_userId;
+    qDebug() << "Signaling: announcing TalQ/" TALQ_VERSION " in room" << m_currentRoom;
     sendBroadcastMessage(data);
 }
 
