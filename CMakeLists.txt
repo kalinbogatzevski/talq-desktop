@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(talq VERSION 0.25.0 LANGUAGES CXX)
+project(talq VERSION 0.25.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -161,7 +161,7 @@ if(WIN32)
     if(CMAKE_BUILD_TYPE STREQUAL "Release")
         set_target_properties(talq PROPERTIES WIN32_EXECUTABLE TRUE)
     endif()
-    target_link_libraries(talq PRIVATE dwmapi winmm)
+    target_link_libraries(talq PRIVATE dwmapi winmm ole32 uuid)
 endif()
 
 install(TARGETS talq RUNTIME DESTINATION bin)

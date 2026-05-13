@@ -13,6 +13,7 @@
 #ifdef Q_OS_WIN
 #include <windows.h>
 #include <mmsystem.h>
+#include <shobjidl.h>
 #endif
 
 NotificationManager::NotificationManager(QObject *parent)
@@ -32,6 +33,12 @@ NotificationManager::NotificationManager(QObject *parent)
 NotificationManager::~NotificationManager()
 {
     delete m_trayMenu;
+#ifdef Q_OS_WIN
+    if (m_taskbar) {
+        m_taskbar->Release();
+        m_taskbar = nullptr;
+    }
+#endif
 }
 
 void NotificationManager::setWindow(QWidget *window)
@@ -164,6 +171,11 @@ void NotificationManager::updateUnreadCount(int count)
 {
     if (count == m_unreadCount) return;
     m_unreadCount = count;
+
+#ifdef Q_OS_WIN
+    updateTaskbarOverlay(count);
+#endif
+
     if (!m_trayIcon) return;
 
     if (count > 0) {
@@ -200,6 +212,108 @@ void NotificationManager::updateUnreadCount(int count)
         m_trayIcon->setIcon(QIcon(":/logo.png"));
     }
 }
+
+#ifdef Q_OS_WIN
+// QImage → HICON via CreateIconIndirect. Caller owns the returned HICON and
+// must call DestroyIcon(). We feed CreateDIBSection with BI_BITFIELDS to get
+// 32bpp ARGB with explicit channel masks; this is the path Windows actually
+// alpha-blends correctly when used as a taskbar overlay icon.
+static HICON QImageToHICON(const QImage &src)
+{
+    QImage img = src.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+
+    BITMAPV5HEADER bi = {};
+    bi.bV5Size = sizeof(bi);
+    bi.bV5Width = img.width();
+    bi.bV5Height = -img.height();   // top-down
+    bi.bV5Planes = 1;
+    bi.bV5BitCount = 32;
+    bi.bV5Compression = BI_BITFIELDS;
+    bi.bV5RedMask   = 0x00FF0000;
+    bi.bV5GreenMask = 0x0000FF00;
+    bi.bV5BlueMask  = 0x000000FF;
+    bi.bV5AlphaMask = 0xFF000000;
+
+    HDC hdc = GetDC(nullptr);
+    void *bits = nullptr;
+    HBITMAP hbmColor = CreateDIBSection(hdc, reinterpret_cast<BITMAPINFO*>(&bi),
+                                         DIB_RGB_COLORS, &bits, nullptr, 0);
+    ReleaseDC(nullptr, hdc);
+    if (!hbmColor || !bits) {
+        if (hbmColor) DeleteObject(hbmColor);
+        return nullptr;
+    }
+    memcpy(bits, img.constBits(), img.sizeInBytes());
+
+    // Empty 1bpp mask — Windows ignores it for 32bpp icons but ICONINFO requires it.
+    HBITMAP hbmMask = CreateBitmap(img.width(), img.height(), 1, 1, nullptr);
+
+    ICONINFO ii = {};
+    ii.fIcon = TRUE;
+    ii.hbmColor = hbmColor;
+    ii.hbmMask = hbmMask;
+    HICON icon = CreateIconIndirect(&ii);
+
+    DeleteObject(hbmColor);
+    DeleteObject(hbmMask);
+    return icon;
+}
+
+void NotificationManager::updateTaskbarOverlay(int count)
+{
+    if (!m_window) return;
+
+    // Lazily create the ITaskbarList3 instance. Qt's windows platform plugin
+    // initializes COM in apartment-threaded mode for us, so CoCreateInstance
+    // just works here.
+    if (!m_taskbar) {
+        HRESULT hr = CoCreateInstance(CLSID_TaskbarList, nullptr, CLSCTX_INPROC_SERVER,
+                                       IID_ITaskbarList3, reinterpret_cast<void**>(&m_taskbar));
+        if (FAILED(hr) || !m_taskbar) {
+            qWarning() << "NotificationManager: failed to create ITaskbarList3, hr=" << hr;
+            return;
+        }
+        if (FAILED(m_taskbar->HrInit())) {
+            m_taskbar->Release();
+            m_taskbar = nullptr;
+            return;
+        }
+    }
+
+    HWND hwnd = reinterpret_cast<HWND>(m_window->winId());
+    if (!hwnd) return;
+
+    if (count <= 0) {
+        m_taskbar->SetOverlayIcon(hwnd, nullptr, L"");
+        return;
+    }
+
+    // Render a 16×16 red badge with the count. Windows scales the overlay
+    // to fit the taskbar icon, so 16×16 is plenty for HiDPI displays too.
+    QImage img(16, 16, QImage::Format_ARGB32_Premultiplied);
+    img.fill(Qt::transparent);
+    {
+        QPainter p(&img);
+        p.setRenderHint(QPainter::Antialiasing);
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor("#e06060"));
+        p.drawEllipse(QRect(0, 0, 16, 16));
+
+        const QString text = count > 99 ? QStringLiteral("99+") : QString::number(count);
+        QFont font;
+        font.setPixelSize(count > 99 ? 8 : (count > 9 ? 10 : 11));
+        font.setBold(true);
+        p.setFont(font);
+        p.setPen(Qt::white);
+        p.drawText(img.rect(), Qt::AlignCenter, text);
+    }
+
+    HICON icon = QImageToHICON(img);
+    const std::wstring desc = QString("%1 unread").arg(count).toStdWString();
+    m_taskbar->SetOverlayIcon(hwnd, icon, desc.c_str());
+    if (icon) DestroyIcon(icon);
+}
+#endif
 
 void NotificationManager::setSoundMode(const QString &mode)
 {
