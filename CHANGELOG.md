@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.25.1 (2026-05-12)
+
+### Fixes
+- **TalQ peer identification now actually works between v0.25.x clients.** The HPB broadcast was being parsed in the wrong branch of `SignalingClient::onTextMessage`: client-originated room broadcasts arrive as `type:"message"` (same path as typing indicators and WebRTC signaling), but the `talq.client` handler was sitting in the `type:"event"` branch — which only handles server-originated broadcasts like chat-refresh hints. The broadcast was being sent and routed correctly; nothing was ever reading it on the receiver side. Defense-in-depth fixes layered on top:
+  - The payload now self-identifies (`data.userid = m_userId`) instead of relying on the spreedbackend's `sender` annotation, which only carries sessionid on some configurations.
+  - `m_sessionToUserId` is populated from participants events so a sender's userId is resolvable even on servers that strip it from broadcasts.
+  - The original `event/room/message` handler is retained as a fallback for server variants that route differently, and the diagnostic logs are now emitted at default verbosity (not `--debug` only).
+
+### Features — Windows taskbar
+- **Unread badge on the taskbar button.** Qt6 dropped `QtWinExtras`, so we go straight to `ITaskbarList3::SetOverlayIcon`. A 16×16 red badge with the unread count overlays the TalQ icon on the Windows taskbar whenever `totalUnread > 0`, mirroring the existing tray-icon behavior. Tooltip on the taskbar button reads "N unread".
+
 ## v0.25.0 (2026-05-12)
 
 ### Features — peer-client identification
