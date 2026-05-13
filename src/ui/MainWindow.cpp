@@ -289,6 +289,21 @@ void MainWindow::buildChatPage()
     profileLayout->addWidget(newChatBtn);
     connect(newChatBtn, &QPushButton::clicked, this, &MainWindow::openNewChatDialog);
 
+    // Theme toggle \u2014 shows the icon for the destination state (sun while
+    // dark, moon while light). Same code path as Ctrl+D and the Settings
+    // checkbox; applyTheme keeps all three in sync.
+    m_themeBtn = new QPushButton(profileBar);
+    m_themeBtn->setFixedSize(30, 30);
+    m_themeBtn->setFocusPolicy(Qt::NoFocus);
+    m_themeBtn->setToolTip(tr("Toggle dark/light theme (Ctrl+D)"));
+    m_themeBtn->setCursor(Qt::PointingHandCursor);
+    m_themeBtn->setStyleSheet(sidebarIconQSS);
+    m_themeBtn->setText(m_darkMode ? QStringLiteral("\uE706")    // sun
+                                   : QStringLiteral("\uE708"));  // moon
+    profileLayout->addWidget(m_themeBtn);
+    connect(m_themeBtn, &QPushButton::clicked, this,
+            [this]() { applyTheme(!m_darkMode); });
+
     m_settingsBtn = new QPushButton(QStringLiteral("\uE713"), profileBar);     // Settings (gear)
     auto *settingsBtn = m_settingsBtn;
     settingsBtn->setFixedSize(30, 30);
@@ -1772,6 +1787,9 @@ void MainWindow::applyTheme(bool dark)
     m_chatPainter->setDarkMode(dark);
     m_threadsPainter->setDarkMode(dark);
     applyDarkPalette();
+    if (m_themeBtn)
+        m_themeBtn->setText(dark ? QStringLiteral("")    // sun (switch to light)
+                                 : QStringLiteral("")); // moon (switch to dark)
     m_settings.beginGroup("Theme");
     m_settings.setValue("darkMode", dark);
     m_settings.endGroup();

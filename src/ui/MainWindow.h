@@ -145,6 +145,7 @@ private:
     QLabel *m_profileNameLabel = nullptr;
     QLabel *m_profileAvatarLabel = nullptr;
     QPushButton *m_settingsBtn = nullptr;
+    QPushButton *m_themeBtn = nullptr;
     QWidget *m_profileBar = nullptr;
     QWidget *m_searchRow = nullptr;
     QPushButton *m_homeBtn = nullptr;
