@@ -301,7 +301,12 @@ void ApiClient::fetchMentions(const QString &token, const QString &search,
 {
     // Build the full URL as a string so Nextcloud subpath installations
     // (e.g. https://host/nextcloud) don't have their prefix stripped by QUrl::setPath.
-    QUrl url(m_serverUrl + QStringLiteral("/ocs/v2.php/apps/spreed/api/v4/chat/")
+    // Mentions endpoint lives under chat API v1, not v4. v4 is for the room
+    // API; the spreed chat endpoints (mentions, share, schedule, …) are all
+    // under /api/v1/chat/. A wrong version here returns HTTP 404 silently,
+    // which manifests as "mention popup never appears" — the empty candidate
+    // list takes the same path as "no matching users".
+    QUrl url(m_serverUrl + QStringLiteral("/ocs/v2.php/apps/spreed/api/v1/chat/")
              + token + QStringLiteral("/mentions"));
     QUrlQuery q;
     q.addQueryItem(QStringLiteral("search"), search);
@@ -356,6 +361,109 @@ void ApiClient::fetchMentions(const QString &token, const QString &search,
             if (!c.id.isEmpty()) out.append(c);
         }
         callback(out);
+    });
+}
+
+namespace {
+// Shared parser for both /bot/{token} and /bot/admin response shapes.
+QVector<BotInfo> parseBotList(const QJsonArray &data)
+{
+    QVector<BotInfo> out;
+    for (const QJsonValue &v : data) {
+        QJsonObject o = v.toObject();
+        BotInfo b;
+        b.id          = o.value(QStringLiteral("id")).toInt();
+        b.name        = o.value(QStringLiteral("name")).toString();
+        b.description = o.value(QStringLiteral("description")).toString();
+        b.state       = o.value(QStringLiteral("state")).toInt();
+        b.features    = o.value(QStringLiteral("features")).toInt();
+        b.errorMessage = o.value(QStringLiteral("error_message")).toString();
+        if (b.id != 0) out.append(b);
+    }
+    return out;
+}
+} // namespace
+
+void ApiClient::fetchEnabledBots(const QString &token, QObject *context,
+                                 std::function<void(bool, const QVector<BotInfo> &)> callback)
+{
+    QUrl url(m_serverUrl + QStringLiteral("/ocs/v2.php/apps/spreed/api/v1/bot/") + token);
+    QNetworkRequest req(url);
+    req.setRawHeader("OCS-APIRequest", "true");
+    req.setRawHeader("Accept", "application/json");
+    applyBasicAuth(req);
+
+    QNetworkReply *reply = m_nam.get(req);
+    connect(reply, &QNetworkReply::finished, context ? context : this,
+            [reply, callback]() {
+        reply->deleteLater();
+        QVector<BotInfo> out;
+        if (reply->error() != QNetworkReply::NoError) {
+            qWarning() << "fetchEnabledBots:" << reply->errorString();
+            callback(false, out);
+            return;
+        }
+        QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
+        QJsonObject ocs = doc.object().value(QStringLiteral("ocs")).toObject();
+        int status = ocs.value(QStringLiteral("meta")).toObject()
+                        .value(QStringLiteral("statuscode")).toInt(200);
+        if (status != 100 && status != 200) { callback(false, out); return; }
+        callback(true, parseBotList(ocs.value(QStringLiteral("data")).toArray()));
+    });
+}
+
+void ApiClient::fetchAllBots(QObject *context,
+                             std::function<void(bool, const QVector<BotInfo> &)> callback)
+{
+    QUrl url(m_serverUrl + QStringLiteral("/ocs/v2.php/apps/spreed/api/v1/bot/admin"));
+    QNetworkRequest req(url);
+    req.setRawHeader("OCS-APIRequest", "true");
+    req.setRawHeader("Accept", "application/json");
+    applyBasicAuth(req);
+
+    QNetworkReply *reply = m_nam.get(req);
+    connect(reply, &QNetworkReply::finished, context ? context : this,
+            [reply, callback]() {
+        reply->deleteLater();
+        QVector<BotInfo> out;
+        if (reply->error() != QNetworkReply::NoError) {
+            // 403 just means "not admin" — caller should fall back to the
+            // per-room list. Pass ok=true with empty so caller treats it
+            // as "no server bots visible to you" rather than an error.
+            int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+            if (httpStatus == 403) { callback(true, out); return; }
+            qWarning() << "fetchAllBots:" << reply->errorString();
+            callback(false, out);
+            return;
+        }
+        QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
+        QJsonObject ocs = doc.object().value(QStringLiteral("ocs")).toObject();
+        int status = ocs.value(QStringLiteral("meta")).toObject()
+                        .value(QStringLiteral("statuscode")).toInt(200);
+        if (status != 100 && status != 200) { callback(false, out); return; }
+        callback(true, parseBotList(ocs.value(QStringLiteral("data")).toArray()));
+    });
+}
+
+void ApiClient::setBotEnabled(const QString &token, int botId, bool enabled,
+                              QObject *context,
+                              std::function<void(bool, int)> callback)
+{
+    QUrl url(m_serverUrl + QStringLiteral("/ocs/v2.php/apps/spreed/api/v1/bot/")
+             + token + QStringLiteral("/") + QString::number(botId));
+    QNetworkRequest req(url);
+    req.setRawHeader("OCS-APIRequest", "true");
+    req.setRawHeader("Accept", "application/json");
+    applyBasicAuth(req);
+
+    QNetworkReply *reply = enabled
+        ? m_nam.sendCustomRequest(req, "POST", QByteArray())
+        : m_nam.sendCustomRequest(req, "DELETE");
+    connect(reply, &QNetworkReply::finished, context ? context : this,
+            [reply, callback]() {
+        reply->deleteLater();
+        int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        callback(reply->error() == QNetworkReply::NoError, httpStatus);
     });
 }
 
