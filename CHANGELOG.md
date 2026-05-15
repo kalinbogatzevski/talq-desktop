@@ -1,5 +1,54 @@
 # Changelog
 
+## v0.27.0 (2026-05-15)
+
+A focused UX/visual redesign pass, driven by a two-assessment design critique
+against a new project design system (`PRODUCT.md` + `DESIGN.md`, North Star
+"The Field Notebook"). Identity, color discipline, contrast, shape, and
+typography. No protocol or feature changes.
+
+### Typography — editorial display tier
+- **New bundled display face: Instrument Serif** (SIL OFL). The header
+  conversation title and the welcome name now use a real editorial serif at
+  genuinely larger sizes (20px / 26px). Body, labels, and all dense chrome
+  stay Inter for legibility. Fixes the "no real display tier / Inter
+  everywhere" finding without risking body readability.
+- **Italics removed as a hierarchy lever** (system messages, header
+  placeholder, typing subtitle). Differentiation is now size/weight/color
+  (Two-Lever Rule).
+
+### Color discipline (One-Signal / No-Gray)
+- **The teal accent is now reserved for one meaning.** The TalQ peer marker
+  no longer uses a foreign cobalt `#2563eb`; the favorite dot no longer uses
+  the teal accent (now amber); the rogue off-palette teal `#2EC4B6` driving
+  unread/selection/highlight is gone; the full-viewport unread teal wash was
+  removed (the separator pill carries it).
+- **No more `#fff`/`#000` or cold gray.** Badge/initial/checkmark glyphs use
+  a warm ink token; autocomplete popups and the message selection control
+  were re-palened from cold grays to the warm ladder; presence "DND" is the
+  calm clay, not a fire-engine red; light-theme surface is warm, not pure
+  white.
+- **Contrast tuned to WCAG AA.** `textMuted` (~2:1) and `textTime` (~3.5:1)
+  were below AA for normal text in both themes; retuned to clear 4.5:1.
+  Unread-badge text moved to ink (was white-on-teal ~2:1).
+
+### Shape + structure
+- **Composer is no longer a pill.** Input and buttons move from 17–20px
+  full-round to the system 8px control radius.
+- **Side-stripes removed.** The 3px teal/amber left bars on the reply quote
+  and the reply/editing bars are replaced by a hairline and a leading glyph
+  (side-stripe ban).
+- **Composer stylesheet-leak fixed.** Every `setStyleSheet` on the composer's
+  bars/labels is now scoped by `#objectName`, so container styles can no
+  longer cascade into child controls (the defect class behind the dark/clipped
+  bot buttons in 0.25.6). Off-ladder invented surface tones snapped to the
+  documented tonal ladder.
+
+### Known follow-up
+- The header trailing-edge can still show up to five icon buttons; collapsing
+  to three + an overflow was scoped out of this pass as a riskier interaction
+  change and is deferred to a later release.
+
 ## v0.25.7 (2026-05-15)
 
 ### Fixes — TalQ peer identification ("Q" badge)

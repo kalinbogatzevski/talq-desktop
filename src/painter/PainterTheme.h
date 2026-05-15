@@ -32,6 +32,7 @@ public:
 
     // ── Accents ──
     QColor accent;
+    QColor controlInk;   // dark warm ink for text/glyphs on a colored fill
     QColor unreadBadge;
     QColor online;
     QColor danger;
@@ -46,6 +47,8 @@ public:
     int fontSizeSmall;
     int fontSizeNormal;
     int fontSizeLarge;
+    int fontSizeTitle;     // real title tier (Instrument Serif)
+    int fontSizeDisplay;   // real display tier (Instrument Serif)
 
     // ── Spacing ──
     static constexpr int spacingTiny = 4;
@@ -91,7 +94,15 @@ public:
     QFont timeFont() const;
     QFont systemFont() const;
     QFont dateSepFont() const;
+    QFont titleFont() const;     // Instrument Serif, title tier
+    QFont displayFont() const;   // Instrument Serif, display tier
+
+    // The bundled display face (Instrument Serif) family name, resolved once
+    // at startup from QFontDatabase. Empty → graceful fallback to Inter.
+    static void setDisplayFamily(const QString &family);
+    static QString displayFamilyName();
 
 private:
     qreal m_fontScale = 1.0;
+    static QString s_displayFamily;
 };

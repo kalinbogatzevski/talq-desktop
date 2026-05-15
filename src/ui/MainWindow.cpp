@@ -512,7 +512,14 @@ void MainWindow::buildChatPage()
 
     m_welcomeNameLabel = new QLabel(m_welcomeWidget);
     m_welcomeNameLabel->setAlignment(Qt::AlignCenter);
-    m_welcomeNameLabel->setStyleSheet("font-size: 22px; font-weight: bold;");
+    {
+        // Real display tier (Scale-Honesty): the editorial Instrument Serif
+        // face at a genuinely larger size, not bolded body text.
+        const QString df = PainterTheme::displayFamilyName();
+        QFont wf = df.isEmpty() ? m_welcomeNameLabel->font() : QFont(df);
+        wf.setPixelSize(26);
+        m_welcomeNameLabel->setFont(wf);
+    }
     welcomeLayout->addWidget(m_welcomeNameLabel);
 
     auto *pickLabel = new QLabel("Pick a conversation from the sidebar", m_welcomeWidget);
