@@ -7,13 +7,27 @@
 #include <QString>
 
 /**
- * C++ mirror of Theme.qml colors/fonts/spacing for QPainter rendering.
- * Constructed with darkMode + fontScale, provides all visual constants.
+ * Warm, calm, fast visual system for QPainter rendering. Ships four
+ * user-selectable themes (three warm-dark levels + one warm light). The
+ * legacy bool ctor is kept as a compatibility shim (true→Vivid, false→Paper)
+ * so existing call sites keep working while the theme picker is wired up.
  */
 class PainterTheme
 {
 public:
-    PainterTheme(bool darkMode = true, qreal fontScale = 1.0);
+    enum class Theme { Ember, Warm, Vivid, Paper };
+
+    PainterTheme(Theme theme, qreal fontScale = 1.0);
+    PainterTheme(bool darkMode = true, qreal fontScale = 1.0);  // shim
+
+    // Theme registry for the picker / cycling / persistence.
+    static QString themeId(Theme t);          // "ember" | "warm" | "vivid" | "paper"
+    static QString themeLabel(Theme t);       // "Ember" | "Warm" | ...
+    static Theme   themeFromId(const QString &id, Theme fallback = Theme::Vivid);
+    static Theme   cycle(Theme t);            // next theme (Settings + Ctrl+D)
+
+    Theme theme = Theme::Vivid;
+    bool  isLight = false;
 
     // ── Backgrounds ──
     QColor bgPrimary;
@@ -32,7 +46,10 @@ public:
 
     // ── Accents ──
     QColor accent;
-    QColor controlInk;   // dark warm ink for text/glyphs on a colored fill
+    QColor controlInk;   // ink/glyph color on a colored fill (per theme)
+    QColor amber;        // warm secondary: favorite, away, accents
+    QColor glow;         // colored halo for state (send hover, active row)
+    QColor ambient;      // soft accent tint painted behind the thread
     QColor unreadBadge;
     QColor online;
     QColor danger;
@@ -47,8 +64,6 @@ public:
     int fontSizeSmall;
     int fontSizeNormal;
     int fontSizeLarge;
-    int fontSizeTitle;     // real title tier (Instrument Serif)
-    int fontSizeDisplay;   // real display tier (Instrument Serif)
 
     // ── Spacing ──
     static constexpr int spacingTiny = 4;
@@ -94,15 +109,7 @@ public:
     QFont timeFont() const;
     QFont systemFont() const;
     QFont dateSepFont() const;
-    QFont titleFont() const;     // Instrument Serif, title tier
-    QFont displayFont() const;   // Instrument Serif, display tier
-
-    // The bundled display face (Instrument Serif) family name, resolved once
-    // at startup from QFontDatabase. Empty → graceful fallback to Inter.
-    static void setDisplayFamily(const QString &family);
-    static QString displayFamilyName();
 
 private:
     qreal m_fontScale = 1.0;
-    static QString s_displayFamily;
 };

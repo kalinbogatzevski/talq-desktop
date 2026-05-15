@@ -203,6 +203,15 @@ void ChatPainter::setDarkMode(bool dark)
     rebuildAllLayouts();
 }
 
+void ChatPainter::setTheme(PainterTheme::Theme t)
+{
+    if (m_themeId == t) return;
+    m_themeId = t;
+    m_theme = PainterTheme(t, m_fontScale);
+    m_layoutCache.clear();
+    rebuildAllLayouts();
+}
+
 void ChatPainter::setFontScale(qreal scale)
 {
     if (qFuzzyCompare(m_fontScale, scale)) return;
@@ -1307,6 +1316,18 @@ void ChatPainter::paintEvent(QPaintEvent *)
     p.setRenderHint(QPainter::SmoothPixmapTransform, true);
 
     p.fillRect(QRectF(0, 0, width(), height()), m_theme.bgPrimary);
+
+    // Flavour: a soft warm accent glow behind the thread (per-theme strength
+    // via m_theme.ambient). Calm and content-first; it never competes with
+    // the messages, it just stops the surface reading as a flat void.
+    if (m_theme.ambient.alpha() > 0) {
+        QRadialGradient g(QPointF(width() * 0.62, -height() * 0.08),
+                          qMax(width(), height()) * 0.95);
+        QColor edge = m_theme.ambient; edge.setAlpha(0);
+        g.setColorAt(0.0, m_theme.ambient);
+        g.setColorAt(1.0, edge);
+        p.fillRect(QRectF(0, 0, width(), height()), g);
+    }
 
     if (m_layouts.isEmpty())
         return;

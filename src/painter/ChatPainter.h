@@ -62,6 +62,7 @@ public:
 
     bool darkMode() const { return m_darkMode; }
     void setDarkMode(bool dark);
+    void setTheme(PainterTheme::Theme t);
 
     qreal fontScale() const { return m_fontScale; }
     void setFontScale(qreal scale);
@@ -192,6 +193,7 @@ private:
     class QTimer *m_highlightTimer = nullptr;
 
     bool m_darkMode = true;
+    PainterTheme::Theme m_themeId = PainterTheme::Theme::Vivid;
     qreal m_fontScale = 1.0;
     qreal m_scrollY = 0;
     qreal m_contentHeight = 0;

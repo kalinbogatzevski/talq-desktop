@@ -83,6 +83,14 @@ void SidebarPainter::setDarkMode(bool dark)
     update();
 }
 
+void SidebarPainter::setTheme(PainterTheme::Theme t)
+{
+    if (m_themeId == t) return;
+    m_themeId = t;
+    m_theme = PainterTheme(t, 1.0);
+    update();
+}
+
 void SidebarPainter::setSelectedIndex(int idx)
 {
     if (m_selectedIndex == idx) return;
@@ -361,12 +369,18 @@ void SidebarPainter::paintRowNormal(QPainter *p, const ConversationLayout &cl, i
         p->fillRect(QRectF(0, rowTop, w, rowH), m_theme.bgHover);
     }
 
-    // ── Selection indicator bar ──
+    // ── Selection indicator bar (+ soft accent glow flavour) ──
     if (selected) {
-        p->setPen(Qt::NoPen);
-        p->setBrush(m_theme.accent);
         qreal barH = rowH * 0.5;
         qreal barY = rowTop + (rowH - barH) / 2.0;
+        QLinearGradient gg(0, 0, 28, 0);
+        QColor g0 = m_theme.glow; g0.setAlpha(46);
+        QColor g1 = m_theme.glow; g1.setAlpha(0);
+        gg.setColorAt(0, g0);
+        gg.setColorAt(1, g1);
+        p->setPen(Qt::NoPen);
+        p->fillRect(QRectF(0, rowTop, 28, rowH), gg);
+        p->setBrush(m_theme.accent);
         p->drawRoundedRect(QRectF(0, barY, SelectionBarWidth, barH), 2, 2);
     }
 

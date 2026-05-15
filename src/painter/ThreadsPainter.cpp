@@ -59,6 +59,14 @@ void ThreadsPainter::setDarkMode(bool dark)
     update();
 }
 
+void ThreadsPainter::setTheme(PainterTheme::Theme t)
+{
+    if (m_themeId == t) return;
+    m_themeId = t;
+    m_theme = PainterTheme(t, 1.0);
+    update();
+}
+
 void ThreadsPainter::setSelectedThreadId(int id)
 {
     if (m_selectedThreadId == id) return;

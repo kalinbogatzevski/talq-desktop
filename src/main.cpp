@@ -164,17 +164,6 @@ int main(int argc, char *argv[])
         }
     }
 
-    // Bundled display face — Instrument Serif (SIL OFL). The editorial
-    // display/title tier; body/UI stays Inter. Family is resolved from the
-    // font DB (not hardcoded) so PainterTheme can fall back gracefully.
-    {
-        int id = QFontDatabase::addApplicationFont(QStringLiteral(":/fonts/InstrumentSerif.ttf"));
-        if (id >= 0) {
-            const auto families = QFontDatabase::applicationFontFamilies(id);
-            if (!families.isEmpty())
-                PainterTheme::setDisplayFamily(families.first());
-        }
-    }
 #ifdef TALQ_BUILD_TS
     app.setApplicationVersion(TALQ_VERSION "-" TALQ_BUILD_TS);
 #else
