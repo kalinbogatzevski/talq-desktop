@@ -590,14 +590,15 @@ void SidebarPainter::paintAvatar(QPainter *p, const ConversationLayout &cl, cons
         p->drawText(rect, Qt::AlignCenter, QString(initial));
     }
 
-    // TalQ marker: small "Q" pill on the bottom-right of the avatar when
+    // TalQ marker: small "Q" pill on the top-right of the avatar when
     // this conversation's primary participant is known to be using TalQ.
     // Only meaningful for 1-on-1 chats (conversationType == 1).
     if (m_signaling && cl.conversationType == 1 && !cl.participantUserId.isEmpty()) {
         const QString info = m_signaling->peerClientInfo(cl.participantUserId);
         if (info.startsWith("TalQ")) {
             const qreal badgeSize = qMax(qreal(12), rect.width() * 0.35);
-            QRectF badge(rect.right() - badgeSize, rect.bottom() - badgeSize,
+            // Top-right corner: the presence status dot occupies bottom-right.
+            QRectF badge(rect.right() - badgeSize, rect.top(),
                          badgeSize, badgeSize);
             p->setPen(QPen(m_theme.bgSidebar, qMax(1.0, badgeSize * 0.08)));
             p->setBrush(QColor("#2563eb"));   // TalQ blue

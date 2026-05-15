@@ -1,6 +1,7 @@
 #include "core/SignalingClient.h"
 #include "core/TalqLog.h"
 #include <QJsonDocument>
+#include <QSettings>
 
 SignalingClient::SignalingClient(ApiClient *api, QObject *parent)
     : QObject(parent)
@@ -26,6 +27,8 @@ SignalingClient::SignalingClient(ApiClient *api, QObject *parent)
             emit typingUserChanged();
         }
     });
+
+    loadPersistedPeerClients();
 }
 
 void SignalingClient::start()
@@ -260,6 +263,7 @@ void SignalingClient::onTextMessage(const QString &msg)
                 const QString info = client + "/" + version;
                 if (m_peerClientInfo.value(senderUid) != info) {
                     m_peerClientInfo[senderUid] = info;
+                    persistPeerClient(senderUid, info);
                     qDebug() << "Signaling: peer TalQ client" << senderUid << "=" << info;
                     emit peerClientInfoChanged(senderUid, info);
                 }
@@ -310,6 +314,7 @@ void SignalingClient::onTextMessage(const QString &msg)
                     const QString info = data["client"].toString() + "/" + data["version"].toString();
                     if (m_peerClientInfo.value(senderUid) != info) {
                         m_peerClientInfo[senderUid] = info;
+                        persistPeerClient(senderUid, info);
                         qDebug() << "Signaling: peer TalQ client (event-path)" << senderUid << "=" << info;
                         emit peerClientInfoChanged(senderUid, info);
                     }
@@ -339,6 +344,7 @@ void SignalingClient::onTextMessage(const QString &msg)
             QJsonObject update = event["update"].toObject();
             QJsonArray users = update["users"].toArray();
             TLOG_SIG("participants update:" << users.size() << "users in room" << update["roomid"].toString());
+            bool sawNewPeer = false;
             for (const QJsonValue &val : users) {
                 QJsonObject user = val.toObject();
                 int inCall = user["inCall"].toInt();
@@ -360,6 +366,8 @@ void SignalingClient::onTextMessage(const QString &msg)
                 if (!userId.isEmpty())
                     m_sessionToUserId[sid] = userId;
 
+                if (!m_participantCallFlags.contains(sid))
+                    sawNewPeer = true;
                 int prevFlags = m_participantCallFlags.value(sid, 0);
                 m_participantCallFlags[sid] = inCall;
 
@@ -380,6 +388,12 @@ void SignalingClient::onTextMessage(const QString &msg)
                     emit participantFlagsChanged(sid, prevFlags, inCall);
                 }
             }
+            // A peer we hadn't seen in this room appeared. HPB does not
+            // reliably deliver a room/join event for them, so re-announce our
+            // TalQ hello here too — this is the more dependable trigger for
+            // the mutual peer-identification handshake.
+            if (sawNewPeer)
+                sendTalqClientHello();
         }
     }
 }
@@ -471,6 +485,35 @@ void SignalingClient::sendTalqClientHello()
     data["userid"] = m_userId;
     qDebug() << "Signaling: announcing TalQ/" TALQ_VERSION " in room" << m_currentRoom;
     sendBroadcastMessage(data);
+}
+
+// QSettings keys treat '/' as a group separator and choke on other characters
+// that can appear in federated user IDs, so the userId is percent-encoded.
+void SignalingClient::loadPersistedPeerClients()
+{
+    QSettings s;
+    s.beginGroup(QStringLiteral("peerClients"));
+    const QStringList keys = s.childKeys();
+    for (const QString &k : keys) {
+        const QString uid = QString::fromUtf8(
+            QByteArray::fromPercentEncoding(k.toLatin1()));
+        const QString info = s.value(k).toString();
+        if (!uid.isEmpty() && !info.isEmpty())
+            m_peerClientInfo[uid] = info;
+    }
+    s.endGroup();
+    if (!m_peerClientInfo.isEmpty())
+        qDebug() << "Signaling: loaded" << m_peerClientInfo.size()
+                 << "persisted peer client(s)";
+}
+
+void SignalingClient::persistPeerClient(const QString &userId, const QString &info)
+{
+    if (userId.isEmpty()) return;
+    QSettings s;
+    s.beginGroup(QStringLiteral("peerClients"));
+    s.setValue(QString::fromLatin1(userId.toUtf8().toPercentEncoding()), info);
+    s.endGroup();
 }
 
 void SignalingClient::sendStartedTyping()

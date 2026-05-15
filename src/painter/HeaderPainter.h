@@ -7,6 +7,7 @@
 
 class ApiClient;
 class QNetworkReply;
+class SignalingClient;
 
 /**
  * QWidget that renders the chat header bar via QPainter.
@@ -78,6 +79,7 @@ public:
     void setDarkMode(bool v);
 
     void setApi(ApiClient *api);
+    void setSignaling(SignalingClient *signaling);
 
 signals:
     void expandSidebarClicked();
@@ -149,5 +151,6 @@ private:
     bool m_darkMode = true;
 
     ApiClient *m_api = nullptr;
+    SignalingClient *m_signaling = nullptr;
     PainterTheme m_theme;
 };
