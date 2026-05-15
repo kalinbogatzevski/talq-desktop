@@ -10,5 +10,6 @@
         <file>icons/mic.svg</file>
         <file>icons/mic-off.svg</file>
         <file>fonts/Inter.ttf</file>
+        <file>fonts/InstrumentSerif.ttf</file>
     </qresource>
 </RCC>

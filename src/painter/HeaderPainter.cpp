@@ -353,13 +353,10 @@ void HeaderPainter::paintEvent(QPaintEvent *)
         titleText = QStringLiteral("Select a conversation");
     }
 
-    QFont titleFont;
-    titleFont.setPixelSize(m_theme.fontSizeLarge);
-    if (!m_conversationName.isEmpty()) {
-        titleFont.setWeight(QFont::DemiBold);
-    } else if (m_activeThreadId <= 0) {
-        titleFont.setItalic(true);  // placeholder "Select a conversation"
-    }
+    // Editorial display face for the header title (Instrument Serif).
+    // Two-Lever Rule: the placeholder is differentiated by the muted title
+    // color set below, not by italics.
+    QFont titleFont = m_theme.titleFont();
     QFontMetrics titleFM(titleFont);
 
     // Decide if we have a subtitle
@@ -371,8 +368,7 @@ void HeaderPainter::paintEvent(QPaintEvent *)
     if (m_isTyping) {
         hasSubtitle = true;
         subtitleText = m_typingUser + QStringLiteral(" is typing...");
-        subtitleColor = m_theme.accent;
-        subtitleItalic = true;
+        subtitleColor = m_theme.accent;   // accent differentiates typing (no italic)
     } else if (m_conversationType == 1 && !m_peerStatus.isEmpty()) {
         hasSubtitle = true;
         // Prefer rich status message/icon over plain state label
@@ -490,7 +486,7 @@ void HeaderPainter::paintCallButton(QPainter *p, const QRectF &rect, const QColo
 {
     if (hovered) {
         p->setPen(Qt::NoPen);
-        p->setBrush(QColor(255, 255, 255, 20));
+        p->setBrush(m_theme.bgHover);   // warm hover, No-Gray (was white-alpha)
         p->drawRoundedRect(rect, rect.width() / 2, rect.height() / 2);
     }
 
@@ -602,7 +598,7 @@ void HeaderPainter::paintAvatar(QPainter *p, const QRectF &rect)
         QFont initFont;
         initFont.setPixelSize(size / 2);
         initFont.setWeight(QFont::DemiBold);
-        p->setPen(Qt::white);
+        p->setPen(m_theme.controlInk);   // No-Gray: ink on author color
         p->setFont(initFont);
         p->drawText(rect, Qt::AlignCenter, QString(initial));
     }

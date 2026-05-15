@@ -385,9 +385,9 @@ void SidebarPainter::paintRowNormal(QPainter *p, const ConversationLayout &cl, i
     // ── Status dot (1:1 conversations only, colored by presence) ──
     if (cl.conversationType == 1) {
         QColor dotColor;
-        if (cl.userStatus == QStringLiteral("online")) dotColor = QColor("#5ec76a");
-        else if (cl.userStatus == QStringLiteral("away")) dotColor = QColor("#e0a040");
-        else if (cl.userStatus == QStringLiteral("dnd")) dotColor = QColor("#d93025");
+        if (cl.userStatus == QStringLiteral("online")) dotColor = m_theme.online;
+        else if (cl.userStatus == QStringLiteral("away")) dotColor = QColor("#f0a050");  // author-amber
+        else if (cl.userStatus == QStringLiteral("dnd")) dotColor = m_theme.danger;      // warm clay, not fire-engine
         if (dotColor.isValid()) {
             qreal dotSize = StatusDotSize;
             qreal dotX = avatarRect.right() - dotSize + 1;
@@ -418,10 +418,11 @@ void SidebarPainter::paintRowNormal(QPainter *p, const ConversationLayout &cl, i
     qreal nameLeft = textLeft;
     qreal nameRight = textRight - timeW - PainterTheme::spacingSmall;
 
-    // Favorite dot
+    // Favorite dot — affinity, not a "needs you" signal. One-Signal Rule:
+    // it must NOT use the teal accent (which competes with unread/active).
     if (cl.isFavorite) {
         p->setPen(Qt::NoPen);
-        p->setBrush(m_theme.accent);
+        p->setBrush(QColor("#f0a050"));   // author-amber: warm "starred"
         qreal dotY2 = nameY + (m_theme.fontSizeNormal - FavDotSize) / 2.0 + 3;
         p->drawEllipse(QRectF(nameLeft, dotY2, FavDotSize, FavDotSize));
         nameLeft += FavDotSize + PainterTheme::spacingSmall;
@@ -541,7 +542,7 @@ void SidebarPainter::paintRowSqueezed(QPainter *p, const ConversationLayout &cl,
         p->drawRoundedRect(QRectF(badgeX, badgeY, badgeW, BadgeHeight),
                            BadgeHeight / 2.0, BadgeHeight / 2.0);
 
-        p->setPen(Qt::white);
+        p->setPen(m_theme.controlInk);   // No-Gray: ink on accent, not #fff
         p->setFont(badgeFont);
         p->drawText(QRectF(badgeX, badgeY, badgeW, BadgeHeight),
                     Qt::AlignCenter, countStr);
@@ -557,11 +558,11 @@ void SidebarPainter::paintAvatar(QPainter *p, const ConversationLayout &cl, cons
     // Note to self (type 6) — special bookmark icon
     if (cl.conversationType == 6) {
         p->setPen(Qt::NoPen);
-        p->setBrush(QColor("#3a3a36"));
+        p->setBrush(PainterTheme::authorColor(QStringLiteral("note-to-self")));  // in-palette, not gray
         p->drawEllipse(rect);
         QFont iconFont;
         iconFont.setPixelSize(static_cast<int>(rect.width() * 0.5));
-        p->setPen(Qt::white);
+        p->setPen(m_theme.controlInk);
         p->setFont(iconFont);
         p->drawText(rect, Qt::AlignCenter, QStringLiteral("\U0001F516"));  // 🔖
         return;
@@ -585,7 +586,7 @@ void SidebarPainter::paintAvatar(QPainter *p, const ConversationLayout &cl, cons
         QFont initFont;
         initFont.setPixelSize(size / 2);
         initFont.setWeight(QFont::DemiBold);
-        p->setPen(Qt::white);
+        p->setPen(m_theme.controlInk);   // No-Gray: ink on author color, not #fff
         p->setFont(initFont);
         p->drawText(rect, Qt::AlignCenter, QString(initial));
     }
@@ -600,14 +601,17 @@ void SidebarPainter::paintAvatar(QPainter *p, const ConversationLayout &cl, cons
             // Top-right corner: the presence status dot occupies bottom-right.
             QRectF badge(rect.right() - badgeSize, rect.top(),
                          badgeSize, badgeSize);
+            // Identity marker, not a "needs you" signal — must NOT use the
+            // teal One-Signal accent nor the old foreign cobalt. In-palette
+            // violet keeps it distinct and warm.
             p->setPen(QPen(m_theme.bgSidebar, qMax(1.0, badgeSize * 0.08)));
-            p->setBrush(QColor("#2563eb"));   // TalQ blue
+            p->setBrush(QColor("#9b7cd4"));   // author-violet (in-palette)
             p->drawEllipse(badge);
 
             QFont qFont;
             qFont.setPixelSize(int(badgeSize * 0.7));
             qFont.setWeight(QFont::Bold);
-            p->setPen(Qt::white);
+            p->setPen(m_theme.controlInk);
             p->setFont(qFont);
             p->drawText(badge, Qt::AlignCenter, QStringLiteral("Q"));
         }
@@ -632,13 +636,16 @@ void SidebarPainter::paintUnreadBadge(QPainter *p, int count, bool mention, cons
     qreal badgeX = badgeArea.right() - badgeW;
     qreal badgeY = badgeArea.top() + (badgeArea.height() - BadgeHeight) / 2.0;
 
-    QColor bgColor = mention ? m_theme.accent : m_theme.unreadBadge;
+    // Mention = clay (danger), plain unread = teal. Differentiated, and
+    // consistent with the squeezed-row path; teal no longer carries two
+    // meanings.
+    QColor bgColor = mention ? m_theme.danger : m_theme.unreadBadge;
     p->setPen(Qt::NoPen);
     p->setBrush(bgColor);
     p->drawRoundedRect(QRectF(badgeX, badgeY, badgeW, BadgeHeight),
                        BadgeHeight / 2.0, BadgeHeight / 2.0);
 
-    p->setPen(Qt::white);
+    p->setPen(m_theme.controlInk);
     p->setFont(badgeFont);
     p->drawText(QRectF(badgeX, badgeY, badgeW, BadgeHeight), Qt::AlignCenter, countStr);
 }
