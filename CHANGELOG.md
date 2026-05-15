@@ -1,5 +1,36 @@
 # Changelog
 
+## v0.27.1 (2026-05-15)
+
+A corrective release. The v0.27.0 editorial direction ("The Field Notebook",
+Instrument Serif) was the wrong fit for a chat app and is fully reverted. The
+new direction is calm, warm, fast: a clean Inter surface, distinctive through a
+warm palette and craft rather than a typeface. Adds a user-selectable theme
+system and a redesigned home screen. No protocol or feature changes.
+
+### Typography
+- **Instrument Serif removed.** The header conversation title and the welcome
+  name return to clean Inter. The bundled serif font, its registration, and
+  its resource entry are gone. Hierarchy is size/weight/color only.
+
+### Themes (user-selectable)
+- **Four warm themes: Ember, Warm, Vivid, Paper** (default Vivid). Three warm
+  dark levels plus one warm light. Every color is a `PainterTheme` token.
+- **Pick or cycle:** `Ctrl+D` or the sidebar swatch cycles themes; the choice
+  is persisted across restarts. The painters (chat, sidebar, header, threads)
+  re-tint live.
+
+### Flavour
+- Soft ambient accent glow behind the thread, a colored halo on the active
+  conversation row and the send button, and a quiet breathing presence dot.
+  Tasteful state glows, not decoration.
+
+### Mission Control home
+- The empty-state home is now a live status board: a system-status pill,
+  telemetry tiles (server, signaling, push, Nextcloud, Talk, GPU) with status
+  LEDs, a GStreamer subsystems strip, and the changelog framed as a flight
+  log. All theme-tokenized; degrades to amber when a subsystem drops.
+
 ## v0.27.0 (2026-05-15)
 
 A focused UX/visual redesign pass, driven by a two-assessment design critique

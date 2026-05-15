@@ -42,6 +42,7 @@ public:
 
     bool darkMode() const { return m_darkMode; }
     void setDarkMode(bool dark);
+    void setTheme(PainterTheme::Theme t);
 
     int selectedThreadId() const { return m_selectedThreadId; }
     void setSelectedThreadId(int id);
@@ -100,6 +101,7 @@ private:
     // State
     ThreadListModel *m_model = nullptr;
     bool m_darkMode = true;
+    PainterTheme::Theme m_themeId = PainterTheme::Theme::Vivid;
     int m_selectedThreadId = -1;
     QString m_groupName;
     bool m_creating = false;

@@ -10,6 +10,7 @@
 #include <QPushButton>
 #include <QSplitter>
 #include <QTimer>
+#include "painter/PainterTheme.h"
 
 class ApiClient;
 class AuthManager;
@@ -92,7 +93,8 @@ private:
     void restoreChatGeometry();
     void applyDarkPalette();
     void applyFontScale(qreal scale);
-    void applyTheme(bool dark);     // toggle + persist + propagate to all painters
+    void applyTheme(bool dark);     // compat shim: dark→Vivid, light→Paper
+    void applyThemeId(PainterTheme::Theme t);  // real path: set+persist+propagate
     void openThread(int threadId, const QString &title);
     void closeThread();
     void updateTopicMode(bool active);
@@ -105,6 +107,7 @@ private:
     void openNewChatDialog();
     void openConversationInfo();
     void createNewTopic();
+    void refreshWelcomeStatus();   // repaint Mission Control telemetry/LEDs/pill
 
     // ── Pointers to backend (not owned) ──
     ApiClient *m_api;
@@ -150,14 +153,17 @@ private:
     QWidget *m_searchRow = nullptr;
     QPushButton *m_homeBtn = nullptr;
     QWidget *m_welcomeWidget = nullptr;
-    QSplitter *m_welcomeSplit = nullptr;
     QLabel *m_welcomeNameLabel = nullptr;
-    QLabel *m_welcomeServerLabel = nullptr;
+    QLabel *m_welcomeServerLabel = nullptr;     // Mission Control tile values
     QLabel *m_welcomeNcLabel = nullptr;
     QLabel *m_welcomeTalkLabel = nullptr;
     QLabel *m_welcomeSignalingLabel = nullptr;
     QLabel *m_welcomePushLabel = nullptr;
     QLabel *m_welcomeGpuLabel = nullptr;
+    QLabel *m_wcStatusPill = nullptr;           // "ALL SYSTEMS NOMINAL" pill
+    QLabel *m_wcSignalLed = nullptr;            // status LEDs for live subsystems
+    QLabel *m_wcPushLed = nullptr;
+    QLabel *m_wcGpuLed = nullptr;
 
     // Auto-update banner
     UpdateChecker *m_updateChecker = nullptr;
@@ -181,6 +187,7 @@ private:
     // State
     bool m_chatMode = false;
     bool m_darkMode = true;
+    PainterTheme::Theme m_themeId = PainterTheme::Theme::Vivid;
     qreal m_fontScale = 1.0;
     bool m_showTopics = false;
     bool m_sidebarSqueezed = false;
