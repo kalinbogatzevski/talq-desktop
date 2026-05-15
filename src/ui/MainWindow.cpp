@@ -325,8 +325,10 @@ void MainWindow::buildChatPage()
                 m_deviceManager, m_notifications, m_appSettings, m_auth, this);
             connect(m_settingsDialog, &SettingsDialog::closeToTrayChanged,
                     this, [this](bool enabled) { m_closeToTray = enabled; });
-            connect(m_settingsDialog, &SettingsDialog::themeChanged,
-                    this, &MainWindow::applyTheme);
+            connect(m_settingsDialog, &SettingsDialog::themeIdChanged,
+                    this, [this](int id) {
+                        applyThemeId(static_cast<PainterTheme::Theme>(id));
+                    });
             connect(m_settingsDialog, &SettingsDialog::checkForUpdatesRequested,
                     this, [this]() {
                 if (m_updateChecker) m_updateChecker->checkNow();
@@ -486,200 +488,20 @@ void MainWindow::buildChatPage()
         m_callManager->startCall(m_messages->conversationToken(), true);
     });
 
-    // ── Mission Control: the empty-state home is a live status board ──
+    // ── Mission Control home: persistent host; content rebuilt per theme ──
     m_welcomeWidget = new QWidget(chatCol);
-    m_welcomeWidget->setObjectName("welcomeRoot");
-    PainterTheme wt(m_themeId, m_fontScale);
-    auto wcss = [](const QColor &c){ return c.name(QColor::HexRgb); };
-    const QString wmono = QStringLiteral("'Consolas','Cascadia Mono',monospace");
-    m_welcomeWidget->setStyleSheet(QString(
-        "QWidget#welcomeRoot{background:%1;} QLabel{background:transparent;}")
-        .arg(wcss(wt.bgPrimary)));
-    auto *welcomeLayout = new QVBoxLayout(m_welcomeWidget);
-    welcomeLayout->setContentsMargins(34, 26, 38, 22);
-    welcomeLayout->setSpacing(15);
-
-    // Command bar: wordmark, build tags, system-status pill.
-    auto *cmdBar = new QHBoxLayout();
-    cmdBar->setSpacing(10);
-    auto *brand = new QLabel(QString(
-        "<span style='font-size:19px;font-weight:700;color:%1;'>Tal</span>"
-        "<span style='font-size:19px;font-weight:700;color:%2;'>Q</span>")
-        .arg(wcss(wt.textPrimary), wcss(wt.accent)), m_welcomeWidget);
-    cmdBar->addWidget(brand);
-    auto makeTag = [&](const QString &t) {
-        auto *l = new QLabel(t, m_welcomeWidget);
-        l->setStyleSheet(QString(
-            "color:%1;font-family:%2;font-size:10px;font-weight:bold;"
-            "letter-spacing:1px;border:1px solid %3;border-radius:6px;padding:4px 8px;")
-            .arg(wcss(wt.textTime), wmono, wcss(wt.divider)));
-        return l;
-    };
-    cmdBar->addWidget(makeTag("BUILD " + QApplication::applicationVersion()));
-#ifdef TALQ_BRAND_123NET
-    cmdBar->addWidget(makeTag(QStringLiteral("123NET")));
-#endif
-    cmdBar->addStretch();
-    m_wcStatusPill = new QLabel(QStringLiteral("●  ALL SYSTEMS NOMINAL"), m_welcomeWidget);
-    m_wcStatusPill->setStyleSheet(QString(
-        "color:%1;font-size:11px;font-weight:bold;letter-spacing:1px;"
-        "border:1px solid %1;border-radius:999px;padding:6px 13px;")
-        .arg(wcss(wt.online)));
-    cmdBar->addWidget(m_wcStatusPill);
-    welcomeLayout->addLayout(cmdBar);
-
-    // Greeting (still the empty state: who you are, what to do next).
-    m_welcomeNameLabel = new QLabel(m_welcomeWidget);
-    {
-        QFont wf = m_welcomeNameLabel->font();
-        wf.setPixelSize(25);
-        wf.setWeight(QFont::DemiBold);
-        m_welcomeNameLabel->setFont(wf);
-    }
-    m_welcomeNameLabel->setStyleSheet(QString("color:%1;").arg(wcss(wt.textPrimary)));
-    welcomeLayout->addWidget(m_welcomeNameLabel);
-    auto *subLine = new QLabel(QStringLiteral(
-        "No conversation selected. Pick one from the sidebar to jump back in."),
-        m_welcomeWidget);
-    subLine->setStyleSheet(QString("font-size:14px;color:%1;").arg(wcss(wt.textSecondary)));
-    welcomeLayout->addWidget(subLine);
-
-    // Telemetry grid: SERVER (wide) / SIGNALING / PUSH / NEXTCLOUD / TALK / GPU.
-    auto *grid = new QGridLayout();
-    grid->setSpacing(11);
-    auto makeTile = [&](const QString &key, QLabel **valOut, QLabel **ledOut) {
-        auto *tile = new QFrame(m_welcomeWidget);
-        tile->setObjectName("mcTile");
-        tile->setStyleSheet(QString(
-            "QFrame#mcTile{background:%1;border:1px solid %2;border-radius:13px;}")
-            .arg(wcss(wt.bgSurface), wcss(wt.divider)));
-        tile->setMinimumHeight(92);
-        auto *tl = new QVBoxLayout(tile);
-        tl->setContentsMargins(15, 13, 16, 14);
-        tl->setSpacing(6);
-        auto *kRow = new QHBoxLayout();
-        kRow->setSpacing(7);
-        auto *led = new QLabel(QStringLiteral("●"), tile);
-        led->setStyleSheet(QString("color:%1;font-size:9px;").arg(wcss(wt.online)));
-        kRow->addWidget(led);
-        auto *kl = new QLabel(key, tile);
-        kl->setStyleSheet(QString(
-            "color:%1;font-size:10px;font-weight:bold;letter-spacing:2px;")
-            .arg(wcss(wt.textTime)));
-        kRow->addWidget(kl);
-        kRow->addStretch();
-        tl->addLayout(kRow);
-        tl->addStretch();
-        auto *val = new QLabel(tile);
-        val->setTextFormat(Qt::RichText);
-        val->setStyleSheet(QString("color:%1;").arg(wcss(wt.textPrimary)));
-        tl->addWidget(val);
-        if (valOut) *valOut = val;
-        if (ledOut) *ledOut = led;
-        return tile;
-    };
-    grid->addWidget(makeTile(QStringLiteral("SERVER"),    &m_welcomeServerLabel,    nullptr),        0, 0, 1, 2);
-    grid->addWidget(makeTile(QStringLiteral("SIGNALING"), &m_welcomeSignalingLabel, &m_wcSignalLed), 0, 2);
-    grid->addWidget(makeTile(QStringLiteral("PUSH"),      &m_welcomePushLabel,      &m_wcPushLed),   0, 3);
-    grid->addWidget(makeTile(QStringLiteral("NEXTCLOUD"), &m_welcomeNcLabel,        nullptr),        1, 0);
-    grid->addWidget(makeTile(QStringLiteral("TALK"),      &m_welcomeTalkLabel,      nullptr),        1, 1);
-    grid->addWidget(makeTile(QStringLiteral("GPU"),       &m_welcomeGpuLabel,       &m_wcGpuLed),    1, 2, 1, 2);
-    for (int c = 0; c < 4; ++c) grid->setColumnStretch(c, 1);
-    welcomeLayout->addLayout(grid);
-
-    // Subsystems strip: GStreamer codec/transport availability.
-    {
-        auto *strip = new QFrame(m_welcomeWidget);
-        strip->setObjectName("mcStrip");
-        strip->setStyleSheet(QString(
-            "QFrame#mcStrip{background:%1;border:1px solid %2;border-radius:13px;}")
-            .arg(wcss(wt.bgSurface), wcss(wt.divider)));
-        auto *sl = new QHBoxLayout(strip);
-        sl->setContentsMargins(16, 12, 16, 12);
-        sl->setSpacing(13);
-        auto *sk = new QLabel(QStringLiteral("SUBSYSTEMS"), strip);
-        sk->setStyleSheet(QString(
-            "color:%1;font-size:10px;font-weight:bold;letter-spacing:2px;")
-            .arg(wcss(wt.textTime)));
-        sl->addWidget(sk);
-        static const char *pluginNames[] = {
-            "webrtc", "opus", "vpx", "d3d11", "nvcodec",
-            "srtp", "dtls", "nice", "wasapi2", "mediafoundation",
-            "winscreencap", nullptr
-        };
-        for (int i = 0; pluginNames[i]; ++i) {
-            GstPlugin *plugin = gst_registry_find_plugin(gst_registry_get(), pluginNames[i]);
-            bool ok = (plugin != nullptr);
-            if (plugin) gst_object_unref(plugin);
-            auto *chip = new QLabel(QString::fromLatin1(pluginNames[i]), strip);
-            chip->setStyleSheet(QString(
-                "QLabel{color:%1;font-family:%2;font-size:10px;font-weight:bold;"
-                "border:1px solid %3;border-radius:6px;padding:3px 8px;}")
-                .arg(wcss(ok ? wt.online : wt.danger), wmono,
-                     wcss(ok ? wt.online : wt.danger)));
-            sl->addWidget(chip);
-        }
-        sl->addStretch();
-        welcomeLayout->addWidget(strip);
-    }
-
-    // Flight log: the changelog, framed as the mission log (fills height).
-    auto *flightPanel = new QFrame(m_welcomeWidget);
-    flightPanel->setObjectName("mcPanel");
-    flightPanel->setStyleSheet(QString(
-        "QFrame#mcPanel{background:%1;border:1px solid %2;border-radius:14px;}")
-        .arg(wcss(wt.bgSurface), wcss(wt.divider)));
-    auto *flightLayout = new QVBoxLayout(flightPanel);
-    flightLayout->setContentsMargins(0, 0, 0, 0);
-    flightLayout->setSpacing(0);
-    auto *flightHdr = new QLabel(QStringLiteral("●  FLIGHT LOG · WHAT'S NEW"), flightPanel);
-    flightHdr->setStyleSheet(QString(
-        "color:%1;font-size:10px;font-weight:bold;letter-spacing:2px;"
-        "padding:13px 17px;border-bottom:1px solid %2;")
-        .arg(wcss(wt.textTime), wcss(wt.divider)));
-    flightLayout->addWidget(flightHdr);
-    auto *changelog = new QTextBrowser(flightPanel);
-    changelog->setFrameShape(QFrame::NoFrame);
-    changelog->setStyleSheet(QString(
-        "QTextBrowser{background:transparent;color:%1;border:none;"
-        "padding:14px 18px;font-size:13px;}")
-        .arg(wcss(wt.textPrimary)));
-    {
-        QFile f(QStringLiteral(":/docs/CHANGELOG.md"));
-        if (f.open(QIODevice::ReadOnly)) {
-            changelog->setMarkdown(QString::fromUtf8(f.readAll()));
-        } else {
-            qWarning() << "welcome: :/docs/CHANGELOG.md missing:" << f.errorString();
-            changelog->setPlainText(tr("Release notes unavailable."));
-        }
-    }
-    changelog->setReadOnly(true);
-    changelog->setOpenExternalLinks(true);
-    flightLayout->addWidget(changelog, 1);
-    welcomeLayout->addWidget(flightPanel, 1);
-
-    // Footer readout.
-    {
-        auto *foot = new QLabel(QString(
-            "<span style='color:%1'>SESSION</span> %2    "
-            "<span style='color:%1'>RENDERER</span> QPainter    "
-            "<span style='color:%1'>TalQ</span> v%3")
-            .arg(wcss(wt.textSecondary),
-                 (m_auth ? m_auth->displayName() : QStringLiteral("local")),
-                 QApplication::applicationVersion()), m_welcomeWidget);
-        foot->setStyleSheet(QString(
-            "color:%1;font-family:%2;font-size:11px;letter-spacing:.4px;")
-            .arg(wcss(wt.textTime), wmono));
-        welcomeLayout->addWidget(foot);
-    }
-
-    // Keep Mission Control telemetry live as services connect/disconnect.
-    connect(m_signaling, &SignalingClient::connectedChanged, this,
-            &MainWindow::refreshWelcomeStatus);
-    connect(m_push, &PushClient::connectedChanged, this,
-            &MainWindow::refreshWelcomeStatus);
-
+    m_welcomeWidget->setObjectName("welcomeHost");
+    auto *welcomeHostLayout = new QVBoxLayout(m_welcomeWidget);
+    welcomeHostLayout->setContentsMargins(0, 0, 0, 0);
+    welcomeHostLayout->setSpacing(0);
     chatLayout->addWidget(m_welcomeWidget, 1);
+    // Telemetry stays live across theme rebuilds (UniqueConnection keeps a
+    // single connection; refreshWelcomeStatus guards on the rebuilt labels).
+    connect(m_signaling, &SignalingClient::connectedChanged, this,
+            &MainWindow::refreshWelcomeStatus, Qt::UniqueConnection);
+    connect(m_push, &PushClient::connectedChanged, this,
+            &MainWindow::refreshWelcomeStatus, Qt::UniqueConnection);
+    buildWelcomeContent();
 
     // Give MessageListModel access to ConversationListModel so it can snapshot
     // the per-user lastReadMessage on conversation switch (for the unread divider).
@@ -1490,8 +1312,10 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
                 m_deviceManager, m_notifications, m_appSettings, m_auth, this);
             connect(m_settingsDialog, &SettingsDialog::closeToTrayChanged,
                     this, [this](bool enabled) { m_closeToTray = enabled; });
-            connect(m_settingsDialog, &SettingsDialog::themeChanged,
-                    this, &MainWindow::applyTheme);
+            connect(m_settingsDialog, &SettingsDialog::themeIdChanged,
+                    this, [this](int id) {
+                        applyThemeId(static_cast<PainterTheme::Theme>(id));
+                    });
             connect(m_settingsDialog, &SettingsDialog::checkForUpdatesRequested,
                     this, [this]() {
                 if (m_updateChecker) m_updateChecker->checkNow();
@@ -1713,6 +1537,206 @@ void MainWindow::refreshWelcomeStatus()
     }
 }
 
+// Builds (or rebuilds, on theme change) the Mission Control content inside
+// the persistent welcome host. Deleting and recreating the content widget
+// keeps every themed stylesheet correct without chasing individual widgets.
+void MainWindow::buildWelcomeContent()
+{
+    if (!m_welcomeWidget) return;
+    if (m_welcomeContent) { delete m_welcomeContent; m_welcomeContent = nullptr; }
+
+    PainterTheme wt(m_themeId, m_fontScale);
+    auto wcss = [](const QColor &c){ return c.name(QColor::HexRgb); };
+    const QString wmono = QStringLiteral("'Consolas','Cascadia Mono',monospace");
+
+    auto *root = new QWidget(m_welcomeWidget);
+    m_welcomeContent = root;
+    root->setObjectName("welcomeRoot");
+    root->setStyleSheet(QString(
+        "QWidget#welcomeRoot{background:%1;} QLabel{background:transparent;}")
+        .arg(wcss(wt.bgPrimary)));
+    m_welcomeWidget->layout()->addWidget(root);
+    auto *welcomeLayout = new QVBoxLayout(root);
+    welcomeLayout->setContentsMargins(34, 26, 38, 22);
+    welcomeLayout->setSpacing(15);
+
+    // Command bar: wordmark, build tags, system-status pill.
+    auto *cmdBar = new QHBoxLayout();
+    cmdBar->setSpacing(10);
+    auto *brand = new QLabel(QString(
+        "<span style='font-size:19px;font-weight:700;color:%1;'>Tal</span>"
+        "<span style='font-size:19px;font-weight:700;color:%2;'>Q</span>")
+        .arg(wcss(wt.textPrimary), wcss(wt.accent)), root);
+    cmdBar->addWidget(brand);
+    auto makeTag = [&](const QString &t) {
+        auto *l = new QLabel(t, root);
+        l->setStyleSheet(QString(
+            "color:%1;font-family:%2;font-size:10px;font-weight:bold;"
+            "letter-spacing:1px;border:1px solid %3;border-radius:6px;padding:4px 8px;")
+            .arg(wcss(wt.textTime), wmono, wcss(wt.divider)));
+        return l;
+    };
+    cmdBar->addWidget(makeTag("BUILD " + QApplication::applicationVersion()));
+#ifdef TALQ_BRAND_123NET
+    cmdBar->addWidget(makeTag(QStringLiteral("123NET")));
+#endif
+    cmdBar->addStretch();
+    m_wcStatusPill = new QLabel(QStringLiteral("●  ALL SYSTEMS NOMINAL"), root);
+    m_wcStatusPill->setStyleSheet(QString(
+        "color:%1;font-size:11px;font-weight:bold;letter-spacing:1px;"
+        "border:1px solid %1;border-radius:999px;padding:6px 13px;")
+        .arg(wcss(wt.online)));
+    cmdBar->addWidget(m_wcStatusPill);
+    welcomeLayout->addLayout(cmdBar);
+
+    // Greeting (still the empty state: who you are, what to do next).
+    m_welcomeNameLabel = new QLabel(root);
+    {
+        QFont wf = m_welcomeNameLabel->font();
+        wf.setPixelSize(25);
+        wf.setWeight(QFont::DemiBold);
+        m_welcomeNameLabel->setFont(wf);
+    }
+    m_welcomeNameLabel->setStyleSheet(QString("color:%1;").arg(wcss(wt.textPrimary)));
+    welcomeLayout->addWidget(m_welcomeNameLabel);
+    auto *subLine = new QLabel(QStringLiteral(
+        "No conversation selected. Pick one from the sidebar to jump back in."),
+        root);
+    subLine->setStyleSheet(QString("font-size:14px;color:%1;").arg(wcss(wt.textSecondary)));
+    welcomeLayout->addWidget(subLine);
+
+    // Telemetry grid: SERVER (wide) / SIGNALING / PUSH / NEXTCLOUD / TALK / GPU.
+    auto *grid = new QGridLayout();
+    grid->setSpacing(11);
+    auto makeTile = [&](const QString &key, QLabel **valOut, QLabel **ledOut) {
+        auto *tile = new QFrame(root);
+        tile->setObjectName("mcTile");
+        tile->setStyleSheet(QString(
+            "QFrame#mcTile{background:%1;border:1px solid %2;border-radius:13px;}")
+            .arg(wcss(wt.bgSurface), wcss(wt.divider)));
+        tile->setMinimumHeight(92);
+        auto *tl = new QVBoxLayout(tile);
+        tl->setContentsMargins(15, 13, 16, 14);
+        tl->setSpacing(6);
+        auto *kRow = new QHBoxLayout();
+        kRow->setSpacing(7);
+        auto *led = new QLabel(QStringLiteral("●"), tile);
+        led->setStyleSheet(QString("color:%1;font-size:9px;").arg(wcss(wt.online)));
+        kRow->addWidget(led);
+        auto *kl = new QLabel(key, tile);
+        kl->setStyleSheet(QString(
+            "color:%1;font-size:10px;font-weight:bold;letter-spacing:2px;")
+            .arg(wcss(wt.textTime)));
+        kRow->addWidget(kl);
+        kRow->addStretch();
+        tl->addLayout(kRow);
+        tl->addStretch();
+        auto *val = new QLabel(tile);
+        val->setTextFormat(Qt::RichText);
+        val->setStyleSheet(QString("color:%1;").arg(wcss(wt.textPrimary)));
+        tl->addWidget(val);
+        if (valOut) *valOut = val;
+        if (ledOut) *ledOut = led;
+        return tile;
+    };
+    grid->addWidget(makeTile(QStringLiteral("SERVER"),    &m_welcomeServerLabel,    nullptr),        0, 0, 1, 2);
+    grid->addWidget(makeTile(QStringLiteral("SIGNALING"), &m_welcomeSignalingLabel, &m_wcSignalLed), 0, 2);
+    grid->addWidget(makeTile(QStringLiteral("PUSH"),      &m_welcomePushLabel,      &m_wcPushLed),   0, 3);
+    grid->addWidget(makeTile(QStringLiteral("NEXTCLOUD"), &m_welcomeNcLabel,        nullptr),        1, 0);
+    grid->addWidget(makeTile(QStringLiteral("TALK"),      &m_welcomeTalkLabel,      nullptr),        1, 1);
+    grid->addWidget(makeTile(QStringLiteral("GPU"),       &m_welcomeGpuLabel,       &m_wcGpuLed),    1, 2, 1, 2);
+    for (int c = 0; c < 4; ++c) grid->setColumnStretch(c, 1);
+    welcomeLayout->addLayout(grid);
+
+    // Subsystems strip: GStreamer codec/transport availability.
+    {
+        auto *strip = new QFrame(root);
+        strip->setObjectName("mcStrip");
+        strip->setStyleSheet(QString(
+            "QFrame#mcStrip{background:%1;border:1px solid %2;border-radius:13px;}")
+            .arg(wcss(wt.bgSurface), wcss(wt.divider)));
+        auto *sl = new QHBoxLayout(strip);
+        sl->setContentsMargins(16, 12, 16, 12);
+        sl->setSpacing(13);
+        auto *sk = new QLabel(QStringLiteral("SUBSYSTEMS"), strip);
+        sk->setStyleSheet(QString(
+            "color:%1;font-size:10px;font-weight:bold;letter-spacing:2px;")
+            .arg(wcss(wt.textTime)));
+        sl->addWidget(sk);
+        static const char *pluginNames[] = {
+            "webrtc", "opus", "vpx", "d3d11", "nvcodec",
+            "srtp", "dtls", "nice", "wasapi2", "mediafoundation",
+            "winscreencap", nullptr
+        };
+        for (int i = 0; pluginNames[i]; ++i) {
+            GstPlugin *plugin = gst_registry_find_plugin(gst_registry_get(), pluginNames[i]);
+            bool ok = (plugin != nullptr);
+            if (plugin) gst_object_unref(plugin);
+            auto *chip = new QLabel(QString::fromLatin1(pluginNames[i]), strip);
+            chip->setStyleSheet(QString(
+                "QLabel{color:%1;font-family:%2;font-size:10px;font-weight:bold;"
+                "border:1px solid %3;border-radius:6px;padding:3px 8px;}")
+                .arg(wcss(ok ? wt.online : wt.danger), wmono,
+                     wcss(ok ? wt.online : wt.danger)));
+            sl->addWidget(chip);
+        }
+        sl->addStretch();
+        welcomeLayout->addWidget(strip);
+    }
+
+    // Flight log: the changelog, framed as the mission log (fills height).
+    auto *flightPanel = new QFrame(root);
+    flightPanel->setObjectName("mcPanel");
+    flightPanel->setStyleSheet(QString(
+        "QFrame#mcPanel{background:%1;border:1px solid %2;border-radius:14px;}")
+        .arg(wcss(wt.bgSurface), wcss(wt.divider)));
+    auto *flightLayout = new QVBoxLayout(flightPanel);
+    flightLayout->setContentsMargins(0, 0, 0, 0);
+    flightLayout->setSpacing(0);
+    auto *flightHdr = new QLabel(QStringLiteral("●  FLIGHT LOG · WHAT'S NEW"), flightPanel);
+    flightHdr->setStyleSheet(QString(
+        "color:%1;font-size:10px;font-weight:bold;letter-spacing:2px;"
+        "padding:13px 17px;border-bottom:1px solid %2;")
+        .arg(wcss(wt.textTime), wcss(wt.divider)));
+    flightLayout->addWidget(flightHdr);
+    auto *changelog = new QTextBrowser(flightPanel);
+    changelog->setFrameShape(QFrame::NoFrame);
+    changelog->setStyleSheet(QString(
+        "QTextBrowser{background:transparent;color:%1;border:none;"
+        "padding:14px 18px;font-size:13px;}")
+        .arg(wcss(wt.textPrimary)));
+    {
+        QFile f(QStringLiteral(":/docs/CHANGELOG.md"));
+        if (f.open(QIODevice::ReadOnly)) {
+            changelog->setMarkdown(QString::fromUtf8(f.readAll()));
+        } else {
+            qWarning() << "welcome: :/docs/CHANGELOG.md missing:" << f.errorString();
+            changelog->setPlainText(tr("Release notes unavailable."));
+        }
+    }
+    changelog->setReadOnly(true);
+    changelog->setOpenExternalLinks(true);
+    flightLayout->addWidget(changelog, 1);
+    welcomeLayout->addWidget(flightPanel, 1);
+
+    // Footer readout.
+    {
+        auto *foot = new QLabel(QString(
+            "<span style='color:%1'>SESSION</span> %2    "
+            "<span style='color:%1'>RENDERER</span> QPainter    "
+            "<span style='color:%1'>TalQ</span> v%3")
+            .arg(wcss(wt.textSecondary),
+                 (m_auth ? m_auth->displayName() : QStringLiteral("local")),
+                 QApplication::applicationVersion()), root);
+        foot->setStyleSheet(QString(
+            "color:%1;font-family:%2;font-size:11px;letter-spacing:.4px;")
+            .arg(wcss(wt.textTime), wmono));
+        welcomeLayout->addWidget(foot);
+    }
+
+    refreshWelcomeStatus();
+}
+
 void MainWindow::switchToLogin()
 {
     m_chatMode = false;
@@ -1894,6 +1918,7 @@ void MainWindow::applyThemeId(PainterTheme::Theme t)
     m_chatPainter->setTheme(t);
     m_threadsPainter->setTheme(t);
     applyDarkPalette();
+    buildWelcomeContent();   // re-tint the Mission Control home to the new theme
     if (m_themeBtn)
         m_themeBtn->setToolTip(tr("Theme: %1 (Ctrl+D to cycle)")
                                    .arg(PainterTheme::themeLabel(t)));

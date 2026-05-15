@@ -1,58 +1,67 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-05-15T15:40:00Z",
+  "generatedAt": "2026-05-16T00:00:00Z",
   "title": "Design System: TalQ",
+  "themeNote": "TalQ ships four user-selectable themes (Ember, Warm, Vivid, Paper; default Vivid). PainterTheme is the single source of truth; every color is a token resolved from the active theme. Canonical hex below is the Vivid default. No theme uses cool gray.",
   "extensions": {
     "colorMeta": {
-      "signal-teal": {
+      "accent": {
         "role": "primary",
-        "displayName": "Signal Teal",
-        "canonical": "#14b8a6",
-        "tonalRamp": ["#062f2a", "#0a463f", "#0d6358", "#108a7c", "#14b8a6", "#34cebd", "#6fdfd1", "#b9efe8"]
+        "displayName": "Accent (signal teal, per-theme)",
+        "canonical": "#21e3c8",
+        "tonalRamp": ["#06201c", "#0a3a33", "#0d6358", "#129e8c", "#21e3c8", "#4cebd4", "#86f1e2", "#c4f7ef"]
       },
-      "pressed-ink": {
+      "bg-primary": {
         "role": "neutral",
-        "displayName": "Pressed Ink (paper-ink ladder)",
-        "canonical": "#141210",
-        "tonalRamp": ["#141210", "#1a1613", "#221d19", "#2a241f", "#4a443c", "#7a726a", "#a8a096", "#f4efe6"]
+        "displayName": "Background / warm tonal ladder (per-theme)",
+        "canonical": "#271d12",
+        "tonalRamp": ["#211810", "#271d12", "#312517", "#342711", "#3d2e1b", "#46341d", "#4b3a23", "#fcf5e7"]
       },
-      "warm-newsprint": {
+      "text-primary": {
         "role": "neutral",
-        "displayName": "Warm Newsprint",
-        "canonical": "#f4efe6",
-        "tonalRamp": ["#6b655a", "#8a8478", "#a8a096", "#c7c1b4", "#ddd7c9", "#ebe6da", "#f4efe6", "#fbf9f5"]
+        "displayName": "Text (warm cream ladder, per-theme)",
+        "canonical": "#fcf5e7",
+        "tonalRamp": ["#9c8c6d", "#b3a384", "#c8b89a", "#dccbac", "#ebdcc4", "#f4ead4", "#fcf5e7", "#fffdf7"]
       },
-      "own-message-teal": {
+      "bg-message-own": {
         "role": "primary",
-        "displayName": "Own Message Teal",
-        "canonical": "#1c3330",
-        "tonalRamp": ["#0e1c1a", "#142724", "#1c3330", "#25433f", "#325953", "#46756d", "#6f9c93", "#a9c6bf"]
+        "displayName": "Own Message (teal-ink, per-theme)",
+        "canonical": "#1f5a4f",
+        "tonalRamp": ["#0e2b26", "#163e36", "#1f5a4f", "#2a766a", "#379184", "#52ab9d", "#82c6bb", "#b6e0d8"]
       },
-      "presence-green": {
+      "online": {
         "role": "tertiary",
-        "displayName": "Presence Green",
-        "canonical": "#5ec76a",
-        "tonalRamp": ["#1e4a26", "#2c6633", "#3a8442", "#4aa553", "#5ec76a", "#7fd589", "#a6e3ac", "#cdf0d0"]
+        "displayName": "Online / Success",
+        "canonical": "#66dd76",
+        "tonalRamp": ["#1e4a26", "#2c6633", "#3a8442", "#4aa553", "#66dd76", "#86e592", "#abeeb2", "#cff5d2"]
       },
-      "alert-clay": {
+      "danger": {
         "role": "tertiary",
-        "displayName": "Alert Clay",
-        "canonical": "#e8866b",
-        "tonalRamp": ["#5c2a1e", "#7d3a28", "#a14c34", "#c66248", "#e8866b", "#ee9d86", "#f3b8a7", "#f8d6cb"]
+        "displayName": "Danger / Alert (calm clay)",
+        "canonical": "#ff9163",
+        "tonalRamp": ["#5c2a1e", "#7d3a28", "#a14c34", "#c66248", "#ff9163", "#ffab86", "#ffc4aa", "#ffdccb"]
+      },
+      "amber": {
+        "role": "tertiary",
+        "displayName": "Amber (warm secondary: favorite, away)",
+        "canonical": "#ffb84a",
+        "tonalRamp": ["#5e3f12", "#7d5618", "#a1701f", "#c68b28", "#ffb84a", "#ffc870", "#ffd99a", "#ffe9c4"]
       }
     },
     "typographyMeta": {
-      "display": { "displayName": "Display", "purpose": "Instrument Serif 26px. Welcome name, largest editorial moment." },
-      "title": { "displayName": "Title", "purpose": "Instrument Serif 20px. Header conversation title." },
-      "body": { "displayName": "Body", "purpose": "Message text. The reading tier; everything else is chrome." },
-      "label": { "displayName": "Label", "purpose": "Secondary labels, member roles, button text." },
-      "caption": { "displayName": "Caption", "purpose": "Timestamps, system messages, uppercased dialog eyebrows." }
+      "display": { "displayName": "Display", "purpose": "Inter 600 25px. The welcome greeting, the largest moment. No serif." },
+      "title": { "displayName": "Title", "purpose": "Inter 600 15px. Header conversation title, sidebar names." },
+      "body": { "displayName": "Body", "purpose": "Inter 400 14px. Message text. The reading tier." },
+      "label": { "displayName": "Label", "purpose": "Inter 600 12px. Secondary labels, roles, button text." },
+      "caption": { "displayName": "Caption", "purpose": "Inter 400 11px. Timestamps, system messages, Mission Control tile keys." },
+      "telemetry": { "displayName": "Telemetry", "purpose": "Monospace (Consolas/Cascadia) 11px. Mission Control values, tags, footer. Control-room legibility only, never prose." }
     },
     "shadows": [],
     "motion": [
-      { "name": "ease-out-quint", "value": "cubic-bezier(0.22, 1, 0.36, 1)", "purpose": "Default easing for all state transitions. Exponential ease-out, no bounce, no elastic. System intent for future animate passes." },
+      { "name": "ease-out-quint", "value": "cubic-bezier(0.22, 1, 0.36, 1)", "purpose": "Default easing for all state transitions. Exponential ease-out, no bounce, no elastic." },
       { "name": "duration-fast", "value": "120ms", "purpose": "Hover, selection, and small state changes." },
-      { "name": "duration-base", "value": "200ms", "purpose": "Panel and view transitions." }
+      { "name": "duration-base", "value": "200ms", "purpose": "Panel and view transitions." },
+      { "name": "presence-breathe", "value": "3s ease-in-out infinite", "purpose": "The breathing presence dot and the system-status pill. State, not decoration; honors reduced-motion." }
     ],
     "breakpoints": []
   },
@@ -63,7 +72,7 @@
       "refersTo": "button-primary",
       "description": "The single filled control. Reserved for the one primary action on a surface (Send, Enable, Save).",
       "html": "<button class=\"ds-btn-primary\">Enable</button>",
-      "css": ".ds-btn-primary { background:#14b8a6; color:#0e1817; font-family:Inter,system-ui,sans-serif; font-size:12px; font-weight:600; border:none; border-radius:8px; padding:8px 18px; cursor:pointer; transition:background 120ms cubic-bezier(0.22,1,0.36,1); } .ds-btn-primary:hover { background:#2dd4bf; } .ds-btn-primary:active { background:#0d9488; } .ds-btn-primary:focus-visible { outline:2px solid #14b8a6; outline-offset:2px; }"
+      "css": ".ds-btn-primary { background:#21e3c8; color:#06201c; font-family:Inter,system-ui,sans-serif; font-size:12px; font-weight:600; border:none; border-radius:8px; padding:8px 18px; cursor:pointer; transition:background 120ms cubic-bezier(0.22,1,0.36,1); } .ds-btn-primary:hover { filter:brightness(1.08); } .ds-btn-primary:focus-visible { outline:2px solid #21e3c8; outline-offset:2px; }"
     },
     {
       "name": "Default Button",
@@ -71,7 +80,7 @@
       "refersTo": "button-default",
       "description": "The quiet workhorse button for non-primary actions.",
       "html": "<button class=\"ds-btn-default\">Cancel</button>",
-      "css": ".ds-btn-default { background:#241f1a; color:#f4efe6; font-family:Inter,system-ui,sans-serif; font-size:12px; font-weight:600; border:none; border-radius:8px; padding:8px 16px; cursor:pointer; transition:background 120ms cubic-bezier(0.22,1,0.36,1); } .ds-btn-default:hover { background:#2e271f; } .ds-btn-default:focus-visible { outline:2px solid #14b8a6; outline-offset:2px; }"
+      "css": ".ds-btn-default { background:#342711; color:#fcf5e7; font-family:Inter,system-ui,sans-serif; font-size:12px; font-weight:600; border:none; border-radius:8px; padding:8px 16px; cursor:pointer; transition:background 120ms cubic-bezier(0.22,1,0.36,1); } .ds-btn-default:hover { background:#46341d; } .ds-btn-default:focus-visible { outline:2px solid #21e3c8; outline-offset:2px; }"
     },
     {
       "name": "Danger Button",
@@ -79,23 +88,23 @@
       "refersTo": "button-danger",
       "description": "Destructive actions. Recessive until hovered, calm clay rather than fire-engine red.",
       "html": "<button class=\"ds-btn-danger\">Remove</button>",
-      "css": ".ds-btn-danger { background:transparent; color:#e8866b; font-family:Inter,system-ui,sans-serif; font-size:12px; font-weight:600; border:1px solid #4a2a22; border-radius:8px; padding:8px 14px; cursor:pointer; transition:background 120ms cubic-bezier(0.22,1,0.36,1),border-color 120ms cubic-bezier(0.22,1,0.36,1); } .ds-btn-danger:hover { background:rgba(232,134,107,0.08); border-color:#e8866b; }"
+      "css": ".ds-btn-danger { background:transparent; color:#ff9163; font-family:Inter,system-ui,sans-serif; font-size:12px; font-weight:600; border:1px solid #5c3a2a; border-radius:8px; padding:8px 14px; cursor:pointer; transition:background 120ms cubic-bezier(0.22,1,0.36,1),border-color 120ms cubic-bezier(0.22,1,0.36,1); } .ds-btn-danger:hover { background:rgba(255,145,99,0.08); border-color:#ff9163; }"
     },
     {
       "name": "Conversation Row",
       "kind": "custom",
       "refersTo": "conversation-row",
-      "description": "Signature component. The list the user stares at all day: avatar, name, preview, time, unread.",
+      "description": "Signature component. The list the user stares at all day: avatar, name, preview, time, unread. Selected gets a soft accent halo (state glow).",
       "html": "<div class=\"ds-conv-row\"><div class=\"ds-conv-av\">A</div><div class=\"ds-conv-main\"><div class=\"ds-conv-top\"><span class=\"ds-conv-name\">Aelita</span><span class=\"ds-conv-time\">14:32</span></div><div class=\"ds-conv-prev\">Sounds good, shipping it now</div></div><span class=\"ds-conv-badge\">3</span></div>",
-      "css": ".ds-conv-row { display:flex; align-items:center; gap:8px; background:#18140f; padding:8px 12px; cursor:pointer; transition:background 120ms cubic-bezier(0.22,1,0.36,1); } .ds-conv-row:hover { background:#241f1a; } .ds-conv-av { width:36px; height:36px; border-radius:999px; background:#14b8a6; color:#0e1817; font-family:Inter,system-ui,sans-serif; font-weight:700; font-size:15px; display:flex; align-items:center; justify-content:center; flex:none; } .ds-conv-main { flex:1; min-width:0; } .ds-conv-top { display:flex; justify-content:space-between; align-items:baseline; } .ds-conv-name { color:#f4efe6; font-family:Inter,system-ui,sans-serif; font-size:14px; font-weight:600; } .ds-conv-time { color:#7a726a; font-family:Inter,system-ui,sans-serif; font-size:11px; } .ds-conv-prev { color:#a8a096; font-family:Inter,system-ui,sans-serif; font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; } .ds-conv-badge { background:#14b8a6; color:#141210; font-family:Inter,system-ui,sans-serif; font-size:11px; font-weight:600; border-radius:999px; padding:1px 7px; flex:none; }"
+      "css": ".ds-conv-row { display:flex; align-items:center; gap:8px; background:#211810; padding:8px 12px; cursor:pointer; transition:background 120ms cubic-bezier(0.22,1,0.36,1); } .ds-conv-row:hover { background:#342711; } .ds-conv-av { width:36px; height:36px; border-radius:999px; background:#21e3c8; color:#06201c; font-family:Inter,system-ui,sans-serif; font-weight:700; font-size:15px; display:flex; align-items:center; justify-content:center; flex:none; } .ds-conv-main { flex:1; min-width:0; } .ds-conv-top { display:flex; justify-content:space-between; align-items:baseline; } .ds-conv-name { color:#fcf5e7; font-family:Inter,system-ui,sans-serif; font-size:14px; font-weight:600; } .ds-conv-time { color:#9c8c6d; font-family:Inter,system-ui,sans-serif; font-size:11px; } .ds-conv-prev { color:#c8b89a; font-family:Inter,system-ui,sans-serif; font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; } .ds-conv-badge { background:#21e3c8; color:#06201c; font-family:Inter,system-ui,sans-serif; font-size:11px; font-weight:600; border-radius:999px; padding:1px 7px; flex:none; }"
     },
     {
       "name": "Message Bubble (Own)",
       "kind": "custom",
       "refersTo": "message-bubble-own",
       "description": "Sent message. 'Mine' reads by warm teal-ink hue, not a loud fill.",
-      "html": "<div class=\"ds-bubble-own\">On it, pushing 0.27.0 once the polish pass lands.</div>",
-      "css": ".ds-bubble-own { background:#1c3330; color:#f4efe6; font-family:Inter,system-ui,sans-serif; font-size:14px; line-height:1.45; border-radius:10px; padding:8px 12px; max-width:60ch; margin-left:auto; }"
+      "html": "<div class=\"ds-bubble-own\">On it, pushing the build once the polish lands.</div>",
+      "css": ".ds-bubble-own { background:#1f5a4f; color:#fcf5e7; font-family:Inter,system-ui,sans-serif; font-size:14px; line-height:1.45; border-radius:10px; padding:8px 12px; max-width:60ch; margin-left:auto; }"
     },
     {
       "name": "Message Bubble (Other)",
@@ -103,50 +112,58 @@
       "refersTo": "message-bubble-other",
       "description": "Received message. Topmost tonal-ladder surface, author-color name in group chats.",
       "html": "<div class=\"ds-bubble-other\"><div class=\"ds-bubble-author\">Aelita</div>Looks great. Ship it.</div>",
-      "css": ".ds-bubble-other { background:#221d19; color:#f4efe6; font-family:Inter,system-ui,sans-serif; font-size:14px; line-height:1.45; border-radius:10px; padding:8px 12px; max-width:60ch; } .ds-bubble-author { color:#50b8c8; font-size:12px; font-weight:600; margin-bottom:2px; }"
+      "css": ".ds-bubble-other { background:#3d2e1b; color:#fcf5e7; font-family:Inter,system-ui,sans-serif; font-size:14px; line-height:1.45; border-radius:10px; padding:8px 12px; max-width:60ch; } .ds-bubble-author { color:#50b8c8; font-size:12px; font-weight:600; margin-bottom:2px; }"
     },
     {
       "name": "Unread Badge",
       "kind": "chip",
       "refersTo": "unread-badge",
-      "description": "The clearest instance of the One Signal Rule. Signal Teal pill, ink text.",
+      "description": "The clearest instance of the One Signal Rule. Accent pill, ink text.",
       "html": "<span class=\"ds-unread\">7</span>",
-      "css": ".ds-unread { background:#14b8a6; color:#141210; font-family:Inter,system-ui,sans-serif; font-size:11px; font-weight:600; letter-spacing:0.4px; border-radius:999px; padding:1px 7px; }"
+      "css": ".ds-unread { background:#21e3c8; color:#06201c; font-family:Inter,system-ui,sans-serif; font-size:11px; font-weight:600; letter-spacing:0.4px; border-radius:999px; padding:1px 7px; }"
+    },
+    {
+      "name": "Status Tile (Mission Control)",
+      "kind": "custom",
+      "refersTo": "status-tile",
+      "description": "Empty-state home telemetry tile: status LED + uppercase key + value + monospace sub-line. Glanceable, not noisy.",
+      "html": "<div class=\"ds-tile\"><div class=\"ds-tile-k\"><span class=\"ds-led\"></span>SIGNALING</div><div class=\"ds-tile-v\">Connected<small>HPB realtime</small></div></div>",
+      "css": ".ds-tile { background:#3d2e1b; border:1px solid #4b3a23; border-radius:13px; padding:13px 16px; display:flex; flex-direction:column; gap:6px; min-height:92px; } .ds-tile-k { color:#9c8c6d; font-family:Inter,system-ui,sans-serif; font-size:10px; font-weight:700; letter-spacing:2px; display:flex; align-items:center; gap:7px; } .ds-led { width:7px; height:7px; border-radius:999px; background:#66dd76; } .ds-tile-v { color:#fcf5e7; font-family:Inter,system-ui,sans-serif; font-size:18px; font-weight:600; margin-top:auto; } .ds-tile-v small { display:block; color:#c8b89a; font-family:Consolas,'Cascadia Mono',monospace; font-size:11px; font-weight:500; margin-top:3px; }"
     }
   ],
   "narrative": {
-    "northStar": "The Field Notebook",
-    "overview": "TalQ is a worn leather field notebook, not a glass dashboard. Surfaces are soft, warm, and paper-like. Chrome stays low-contrast and recedes so the conversation is the only thing that asks for attention. The mood is unhurried and human: a tool you keep open all day without it raising your pulse. Depth is conveyed by warm tonal layering, never by drop shadows or glass. The system runs on a deliberate tension: the surface is quiet (Field Notebook calm, content-first) while the controls are tactile and confident (real presence, unambiguous affordance). A calm page, a pen that feels solid in the hand. It explicitly rejects generic Material/AI-slop, the default Nextcloud Talk web UI, and the cold-blue chat-app category reflex.",
+    "northStar": "Calm, Warm, Fast",
+    "overview": "TalQ is a quick, quiet, warm room you keep open all day. The surface stays low-contrast and recedes so the conversation is the only thing that asks for attention; interactions feel immediate. Distinctiveness comes from the warm palette and visible craft, never a display typeface or costume; the v0.27.0 editorial/serif direction was tried and rejected as the wrong register for a chat tool. The system runs on a deliberate tension: a quiet surface and confident controls. Color is a four-theme token system (Ember, Warm, Vivid default, Paper), the user's choice, never cool gray. Flat at rest, with a soft accent glow reserved for state. It rejects generic Material/AI-slop, the Nextcloud Talk web UI, the cold-blue category reflex, and the editorial costume.",
     "keyCharacteristics": [
-      "Warm, paper-like surfaces tinted toward umber-black, never neutral gray",
-      "A single teal signal accent used sparingly against ink and newsprint",
-      "Flat by default; depth only from a four-step warm tonal ladder",
-      "Type and spacing carry the hierarchy; ornament is near-zero",
-      "Calm chrome, confident controls"
+      "Warm surfaces tinted toward umber/amber, never neutral or cool gray, in every theme",
+      "One saturated accent used sparingly as the single signal",
+      "Flat at rest; warm tonal ladder for depth, plus a state-only soft glow",
+      "Inter only; type and spacing carry the hierarchy",
+      "Calm chrome, confident controls, fast transitions"
     ],
     "rules": [
-      { "name": "The One Signal Rule", "body": "Signal Teal covers at most ~10% of any screen. It marks exactly one thing: this needs you (unread, active, primary action). If two teal things compete on screen, one is wrong.", "section": "colors" },
-      { "name": "The No-Gray Rule", "body": "There is no neutral gray anywhere. Every surface, text, and divider value is tinted toward the umber/newsprint hue. A value that reads as gray is a bug.", "section": "colors" },
-      { "name": "The Two-Lever Rule", "body": "Hierarchy is built from exactly two levers, size and weight (400 vs 600). No italics for hierarchy, no third weight for chrome, no color-as-hierarchy.", "section": "typography" },
-      { "name": "The Scale Honesty Rule", "body": "The scale tops out at 16px. Do not fake editorial presence by bolding 14px text. A headline needs a real larger size, not heavier body text.", "section": "typography" },
-      { "name": "The Flat-Paper Rule", "body": "Surfaces are flat at rest, always. Forbidden: box-shadow on cards, panels, rows, bubbles, or dialogs. Depth is a tonal-ladder choice, never a shadow.", "section": "elevation" },
-      { "name": "The Ladder Rule", "body": "A surface is raised by moving exactly one step up the ladder (base to sidebar to raised to surface). Never skip a step or raise by shadow.", "section": "elevation" }
+      { "name": "The One Signal Rule", "body": "The accent covers at most ~10% of any screen. It marks exactly one meaning: this needs you (unread, active, primary action). If two accent things compete on screen, one is wrong.", "section": "colors" },
+      { "name": "The No-Gray Rule", "body": "No neutral or cool gray exists in any of the four themes. Every surface, text, and divider value is tinted warm. A value that reads as gray is a bug.", "section": "colors" },
+      { "name": "The Two-Lever Rule", "body": "Hierarchy is built from exactly two levers, size and weight (Inter 400 vs 600). One face only. No italics for hierarchy, no third weight for chrome, no color-as-hierarchy, no serif/display tier.", "section": "typography" },
+      { "name": "The Scale Honesty Rule", "body": "A headline needs a real larger size. Do not fake editorial presence by bolding 14px body text.", "section": "typography" },
+      { "name": "The Flat-But-Stateful Rule", "body": "Surfaces are flat at rest. Forbidden: decorative box-shadow, glassmorphism, blur, gradient text. Permitted: a soft accent glow that encodes state (active/hover/presence/ambient), tasteful, low-opacity, honoring reduced-motion. A glow that is not carrying state is decoration and is forbidden.", "section": "elevation" },
+      { "name": "The Ladder Rule", "body": "Raise a surface by exactly one step up the warm ladder (primary to sidebar to secondary to surface). Never skip a step or raise by shadow.", "section": "elevation" }
     ],
     "dos": [
-      "Do keep Signal Teal under ~10% of any screen. Its scarcity is the design.",
-      "Do tint every neutral toward umber/newsprint. Pure or cool gray is a bug.",
-      "Do build hierarchy from size and weight only.",
-      "Do raise surfaces one step up the warm tonal ladder, never with a shadow.",
+      "Do keep the accent under ~10% of any screen. Its scarcity is the design.",
+      "Do resolve every color from the active theme token and tint every neutral warm, in all four themes.",
+      "Do build hierarchy from size and weight only, Inter throughout.",
+      "Do raise surfaces one step up the warm ladder, never with a shadow.",
+      "Do use the soft glow only to encode state, and honor reduced-motion.",
       "Do give every control its full style on the control itself, immune to ancestor stylesheets.",
-      "Do honor reduced-motion and user font scaling, and keep dark and light at WCAG AA contrast."
+      "Do keep every theme at WCAG AA contrast and respect user font scaling."
     ],
     "donts": [
-      "Don't use #000 or #fff anywhere, including the light-theme surface (current pure #ffffff light bgSurface is a standing fix, not a precedent).",
-      "Don't add box-shadow, glassmorphism, blur, or gradient text to any surface.",
+      "Don't use #000 or #fff anywhere, including Paper's surfaces.",
+      "Don't add decorative box-shadow, glassmorphism, blur, or gradient text. A glow that isn't state is decoration.",
       "Don't use a colored side-stripe (border-left/right > 1px) as an accent on rows, bubbles, or callouts.",
-      "Don't drift toward generic Material or AI slop: cold gray neutrals, purple-on-white gradients, cookie-cutter identical card grids, templated component kits.",
-      "Don't settle for parity with the default Nextcloud Talk web UI; the visible craft gap is the point.",
-      "Don't regress toward the cold-blue chat-app category reflex (Slack/Teams clutter, Discord neon-on-charcoal).",
+      "Don't reintroduce a serif or editorial display tier; the costume was rejected. Distinctiveness is warmth and craft.",
+      "Don't drift toward generic Material or AI slop, settle for parity with the Nextcloud Talk web UI, or regress toward the cold-blue category reflex.",
       "Don't fake editorial presence by bolding 14px text in place of a real larger size."
     ]
   }

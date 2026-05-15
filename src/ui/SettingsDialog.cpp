@@ -333,13 +333,28 @@ QWidget *SettingsDialog::buildGeneralTab()
     // Appearance section
     layout->addWidget(makeSectionHeader("APPEARANCE"));
 
-    m_darkTheme = new QCheckBox(tr("Dark theme"));
+    auto *themeRow = new QHBoxLayout();
+    auto *themeLbl = new QLabel(tr("Theme"));
+    themeRow->addWidget(themeLbl);
+    m_themeCombo = new QComboBox();
+    const PainterTheme::Theme kThemes[] = {
+        PainterTheme::Theme::Ember, PainterTheme::Theme::Warm,
+        PainterTheme::Theme::Vivid, PainterTheme::Theme::Paper
+    };
+    for (auto th : kThemes)
+        m_themeCombo->addItem(PainterTheme::themeLabel(th), PainterTheme::themeId(th));
     m_settings.beginGroup("Theme");
-    m_darkTheme->setChecked(m_settings.value("darkMode", true).toBool());
+    QString curThemeId = m_settings.value("theme",
+        PainterTheme::themeId(PainterTheme::Theme::Vivid)).toString();
     m_settings.endGroup();
-    layout->addWidget(m_darkTheme);
+    {
+        int idx = m_themeCombo->findData(curThemeId);
+        m_themeCombo->setCurrentIndex(idx < 0 ? 2 : idx);  // 2 == Vivid (default)
+    }
+    themeRow->addWidget(m_themeCombo, 1);
+    layout->addLayout(themeRow);
 
-    auto *themeHint = new QLabel(tr("Toggle with Ctrl+D"));
+    auto *themeHint = new QLabel(tr("Or cycle with Ctrl+D or the sidebar swatch"));
     QFont thf = themeHint->font();
     thf.setPixelSize(11);
     themeHint->setFont(thf);
@@ -351,8 +366,10 @@ QWidget *SettingsDialog::buildGeneralTab()
     }
     layout->addWidget(themeHint);
 
-    connect(m_darkTheme, &QCheckBox::toggled, this, [this](bool dark) {
-        emit themeChanged(dark);
+    connect(m_themeCombo, &QComboBox::currentIndexChanged, this, [this](int) {
+        PainterTheme::Theme th = PainterTheme::themeFromId(
+            m_themeCombo->currentData().toString(), PainterTheme::Theme::Vivid);
+        emit themeIdChanged(static_cast<int>(th));
     });
 
     layout->addSpacing(8);
@@ -642,12 +659,14 @@ void SettingsDialog::loadGeneralSettings()
     m_closeToTray->setChecked(closeTray);
     m_closeToTray->blockSignals(false);
 
-    if (m_darkTheme) {
+    if (m_themeCombo) {
         m_settings.beginGroup("Theme");
-        bool dark = m_settings.value("darkMode", true).toBool();
+        QString tid = m_settings.value("theme",
+            PainterTheme::themeId(PainterTheme::Theme::Vivid)).toString();
         m_settings.endGroup();
-        m_darkTheme->blockSignals(true);
-        m_darkTheme->setChecked(dark);
-        m_darkTheme->blockSignals(false);
+        int idx = m_themeCombo->findData(tid);
+        m_themeCombo->blockSignals(true);
+        m_themeCombo->setCurrentIndex(idx < 0 ? 2 : idx);
+        m_themeCombo->blockSignals(false);
     }
 }
