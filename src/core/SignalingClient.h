@@ -129,4 +129,9 @@ private:
     QHash<QString, QString> m_sessionToUserId;  // sessionId → userId (for DC-only fallback)
 
     void sendTalqClientHello();
+
+    // Persist learned peer→client identity so the TalQ badge survives restarts
+    // and no longer depends on a perfectly-timed live signaling-room overlap.
+    void loadPersistedPeerClients();
+    void persistPeerClient(const QString &userId, const QString &info);
 };

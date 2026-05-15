@@ -30,7 +30,9 @@ QPixmap makeBotIcon(int sizePx)
     p.setRenderHint(QPainter::Antialiasing);
     p.setPen(Qt::NoPen);
     p.setBrush(QColor("#14b8a6"));
-    p.drawEllipse(0, 0, sizePx, sizePx);
+    // Inset 0.5px so the antialiased edge is not clipped at the pixmap's
+    // right/bottom boundary (drawing the full 0..sizePx bounds cuts it).
+    p.drawEllipse(QRectF(0.5, 0.5, sizePx - 1.0, sizePx - 1.0));
     QFont f;
     f.setPixelSize(int(sizePx * 0.55));
     f.setWeight(QFont::Black);
@@ -554,30 +556,67 @@ void ConversationInfoDialog::populateBotRow(const BotInfo &bot)
     }
 
     if (m_amOwnerOrMod) {
-        auto *removeBtn = new QPushButton(tr("Remove"), row);
-        removeBtn->setObjectName("danger");
-        removeBtn->setCursor(Qt::PointingHandCursor);
         const int botId = bot.id;
         const QString botName = bot.name;
-        connect(removeBtn, &QPushButton::clicked, this, [this, botId, botName]() {
-            auto reply = QMessageBox::question(
-                this, tr("Remove bot"),
-                tr("Remove %1 from this conversation?").arg(botName),
-                QMessageBox::Yes | QMessageBox::No);
-            if (reply != QMessageBox::Yes) return;
-            m_status->setText(tr("Removing bot\u2026"));
-            m_api->setBotEnabled(m_token, botId, false, this,
-                [this](bool ok, int httpStatus) {
-                    if (!ok) {
-                        m_status->setStyleSheet("color: #ff6b6b; font-size: 12px;");
-                        m_status->setText(tr("Couldn't remove (HTTP %1).").arg(httpStatus));
-                    } else {
-                        m_status->setText(tr("Bot removed."));
-                        refreshBots();
-                    }
-                });
-        });
-        lay->addWidget(removeBtn);
+        const bool errored = (bot.state == 3);
+        if (bot.isEnabled() || errored) {
+            // Installed & active here \u2192 moderators can disable it.
+            auto *removeBtn = new QPushButton(tr("Remove"), row);
+            removeBtn->setObjectName("danger");
+            removeBtn->setCursor(Qt::PointingHandCursor);
+            connect(removeBtn, &QPushButton::clicked, this, [this, botId, botName]() {
+                auto reply = QMessageBox::question(
+                    this, tr("Remove bot"),
+                    tr("Remove %1 from this conversation?").arg(botName),
+                    QMessageBox::Yes | QMessageBox::No);
+                if (reply != QMessageBox::Yes) return;
+                m_status->setStyleSheet("color: #8a8680; font-size: 12px;");
+                m_status->setText(tr("Removing bot\u2026"));
+                m_api->setBotEnabled(m_token, botId, false, this,
+                    [this](bool ok, int httpStatus) {
+                        if (!ok) {
+                            m_status->setStyleSheet("color: #ff6b6b; font-size: 12px;");
+                            m_status->setText(tr("Couldn't remove (HTTP %1).").arg(httpStatus));
+                        } else {
+                            m_status->setText(tr("Bot removed."));
+                            refreshBots();
+                        }
+                    });
+            });
+            lay->addWidget(removeBtn);
+        } else {
+            // Disabled here \u2192 any moderator can enable it (no admin/CLI
+            // needed) provided the bot wasn't installed with --no-setup.
+            auto *enableBtn = new QPushButton(tr("Enable"), row);
+            // Explicit, self-contained style: a stylesheet set directly on the
+            // button wins over the selector-less `background` on m_botsContainer
+            // that would otherwise leak in and make #primary unreadable here.
+            enableBtn->setStyleSheet(
+                "QPushButton { background: #14b8a6; color: #0e1817;"
+                "  font-weight: 700; font-size: 12px; border: none;"
+                "  border-radius: 8px; padding: 8px 18px; }"
+                "QPushButton:hover   { background: #2dd4bf; }"
+                "QPushButton:pressed { background: #0d9488; }");
+            enableBtn->setCursor(Qt::PointingHandCursor);
+            connect(enableBtn, &QPushButton::clicked, this, [this, botId]() {
+                m_status->setStyleSheet("color: #8a8680; font-size: 12px;");
+                m_status->setText(tr("Enabling bot\u2026"));
+                m_api->setBotEnabled(m_token, botId, true, this,
+                    [this](bool ok, int httpStatus) {
+                        if (!ok) {
+                            m_status->setStyleSheet("color: #ff6b6b; font-size: 12px;");
+                            m_status->setText((httpStatus == 400 || httpStatus == 403)
+                                ? tr("Server blocked it \u2014 this bot was installed "
+                                     "with --no-setup (admin-only via occ).")
+                                : tr("Couldn't enable (HTTP %1).").arg(httpStatus));
+                        } else {
+                            m_status->setText(tr("Bot enabled."));
+                            refreshBots();
+                        }
+                    });
+            });
+            lay->addWidget(enableBtn);
+        }
     }
 
     m_botsLayout->addWidget(row);
@@ -657,7 +696,14 @@ void ConversationInfoDialog::onAddBotClicked()
             txt->setStyleSheet("color: #f4efe6; font-weight: 500;");
             rl->addWidget(txt, 1);
             auto *enableBtn = new QPushButton(tr("Enable"), row);
-            enableBtn->setObjectName("primary");
+            // Explicit style (not #primary): self-contained so it survives
+            // both the inherited dialog QSS and the early sizeHint pass.
+            enableBtn->setStyleSheet(
+                "QPushButton { background: #14b8a6; color: #0e1817;"
+                "  font-weight: 700; font-size: 12px; border: none;"
+                "  border-radius: 8px; padding: 8px 18px; min-height: 18px; }"
+                "QPushButton:hover   { background: #2dd4bf; }"
+                "QPushButton:pressed { background: #0d9488; }");
             enableBtn->setCursor(Qt::PointingHandCursor);
             const int botId = b.id;
             connect(enableBtn, &QPushButton::clicked, dlg, [this, botId, status, dlg]() {
@@ -675,7 +721,11 @@ void ConversationInfoDialog::onAddBotClicked()
             });
             rl->addWidget(enableBtn);
             auto *item = new QListWidgetItem(list);
-            item->setSizeHint(row->sizeHint());
+            // Fixed, generous height: row->sizeHint() here is computed before
+            // the inherited stylesheet is polished, so it under-reports and the
+            // styled Enable button gets clipped to a thin line.
+            const QSize sh = row->sizeHint();
+            item->setSizeHint(QSize(qMax(260, sh.width()), 44));
             item->setFlags(Qt::NoItemFlags);
             list->setItemWidget(item, row);
         }
