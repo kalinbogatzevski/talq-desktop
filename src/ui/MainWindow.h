@@ -107,6 +107,7 @@ private:
     void openNewChatDialog();
     void openConversationInfo();
     void createNewTopic();
+    void buildWelcomeContent();    // (re)build Mission Control content; theme-aware
     void refreshWelcomeStatus();   // repaint Mission Control telemetry/LEDs/pill
 
     // ── Pointers to backend (not owned) ──
@@ -152,7 +153,8 @@ private:
     QWidget *m_profileBar = nullptr;
     QWidget *m_searchRow = nullptr;
     QPushButton *m_homeBtn = nullptr;
-    QWidget *m_welcomeWidget = nullptr;
+    QWidget *m_welcomeWidget = nullptr;     // persistent host (shown/hidden)
+    QWidget *m_welcomeContent = nullptr;    // themed content, rebuilt on theme change
     QLabel *m_welcomeNameLabel = nullptr;
     QLabel *m_welcomeServerLabel = nullptr;     // Mission Control tile values
     QLabel *m_welcomeNcLabel = nullptr;

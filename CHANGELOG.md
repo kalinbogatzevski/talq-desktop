@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.27.2 (2026-05-16)
+
+A small corrective follow-up to 0.27.1.
+
+### Fixed
+- **The Mission Control home now re-tints when you change theme.** It was
+  built once at startup and kept the launch theme until restart; it is now a
+  persistent host whose content is rebuilt on every theme change, so Ctrl+D,
+  the sidebar swatch, and the Settings picker all update it live.
+
+### Changed
+- **Settings: the "Dark theme" checkbox is now a theme picker.** Choose
+  Ember, Warm, Vivid, or Paper directly; the choice persists and applies
+  immediately. Ctrl+D and the sidebar swatch still cycle.
+- Design-system docs (`PRODUCT.md`, `DESIGN.md`, `.impeccable/design.json`)
+  rewritten to the shipped "calm, warm, fast" direction and the four-theme
+  system; the abandoned editorial/serif North Star is gone.
+
 ## v0.27.1 (2026-05-15)
 
 A corrective release. The v0.27.0 editorial direction ("The Field Notebook",
