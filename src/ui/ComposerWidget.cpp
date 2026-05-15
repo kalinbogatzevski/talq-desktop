@@ -56,10 +56,11 @@ int walkShortcodeBack(const QString &text, int from)
 }
 
 // Shared stylesheet for shortcode and mention autocomplete popups.
+// Warm, in-ladder palette (No-Gray: was cold #222230/#333/#3a3a55).
 constexpr auto kPopupStyle =
-    "QListWidget { background: #222230; color: #eee; border: 1px solid #333; border-radius: 6px; }"
+    "QListWidget { background: #1a1613; color: #f4efe6; border: 1px solid #2a241f; border-radius: 8px; }"
     "QListWidget::item { padding: 4px 8px; }"
-    "QListWidget::item:selected { background: #3a3a55; }";
+    "QListWidget::item:selected { background: #2a211a; }";
 
 } // namespace
 
@@ -176,7 +177,7 @@ ComposerWidget::ComposerWidget(QWidget *parent)
     m_attachBtn->setCursor(Qt::PointingHandCursor);
     m_attachBtn->setStyleSheet(
         "QPushButton { background: transparent; color: #a8a096; border: none;"
-        "  border-radius: 19px; font-size: 16px; " + iconFont + " }"
+        "  border-radius: 8px; font-size: 16px; " + iconFont + " }"
         "QPushButton:hover   { background: #241f1a; color: #f4efe6; }"
         "QPushButton:pressed { background: #2a241f; }"
     );
@@ -190,11 +191,11 @@ ComposerWidget::ComposerWidget(QWidget *parent)
     m_input->setStyleSheet(
         // QTextEdit border-radius requires viewport transparency — otherwise
         // the inner viewport paints a rectangle over the rounded corners.
-        "QTextEdit { background: #1f1b17; border: 1px solid #3a3228;"
-        "  border-radius: 20px; padding: 8px 16px; font-size: 14px;"
+        "QTextEdit { background: #1a1613; border: 1px solid #2a241f;"
+        "  border-radius: 8px; padding: 8px 16px; font-size: 14px;"
         "  color: #f4efe6; selection-background-color: #14b8a6;"
         "  selection-color: #0e1817; }"
-        "QTextEdit:focus { border-color: #14b8a6; background: #221e1a; }"
+        "QTextEdit:focus { border-color: #14b8a6; background: #221d19; }"
         "QTextEdit > QWidget { background: transparent; }"
     );
     layout->addWidget(m_input, 1);
@@ -207,7 +208,7 @@ ComposerWidget::ComposerWidget(QWidget *parent)
     m_emojiBtn->setToolTip(tr("Emoji"));
     m_emojiBtn->setStyleSheet(
         "QPushButton { background: transparent; color: #a8a096; border: none;"
-        "  border-radius: 17px; font-size: 16px; " + iconFont + " }"
+        "  border-radius: 8px; font-size: 16px; " + iconFont + " }"
         "QPushButton:hover   { background: #241f1a; color: #f4efe6; }"
     );
     layout->addWidget(m_emojiBtn);
@@ -221,7 +222,7 @@ ComposerWidget::ComposerWidget(QWidget *parent)
     m_sendBtn->setCursor(Qt::PointingHandCursor);
     m_sendBtn->setStyleSheet(
         "QPushButton { background: #14b8a6; color: #0e1817; border: none;"
-        "  border-radius: 19px; font-size: 15px; font-weight: 700;"
+        "  border-radius: 8px; font-size: 15px; font-weight: 700;"
         "  " + iconFont + " }"
         "QPushButton:hover   { background: #2dd4bf; }"
         "QPushButton:pressed { background: #0d9488; }"
@@ -303,18 +304,21 @@ ComposerWidget::ComposerWidget(QWidget *parent)
     pendingLayout->setSpacing(8);
 
     m_pendingPreview = new QLabel(m_pendingBar);
+    m_pendingPreview->setObjectName("pendingPreview");
     m_pendingPreview->setFixedSize(48, 48);
     m_pendingPreview->setAlignment(Qt::AlignCenter);
-    m_pendingPreview->setStyleSheet("background: #222220; border-radius: 6px;");
+    m_pendingPreview->setStyleSheet("QLabel#pendingPreview { background: #221d19; border-radius: 8px; }");
     pendingLayout->addWidget(m_pendingPreview);
 
     m_pendingName = new QLabel(m_pendingBar);
-    m_pendingName->setStyleSheet("font-size: 12px; color: #b0aca5;");
+    m_pendingName->setObjectName("pendingName");
+    m_pendingName->setStyleSheet("QLabel#pendingName { font-size: 12px; color: #a8a096; }");
     pendingLayout->addWidget(m_pendingName, 1);
 
     m_pendingCancelBtn = new QPushButton("\u2715", m_pendingBar);
+    m_pendingCancelBtn->setObjectName("pendingCancel");
     m_pendingCancelBtn->setFixedSize(32, 32);
-    m_pendingCancelBtn->setStyleSheet("font-size: 14px; border: none; border-radius: 16px; background: #e06060; color: white;");
+    m_pendingCancelBtn->setStyleSheet("QPushButton#pendingCancel { font-size: 14px; border: none; border-radius: 8px; background: #e8866b; color: #0e1817; }");
     m_pendingCancelBtn->setCursor(Qt::PointingHandCursor);
     m_pendingCancelBtn->setToolTip("Cancel");
     connect(m_pendingCancelBtn, &QPushButton::clicked, this, &ComposerWidget::cancelPendingFile);
@@ -323,26 +327,29 @@ ComposerWidget::ComposerWidget(QWidget *parent)
     // Reply bar (hidden by default)
     m_replyBar = new QWidget(this);
     m_replyBar->hide();
-    m_replyBar->setStyleSheet("background: #1e2a28; border-top: 1px solid #2a2a26;");
-    // Teal accent bar on the left
-    auto *accentBar = new QWidget(m_replyBar);
-    accentBar->setFixedWidth(3);
-    accentBar->setStyleSheet("background: #14b8a6;");
+    m_replyBar->setObjectName("replyBar");
+    m_replyBar->setStyleSheet("QWidget#replyBar { background: #1a1613; border-top: 1px solid #2a241f; }");
     m_replyBar->setFixedHeight(36);
     auto *replyBarLayout = new QHBoxLayout(m_replyBar);
-    replyBarLayout->setContentsMargins(0, 0, 8, 0);
+    replyBarLayout->setContentsMargins(12, 0, 8, 0);
     replyBarLayout->setSpacing(8);
-    replyBarLayout->addWidget(accentBar);
+    // Leading reply glyph replaces the banned 3px teal side-stripe.
+    auto *replyIcon = new QLabel(QStringLiteral("↩"), m_replyBar);  // ↩
+    replyIcon->setObjectName("replyIcon");
+    replyIcon->setStyleSheet("QLabel#replyIcon { font-size: 14px; color: #14b8a6; }");
+    replyBarLayout->addWidget(replyIcon);
     m_replyLabel = new QLabel(m_replyBar);
-    m_replyLabel->setStyleSheet("font-size: 13px; color: #b0aca5;");
+    m_replyLabel->setObjectName("replyLabel");
+    m_replyLabel->setStyleSheet("QLabel#replyLabel { font-size: 13px; color: #a8a096; }");
     replyBarLayout->addWidget(m_replyLabel, 1);
     auto *replyCancelBtn = new QPushButton("\u2715", m_replyBar);
     replyCancelBtn->setFixedSize(28, 28);
     replyCancelBtn->setFlat(true);
     replyCancelBtn->setCursor(Qt::PointingHandCursor);
+    replyCancelBtn->setObjectName("replyCancel");
     replyCancelBtn->setStyleSheet(
-        "QPushButton { font-size: 14px; border: none; border-radius: 14px; color: #8a8680; }"
-        "QPushButton:hover { background: rgba(255,255,255,0.1); color: #e4e0da; }"
+        "QPushButton#replyCancel { font-size: 14px; border: none; border-radius: 8px; color: #a8a096; }"
+        "QPushButton#replyCancel:hover { background: rgba(244,239,230,0.10); color: #f4efe6; }"
     );
     connect(replyCancelBtn, &QPushButton::clicked, this, &ComposerWidget::hideReplyBar);
     replyBarLayout->addWidget(replyCancelBtn);
@@ -350,31 +357,31 @@ ComposerWidget::ComposerWidget(QWidget *parent)
     // Editing bar (hidden by default)
     m_editingBar = new QWidget(this);
     m_editingBar->hide();
-    m_editingBar->setStyleSheet("background: #2a241e; border-top: 1px solid #2a2a26;");
-    auto *editAccent = new QWidget(m_editingBar);
-    editAccent->setFixedWidth(3);
-    editAccent->setStyleSheet("background: #e0a040;"); // warm amber (vs reply's teal)
+    m_editingBar->setObjectName("editingBar");
+    m_editingBar->setStyleSheet("QWidget#editingBar { background: #1a1613; border-top: 1px solid #2a241f; }");
     m_editingBar->setFixedHeight(36);
     auto *editBarLayout = new QHBoxLayout(m_editingBar);
-    editBarLayout->setContentsMargins(0, 0, 8, 0);
+    editBarLayout->setContentsMargins(12, 0, 8, 0);
     editBarLayout->setSpacing(8);
-    editBarLayout->addWidget(editAccent);
 
     auto *editIcon = new QLabel(QStringLiteral("\u270F\uFE0F"), m_editingBar); // ✏️
-    editIcon->setStyleSheet("font-size: 14px;");
+    editIcon->setObjectName("editIcon");
+    editIcon->setStyleSheet("QLabel#editIcon { font-size: 14px; }");
     editBarLayout->addWidget(editIcon);
 
     m_editingPreview = new QLabel(m_editingBar);
-    m_editingPreview->setStyleSheet("font-size: 13px; color: #b0aca5;");
+    m_editingPreview->setObjectName("editingPreview");
+    m_editingPreview->setStyleSheet("QLabel#editingPreview { font-size: 13px; color: #a8a096; }");
     editBarLayout->addWidget(m_editingPreview, 1);
 
     auto *editCancelBtn = new QPushButton("\u2715", m_editingBar);
     editCancelBtn->setFixedSize(28, 28);
     editCancelBtn->setFlat(true);
     editCancelBtn->setCursor(Qt::PointingHandCursor);
+    editCancelBtn->setObjectName("editCancel");
     editCancelBtn->setStyleSheet(
-        "QPushButton { font-size: 14px; border: none; border-radius: 14px; color: #8a8680; }"
-        "QPushButton:hover { background: rgba(255,255,255,0.1); color: #e4e0da; }"
+        "QPushButton#editCancel { font-size: 14px; border: none; border-radius: 8px; color: #a8a096; }"
+        "QPushButton#editCancel:hover { background: rgba(244,239,230,0.10); color: #f4efe6; }"
     );
     connect(editCancelBtn, &QPushButton::clicked, this, &ComposerWidget::hideEditingBar);
     editBarLayout->addWidget(editCancelBtn);

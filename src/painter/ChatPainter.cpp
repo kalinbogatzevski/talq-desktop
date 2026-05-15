@@ -1315,22 +1315,9 @@ void ChatPainter::paintEvent(QPaintEvent *)
     qreal vpBottom = m_scrollY + height();
     qreal offsetY = -m_scrollY;
 
-    // Subtle teal tint behind the unread region, reinforcing the divider.
-    qreal unreadY = -1;
-    for (const auto &ml : m_layouts) {
-        if (ml.showUnreadSep) {
-            unreadY = ml.unreadSepRect.top();
-            break;
-        }
-    }
-    if (unreadY >= 0) {
-        qreal topOnScreen = unreadY - m_scrollY;
-        qreal visibleTop = qMax(qreal(0), topOnScreen);
-        if (visibleTop < height()) {
-            p.fillRect(QRectF(0, visibleTop, width(), height() - visibleTop),
-                       QColor(46, 196, 182, 10));  // ~4% opacity teal
-        }
-    }
+    // One-Signal Rule: the unread state is carried solely by the "New
+    // messages" separator pill. The former full-viewport teal wash was a
+    // large competing teal fill and has been removed.
 
     for (int i = 0; i < m_layouts.size(); ++i) {
         const auto &ml = m_layouts[i];
@@ -1341,7 +1328,8 @@ void ChatPainter::paintEvent(QPaintEvent *)
         // Selection row highlight (painted as background, before message)
         if (m_selectionMode && m_selectedIds.contains(ml.messageId)) {
             p.setPen(Qt::NoPen);
-            p.setBrush(QColor(46, 196, 182, 30));
+            p.setBrush(QColor(m_theme.accent.red(), m_theme.accent.green(),
+                              m_theme.accent.blue(), 30));
             p.drawRect(QRectF(0, ml.totalY + offsetY, width(), ml.totalHeight));
         }
 
@@ -1367,17 +1355,17 @@ void ChatPainter::paintEvent(QPaintEvent *)
             qreal ckY = ml.totalY + offsetY + (ml.totalHeight - ckSize) / 2.0;
 
             if (selected) {
-                // Filled teal circle with white checkmark
-                p.setPen(QPen(Qt::white, 2));
+                // Filled teal circle with ink checkmark (No-Gray: not #fff)
+                p.setPen(QPen(m_theme.controlInk, 2));
                 p.setBrush(m_theme.accent);
                 p.drawEllipse(QRectF(ckX, ckY, ckSize, ckSize));
                 QPointF c(ckX + ckSize / 2.0, ckY + ckSize / 2.0);
                 p.drawLine(QPointF(c.x() - 5, c.y()), QPointF(c.x() - 1, c.y() + 4));
                 p.drawLine(QPointF(c.x() - 1, c.y() + 4), QPointF(c.x() + 5, c.y() - 4));
             } else {
-                // Dark filled circle with light border
-                p.setPen(QPen(QColor(160, 160, 160), 2));
-                p.setBrush(QColor(30, 30, 46, 220));
+                // Warm unselected circle (No-Gray: warm tokens, not cold gray)
+                p.setPen(QPen(m_theme.textMuted, 2));
+                p.setBrush(m_theme.bgSurface);
                 p.drawEllipse(QRectF(ckX, ckY, ckSize, ckSize));
             }
         }
@@ -1484,7 +1472,7 @@ void ChatPainter::paintOwnMessage(QPainter *p, const MessageLayout &ml, qreal of
             letterFont.setPixelSize(14);
             letterFont.setWeight(QFont::DemiBold);
             p->setFont(letterFont);
-            p->setPen(Qt::white);
+            p->setPen(m_theme.controlInk);   // No-Gray: ink on color, not #fff
             p->drawText(ar, Qt::AlignCenter, QStringLiteral("Me"));
         }
     }
@@ -1496,7 +1484,8 @@ void ChatPainter::paintOwnMessage(QPainter *p, const MessageLayout &ml, qreal of
         p->setBrush(m_theme.bgMessageOwn);
         p->drawRoundedRect(bubble, PainterTheme::radiusNormal, PainterTheme::radiusNormal);
         if (ml.messageId == m_highlightMessageId && m_highlightTimer && m_highlightTimer->isActive()) {
-            p->fillRect(bubble, QColor(46, 196, 182, 50));
+            p->fillRect(bubble, QColor(m_theme.accent.red(), m_theme.accent.green(),
+                                       m_theme.accent.blue(), 50));
         }
     }
 
@@ -1544,7 +1533,8 @@ void ChatPainter::paintOwnMessage(QPainter *p, const MessageLayout &ml, qreal of
                 QAbstractTextDocumentLayout::Selection sel;
                 sel.cursor = cursor;
                 QTextCharFormat fmt;
-                fmt.setBackground(QColor(46, 196, 182, 77));
+                fmt.setBackground(QColor(m_theme.accent.red(), m_theme.accent.green(),
+                                         m_theme.accent.blue(), 77));
                 sel.format = fmt;
                 ctx.selections.append(sel);
             }
@@ -1562,9 +1552,7 @@ void ChatPainter::paintOwnMessage(QPainter *p, const MessageLayout &ml, qreal of
     // Timestamp + read status (draw once, not twice)
     {
         QRectF tr = ml.timeRect.translated(0, offsetY);
-        QColor timeColor = m_darkMode
-            ? QColor(255, 255, 255, 115)
-            : m_theme.textTime;
+        QColor timeColor = m_theme.textTime;   // warm, No-Gray (was white-alpha)
 
         QString timeLabel = ml.lastEditTimestamp > 0
             ? QStringLiteral("(edited) ") + ml.timeString
@@ -1614,10 +1602,11 @@ void ChatPainter::paintOtherMessage(QPainter *p, const MessageLayout &ml, qreal 
     if (!ml.bubbleRect.isNull()) {
         QRectF bubble = ml.bubbleRect.translated(0, offsetY);
         p->setPen(Qt::NoPen);
-        p->setBrush(m_darkMode ? QColor(255, 255, 255, 15) : QColor(0, 0, 0, 12));
+        p->setBrush(m_theme.bgSurface);   // Ladder Rule: other-bubble = Ink Surface
         p->drawRoundedRect(bubble, PainterTheme::radiusNormal, PainterTheme::radiusNormal);
         if (ml.messageId == m_highlightMessageId && m_highlightTimer && m_highlightTimer->isActive()) {
-            p->fillRect(bubble, QColor(46, 196, 182, 50));
+            p->fillRect(bubble, QColor(m_theme.accent.red(), m_theme.accent.green(),
+                                       m_theme.accent.blue(), 50));
         }
     }
 
@@ -1640,7 +1629,7 @@ void ChatPainter::paintOtherMessage(QPainter *p, const MessageLayout &ml, qreal 
             letterFont.setPixelSize(14);
             letterFont.setWeight(QFont::DemiBold);
             p->setFont(letterFont);
-            p->setPen(Qt::white);
+            p->setPen(m_theme.controlInk);   // No-Gray: ink on author color
             QString letter = ml.actorName.isEmpty()
                 ? QStringLiteral("?")
                 : ml.actorName.left(1).toUpper();
@@ -1710,7 +1699,8 @@ void ChatPainter::paintOtherMessage(QPainter *p, const MessageLayout &ml, qreal 
                 QAbstractTextDocumentLayout::Selection sel;
                 sel.cursor = cursor;
                 QTextCharFormat fmt;
-                fmt.setBackground(QColor(46, 196, 182, 77));
+                fmt.setBackground(QColor(m_theme.accent.red(), m_theme.accent.green(),
+                                         m_theme.accent.blue(), 77));
                 sel.format = fmt;
                 ctx.selections.append(sel);
             }
@@ -1745,17 +1735,17 @@ void ChatPainter::paintReplyQuote(QPainter *p, const MessageLayout &ml, qreal of
     if (qr.isNull()) return;
 
     // Background
-    QColor quoteBg = m_darkMode
-        ? QColor(255, 255, 255, 10)   // rgba(1,1,1,0.04)
-        : QColor(0, 0, 0, 10);
+    QColor quoteBg = m_theme.textPrimary;        // warm-tinted inset, No-Gray
+    quoteBg.setAlpha(m_darkMode ? 14 : 16);
     p->setPen(Qt::NoPen);
     p->setBrush(quoteBg);
     p->drawRoundedRect(qr, PainterTheme::radiusSmall, PainterTheme::radiusSmall);
 
-    // Teal left border
-    QRectF bar(qr.left(), qr.top(), 3, qr.height());
-    p->setBrush(m_theme.accent);
-    p->drawRoundedRect(bar, 1.5, 1.5);
+    // Full 1px hairline (side-stripe ban: no >1px colored left bar). The
+    // warm bg inset + accent author text already identify the quote.
+    p->setPen(QPen(m_theme.divider, 1));
+    p->setBrush(Qt::NoBrush);
+    p->drawRoundedRect(qr, PainterTheme::radiusSmall, PainterTheme::radiusSmall);
 
     // Author name
     QFont tinyFont = m_theme.timeFont();
@@ -1882,7 +1872,8 @@ void ChatPainter::paintReactions(QPainter *p, const MessageLayout &ml, qreal off
     const qreal pillGap = 4;
     const qreal pillPadX = 6;
 
-    QColor pillBg = m_darkMode ? QColor(255, 255, 255, 15) : QColor(0, 0, 0, 10);
+    QColor pillBg = m_theme.textPrimary;         // warm-tinted, No-Gray
+    pillBg.setAlpha(16);
     QColor countColor = m_theme.textSecondary;
 
     for (const QString &token : tokens) {

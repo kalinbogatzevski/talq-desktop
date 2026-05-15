@@ -24,17 +24,20 @@ PainterTheme::PainterTheme(bool darkMode, qreal fontScale)
     bgSidebar    = darkMode ? QColor("#18140f") : QColor("#ede9e1");
     bgSelected   = darkMode ? QColor("#2a211a") : QColor("#ded8cb");
     bgMessageOwn = darkMode ? QColor("#1c3330") : QColor("#d4ebe7");
-    bgSurface    = darkMode ? QColor("#221d19") : QColor("#ffffff");
+    bgSurface    = darkMode ? QColor("#221d19") : QColor("#fefdf9");  // No-Gray: never #fff
     bgHover      = darkMode ? QColor("#241f1a") : QColor("#ebe6dd");
 
     // ── Text — warmer cream on dark ──
     textPrimary   = darkMode ? QColor("#f4efe6") : QColor("#1a1613");
     textSecondary = darkMode ? QColor("#a8a096") : QColor("#65605a");
-    textTime      = darkMode ? QColor("#7a726a") : QColor("#8e887f");
-    textMuted     = darkMode ? QColor("#5a5348") : QColor("#b0aca5");
+    // Contrast-tuned to clear WCAG AA for normal text on the warm grounds
+    // (old #7a726a/#5a5348 and #8e887f/#b0aca5 sat at ~3.5:1 and ~2:1).
+    textTime      = darkMode ? QColor("#968c7e") : QColor("#6f6a62");
+    textMuted     = darkMode ? QColor("#8a8175") : QColor("#6b665e");
 
     // ── Accents — teal primary, amber secondary for emphasis ──
     accent      = darkMode ? QColor("#14b8a6") : QColor("#0d9488");
+    controlInk  = QColor("#0e1817");   // theme-independent: ink on a color fill
     unreadBadge = darkMode ? QColor("#14b8a6") : QColor("#0d9488");
     online      = QColor("#5ec76a");
     danger      = QColor("#e8866b");
@@ -49,6 +52,20 @@ PainterTheme::PainterTheme(bool darkMode, qreal fontScale)
     fontSizeSmall  = qRound(12 * fontScale);
     fontSizeNormal = qRound(14 * fontScale);
     fontSizeLarge  = qRound(16 * fontScale);
+    fontSizeTitle  = qRound(20 * fontScale);
+    fontSizeDisplay = qRound(26 * fontScale);
+}
+
+QString PainterTheme::s_displayFamily;
+
+void PainterTheme::setDisplayFamily(const QString &family)
+{
+    s_displayFamily = family;
+}
+
+QString PainterTheme::displayFamilyName()
+{
+    return s_displayFamily;
 }
 
 QColor PainterTheme::authorColor(const QString &actorId)
@@ -158,9 +175,10 @@ QFont PainterTheme::timeFont() const
 
 QFont PainterTheme::systemFont() const
 {
+    // Two-Lever Rule: no italics for hierarchy. System messages are
+    // differentiated by the muted systemMsg color + tiny size, not slant.
     QFont f = interFont();
     f.setPixelSize(fontSizeTiny);
-    f.setItalic(true);
     return f;
 }
 
@@ -169,5 +187,35 @@ QFont PainterTheme::dateSepFont() const
     QFont f = interFont();
     f.setPixelSize(fontSizeTiny);
     f.setWeight(QFont::DemiBold);
+    return f;
+}
+
+// Instrument Serif is the bundled editorial display face. If registration
+// failed, fall back to Inter SemiBold so the larger size still lands (the
+// Scale-Honesty rule: a headline needs a real larger size, not bold body).
+static QFont displayBase()
+{
+    const QString fam = PainterTheme::displayFamilyName();
+    if (!fam.isEmpty()) {
+        QFont f(fam);
+        f.setHintingPreference(QFont::PreferFullHinting);
+        return f;
+    }
+    QFont f = interFont();
+    f.setWeight(QFont::DemiBold);
+    return f;
+}
+
+QFont PainterTheme::titleFont() const
+{
+    QFont f = displayBase();
+    f.setPixelSize(fontSizeTitle);
+    return f;
+}
+
+QFont PainterTheme::displayFont() const
+{
+    QFont f = displayBase();
+    f.setPixelSize(fontSizeDisplay);
     return f;
 }
