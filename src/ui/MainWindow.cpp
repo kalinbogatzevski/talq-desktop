@@ -35,6 +35,8 @@
 #include <QApplication>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
+#include <QGridLayout>
+#include <QFrame>
 #include <QCloseEvent>
 #include <QScreen>
 #include <QMenu>
@@ -117,6 +119,9 @@ MainWindow::MainWindow(
     // Read settings
     m_settings.beginGroup("Theme");
     m_darkMode = m_settings.value("darkMode", true).toBool();
+    m_themeId = PainterTheme::themeFromId(
+        m_settings.value("theme", PainterTheme::themeId(PainterTheme::Theme::Vivid)).toString(),
+        PainterTheme::Theme::Vivid);
     m_fontScale = m_settings.value("fontScale", 1.0).toReal();
     m_settings.endGroup();
 
@@ -165,7 +170,7 @@ MainWindow::MainWindow(
 
     auto *toggleDark = new QShortcut(QKeySequence("Ctrl+D"), this);
     connect(toggleDark, &QShortcut::activated, this, [this]() {
-        applyTheme(!m_darkMode);
+        applyThemeId(PainterTheme::cycle(m_themeId));
     });
 
     // ── Auth signals ──
@@ -298,11 +303,12 @@ void MainWindow::buildChatPage()
     m_themeBtn->setToolTip(tr("Toggle dark/light theme (Ctrl+D)"));
     m_themeBtn->setCursor(Qt::PointingHandCursor);
     m_themeBtn->setStyleSheet(sidebarIconQSS);
-    m_themeBtn->setText(m_darkMode ? QStringLiteral("\uE706")    // sun
-                                   : QStringLiteral("\uE708"));  // moon
+    m_themeBtn->setText(QStringLiteral("\uE790"));   // color/palette swatch
+    m_themeBtn->setToolTip(tr("Theme: %1 (Ctrl+D to cycle)")
+                               .arg(PainterTheme::themeLabel(m_themeId)));
     profileLayout->addWidget(m_themeBtn);
     connect(m_themeBtn, &QPushButton::clicked, this,
-            [this]() { applyTheme(!m_darkMode); });
+            [this]() { applyThemeId(PainterTheme::cycle(m_themeId)); });
 
     m_settingsBtn = new QPushButton(QStringLiteral("\uE713"), profileBar);     // Settings (gear)
     auto *settingsBtn = m_settingsBtn;
@@ -366,7 +372,7 @@ void MainWindow::buildChatPage()
     m_sidebar->setModel(m_conversations);
     m_sidebar->setApi(m_api);
     m_sidebar->setSignaling(m_signaling);
-    m_sidebar->setDarkMode(m_darkMode);
+    m_sidebar->setTheme(m_themeId);
     sidebarLayout->addWidget(m_sidebar, 1);
 
     connect(m_searchField, &QLineEdit::textChanged, m_sidebar, &SidebarPainter::setFilterText);
@@ -417,7 +423,7 @@ void MainWindow::buildChatPage()
 
     m_threadsPainter = new ThreadsPainter(m_threadsPanel);
     m_threadsPainter->setModel(m_threads);
-    m_threadsPainter->setDarkMode(m_darkMode);
+    m_threadsPainter->setTheme(m_themeId);
     m_threadsPainter->setSelectedThreadId(-1);
     threadsLayout->addWidget(m_threadsPainter, 1);
     m_threadsPanel->hide();
@@ -450,7 +456,7 @@ void MainWindow::buildChatPage()
     chatLayout->setSpacing(0);
 
     m_header = new HeaderPainter(chatCol);
-    m_header->setDarkMode(m_darkMode);
+    m_header->setTheme(m_themeId);
     m_header->setApi(m_api);
     m_header->setSignaling(m_signaling);
     chatLayout->addWidget(m_header);
@@ -480,100 +486,122 @@ void MainWindow::buildChatPage()
         m_callManager->startCall(m_messages->conversationToken(), true);
     });
 
-    // Welcome screen (shown when no conversation selected)
+    // ── Mission Control: the empty-state home is a live status board ──
     m_welcomeWidget = new QWidget(chatCol);
+    m_welcomeWidget->setObjectName("welcomeRoot");
+    PainterTheme wt(m_themeId, m_fontScale);
+    auto wcss = [](const QColor &c){ return c.name(QColor::HexRgb); };
+    const QString wmono = QStringLiteral("'Consolas','Cascadia Mono',monospace");
+    m_welcomeWidget->setStyleSheet(QString(
+        "QWidget#welcomeRoot{background:%1;} QLabel{background:transparent;}")
+        .arg(wcss(wt.bgPrimary)));
     auto *welcomeLayout = new QVBoxLayout(m_welcomeWidget);
-    welcomeLayout->setAlignment(Qt::AlignCenter);
-    welcomeLayout->setSpacing(16);
+    welcomeLayout->setContentsMargins(34, 26, 38, 22);
+    welcomeLayout->setSpacing(15);
 
+    // Command bar: wordmark, build tags, system-status pill.
+    auto *cmdBar = new QHBoxLayout();
+    cmdBar->setSpacing(10);
+    auto *brand = new QLabel(QString(
+        "<span style='font-size:19px;font-weight:700;color:%1;'>Tal</span>"
+        "<span style='font-size:19px;font-weight:700;color:%2;'>Q</span>")
+        .arg(wcss(wt.textPrimary), wcss(wt.accent)), m_welcomeWidget);
+    cmdBar->addWidget(brand);
+    auto makeTag = [&](const QString &t) {
+        auto *l = new QLabel(t, m_welcomeWidget);
+        l->setStyleSheet(QString(
+            "color:%1;font-family:%2;font-size:10px;font-weight:bold;"
+            "letter-spacing:1px;border:1px solid %3;border-radius:6px;padding:4px 8px;")
+            .arg(wcss(wt.textTime), wmono, wcss(wt.divider)));
+        return l;
+    };
+    cmdBar->addWidget(makeTag("BUILD " + QApplication::applicationVersion()));
 #ifdef TALQ_BRAND_123NET
-    // Branded: show 123NET logo + smaller TalQ logo below
-    auto *brandLabel = new QLabel(m_welcomeWidget);
-    QPixmap brandLogo(":/123net-logo.png");
-    if (!brandLogo.isNull())
-        brandLabel->setPixmap(brandLogo.scaled(80, 80, Qt::KeepAspectRatio, Qt::SmoothTransformation));
-    brandLabel->setAlignment(Qt::AlignCenter);
-    welcomeLayout->addWidget(brandLabel);
-
-    auto *logoLabel = new QLabel(m_welcomeWidget);
-    QPixmap logo(":/logo.png");
-    if (!logo.isNull())
-        logoLabel->setPixmap(logo.scaled(48, 48, Qt::KeepAspectRatio, Qt::SmoothTransformation));
-    logoLabel->setAlignment(Qt::AlignCenter);
-    welcomeLayout->addWidget(logoLabel);
-#else
-    auto *logoLabel = new QLabel(m_welcomeWidget);
-    QPixmap logo(":/logo.png");
-    if (!logo.isNull())
-        logoLabel->setPixmap(logo.scaled(80, 80, Qt::KeepAspectRatio, Qt::SmoothTransformation));
-    logoLabel->setAlignment(Qt::AlignCenter);
-    welcomeLayout->addWidget(logoLabel);
+    cmdBar->addWidget(makeTag(QStringLiteral("123NET")));
 #endif
+    cmdBar->addStretch();
+    m_wcStatusPill = new QLabel(QStringLiteral("●  ALL SYSTEMS NOMINAL"), m_welcomeWidget);
+    m_wcStatusPill->setStyleSheet(QString(
+        "color:%1;font-size:11px;font-weight:bold;letter-spacing:1px;"
+        "border:1px solid %1;border-radius:999px;padding:6px 13px;")
+        .arg(wcss(wt.online)));
+    cmdBar->addWidget(m_wcStatusPill);
+    welcomeLayout->addLayout(cmdBar);
 
+    // Greeting (still the empty state: who you are, what to do next).
     m_welcomeNameLabel = new QLabel(m_welcomeWidget);
-    m_welcomeNameLabel->setAlignment(Qt::AlignCenter);
     {
-        // Real display tier (Scale-Honesty): the editorial Instrument Serif
-        // face at a genuinely larger size, not bolded body text.
-        const QString df = PainterTheme::displayFamilyName();
-        QFont wf = df.isEmpty() ? m_welcomeNameLabel->font() : QFont(df);
-        wf.setPixelSize(26);
+        QFont wf = m_welcomeNameLabel->font();
+        wf.setPixelSize(25);
+        wf.setWeight(QFont::DemiBold);
         m_welcomeNameLabel->setFont(wf);
     }
+    m_welcomeNameLabel->setStyleSheet(QString("color:%1;").arg(wcss(wt.textPrimary)));
     welcomeLayout->addWidget(m_welcomeNameLabel);
+    auto *subLine = new QLabel(QStringLiteral(
+        "No conversation selected. Pick one from the sidebar to jump back in."),
+        m_welcomeWidget);
+    subLine->setStyleSheet(QString("font-size:14px;color:%1;").arg(wcss(wt.textSecondary)));
+    welcomeLayout->addWidget(subLine);
 
-    auto *pickLabel = new QLabel("Pick a conversation from the sidebar", m_welcomeWidget);
-    pickLabel->setAlignment(Qt::AlignCenter);
-    pickLabel->setStyleSheet("font-size: 14px; color: #8a8680;");
-    welcomeLayout->addWidget(pickLabel);
-
-    auto *versionLabel = new QLabel("v" + QApplication::applicationVersion(), m_welcomeWidget);
-    versionLabel->setAlignment(Qt::AlignCenter);
-    versionLabel->setStyleSheet("font-size: 11px; color: #5a5850;");
-    welcomeLayout->addWidget(versionLabel);
-
-    // Server info card
-    auto *serverCard = new QWidget(m_welcomeWidget);
-    serverCard->setMaximumWidth(420);
-    serverCard->setStyleSheet("background: #1c1c1a; border-radius: 12px; border: 1px solid #3a3a36;");
-    auto *serverLayout = new QVBoxLayout(serverCard);
-    serverLayout->setContentsMargins(20, 16, 20, 16);
-    serverLayout->setSpacing(10);
-
-    auto addInfoRow = [&](const QString &icon, const QString &text, const QString &color = "#8a8680") {
-        auto *row = new QHBoxLayout();
-        row->setSpacing(12);
-        auto *iconLbl = new QLabel(icon, serverCard);
-        iconLbl->setFixedWidth(28);
-        iconLbl->setStyleSheet(QString("font-size: 16px; color: %1;").arg(color));
-        row->addWidget(iconLbl);
-        auto *textLbl = new QLabel(text, serverCard);
-        textLbl->setStyleSheet(QString("font-size: 14px; color: %1;").arg(color));
-        row->addWidget(textLbl, 1);
-        serverLayout->addLayout(row);
-        return textLbl;
+    // Telemetry grid: SERVER (wide) / SIGNALING / PUSH / NEXTCLOUD / TALK / GPU.
+    auto *grid = new QGridLayout();
+    grid->setSpacing(11);
+    auto makeTile = [&](const QString &key, QLabel **valOut, QLabel **ledOut) {
+        auto *tile = new QFrame(m_welcomeWidget);
+        tile->setObjectName("mcTile");
+        tile->setStyleSheet(QString(
+            "QFrame#mcTile{background:%1;border:1px solid %2;border-radius:13px;}")
+            .arg(wcss(wt.bgSurface), wcss(wt.divider)));
+        tile->setMinimumHeight(92);
+        auto *tl = new QVBoxLayout(tile);
+        tl->setContentsMargins(15, 13, 16, 14);
+        tl->setSpacing(6);
+        auto *kRow = new QHBoxLayout();
+        kRow->setSpacing(7);
+        auto *led = new QLabel(QStringLiteral("●"), tile);
+        led->setStyleSheet(QString("color:%1;font-size:9px;").arg(wcss(wt.online)));
+        kRow->addWidget(led);
+        auto *kl = new QLabel(key, tile);
+        kl->setStyleSheet(QString(
+            "color:%1;font-size:10px;font-weight:bold;letter-spacing:2px;")
+            .arg(wcss(wt.textTime)));
+        kRow->addWidget(kl);
+        kRow->addStretch();
+        tl->addLayout(kRow);
+        tl->addStretch();
+        auto *val = new QLabel(tile);
+        val->setTextFormat(Qt::RichText);
+        val->setStyleSheet(QString("color:%1;").arg(wcss(wt.textPrimary)));
+        tl->addWidget(val);
+        if (valOut) *valOut = val;
+        if (ledOut) *ledOut = led;
+        return tile;
     };
+    grid->addWidget(makeTile(QStringLiteral("SERVER"),    &m_welcomeServerLabel,    nullptr),        0, 0, 1, 2);
+    grid->addWidget(makeTile(QStringLiteral("SIGNALING"), &m_welcomeSignalingLabel, &m_wcSignalLed), 0, 2);
+    grid->addWidget(makeTile(QStringLiteral("PUSH"),      &m_welcomePushLabel,      &m_wcPushLed),   0, 3);
+    grid->addWidget(makeTile(QStringLiteral("NEXTCLOUD"), &m_welcomeNcLabel,        nullptr),        1, 0);
+    grid->addWidget(makeTile(QStringLiteral("TALK"),      &m_welcomeTalkLabel,      nullptr),        1, 1);
+    grid->addWidget(makeTile(QStringLiteral("GPU"),       &m_welcomeGpuLabel,       &m_wcGpuLed),    1, 2, 1, 2);
+    for (int c = 0; c < 4; ++c) grid->setColumnStretch(c, 1);
+    welcomeLayout->addLayout(grid);
 
-    auto *sectionLbl = new QLabel("Server", serverCard);
-    sectionLbl->setStyleSheet("font-size: 11px; font-weight: bold; color: #6a6660; letter-spacing: 1px;");
-    serverLayout->addWidget(sectionLbl);
-
-    m_welcomeServerLabel = addInfoRow("\u2601", "", "#14b8a6");
-    m_welcomeNcLabel = addInfoRow("\u24C3", "");
-    m_welcomeTalkLabel = addInfoRow("\u260E", "");
-    m_welcomeSignalingLabel = addInfoRow("\u26A1", "");
-    m_welcomePushLabel = addInfoRow("\u25CF", "");
-    m_welcomeGpuLabel = addInfoRow("\u2B22", "");  // hexagon for GPU
-
-    // GStreamer plugin pills
+    // Subsystems strip: GStreamer codec/transport availability.
     {
-        auto *pillContainer = new QWidget(serverCard);
-        pillContainer->setStyleSheet("background: transparent;");
-        auto *pillsLayout = new QHBoxLayout(pillContainer);
-        pillsLayout->setContentsMargins(40, 0, 0, 0);
-        pillsLayout->setSpacing(4);
-        pillsLayout->setAlignment(Qt::AlignLeft);
-
+        auto *strip = new QFrame(m_welcomeWidget);
+        strip->setObjectName("mcStrip");
+        strip->setStyleSheet(QString(
+            "QFrame#mcStrip{background:%1;border:1px solid %2;border-radius:13px;}")
+            .arg(wcss(wt.bgSurface), wcss(wt.divider)));
+        auto *sl = new QHBoxLayout(strip);
+        sl->setContentsMargins(16, 12, 16, 12);
+        sl->setSpacing(13);
+        auto *sk = new QLabel(QStringLiteral("SUBSYSTEMS"), strip);
+        sk->setStyleSheet(QString(
+            "color:%1;font-size:10px;font-weight:bold;letter-spacing:2px;")
+            .arg(wcss(wt.textTime)));
+        sl->addWidget(sk);
         static const char *pluginNames[] = {
             "webrtc", "opus", "vpx", "d3d11", "nvcodec",
             "srtp", "dtls", "nice", "wasapi2", "mediafoundation",
@@ -583,59 +611,73 @@ void MainWindow::buildChatPage()
             GstPlugin *plugin = gst_registry_find_plugin(gst_registry_get(), pluginNames[i]);
             bool ok = (plugin != nullptr);
             if (plugin) gst_object_unref(plugin);
-            auto *pill = new QLabel(pluginNames[i], pillContainer);
-            pill->setStyleSheet(QString(
-                "QLabel { background: %1; color: %2; border-radius: 6px;"
-                " padding: 1px 6px; font-size: 9px; font-weight: bold; }")
-                .arg(ok ? "#1a3a2a" : "#3a1a1a", ok ? "#5ec76a" : "#d93025"));
-            pillsLayout->addWidget(pill);
+            auto *chip = new QLabel(QString::fromLatin1(pluginNames[i]), strip);
+            chip->setStyleSheet(QString(
+                "QLabel{color:%1;font-family:%2;font-size:10px;font-weight:bold;"
+                "border:1px solid %3;border-radius:6px;padding:3px 8px;}")
+                .arg(wcss(ok ? wt.online : wt.danger), wmono,
+                     wcss(ok ? wt.online : wt.danger)));
+            sl->addWidget(chip);
         }
-        pillsLayout->addStretch();
-        serverLayout->addWidget(pillContainer);
+        sl->addStretch();
+        welcomeLayout->addWidget(strip);
     }
 
-    // Live-update status labels when services connect/disconnect
-    connect(m_signaling, &SignalingClient::connectedChanged, this, [this]() {
-        if (!m_welcomeSignalingLabel) return;
-        bool on = m_signaling->isConnected();
-        m_welcomeSignalingLabel->setText(on ? "Signaling connected" : "Signaling disconnected");
-        m_welcomeSignalingLabel->setStyleSheet(QString("font-size: 14px; color: %1;").arg(on ? "#5ec76a" : "#8a8680"));
-    });
-    connect(m_push, &PushClient::connectedChanged, this, [this]() {
-        if (!m_welcomePushLabel) return;
-        bool on = m_push->isConnected();
-        m_welcomePushLabel->setText(on ? "Push connected (real-time)" : "Push disconnected (polling)");
-        m_welcomePushLabel->setStyleSheet(QString("font-size: 14px; color: %1;").arg(on ? "#5ec76a" : "#8a8680"));
-    });
-
-    auto *changelog = new QTextBrowser(m_welcomeWidget);
-    changelog->setStyleSheet(
-        "QTextBrowser { background: #161616; color: #d8d2c8; border: 1px solid #2a2a26;"
-        " border-radius: 10px; padding: 16px; font-size: 13px; }"
-    );
+    // Flight log: the changelog, framed as the mission log (fills height).
+    auto *flightPanel = new QFrame(m_welcomeWidget);
+    flightPanel->setObjectName("mcPanel");
+    flightPanel->setStyleSheet(QString(
+        "QFrame#mcPanel{background:%1;border:1px solid %2;border-radius:14px;}")
+        .arg(wcss(wt.bgSurface), wcss(wt.divider)));
+    auto *flightLayout = new QVBoxLayout(flightPanel);
+    flightLayout->setContentsMargins(0, 0, 0, 0);
+    flightLayout->setSpacing(0);
+    auto *flightHdr = new QLabel(QStringLiteral("●  FLIGHT LOG · WHAT'S NEW"), flightPanel);
+    flightHdr->setStyleSheet(QString(
+        "color:%1;font-size:10px;font-weight:bold;letter-spacing:2px;"
+        "padding:13px 17px;border-bottom:1px solid %2;")
+        .arg(wcss(wt.textTime), wcss(wt.divider)));
+    flightLayout->addWidget(flightHdr);
+    auto *changelog = new QTextBrowser(flightPanel);
+    changelog->setFrameShape(QFrame::NoFrame);
+    changelog->setStyleSheet(QString(
+        "QTextBrowser{background:transparent;color:%1;border:none;"
+        "padding:14px 18px;font-size:13px;}")
+        .arg(wcss(wt.textPrimary)));
     {
         QFile f(QStringLiteral(":/docs/CHANGELOG.md"));
         if (f.open(QIODevice::ReadOnly)) {
             changelog->setMarkdown(QString::fromUtf8(f.readAll()));
         } else {
-            qWarning() << "welcome: :/docs/CHANGELOG.md missing —" << f.errorString();
+            qWarning() << "welcome: :/docs/CHANGELOG.md missing:" << f.errorString();
             changelog->setPlainText(tr("Release notes unavailable."));
         }
     }
     changelog->setReadOnly(true);
     changelog->setOpenExternalLinks(true);
+    flightLayout->addWidget(changelog, 1);
+    welcomeLayout->addWidget(flightPanel, 1);
 
-    m_welcomeSplit = new QSplitter(Qt::Horizontal, m_welcomeWidget);
-    m_welcomeSplit->setHandleWidth(1);
-    m_welcomeSplit->setStyleSheet("QSplitter::handle { background: #2a2a26; }");
-    m_welcomeSplit->addWidget(serverCard);
-    m_welcomeSplit->addWidget(changelog);
-    m_welcomeSplit->setStretchFactor(0, 0);
-    m_welcomeSplit->setStretchFactor(1, 1);
-    m_welcomeSplit->setSizes({420, 800});
-    welcomeLayout->addWidget(m_welcomeSplit, 1);
+    // Footer readout.
+    {
+        auto *foot = new QLabel(QString(
+            "<span style='color:%1'>SESSION</span> %2    "
+            "<span style='color:%1'>RENDERER</span> QPainter    "
+            "<span style='color:%1'>TalQ</span> v%3")
+            .arg(wcss(wt.textSecondary),
+                 (m_auth ? m_auth->displayName() : QStringLiteral("local")),
+                 QApplication::applicationVersion()), m_welcomeWidget);
+        foot->setStyleSheet(QString(
+            "color:%1;font-family:%2;font-size:11px;letter-spacing:.4px;")
+            .arg(wcss(wt.textTime), wmono));
+        welcomeLayout->addWidget(foot);
+    }
 
-    m_welcomeWidget->installEventFilter(this);
+    // Keep Mission Control telemetry live as services connect/disconnect.
+    connect(m_signaling, &SignalingClient::connectedChanged, this,
+            &MainWindow::refreshWelcomeStatus);
+    connect(m_push, &PushClient::connectedChanged, this,
+            &MainWindow::refreshWelcomeStatus);
 
     chatLayout->addWidget(m_welcomeWidget, 1);
 
@@ -648,7 +690,7 @@ void MainWindow::buildChatPage()
     m_chatPainter->setModel(m_messages);
     m_chatPainter->setMyUserId(m_auth->userId());
     m_chatPainter->setSignaling(m_signaling);
-    m_chatPainter->setDarkMode(m_darkMode);
+    m_chatPainter->setTheme(m_themeId);
     m_chatPainter->setFontScale(m_fontScale);
     m_chatPainter->hide();
     chatLayout->addWidget(m_chatPainter, 1);
@@ -1459,12 +1501,6 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
         m_settingsDialog->exec();
         return true;
     }
-    // Welcome split orientation: horizontal above 1100px, vertical below
-    if (obj == m_welcomeWidget && event->type() == QEvent::Resize && m_welcomeSplit) {
-        auto *re = static_cast<QResizeEvent*>(event);
-        m_welcomeSplit->setOrientation(re->size().width() < 1100
-                                       ? Qt::Vertical : Qt::Horizontal);
-    }
     return QMainWindow::eventFilter(obj, event);
 }
 
@@ -1600,24 +1636,81 @@ void MainWindow::switchToChat()
     restoreChatGeometry();
     m_conversations->refresh();
 
-    // Populate welcome screen
-    m_welcomeNameLabel->setText("Welcome, " + m_auth->displayName());
-    QString url = m_auth->serverUrl();
-    url.remove(QRegularExpression("^https?://"));
-    m_welcomeServerLabel->setText(url);
-    m_welcomeNcLabel->setText("Nextcloud " + m_auth->nextcloudVersion());
-    m_welcomeTalkLabel->setText("Talk " + m_auth->talkVersion());
-    m_welcomeSignalingLabel->setText(m_signaling->isConnected() ? "Signaling connected" : "Signaling disconnected");
-    m_welcomePushLabel->setText(m_push->isConnected() ? "Push connected (real-time)" : "Push disconnected (polling)");
-    QString gpu = m_callManager->gpuAccelStatus();
-    bool hwAccel = (gpu != "Software only");
-    m_welcomeGpuLabel->setText("GPU: " + gpu);
-    m_welcomeGpuLabel->setStyleSheet(QString("font-size: 14px; color: %1;").arg(hwAccel ? "#5ec76a" : "#d93025"));
+    // Populate Mission Control telemetry
+    refreshWelcomeStatus();
 
     // Show welcome, hide chat content
     m_welcomeWidget->show();
     m_chatPainter->hide();
     m_composer->hide();
+}
+
+// Repaint the Mission Control board: tile values, status LEDs, system pill.
+// Called on entry to the chat page and whenever signaling/push flip.
+void MainWindow::refreshWelcomeStatus()
+{
+    if (!m_welcomeNameLabel) return;   // welcome screen not built yet
+    PainterTheme th(m_themeId, m_fontScale);
+    auto hx = [](const QColor &c){ return c.name(QColor::HexRgb); };
+    const QString mono = QStringLiteral("'Consolas','Cascadia Mono',monospace");
+
+    const bool sigOn  = m_signaling && m_signaling->isConnected();
+    const bool pushOn = m_push && m_push->isConnected();
+    const QString gpu = m_callManager ? m_callManager->gpuAccelStatus()
+                                      : QStringLiteral("Software only");
+    const bool gpuOn  = (gpu != QLatin1String("Software only"));
+
+    QString url = m_auth ? m_auth->serverUrl() : QString();
+    url.remove(QRegularExpression(QStringLiteral("^https?://")));
+
+    auto val = [&](const QString &big, const QString &sub) {
+        return QString(
+            "<span style='font-size:18px;font-weight:600;color:%1'>%2</span>"
+            "<br><span style='font-family:%3;font-size:11px;color:%4'>%5</span>")
+            .arg(hx(th.textPrimary), big.toHtmlEscaped(), mono,
+                 hx(th.textSecondary), sub.toHtmlEscaped());
+    };
+
+    m_welcomeNameLabel->setText(QStringLiteral("Welcome back, ")
+        + (m_auth ? m_auth->displayName() : QString()));
+    m_welcomeServerLabel->setText(val(url.isEmpty() ? QStringLiteral("offline") : url,
+                                      url.isEmpty() ? QStringLiteral("not connected")
+                                                    : QStringLiteral("reachable")));
+    m_welcomeNcLabel->setText(val(m_auth ? m_auth->nextcloudVersion() : QStringLiteral("?"),
+                                  QStringLiteral("core api")));
+    m_welcomeTalkLabel->setText(val(m_auth ? m_auth->talkVersion() : QStringLiteral("?"),
+                                    QStringLiteral("capabilities")));
+    m_welcomeSignalingLabel->setText(val(sigOn ? QStringLiteral("Connected")
+                                                : QStringLiteral("Disconnected"),
+                                         sigOn ? QStringLiteral("HPB realtime")
+                                               : QStringLiteral("offline")));
+    m_welcomePushLabel->setText(val(pushOn ? QStringLiteral("Real-time")
+                                           : QStringLiteral("Polling"),
+                                    pushOn ? QStringLiteral("websocket up")
+                                           : QStringLiteral("fallback")));
+    m_welcomeGpuLabel->setText(val(gpu,
+                                   gpuOn ? QStringLiteral("hardware accelerated")
+                                         : QStringLiteral("software only")));
+
+    auto setLed = [&](QLabel *led, bool ok) {
+        if (led) led->setStyleSheet(QString("color:%1;font-size:9px;")
+                                    .arg(hx(ok ? th.online : th.amber)));
+    };
+    setLed(m_wcSignalLed, sigOn);
+    setLed(m_wcPushLed, pushOn);
+    setLed(m_wcGpuLed, gpuOn);
+
+    if (m_wcStatusPill) {
+        const bool nominal = sigOn && pushOn && gpuOn;
+        const QColor c = nominal ? th.online : th.amber;
+        m_wcStatusPill->setText(nominal
+            ? QStringLiteral("●  ALL SYSTEMS NOMINAL")
+            : QStringLiteral("●  DEGRADED"));
+        m_wcStatusPill->setStyleSheet(QString(
+            "color:%1;font-size:11px;font-weight:bold;letter-spacing:1px;"
+            "border:1px solid %1;border-radius:999px;padding:6px 13px;")
+            .arg(hx(c)));
+    }
 }
 
 void MainWindow::switchToLogin()
@@ -1788,24 +1881,31 @@ void MainWindow::applyFontScale(qreal scale)
 
 void MainWindow::applyTheme(bool dark)
 {
-    if (m_darkMode == dark) return;
-    m_darkMode = dark;
-    m_sidebar->setDarkMode(dark);
-    m_header->setDarkMode(dark);
-    m_chatPainter->setDarkMode(dark);
-    m_threadsPainter->setDarkMode(dark);
+    applyThemeId(dark ? PainterTheme::Theme::Vivid : PainterTheme::Theme::Paper);
+}
+
+void MainWindow::applyThemeId(PainterTheme::Theme t)
+{
+    if (m_themeId == t) return;
+    m_themeId = t;
+    m_darkMode = (t != PainterTheme::Theme::Paper);
+    m_sidebar->setTheme(t);
+    m_header->setTheme(t);
+    m_chatPainter->setTheme(t);
+    m_threadsPainter->setTheme(t);
     applyDarkPalette();
     if (m_themeBtn)
-        m_themeBtn->setText(dark ? QStringLiteral("")    // sun (switch to light)
-                                 : QStringLiteral("")); // moon (switch to dark)
+        m_themeBtn->setToolTip(tr("Theme: %1 (Ctrl+D to cycle)")
+                                   .arg(PainterTheme::themeLabel(t)));
     m_settings.beginGroup("Theme");
-    m_settings.setValue("darkMode", dark);
+    m_settings.setValue("theme", PainterTheme::themeId(t));
+    m_settings.setValue("darkMode", m_darkMode);
     m_settings.endGroup();
 }
 
 void MainWindow::applyDarkPalette()
 {
-    PainterTheme theme(m_darkMode, 1.0);
+    PainterTheme theme(m_themeId, 1.0);
     QPalette pal;
     pal.setColor(QPalette::Window, theme.bgPrimary);
     pal.setColor(QPalette::WindowText, theme.textPrimary);

@@ -158,6 +158,13 @@ void HeaderPainter::setDarkMode(bool v) {
     update();
 }
 
+void HeaderPainter::setTheme(PainterTheme::Theme t) {
+    if (m_themeId == t) return;
+    m_themeId = t;
+    m_theme = PainterTheme(t, 1.0);
+    update();
+}
+
 void HeaderPainter::setApi(ApiClient *api) {
     if (api == m_api) return;
     m_api = api;
@@ -353,10 +360,11 @@ void HeaderPainter::paintEvent(QPaintEvent *)
         titleText = QStringLiteral("Select a conversation");
     }
 
-    // Editorial display face for the header title (Instrument Serif).
-    // Two-Lever Rule: the placeholder is differentiated by the muted title
-    // color set below, not by italics.
-    QFont titleFont = m_theme.titleFont();
+    // Clean Inter title. Two-Lever Rule: the placeholder is differentiated
+    // by the muted title color set below, not by italics or a serif.
+    QFont titleFont = m_theme.bodyFont();
+    titleFont.setPixelSize(m_theme.fontSizeLarge);
+    titleFont.setWeight(QFont::DemiBold);
     QFontMetrics titleFM(titleFont);
 
     // Decide if we have a subtitle

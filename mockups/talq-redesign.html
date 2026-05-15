@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="en" data-theme="vivid">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TalQ — calm · warm · fast</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --f:'Inter',system-ui,sans-serif;
+  --sp:200ms cubic-bezier(.22,1,.36,1);
+  --teal-ink:#0e1817; --amber:#f0a050; --clay:#e8866b; --green:#5ec76a;
+}
+/* "total black" — the version you said feels like a void. Kept for compare. */
+html[data-theme="ink"]{
+  --bg:#141210; --bg-side:#18140f; --bg-2:#1a1613; --surface:#221d19;
+  --sel:#241f1a; --hover:#1f1b17; --line:#2a241f;
+  --tx:#f4efe6; --tx2:#a8a096; --tx3:#8a8175;
+  --teal:#14b8a6; --own:#1c3330;
+  --ambient:transparent; --glow:0 0 0 transparent;
+}
+/* Ember — same restraint, base lifted off black. Warm depth, not a void. */
+html[data-theme="ember"]{
+  --bg:#221c16; --bg-side:#1d1813; --bg-2:#281f18; --surface:#322820;
+  --sel:#382c1f; --hover:#2b221a; --line:#3a3027;
+  --tx:#f6f1e8; --tx2:#b4ab9c; --tx3:#8d8273;
+  --teal:#1ac2af; --own:#20413b; --amber:#f3a948; --clay:#ec8a64; --green:#5fce72;
+  --ambient:radial-gradient(900px 460px at 64% -8%,rgba(26,194,175,.05),transparent 70%);
+  --glow:0 6px 22px rgba(26,194,175,.20);
+}
+/* Warm — richer colour presence. The recommended "more vivid". */
+html[data-theme="warm"]{
+  --bg:#241d15; --bg-side:#1f1812; --bg-2:#2c2318; --surface:#382c1d;
+  --sel:#3f311e; --hover:#2e2418; --line:#43372a;
+  --tx:#f7f1e6; --tx2:#bcae99; --tx3:#948770;
+  --teal:#1ecdb6; --own:#224c43; --amber:#f6ad3e; --clay:#f08a62; --green:#61d36f;
+  --ambient:radial-gradient(1000px 520px at 62% -10%,rgba(30,205,182,.07),transparent 68%);
+  --glow:0 8px 26px rgba(30,205,182,.26);
+}
+/* Vivid — bold and alive, calm structure. Max flavour. */
+html[data-theme="vivid"]{
+  --bg:#271d12; --bg-side:#211810; --bg-2:#312517; --surface:#3d2e1b;
+  --sel:#46341d; --hover:#342711; --line:#4b3a23;
+  --tx:#fcf5e7; --tx2:#c8b89a; --tx3:#9c8c6d;
+  --teal:#21e3c8; --teal-ink:#06201c; --own:#1f5a4f;
+  --amber:#ffb84a; --clay:#ff9163; --green:#66dd76;
+  --ambient:radial-gradient(1100px 560px at 60% -12%,rgba(33,227,200,.11),
+            transparent 64%),radial-gradient(700px 400px at 18% 108%,
+            rgba(246,173,62,.06),transparent 60%);
+  --glow:0 10px 30px rgba(33,227,200,.34);
+}
+/* Paper — warm light, bright by nature. */
+html[data-theme="paper"]{
+  --bg:#fbf6ed; --bg-side:#f3eddf; --bg-2:#efe8d8; --surface:#fffdf5;
+  --sel:#e9e0cd; --hover:#efe8d8; --line:#e1d8c4;
+  --tx:#1a1613; --tx2:#5f5a52; --tx3:#7c7568;
+  --teal:#0d9488; --teal-ink:#fffdf5; --own:#d7ece6;
+  --amber:#c8821f; --clay:#c75a3a; --green:#3a9b48;
+  --ambient:radial-gradient(900px 460px at 64% -8%,rgba(13,148,136,.06),transparent 70%);
+  --glow:0 8px 24px rgba(13,148,136,.18);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--f);background:var(--bg);color:var(--tx);height:100vh;
+  overflow:hidden;-webkit-font-smoothing:antialiased;font-size:14px}
+.app{display:grid;grid-template-columns:300px 1fr;height:100vh}
+
+/* ---------- SIDEBAR ---------- */
+.side{background:var(--bg-side);border-right:1px solid var(--line);
+  display:flex;flex-direction:column;overflow:hidden}
+.s-top{padding:14px 14px 10px;display:flex;gap:10px;align-items:center}
+.search{flex:1;background:var(--bg-2);border:1px solid var(--line);border-radius:9px;
+  padding:9px 12px;color:var(--tx2);font-size:13px;display:flex;gap:8px;align-items:center}
+.s-top .ib{width:36px;height:36px;border-radius:9px;display:grid;place-items:center;
+  color:var(--tx2);cursor:pointer;flex:none;transition:var(--sp)}
+.s-top .ib:hover{background:var(--hover);color:var(--tx)}
+.list{flex:1;overflow:auto;padding:4px 8px}
+.row{display:flex;gap:11px;padding:9px 10px;border-radius:10px;cursor:pointer;
+  position:relative;transition:background var(--sp)}
+.row:hover{background:var(--hover);transform:translateX(2px)}
+.row.on{background:var(--sel)}
+.row.on::before{content:"";position:absolute;left:-8px;top:14px;bottom:14px;width:3px;
+  border-radius:0 3px 3px 0;background:var(--teal);box-shadow:var(--glow)}
+.av{width:42px;height:42px;border-radius:50%;flex:none;display:grid;place-items:center;
+  color:var(--teal-ink);font-weight:600;font-size:15px;position:relative}
+.pres{position:absolute;right:-1px;bottom:-1px;width:12px;height:12px;border-radius:50%;
+  border:2.5px solid var(--bg-side);background:var(--green);
+  animation:breathe 3.4s ease-in-out infinite}
+@keyframes breathe{0%,100%{box-shadow:0 0 0 0 color-mix(in oklab,var(--green) 55%,transparent)}
+  55%{box-shadow:0 0 0 4px transparent}}
+.meta{flex:1;min-width:0}
+.l1{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+.nm{font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row.unread .nm{font-weight:600;color:var(--tx)}
+.tm{font-size:11px;color:var(--tx3);flex:none;font-variant-numeric:tabular-nums}
+.l2{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:3px}
+.pv{font-size:12.5px;color:var(--tx2);white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis;flex:1}
+.row.unread .pv{color:var(--tx)}
+.bdg{background:var(--teal);color:var(--teal-ink);font-size:11px;font-weight:600;
+  border-radius:999px;padding:1px 7px;flex:none;font-variant-numeric:tabular-nums}
+.bdg.at{background:var(--clay)}
+.s-me{padding:12px 16px;border-top:1px solid var(--line);display:flex;align-items:center;gap:11px}
+.s-me .av{width:32px;height:32px;font-size:13px}
+.s-me .who{flex:1;font-weight:500}
+.s-me .st{font-size:11px;color:var(--tx3)}
+.s-me .ib{width:30px;height:30px;border-radius:8px;display:grid;place-items:center;
+  color:var(--tx2);cursor:pointer;transition:var(--sp)}
+.s-me .ib:hover{background:var(--hover);color:var(--tx)}
+
+/* ---------- THREAD ---------- */
+.main{display:flex;flex-direction:column;background:var(--ambient),var(--bg);overflow:hidden}
+.hd{height:60px;padding:0 22px;display:flex;align-items:center;gap:13px;
+  border-bottom:1px solid var(--line)}
+.hd .av{width:36px;height:36px;font-size:14px}
+.hd .ht{flex:1}
+.hd .h1{font-weight:600;font-size:15px}
+.hd .h2{font-size:12px;color:var(--green);margin-top:1px}
+.hd .acts{display:flex;gap:4px}
+.hd .ib{width:36px;height:36px;border-radius:9px;display:grid;place-items:center;
+  color:var(--tx2);cursor:pointer;transition:var(--sp)}
+.hd .ib:hover{background:var(--hover);color:var(--tx)}
+.scroll{flex:1;overflow:auto;padding:18px 22px 8px}
+.day{display:flex;justify-content:center;margin:14px 0 18px}
+.day span{font-size:11px;font-weight:600;color:var(--tx3);background:var(--bg-2);
+  border:1px solid var(--line);border-radius:999px;padding:4px 12px;letter-spacing:.3px}
+
+.grp{display:flex;gap:11px;margin-top:14px}
+.grp.mine{flex-direction:row-reverse}
+.gav{width:36px;height:36px;border-radius:50%;flex:none;align-self:flex-end;
+  display:grid;place-items:center;color:var(--teal-ink);font-weight:600;font-size:13px}
+.gav.hide{visibility:hidden}
+.col{display:flex;flex-direction:column;max-width:560px;gap:3px}
+.grp.mine .col{align-items:flex-end}
+.who{font-size:12px;font-weight:600;color:var(--amber);margin:0 0 3px 4px}
+.grp.mine .who{display:none}
+.bub{background:var(--surface);padding:9px 13px;border-radius:14px;
+  border-bottom-left-radius:5px;font-size:14px;line-height:1.5;color:var(--tx);
+  width:fit-content;max-width:100%;position:relative;transition:var(--sp)}
+.grp.mine .bub{background:var(--own);border-bottom-left-radius:14px;
+  border-bottom-right-radius:5px}
+.grp .bub:not(:last-child){border-radius:14px}
+.grp.mine .bub:not(:last-child){border-radius:14px}
+.t{font-size:10.5px;color:var(--tx3);opacity:0;align-self:flex-end;
+  margin:1px 6px;transition:opacity var(--sp);font-variant-numeric:tabular-nums}
+.grp:hover .t{opacity:1}
+.tick{color:var(--teal)}
+.q{border-left:2px solid var(--teal);padding:3px 0 3px 9px;margin-bottom:5px;
+  font-size:12.5px;color:var(--tx2)}
+.q b{color:var(--tx2);font-weight:600}
+.rx{display:flex;gap:5px;margin:5px 0 0 2px}
+.rx span{font-size:12px;background:var(--bg-2);border:1px solid var(--line);
+  border-radius:999px;padding:2px 8px;cursor:pointer;transition:var(--sp)}
+.rx span:hover{border-color:var(--teal)}
+.rx .on{border-color:var(--teal);color:var(--teal);
+  background:color-mix(in oklab,var(--teal) 14%,transparent)}
+
+/* ---------- COMPOSER ---------- */
+.cp{padding:14px 22px 18px;border-top:1px solid var(--line)}
+.cpin{display:flex;align-items:flex-end;gap:9px;background:var(--bg-2);
+  border:1px solid var(--line);border-radius:13px;padding:6px 6px 6px 8px;
+  transition:border-color var(--sp)}
+.cpin:focus-within{border-color:var(--teal)}
+.cb{width:36px;height:36px;border-radius:9px;border:none;background:transparent;
+  color:var(--tx2);font-size:17px;cursor:pointer;flex:none;transition:var(--sp)}
+.cb:hover{background:var(--hover);color:var(--tx)}
+.ta{flex:1;padding:9px 4px;color:var(--tx);font-size:14px}
+.ta .ph{color:var(--tx3)}
+.snd{width:36px;height:36px;border-radius:9px;border:none;
+  background:linear-gradient(180deg,
+    color-mix(in oklab,var(--teal) 88%,#fff) 0%,var(--teal) 60%);
+  color:var(--teal-ink);font-size:16px;font-weight:700;cursor:pointer;flex:none;
+  transition:transform var(--sp),box-shadow var(--sp)}
+.snd:hover{transform:scale(1.06);box-shadow:var(--glow)}
+
+.sw{position:fixed;top:12px;right:16px;z-index:9;display:flex;gap:3px;
+  background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:4px}
+.sw b{font:600 11.5px var(--f);color:var(--tx2);padding:5px 11px;border-radius:7px;
+  cursor:pointer;transition:var(--sp);user-select:none}
+.sw b:hover{color:var(--tx)}
+.sw b.sel{background:var(--teal);color:var(--teal-ink)}
+::-webkit-scrollbar{width:10px}
+::-webkit-scrollbar-thumb{background:color-mix(in oklab,var(--tx3) 35%,transparent);
+  border-radius:10px;border:3px solid transparent;background-clip:content-box}
+</style>
+</head>
+<body>
+<div class="sw" id="sw">
+  <b data-t="ink">Ink</b><b data-t="ember">Ember</b><b data-t="warm">Warm</b><b data-t="vivid" class="sel">Vivid</b><b data-t="paper">Paper</b>
+</div>
+<script>
+  const sw=document.getElementById('sw');
+  sw.addEventListener('click',e=>{
+    const b=e.target.closest('b'); if(!b)return;
+    document.documentElement.dataset.theme=b.dataset.t;
+    sw.querySelectorAll('b').forEach(x=>x.classList.toggle('sel',x===b));
+  });
+</script>
+<div class="app">
+
+  <aside class="side">
+    <div class="s-top">
+      <div class="search">⌕&nbsp; Search conversations</div>
+      <div class="ib">✎</div>
+    </div>
+    <div class="list">
+      <div class="row on unread">
+        <div class="av" style="background:#14b8a6">A<span class="pres"></span></div>
+        <div class="meta">
+          <div class="l1"><span class="nm">Aelita</span><span class="tm">9:32</span></div>
+          <div class="l2"><span class="pv">Done, the calm build is ready to look at</span><span class="bdg">2</span></div>
+        </div>
+      </div>
+      <div class="row unread">
+        <div class="av" style="background:#9b7cd4">S</div>
+        <div class="meta">
+          <div class="l1"><span class="nm">Sumeshini</span><span class="tm">9:10</span></div>
+          <div class="l2"><span class="pv">@Kalin can you review the draft?</span><span class="bdg at">@</span></div>
+        </div>
+      </div>
+      <div class="row">
+        <div class="av" style="background:#50b8c8">I<span class="pres"></span></div>
+        <div class="meta">
+          <div class="l1"><span class="nm">Ilko</span><span class="tm">Tue</span></div>
+          <div class="l2"><span class="pv">Sounds good to me</span></div>
+        </div>
+      </div>
+      <div class="row">
+        <div class="av" style="background:#e07060">E</div>
+        <div class="meta">
+          <div class="l1"><span class="nm">Engineering</span><span class="tm">Tue</span></div>
+          <div class="l2"><span class="pv">Rakesh: merged and deployed 🎉</span></div>
+        </div>
+      </div>
+      <div class="row">
+        <div class="av" style="background:#5a9ecf">S</div>
+        <div class="meta">
+          <div class="l1"><span class="nm">Sam</span><span class="tm">Mon</span></div>
+          <div class="l2"><span class="pv">Thanks!</span></div>
+        </div>
+      </div>
+      <div class="row">
+        <div class="av" style="background:#5ec76a">D</div>
+        <div class="meta">
+          <div class="l1"><span class="nm">Design</span><span class="tm">Mon</span></div>
+          <div class="l2"><span class="pv">You: pushing the warm pass now</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="s-me">
+      <div class="av" style="background:#f0a050">K</div>
+      <div><div class="who">Kalin</div><div class="st">Online</div></div>
+      <div class="ib">☾</div><div class="ib">⚙</div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="hd">
+      <div class="av" style="background:#14b8a6">A</div>
+      <div class="ht"><div class="h1">Aelita</div><div class="h2">Online · TalQ</div></div>
+      <div class="acts"><div class="ib">⌕</div><div class="ib">☏</div><div class="ib">⋯</div></div>
+    </div>
+
+    <div class="scroll">
+      <div class="day"><span>Today</span></div>
+
+      <div class="grp">
+        <div class="gav" style="background:#14b8a6">A</div>
+        <div class="col">
+          <div class="who">Aelita</div>
+          <div class="bub">Morning. The calm/warm pass is ready.</div>
+          <div class="bub">No serif, no editorial costume. Same familiar chat shape, just done well: tight grouping, warm surfaces, one quiet accent.</div>
+        </div>
+        <div class="t">9:30</div>
+      </div>
+
+      <div class="grp mine">
+        <div class="gav hide"></div>
+        <div class="col">
+          <div class="bub">This is what I meant. It still reads as a chat app.</div>
+        </div>
+        <div class="t">9:38 <span class="tick">✓✓</span></div>
+      </div>
+
+      <div class="grp">
+        <div class="gav" style="background:#14b8a6">A</div>
+        <div class="col">
+          <div class="who">Aelita</div>
+          <div class="bub"><div class="q"><b>Kalin</b><br>It still reads as a chat app.</div>Exactly. The distinctiveness is the warmth and the craft, not the typeface. Hover a message to see the timestamp; consecutive messages group with no repeated avatar.</div>
+          <div class="rx"><span class="on">👍 3</span><span>🔥 1</span><span>＋</span></div>
+        </div>
+        <div class="t">9:41</div>
+      </div>
+
+      <div class="grp mine">
+        <div class="gav hide"></div>
+        <div class="col">
+          <div class="bub">Ship this one.</div>
+        </div>
+        <div class="t">9:45 <span class="tick">✓✓</span></div>
+      </div>
+    </div>
+
+    <div class="cp">
+      <div class="cpin">
+        <button class="cb">＋</button>
+        <div class="ta"><span class="ph">Message Aelita…</span></div>
+        <button class="cb">☺</button>
+        <button class="snd">↑</button>
+      </div>
+    </div>
+  </main>
+</div>
+</body>
+</html>

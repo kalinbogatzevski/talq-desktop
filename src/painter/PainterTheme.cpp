@@ -15,57 +15,121 @@ static const QColor s_topicPalette[] = {
     QColor("#5ec76a"), QColor("#9b7cd4"), QColor("#e87aae")
 };
 
-PainterTheme::PainterTheme(bool darkMode, qreal fontScale)
-    : m_fontScale(fontScale)
+namespace {
+struct Palette {
+    const char *bg, *side, *bg2, *surface, *sel, *hover, *line;
+    const char *tx, *tx2, *tx3;
+    const char *teal, *own, *amber, *clay, *green, *tealInk;
+    int ambientAlpha;   // strength of the accent ambient behind the thread
+};
+// Ported verbatim from the approved mockup (mockups/talq-redesign.html).
+const Palette kEmber{
+    "#221c16","#1d1813","#281f18","#322820","#382c1f","#2b221a","#3a3027",
+    "#f6f1e8","#b4ab9c","#8d8273",
+    "#1ac2af","#20413b","#f3a948","#ec8a64","#5fce72","#0e1817", 13};
+const Palette kWarm{
+    "#241d15","#1f1812","#2c2318","#382c1d","#3f311e","#2e2418","#43372a",
+    "#f7f1e6","#bcae99","#948770",
+    "#1ecdb6","#224c43","#f6ad3e","#f08a62","#61d36f","#0e1817", 18};
+const Palette kVivid{
+    "#271d12","#211810","#312517","#3d2e1b","#46341d","#342711","#4b3a23",
+    "#fcf5e7","#c8b89a","#9c8c6d",
+    "#21e3c8","#1f5a4f","#ffb84a","#ff9163","#66dd76","#06201c", 28};
+const Palette kPaper{
+    "#fbf6ed","#f3eddf","#efe8d8","#fffdf5","#e9e0cd","#efe8d8","#e1d8c4",
+    "#1a1613","#5f5a52","#7c7568",
+    "#0d9488","#d7ece6","#c8821f","#c75a3a","#3a9b48","#fffdf5", 14};
+
+const Palette &paletteFor(PainterTheme::Theme t) {
+    switch (t) {
+    case PainterTheme::Theme::Ember: return kEmber;
+    case PainterTheme::Theme::Warm:  return kWarm;
+    case PainterTheme::Theme::Paper: return kPaper;
+    case PainterTheme::Theme::Vivid: default: return kVivid;
+    }
+}
+} // namespace
+
+PainterTheme::PainterTheme(Theme t, qreal fontScale)
+    : theme(t), m_fontScale(fontScale)
 {
-    // ── Backgrounds — warm dispatch, paper-like depth ──
-    bgPrimary    = darkMode ? QColor("#141210") : QColor("#fbf9f5");
-    bgSecondary  = darkMode ? QColor("#1a1613") : QColor("#f3f0e9");
-    bgSidebar    = darkMode ? QColor("#18140f") : QColor("#ede9e1");
-    bgSelected   = darkMode ? QColor("#2a211a") : QColor("#ded8cb");
-    bgMessageOwn = darkMode ? QColor("#1c3330") : QColor("#d4ebe7");
-    bgSurface    = darkMode ? QColor("#221d19") : QColor("#fefdf9");  // No-Gray: never #fff
-    bgHover      = darkMode ? QColor("#241f1a") : QColor("#ebe6dd");
+    const Palette &p = paletteFor(t);
+    isLight = (t == Theme::Paper);
 
-    // ── Text — warmer cream on dark ──
-    textPrimary   = darkMode ? QColor("#f4efe6") : QColor("#1a1613");
-    textSecondary = darkMode ? QColor("#a8a096") : QColor("#65605a");
-    // Contrast-tuned to clear WCAG AA for normal text on the warm grounds
-    // (old #7a726a/#5a5348 and #8e887f/#b0aca5 sat at ~3.5:1 and ~2:1).
-    textTime      = darkMode ? QColor("#968c7e") : QColor("#6f6a62");
-    textMuted     = darkMode ? QColor("#8a8175") : QColor("#6b665e");
+    bgPrimary    = QColor(p.bg);
+    bgSidebar    = QColor(p.side);
+    bgSecondary  = QColor(p.bg2);
+    bgSurface    = QColor(p.surface);
+    bgSelected   = QColor(p.sel);
+    bgHover      = QColor(p.hover);
+    bgMessageOwn = QColor(p.own);
+    divider      = QColor(p.line);
 
-    // ── Accents — teal primary, amber secondary for emphasis ──
-    accent      = darkMode ? QColor("#14b8a6") : QColor("#0d9488");
-    controlInk  = QColor("#0e1817");   // theme-independent: ink on a color fill
-    unreadBadge = darkMode ? QColor("#14b8a6") : QColor("#0d9488");
-    online      = QColor("#5ec76a");
-    danger      = QColor("#e8866b");
-    success     = QColor("#5ec76a");
-    systemMsg   = darkMode ? QColor("#7a726a") : QColor("#8e887f");
+    textPrimary   = QColor(p.tx);
+    textSecondary = QColor(p.tx2);
+    textTime      = QColor(p.tx3);
+    textMuted     = QColor(p.tx3);
+    systemMsg     = QColor(p.tx3);
 
-    // ── Borders — warm-tinted so panels don't read as gray ──
-    divider = darkMode ? QColor("#2a241f") : QColor("#e8e2d6");
+    accent      = QColor(p.teal);
+    unreadBadge = QColor(p.teal);
+    controlInk  = QColor(p.tealInk);
+    amber       = QColor(p.amber);
+    online      = QColor(p.green);
+    success     = QColor(p.green);
+    danger      = QColor(p.clay);
 
-    // ── Font sizes ──
+    glow = accent;                       // halo color for state
+    ambient = accent;                    // soft tint behind the thread
+    ambient.setAlpha(p.ambientAlpha);
+
     fontSizeTiny   = qRound(11 * fontScale);
     fontSizeSmall  = qRound(12 * fontScale);
     fontSizeNormal = qRound(14 * fontScale);
     fontSizeLarge  = qRound(16 * fontScale);
-    fontSizeTitle  = qRound(20 * fontScale);
-    fontSizeDisplay = qRound(26 * fontScale);
 }
 
-QString PainterTheme::s_displayFamily;
+// Compatibility shim: existing call sites pass a darkMode bool.
+PainterTheme::PainterTheme(bool darkMode, qreal fontScale)
+    : PainterTheme(darkMode ? Theme::Vivid : Theme::Paper, fontScale) {}
 
-void PainterTheme::setDisplayFamily(const QString &family)
+QString PainterTheme::themeId(Theme t)
 {
-    s_displayFamily = family;
+    switch (t) {
+    case Theme::Ember: return QStringLiteral("ember");
+    case Theme::Warm:  return QStringLiteral("warm");
+    case Theme::Paper: return QStringLiteral("paper");
+    case Theme::Vivid: default: return QStringLiteral("vivid");
+    }
 }
 
-QString PainterTheme::displayFamilyName()
+QString PainterTheme::themeLabel(Theme t)
 {
-    return s_displayFamily;
+    switch (t) {
+    case Theme::Ember: return QStringLiteral("Ember");
+    case Theme::Warm:  return QStringLiteral("Warm");
+    case Theme::Paper: return QStringLiteral("Paper");
+    case Theme::Vivid: default: return QStringLiteral("Vivid");
+    }
+}
+
+PainterTheme::Theme PainterTheme::themeFromId(const QString &id, Theme fallback)
+{
+    if (id == QLatin1String("ember")) return Theme::Ember;
+    if (id == QLatin1String("warm"))  return Theme::Warm;
+    if (id == QLatin1String("vivid")) return Theme::Vivid;
+    if (id == QLatin1String("paper")) return Theme::Paper;
+    return fallback;
+}
+
+PainterTheme::Theme PainterTheme::cycle(Theme t)
+{
+    switch (t) {
+    case Theme::Ember: return Theme::Warm;
+    case Theme::Warm:  return Theme::Vivid;
+    case Theme::Vivid: return Theme::Paper;
+    case Theme::Paper: default: return Theme::Ember;
+    }
 }
 
 QColor PainterTheme::authorColor(const QString &actorId)
@@ -190,32 +254,3 @@ QFont PainterTheme::dateSepFont() const
     return f;
 }
 
-// Instrument Serif is the bundled editorial display face. If registration
-// failed, fall back to Inter SemiBold so the larger size still lands (the
-// Scale-Honesty rule: a headline needs a real larger size, not bold body).
-static QFont displayBase()
-{
-    const QString fam = PainterTheme::displayFamilyName();
-    if (!fam.isEmpty()) {
-        QFont f(fam);
-        f.setHintingPreference(QFont::PreferFullHinting);
-        return f;
-    }
-    QFont f = interFont();
-    f.setWeight(QFont::DemiBold);
-    return f;
-}
-
-QFont PainterTheme::titleFont() const
-{
-    QFont f = displayBase();
-    f.setPixelSize(fontSizeTitle);
-    return f;
-}
-
-QFont PainterTheme::displayFont() const
-{
-    QFont f = displayBase();
-    f.setPixelSize(fontSizeDisplay);
-    return f;
-}

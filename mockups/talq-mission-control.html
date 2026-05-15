@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="en" data-theme="vivid">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TalQ — Mission Control</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --f:'Inter',system-ui,sans-serif;
+  --mono:'JetBrains Mono',ui-monospace,Consolas,monospace;
+  --sp:200ms cubic-bezier(.22,1,.36,1);
+  --teal-ink:#0e1817; --amber:#f0a050; --clay:#e8866b; --green:#5ec76a;
+}
+html[data-theme="ink"]{
+  --bg:#141210; --bg-side:#18140f; --bg-2:#1a1613; --surface:#221d19;
+  --sel:#241f1a; --hover:#1f1b17; --line:#2a241f;
+  --tx:#f4efe6; --tx2:#a8a096; --tx3:#8a8175;
+  --teal:#14b8a6; --own:#1c3330;
+  --ambient:transparent; --glow:0 0 0 transparent;
+}
+html[data-theme="ember"]{
+  --bg:#221c16; --bg-side:#1d1813; --bg-2:#281f18; --surface:#322820;
+  --sel:#382c1f; --hover:#2b221a; --line:#3a3027;
+  --tx:#f6f1e8; --tx2:#b4ab9c; --tx3:#8d8273;
+  --teal:#1ac2af; --own:#20413b; --amber:#f3a948; --clay:#ec8a64; --green:#5fce72;
+  --ambient:radial-gradient(900px 460px at 64% -8%,rgba(26,194,175,.05),transparent 70%);
+  --glow:0 6px 22px rgba(26,194,175,.20);
+}
+html[data-theme="warm"]{
+  --bg:#241d15; --bg-side:#1f1812; --bg-2:#2c2318; --surface:#382c1d;
+  --sel:#3f311e; --hover:#2e2418; --line:#43372a;
+  --tx:#f7f1e6; --tx2:#bcae99; --tx3:#948770;
+  --teal:#1ecdb6; --own:#224c43; --amber:#f6ad3e; --clay:#f08a62; --green:#61d36f;
+  --ambient:radial-gradient(1000px 520px at 62% -10%,rgba(30,205,182,.07),transparent 68%);
+  --glow:0 8px 26px rgba(30,205,182,.26);
+}
+html[data-theme="vivid"]{
+  --bg:#271d12; --bg-side:#211810; --bg-2:#312517; --surface:#3d2e1b;
+  --sel:#46341d; --hover:#342711; --line:#4b3a23;
+  --tx:#fcf5e7; --tx2:#c8b89a; --tx3:#9c8c6d;
+  --teal:#21e3c8; --teal-ink:#06201c; --own:#1f5a4f;
+  --amber:#ffb84a; --clay:#ff9163; --green:#66dd76;
+  --ambient:radial-gradient(1100px 560px at 60% -12%,rgba(33,227,200,.11),
+            transparent 64%),radial-gradient(700px 400px at 18% 108%,
+            rgba(246,173,62,.06),transparent 60%);
+  --glow:0 10px 30px rgba(33,227,200,.34);
+}
+html[data-theme="paper"]{
+  --bg:#fbf6ed; --bg-side:#f3eddf; --bg-2:#efe8d8; --surface:#fffdf5;
+  --sel:#e9e0cd; --hover:#efe8d8; --line:#e1d8c4;
+  --tx:#1a1613; --tx2:#5f5a52; --tx3:#7c7568;
+  --teal:#0d9488; --teal-ink:#fffdf5; --own:#d7ece6;
+  --amber:#c8821f; --clay:#c75a3a; --green:#3a9b48;
+  --ambient:radial-gradient(900px 460px at 64% -8%,rgba(13,148,136,.06),transparent 70%);
+  --glow:0 8px 24px rgba(13,148,136,.18);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--f);background:var(--bg);color:var(--tx);height:100vh;
+  overflow:hidden;-webkit-font-smoothing:antialiased;font-size:14px}
+.app{display:grid;grid-template-columns:300px 1fr;height:100vh}
+
+/* ---------- SIDEBAR (real context, nothing selected) ---------- */
+.side{background:var(--bg-side);border-right:1px solid var(--line);
+  display:flex;flex-direction:column;overflow:hidden}
+.s-top{padding:14px 14px 10px;display:flex;gap:10px;align-items:center}
+.search{flex:1;background:var(--bg-2);border:1px solid var(--line);border-radius:9px;
+  padding:9px 12px;color:var(--tx2);font-size:13px;display:flex;gap:8px;align-items:center}
+.s-top .ib{width:36px;height:36px;border-radius:9px;display:grid;place-items:center;
+  color:var(--tx2);cursor:pointer;flex:none;transition:var(--sp)}
+.s-top .ib:hover{background:var(--hover);color:var(--tx)}
+.list{flex:1;overflow:auto;padding:4px 8px}
+.row{display:flex;gap:11px;padding:9px 10px;border-radius:10px;cursor:pointer;
+  position:relative;transition:background var(--sp)}
+.row:hover{background:var(--hover);transform:translateX(2px)}
+.av{width:42px;height:42px;border-radius:50%;flex:none;display:grid;place-items:center;
+  color:var(--teal-ink);font-weight:600;font-size:15px;position:relative}
+.pres{position:absolute;right:-1px;bottom:-1px;width:12px;height:12px;border-radius:50%;
+  border:2.5px solid var(--bg-side);background:var(--green);
+  animation:breathe 3.4s ease-in-out infinite}
+@keyframes breathe{0%,100%{box-shadow:0 0 0 0 color-mix(in oklab,var(--green) 55%,transparent)}
+  55%{box-shadow:0 0 0 5px transparent}}
+.meta{flex:1;min-width:0}
+.l1{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+.nm{font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row.unread .nm{font-weight:600;color:var(--tx)}
+.tm{font-size:11px;color:var(--tx3);flex:none;font-variant-numeric:tabular-nums}
+.l2{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:3px}
+.pv{font-size:12.5px;color:var(--tx2);white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis;flex:1}
+.bdg{background:var(--teal);color:var(--teal-ink);font-size:11px;font-weight:600;
+  border-radius:999px;padding:1px 7px;flex:none;font-variant-numeric:tabular-nums}
+.s-me{padding:12px 16px;border-top:1px solid var(--line);display:flex;align-items:center;gap:11px}
+.s-me .av{width:32px;height:32px;font-size:13px}
+.s-me .who{flex:1;font-weight:500}
+.s-me .st{font-size:11px;color:var(--tx3)}
+.s-me .ib{width:30px;height:30px;border-radius:8px;display:grid;place-items:center;
+  color:var(--tx2);cursor:pointer;transition:var(--sp)}
+.s-me .ib:hover{background:var(--hover);color:var(--tx)}
+
+/* ---------- MISSION CONTROL (empty-state home) ---------- */
+.mc{display:flex;flex-direction:column;gap:18px;padding:30px 38px 26px;
+  background:var(--ambient),var(--bg);overflow:auto}
+.mc-top{display:flex;align-items:center;gap:13px}
+.brand{font-weight:700;font-size:19px;letter-spacing:-.5px}
+.brand .qd{color:var(--teal)}
+.tag{font:600 10px var(--mono);letter-spacing:1.5px;color:var(--tx3);
+  border:1px solid var(--line);border-radius:6px;padding:4px 8px}
+.sysok{margin-left:auto;display:flex;align-items:center;gap:9px;
+  font:600 11px var(--f);letter-spacing:1.6px;color:var(--green);
+  background:color-mix(in oklab,var(--green) 11%,transparent);
+  border:1px solid color-mix(in oklab,var(--green) 34%,transparent);
+  border-radius:999px;padding:7px 14px}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--green);
+  animation:breathe 3s ease-in-out infinite}
+
+.hello h1{font-size:25px;font-weight:600;letter-spacing:-.3px}
+.hello p{color:var(--tx2);margin-top:5px;font-size:14px}
+
+.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:11px}
+.cell{background:var(--surface);border:1px solid var(--line);border-radius:13px;
+  padding:14px 16px;display:flex;flex-direction:column;gap:6px;min-height:92px;
+  transition:border-color var(--sp)}
+.cell:hover{border-color:color-mix(in oklab,var(--teal) 40%,var(--line))}
+.cell.wide{grid-column:span 2}
+.cell .k{font:600 10px var(--f);letter-spacing:1.7px;color:var(--tx3);
+  display:flex;align-items:center;gap:7px}
+.led{width:7px;height:7px;border-radius:50%;flex:none}
+.led.ok{background:var(--green)}.led.warn{background:var(--amber)}.led.err{background:var(--clay)}
+.cell .v{font:600 19px var(--f);color:var(--tx);
+  font-variant-numeric:tabular-nums;margin-top:auto;line-height:1.2}
+.cell .v small{display:block;font-weight:500;font-size:12px;
+  color:var(--tx2);margin-top:3px;font-family:var(--mono);letter-spacing:.2px}
+
+.subsys{background:var(--surface);border:1px solid var(--line);border-radius:13px;
+  padding:13px 16px;display:flex;align-items:center;gap:13px;flex-wrap:wrap}
+.subsys .k{font:600 10px var(--f);letter-spacing:1.7px;color:var(--tx3);flex:none}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{font:600 10px var(--mono);letter-spacing:.4px;border-radius:6px;
+  padding:3px 8px;border:1px solid var(--line);color:var(--tx3);background:var(--bg-2)}
+.chip.ok{color:var(--green);border-color:color-mix(in oklab,var(--green) 28%,transparent)}
+.chip.no{color:var(--clay);border-color:color-mix(in oklab,var(--clay) 30%,transparent)}
+
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:14px;
+  display:flex;flex-direction:column;min-height:230px;flex:1;overflow:hidden}
+.panel-h{display:flex;align-items:center;gap:9px;padding:13px 17px;
+  border-bottom:1px solid var(--line);
+  font:600 10px var(--f);letter-spacing:1.9px;color:var(--tx3)}
+.panel-h .led{width:6px;height:6px}
+.panel-b{padding:16px 19px;overflow:auto;font-size:13px;
+  color:var(--tx2);line-height:1.65}
+.panel-b h3{color:var(--tx);font-size:13px;font-weight:600;
+  letter-spacing:.2px;margin:15px 0 5px;display:flex;align-items:center;gap:8px}
+.panel-b h3:first-child{margin-top:0}
+.panel-b h3 .rel{font:600 10px var(--mono);color:var(--teal);
+  border:1px solid color-mix(in oklab,var(--teal) 30%,transparent);
+  border-radius:5px;padding:1px 6px;letter-spacing:0}
+.panel-b ul{margin:0 0 4px 17px}
+.panel-b li{margin:3px 0}
+.panel-b code{font:12px var(--mono);background:var(--bg-2);
+  padding:1px 5px;border-radius:5px;color:var(--tx2)}
+
+.foot{display:flex;gap:20px;flex-wrap:wrap;
+  font:500 11px var(--mono);color:var(--tx3);letter-spacing:.4px}
+.foot b{color:var(--tx2);font-weight:600}
+
+.sw{position:fixed;top:12px;right:16px;z-index:9;display:flex;gap:3px;
+  background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:4px}
+.sw b{font:600 11.5px var(--f);color:var(--tx2);padding:5px 11px;border-radius:7px;
+  cursor:pointer;transition:var(--sp);user-select:none}
+.sw b:hover{color:var(--tx)}
+.sw b.sel{background:var(--teal);color:var(--teal-ink)}
+::-webkit-scrollbar{width:10px}
+::-webkit-scrollbar-thumb{background:color-mix(in oklab,var(--tx3) 35%,transparent);
+  border-radius:10px;border:3px solid transparent;background-clip:content-box}
+</style>
+</head>
+<body>
+<div class="sw" id="sw">
+  <b data-t="ink">Ink</b><b data-t="ember">Ember</b><b data-t="warm">Warm</b><b data-t="vivid" class="sel">Vivid</b><b data-t="paper">Paper</b>
+</div>
+<script>
+  const sw=document.getElementById('sw');
+  sw.addEventListener('click',e=>{
+    const b=e.target.closest('b'); if(!b)return;
+    document.documentElement.dataset.theme=b.dataset.t;
+    sw.querySelectorAll('b').forEach(x=>x.classList.toggle('sel',x===b));
+  });
+</script>
+<div class="app">
+
+  <aside class="side">
+    <div class="s-top">
+      <div class="search">⌕&nbsp; Search conversations</div>
+      <div class="ib">✎</div>
+    </div>
+    <div class="list">
+      <div class="row unread">
+        <div class="av" style="background:#14b8a6">A<span class="pres"></span></div>
+        <div class="meta">
+          <div class="l1"><span class="nm">Aelita</span><span class="tm">9:32</span></div>
+          <div class="l2"><span class="pv">Done, the calm build is ready to look at</span><span class="bdg">2</span></div>
+        </div>
+      </div>
+      <div class="row">
+        <div class="av" style="background:#9b7cd4">S</div>
+        <div class="meta">
+          <div class="l1"><span class="nm">Sumeshini</span><span class="tm">9:10</span></div>
+          <div class="l2"><span class="pv">@Kalin can you review the draft?</span></div>
+        </div>
+      </div>
+      <div class="row">
+        <div class="av" style="background:#50b8c8">I<span class="pres"></span></div>
+        <div class="meta">
+          <div class="l1"><span class="nm">Ilko</span><span class="tm">Tue</span></div>
+          <div class="l2"><span class="pv">Sounds good to me</span></div>
+        </div>
+      </div>
+      <div class="row">
+        <div class="av" style="background:#e07060">E</div>
+        <div class="meta">
+          <div class="l1"><span class="nm">Engineering</span><span class="tm">Tue</span></div>
+          <div class="l2"><span class="pv">Rakesh: merged and deployed 🎉</span></div>
+        </div>
+      </div>
+      <div class="row">
+        <div class="av" style="background:#5ec76a">D</div>
+        <div class="meta">
+          <div class="l1"><span class="nm">Design</span><span class="tm">Mon</span></div>
+          <div class="l2"><span class="pv">You: pushing the warm pass now</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="s-me">
+      <div class="av" style="background:#f0a050">K</div>
+      <div><div class="who">Kalin</div><div class="st">Online</div></div>
+      <div class="ib">☾</div><div class="ib">⚙</div>
+    </div>
+  </aside>
+
+  <main class="mc">
+
+    <div class="mc-top">
+      <span class="brand">Tal<span class="qd">Q</span></span>
+      <span class="tag">BUILD 0.27.1</span>
+      <span class="tag">123NET</span>
+      <span class="sysok"><span class="dot"></span>ALL SYSTEMS NOMINAL</span>
+    </div>
+
+    <div class="hello">
+      <h1>Welcome back, Kalin</h1>
+      <p>No conversation selected. Pick one from the sidebar to jump back in.</p>
+    </div>
+
+    <div class="grid">
+      <div class="cell wide">
+        <div class="k"><span class="led ok"></span>SERVER</div>
+        <div class="v">talk.123net.co.za<small>reachable · TLS 1.3 · 28 ms</small></div>
+      </div>
+      <div class="cell">
+        <div class="k"><span class="led ok"></span>SIGNALING</div>
+        <div class="v">Connected<small>HPB · realtime</small></div>
+      </div>
+      <div class="cell">
+        <div class="k"><span class="led ok"></span>PUSH</div>
+        <div class="v">Real-time<small>websocket up</small></div>
+      </div>
+      <div class="cell">
+        <div class="k"><span class="led ok"></span>NEXTCLOUD</div>
+        <div class="v">31.0.4<small>core api ok</small></div>
+      </div>
+      <div class="cell">
+        <div class="k"><span class="led ok"></span>TALK</div>
+        <div class="v">21.1.0<small>capabilities ok</small></div>
+      </div>
+      <div class="cell">
+        <div class="k"><span class="led ok"></span>GPU</div>
+        <div class="v">D3D11 / NVENC<small>hardware accelerated</small></div>
+      </div>
+    </div>
+
+    <div class="subsys">
+      <span class="k">SUBSYSTEMS</span>
+      <div class="chips">
+        <span class="chip ok">webrtc</span><span class="chip ok">opus</span>
+        <span class="chip ok">vpx</span><span class="chip ok">d3d11</span>
+        <span class="chip ok">nvcodec</span><span class="chip ok">srtp</span>
+        <span class="chip ok">dtls</span><span class="chip ok">nice</span>
+        <span class="chip ok">wasapi2</span><span class="chip ok">mediafoundation</span>
+        <span class="chip no">winscreencap</span>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-h"><span class="led ok"></span>FLIGHT LOG · WHAT'S NEW</div>
+      <div class="panel-b">
+        <h3>0.27.1 <span class="rel">CURRENT</span></h3>
+        <ul>
+          <li>New Mission Control home: live server, signaling, push and GPU telemetry at a glance.</li>
+          <li>Four user themes: Ember, Warm, Vivid, Paper. Cycle with <code>Ctrl+D</code> or the sidebar swatch.</li>
+          <li>Reverted the editorial serif. Back to a clean, fast chat surface with warm flavour.</li>
+        </ul>
+        <h3>0.27.0</h3>
+        <ul>
+          <li>Critique-driven visual pass: calmer accents, hairline reply quotes, tokenised colours.</li>
+        </ul>
+        <h3>0.25.7</h3>
+        <ul>
+          <li>Peer TalQ version in the header subtitle, persisted across the handshake.</li>
+          <li>Any participant can enable a disabled bot from Conversation Info.</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="foot">
+      <span><b>SESSION</b> ai1@123net.co.za</span>
+      <span><b>UPTIME</b> 04:21:18</span>
+      <span><b>LATENCY</b> 28 ms</span>
+      <span><b>RENDERER</b> QPainter</span>
+      <span><b>TalQ</b> v0.27.1</span>
+    </div>
+
+  </main>
+</div>
+</body>
+</html>

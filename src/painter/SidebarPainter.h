@@ -55,6 +55,7 @@ public:
 
     bool darkMode() const { return m_darkMode; }
     void setDarkMode(bool dark);
+    void setTheme(PainterTheme::Theme t);
 
     int selectedIndex() const { return m_selectedIndex; }
     void setSelectedIndex(int idx);
@@ -131,6 +132,7 @@ private:
     ApiClient *m_api = nullptr;
     SignalingClient *m_signaling = nullptr;
     bool m_darkMode = true;
+    PainterTheme::Theme m_themeId = PainterTheme::Theme::Vivid;
     int m_selectedIndex = -1;
     QString m_selectedToken;
     bool m_squeezed = false;

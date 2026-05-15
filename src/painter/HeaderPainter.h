@@ -77,6 +77,7 @@ public:
 
     bool darkMode() const { return m_darkMode; }
     void setDarkMode(bool v);
+    void setTheme(PainterTheme::Theme t);
 
     void setApi(ApiClient *api);
     void setSignaling(SignalingClient *signaling);
@@ -149,6 +150,7 @@ private:
     bool m_callsAvailable = true;
     QString m_callsUnavailableReason;
     bool m_darkMode = true;
+    PainterTheme::Theme m_themeId = PainterTheme::Theme::Vivid;
 
     ApiClient *m_api = nullptr;
     SignalingClient *m_signaling = nullptr;
