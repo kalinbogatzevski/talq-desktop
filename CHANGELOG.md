@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.25.7 (2026-05-15)
+
+### Fixes — TalQ peer identification ("Q" badge)
+- **The "Q" badge / peer TalQ version is now reliable and persistent.** Root cause: peer client identity lived only in an in-memory map populated *solely* by a live signaling-room broadcast. It required you and the peer to be simultaneously joined to the same conversation's signaling room at the same instant, was one-shot (no replay, no catch-up), and was never persisted — so it appeared for some peers (a live overlap happened to occur) and never for others, with no way to refresh, and was lost on every restart. Fixes:
+  - **Persisted across sessions** via `QSettings` (`peerClients` group, percent-encoded user IDs). Once a peer is seen on TalQ even once, the badge sticks — across rooms and restarts.
+  - **Wider handshake:** the TalQ hello is now re-announced when a new peer appears in a `participants` update, not only on the `room/join` event. HPB does not reliably deliver `join` for all peers, which is why genuinely co-present peers were still missed.
+  - **Badge moved to the avatar's top-right** in the sidebar — it was being painted at the bottom-right, *under* the presence status dot, and hidden.
+  - **The correspondent's TalQ version now shows in the 1-on-1 chat header subtitle** (e.g. `Online · TalQ 0.25.7`) — always visible, instead of only as a per-message author-name suffix that almost never rendered in a 1-on-1 conversation.
+
+  Note: this is a "best known" indicator — if a peer later switches from TalQ to the web client and you are never co-present again, it can show stale-positive until a newer hello arrives. Deliberate trade-off versus the previous near-useless behavior.
+
+### Features — bot management
+- **Inline "Enable" button on disabled bot rows** in Conversation Info → Bots. Previously a disabled bot row only offered "Remove", so enabling required the roundabout "+ Add bot" dialog. Any conversation moderator (no admin/CLI) can now enable an installed bot in two clicks, provided the bot was not installed with `--no-setup`.
+- **Clear error when the server blocks enabling.** If the bot was installed with `occ talk:bot:install --no-setup` (state "no setup via GUI"), the per-conversation enable API is refused; TalQ now states exactly that ("Server blocked it — this bot was installed with --no-setup") instead of a bare HTTP code.
+
+### Fixes — UI rendering
+- **Bot "Enable" button was unreadable** (near-black text on the dark panel background). `m_botsContainer` sets a selector-less `background` stylesheet that leaks into descendant buttons and overrode the `#primary` rule. Both Enable buttons now use an explicit, self-contained stylesheet that is immune to the cascade.
+- **"Add bot" dialog: the per-bot Enable button rendered as a thin line with no text.** Its `QListWidget` item used `setSizeHint(row->sizeHint())` computed before the inherited stylesheet was polished, so the styled button was clipped. Now uses an explicit fixed row height.
+- **Bot "B" icon was clipped on the right/bottom edge.** `drawEllipse(0, 0, size, size)` painted to the exact pixmap bounds, so the antialiased edge was cut. Inset by 0.5px.
+- **The call-screen avatar circle had the identical edge clipping** (`CallDialog`) — same fix applied.
+
 ## v0.25.6 (2026-05-13)
 
 ### Fixes — @-mention composer

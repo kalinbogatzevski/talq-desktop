@@ -1,5 +1,6 @@
 #include "HeaderPainter.h"
 #include "core/ApiClient.h"
+#include "core/SignalingClient.h"
 #include <QFile>
 #include <QHash>
 #include <QPainter>
@@ -160,6 +161,17 @@ void HeaderPainter::setDarkMode(bool v) {
 void HeaderPainter::setApi(ApiClient *api) {
     if (api == m_api) return;
     m_api = api;
+}
+
+void HeaderPainter::setSignaling(SignalingClient *signaling) {
+    if (signaling == m_signaling) return;
+    m_signaling = signaling;
+    // Repaint when a peer's TalQ identity arrives so the header subtitle
+    // updates without waiting for the next conversation switch.
+    if (m_signaling) {
+        connect(m_signaling, &SignalingClient::peerClientInfoChanged,
+                this, [this]() { update(); });
+    }
 }
 
 // ═══════════════════════════════════════════════════════
@@ -387,6 +399,23 @@ void HeaderPainter::paintEvent(QPaintEvent *)
         subtitleText = m_conversationName + QStringLiteral(" \u00B7 ") +
                        QString::number(m_messageCount) + QStringLiteral(" messages");
         subtitleColor = m_theme.textSecondary;
+    }
+
+    // Surface the correspondent's TalQ client in 1-on-1 chats \u2014 appended to
+    // the status line, or standalone if there is no status line. Persisted
+    // peer identity (see SignalingClient) makes this reliable across sessions.
+    if (m_conversationType == 1 && m_signaling && !m_conversationUserId.isEmpty()) {
+        QString tc = m_signaling->peerClientInfo(m_conversationUserId);
+        if (tc.startsWith(QStringLiteral("TalQ"))) {
+            tc.replace(QLatin1Char('/'), QLatin1Char(' '));   // "TalQ/0.25.6" \u2192 "TalQ 0.25.6"
+            if (hasSubtitle && !subtitleText.isEmpty()) {
+                subtitleText += QStringLiteral(" \u00B7 ") + tc;
+            } else {
+                hasSubtitle = true;
+                subtitleText = tc;
+                subtitleColor = m_theme.textMuted;
+            }
+        }
     }
 
     if (hasSubtitle) {

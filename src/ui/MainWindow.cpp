@@ -452,6 +452,7 @@ void MainWindow::buildChatPage()
     m_header = new HeaderPainter(chatCol);
     m_header->setDarkMode(m_darkMode);
     m_header->setApi(m_api);
+    m_header->setSignaling(m_signaling);
     chatLayout->addWidget(m_header);
 
     // Topic tabs (Telegram-style horizontal strip below the header).

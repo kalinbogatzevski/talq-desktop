@@ -534,7 +534,9 @@ void CallDialog::fetchAvatar(const QString &userId)
         p.setRenderHint(QPainter::Antialiasing);
         p.setBrush(QBrush(pm.scaled(sz, sz, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation)));
         p.setPen(Qt::NoPen);
-        p.drawEllipse(0, 0, sz, sz);
+        // Inset 0.5px so the antialiased edge is not clipped at the pixmap
+        // boundary on the right/bottom.
+        p.drawEllipse(QRectF(0.5, 0.5, sz - 1.0, sz - 1.0));
         m_avatarPixmap = circle.scaled(64, 64, Qt::KeepAspectRatio, Qt::SmoothTransformation);
         m_avatarLabel->setPixmap(m_avatarPixmap);
     });
