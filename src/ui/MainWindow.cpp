@@ -1727,9 +1727,12 @@ void MainWindow::buildWelcomeContent()
     greetCol->addWidget(subLine);
     greetRow->addLayout(greetCol);
     greetRow->addStretch();
-#ifdef TALQ_BRAND_123NET
     {
+#ifdef TALQ_BRAND_123NET
         QPixmap lp(QStringLiteral(":/123net-logo.png"));
+#else
+        QPixmap lp(QStringLiteral(":/logo.png"));
+#endif
         if (!lp.isNull()) {
             auto *brandLogo = new QLabel(root);
             // Match the two-line greeting height (25px name + 14px sub + gap).
@@ -1737,7 +1740,6 @@ void MainWindow::buildWelcomeContent()
             greetRow->addWidget(brandLogo, 0, Qt::AlignRight | Qt::AlignVCenter);
         }
     }
-#endif
     welcomeLayout->addLayout(greetRow);
 
     // Telemetry grid: SERVER (wide) / SIGNALING / PUSH / NEXTCLOUD / TALK / GPU.
