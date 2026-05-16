@@ -24,6 +24,12 @@ class ComposerWidget : public QWidget
 public:
     explicit ComposerWidget(QWidget *parent = nullptr);
 
+    // Composer font pixel size at zoom 1.0. MainWindow scales this by the
+    // zoom factor when building the input font; ComposerWidget derives its
+    // box chrome from the same value. Single source of truth so the two
+    // sides cannot silently desync.
+    static constexpr int kBaseInputPx = 14;
+
     void setTopicName(const QString &name);
     void setSignaling(SignalingClient *sig);
     void setMessageModel(MessageListModel *model);
@@ -78,6 +84,9 @@ private:
     bool m_nextSendSilent = false;
     int  m_minInputH = 38;
     int  m_maxInputH = 160;
+    // Scaled QTextEdit vertical padding; autoResizeInput() needs it to add
+    // the real chrome (padding + border) on top of the document height.
+    int  m_inputVPad = 8;
 
     QTextEdit *m_input = nullptr;
     QPushButton *m_sendBtn = nullptr;

@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.28.5 (2026-05-16)
+
+### Fixed
+- **The message box now zooms with the rest of the interface.** The
+  composer's text size was pinned by a stylesheet `font-size`, which
+  overrides the zoom font, so `Ctrl+=` / `Ctrl+-` left the input text
+  unchanged while everything else scaled.
+- **The placeholder is no longer clipped at higher zoom.** The input
+  box reserved too little vertical space for its own padding, border and
+  text margin, so the bottom of the placeholder/first line got cut once
+  the font grew. The box now budgets its full chrome and scales padding
+  with the zoom level.
+- **Saved zoom is restored on launch.** A zoom level kept from a previous
+  session was applied to the chat but not the composer until you pressed
+  a zoom shortcut again; both now restore together at startup.
+
 ## v0.28.4 (2026-05-16)
 
 ### Fixed

@@ -5,7 +5,7 @@
 ; AppName matches talq-setup.iss so it targets the same install dir.
 [Setup]
 AppName=TalQ
-AppVersion=0.28.4
+AppVersion=0.28.5
 AppPublisher=TalQ
 AppPublisherURL=https://github.com/kalinbogatzevski/talq-desktop
 DefaultDirName={localappdata}\Programs\TalQ
@@ -14,7 +14,7 @@ PrivilegesRequired=lowest
 DisableDirPage=yes
 DisableProgramGroupPage=yes
 OutputDir=..\dist
-OutputBaseFilename=TalQ-v0.28.4-Update
+OutputBaseFilename=TalQ-v0.28.5-Update
 SetupIconFile=..\resources\talq.ico
 UninstallDisplayIcon={app}\talq.exe
 Compression=lzma2/ultra64
@@ -30,7 +30,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Files]
 ; Only the binary that changes between point releases.
-Source: "..\dist\TalQ-v0.28.4-win64\talq.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\dist\TalQ-v0.28.5-win64\talq.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 [Run]
 Filename: "{app}\talq.exe"; Description: "Launch TalQ"; Flags: nowait postinstall
