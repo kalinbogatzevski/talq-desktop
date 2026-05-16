@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.28.4 (2026-05-16)
+
+### Fixed
+- **Installers now bundle the full Qt runtime.** The release pipeline ran
+  `windeployqt` without Qt on PATH, so it failed silently and earlier
+  0.28.x installers shipped with no Qt DLLs / platform plugin — a clean
+  install would not launch. Fixed and the build now hard-fails if the Qt
+  runtime is absent. **Upgrade from any 0.28.x installer to this build.**
+
 ## v0.28.3 (2026-05-16)
 
 ### Fixed

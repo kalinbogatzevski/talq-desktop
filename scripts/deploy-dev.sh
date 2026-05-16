@@ -30,7 +30,8 @@ export PATH="$MINGW_DIR/bin:$QT_DIR/bin:$MSYS2_DIR/bin:$PATH"
 # Step 1: windeployqt (Qt DLLs)
 if [ "$CLEAN" = true ] || [ ! -f "$BUILD_DIR/Qt6Core.dll" ]; then
     echo "[1/4] Running windeployqt..."
-    windeployqt6.exe --no-qml-import-scan "$BUILD_DIR/talq.exe" > /dev/null 2>&1
+    # No --no-qml-import-scan: Qt 6.8 windeployqt rejects it and deploys nothing.
+    windeployqt6.exe --release --no-translations "$BUILD_DIR/talq.exe" > /dev/null 2>&1
 else
     echo "[1/4] Qt DLLs already deployed (use --clean to redo)"
 fi
