@@ -56,30 +56,34 @@ qreal totalWidth(const QVector<Run> &runs)
 void elide(QVector<Run> &runs, qreal maxWidth, const QFontMetricsF &fm)
 {
     const QString ell = QStringLiteral("…");
-    qreal ellW = fm.horizontalAdvance(ell);
+    const qreal ellW = fm.horizontalAdvance(ell);
 
-    // Keep at least one run so the peel loop below can trim it char-by-char.
-    // Previously this was `!runs.isEmpty()` — a single long-word preview
-    // would get removed entirely, leaving the UI to render just "…".
-    while (runs.size() > 1 && totalWidth(runs) + ellW > maxWidth)
+    // Drop whole trailing runs while even prefix + ellipsis can't fit. Track a
+    // running total instead of recomputing totalWidth() each step.
+    qreal total = totalWidth(runs);
+    while (runs.size() > 1 && total + ellW > maxWidth) {
+        total -= runs.last().width;
         runs.removeLast();
+    }
+    if (runs.isEmpty()) { runs.append({false, ell, ellW}); return; }
 
-    // If we still don't fit, peel chars off the last text run.
-    while (!runs.isEmpty()) {
-        qreal sum = totalWidth(runs) + ellW;
-        if (sum <= maxWidth) break;
-
-        Run &last = runs.last();
-        if (last.isEmoji || last.text.isEmpty()) {
-            runs.removeLast();
-            continue;
-        }
-        last.text.chop(1);
-        last.width = fm.horizontalAdvance(last.text);
+    Run &last = runs.last();
+    if (last.isEmoji) {
+        // Can't elide inside an emoji glyph; just mark truncation.
+        runs.append({false, ell, ellW});
+        return;
     }
 
-    // Append ellipsis as its own text run (non-emoji).
-    runs.append({false, ell, ellW});
+    // Fit the final text run with Qt's optimized elide (binary search,
+    // ellipsis embedded) rather than an O(n^2) char-by-char peel that
+    // re-shaped the whole remaining string on every removed character.
+    qreal prefix = 0;
+    for (int i = 0; i < runs.size() - 1; ++i) prefix += runs[i].width;
+    const qreal avail = qMax(ellW, maxWidth - prefix);
+    const QString elided = fm.elidedText(last.text, Qt::ElideRight, avail);
+    last.text = elided;
+    last.width = fm.horizontalAdvance(elided);
+    // QFontMetricsF::elidedText already embeds the ellipsis; no extra run.
 }
 
 } // namespace
