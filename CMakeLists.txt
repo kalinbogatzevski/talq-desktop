@@ -134,11 +134,9 @@ target_compile_definitions(talq PRIVATE
 # published); the branded build pulls them in here. The default/public
 # build is unbranded and references none of this.
 if(TALQ_BRAND STREQUAL "BRAND")
-    target_compile_definitions(talq PRIVATE
-        TALQ_BRANDED
-        TALQ_BRAND_NAME="BRAND Talk"
-        TALQ_BRAND_SERVER="https://example.invalid"
-    )
+    # Brand identity/endpoints are NOT defined here (would leak into public
+    # source). They come from the private include store at compile time.
+    target_compile_definitions(talq PRIVATE TALQ_BRANDED)
     set(_brand_qrc "${CMAKE_SOURCE_DIR}/private/branding/brand/brand.qrc")
     if(NOT EXISTS "${_brand_qrc}")
         message(FATAL_ERROR

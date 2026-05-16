@@ -13,8 +13,9 @@ LoginWidget::LoginWidget(AuthManager *auth, QWidget *parent)
     , m_auth(auth)
 {
 #ifdef TALQ_BRANDED
+#include "brand_identity.inc"   // private; defines TALQ_BRAND_SERVER_STR
     m_isBranded = true;
-    m_brandServer = "https://example.invalid";
+    m_brandServer = TALQ_BRAND_SERVER_STR;
     m_brandName = "BRAND TalQ";
 #else
     m_isBranded = false;
