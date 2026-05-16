@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.28.3 (2026-05-16)
+
+### Fixed
+- **Clearer conversation-create errors.** When the server rejects creating
+  a conversation, TalQ now shows the real HTTP/OCS status instead of a bare
+  "Server refused" — and explicitly names the Talk "who can start
+  conversations" restriction on HTTP 403, so the cause is obvious.
+
+### Changed
+- **Generic build shows the TalQ logo on the welcome screen** (where the
+  branded build shows its logo).
+- **Open-source build auto-updates from GitHub Releases.** No bundled
+  update server or credentials; integrity rests on HTTPS to GitHub.
+
+(Project also went open-source under Apache-2.0 at
+github.com/kalinbogatzevski/talq-desktop.)
+
 ## v0.28.2 (2026-05-16)
 
 ### Fixed
