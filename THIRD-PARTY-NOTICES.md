@@ -62,14 +62,28 @@ those attribution requirements.
   versions.
 - <https://github.com/rsms/inter> · <https://openfontlicense.org/>
 
-## UI icons (`resources/icons/`)
+## Feather Icons (`resources/icons/`)
 
-- The SVG glyphs (`mic`, `mic-off`, `phone-call`, `phone-off`, `react`,
-  `reply`) are small interface icons.
-- **License/origin: TO BE CONFIRMED before public release.** If they
-  originate from an open icon set (e.g. Feather — MIT, or Lucide — ISC),
-  the corresponding copyright and license will be reproduced here;
-  otherwise they will be replaced with cleanly-licensed equivalents.
+- **License:** MIT
+- **Copyright:** © 2013–2017 Cole Bemis
+- The SVG glyphs in `resources/icons/` are derived from Feather Icons
+  (`mic`, `mic-off`, `phone-call`, `phone-off`; `react` from `smile`;
+  `reply` from `corner-up-left`), lightly modified (color/stroke width).
+- Source: <https://github.com/feathericons/feather>
+- MIT License:
+
+  > Permission is hereby granted, free of charge, to any person obtaining
+  > a copy of this software and associated documentation files (the
+  > "Software"), to deal in the Software without restriction, including
+  > without limitation the rights to use, copy, modify, merge, publish,
+  > distribute, sublicense, and/or sell copies of the Software, and to
+  > permit persons to whom the Software is furnished to do so, subject to
+  > the following conditions:
+  >
+  > The above copyright notice and this permission notice shall be
+  > included in all copies or substantial portions of the Software.
+  >
+  > THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
 
 ## System fonts (not bundled)
 
