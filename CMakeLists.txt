@@ -130,13 +130,27 @@ target_compile_definitions(talq PRIVATE
     TALQ_BUILD_TS="${TALQ_BUILD_TS}"
 )
 
-# Branding
+# Branding. BRAND assets live outside the tree in /private (never
+# published); the branded build pulls them in here. The default/public
+# build is unbranded and references none of this.
 if(TALQ_BRAND STREQUAL "BRAND")
     target_compile_definitions(talq PRIVATE
         TALQ_BRANDED
         TALQ_BRAND_NAME="BRAND Talk"
         TALQ_BRAND_SERVER="https://example.invalid"
     )
+    set(_brand_qrc "${CMAKE_SOURCE_DIR}/private/branding/brand/brand.qrc")
+    if(NOT EXISTS "${_brand_qrc}")
+        message(FATAL_ERROR
+            "TALQ_BRAND=BRAND but ${_brand_qrc} is missing. "
+            "The BRAND branding store is private and not part of the "
+            "public source. Build without -DTALQ_BRAND for the generic app.")
+    endif()
+    target_sources(talq PRIVATE "${_brand_qrc}")
+    # Private update-channel config (brand_updates.inc) is included by
+    # AppSettings.h under #ifdef TALQ_BRANDED; put it on the path.
+    target_include_directories(talq PRIVATE
+        "${CMAKE_SOURCE_DIR}/private/branding/brand")
     message(STATUS "Building BRAND branded version")
 endif()
 

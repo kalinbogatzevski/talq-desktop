@@ -2,7 +2,7 @@
 AppName=TalQ
 AppVersion=0.28.2
 AppPublisher=TalQ
-AppPublisherURL=https://example.invalid/kalin/talq-desktop
+AppPublisherURL=https://github.com/kalinbogatzevski/talq-desktop
 DefaultDirName={localappdata}\Programs\TalQ
 PrivilegesRequired=lowest
 DefaultGroupName=TalQ
