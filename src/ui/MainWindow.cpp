@@ -682,6 +682,12 @@ void MainWindow::buildChatPage()
     m_composer->hide();
     chatLayout->addWidget(m_composer);
 
+    // Restore the saved zoom through the SAME path a manual zoom uses, now
+    // that both the chat painter and composer exist. Previously only the
+    // chat painter got m_fontScale at startup (line ~577); the composer
+    // stayed at 1.0 until the user pressed a zoom shortcut again.
+    applyFontScale(m_fontScale);
+
     m_selectionBar = new SelectionBarWidget(chatCol);
     m_selectionBar->hide();
     chatLayout->addWidget(m_selectionBar);
@@ -2186,9 +2192,10 @@ void MainWindow::applyFontScale(qreal scale)
     m_fontScale = scale;
     m_chatPainter->setFontScale(m_fontScale);
 
-    // Scale composer font to match chat zoom
+    // Scale composer font to match chat zoom (base px is owned by
+    // ComposerWidget so the two sides can't desync).
     QFont inputFont = m_composer->font();
-    inputFont.setPixelSize(qRound(14 * m_fontScale));
+    inputFont.setPixelSize(qRound(ComposerWidget::kBaseInputPx * m_fontScale));
     m_composer->setInputFont(inputFont);
 
     m_settings.beginGroup("Theme");
