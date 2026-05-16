@@ -53,6 +53,7 @@
 #include <QListWidget>
 #include <QUrl>
 #include <QTextBrowser>
+#include <QTextDocument>
 #include <QDateTimeEdit>
 #include <QDialogButtonBox>
 #include <QFile>
@@ -1229,15 +1230,65 @@ void MainWindow::buildChatPage()
         m_updateChecker->deferUpdate();
     });
     connect(m_updateWhatsNewBtn, &QPushButton::clicked, this, [this]() {
+        PainterTheme t(m_themeId, m_fontScale);
+        auto hx = [](const QColor &c){ return c.name(QColor::HexRgb); };
+
         auto *dlg = new QDialog(this);
         dlg->setWindowTitle(tr("What's new"));
         dlg->setAttribute(Qt::WA_DeleteOnClose);
+        dlg->resize(640, 560);
+        dlg->setStyleSheet(QString(
+            "QDialog{background:%1;}"
+            "QPushButton{background:%2;color:%3;border:none;border-radius:8px;"
+            "padding:8px 18px;font-size:13px;font-weight:600;}"
+            "QPushButton:hover{background:%4;}")
+            .arg(hx(t.bgPrimary), hx(t.bgSurface), hx(t.textPrimary),
+                 hx(t.bgSecondary)));
+
         auto *lay = new QVBoxLayout(dlg);
+        lay->setContentsMargins(0, 0, 0, 0);
+        lay->setSpacing(0);
+
+        auto *hdr = new QLabel(QStringLiteral("●  WHAT'S NEW"), dlg);
+        hdr->setStyleSheet(QString(
+            "color:%1;font-size:10px;font-weight:bold;letter-spacing:2px;"
+            "padding:16px 26px;border-bottom:1px solid %2;background:%3;")
+            .arg(hx(t.textTime), hx(t.divider), hx(t.bgSurface)));
+        lay->addWidget(hdr);
+
         auto *tb = new QTextBrowser(dlg);
-        tb->setMarkdown(m_pendingUpdateNotes);
-        tb->setMinimumSize(520, 360);
+        tb->setFrameShape(QFrame::NoFrame);
         tb->setOpenExternalLinks(true);
-        lay->addWidget(tb);
+        tb->setStyleSheet(QString(
+            "QTextBrowser{background:%1;color:%2;border:none;"
+            "padding:6px 26px 24px;font-size:13px;}")
+            .arg(hx(t.bgPrimary), hx(t.textPrimary)));
+        // Markdown -> QTextDocument uses minimal default CSS (cramped headings,
+        // no theme color). A document style sheet, set BEFORE setMarkdown,
+        // gives the release notes real hierarchy and on-theme colors.
+        tb->document()->setDefaultStyleSheet(QString(
+            "h1{font-size:21px;font-weight:700;color:%1;margin:18px 0 8px;}"
+            "h2{font-size:17px;font-weight:700;color:%1;margin:22px 0 8px;}"
+            "h3{font-size:13px;font-weight:700;color:%2;margin:16px 0 4px;}"
+            "p{color:%1;margin:7px 0;}"
+            "li{color:%1;margin:5px 0;}"
+            "strong,b{color:%3;font-weight:700;}"
+            "code{color:%3;}"
+            "a{color:%3;text-decoration:none;}")
+            .arg(hx(t.textPrimary), hx(t.textSecondary), hx(t.accent)));
+        tb->setMarkdown(m_pendingUpdateNotes);
+        tb->setReadOnly(true);
+        lay->addWidget(tb, 1);
+
+        auto *footer = new QHBoxLayout();
+        footer->setContentsMargins(26, 14, 26, 18);
+        footer->addStretch();
+        auto *closeBtn = new QPushButton(tr("Close"), dlg);
+        closeBtn->setCursor(Qt::PointingHandCursor);
+        connect(closeBtn, &QPushButton::clicked, dlg, &QDialog::accept);
+        footer->addWidget(closeBtn);
+        lay->addLayout(footer);
+
         dlg->show();
     });
 
@@ -1801,6 +1852,19 @@ void MainWindow::buildWelcomeContent()
             else
                 qWarning() << "welcome: :/docs/CHANGELOG.md missing:" << f.errorString();
         }
+        // Give the markdown real hierarchy/spacing — Qt's built-in
+        // markdown CSS is cramped and ignores the theme. Must precede
+        // setMarkdown() to take effect.
+        changelog->document()->setDefaultStyleSheet(QString(
+            "h1{font-size:20px;font-weight:700;color:%1;margin:16px 0 8px;}"
+            "h2{font-size:16px;font-weight:700;color:%1;margin:20px 0 8px;}"
+            "h3{font-size:12px;font-weight:700;color:%2;margin:14px 0 4px;}"
+            "p{color:%1;margin:6px 0;}"
+            "li{color:%1;margin:5px 0;}"
+            "strong,b{color:%3;font-weight:700;}"
+            "code{color:%3;}"
+            "a{color:%3;text-decoration:none;}")
+            .arg(wcss(wt.textPrimary), wcss(wt.textSecondary), wcss(wt.accent)));
         if (!s_changelogMd.isEmpty())
             changelog->setMarkdown(s_changelogMd);
         else

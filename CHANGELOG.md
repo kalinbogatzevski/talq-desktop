@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.28.1 (2026-05-16)
+
+Release-notes formatting fix.
+
+### Fixed
+- **"What's new" release notes render with proper structure.** The update
+  manifest was flattening every newline to a space and truncating notes to
+  500 characters, so the in-app release notes collapsed into one run-on
+  paragraph. The manifest now preserves the full changelog section verbatim
+  (headings, lists, blank lines) as valid JSON.
+- **"What's new" dialog and the welcome flight-log are themed.** Both were
+  using Qt's cramped default markdown styling; they now use theme colors and
+  a proper heading/list hierarchy.
+- **Release script no longer crashes on non-Latin-1 changelog characters.**
+  Manifest generation writes UTF-8 directly instead of relying on Windows'
+  redirected-stdout encoding, which threw on arrows / em-dashes.
+
 ## v0.28.0 (2026-05-16)
 
 Feature release porting the client-side improvements from the upstream Nextcloud
