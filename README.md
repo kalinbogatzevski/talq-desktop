@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="resources/logo.png" alt="TalQ" width="128" height="128" />
+
 # TalQ
 
 **A native desktop client for Nextcloud Talk — drawn, not wrapped.**
