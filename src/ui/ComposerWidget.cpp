@@ -62,6 +62,18 @@ constexpr auto kPopupStyle =
     "QListWidget::item { padding: 4px 8px; }"
     "QListWidget::item:selected { background: #2a211a; }";
 
+// Composer text-box sizing at zoom 1.0. The QTextEdit's true vertical
+// chrome is padding + border + the QTextDocument margin (top *and*
+// bottom); the widget height MUST budget all of it or the zoomed text /
+// placeholder gets clipped — which is exactly what the old `lineH + 16`
+// (only 16 of the real ~26) did, worsening as zoom enlarged the font.
+// kBaseInputPx lives in the header (ComposerWidget::kBaseInputPx) so
+// MainWindow scales the same base; the rest stay local to this file.
+constexpr int kBaseVPad      = 8;   // QTextEdit vertical padding @1.0
+constexpr int kBaseHPad      = 16;  // QTextEdit horizontal padding @1.0
+constexpr int kBaseDocMargin = 4;   // QTextDocument margin @1.0
+constexpr int kInputBorder   = 1;   // hairline border: counted, never scaled
+
 } // namespace
 
 // Custom text edit that sends on Enter, newline on Shift+Enter, handles image paste
@@ -185,19 +197,12 @@ ComposerWidget::ComposerWidget(QWidget *parent)
 
     m_input = new ComposeTextEdit(this);
     m_input->setPlaceholderText(tr("Write a message\u2026"));
-    m_input->setMinimumHeight(m_minInputH);
-    m_input->setMaximumHeight(m_maxInputH);
     setFocusProxy(m_input);
-    m_input->setStyleSheet(
-        // QTextEdit border-radius requires viewport transparency — otherwise
-        // the inner viewport paints a rectangle over the rounded corners.
-        "QTextEdit { background: #1a1613; border: 1px solid #2a241f;"
-        "  border-radius: 8px; padding: 8px 16px; font-size: 14px;"
-        "  color: #f4efe6; selection-background-color: #14b8a6;"
-        "  selection-color: #0e1817; }"
-        "QTextEdit:focus { border-color: #14b8a6; background: #221d19; }"
-        "QTextEdit > QWidget { background: transparent; }"
-    );
+    // The QTextEdit stylesheet and min/max height are owned by
+    // setInputFont() (called at the end of this constructor and on every
+    // zoom change) so default and zoomed state share one code path and
+    // cannot disagree. The previous inline stylesheet hard-coded
+    // font-size:14px, which overrides setFont() and broke composer zoom.
     layout->addWidget(m_input, 1);
 
     m_emojiBtn = new QPushButton(this);
@@ -399,7 +404,13 @@ ComposerWidget::ComposerWidget(QWidget *parent)
     mainLayout->addWidget(inputRow);
     setLayout(mainLayout);
 
-    setMaximumHeight(280);
+    // Establish initial composer metrics through the SAME path zoom uses,
+    // so the default state is computed with the correct chrome budget and
+    // can never disagree with the zoomed state. setInputFont() also sets
+    // this widget's maximum height (replaces the old fixed 280).
+    QFont baseInputFont = m_input->font();
+    baseInputFont.setPixelSize(kBaseInputPx);
+    setInputFont(baseInputFont);
 }
 
 // Reserve vertical space above the input row for any combination of the
@@ -409,9 +420,13 @@ static constexpr int kComposerBarsReserve = 120;
 void ComposerWidget::autoResizeInput()
 {
     if (!m_input) return;
-    const int docH = int(std::ceil(m_input->document()->size().height()));
-    const int frame = m_input->frameWidth() * 2;
-    const int newH = qBound(m_minInputH, docH + frame + 4, m_maxInputH);
+    // document()->size() already includes the (scaled) document margin.
+    // It does NOT include the stylesheet padding + border, and
+    // frameWidth() is 0 when the border is drawn by a stylesheet — so the
+    // old `frame + 4` under-counted and clipped lower lines while typing.
+    const int docH   = int(std::ceil(m_input->document()->size().height()));
+    const int chrome = 2 * (m_inputVPad + kInputBorder);
+    const int newH   = qBound(m_minInputH, docH + chrome, m_maxInputH);
     if (m_input->height() != newH)
         m_input->setFixedHeight(newH);
 }
@@ -452,9 +467,39 @@ void ComposerWidget::setMessageModel(MessageListModel *model)
 void ComposerWidget::setInputFont(const QFont &font)
 {
     m_input->setFont(font);
+
+    const int   px    = font.pixelSize() > 0 ? font.pixelSize() : kBaseInputPx;
+    const qreal scale = qreal(px) / kBaseInputPx;
+    const int   vpad  = qRound(kBaseVPad      * scale);
+    const int   hpad  = qRound(kBaseHPad      * scale);
+    const int   docM  = qRound(kBaseDocMargin * scale);
+    m_inputVPad = vpad;
+    m_input->document()->setDocumentMargin(docM);
+
+    // Own the QTextEdit stylesheet here so it is single-sourced with the
+    // height math below. Crucially it carries NO `font-size`: a stylesheet
+    // font-size overrides setFont(), which is why the composer used to
+    // ignore zoom. Padding scales with the zoom level so the box grows in
+    // proportion to the text. Viewport stays transparent for the rounded
+    // corners (otherwise the inner viewport paints over them).
+    m_input->setStyleSheet(QStringLiteral(
+        "QTextEdit { background: #1a1613; border: %1px solid #2a241f;"
+        "  border-radius: 8px; padding: %2px %3px;"
+        "  color: #f4efe6; selection-background-color: #14b8a6;"
+        "  selection-color: #0e1817; }"
+        "QTextEdit:focus { border-color: #14b8a6; background: #221d19; }"
+        "QTextEdit > QWidget { background: transparent; }")
+        .arg(kInputBorder).arg(vpad).arg(hpad));
+
     const int lineH = QFontMetrics(font).height();
-    m_minInputH = lineH + 16;
-    m_maxInputH = m_minInputH * 5 + 12;
+    // Full vertical chrome the widget must contain so one line of text
+    // (and the placeholder) is never clipped: padding + border + document
+    // margin, top *and* bottom. The old code budgeted only +16 of the
+    // real ~26, so the bottom of the glyphs was cut once zoom enlarged
+    // the font enough to use the line box's slack.
+    const int chromeV = 2 * (vpad + kInputBorder + docM);
+    m_minInputH = lineH + chromeV;
+    m_maxInputH = lineH * 5 + chromeV;
     m_input->setMinimumHeight(m_minInputH);
     m_input->setMaximumHeight(m_maxInputH);
     m_sendBtn->setFixedSize(m_minInputH, m_minInputH);
