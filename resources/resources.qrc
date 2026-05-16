@@ -1,0 +1,13 @@
+<RCC>
+    <qresource prefix="/">
+        <file>logo.png</file>
+        <file>notification.wav</file>
+        <file>icons/react.svg</file>
+        <file>icons/reply.svg</file>
+        <file>icons/phone-call.svg</file>
+        <file>icons/phone-off.svg</file>
+        <file>icons/mic.svg</file>
+        <file>icons/mic-off.svg</file>
+        <file>fonts/Inter.ttf</file>
+    </qresource>
+</RCC>
