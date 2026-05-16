@@ -481,8 +481,11 @@ bool NewChatDialog::isPicked(const QString &id) const
 void NewChatDialog::refreshCreateEnabled()
 {
     const bool group = m_groupTab->isChecked();
+    // A group only needs a name — it may be created with zero members (e.g.
+    // a room you'll add a bot to, or invite people into later). A 1:1 still
+    // needs exactly one counterpart.
     const bool canCreate =
-        group ? (!m_selected.isEmpty() && !m_groupNameEdit->text().trimmed().isEmpty())
+        group ? !m_groupNameEdit->text().trimmed().isEmpty()
               : (m_selected.size() == 1);
     m_createBtn->setEnabled(canCreate);
     m_createBtn->setText(group ? tr("Create group") : tr("Start chat"));
@@ -490,7 +493,8 @@ void NewChatDialog::refreshCreateEnabled()
 
 void NewChatDialog::onCreateClicked()
 {
-    if (m_selected.isEmpty()) return;
+    // A 1:1 needs a counterpart; a group may be created empty.
+    if (!m_groupTab->isChecked() && m_selected.isEmpty()) return;
     m_createBtn->setEnabled(false);
     m_cancelBtn->setEnabled(false);
     m_status->setStyleSheet("color: #6f6a62; font-size: 12px;");
@@ -524,6 +528,14 @@ void NewChatDialog::onCreateClicked()
                 return;
             }
             m_createdToken = token;
+            // No invitees (e.g. a bot room or an empty group to populate
+            // later): nothing to wait on, so finish now. Without this the
+            // add-participant loop below never runs and accept() is never
+            // reached, leaving the dialog stuck on "Creating room…".
+            if (m_selected.isEmpty()) {
+                accept();
+                return;
+            }
             // Shared counter + error list — owned by lambdas via shared_ptr so
             // they're freed automatically if the dialog is dismissed mid-flight
             // (Qt disconnects the context-bound lambdas and their captures).
