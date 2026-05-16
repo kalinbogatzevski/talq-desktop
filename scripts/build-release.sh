@@ -148,24 +148,42 @@ if [ -n "${NC_APP_PASSWORD:-}" ]; then
         GEN_SHA=$(sha256sum "$GEN_INSTALLER" | awk '{print $1}')
         BRAND_SHA=$(sha256sum "$BRAND_INSTALLER" | awk '{print $1}')
 
+        # Latest version's section, verbatim (keeps markdown line structure:
+        # headings, blank lines, bullet lists). The client renders this with
+        # setMarkdown(), so flattening newlines here would collapse it into
+        # one run-on paragraph. Build the JSON with python so newlines and
+        # quotes are escaped correctly and the notes aren't truncated.
         NOTES=$(awk '/^## v/ { if (found) exit; found=1; next } found { print }' \
-                "$SRC_DIR/CHANGELOG.md" | head -c 500 | tr '\n' ' ' | sed 's/"/\\"/g')
+                "$SRC_DIR/CHANGELOG.md")
 
-        cat > /tmp/talq-latest.json <<MANIFEST
-{
-  "version": "${VERSION}",
-  "releaseDate": "$(date +%Y-%m-%d)",
-  "notes": "${NOTES}",
-  "assets": {
-    "generic": "TalQ-v${VERSION}-Setup.exe",
-    "123net":  "123NET-TalQ-v${VERSION}-Setup.exe"
-  },
-  "sha256": {
-    "generic": "${GEN_SHA}",
-    "123net":  "${BRAND_SHA}"
-  }
+        NOTES="$NOTES" \
+        M_VERSION="$VERSION" \
+        M_DATE="$(date +%Y-%m-%d)" \
+        M_GEN="TalQ-v${VERSION}-Setup.exe" \
+        M_BRAND="123NET-TalQ-v${VERSION}-Setup.exe" \
+        M_GEN_SHA="$GEN_SHA" \
+        M_BRAND_SHA="$BRAND_SHA" \
+        M_OUT="/tmp/talq-latest.json" \
+        python - <<'PY'
+import json, os
+m = {
+    "version":     os.environ["M_VERSION"],
+    "releaseDate": os.environ["M_DATE"],
+    "notes":       os.environ["NOTES"].strip(),
+    "assets": {
+        "generic": os.environ["M_GEN"],
+        "123net":  os.environ["M_BRAND"],
+    },
+    "sha256": {
+        "generic": os.environ["M_GEN_SHA"],
+        "123net":  os.environ["M_BRAND_SHA"],
+    },
 }
-MANIFEST
+# Write UTF-8 directly: the CHANGELOG has non-Latin-1 chars (arrows,
+# em-dashes) and Windows' redirected-stdout encoding would crash on them.
+with open(os.environ["M_OUT"], "w", encoding="utf-8") as fh:
+    json.dump(m, fh, indent=2, ensure_ascii=False)
+PY
 
         curl -sS -u "${NC_USER}:${NC_APP_PASSWORD}" -T "$GEN_INSTALLER" \
             "${NC_FOLDER}/TalQ-v${VERSION}-Setup.exe" >/dev/null
