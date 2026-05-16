@@ -2,6 +2,7 @@
 #include <QDebug>
 #include <QPointer>
 #include <QRegularExpression>
+#include <QSettings>
 #include <QUrl>
 #include <gst/app/gstappsink.h>
 #include <thread>
@@ -112,14 +113,53 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
     // Configure level element: report every 100ms
     g_object_set(level, "post-messages", TRUE, "interval", (guint64)100000000, nullptr);
 
-    gst_bin_add_many(GST_BIN(m_pipeline), audiosrc, audioconvert, audioresample,
-                     level, opusenc, rtpopuspay, m_webrtcbin, nullptr);
+    // Optional WebRTC noise suppression (webrtcdsp). Enabled by default; the
+    // setting and the plugin's presence in the deployed GStreamer both gate
+    // it. If the plugin is missing we fall back to the plain chain so calls
+    // still work on installs without libgstwebrtcdsp.
+    GstElement *webrtcdsp = nullptr;
+    {
+        QSettings s("TalQ", "TalQ");
+        s.beginGroup("Audio");
+        const bool nsEnabled = s.value("noiseSuppression", true).toBool();
+        s.endGroup();
+        if (nsEnabled) {
+            webrtcdsp = gst_element_factory_make("webrtcdsp", "pub-webrtcdsp");
+            if (webrtcdsp) {
+                g_object_set(webrtcdsp,
+                             "echo-cancel", FALSE,
+                             "noise-suppression", TRUE,
+                             "noise-suppression-level", 2,   // high
+                             "high-pass-filter", TRUE,
+                             "gain-control", FALSE,
+                             "voice-detection", FALSE,
+                             nullptr);
+                qDebug() << "PublishPipeline: noise suppression ON (webrtcdsp)";
+            } else {
+                qWarning() << "PublishPipeline: webrtcdsp unavailable; "
+                              "continuing without noise suppression";
+            }
+        }
+    }
 
-    if (!gst_element_link_many(audiosrc, audioconvert, audioresample,
-                               level, opusenc, rtpopuspay, nullptr)) {
-        emit error("Failed to link audio capture chain");
-        cleanup();
-        return false;
+    if (webrtcdsp) {
+        gst_bin_add_many(GST_BIN(m_pipeline), audiosrc, audioconvert, audioresample,
+                         webrtcdsp, level, opusenc, rtpopuspay, m_webrtcbin, nullptr);
+        if (!gst_element_link_many(audiosrc, audioconvert, audioresample,
+                                   webrtcdsp, level, opusenc, rtpopuspay, nullptr)) {
+            emit error("Failed to link audio capture chain");
+            cleanup();
+            return false;
+        }
+    } else {
+        gst_bin_add_many(GST_BIN(m_pipeline), audiosrc, audioconvert, audioresample,
+                         level, opusenc, rtpopuspay, m_webrtcbin, nullptr);
+        if (!gst_element_link_many(audiosrc, audioconvert, audioresample,
+                                   level, opusenc, rtpopuspay, nullptr)) {
+            emit error("Failed to link audio capture chain");
+            cleanup();
+            return false;
+        }
     }
 
     // Force a known SSRC via capsfilter between payloader and webrtcbin.

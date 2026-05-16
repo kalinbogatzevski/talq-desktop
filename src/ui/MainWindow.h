@@ -37,6 +37,7 @@ class SelectionBarWidget;
 class ImageViewerDialog;
 class UpdateChecker;
 class QProgressBar;
+class QMenu;
 
 class MainWindow : public QMainWindow
 {
@@ -156,6 +157,8 @@ private:
     QWidget *m_profileBar = nullptr;
     QWidget *m_searchRow = nullptr;
     QPushButton *m_homeBtn = nullptr;
+    QPushButton *m_filterBtn = nullptr;     // sidebar sort/filter menu trigger
+    QMenu *m_filterMenu = nullptr;          // themed in restyleChrome
     QWidget *m_welcomeWidget = nullptr;     // persistent host (shown/hidden)
     QWidget *m_welcomeContent = nullptr;    // themed content, rebuilt on theme change
     bool m_welcomeDirty = false;            // theme changed while welcome hidden → rebuild on next show

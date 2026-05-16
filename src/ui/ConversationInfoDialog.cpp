@@ -16,6 +16,13 @@
 #include <QPushButton>
 #include <QVBoxLayout>
 #include <QTimer>
+#include <QJsonObject>
+#include <QJsonArray>
+#include <QUrlQuery>
+#include <QUrl>
+#include <QDesktopServices>
+#include <QPointer>
+#include <QSet>
 
 namespace {
 constexpr int kAttendeeIdRole    = Qt::UserRole + 1;
@@ -210,6 +217,27 @@ ConversationInfoDialog::ConversationInfoDialog(ApiClient *api,
     connect(m_addBotBtn, &QPushButton::clicked,
             this, &ConversationInfoDialog::onAddBotClicked);
 
+    // ── Shared files section ──────────────────────────────
+    // Scans the most recent chat page for file shares. Bounded to one API
+    // page so it stays cheap; click a row to open the file in the browser.
+    outer->addSpacing(16);
+    m_filesHeader = new QLabel(tr("SHARED FILES"), this);
+    m_filesHeader->setObjectName("eyebrow");
+    outer->addWidget(m_filesHeader);
+    outer->addSpacing(6);
+
+    m_filesList = new QListWidget(this);
+    m_filesList->setSelectionMode(QAbstractItemView::NoSelection);
+    m_filesList->setFixedHeight(150);
+    m_filesList->setCursor(Qt::PointingHandCursor);
+    outer->addWidget(m_filesList);
+    connect(m_filesList, &QListWidget::itemClicked, this,
+            [](QListWidgetItem *item) {
+        const QString link = item->data(Qt::UserRole).toString();
+        if (!link.isEmpty())
+            QDesktopServices::openUrl(QUrl(link));
+    });
+
     outer->addSpacing(8);
     m_status = new QLabel(QString(), this);
     m_status->setStyleSheet("color: #6f6a62; font-size: 12px;");
@@ -257,6 +285,7 @@ ConversationInfoDialog::ConversationInfoDialog(ApiClient *api,
 
     refreshParticipants();
     refreshBots();
+    refreshSharedFiles();
 }
 
 void ConversationInfoDialog::saveName()
@@ -523,6 +552,93 @@ void ConversationInfoDialog::refreshBots()
             }
             for (const BotInfo &b : bots) populateBotRow(b);
         });
+}
+
+// ─── Shared files ─────────────────────────────────────────
+
+void ConversationInfoDialog::refreshSharedFiles()
+{
+    m_filesList->clear();
+    auto *loading = new QListWidgetItem(tr("Loading…"), m_filesList);
+    loading->setFlags(Qt::NoItemFlags);
+
+    // One recent page is enough — this is a quick "what was shared lately"
+    // view, not a full archive crawl.
+    QUrlQuery params;
+    params.addQueryItem("lookIntoFuture", "0");
+    params.addQueryItem("limit", "200");
+
+    QPointer<ConversationInfoDialog> guard(this);
+    m_api->getArray("apps/spreed/api/v1/chat/" + m_token, params,
+        [guard](bool ok, const QJsonArray &data, int) {
+        if (!guard) return;
+        ConversationInfoDialog *self = guard;
+        self->m_filesList->clear();
+
+        if (!ok) {
+            auto *it = new QListWidgetItem(tr("(couldn't load shared files)"),
+                                           self->m_filesList);
+            it->setFlags(Qt::NoItemFlags);
+            return;
+        }
+
+        auto humanSize = [](qint64 b) -> QString {
+            if (b <= 0) return QString();
+            static const char *u[] = { "B", "KB", "MB", "GB", "TB" };
+            double s = b;
+            int i = 0;
+            while (s >= 1024.0 && i < 4) { s /= 1024.0; ++i; }
+            return (i == 0) ? QString("%1 B").arg(b)
+                            : QString::number(s, 'f', s < 10 ? 1 : 0) + ' ' + u[i];
+        };
+        auto glyph = [](const QString &mime) -> QString {
+            if (mime.startsWith("image/")) return QString::fromUtf8("\xF0\x9F\x96\xBC");
+            if (mime.startsWith("video/")) return QString::fromUtf8("\xF0\x9F\x8E\xAC");
+            if (mime.startsWith("audio/")) return QString::fromUtf8("\xF0\x9F\x8E\xB5");
+            if (mime == "application/pdf") return QString::fromUtf8("\xF0\x9F\x93\x95");
+            return QString::fromUtf8("\xF0\x9F\x93\x84");
+        };
+
+        QSet<QString> seen;
+        int shown = 0;
+        for (const QJsonValue &mv : data) {
+            const QJsonObject mp = mv.toObject()
+                                      .value("messageParameters").toObject();
+            for (auto it = mp.begin(); it != mp.end(); ++it) {
+                const QJsonObject f = it.value().toObject();
+                if (f.value("type").toString() != "file") continue;
+
+                const QString id = f.value("id").toString();
+                if (!id.isEmpty() && seen.contains(id)) continue;
+                if (!id.isEmpty()) seen.insert(id);
+
+                const QString name = f.value("name").toString();
+                const QString link = f.value("link").toString();
+                const QString mime = f.value("mimetype").toString();
+                const qint64  size = f.value("size").toVariant().toLongLong();
+                if (name.isEmpty()) continue;
+
+                const QString sz = humanSize(size);
+                const QString label = sz.isEmpty()
+                    ? QString("%1  %2").arg(glyph(mime), name)
+                    : QString("%1  %2   ·   %3").arg(glyph(mime), name, sz);
+                auto *row = new QListWidgetItem(label, self->m_filesList);
+                if (!link.isEmpty()) {
+                    row->setData(Qt::UserRole, link);
+                    row->setToolTip(tr("Open in browser"));
+                } else {
+                    row->setFlags(Qt::NoItemFlags);
+                }
+                ++shown;
+            }
+        }
+
+        if (shown == 0) {
+            auto *it = new QListWidgetItem(
+                tr("No files shared in recent messages."), self->m_filesList);
+            it->setFlags(Qt::NoItemFlags);
+        }
+    });
 }
 
 void ConversationInfoDialog::populateBotRow(const BotInfo &bot)

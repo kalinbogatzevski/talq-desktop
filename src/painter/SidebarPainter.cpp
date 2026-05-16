@@ -12,6 +12,7 @@
 #include <QNetworkReply>
 #include <QFontMetrics>
 #include <QtMath>
+#include <algorithm>
 
 // ═══════════════════════════════════════════════════════
 // Constructor
@@ -115,6 +116,20 @@ void SidebarPainter::setFilterText(const QString &text)
     rebuildLayouts();
 }
 
+void SidebarPainter::setSortMode(int mode)
+{
+    if (m_sortMode == mode) return;
+    m_sortMode = mode;
+    rebuildLayouts();
+}
+
+void SidebarPainter::setFilterMode(int mode)
+{
+    if (m_filterMode == mode) return;
+    m_filterMode = mode;
+    rebuildLayouts();
+}
+
 // ═══════════════════════════════════════════════════════
 // Model signal handlers
 // ═══════════════════════════════════════════════════════
@@ -185,13 +200,57 @@ void SidebarPainter::rebuildLayouts()
         m_layouts.append(cl);
     }
 
-    // Build visible indices (filter)
+    // Build visible indices (text filter + filter mode)
     for (int i = 0; i < m_layouts.size(); ++i) {
-        if (m_filterText.isEmpty() ||
-            m_layouts[i].displayName.contains(m_filterText, Qt::CaseInsensitive)) {
-            m_visibleIndices.append(i);
+        const ConversationLayout &cl = m_layouts[i];
+
+        if (!m_filterText.isEmpty() &&
+            !cl.displayName.contains(m_filterText, Qt::CaseInsensitive))
+            continue;
+
+        bool modeOk = true;
+        switch (m_filterMode) {
+        case FilterUnread:    modeOk = cl.unreadCount > 0;          break;
+        case FilterFavorites: modeOk = cl.isFavorite;               break;
+        case FilterDirect:    modeOk = cl.conversationType == 1;    break;  // OneToOne
+        case FilterGroups:    modeOk = cl.conversationType == 2
+                                    || cl.conversationType == 3;    break;  // Group / Public
+        case FilterAll:
+        default:              modeOk = true;                        break;
         }
+        if (!modeOk)
+            continue;
+
+        m_visibleIndices.append(i);
     }
+
+    // Sort visible indices. Favorites are always grouped first (except when
+    // already filtering to favorites), then the chosen sort key applies.
+    const QVector<ConversationLayout> &L = m_layouts;
+    const bool groupFavs = (m_filterMode != FilterFavorites);
+    const int sortMode = m_sortMode;
+    std::stable_sort(m_visibleIndices.begin(), m_visibleIndices.end(),
+                     [&L, groupFavs, sortMode](int a, int b) {
+        const ConversationLayout &x = L[a];
+        const ConversationLayout &y = L[b];
+        if (groupFavs && x.isFavorite != y.isFavorite)
+            return x.isFavorite;            // favorites first
+        switch (sortMode) {
+        case SortName:
+            return x.displayName.localeAwareCompare(y.displayName) < 0;
+        case SortUnread: {
+            const bool xu = x.unreadCount > 0;
+            const bool yu = y.unreadCount > 0;
+            if (xu != yu) return xu;        // unread first
+            if (xu && x.unreadCount != y.unreadCount)
+                return x.unreadCount > y.unreadCount;
+            return x.lastActivity > y.lastActivity;
+        }
+        case SortRecent:
+        default:
+            return x.lastActivity > y.lastActivity;
+        }
+    });
 
     // Restore selection: find the new index for the previously selected token
     if (!prevSelectedToken.isEmpty()) {

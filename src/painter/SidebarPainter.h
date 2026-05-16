@@ -72,6 +72,16 @@ public:
     QString filterText() const { return m_filterText; }
     void setFilterText(const QString &text);
 
+    // ── Sort / filter modes (F1) ──
+    enum SortMode  { SortRecent = 0, SortUnread = 1, SortName = 2 };
+    enum FilterMode { FilterAll = 0, FilterUnread = 1, FilterFavorites = 2,
+                      FilterDirect = 3, FilterGroups = 4 };
+
+    int sortMode() const { return m_sortMode; }
+    void setSortMode(int mode);
+    int filterMode() const { return m_filterMode; }
+    void setFilterMode(int mode);
+
 signals:
     void selectedIndexChanged();
 
@@ -137,6 +147,8 @@ private:
     QString m_selectedToken;
     bool m_squeezed = false;
     QString m_filterText;
+    int m_sortMode = SortRecent;
+    int m_filterMode = FilterAll;
     qreal m_scrollY = 0;
     int m_hoveredRow = -1;  // visible row index
 
