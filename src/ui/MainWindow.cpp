@@ -227,26 +227,16 @@ void MainWindow::buildChatPage()
 
     // Warm-dispatch search field — pill-shaped, low-contrast until focused.
     m_searchField = new QLineEdit(sidebarCol);
+    m_searchField->setObjectName("sbSearch");
     m_searchField->setPlaceholderText(tr("Search conversations\u2026"));
     m_searchField->setMinimumHeight(32);
-    m_searchField->setStyleSheet(
-        "QLineEdit { background: #1f1b17; border: 1px solid #2a241f;"
-        "  border-radius: 16px; padding: 4px 14px; font-size: 13px;"
-        "  color: #f4efe6; }"
-        "QLineEdit:focus { border-color: #14b8a6; background: #221e1a; }"
-    );
 
     m_homeBtn = new QPushButton(QStringLiteral("\uE80F"), sidebarCol);  // Home
+    m_homeBtn->setObjectName("sbIcon");
     m_homeBtn->setFixedSize(32, 32);
     m_homeBtn->setFocusPolicy(Qt::NoFocus);
     m_homeBtn->setCursor(Qt::PointingHandCursor);
     m_homeBtn->setToolTip(tr("Home"));
-    m_homeBtn->setStyleSheet(
-        "QPushButton { background: transparent; color: #a8a096; border: none;"
-        "  border-radius: 8px; font-size: 14px;"
-        "  font-family: 'Segoe Fluent Icons', 'Segoe MDL2 Assets', 'Segoe UI Symbol'; }"
-        "QPushButton:hover { background: #241f1a; color: #f4efe6; }"
-    );
 
     m_searchRow = new QWidget(sidebarCol);
     auto *searchRowLayout = new QHBoxLayout(m_searchRow);
@@ -267,30 +257,20 @@ void MainWindow::buildChatPage()
     profileLayout->setSpacing(10);
 
     auto *profileAvatar = new QLabel(profileBar);
+    profileAvatar->setObjectName("sbAvatar");
     profileAvatar->setFixedSize(36, 36);
-    profileAvatar->setStyleSheet("border-radius: 18px; background: #14b8a6;");
     profileLayout->addWidget(profileAvatar);
 
     m_profileNameLabel = new QLabel(profileBar);
-    m_profileNameLabel->setStyleSheet(
-        "color: #f4efe6; font-size: 14px; font-weight: 600; letter-spacing: 0.1px;"
-    );
+    m_profileNameLabel->setObjectName("sbName");
     profileLayout->addWidget(m_profileNameLabel, 1);
 
-    // Icon-font for the sidebar controls so they match the chat header.
-    const QString sidebarIconQSS =
-        "QPushButton { background: transparent; color: #a8a096; border: none;"
-        "  border-radius: 8px; font-size: 14px;"
-        "  font-family: 'Segoe Fluent Icons', 'Segoe MDL2 Assets', 'Segoe UI Symbol'; }"
-        "QPushButton:hover   { background: #241f1a; color: #f4efe6; }"
-        "QPushButton:pressed { background: #2a241f; }";
-
     auto *newChatBtn = new QPushButton(QStringLiteral("\uE710"), profileBar);  // Add
+    newChatBtn->setObjectName("sbIcon");
     newChatBtn->setFixedSize(30, 30);
     newChatBtn->setFocusPolicy(Qt::NoFocus);
     newChatBtn->setToolTip(tr("New chat"));
     newChatBtn->setCursor(Qt::PointingHandCursor);
-    newChatBtn->setStyleSheet(sidebarIconQSS);
     profileLayout->addWidget(newChatBtn);
     connect(newChatBtn, &QPushButton::clicked, this, &MainWindow::openNewChatDialog);
 
@@ -298,11 +278,11 @@ void MainWindow::buildChatPage()
     // dark, moon while light). Same code path as Ctrl+D and the Settings
     // checkbox; applyTheme keeps all three in sync.
     m_themeBtn = new QPushButton(profileBar);
+    m_themeBtn->setObjectName("sbIcon");
     m_themeBtn->setFixedSize(30, 30);
     m_themeBtn->setFocusPolicy(Qt::NoFocus);
     m_themeBtn->setToolTip(tr("Toggle dark/light theme (Ctrl+D)"));
     m_themeBtn->setCursor(Qt::PointingHandCursor);
-    m_themeBtn->setStyleSheet(sidebarIconQSS);
     m_themeBtn->setText(QStringLiteral("\uE790"));   // color/palette swatch
     m_themeBtn->setToolTip(tr("Theme: %1 (Ctrl+D to cycle)")
                                .arg(PainterTheme::themeLabel(m_themeId)));
@@ -312,11 +292,11 @@ void MainWindow::buildChatPage()
 
     m_settingsBtn = new QPushButton(QStringLiteral("\uE713"), profileBar);     // Settings (gear)
     auto *settingsBtn = m_settingsBtn;
+    settingsBtn->setObjectName("sbIcon");
     settingsBtn->setFixedSize(30, 30);
     settingsBtn->setFocusPolicy(Qt::NoFocus);
     settingsBtn->setToolTip(tr("Settings"));
     settingsBtn->setCursor(Qt::PointingHandCursor);
-    settingsBtn->setStyleSheet(sidebarIconQSS);
     profileLayout->addWidget(settingsBtn);
 
     connect(settingsBtn, &QPushButton::clicked, this, [this]() {
@@ -397,7 +377,7 @@ void MainWindow::buildChatPage()
         m_chatPainter->hide();
         if (m_composer) m_composer->hide();
         m_header->hide();
-        m_welcomeWidget->show();
+        showWelcome();
         if (m_updateBannerActive) {
             m_updateBanner->show();
             m_updateBanner->raise();
@@ -517,55 +497,53 @@ void MainWindow::buildChatPage()
     m_chatPainter->hide();
     chatLayout->addWidget(m_chatPainter, 1);
 
-    // ── Auto-update banner ──
+    // ── Auto-update banner (prominent; styled by restyleChrome from tokens) ──
     m_updateBanner = new QWidget(chatCol);
+    m_updateBanner->setObjectName("ubRoot");
     m_updateBanner->hide();
-    m_updateBanner->setStyleSheet(
-        "QWidget { background: #1a2e2c; border-bottom: 1px solid #243d3a; }");
-    m_updateBanner->setFixedHeight(36);
+    m_updateBanner->setFixedHeight(52);
     auto *ubLay = new QHBoxLayout(m_updateBanner);
-    ubLay->setContentsMargins(12, 4, 8, 4);
-    ubLay->setSpacing(8);
+    ubLay->setContentsMargins(18, 6, 12, 6);
+    ubLay->setSpacing(12);
 
-    auto *ubAccent = new QWidget(m_updateBanner);
-    ubAccent->setFixedWidth(3);
-    ubAccent->setStyleSheet("background: #14b8a6;");
-    ubLay->addWidget(ubAccent);
+    auto *ubGlyph = new QLabel(QStringLiteral(""), m_updateBanner);  // download
+    ubGlyph->setObjectName("ubGlyph");
+    ubLay->addWidget(ubGlyph);
 
     m_updateLabel = new QLabel(m_updateBanner);
-    m_updateLabel->setStyleSheet("color: #e4e0da; font-size: 13px;");
+    m_updateLabel->setObjectName("ubLabel");
+    m_updateLabel->setTextFormat(Qt::RichText);
     ubLay->addWidget(m_updateLabel, 1);
 
     m_updateProgress = new QProgressBar(m_updateBanner);
+    m_updateProgress->setObjectName("ubProgress");
     m_updateProgress->setRange(0, 100);
-    m_updateProgress->setFixedWidth(180);
+    m_updateProgress->setFixedWidth(200);
     m_updateProgress->hide();
     ubLay->addWidget(m_updateProgress);
 
     m_updateWhatsNewBtn = new QPushButton(tr("What's new"), m_updateBanner);
+    m_updateWhatsNewBtn->setObjectName("ubGhost");
     m_updateWhatsNewBtn->setFlat(true);
-    m_updateWhatsNewBtn->setStyleSheet(
-        "QPushButton { color: #14b8a6; border: none; padding: 4px 8px; }"
-        "QPushButton:hover { color: #5ee3d6; }");
+    m_updateWhatsNewBtn->setCursor(Qt::PointingHandCursor);
     ubLay->addWidget(m_updateWhatsNewBtn);
 
     m_updateInstallBtn = new QPushButton(tr("Install now"), m_updateBanner);
-    m_updateInstallBtn->setStyleSheet(
-        "QPushButton { background: #14b8a6; color: #0e1817; border: none;"
-        "  padding: 4px 14px; border-radius: 4px; font-weight: 600; }"
-        "QPushButton:hover { background: #4edad0; }");
+    m_updateInstallBtn->setObjectName("ubInstall");
+    m_updateInstallBtn->setCursor(Qt::PointingHandCursor);
     ubLay->addWidget(m_updateInstallBtn);
 
     m_updateLaterBtn = new QPushButton(tr("Later"), m_updateBanner);
+    m_updateLaterBtn->setObjectName("ubGhost");
     m_updateLaterBtn->setFlat(true);
-    m_updateLaterBtn->setStyleSheet(
-        "QPushButton { color: #b0aca5; border: none; padding: 4px 8px; }");
+    m_updateLaterBtn->setCursor(Qt::PointingHandCursor);
     ubLay->addWidget(m_updateLaterBtn);
 
     m_updateCloseBtn = new QPushButton(QStringLiteral("\u2715"), m_updateBanner);
+    m_updateCloseBtn->setObjectName("ubClose");
     m_updateCloseBtn->setFlat(true);
-    m_updateCloseBtn->setFixedSize(24, 24);
-    m_updateCloseBtn->setStyleSheet("QPushButton { color: #8a8680; border: none; }");
+    m_updateCloseBtn->setFixedSize(26, 26);
+    m_updateCloseBtn->setCursor(Qt::PointingHandCursor);
     ubLay->addWidget(m_updateCloseBtn);
 
     chatLayout->insertWidget(0, m_updateBanner);
@@ -1025,9 +1003,12 @@ void MainWindow::buildChatPage()
     m_splitter->setStretchFactor(2, 1);
     m_splitter->setSizes({280, 0, 700});
     m_splitter->setHandleWidth(1);
-    m_splitter->setStyleSheet("QSplitter::handle { background: #2a2a26; }");
 
     mainLayout->addWidget(m_splitter);
+
+    // Initial chrome styling from the active theme (re-applied on theme change
+    // by applyThemeId → restyleChrome).
+    restyleChrome();
 
     // ── Model signals ──
     connect(m_messages, &MessageListModel::conversationTokenChanged, this, [this]() {
@@ -1122,7 +1103,8 @@ void MainWindow::buildChatPage()
     connect(m_updateChecker, &UpdateChecker::updateAvailable,
             this, [this](const UpdateChecker::Manifest &m) {
         m_pendingUpdateNotes = m.notes;
-        m_updateLabel->setText(tr("Update available: v%1").arg(m.version));
+        m_updateLabel->setText(tr("<b>Update available.</b> TalQ v%1 is ready "
+                                   "to install.").arg(m.version));
         m_updateProgress->hide();
         m_updateInstallBtn->setText(tr("Install now"));
         m_updateInstallBtn->show();
@@ -1460,11 +1442,9 @@ void MainWindow::switchToChat()
     restoreChatGeometry();
     m_conversations->refresh();
 
-    // Populate Mission Control telemetry
-    refreshWelcomeStatus();
-
-    // Show welcome, hide chat content
-    m_welcomeWidget->show();
+    // Show the Mission Control home (rebuilds only if a theme change happened
+    // while it was hidden) and populate telemetry.
+    showWelcome();
     m_chatPainter->hide();
     m_composer->hide();
 }
@@ -1474,6 +1454,9 @@ void MainWindow::switchToChat()
 void MainWindow::refreshWelcomeStatus()
 {
     if (!m_welcomeNameLabel) return;   // welcome screen not built yet
+    // Don't do off-screen work: while a chat is open the welcome host is
+    // hidden, and signaling/push churn must not touch its widgets.
+    if (m_welcomeWidget && !m_welcomeWidget->isVisible()) return;
     PainterTheme th(m_themeId, m_fontScale);
     auto hx = [](const QColor &c){ return c.name(QColor::HexRgb); };
     const QString mono = QStringLiteral("'Consolas','Cascadia Mono',monospace");
@@ -1543,6 +1526,7 @@ void MainWindow::refreshWelcomeStatus()
 void MainWindow::buildWelcomeContent()
 {
     if (!m_welcomeWidget) return;
+    m_welcomeDirty = false;
     if (m_welcomeContent) { delete m_welcomeContent; m_welcomeContent = nullptr; }
 
     PainterTheme wt(m_themeId, m_fontScale);
@@ -1589,7 +1573,13 @@ void MainWindow::buildWelcomeContent()
     cmdBar->addWidget(m_wcStatusPill);
     welcomeLayout->addLayout(cmdBar);
 
-    // Greeting (still the empty state: who you are, what to do next).
+    // Greeting (still the empty state: who you are, what to do next). On the
+    // branded build the 123NET logo fills the top-right free space beside the
+    // two-line greeting, just below the status pill.
+    auto *greetRow = new QHBoxLayout();
+    greetRow->setSpacing(16);
+    auto *greetCol = new QVBoxLayout();
+    greetCol->setSpacing(4);
     m_welcomeNameLabel = new QLabel(root);
     {
         QFont wf = m_welcomeNameLabel->font();
@@ -1598,12 +1588,26 @@ void MainWindow::buildWelcomeContent()
         m_welcomeNameLabel->setFont(wf);
     }
     m_welcomeNameLabel->setStyleSheet(QString("color:%1;").arg(wcss(wt.textPrimary)));
-    welcomeLayout->addWidget(m_welcomeNameLabel);
+    greetCol->addWidget(m_welcomeNameLabel);
     auto *subLine = new QLabel(QStringLiteral(
         "No conversation selected. Pick one from the sidebar to jump back in."),
         root);
     subLine->setStyleSheet(QString("font-size:14px;color:%1;").arg(wcss(wt.textSecondary)));
-    welcomeLayout->addWidget(subLine);
+    greetCol->addWidget(subLine);
+    greetRow->addLayout(greetCol);
+    greetRow->addStretch();
+#ifdef TALQ_BRAND_123NET
+    {
+        QPixmap lp(QStringLiteral(":/123net-logo.png"));
+        if (!lp.isNull()) {
+            auto *brandLogo = new QLabel(root);
+            // Match the two-line greeting height (25px name + 14px sub + gap).
+            brandLogo->setPixmap(lp.scaledToHeight(56, Qt::SmoothTransformation));
+            greetRow->addWidget(brandLogo, 0, Qt::AlignRight | Qt::AlignVCenter);
+        }
+    }
+#endif
+    welcomeLayout->addLayout(greetRow);
 
     // Telemetry grid: SERVER (wide) / SIGNALING / PUSH / NEXTCLOUD / TALK / GPU.
     auto *grid = new QGridLayout();
@@ -1706,13 +1710,21 @@ void MainWindow::buildWelcomeContent()
         "padding:14px 18px;font-size:13px;}")
         .arg(wcss(wt.textPrimary)));
     {
-        QFile f(QStringLiteral(":/docs/CHANGELOG.md"));
-        if (f.open(QIODevice::ReadOnly)) {
-            changelog->setMarkdown(QString::fromUtf8(f.readAll()));
-        } else {
-            qWarning() << "welcome: :/docs/CHANGELOG.md missing:" << f.errorString();
-            changelog->setPlainText(tr("Release notes unavailable."));
+        // Read the changelog resource once per process; rebuilds reuse it.
+        static QString s_changelogMd;
+        static bool s_changelogTried = false;
+        if (!s_changelogTried) {
+            s_changelogTried = true;
+            QFile f(QStringLiteral(":/docs/CHANGELOG.md"));
+            if (f.open(QIODevice::ReadOnly))
+                s_changelogMd = QString::fromUtf8(f.readAll());
+            else
+                qWarning() << "welcome: :/docs/CHANGELOG.md missing:" << f.errorString();
         }
+        if (!s_changelogMd.isEmpty())
+            changelog->setMarkdown(s_changelogMd);
+        else
+            changelog->setPlainText(tr("Release notes unavailable."));
     }
     changelog->setReadOnly(true);
     changelog->setOpenExternalLinks(true);
@@ -1735,6 +1747,115 @@ void MainWindow::buildWelcomeContent()
     }
 
     refreshWelcomeStatus();
+}
+
+// Make the welcome host visible. Rebuild its content only if a theme change
+// happened while it was hidden (deferred from applyThemeId), so opening a
+// chat and cycling themes mid-chat stay cheap.
+void MainWindow::showWelcome()
+{
+    if (!m_welcomeWidget) return;
+    if (m_welcomeDirty || !m_welcomeContent)
+        buildWelcomeContent();
+    m_welcomeWidget->show();
+    refreshWelcomeStatus();
+}
+
+// Brief, theme-tinted "Theme: X" overlay, bottom-centre, auto-hiding. Honors
+// reduced-motion by not animating (plain show/hide).
+void MainWindow::showThemeToast(const QString &name)
+{
+    PainterTheme t(m_themeId, m_fontScale);
+    auto hx = [](const QColor &c){ return c.name(QColor::HexRgb); };
+    if (!m_themeToast) {
+        m_themeToast = new QLabel(this);
+        m_themeToast->setAttribute(Qt::WA_TransparentForMouseEvents);
+        m_themeToast->setAlignment(Qt::AlignCenter);
+    }
+    m_themeToast->setText(tr("  Theme: %1  ").arg(name));
+    // High-contrast accent pill (controlInk on accent), top-centre so it's
+    // unmistakable. Transient confirmation, so the One-Signal accent is fine.
+    m_themeToast->setStyleSheet(QString(
+        "background:%1;color:%2;border:none;border-radius:14px;"
+        "padding:9px 22px;font-size:14px;font-weight:700;letter-spacing:0.3px;")
+        .arg(hx(t.accent), hx(t.controlInk)));
+    m_themeToast->adjustSize();
+    m_themeToast->move((width() - m_themeToast->width()) / 2, 28);
+    m_themeToast->raise();
+    m_themeToast->show();
+    QPointer<QLabel> tp(m_themeToast);
+    QTimer::singleShot(1600, this, [tp]{ if (tp) tp->hide(); });
+}
+
+// Re-apply theme tokens to the QSS-styled sidebar chrome. These widgets are
+// QWidgets (not QPainter) so they don't follow the painter theme; without
+// this, the search field, sidebar icon buttons (incl. their hover/pressed
+// states), profile name, avatar, and splitter handle keep their build-time
+// colours after a theme switch.
+void MainWindow::restyleChrome()
+{
+    PainterTheme t(m_themeId, m_fontScale);
+    auto hx = [](const QColor &c){ return c.name(QColor::HexRgb); };
+
+    if (m_searchField)
+        m_searchField->setStyleSheet(QString(
+            "QLineEdit{background:%1;border:1px solid %2;border-radius:16px;"
+            "padding:4px 14px;font-size:13px;color:%3;}"
+            "QLineEdit:focus{border-color:%4;background:%5;}")
+            .arg(hx(t.bgSecondary), hx(t.divider), hx(t.textPrimary),
+                 hx(t.accent), hx(t.bgHover)));
+
+    const QString iconQSS = QString(
+        "QPushButton{background:transparent;color:%1;border:none;"
+        "border-radius:8px;font-size:14px;"
+        "font-family:'Segoe Fluent Icons','Segoe MDL2 Assets','Segoe UI Symbol';}"
+        "QPushButton:hover{background:%2;color:%3;}"
+        "QPushButton:pressed{background:%4;}")
+        .arg(hx(t.textSecondary), hx(t.bgHover), hx(t.textPrimary),
+             hx(t.bgSelected));
+    if (m_sidebarCol)
+        for (auto *b : m_sidebarCol->findChildren<QPushButton*>(QStringLiteral("sbIcon")))
+            b->setStyleSheet(iconQSS);
+
+    if (m_profileNameLabel)
+        m_profileNameLabel->setStyleSheet(QString(
+            "color:%1;font-size:14px;font-weight:600;letter-spacing:0.1px;")
+            .arg(hx(t.textPrimary)));
+
+    if (m_sidebarCol) {
+        if (auto *av = m_sidebarCol->findChild<QLabel*>(QStringLiteral("sbAvatar")))
+            av->setStyleSheet(QString("border-radius:18px;background:%1;")
+                                  .arg(hx(t.accent)));
+    }
+
+    if (m_splitter)
+        m_splitter->setStyleSheet(QString("QSplitter::handle{background:%1;}")
+                                      .arg(hx(t.divider)));
+
+    if (m_updateBanner) {
+        const QString accentHi = t.accent.lighter(118).name(QColor::HexRgb);
+        m_updateBanner->setStyleSheet(QString(
+            "QWidget#ubRoot{background:%1;border-top:1px solid %2;"
+            "border-bottom:1px solid %2;}"
+            "QLabel#ubGlyph{color:%2;font-size:20px;"
+            "font-family:'Segoe Fluent Icons','Segoe MDL2 Assets','Segoe UI Symbol';}"
+            "QLabel#ubLabel{color:%3;font-size:14px;}"
+            "QPushButton#ubInstall{background:%2;color:%4;border:none;"
+            "border-radius:7px;padding:8px 20px;font-weight:700;}"
+            "QPushButton#ubInstall:hover{background:%5;}"
+            "QPushButton#ubGhost{color:%6;border:none;padding:7px 12px;"
+            "font-weight:600;background:transparent;}"
+            "QPushButton#ubGhost:hover{color:%3;}"
+            "QPushButton#ubClose{color:%6;border:none;background:transparent;"
+            "font-size:13px;}"
+            "QPushButton#ubClose:hover{color:%3;}"
+            "QProgressBar#ubProgress{background:%7;border:1px solid %8;"
+            "border-radius:6px;color:%3;text-align:center;}"
+            "QProgressBar#ubProgress::chunk{background:%2;border-radius:5px;}")
+            .arg(hx(t.bgSurface), hx(t.accent), hx(t.textPrimary),
+                 hx(t.controlInk), accentHi, hx(t.textTime),
+                 hx(t.bgSecondary), hx(t.divider)));
+    }
 }
 
 void MainWindow::switchToLogin()
@@ -1918,7 +2039,14 @@ void MainWindow::applyThemeId(PainterTheme::Theme t)
     m_chatPainter->setTheme(t);
     m_threadsPainter->setTheme(t);
     applyDarkPalette();
-    buildWelcomeContent();   // re-tint the Mission Control home to the new theme
+    restyleChrome();          // search field, sidebar icons, profile, splitter
+    // Re-tint the Mission Control home. Rebuilding it (delete + recreate ~30
+    // widgets + re-parse the full CHANGELOG markdown) is expensive, so only do
+    // it when the user is actually looking at it; otherwise defer to next show.
+    if (m_welcomeWidget && m_welcomeWidget->isVisible())
+        buildWelcomeContent();
+    else
+        m_welcomeDirty = true;
     if (m_themeBtn)
         m_themeBtn->setToolTip(tr("Theme: %1 (Ctrl+D to cycle)")
                                    .arg(PainterTheme::themeLabel(t)));
@@ -1926,6 +2054,7 @@ void MainWindow::applyThemeId(PainterTheme::Theme t)
     m_settings.setValue("theme", PainterTheme::themeId(t));
     m_settings.setValue("darkMode", m_darkMode);
     m_settings.endGroup();
+    showThemeToast(PainterTheme::themeLabel(t));
 }
 
 void MainWindow::applyDarkPalette()

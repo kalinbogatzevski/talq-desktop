@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.27.3 (2026-05-16)
+
+Performance and polish. The redesign had introduced severe GUI-thread stalls;
+this release removes them and tightens the new chrome.
+
+### Fixed (performance)
+- **Sidebar hover/scroll is fast again.** Conversation-list preview text was
+  elided character-by-character, re-shaping the whole remaining string every
+  step (O(n²)) on every visible row on every repaint: ~445 ms (up to ~2 s) per
+  sidebar paint. Now uses Qt's optimized elide: ~6 ms per paint (~75x).
+- **Chat background glow is cached.** The per-theme ambient radial gradient is
+  rasterised once per size/theme instead of every paint.
+- **Theme switching is cheap.** The Mission Control home is no longer rebuilt
+  (with a full CHANGELOG re-parse) when it's hidden; it rebuilds lazily on
+  next show. Off-screen telemetry refresh is skipped while chatting.
+
+### Changed
+- Theme switch shows a high-contrast accent toast at the top.
+- The "Search conversations" field, sidebar buttons (incl. hover), profile,
+  splitter, and update banner now re-tint on theme change.
+- Auto-update banner is taller and more prominent (bold message, accent
+  Install button, full borders, theme-tokenized); the side-stripe is gone.
+- Startup update check now runs ~3 s after launch (was 30 s).
+- Branded build: the 123NET logo appears top-right on the welcome screen.
+
 ## v0.27.2 (2026-05-16)
 
 A small corrective follow-up to 0.27.1.

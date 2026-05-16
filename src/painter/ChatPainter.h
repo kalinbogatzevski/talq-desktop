@@ -4,6 +4,7 @@
 #include <QVector>
 #include <QHash>
 #include <QImage>
+#include <QPixmap>
 #include <QSet>
 #include "MessageLayout.h"
 #include "PainterTheme.h"
@@ -210,6 +211,10 @@ private:
     qreal m_dragStartScroll = 0;
 
     PainterTheme m_theme;
+
+    // Cached background (bgPrimary + ambient glow) so the per-theme radial
+    // gradient is rasterised once per size/theme change, not every paint.
+    QPixmap m_ambientCache;
 
     // Layouts: index 0 = oldest message (top of view)
     // Model is newest-first, so m_layouts[i] corresponds to model row (rowCount - 1 - i)

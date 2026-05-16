@@ -108,6 +108,9 @@ private:
     void openConversationInfo();
     void createNewTopic();
     void buildWelcomeContent();    // (re)build Mission Control content; theme-aware
+    void showWelcome();            // rebuild-if-dirty, then show + refresh
+    void restyleChrome();          // re-apply theme tokens to QSS-styled chrome
+    void showThemeToast(const QString &name);  // brief "Theme: X" overlay
     void refreshWelcomeStatus();   // repaint Mission Control telemetry/LEDs/pill
 
     // ── Pointers to backend (not owned) ──
@@ -155,6 +158,8 @@ private:
     QPushButton *m_homeBtn = nullptr;
     QWidget *m_welcomeWidget = nullptr;     // persistent host (shown/hidden)
     QWidget *m_welcomeContent = nullptr;    // themed content, rebuilt on theme change
+    bool m_welcomeDirty = false;            // theme changed while welcome hidden → rebuild on next show
+    QLabel *m_themeToast = nullptr;         // transient "Theme: X" overlay
     QLabel *m_welcomeNameLabel = nullptr;
     QLabel *m_welcomeServerLabel = nullptr;     // Mission Control tile values
     QLabel *m_welcomeNcLabel = nullptr;
