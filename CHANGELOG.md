@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.28.0 (2026-05-16)
+
+Feature release porting the client-side improvements from the upstream Nextcloud
+Talk beta.
+
+### Added
+- **Sidebar sort and filter.** A funnel control in the search row sorts the
+  conversation list by recent activity, unread first, or name, and filters to
+  all / unread / favorites / direct messages / groups. Favorites stay grouped
+  on top. Choices persist across restarts.
+- **Shared files panel.** Conversation info now lists files shared in recent
+  messages with a type glyph and size; click a row to open it in the browser.
+- **Call noise suppression.** Microphone audio is run through WebRTC noise
+  suppression during calls (high-pass filter on, gain control off). Toggle it
+  in Settings → Audio & Video; on by default. Degrades gracefully if the
+  GStreamer `webrtcdsp` plugin is unavailable.
+
+### Verified
+- Private (1:1) replies render the quoted parent message, same as group
+  conversations (already correct; confirmed and kept).
+
 ## v0.27.3 (2026-05-16)
 
 Performance and polish. The redesign had introduced severe GUI-thread stalls;

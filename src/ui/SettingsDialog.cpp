@@ -147,6 +147,21 @@ QWidget *SettingsDialog::buildAudioVideoTab()
     connect(m_micCombo, QOverload<int>::of(&QComboBox::activated),
             this, [this](int idx) { m_deviceManager->setSelectedAudioInput(idx); });
 
+    m_noiseSuppression = new QCheckBox(tr("Noise suppression"));
+    m_noiseSuppression->setToolTip(
+        tr("Filter background noise from your microphone during calls "
+           "(applies to the next call)."));
+    m_settings.beginGroup("Audio");
+    m_noiseSuppression->setChecked(
+        m_settings.value("noiseSuppression", true).toBool());
+    m_settings.endGroup();
+    layout->addWidget(m_noiseSuppression);
+    connect(m_noiseSuppression, &QCheckBox::toggled, this, [this](bool checked) {
+        m_settings.beginGroup("Audio");
+        m_settings.setValue("noiseSuppression", checked);
+        m_settings.endGroup();
+    });
+
     layout->addSpacing(4);
 
     // Speaker

@@ -73,7 +73,7 @@ echo "[4/6] Copying MSYS2 + GStreamer DLLs..."
 for dll in libstdc++-6.dll libgcc_s_seh-1.dll libwinpthread-1.dll \
     liborc-0.4-0.dll zlib1.dll libiconv-2.dll \
     libgstreamer-1.0-0.dll libgstbase-1.0-0.dll libgstapp-1.0-0.dll \
-    libgstaudio-1.0-0.dll libgstvideo-1.0-0.dll libgstpbutils-1.0-0.dll \
+    libgstaudio-1.0-0.dll libgstbadaudio-1.0-0.dll libgstvideo-1.0-0.dll libgstpbutils-1.0-0.dll \
     libgstrtp-1.0-0.dll libgstsdp-1.0-0.dll libgstwebrtc-1.0-0.dll \
     libgstrtsp-1.0-0.dll libgsttag-1.0-0.dll \
     libgobject-2.0-0.dll libglib-2.0-0.dll libgio-2.0-0.dll \
@@ -88,7 +88,8 @@ for dll in libstdc++-6.dll libgcc_s_seh-1.dll libwinpthread-1.dll \
     libgnutls-30.dll libhogweed-6.dll libgmp-10.dll \
     libidn2-0.dll libnettle-8.dll libp11-kit-0.dll \
     libtasn1-6.dll libunistring-5.dll libzstd.dll \
-    libbrotlicommon.dll libbrotlidec.dll libbrotlienc.dll; do
+    libbrotlicommon.dll libbrotlidec.dll libbrotlienc.dll \
+    libwebrtc-audio-processing-1-3.dll; do
     cp "$MSYS2/$dll" . 2>/dev/null || true
 done
 
@@ -96,7 +97,7 @@ done
 mkdir -p gst-plugins
 for p in coreelements audioconvert audioresample autodetect audiotestsrc videotestsrc \
     dtls nice opus rtp rtpmanager srtp \
-    wasapi wasapi2 webrtc app level \
+    wasapi wasapi2 webrtc webrtcdsp app level \
     vpx openh264 videoconvertscale sctp jpeg \
     winks mediafoundation winscreencap \
     d3d11 nvcodec; do
