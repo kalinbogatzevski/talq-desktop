@@ -836,8 +836,24 @@ void ApiClient::createRoom(int roomType, const QString &roomName, const QString 
                                 .value(QStringLiteral("token")).toString();
             callback(true, token, QString());
         } else {
-            const QString msg = meta.value(QStringLiteral("message")).toString();
-            qWarning() << "createRoom: OCS" << ocsStatus << msg;
+            const int httpStatus = reply->attribute(
+                QNetworkRequest::HttpStatusCodeAttribute).toInt();
+            QString msg = meta.value(QStringLiteral("message")).toString();
+            if (msg.isEmpty()) {
+                if (reply->error() != QNetworkReply::NoError)
+                    msg = reply->errorString();
+                else if (httpStatus == 403)
+                    msg = QStringLiteral("Server refused (HTTP 403): this "
+                          "account is not allowed to create conversations. "
+                          "Check Talk admin setting \"Allow users to start "
+                          "conversations\" / group restriction.");
+                else
+                    msg = QStringLiteral("Server refused (HTTP %1, OCS %2).")
+                              .arg(httpStatus).arg(ocsStatus);
+            }
+            qWarning() << "createRoom failed: http" << httpStatus
+                       << "ocs" << ocsStatus
+                       << "neterr" << reply->error() << msg;
             callback(false, QString(), msg);
         }
     });
