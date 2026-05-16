@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="resources/logo.png" alt="TalQ" width="128" height="128" />
+
 # TalQ
 
 **A native desktop client for Nextcloud Talk — drawn, not wrapped.**
@@ -182,8 +184,8 @@ Nextcloud GmbH.
 ---
 
 Built by **Kalin Bogatzevski**. By day I work on the commercial side —
-**ISPCQ**, the multi-tenant ISP/ERP platform. TalQ is the same engineering
-DNA applied to a desktop client.
+**[ISPCQ](https://ispcq.com)**, the multi-tenant ISP/ERP platform. TalQ is
+the same engineering DNA applied to a desktop client.
 
 Open-sourced because the tool you live inside all day shouldn't be a black
 box — and because good software is the best advertising I know.
