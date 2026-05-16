@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.28.2 (2026-05-16)
+
+### Fixed
+- **Group rooms can be created with no members.** Creating a named group no
+  longer requires selecting at least one person, so you can make an empty
+  room and then add a bot (or invite people later). Previously the Create
+  button stayed disabled, an internal guard rejected the submit, and even
+  when forced through the dialog hung on "Creating room…" because the
+  add-participant loop never completed for an empty member list. A 1:1 chat
+  still requires exactly one counterpart.
+
 ## v0.28.1 (2026-05-16)
 
 Release-notes formatting fix.
