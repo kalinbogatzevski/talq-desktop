@@ -225,6 +225,39 @@ fi
 NC_USER="kalin"
 NC_FOLDER="https://ncloud.123net.link/remote.php/dav/files/${NC_USER}/TalQ-updates"
 
+# Upload one file to the ncloud channel and HARD-VERIFY it landed intact.
+# Plain `curl -sS` exits 0 on HTTP 5xx/4xx, so a 503 maintenance page or a
+# 423 stale-lock looks like a successful upload; and a connection cut
+# mid-PUT can store a truncated object that still returned 2xx. This
+# wrapper fails loudly on the HTTP code AND re-reads the stored size via
+# WebDAV HEAD, so a release can never silently ship a partial/missing
+# update to the auto-update channel (this exact failure shipped a corrupt
+# branded installer once, masked by an "uploaded" log line).
+nc_put() {
+    local lf="$1" rn="$2" code lsize rsize
+    lsize=$(stat -c '%s' "$lf")
+    code=$(curl -sS -u "${NC_USER}:${NC_APP_PASSWORD}" -T "$lf" \
+           "${NC_FOLDER}/${rn}" -o /dev/null -w '%{http_code}') || true
+    case "$code" in
+        2*) ;;
+        423) echo "FATAL: ncloud PUT $rn -> 423 Locked (stale WebDAV/Redis"
+             echo "       lock from an interrupted transfer). Clear it, re-run." ; exit 1 ;;
+        503) echo "FATAL: ncloud PUT $rn -> 503 (NC in maintenance mode)."
+             echo "       Wait for maintenance to finish, then re-run." ; exit 1 ;;
+        *)   echo "FATAL: ncloud PUT $rn -> HTTP ${code:-no-response}." ; exit 1 ;;
+    esac
+    # tr -d '\r': HTTP headers are CRLF; header name case varies.
+    rsize=$(curl -fsS -u "${NC_USER}:${NC_APP_PASSWORD}" -I "${NC_FOLDER}/${rn}" \
+            2>/dev/null | tr -d '\r' \
+            | awk -F': ' 'tolower($1)=="content-length"{print $2}')
+    if [ "$rsize" != "$lsize" ]; then
+        echo "FATAL: ncloud $rn size mismatch (local=$lsize remote=${rsize:-none})."
+        echo "       Truncated/partial upload — re-run when ncloud is healthy."
+        exit 1
+    fi
+    echo "  ✓ $rn ($lsize B) verified on ncloud"
+}
+
 if [ -n "${NC_APP_PASSWORD:-}" ]; then
     echo "[7/7] Uploading to ncloud update channel..."
     GEN_INSTALLER="$SRC_DIR/dist/TalQ-v${VERSION}-Setup.exe"
@@ -271,14 +304,15 @@ with open(os.environ["M_OUT"], "w", encoding="utf-8") as fh:
     json.dump(m, fh, indent=2, ensure_ascii=False)
 PY
 
-        curl -sS -u "${NC_USER}:${NC_APP_PASSWORD}" -T "$GEN_INSTALLER" \
-            "${NC_FOLDER}/TalQ-v${VERSION}-Setup.exe" >/dev/null
-        curl -sS -u "${NC_USER}:${NC_APP_PASSWORD}" -T "$BRAND_INSTALLER" \
-            "${NC_FOLDER}/123NET-TalQ-v${VERSION}-Setup.exe" >/dev/null
-        curl -sS -u "${NC_USER}:${NC_APP_PASSWORD}" -T /tmp/talq-latest.json \
-            "${NC_FOLDER}/talq-latest.json" >/dev/null
+        # Manifest (sha256 verified by the branded in-app updater) MUST go
+        # last: if it lands but an installer didn't, clients chase a missing
+        # or wrong-hash file. nc_put exits non-zero on any failure, so an
+        # earlier installer failure aborts before the manifest is written.
+        nc_put "$GEN_INSTALLER"      "TalQ-v${VERSION}-Setup.exe"
+        nc_put "$BRAND_INSTALLER"    "123NET-TalQ-v${VERSION}-Setup.exe"
+        nc_put /tmp/talq-latest.json "talq-latest.json"
 
-        echo "  uploaded v${VERSION} generic + 123NET + manifest to ncloud"
+        echo "  uploaded + verified v${VERSION} generic + 123NET + manifest to ncloud"
     else
         echo "  skipped manifest push: need both generic + 123NET installers in dist"
     fi
