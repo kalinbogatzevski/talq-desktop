@@ -55,6 +55,7 @@ private:
     void runAddSearch();
     void refreshBots();
     void populateBotRow(const BotInfo &bot);
+    void refreshSharedFiles();
 
     ApiClient   *m_api = nullptr;
     QString      m_token;
@@ -87,4 +88,10 @@ private:
     QPushButton *m_addBotBtn = nullptr;
     QLabel      *m_botsHeader = nullptr;
     int          m_botsRefreshSeq = 0;   // guards async-callback races
+
+    // Shared files: a flat read-only list built from one recent chat page.
+    // No thumbnails and no MessageListModel — just filename, size and a
+    // click-to-open link, kept deliberately lightweight.
+    QLabel      *m_filesHeader = nullptr;
+    QListWidget *m_filesList = nullptr;
 };

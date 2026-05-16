@@ -41,7 +41,7 @@ echo "[2/4] Copying GStreamer runtime DLLs..."
 GST_RUNTIME_DLLS=(
     libgstreamer-1.0-0 libgstbase-1.0-0 libgstapp-1.0-0
     libgstsdp-1.0-0 libgstwebrtc-1.0-0 libgstrtp-1.0-0
-    libgstpbutils-1.0-0 libgstaudio-1.0-0 libgsttag-1.0-0
+    libgstpbutils-1.0-0 libgstaudio-1.0-0 libgstbadaudio-1.0-0 libgsttag-1.0-0
     libgstvideo-1.0-0 libgstnet-1.0-0 libgstsctp-1.0-0
     libgstwebrtcnice-1.0-0
     libgstd3d11-1.0-0 libgstd3dshader-1.0-0 libgstd3d12-1.0-0
@@ -61,7 +61,7 @@ mkdir -p "$BUILD_DIR/gst-plugins"
 GST_PLUGINS=(
     coreelements audioconvert audioresample autodetect audiotestsrc videotestsrc
     dtls nice opus rtp rtpmanager srtp
-    wasapi wasapi2 webrtc app level
+    wasapi wasapi2 webrtc webrtcdsp app level
     vpx openh264 videoconvertscale sctp jpeg
     winks mediafoundation winscreencap
     d3d11 nvcodec
@@ -86,7 +86,8 @@ for dll in liborc-0.4-0.dll zlib1.dll \
     libgnutls-30.dll libhogweed-6.dll libgmp-10.dll \
     libidn2-0.dll libnettle-8.dll libp11-kit-0.dll \
     libtasn1-6.dll libunistring-5.dll libzstd.dll \
-    libbrotlicommon.dll libbrotlidec.dll libbrotlienc.dll; do
+    libbrotlicommon.dll libbrotlidec.dll libbrotlienc.dll \
+    libwebrtc-audio-processing-1-3.dll; do
     cp "$MSYS2_DIR/bin/$dll" "$BUILD_DIR/" 2>/dev/null || true
 done
 

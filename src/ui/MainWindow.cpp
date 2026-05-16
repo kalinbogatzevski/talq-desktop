@@ -40,6 +40,7 @@
 #include <QCloseEvent>
 #include <QScreen>
 #include <QMenu>
+#include <QActionGroup>
 #include <QDesktopServices>
 #include <QDialog>
 #include <QClipboard>
@@ -238,12 +239,58 @@ void MainWindow::buildChatPage()
     m_homeBtn->setCursor(Qt::PointingHandCursor);
     m_homeBtn->setToolTip(tr("Home"));
 
+    // Sort / filter trigger — funnel glyph, menu of exclusive sort & show modes.
+    m_filterBtn = new QPushButton(QStringLiteral(""), sidebarCol);  // Filter (funnel)
+    m_filterBtn->setObjectName("sbIcon");
+    m_filterBtn->setFixedSize(32, 32);
+    m_filterBtn->setFocusPolicy(Qt::NoFocus);
+    m_filterBtn->setCursor(Qt::PointingHandCursor);
+    m_filterBtn->setToolTip(tr("Sort and filter conversations"));
+
+    m_filterMenu = new QMenu(m_filterBtn);
+    auto *sortGroup = new QActionGroup(m_filterMenu);
+    sortGroup->setExclusive(true);
+    m_filterMenu->addSection(tr("Sort by"));
+    struct ModeDef { const char *label; int mode; };
+    const ModeDef sortDefs[] = {
+        { QT_TR_NOOP("Recent activity"), SidebarPainter::SortRecent },
+        { QT_TR_NOOP("Unread first"),    SidebarPainter::SortUnread },
+        { QT_TR_NOOP("Name (A–Z)"), SidebarPainter::SortName },
+    };
+    for (const auto &d : sortDefs) {
+        QAction *a = m_filterMenu->addAction(tr(d.label));
+        a->setCheckable(true);
+        a->setData(d.mode);
+        sortGroup->addAction(a);
+    }
+    auto *filterGroup = new QActionGroup(m_filterMenu);
+    filterGroup->setExclusive(true);
+    m_filterMenu->addSection(tr("Show"));
+    const ModeDef filterDefs[] = {
+        { QT_TR_NOOP("All conversations"), SidebarPainter::FilterAll },
+        { QT_TR_NOOP("Unread"),            SidebarPainter::FilterUnread },
+        { QT_TR_NOOP("Favorites"),         SidebarPainter::FilterFavorites },
+        { QT_TR_NOOP("Direct messages"),   SidebarPainter::FilterDirect },
+        { QT_TR_NOOP("Groups"),            SidebarPainter::FilterGroups },
+    };
+    for (const auto &d : filterDefs) {
+        QAction *a = m_filterMenu->addAction(tr(d.label));
+        a->setCheckable(true);
+        a->setData(d.mode);
+        filterGroup->addAction(a);
+    }
+    connect(m_filterBtn, &QPushButton::clicked, this, [this]() {
+        m_filterMenu->popup(m_filterBtn->mapToGlobal(
+            QPoint(0, m_filterBtn->height() + 2)));
+    });
+
     m_searchRow = new QWidget(sidebarCol);
     auto *searchRowLayout = new QHBoxLayout(m_searchRow);
     searchRowLayout->setContentsMargins(10, 6, 10, 6);
     searchRowLayout->setSpacing(6);
     searchRowLayout->addWidget(m_homeBtn);
     searchRowLayout->addWidget(m_searchField, 1);
+    searchRowLayout->addWidget(m_filterBtn);
     auto *searchRow = m_searchRow;
 
     // ── User profile header ──
@@ -359,6 +406,39 @@ void MainWindow::buildChatPage()
 
     connect(m_searchField, &QLineEdit::textChanged, m_sidebar, &SidebarPainter::setFilterText);
     connect(m_sidebar, &SidebarPainter::conversationClicked, this, &MainWindow::onConversationSelected);
+
+    // ── Restore persisted sort / filter, sync menu checks, wire changes ──
+    m_settings.beginGroup("Sidebar");
+    int savedSort = m_settings.value("sortMode", SidebarPainter::SortRecent).toInt();
+    int savedFilter = m_settings.value("filterMode", SidebarPainter::FilterAll).toInt();
+    m_settings.endGroup();
+    if (savedSort < SidebarPainter::SortRecent || savedSort > SidebarPainter::SortName)
+        savedSort = SidebarPainter::SortRecent;
+    if (savedFilter < SidebarPainter::FilterAll || savedFilter > SidebarPainter::FilterGroups)
+        savedFilter = SidebarPainter::FilterAll;
+    m_sidebar->setSortMode(savedSort);
+    m_sidebar->setFilterMode(savedFilter);
+    for (QAction *a : sortGroup->actions())
+        if (a->data().toInt() == savedSort) a->setChecked(true);
+    for (QAction *a : filterGroup->actions())
+        if (a->data().toInt() == savedFilter) a->setChecked(true);
+
+    connect(sortGroup, &QActionGroup::triggered, this, [this](QAction *a) {
+        const int m = a->data().toInt();
+        m_sidebar->setSortMode(m);
+        m_settings.beginGroup("Sidebar");
+        m_settings.setValue("sortMode", m);
+        m_settings.endGroup();
+        restyleChrome();
+    });
+    connect(filterGroup, &QActionGroup::triggered, this, [this](QAction *a) {
+        const int m = a->data().toInt();
+        m_sidebar->setFilterMode(m);
+        m_settings.beginGroup("Sidebar");
+        m_settings.setValue("filterMode", m);
+        m_settings.endGroup();
+        restyleChrome();
+    });
 
     // Home button and clickable-logo → return to welcome screen
     connect(m_homeBtn, &QPushButton::clicked, m_sidebar, &SidebarPainter::homeRequested);
@@ -1816,6 +1896,32 @@ void MainWindow::restyleChrome()
     if (m_sidebarCol)
         for (auto *b : m_sidebarCol->findChildren<QPushButton*>(QStringLiteral("sbIcon")))
             b->setStyleSheet(iconQSS);
+
+    // Filter trigger: tint accent while a non-default sort/filter is active so
+    // the funnel reads as "engaged" without opening the menu.
+    if (m_filterBtn && m_sidebar) {
+        const bool active = m_sidebar->filterMode() != SidebarPainter::FilterAll
+                         || m_sidebar->sortMode()   != SidebarPainter::SortRecent;
+        if (active)
+            m_filterBtn->setStyleSheet(QString(
+                "QPushButton{background:transparent;color:%1;border:none;"
+                "border-radius:8px;font-size:14px;font-family:'Segoe Fluent Icons',"
+                "'Segoe MDL2 Assets','Segoe UI Symbol';}"
+                "QPushButton:hover{background:%2;color:%1;}"
+                "QPushButton:pressed{background:%3;}")
+                .arg(hx(t.accent), hx(t.bgHover), hx(t.bgSelected)));
+    }
+
+    if (m_filterMenu)
+        m_filterMenu->setStyleSheet(QString(
+            "QMenu{background:%1;border:1px solid %2;border-radius:10px;"
+            "padding:6px;color:%3;font-size:13px;}"
+            "QMenu::item{padding:7px 28px 7px 24px;border-radius:6px;}"
+            "QMenu::item:selected{background:%4;color:%5;}"
+            "QMenu::item:checked{color:%6;font-weight:600;}"
+            "QMenu::separator{height:1px;background:%2;margin:6px 8px;}")
+            .arg(hx(t.bgSurface), hx(t.divider), hx(t.textPrimary),
+                 hx(t.bgHover), hx(t.textPrimary), hx(t.accent)));
 
     if (m_profileNameLabel)
         m_profileNameLabel->setStyleSheet(QString(

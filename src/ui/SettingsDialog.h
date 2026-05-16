@@ -61,6 +61,7 @@ private:
     QComboBox *m_cameraCombo = nullptr;
     QRadioButton *m_res1080 = nullptr;
     QRadioButton *m_res720 = nullptr;
+    QCheckBox *m_noiseSuppression = nullptr;
 
     // Notifications tab
     QCheckBox *m_notifEnabled = nullptr;
