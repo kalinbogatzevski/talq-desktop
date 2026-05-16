@@ -3,12 +3,12 @@
 #include <QObject>
 #include <QString>
 
-// The in-app auto-updater is a feature of the branded distribution: it
-// points at that distribution's private update channel (endpoint +
-// credentials supplied from the private build store). The generic /
-// open-source build ships none of that and distributes via GitHub
-// Releases, so the updater is compiled inert (kEnabled=false, empty
-// endpoints) and never touches the network.
+// The in-app auto-updater has two compile-time channels. The branded
+// distribution uses a private channel (endpoint + credentials supplied
+// from the private build store). The generic / open-source build uses
+// public GitHub Releases (kUseGithub=true): the GitHub API and repo are
+// public, so there are no credentials and no private infrastructure in
+// this source — only the public api.github.com endpoint.
 namespace TalQUpdates {
 #ifdef TALQ_BRAND_123NET
     // The real endpoint + public-share credentials are NOT in the public
