@@ -55,6 +55,25 @@ fi
 BUILD_DIR="/c/build/talq-release${DIST_SUFFIX}"
 DIST_DIR="$SRC_DIR/dist/TalQ-v${VERSION}-win64${DIST_SUFFIX}"
 
+# Version consistency guard (generic build): talq-setup.iss / talq-update.iss
+# carry hardcoded versions (AppVersion, the packaged dist path, and the
+# OutputBaseFilename). CMakeLists.txt is the single source of truth; if the
+# .iss files drift, the installer silently packages the wrong dist folder or
+# emits a misnamed exe. Branded builds stamp their .iss from /private, so this
+# guard only applies to the generic path. tr -d '\r': the .iss are CRLF.
+if [ -z "$BRAND" ]; then
+    for iss in talq-setup.iss talq-update.iss; do
+        iss_ver=$(grep -m1 '^AppVersion=' "$SRC_DIR/installer/$iss" \
+                  | cut -d= -f2 | tr -d '\r')
+        if [ "$iss_ver" != "$VERSION" ]; then
+            echo "FATAL: installer/$iss is AppVersion=$iss_ver but CMakeLists.txt"
+            echo "       is $VERSION. Bump installer/$iss (AppVersion, the dist"
+            echo "       path, and OutputBaseFilename) to $VERSION and retry."
+            exit 1
+        fi
+    done
+fi
+
 # Tool paths
 CMAKE="/c/Qt/Tools/CMake_64/bin/cmake.exe"
 WINDEPLOYQT="/c/Qt/6.8.2/mingw_64/bin/windeployqt6.exe"
@@ -175,9 +194,16 @@ rm -rf "$DIST_DIR/CMakeFiles" "$DIST_DIR/cmake_install.cmake" \
     "$DIST_DIR/.ninja"* "$DIST_DIR/talq_autogen" \
     "$DIST_DIR/talq-call-test_autogen" "$DIST_DIR/.qt"
 
-echo "[6/6] Building installer..."
+echo "[6/6] Building installer(s)..."
 if [ -f "$ISCC" ]; then
     "$ISCC" "$SRC_DIR/installer/$INSTALLER_ISS" 2>&1 | tail -2
+    # Slim "update" installer: ships only talq.exe over an existing full
+    # install (point-release upgrade path). Generic-only — the branded
+    # channel auto-updates via ncloud with the full installer, so a slim
+    # updater there would be dead weight.
+    if [ -z "$BRAND" ]; then
+        "$ISCC" "$SRC_DIR/installer/talq-update.iss" 2>&1 | tail -2
+    fi
 else
     echo "Inno Setup not found at $ISCC — skipping installer"
 fi
@@ -185,7 +211,7 @@ fi
 echo ""
 echo "=== Release complete ==="
 echo "Dist: $DIST_DIR"
-ls -lh "$SRC_DIR/dist/"*"v${VERSION}"*Setup* 2>/dev/null || echo "(no installer built)"
+ls -lh "$SRC_DIR/dist/"*"v${VERSION}"-*.exe 2>/dev/null || echo "(no installer built)"
 
 # ── [7/7] Auto-upload to ncloud update channel (optional) ──
 # Credentials: either export NC_APP_PASSWORD inline, or store it once in
