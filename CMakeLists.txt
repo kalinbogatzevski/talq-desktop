@@ -130,13 +130,27 @@ target_compile_definitions(talq PRIVATE
     TALQ_BUILD_TS="${TALQ_BUILD_TS}"
 )
 
-# Branding
+# Branding. 123NET assets live outside the tree in /private (never
+# published); the branded build pulls them in here. The default/public
+# build is unbranded and references none of this.
 if(TALQ_BRAND STREQUAL "123NET")
     target_compile_definitions(talq PRIVATE
         TALQ_BRAND_123NET
         TALQ_BRAND_NAME="123NET Talk"
         TALQ_BRAND_SERVER="https://ncloud.123net.link"
     )
+    set(_brand_qrc "${CMAKE_SOURCE_DIR}/private/branding/123net/brand.qrc")
+    if(NOT EXISTS "${_brand_qrc}")
+        message(FATAL_ERROR
+            "TALQ_BRAND=123NET but ${_brand_qrc} is missing. "
+            "The 123NET branding store is private and not part of the "
+            "public source. Build without -DTALQ_BRAND for the generic app.")
+    endif()
+    target_sources(talq PRIVATE "${_brand_qrc}")
+    # Private update-channel config (brand_updates.inc) is included by
+    # AppSettings.h under #ifdef TALQ_BRAND_123NET; put it on the path.
+    target_include_directories(talq PRIVATE
+        "${CMAKE_SOURCE_DIR}/private/branding/123net")
     message(STATUS "Building 123NET branded version")
 endif()
 

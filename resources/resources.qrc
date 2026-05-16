@@ -2,7 +2,6 @@
     <qresource prefix="/">
         <file>logo.png</file>
         <file>notification.wav</file>
-        <file>123net-logo.png</file>
         <file>icons/react.svg</file>
         <file>icons/reply.svg</file>
         <file>icons/phone-call.svg</file>

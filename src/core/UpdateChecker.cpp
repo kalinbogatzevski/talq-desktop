@@ -29,6 +29,7 @@ UpdateChecker::UpdateChecker(QNetworkAccessManager *nam, QObject *parent)
 
 void UpdateChecker::start()
 {
+    if (!TalQUpdates::kEnabled) return;   // no updater in the generic/OSS build
     if (!autoCheckEnabled()) return;
     // First check shortly after launch (the network stack and main window are
     // up by ~3 s; the manifest GET is a sub-1KB JSON on the network thread so
@@ -55,6 +56,7 @@ void UpdateChecker::setAutoCheckEnabled(bool on)
 
 void UpdateChecker::checkNow()
 {
+    if (!TalQUpdates::kEnabled) return;   // OSS build: no 123NET update endpoint
     fetchManifest();
 }
 

@@ -29,6 +29,29 @@ else
     echo "=== Building generic release ==="
 fi
 
+# 123NET branding lives outside the tree (/private, never published). For a
+# branded build, restore the wizard art + installer script into the tree
+# (gitignored names, so this can't dirty git) and stamp them to $VERSION,
+# so the rest of the pipeline and the .iss relative paths work unchanged.
+# The branded logo is pulled straight from /private by CMake (brand.qrc).
+if [ "$BRAND" = "123NET" ]; then
+    PRIV="$SRC_DIR/private/branding/123net"
+    if [ ! -d "$PRIV" ]; then
+        echo "ERROR: $PRIV not found — the 123NET branding store is private."
+        echo "Build without --brand for the generic/public app."
+        exit 1
+    fi
+    cp "$PRIV/123net-wizard.bmp"       "$SRC_DIR/resources/"
+    cp "$PRIV/123net-wizard-small.bmp" "$SRC_DIR/resources/"
+    cp "$PRIV/123net-talk-setup.iss"   "$SRC_DIR/installer/"
+    ISS="$SRC_DIR/installer/123net-talk-setup.iss"
+    sed -i \
+        -e "s/^AppVersion=.*/AppVersion=${VERSION}/" \
+        -e "s/123NET-TalQ-v[0-9.]*-Setup/123NET-TalQ-v${VERSION}-Setup/g" \
+        -e "s/TalQ-v[0-9.]*-win64-123net/TalQ-v${VERSION}-win64-123net/g" \
+        "$ISS"
+fi
+
 BUILD_DIR="/c/build/talq-release${DIST_SUFFIX}"
 DIST_DIR="$SRC_DIR/dist/TalQ-v${VERSION}-win64${DIST_SUFFIX}"
 

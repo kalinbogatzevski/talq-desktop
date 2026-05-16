@@ -9,3 +9,11 @@ CMakeUserPresets.json
 .cache/
 aqtinstall.log
 .superpowers/
+
+# Private/branded assets — never published. Canonical store is /private;
+# the 123NET build restores these into the tree at build time (kept ignored
+# here so a restored working copy can't be committed).
+/private/
+signing/
+resources/123net-*
+installer/123net-talk-setup.iss
