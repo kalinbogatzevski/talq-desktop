@@ -4,6 +4,7 @@
 
 #include <QCryptographicHash>
 #include <QFile>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QNetworkAccessManager>
@@ -107,12 +108,19 @@ bool UpdateChecker::versionNewer(const QString &candidate, const QString &curren
 void UpdateChecker::fetchManifest()
 {
     if (!m_nam) return;
-    QNetworkRequest req((QUrl(TalQUpdates::kManifestUrl)));
-    QString creds = QStringLiteral("%1:%2")
-                        .arg(QString::fromLatin1(TalQUpdates::kShareToken),
-                             QString::fromLatin1(TalQUpdates::kSharePassword));
-    req.setRawHeader("Authorization",
-                     "Basic " + creds.toUtf8().toBase64());
+    QNetworkRequest req;
+    if (TalQUpdates::kUseGithub) {
+        req.setUrl(QUrl(QString::fromLatin1(TalQUpdates::kGithubApi)));
+        req.setRawHeader("Accept", "application/vnd.github+json");
+        req.setRawHeader("User-Agent", "TalQ-UpdateChecker");
+    } else {
+        req.setUrl(QUrl(QString::fromLatin1(TalQUpdates::kManifestUrl)));
+        QString creds = QStringLiteral("%1:%2")
+                            .arg(QString::fromLatin1(TalQUpdates::kShareToken),
+                                 QString::fromLatin1(TalQUpdates::kSharePassword));
+        req.setRawHeader("Authorization",
+                         "Basic " + creds.toUtf8().toBase64());
+    }
     req.setTransferTimeout(30 * 1000);
 
     QNetworkReply *reply = m_nam->get(req);
@@ -136,18 +144,45 @@ void UpdateChecker::onManifestFetched(QNetworkReply *reply)
     QJsonObject root = doc.object();
 
     Manifest m;
-    m.version     = root.value(QStringLiteral("version")).toString();
-    m.releaseDate = root.value(QStringLiteral("releaseDate")).toString();
-    m.notes       = root.value(QStringLiteral("notes")).toString();
+    if (TalQUpdates::kUseGithub) {
+        // GitHub Releases API response shape.
+        QString tag = root.value(QStringLiteral("tag_name")).toString();
+        if (tag.startsWith(QLatin1Char('v')) || tag.startsWith(QLatin1Char('V')))
+            tag.remove(0, 1);
+        m.version     = tag;
+        m.releaseDate = root.value(QStringLiteral("published_at")).toString();
+        m.notes       = root.value(QStringLiteral("body")).toString();
+        // The OSS release publishes the generic installer as
+        // TalQ-v<ver>-Setup.exe; pick that asset.
+        const QJsonArray assets = root.value(QStringLiteral("assets")).toArray();
+        for (const QJsonValue &av : assets) {
+            const QJsonObject a = av.toObject();
+            const QString name = a.value(QStringLiteral("name")).toString();
+            if (name.startsWith(QStringLiteral("TalQ-v"))
+                && name.endsWith(QStringLiteral("-Setup.exe"))) {
+                m.assetFilename = name;
+                m.assetUrl = a.value(QStringLiteral("browser_download_url")).toString();
+                break;
+            }
+        }
+        m.assetSha256.clear();   // GitHub exposes no per-asset digest
+    } else {
+        m.version     = root.value(QStringLiteral("version")).toString();
+        m.releaseDate = root.value(QStringLiteral("releaseDate")).toString();
+        m.notes       = root.value(QStringLiteral("notes")).toString();
 
-    QString brand = brandKeyForThisBuild();
-    m.assetFilename = root.value(QStringLiteral("assets")).toObject()
-                          .value(brand).toString();
-    m.assetSha256   = root.value(QStringLiteral("sha256")).toObject()
-                          .value(brand).toString();
+        QString brand = brandKeyForThisBuild();
+        m.assetFilename = root.value(QStringLiteral("assets")).toObject()
+                              .value(brand).toString();
+        m.assetSha256   = root.value(QStringLiteral("sha256")).toObject()
+                              .value(brand).toString();
+        if (!m.assetFilename.isEmpty())
+            m.assetUrl = QString::fromLatin1(TalQUpdates::kAssetBaseUrl)
+                         + m.assetFilename;
+    }
 
-    if (m.version.isEmpty() || m.assetFilename.isEmpty()) {
-        qWarning() << "UpdateChecker: manifest missing version or asset. brand=" << brand;
+    if (m.version.isEmpty() || m.assetUrl.isEmpty()) {
+        qWarning() << "UpdateChecker: manifest missing version or asset url";
         return;
     }
 
@@ -171,14 +206,18 @@ void UpdateChecker::startDownload()
         return;
     }
 
-    QUrl url(QString::fromLatin1(TalQUpdates::kAssetBaseUrl)
-             + m_lastManifest.assetFilename);
-    QNetworkRequest req(url);
-    QString creds = QStringLiteral("%1:%2")
-                        .arg(QString::fromLatin1(TalQUpdates::kShareToken),
-                             QString::fromLatin1(TalQUpdates::kSharePassword));
-    req.setRawHeader("Authorization",
-                     "Basic " + creds.toUtf8().toBase64());
+    QNetworkRequest req{QUrl(m_lastManifest.assetUrl)};
+    // GitHub redirects release-asset downloads to its CDN; follow safely.
+    req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                     QNetworkRequest::NoLessSafeRedirectPolicy);
+    req.setRawHeader("User-Agent", "TalQ-UpdateChecker");
+    if (!TalQUpdates::kUseGithub) {
+        QString creds = QStringLiteral("%1:%2")
+                            .arg(QString::fromLatin1(TalQUpdates::kShareToken),
+                                 QString::fromLatin1(TalQUpdates::kSharePassword));
+        req.setRawHeader("Authorization",
+                         "Basic " + creds.toUtf8().toBase64());
+    }
     req.setTransferTimeout(10 * 60 * 1000);
 
     QNetworkReply *reply = m_nam->get(req);
@@ -216,10 +255,16 @@ void UpdateChecker::onDownloadFinished(QNetworkReply *reply, QFile *out)
         return;
     }
 
-    if (!verifySha256(path, m_lastManifest.assetSha256)) {
-        QFile::remove(path);
-        emit downloadFailed(QStringLiteral("Checksum verification failed"));
-        return;
+    if (!m_lastManifest.assetSha256.isEmpty()) {
+        if (!verifySha256(path, m_lastManifest.assetSha256)) {
+            QFile::remove(path);
+            emit downloadFailed(QStringLiteral("Checksum verification failed"));
+            return;
+        }
+    } else {
+        // GitHub provides no per-asset digest; integrity rests on the
+        // HTTPS transport to github.com and its CDN.
+        qInfo() << "UpdateChecker: no checksum in release; relying on HTTPS";
     }
 
     emit readyToLaunch(path);

@@ -17,7 +17,8 @@ public:
         QString releaseDate;
         QString notes;
         QString assetFilename;
-        QString assetSha256;
+        QString assetUrl;       // absolute download URL (GitHub or ncloud)
+        QString assetSha256;    // may be empty (GitHub provides no digest)
     };
 
     explicit UpdateChecker(QNetworkAccessManager *nam, QObject *parent = nullptr);
