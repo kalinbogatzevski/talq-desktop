@@ -3,11 +3,26 @@
 #include <QObject>
 #include <QString>
 
+// The in-app auto-updater is a BRAND-distribution feature: it points at
+// BRAND's ncloud share (URL + public-share credentials). The generic /
+// open-source build does NOT ship that infrastructure or those credentials
+// and distributes via GitHub Releases instead, so the updater is compiled
+// inert (kEnabled=false, empty endpoints) and never touches the network.
 namespace TalQUpdates {
-    constexpr auto kManifestUrl   = "https://example.invalid/public.php/webdav/talq-latest.json";
-    constexpr auto kAssetBaseUrl  = "https://example.invalid/public.php/webdav/";
-    constexpr auto kShareToken    = "REDACTED";
-    constexpr auto kSharePassword = "REDACTED";
+#ifdef TALQ_BRANDED
+    // The real endpoint + public-share credentials are NOT in the public
+    // source. They live in the private branding store
+    // (private/branding/brand/brand_updates.inc), put on the include path
+    // only for the BRAND build by CMake. A branded build without the
+    // private store fails to compile — that's the intended contract.
+    #include "brand_updates.inc"
+#else
+    constexpr bool kEnabled       = false;
+    constexpr auto kManifestUrl   = "";
+    constexpr auto kAssetBaseUrl  = "";
+    constexpr auto kShareToken    = "";
+    constexpr auto kSharePassword = "";
+#endif
 }
 
 class AppSettings : public QObject
