@@ -134,11 +134,9 @@ target_compile_definitions(talq PRIVATE
 # published); the branded build pulls them in here. The default/public
 # build is unbranded and references none of this.
 if(TALQ_BRAND STREQUAL "123NET")
-    target_compile_definitions(talq PRIVATE
-        TALQ_BRAND_123NET
-        TALQ_BRAND_NAME="123NET Talk"
-        TALQ_BRAND_SERVER="https://ncloud.123net.link"
-    )
+    # Brand identity/endpoints are NOT defined here (would leak into public
+    # source). They come from the private include store at compile time.
+    target_compile_definitions(talq PRIVATE TALQ_BRAND_123NET)
     set(_brand_qrc "${CMAKE_SOURCE_DIR}/private/branding/123net/brand.qrc")
     if(NOT EXISTS "${_brand_qrc}")
         message(FATAL_ERROR
