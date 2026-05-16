@@ -1,0 +1,10 @@
+build/
+build-win64/
+dist/
+*.o
+*.a
+*.so
+*.user
+CMakeUserPresets.json
+.cache/
+aqtinstall.log
