@@ -66,7 +66,11 @@ ISCC="$HOME/InnoSetup/ISCC.exe"
 NINJA="/c/Qt/Tools/Ninja"
 MINGW="/c/Qt/Tools/mingw1310_64/bin"
 MSYS2="/c/msys64/mingw64/bin"
-export PATH="$NINJA:$MINGW:$PATH"
+QTBIN="/c/Qt/6.8.2/mingw_64/bin"
+# Qt bin MUST be on PATH: windeployqt6.exe is itself a Qt app and cannot
+# even start without Qt6Core on PATH. Omitting it made windeployqt fail
+# silently and shipped installers with no Qt runtime (app wouldn't launch).
+export PATH="$NINJA:$MINGW:$QTBIN:$PATH"
 
 # ccache: caches object files across clean rebuilds. Output is bit-identical
 # on cache hit; cold first build is unaffected. Skip silently if not installed.
@@ -90,7 +94,40 @@ echo "[2/6] Building..."
 
 echo "[3/6] Deploying Qt DLLs..."
 cd "$BUILD_DIR"
-"$WINDEPLOYQT" --no-qml-import-scan talq.exe 2>&1 | tail -1
+# NB: no --no-qml-import-scan — Qt 6.8 windeployqt rejects that option
+# and aborts deploying nothing (this is what shipped Qt-less installers).
+"$WINDEPLOYQT" --release --no-translations talq.exe 2>&1 | tail -1
+# Fail loudly: a Qt-less dist produces an installer whose app cannot start
+# ("no Qt platform plugin"). These must exist after windeployqt.
+for must in Qt6Core.dll Qt6Widgets.dll Qt6Network.dll platforms/qwindows.dll; do
+    if [ ! -f "$BUILD_DIR/$must" ]; then
+        echo "FATAL: windeployqt did not produce $must — Qt runtime missing."
+        echo "       (Is $QTBIN on PATH? Is windeployqt6.exe present there?)"
+        exit 1
+    fi
+done
+# TalQ uses Qt6Sql with SQLite only. windeployqt copies every SQL driver;
+# the unused ones (psql/odbc/mimer/mysql) only drag in third-party client
+# libs (libpq/odbc32/mimapi) that aren't shipped, bloating the installer
+# and tripping dependency checks. Keep just qsqlite.
+if [ -d "$BUILD_DIR/sqldrivers" ]; then
+    find "$BUILD_DIR/sqldrivers" -name 'qsql*.dll' ! -name 'qsqlite.dll' -delete
+fi
+# Drop ~40 MB of windeployqt over-deploy that TalQ never uses:
+#  - opengl32sw.dll: software-GL fallback; TalQ is a QPainter raster app,
+#    nothing import-links or loads it.
+#  - The Qt Multimedia FFmpeg backend (ffmpegmediaplugin + av*/sw*):
+#    TalQ only uses QVideoSink/QVideoFrame (frames fed from GStreamer);
+#    it has no QMediaPlayer/QSoundEffect/QCamera. windowsmediaplugin.dll
+#    is kept so Qt Multimedia still has a (tiny, native) backend present.
+#  - generic/qtuiotouchplugin.dll: TUIO touch input, unused on desktop.
+rm -f "$BUILD_DIR/opengl32sw.dll"
+rm -f "$BUILD_DIR"/avcodec-*.dll "$BUILD_DIR"/avformat-*.dll \
+      "$BUILD_DIR"/avutil-*.dll "$BUILD_DIR"/swscale-*.dll \
+      "$BUILD_DIR"/swresample-*.dll
+rm -f "$BUILD_DIR/multimedia/ffmpegmediaplugin.dll"
+rm -f "$BUILD_DIR/generic/qtuiotouchplugin.dll"
+rmdir "$BUILD_DIR/generic" 2>/dev/null || true
 
 echo "[4/6] Copying MSYS2 + GStreamer DLLs..."
 for dll in libstdc++-6.dll libgcc_s_seh-1.dll libwinpthread-1.dll \
