@@ -199,6 +199,7 @@ void ChatPainter::setDarkMode(bool dark)
     if (m_darkMode == dark) return;
     m_darkMode = dark;
     m_theme = PainterTheme(m_darkMode, m_fontScale);
+    m_ambientCache = QPixmap();      // theme changed → re-rasterise background
     m_layoutCache.clear();          // colors only affect paint, but bodyDoc fonts are theme-bound
     rebuildAllLayouts();
 }
@@ -208,6 +209,7 @@ void ChatPainter::setTheme(PainterTheme::Theme t)
     if (m_themeId == t) return;
     m_themeId = t;
     m_theme = PainterTheme(t, m_fontScale);
+    m_ambientCache = QPixmap();      // theme changed → re-rasterise background
     m_layoutCache.clear();
     rebuildAllLayouts();
 }
@@ -217,6 +219,7 @@ void ChatPainter::setFontScale(qreal scale)
     if (qFuzzyCompare(m_fontScale, scale)) return;
     m_fontScale = scale;
     m_theme = PainterTheme(m_darkMode, m_fontScale);
+    m_ambientCache = QPixmap();
     m_layoutCache.clear();
     rebuildAllLayouts();
 }
@@ -1315,18 +1318,28 @@ void ChatPainter::paintEvent(QPaintEvent *)
     p.setRenderHint(QPainter::TextAntialiasing, true);
     p.setRenderHint(QPainter::SmoothPixmapTransform, true);
 
-    p.fillRect(QRectF(0, 0, width(), height()), m_theme.bgPrimary);
-
-    // Flavour: a soft warm accent glow behind the thread (per-theme strength
-    // via m_theme.ambient). Calm and content-first; it never competes with
-    // the messages, it just stops the surface reading as a flat void.
-    if (m_theme.ambient.alpha() > 0) {
-        QRadialGradient g(QPointF(width() * 0.62, -height() * 0.08),
-                          qMax(width(), height()) * 0.95);
-        QColor edge = m_theme.ambient; edge.setAlpha(0);
-        g.setColorAt(0.0, m_theme.ambient);
-        g.setColorAt(1.0, edge);
-        p.fillRect(QRectF(0, 0, width(), height()), g);
+    // Background = bgPrimary + the soft warm ambient glow, rasterised once
+    // per size/theme into m_ambientCache. Rebuilding a full-window
+    // QRadialGradient on every paint (scroll, hover, cursor blink) was a
+    // major CPU regression; a cached opaque pixmap blit is ~free.
+    const QSize sz = size();
+    if (!sz.isEmpty()) {
+        if (m_ambientCache.size() != sz) {
+            m_ambientCache = QPixmap(sz);
+            m_ambientCache.fill(m_theme.bgPrimary);
+            if (m_theme.ambient.alpha() > 0) {
+                QPainter cp(&m_ambientCache);
+                QRadialGradient g(QPointF(sz.width() * 0.62, -sz.height() * 0.08),
+                                  qMax(sz.width(), sz.height()) * 0.95);
+                QColor edge = m_theme.ambient; edge.setAlpha(0);
+                g.setColorAt(0.0, m_theme.ambient);
+                g.setColorAt(1.0, edge);
+                cp.fillRect(QRect(QPoint(0, 0), sz), g);
+            }
+        }
+        p.drawPixmap(0, 0, m_ambientCache);
+    } else {
+        p.fillRect(QRectF(0, 0, width(), height()), m_theme.bgPrimary);
     }
 
     if (m_layouts.isEmpty())

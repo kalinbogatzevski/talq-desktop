@@ -30,7 +30,10 @@ UpdateChecker::UpdateChecker(QNetworkAccessManager *nam, QObject *parent)
 void UpdateChecker::start()
 {
     if (!autoCheckEnabled()) return;
-    QTimer::singleShot(30 * 1000, this, &UpdateChecker::checkNow);
+    // First check shortly after launch (the network stack and main window are
+    // up by ~3 s; the manifest GET is a sub-1KB JSON on the network thread so
+    // it never competes with the UI). Was 30 s, which felt unresponsive.
+    QTimer::singleShot(3 * 1000, this, &UpdateChecker::checkNow);
     m_pollTimer.start();
 }
 
