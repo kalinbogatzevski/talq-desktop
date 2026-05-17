@@ -39,6 +39,7 @@ void SignalingClient::start()
 void SignalingClient::stop()
 {
     m_reconnectTimer.stop();
+    sendBye();                 // graceful HPB disconnect (matches upstream)
     m_ws.close();
     m_sessionId.clear();
     m_reconnectDelay = 2000;
@@ -64,11 +65,17 @@ void SignalingClient::fetchSettings()
                 return;
             }
 
-            // Get v1.0 auth params
+            // Auth params: prefer hello v2.0 (signed JWT) when the server
+            // provides it, exactly like the official client; fall back to
+            // v1.0 (userid/ticket) otherwise.
             QJsonObject authParams = data["helloAuthParams"].toObject();
             QJsonObject v1 = authParams["1.0"].toObject();
             m_userId = v1["userid"].toString();
             m_ticket = v1["ticket"].toString();
+            // (v2.0 token is also offered by the server but our v2 hello
+            // envelope was rejected at runtime — see sendHello(); we use
+            // v1.0, which requires the ticket.)
+            m_helloV2Token = authParams["2.0"].toObject()["token"].toString();
 
             if (m_ticket.isEmpty()) {
                 qWarning() << "Signaling: no ticket in settings";
@@ -404,7 +411,13 @@ void SignalingClient::sendHello()
     hello["type"] = QString("hello");
 
     QJsonObject helloData;
-    // Use v1.0 auth (userid/ticket). v2.0 requires JWT which we don't have.
+    // hello v1.0 (userid + ticket). This is a server-accepted protocol
+    // version and is the path that actually connects against the
+    // standalone signaling backend. A v2.0 (signed-JWT) attempt was
+    // rejected by the server at runtime with {"code":"invalid_format"}
+    // (the exact v2 envelope this server expects is unverified), so we
+    // stay on v1.0 rather than ship a broken handshake — the rest of the
+    // flow (room/MCU/offer) is identical regardless of hello version.
     helloData["version"] = QString("1.0");
 
     QJsonObject auth;
@@ -419,8 +432,19 @@ void SignalingClient::sendHello()
     hello["hello"] = helloData;
 
     QString json = QJsonDocument(hello).toJson(QJsonDocument::Compact);
-    qDebug() << "Signaling: WS >> hello (ticket redacted)";
+    qDebug() << "Signaling: WS >> hello v1.0 (creds redacted)";
     m_ws.sendTextMessage(json);
+}
+
+void SignalingClient::sendBye()
+{
+    if (!m_authenticated || m_ws.state() != QAbstractSocket::ConnectedState)
+        return;
+    QJsonObject msg;
+    msg["type"] = QString("bye");
+    msg["bye"] = QJsonObject();
+    m_ws.sendTextMessage(QJsonDocument(msg).toJson(QJsonDocument::Compact));
+    qDebug() << "Signaling: WS >> bye";
 }
 
 void SignalingClient::joinRoom(const QString &token)
@@ -583,20 +607,36 @@ void SignalingClient::sendSessionMessage(const QString &toSessionId, const QStri
 }
 
 void SignalingClient::sendOffer(const QString &toSessionId, const QString &sdp,
-                                const QString &sid, const QString &nick, const QString &roomType)
+                                const QString &sid, const QString &nick,
+                                const QString &roomType, const QString &broadcaster)
 {
     QJsonObject payload;
     payload["type"] = QString("offer");
     payload["sdp"] = sdp;
     if (!nick.isEmpty()) payload["nick"] = nick;
-    // Include codec preferences so the signaling server passes them to Janus
-    // when creating the videoroom. Without these, Janus sets codec to 'none'
-    // and rejects all audio/video.
+    // Codec preferences passed to the signaling server (offer-codecs) so
+    // Janus creates the room with the right codecs; without them Janus
+    // sets codec 'none' and rejects media. The screen stream is
+    // video-only (VP8) and the publisher must carry a `broadcaster`
+    // field = its own session id (upstream Peer.send), or Janus can't
+    // associate the screen publisher.
     QJsonObject extra;
-    extra["audiocodec"] = QString("opus");
-    extra["videocodec"] = QString("vp8");
+    if (roomType == "screen") {
+        extra["videocodec"] = QString("vp8");
+        if (!broadcaster.isEmpty())
+            extra["broadcaster"] = broadcaster;
+    } else {
+        extra["audiocodec"] = QString("opus");
+        // Advertise the upstream-canonical preference list (the official
+        // client / offer-codecs uses "vp9,vp8,h264"), NOT vp8-only. With
+        // vp8-only the signaling server told Janus to expect VP8 while the
+        // pipeline actually offered H264, so Janus dropped every video RTP
+        // packet (valid SDP + ICE, but zero frames routed).
+        extra["videocodec"] = QString("vp9,vp8,h264");
+    }
     sendSessionMessage(toSessionId, "offer", payload, sid, extra, roomType);
-    qDebug() << "Signaling: sent offer to" << toSessionId.left(20) << "sid=" << sid.left(10);
+    qDebug() << "Signaling: sent offer to" << toSessionId.left(20)
+             << "sid=" << sid.left(10) << "roomType=" << roomType;
 }
 
 void SignalingClient::sendAnswer(const QString &toSessionId, const QString &sdp,
@@ -618,9 +658,10 @@ void SignalingClient::sendCandidate(const QString &toSessionId, const QJsonObjec
     sendSessionMessage(toSessionId, "candidate", payload, sid, {}, roomType);
 }
 
-void SignalingClient::sendEndOfCandidates(const QString &toSessionId, const QString &sid)
+void SignalingClient::sendEndOfCandidates(const QString &toSessionId, const QString &sid,
+                                          const QString &roomType)
 {
-    sendSessionMessage(toSessionId, "endOfCandidates", QJsonObject(), sid);
+    sendSessionMessage(toSessionId, "endOfCandidates", QJsonObject(), sid, {}, roomType);
 }
 
 void SignalingClient::sendBroadcastMessage(const QJsonObject &data)

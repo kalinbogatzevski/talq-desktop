@@ -3,6 +3,8 @@
 #include <QObject>
 #include <QTimer>
 #include <QHash>
+#include <QSet>
+#include <functional>
 #include "core/ApiClient.h"
 #include "core/SignalingClient.h"
 #include "core/PublishPipeline.h"
@@ -11,6 +13,7 @@
 #include "core/MediaDeviceManager.h"
 #include "core/VideoFrameProvider.h"
 #include "core/ScreenSharePipeline.h"
+#include "core/CallParticipant.h"
 
 class CallManager : public QObject
 {
@@ -72,6 +75,11 @@ public:
     VideoFrameProvider *remoteScreenProvider() const { return m_remoteScreenProvider; }
     void onIncomingCallDetected(const QString &callerName, const QString &token, int callFlag);
 
+    // Multi-party model. Stable order: self first, then join order. The
+    // legacy 1:1 getters above keep working (P2P = self + one remote).
+    QList<CallParticipant*> participants() const { return m_participantOrder; }
+    CallParticipant *selfParticipant() const { return m_selfParticipant; }
+
 signals:
     void stateChanged();
     void muteChanged();
@@ -88,6 +96,9 @@ signals:
     void remoteMediaChanged();
     void screenShareChanged();
     void remoteScreenProviderChanged();
+    void participantAdded(CallParticipant *p);
+    void participantRemoved(const QString &sessionId);
+    void participantsChanged();
 
 private slots:
     void onParticipantJoinedCall(const QString &sessionId, int flags, const QString &displayName);
@@ -108,6 +119,28 @@ private:
     bool preferHd1080() const;
     void broadcastMediaState(const QString &media, bool enabled);
     void updateCallFlags();
+
+    // Upstream Talk requires the signaling room (session + WS room) to be
+    // joined before POST call/{token}, or participant/offer events are
+    // missed. Runs `next` once that is guaranteed (immediately if already
+    // in the room). Used by both the outgoing and incoming paths so they
+    // share one ordering.
+    void ensureSignalingRoomJoined(std::function<void()> next);
+
+    // Subscribe to a remote peer's stream. Upstream retries `requestoffer`
+    // until the MCU delivers an offer; a single send races MCU readiness
+    // and yields a connected call with no audio from that peer.
+    void requestPeerStream(const QString &sessionId);
+
+    // --- Participant registry (additive; mirrors signaling/pipeline state) ---
+    CallParticipant *ensureParticipant(const QString &sessionId, const QString &name);
+    CallParticipant *ensureSelfParticipant();
+    void removeParticipant(const QString &sessionId);
+    void syncSelfParticipant();
+    void clearParticipants();
+    QHash<QString, CallParticipant*> m_participants;   // sessionId -> participant
+    QList<CallParticipant*> m_participantOrder;         // self first, then join order
+    CallParticipant *m_selfParticipant = nullptr;
 
     ApiClient *m_api;
     SignalingClient *m_signaling;
@@ -175,4 +208,9 @@ private:
     struct PendingOffer { QString fromSessionId; QString sdp; QString sid; };
     QList<PendingOffer> m_pendingOffers;
     void processPendingOffers();
+
+    // requestoffer retry (upstream resends ~every 8s until the offer lands)
+    QSet<QString> m_pendingRequestOffers;
+    QHash<QString, int> m_requestOfferAttempts;
+    QTimer m_requestOfferRetry;
 };
