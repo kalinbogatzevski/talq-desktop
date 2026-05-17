@@ -140,6 +140,10 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
         if (m_state != Connecting && m_state != Active) return;
         bool hadVideo = (oldFlags & CALL_FLAG_WITH_VIDEO) != 0;
         bool hasVideo = (newFlags & CALL_FLAG_WITH_VIDEO) != 0;
+        if (auto *p = m_participants.value(sessionId)) {
+            p->setAudioMuted(!(newFlags & CALL_FLAG_WITH_AUDIO));
+            p->setVideoMuted(!(newFlags & CALL_FLAG_WITH_VIDEO));
+        }
         if (!hadVideo && hasVideo) {
             qDebug() << "CallManager: peer" << sessionId.left(20) << "enabled video, re-requesting stream";
             m_signaling->requestOffer(sessionId, "video");
@@ -155,16 +159,32 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
                 m_remoteSessionId = sessionId;
                 emit callInfoChanged();
             }
-            m_signaling->requestOffer(sessionId, "video");
+            requestPeerStream(sessionId);
             qDebug() << "CallManager: requestOffer for room peer" << sessionId.left(20);
+
+            // Upstream: while a screen share is active the publisher must
+            // sendoffer to every NEW joiner (peers can't discover an
+            // ongoing screen share any other way — no flag/event for it).
+            if (m_screenSharing && m_screenSharePipeline) {
+                QJsonObject data;
+                data["type"] = QString("sendoffer");
+                data["roomType"] = QString("screen");
+                m_signaling->sendMinimalMessage(sessionId, data);
+                qDebug() << "CallManager: sent screen sendoffer to new peer"
+                         << sessionId.left(20);
+            }
         }
     });
 
     // Remote mute/unmute tracking
     connect(m_signaling, &SignalingClient::remoteMuteChanged,
-            this, [this](const QString &, const QString &media, bool muted) {
+            this, [this](const QString &sessionId, const QString &media, bool muted) {
         if (media == "video") { m_remoteVideoMuted = muted; emit remoteMediaChanged(); }
         if (media == "audio") { m_remoteAudioMuted = muted; emit remoteMediaChanged(); }
+        if (auto *p = m_participants.value(sessionId)) {
+            if (media == "video") p->setVideoMuted(muted);
+            if (media == "audio") p->setAudioMuted(muted);
+        }
         qDebug() << "CallManager: remote" << media << (muted ? "muted" : "unmuted");
     });
 
@@ -183,7 +203,17 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
             m_screenSubscribers[sessionId]->deleteLater();
             m_screenSubscribers.remove(sessionId);
         }
+        if (auto *p = m_participants.value(sessionId)) {
+            p->setScreen(nullptr);
+            p->setScreenSharing(false);
+        }
     });
+
+    // Keep the self participant mirrored to our own media state.
+    for (auto sig : { &CallManager::muteChanged, &CallManager::cameraChanged,
+                      &CallManager::screenShareChanged,
+                      &CallManager::localVideoProviderChanged })
+        connect(this, sig, this, [this]{ syncSelfParticipant(); });
 
     // HPB WebSocket signaling messages
     connect(m_signaling, &SignalingClient::offerReceived,
@@ -212,6 +242,10 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
                     this, [this](const QString &state) {
                 qDebug() << "CallManager: screen subscriber ICE:" << state;
             });
+            connect(sub, &SubscribePipeline::iceGatheringComplete,
+                    this, [this, from, sid]() {
+                m_signaling->sendEndOfCandidates(from, sid, "screen");
+            });
             m_screenSubscribers[from] = sub;
             qDebug() << "CallManager: starting screen subscriber, STUN:" << m_stunServer;
             if (!sub->start(m_stunServer, m_turnServers)) {
@@ -223,6 +257,10 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
             qDebug() << "CallManager: screen subscriber started, setting offer...";
             m_remoteScreenProvider = sub->videoProvider();
             emit remoteScreenProviderChanged();
+            if (auto *p = ensureParticipant(from, {})) {
+                p->setScreen(sub->videoProvider());
+                p->setScreenSharing(true);
+            }
             sub->setRemoteOffer(sdp);
             qDebug() << "CallManager: screen subscriber offer set";
             return;
@@ -305,6 +343,39 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
             if (m_publishPipeline && m_publishPipeline->isRunning())
                 m_publishPipeline->sendStatusMessage(R"({"type":"stoppedSpeaking"})");
         }
+    });
+
+    // requestoffer retry — upstream resends ~every 8s until the MCU
+    // delivers the offer (a single send races MCU room-creation and
+    // leaves that peer silent). Stops once nothing is outstanding.
+    m_requestOfferRetry.setInterval(8000);
+    connect(&m_requestOfferRetry, &QTimer::timeout, this, [this]() {
+        if (m_state != Connecting && m_state != Active) {
+            m_pendingRequestOffers.clear();
+            m_requestOfferAttempts.clear();
+            m_requestOfferRetry.stop();
+            return;
+        }
+        const auto sids = m_pendingRequestOffers;
+        for (const QString &sid : sids) {
+            if (m_subscribePipelines.contains(sid)) {
+                m_pendingRequestOffers.remove(sid);
+                m_requestOfferAttempts.remove(sid);
+                continue;
+            }
+            int &n = m_requestOfferAttempts[sid];
+            if (n >= 6) {                       // ~48s, then give up
+                qWarning() << "CallManager: requestoffer gave up for" << sid.left(20);
+                m_pendingRequestOffers.remove(sid);
+                m_requestOfferAttempts.remove(sid);
+                continue;
+            }
+            ++n;
+            qDebug() << "CallManager: re-requesting offer from" << sid.left(20) << "attempt" << n;
+            m_signaling->requestOffer(sid, "video");
+        }
+        if (m_pendingRequestOffers.isEmpty())
+            m_requestOfferRetry.stop();
     });
 
     // Check GStreamer plugins on startup
@@ -434,6 +505,10 @@ void CallManager::setState(CallState newState)
     } else {
         m_statsTimer.stop();
     }
+    if (newState == Idle)
+        clearParticipants();
+    else if (!m_selfParticipant)
+        ensureSelfParticipant();
     emit stateChanged();
 }
 
@@ -453,9 +528,56 @@ void CallManager::startCall(const QString &token, bool withVideo)
     setStatusDetail("Joining room");
     m_ringTimeout.start();
 
-    // Join call — room should already be active from conversation selection
+    // Join call — but only once the signaling room is actually joined.
+    // Posting POST call/{token} before the HPB hello+room handshake
+    // completes loses the participant/offer events and yields a silent
+    // call. (The incoming path already did this; now both share it.)
     setStatusDetail("Joining call");
-    joinCallOnServer(withVideo);
+    ensureSignalingRoomJoined([this, withVideo]() {
+        if (m_state != Outgoing && m_state != Connecting) return;
+        joinCallOnServer(withVideo);
+    });
+}
+
+void CallManager::ensureSignalingRoomJoined(std::function<void()> next)
+{
+    // Already in the right signaling room and authenticated → proceed.
+    if (m_signaling->isConnected()
+        && m_signaling->currentRoom() == m_callToken
+        && !m_signaling->sessionId().isEmpty()) {
+        next();
+        return;
+    }
+    auto fired = std::make_shared<bool>(false);
+    auto conn  = std::make_shared<QMetaObject::Connection>();
+    *conn = connect(m_signaling, &SignalingClient::roomJoined, this,
+        [this, next, conn, fired]() {
+            if (*fired) return;
+            *fired = true;
+            QObject::disconnect(*conn);
+            qDebug() << "CallManager: signaling room joined, proceeding";
+            next();
+        });
+    QTimer::singleShot(15000, this, [conn, fired]() {
+        if (!*fired) {
+            QObject::disconnect(*conn);
+            qWarning() << "CallManager: signaling roomJoined timeout";
+        }
+    });
+    // joinRoom() POSTs participants/active (yielding the NC sessionId) and
+    // then sends the WS `room` message.
+    m_signaling->joinRoom(m_callToken);
+}
+
+void CallManager::requestPeerStream(const QString &sessionId)
+{
+    if (sessionId.isEmpty() || sessionId == m_signaling->sessionId()) return;
+    if (m_subscribePipelines.contains(sessionId)) return;   // already subscribed
+    m_pendingRequestOffers.insert(sessionId);
+    m_requestOfferAttempts[sessionId] = 0;
+    m_signaling->requestOffer(sessionId, "video");
+    if (!m_requestOfferRetry.isActive())
+        m_requestOfferRetry.start();
 }
 
 void CallManager::onIncomingCallDetected(const QString &callerName, const QString &token, int callFlag)
@@ -506,30 +628,14 @@ void CallManager::acceptCall(bool withVideo) {
     setStatusDetail("Joining room");
     setState(Connecting);
 
-    // Sequence: join room (REST) → join signaling room (WS) → wait for room joined → join call
-    QJsonObject empty;
-    m_api->post("apps/spreed/api/v4/room/" + m_callToken + "/participants/active", empty,
-        [this, withVideo](bool, const QJsonObject &, int) {
-            // Wait for HPB room join confirmation before calling the API
-            auto fired = std::make_shared<bool>(false);
-            auto conn = std::make_shared<QMetaObject::Connection>();
-            *conn = connect(m_signaling, &SignalingClient::roomJoined,
-                this, [this, withVideo, conn, fired]() {
-                    *fired = true;
-                    disconnect(*conn);
-                    // Guard: call may have been hung up while waiting for room join
-                    if (m_state != Incoming && m_state != Connecting) return;
-                    qDebug() << "CallManager: signaling room joined, now joining call";
-                    joinCallOnServer(withVideo);
-                });
-            QTimer::singleShot(15000, this, [conn, fired]() {
-                if (!*fired) {
-                    QObject::disconnect(*conn);
-                    qWarning() << "CallManager: roomJoined timeout — cleaning up connection";
-                }
-            });
-            m_signaling->joinRoom(m_callToken);
-        });
+    // Same ordering as the outgoing path: signaling room first, then the
+    // call API. ensureSignalingRoomJoined() handles participants/active
+    // (NC sessionId) + the WS room join + the await.
+    ensureSignalingRoomJoined([this, withVideo]() {
+        // Guard: call may have been hung up while waiting for room join.
+        if (m_state != Incoming && m_state != Connecting) return;
+        joinCallOnServer(withVideo);
+    });
 }
 
 void CallManager::declineCall()
@@ -585,6 +691,11 @@ void CallManager::toggleMute() {
 
     // Broadcast mute/unmute state to peers via signaling (NC Talk compatibility)
     broadcastMediaState("audio", !m_muted);
+
+    // Upstream keeps the in-call flags in sync with mic state (clears the
+    // WITH_AUDIO bit on mute) so the participant list / other clients show
+    // the correct mic status.
+    updateCallFlags();
 }
 
 void CallManager::toggleCamera() {
@@ -622,7 +733,10 @@ void CallManager::startScreenShare(int monitorIndex, quintptr windowHandle)
     connect(m_screenSharePipeline, &ScreenSharePipeline::localOfferReady,
             this, [this](const QString &sdp) {
         m_screenShareSid = QString::number(qHash(sdp)).left(10);
-        m_signaling->sendOffer(m_signaling->sessionId(), sdp, m_screenShareSid, {}, "screen");
+        // Screen publisher offer carries broadcaster = own session id
+        // (upstream Peer.send) so Janus can associate the screen stream.
+        m_signaling->sendOffer(m_signaling->sessionId(), sdp, m_screenShareSid,
+                               {}, "screen", m_signaling->sessionId());
         qDebug() << "CallManager: sent screen share offer, sid=" << m_screenShareSid;
     });
 
@@ -633,6 +747,11 @@ void CallManager::startScreenShare(int monitorIndex, quintptr windowHandle)
         c["sdpMLineIndex"] = mline;
         c["sdpMid"] = mid;
         m_signaling->sendCandidate(m_signaling->sessionId(), c, m_screenShareSid, "screen");
+    });
+
+    connect(m_screenSharePipeline, &ScreenSharePipeline::iceGatheringComplete,
+            this, [this]() {
+        m_signaling->sendEndOfCandidates(m_signaling->sessionId(), m_screenShareSid, "screen");
     });
 
     connect(m_screenSharePipeline, &ScreenSharePipeline::iceStateChanged,
@@ -732,9 +851,10 @@ void CallManager::broadcastMediaState(const QString &media, bool enabled)
     }
 }
 
-static int callFlags(bool withVideo)
+static int callFlags(bool withVideo, bool withAudio)
 {
-    int flags = CALL_FLAG_IN_CALL | CALL_FLAG_WITH_AUDIO;
+    int flags = CALL_FLAG_IN_CALL;
+    if (withAudio) flags |= CALL_FLAG_WITH_AUDIO;
     if (withVideo) flags |= CALL_FLAG_WITH_VIDEO;
     return flags;
 }
@@ -745,7 +865,7 @@ void CallManager::updateCallFlags()
         return;
 
     QJsonObject body;
-    body["flags"] = callFlags(m_cameraOn);
+    body["flags"] = callFlags(m_cameraOn, !m_muted);
     m_api->put("apps/spreed/api/v4/call/" + m_callToken, body,
         [](bool ok, const QJsonObject &, int statusCode) {
             if (!ok) qWarning() << "CallManager: failed to update call flags, status=" << statusCode;
@@ -755,8 +875,10 @@ void CallManager::updateCallFlags()
 void CallManager::joinCallOnServer(bool withVideo)
 {
     QJsonObject body;
-    body["flags"] = callFlags(withVideo);
-
+    body["flags"] = callFlags(withVideo, !m_muted);
+    // Match the official client's POST call/{token} parameter shape.
+    body["silent"] = false;            // ring participants normally
+    body["recordingConsent"] = false;  // no consent UI; server enforces only if required
     m_api->post("apps/spreed/api/v4/call/" + m_callToken, body,
         [this](bool ok, const QJsonObject &, int statusCode) {
             if (!ok) {
@@ -772,24 +894,22 @@ void CallManager::joinCallOnServer(bool withVideo)
             // Fetch STUN server
             m_api->get("apps/spreed/api/v3/signaling/settings",
                 [this](bool ok2, const QJsonObject &settings, int) {
-                    m_stunServer = "stun:stun.nextcloud.com:443";
+                    // Use the server's configured STUN order (what the
+                    // official client does); only fall back to the public
+                    // default if the server provided none.
+                    m_stunServer.clear();
                     if (ok2) {
-                        // Pick STUN server — prefer non-nextcloud.com (own server)
-                        auto stunArr = settings["stunservers"].toArray();
+                        const auto stunArr = settings["stunservers"].toArray();
                         for (const auto &s : stunArr) {
-                            auto urls = s.toObject()["urls"].toArray();
-                            for (const auto &u : urls) {
-                                QString url = u.toString();
-                                if (!url.contains("nextcloud.com")) {
-                                    m_stunServer = url;
-                                    break;
-                                }
-                                if (m_stunServer.contains("nextcloud.com"))
-                                    m_stunServer = url;
+                            const auto urls = s.toObject()["urls"].toArray();
+                            if (!urls.isEmpty()) {
+                                m_stunServer = urls.first().toString();
+                                break;
                             }
-                            if (!m_stunServer.contains("nextcloud.com")) break;
                         }
                     }
+                    if (m_stunServer.isEmpty())
+                        m_stunServer = "stun:stun.nextcloud.com:443";
                     qDebug() << "CallManager: STUN:" << m_stunServer;
 
                     QList<TurnServer> turnServers;
@@ -842,6 +962,11 @@ void CallManager::joinCallOnServer(bool withVideo)
                         connect(m_peerPipeline, &PeerPipeline::iceCandidateReady,
                                 this, [this, p2pSid](const QString &candidate, int mline, const QString &mid) {
                             m_signaling->sendCandidate(m_remoteSessionId, makeCandidateJson(candidate, mline, mid), p2pSid);
+                        });
+
+                        connect(m_peerPipeline, &PeerPipeline::iceGatheringComplete,
+                                this, [this, p2pSid]() {
+                            m_signaling->sendEndOfCandidates(m_remoteSessionId, p2pSid);
                         });
 
                         connect(m_peerPipeline, &PeerPipeline::iceStateChanged,
@@ -931,6 +1056,13 @@ void CallManager::joinCallOnServer(bool withVideo)
                             m_signaling->sendCandidate(m_signaling->sessionId(), makeCandidateJson(candidate, mline, mid), pubSid);
                         });
 
+                        connect(m_publishPipeline, &PublishPipeline::iceGatheringComplete,
+                                this, [this, pubSid]() {
+                            // Upstream terminates trickle with endOfCandidates
+                            // (publisher candidates go to our own session).
+                            m_signaling->sendEndOfCandidates(m_signaling->sessionId(), pubSid);
+                        });
+
                         connect(m_publishPipeline, &PublishPipeline::iceStateChanged,
                                 this, [this](const QString &state) {
                             qDebug() << "CallManager: publisher ICE:" << state;
@@ -972,7 +1104,7 @@ void CallManager::joinCallOnServer(bool withVideo)
                         // If remote peer already joined (incoming call), request their stream
                         if (!m_remoteSessionId.isEmpty() && !m_subscribePipelines.contains(m_remoteSessionId)) {
                             setStatusDetail("Requesting peer stream");
-                            m_signaling->requestOffer(m_remoteSessionId, "video");
+                            requestPeerStream(m_remoteSessionId);
                             qDebug() << "CallManager: sent requestOffer for already-joined remote peer";
                         } else {
                             // Discover who's already in the call and request their streams.
@@ -997,7 +1129,7 @@ void CallManager::joinCallOnServer(bool withVideo)
                                                 emit callInfoChanged();
                                             }
                                             if (!m_subscribePipelines.contains(sid)) {
-                                                m_signaling->requestOffer(sid, "video");
+                                                requestPeerStream(sid);
                                                 TLOG_CALL("sent requestOffer for discovered peer" << sid.left(20));
                                             }
                                     }
@@ -1025,9 +1157,12 @@ void CallManager::joinCallOnServer(bool withVideo)
 void CallManager::leaveCallOnServer()
 {
     if (m_callToken.isEmpty() || !m_joinedCall) return;
-    // NC Talk API reads "all" from the request body, not query params
+    // NC Talk API reads "all" from the request body, not query params.
+    // all=true means "end the call for EVERYONE" and is moderators-only;
+    // a normal hang-up must send all=false or a moderator leaving would
+    // terminate the whole group call.
     QJsonObject body;
-    body["all"] = true;
+    body["all"] = false;
     m_api->del("apps/spreed/api/v4/call/" + m_callToken, body,
         [](bool ok, const QJsonObject &, int statusCode) {
             if (!ok) qWarning() << "CallManager: failed to leave call on server, status=" << statusCode;
@@ -1093,6 +1228,9 @@ void CallManager::teardown(const QString &reason)
     m_speaking = false;
     m_speakingGrace.stop();
     m_pendingOffers.clear();
+    m_pendingRequestOffers.clear();
+    m_requestOfferAttempts.clear();
+    m_requestOfferRetry.stop();
 
     // Clean up screen sharing
     if (m_screenSharePipeline) {
@@ -1135,6 +1273,82 @@ void CallManager::onAudioLevelUpdated(double level)
     } else if (m_speaking && !m_speakingGrace.isActive()) {
         m_speakingGrace.start();
     }
+
+    if (m_selfParticipant) {
+        m_selfParticipant->setAudioLevel(level);
+        m_selfParticipant->setSpeaking(m_speaking);
+    }
+}
+
+// --- Participant registry (additive; mirrors signaling/pipeline state) ---
+
+CallParticipant *CallManager::ensureParticipant(const QString &sessionId, const QString &name)
+{
+    if (sessionId.isEmpty() || sessionId == m_signaling->sessionId())
+        return nullptr;
+    if (auto it = m_participants.constFind(sessionId); it != m_participants.constEnd()) {
+        it.value()->setDisplayName(name);
+        return it.value();
+    }
+    auto *p = new CallParticipant(sessionId, /*isSelf*/false, this);
+    p->setDisplayName(name);
+    m_participants.insert(sessionId, p);
+    m_participantOrder.append(p);
+    connect(p, &CallParticipant::changed, this, &CallManager::participantsChanged);
+    emit participantAdded(p);
+    emit participantsChanged();
+    return p;
+}
+
+CallParticipant *CallManager::ensureSelfParticipant()
+{
+    if (m_selfParticipant) return m_selfParticipant;
+    m_selfParticipant = new CallParticipant(QStringLiteral("self"), /*isSelf*/true, this);
+    m_selfParticipant->setDisplayName(tr("You"));
+    m_selfParticipant->setConnState(CallParticipant::Connected);
+    m_participantOrder.prepend(m_selfParticipant);   // self renders first
+    connect(m_selfParticipant, &CallParticipant::changed, this, &CallManager::participantsChanged);
+    emit participantAdded(m_selfParticipant);
+    emit participantsChanged();
+    syncSelfParticipant();
+    return m_selfParticipant;
+}
+
+void CallManager::syncSelfParticipant()
+{
+    if (!m_selfParticipant) return;
+    m_selfParticipant->setAudioMuted(m_muted);
+    m_selfParticipant->setVideoMuted(!m_cameraOn);
+    m_selfParticipant->setScreenSharing(m_screenSharing);
+    m_selfParticipant->setCamera(m_localVideoProvider);
+    m_selfParticipant->setSpeaking(m_speaking);
+    m_selfParticipant->setAudioLevel(m_audioLevel);
+}
+
+void CallManager::removeParticipant(const QString &sessionId)
+{
+    auto it = m_participants.find(sessionId);
+    if (it == m_participants.end()) return;
+    CallParticipant *p = it.value();
+    m_participants.erase(it);
+    m_participantOrder.removeOne(p);
+    emit participantRemoved(sessionId);
+    emit participantsChanged();
+    p->deleteLater();
+}
+
+void CallManager::clearParticipants()
+{
+    if (m_participantOrder.isEmpty()) return;
+    const auto order = m_participantOrder;
+    m_participants.clear();
+    m_participantOrder.clear();
+    m_selfParticipant = nullptr;
+    for (auto *p : order) {
+        emit participantRemoved(p->sessionId());
+        p->deleteLater();
+    }
+    emit participantsChanged();
 }
 
 // --- Participant events ---
@@ -1163,8 +1377,12 @@ void CallManager::onParticipantJoinedCall(const QString &sessionId, int flags, c
         if (m_useP2P && m_peerPipeline) {
             m_peerPipeline->createOffer();
             qDebug() << "CallManager: creating P2P offer for joined peer";
+            if (auto *p = ensureParticipant(sessionId, displayName)) {
+                p->setCamera(m_peerPipeline->remoteVideoProvider());
+                p->setConnState(CallParticipant::Connecting);
+            }
         } else {
-            m_signaling->requestOffer(sessionId, "video");
+            requestPeerStream(sessionId);
             qDebug() << "CallManager: sent requestOffer for remote peer";
         }
     }
@@ -1175,11 +1393,24 @@ void CallManager::onParticipantJoinedCall(const QString &sessionId, int flags, c
         QString token = m_signaling->currentRoom();
         onIncomingCallDetected(displayName, token, flags);
     }
+
+    // Register every in-call peer in the model (covers peers that join an
+    // already-active conference, and refreshes flags). Media providers are
+    // attached later when their subscriber/offer arrives.
+    if (m_state == Outgoing || m_state == Connecting || m_state == Active) {
+        if (auto *p = ensureParticipant(sessionId, displayName)) {
+            p->setAudioMuted(!(flags & CALL_FLAG_WITH_AUDIO));
+            p->setVideoMuted(!(flags & CALL_FLAG_WITH_VIDEO));
+        }
+    }
 }
 
 void CallManager::onParticipantLeftCall(const QString &sessionId)
 {
     if (sessionId == m_signaling->sessionId()) return;
+
+    m_pendingRequestOffers.remove(sessionId);
+    m_requestOfferAttempts.remove(sessionId);
 
     // Remove subscriber pipeline for this peer
     if (m_subscribePipelines.contains(sessionId)) {
@@ -1189,6 +1420,8 @@ void CallManager::onParticipantLeftCall(const QString &sessionId)
         m_subscriberSids.remove(sessionId);
         qDebug() << "CallManager: removed subscriber for" << sessionId.left(20);
     }
+
+    removeParticipant(sessionId);
 
     if (sessionId == m_remoteSessionId) {
         qDebug() << "CallManager: remote peer left call";
@@ -1225,6 +1458,10 @@ void CallManager::onOfferReceived(const QString &fromSessionId, const QString &s
         return;
     }
 
+    // An offer arrived for this peer — stop retrying requestoffer for it.
+    m_pendingRequestOffers.remove(fromSessionId);
+    m_requestOfferAttempts.remove(fromSessionId);
+
     // Track the MCU's sid — signals use the hash so re-offers update seamlessly
     m_subscriberSids[fromSessionId] = sid;
 
@@ -1251,10 +1488,25 @@ void CallManager::onOfferReceived(const QString &fromSessionId, const QString &s
         m_signaling->sendCandidate(fromSessionId, makeCandidateJson(candidate, mline, mid), currentSid);
     });
 
+    connect(sub, &SubscribePipeline::iceGatheringComplete,
+            this, [this, fromSessionId]() {
+        m_signaling->sendEndOfCandidates(fromSessionId, m_subscriberSids.value(fromSessionId));
+    });
+
     connect(sub, &SubscribePipeline::iceStateChanged,
-            this, [this](const QString &state) {
+            this, [this, fromSessionId](const QString &state) {
         qDebug() << "CallManager: subscriber ICE:" << state;
         setStatusDetail("Subscriber ICE " + state);
+        if (auto *p = m_participants.value(fromSessionId)) {
+            if (state == "connected" || state == "completed")
+                p->setConnState(CallParticipant::Connected);
+            else if (state == "failed")
+                p->setConnState(CallParticipant::Failed);
+            else if (state == "disconnected")
+                p->setConnState(CallParticipant::Reconnecting);
+            else
+                p->setConnState(CallParticipant::Connecting);
+        }
         if (state == "connected" || state == "completed") {
             setStatusDetail("Connected");
             if (m_state == Connecting) {
@@ -1279,20 +1531,21 @@ void CallManager::onOfferReceived(const QString &fromSessionId, const QString &s
     });
 
     connect(sub, &SubscribePipeline::mediaStateReceived,
-            this, [this](const QString &type) {
-        if (type == "audioOn")       { m_remoteAudioMuted = false; emit remoteMediaChanged(); }
-        else if (type == "audioOff") { m_remoteAudioMuted = true;  emit remoteMediaChanged(); }
-        else if (type == "videoOn")  { m_remoteVideoMuted = false; emit remoteMediaChanged(); }
-        else if (type == "videoOff") { m_remoteVideoMuted = true;  emit remoteMediaChanged(); }
-        else if (type == "speaking" || type == "stoppedSpeaking") {
-            // Received but no UI action yet — future: highlight active speaker
-            qDebug() << "CallManager: remote" << type;
-        }
+            this, [this, fromSessionId](const QString &type) {
+        CallParticipant *p = m_participants.value(fromSessionId);
+        if (type == "audioOn")       { m_remoteAudioMuted = false; emit remoteMediaChanged(); if (p) p->setAudioMuted(false); }
+        else if (type == "audioOff") { m_remoteAudioMuted = true;  emit remoteMediaChanged(); if (p) p->setAudioMuted(true); }
+        else if (type == "videoOn")  { m_remoteVideoMuted = false; emit remoteMediaChanged(); if (p) p->setVideoMuted(false); }
+        else if (type == "videoOff") { m_remoteVideoMuted = true;  emit remoteMediaChanged(); if (p) p->setVideoMuted(true); }
+        else if (type == "speaking")        { if (p) p->setSpeaking(true); }
+        else if (type == "stoppedSpeaking") { if (p) p->setSpeaking(false); }
     });
 
     connect(sub, &SubscribePipeline::peerClientInfo,
-            this, [this](const QString &client, const QString &version) {
+            this, [this, fromSessionId](const QString &client, const QString &version) {
         const QString info = client + "/" + version;
+        if (auto *p = m_participants.value(fromSessionId))
+            p->setPeerClient(info);
         if (m_remotePeerClient != info) {
             m_remotePeerClient = info;
             qDebug() << "CallManager: peer client" << info;
@@ -1316,6 +1569,8 @@ void CallManager::onOfferReceived(const QString &fromSessionId, const QString &s
     qDebug() << "CallManager: subscriber started, setting video provider...";
     m_remoteVideoProvider = sub->videoProvider();
     emit remoteVideoProviderChanged();
+    if (auto *p = ensureParticipant(fromSessionId, {}))
+        p->setCamera(sub->videoProvider());
 
     qDebug() << "CallManager: calling setRemoteOffer...";
     sub->setRemoteOffer(sdp);

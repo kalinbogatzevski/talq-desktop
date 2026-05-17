@@ -149,27 +149,42 @@ bool PeerPipeline::start(const QString &stunServer, const QList<TurnServer> &tur
         }
     }
 
+    // Force a known SSRC via a capsfilter between the payloader and
+    // webrtcbin so rtpbin uses the SAME SSRC on the wire as in the SDP.
+    // Without this, rtpbin picks its own SSRC, the SDP a=ssrc is wrong,
+    // and Janus drops every RTP packet as "Unknown SSRC" (no media
+    // forwarded). Mirrors PublishPipeline's proven approach.
+    m_audioSsrc = g_random_int();
+    g_object_set(rtpopuspay, "ssrc", m_audioSsrc, nullptr);
+    m_audioSsrcFilter = gst_element_factory_make("capsfilter", "peer-audio-ssrc-filter");
+    {
+        GstCaps *sc = gst_caps_from_string("application/x-rtp");
+        gst_caps_set_simple(sc, "ssrc", G_TYPE_UINT, m_audioSsrc, nullptr);
+        g_object_set(m_audioSsrcFilter, "caps", sc, nullptr);
+        gst_caps_unref(sc);
+    }
+
     if (webrtcdsp) {
         gst_bin_add_many(GST_BIN(m_pipeline), audiosrc, capsfilter, audioconvert, audioresample,
-                         webrtcdsp, level, opusenc, rtpopuspay, m_webrtcbin, nullptr);
+                         webrtcdsp, level, opusenc, rtpopuspay, m_audioSsrcFilter, m_webrtcbin, nullptr);
         if (!gst_element_link_many(audiosrc, capsfilter, audioconvert, audioresample,
-                                   webrtcdsp, level, opusenc, rtpopuspay, nullptr)) {
+                                   webrtcdsp, level, opusenc, rtpopuspay, m_audioSsrcFilter, nullptr)) {
             emit error("Failed to link audio capture chain");
             cleanup();
             return false;
         }
     } else {
         gst_bin_add_many(GST_BIN(m_pipeline), audiosrc, capsfilter, audioconvert, audioresample,
-                         level, opusenc, rtpopuspay, m_webrtcbin, nullptr);
+                         level, opusenc, rtpopuspay, m_audioSsrcFilter, m_webrtcbin, nullptr);
         if (!gst_element_link_many(audiosrc, capsfilter, audioconvert, audioresample,
-                                   level, opusenc, rtpopuspay, nullptr)) {
+                                   level, opusenc, rtpopuspay, m_audioSsrcFilter, nullptr)) {
             emit error("Failed to link audio capture chain");
             cleanup();
             return false;
         }
     }
 
-    GstPad *rtpSrcPad = gst_element_get_static_pad(rtpopuspay, "src");
+    GstPad *rtpSrcPad = gst_element_get_static_pad(m_audioSsrcFilter, "src");
     GstPad *sinkPad = gst_element_request_pad_simple(m_webrtcbin, "sink_%u");
     if (gst_pad_link(rtpSrcPad, sinkPad) != GST_PAD_LINK_OK) {
         emit error("Failed to link RTP to webrtcbin");
@@ -188,6 +203,8 @@ bool PeerPipeline::start(const QString &stunServer, const QList<TurnServer> &tur
                      G_CALLBACK(onPadAdded), this);
     g_signal_connect(m_webrtcbin, "notify::ice-connection-state",
                      G_CALLBACK(onIceStateChanged), this);
+    g_signal_connect(m_webrtcbin, "notify::ice-gathering-state",
+                     G_CALLBACK(onIceGatheringStateChanged), this);
     // Do NOT connect on-negotiation-needed — CallManager controls when offers happen
 
     // No bus watch — pollBus() handles all bus messages via manual polling
@@ -228,6 +245,12 @@ void PeerPipeline::cleanup()
     m_audioChainCreated = false;
     m_videoChainCreated = false;
     m_lvlDbg = 0;
+    // SSRC filters are children of the pipeline (freed above) — just drop
+    // the stale pointers so the next start() recreates them cleanly.
+    m_audioSsrcFilter = nullptr;
+    m_videoSsrcFilter = nullptr;
+    m_audioSsrc = 0;
+    m_videoSsrc = 0;
     m_pendingCandidates.clear();
 }
 
@@ -355,6 +378,21 @@ void PeerPipeline::enableCamera(int deviceIndex, bool hd1080)
         if (m_videoEncoder) { gst_object_unref(m_videoEncoder); m_videoEncoder = nullptr; }
         if (m_videoPayloader) { gst_object_unref(m_videoPayloader); m_videoPayloader = nullptr; }
         return;
+    }
+
+    // Pin the video wire SSRC to the SDP a=ssrc (mirrors PublishPipeline):
+    // a capsfilter between the payloader and webrtcbin forces rtpbin to
+    // keep this SSRC, otherwise Janus drops all video RTP as "Unknown
+    // SSRC" and forwards nothing to subscribers.
+    m_videoSsrc = g_random_int();
+    // PT 97 must match the video codec-preferences below (audio OPUS = 96).
+    g_object_set(m_videoPayloader, "ssrc", m_videoSsrc, "pt", 97, nullptr);
+    m_videoSsrcFilter = gst_element_factory_make("capsfilter", "peer-video-ssrc-filter");
+    if (m_videoSsrcFilter) {
+        GstCaps *sc = gst_caps_from_string("application/x-rtp");
+        gst_caps_set_simple(sc, "ssrc", G_TYPE_UINT, m_videoSsrc, nullptr);
+        g_object_set(m_videoSsrcFilter, "caps", sc, nullptr);
+        gst_caps_unref(sc);
     }
 
     int w = hd1080 ? 1920 : 1280;
@@ -493,8 +531,13 @@ void PeerPipeline::enableCamera(int deviceIndex, bool hd1080)
     GstWebRTCRTPTransceiver *transceiver = nullptr;
     g_object_get(m_videoSinkPad, "transceiver", &transceiver, nullptr);
     if (transceiver) {
+        // Video MUST use a different RTP payload type than audio (OPUS is
+        // PT 96). Audio and video share one BUNDLE m-section group, so a
+        // duplicate PT makes Janus keep the first mapping (OPUS/48000) and
+        // skip the video rtpmap ("Payload type 96 already mapped..."),
+        // dropping all video. Use 97 for H264.
         GstCaps *videoCaps = gst_caps_from_string(
-            "application/x-rtp,media=video,encoding-name=H264,clock-rate=90000,payload=96");
+            "application/x-rtp,media=video,encoding-name=H264,clock-rate=90000,payload=97");
         g_object_set(transceiver,
                      "direction", GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDONLY,
                      "codec-preferences", videoCaps,
@@ -506,7 +549,16 @@ void PeerPipeline::enableCamera(int deviceIndex, bool hd1080)
         qWarning() << "PeerPipeline: could not get transceiver from video pad";
     }
 
-    GstPad *payloaderSrc = gst_element_get_static_pad(m_videoPayloader, "src");
+    // Insert the SSRC capsfilter between payloader and webrtcbin so the
+    // wire SSRC matches the SDP a=ssrc (see comment at filter creation).
+    gst_bin_add(GST_BIN(m_pipeline), m_videoSsrcFilter);
+    if (!gst_element_link(m_videoPayloader, m_videoSsrcFilter)) {
+        qWarning() << "PeerPipeline: failed to link video payloader -> ssrc filter";
+        emit cameraError("Failed to connect video to WebRTC");
+        disableCamera();
+        return;
+    }
+    GstPad *payloaderSrc = gst_element_get_static_pad(m_videoSsrcFilter, "src");
     GstPadLinkReturn ret = gst_pad_link(payloaderSrc, m_videoSinkPad);
     gst_object_unref(payloaderSrc);
 
@@ -530,6 +582,7 @@ void PeerPipeline::enableCamera(int deviceIndex, bool hd1080)
     }
     gst_element_sync_state_with_parent(m_videoEncoder);
     gst_element_sync_state_with_parent(m_videoPayloader);
+    gst_element_sync_state_with_parent(m_videoSsrcFilter);
 
     m_cameraEnabled = true;
     qDebug() << "PeerPipeline: camera enabled successfully";
@@ -554,8 +607,9 @@ void PeerPipeline::disableCamera()
         }
     };
 
-    if (m_videoPayloader && m_videoSinkPad) {
-        GstPad *src = gst_element_get_static_pad(m_videoPayloader, "src");
+    GstElement *videoTail = m_videoSsrcFilter ? m_videoSsrcFilter : m_videoPayloader;
+    if (videoTail && m_videoSinkPad) {
+        GstPad *src = gst_element_get_static_pad(videoTail, "src");
         if (src) {
             gst_pad_unlink(src, m_videoSinkPad);
             gst_object_unref(src);
@@ -574,6 +628,7 @@ void PeerPipeline::disableCamera()
     removeElement(m_previewQueue);
     removeElement(m_tee);
     removeElement(m_encQueue);
+    removeElement(m_videoSsrcFilter);
     removeElement(m_videoPayloader);
     removeElement(m_videoEncoder);
     removeElement(m_videoCapsFilter);
@@ -810,32 +865,14 @@ void PeerPipeline::onOfferCreated(GstPromise *promise, gpointer userData)
 
     qDebug() << "PeerPipeline: offer created, SDP length=" << sdp.length();
 
-    // Strip a=ssrc/a=ssrc-group lines — see PublishPipeline::onOfferCreated
-    // for full explanation. rtpbin rewrites wire SSRC; stripping forces the
-    // remote end (browser or Janus) to learn SSRC from the first RTP packet.
-    QString mungedSdp;
-    int stripped = 0;
-    const auto lines = sdp.split('\n');
-    for (const QString &line : lines) {
-        QString trimmed = line.trimmed();
-        if (trimmed.startsWith("a=ssrc:") || trimmed.startsWith("a=ssrc-group:")) {
-            stripped++;
-            continue;
-        }
-        mungedSdp += line + '\n';
-    }
-    while (mungedSdp.endsWith("\n\n"))
-        mungedSdp.chop(1);
-    if (!mungedSdp.endsWith('\n'))
-        mungedSdp += '\n';
-
-    if (stripped > 0)
-        qDebug() << "PeerPipeline: stripped" << stripped << "a=ssrc lines from offer SDP";
-
+    // Keep a=ssrc/a=ssrc-group lines: the SSRC capsfilters pin the wire
+    // SSRC to the values webrtcbin advertised, so the SDP is now truthful.
+    // Janus requires a=ssrc to map the publisher's RTP; stripping it made
+    // Janus drop every packet as "Unknown SSRC". (Mirrors PublishPipeline.)
     QPointer<PeerPipeline> guard(self);
-    QMetaObject::invokeMethod(self, [guard, mungedSdp]() {
+    QMetaObject::invokeMethod(self, [guard, sdp]() {
         if (!guard) return;
-        emit guard->localOfferReady(mungedSdp);
+        emit guard->localOfferReady(sdp);
     }, Qt::QueuedConnection);
 }
 
@@ -868,33 +905,14 @@ void PeerPipeline::onAnswerCreated(GstPromise *promise, gpointer userData)
 
     qDebug() << "PeerPipeline: answer created, SDP length=" << sdp.length();
 
-    // Strip a=ssrc/a=ssrc-group lines from answer too — same rtpbin SSRC
-    // rewrite issue applies when we are the answerer in P2P calls.
-    QString mungedSdp;
-    int stripped = 0;
-    const auto lines = sdp.split('\n');
-    for (const QString &line : lines) {
-        QString trimmed = line.trimmed();
-        if (trimmed.startsWith("a=ssrc:") || trimmed.startsWith("a=ssrc-group:")) {
-            stripped++;
-            continue;
-        }
-        mungedSdp += line + '\n';
-    }
-    while (mungedSdp.endsWith("\n\n"))
-        mungedSdp.chop(1);
-    if (!mungedSdp.endsWith('\n'))
-        mungedSdp += '\n';
-
-    if (stripped > 0)
-        qDebug() << "PeerPipeline: stripped" << stripped << "a=ssrc lines from answer SDP";
-
-    qDebug() << "PeerPipeline: answer SDP:\n" << mungedSdp.left(2000);
+    // Keep a=ssrc lines (the SSRC capsfilters make them truthful) so the
+    // remote end can map our RTP. Mirrors the offer path / PublishPipeline.
+    qDebug() << "PeerPipeline: answer SDP:\n" << sdp.left(2000);
 
     QPointer<PeerPipeline> guard(self);
-    QMetaObject::invokeMethod(self, [guard, mungedSdp]() {
+    QMetaObject::invokeMethod(self, [guard, sdp]() {
         if (!guard) return;
-        emit guard->localAnswerReady(mungedSdp);
+        emit guard->localAnswerReady(sdp);
     }, Qt::QueuedConnection);
 }
 
@@ -959,6 +977,20 @@ void PeerPipeline::onIceStateChanged(GObject *obj, GParamSpec *, gpointer userDa
         if (!guard) return;
         qDebug() << "PeerPipeline: ICE ->" << stateName;
         emit guard->iceStateChanged(stateName);
+    }, Qt::QueuedConnection);
+}
+
+void PeerPipeline::onIceGatheringStateChanged(GObject *obj, GParamSpec *, gpointer userData)
+{
+    auto *self = static_cast<PeerPipeline *>(userData);
+    GstWebRTCICEGatheringState state;
+    g_object_get(obj, "ice-gathering-state", &state, nullptr);
+    if (state != GST_WEBRTC_ICE_GATHERING_STATE_COMPLETE) return;
+    QPointer<PeerPipeline> guard(self);
+    QMetaObject::invokeMethod(self, [guard]() {
+        if (!guard) return;
+        qDebug() << "PeerPipeline: ICE gathering complete";
+        emit guard->iceGatheringComplete();
     }, Qt::QueuedConnection);
 }
 
