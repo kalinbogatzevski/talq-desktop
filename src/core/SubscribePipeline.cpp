@@ -74,6 +74,8 @@ bool SubscribePipeline::start(const QString &stunServer, const QList<TurnServer>
                      G_CALLBACK(onPadAdded), this);
     g_signal_connect(m_webrtcbin, "notify::ice-connection-state",
                      G_CALLBACK(onIceStateChanged), this);
+    g_signal_connect(m_webrtcbin, "notify::ice-gathering-state",
+                     G_CALLBACK(onIceGatheringStateChanged), this);
     g_signal_connect(m_webrtcbin, "on-data-channel",
                      G_CALLBACK(onDataChannel), this);
 
@@ -485,6 +487,20 @@ void SubscribePipeline::onIceStateChanged(GObject *obj, GParamSpec *, gpointer u
         if (!guard) return;
         qDebug() << "SubscribePipeline: ICE ->" << stateName;
         emit guard->iceStateChanged(stateName);
+    }, Qt::QueuedConnection);
+}
+
+void SubscribePipeline::onIceGatheringStateChanged(GObject *obj, GParamSpec *, gpointer userData)
+{
+    auto *self = static_cast<SubscribePipeline *>(userData);
+    GstWebRTCICEGatheringState state;
+    g_object_get(obj, "ice-gathering-state", &state, nullptr);
+    if (state != GST_WEBRTC_ICE_GATHERING_STATE_COMPLETE) return;
+    QPointer<SubscribePipeline> guard(self);
+    QMetaObject::invokeMethod(self, [guard]() {
+        if (!guard) return;
+        qDebug() << "SubscribePipeline: ICE gathering complete";
+        emit guard->iceGatheringComplete();
     }, Qt::QueuedConnection);
 }
 

@@ -31,6 +31,7 @@ signals:
     void localOfferReady(const QString &sdp);
     void iceCandidateReady(const QString &candidate, int sdpMLineIndex, const QString &sdpMid);
     void iceStateChanged(const QString &state);
+    void iceGatheringComplete();           // ICE gathering done → endOfCandidates
     void error(const QString &message);
 
 public slots:
@@ -49,4 +50,5 @@ private:
     static void onIceCandidate(GstElement *webrtc, guint mlineIndex, gchar *candidate, gpointer userData);
     static void onOfferCreated(GstPromise *promise, gpointer userData);
     static void onIceStateChanged(GObject *obj, GParamSpec *pspec, gpointer userData);
+    static void onIceGatheringStateChanged(GObject *obj, GParamSpec *pspec, gpointer userData);
 };

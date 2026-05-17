@@ -1,5 +1,36 @@
 # Changelog
 
+## v0.29.1 "Bangaranga" (2026-05-17)
+
+**"Bangaranga"**, for Bulgaria's Eurovision 2026 win in Vienna.
+
+### Added
+- **Reworked video calls: "The Bridge".** Both 1:1 and multi-party calls
+  now share one adaptive surface that scales from two people to a full
+  room without switching modes. It promotes whatever matters, a shared
+  screen or the active speaker, to the stage and keeps everyone else on a
+  warm rail; your own camera rides as a draggable picture-in-picture you
+  can park in any corner. Click a tile to pin it, click again to hand
+  control back to the room.
+- **The call stays watchable while you work.** Navigate back into any
+  conversation during a call and it tucks into a compact always-on-top
+  corner; double-click it to bring it back full.
+- **Calm Mission Control instrumentation.** A single breathing status
+  pill carries call state at a glance (it warms to amber when a peer is
+  catching up, to clay when reconnecting); every tile has a quiet
+  connection light. A summonable telemetry drawer (press T) shows codec,
+  decoder, per-peer link health and live stats for when you want the
+  detail, hidden by default so the call stays quiet.
+- **The call is now a real window**, not a fixed dialog: resizable,
+  full-screen on double-click or F, with mic (M), camera (V) and
+  screen-share (S) on the keyboard. The control bar fades when you stop
+  moving and returns on the first nudge.
+- A small release-codename pill on the Mission Control home.
+
+### Changed
+- The whole call UI is rendered on the warm four-theme system (no more
+  black letterbox or cold chrome); reduced-motion is honored throughout.
+
 ## v0.28.5 (2026-05-16)
 
 ### Fixed

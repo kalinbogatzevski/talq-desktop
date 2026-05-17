@@ -51,6 +51,7 @@ signals:
     void localOfferReady(const QString &sdp);
     void iceCandidateReady(const QString &candidate, int sdpMLineIndex, const QString &sdpMid);
     void iceStateChanged(const QString &state);
+    void iceGatheringComplete();           // ICE gathering done → endOfCandidates
     void audioLevelUpdated(double level);  // 0.0 to 1.0
     void error(const QString &message);
     void cameraError(const QString &reason);
@@ -107,5 +108,6 @@ private:
     static void onIceCandidate(GstElement *webrtc, guint mlineIndex, gchar *candidate, gpointer userData);
     static void onOfferCreated(GstPromise *promise, gpointer userData);
     static void onIceStateChanged(GObject *obj, GParamSpec *pspec, gpointer userData);
+    static void onIceGatheringStateChanged(GObject *obj, GParamSpec *pspec, gpointer userData);
     static GstFlowReturn onPreviewSample(GstAppSink *sink, gpointer userData);
 };

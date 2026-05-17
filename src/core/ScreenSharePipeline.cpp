@@ -167,6 +167,8 @@ bool ScreenSharePipeline::start(const QString &stunServer, const QList<TurnServe
                      G_CALLBACK(onIceCandidate), this);
     g_signal_connect(m_webrtcbin, "notify::ice-connection-state",
                      G_CALLBACK(onIceStateChanged), this);
+    g_signal_connect(m_webrtcbin, "notify::ice-gathering-state",
+                     G_CALLBACK(onIceGatheringStateChanged), this);
 
     qDebug() << "ScreenSharePipeline: setting pipeline to PLAYING...";
     GstStateChangeReturn ret = gst_element_set_state(m_pipeline, GST_STATE_PLAYING);
@@ -315,5 +317,19 @@ void ScreenSharePipeline::onIceStateChanged(GObject *obj, GParamSpec *, gpointer
     QMetaObject::invokeMethod(self, [guard, stateName]() {
         if (!guard) return;
         emit guard->iceStateChanged(stateName);
+    }, Qt::QueuedConnection);
+}
+
+void ScreenSharePipeline::onIceGatheringStateChanged(GObject *obj, GParamSpec *, gpointer userData)
+{
+    auto *self = static_cast<ScreenSharePipeline *>(userData);
+    GstWebRTCICEGatheringState state;
+    g_object_get(obj, "ice-gathering-state", &state, nullptr);
+    if (state != GST_WEBRTC_ICE_GATHERING_STATE_COMPLETE) return;
+    QPointer<ScreenSharePipeline> guard(self);
+    QMetaObject::invokeMethod(self, [guard]() {
+        if (!guard) return;
+        qDebug() << "ScreenSharePipeline: ICE gathering complete";
+        emit guard->iceGatheringComplete();
     }, Qt::QueuedConnection);
 }
