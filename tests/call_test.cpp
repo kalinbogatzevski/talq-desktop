@@ -115,12 +115,15 @@ struct TestPeer {
     bool videoRenegSdpValid = false;   // true if renegotiation SDP has active m=video
     bool videoAnswerReceived = false;  // true when MCU answers our video renegotiation
     bool subscriberRequested = false;  // true after requestOffer for remote peer
+    QString subscriberSid;   // MCU-assigned sid from the subscriber offer
     int remoteVideoFramesBefore = 0;   // frame count before waiting
     int remoteVideoFramesAfter = 0;    // frame count after waiting
     QString stunServer;
     QList<TurnServer> turnServers;
     // Pending ICE candidates (received before pipeline started)
     QList<std::tuple<QString, int, QString>> pendingCandidates;
+    // Pending subscriber ICE candidates (received before subscribe pipeline started)
+    QList<std::tuple<QString, int, QString>> subPendingCandidates;
 
     void log(const QString &msg) {
         qDebug().noquote() << QString("[%1] %2").arg(name, msg);
@@ -215,23 +218,46 @@ private:
         // Offer received from MCU (subscriber flow: MCU sends offer for remote peer's stream)
         connect(peer.signaling, &SignalingClient::offerReceived, this,
                 [this, &peer](const QString &from, const QString &sdp, const QString &sid) {
-            Q_UNUSED(sid)
-            peer.log("Subscriber offer from MCU for remote: " + from.left(20) + "... (" + QString::number(sdp.length()) + " chars)");
+            peer.log("Subscriber offer from MCU for remote: " + from.left(20)
+                     + "... sid=" + sid + " (" + QString::number(sdp.length()) + " chars)");
+            // The MCU assigns a fresh sid per (re)offer; the subscriber's
+            // answer + candidates MUST echo it back to the remote peer's
+            // session id (not ours) or Janus can't bind them to the
+            // subscriber handle and ICE fails. Read live so re-offers work.
+            peer.subscriberSid = sid;
             startSubscribePipeline(peer, from, sdp);
         });
 
-        // ICE candidates from MCU
+        // ICE candidates from MCU. Route exactly like the real app
+        // (CallManager::candidateReceived): Janus trickles candidates for
+        // TWO independent transports — the publisher (our own session id)
+        // and each subscriber feed (the remote peer's session id). Feeding
+        // every candidate into the publisher pipeline (the old behaviour)
+        // left the subscribe pipeline without remote candidates, so its
+        // ICE never left "new" and zero remote frames ever arrived.
         connect(peer.signaling, &SignalingClient::candidateReceived, this,
-                [this, &peer](const QString &from, const QJsonObject &candidate) {
-            Q_UNUSED(from)
+                [this, &peer](const QString &from, const QJsonObject &candidate,
+                              const QString &roomType) {
+            Q_UNUSED(roomType)
             QString cand = candidate["candidate"].toString();
             int mline = candidate["sdpMLineIndex"].toInt();
             QString mid = candidate["sdpMid"].toString();
-            peer.log("ICE candidate received: " + cand.left(80));
-            if (peer.pipeline && peer.pipeline->isRunning()) {
-                peer.pipeline->addIceCandidate(cand, mline, mid);
+            peer.log("ICE candidate from " + from.left(12) + ": " + cand.left(60));
+
+            // Publisher transport: candidates for our own session id.
+            if (from == peer.sessionId) {
+                if (peer.pipeline && peer.pipeline->isRunning())
+                    peer.pipeline->addIceCandidate(cand, mline, mid);
+                else
+                    peer.pendingCandidates.append({cand, mline, mid});
+                return;
+            }
+
+            // Subscriber transport: candidates for the remote peer's feed.
+            if (peer.subscribePipeline) {
+                peer.subscribePipeline->addIceCandidate(cand, mline, mid);
             } else {
-                peer.pendingCandidates.append({cand, mline, mid});
+                peer.subPendingCandidates.append({cand, mline, mid});
             }
         });
 
@@ -422,17 +448,18 @@ private:
 
         connect(peer.subscribePipeline, &SubscribePipeline::localAnswerReady, this,
                 [this, &peer, remoteSession](const QString &answer) {
-            peer.log("Subscriber answer ready, sending to MCU");
-            peer.signaling->sendAnswer(peer.sessionId, answer, "mcu-test");
+            peer.log("Subscriber answer -> " + remoteSession.left(12)
+                     + " sid=" + peer.subscriberSid);
+            peer.signaling->sendAnswer(remoteSession, answer, peer.subscriberSid);
         });
 
         connect(peer.subscribePipeline, &SubscribePipeline::iceCandidateReady, this,
-                [this, &peer](const QString &cand, int mline, const QString &mid) {
+                [this, &peer, remoteSession](const QString &cand, int mline, const QString &mid) {
             QJsonObject c;
             c["candidate"] = cand;
             c["sdpMLineIndex"] = mline;
             c["sdpMid"] = mid;
-            peer.signaling->sendCandidate(peer.sessionId, c, "mcu-test");
+            peer.signaling->sendCandidate(remoteSession, c, peer.subscriberSid);
         });
 
         connect(peer.subscribePipeline, &SubscribePipeline::iceStateChanged, this,
@@ -459,6 +486,13 @@ private:
         });
 
         peer.subscribePipeline->setRemoteOffer(sdp);
+
+        // Flush any subscriber candidates that arrived before the pipeline
+        // existed (SubscribePipeline::addIceCandidate self-queues until its
+        // remote description is set, so ordering here is safe).
+        for (auto &[cand, mline, mid] : peer.subPendingCandidates)
+            peer.subscribePipeline->addIceCandidate(cand, mline, mid);
+        peer.subPendingCandidates.clear();
     }
 
     void checkBothActive()
@@ -586,10 +620,17 @@ private:
             if (state == "connected" || state == "completed") {
                 peer.iceConnected = true;
                 peer.videoAnswerReceived = true;  // MCU answered our offer
-                // Request subscriber stream for remote peer's video
-                if (!peer.remoteSessionId.isEmpty()) {
+                // Request the remote peer's subscriber feed exactly once.
+                // The real app (CallManager::requestPeerStream) subscribes a
+                // single time; Janus then drives later renegotiation via
+                // "Negotiation update" with no further requestoffer. Re-
+                // requesting on every ICE transition makes Janus log
+                // "Already in as a subscriber on this handle" and detach the
+                // feed ("No WebRTC media anymore") before any frame decodes.
+                if (!peer.remoteSessionId.isEmpty() && !peer.subscriberRequested) {
                     peer.log("Requesting subscriber for " + peer.remoteSessionId.left(20));
                     peer.signaling->requestOffer(peer.remoteSessionId, "video");
+                    peer.subscriberRequested = true;
                 }
                 checkBothVideoRenegotiated();
             }

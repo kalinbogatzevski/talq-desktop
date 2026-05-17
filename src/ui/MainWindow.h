@@ -31,7 +31,7 @@ class HeaderPainter;
 class ThreadsPainter;
 class ComposerWidget;
 class LoginWidget;
-class CallDialog;
+class CallWindow;
 class SettingsDialog;
 class SelectionBarWidget;
 class ImageViewerDialog;
@@ -217,7 +217,7 @@ private:
 
     QSettings m_settings;
     QTimer m_saveGeometryTimer;
-    CallDialog *m_callDialog = nullptr;
+    CallWindow *m_callWindow = nullptr;
     SettingsDialog *m_settingsDialog = nullptr;
     QPointer<ImageViewerDialog> m_imageViewer;
 };

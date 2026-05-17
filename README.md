@@ -8,6 +8,8 @@
 
 Your team chat as a real desktop app: instant open, near-zero idle, built to be left running all day.
 
+<sub>Release codename: **Bangaranga**, for Bulgaria's Eurovision 2026 win in Vienna 🇧🇬</sub>
+
 </div>
 
 > ⚠️ **Status:** Chat is the solid, daily-driver core. **Audio and video
