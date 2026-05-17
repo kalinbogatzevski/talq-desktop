@@ -47,6 +47,7 @@ signals:
     void localAnswerReady(const QString &sdp);
     void iceCandidateReady(const QString &candidate, int sdpMLineIndex, const QString &sdpMid);
     void iceStateChanged(const QString &state);
+    void iceGatheringComplete();           // ICE gathering done → endOfCandidates
     void audioLevelUpdated(double level);
     void error(const QString &message);
     void cameraError(const QString &reason);
@@ -72,6 +73,10 @@ private:
     GstElement *m_videoCapsFilter = nullptr;
     GstElement *m_videoEncoder = nullptr;
     GstElement *m_videoPayloader = nullptr;
+    GstElement *m_videoSsrcFilter = nullptr;
+    guint32 m_videoSsrc = 0;
+    GstElement *m_audioSsrcFilter = nullptr;
+    guint32 m_audioSsrc = 0;
     GstElement *m_jpegDec = nullptr;
     GstElement *m_tee = nullptr;
     GstElement *m_encQueue = nullptr;
@@ -95,6 +100,7 @@ private:
     static void onAnswerCreated(GstPromise *promise, gpointer userData);
     static void onPadAdded(GstElement *webrtc, GstPad *pad, gpointer userData);
     static void onIceStateChanged(GObject *obj, GParamSpec *pspec, gpointer userData);
+    static void onIceGatheringStateChanged(GObject *obj, GParamSpec *pspec, gpointer userData);
     static GstFlowReturn onPreviewSample(GstAppSink *sink, gpointer userData);
     static GstFlowReturn onRemoteVideoSample(GstAppSink *sink, gpointer userData);
 };
