@@ -1,6 +1,9 @@
 #include "MainWindow.h"
-#include "CallDialog.h"
+#include "CallWindow.h"
 #include "SettingsDialog.h"
+#ifndef TALQ_VERSION_NAME
+#define TALQ_VERSION_NAME ""   // per-release codename (set in CMake)
+#endif
 #include "LoginWidget.h"
 #include "ComposerWidget.h"
 #include "SelectionBarWidget.h"
@@ -1163,7 +1166,7 @@ void MainWindow::buildChatPage()
     });
 
     // Call dialog (shows/hides automatically via CallManager::stateChanged)
-    m_callDialog = new CallDialog(m_callManager, m_api, this);
+    m_callWindow = new CallWindow(m_callManager, m_api, this);
 
     // Update userId when logged in
     connect(m_auth, &AuthManager::userInfoChanged, this, [this]() {
@@ -1487,6 +1490,12 @@ void MainWindow::onConversationSelected(const QString &token, const QString &nam
 
     m_activeConvToken = token;
 
+    // A live call stays watchable while you browse chat: dock it to a
+    // compact corner PiP when you navigate into a conversation. Double-
+    // click the PiP (or end the call) to bring it back full.
+    if (m_callWindow && m_callManager->state() != CallManager::Idle)
+        m_callWindow->enterPipDock();
+
     // Switch from welcome to chat
     m_welcomeWidget->hide();
     m_header->show();
@@ -1701,6 +1710,19 @@ void MainWindow::buildWelcomeContent()
 #ifdef TALQ_BRAND_123NET
     cmdBar->addWidget(makeTag(QStringLiteral("123NET")));
 #endif
+    // Per-release codename pill. A celebratory moment, so it wears the warm
+    // amber (secondary), not the accent (the accent stays the one "needs
+    // you" signal). Hidden when no codename is set for the release.
+    const QString verName = QStringLiteral(TALQ_VERSION_NAME);
+    if (!verName.isEmpty()) {
+        auto *codename = new QLabel(QStringLiteral("✦ ") + verName.toUpper(), root);
+        codename->setToolTip(tr("Release codename"));
+        codename->setStyleSheet(QString(
+            "color:%1;font-family:%2;font-size:10px;font-weight:bold;"
+            "letter-spacing:1px;border:1px solid %1;border-radius:6px;padding:4px 8px;")
+            .arg(wcss(wt.amber), wmono));
+        cmdBar->addWidget(codename);
+    }
     cmdBar->addStretch();
     m_wcStatusPill = new QLabel(QStringLiteral("●  ALL SYSTEMS NOMINAL"), root);
     m_wcStatusPill->setStyleSheet(QString(
@@ -2217,6 +2239,7 @@ void MainWindow::applyThemeId(PainterTheme::Theme t)
     m_header->setTheme(t);
     m_chatPainter->setTheme(t);
     m_threadsPainter->setTheme(t);
+    if (m_callWindow) m_callWindow->setTheme(t);
     applyDarkPalette();
     restyleChrome();          // search field, sidebar icons, profile, splitter
     // Re-tint the Mission Control home. Rebuilding it (delete + recreate ~30

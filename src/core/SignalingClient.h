@@ -46,13 +46,15 @@ public:
     QString currentRoom() const { return m_currentRoom; }
     void sendOffer(const QString &toSessionId, const QString &sdp,
                    const QString &sid, const QString &nick = {},
-                   const QString &roomType = "video");
+                   const QString &roomType = "video",
+                   const QString &broadcaster = {});
     void sendAnswer(const QString &toSessionId, const QString &sdp,
                     const QString &sid, const QString &nick = {},
                     const QString &roomType = "video");
     void sendCandidate(const QString &toSessionId, const QJsonObject &candidate,
                        const QString &sid, const QString &roomType = "video");
-    void sendEndOfCandidates(const QString &toSessionId, const QString &sid);
+    void sendEndOfCandidates(const QString &toSessionId, const QString &sid,
+                             const QString &roomType = "video");
     void requestOffer(const QString &sessionId, const QString &roomType = "video");
     void sendSessionMessage(const QString &toSessionId, const QString &type,
                             const QJsonObject &payload, const QString &sid,
@@ -99,6 +101,7 @@ private:
     void onDisconnected();
     void onTextMessage(const QString &msg);
     void sendHello();
+    void sendBye();
     void sendRoomMessage(const QString &msgType);
     void reconnect();
 
@@ -110,6 +113,7 @@ private:
     QString m_signalingUrl;
     QString m_userId;
     QString m_ticket;
+    QString m_helloV2Token;   // signed JWT for hello v2.0 (preferred when present)
     QString m_sessionId;
     QString m_currentRoom;
     QString m_typingUser;

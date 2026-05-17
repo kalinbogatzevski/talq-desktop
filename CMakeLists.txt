@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(talq VERSION 0.28.5 LANGUAGES CXX)
+project(talq VERSION 0.29.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -62,6 +62,7 @@ qt_add_executable(talq
     src/core/VideoFrameProvider.cpp
     src/core/MediaDeviceManager.cpp
     src/core/CallManager.cpp
+    src/core/CallParticipant.cpp
     src/core/PeerPipeline.cpp
     src/core/ScreenSharePipeline.cpp
     src/core/CallSignaling.cpp
@@ -81,7 +82,8 @@ qt_add_executable(talq
     src/ui/ComposerWidget.cpp
     src/ui/LoginWidget.cpp
     src/ui/SettingsDialog.cpp
-    src/ui/CallDialog.cpp
+    src/ui/CallStage.cpp
+    src/ui/CallWindow.cpp
     src/ui/SharePickerDialog.cpp
     src/ui/SelectionBarWidget.h
     src/ui/SelectionBarWidget.cpp
@@ -128,6 +130,9 @@ string(TIMESTAMP TALQ_BUILD_TS "%m%d-%H%M")
 target_compile_definitions(talq PRIVATE
     TALQ_VERSION="${PROJECT_VERSION}"
     TALQ_BUILD_TS="${TALQ_BUILD_TS}"
+    # Per-release codename (empty string = no codename pill). Set alongside
+    # the version bump; shown on the Mission Control command bar.
+    TALQ_VERSION_NAME="Bangaranga"
 )
 
 # Branding. 123NET assets live outside the tree in /private (never
@@ -191,6 +196,9 @@ qt_add_executable(talq-call-test
     src/core/CallSignaling.cpp
 )
 target_include_directories(talq-call-test PRIVATE src ${GST_INCLUDE_DIRS})
+# SignalingClient.cpp references TALQ_VERSION (talq target defines it; the
+# test target must too or it fails to compile).
+target_compile_definitions(talq-call-test PRIVATE TALQ_VERSION="${PROJECT_VERSION}")
 target_link_directories(talq-call-test PRIVATE ${GST_LIBRARY_DIRS})
 target_link_libraries(talq-call-test PRIVATE
     Qt6::Core
@@ -202,4 +210,8 @@ target_link_libraries(talq-call-test PRIVATE
 )
 if(WIN32)
     target_link_libraries(talq-call-test PRIVATE credui advapi32)
+    # Console subsystem: it's a QCoreApplication test harness, so its
+    # qDebug/stderr must reach the terminal (Qt defaults exes to the
+    # WIN32 GUI subsystem, which detaches stdio).
+    set_target_properties(talq-call-test PROPERTIES WIN32_EXECUTABLE FALSE)
 endif()

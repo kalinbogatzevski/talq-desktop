@@ -37,6 +37,7 @@ signals:
     void localAnswerReady(const QString &sdp);
     void iceCandidateReady(const QString &candidate, int sdpMLineIndex, const QString &sdpMid);
     void iceStateChanged(const QString &state);
+    void iceGatheringComplete();           // ICE gathering done → endOfCandidates
     void error(const QString &message);
     void mediaStateReceived(const QString &type);
     // Emitted when peer sends a `{"type":"talq.client",...}` data channel
@@ -70,6 +71,7 @@ private:
     static void onPadAdded(GstElement *webrtc, GstPad *pad, gpointer userData);
     static void onAnswerCreated(GstPromise *promise, gpointer userData);
     static void onIceStateChanged(GObject *obj, GParamSpec *pspec, gpointer userData);
+    static void onIceGatheringStateChanged(GObject *obj, GParamSpec *pspec, gpointer userData);
     static GstFlowReturn onNewVideoSample(GstAppSink *sink, gpointer userData);
     static void onDataChannel(GstElement *webrtc, GstWebRTCDataChannel *channel, gpointer userData);
     static void onDataChannelMessage(GstWebRTCDataChannel *channel, gchar *str, gpointer userData);
