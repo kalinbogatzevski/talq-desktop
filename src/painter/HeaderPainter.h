@@ -102,6 +102,9 @@ private:
     static constexpr int HeaderHeight = 54;
     static constexpr int AvatarSize = 30;
     static constexpr int ButtonSize = 34;
+    // Visual chrome (rounded pill) painted inside the 34px hit target, so
+    // every action button has the same compact, consistent footprint.
+    static constexpr int ButtonChrome = 30;
     static constexpr int TopicDotSize = 10;
 
     // ── Hit-test rectangles (set during paint) ──
@@ -113,8 +116,13 @@ private:
     QRectF m_remindersBtnRect;
     QRectF m_infoBtnRect;
     int m_hoveredButton = -1;   // 0=expand, 1=back, 2=audio, 3=video, 4=search, 5=reminders, 6=info
+    int m_pressedButton = -1;   // armed button between press and release (same ids)
 
     int buttonAtPos(const QPointF &pos) const;
+    QRectF buttonRect(int id) const;          // hit-test rect for a button id
+    QString tooltipFor(int id) const;         // user-facing label for a button id
+    void showTooltipFor(int id);              // anchor a tooltip under the button
+    void clearHoverState();                   // drop hover + pressed + tooltip
 
     // ── Avatar loading ──
     QImage fetchAvatar(const QString &userId);
@@ -123,9 +131,13 @@ private:
     QSet<QString> m_avatarPending;
 
     // ── Painting helpers ──
-    void paintBackButton(QPainter *p, const QRectF &rect, bool hovered);
-    void paintCallButton(QPainter *p, const QRectF &rect, const QColor &bg,
-                         const QString &icon, bool hovered);
+    // Shared rounded-pill background for every action button (hover/pressed).
+    void paintButtonChrome(QPainter *p, const QRectF &rect,
+                           bool hovered, bool pressed);
+    void paintBackButton(QPainter *p, const QRectF &rect,
+                         bool hovered, bool pressed);
+    void paintCallButton(QPainter *p, const QRectF &rect, const QColor &accentColor,
+                         const QString &icon, bool hovered, bool pressed);
     void paintAvatar(QPainter *p, const QRectF &rect);
 
     // ── State ──

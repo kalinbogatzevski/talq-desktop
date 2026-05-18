@@ -22,6 +22,7 @@ class PushClient;
 class SignalingClient;
 class MediaDeviceManager;
 class CallManager;
+class UserStatusManager;
 class DebugMonitor;
 class AppSettings;
 
@@ -33,6 +34,8 @@ class ComposerWidget;
 class LoginWidget;
 class CallWindow;
 class SettingsDialog;
+class StatusPopover;
+class StatusDot;
 class SelectionBarWidget;
 class ImageViewerDialog;
 class UpdateChecker;
@@ -55,6 +58,7 @@ public:
         SignalingClient *signaling,
         MediaDeviceManager *deviceManager,
         CallManager *callManager,
+        UserStatusManager *userStatus,
         DebugMonitor *debug,
         AppSettings *appSettings,
         QWidget *parent = nullptr
@@ -74,6 +78,8 @@ protected:
     void closeEvent(QCloseEvent *event) override;
     void moveEvent(QMoveEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
+    void changeEvent(QEvent *event) override;   // hide status popover on minimize
+    void hideEvent(QHideEvent *event) override;  // hide status popover with window
     bool eventFilter(QObject *obj, QEvent *event) override;
 
 private slots:
@@ -100,6 +106,8 @@ private:
     void closeThread();
     void updateTopicMode(bool active);
     void loadProfileAvatar(QLabel *avatarLabel);
+    void openStatusPopover();
+    void refreshStatusIndicator();
     void buildSearchBar(QWidget *chatCol);
     void runSearchQuery();
     void scheduleReminder(int messageId, const QDateTime &when);
@@ -125,6 +133,7 @@ private:
     SignalingClient *m_signaling;
     MediaDeviceManager *m_deviceManager;
     CallManager *m_callManager;
+    UserStatusManager *m_userStatus;
     DebugMonitor *m_debug;
     AppSettings *m_appSettings;
 
@@ -152,6 +161,9 @@ private:
     QWidget *m_sidebarCol = nullptr;
     QLabel *m_profileNameLabel = nullptr;
     QLabel *m_profileAvatarLabel = nullptr;
+    QPushButton *m_statusPill = nullptr;     // glanceable "● Online ▾" readout
+    StatusDot *m_statusDot = nullptr;        // overlay on own avatar
+    StatusPopover *m_statusPopover = nullptr;
     QPushButton *m_settingsBtn = nullptr;
     QPushButton *m_themeBtn = nullptr;
     QWidget *m_profileBar = nullptr;

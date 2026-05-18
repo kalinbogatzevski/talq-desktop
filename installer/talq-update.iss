@@ -1,11 +1,19 @@
-; Slim UPDATE installer — ships only talq.exe over an existing install.
-; Valid for upgrading an already-installed TalQ to the next version; it
-; is NOT a fresh install (the Qt runtime / DLLs are not included). If no
-; existing install is found it aborts and points to the full installer.
-; AppName matches talq-setup.iss so it targets the same install dir.
+; UPDATE installer — full-payload point-release upgrade.
+;
+; HISTORY: this used to ship ONLY talq.exe over an existing install. That
+; broke 0.29.5: the release added new GStreamer plugin dependencies
+; (decodebin3/playback, opusparse) the slim package did not carry, so
+; anyone who upgraded via it ran a talq.exe whose required plugins were
+; absent and the app died the instant a call connected.
+;
+; POLICY (do not regress): an update MUST always carry the COMPLETE
+; dependency set and remove anything dropped since the prior version.
+; This package now bundles the identical full payload as talq-setup.iss;
+; the only difference is update-friendly UX (reuses the previous install
+; dir, no dir/group pages). It is also a valid standalone install.
 [Setup]
 AppName=TalQ
-AppVersion=0.29.1
+AppVersion=0.30.1
 AppPublisher=TalQ
 AppPublisherURL=https://github.com/kalinbogatzevski/talq-desktop
 DefaultDirName={localappdata}\Programs\TalQ
@@ -14,7 +22,7 @@ PrivilegesRequired=lowest
 DisableDirPage=yes
 DisableProgramGroupPage=yes
 OutputDir=..\dist
-OutputBaseFilename=TalQ-v0.29.1-Update
+OutputBaseFilename=TalQ-v0.30.1-Update
 SetupIconFile=..\resources\talq.ico
 UninstallDisplayIcon={app}\talq.exe
 Compression=lzma2/ultra64
@@ -28,22 +36,18 @@ RestartApplications=no
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
+[InstallDelete]
+; Identical to talq-setup.iss: wipe the version-specific runtime so a
+; stale/removed plugin or DLL from the prior version can never linger
+; (ignoreversion only overwrites files still present in the new payload,
+; it can never delete one). [Files] below recopies the complete set.
+Type: filesandordirs; Name: "{app}\gst-plugins"
+Type: files; Name: "{app}\*.dll"
+
 [Files]
-; Only the binary that changes between point releases.
-Source: "..\dist\TalQ-v0.29.1-win64\talq.exe"; DestDir: "{app}"; Flags: ignoreversion
+; The COMPLETE payload — every DLL + the full GStreamer plugin set —
+; exactly as the full installer. Never a talq.exe-only patch again.
+Source: "..\dist\TalQ-v0.30.1-win64\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Run]
 Filename: "{app}\talq.exe"; Description: "Launch TalQ"; Flags: nowait postinstall
-
-[Code]
-function PrepareToInstall(var NeedsRestart: Boolean): String;
-begin
-  // Guard: only run as an update over a real existing install (the Qt
-  // runtime must already be present — this package doesn't carry it).
-  if not FileExists(ExpandConstant('{app}\Qt6Core.dll')) then
-    Result := 'No existing TalQ installation was found to update. ' +
-              'This is a slim update package and does not include the ' +
-              'Qt runtime. Please download and run the full TalQ installer.'
-  else
-    Result := '';
-end;

@@ -12,9 +12,11 @@ Your team chat as a real desktop app: instant open, near-zero idle, built to be 
 
 </div>
 
-> ⚠️ **Status:** Chat is the solid, daily-driver core. **Audio and video
-> calls are under active development and not fully tested** — expect rough
-> edges, especially across varied network/NAT setups. Windows only for now.
+> ⚠️ **Status:** Chat is the solid, daily-driver core. **Audio/video
+> calls and screen sharing now work end to end** and are verified in real
+> two-party use (1:1 and MCU/conference) as of v0.30.0 — we're almost
+> there; the remaining work is breadth of cross-network/NAT hardening.
+> Windows only for now.
 
 ---
 
@@ -55,8 +57,9 @@ eventually you rebuild the part that's between you and the work.
   per-conversation "shared files" view.
 - **Live updates** — long-poll for new messages; native notifications and
   a tray that stays out of the way.
-- **Calls** — one-to-one and group audio/video over WebRTC, with optional
-  noise suppression. *(Beta — see Status.)*
+- **Calls** — one-to-one and group audio/video over WebRTC, screen
+  sharing, with optional noise suppression. *(Working end to end; final
+  cross-network hardening — see Status.)*
 - **Four themes** — Ember, Warm, Vivid, Paper. Calm, warm, fast.
 - **Built to idle** — QPainter-on-QWidget rendering, no web engine; near-
   zero CPU at rest.
@@ -141,11 +144,12 @@ TalQ is what I use every day, but it's honest about where it is:
 - **Solid:** chat, threads, reactions, file sharing, search,
   notifications, the conversation list — the things I rely on for hours a
   day.
-- **Under development / not fully tested:** **audio and video calls.** The
-  WebRTC pipeline works in my setup, but it hasn't been validated across
-  the range of NAT, firewall, and device configurations real users have.
-  Treat calls as beta: usable, not guaranteed. Subscriber-side ICE on
-  certain network topologies is a known open issue.
+- **Working, almost there:** **audio/video calls and screen sharing.** As
+  of v0.30.0 the WebRTC pipeline is verified working end to end in real
+  two-party use — 1:1 and MCU/conference video, hardware H264, screen
+  share — with crash barriers so a media failure can't take the app down.
+  The remaining work is breadth: validating across the range of NAT,
+  firewall, and device configurations real users have.
 - **Windows only.** Linux/macOS would need the media/compositor paths
   reworked.
 - **Help especially welcome here:** call reliability across networks is

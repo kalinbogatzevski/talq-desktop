@@ -225,7 +225,8 @@ void HeaderPainter::paintEvent(QPaintEvent *)
         qreal smallBtn = 30;
         qreal btnYSmall = (h - smallBtn) / 2.0;
         m_expandBtnRect = QRectF(x, btnYSmall, smallBtn, smallBtn);
-        paintBackButton(painter, m_expandBtnRect, m_hoveredButton == 0);
+        paintBackButton(painter, m_expandBtnRect,
+                        m_hoveredButton == 0, m_pressedButton == 0);
         x += smallBtn + spacing;
     }
 
@@ -235,7 +236,8 @@ void HeaderPainter::paintEvent(QPaintEvent *)
         qreal smallBtn = 30;
         qreal btnYSmall = (h - smallBtn) / 2.0;
         m_backBtnRect = QRectF(x, btnYSmall, smallBtn, smallBtn);
-        paintBackButton(painter, m_backBtnRect, m_hoveredButton == 1);
+        paintBackButton(painter, m_backBtnRect,
+                        m_hoveredButton == 1, m_pressedButton == 1);
         x += smallBtn + spacing;
     }
 
@@ -303,14 +305,16 @@ void HeaderPainter::paintEvent(QPaintEvent *)
         rightX -= ButtonSize;
         m_videoCallRect = QRectF(rightX, btnY, ButtonSize, ButtonSize);
         paintCallButton(painter, m_videoCallRect, m_theme.accent,
-                        QStringLiteral("\uE714"), m_hoveredButton == 3);   // Video camera
+                        QStringLiteral("\uE714"),
+                        m_hoveredButton == 3, m_pressedButton == 3);   // Video camera
         rightX -= spacing;
 
         // Audio call button
         rightX -= ButtonSize;
         m_audioCallRect = QRectF(rightX, btnY, ButtonSize, ButtonSize);
         paintCallButton(painter, m_audioCallRect, m_theme.success,
-                        QStringLiteral("\uE717"), m_hoveredButton == 2);   // Phone
+                        QStringLiteral("\uE717"),
+                        m_hoveredButton == 2, m_pressedButton == 2);   // Phone
         rightX -= spacing;
     }
 
@@ -319,8 +323,9 @@ void HeaderPainter::paintEvent(QPaintEvent *)
         qreal btnY = (h - ButtonSize) / 2.0;
         rightX -= ButtonSize;
         m_searchBtnRect = QRectF(rightX, btnY, ButtonSize, ButtonSize);
-        paintCallButton(painter, m_searchBtnRect, m_theme.textSecondary,
-                        QStringLiteral("\uE721"), m_hoveredButton == 4);   // Search / magnifier
+        paintCallButton(painter, m_searchBtnRect, m_theme.accent,
+                        QStringLiteral("\uE721"),
+                        m_hoveredButton == 4, m_pressedButton == 4);   // Search / magnifier
         rightX -= spacing;
     }
 
@@ -329,8 +334,9 @@ void HeaderPainter::paintEvent(QPaintEvent *)
         qreal btnY = (h - ButtonSize) / 2.0;
         rightX -= ButtonSize;
         m_remindersBtnRect = QRectF(rightX, btnY, ButtonSize, ButtonSize);
-        paintCallButton(painter, m_remindersBtnRect, m_theme.textSecondary,
-                        QStringLiteral("\uEA8F"), m_hoveredButton == 5);   // Reminder (bell)
+        paintCallButton(painter, m_remindersBtnRect, m_theme.accent,
+                        QStringLiteral("\uEA8F"),
+                        m_hoveredButton == 5, m_pressedButton == 5);   // Reminder (bell)
         rightX -= spacing;
     }
 
@@ -339,8 +345,9 @@ void HeaderPainter::paintEvent(QPaintEvent *)
         qreal btnY = (h - ButtonSize) / 2.0;
         rightX -= ButtonSize;
         m_infoBtnRect = QRectF(rightX, btnY, ButtonSize, ButtonSize);
-        paintCallButton(painter, m_infoBtnRect, m_theme.textSecondary,
-                        QStringLiteral("\uE946"), m_hoveredButton == 6);   // Info (circle-i)
+        paintCallButton(painter, m_infoBtnRect, m_theme.accent,
+                        QStringLiteral("\uE946"),
+                        m_hoveredButton == 6, m_pressedButton == 6);   // Info (circle-i)
         rightX -= spacing;
     }
 
@@ -463,17 +470,48 @@ void HeaderPainter::paintEvent(QPaintEvent *)
 // Painting helpers
 // ═══════════════════════════════════════════════════════
 
-void HeaderPainter::paintBackButton(QPainter *p, const QRectF &rect, bool hovered)
+// Shared rounded-pill background for every action button. Three calm states
+// in the warm ladder, accent kept as the single signal (it only appears on
+// the glyph when pressed, never as a loud fill):
+//   idle    -> nothing painted (the header stays quiet)
+//   hover   -> soft bgHover wash
+//   pressed -> slightly deeper bgSelected wash + faint divider hairline
+// The chrome is a ButtonChrome-sized pill centred inside the (larger) hit
+// rect, so every button has an identical compact footprint regardless of
+// whether its hit target is 30 or 34 px.
+void HeaderPainter::paintButtonChrome(QPainter *p, const QRectF &rect,
+                                      bool hovered, bool pressed)
 {
-    // Rounded rect background on hover
-    if (hovered) {
-        p->setPen(Qt::NoPen);
-        p->setBrush(m_theme.bgHover);
-        p->drawRoundedRect(rect, rect.width() / 2, rect.height() / 2);
-    }
+    if (!hovered && !pressed)
+        return;
 
-    // Draw arrow-left: a simple < chevron
-    p->setPen(QPen(m_theme.accent, 2.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    const qreal d = ButtonChrome;
+    QRectF pill(rect.center().x() - d / 2.0, rect.center().y() - d / 2.0, d, d);
+
+    p->setPen(Qt::NoPen);
+    p->setBrush(pressed ? m_theme.bgSelected : m_theme.bgHover);
+    p->drawRoundedRect(pill, PainterTheme::radiusSmall, PainterTheme::radiusSmall);
+
+    if (pressed) {
+        // A whisper-thin border on press: confirms the click without a loud
+        // colour change. Inset by half a pixel so the 1px stroke stays crisp.
+        p->setBrush(Qt::NoBrush);
+        p->setPen(QPen(m_theme.divider, 1.0));
+        p->drawRoundedRect(pill.adjusted(0.5, 0.5, -0.5, -0.5),
+                           PainterTheme::radiusSmall, PainterTheme::radiusSmall);
+    }
+}
+
+void HeaderPainter::paintBackButton(QPainter *p, const QRectF &rect,
+                                    bool hovered, bool pressed)
+{
+    paintButtonChrome(p, rect, hovered, pressed);
+
+    // The chevron is the only place accent is allowed to read, and only
+    // while the button is engaged: calm at rest, the one signal on intent.
+    const QColor stroke = (hovered || pressed) ? m_theme.accent
+                                               : m_theme.textSecondary;
+    p->setPen(QPen(stroke, 2.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
     p->setBrush(Qt::NoBrush);
     qreal cx = rect.center().x();
     qreal cy = rect.center().y();
@@ -489,16 +527,16 @@ void HeaderPainter::paintBackButton(QPainter *p, const QRectF &rect, bool hovere
     p->drawLine(pts[0], pts[2]);
 }
 
-void HeaderPainter::paintCallButton(QPainter *p, const QRectF &rect, const QColor &iconColor,
-                                     const QString &icon, bool hovered)
+void HeaderPainter::paintCallButton(QPainter *p, const QRectF &rect, const QColor &accentColor,
+                                     const QString &icon, bool hovered, bool pressed)
 {
-    if (hovered) {
-        p->setPen(Qt::NoPen);
-        p->setBrush(m_theme.bgHover);   // warm hover, No-Gray (was white-alpha)
-        p->drawRoundedRect(rect, rect.width() / 2, rect.height() / 2);
-    }
+    paintButtonChrome(p, rect, hovered, pressed);
 
-    const QColor drawColor = hovered ? iconColor : m_theme.textSecondary;
+    // Calm at rest (secondary ink), the button's own accent only on intent.
+    // Pressed reads one notch brighter than hover so the click registers.
+    QColor drawColor = m_theme.textSecondary;
+    if (pressed)      drawColor = accentColor;
+    else if (hovered) drawColor = m_theme.textPrimary;
     const QPointF c = rect.center();
 
     // Phone and video are drawn as geometric paths so they can't fall back
@@ -686,14 +724,94 @@ int HeaderPainter::buttonAtPos(const QPointF &pos) const
     return -1;
 }
 
+QRectF HeaderPainter::buttonRect(int id) const
+{
+    switch (id) {
+    case 0: return m_expandBtnRect;
+    case 1: return m_backBtnRect;
+    case 2: return m_audioCallRect;
+    case 3: return m_videoCallRect;
+    case 4: return m_searchBtnRect;
+    case 5: return m_remindersBtnRect;
+    case 6: return m_infoBtnRect;
+    default: return QRectF();
+    }
+}
+
+QString HeaderPainter::tooltipFor(int id) const
+{
+    switch (id) {
+    case 0: return tr("Expand sidebar");
+    case 1: return tr("Back");
+    case 2: return tr("Audio call");
+    case 3: return tr("Video call");
+    case 4: return tr("Search in conversation");
+    case 5: return tr("Upcoming reminders");
+    case 6: return tr("Conversation info");
+    default: return QString();
+    }
+}
+
+// Anchor the tooltip to the actual button, not the cursor. We pass the
+// button's hit rect (in this widget's coordinates) as the 4th argument to
+// QToolTip::showText: Qt keeps the tip visible while the cursor stays inside
+// that rect and auto-hides it the moment the cursor leaves, which kills the
+// old "stale tip stuck offscreen / jittering with the mouse" behaviour. The
+// anchor point is the button's bottom-centre mapped to global coords, so the
+// tip consistently sits just under the button it describes.
+void HeaderPainter::showTooltipFor(int id)
+{
+    const QString tip = tooltipFor(id);
+    const QRectF r = buttonRect(id);
+    if (tip.isEmpty() || !r.isValid()) {
+        QToolTip::hideText();
+        return;
+    }
+    const QRect rLocal = r.toRect();
+    const QPoint anchor = mapToGlobal(QPoint(rLocal.center().x(), rLocal.bottom()));
+    QToolTip::showText(anchor, tip, this, rLocal);
+}
+
+void HeaderPainter::clearHoverState()
+{
+    bool changed = false;
+    if (m_hoveredButton != -1) { m_hoveredButton = -1; changed = true; }
+    if (m_pressedButton != -1) { m_pressedButton = -1; changed = true; }
+    if (changed) {
+        setCursor(QCursor(Qt::ArrowCursor));
+        update();
+    }
+    // Always drop any visible tip so it can never linger over the chat.
+    QToolTip::hideText();
+}
+
 void HeaderPainter::mousePressEvent(QMouseEvent *event)
 {
+    if (event->button() == Qt::LeftButton) {
+        int btn = buttonAtPos(event->position());
+        if (btn != m_pressedButton) {
+            m_pressedButton = btn;
+            update();
+        }
+    }
     event->accept();
 }
 
 void HeaderPainter::mouseReleaseEvent(QMouseEvent *event)
 {
+    const int armed = m_pressedButton;
+    if (m_pressedButton != -1) {
+        m_pressedButton = -1;
+        update();
+    }
+
+    if (event->button() != Qt::LeftButton) { event->accept(); return; }
+
+    // Only fire if the release lands on the same button that was pressed
+    // (press-and-drag-off cancels, like every other button in the app).
     int btn = buttonAtPos(event->position());
+    if (btn != armed || btn < 0) { event->accept(); return; }
+
     switch (btn) {
     case 0: emit expandSidebarClicked(); break;
     case 1: emit backClicked(); break;
@@ -714,36 +832,23 @@ bool HeaderPainter::event(QEvent *e)
         int btn = buttonAtPos(he->position());
         if (btn != m_hoveredButton) {
             m_hoveredButton = btn;
-            if (btn >= 0)
-                setCursor(QCursor(Qt::PointingHandCursor));
-            else
-                setCursor(QCursor(Qt::ArrowCursor));
+            setCursor(QCursor(btn >= 0 ? Qt::PointingHandCursor
+                                       : Qt::ArrowCursor));
             update();
 
-            // Tooltips
-            QString tip;
-            switch (btn) {
-            case 0: tip = tr("Expand sidebar"); break;
-            case 1: tip = tr("Back"); break;
-            case 2: tip = tr("Audio call"); break;
-            case 3: tip = tr("Video call"); break;
-            case 4: tip = tr("Search in conversation"); break;
-            case 5: tip = tr("Upcoming reminders"); break;
-            case 6: tip = tr("Conversation info"); break;
-            }
-            if (!tip.isEmpty())
-                QToolTip::showText(mapToGlobal(he->position().toPoint()), tip, this);
+            // Re-anchor the tip to the new button (or clear it when the
+            // cursor is over the header but not on any button).
+            if (btn >= 0)
+                showTooltipFor(btn);
             else
                 QToolTip::hideText();
         }
         return true;
     }
     if (e->type() == QEvent::HoverLeave) {
-        if (m_hoveredButton != -1) {
-            m_hoveredButton = -1;
-            setCursor(QCursor(Qt::ArrowCursor));
-            update();
-        }
+        // Cursor left the header entirely: drop hover, pressed and tooltip
+        // so nothing stale survives onto the chat surface.
+        clearHoverState();
         return true;
     }
     return QWidget::event(e);

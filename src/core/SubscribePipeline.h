@@ -58,7 +58,8 @@ private:
 
     VideoFrameProvider *m_videoProvider = nullptr;
     GstElement *m_videoAppsink = nullptr;
-    GstElement *m_videoDepay = nullptr;
+    GstElement *m_videoConvert = nullptr;  // decodebin pad-added links here
+    GstElement *m_videoDecode = nullptr;   // decodebin; PLI on its sink pad
     QTimer *m_pliTimer = nullptr;
     bool m_audioChainCreated = false;
     QString m_videoCodec;    // "VP8", "H264"
@@ -69,6 +70,7 @@ private:
 
     static void onIceCandidate(GstElement *webrtc, guint mlineIndex, gchar *candidate, gpointer userData);
     static void onPadAdded(GstElement *webrtc, GstPad *pad, gpointer userData);
+    static void onDecodebinPad(GstElement *decodebin, GstPad *pad, gpointer userData);
     static void onAnswerCreated(GstPromise *promise, gpointer userData);
     static void onIceStateChanged(GObject *obj, GParamSpec *pspec, gpointer userData);
     static void onIceGatheringStateChanged(GObject *obj, GParamSpec *pspec, gpointer userData);

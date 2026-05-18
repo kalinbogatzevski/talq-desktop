@@ -4,6 +4,8 @@
 #include <QJsonObject>
 #include <QPointer>
 #include <QRegularExpression>
+#include <QSet>
+#include <QStringList>
 #include <QUrl>
 #include <thread>
 
@@ -85,7 +87,12 @@ bool SubscribePipeline::start(const QString &stunServer, const QList<TurnServer>
         if (GST_MESSAGE_TYPE(msg) == GST_MESSAGE_ERROR) {
             GError *err = nullptr; gchar *dbg = nullptr;
             gst_message_parse_error(msg, &err, &dbg);
-            qWarning() << "SubscribePipeline ERROR:" << err->message << (dbg ? dbg : "");
+            const gchar *srcName = GST_MESSAGE_SRC(msg)
+                ? GST_OBJECT_NAME(GST_MESSAGE_SRC(msg)) : "?";
+            qWarning().nospace() << "SubscribePipeline ERROR from " << srcName
+                << " [" << (err ? g_quark_to_string(err->domain) : "?")
+                << ":" << (err ? err->code : -1) << "] "
+                << (err ? err->message : "?") << " | " << (dbg ? dbg : "");
             g_clear_error(&err); g_free(dbg);
         }
         return TRUE;
@@ -134,22 +141,109 @@ void SubscribePipeline::cleanup()
     }
     m_webrtcbin = nullptr;
     m_videoAppsink = nullptr;
-    m_videoDepay = nullptr;
+    m_videoConvert = nullptr;
+    m_videoDecode = nullptr;
     m_audioChainCreated = false;
     m_remoteDescSet = false;
     m_pendingCandidates.clear();
 }
 
-void SubscribePipeline::setRemoteOffer(const QString &sdp)
+// Janus VideoRoom offers the subscriber stream with RTX (a=ssrc-group:FID
+// + an rtx rtpmap) and sometimes red/ulpfec. webrtcbin 1.28 cannot wire up
+// those receive transceivers (try_match_transceiver_with_fec_decoder
+// fails), leaving an internal transportreceivebin queue unlinked → fatal
+// not-linked(-1) + a buffer-storm that freezes the app and times the call
+// out. Janus explicitly supports the subscriber shaping the offer SDP, so
+// we strip RTX/RED/ULPFEC and negotiate a plain H264 receive (the same
+// shape as the audio path, which works). Trade-off: no receive-leg
+// retransmission; PLI still drives keyframes and the HPB link is good.
+static QString stripReceiveRtxFec(const QString &sdp)
+{
+    const QStringList lines = sdp.split(QRegularExpression("\r\n|\n"));
+    // RTP payload numbers are only unique WITHIN an m= section, so the
+    // strip must be scoped to the video section — keying on PT number
+    // across the whole SDP would corrupt audio when an audio PT happens
+    // to equal a video rtx/red/ulpfec PT.
+    QSet<QString> dropPts;        // rtx/red/ulpfec PTs (video section only)
+    QSet<QString> rtxSsrcs;       // secondary (rtx) SSRCs from video FID groups
+    QRegularExpression rtpmapRx(
+        "^a=rtpmap:(\\d+)\\s+(rtx|red|ulpfec)/", QRegularExpression::CaseInsensitiveOption);
+    bool inVideo = false;
+    for (const QString &ln : lines) {
+        if (ln.startsWith("m=")) { inVideo = ln.startsWith("m=video "); continue; }
+        if (!inVideo) continue;
+        auto m = rtpmapRx.match(ln);
+        if (m.hasMatch()) { dropPts.insert(m.captured(1)); continue; }
+        if (ln.startsWith("a=ssrc-group:FID")) {
+            const QStringList t = ln.section(':', 1).split(' ', Qt::SkipEmptyParts);
+            // tokens: "FID", <primary>, <rtx...> — everything past the
+            // primary is a retransmission SSRC we will not receive.
+            for (int i = 2; i < t.size(); ++i) rtxSsrcs.insert(t[i]);
+        }
+    }
+    if (dropPts.isEmpty() && rtxSsrcs.isEmpty()) return sdp;  // nothing to do
+
+    QStringList out;
+    out.reserve(lines.size());
+    QRegularExpression ptAttrRx("^a=(rtpmap|fmtp|rtcp-fb):(\\d+)\\b");
+    inVideo = false;
+    int videoFmtCount = -1;  // formats kept on the rewritten m=video line
+    for (const QString &ln : lines) {
+        if (ln.startsWith("m=")) {
+            inVideo = ln.startsWith("m=video ");
+            if (inVideo) {
+                // m=video <port> <proto> <fmt>...  — drop rtx/fec PTs;
+                // indices 0-2 (m=video, port, proto) always survive.
+                const QStringList t = ln.split(' ', Qt::SkipEmptyParts);
+                QStringList kept;
+                for (int i = 0; i < t.size(); ++i)
+                    if (i < 3 || !dropPts.contains(t[i])) kept << t[i];
+                videoFmtCount = kept.size() - 3;
+                out << kept.join(' ');
+                continue;
+            }
+        }
+        if (inVideo) {
+            if (ln.startsWith("a=ssrc-group:FID")) continue;
+            auto pm = ptAttrRx.match(ln);
+            if (pm.hasMatch() && dropPts.contains(pm.captured(2))) continue;
+            if (ln.startsWith("a=ssrc:")) {
+                const QString id = ln.mid(7).section(' ', 0, 0);
+                if (rtxSsrcs.contains(id)) continue;
+            }
+        }
+        out << ln;
+    }
+    if (videoFmtCount < 1) {
+        // Stripping would leave m=video with no codec — never emit that;
+        // fall back to the original and let webrtcbin fail loudly instead.
+        qWarning() << "SubscribePipeline: RTX/FEC strip would empty m=video "
+                      "— keeping original offer";
+        return sdp;
+    }
+    qDebug().nospace() << "SubscribePipeline: stripped RTX/FEC from offer (pts="
+                       << QStringList(dropPts.values()).join(',') << " rtxSsrcs="
+                       << QStringList(rtxSsrcs.values()).join(',') << ")";
+    return out.join("\r\n");
+}
+
+void SubscribePipeline::setRemoteOffer(const QString &sdpIn)
 {
     if (!m_webrtcbin) return;
 
+    const QString sdp = stripReceiveRtxFec(sdpIn);
     qDebug() << "SubscribePipeline::setRemoteOffer — parsing SDP...";
     QByteArray sdpUtf8 = sdp.toUtf8();
     GstSDPMessage *sdpMsg;
     gst_sdp_message_new(&sdpMsg);
-    gst_sdp_message_parse_buffer((const guint8 *)sdpUtf8.constData(),
-                                  sdpUtf8.size(), sdpMsg);
+    if (gst_sdp_message_parse_buffer((const guint8 *)sdpUtf8.constData(),
+                                     sdpUtf8.size(), sdpMsg) != GST_SDP_OK) {
+        gst_sdp_message_free(sdpMsg);
+        qWarning() << "SubscribePipeline: failed to parse remote offer SDP";
+        emit error("Could not negotiate the incoming video stream "
+                   "(bad session description). Try rejoining the call.");
+        return;
+    }
 
     qDebug() << "SubscribePipeline::setRemoteOffer — creating session description...";
     GstWebRTCSessionDescription *desc = gst_webrtc_session_description_new(
@@ -211,7 +305,12 @@ void SubscribePipeline::onPadAdded(GstElement *, GstPad *pad, gpointer userData)
     const gchar *media = gst_structure_get_string(s, "media");
     const gchar *encoding = gst_structure_get_string(s, "encoding-name");
 
-    qDebug() << "SubscribePipeline: pad added, media=" << media << "encoding=" << encoding;
+    {
+        gchar *capsStr = gst_caps_to_string(caps);
+        qDebug() << "SubscribePipeline: pad added, media=" << media
+                 << "encoding=" << encoding << "caps=" << capsStr;
+        g_free(capsStr);
+    }
 
     bool isAudio = (media && g_strcmp0(media, "audio") == 0)
                 || (encoding && g_ascii_strcasecmp(encoding, "OPUS") == 0);
@@ -308,52 +407,27 @@ void SubscribePipeline::createVideoChain(GstPad *pad, const gchar *encoding)
 {
     qDebug() << "SubscribePipeline: creating video chain for" << encoding;
 
-    GstElement *depay = nullptr;
-    GstElement *decoder = nullptr;
+    // Canonical webrtcbin receive pattern, verbatim from the official
+    // gstwebrtc-demos webrtc-recvonly-h264.c: link the webrtcbin src pad
+    // straight into decodebin. decodebin autoplugs the RTP depayloader +
+    // parser + best-ranked (hardware) decoder and negotiates caps, and is
+    // the path that handles H264 + RTX + in-band SPS/PPS uniformly. The
+    // two hand-built chains (rtph264depay→decoder, then
+    // rtph264depay→h264parse→decodebin) both hit not-negotiated(-4); the
+    // working audio path is manual too, so the defect is the manual H264
+    // depay specifically — decodebin from the RTP pad is the documented fix.
+    const bool isVP8 = encoding && g_ascii_strcasecmp(encoding, "VP8") == 0;
+    m_videoCodec   = isVP8 ? QStringLiteral("VP8") : QStringLiteral("H264");
+    m_videoDecoder = QStringLiteral("auto");  // decodebin selects at runtime
 
-    if (encoding && g_ascii_strcasecmp(encoding, "VP8") == 0) {
-        depay = gst_element_factory_make("rtpvp8depay", nullptr);
-        m_videoCodec = "VP8";
-        // Try hardware VP8 decoders: NVIDIA NVDEC → Intel D3D11/DXVA → software fallback
-        decoder = gst_element_factory_make("nvvp8dec", nullptr);
-        if (decoder) {
-            m_videoDecoder = "NVDEC";
-            qDebug() << "SubscribePipeline: using nvvp8dec (NVIDIA hardware)";
-        } else {
-            decoder = gst_element_factory_make("d3d11vp8dec", nullptr);
-            if (decoder) {
-                m_videoDecoder = "DXVA";
-                qDebug() << "SubscribePipeline: using d3d11vp8dec (Intel DXVA)";
-            }
-        }
-        if (!decoder) {
-            decoder = gst_element_factory_make("vp8dec", nullptr);
-            m_videoDecoder = "Software";
-            qDebug() << "SubscribePipeline: using vp8dec (software fallback)";
-        }
-    } else {
-        depay = gst_element_factory_make("rtph264depay", nullptr);
-        m_videoCodec = "H264";
-        decoder = gst_element_factory_make("d3d11h264dec", nullptr);
-        if (decoder) {
-            m_videoDecoder = "DXVA";
-            qDebug() << "SubscribePipeline: using d3d11h264dec (DXVA)";
-        } else {
-            decoder = gst_element_factory_make("openh264dec", nullptr);
-            m_videoDecoder = "Software";
-            qDebug() << "SubscribePipeline: using openh264dec (software fallback)";
-        }
-    }
-
+    GstElement *decode  = gst_element_factory_make("decodebin", nullptr);
     GstElement *convert = gst_element_factory_make("videoconvert", nullptr);
     GstElement *appsink = gst_element_factory_make("appsink", nullptr);
 
-    if (!depay || !decoder || !convert || !appsink) {
+    if (!decode || !convert || !appsink) {
         qWarning() << "SubscribePipeline: failed to create video elements";
-        if (depay) gst_object_unref(depay);
-        if (decoder) gst_object_unref(decoder);
-        if (convert) gst_object_unref(convert);
-        if (appsink) gst_object_unref(appsink);
+        for (GstElement *e : { decode, convert, appsink })
+            if (e) gst_object_unref(e);
         return;
     }
 
@@ -369,57 +443,77 @@ void SubscribePipeline::createVideoChain(GstPad *pad, const gchar *encoding)
     g_signal_connect(appsink, "new-sample",
         G_CALLBACK(onNewVideoSample), this);
     m_videoAppsink = appsink;
+    m_videoConvert = convert;
+    m_videoDecode  = decode;  // pipeline-owned; PLI sent on its sink pad
 
-    gst_bin_add_many(GST_BIN(m_pipeline), depay, decoder, convert, appsink, nullptr);
-    gst_element_link_many(depay, decoder, convert, appsink, nullptr);
+    gst_bin_add_many(GST_BIN(m_pipeline), decode, convert, appsink, nullptr);
 
-    gst_element_sync_state_with_parent(depay);
-    gst_element_sync_state_with_parent(decoder);
+    // decodebin exposes its decoded video pad asynchronously → onDecodebinPad
+    g_signal_connect(decode, "pad-added", G_CALLBACK(onDecodebinPad), this);
+    gst_element_link(convert, appsink);
+
+    gst_element_sync_state_with_parent(decode);
     gst_element_sync_state_with_parent(convert);
     gst_element_sync_state_with_parent(appsink);
 
-    GstPad *sinkPad = gst_element_get_static_pad(depay, "sink");
-    GstPadLinkReturn ret = gst_pad_link(pad, sinkPad);
-    gst_object_unref(sinkPad);
+    GstPad *dbSink = gst_element_get_static_pad(decode, "sink");
+    GstPadLinkReturn ret = gst_pad_link(pad, dbSink);
+    gst_object_unref(dbSink);  // not retained; PLI re-fetches it per call
 
     if (ret != GST_PAD_LINK_OK) {
-        qWarning() << "SubscribePipeline: video pad link failed:" << ret;
-    } else {
-        qDebug() << "SubscribePipeline: video chain linked successfully";
-
-        // Request keyframes aggressively — send PLI at 0s, 1s, 2s, 4s after link.
-        // webrtcbin translates ForceKeyUnit to RTCP PLI → MCU → phone sends keyframe.
-        // Multiple requests needed because MCU/Janus may not forward the first one.
-        m_videoDepay = depay;  // save for PLI requests
-        auto sendPLI = [this]() {
-            if (!m_videoDepay || !m_pipeline) return;
-            // Send ForceKeyUnit on the depay's src pad — upstream events travel from src to sink
-            // This propagates through webrtcbin which translates it to RTCP PLI
-            GstPad *srcPad = gst_element_get_static_pad(m_videoDepay, "src");
-            if (srcPad) {
-                gst_pad_send_event(srcPad,
-                    gst_event_new_custom(GST_EVENT_CUSTOM_UPSTREAM,
-                        gst_structure_new("GstForceKeyUnit",
-                            "all-headers", G_TYPE_BOOLEAN, TRUE, nullptr)));
-                gst_object_unref(srcPad);
-                qDebug() << "SubscribePipeline: sent PLI for keyframe";
-            }
-        };
-        sendPLI();
-        // Defer QTimer creation to the Qt thread (createVideoChain runs on GStreamer thread)
-        QPointer<SubscribePipeline> guard(this);
-        QMetaObject::invokeMethod(this, [guard, sendPLI]() {
-            if (!guard) return;
-            auto *self = guard.data();
-            QTimer::singleShot(500, self, sendPLI);
-            QTimer::singleShot(1500, self, sendPLI);
-            QTimer::singleShot(3000, self, sendPLI);
-            self->m_pliTimer = new QTimer(self);
-            self->m_pliTimer->setInterval(5000);
-            QObject::connect(self->m_pliTimer, &QTimer::timeout, self, sendPLI);
-            self->m_pliTimer->start();
-        }, Qt::QueuedConnection);
+        qWarning() << "SubscribePipeline: webrtcbin pad -> decodebin link failed:" << ret;
+        return;
     }
+    qDebug() << "SubscribePipeline: webrtcbin video pad -> decodebin linked";
+
+    // Keyframe requests for SFU late-join: GstForceKeyUnit pushed UPSTREAM
+    // on decodebin's sink pad (peer of the webrtcbin src pad) → webrtcbin
+    // emits RTCP PLI. The pad is fetched fresh each call (no raw pad kept
+    // across the GStreamer/Qt thread boundary); m_videoDecode is a
+    // pipeline-owned element pointer like m_videoConvert.
+    auto sendPLI = [this]() {
+        if (!m_videoDecode || !m_pipeline) return;
+        GstPad *p = gst_element_get_static_pad(m_videoDecode, "sink");
+        if (!p) return;
+        gst_pad_send_event(p,
+            gst_event_new_custom(GST_EVENT_CUSTOM_UPSTREAM,
+                gst_structure_new("GstForceKeyUnit",
+                    "all-headers", G_TYPE_BOOLEAN, TRUE, nullptr)));
+        gst_object_unref(p);
+        qDebug() << "SubscribePipeline: sent PLI for keyframe";
+    };
+    sendPLI();
+    QPointer<SubscribePipeline> guard(this);
+    QMetaObject::invokeMethod(this, [guard, sendPLI]() {
+        if (!guard) return;
+        auto *self = guard.data();
+        QTimer::singleShot(500, self, sendPLI);
+        QTimer::singleShot(1500, self, sendPLI);
+        QTimer::singleShot(3000, self, sendPLI);
+        self->m_pliTimer = new QTimer(self);
+        self->m_pliTimer->setInterval(5000);
+        QObject::connect(self->m_pliTimer, &QTimer::timeout, self, sendPLI);
+        self->m_pliTimer->start();
+    }, Qt::QueuedConnection);
+}
+
+void SubscribePipeline::onDecodebinPad(GstElement *, GstPad *pad, gpointer userData)
+{
+    auto *self = static_cast<SubscribePipeline *>(userData);
+    if (!self->m_videoConvert) return;
+    // decodebin only ever produces the one decoded video stream here
+    // (it is fed a single video-only RTP branch). Link its raw pad to
+    // videoconvert; ignore a second call if already linked.
+    GstPad *sink = gst_element_get_static_pad(self->m_videoConvert, "sink");
+    if (!sink) return;
+    if (!gst_pad_is_linked(sink)) {
+        GstPadLinkReturn r = gst_pad_link(pad, sink);
+        if (r == GST_PAD_LINK_OK)
+            qDebug() << "SubscribePipeline: decodebin -> videoconvert linked";
+        else
+            qWarning() << "SubscribePipeline: decodebin -> convert link failed:" << r;
+    }
+    gst_object_unref(sink);
 }
 
 GstFlowReturn SubscribePipeline::onNewVideoSample(GstAppSink *sink, gpointer userData)

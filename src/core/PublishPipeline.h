@@ -1,6 +1,8 @@
 #pragma once
 
+#include <atomic>
 #include <QObject>
+#include <QString>
 #include <gst/gst.h>
 #include <gst/sdp/sdp.h>
 #include <gst/webrtc/webrtc.h>
@@ -39,6 +41,13 @@ public:
     bool isRunning() const { return m_running; }
     bool isCameraOn() const { return m_cameraEnabled; }
     bool usesH264() const { return m_useH264; }
+    // e.g. "H264 · nvh264enc · hw" — for the call codec/quality telemetry.
+    QString encoderDescription() const { return m_encoderDesc; }
+    // Live send bitrate (bits/s): the value GCC last pushed to the
+    // encoder, or the conservative start until the estimate kicks in.
+    int currentVideoBitrate() const {
+        return m_lastAppliedBitrate > 0 ? m_lastAppliedBitrate : m_initBitrate;
+    }
 
     void enableCamera(int deviceIndex, bool hd1080 = true);
     void disableCamera();
@@ -73,14 +82,36 @@ private:
     // Shared encoder chain (built once, never torn down):
     // funnel → vp8enc → rtpvp8pay → videoSsrcFilter → webrtcbin
     GstElement *m_funnel = nullptr;
+    GstElement *m_sharedScale = nullptr;  // funnel→...→sharedScale→sharedCaps→enc
+    GstElement *m_sharedCaps = nullptr;   // pins a CONSTANT enc resolution so the
+                                          // encoder never reconfigures on the
+                                          // 16x16-dummy↔camera source switch
     GstElement *m_videoEncoder = nullptr;
     GstElement *m_videoPayloader = nullptr;
     GstElement *m_videoSsrcFilter = nullptr;
     GstPad *m_videoSinkPad = nullptr;     // webrtcbin's video sink pad
     guint32 m_videoSsrc = 0;
-    GstElement *m_videoParser = nullptr;  // h264parse (only when using NVENC H264)
+    // Start bitrate (bits/s) handed to the encoder; rtpgccbwe drives the
+    // live rate up to the server ceiling once TWCC feedback flows.
+    int m_initBitrate = 2500000;
+    // Server video ceiling (HPB signaling [mcu] maxstreambitrate). GCC is
+    // clamped here so it never probes past what Janus will forward.
+    int m_maxBitrate = 4000000;
+    GstElement *m_gccbwe = nullptr;  // rtpgccbwe, owned by webrtcbin once returned
+    // Set before the pipeline goes to NULL in cleanup(). webrtcbin can fire
+    // request-aux-sender / notify::estimated-bitrate on a streaming thread
+    // concurrently with Qt-thread teardown; these callbacks bail on it.
+    std::atomic<bool> m_shuttingDown{false};
+    // Last bitrate actually pushed to the encoder. GCC notifies every
+    // ~200 ms with tiny deltas; hardware encoders (qsvh264enc/oneVPL)
+    // reject most live reconfigures (MFX_ERR_INCOMPATIBLE_VIDEO_PARAM) and
+    // a per-tick g_object_set storms that path. Only re-apply on a
+    // meaningful change.
+    int m_lastAppliedBitrate = 0;
+    GstElement *m_videoParser = nullptr;  // h264parse (present iff m_useH264)
     bool m_cameraEnabled = false;
     bool m_useH264 = false;
+    QString m_encoderDesc;   // human codec/encoder/hw-sw, for telemetry/pill
     int m_lvlDbg = 0;
     GstWebRTCDataChannel *m_statusDataChannel = nullptr;
 
@@ -110,4 +141,9 @@ private:
     static void onIceStateChanged(GObject *obj, GParamSpec *pspec, gpointer userData);
     static void onIceGatheringStateChanged(GObject *obj, GParamSpec *pspec, gpointer userData);
     static GstFlowReturn onPreviewSample(GstAppSink *sink, gpointer userData);
+    // Send-side adaptive bitrate: webrtcbin asks for an aux sender; we hand
+    // back rtpgccbwe and follow its estimate live onto the encoder.
+    static GstElement *onRequestAuxSender(GstElement *webrtc, GObject *transport,
+                                          gpointer userData);
+    static void onGccBitrate(GObject *gcc, GParamSpec *pspec, gpointer userData);
 };
