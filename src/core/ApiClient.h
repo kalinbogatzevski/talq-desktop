@@ -200,6 +200,15 @@ public:
     QNetworkReply *getLongPoll(const QString &path, const QUrlQuery &params, int timeoutSecs,
                                const QMap<QByteArray, QByteArray> &headers = {});
 
+    // Drop any server-issued session (cookie jar + cached connections and
+    // auth/credential cache). MUST be called when the authenticated user
+    // changes: Nextcloud validates a live session cookie BEFORE the
+    // Authorization: Basic header, so a cookie left over from the previous
+    // account makes every request authenticate as that old user even after
+    // credentials change. setCredentials() invokes this automatically on a
+    // user change; exposed for callers that need an explicit reset.
+    void resetSession();
+
     // Cancel all pending requests
     void cancelAll();
 
@@ -216,8 +225,17 @@ signals:
 private:
     QNetworkRequest makeRequest(const QString &path, const QUrlQuery &params = QUrlQuery()) const;
     void applyBasicAuth(QNetworkRequest &req) const;
-    void handleReply(QNetworkReply *reply, Callback callback);
-    void handleArrayReply(QNetworkReply *reply, ArrayCallback callback);
+    // True when the request demonstrably never reached the server (stale
+    // pooled HTTP/2 connection → server GOAWAY after idle, etc.), so it is
+    // safe to replay once without risking a double-submit.
+    bool isRetryableTransportError(QNetworkReply *reply) const;
+    // `resend` re-issues the identical request on a fresh connection; on a
+    // retryable transport error the reply is replayed once before failure
+    // is surfaced to `callback`.
+    void handleReply(QNetworkReply *reply, Callback callback,
+                     std::function<QNetworkReply*()> resend = {}, int attempt = 0);
+    void handleArrayReply(QNetworkReply *reply, ArrayCallback callback,
+                          std::function<QNetworkReply*()> resend = {}, int attempt = 0);
     void trackReply(QNetworkReply *reply);
 
     QNetworkAccessManager m_nam;

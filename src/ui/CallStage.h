@@ -50,7 +50,7 @@ protected:
 
 private:
     struct Tile { QPointer<CallParticipant> p; QRectF rect; bool isStage = false; bool isScreen = false; };
-    struct Btn  { QString id; QRectF rect; QString glyph; bool on = false; bool danger = false; };
+    struct Btn  { QString id; QRectF rect; QString glyph; QString tip; bool on = false; bool danger = false; };
 
     void rebindProviders();
     void purgeStaleFrames();      // drop cached frames for departed peers
@@ -61,6 +61,7 @@ private:
     void paintTile(QPainter &p, const Tile &t, const PainterTheme &th, bool large);
     void paintControlBar(QPainter &p, const PainterTheme &th);
     void paintStatusPill(QPainter &p, const PainterTheme &th);
+    void paintCodecPill(QPainter &p, const PainterTheme &th);
     void paintTelemetry(QPainter &p, const PainterTheme &th);
     void paintCentered(QPainter &p, const PainterTheme &th); // incoming/outgoing/alone
     void buildButtons();
@@ -85,6 +86,7 @@ private:
     QTimer *m_tick = nullptr;                  // ~30fps repaint + idle/glow
     bool m_telemetryOpen = false;
     bool m_rosterOpen = false;
+    QString m_hoverBtn;                        // control-bar button under cursor
 
     // self-PiP drag
     int m_pipCorner = 3;                       // 0..3 TL,TR,BL,BR (default BR)
@@ -93,4 +95,5 @@ private:
     QRectF m_pipRect;
 
     double m_glowPhase = 0.0;
+    qreal m_statusPillBottom = 42.0;  // set by paintStatusPill; anchors codec pill
 };

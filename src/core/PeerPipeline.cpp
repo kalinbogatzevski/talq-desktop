@@ -338,19 +338,26 @@ void PeerPipeline::setMuted(bool muted)
     gst_object_unref(src);
 }
 
-void PeerPipeline::enableCamera(int deviceIndex, bool hd1080)
+void PeerPipeline::enableCamera(int deviceIndex, bool hd1080,
+                                bool forceTestSource)
 {
     if (m_cameraEnabled || !m_pipeline) return;
 
     qDebug() << "PeerPipeline: enabling camera, device" << deviceIndex << (hd1080 ? "1080p" : "720p");
 
-    bool testVideo = !qEnvironmentVariableIsEmpty("TALQ_TEST_AUDIO");
+    // Video test source is gated by its OWN env (TALQ_TEST_VIDEO), decoupled
+    // from TALQ_TEST_AUDIO: the harness wants synthetic audio (no mic↔speaker
+    // feedback — the subscriber plays remote audio on the same box) while
+    // still exercising the REAL camera capture+encode path. The real app
+    // sets neither env, so it always uses the real camera (unchanged).
+    bool testVideo = forceTestSource ||
+                     !qEnvironmentVariableIsEmpty("TALQ_TEST_VIDEO");
 
     if (testVideo) {
         m_cameraSrc = gst_element_factory_make("videotestsrc", nullptr);
         if (m_cameraSrc) {
             g_object_set(m_cameraSrc, "is-live", TRUE, "pattern", 0 /* SMPTE */, nullptr);
-            qDebug() << "PeerPipeline: using videotestsrc (test mode)";
+            qDebug() << "PeerPipeline: using videotestsrc (TALQ_TEST_VIDEO)";
         }
     }
     if (!m_cameraSrc) {

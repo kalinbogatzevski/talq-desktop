@@ -5,6 +5,10 @@
 #include "core/AppSettings.h"
 #include "core/AuthManager.h"
 
+#ifndef TALQ_VERSION_NAME
+#define TALQ_VERSION_NAME ""   // per-release codename (set in CMake)
+#endif
+
 #include <QApplication>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -583,6 +587,23 @@ QWidget *SettingsDialog::buildAccountTab()
     });
     bottomRow->addWidget(logoutBtn);
     layout->addLayout(bottomRow);
+
+    // Release codename credit. The codename "Bangaranga" honours DARA's
+    // "Bangaranga", the song that won the Eurovision Song Contest 2026 for
+    // Bulgaria (the country's first Eurovision win, at the contest's 70th
+    // anniversary), with staging inspired by Bulgarian kukeri folklore.
+    // Shown only when a codename is set for the release.
+    const QString verName = QStringLiteral(TALQ_VERSION_NAME);
+    if (!verName.isEmpty()) {
+        layout->addSpacing(6);
+        auto *credit = new QLabel(
+            tr("Codename \"%1\" after DARA's \"Bangaranga\", "
+               "Bulgaria's first Eurovision win (2026).").arg(verName));
+        credit->setFont(infoFont);
+        credit->setPalette(secPal);
+        credit->setWordWrap(true);
+        layout->addWidget(credit);
+    }
 
     return page;
 }

@@ -28,6 +28,10 @@
 #include <QRegularExpression>
 #include <gst/gst.h>
 #include <glib.h>
+#include <thread>
+#include <chrono>
+#include <cstdlib>
+#include <cstdio>
 
 #ifdef Q_OS_WIN
 #include <windows.h>
@@ -37,17 +41,22 @@
 #include "core/ApiClient.h"
 #include "core/SignalingClient.h"
 #include "core/PeerPipeline.h"
-#include "core/SubscribePipeline.h"
+#include "core/SubscribeWebrtcSrc.h"  // subscriber under test (gst-plugins-rs)
 
-// Test configuration
+// Test configuration. Identities/token come from the environment so the
+// harness never rings a real person's devices. Defaults are the two
+// dedicated bot accounts in the "TalQ Auto Test" group room — NEVER a
+// human account. Override via TALQ_TEST_USERA / _USERA_PASS / _USERB /
+// _USERB_PASS / _TOKEN (load C:\Users\bogat\.talq-test.env first).
 static const QString SERVER = "https://ncloud.123net.link";
-static const QString USER_A = "kalin";
-static const QString USER_B = "test-talq";
-static const QString PASS_B = "talQing123@";
-static const QString DEFAULT_TOKEN = "u2f3gbu4";  // Test TalQ (kalin <-> test-talq)
+static QString USER_A;  // resolved in main() from env (default test-talq2)
+static QString USER_B;  // resolved in main() from env (default test-talq)
+static QString PASS_A;
+static QString PASS_B;
+static const QString DEFAULT_TOKEN = "aqzoti8m";  // TalQ Auto Test (bots only)
 
-// Credential helper
-static QString loadPasswordFromCredMan()
+// Credential helper (legacy CredMan path; kept for manual runs)
+[[maybe_unused]] static QString loadPasswordFromCredMan()
 {
 #ifdef Q_OS_WIN
     PCREDENTIALW cred = nullptr;
@@ -105,7 +114,7 @@ struct TestPeer {
     ApiClient *api = nullptr;
     SignalingClient *signaling = nullptr;
     PeerPipeline *pipeline = nullptr;
-    SubscribePipeline *subscribePipeline = nullptr;  // for receiving remote peer's stream via MCU
+    SubscribeWebrtcSrc *subscribePipeline = nullptr;  // remote peer's stream via MCU (webrtcsrc)
     TestPhase phase = Init;
     QString sessionId;       // HPB session ID
     QString remoteSessionId; // other peer's HPB session ID
@@ -160,15 +169,16 @@ public:
         m_timeout.start();
         gst_init(nullptr, nullptr);
 
-        // Set up User A (kalin)
-        QString passA = loadPasswordFromCredMan();
-        if (passA.isEmpty()) {
-            qCritical() << "Cannot read User A password from Credential Manager";
+        if (PASS_A.isEmpty() || PASS_B.isEmpty()) {
+            qCritical() << "Missing test credentials. Set TALQ_TEST_USERA_PASS"
+                           " and TALQ_TEST_USERB_PASS (source .talq-test.env).";
             qApp->exit(1);
             return;
         }
+        qDebug().noquote() << QString("Identities: A=%1  B=%2  (no human accounts)")
+                                  .arg(USER_A, USER_B);
 
-        setupPeer(m_peerA, "UserA(" + USER_A + ")", SERVER, USER_A, passA);
+        setupPeer(m_peerA, "UserA(" + USER_A + ")", SERVER, USER_A, PASS_A);
         setupPeer(m_peerB, "UserB(" + USER_B + ")", SERVER, USER_B, PASS_B);
 
         m_peerA.setPhase(SignalingConnecting);
@@ -332,9 +342,13 @@ private:
 
     void joinCall(TestPeer &peer)
     {
-        // flags: 1=IN_CALL, 2=WITH_AUDIO -> 3 = audio only
+        // flags: 1=IN_CALL|2=WITH_AUDIO|4=WITH_VIDEO -> 7. Publish video
+        // from the start and subscribe once — mirrors the real app's
+        // CallManager flow. No audio-first + forceReconnect reneg dance
+        // (that stop/recreate churn manufactured the orphan webrtcbin/
+        // DTLS transports that wedged subscriber DTLS at role=server).
         QJsonObject body;
-        body["flags"] = 3;
+        body["flags"] = 7;
         peer.api->post("apps/spreed/api/v4/call/" + m_token, body,
                       [this, &peer](bool ok, const QJsonObject &, int status) {
             if (!ok) {
@@ -362,14 +376,9 @@ private:
         connect(peer.pipeline, &PeerPipeline::localOfferReady, this,
                 [this, &peer](const QString &sdp) {
             peer.log("Local offer ready (" + QString::number(sdp.length()) + " chars)");
-            if (!sdp.contains("m=audio")) {
-                peer.log("WARNING: SDP missing m=audio!");
-            }
-            if (sdp.contains("OPUS") || sdp.contains("opus")) {
-                peer.log("SDP has Opus codec");
-            }
-            // Send offer to MCU: in HPB MCU mode, the signaling server
-            // routes the offer to the MCU which creates the answer
+            // Publisher offers video from the start now — validate it so
+            // the pass criteria still gates on a valid active m=video.
+            peer.videoRenegSdpValid = validateVideoSdp(peer, sdp);
             peer.signaling->sendOffer(peer.sessionId, sdp, "mcu-test");
         });
 
@@ -416,6 +425,16 @@ private:
         peer.pipelineStarted = true;
         peer.log("Pipeline started");
 
+        // Publish video from the start so the first publisher offer
+        // carries active m=video. Peer A uses the REAL camera (real
+        // capture+H264 encode → MCU → peer B decodes it — the meaningful
+        // real-path proof); peer B uses videotestsrc, because two
+        // mfvideosrc consumers of one device in one process race
+        // ("Internal data stream error"). The real app has a single
+        // consumer, so it always uses the real camera.
+        const bool useSyntheticVideo = (&peer == &m_peerB);
+        peer.pipeline->enableCamera(0, false, useSyntheticVideo);
+
         // Flush pending ICE candidates
         for (auto &[cand, mline, mid] : peer.pendingCandidates)
             peer.pipeline->addIceCandidate(cand, mline, mid);
@@ -444,16 +463,16 @@ private:
             return;
         }
 
-        peer.subscribePipeline = new SubscribePipeline(remoteSession, this);
+        peer.subscribePipeline = new SubscribeWebrtcSrc(remoteSession, this);
 
-        connect(peer.subscribePipeline, &SubscribePipeline::localAnswerReady, this,
+        connect(peer.subscribePipeline, &SubscribeWebrtcSrc::localAnswerReady, this,
                 [this, &peer, remoteSession](const QString &answer) {
             peer.log("Subscriber answer -> " + remoteSession.left(12)
                      + " sid=" + peer.subscriberSid);
             peer.signaling->sendAnswer(remoteSession, answer, peer.subscriberSid);
         });
 
-        connect(peer.subscribePipeline, &SubscribePipeline::iceCandidateReady, this,
+        connect(peer.subscribePipeline, &SubscribeWebrtcSrc::iceCandidateReady, this,
                 [this, &peer, remoteSession](const QString &cand, int mline, const QString &mid) {
             QJsonObject c;
             c["candidate"] = cand;
@@ -462,12 +481,12 @@ private:
             peer.signaling->sendCandidate(remoteSession, c, peer.subscriberSid);
         });
 
-        connect(peer.subscribePipeline, &SubscribePipeline::iceStateChanged, this,
+        connect(peer.subscribePipeline, &SubscribeWebrtcSrc::iceStateChanged, this,
                 [&peer](const QString &state) {
             peer.log("Subscriber ICE: " + state);
         });
 
-        connect(peer.subscribePipeline, &SubscribePipeline::error, this,
+        connect(peer.subscribePipeline, &SubscribeWebrtcSrc::error, this,
                 [&peer](const QString &err) {
             peer.log("Subscriber error: " + err);
         });
@@ -498,11 +517,32 @@ private:
     void checkBothActive()
     {
         if (m_peerA.iceConnected && m_peerB.iceConnected && !m_videoTestStarted) {
-            qDebug() << "\n===== BOTH PEERS ICE CONNECTED TO MCU =====";
-            qDebug() << "Waiting 1 second for stability, then testing video renegotiation...";
+            qDebug() << "\n===== BOTH PEERS PUBLISHING (audio+video) TO MCU =====";
             m_videoTestStarted = true;
-            QTimer::singleShot(1000, this, &CallTest::startVideoRenegotiation);
+            // Both publishers are up with video. Request each peer's
+            // subscriber stream EXACTLY ONCE (real-app CallManager
+            // behaviour) after a short settle, then wait for frames.
+            QTimer::singleShot(1500, this, [this]() {
+                requestSubscribersOnce();
+                QTimer::singleShot(3000, this, &CallTest::startFrameWait);
+            });
         }
+    }
+
+    // Request each peer's view of the OTHER peer's stream, exactly once
+    // per peer — the same single-shot subscribe the real app does in
+    // CallManager::requestPeerStream. No re-requesting, no reneg: that
+    // churn is what spawned orphan webrtcbin/DTLS transports.
+    void requestSubscribersOnce()
+    {
+        auto req = [this](TestPeer &p) {
+            if (p.subscriberRequested || p.remoteSessionId.isEmpty()) return;
+            p.subscriberRequested = true;
+            p.log("requestOffer (once) for remote " + p.remoteSessionId.left(20));
+            p.signaling->requestOffer(p.remoteSessionId, "video");
+        };
+        req(m_peerA);
+        req(m_peerB);
     }
 
     // Validate an SDP offer for video and return true if valid
@@ -620,18 +660,12 @@ private:
             if (state == "connected" || state == "completed") {
                 peer.iceConnected = true;
                 peer.videoAnswerReceived = true;  // MCU answered our offer
-                // Request the remote peer's subscriber feed exactly once.
-                // The real app (CallManager::requestPeerStream) subscribes a
-                // single time; Janus then drives later renegotiation via
-                // "Negotiation update" with no further requestoffer. Re-
-                // requesting on every ICE transition makes Janus log
-                // "Already in as a subscriber on this handle" and detach the
-                // feed ("No WebRTC media anymore") before any frame decodes.
-                if (!peer.remoteSessionId.isEmpty() && !peer.subscriberRequested) {
-                    peer.log("Requesting subscriber for " + peer.remoteSessionId.left(20));
-                    peer.signaling->requestOffer(peer.remoteSessionId, "video");
-                    peer.subscriberRequested = true;
-                }
+                // Do NOT request the subscriber here. Requesting on our own
+                // publisher ICE-connect races the OTHER peer's video publish
+                // — the MCU then offers an audio-only feed (the 630-char
+                // offer → no video pad ever). The single requestOffer is
+                // issued by checkBothVideoRenegotiated(), which fires only
+                // AFTER both peers have published video.
                 checkBothVideoRenegotiated();
             }
         });
@@ -675,8 +709,8 @@ private:
         m_peerA.setPhase(VideoRenegotiatingA);
         forceReconnectWithVideo(m_peerA);
 
-        // Step 2: After 3s, User B does forceReconnect with video
-        QTimer::singleShot(3000, this, [this]() {
+        // Step 2: After 1.5s, User B does forceReconnect with video
+        QTimer::singleShot(1500, this, [this]() {
             if (m_peerB.phase == TearingDown) return;
             qDebug() << "\n--- User B forceReconnect with video ---";
             m_peerB.setPhase(VideoRenegotiatingB);
@@ -684,7 +718,7 @@ private:
         });
 
         // Safety timeout
-        QTimer::singleShot(30000, this, [this]() {
+        QTimer::singleShot(18000, this, [this]() {
             if (!m_frameWaitStarted) {
                 qWarning() << "Video forceReconnect timed out, checking frames anyway...";
                 startFrameWait();
@@ -694,7 +728,15 @@ private:
 
     void checkBothVideoRenegotiated()
     {
+        // Run EXACTLY ONCE. This is invoked from both peers' ICE-state
+        // handlers, which fire repeatedly (connected, then completed,
+        // then on every check). Without this guard it re-issued
+        // requestOffer ~7×, so Janus kept replacing the subscriber
+        // session with fresh ICE creds and DTLS never converged on a
+        // stable transport (no srtp key → no media).
+        if (m_videoRenegHandled) return;
         if (m_peerA.videoAnswerReceived && m_peerB.videoAnswerReceived) {
+            m_videoRenegHandled = true;
             qDebug() << "\n===== BOTH PEERS VIDEO RENEGOTIATION COMPLETE =====";
 
             // Update call flags to include VIDEO (7 = IN_CALL + AUDIO + VIDEO)
@@ -712,7 +754,7 @@ private:
             });
 
             // Wait for flags to propagate, then request subscriber streams
-            QTimer::singleShot(2000, this, [this]() {
+            QTimer::singleShot(1500, this, [this]() {
                 qDebug() << "Requesting subscriber streams from MCU...";
                 if (!m_peerA.remoteSessionId.isEmpty() && !m_peerA.subscriberRequested) {
                     m_peerA.log("requestOffer for remote: " + m_peerA.remoteSessionId.left(20));
@@ -726,7 +768,7 @@ private:
                 }
 
                 // Wait for MCU to send subscriber offers with video
-                QTimer::singleShot(3000, this, &CallTest::startFrameWait);
+                QTimer::singleShot(2000, this, &CallTest::startFrameWait);
             });
         }
     }
@@ -750,12 +792,12 @@ private:
         m_peerA.remoteVideoFramesBefore = getRemoteFrames(m_peerA);
         m_peerB.remoteVideoFramesBefore = getRemoteFrames(m_peerB);
 
-        qDebug() << "Waiting 8 seconds for video frames to flow through MCU...";
+        qDebug() << "Waiting 6 seconds for video frames to flow through MCU...";
         qDebug() << "  User A remote frames so far:" << m_peerA.remoteVideoFramesBefore;
         qDebug() << "  User B remote frames so far:" << m_peerB.remoteVideoFramesBefore;
 
-        // Wait 8 seconds for the MCU to route video between peers
-        QTimer::singleShot(8000, this, [this, getRemoteFrames]() {
+        // Wait 6 seconds for the MCU to route video between peers
+        QTimer::singleShot(6000, this, [this, getRemoteFrames]() {
             m_peerA.remoteVideoFramesAfter = getRemoteFrames(m_peerA);
             m_peerB.remoteVideoFramesAfter = getRemoteFrames(m_peerB);
 
@@ -821,10 +863,15 @@ private:
                 QTimer::singleShot(1000, this, [this]() {
                     bool icePassed = m_peerA.iceConnected && m_peerB.iceConnected;
                     bool videoSdpOk = m_peerA.videoRenegSdpValid && m_peerB.videoRenegSdpValid;
+                    int aFrames = m_peerA.remoteVideoFramesAfter - m_peerA.remoteVideoFramesBefore;
+                    int bFrames = m_peerB.remoteVideoFramesAfter - m_peerB.remoteVideoFramesBefore;
+                    // The whole point of webrtcsrc was to fix "no remote
+                    // video", so decoded frames on BOTH subscribers is the
+                    // hard pass bar — not informational anymore.
+                    bool framesOk = aFrames > 0 && bFrames > 0;
+                    bool pass = icePassed && videoSdpOk && framesOk;
                     printSummary(icePassed);
-                    // Pass if ICE and both video SDPs are valid
-                    // (frame flow through MCU is informational, not a hard failure)
-                    qApp->exit((icePassed && videoSdpOk) ? 0 : 1);
+                    qApp->exit(pass ? 0 : 1);
                 });
             }
         };
@@ -884,6 +931,7 @@ private:
     QTimer m_timeout;
     QTimer m_activeTimer;
     bool m_videoTestStarted = false;
+    bool m_videoRenegHandled = false;   // checkBothVideoRenegotiated once-guard
     bool m_frameWaitStarted = false;
 };
 
@@ -893,14 +941,40 @@ int main(int argc, char *argv[])
 
     QCoreApplication app(argc, argv);
 
+    // Resolve identities from env (bot defaults; never a human account).
+    auto envOr = [](const char *k, const QString &def) {
+        QString v = qEnvironmentVariable(k);
+        return v.isEmpty() ? def : v;
+    };
+    USER_A = envOr("TALQ_TEST_USERA", "test-talq2");
+    USER_B = envOr("TALQ_TEST_USERB", "test-talq");
+    PASS_A = qEnvironmentVariable("TALQ_TEST_USERA_PASS");
+    PASS_B = qEnvironmentVariable("TALQ_TEST_USERB_PASS");
+
     QCommandLineParser parser;
-    parser.addOption({"token", "Conversation token", "TOKEN", DEFAULT_TOKEN});
+    parser.addOption({"token", "Conversation token", "TOKEN",
+                      envOr("TALQ_TEST_TOKEN", DEFAULT_TOKEN)});
     parser.addOption({"timeout", "Test timeout in seconds", "SECS", "60"});
     parser.addHelpOption();
     parser.process(app);
 
     QString token = parser.value("token");
     int timeout = parser.value("timeout").toInt();
+    // Kalin: a broken call drops by ~40s, so never wait past ~60s.
+    if (timeout <= 0 || timeout > 60) timeout = 60;
+
+    // Hard watchdog on a dedicated thread: a blocking teardown (e.g.
+    // PeerPipeline camera-disable / GStreamer state→NULL) can stall the
+    // Qt event loop so the QTimer timeout never fires. This thread is
+    // independent of the loop and force-exits at the deadline no matter
+    // what. Exit 124 = watchdog kill (distinct from 0 pass / 1 fail).
+    std::thread([timeout]() {
+        std::this_thread::sleep_for(std::chrono::seconds(timeout));
+        std::fprintf(stderr,
+            "\n[WATCHDOG] hard %ds deadline hit - force terminate\n", timeout);
+        std::fflush(stderr);
+        std::_Exit(124);
+    }).detach();
 
     qDebug() << "TalQ Call Test Harness (MCU mode)";
     qDebug() << "Server:" << SERVER;

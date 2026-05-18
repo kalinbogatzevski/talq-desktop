@@ -9,6 +9,7 @@
 #include "core/SignalingClient.h"
 #include "core/PublishPipeline.h"
 #include "core/SubscribePipeline.h"
+#include "core/SubscribeWebrtcSrc.h"
 #include "core/PeerPipeline.h"
 #include "core/MediaDeviceManager.h"
 #include "core/VideoFrameProvider.h"
@@ -60,6 +61,12 @@ public:
     QString gpuAccelStatus() const { return m_gpuAccelStatus; }
     QString activeVideoCodec() const;
     QString activeVideoDecoder() const;
+    // Publish (or screen-share) encoder, e.g. "H264 · nvh264enc · hw".
+    QString activeVideoEncoder() const;
+    // Whether the active video encoder is hardware-accelerated (pill tint).
+    bool activeVideoEncoderIsHw() const;
+    // Send resolution + live bitrate, e.g. "1280×720 · 2.5 Mbps".
+    QString videoTxLabel() const;
 
     Q_INVOKABLE void startCall(const QString &token, bool withVideo);
     Q_INVOKABLE void setRemotePeerInfo(const QString &name, const QString &peerId);
@@ -67,6 +74,11 @@ public:
     Q_INVOKABLE void declineCall();
     Q_INVOKABLE void setUserActionReady();
     Q_INVOKABLE void hangUp();
+    // Best-effort: free the server-side call participant on a clean exit
+    // (window close / quit / logout) WITHOUT tearing pipelines, then
+    // briefly flush the DELETE so it lands before the process exits.
+    // Idempotent — safe to call when not in a call.
+    void leaveCallBeacon();
     Q_INVOKABLE void toggleMute();
     Q_INVOKABLE void toggleCamera();
     Q_INVOKABLE void startScreenShare(int monitorIndex = 0, quintptr windowHandle = 0);
@@ -147,7 +159,7 @@ private:
     MediaDeviceManager *m_deviceManager = nullptr;
     // MCU dual pipelines
     PublishPipeline *m_publishPipeline = nullptr;
-    QHash<QString, SubscribePipeline*> m_subscribePipelines;
+    QHash<QString, SubscribeWebrtcSrc*> m_subscribePipelines;
     QHash<QString, QString> m_subscriberSids;  // sessionId -> current MCU sid
     // P2P single pipeline
     PeerPipeline *m_peerPipeline = nullptr;

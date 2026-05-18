@@ -11,12 +11,86 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QTime>
+#include <csignal>
+#include <cstdlib>
+#include <exception>
 
 #ifdef Q_OS_WIN
 #include <windows.h>
 #include <psapi.h>
 #include <dwmapi.h>
+#include <dbghelp.h>
 #pragma comment(lib, "dwmapi.lib")
+#pragma comment(lib, "dbghelp.lib")
+#endif
+
+// Crash backstop. A native fault (access violation, etc.) would otherwise
+// make TalQ vanish silently with no trace — unacceptable for a comms app.
+// This last-resort filter writes a minidump + a marker line next to the
+// log so EVERY crash is diagnosable, then lets the process terminate
+// (cleanly, with evidence) instead of disappearing. It is the safety net
+// BEHIND the real fix: every foreseeable media failure is made non-fatal
+// at its source so we never reach here in normal operation.
+#ifdef Q_OS_WIN
+namespace {
+wchar_t g_crashDumpPath[MAX_PATH] = L"";
+
+// Shared dump writer. `info` is non-null only for the SEH path; abort()
+// and std::terminate have no exception record (pass nullptr).
+void talqWriteMiniDump(EXCEPTION_POINTERS *info)
+{
+    if (!g_crashDumpPath[0]) return;
+    HANDLE f = CreateFileW(g_crashDumpPath, GENERIC_WRITE, 0, nullptr,
+                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return;
+    MINIDUMP_EXCEPTION_INFORMATION mei{};
+    mei.ThreadId = GetCurrentThreadId();
+    mei.ExceptionPointers = info;
+    mei.ClientPointers = FALSE;
+    MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), f,
+                      MiniDumpWithIndirectlyReferencedMemory,
+                      info ? &mei : nullptr, nullptr, nullptr);
+    CloseHandle(f);
+    fprintf(stderr, "[TalQ FATAL] minidump written\n");
+    fflush(stderr);
+}
+
+LONG WINAPI talqCrashFilter(EXCEPTION_POINTERS *info)
+{
+    // stderr is freopen'd to the log file; record the crash there first so
+    // it survives even if minidump writing fails.
+    fprintf(stderr,
+            "\n[TalQ FATAL] unhandled exception 0x%08lX at %p — writing dump\n",
+            info ? info->ExceptionRecord->ExceptionCode : 0,
+            info ? (void*)info->ExceptionRecord->ExceptionAddress : nullptr);
+    fflush(stderr);
+    talqWriteMiniDump(info);
+    return EXCEPTION_EXECUTE_HANDLER;  // terminate with evidence, not silently
+}
+
+// SetUnhandledExceptionFilter does NOT catch abort() (SIGABRT). GLib
+// g_assert/g_error and — critically — a Rust panic inside the gstrswebrtc
+// plugin (the new subscribe path) terminate via abort(), which would
+// otherwise vanish with no dump. This backstop catches that class too.
+extern "C" void talqAbortHandler(int)
+{
+    fprintf(stderr, "\n[TalQ FATAL] abort()/SIGABRT — likely a GLib assertion "
+                     "or Rust panic in a GStreamer plugin. Writing dump.\n");
+    fflush(stderr);
+    talqWriteMiniDump(nullptr);
+    signal(SIGABRT, SIG_DFL);
+    _exit(134);  // 128 + SIGABRT, with evidence
+}
+
+void talqTerminateHandler()
+{
+    fprintf(stderr, "\n[TalQ FATAL] std::terminate (unhandled C++ exception). "
+                     "Writing dump.\n");
+    fflush(stderr);
+    talqWriteMiniDump(nullptr);
+    _exit(134);
+}
+} // namespace
 #endif
 
 #include "core/ApiClient.h"
@@ -30,6 +104,7 @@
 #include "models/ThreadListModel.h"
 #include "core/MediaDeviceManager.h"
 #include "core/CallManager.h"
+#include "core/UserStatusManager.h"
 #include "core/DebugMonitor.h"
 #include "core/AppSettings.h"
 #include "core/EmojiData.h"
@@ -53,11 +128,17 @@ int main(int argc, char *argv[])
         QByteArray a(argv[i]);
         if (a == "--debug" || a == "-d") { debugRequested = true; break; }
     }
-    bool enableFileLogging = debugRequested;
+    // Logging is ALWAYS on (release included): a comms app that can die
+    // mid-call must never do so without a log + minidump next to it. Only
+    // the VERBOSITY is gated — `--debug`/QT_DEBUG turns on the heavy
+    // GStreamer/app tracing; a normal run keeps a lean errors+warnings log
+    // and the crash backstop. This is the durable fix for the recurring
+    // "user hit a release build, no evidence" blindness.
+    bool verbose = debugRequested;
 #ifdef QT_DEBUG
-    enableFileLogging = true;
+    verbose = true;
 #endif
-    if (enableFileLogging) TalqLog::g_verbose = true;
+    if (verbose) TalqLog::g_verbose = true;
 
     // Set GStreamer plugin path relative to the exe (before gst_init)
     {
@@ -69,9 +150,21 @@ int main(int argc, char *argv[])
     }
 
     QString logPath;
-    if (enableFileLogging) {
+    {
         qputenv("QT_FORCE_STDERR_LOGGING", "1");
-        qputenv("GST_DEBUG", "2");  // gst warnings into the log
+        if (verbose) {
+            // Heavy tracing: global level 2 + the camera capture path and
+            // caps negotiation, so "camera won't start" / negotiation
+            // failures are diagnosable from the log alone.
+            qputenv("GST_DEBUG",
+                    "2,mfvideosrc:6,ksvideosrc:6,videoconvert:5,"
+                    "capsfilter:5,GST_CAPS:5,GST_PADS:4,webrtcsrc:5,webrtcbin:4");
+        } else {
+            // Lean always-on log: GStreamer ERRORs/WARNINGs only. Keeps the
+            // file small for normal use while still capturing what killed a
+            // call (webrtcsrc panics, pipeline errors print at this level).
+            qputenv("GST_DEBUG", "1");
+        }
         logPath = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/talq_debug.log";
         QDir().mkpath(QFileInfo(logPath).absolutePath());
         // Redirect C stderr so GStreamer / any fprintf output is captured
@@ -80,24 +173,50 @@ int main(int argc, char *argv[])
         // writes don't go to a dead FD, and let Qt's default handler remain.
         FILE *fp = freopen(logPath.toUtf8().constData(), "w", stderr);
         if (fp) {
-            qInstallMessageHandler([](QtMsgType, const QMessageLogContext &, const QString &msg) {
+            qInstallMessageHandler([](QtMsgType t, const QMessageLogContext &, const QString &msg) {
+                // Non-verbose: drop qDebug() noise, keep info/warn/critical
+                // so the always-on log stays lean but still diagnostic.
+                if (!TalqLog::g_verbose && t == QtDebugMsg) return;
                 QByteArray line = (QTime::currentTime().toString("HH:mm:ss.zzz") + " " + msg + "\n").toUtf8();
                 fwrite(line.constData(), 1, line.size(), stderr);
                 fflush(stderr);
             });
-            qInfo().noquote() << "[TalQ] verbose logging enabled; log at" << logPath;
+#ifdef Q_OS_WIN
+            // Crash backstop — ALWAYS armed (release included): a native
+            // fault / abort / Rust panic now leaves a minidump next to the
+            // log instead of TalQ vanishing without a trace.
+            {
+                QString dump = logPath;
+                dump.replace(QStringLiteral(".log"), QString());
+                dump += QStringLiteral(".crash.dmp");
+                const std::wstring w = dump.toStdWString();
+                wcsncpy(g_crashDumpPath, w.c_str(), MAX_PATH - 1);
+                SetUnhandledExceptionFilter(talqCrashFilter);
+                // abort()/SIGABRT and unhandled C++ exceptions bypass the
+                // SEH filter. A Rust panic in gstrswebrtc or a GLib
+                // assertion takes this path — capture it too.
+                signal(SIGABRT, talqAbortHandler);
+                std::set_terminate(talqTerminateHandler);
+            }
+#endif
+            qInfo().noquote() << "[TalQ]" << (verbose ? "verbose" : "standard")
+                              << "logging enabled; log at" << logPath;
         } else {
             const int savedErrno = errno;
 #ifdef Q_OS_WIN
-            const QString msg = QStringLiteral(
-                "TalQ couldn't open the --debug log at:\n\n%1\n\nerrno=%2.\n\n"
-                "This usually means AppData is on an unreachable network share, "
-                "or antivirus/policy is blocking writes. The app will continue "
-                "without a log file.").arg(logPath).arg(savedErrno);
-            MessageBoxW(nullptr,
-                reinterpret_cast<const wchar_t*>(msg.utf16()),
-                L"TalQ — diagnostic log setup failed",
-                MB_OK | MB_ICONWARNING);
+            // Only nag with a modal if the user explicitly asked for
+            // --debug; a normal run continues silently without a log.
+            if (debugRequested) {
+                const QString msg = QStringLiteral(
+                    "TalQ couldn't open the log at:\n\n%1\n\nerrno=%2.\n\n"
+                    "This usually means AppData is on an unreachable network "
+                    "share, or antivirus/policy is blocking writes. The app "
+                    "will continue without a log file.").arg(logPath).arg(savedErrno);
+                MessageBoxW(nullptr,
+                    reinterpret_cast<const wchar_t*>(msg.utf16()),
+                    L"TalQ — diagnostic log setup failed",
+                    MB_OK | MB_ICONWARNING);
+            }
 #endif
             logPath.clear();
         }
@@ -106,6 +225,80 @@ int main(int argc, char *argv[])
     gst_init(&argc, &argv);
 
     QApplication app(argc, argv);
+
+    // ── Hard dependency gate ────────────────────────────────────────────
+    // TalQ links GStreamer directly and webrtcsrc (Rust) will __fastfail-
+    // abort the ENTIRE process — uncatchable by SEH/SIGABRT/std::terminate
+    // — the instant it cannot find an element it needs (this is exactly
+    // how 0.29.5 killed the called party: `decodebin3` was not deployed).
+    // So a missing media plugin must be caught HERE, before any call is
+    // possible, and TalQ must refuse to run with a clear message rather
+    // than appear to work and then vanish mid-call.
+    {
+        auto have = [](const char *f) {
+            GstElementFactory *e = gst_element_factory_find(f);
+            if (e) { gst_object_unref(e); return true; }
+            return false;
+        };
+        // Every one of these must exist (one representative element per
+        // plugin TalQ's publish/subscribe/audio pipelines depend on).
+        const char *required[] = {
+            "tee","queue","capsfilter","valve","fakesink","funnel",   // coreelements
+            "appsrc","appsink",                                       // app
+            "decodebin3","uridecodebin3",                             // playback (THE 0.29.5 killer)
+            "webrtcbin",                                              // webrtc (publish)
+            "webrtcsrc",                                              // rswebrtc (subscribe)
+            "rtpbin","rtpjitterbuffer",                               // rtpmanager
+            "rtph264pay","rtph264depay","rtpopuspay","rtpopusdepay",  // rtp
+            "dtlssrtpenc","dtlssrtpdec",                              // dtls
+            "nicesrc","nicesink",                                     // nice
+            "srtpenc","srtpdec",                                      // srtp
+            "opusenc","opusdec","opusparse",                          // opus + audioparsers
+            "audioconvert","audioresample","videoconvert",            // conv/resample
+            "h264parse","jpegdec","level","webrtcdsp",                // parsers/jpeg/meter/aec
+        };
+        // Hardware-optional capabilities: at least one provider must exist.
+        struct Group { const char *label; QStringList alts; };
+        const Group groups[] = {
+            { "camera capture",       {"mfvideosrc","ksvideosrc"} },
+            { "microphone capture",   {"wasapi2src","wasapisrc"} },
+            { "speaker output",       {"wasapi2sink","wasapisink","autoaudiosink"} },
+            { "H.264 encoder",        {"nvh264enc","qsvh264enc","mfh264enc","x264enc","openh264enc"} },
+            { "H.264 decoder",        {"nvh264dec","qsvh264dec","d3d11h264dec","openh264dec"} },
+            { "VP8/VP9 decoder",      {"vp8dec","vp9dec"} },
+        };
+        QStringList missing;
+        for (const char *f : required)
+            if (!have(f)) missing << QString::fromLatin1(f);
+        for (const Group &g : groups) {
+            bool any = false;
+            for (const QString &a : g.alts) if (have(a.toLatin1().constData())) { any = true; break; }
+            if (!any) missing << (QString::fromLatin1(g.label) + " (need one of: " + g.alts.join(", ") + ")");
+        }
+        if (!missing.isEmpty()) {
+            const QString body = QStringLiteral(
+                "TalQ cannot start: required media components are missing "
+                "from this installation.\n\nMissing:\n  • %1\n\n"
+                "This means the installer or update did not deliver the "
+                "complete GStreamer plugin set. Reinstall TalQ using the "
+                "full installer. (Calls would otherwise crash the app and "
+                "the person you are calling.)")
+                .arg(missing.join("\n  • "));
+            qCritical().noquote() << "[TalQ] DEPENDENCY GATE FAILED — missing:" << missing.join(", ");
+#ifdef Q_OS_WIN
+            MessageBoxW(nullptr,
+                reinterpret_cast<const wchar_t*>(body.utf16()),
+                L"TalQ — missing media components",
+                MB_OK | MB_ICONERROR);
+#else
+            QMessageBox::critical(nullptr, "TalQ — missing media components", body);
+#endif
+            return 2;
+        }
+        qInfo() << "[TalQ] dependency gate passed —"
+                << (int(sizeof(required)/sizeof(required[0])) + int(sizeof(groups)/sizeof(groups[0])))
+                << "media checks OK";
+    }
 
     // Single-instance guard
     QSharedMemory singleInstance("TalQ_SingleInstance_Lock");
@@ -231,13 +424,14 @@ int main(int argc, char *argv[])
     MediaDeviceManager deviceManager;
     CallManager callManager(&api, &signaling, &deviceManager);
 
+    UserStatusManager userStatus(&api, &auth);
     DebugMonitor debug;
     AppSettings appSettings;
 
     MainWindow window(
         &api, &auth, &conversations, &messages, &threads,
         &notifications, &push, &signaling, &deviceManager,
-        &callManager, &debug, &appSettings
+        &callManager, &userStatus, &debug, &appSettings
     );
 
     // Custom notification popup
@@ -344,27 +538,25 @@ int main(int argc, char *argv[])
             startServices();
     });
 
-    // User status heartbeat
-    QTimer statusTimer;
-    statusTimer.setInterval(120000);
-    QObject::connect(&statusTimer, &QTimer::timeout, [&api]() {
-        QJsonObject body;
-        body["statusType"] = "online";
-        api.put("apps/user_status/api/v1/user_status/status", body, [](bool ok, const QJsonObject &, int) {
-            if (!ok) qWarning() << "Status heartbeat failed";
-        });
+    // User status: UserStatusManager owns presence + heartbeat and, on
+    // login, reverts a crash-stuck Talk 'call' status. Wired on both fresh
+    // login and session restore (mirrors the push/signaling start path).
+    QObject::connect(&auth, &AuthManager::loggedInChanged, &userStatus, [&auth, &userStatus]() {
+        if (auth.isLoggedIn()) userStatus.onLoggedIn();
+        else                   userStatus.onLoggedOut();
     });
-    QObject::connect(&auth, &AuthManager::loggedInChanged, &api, [&auth, &api, &statusTimer]() {
-        if (auth.isLoggedIn()) {
-            QJsonObject body;
-            body["statusType"] = "online";
-            api.put("apps/user_status/api/v1/user_status/status", body, [](bool ok, const QJsonObject &, int) {
-                qDebug() << "User status set:" << (ok ? "online" : "failed");
-            });
-            statusTimer.start();
-        } else {
-            statusTimer.stop();
-        }
+    QObject::connect(&auth, &AuthManager::restoringChanged, &userStatus, [&auth, &userStatus]() {
+        if (!auth.isRestoringSession() && auth.isLoggedIn())
+            userStatus.onLoggedIn();
+    });
+
+    // Free the server-side call participant on every clean exit so a
+    // closed/quit/logged-out client never leaves "in a call" lingering.
+    QObject::connect(&auth, &AuthManager::loggedInChanged, &callManager, [&auth, &callManager]() {
+        if (!auth.isLoggedIn()) callManager.leaveCallBeacon();
+    });
+    QObject::connect(&app, &QCoreApplication::aboutToQuit, &callManager, [&callManager]() {
+        callManager.leaveCallBeacon();
     });
 
     // Restore session

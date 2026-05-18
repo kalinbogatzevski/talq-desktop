@@ -36,7 +36,11 @@ public:
     void addIceCandidate(const QString &candidate, int sdpMLineIndex, const QString &sdpMid);
 
     void setMuted(bool muted);
-    void enableCamera(int deviceIndex, bool hd1080 = true);
+    // forceTestSource: use videotestsrc regardless of env (test harness
+    // only — lets one in-process peer use the real camera while another
+    // uses synthetic, since two mfvideosrc consumers of one device race).
+    void enableCamera(int deviceIndex, bool hd1080 = true,
+                      bool forceTestSource = false);
     void disableCamera();
 
     VideoFrameProvider *localVideoProvider() const { return m_localVideoProvider; }

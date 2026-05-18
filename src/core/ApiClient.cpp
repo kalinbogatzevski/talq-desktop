@@ -2,6 +2,7 @@
 #include <QBuffer>
 #include <QCoreApplication>
 #include <QImage>
+#include <QNetworkCookieJar>
 #include <QNetworkRequest>
 #include <QPointer>
 #include <QUrlQuery>
@@ -28,11 +29,32 @@ void ApiClient::setServerUrl(const QString &url)
 
 void ApiClient::setCredentials(const QString &user, const QString &password)
 {
+    // A different user (including logout → empty) MUST start from a clean
+    // session. Nextcloud authenticates a valid session cookie before the
+    // Basic-auth header, so without this a leftover cookie from the old
+    // account makes every request resolve to that old user — the app then
+    // reports the wrong identity until restarted.
+    const bool userChanged = (user != m_user);
+
     // Zero old credentials before overwriting
     m_password.fill(QChar(0));
     m_user = user;
     m_password = password;
+    if (userChanged)
+        resetSession();
     emit authenticatedChanged();
+}
+
+void ApiClient::resetSession()
+{
+    // Fresh jar drops the previous account's session cookie; clearing the
+    // access cache flushes pooled connections plus the cached HTTP
+    // auth/credential and SSL-session state so nothing is reused.
+    // Parentless so the NAM takes ownership and deletes the prior jar
+    // (the internal default, then each replaced one) — no accumulation
+    // across repeated account switches.
+    m_nam.setCookieJar(new QNetworkCookieJar);
+    m_nam.clearAccessCache();
 }
 
 QNetworkRequest ApiClient::makeRequest(const QString &path, const QUrlQuery &params) const
@@ -61,15 +83,57 @@ void ApiClient::applyBasicAuth(QNetworkRequest &req) const
     req.setRawHeader("Authorization", "Basic " + credentials.toUtf8().toBase64());
 }
 
-void ApiClient::handleReply(QNetworkReply *reply, Callback callback)
+bool ApiClient::isRetryableTransportError(QNetworkReply *reply) const
 {
-    connect(reply, &QNetworkReply::finished, this, [this, reply, callback]() {
+    // Retry ONLY when the request provably never reached the server, so
+    // replaying a POST cannot double-submit. A real HTTP status
+    // (404/500/…) means the server answered; never retry those.
+    // RemoteHostClosedError / TemporaryNetworkFailureError are NOT safe:
+    // the server may have received and acted on the request before the
+    // connection dropped (a replayed POST would double-join a call). The
+    // only conditions we treat as never-established:
+    //   • ContentReSendError — Qt's explicit "safe to resend" signal.
+    //   • HTTP/2 GOAWAY before the stream was established — the exact
+    //     stale-pooled-connection case this retry exists for; the error
+    //     string is the only version-stable signal and it literally says
+    //     the stream was never established.
+    const QVariant httpStatus =
+        reply->attribute(QNetworkRequest::HttpStatusCodeAttribute);
+    if (httpStatus.isValid() && httpStatus.toInt() != 0)
+        return false;
+    if (reply->error() == QNetworkReply::ContentReSendError)
+        return true;
+    return reply->errorString().contains(
+        QStringLiteral("stopped accepting new streams before this stream "
+                       "was established"), Qt::CaseInsensitive);
+}
+
+void ApiClient::handleReply(QNetworkReply *reply, Callback callback,
+                            std::function<QNetworkReply*()> resend, int attempt)
+{
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, callback, resend, attempt]() {
         m_pendingReplies.removeOne(reply);
         reply->deleteLater();
 
         int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
 
         if (reply->error() != QNetworkReply::NoError) {
+            // First call after an idle period (e.g. joining a call) rides a
+            // pooled HTTP/2 connection the server has since closed; the
+            // request fails before it ever reaches the server. Drop the
+            // dead connection and replay once — otherwise the join silently
+            // fails and the user sees the call "drop immediately".
+            if (attempt == 0 && resend && isRetryableTransportError(reply)) {
+                qWarning() << "API transient transport error:"
+                           << reply->errorString()
+                           << "— retrying once on a fresh connection";
+                m_nam.clearConnectionCache();
+                QNetworkReply *r2 = resend();
+                m_pendingReplies.append(r2);
+                handleReply(r2, callback, resend, attempt + 1);
+                return;
+            }
             qWarning() << "API error:" << reply->errorString() << "status:" << status;
             callback(false, {}, status);
             return;
@@ -98,15 +162,28 @@ void ApiClient::handleReply(QNetworkReply *reply, Callback callback)
     });
 }
 
-void ApiClient::handleArrayReply(QNetworkReply *reply, ArrayCallback callback)
+void ApiClient::handleArrayReply(QNetworkReply *reply, ArrayCallback callback,
+                                 std::function<QNetworkReply*()> resend, int attempt)
 {
-    connect(reply, &QNetworkReply::finished, this, [this, reply, callback]() {
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, callback, resend, attempt]() {
         m_pendingReplies.removeOne(reply);
         reply->deleteLater();
 
         int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
 
         if (reply->error() != QNetworkReply::NoError) {
+            if (attempt == 0 && resend && isRetryableTransportError(reply)) {
+                qWarning() << "API transient transport error:"
+                           << reply->errorString()
+                           << "— retrying once on a fresh connection";
+                m_nam.clearConnectionCache();
+                QNetworkReply *r2 = resend();
+                m_pendingReplies.append(r2);
+                handleArrayReply(r2, callback, resend, attempt + 1);
+                return;
+            }
+            qWarning() << "API error:" << reply->errorString() << "status:" << status;
             callback(false, {}, status);
             return;
         }
@@ -134,10 +211,12 @@ void ApiClient::handleArrayReply(QNetworkReply *reply, ArrayCallback callback)
 
 void ApiClient::get(const QString &path, const QUrlQuery &params, Callback callback)
 {
-    auto req = makeRequest(path, params);
-    auto *reply = m_nam.get(req);
+    auto resend = [this, path, params]() {
+        return m_nam.get(makeRequest(path, params));
+    };
+    auto *reply = resend();
     m_pendingReplies.append(reply);
-    handleReply(reply, callback);
+    handleReply(reply, callback, resend);
 }
 
 void ApiClient::get(const QString &path, Callback callback)
@@ -147,10 +226,12 @@ void ApiClient::get(const QString &path, Callback callback)
 
 void ApiClient::getArray(const QString &path, const QUrlQuery &params, ArrayCallback callback)
 {
-    auto req = makeRequest(path, params);
-    auto *reply = m_nam.get(req);
+    auto resend = [this, path, params]() {
+        return m_nam.get(makeRequest(path, params));
+    };
+    auto *reply = resend();
     m_pendingReplies.append(reply);
-    handleArrayReply(reply, callback);
+    handleArrayReply(reply, callback, resend);
 }
 
 void ApiClient::getArray(const QString &path, ArrayCallback callback)
@@ -160,11 +241,13 @@ void ApiClient::getArray(const QString &path, ArrayCallback callback)
 
 void ApiClient::post(const QString &path, const QJsonObject &body, Callback callback)
 {
-    auto req = makeRequest(path);
     QByteArray data = QJsonDocument(body).toJson(QJsonDocument::Compact);
-    auto *reply = m_nam.post(req, data);
+    auto resend = [this, path, data]() {
+        return m_nam.post(makeRequest(path), data);
+    };
+    auto *reply = resend();
     m_pendingReplies.append(reply);
-    handleReply(reply, callback);
+    handleReply(reply, callback, resend);
 }
 
 void ApiClient::post(const QString &path, Callback callback)
@@ -174,11 +257,13 @@ void ApiClient::post(const QString &path, Callback callback)
 
 void ApiClient::put(const QString &path, const QJsonObject &body, Callback callback)
 {
-    auto req = makeRequest(path);
     QByteArray data = QJsonDocument(body).toJson(QJsonDocument::Compact);
-    auto *reply = m_nam.put(req, data);
+    auto resend = [this, path, data]() {
+        return m_nam.put(makeRequest(path), data);
+    };
+    auto *reply = resend();
     m_pendingReplies.append(reply);
-    handleReply(reply, callback);
+    handleReply(reply, callback, resend);
 }
 
 void ApiClient::del(const QString &path, Callback callback)
@@ -188,23 +273,30 @@ void ApiClient::del(const QString &path, Callback callback)
 
 void ApiClient::del(const QString &path, const QUrlQuery &params, Callback callback)
 {
-    auto req = makeRequest(path, params);
-    auto *reply = m_nam.deleteResource(req);
+    auto resend = [this, path, params]() {
+        return m_nam.deleteResource(makeRequest(path, params));
+    };
+    auto *reply = resend();
     m_pendingReplies.append(reply);
-    handleReply(reply, callback);
+    handleReply(reply, callback, resend);
 }
 
 void ApiClient::del(const QString &path, const QJsonObject &body, Callback callback)
 {
-    auto req = makeRequest(path);
     QByteArray data = QJsonDocument(body).toJson(QJsonDocument::Compact);
-    auto *buf = new QBuffer();
-    buf->setData(data);
-    buf->open(QIODevice::ReadOnly);
-    auto *reply = m_nam.sendCustomRequest(req, "DELETE", buf);
-    buf->setParent(reply);  // ensure buffer lives until reply completes
+    // Fresh buffer per send: the previous one is parented to (and dies
+    // with) the failed reply, so a retry must build its own.
+    auto resend = [this, path, data]() {
+        auto *buf = new QBuffer();
+        buf->setData(data);
+        buf->open(QIODevice::ReadOnly);
+        auto *reply = m_nam.sendCustomRequest(makeRequest(path), "DELETE", buf);
+        buf->setParent(reply);  // ensure buffer lives until reply completes
+        return reply;
+    };
+    auto *reply = resend();
     m_pendingReplies.append(reply);
-    handleReply(reply, callback);
+    handleReply(reply, callback, resend);
 }
 
 QNetworkReply *ApiClient::getRaw(const QString &path, const QUrlQuery &params)

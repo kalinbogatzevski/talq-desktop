@@ -1,5 +1,190 @@
 # Changelog
 
+## v0.30.1 "Bangaranga" (2026-05-18)
+
+### Changed
+- **Redesigned the in-call control bar.** The buttons were color-emoji
+  glyphs that ignored the theme — a muted mic or an off camera looked
+  identical to on. They're now crisp vector icons on a calm segmented
+  pill: muted mic / camera-off show a warm-clay chip with a slash so the
+  state is unmissable, active screen-share / panels light up, and
+  hang-up is a detached red pill. Each control has a themed tooltip whose
+  label reflects the current state ("Mute" ↔ "Unmute", "Turn camera
+  on" ↔ "Turn camera off", and so on).
+
+## v0.30.0 "Bangaranga" (2026-05-18)
+
+Graduates the 0.29.x line: the new WebRTC call engine, screen sharing,
+the dependency gate, always-on diagnostics, account/identity fixes and
+the user-status feature are all verified working end to end.
+
+### Fixed
+- **Status popover behaves like a proper dropdown.** It now closes as
+  soon as you pick a status, set or clear a message, and dismisses when
+  you click away — and it no longer floats on the desktop when TalQ is
+  minimized or sent to the tray.
+
+## v0.29.10 "Bangaranga" (2026-05-18)
+
+### Added
+- **Set your status.** A status control on your sidebar profile (a
+  presence dot on your avatar plus a glanceable pill by your name): pick
+  Online / Away / Do not disturb / Invisible, set a custom message with
+  an emoji, choose from the server's presets, and a "clear after" timer
+  so a status can't get stuck forever.
+
+### Fixed
+- **No more stuck "In a call".** If TalQ ever crashed during a call you
+  could be left showing "In a call / Busy" on the server. On every login
+  TalQ now clears that automatically. It also leaves the call cleanly
+  when you close the window, quit, or log out, so it can't leak in the
+  first place.
+- **Switching accounts no longer keeps the previous user.** A stale
+  session cookie made TalQ keep showing the old account after logging
+  out and back in as someone else; the session is now fully reset on
+  every credential change.
+- **The window always appears at the login screen.** Starting TalQ with
+  no saved login (e.g. just after logging out) could leave it running
+  with no visible window; it now always shows the login screen.
+
+## v0.29.9 "Bangaranga" (2026-05-18)
+
+### Fixed
+- **Turning a camera on mid-call now reliably streams the video.** When a
+  participant enabled their camera, TalQ asked the server for their
+  stream exactly once; if the server wasn't ready yet ("not allowed to
+  request offer") the request was dropped and the video never appeared.
+  It now retries the same way the initial stream request does.
+- **A peer's video is no longer abandoned too early.** The stream request
+  used to give up after ~48s, which could leave one direction of a call
+  permanently black if the server took longer to be ready. The retry
+  window is now much more patient.
+
+### Changed
+- The always-on log now records the call and signaling lifecycle, so
+  call problems are diagnosable from a normal run without any flags.
+
+## v0.29.8 "Bangaranga" (2026-05-17)
+
+### Changed
+- TalQ now always keeps a small local diagnostic log and always writes a
+  crash report if it ever stops unexpectedly, with no special flags
+  needed. If a call ever misbehaves, the evidence is already on disk, so
+  problems can be fixed instead of guessed at. (`--debug` still switches
+  on the full verbose trace.)
+
+## v0.29.7 "Bangaranga" (2026-05-17)
+
+### Fixed
+- **Video calls now actually connect.** Two bugs kept calls stuck on
+  "Connecting" with black video: when the other person enabled their
+  camera mid-call the new stream offer was silently dropped (the
+  subscriber is now rebuilt for the new session), and the subscriber's
+  connection state was never reported to the call UI (it is now), so the
+  call could never go live even when media was flowing.
+- **Your camera starts immediately on a video call**, not only after the
+  call connects, so your own preview is live right away.
+
+### Added
+- The call view never shows a silent black tile: it now says why there
+  is no picture ("Starting camera…", "Waiting for video…", "Camera off",
+  "Connecting…").
+- Control-bar buttons have clear hover feedback; the chat-header buttons
+  were redesigned with consistent states and correctly anchored tooltips.
+- A small credit for the "Bangaranga" release codename in Settings.
+
+## v0.29.6 "Bangaranga" (2026-05-17)
+
+### Fixed
+- **The video-call crash is actually fixed now.** v0.29.5's installer
+  was missing media components the new call engine needs (the stream
+  decoder and the Opus audio parser). The moment a call connected, the
+  person being called would have TalQ vanish instantly. Those components
+  are now always bundled, so calls connect and stay up on both ends.
+- **TalQ now checks its media components at startup** and refuses to run
+  with a clear message if any are missing, instead of appearing to work
+  and then dying mid-call. A broken install can no longer masquerade as
+  a working one.
+
+### Changed
+- Updates always carry the complete set of dependencies and clear out
+  files removed since the previous version, so an upgrade can never
+  leave a half-installed, crash-prone TalQ behind.
+
+## v0.29.5 "Bangaranga" (2026-05-17)
+
+### Fixed
+- **Video calls no longer crash the app.** Receiving a participant's
+  video could hard-crash TalQ the instant the call connected. The
+  receive side has been rebuilt on a new, robust media engine, so
+  joining a video call is stable.
+- **Remote video and audio now actually come through.** Previously a
+  call could connect but stay black and silent; the other person's
+  camera and microphone now arrive and play reliably, in both
+  directions, through the conference server.
+
+### Changed
+- The whole video-receive path was re-engineered end to end and is now
+  verified — connection, encryption, and live audio + video decoding —
+  against the real server with automated testing, so calls are
+  considerably more dependable than v0.29.4.
+
+## v0.29.4 "Bangaranga" (2026-05-17)
+
+### Fixed
+- **Video calls no longer drop the moment you start them.** After the app
+  had been idle a few minutes the server closed the pooled connection;
+  the next request (joining the call) failed before it ever reached the
+  server, the session never registered, and the call ended immediately.
+  Requests that fail this way are now retried once on a fresh connection,
+  so joining a call after an idle period works.
+- **Adaptive bitrate now actually negotiates.** The congestion-control
+  header extension was not being offered, so the server sent no feedback
+  and the video could stall to black. It is now advertised correctly and
+  the encoder follows the live network estimate (and no longer thrashes
+  the hardware encoder with a reconfigure every fraction of a second).
+
+### Changed
+- Hardware H264, adaptive bitrate, and full-resolution screen sharing
+  from v0.29.2/v0.29.3 (see below), now verified negotiating end to end.
+
+## v0.29.3 "Bangaranga" (2026-05-17)
+
+### Changed
+- **Calls now use hardware H264 for far higher quality.** The camera and
+  screen share encode with the GPU's H264 encoder when available (NVIDIA
+  NVENC, Intel QuickSync, or Windows MediaFoundation), falling back to
+  software only if no hardware encoder exists. This is dramatically
+  sharper at the same CPU cost, and the conference negotiates H264
+  end to end (VP8 remains a compatibility fallback).
+- **Adaptive bitrate.** Video now rides a congestion controller that
+  continuously raises or lowers quality to match the network and server,
+  instead of a fixed guess, up to the server's limit (camera up to
+  4 Mbit/s, screen share up to 12 Mbit/s). Smoother under load, much
+  higher quality when the link is good.
+- **Screen sharing is now full native resolution and high bitrate**, so
+  shared screens stay crisp and readable rather than soft.
+
+### Notes
+- For best quality the High Performance Backend must allow these
+  bitrates; see `docs/SELF-HOSTED-HPB.md`. The conference is H264; a
+  client with no H264 support will not show video (by design, no
+  quality-reducing transcoding) — keep all clients updated.
+
+## v0.29.2 "Bangaranga" (2026-05-17)
+
+### Fixed
+- **Calls no longer collapse a few seconds after you turn your camera
+  on.** The publisher encoded at a forced 1080p through a shared scaler
+  with no fixed output size, so enabling the camera made the encoder
+  reconfigure mid-call and allocate uncontrollably (a multi-hundred-MB
+  spike in two seconds), stalling the app until the server dropped the
+  publisher. The encoder now runs at a constant, device-supported
+  resolution (≤1280×720 @ ≤30fps, matching the official client; the
+  camera is captured within device capabilities, never forced to 1080p),
+  and the publish bitrate is capped to the signaling server's limit. The
+  call now survives enabling the camera.
+
 ## v0.29.1 "Bangaranga" (2026-05-17)
 
 **"Bangaranga"**, for Bulgaria's Eurovision 2026 win in Vienna.

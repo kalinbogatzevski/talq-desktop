@@ -163,7 +163,7 @@ for dll in libstdc++-6.dll libgcc_s_seh-1.dll libwinpthread-1.dll \
     libgstcuda-1.0-0.dll libgstdxva-1.0-0.dll libgstgl-1.0-0.dll \
     libnice-10.dll libsrtp2-1.dll libopus-0.dll \
     libssl-3-x64.dll libcrypto-3-x64.dll \
-    libjpeg-8.dll libopenh264-7.dll libvpx-1.dll \
+    libjpeg-8.dll libopenh264-7.dll libvpx-1.dll libx264-165.dll \
     libgnutls-30.dll libhogweed-6.dll libgmp-10.dll \
     libidn2-0.dll libnettle-8.dll libp11-kit-0.dll \
     libtasn1-6.dll libunistring-5.dll libzstd.dll \
@@ -174,12 +174,22 @@ done
 
 # GStreamer plugins (copy directly from MSYS2)
 mkdir -p gst-plugins
-for p in coreelements audioconvert audioresample autodetect audiotestsrc videotestsrc \
+# NOTE: webrtcsrc (rswebrtc) internally builds a `decodebin3` and will
+# Rust-panic→__fastfail-abort the WHOLE process (uncatchable by C++ /
+# SEH / SIGABRT) the instant a remote stream arrives if decodebin3 or
+# its autoplug helpers are absent. decodebin3 lives in `playback`;
+# autoplugging also needs `typefindfunctions` and `audioparsers`.
+# These three are NOT optional — omitting them = "called party dies".
+# Keep this list in lockstep with scripts/deploy-dev.sh and with the
+# startup dependency gate in src/main.cpp.
+for p in coreelements typefindfunctions playback \
+    audioconvert audioresample audioparsers opusparse autodetect audiotestsrc videotestsrc \
     dtls nice opus rtp rtpmanager srtp \
     wasapi wasapi2 webrtc webrtcdsp app level \
     vpx openh264 videoconvertscale sctp jpeg \
     winks mediafoundation winscreencap \
-    d3d11 nvcodec; do
+    d3d11 nvcodec qsv x264 videoparsersbad \
+    rsrtp rswebrtc; do
     src="$MSYS2/../lib/gstreamer-1.0/libgst${p}.dll"
     [ -f "$src" ] && cp "$src" gst-plugins/
 done
