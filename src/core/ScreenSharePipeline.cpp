@@ -1,4 +1,6 @@
 #include "core/ScreenSharePipeline.h"
+#include "core/VideoEncoderUtil.h"
+#include <gst/rtp/rtp.h>
 #include <QDebug>
 #include <QPointer>
 #include <QRegularExpression>
@@ -88,28 +90,66 @@ bool ScreenSharePipeline::start(const QString &stunServer, const QList<TurnServe
         return false;
     }
 
-    // Simple chain: screenSrc → videoconvert → vp8enc → rtpvp8pay → capsfilter(ssrc)
-    // No videorate/videoscale — let encoder handle what it gets
+    // Chain: screenSrc → videoconvert → encoder → [h264parse] → pay
+    //        → capsfilter(ssrc). Full native screen resolution — no
+    //        videoscale; screen content stays pixel-sharp. Hardware H264
+    //        preferred (sharp at the high screen bitrate the HPB allows),
+    //        software VP8 last-resort fallback.
     GstElement *videoConvert = gst_element_factory_make("videoconvert", nullptr);
-    GstElement *vp8enc = gst_element_factory_make("vp8enc", nullptr);
-    GstElement *rtpvp8pay = gst_element_factory_make("rtpvp8pay", nullptr);
-    GstElement *ssrcFilter = gst_element_factory_make("capsfilter", nullptr);
+    GstElement *ssrcFilter   = gst_element_factory_make("capsfilter", nullptr);
+    bool useH264 = false;
+    GstElement *venc = makeWebrtcVideoEncoder(/*screen=*/true, m_initBitrate,
+                                              &useH264, &m_videoParser,
+                                              &m_encoderDesc);
+    GstElement *pay = venc ? gst_element_factory_make(
+                                 useH264 ? "rtph264pay" : "rtpvp8pay", nullptr)
+                           : nullptr;
 
-    if (!videoConvert || !vp8enc || !rtpvp8pay || !ssrcFilter) {
+    if (!videoConvert || !venc || !pay || !ssrcFilter) {
         emit error("Failed to create screen share encoding elements");
+        // Not bin-added yet → drop floating refs (cleanup() only nulls).
+        for (GstElement *e : { videoConvert, venc, m_videoParser,
+                               pay, ssrcFilter })
+            if (e) gst_object_unref(e);
+        m_videoParser = nullptr;
         cleanup();
         return false;
     }
 
-    qDebug() << "ScreenSharePipeline: elements created";
+    qDebug().nospace() << "ScreenSharePipeline: encoder = " << m_encoderDesc;
+    m_videoEncoder = venc;     // for rtpgccbwe live bitrate
+    m_useH264 = useH264;
 
-    // Encoder: realtime, low bitrate for screen content
-    g_object_set(vp8enc, "deadline", (gint64)1, "threads", 4,
-                 "target-bitrate", 1500000, nullptr);
+    if (useH264) {
+        // Repeat SPS/PPS before every IDR so subscribers that join the SFU
+        // after the first keyframe still decode; zero-latency aggregation.
+        g_object_set(m_videoParser, "config-interval", -1, nullptr);
+        g_object_set(pay, "aggregate-mode", 1 /* zero-latency */,
+                     "config-interval", -1, nullptr);
+    }
 
     // SSRC capsfilter
     guint32 videoSsrc = g_random_int();
-    g_object_set(rtpvp8pay, "ssrc", videoSsrc, nullptr);
+    g_object_set(pay, "ssrc", videoSsrc, "pt", 96, nullptr);
+    // TWCC seq numbers on the wire, same id as codec-preferences below.
+    // Only advertise extmap in SDP if this actually succeeds (SDP/wire
+    // must agree or GCC starves).
+    bool twccActive = false;
+    {
+        GstRTPHeaderExtension *twcc =
+            gst_rtp_header_extension_create_from_uri(kTwccUri);
+        if (twcc) {
+            gst_rtp_header_extension_set_id(twcc, kTwccExtId);
+            g_signal_emit_by_name(pay, "add-extension", twcc);
+            gst_object_unref(twcc);
+            twccActive = true;
+            qDebug() << "ScreenSharePipeline: TWCC ext id" << kTwccExtId
+                     << "added to payloader";
+        } else {
+            qWarning() << "ScreenSharePipeline: rtphdrexttwcc unavailable — "
+                          "send-side adaptive bitrate disabled";
+        }
+    }
     {
         GstCaps *ssrcCaps = gst_caps_from_string("application/x-rtp");
         gst_caps_set_simple(ssrcCaps, "ssrc", G_TYPE_UINT, videoSsrc, nullptr);
@@ -118,12 +158,21 @@ bool ScreenSharePipeline::start(const QString &stunServer, const QList<TurnServe
     }
 
     gst_bin_add_many(GST_BIN(m_pipeline), screenSrc, videoConvert,
-                     vp8enc, rtpvp8pay, ssrcFilter, m_webrtcbin, nullptr);
+                     venc, pay, ssrcFilter, m_webrtcbin, nullptr);
+    if (m_videoParser)
+        gst_bin_add(GST_BIN(m_pipeline), m_videoParser);
 
     qDebug() << "ScreenSharePipeline: elements added to pipeline";
 
-    if (!gst_element_link_many(screenSrc, videoConvert,
-                               vp8enc, rtpvp8pay, ssrcFilter, nullptr)) {
+    gboolean linked =
+        gst_element_link_many(screenSrc, videoConvert, venc, nullptr);
+    if (m_videoParser)
+        linked = linked && gst_element_link_many(venc, m_videoParser, pay,
+                                                 ssrcFilter, nullptr);
+    else
+        linked = linked && gst_element_link_many(venc, pay,
+                                                 ssrcFilter, nullptr);
+    if (!linked) {
         emit error("Failed to link screen share chain");
         cleanup();
         return false;
@@ -136,12 +185,24 @@ bool ScreenSharePipeline::start(const QString &stunServer, const QList<TurnServe
     GstPad *sinkPad = gst_element_request_pad_simple(m_webrtcbin, "sink_%u");
     gst_pad_link(ssrcSrcPad, sinkPad);
 
-    // Set transceiver to sendonly VP8
+    // Set transceiver sendonly, codec matching the chosen encoder
     GstWebRTCRTPTransceiver *vt = nullptr;
     g_object_get(sinkPad, "transceiver", &vt, nullptr);
     if (vt) {
         GstCaps *vc = gst_caps_from_string(
-            "application/x-rtp,media=video,encoding-name=VP8,clock-rate=90000,payload=96");
+            useH264
+              ? "application/x-rtp,media=video,encoding-name=H264,"
+                "clock-rate=90000,payload=96"
+              : "application/x-rtp,media=video,encoding-name=VP8,"
+                "clock-rate=90000,payload=96");
+        // webrtcbin builds a=extmap from these caps, not the payloader —
+        // put TWCC here so Janus negotiates transport-wide-cc and feeds
+        // GCC. Only if the payloader actually writes it (twccActive).
+        if (twccActive) {
+            char extField[16];
+            g_snprintf(extField, sizeof(extField), "extmap-%d", kTwccExtId);
+            gst_caps_set_simple(vc, extField, G_TYPE_STRING, kTwccUri, nullptr);
+        }
         g_object_set(vt, "direction", GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDONLY,
                      "codec-preferences", vc, nullptr);
         gst_caps_unref(vc);
@@ -169,6 +230,8 @@ bool ScreenSharePipeline::start(const QString &stunServer, const QList<TurnServe
                      G_CALLBACK(onIceStateChanged), this);
     g_signal_connect(m_webrtcbin, "notify::ice-gathering-state",
                      G_CALLBACK(onIceGatheringStateChanged), this);
+    g_signal_connect(m_webrtcbin, "request-aux-sender",
+                     G_CALLBACK(onRequestAuxSender), this);
 
     qDebug() << "ScreenSharePipeline: setting pipeline to PLAYING...";
     GstStateChangeReturn ret = gst_element_set_state(m_pipeline, GST_STATE_PLAYING);
@@ -194,14 +257,21 @@ void ScreenSharePipeline::stop()
 
 void ScreenSharePipeline::cleanup()
 {
+    m_shuttingDown.store(true);
     if (m_webrtcbin)
         g_signal_handlers_disconnect_by_data(m_webrtcbin, this);
+    if (m_gccbwe)  // notify::estimated-bitrate is on the gcc element
+        g_signal_handlers_disconnect_by_data(m_gccbwe, this);
     if (m_pipeline) {
         gst_element_set_state(m_pipeline, GST_STATE_NULL);
         gst_object_unref(m_pipeline);
         m_pipeline = nullptr;
     }
     m_webrtcbin = nullptr;
+    m_videoEncoder = nullptr;  // owned by the (now-freed) pipeline
+    m_gccbwe = nullptr;        // owned by webrtcbin (now-freed)
+    m_videoParser = nullptr;   // owned by the (now-freed) pipeline
+    m_useH264 = false;
     m_remoteDescSet = false;
     m_pendingCandidates.clear();
 }
@@ -332,4 +402,54 @@ void ScreenSharePipeline::onIceGatheringStateChanged(GObject *obj, GParamSpec *,
         qDebug() << "ScreenSharePipeline: ICE gathering complete";
         emit guard->iceGatheringComplete();
     }, Qt::QueuedConnection);
+}
+
+GstElement *ScreenSharePipeline::onRequestAuxSender(GstElement *, GObject *,
+                                                    gpointer userData)
+{
+    auto *self = static_cast<ScreenSharePipeline *>(userData);
+    if (self->m_shuttingDown.load()) return nullptr;
+    GstElement *gcc = gst_element_factory_make("rtpgccbwe", nullptr);
+    if (!gcc) {
+        qWarning() << "ScreenSharePipeline: rtpgccbwe unavailable — encoder "
+                      "stays at fixed bitrate";
+        return nullptr;
+    }
+    // Screen is VBR: GCC moves the sustained average; the encoder keeps its
+    // configured peak headroom for bursts (scrolling, motion). Floor low so
+    // a near-static screen costs almost nothing; ceiling = server screen cap.
+    g_object_set(gcc,
+                 "min-bitrate", (guint)500000,
+                 "max-bitrate", (guint)self->m_maxBitrate,
+                 "estimated-bitrate", (guint)self->m_initBitrate,
+                 nullptr);
+    g_signal_connect(gcc, "notify::estimated-bitrate",
+                     G_CALLBACK(onGccBitrate), self);
+    self->m_gccbwe = gcc;
+    qInfo().nospace() << "ScreenSharePipeline: rtpgccbwe attached (min 500k, "
+                         "max " << self->m_maxBitrate << ", start "
+                      << self->m_initBitrate << ")";
+    return gcc;  // webrtcbin takes ownership
+}
+
+void ScreenSharePipeline::onGccBitrate(GObject *gcc, GParamSpec *,
+                                       gpointer userData)
+{
+    auto *self = static_cast<ScreenSharePipeline *>(userData);
+    if (self->m_shuttingDown.load() || !self->m_videoEncoder) return;
+    guint est = 0;
+    g_object_get(gcc, "estimated-bitrate", &est, nullptr);
+    if (est == 0) return;
+    if (est > (guint)self->m_maxBitrate) est = (guint)self->m_maxBitrate;
+    // Deadband (see PublishPipeline::onGccBitrate) — spare the hardware
+    // encoder a reconfigure storm it mostly rejects.
+    const int last = self->m_lastAppliedBitrate;
+    if (last != 0) {
+        const guint delta = est > (guint)last ? est - last : (guint)last - est;
+        if (delta * 100u < (guint)last * 15u) return;
+    }
+    self->m_lastAppliedBitrate = (int)est;
+    setWebrtcVideoEncoderBitrate(self->m_videoEncoder, self->m_useH264, est);
+    qInfo().nospace() << "ScreenSharePipeline: GCC -> encoder "
+                      << (est / 1000) << " kbps";
 }

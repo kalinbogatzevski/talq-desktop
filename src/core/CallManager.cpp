@@ -6,6 +6,9 @@
 #include <QSet>
 #include <QSettings>
 #include <QRegularExpression>
+#include <QElapsedTimer>
+#include <QCoreApplication>
+#include <QEventLoop>
 #include <memory>
 
 #ifdef Q_OS_WIN
@@ -145,8 +148,17 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
             p->setVideoMuted(!(newFlags & CALL_FLAG_WITH_VIDEO));
         }
         if (!hadVideo && hasVideo) {
-            qDebug() << "CallManager: peer" << sessionId.left(20) << "enabled video, re-requesting stream";
-            m_signaling->requestOffer(sessionId, "video");
+            qInfo() << "CallManager: peer" << sessionId.left(20)
+                    << "enabled video, re-requesting stream";
+            // MUST go through requestPeerStream, not a bare one-shot
+            // requestOffer: when a peer toggles video on, the MCU often
+            // hasn't registered their new publish yet and the server
+            // rejects with "Not allowed to request offer." A single send
+            // is then lost forever (the new video never streams). This
+            // path resets the attempt budget and re-arms the 8s retry
+            // timer; onOfferReceived rebuilds the subscriber for the new
+            // session when the offer finally arrives.
+            requestPeerStream(sessionId);
         }
     });
 
@@ -364,14 +376,23 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
                 continue;
             }
             int &n = m_requestOfferAttempts[sid];
-            if (n >= 6) {                       // ~48s, then give up
-                qWarning() << "CallManager: requestoffer gave up for" << sid.left(20);
+            // 6 attempts (~48s) was too short: if the MCU keeps replying
+            // "Not allowed to request offer" while a peer's publish or
+            // media permission is still settling, giving up here loses
+            // that peer's video for the WHOLE call (a likely cause of
+            // permanent one-direction black). The subscribePipelines
+            // check above already stops retrying the moment an offer
+            // actually lands, so a generous cap only bounds the genuine
+            // never-publishes case. ~8 min headroom.
+            if (n >= 60) {
+                qWarning() << "CallManager: requestoffer gave up for" << sid.left(20)
+                           << "after" << n << "attempts";
                 m_pendingRequestOffers.remove(sid);
                 m_requestOfferAttempts.remove(sid);
                 continue;
             }
             ++n;
-            qDebug() << "CallManager: re-requesting offer from" << sid.left(20) << "attempt" << n;
+            qInfo() << "CallManager: re-requesting offer from" << sid.left(20) << "attempt" << n;
             m_signaling->requestOffer(sid, "video");
         }
         if (m_pendingRequestOffers.isEmpty())
@@ -449,6 +470,35 @@ QString CallManager::activeVideoDecoder() const
     return {};
 }
 
+QString CallManager::activeVideoEncoder() const
+{
+    if (m_screenSharing && m_screenSharePipeline)
+        return m_screenSharePipeline->encoderDescription();
+    if (m_publishPipeline && m_publishPipeline->isRunning() &&
+        m_publishPipeline->isCameraOn())
+        return m_publishPipeline->encoderDescription();
+    return {};
+}
+
+bool CallManager::activeVideoEncoderIsHw() const
+{
+    // encoderDescription tags the backend, e.g. "H264 · nvh264enc · hw".
+    return activeVideoEncoder().endsWith(QStringLiteral("hw"));
+}
+
+QString CallManager::videoTxLabel() const
+{
+    if (m_screenSharing && m_screenSharePipeline)
+        return QStringLiteral("screen share");
+    if (m_publishPipeline && m_publishPipeline->isRunning() &&
+        m_publishPipeline->isCameraOn()) {
+        const double mbps = m_publishPipeline->currentVideoBitrate() / 1e6;
+        // Camera publish is pinned to 1280×720 (native-client target).
+        return QStringLiteral("1280×720 · %1 Mbps").arg(mbps, 0, 'f', 1);
+    }
+    return {};
+}
+
 void CallManager::updateCallStats()
 {
     QStringList lines;
@@ -487,13 +537,15 @@ void CallManager::setState(CallState newState)
 {
     if (m_state == newState) return;
     m_state = newState;
-    qDebug() << "CallManager: state ->" << newState;
+    qInfo() << "CallManager: state ->" << newState;
     if (newState == Outgoing || newState == Incoming) startRingtone();
     else stopRingtone();
     if (newState == Active) {
         updateCallStats();
         m_statsTimer.start();
-        // Enable camera now that call is connected (deferred from start() to avoid UI block)
+        // Late fallback only: the camera is now enabled immediately when the
+        // publish pipeline starts (see joinCallOnServer). This re-checks in
+        // case it wasn't on yet; isCameraOn() prevents a double-enable.
         if (m_cameraOn && m_publishPipeline && !m_publishPipeline->isCameraOn()) {
             m_publishPipeline->enableCamera(videoDeviceIndex(), preferHd1080());
             m_localVideoProvider = m_publishPipeline->localVideoProvider();
@@ -1101,6 +1153,20 @@ void CallManager::joinCallOnServer(bool withVideo)
                         }
                         m_glibTimer.start(20);
 
+                        // Camera must come up IMMEDIATELY for a video call —
+                        // the local preview should be live the moment the call
+                        // starts, not deferred until it reaches Active (a call
+                        // that stalls in Connecting must still show your own
+                        // camera). mfvideosrc starts async so this does not
+                        // block the UI. The setState(Active) block remains
+                        // only as a late fallback (guarded by isCameraOn()).
+                        if (m_cameraOn && m_publishPipeline && !m_publishPipeline->isCameraOn()) {
+                            qDebug() << "CallManager: enabling camera immediately (video call)";
+                            m_publishPipeline->enableCamera(videoDeviceIndex(), preferHd1080());
+                            m_localVideoProvider = m_publishPipeline->localVideoProvider();
+                            emit localVideoProviderChanged();
+                        }
+
                         // If remote peer already joined (incoming call), request their stream
                         if (!m_remoteSessionId.isEmpty() && !m_subscribePipelines.contains(m_remoteSessionId)) {
                             setStatusDetail("Requesting peer stream");
@@ -1167,6 +1233,27 @@ void CallManager::leaveCallOnServer()
         [](bool ok, const QJsonObject &, int statusCode) {
             if (!ok) qWarning() << "CallManager: failed to leave call on server, status=" << statusCode;
         });
+}
+
+void CallManager::leaveCallBeacon()
+{
+    if (!m_joinedCall || m_callToken.isEmpty()) return;
+    qInfo() << "CallManager: leave-call beacon for" << m_callToken;
+    m_joinedCall = false;  // guard against duplicate beacons / re-entry
+
+    QJsonObject body;
+    body["all"] = false;
+    m_api->del("apps/spreed/api/v4/call/" + m_callToken, body,
+        [](bool ok, const QJsonObject &, int sc) {
+            qInfo() << "CallManager: leave-call beacon"
+                    << (ok ? "delivered" : "failed") << sc;
+        });
+
+    // On aboutToQuit the event loop is winding down; spin briefly so the
+    // DELETE actually flushes instead of being dropped with the process.
+    QElapsedTimer t; t.start();
+    while (m_api->pendingCount() > 0 && t.elapsed() < 600)
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
 }
 
 void CallManager::stopAllPipelines()
@@ -1465,35 +1552,50 @@ void CallManager::onOfferReceived(const QString &fromSessionId, const QString &s
     // Track the MCU's sid — signals use the hash so re-offers update seamlessly
     m_subscriberSids[fromSessionId] = sid;
 
-    // Re-offer on existing subscriber: reuse the pipeline (preserves ICE/DTLS)
+    // Re-offer for an existing subscriber. A Nextcloud Talk / Janus
+    // re-subscribe (e.g. the remote peer enables video) is a BRAND-NEW
+    // PeerConnection: new sid, new ICE ufrag/pwd, new DTLS fingerprint.
+    // webrtcsrc cannot adopt new ICE credentials on a live session —
+    // SubscribeWebrtcSrc::feedOfferToSignaller() is one-shot
+    // (m_offerDelivered), so feeding the re-offer into the existing element
+    // silently DROPS it; the stale session keeps running until its ICE
+    // consent times out (~25 s) and the whole subscription fails, so the
+    // remote video (only present from the re-offer onward) never arrives
+    // and the call is stuck "Connecting". Tear the stale subscriber down
+    // and fall through to build a fresh one bound to the new session.
+    // deleteLater (not delete): we may be inside a signaling callback;
+    // destroying the element synchronously here risks re-entrant teardown.
     if (m_subscribePipelines.contains(fromSessionId)) {
-        qDebug() << "CallManager: re-offer for" << fromSessionId.left(20) << "— reusing subscriber, new sid=" << sid;
-        m_subscribePipelines[fromSessionId]->setRemoteOffer(sdp);
-        return;
+        qDebug() << "CallManager: re-offer for" << fromSessionId.left(20)
+                 << "— rebuilding subscriber for new session sid=" << sid;
+        if (auto *old = m_subscribePipelines.take(fromSessionId)) {
+            old->stop();
+            old->deleteLater();
+        }
     }
 
     // New subscriber
-    auto *sub = new SubscribePipeline(fromSessionId, this);
+    auto *sub = new SubscribeWebrtcSrc(fromSessionId, this);
 
-    connect(sub, &SubscribePipeline::localAnswerReady,
+    connect(sub, &SubscribeWebrtcSrc::localAnswerReady,
             this, [this, fromSessionId](const QString &sdp) {
         QString currentSid = m_subscriberSids.value(fromSessionId);
         m_signaling->sendAnswer(fromSessionId, sdp, currentSid);
         qDebug() << "CallManager: sent subscriber answer to" << fromSessionId.left(20) << "sid=" << currentSid;
     });
 
-    connect(sub, &SubscribePipeline::iceCandidateReady,
+    connect(sub, &SubscribeWebrtcSrc::iceCandidateReady,
             this, [this, fromSessionId](const QString &candidate, int mline, const QString &mid) {
         QString currentSid = m_subscriberSids.value(fromSessionId);
         m_signaling->sendCandidate(fromSessionId, makeCandidateJson(candidate, mline, mid), currentSid);
     });
 
-    connect(sub, &SubscribePipeline::iceGatheringComplete,
+    connect(sub, &SubscribeWebrtcSrc::iceGatheringComplete,
             this, [this, fromSessionId]() {
         m_signaling->sendEndOfCandidates(fromSessionId, m_subscriberSids.value(fromSessionId));
     });
 
-    connect(sub, &SubscribePipeline::iceStateChanged,
+    connect(sub, &SubscribeWebrtcSrc::iceStateChanged,
             this, [this, fromSessionId](const QString &state) {
         qDebug() << "CallManager: subscriber ICE:" << state;
         setStatusDetail("Subscriber ICE " + state);
@@ -1530,7 +1632,7 @@ void CallManager::onOfferReceived(const QString &fromSessionId, const QString &s
         }
     });
 
-    connect(sub, &SubscribePipeline::mediaStateReceived,
+    connect(sub, &SubscribeWebrtcSrc::mediaStateReceived,
             this, [this, fromSessionId](const QString &type) {
         CallParticipant *p = m_participants.value(fromSessionId);
         if (type == "audioOn")       { m_remoteAudioMuted = false; emit remoteMediaChanged(); if (p) p->setAudioMuted(false); }
@@ -1541,7 +1643,7 @@ void CallManager::onOfferReceived(const QString &fromSessionId, const QString &s
         else if (type == "stoppedSpeaking") { if (p) p->setSpeaking(false); }
     });
 
-    connect(sub, &SubscribePipeline::peerClientInfo,
+    connect(sub, &SubscribeWebrtcSrc::peerClientInfo,
             this, [this, fromSessionId](const QString &client, const QString &version) {
         const QString info = client + "/" + version;
         if (auto *p = m_participants.value(fromSessionId))
@@ -1553,7 +1655,7 @@ void CallManager::onOfferReceived(const QString &fromSessionId, const QString &s
         }
     });
 
-    connect(sub, &SubscribePipeline::error, this, [this, fromSessionId](const QString &msg) {
+    connect(sub, &SubscribeWebrtcSrc::error, this, [this, fromSessionId](const QString &msg) {
         qWarning() << "CallManager: subscriber pipeline error for" << fromSessionId.left(20) << ":" << msg;
     });
 

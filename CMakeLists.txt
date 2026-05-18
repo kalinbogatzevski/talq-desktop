@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(talq VERSION 0.29.1 LANGUAGES CXX)
+project(talq VERSION 0.30.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -27,7 +27,7 @@ set(GST_INCLUDE_DIRS
     "${GSTREAMER_ROOT}/include"
 )
 set(GST_LIBRARY_DIRS "${GSTREAMER_ROOT}/lib")
-set(GST_LIBRARIES gstreamer-1.0 gstsdp-1.0 gstwebrtc-1.0 gstapp-1.0 gobject-2.0 glib-2.0 intl)
+set(GST_LIBRARIES gstreamer-1.0 gstsdp-1.0 gstwebrtc-1.0 gstapp-1.0 gstrtp-1.0 gobject-2.0 glib-2.0 intl)
 
 find_package(Python3 COMPONENTS Interpreter)
 
@@ -58,9 +58,12 @@ qt_add_executable(talq
     src/models/ThreadListModel.cpp
     src/core/PublishPipeline.cpp
     src/core/SubscribePipeline.cpp
+    src/core/SubscribeWebrtcSrc.cpp
     src/core/VideoFrameProvider.h
     src/core/VideoFrameProvider.cpp
     src/core/MediaDeviceManager.cpp
+    src/core/UserStatusManager.h
+    src/core/UserStatusManager.cpp
     src/core/CallManager.cpp
     src/core/CallParticipant.cpp
     src/core/PeerPipeline.cpp
@@ -84,6 +87,8 @@ qt_add_executable(talq
     src/ui/SettingsDialog.cpp
     src/ui/CallStage.cpp
     src/ui/CallWindow.cpp
+    src/ui/StatusPopover.h
+    src/ui/StatusPopover.cpp
     src/ui/SharePickerDialog.cpp
     src/ui/SelectionBarWidget.h
     src/ui/SelectionBarWidget.cpp
@@ -132,6 +137,9 @@ target_compile_definitions(talq PRIVATE
     TALQ_BUILD_TS="${TALQ_BUILD_TS}"
     # Per-release codename (empty string = no codename pill). Set alongside
     # the version bump; shown on the Mission Control command bar.
+    # "Bangaranga": DARA's winning song at the Eurovision Song Contest 2026,
+    # Bulgaria's first-ever Eurovision win (contest's 70th anniversary;
+    # staging inspired by Bulgarian kukeri folklore).
     TALQ_VERSION_NAME="Bangaranga"
 )
 
@@ -171,11 +179,3 @@ target_link_libraries(talq PRIVATE
     Qt6::Concurrent
     Qt6::Multimedia
     ${GST_LIBRARIES}
-)
-
-# Windows-specific settings
-if(WIN32)
-    # Debug builds: show console for logging. Release: GUI only (no console).
-    if(CMAKE_BUILD_TYPE STREQUAL "Release")
-        set_target_properties(talq PROPERTIES WIN32_EXECUTABLE TRUE)
-    endif()
