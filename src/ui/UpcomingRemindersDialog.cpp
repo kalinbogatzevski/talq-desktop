@@ -19,20 +19,7 @@ UpcomingRemindersDialog::UpcomingRemindersDialog(ApiClient *api, QWidget *parent
 {
     setWindowTitle(tr("Upcoming reminders"));
     resize(520, 420);
-    setStyleSheet(
-        "QDialog { background: #141210; color: #f4efe6; }"
-        "QLabel  { color: #f4efe6; }"
-        "QListWidget { background: #1a1613; border: 1px solid #2a241f;"
-        "  border-radius: 12px; color: #f4efe6; padding: 4px; outline: none; }"
-        "QListWidget::item { padding: 10px 12px; border-radius: 8px; color: #f4efe6; }"
-        "QListWidget::item:hover    { background: #241f1a; }"
-        "QListWidget::item:selected { background: #241f1a; }"
-        "QPushButton { background: #241f1a; color: #f4efe6; border: none;"
-        "  border-radius: 8px; padding: 8px 16px; font-size: 13px; font-weight: 500; }"
-        "QPushButton:hover   { background: #2e271f; }"
-        "QPushButton:pressed { background: #2a241f; }"
-        "QPushButton#danger  { color: #e8866b; }"
-    );
+    // Chrome inherited from the app-wide AppStyle sheet (theme-driven).
 
     auto *outer = new QVBoxLayout(this);
     outer->setContentsMargins(16, 16, 16, 16);
@@ -42,7 +29,7 @@ UpcomingRemindersDialog::UpcomingRemindersDialog(ApiClient *api, QWidget *parent
     outer->addWidget(m_list, 1);
 
     m_status = new QLabel(tr("Loading\u2026"), this);
-    m_status->setStyleSheet("color: #8a8680; font-size: 12px;");
+    m_status->setProperty("role", "secondary");
     outer->addWidget(m_status);
 
     auto *btnRow = new QHBoxLayout();
