@@ -37,6 +37,91 @@ QFont monoFont(int px)
     f.setWeight(QFont::DemiBold);
     return f;
 }
+// Vector control-bar icons drawn in a 24-unit viewBox, mapped into `box`.
+// Stroked (theme-tinted) so on/off state reads via colour + the slash —
+// unlike the old colour-emoji glyphs which ignored the pen entirely.
+void drawCallIcon(QPainter &p, const QString &id, const QRectF &box,
+                  const QColor &stroke, bool slash, const QColor &slashBack)
+{
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing, true);
+    const qreal s = qMin(box.width(), box.height()) / 24.0;
+    p.translate(box.center());
+    p.scale(s, s);
+    p.translate(-12, -12);
+
+    QPen pen(stroke, 2.0);
+    pen.setCapStyle(Qt::RoundCap);
+    pen.setJoinStyle(Qt::RoundJoin);
+    p.setPen(pen);
+    p.setBrush(Qt::NoBrush);
+
+    if (id == "mic") {
+        QPainterPath body;
+        body.addRoundedRect(QRectF(9, 3, 6, 11), 3, 3);
+        p.drawPath(body);
+        QPainterPath arc;
+        arc.moveTo(5.5, 10.5);
+        arc.cubicTo(5.5, 17, 18.5, 17, 18.5, 10.5);
+        p.drawPath(arc);
+        p.drawLine(QPointF(12, 17), QPointF(12, 21));
+        p.drawLine(QPointF(8.5, 21), QPointF(15.5, 21));
+    } else if (id == "cam") {
+        QPainterPath b; b.addRoundedRect(QRectF(3, 7, 12.5, 10), 2.2, 2.2);
+        p.drawPath(b);
+        QPainterPath lens;
+        lens.moveTo(15.5, 10.2); lens.lineTo(21, 7);
+        lens.lineTo(21, 17); lens.lineTo(15.5, 13.8); lens.closeSubpath();
+        p.drawPath(lens);
+    } else if (id == "share") {
+        QPainterPath m; m.addRoundedRect(QRectF(3, 5, 18, 12), 2.2, 2.2);
+        p.drawPath(m);
+        p.drawLine(QPointF(12, 17), QPointF(12, 21));
+        p.drawLine(QPointF(8.5, 21), QPointF(15.5, 21));
+    } else if (id == "roster") {
+        p.drawEllipse(QRectF(6, 5.5, 6, 6));
+        QPainterPath sh; sh.moveTo(3.5, 19);
+        sh.cubicTo(3.5, 12.5, 14.5, 12.5, 14.5, 19);
+        p.drawPath(sh);
+        p.drawEllipse(QRectF(14.5, 7, 4.6, 4.6));
+        QPainterPath sh2; sh2.moveTo(16, 18.5);
+        sh2.cubicTo(16, 14, 21.5, 13.8, 21.5, 18.5);
+        p.drawPath(sh2);
+    } else if (id == "telemetry") {
+        p.drawLine(QPointF(6, 18), QPointF(6, 13));
+        p.drawLine(QPointF(12, 18), QPointF(12, 8));
+        p.drawLine(QPointF(18, 18), QPointF(18, 11));
+        p.drawLine(QPointF(3.5, 20.5), QPointF(20.5, 20.5));
+    } else if (id == "full") {
+        const qreal L = 5;
+        p.drawPolyline(QPolygonF({{3.0+L,4.0},{4.0,4.0},{4.0,4.0+L}}));
+        p.drawPolyline(QPolygonF({{20.0-L,4.0},{20.0,4.0},{20.0,4.0+L}}));
+        p.drawPolyline(QPolygonF({{4.0,20.0-L},{4.0,20.0},{4.0+L,20.0}}));
+        p.drawPolyline(QPolygonF({{20.0-L,20.0},{20.0,20.0},{20.0,20.0-L}}));
+    } else if (id == "end") {
+        // Hang-up: a solid handset tilted down (reads as "end call").
+        p.translate(12, 12); p.rotate(135); p.translate(-12, -12);
+        QPainterPath h;
+        h.addRoundedRect(QRectF(3, 10, 18, 4), 2, 2);
+        h.addEllipse(QRectF(2, 8.5, 6, 6));
+        h.addEllipse(QRectF(16, 8.5, 6, 6));
+        p.setPen(Qt::NoPen); p.setBrush(stroke);
+        p.drawPath(h.simplified());
+    }
+
+    if (slash) {
+        // Standard disabled cut: a backing stroke in the cell colour, the
+        // tinted stroke on top — the icon reads as visibly severed.
+        p.setBrush(Qt::NoBrush);
+        QPen bk(slashBack, 5.0); bk.setCapStyle(Qt::RoundCap);
+        p.setPen(bk);
+        p.drawLine(QPointF(4.5, 4.5), QPointF(19.5, 19.5));
+        QPen fr(stroke, 2.4); fr.setCapStyle(Qt::RoundCap);
+        p.setPen(fr);
+        p.drawLine(QPointF(4.5, 4.5), QPointF(19.5, 19.5));
+    }
+    p.restore();
+}
 } // namespace
 
 CallStage::CallStage(CallManager *call, QWidget *parent)
@@ -134,6 +219,14 @@ void CallStage::purgeStaleFrames()
 
 void CallStage::onFrame(CallParticipant *p, bool screen, const QImage &img)
 {
+    // Diagnostic: confirm the render path actually receives remote frames
+    // (first few + every 100th). Cheap, gated to the debug log only.
+    static QHash<CallParticipant*, int> s_dbgCount;
+    int &n = s_dbgCount[p];
+    if (++n <= 3 || n % 100 == 0)
+        qDebug() << "CallStage::onFrame" << (p && p->isSelf() ? "SELF" : "REMOTE")
+                 << (screen ? "screen" : "camera") << img.size()
+                 << "frame#" << n << "part=" << (void*)p;
     if (img.isNull() || img.width() <= 32) return;       // skip MCU 16x16 dummy
     // Pre-scale to the widget bound so paint is a plain blit (perf guardrail).
     QImage f = img;
@@ -282,6 +375,7 @@ void CallStage::paintEvent(QPaintEvent *)
             paintTile(p, s, th, false);
         }
         paintStatusPill(p, th);
+        paintCodecPill(p, th);
         if (m_telemetryOpen) paintTelemetry(p, th);
         if (m_controlsVisible) paintControlBar(p, th);
     }
@@ -355,6 +449,34 @@ void CallStage::paintTile(QPainter &p, const Tile &t, const PainterTheme &th, bo
         d = qBound(40, d, 132);
         p.drawImage(QPointF(rc.center().x()-d/2.0, rc.center().y()-d/2.0),
                     avatarDisc(cp->sessionId(), cp->displayName(), d, th));
+
+        // No silent black: always say WHY there's no picture. The
+        // Reconnecting/Failed scrim below owns those states; this caption
+        // covers the normal ones (camera starting / off / waiting).
+        const bool reconn = cp->connState() == CallParticipant::Reconnecting
+                         || cp->connState() == CallParticipant::Failed;
+        if (!reconn && !t.isScreen) {
+            QString cap;
+            if (cp->isSelf()) {
+                cap = m_call->isCameraOn() ? tr("Starting camera…")
+                                           : tr("Camera off");
+            } else if (cp->videoMuted()) {
+                cap = tr("Camera off");
+            } else if (cp->connState() == CallParticipant::Connecting) {
+                cap = tr("Connecting…");
+            } else {
+                cap = tr("Waiting for video…");
+            }
+            QFont cf = th.systemFont();
+            p.setFont(cf);
+            p.setPen(th.textSecondary);
+            QRectF capR(rc.left()+8,
+                        rc.center().y() + d/2.0 + 10,
+                        rc.width()-16, 20);
+            p.drawText(capR, Qt::AlignHCenter|Qt::AlignTop,
+                       QFontMetrics(cf).elidedText(cap, Qt::ElideRight,
+                                                   int(capR.width())));
+        }
     }
 
     // Reconnecting scrim (warm ladder, not a black overlay).
@@ -442,8 +564,8 @@ void CallStage::paintCentered(QPainter &p, const PainterTheme &th)
         p.drawRoundedRect(dec, 10, 10);
         p.setPen(th.danger);
         p.drawText(dec, Qt::AlignCenter, tr("Decline"));
-        m_buttons.push_back({QStringLiteral("accept"), acc, {}, false, false});
-        m_buttons.push_back({QStringLiteral("decline"), dec, {}, false, true});
+        m_buttons.push_back({QStringLiteral("accept"), acc, {}, tr("Accept"), false, false});
+        m_buttons.push_back({QStringLiteral("decline"), dec, {}, tr("Decline"), false, true});
     } else {
         paintStatusPill(p, th);
         if (m_controlsVisible) paintControlBar(p, th);
@@ -454,51 +576,144 @@ void CallStage::buildButtons()
 {
     m_buttons.clear();
     if (m_call->state() == CallManager::Incoming) return;
-    struct Def { const char *id; const char *glyph; };
-    const QVector<Def> defs = {
-        {"mic",   "\U0001F3A4"}, {"cam", "\U0001F3A5"}, {"share", "\U0001F5A5"},
-        {"telemetry", "☷"}, {"roster", "\U0001F465"}, {"full", "⛶"},
-        {"end",   "✕"},
-    };
-    qreal bs = 46, gap = 12;
-    qreal total = defs.size()*bs + (defs.size()-1)*gap + 16;
-    qreal x = (width()-total)/2.0, y = height()-bs-22;
-    for (const Def &d : defs) {
-        Btn b; b.id = d.id; b.glyph = QString::fromUtf8(d.glyph);
-        b.rect = QRectF(x, y, bs, bs);
-        if (b.id == "end") { b.danger = true; b.rect.translate(8, 0); }
-        if (b.id == "mic")   b.on = !m_call->isMuted();
-        if (b.id == "cam")   b.on = m_call->isCameraOn();
-        if (b.id == "share") b.on = m_call->isScreenSharing();
-        if (b.id == "telemetry") b.on = m_telemetryOpen;
-        if (b.id == "roster") b.on = m_rosterOpen;
+
+    // Segmented-pill layout: six controls share one continuous strip;
+    // hang-up is a detached red pill set apart so it can't be misclicked.
+    const QStringList ctl = {"mic","cam","share","telemetry","roster","full"};
+    const qreal cellW = 56, cellH = 50, pad = 8, endW = 58, gap = 14;
+    const qreal pillW  = ctl.size()*cellW + 2*pad;
+    const qreal total  = pillW + gap + endW;
+    qreal x = (width()-total)/2.0;
+    const qreal y = height()-cellH-26;
+
+    auto add = [&](const QString &id, const QRectF &r){
+        Btn b; b.id = id; b.rect = r;
+        if (id=="mic")        { b.on = !m_call->isMuted();
+                                b.tip = b.on ? tr("Mute") : tr("Unmute"); }
+        else if (id=="cam")   { b.on = m_call->isCameraOn();
+                                b.tip = b.on ? tr("Turn camera off") : tr("Turn camera on"); }
+        else if (id=="share") { b.on = m_call->isScreenSharing();
+                                b.tip = b.on ? tr("Stop sharing") : tr("Share screen"); }
+        else if (id=="telemetry"){ b.on = m_telemetryOpen;
+                                b.tip = b.on ? tr("Hide telemetry") : tr("Telemetry"); }
+        else if (id=="roster"){ b.on = m_rosterOpen;
+                                b.tip = b.on ? tr("Hide participants") : tr("Participants"); }
+        else if (id=="full")  { b.tip = tr("Fullscreen"); }
+        else if (id=="end")   { b.danger = true; b.tip = tr("Leave call"); }
         m_buttons << b;
-        x += bs + gap;
-    }
+    };
+
+    qreal cx = x + pad;
+    for (const QString &id : ctl) { add(id, QRectF(cx, y, cellW, cellH)); cx += cellW; }
+    add("end", QRectF(x + pillW + gap, y, endW, cellH));
 }
 
 void CallStage::paintControlBar(QPainter &p, const PainterTheme &th)
 {
     if (m_buttons.isEmpty()) return;
-    QRectF bar = m_buttons.first().rect.united(m_buttons.last().rect)
-                     .adjusted(-16, -12, 16, 12);
-    QColor barBg = th.bgSecondary; barBg.setAlphaF(0.92);
-    p.setBrush(barBg); p.setPen(QPen(th.divider, 1));
-    p.drawRoundedRect(bar, 26, 26);
+    p.setRenderHint(QPainter::Antialiasing, true);
 
+    auto mix = [](const QColor &a, const QColor &b, qreal t) {
+        return QColor::fromRgbF(a.redF()  +(b.redF()  -a.redF())  *t,
+                                a.greenF()+(b.greenF()-a.greenF())*t,
+                                a.blueF() +(b.blueF() -a.blueF()) *t);
+    };
+    const QColor pillSolid = mix(th.bgSecondary, th.textPrimary, 0.0); // = bgSecondary
+    const QColor clayChip  = mix(th.bgSecondary, th.danger, 0.22);
+    const QColor clayInk   = th.danger.lighter(135);
+    const QColor grnChip   = mix(th.bgSecondary, th.accent, 0.20);
+    const QColor grnInk    = th.accent.lighter(122);
+
+    // ── the segmented strip (all non-danger cells) ──
+    QRectF pill;
+    const Btn *endBtn = nullptr;
     for (const Btn &b : m_buttons) {
-        QColor fill, ink;
-        if (b.danger)      { fill = th.danger;  ink = th.controlInk; }
-        else if (b.on && (b.id=="share"||b.id=="telemetry"||b.id=="roster"))
-                           { fill = th.accent;  ink = th.controlInk; }
-        else if (!b.on && (b.id=="mic"||b.id=="cam"))
-                           { fill = th.bgSurface; ink = th.danger; }   // off = danger ink
-        else               { fill = th.bgSurface; ink = th.textPrimary; }
-        p.setBrush(fill); p.setPen(Qt::NoPen);
-        p.drawEllipse(b.rect);
-        QFont gf = th.nameFont(); gf.setPixelSize(18); p.setFont(gf);
-        p.setPen(ink);
-        p.drawText(b.rect, Qt::AlignCenter, b.glyph);
+        if (b.danger) { endBtn = &b; continue; }
+        pill = pill.isNull() ? b.rect : pill.united(b.rect);
+    }
+    pill = pill.adjusted(-8, -3, 8, 3);
+    QColor barBg = th.bgSecondary; barBg.setAlphaF(0.94);
+    p.setBrush(barBg); p.setPen(QPen(th.divider, 1));
+    p.drawRoundedRect(pill, pill.height()/2.0, pill.height()/2.0);
+
+    int idx = 0, nCtl = m_buttons.size() - (endBtn ? 1 : 0);
+    for (const Btn &b : m_buttons) {
+        if (b.danger) continue;
+        const bool hover = (b.id == m_hoverBtn);
+        const bool off   = (b.id=="mic"||b.id=="cam") && !b.on;
+        const bool act   = (b.id=="share"||b.id=="telemetry"||b.id=="roster") && b.on;
+
+        QColor chip; QColor ink = th.textPrimary; QColor slashBack = pillSolid;
+        if (off)      { chip = clayChip; ink = clayInk; slashBack = clayChip; }
+        else if (act) { chip = grnChip;  ink = grnInk; }
+
+        const QRectF chipR = b.rect.adjusted(3, 5, -3, -5);
+        if (chip.isValid()) {
+            if (hover) chip = chip.lighter(116);
+            p.setBrush(chip); p.setPen(Qt::NoPen);
+            p.drawRoundedRect(chipR, 12, 12);
+        } else if (hover) {
+            QColor wash = th.accent; wash.setAlphaF(0.13);
+            p.setBrush(wash); p.setPen(Qt::NoPen);
+            p.drawRoundedRect(chipR, 12, 12);
+        } else if (idx > 0) {
+            // subtle separator between two plain cells
+            const Btn &prev = m_buttons[idx-1];
+            const bool prevPlain = !((prev.id=="mic"||prev.id=="cam")&&!prev.on)
+                                && !((prev.id=="share"||prev.id=="telemetry"||prev.id=="roster")&&prev.on)
+                                && prev.id != m_hoverBtn;
+            if (prevPlain) {
+                QColor d = th.divider; d.setAlphaF(0.6);
+                p.setPen(QPen(d, 1));
+                p.drawLine(QPointF(b.rect.left(), b.rect.top()+12),
+                           QPointF(b.rect.left(), b.rect.bottom()-12));
+            }
+        }
+        const qreal isz = qMin(b.rect.width(), b.rect.height()) * 0.46;
+        QRectF ib(0, 0, isz, isz); ib.moveCenter(b.rect.center());
+        drawCallIcon(p, b.id, ib, ink, off, slashBack);
+        idx++;
+    }
+
+    // ── detached hang-up pill ──
+    if (endBtn) {
+        const bool hv = (endBtn->id == m_hoverBtn);
+        QColor f = hv ? th.danger.lighter(112) : th.danger;
+        p.setBrush(f); p.setPen(Qt::NoPen);
+        p.drawRoundedRect(endBtn->rect, endBtn->rect.height()/2.0,
+                          endBtn->rect.height()/2.0);
+        const qreal isz = qMin(endBtn->rect.width(), endBtn->rect.height())*0.5;
+        QRectF ib(0,0,isz,isz); ib.moveCenter(endBtn->rect.center());
+        drawCallIcon(p, "end", ib, th.controlInk, false, f);
+    }
+
+    // ── themed tooltip for the hovered control ──
+    if (!m_hoverBtn.isEmpty()) {
+        for (const Btn &b : m_buttons) {
+            if (b.id != m_hoverBtn || b.tip.isEmpty()) continue;
+            QFont tf = monoFont(11); p.setFont(tf);
+            QFontMetrics fm(tf);
+            const qreal tw = fm.horizontalAdvance(b.tip) + 22;
+            const qreal th_ = 26;
+            qreal tx = b.rect.center().x() - tw/2.0;
+            tx = qBound(8.0, tx, width()-tw-8.0);
+            const qreal ty = b.rect.top() - th_ - 10;
+            QRectF tip(tx, ty, tw, th_);
+            QColor bg = th.bgSecondary; bg.setAlphaF(0.98);
+            p.setBrush(bg); p.setPen(QPen(th.divider, 1));
+            p.drawRoundedRect(tip, 8, 8);
+            // little downward pointer toward the button
+            qreal px = qBound(tip.left()+12, b.rect.center().x(), tip.right()-12);
+            QPainterPath tri;
+            tri.moveTo(px-6, tip.bottom());
+            tri.lineTo(px+6, tip.bottom());
+            tri.lineTo(px,   tip.bottom()+6);
+            tri.closeSubpath();
+            p.setBrush(bg); p.setPen(Qt::NoPen); p.drawPath(tri);
+            p.setPen(th.textPrimary);
+            p.drawText(tip, Qt::AlignCenter, b.tip);
+            break;
+        }
     }
 }
 
@@ -536,6 +751,38 @@ void CallStage::paintStatusPill(QPainter &p, const PainterTheme &th)
     p.drawEllipse(QRectF(pill.left()+13, pill.center().y()-4, 8, 8));
     p.setPen(th.textPrimary);
     p.drawText(pill.adjusted(30, 0, -8, 0), Qt::AlignVCenter|Qt::AlignLeft, text);
+
+    m_statusPillBottom = pill.bottom();
+}
+
+// Small secondary chip under the status pill: live proof of the negotiated
+// send codec + whether the encoder is hardware-accelerated. Quiet by
+// design — it's diagnostic reassurance, not a primary control.
+void CallStage::paintCodecPill(QPainter &p, const PainterTheme &th)
+{
+    const QString enc = m_call->activeVideoEncoder();
+    if (enc.isEmpty()) return;
+
+    const bool hw = m_call->activeVideoEncoderIsHw();
+    const QString codec = enc.section(QStringLiteral(" · "), 0, 0);
+    const QString text  = codec + (hw ? QStringLiteral(" · HW")
+                                       : QStringLiteral(" · SW"));
+    const QColor sig = hw ? th.success : th.amber;
+
+    QFont f = monoFont(10); p.setFont(f);
+    QFontMetrics fm(f);
+    QRectF pill(16, m_statusPillBottom + 8,
+                fm.horizontalAdvance(text) + 34, 22);
+    QColor bg = th.bgSecondary; bg.setAlphaF(0.9);
+    QColor border = sig; border.setAlphaF(0.55);
+    p.setBrush(bg); p.setPen(QPen(border, 1));
+    p.drawRoundedRect(pill, 11, 11);
+
+    p.setBrush(sig); p.setPen(Qt::NoPen);
+    p.drawEllipse(QRectF(pill.left() + 11, pill.center().y() - 3, 6, 6));
+    p.setPen(th.textSecondary);
+    p.drawText(pill.adjusted(26, 0, -8, 0),
+               Qt::AlignVCenter | Qt::AlignLeft, text);
 }
 
 void CallStage::paintTelemetry(QPainter &p, const PainterTheme &th)
@@ -561,6 +808,12 @@ void CallStage::paintTelemetry(QPainter &p, const PainterTheme &th)
     line("CODEC",   m_call->activeVideoCodec().isEmpty() ? "—" : m_call->activeVideoCodec(), th.textPrimary);
     QString dec = m_call->activeVideoDecoder();
     line("DECODER", dec.isEmpty() ? "—" : dec, dec=="Software" ? th.danger : th.success);
+    QString enc = m_call->activeVideoEncoder();
+    line("ENCODER", enc.isEmpty() ? "—" : enc,
+         enc.isEmpty() ? th.textPrimary
+                        : m_call->activeVideoEncoderIsHw() ? th.success : th.amber);
+    QString tx = m_call->videoTxLabel();
+    line("VIDEO TX", tx.isEmpty() ? "—" : tx, th.textPrimary);
     line("PEER",    m_call->remotePeerClient().isEmpty() ? "—" : m_call->remotePeerClient(), th.textPrimary);
     y += 8;
     p.setPen(th.textSecondary); p.drawText(QPointF(x, y), QStringLiteral("SUBSYSTEMS")); y += 22;
@@ -607,6 +860,12 @@ void CallStage::mouseMoveEvent(QMouseEvent *e)
         m_pipRect.moveTopLeft(e->position() - m_dragOff);
         update();
         return;
+    }
+    // Track which control-bar button is under the cursor for hover feedback.
+    const QString hov = m_controlsVisible ? hitButton(e->position()) : QString();
+    if (hov != m_hoverBtn) {
+        m_hoverBtn = hov;
+        setCursor(hov.isEmpty() ? Qt::ArrowCursor : Qt::PointingHandCursor);
     }
     pokeControls();
     update();
@@ -664,6 +923,7 @@ void CallStage::leaveEvent(QEvent *)
 {
     // Don't strand the user with a hidden bar + blank cursor when the
     // pointer leaves while idle; restore both so re-entry is never blind.
+    if (!m_hoverBtn.isEmpty()) { m_hoverBtn.clear(); setCursor(Qt::ArrowCursor); }
     pokeControls();
     update();
 }

@@ -5,7 +5,10 @@
 #include <QSettings>
 #include <QUrl>
 #include <gst/app/gstappsink.h>
+#include <gst/rtp/rtp.h>
 #include <thread>
+
+#include "core/VideoEncoderUtil.h"
 
 PublishPipeline::PublishPipeline(QObject *parent)
     : QObject(parent)
@@ -217,22 +220,69 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
     // No unlinking, no relinking, no pad swaps.
     m_videoSsrc = g_random_int();
 
-    // --- Shared encoder chain: funnel → vp8enc → rtpvp8pay → videoSsrcFilter ---
-    // VP8 with speed optimizations. H264 NVENC needs Janus SDP negotiation work.
+    // --- Shared encoder chain: funnel → [enc] → [h264parse] → pay → ssrc ---
+    // Prefer HARDWARE H264 (highest quality at the raised HPB ceiling,
+    // near-zero CPU — VP8/VP9 software at 1080p is the CPU-storm class of
+    // failure we fixed in 0.29.2). The Janus room is created H264-preferred
+    // (SignalingClient videocodec="h264,vp8"). Fallbacks: MediaFoundation
+    // H264 → x264 (sw) → vp8 (last resort, keeps a call alive if no H264
+    // encoder exists on the box). m_initBitrate is a conservative start;
+    // rtpgccbwe drives it up to the server ceiling at runtime.
     m_funnel          = gst_element_factory_make("funnel", "pub-funnel");
-    m_videoEncoder    = gst_element_factory_make("vp8enc", "pub-vp8enc");
-    m_videoPayloader  = gst_element_factory_make("rtpvp8pay", "pub-rtpvp8pay");
     m_videoSsrcFilter = gst_element_factory_make("capsfilter", "pub-video-ssrc-filter");
-    m_videoParser = nullptr;
-    m_useH264 = false;
+    m_videoParser     = nullptr;
+    m_videoEncoder    = makeWebrtcVideoEncoder(/*screen=*/false, m_initBitrate,
+                                               &m_useH264, &m_videoParser,
+                                               &m_encoderDesc);
+    m_videoPayloader  = gst_element_factory_make(
+                            m_useH264 ? "rtph264pay" : "rtpvp8pay",
+                            "pub-rtppay");
     if (!m_funnel || !m_videoEncoder || !m_videoPayloader || !m_videoSsrcFilter) {
         emit error("Failed to create shared video encoder chain");
+        // Not bin-added yet → cleanup() (which only nulls pointers) would
+        // leak these floating refs. Sink+drop the ones we did create.
+        for (GstElement *e : { m_funnel, m_videoEncoder, m_videoParser,
+                               m_videoPayloader, m_videoSsrcFilter })
+            if (e) gst_object_unref(e);
+        m_funnel = m_videoEncoder = m_videoParser = nullptr;
+        m_videoPayloader = m_videoSsrcFilter = nullptr;
         cleanup();
         return false;
     }
-    g_object_set(m_videoEncoder, "deadline", (gint64)1, "target-bitrate", 2000000,
-                 "cpu-used", 8, "threads", 4, nullptr);
-    g_object_set(m_videoPayloader, "ssrc", m_videoSsrc, nullptr);
+    if (m_useH264) {
+        // h264parse + config-interval=-1 repeats SPS/PPS before every IDR
+        // (an SFU forwards to subscribers who join after the first
+        // keyframe — without this they get no decodable stream).
+        // rtph264pay aggregate-mode=zero-latency + au alignment for RTC.
+        g_object_set(m_videoParser, "config-interval", -1, nullptr);
+        g_object_set(m_videoPayloader, "aggregate-mode", 1 /* zero-latency */,
+                     "config-interval", -1, nullptr);
+    }
+    g_object_set(m_videoPayloader, "ssrc", m_videoSsrc, "pt", 96, nullptr);
+    // Make the payloader stamp the TWCC sequence number onto every packet
+    // with the SAME id we advertise in codec-preferences below. Without
+    // this the SDP offers transport-wide-cc but the wire carries none, so
+    // Janus has nothing to feed back and rtpgccbwe stays starved.
+    // Tracks whether the wire actually carries TWCC, so the SDP only
+    // advertises extmap when it is true (advertising it without the
+    // payloader writing it = Janus expects feedback, gets none, GCC
+    // starves — the 0.29.3 black-video regression).
+    bool twccActive = false;
+    {
+        GstRTPHeaderExtension *twcc =
+            gst_rtp_header_extension_create_from_uri(kTwccUri);
+        if (twcc) {
+            gst_rtp_header_extension_set_id(twcc, kTwccExtId);
+            g_signal_emit_by_name(m_videoPayloader, "add-extension", twcc);
+            gst_object_unref(twcc);  // payloader holds its own ref
+            twccActive = true;
+            qDebug() << "PublishPipeline: TWCC ext id" << kTwccExtId
+                     << "added to payloader";
+        } else {
+            qWarning() << "PublishPipeline: rtphdrexttwcc unavailable — "
+                          "send-side adaptive bitrate disabled";
+        }
+    }
     {
         GstCaps *sc = gst_caps_from_string("application/x-rtp");
         gst_caps_set_simple(sc, "ssrc", G_TYPE_UINT, m_videoSsrc, nullptr);
@@ -262,7 +312,8 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
     gst_bin_add_many(GST_BIN(m_pipeline), m_funnel, m_videoEncoder, m_videoPayloader,
                      m_videoSsrcFilter, m_dummySrc, m_dummyCaps, m_dummyConv,
                      m_dummyValve, nullptr);
-    // (m_videoParser only used with H264 NVENC — not active currently)
+    if (m_videoParser)  // h264parse, present iff H264 encoder selected
+        gst_bin_add(GST_BIN(m_pipeline), m_videoParser);
 
     // Link dummy branch: dummySrc → dummyCaps → dummyConv → dummyValve
     gst_element_link_many(m_dummySrc, m_dummyCaps, m_dummyConv, m_dummyValve, nullptr);
@@ -279,15 +330,50 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
     // Shared converter+scaler between funnel and encoder — handles resolution
     // changes when switching between dummy (16x16) and camera (native resolution).
     GstElement *sharedConvert = gst_element_factory_make("videoconvert", "pub-shared-conv");
-    GstElement *sharedScale = gst_element_factory_make("videoscale", "pub-shared-scale");
-    gst_bin_add_many(GST_BIN(m_pipeline), sharedConvert, sharedScale, nullptr);
+    m_sharedScale = gst_element_factory_make("videoscale", "pub-shared-scale");
+    m_sharedCaps  = gst_element_factory_make("capsfilter", "pub-shared-caps");
 
-    // Link shared chain: funnel → videoconvert → videoscale → vp8enc → rtpvp8pay → ssrcFilter
-    gst_element_link_many(m_funnel, sharedConvert, sharedScale,
-                          m_videoEncoder, m_videoPayloader,
-                          m_videoSsrcFilter, nullptr);
+    // Pin a CONSTANT encoder-input resolution. The funnel multiplexes a
+    // 16x16 black dummy (idle) and the live camera; without this the
+    // encoder caps flipped 16x16↔native(1080p) on camera-enable, forcing
+    // a full vp8enc + buffer-pool reconfiguration mid-call (+281 MB/2 s,
+    // event-loop stall → the SFU dropped the publisher and the call
+    // ended). 1280x720 matches the official native (Android) client's
+    // landscape capture target; the dummy is upscaled (trivial, 1 fps
+    // black), the camera is downscaled here. The codec carries resolution
+    // in-band (H264 SPS / VP8 frame) so this is transparent to the
+    // negotiated SDP/Janus.
+    {
+        GstCaps *sc = gst_caps_from_string(
+            "video/x-raw,width=1280,height=720,pixel-aspect-ratio=1/1");
+        g_object_set(m_sharedCaps, "caps", sc, nullptr);
+        gst_caps_unref(sc);
+    }
+    gst_bin_add_many(GST_BIN(m_pipeline), sharedConvert, m_sharedScale,
+                     m_sharedCaps, nullptr);
 
-    qDebug() << "PublishPipeline: encoder chain built, codec=" << (m_useH264 ? "H264 NVENC" : "VP8")
+    // Link shared chain: funnel → videoconvert → videoscale → sharedCaps
+    //   → encoder → [h264parse if H264] → rtp{h264,vp8}pay → ssrcFilter
+    gboolean encLinked =
+        gst_element_link_many(m_funnel, sharedConvert, m_sharedScale,
+                              m_sharedCaps, m_videoEncoder, nullptr);
+    if (m_videoParser) {
+        encLinked = encLinked &&
+            gst_element_link_many(m_videoEncoder, m_videoParser,
+                                  m_videoPayloader, m_videoSsrcFilter, nullptr);
+    } else {
+        encLinked = encLinked &&
+            gst_element_link_many(m_videoEncoder, m_videoPayloader,
+                                  m_videoSsrcFilter, nullptr);
+    }
+    if (!encLinked) {
+        emit error("Failed to link shared video encoder chain");
+        cleanup();
+        return false;
+    }
+
+    qDebug() << "PublishPipeline: encoder chain built, codec="
+             << (m_useH264 ? "H264 (hardware-preferred)" : "VP8 (fallback)")
              << "SSRC" << m_videoSsrc;
 
     // --- Link videoSsrcFilter to webrtcbin video sink pad ---
@@ -297,7 +383,24 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
     g_object_get(m_videoSinkPad, "transceiver", &vt, nullptr);
     if (vt) {
         GstCaps *vc = gst_caps_from_string(
-            "application/x-rtp,media=video,encoding-name=VP8,clock-rate=90000,payload=96");
+            m_useH264
+              ? "application/x-rtp,media=video,encoding-name=H264,"
+                "clock-rate=90000,payload=96"
+              : "application/x-rtp,media=video,encoding-name=VP8,"
+                "clock-rate=90000,payload=96");
+        // webrtcbin emits a=extmap in the offer from codec-preferences, not
+        // by introspecting the external payloader (whose caps aren't even
+        // negotiated yet at create-offer — the funnel is on the 16x16
+        // dummy). Putting the TWCC extmap here makes the offer carry it
+        // deterministically, so Janus negotiates transport-wide-cc and
+        // feeds GCC. set_simple is used over a caps string to avoid URI
+        // escaping pitfalls. Only advertise it if the payloader actually
+        // writes TWCC (twccActive) — otherwise SDP and wire disagree.
+        if (twccActive) {
+            char extField[16];
+            g_snprintf(extField, sizeof(extField), "extmap-%d", kTwccExtId);
+            gst_caps_set_simple(vc, extField, G_TYPE_STRING, kTwccUri, nullptr);
+        }
         g_object_set(vt, "direction", GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDONLY,
                      "codec-preferences", vc, nullptr);
         gst_caps_unref(vc);
@@ -332,6 +435,12 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
                      G_CALLBACK(onIceStateChanged), this);
     g_signal_connect(m_webrtcbin, "notify::ice-gathering-state",
                      G_CALLBACK(onIceGatheringStateChanged), this);
+    // Send-side congestion control: webrtcbin asks for an aux sender once
+    // the transport is up; we return rtpgccbwe and ride its estimate onto
+    // the encoder. Now that the offer carries the TWCC extmap (above),
+    // Janus sends transport-wide RTCP feedback so the estimate is real.
+    g_signal_connect(m_webrtcbin, "request-aux-sender",
+                     G_CALLBACK(onRequestAuxSender), this);
 
     // No bus watch — pollBus() handles all bus messages via manual polling
 
@@ -385,11 +494,16 @@ void PublishPipeline::stop()
 void PublishPipeline::cleanup()
 {
     qDebug() << "PublishPipeline::cleanup() — begin, pipeline=" << (void*)m_pipeline << "webrtcbin=" << (void*)m_webrtcbin;
+    // Block any aux-sender/GCC callback that races this teardown (they run
+    // on a GStreamer streaming thread; cleanup() runs on the Qt thread).
+    m_shuttingDown.store(true);
     // Disconnect GStreamer signals to prevent callbacks with stale userData
     if (m_webrtcbin) {
         qDebug() << "PublishPipeline::cleanup() — disconnecting signals";
         g_signal_handlers_disconnect_by_data(m_webrtcbin, this);
     }
+    if (m_gccbwe)  // notify::estimated-bitrate is on the gcc element, not webrtcbin
+        g_signal_handlers_disconnect_by_data(m_gccbwe, this);
     if (m_previewAppsink)
         g_signal_handlers_disconnect_by_data(m_previewAppsink, this);
 
@@ -409,7 +523,10 @@ void PublishPipeline::cleanup()
     // Pipeline owns all elements — just null out the pointers
     m_webrtcbin = nullptr;
     m_funnel = nullptr;
+    m_sharedScale = nullptr;
+    m_sharedCaps = nullptr;
     m_videoEncoder = nullptr;
+    m_gccbwe = nullptr;
     m_videoParser = nullptr;
     m_videoPayloader = nullptr;
     m_videoSsrcFilter = nullptr;
@@ -530,12 +647,22 @@ bool PublishPipeline::buildCameraChain(int deviceIndex, bool hd1080)
     }
 
     // Configure elements
-    // Camera capsfilter: auto-negotiate (let camera decide resolution)
+    // Camera capsfilter: prefer a device-supported mode at or below
+    // 1280x720 @ ≤30 fps (the official native client's target — it never
+    // captures 1080p, and 60 fps webcams would double convert/encode
+    // load). Two structures: try ≤720p first, else fall back to any
+    // resolution at ≤30 fps so negotiation never fails on cameras that
+    // only expose larger modes (sharedScale downsizes to 1280x720 for
+    // the encoder regardless).
     {
-        GstCaps *caps = gst_caps_from_string("video/x-raw");
+        GstCaps *caps = gst_caps_from_string(
+            "video/x-raw,width=(int)[1,1280],height=(int)[1,720],"
+            "framerate=(fraction)[1/1,30/1];"
+            "video/x-raw,framerate=(fraction)[1/1,30/1]");
         g_object_set(m_videoCapsFilter, "caps", caps, nullptr);
         gst_caps_unref(caps);
-        qDebug() << "PublishPipeline: camera caps: auto-negotiate";
+        qDebug() << "PublishPipeline: camera caps: ≤1280x720 @ ≤30fps "
+                    "(device-supported), encoder pinned 1280x720";
     }
     // Queues: leaky downstream to prevent blocking
     g_object_set(m_encQueue, "leaky", 2 /* downstream */, "max-size-buffers", 3, nullptr);
@@ -831,4 +958,56 @@ GstFlowReturn PublishPipeline::onPreviewSample(GstAppSink *sink, gpointer userDa
     }, Qt::QueuedConnection);
 
     return GST_FLOW_OK;
+}
+
+GstElement *PublishPipeline::onRequestAuxSender(GstElement *, GObject *,
+                                                gpointer userData)
+{
+    auto *self = static_cast<PublishPipeline *>(userData);
+    if (self->m_shuttingDown.load()) return nullptr;
+    GstElement *gcc = gst_element_factory_make("rtpgccbwe", nullptr);
+    if (!gcc) {
+        qWarning() << "PublishPipeline: rtpgccbwe unavailable — encoder "
+                      "stays at fixed bitrate";
+        return nullptr;
+    }
+    // Floor keeps a usable call alive on a bad link; ceiling = server video
+    // cap so GCC never probes past what Janus will forward. Seed the
+    // estimate with our start bitrate (the element treats it as the
+    // target until feedback arrives). guint props, set while NULL.
+    g_object_set(gcc,
+                 "min-bitrate", (guint)300000,
+                 "max-bitrate", (guint)self->m_maxBitrate,
+                 "estimated-bitrate", (guint)self->m_initBitrate,
+                 nullptr);
+    g_signal_connect(gcc, "notify::estimated-bitrate",
+                     G_CALLBACK(onGccBitrate), self);
+    self->m_gccbwe = gcc;
+    qInfo().nospace() << "PublishPipeline: rtpgccbwe attached (min 300k, max "
+                      << self->m_maxBitrate << ", start "
+                      << self->m_initBitrate << ")";
+    return gcc;  // webrtcbin takes ownership
+}
+
+void PublishPipeline::onGccBitrate(GObject *gcc, GParamSpec *, gpointer userData)
+{
+    auto *self = static_cast<PublishPipeline *>(userData);
+    if (self->m_shuttingDown.load() || !self->m_videoEncoder) return;
+    guint est = 0;
+    g_object_get(gcc, "estimated-bitrate", &est, nullptr);
+    if (est == 0) return;
+    if (est > (guint)self->m_maxBitrate) est = (guint)self->m_maxBitrate;
+    // Deadband: only reconfigure the encoder on a ≥15% move (or the first
+    // estimate). GCC notifies every ~200 ms with sub-percent jitter;
+    // qsvh264enc/oneVPL rejects nearly every live reconfigure
+    // (MFX_ERR_INCOMPATIBLE_VIDEO_PARAM) and a per-tick set storms it.
+    const int last = self->m_lastAppliedBitrate;
+    if (last != 0) {
+        const guint delta = est > (guint)last ? est - last : (guint)last - est;
+        if (delta * 100u < (guint)last * 15u) return;
+    }
+    self->m_lastAppliedBitrate = (int)est;
+    setWebrtcVideoEncoderBitrate(self->m_videoEncoder, self->m_useH264, est);
+    qInfo().nospace() << "PublishPipeline: GCC -> encoder "
+                      << (est / 1000) << " kbps";
 }
