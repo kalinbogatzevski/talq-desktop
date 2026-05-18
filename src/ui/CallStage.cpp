@@ -1,5 +1,6 @@
 #include "CallStage.h"
 #include "core/VideoFrameProvider.h"
+#include "painter/VectorIcons.h"
 
 #include <QPainter>
 #include <QPainterPath>
@@ -36,91 +37,6 @@ QFont monoFont(int px)
     f.setPixelSize(px);
     f.setWeight(QFont::DemiBold);
     return f;
-}
-// Vector control-bar icons drawn in a 24-unit viewBox, mapped into `box`.
-// Stroked (theme-tinted) so on/off state reads via colour + the slash —
-// unlike the old colour-emoji glyphs which ignored the pen entirely.
-void drawCallIcon(QPainter &p, const QString &id, const QRectF &box,
-                  const QColor &stroke, bool slash, const QColor &slashBack)
-{
-    p.save();
-    p.setRenderHint(QPainter::Antialiasing, true);
-    const qreal s = qMin(box.width(), box.height()) / 24.0;
-    p.translate(box.center());
-    p.scale(s, s);
-    p.translate(-12, -12);
-
-    QPen pen(stroke, 2.0);
-    pen.setCapStyle(Qt::RoundCap);
-    pen.setJoinStyle(Qt::RoundJoin);
-    p.setPen(pen);
-    p.setBrush(Qt::NoBrush);
-
-    if (id == "mic") {
-        QPainterPath body;
-        body.addRoundedRect(QRectF(9, 3, 6, 11), 3, 3);
-        p.drawPath(body);
-        QPainterPath arc;
-        arc.moveTo(5.5, 10.5);
-        arc.cubicTo(5.5, 17, 18.5, 17, 18.5, 10.5);
-        p.drawPath(arc);
-        p.drawLine(QPointF(12, 17), QPointF(12, 21));
-        p.drawLine(QPointF(8.5, 21), QPointF(15.5, 21));
-    } else if (id == "cam") {
-        QPainterPath b; b.addRoundedRect(QRectF(3, 7, 12.5, 10), 2.2, 2.2);
-        p.drawPath(b);
-        QPainterPath lens;
-        lens.moveTo(15.5, 10.2); lens.lineTo(21, 7);
-        lens.lineTo(21, 17); lens.lineTo(15.5, 13.8); lens.closeSubpath();
-        p.drawPath(lens);
-    } else if (id == "share") {
-        QPainterPath m; m.addRoundedRect(QRectF(3, 5, 18, 12), 2.2, 2.2);
-        p.drawPath(m);
-        p.drawLine(QPointF(12, 17), QPointF(12, 21));
-        p.drawLine(QPointF(8.5, 21), QPointF(15.5, 21));
-    } else if (id == "roster") {
-        p.drawEllipse(QRectF(6, 5.5, 6, 6));
-        QPainterPath sh; sh.moveTo(3.5, 19);
-        sh.cubicTo(3.5, 12.5, 14.5, 12.5, 14.5, 19);
-        p.drawPath(sh);
-        p.drawEllipse(QRectF(14.5, 7, 4.6, 4.6));
-        QPainterPath sh2; sh2.moveTo(16, 18.5);
-        sh2.cubicTo(16, 14, 21.5, 13.8, 21.5, 18.5);
-        p.drawPath(sh2);
-    } else if (id == "telemetry") {
-        p.drawLine(QPointF(6, 18), QPointF(6, 13));
-        p.drawLine(QPointF(12, 18), QPointF(12, 8));
-        p.drawLine(QPointF(18, 18), QPointF(18, 11));
-        p.drawLine(QPointF(3.5, 20.5), QPointF(20.5, 20.5));
-    } else if (id == "full") {
-        const qreal L = 5;
-        p.drawPolyline(QPolygonF({{3.0+L,4.0},{4.0,4.0},{4.0,4.0+L}}));
-        p.drawPolyline(QPolygonF({{20.0-L,4.0},{20.0,4.0},{20.0,4.0+L}}));
-        p.drawPolyline(QPolygonF({{4.0,20.0-L},{4.0,20.0},{4.0+L,20.0}}));
-        p.drawPolyline(QPolygonF({{20.0-L,20.0},{20.0,20.0},{20.0,20.0-L}}));
-    } else if (id == "end") {
-        // Hang-up: a solid handset tilted down (reads as "end call").
-        p.translate(12, 12); p.rotate(135); p.translate(-12, -12);
-        QPainterPath h;
-        h.addRoundedRect(QRectF(3, 10, 18, 4), 2, 2);
-        h.addEllipse(QRectF(2, 8.5, 6, 6));
-        h.addEllipse(QRectF(16, 8.5, 6, 6));
-        p.setPen(Qt::NoPen); p.setBrush(stroke);
-        p.drawPath(h.simplified());
-    }
-
-    if (slash) {
-        // Standard disabled cut: a backing stroke in the cell colour, the
-        // tinted stroke on top — the icon reads as visibly severed.
-        p.setBrush(Qt::NoBrush);
-        QPen bk(slashBack, 5.0); bk.setCapStyle(Qt::RoundCap);
-        p.setPen(bk);
-        p.drawLine(QPointF(4.5, 4.5), QPointF(19.5, 19.5));
-        QPen fr(stroke, 2.4); fr.setCapStyle(Qt::RoundCap);
-        p.setPen(fr);
-        p.drawLine(QPointF(4.5, 4.5), QPointF(19.5, 19.5));
-    }
-    p.restore();
 }
 } // namespace
 
@@ -214,6 +130,10 @@ void CallStage::purgeStaleFrames()
     for (auto it = m_scrFrame.begin(); it != m_scrFrame.end(); ) {
         if (live.contains(it.key())) ++it;
         else it = m_scrFrame.erase(it);
+    }
+    for (auto it = m_micLvl.begin(); it != m_micLvl.end(); ) {
+        if (live.contains(it.key())) ++it;
+        else it = m_micLvl.erase(it);
     }
 }
 
@@ -332,9 +252,19 @@ void CallStage::relayout()
 {
     m_tiles = computeLayout();
     buildButtons();
-    // self-PiP rect (only in stage modes where self is not a rail tile)
+    // self-PiP rect. Self counts as "already a tile" (→ no PiP) ONLY in
+    // mediaPhase, since that's the only phase tiles are painted. During the
+    // centered calling/connecting screen computeLayout() still emits a
+    // throwaway self stage-tile (no remote to put on stage yet) that's never
+    // drawn — it must not suppress the self-preview PiP.
+    const auto st = m_call->state();
+    int rmt = 0; for (auto *q : m_call->participants()) if (!q->isSelf()) ++rmt;
+    const bool mediaPhase =
+        (st == CallManager::Active || st == CallManager::Connecting)
+        && rmt > 0 && !m_tiles.isEmpty();
     bool selfIsTile = false;
-    for (const Tile &t : m_tiles) if (t.p && t.p->isSelf()) selfIsTile = true;
+    if (mediaPhase)
+        for (const Tile &t : m_tiles) if (t.p && t.p->isSelf()) selfIsTile = true;
     if (!selfIsTile && m_call->selfParticipant()) {
         qreal w = qBound(140.0, width()*0.18, 240.0), h = w*9.0/16.0, m = 18;
         qreal x = (m_pipCorner % 2 == 0) ? m : width()-w-m;
@@ -498,7 +428,12 @@ void CallStage::paintTile(QPainter &p, const Tile &t, const PainterTheme &th, bo
     p.setFont(nf);
     QFontMetrics fm(nf);
     int tw = fm.horizontalAdvance(label);
-    QRectF plate(rc.left()+10, rc.bottom()-30, qMin<qreal>(tw+50, rc.width()-20), 22);
+    // Live mic meter sits in the plate (legacy feature: see your mic work).
+    // Hidden when muted (the ✕ already says "no audio").
+    const bool showMeter = !cp->audioMuted();
+    const qreal meterW = showMeter ? 46.0 : 0.0;
+    QRectF plate(rc.left()+10, rc.bottom()-30,
+                 qMin<qreal>(tw+52+meterW, rc.width()-20), 22);
     QColor pb = th.bgPrimary; pb.setAlphaF(0.5);
     p.setBrush(pb); p.setPen(Qt::NoPen);
     p.drawRoundedRect(plate, 7, 7);
@@ -516,9 +451,31 @@ void CallStage::paintTile(QPainter &p, const Tile &t, const PainterTheme &th, bo
         tx += 16;
     }
     p.setPen(th.textPrimary);
-    p.drawText(QRectF(tx, plate.top(), plate.right()-tx-6, plate.height()),
+    p.drawText(QRectF(tx, plate.top(),
+                      plate.right()-tx-6-meterW, plate.height()),
                Qt::AlignVCenter|Qt::AlignLeft, fm.elidedText(label, Qt::ElideRight,
-               int(plate.right()-tx-6)));
+               int(plate.right()-tx-6-meterW)));
+
+    if (showMeter) {
+        // Fast attack, slow decay → reads like a real VU; perceptual curve
+        // so quiet speech is still visible. Data, so shown even in
+        // reduced-motion (no decoration, just the level).
+        qreal target = qPow(qBound(0.0, cp->audioLevel(), 1.0), 0.6);
+        qreal &s = m_micLvl[cp];
+        s += (target - s) * (target > s ? 0.6 : 0.16);
+        const QRectF track(plate.right()-meterW, plate.center().y()-2.5,
+                           meterW-10, 5);
+        QColor tb = th.textPrimary; tb.setAlphaF(0.18);
+        p.setBrush(tb); p.setPen(Qt::NoPen);
+        p.drawRoundedRect(track, 2.5, 2.5);
+        if (s > 0.02) {
+            QRectF fillR(track.left(), track.top(),
+                         track.width() * qBound(0.0, s, 1.0), track.height());
+            QColor fc = cp->speaking() ? th.accent : th.online;
+            p.setBrush(fc);
+            p.drawRoundedRect(fillR, 2.5, 2.5);
+        }
+    }
 
     if (t.isScreen) {
         p.setPen(th.accent); p.setFont(th.timeFont());
@@ -567,6 +524,16 @@ void CallStage::paintCentered(QPainter &p, const PainterTheme &th)
         m_buttons.push_back({QStringLiteral("accept"), acc, {}, tr("Accept"), false, false});
         m_buttons.push_back({QStringLiteral("decline"), dec, {}, tr("Decline"), false, true});
     } else {
+        // Self-preview PiP shown immediately while calling/connecting, in
+        // the exact corner it keeps once connected (no jump on transition).
+        // Hidden entirely if the camera is off — on the calling screen an
+        // empty "Camera off" box is just noise, so toggling cam off here
+        // dismisses the PiP (the ~30fps tick repaints within a frame).
+        if (m_call->isCameraOn() && !m_pipRect.isNull()
+            && m_call->selfParticipant()) {
+            Tile s; s.p = m_call->selfParticipant(); s.rect = m_pipRect;
+            paintTile(p, s, th, false);
+        }
         paintStatusPill(p, th);
         if (m_controlsVisible) paintControlBar(p, th);
     }
@@ -577,9 +544,29 @@ void CallStage::buildButtons()
     m_buttons.clear();
     if (m_call->state() == CallManager::Incoming) return;
 
-    // Segmented-pill layout: six controls share one continuous strip;
-    // hang-up is a detached red pill set apart so it can't be misclicked.
-    const QStringList ctl = {"mic","cam","share","telemetry","roster","full"};
+    // Only surface controls that mean something *right now*. Before the
+    // call connects there is nothing to share into, no telemetry yet, and
+    // no roster; the roster is also pointless in a 1:1/P2P call (it'd just
+    // list you and the one callee). mic/cam/fullscreen/hang-up always apply.
+    const bool active = m_call->state() == CallManager::Active;
+    int remotes = 0;
+    for (auto *q : m_call->participants()) if (!q->isSelf()) ++remotes;
+    const bool group = remotes >= 2;
+
+    QStringList ctl = {"mic", "cam"};
+    if (active)          ctl << "share" << "telemetry";
+    if (active && group) ctl << "roster";
+    ctl << "full";
+
+    // Don't strand an open panel for a control we just hid (e.g. a group
+    // call shrinking to 1:1 with the roster still toggled open).
+    if (!ctl.contains("telemetry")) m_telemetryOpen = false;
+    if (!ctl.contains("roster"))    m_rosterOpen = false;
+
+    // Segmented-pill layout: the applicable controls share one continuous
+    // strip; hang-up is a detached red pill set apart so it can't be
+    // misclicked. Geometry derives from ctl.size() so the pill re-centres
+    // as controls appear/disappear across call phases.
     const qreal cellW = 56, cellH = 50, pad = 8, endW = 58, gap = 14;
     const qreal pillW  = ctl.size()*cellW + 2*pad;
     const qreal total  = pillW + gap + endW;
@@ -671,7 +658,7 @@ void CallStage::paintControlBar(QPainter &p, const PainterTheme &th)
         }
         const qreal isz = qMin(b.rect.width(), b.rect.height()) * 0.46;
         QRectF ib(0, 0, isz, isz); ib.moveCenter(b.rect.center());
-        drawCallIcon(p, b.id, ib, ink, off, slashBack);
+        VectorIcons::draw(p, b.id, ib, ink, off, slashBack);
         idx++;
     }
 
@@ -684,7 +671,7 @@ void CallStage::paintControlBar(QPainter &p, const PainterTheme &th)
                           endBtn->rect.height()/2.0);
         const qreal isz = qMin(endBtn->rect.width(), endBtn->rect.height())*0.5;
         QRectF ib(0,0,isz,isz); ib.moveCenter(endBtn->rect.center());
-        drawCallIcon(p, "end", ib, th.controlInk, false, f);
+        VectorIcons::draw(p, "end", ib, th.controlInk, false, f);
     }
 
     // ── themed tooltip for the hovered control ──
@@ -814,6 +801,9 @@ void CallStage::paintTelemetry(QPainter &p, const PainterTheme &th)
                         : m_call->activeVideoEncoderIsHw() ? th.success : th.amber);
     QString tx = m_call->videoTxLabel();
     line("VIDEO TX", tx.isEmpty() ? "—" : tx, th.textPrimary);
+    QString bw = m_call->streamBandwidthLabel();
+    line("STREAM BW", bw.isEmpty() ? "—" : bw,
+         bw.isEmpty() ? th.textPrimary : th.success);
     line("PEER",    m_call->remotePeerClient().isEmpty() ? "—" : m_call->remotePeerClient(), th.textPrimary);
     y += 8;
     p.setPen(th.textSecondary); p.drawText(QPointF(x, y), QStringLiteral("SUBSYSTEMS")); y += 22;

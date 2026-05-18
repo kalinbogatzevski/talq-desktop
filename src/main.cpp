@@ -3,6 +3,8 @@
 #include <QRegularExpression>
 #include <cerrno>
 #include <QSharedMemory>
+#include <QLocalServer>
+#include <QLocalSocket>
 #include <QScreen>
 #include <QPainter>
 #include <QSplashScreen>
@@ -305,7 +307,20 @@ int main(int argc, char *argv[])
     singleInstance.attach();
     singleInstance.detach();
     if (!singleInstance.create(1)) {
-        qWarning() << "TalQ is already running!";
+        // Another instance holds the lock. Ask it to surface its window —
+        // this is the path hit when the user clicks the pinned taskbar
+        // icon while TalQ is hidden in the tray (Windows launches a fresh
+        // process instead of activating the hidden one). Without this the
+        // running instance stays hidden and only the tray icon can restore it.
+        qWarning() << "TalQ is already running — signaling it to show.";
+        QLocalSocket sock;
+        sock.connectToServer(QStringLiteral("TalQ_SingleInstance_Pipe"));
+        if (sock.waitForConnected(800)) {
+            sock.write("SHOW");
+            sock.flush();
+            sock.waitForBytesWritten(800);
+            sock.disconnectFromServer();
+        }
         return 0;
     }
 #ifdef TALQ_BRAND_123NET
@@ -433,6 +448,24 @@ int main(int argc, char *argv[])
         &notifications, &push, &signaling, &deviceManager,
         &callManager, &userStatus, &debug, &appSettings
     );
+
+    // Single-instance IPC: a second launch (notably clicking the pinned
+    // taskbar icon while we're hidden in the tray) connects here; we then
+    // surface via openConversation("") which un-hides, restores the prior
+    // fullscreen/maximized state, raises, and does the Windows
+    // SetForegroundWindow focus-steal bypass.
+    QLocalServer::removeServer(QStringLiteral("TalQ_SingleInstance_Pipe"));
+    QLocalServer ipcServer;
+    if (!ipcServer.listen(QStringLiteral("TalQ_SingleInstance_Pipe")))
+        qWarning() << "TalQ: single-instance IPC listen failed:"
+                   << ipcServer.errorString();
+    QObject::connect(&ipcServer, &QLocalServer::newConnection, &window, [&ipcServer, &window]() {
+        while (QLocalSocket *s = ipcServer.nextPendingConnection()) {
+            QObject::connect(s, &QLocalSocket::disconnected, s, &QLocalSocket::deleteLater);
+            s->close();
+        }
+        window.openConversation(QString());
+    });
 
     // Custom notification popup
     // Notification stack — multiple toasts stack at the bottom-right,

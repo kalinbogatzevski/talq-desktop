@@ -14,23 +14,13 @@ SharePickerDialog::SharePickerDialog(QWidget *parent)
     setWindowTitle("Share Screen");
     setMinimumSize(400, 350);
     resize(450, 400);
-    setStyleSheet(
-        "SharePickerDialog { background: #1c1c1a; }"
-        "QLabel { color: #e4e0da; }"
-        "QTabWidget::pane { border: 1px solid #3a3a36; background: #1c1c1a; }"
-        "QTabBar::tab { background: #2a2a26; color: #8a8680; padding: 8px 16px; border: none; }"
-        "QTabBar::tab:selected { background: #3a3a36; color: #e4e0da; }"
-        "QListWidget { background: #1c1c1a; color: #e4e0da; border: none; outline: none; }"
-        "QListWidget::item { padding: 8px 12px; border-radius: 6px; }"
-        "QListWidget::item:selected { background: #2a4a46; }"
-        "QListWidget::item:hover { background: #2a2a26; }"
-    );
+    // Chrome inherited from the app-wide AppStyle sheet (theme-driven).
 
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(16, 12, 16, 12);
 
     auto *title = new QLabel("Choose what to share", this);
-    title->setStyleSheet("font-size: 16px; font-weight: bold; color: #e4e0da;");
+    title->setProperty("role", "title");
     layout->addWidget(title);
 
     m_tabs = new QTabWidget(this);
@@ -46,11 +36,7 @@ SharePickerDialog::SharePickerDialog(QWidget *parent)
 
     // Share button
     m_shareBtn = new QPushButton("Share", this);
-    m_shareBtn->setStyleSheet(
-        "QPushButton { background: #14b8a6; color: white; border: none; border-radius: 8px;"
-        " font-size: 14px; font-weight: bold; padding: 10px 24px; }"
-        "QPushButton:hover { background: #3ed4c6; }"
-        "QPushButton:disabled { background: #3a3a36; color: #6a6660; }");
+    m_shareBtn->setProperty("variant", "primary");
     m_shareBtn->setEnabled(false);
     layout->addWidget(m_shareBtn, 0, Qt::AlignRight);
 

@@ -50,8 +50,10 @@ protected:
     // Dismiss on click-away (lost activation), like a real dropdown —
     // except while the emoji picker child popup is the one taking focus.
     bool event(QEvent *e) override;
+    void changeEvent(QEvent *e) override;   // re-theme on palette change
 
 private:
+    void applyChrome();   // popover card frame, palette-driven
     void buildUi();
     void rebuildPresets();
     void refreshFromManager();

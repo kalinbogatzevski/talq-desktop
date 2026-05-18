@@ -31,11 +31,15 @@ public:
 
     QString createdToken() const { return m_createdToken; }
 
+protected:
+    void changeEvent(QEvent *e) override;   // re-theme on palette change
+
 private slots:
     void onResultClicked(QListWidgetItem *item);
     void onCreateClicked();
 
 private:
+    void applyChrome();   // dialog typography/inputs, palette-driven
     void setMode(bool group);
     void runSearch();
     void rebuildChips();

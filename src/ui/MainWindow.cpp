@@ -28,6 +28,7 @@
 #include "core/CallManager.h"
 #include "core/UserStatusManager.h"
 #include "ui/StatusPopover.h"
+#include "ui/AppStyle.h"
 #include "core/DebugMonitor.h"
 #include "core/AppSettings.h"
 #include "core/MediaDeviceManager.h"
@@ -669,8 +670,8 @@ void MainWindow::buildChatPage()
 
     // Upload progress bar
     m_uploadBar = new QWidget(chatCol);
-    m_uploadBar->setFixedHeight(36);
-    m_uploadBar->setStyleSheet("background: #1a1a16;");
+    m_uploadBar->setObjectName(QStringLiteral("uploadBar"));
+    m_uploadBar->setFixedHeight(36);   // surface from restyleChrome (theme)
     m_uploadBar->hide();
     auto *uploadOuterLayout = new QVBoxLayout(m_uploadBar);
     uploadOuterLayout->setContentsMargins(0, 0, 0, 0);
@@ -684,16 +685,18 @@ void MainWindow::buildChatPage()
     clipIcon->setStyleSheet("font-size: 14px; background: transparent;");
     uploadLayout->addWidget(clipIcon);
     m_uploadLabel = new QLabel(uploadRow);
-    m_uploadLabel->setStyleSheet("font-size: 12px; color: #b0aca5; background: transparent;");
+    m_uploadLabel->setProperty("role", "secondary");
+    m_uploadLabel->setStyleSheet("font-size: 12px; background: transparent;");
     uploadLayout->addWidget(m_uploadLabel, 1);
     auto *percentLabel = new QLabel(uploadRow);
-    percentLabel->setStyleSheet("font-size: 12px; font-weight: 600; color: #14b8a6; background: transparent;");
+    percentLabel->setProperty("role", "success");
+    percentLabel->setStyleSheet("font-size: 12px; font-weight: 600; background: transparent;");
     uploadLayout->addWidget(percentLabel);
     uploadOuterLayout->addWidget(uploadRow, 1);
 
-    // Teal progress line (positioned absolutely at bottom of m_uploadBar)
+    // Accent progress line (themed in restyleChrome via #uploadProgress).
     m_uploadProgress = new QWidget(m_uploadBar);
-    m_uploadProgress->setStyleSheet("background: #14b8a6;");
+    m_uploadProgress->setObjectName(QStringLiteral("uploadProgress"));
     m_uploadProgress->setGeometry(0, 34, 0, 2);
 
     chatLayout->addWidget(m_uploadBar);
@@ -1990,6 +1993,20 @@ void MainWindow::restyleChrome()
     PainterTheme t(m_themeId, m_fontScale);
     auto hx = [](const QColor &c){ return c.name(QColor::HexRgb); };
 
+    // Single source of truth: the whole app's widget chrome is generated
+    // from PainterTheme and applied app-wide here, so every dialog/button/
+    // input/menu tracks all four themes from one place. The few specific
+    // theme-driven sheets below (search field, update banner) are component
+    // styles layered on top — widget-level QSS wins over the app sheet.
+    AppStyle::installRepolishFilter();
+    qApp->setStyleSheet(AppStyle::sheet(t));
+
+    if (m_uploadBar)
+        m_uploadBar->setStyleSheet(QString(
+            "QWidget#uploadBar{background:%1;}"
+            "QWidget#uploadProgress{background:%2;border-radius:1px;}")
+            .arg(hx(t.bgSecondary), hx(t.accent)));
+
     if (m_searchField)
         m_searchField->setStyleSheet(QString(
             "QLineEdit{background:%1;border:1px solid %2;border-radius:16px;"
@@ -2308,7 +2325,7 @@ void MainWindow::applyDarkPalette()
     pal.setColor(QPalette::Button, theme.bgSurface);
     pal.setColor(QPalette::ButtonText, theme.textPrimary);
     pal.setColor(QPalette::Highlight, theme.accent);
-    pal.setColor(QPalette::HighlightedText, QColor("#000000"));
+    pal.setColor(QPalette::HighlightedText, theme.controlInk);
     pal.setColor(QPalette::PlaceholderText, theme.textMuted);
     pal.setColor(QPalette::Mid, theme.divider);
     QApplication::setPalette(pal);

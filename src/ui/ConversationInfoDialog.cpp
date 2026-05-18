@@ -4,6 +4,8 @@
 #include "core/NcUser.h"
 
 #include <QCursor>
+#include <QEvent>
+#include <QPalette>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
@@ -79,46 +81,7 @@ ConversationInfoDialog::ConversationInfoDialog(ApiClient *api,
     setWindowTitle(tr("Conversation info"));
     setModal(true);
     resize(520, 620);
-    setStyleSheet(
-        "QDialog { background: #141210; color: #f4efe6; }"
-        "QLabel  { color: #f4efe6; }"
-        "QLabel#eyebrow { color: #7a726a; font-size: 10px; letter-spacing: 2px;"
-        "  text-transform: uppercase; font-weight: 700; }"
-        "QLabel#headline { color: #f4efe6; font-size: 22px; font-weight: 600;"
-        "  letter-spacing: -0.2px; }"
-        "QLineEdit { background: transparent; border: none;"
-        "  border-bottom: 1px solid #2a241f; padding: 8px 0; color: #f4efe6;"
-        "  font-size: 14px; selection-background-color: #14b8a6;"
-        "  selection-color: #0e1817; }"
-        "QLineEdit:focus { border-bottom-color: #14b8a6; }"
-        "QLineEdit#name  { font-size: 20px; font-weight: 600; }"
-        "QListWidget { background: #1a1613; border: 1px solid #2a241f;"
-        "  border-radius: 12px; color: #f4efe6; padding: 4px; outline: none; }"
-        "QListWidget::item { padding: 10px 12px; border-radius: 8px; color: #f4efe6; }"
-        "QListWidget::item:hover    { background: #241f1a; }"
-        "QListWidget::item:selected { background: #241f1a; }"
-        "QPushButton { background: #241f1a; color: #f4efe6; border: none;"
-        "  border-radius: 8px; padding: 8px 16px; font-size: 13px;"
-        "  font-weight: 500; }"
-        "QPushButton:hover   { background: #2e271f; }"
-        "QPushButton:pressed { background: #2a241f; }"
-        "QPushButton#primary { background: #14b8a6; color: #0e1817;"
-        "  font-weight: 700; letter-spacing: 0.5px; padding: 8px 18px;"
-        "  border-radius: 8px; font-size: 12px; text-transform: uppercase; }"
-        "QPushButton#primary:hover   { background: #2dd4bf; }"
-        "QPushButton#primary:pressed { background: #0d9488; }"
-        "QPushButton#danger  { background: transparent; color: #e8866b;"
-        "  border: 1px solid #4a2a22;"
-        "  letter-spacing: 0.5px; text-transform: uppercase;"
-        "  font-weight: 600; font-size: 12px; padding: 8px 14px; }"
-        "QPushButton#danger:hover    { background: rgba(232,134,107,0.08);"
-        "  border-color: #e8866b; }"
-        "QPushButton#ghost   { background: transparent; color: #a8a096;"
-        "  border: none;"
-        "  letter-spacing: 0.5px; text-transform: uppercase;"
-        "  font-weight: 600; font-size: 12px; padding: 8px 14px; }"
-        "QPushButton#ghost:hover     { color: #f4efe6; }"
-    );
+    applyChrome();
 
     auto *outer = new QVBoxLayout(this);
     outer->setContentsMargins(28, 24, 28, 20);
@@ -156,7 +119,7 @@ ConversationInfoDialog::ConversationInfoDialog(ApiClient *api,
     memRow->addWidget(m_memberCount);
     memRow->addStretch();
     m_addBtn = new QPushButton(tr("+ Add people"), this);
-    m_addBtn->setObjectName("primary");
+    m_addBtn->setProperty("variant", "primary");
     m_addBtn->setCursor(Qt::PointingHandCursor);
     m_addBtn->setVisible(m_amOwnerOrMod && roomType != 1);
     memRow->addWidget(m_addBtn);
@@ -199,7 +162,7 @@ ConversationInfoDialog::ConversationInfoDialog(ApiClient *api,
     botRow->addWidget(m_botsHeader);
     botRow->addStretch();
     m_addBotBtn = new QPushButton(tr("+ Add bot"), this);
-    m_addBotBtn->setObjectName("primary");
+    m_addBotBtn->setProperty("variant", "primary");
     m_addBotBtn->setCursor(Qt::PointingHandCursor);
     m_addBotBtn->setVisible(m_amOwnerOrMod);
     botRow->addWidget(m_addBotBtn);
@@ -207,8 +170,12 @@ ConversationInfoDialog::ConversationInfoDialog(ApiClient *api,
     outer->addSpacing(6);
 
     m_botsContainer = new QWidget(this);
-    m_botsContainer->setStyleSheet(
-        "background: #1a1613; border: 1px solid #2a241f; border-radius: 12px;");
+    m_botsContainer->setObjectName(QStringLiteral("botsCard"));
+    m_botsContainer->setStyleSheet(QStringLiteral(
+        "QWidget#botsCard { background: %1; border: 1px solid %2;"
+        " border-radius: 12px; }")
+        .arg(palette().color(QPalette::Base).name(),
+             palette().color(QPalette::Mid).name()));
     m_botsLayout = new QVBoxLayout(m_botsContainer);
     m_botsLayout->setContentsMargins(4, 4, 4, 4);
     m_botsLayout->setSpacing(2);
@@ -240,26 +207,26 @@ ConversationInfoDialog::ConversationInfoDialog(ApiClient *api,
 
     outer->addSpacing(8);
     m_status = new QLabel(QString(), this);
-    m_status->setStyleSheet("color: #6f6a62; font-size: 12px;");
+    m_status->setProperty("role", "secondary");
     outer->addWidget(m_status);
     outer->addSpacing(8);
 
     // Footer buttons
     auto *footer = new QHBoxLayout();
     m_leaveBtn = new QPushButton(tr("Leave"), this);
-    m_leaveBtn->setObjectName("danger");
+    m_leaveBtn->setProperty("variant", "danger");
     m_leaveBtn->setCursor(Qt::PointingHandCursor);
     footer->addWidget(m_leaveBtn);
 
     m_deleteBtn = new QPushButton(tr("Delete"), this);
-    m_deleteBtn->setObjectName("danger");
+    m_deleteBtn->setProperty("variant", "danger");
     m_deleteBtn->setCursor(Qt::PointingHandCursor);
     m_deleteBtn->setVisible(m_myType == RoomParticipant::Owner);
     footer->addWidget(m_deleteBtn);
 
     footer->addStretch();
     m_closeBtn = new QPushButton(tr("Done"), this);
-    m_closeBtn->setObjectName("ghost");
+    m_closeBtn->setProperty("variant", "ghost");
     m_closeBtn->setCursor(Qt::PointingHandCursor);
     m_closeBtn->setDefault(true);
     footer->addWidget(m_closeBtn);
@@ -288,6 +255,38 @@ ConversationInfoDialog::ConversationInfoDialog(ApiClient *api,
     refreshSharedFiles();
 }
 
+void ConversationInfoDialog::applyChrome()
+{
+    // Typographic identity + underline inputs, palette-driven. QDialog bg,
+    // QLabel, QListWidget, QMenu and the primary/danger/ghost buttons all
+    // come from the app-wide AppStyle sheet (single source of truth).
+    const QPalette p = palette();
+    auto n = [&](QPalette::ColorRole r){ return p.color(r).name(); };
+    setStyleSheet(QString(
+        "QLabel#eyebrow { color: %1; font-size: 10px; letter-spacing: 2px;"
+        "  text-transform: uppercase; font-weight: 700; }"
+        "QLabel#headline { color: %2; font-size: 22px; font-weight: 600;"
+        "  letter-spacing: -0.2px; }"
+        "QLineEdit { background: transparent; border: none;"
+        "  border-bottom: 1px solid %3; padding: 8px 0; color: %2;"
+        "  font-size: 14px; selection-background-color: %4;"
+        "  selection-color: %5; }"
+        "QLineEdit:focus { border-bottom-color: %4; }"
+        "QLineEdit#name  { font-size: 20px; font-weight: 600; }")
+        .arg(n(QPalette::PlaceholderText), n(QPalette::WindowText),
+             n(QPalette::Mid), n(QPalette::Highlight),
+             n(QPalette::HighlightedText)));
+}
+
+void ConversationInfoDialog::changeEvent(QEvent *e)
+{
+    QDialog::changeEvent(e);
+    // ApplicationPaletteChange only — PaletteChange recurses via setStyleSheet.
+    if (e->type() == QEvent::ApplicationPaletteChange
+        || e->type() == QEvent::ThemeChange)
+        applyChrome();
+}
+
 void ConversationInfoDialog::saveName()
 {
     const QString n = m_nameEdit->text().trimmed();
@@ -297,8 +296,7 @@ void ConversationInfoDialog::saveName()
         [this](bool ok, const QString &err) {
             m_status->setText(ok ? tr("Name saved.")
                                  : (err.isEmpty() ? tr("Couldn't rename.") : err));
-            m_status->setStyleSheet(ok ? "color: #6f6a62; font-size: 12px;"
-                                       : "color: #ff6b6b; font-size: 12px;");
+            m_status->setProperty("role", ok ? "secondary" : "danger");
             if (ok) emit roomChanged();
         });
 }
@@ -317,8 +315,7 @@ void ConversationInfoDialog::saveDescription()
         [this](bool ok, const QString &err) {
             m_status->setText(ok ? tr("Description saved.")
                                  : (err.isEmpty() ? tr("Couldn't save description.") : err));
-            m_status->setStyleSheet(ok ? "color: #6f6a62; font-size: 12px;"
-                                       : "color: #ff6b6b; font-size: 12px;");
+            m_status->setProperty("role", ok ? "secondary" : "danger");
             if (ok) emit roomChanged();
         });
 }
@@ -365,13 +362,7 @@ void ConversationInfoDialog::onRemoveMember(QListWidgetItem *item)
         item->text().section(QLatin1Char(' '), 2, 2, QString::SectionSkipEmpty);
 
     QMenu menu(this);
-    menu.setStyleSheet(
-        "QMenu { background: #1c1c1a; border: 1px solid #2a2a26; color: #e4e0da;"
-        "  padding: 6px; border-radius: 6px; }"
-        "QMenu::item { padding: 6px 16px; border-radius: 4px; }"
-        "QMenu::item:selected { background: #2a2a26; }"
-        "QMenu::item:disabled { color: #545048; }"
-    );
+    // QMenu chrome from the app-wide AppStyle sheet (theme-driven).
 
     const bool canManage = m_amOwnerOrMod && !isMe
                            && type != RoomParticipant::Owner;
@@ -396,7 +387,7 @@ void ConversationInfoDialog::onRemoveMember(QListWidgetItem *item)
 
     auto done = [this](bool ok, const QString &err) {
         if (!ok) {
-            m_status->setStyleSheet("color: #ff6b6b; font-size: 12px;");
+            m_status->setProperty("role", "danger");
             m_status->setText(err.isEmpty() ? tr("Server refused.") : err);
             return;
         }
@@ -471,12 +462,12 @@ void ConversationInfoDialog::onAddResultClicked(QListWidgetItem *item)
     m_api->addRoomParticipant(m_token, userId, this,
         [this, userId](bool ok, const QString &err) {
             if (!ok) {
-                m_status->setStyleSheet("color: #ff6b6b; font-size: 12px;");
+                m_status->setProperty("role", "danger");
                 m_status->setText(tr("Couldn't add %1: %2")
                                       .arg(userId, err.isEmpty() ? tr("refused") : err));
                 return;
             }
-            m_status->setStyleSheet("color: #6f6a62; font-size: 12px;");
+            m_status->setProperty("role", "secondary");
             m_status->setText(tr("Added %1.").arg(userId));
             refreshParticipants();
             emit roomChanged();
@@ -493,7 +484,7 @@ void ConversationInfoDialog::onLeaveClicked()
     m_api->leaveRoom(m_token, this,
         [this](bool ok, const QString &err) {
             if (!ok) {
-                m_status->setStyleSheet("color: #ff6b6b; font-size: 12px;");
+                m_status->setProperty("role", "danger");
                 m_status->setText(err.isEmpty() ? tr("Leave refused.") : err);
                 return;
             }
@@ -512,7 +503,7 @@ void ConversationInfoDialog::onDeleteClicked()
     m_api->deleteRoom(m_token, this,
         [this](bool ok, const QString &err) {
             if (!ok) {
-                m_status->setStyleSheet("color: #ff6b6b; font-size: 12px;");
+                m_status->setProperty("role", "danger");
                 m_status->setText(err.isEmpty() ? tr("Delete refused.") : err);
                 return;
             }
@@ -539,14 +530,14 @@ void ConversationInfoDialog::refreshBots()
             if (seq != m_botsRefreshSeq) return;
             if (!ok) {
                 auto *l = new QLabel(tr("(couldn't load bots)"), m_botsContainer);
-                l->setStyleSheet("color: #8a8680; padding: 8px;");
+                l->setProperty("role", "secondary");
                 m_botsLayout->addWidget(l);
                 return;
             }
             if (bots.isEmpty()) {
                 auto *l = new QLabel(tr("No bots enabled in this conversation."),
                                      m_botsContainer);
-                l->setStyleSheet("color: #8a8680; padding: 8px;");
+                l->setProperty("role", "secondary");
                 m_botsLayout->addWidget(l);
                 return;
             }
@@ -656,18 +647,18 @@ void ConversationInfoDialog::populateBotRow(const BotInfo &bot)
     lay->addWidget(iconLbl);
 
     auto *label = new QLabel(bot.name, row);
-    label->setStyleSheet("color: #f4efe6; background: transparent; font-weight: 500;");
+    label->setStyleSheet("background: transparent; font-weight: 500;");
     if (!bot.description.isEmpty()) label->setToolTip(bot.description);
     lay->addWidget(label, 1);
 
     if (bot.state == 3 && !bot.errorMessage.isEmpty()) {
         auto *err = new QLabel(bot.errorMessage, row);
-        err->setStyleSheet("color: #ff6b6b; font-size: 11px; background: transparent;");
+        err->setProperty("role", "danger");
         err->setToolTip(bot.errorMessage);
         lay->addWidget(err);
     } else if (!bot.isEnabled()) {
         auto *note = new QLabel(tr("disabled"), row);
-        note->setStyleSheet("color: #8a8680; font-size: 11px; background: transparent;");
+        note->setProperty("role", "secondary");
         lay->addWidget(note);
     }
 
@@ -678,7 +669,7 @@ void ConversationInfoDialog::populateBotRow(const BotInfo &bot)
         if (bot.isEnabled() || errored) {
             // Installed & active here \u2192 moderators can disable it.
             auto *removeBtn = new QPushButton(tr("Remove"), row);
-            removeBtn->setObjectName("danger");
+            removeBtn->setProperty("variant", "danger");
             removeBtn->setCursor(Qt::PointingHandCursor);
             connect(removeBtn, &QPushButton::clicked, this, [this, botId, botName]() {
                 auto reply = QMessageBox::question(
@@ -686,12 +677,12 @@ void ConversationInfoDialog::populateBotRow(const BotInfo &bot)
                     tr("Remove %1 from this conversation?").arg(botName),
                     QMessageBox::Yes | QMessageBox::No);
                 if (reply != QMessageBox::Yes) return;
-                m_status->setStyleSheet("color: #8a8680; font-size: 12px;");
+                m_status->setProperty("role", "secondary");
                 m_status->setText(tr("Removing bot\u2026"));
                 m_api->setBotEnabled(m_token, botId, false, this,
                     [this](bool ok, int httpStatus) {
                         if (!ok) {
-                            m_status->setStyleSheet("color: #ff6b6b; font-size: 12px;");
+                            m_status->setProperty("role", "danger");
                             m_status->setText(tr("Couldn't remove (HTTP %1).").arg(httpStatus));
                         } else {
                             m_status->setText(tr("Bot removed."));
@@ -715,12 +706,12 @@ void ConversationInfoDialog::populateBotRow(const BotInfo &bot)
                 "QPushButton:pressed { background: #0d9488; }");
             enableBtn->setCursor(Qt::PointingHandCursor);
             connect(enableBtn, &QPushButton::clicked, this, [this, botId]() {
-                m_status->setStyleSheet("color: #8a8680; font-size: 12px;");
+                m_status->setProperty("role", "secondary");
                 m_status->setText(tr("Enabling bot\u2026"));
                 m_api->setBotEnabled(m_token, botId, true, this,
                     [this](bool ok, int httpStatus) {
                         if (!ok) {
-                            m_status->setStyleSheet("color: #ff6b6b; font-size: 12px;");
+                            m_status->setProperty("role", "danger");
                             m_status->setText((httpStatus == 400 || httpStatus == 403)
                                 ? tr("Server blocked it \u2014 this bot was installed "
                                      "with --no-setup (admin-only via occ).")
@@ -758,7 +749,7 @@ void ConversationInfoDialog::onAddBotClicked()
                                "have admin permission \u2014 enter a bot ID below."),
                             dlg);
     info->setWordWrap(true);
-    info->setStyleSheet("color: #8a8680; font-size: 11px;");
+    info->setProperty("role", "secondary");
     lay->addWidget(info);
 
     auto *list = new QListWidget(dlg);
@@ -770,7 +761,7 @@ void ConversationInfoDialog::onAddBotClicked()
     auto *idEdit = new QLineEdit(dlg);
     idEdit->setPlaceholderText(tr("e.g. 3"));
     auto *idBtn = new QPushButton(tr("Enable"), dlg);
-    idBtn->setObjectName("primary");
+    idBtn->setProperty("variant", "primary");
     idBtn->setCursor(Qt::PointingHandCursor);
     idRow->addWidget(idLabel);
     idRow->addWidget(idEdit, 1);
@@ -778,7 +769,7 @@ void ConversationInfoDialog::onAddBotClicked()
     lay->addLayout(idRow);
 
     auto *status = new QLabel(QString(), dlg);
-    status->setStyleSheet("color: #6f6a62; font-size: 11px;");
+    status->setProperty("role", "secondary");
     lay->addWidget(status);
 
     // Populate the list with server bots (admin only)
@@ -809,7 +800,7 @@ void ConversationInfoDialog::onAddBotClicked()
             rl->addWidget(icon2);
             auto *txt = new QLabel(b.name + QStringLiteral("  ·  #")
                                   + QString::number(b.id), row);
-            txt->setStyleSheet("color: #f4efe6; font-weight: 500;");
+            txt->setStyleSheet("font-weight: 500;");
             rl->addWidget(txt, 1);
             auto *enableBtn = new QPushButton(tr("Enable"), row);
             // Explicit style (not #primary): self-contained so it survives
@@ -830,7 +821,7 @@ void ConversationInfoDialog::onAddBotClicked()
                             refreshBots();
                             dlg->accept();
                         } else {
-                            status->setStyleSheet("color: #ff6b6b; font-size: 11px;");
+                            status->setProperty("role", "danger");
                             status->setText(tr("Failed (HTTP %1).").arg(httpStatus));
                         }
                     });
@@ -852,11 +843,11 @@ void ConversationInfoDialog::onAddBotClicked()
         bool ok = false;
         const int botId = idEdit->text().trimmed().toInt(&ok);
         if (!ok || botId <= 0) {
-            status->setStyleSheet("color: #ff6b6b; font-size: 11px;");
+            status->setProperty("role", "danger");
             status->setText(tr("Enter a positive integer."));
             return;
         }
-        status->setStyleSheet("color: #6f6a62; font-size: 11px;");
+        status->setProperty("role", "secondary");
         status->setText(tr("Enabling\u2026"));
         m_api->setBotEnabled(m_token, botId, true, dlg,
             [this, status, dlg](bool apiOk, int httpStatus) {
@@ -864,7 +855,7 @@ void ConversationInfoDialog::onAddBotClicked()
                     refreshBots();
                     dlg->accept();
                 } else {
-                    status->setStyleSheet("color: #ff6b6b; font-size: 11px;");
+                    status->setProperty("role", "danger");
                     status->setText(tr("Failed (HTTP %1) \u2014 bot may not exist or "
                                        "you lack permission.").arg(httpStatus));
                 }

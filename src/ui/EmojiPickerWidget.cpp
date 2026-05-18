@@ -16,6 +16,8 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QVBoxLayout>
+#include <QEvent>
+#include <QPalette>
 
 class EmojiCell : public QAbstractButton
 {
@@ -70,7 +72,11 @@ private:
     {
         auto *popup = new QWidget(this, Qt::Popup);
         popup->setAttribute(Qt::WA_DeleteOnClose);
-        popup->setStyleSheet("background: #262636; border-radius: 6px; padding: 4px;");
+        popup->setStyleSheet(QStringLiteral(
+            "background: %1; border: 1px solid %2; border-radius: 6px;"
+            " padding: 4px;")
+            .arg(palette().color(QPalette::AlternateBase).name(),
+                 palette().color(QPalette::Mid).name()));
         auto *lay = new QHBoxLayout(popup);
         lay->setContentsMargins(6, 6, 6, 6);
         lay->setSpacing(4);
@@ -105,7 +111,7 @@ EmojiPickerWidget::EmojiPickerWidget(QWidget *parent)
     : QWidget(parent)
 {
     setFixedSize(400, 360);
-    setStyleSheet("EmojiPickerWidget { background: #1e1e2a; border-radius: 10px; }");
+    applyChrome();
 
     auto *root = new QVBoxLayout(this);
     root->setContentsMargins(8, 8, 8, 8);
@@ -113,7 +119,7 @@ EmojiPickerWidget::EmojiPickerWidget(QWidget *parent)
 
     m_search = new QLineEdit(this);
     m_search->setPlaceholderText(tr("Search emoji…"));
-    m_search->setStyleSheet("QLineEdit { background: #2a2a3a; color: #eee; padding: 6px 10px; border: none; border-radius: 6px; }");
+    // Search field inherits the app-wide AppStyle QLineEdit (theme-driven).
     connect(m_search, &QLineEdit::textChanged, this, [this](const QString &t) {
         m_filter = t;
         rebuild();
@@ -144,7 +150,8 @@ EmojiPickerWidget::EmojiPickerWidget(QWidget *parent)
         btn->setFlat(true);
         btn->setFixedSize(34, 30);
         btn->setCursor(Qt::PointingHandCursor);
-        btn->setStyleSheet("QPushButton { background: transparent; font-size: 18px; color: #eee; } QPushButton:hover { background: rgba(255,255,255,0.08); border-radius: 6px; }");
+        btn->setProperty("variant", "ghost");
+        btn->setStyleSheet(QStringLiteral("QPushButton { font-size: 18px; }"));
         auto cat = t.cat;
         connect(btn, &QPushButton::clicked, this, [this, cat]() { scrollToCategory(cat); });
         tabLayout->addWidget(btn);
@@ -166,6 +173,27 @@ EmojiPickerWidget::EmojiPickerWidget(QWidget *parent)
     root->addWidget(m_scroll, 1);
 
     rebuild();
+}
+
+void EmojiPickerWidget::applyChrome()
+{
+    // Frameless popover card — theme-driven via the app palette.
+    setStyleSheet(QStringLiteral(
+        "EmojiPickerWidget { background: %1; border: 1px solid %2;"
+        " border-radius: 10px; }")
+        .arg(palette().color(QPalette::Window).name(),
+             palette().color(QPalette::Mid).name()));
+}
+
+void EmojiPickerWidget::changeEvent(QEvent *e)
+{
+    QWidget::changeEvent(e);
+    // ApplicationPaletteChange only — PaletteChange recurses via setStyleSheet.
+    if (e->type() == QEvent::ApplicationPaletteChange
+        || e->type() == QEvent::ThemeChange) {
+        applyChrome();
+        rebuild();
+    }
 }
 
 void EmojiPickerWidget::keyPressEvent(QKeyEvent *event)
@@ -194,7 +222,9 @@ void EmojiPickerWidget::rebuild()
                              int categoryKey) {
         if (items.isEmpty()) return;
         auto *hdr = new QLabel(title, m_gridHost);
-        hdr->setStyleSheet("color: #888; font-size: 11px; font-weight: 600; padding: 6px 2px;");
+        hdr->setProperty("role", "secondary");
+        hdr->setStyleSheet(QStringLiteral(
+            "font-size: 11px; font-weight: 600; padding: 6px 2px;"));
         m_gridLayout->addWidget(hdr);
         if (categoryKey >= 0)
             m_sectionAnchors.insert(categoryKey, hdr);

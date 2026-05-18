@@ -11,6 +11,9 @@
 #include <QScrollArea>
 #include <QTimer>
 #include <QVBoxLayout>
+#include <QApplication>
+#include <QEvent>
+#include <QPalette>
 #include <algorithm>
 
 namespace {
@@ -34,14 +37,17 @@ QPushButton *makeTabButton(const QString &text, QWidget *parent)
     b->setCheckable(true);
     b->setCursor(Qt::PointingHandCursor);
     b->setFixedHeight(38);
-    b->setStyleSheet(
-        "QPushButton { background: transparent; color: #8a8680; border: none;"
+    const QPalette p = qApp->palette();
+    b->setStyleSheet(QString(
+        "QPushButton { background: transparent; color: %1; border: none;"
         "  border-bottom: 2px solid transparent;"
         "  padding: 0 18px; font-size: 12px; letter-spacing: 2px;"
         "  text-transform: uppercase; font-weight: 600; }"
-        "QPushButton:hover   { color: #b9b4ac; }"
-        "QPushButton:checked { color: #e4e0da; border-bottom-color: #14b8a6; }"
-    );
+        "QPushButton:hover   { color: %2; }"
+        "QPushButton:checked { color: %2; border-bottom-color: %3; }"
+    ).arg(p.color(QPalette::PlaceholderText).name(),
+          p.color(QPalette::WindowText).name(),
+          p.color(QPalette::Highlight).name()));
     return b;
 }
 
@@ -52,11 +58,15 @@ QPushButton *makeChip(const QString &label, const QString &id, QWidget *parent)
     b->setProperty("chipId", id);
     b->setCursor(Qt::PointingHandCursor);
     b->setFlat(true);
-    b->setStyleSheet(
-        "QPushButton { background: #26312f; color: #d4ccc2; border: 1px solid #34423f;"
+    const QPalette p = qApp->palette();
+    b->setStyleSheet(QString(
+        "QPushButton { background: %1; color: %2; border: 1px solid %3;"
         "  border-radius: 13px; padding: 4px 10px; font-size: 12px; }"
-        "QPushButton:hover { background: #2f3b38; border-color: #14b8a6; color: #e4e0da; }"
-    );
+        "QPushButton:hover { background: %1; border-color: %4; color: %2; }"
+    ).arg(p.color(QPalette::AlternateBase).name(),
+          p.color(QPalette::WindowText).name(),
+          p.color(QPalette::Mid).name(),
+          p.color(QPalette::Highlight).name()));
     return b;
 }
 
@@ -72,40 +82,7 @@ NewChatDialog::NewChatDialog(ApiClient *api, QWidget *parent)
     setWindowTitle(tr("New conversation"));
     setModal(true);
     resize(560, 640);
-    setStyleSheet(
-        "QDialog { background: #141210; color: #f4efe6; }"
-        "QLabel  { color: #f4efe6; }"
-        "QLabel#eyebrow { color: #7a726a; font-size: 10px; letter-spacing: 2px;"
-        "  text-transform: uppercase; font-weight: 700; }"
-        "QLabel#headline { color: #f4efe6; font-size: 22px; font-weight: 600;"
-        "  letter-spacing: -0.2px; }"
-        "QLineEdit { background: transparent; border: none;"
-        "  border-bottom: 1px solid #2a241f; padding: 8px 0; font-size: 14px;"
-        "  color: #f4efe6; selection-background-color: #14b8a6;"
-        "  selection-color: #0e1817; }"
-        "QLineEdit:focus { border-bottom-color: #14b8a6; }"
-        "QLineEdit#groupname { font-size: 20px; font-weight: 600; padding: 10px 0; }"
-        "QListWidget { background: #1a1613; border: 1px solid #2a241f;"
-        "  border-radius: 12px; color: #f4efe6; padding: 4px; outline: none; }"
-        "QListWidget::item { padding: 0; border-radius: 8px; color: #f4efe6; }"
-        "QListWidget::item:hover    { background: #241f1a; }"
-        "QListWidget::item:selected { background: #241f1a; }"
-        "QRadioButton { color: #b9b4ac; font-size: 13px; font-weight: 500;"
-        "  padding: 4px 8px; }"
-        "QRadioButton:checked { color: #f4efe6; }"
-        "QScrollArea, QScrollArea > QWidget, QScrollArea > QWidget > QWidget {"
-        "  background: transparent; border: none; }"
-        "QPushButton#cancel  { background: transparent; color: #a8a096; border: none;"
-        "  padding: 10px 18px; font-size: 12px; letter-spacing: 0.5px;"
-        "  text-transform: uppercase; font-weight: 600; }"
-        "QPushButton#cancel:hover { color: #f4efe6; }"
-        "QPushButton#primary { background: #14b8a6; color: #0e1817; border: none;"
-        "  border-radius: 22px; padding: 10px 28px; font-size: 12px;"
-        "  letter-spacing: 0.5px; text-transform: uppercase; font-weight: 700; }"
-        "QPushButton#primary:hover    { background: #2dd4bf; }"
-        "QPushButton#primary:pressed  { background: #0d9488; }"
-        "QPushButton#primary:disabled { background: #1c2b2a; color: #546361; }"
-    );
+    applyChrome();
 
     auto *outer = new QVBoxLayout(this);
     outer->setContentsMargins(28, 24, 28, 20);
@@ -131,8 +108,7 @@ NewChatDialog::NewChatDialog(ApiClient *api, QWidget *parent)
 
     auto *tabRule = new QFrame(this);
     tabRule->setFrameShape(QFrame::HLine);
-    tabRule->setStyleSheet("background: #2a2a26; border: none; max-height: 1px;");
-    tabRule->setFixedHeight(1);
+    tabRule->setFixedHeight(1);   // colour from AppStyle QFrame[frameShape]
     outer->addWidget(tabRule);
     outer->addSpacing(18);
 
@@ -197,7 +173,7 @@ NewChatDialog::NewChatDialog(ApiClient *api, QWidget *parent)
 
     outer->addSpacing(10);
     m_status = new QLabel(QString(), this);
-    m_status->setStyleSheet("color: #6f6a62; font-size: 12px;");
+    m_status->setProperty("role", "secondary");
     outer->addWidget(m_status);
     outer->addSpacing(6);
 
@@ -236,6 +212,63 @@ NewChatDialog::NewChatDialog(ApiClient *api, QWidget *parent)
     m_status->setText(tr("Start typing to search for people."));
 }
 
+void NewChatDialog::applyChrome()
+{
+    // Same refined layout, now palette-driven (theme tracks all 4 themes).
+    const QPalette p = palette();
+    auto n = [&](QPalette::ColorRole r){ return p.color(r).name(); };
+    const QString bg     = n(QPalette::Window);
+    const QString ink    = n(QPalette::WindowText);
+    const QString dim    = n(QPalette::PlaceholderText);
+    const QString line   = n(QPalette::Mid);
+    const QString listBg = n(QPalette::Base);
+    const QString hover  = n(QPalette::AlternateBase);
+    const QString accent = n(QPalette::Highlight);
+    const QString onAcc  = n(QPalette::HighlightedText);
+    setStyleSheet(QString(
+        "QDialog { background: %1; color: %2; }"
+        "QLabel  { color: %2; }"
+        "QLabel#eyebrow { color: %3; font-size: 10px; letter-spacing: 2px;"
+        "  text-transform: uppercase; font-weight: 700; }"
+        "QLabel#headline { color: %2; font-size: 22px; font-weight: 600;"
+        "  letter-spacing: -0.2px; }"
+        "QLineEdit { background: transparent; border: none;"
+        "  border-bottom: 1px solid %4; padding: 8px 0; font-size: 14px;"
+        "  color: %2; selection-background-color: %7;"
+        "  selection-color: %8; }"
+        "QLineEdit:focus { border-bottom-color: %7; }"
+        "QLineEdit#groupname { font-size: 20px; font-weight: 600; padding: 10px 0; }"
+        "QListWidget { background: %5; border: 1px solid %4;"
+        "  border-radius: 12px; color: %2; padding: 4px; outline: none; }"
+        "QListWidget::item { padding: 0; border-radius: 8px; color: %2; }"
+        "QListWidget::item:hover    { background: %6; }"
+        "QListWidget::item:selected { background: %6; }"
+        "QRadioButton { color: %3; font-size: 13px; font-weight: 500;"
+        "  padding: 4px 8px; }"
+        "QRadioButton:checked { color: %2; }"
+        "QScrollArea, QScrollArea > QWidget, QScrollArea > QWidget > QWidget {"
+        "  background: transparent; border: none; }"
+        "QPushButton#cancel  { background: transparent; color: %3; border: none;"
+        "  padding: 10px 18px; font-size: 12px; letter-spacing: 0.5px;"
+        "  text-transform: uppercase; font-weight: 600; }"
+        "QPushButton#cancel:hover { color: %2; }"
+        "QPushButton#primary { background: %7; color: %8; border: none;"
+        "  border-radius: 22px; padding: 10px 28px; font-size: 12px;"
+        "  letter-spacing: 0.5px; text-transform: uppercase; font-weight: 700; }"
+        "QPushButton#primary:hover    { background: %7; }"
+        "QPushButton#primary:disabled { background: %6; color: %3; }"
+    ).arg(bg, ink, dim, line, listBg, hover, accent, onAcc));
+}
+
+void NewChatDialog::changeEvent(QEvent *e)
+{
+    QDialog::changeEvent(e);
+    // ApplicationPaletteChange only — PaletteChange recurses via setStyleSheet.
+    if (e->type() == QEvent::ApplicationPaletteChange
+        || e->type() == QEvent::ThemeChange)
+        applyChrome();
+}
+
 void NewChatDialog::setMode(bool group)
 {
     m_directTab->setChecked(!group);
@@ -263,11 +296,11 @@ void NewChatDialog::runSearch()
     m_api->searchNcUsers(q, this,
         [this, group](bool ok, const QVector<NcUser> &users) {
             if (!ok) {
-                m_status->setStyleSheet("color: #ff6b6b; font-size: 12px;");
+                m_status->setProperty("role", "danger");
                 m_status->setText(tr("Search failed — the server refused the request."));
                 return;
             }
-            m_status->setStyleSheet("color: #6f6a62; font-size: 12px;");
+            m_status->setProperty("role", "secondary");
             int shown = 0;
             for (const NcUser &u : users) {
                 if (!group && u.source != QStringLiteral("users")) continue;
@@ -497,7 +530,7 @@ void NewChatDialog::onCreateClicked()
     if (!m_groupTab->isChecked() && m_selected.isEmpty()) return;
     m_createBtn->setEnabled(false);
     m_cancelBtn->setEnabled(false);
-    m_status->setStyleSheet("color: #6f6a62; font-size: 12px;");
+    m_status->setProperty("role", "secondary");
     m_status->setText(tr("Creating room\u2026"));
 
     if (!m_groupTab->isChecked()) {
@@ -505,7 +538,7 @@ void NewChatDialog::onCreateClicked()
         m_api->createRoom(1, QString(), invite, this,
             [this](bool ok, const QString &token, const QString &error) {
                 if (!ok) {
-                    m_status->setStyleSheet("color: #ff6b6b; font-size: 12px;");
+                    m_status->setProperty("role", "danger");
                     m_status->setText(error.isEmpty() ? tr("Server refused.") : error);
                     m_createBtn->setEnabled(true);
                     m_cancelBtn->setEnabled(true);
@@ -521,7 +554,7 @@ void NewChatDialog::onCreateClicked()
     m_api->createRoom(2, name, QString(), this,
         [this](bool ok, const QString &token, const QString &error) {
             if (!ok) {
-                m_status->setStyleSheet("color: #ff6b6b; font-size: 12px;");
+                m_status->setProperty("role", "danger");
                 m_status->setText(error.isEmpty() ? tr("Server refused.") : error);
                 m_createBtn->setEnabled(true);
                 m_cancelBtn->setEnabled(true);
@@ -550,7 +583,7 @@ void NewChatDialog::onCreateClicked()
                                      err.isEmpty() ? tr("refused") : err));
                         if (--(*remaining) == 0) {
                             if (!errors->isEmpty()) {
-                                m_status->setStyleSheet("color: #ff6b6b; font-size: 12px;");
+                                m_status->setProperty("role", "danger");
                                 m_status->setText(tr("Room created, some invites failed: %1")
                                                       .arg(errors->join(QStringLiteral("; "))));
                             }

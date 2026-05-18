@@ -76,6 +76,9 @@ private:
     // Per-participant scaled frame cache (pre-scaled in onFrame, cheap paint)
     QHash<CallParticipant*, QImage> m_camFrame;
     QHash<CallParticipant*, QImage> m_scrFrame;
+    // Smoothed mic level per participant (fast attack / slow decay) so the
+    // name-plate meter reads like a real VU, not a jittery raw value.
+    QHash<CallParticipant*, qreal>  m_micLvl;
     QVector<QMetaObject::Connection> m_conns;
 
     QVector<Tile> m_tiles;

@@ -76,6 +76,7 @@ LoginWidget::LoginWidget(AuthManager *auth, QWidget *parent)
 
     // Status
     m_statusLabel = new QLabel(centerWidget);
+    m_statusLabel->setProperty("role", "secondary");
     m_statusLabel->setAlignment(Qt::AlignCenter);
     m_statusLabel->setWordWrap(true);
     m_statusLabel->hide();
@@ -83,6 +84,7 @@ LoginWidget::LoginWidget(AuthManager *auth, QWidget *parent)
 
     // Error
     m_errorLabel = new QLabel(centerWidget);
+    m_errorLabel->setProperty("role", "danger");
     m_errorLabel->setAlignment(Qt::AlignCenter);
     m_errorLabel->setWordWrap(true);
     m_errorLabel->hide();
@@ -92,6 +94,7 @@ LoginWidget::LoginWidget(AuthManager *auth, QWidget *parent)
 
     // Connect / Cancel button
     m_connectBtn = new QPushButton("Connect", centerWidget);
+    m_connectBtn->setProperty("variant", "primary");
     m_connectBtn->setMinimumHeight(40);
     QFont btnFont; btnFont.setPixelSize(14); btnFont.setWeight(QFont::DemiBold);
     m_connectBtn->setFont(btnFont);
@@ -101,6 +104,7 @@ LoginWidget::LoginWidget(AuthManager *auth, QWidget *parent)
 
     // Version
     m_versionLabel = new QLabel("v" + QApplication::applicationVersion(), centerWidget);
+    m_versionLabel->setProperty("role", "muted");
     m_versionLabel->setAlignment(Qt::AlignCenter);
     QFont vf; vf.setPixelSize(10);
     m_versionLabel->setFont(vf);
@@ -131,7 +135,8 @@ LoginWidget::LoginWidget(AuthManager *auth, QWidget *parent)
 void LoginWidget::paintEvent(QPaintEvent *)
 {
     QPainter p(this);
-    p.fillRect(rect(), QColor("#121210"));
+    // Theme-driven (QApplication palette is set from PainterTheme.bgPrimary).
+    p.fillRect(rect(), palette().color(QPalette::Window));
 }
 
 void LoginWidget::updateState()
