@@ -1,5 +1,36 @@
 # Changelog
 
+## v0.30.2 "Bangaranga" (2026-05-18)
+
+### Changed
+- **One design language across the whole app.** Every dialog, button,
+  input, menu and list is now generated from the active theme instead of
+  hand-styled per window, so all four themes track consistently and the
+  calm call-bar look extends app-wide. Buttons share one quiet family with
+  accent primary actions; the composer's attach / emoji / send are now
+  crisp vector icons matching the call bar.
+- **Smoother call start.** Your self-preview appears the instant a call
+  starts (no more black box until it connects), and toggling your camera
+  off hides the preview rather than showing an empty tile. While
+  ringing/connecting, controls that don't apply yet (screen share,
+  telemetry, participants) stay hidden and appear once connected — the
+  participants control only shows in an established group call.
+
+### Added
+- **Live mic meter.** Each call tile's name plate shows a real-time level
+  meter (fast attack, gentle decay) so you can see your mic working at a
+  glance — accent when you're speaking, calm green otherwise.
+- **Stream bandwidth in telemetry.** The flight-log telemetry panel now
+  shows the current outbound stream bandwidth (congestion-controlled
+  video + audio).
+- Clicking the pinned taskbar icon now reopens TalQ when it's been closed
+  to the tray (previously only the tray icon worked).
+
+### Fixed
+- A startup crash and clipped/blank toolbar icons introduced while
+  unifying the design system — both resolved; the theme system no longer
+  recurses and icon buttons are never boxed.
+
 ## v0.30.1 "Bangaranga" (2026-05-18)
 
 ### Changed

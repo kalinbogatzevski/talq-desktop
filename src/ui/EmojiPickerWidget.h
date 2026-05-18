@@ -24,8 +24,10 @@ signals:
 
 protected:
     void keyPressEvent(QKeyEvent *event) override;
+    void changeEvent(QEvent *e) override;   // re-theme on palette change
 
 private:
+    void applyChrome();   // widget bg, palette-driven
     void rebuild();
     void onCellClicked(const EmojiData::EmojiEntry *e);
     void scrollToCategory(EmojiData::Category c);

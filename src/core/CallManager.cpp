@@ -499,6 +499,26 @@ QString CallManager::videoTxLabel() const
     return {};
 }
 
+QString CallManager::streamBandwidthLabel() const
+{
+    // Honest: this is the OUTBOUND rate we control/measure. Video = the
+    // GCC-applied send bitrate (real, congestion-controlled), audio = the
+    // fixed Opus rate (~40 kbps). RX has no per-stream accessor on the MCU
+    // subscribers, so we don't fabricate one.
+    double bps = 0.0;
+    if (m_screenSharing && m_screenSharePipeline)
+        bps += 2.5e6;  // screen-share target (no live accessor); indicative
+    if (m_publishPipeline && m_publishPipeline->isRunning()) {
+        if (m_publishPipeline->isCameraOn())
+            bps += m_publishPipeline->currentVideoBitrate();
+        bps += 40000.0;  // Opus
+    }
+    if (bps <= 0.0) return {};
+    return bps >= 1e6
+        ? QStringLiteral("↑ %1 Mbps").arg(bps / 1e6, 0, 'f', 2)
+        : QStringLiteral("↑ %1 kbps").arg(bps / 1e3, 0, 'f', 0);
+}
+
 void CallManager::updateCallStats()
 {
     QStringList lines;

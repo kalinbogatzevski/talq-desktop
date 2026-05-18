@@ -67,6 +67,9 @@ public:
     bool activeVideoEncoderIsHw() const;
     // Send resolution + live bitrate, e.g. "1280×720 · 2.5 Mbps".
     QString videoTxLabel() const;
+    // Current outbound stream bandwidth (GCC-applied video + Opus audio),
+    // e.g. "↑ 2.45 Mbps". Empty when nothing is being sent.
+    QString streamBandwidthLabel() const;
 
     Q_INVOKABLE void startCall(const QString &token, bool withVideo);
     Q_INVOKABLE void setRemotePeerInfo(const QString &name, const QString &peerId);

@@ -28,13 +28,7 @@ static QLabel *makeSectionHeader(const QString &text)
     f.setWeight(QFont::DemiBold);
     f.setLetterSpacing(QFont::AbsoluteSpacing, 1);
     label->setFont(f);
-
-    // Use palette's mid role for subdued color
-    QPalette pal = label->palette();
-    QColor c = pal.color(QPalette::WindowText);
-    c.setAlphaF(0.5f);
-    pal.setColor(QPalette::WindowText, c);
-    label->setPalette(pal);
+    label->setProperty("role", "muted");   // AppStyle, theme-driven
     return label;
 }
 
@@ -45,11 +39,7 @@ static QFrame *makeDivider()
     line->setFrameShape(QFrame::HLine);
     line->setFrameShadow(QFrame::Plain);
     line->setFixedHeight(1);
-
-    PainterTheme theme(true, 1.0);
-    QPalette pal = line->palette();
-    pal.setColor(QPalette::WindowText, theme.divider);
-    line->setPalette(pal);
+    // Line colour from AppStyle QFrame[frameShape] (theme-driven).
     return line;
 }
 
@@ -82,29 +72,8 @@ SettingsDialog::SettingsDialog(
     m_tabs->addTab(buildAccountTab(), "Account");
     mainLayout->addWidget(m_tabs);
 
-    // Style the tab bar to match the dark palette
-    PainterTheme theme(true, 1.0);
-    QString tabStyle = QString(
-        "QTabWidget::pane { border: none; }"
-        "QTabBar::tab {"
-        "  padding: 8px 16px;"
-        "  border: none;"
-        "  border-bottom: 2px solid transparent;"
-        "  color: %1;"
-        "  background: %2;"
-        "}"
-        "QTabBar::tab:selected {"
-        "  border-bottom-color: %3;"
-        "  color: %3;"
-        "}"
-        "QTabBar::tab:hover {"
-        "  color: %4;"
-        "}"
-    ).arg(theme.textSecondary.name(),
-          theme.bgSecondary.name(),
-          theme.accent.name(),
-          theme.textPrimary.name());
-    m_tabs->setStyleSheet(tabStyle);
+    // Tab bar inherits the app-wide AppStyle sheet (theme-driven, all 4
+    // themes — no hardcoded dark palette here any more).
 
     // Connect device manager signals to refresh combos
     connect(m_deviceManager, &MediaDeviceManager::devicesChanged, this, &SettingsDialog::populateDeviceCombos);
@@ -308,29 +277,17 @@ QWidget *SettingsDialog::buildNotificationsTab()
 
     layout->addSpacing(12);
 
-    // Hint box
-    PainterTheme theme(true, 1.0);
+    // Calm callout (AppStyle role="hint" — full tint, no side-stripe).
     auto *hintFrame = new QFrame;
-    hintFrame->setStyleSheet(QString(
-        "QFrame {"
-        "  background: rgba(%1, %2, %3, 25);"
-        "  border-left: 3px solid %4;"
-        "  border-radius: 6px;"
-        "  padding: 12px 14px;"
-        "}"
-    ).arg(theme.accent.red()).arg(theme.accent.green()).arg(theme.accent.blue())
-     .arg(theme.accent.name()));
-
+    hintFrame->setProperty("role", "hint");
     auto *hintLayout = new QVBoxLayout(hintFrame);
     hintLayout->setContentsMargins(14, 12, 12, 12);
     auto *hintLabel = new QLabel("To mute individual conversations, right-click on them in the sidebar.");
     hintLabel->setWordWrap(true);
+    hintLabel->setProperty("role", "secondary");
     QFont hintFont = hintLabel->font();
     hintFont.setPixelSize(11);
     hintLabel->setFont(hintFont);
-    QPalette hintPal = hintLabel->palette();
-    hintPal.setColor(QPalette::WindowText, theme.textSecondary);
-    hintLabel->setPalette(hintPal);
     hintLayout->addWidget(hintLabel);
     layout->addWidget(hintFrame);
 
@@ -377,12 +334,7 @@ QWidget *SettingsDialog::buildGeneralTab()
     QFont thf = themeHint->font();
     thf.setPixelSize(11);
     themeHint->setFont(thf);
-    {
-        PainterTheme th(true, 1.0);
-        QPalette tp = themeHint->palette();
-        tp.setColor(QPalette::WindowText, th.textSecondary);
-        themeHint->setPalette(tp);
-    }
+    themeHint->setProperty("role", "secondary");
     layout->addWidget(themeHint);
 
     connect(m_themeCombo, &QComboBox::currentIndexChanged, this, [this](int) {
@@ -422,10 +374,7 @@ QWidget *SettingsDialog::buildGeneralTab()
     QFont hf = closeHint->font();
     hf.setPixelSize(11);
     closeHint->setFont(hf);
-    PainterTheme theme(true, 1.0);
-    QPalette hp = closeHint->palette();
-    hp.setColor(QPalette::WindowText, theme.textSecondary);
-    closeHint->setPalette(hp);
+    closeHint->setProperty("role", "secondary");
     layout->addWidget(closeHint);
 
     connect(m_closeToTray, &QCheckBox::toggled, this, [this](bool checked) {
@@ -463,13 +412,15 @@ QWidget *SettingsDialog::buildUpdatesTab()
            "When a new version is available, a banner appears at the top of the chat."),
         w);
     note->setWordWrap(true);
-    note->setStyleSheet("color: #8a8680; font-size: 11px;");
+    note->setProperty("role", "secondary");
+    { QFont f = note->font(); f.setPixelSize(11); note->setFont(f); }
     lay->addWidget(note);
 
     auto *btnRow = new QHBoxLayout;
     auto *checkBtn = new QPushButton(tr("Check for updates now"), w);
     auto *checkStatus = new QLabel(w);
-    checkStatus->setStyleSheet("color: #8a8680; font-size: 11px;");
+    checkStatus->setProperty("role", "secondary");
+    { QFont f = checkStatus->font(); f.setPixelSize(11); checkStatus->setFont(f); }
     btnRow->addWidget(checkBtn);
     btnRow->addWidget(checkStatus, 1);
     lay->addLayout(btnRow);
@@ -515,10 +466,7 @@ QWidget *SettingsDialog::buildAccountTab()
     QFont urlFont = m_serverUrlLabel->font();
     urlFont.setPixelSize(12);
     m_serverUrlLabel->setFont(urlFont);
-    PainterTheme theme(true, 1.0);
-    QPalette secPal = m_serverUrlLabel->palette();
-    secPal.setColor(QPalette::WindowText, theme.textSecondary);
-    m_serverUrlLabel->setPalette(secPal);
+    m_serverUrlLabel->setProperty("role", "secondary");
     layout->addWidget(m_serverUrlLabel);
 
     layout->addSpacing(4);
@@ -529,17 +477,13 @@ QWidget *SettingsDialog::buildAccountTab()
     layout->addWidget(makeSectionHeader("SERVER"));
 
     auto *serverFrame = new QFrame;
-    serverFrame->setStyleSheet(QString(
-        "QFrame { background: %1; border-radius: 6px; padding: 8px; }"
-    ).arg(theme.bgSurface.name()));
+    serverFrame->setProperty("role", "card");
 
     auto *serverLayout = new QVBoxLayout(serverFrame);
     serverLayout->setContentsMargins(8, 8, 8, 8);
     auto *serverUrlDisplay = new QLabel;
     serverUrlDisplay->setFont(urlFont);
-    QPalette srvPal = serverUrlDisplay->palette();
-    srvPal.setColor(QPalette::WindowText, theme.textSecondary);
-    serverUrlDisplay->setPalette(srvPal);
+    serverUrlDisplay->setProperty("role", "secondary");
     serverLayout->addWidget(serverUrlDisplay);
     layout->addWidget(serverFrame);
 
@@ -555,10 +499,10 @@ QWidget *SettingsDialog::buildAccountTab()
     QFont infoFont = m_ncVersionLabel->font();
     infoFont.setPixelSize(11);
     m_ncVersionLabel->setFont(infoFont);
-    m_ncVersionLabel->setPalette(secPal);
+    m_ncVersionLabel->setProperty("role", "secondary");
     m_talkVersionLabel = new QLabel;
     m_talkVersionLabel->setFont(infoFont);
-    m_talkVersionLabel->setPalette(secPal);
+    m_talkVersionLabel->setProperty("role", "secondary");
     infoRow->addWidget(m_ncVersionLabel);
     infoRow->addWidget(m_talkVersionLabel);
     infoRow->addStretch();
@@ -571,16 +515,12 @@ QWidget *SettingsDialog::buildAccountTab()
     auto *bottomRow = new QHBoxLayout;
     m_talqVersionLabel = new QLabel;
     m_talqVersionLabel->setFont(infoFont);
-    m_talqVersionLabel->setPalette(secPal);
+    m_talqVersionLabel->setProperty("role", "secondary");
     bottomRow->addWidget(m_talqVersionLabel);
     bottomRow->addStretch();
 
     auto *logoutBtn = new QPushButton("Log out");
-    logoutBtn->setStyleSheet(
-        "QPushButton { background: #e07060; color: white; border: none;"
-        "  border-radius: 6px; padding: 6px 16px; }"
-        "QPushButton:hover { background: #c85a4a; }"
-    );
+    logoutBtn->setProperty("variant", "danger");
     connect(logoutBtn, &QPushButton::clicked, this, [this]() {
         m_auth->logout();
         accept(); // close the dialog
@@ -600,7 +540,7 @@ QWidget *SettingsDialog::buildAccountTab()
             tr("Codename \"%1\" after DARA's \"Bangaranga\", "
                "Bulgaria's first Eurovision win (2026).").arg(verName));
         credit->setFont(infoFont);
-        credit->setPalette(secPal);
+        credit->setProperty("role", "secondary");
         credit->setWordWrap(true);
         layout->addWidget(credit);
     }
