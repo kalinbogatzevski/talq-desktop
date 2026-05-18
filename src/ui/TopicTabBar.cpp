@@ -3,24 +3,38 @@
 #include "models/ThreadListModel.h"
 
 #include <QAbstractItemModel>
+#include <QEvent>
 #include <QHBoxLayout>
+#include <QPalette>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QVBoxLayout>
+
+namespace {
+// Theme palette (set app-wide from PainterTheme via QApplication::setPalette).
+struct Pal {
+    QString accent, onAccent, barBg, chipBg, border, ink, inkDim, hoverBg;
+};
+Pal pal(const QWidget *w)
+{
+    const QPalette p = w->palette();
+    auto n = [](const QColor &c){ return c.name(QColor::HexRgb); };
+    return { n(p.color(QPalette::Highlight)),
+             n(p.color(QPalette::HighlightedText)),
+             n(p.color(QPalette::Window)),
+             n(p.color(QPalette::AlternateBase)),
+             n(p.color(QPalette::Mid)),
+             n(p.color(QPalette::WindowText)),
+             n(p.color(QPalette::PlaceholderText)),
+             n(p.color(QPalette::Base)) };
+}
+} // namespace
 
 TopicTabBar::TopicTabBar(QWidget *parent)
     : QWidget(parent)
 {
     setFixedHeight(48);
-    setStyleSheet(
-        "TopicTabBar { background: #141412; border-bottom: 1px solid #26262238; }"
-        "QScrollArea, QScrollArea > QWidget, QScrollArea > QWidget > QWidget {"
-        "  background: transparent; border: none; }"
-        "QScrollBar:horizontal { height: 4px; background: transparent; margin: 0; }"
-        "QScrollBar::handle:horizontal { background: #2a2a26; border-radius: 2px; min-width: 24px; }"
-        "QScrollBar::handle:horizontal:hover { background: #3a3a34; }"
-        "QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }"
-    );
+    applyBarChrome();
 
     auto *outer = new QVBoxLayout(this);
     outer->setContentsMargins(0, 0, 0, 0);
@@ -42,6 +56,32 @@ TopicTabBar::TopicTabBar(QWidget *parent)
     m_scroll->setWidget(m_row);
 
     hide();
+}
+
+void TopicTabBar::applyBarChrome()
+{
+    const Pal c = pal(this);
+    setStyleSheet(QStringLiteral(
+        "TopicTabBar { background: %1; border-bottom: 1px solid %2; }"
+        "QScrollArea, QScrollArea > QWidget, QScrollArea > QWidget > QWidget {"
+        "  background: transparent; border: none; }"
+        "QScrollBar:horizontal { height: 4px; background: transparent; margin: 0; }"
+        "QScrollBar::handle:horizontal { background: %2; border-radius: 2px;"
+        "  min-width: 24px; }"
+        "QScrollBar::handle:horizontal:hover { background: %3; }"
+        "QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }"
+    ).arg(c.barBg, c.border, c.inkDim));
+}
+
+void TopicTabBar::changeEvent(QEvent *e)
+{
+    QWidget::changeEvent(e);
+    // ApplicationPaletteChange only — PaletteChange recurses via setStyleSheet.
+    if (e->type() == QEvent::ApplicationPaletteChange
+        || e->type() == QEvent::ThemeChange) {
+        applyBarChrome();
+        rebuild();
+    }
 }
 
 void TopicTabBar::setModel(ThreadListModel *model)
@@ -76,21 +116,20 @@ QPushButton *TopicTabBar::makeChip(const QString &label, int threadId,
     b->setCursor(Qt::PointingHandCursor);
     b->setFixedHeight(32);
     b->setFocusPolicy(Qt::NoFocus);
+    const Pal c = pal(this);
     b->setStyleSheet(active
         ? QStringLiteral(
-            "QPushButton { background: #14b8a6; color: #0e1817; border: none;"
+            "QPushButton { background: %1; color: %2; border: none;"
             "  border-radius: 16px; padding: 6px 16px; font-size: 13px;"
             "  font-weight: 600; letter-spacing: 0.1px; }"
-            "QPushButton:hover { background: #2dd4bf; }"
-            "QPushButton:pressed { background: #0d9488; }"
-          )
+            "QPushButton:hover { background: %1; }"
+          ).arg(c.accent, c.onAccent)
         : QStringLiteral(
-            "QPushButton { background: #1c1c1a; color: #b9b4ac; border: 1px solid #2a2a26;"
+            "QPushButton { background: %1; color: %2; border: 1px solid %3;"
             "  border-radius: 16px; padding: 6px 16px; font-size: 13px;"
             "  font-weight: 500; letter-spacing: 0.1px; }"
-            "QPushButton:hover { background: #242422; color: #e4e0da; border-color: #3a3a34; }"
-            "QPushButton:pressed { background: #2a2a26; }"
-          ));
+            "QPushButton:hover { background: %4; color: %5; border-color: %6; }"
+          ).arg(c.chipBg, c.inkDim, c.border, c.hoverBg, c.ink, c.accent));
     connect(b, &QPushButton::clicked, this, [this, threadId, label]() {
         if (threadId == 0) emit allMessagesSelected();
         else               emit threadSelected(threadId, label);
@@ -115,12 +154,12 @@ void TopicTabBar::rebuild()
         add->setCursor(Qt::PointingHandCursor);
         add->setFlat(true);
         add->setFixedHeight(28);
-        add->setStyleSheet(
-            "QPushButton { background: transparent; color: #14b8a6;"
-            "  border: 1px dashed #14b8a6; border-radius: 14px; padding: 0 14px;"
+        add->setStyleSheet(QStringLiteral(
+            "QPushButton { background: transparent; color: %1;"
+            "  border: 1px dashed %1; border-radius: 14px; padding: 0 14px;"
             "  font-size: 12px; font-weight: 600; letter-spacing: 0.5px; }"
-            "QPushButton:hover { background: rgba(46,196,182,0.08); }"
-        );
+            "QPushButton:hover { background: %2; }"
+        ).arg(pal(this).accent, pal(this).hoverBg));
         connect(add, &QPushButton::clicked, this, &TopicTabBar::newTopicRequested);
         m_rowLayout->insertWidget(m_rowLayout->count() - 1, add);
         // Visibility is controlled from MainWindow::updateTopicMode — a rebuild
@@ -150,12 +189,12 @@ void TopicTabBar::rebuild()
     add->setCursor(Qt::PointingHandCursor);
     add->setFlat(true);
     add->setFixedSize(28, 28);
-    add->setStyleSheet(
-        "QPushButton { background: transparent; color: #14b8a6;"
-        "  border: 1px dashed #14b8a6; border-radius: 14px;"
+    add->setStyleSheet(QStringLiteral(
+        "QPushButton { background: transparent; color: %1;"
+        "  border: 1px dashed %1; border-radius: 14px;"
         "  font-size: 15px; font-weight: 700; }"
-        "QPushButton:hover { background: rgba(46,196,182,0.08); }"
-    );
+        "QPushButton:hover { background: %2; }"
+    ).arg(pal(this).accent, pal(this).hoverBg));
     connect(add, &QPushButton::clicked, this, &TopicTabBar::newTopicRequested);
     m_rowLayout->insertWidget(m_rowLayout->count() - 1, add);
 

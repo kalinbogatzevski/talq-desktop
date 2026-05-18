@@ -15,6 +15,7 @@
 #include <QGuiApplication>
 #include <QRegularExpression>
 #include <QEvent>
+#include <QPalette>
 
 // ─── StatusDot ───
 
@@ -70,25 +71,9 @@ StatusPopover::StatusPopover(UserStatusManager *mgr, QWidget *parent)
     setWindowFlags(Qt::FramelessWindowHint | Qt::Dialog);
     setAttribute(Qt::WA_TranslucentBackground, false);
     setObjectName("statusPopover");
-    setStyleSheet(R"(
-        QDialog#statusPopover { background:#1f1d1a; border:1px solid #34312b; border-radius:12px; }
-        QLabel { color:#cfc9bd; }
-        QLabel#stTitle { color:#8a8680; font-size:11px; letter-spacing:1px; }
-        QLabel#stErr { color:#d9694c; font-size:12px; }
-        QPushButton { color:#e9e5dd; background:transparent; border:none;
-                      text-align:left; padding:7px 10px; border-radius:7px; }
-        QPushButton:hover { background:#2a2823; }
-        QPushButton#stPrimary { background:#3a6f57; padding:7px 14px; }
-        QPushButton#stPrimary:hover { background:#447f63; }
-        QToolButton { color:#e9e5dd; background:#23211d; border:1px solid #34312b;
-                      border-radius:7px; padding:4px 8px; }
-        QToolButton:hover { background:#2a2823; }
-        QLineEdit { background:#1b1a17; border:1px solid #34312b; border-radius:7px;
-                    padding:6px 8px; color:#e9e5dd; }
-        QComboBox { background:#1b1a17; border:1px solid #34312b; border-radius:7px;
-                    padding:4px 8px; color:#e9e5dd; }
-        QFrame#stDiv { background:#2a2823; max-height:1px; border:none; }
-    )");
+    // Card frame only — palette-driven. Labels/buttons/inputs inherit the
+    // app-wide AppStyle sheet (theme-driven, single source of truth).
+    applyChrome();
     buildUi();
 
     connect(m_mgr, &UserStatusManager::statusChanged,
@@ -101,6 +86,26 @@ StatusPopover::StatusPopover(UserStatusManager *mgr, QWidget *parent)
     });
 }
 
+void StatusPopover::applyChrome()
+{
+    const QPalette p = palette();
+    setStyleSheet(QStringLiteral(
+        "QDialog#statusPopover { background:%1; border:1px solid %2;"
+        " border-radius:12px; }"
+        "QFrame#stDiv { background:%2; max-height:1px; border:none; }")
+        .arg(p.color(QPalette::Window).name(),
+             p.color(QPalette::Mid).name()));
+}
+
+void StatusPopover::changeEvent(QEvent *e)
+{
+    QDialog::changeEvent(e);
+    // ApplicationPaletteChange only — PaletteChange recurses via setStyleSheet.
+    if (e->type() == QEvent::ApplicationPaletteChange
+        || e->type() == QEvent::ThemeChange)
+        applyChrome();
+}
+
 void StatusPopover::buildUi()
 {
     auto *root = new QVBoxLayout(this);
@@ -109,10 +114,12 @@ void StatusPopover::buildUi()
 
     auto *title = new QLabel(tr("SET STATUS"), this);
     title->setObjectName("stTitle");
+    title->setProperty("role", "secondary");
     root->addWidget(title);
 
     for (auto t : kTypes) {
         auto *b = new QPushButton(UserStatusManager::label(t), this);
+        b->setProperty("variant", "ghost");
         b->setIcon(circlePixmap(UserStatusManager::colorFor(t)));
         b->setCursor(Qt::PointingHandCursor);
         connect(b, &QPushButton::clicked, this, [this, t]() {
@@ -157,6 +164,7 @@ void StatusPopover::buildUi()
     // Action buttons
     auto *actRow = new QHBoxLayout;
     auto *clearBtn = new QPushButton(tr("Clear status"), this);
+    clearBtn->setProperty("variant", "ghost");
     clearBtn->setCursor(Qt::PointingHandCursor);
     connect(clearBtn, &QPushButton::clicked, this, [this]() {
         m_err->hide();
@@ -167,7 +175,7 @@ void StatusPopover::buildUi()
         accept();
     });
     auto *setBtn = new QPushButton(tr("Set status"), this);
-    setBtn->setObjectName("stPrimary");
+    setBtn->setProperty("variant", "primary");
     setBtn->setCursor(Qt::PointingHandCursor);
     connect(setBtn, &QPushButton::clicked, this, [this]() {
         m_err->hide();
@@ -194,6 +202,7 @@ void StatusPopover::buildUi()
 
     m_err = new QLabel(this);
     m_err->setObjectName("stErr");
+    m_err->setProperty("role", "danger");
     m_err->setWordWrap(true);
     m_err->hide();
     root->addWidget(m_err);
@@ -211,6 +220,7 @@ void StatusPopover::rebuildPresets()
         auto *b = new QPushButton(
             (p.icon.isEmpty() ? QString() : p.icon + QStringLiteral("  ")) + p.message,
             m_presetHost);
+        b->setProperty("variant", "ghost");
         b->setCursor(Qt::PointingHandCursor);
         const QString id = p.id;
         connect(b, &QPushButton::clicked, this, [this, id]() {

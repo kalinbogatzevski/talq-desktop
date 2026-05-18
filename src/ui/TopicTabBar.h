@@ -23,6 +23,10 @@ public:
     void setModel(ThreadListModel *model);
     void setSelectedThreadId(int threadId);
 
+protected:
+    // Re-theme when the app palette changes (PainterTheme drives it).
+    void changeEvent(QEvent *e) override;
+
 signals:
     void threadSelected(int threadId, const QString &title);
     void allMessagesSelected();
@@ -30,6 +34,7 @@ signals:
 
 private:
     void rebuild();
+    void applyBarChrome();   // bar bg/border + thin scrollbar, palette-driven
     QPushButton *makeChip(const QString &label, int threadId,
                           int unreadCount, bool active);
 

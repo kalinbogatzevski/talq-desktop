@@ -23,16 +23,7 @@ ScheduledMessagesDialog::ScheduledMessagesDialog(ApiClient *api, const QString &
 {
     setWindowTitle(tr("Scheduled messages"));
     setMinimumSize(460, 360);
-    setStyleSheet(
-        "QDialog { background: #1e1e2e; }"
-        "QLabel { color: #b0aca5; }"
-        "QListWidget { background: transparent; border: none; outline: none; }"
-        "QListWidget::item { color: #e4e0da; padding: 0; border-radius: 8px; }"
-        "QListWidget::item:hover { background: rgba(255,255,255,0.04); }"
-        "QPushButton { background: transparent; color: #e4e0da; border: 1px solid #363c48;"
-        "  border-radius: 8px; padding: 5px 10px; font-size: 12px; }"
-        "QPushButton:hover { border-color: #d93025; color: #d93025; }"
-    );
+    // Chrome inherited from the app-wide AppStyle sheet (theme-driven).
 
     auto *root = new QVBoxLayout(this);
     root->setContentsMargins(12, 12, 12, 12);
@@ -48,14 +39,12 @@ ScheduledMessagesDialog::ScheduledMessagesDialog(ApiClient *api, const QString &
 
     m_empty = new QLabel(tr("No scheduled messages."), this);
     m_empty->setAlignment(Qt::AlignCenter);
-    m_empty->setStyleSheet("color: #71717a; font-style: italic; padding: 24px;");
+    m_empty->setProperty("role", "muted");
     m_empty->hide();
     root->addWidget(m_empty);
 
     auto *closeBtn = new QPushButton(tr("Close"), this);
-    closeBtn->setStyleSheet("QPushButton { background: #14b8a6; color: white;"
-                            "  border: none; border-radius: 8px; padding: 8px 16px; }"
-                            "QPushButton:hover { background: #0f9488; }");
+    closeBtn->setProperty("variant", "primary");
     auto *btnRow = new QHBoxLayout();
     btnRow->addStretch();
     btnRow->addWidget(closeBtn);
@@ -109,10 +98,9 @@ void ScheduledMessagesDialog::renderItems(const QJsonArray &items)
         auto *textCol = new QVBoxLayout();
         textCol->setSpacing(2);
         auto *whenLabel = new QLabel(QStringLiteral("⏰ %1").arg(when), row);
-        whenLabel->setStyleSheet("color: #14b8a6; font-size: 12px; font-weight: 600;");
+        whenLabel->setProperty("role", "success");
         auto *textLabel = new QLabel(text.isEmpty()
             ? QStringLiteral("(empty)") : text, row);
-        textLabel->setStyleSheet("color: #e4e0da; font-size: 13px;");
         textLabel->setWordWrap(true);
         textCol->addWidget(whenLabel);
         textCol->addWidget(textLabel);
@@ -131,6 +119,7 @@ void ScheduledMessagesDialog::renderItems(const QJsonArray &items)
         rowLayout->addWidget(editBtn);
 
         auto *delBtn = new QPushButton(tr("Cancel"), row);
+        delBtn->setProperty("variant", "danger");
         delBtn->setFixedWidth(80);
         connect(delBtn, &QPushButton::clicked, this, [this, messageId]() {
             deleteItem(messageId);
@@ -161,13 +150,7 @@ void ScheduledMessagesDialog::editItem(qint64 messageId, const QString &currentT
     QDialog dlg(this);
     dlg.setWindowTitle(tr("Edit scheduled message"));
     dlg.setMinimumWidth(420);
-    dlg.setStyleSheet(
-        "QDialog { background: #1e1e2e; }"
-        "QLabel { color: #b0aca5; font-size: 12px; }"
-        "QPlainTextEdit, QDateTimeEdit { background: #2a2a3e; color: #e4e0da;"
-        "  border: 1px solid #363c48; border-radius: 8px; padding: 6px 8px; }"
-        "QPlainTextEdit:focus, QDateTimeEdit:focus { border-color: #14b8a6; }"
-    );
+    // Chrome inherited from the app-wide AppStyle sheet (theme-driven).
 
     auto *layout = new QVBoxLayout(&dlg);
     layout->setContentsMargins(14, 14, 14, 14);

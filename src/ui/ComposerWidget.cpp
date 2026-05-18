@@ -31,6 +31,8 @@
 #include <QtConcurrent>
 #include <cmath>
 #include <QCursor>
+#include <QEvent>
+#include <QPalette>
 
 namespace {
 
@@ -55,12 +57,8 @@ int walkShortcodeBack(const QString &text, int from)
     return i;
 }
 
-// Shared stylesheet for shortcode and mention autocomplete popups.
-// Warm, in-ladder palette (No-Gray: was cold #222230/#333/#3a3a55).
-constexpr auto kPopupStyle =
-    "QListWidget { background: #1a1613; color: #f4efe6; border: 1px solid #2a241f; border-radius: 8px; }"
-    "QListWidget::item { padding: 4px 8px; }"
-    "QListWidget::item:selected { background: #2a211a; }";
+// Autocomplete / mention popups inherit the app-wide AppStyle QListWidget
+// (theme-driven) — no local palette here any more.
 
 // Composer text-box sizing at zoom 1.0. The QTextEdit's true vertical
 // chrome is padding + border + the QTextDocument margin (top *and*
@@ -167,32 +165,18 @@ private:
 ComposerWidget::ComposerWidget(QWidget *parent)
     : QWidget(parent)
 {
-    // Warm surface with a subtle top hairline to separate from the chat.
-    setStyleSheet(
-        "ComposerWidget { background: #18140f; border-top: 1px solid #2a241f; }"
-    );
+    // Warm surface with a subtle top hairline — palette-driven, set by
+    // applyChrome() at the end of the constructor (and on theme change).
 
     auto *layout = new QHBoxLayout();
     layout->setContentsMargins(14, 10, 14, 10);
     layout->setSpacing(8);
 
-    // MDL2 / Fluent Icons for all composer buttons so typography reads
-    // consistently (same weight, same baseline as the header icons).
-    const QString iconFont =
-        "font-family: 'Segoe Fluent Icons', 'Segoe MDL2 Assets', 'Segoe UI Symbol';";
-
-    m_attachBtn = new QPushButton(this);
-    m_attachBtn->setText(QStringLiteral("\uE723"));         // paperclip
+    // Painted call-bar chip icons (vector, theme-tinted) \u2014 one idiom with
+    // the call control bar.
+    m_attachBtn = new TalqIconButton(QStringLiteral("attach"), this);
     m_attachBtn->setFixedSize(38, 38);
-    m_attachBtn->setFocusPolicy(Qt::NoFocus);
     m_attachBtn->setToolTip(tr("Attach file"));
-    m_attachBtn->setCursor(Qt::PointingHandCursor);
-    m_attachBtn->setStyleSheet(
-        "QPushButton { background: transparent; color: #a8a096; border: none;"
-        "  border-radius: 8px; font-size: 16px; " + iconFont + " }"
-        "QPushButton:hover   { background: #241f1a; color: #f4efe6; }"
-        "QPushButton:pressed { background: #2a241f; }"
-    );
     layout->addWidget(m_attachBtn);
 
     m_input = new ComposeTextEdit(this);
@@ -205,39 +189,23 @@ ComposerWidget::ComposerWidget(QWidget *parent)
     // font-size:14px, which overrides setFont() and broke composer zoom.
     layout->addWidget(m_input, 1);
 
-    m_emojiBtn = new QPushButton(this);
+    m_emojiBtn = new TalqIconButton(QStringLiteral("emoji"), this);
     m_emojiBtn->setText(QStringLiteral("\uE76E"));          // emoji face
     m_emojiBtn->setFixedSize(34, 34);
-    m_emojiBtn->setFocusPolicy(Qt::NoFocus);
-    m_emojiBtn->setCursor(Qt::PointingHandCursor);
     m_emojiBtn->setToolTip(tr("Emoji"));
-    m_emojiBtn->setStyleSheet(
-        "QPushButton { background: transparent; color: #a8a096; border: none;"
-        "  border-radius: 8px; font-size: 16px; " + iconFont + " }"
-        "QPushButton:hover   { background: #241f1a; color: #f4efe6; }"
-    );
     layout->addWidget(m_emojiBtn);
-    connect(m_emojiBtn, &QPushButton::clicked, this, &ComposerWidget::openEmojiPicker);
+    connect(m_emojiBtn, &QAbstractButton::clicked, this, &ComposerWidget::openEmojiPicker);
 
-    m_sendBtn = new QPushButton(this);
+    m_sendBtn = new TalqIconButton(QStringLiteral("send"), this);
     m_sendBtn->setText(QStringLiteral("\uE724"));           // send
     m_sendBtn->setFixedSize(38, 38);
-    m_sendBtn->setFocusPolicy(Qt::NoFocus);
     m_sendBtn->setToolTip(tr("Send — Enter"));
-    m_sendBtn->setCursor(Qt::PointingHandCursor);
-    m_sendBtn->setStyleSheet(
-        "QPushButton { background: #14b8a6; color: #0e1817; border: none;"
-        "  border-radius: 8px; font-size: 15px; font-weight: 700;"
-        "  " + iconFont + " }"
-        "QPushButton:hover   { background: #2dd4bf; }"
-        "QPushButton:pressed { background: #0d9488; }"
-    );
     layout->addWidget(m_sendBtn);
 
-    connect(m_sendBtn, &QPushButton::clicked, this, &ComposerWidget::sendAction);
+    connect(m_sendBtn, &QAbstractButton::clicked, this, &ComposerWidget::sendAction);
 
     m_sendBtn->setContextMenuPolicy(Qt::CustomContextMenu);
-    connect(m_sendBtn, &QPushButton::customContextMenuRequested,
+    connect(m_sendBtn, &QWidget::customContextMenuRequested,
             this, &ComposerWidget::openScheduleMenu);
 
     m_sendBtn->installEventFilter(this);
@@ -259,7 +227,7 @@ ComposerWidget::ComposerWidget(QWidget *parent)
             this, &ComposerWidget::fetchMentionsDebounced);
 
     m_input->installEventFilter(this);
-    connect(m_attachBtn, &QPushButton::clicked, this, [this]() {
+    connect(m_attachBtn, &QAbstractButton::clicked, this, [this]() {
         QMenu menu(this);
         QAction *fromDevice = menu.addAction(
             QStringLiteral("\U0001F4BB  ") + tr("From this device\u2026"));
@@ -312,18 +280,18 @@ ComposerWidget::ComposerWidget(QWidget *parent)
     m_pendingPreview->setObjectName("pendingPreview");
     m_pendingPreview->setFixedSize(48, 48);
     m_pendingPreview->setAlignment(Qt::AlignCenter);
-    m_pendingPreview->setStyleSheet("QLabel#pendingPreview { background: #221d19; border-radius: 8px; }");
+    // Surface set by showPendingFile()/showPendingEncoding() (palette-driven).
     pendingLayout->addWidget(m_pendingPreview);
 
     m_pendingName = new QLabel(m_pendingBar);
     m_pendingName->setObjectName("pendingName");
-    m_pendingName->setStyleSheet("QLabel#pendingName { font-size: 12px; color: #a8a096; }");
+    m_pendingName->setProperty("role", "secondary");
     pendingLayout->addWidget(m_pendingName, 1);
 
     m_pendingCancelBtn = new QPushButton("\u2715", m_pendingBar);
     m_pendingCancelBtn->setObjectName("pendingCancel");
+    m_pendingCancelBtn->setProperty("variant", "danger");
     m_pendingCancelBtn->setFixedSize(32, 32);
-    m_pendingCancelBtn->setStyleSheet("QPushButton#pendingCancel { font-size: 14px; border: none; border-radius: 8px; background: #e8866b; color: #0e1817; }");
     m_pendingCancelBtn->setCursor(Qt::PointingHandCursor);
     m_pendingCancelBtn->setToolTip("Cancel");
     connect(m_pendingCancelBtn, &QPushButton::clicked, this, &ComposerWidget::cancelPendingFile);
@@ -333,29 +301,24 @@ ComposerWidget::ComposerWidget(QWidget *parent)
     m_replyBar = new QWidget(this);
     m_replyBar->hide();
     m_replyBar->setObjectName("replyBar");
-    m_replyBar->setStyleSheet("QWidget#replyBar { background: #1a1613; border-top: 1px solid #2a241f; }");
-    m_replyBar->setFixedHeight(36);
+    m_replyBar->setFixedHeight(36);   // surface from applyChrome()
     auto *replyBarLayout = new QHBoxLayout(m_replyBar);
     replyBarLayout->setContentsMargins(12, 0, 8, 0);
     replyBarLayout->setSpacing(8);
     // Leading reply glyph replaces the banned 3px teal side-stripe.
     auto *replyIcon = new QLabel(QStringLiteral("↩"), m_replyBar);  // ↩
     replyIcon->setObjectName("replyIcon");
-    replyIcon->setStyleSheet("QLabel#replyIcon { font-size: 14px; color: #14b8a6; }");
+    replyIcon->setProperty("role", "success");
     replyBarLayout->addWidget(replyIcon);
     m_replyLabel = new QLabel(m_replyBar);
     m_replyLabel->setObjectName("replyLabel");
-    m_replyLabel->setStyleSheet("QLabel#replyLabel { font-size: 13px; color: #a8a096; }");
+    m_replyLabel->setProperty("role", "secondary");
     replyBarLayout->addWidget(m_replyLabel, 1);
     auto *replyCancelBtn = new QPushButton("\u2715", m_replyBar);
     replyCancelBtn->setFixedSize(28, 28);
-    replyCancelBtn->setFlat(true);
     replyCancelBtn->setCursor(Qt::PointingHandCursor);
     replyCancelBtn->setObjectName("replyCancel");
-    replyCancelBtn->setStyleSheet(
-        "QPushButton#replyCancel { font-size: 14px; border: none; border-radius: 8px; color: #a8a096; }"
-        "QPushButton#replyCancel:hover { background: rgba(244,239,230,0.10); color: #f4efe6; }"
-    );
+    replyCancelBtn->setProperty("variant", "ghost");
     connect(replyCancelBtn, &QPushButton::clicked, this, &ComposerWidget::hideReplyBar);
     replyBarLayout->addWidget(replyCancelBtn);
 
@@ -363,31 +326,25 @@ ComposerWidget::ComposerWidget(QWidget *parent)
     m_editingBar = new QWidget(this);
     m_editingBar->hide();
     m_editingBar->setObjectName("editingBar");
-    m_editingBar->setStyleSheet("QWidget#editingBar { background: #1a1613; border-top: 1px solid #2a241f; }");
-    m_editingBar->setFixedHeight(36);
+    m_editingBar->setFixedHeight(36);   // surface from applyChrome()
     auto *editBarLayout = new QHBoxLayout(m_editingBar);
     editBarLayout->setContentsMargins(12, 0, 8, 0);
     editBarLayout->setSpacing(8);
 
     auto *editIcon = new QLabel(QStringLiteral("\u270F\uFE0F"), m_editingBar); // ✏️
     editIcon->setObjectName("editIcon");
-    editIcon->setStyleSheet("QLabel#editIcon { font-size: 14px; }");
     editBarLayout->addWidget(editIcon);
 
     m_editingPreview = new QLabel(m_editingBar);
     m_editingPreview->setObjectName("editingPreview");
-    m_editingPreview->setStyleSheet("QLabel#editingPreview { font-size: 13px; color: #a8a096; }");
+    m_editingPreview->setProperty("role", "secondary");
     editBarLayout->addWidget(m_editingPreview, 1);
 
     auto *editCancelBtn = new QPushButton("\u2715", m_editingBar);
     editCancelBtn->setFixedSize(28, 28);
-    editCancelBtn->setFlat(true);
     editCancelBtn->setCursor(Qt::PointingHandCursor);
     editCancelBtn->setObjectName("editCancel");
-    editCancelBtn->setStyleSheet(
-        "QPushButton#editCancel { font-size: 14px; border: none; border-radius: 8px; color: #a8a096; }"
-        "QPushButton#editCancel:hover { background: rgba(244,239,230,0.10); color: #f4efe6; }"
-    );
+    editCancelBtn->setProperty("variant", "ghost");
     connect(editCancelBtn, &QPushButton::clicked, this, &ComposerWidget::hideEditingBar);
     editBarLayout->addWidget(editCancelBtn);
 
@@ -411,6 +368,33 @@ ComposerWidget::ComposerWidget(QWidget *parent)
     QFont baseInputFont = m_input->font();
     baseInputFont.setPixelSize(kBaseInputPx);
     setInputFont(baseInputFont);
+
+    applyChrome();
+}
+
+void ComposerWidget::applyChrome()
+{
+    // Composer surface + the reply/edit/pending bars — palette-driven so
+    // all four themes track from one place (the app palette = PainterTheme).
+    const QPalette p = palette();
+    const QString bg   = p.color(QPalette::Window).name();
+    const QString bar  = p.color(QPalette::Base).name();
+    const QString line = p.color(QPalette::Mid).name();
+    setStyleSheet(QString(
+        "ComposerWidget { background: %1; border-top: 1px solid %2; }"
+        "QWidget#replyBar, QWidget#editingBar {"
+        "  background: %3; border-top: 1px solid %2; }")
+        .arg(bg, line, bar));
+}
+
+void ComposerWidget::changeEvent(QEvent *event)
+{
+    QWidget::changeEvent(event);
+    // ApplicationPaletteChange (NOT PaletteChange): the latter is re-emitted
+    // by our own setStyleSheet() inside applyChrome() → infinite recursion.
+    if (event->type() == QEvent::ApplicationPaletteChange
+        || event->type() == QEvent::ThemeChange)
+        applyChrome();
 }
 
 // Reserve vertical space above the input row for any combination of the
@@ -482,14 +466,20 @@ void ComposerWidget::setInputFont(const QFont &font)
     // ignore zoom. Padding scales with the zoom level so the box grows in
     // proportion to the text. Viewport stays transparent for the rounded
     // corners (otherwise the inner viewport paints over them).
-    m_input->setStyleSheet(QStringLiteral(
-        "QTextEdit { background: #1a1613; border: %1px solid #2a241f;"
+    const QPalette ip = palette();
+    auto ic = [&](QPalette::ColorRole r){ return ip.color(r).name(); };
+    m_input->setStyleSheet(QString(
+        "QTextEdit { background: %4; border: %1px solid %5;"
         "  border-radius: 8px; padding: %2px %3px;"
-        "  color: #f4efe6; selection-background-color: #14b8a6;"
-        "  selection-color: #0e1817; }"
-        "QTextEdit:focus { border-color: #14b8a6; background: #221d19; }"
+        "  color: %6; selection-background-color: %7;"
+        "  selection-color: %8; }"
+        "QTextEdit:focus { border-color: %7; background: %9; }"
         "QTextEdit > QWidget { background: transparent; }")
-        .arg(kInputBorder).arg(vpad).arg(hpad));
+        .arg(QString::number(kInputBorder), QString::number(vpad),
+             QString::number(hpad),
+             ic(QPalette::Base), ic(QPalette::Mid), ic(QPalette::WindowText),
+             ic(QPalette::Highlight), ic(QPalette::HighlightedText),
+             ic(QPalette::AlternateBase)));
 
     const int lineH = QFontMetrics(font).height();
     // Full vertical chrome the widget must contain so one line of text
@@ -516,7 +506,9 @@ void ComposerWidget::showPendingFile(const QString &path)
 
     // Clear any "Preparing image…" styling left from showPendingEncoding().
     m_pendingPreview->setText(QString());
-    m_pendingPreview->setStyleSheet("background: #1a1613; border-radius: 6px;");
+    m_pendingPreview->setStyleSheet(
+        QStringLiteral("background: %1; border-radius: 6px;")
+            .arg(palette().color(QPalette::Base).name()));
 
     QImage img(path);
     if (!img.isNull()) {
@@ -524,7 +516,9 @@ void ComposerWidget::showPendingFile(const QString &path)
         m_pendingPreview->setPixmap(pix);
     } else {
         m_pendingPreview->setText("\U0001F4C4");
-        m_pendingPreview->setStyleSheet("background: #1a1613; border-radius: 6px; font-size: 24px;");
+        m_pendingPreview->setStyleSheet(
+            QStringLiteral("background: %1; border-radius: 6px; font-size: 24px;")
+                .arg(palette().color(QPalette::Base).name()));
     }
 
     m_pendingBar->show();
@@ -538,7 +532,10 @@ void ComposerWidget::showPendingEncoding()
     m_pendingPreview->setPixmap(QPixmap());
     m_pendingPreview->setText(QStringLiteral("\u23F3"));                       // ⏳ hourglass
     m_pendingPreview->setStyleSheet(
-        "background: #1a1613; border-radius: 6px; color: #14b8a6; font-size: 22px;");
+        QStringLiteral("background: %1; border-radius: 6px; color: %2;"
+                       " font-size: 22px;")
+            .arg(palette().color(QPalette::Base).name(),
+                 palette().color(QPalette::Highlight).name()));
     m_pendingName->setText(tr("Preparing image\u2026"));
     m_pendingBar->show();
 }
@@ -638,10 +635,10 @@ void ComposerWidget::sendAction()
     emit sendMessage(text, silent);
 
     if (silent) {
-        QString original = m_sendBtn->text();
-        m_sendBtn->setText(QStringLiteral("\U0001F515"));
-        QTimer::singleShot(500, this, [this, original]() {
-            if (m_sendBtn) m_sendBtn->setText(original);
+        // Brief "sent silently" confirmation: flash a bell-off glyph.
+        m_sendBtn->setIconId(QStringLiteral("belloff"));
+        QTimer::singleShot(600, this, [this]() {
+            if (m_sendBtn) m_sendBtn->setIconId(QStringLiteral("send"));
         });
     }
 
@@ -867,7 +864,7 @@ void ComposerWidget::maybeShowCompletion()
                                     | Qt::WindowDoesNotAcceptFocus);
         m_completion->setAttribute(Qt::WA_ShowWithoutActivating);
         m_completion->setFocusPolicy(Qt::NoFocus);
-        m_completion->setStyleSheet(kPopupStyle);
+        // QListWidget chrome from app-wide AppStyle (theme-driven).
         connect(m_completion, &QListWidget::itemClicked, this,
                 [this](QListWidgetItem *it) { applyCompletion(m_completion->row(it)); });
         connect(m_completion, &QListWidget::itemActivated, this,
@@ -1057,7 +1054,7 @@ void ComposerWidget::fetchMentionsDebounced()
                                                       | Qt::WindowDoesNotAcceptFocus);
                         m_mentionPopup->setAttribute(Qt::WA_ShowWithoutActivating);
                         m_mentionPopup->setFocusPolicy(Qt::NoFocus);
-                        m_mentionPopup->setStyleSheet(kPopupStyle);
+                        // List chrome from app-wide AppStyle (theme-driven).
                         m_mentionPopup->setIconSize(QSize(24, 24));
                         connect(m_mentionPopup, &QListWidget::itemClicked, this,
                                 [this](QListWidgetItem *it) {

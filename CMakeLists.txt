@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(talq VERSION 0.30.1 LANGUAGES CXX)
+project(talq VERSION 0.30.2 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -81,6 +81,7 @@ qt_add_executable(talq
     src/painter/ThreadsPainter.cpp
     src/painter/EmojiTextRenderer.h
     src/painter/EmojiTextRenderer.cpp
+    src/painter/VectorIcons.h
     src/ui/MainWindow.cpp
     src/ui/ComposerWidget.cpp
     src/ui/LoginWidget.cpp
@@ -89,6 +90,10 @@ qt_add_executable(talq
     src/ui/CallWindow.cpp
     src/ui/StatusPopover.h
     src/ui/StatusPopover.cpp
+    src/ui/AppStyle.h
+    src/ui/AppStyle.cpp
+    src/ui/TalqIconButton.h
+    src/ui/TalqIconButton.cpp
     src/ui/SharePickerDialog.cpp
     src/ui/SelectionBarWidget.h
     src/ui/SelectionBarWidget.cpp
@@ -174,8 +179,3 @@ target_link_libraries(talq PRIVATE
     Qt6::Network
     Qt6::Sql
     Qt6::WebSockets
-    Qt6::Widgets
-    Qt6::Svg
-    Qt6::Concurrent
-    Qt6::Multimedia
-    ${GST_LIBRARIES}
