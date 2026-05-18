@@ -36,25 +36,7 @@ NextcloudFilePickerDialog::NextcloudFilePickerDialog(ApiClient *api, QWidget *pa
 {
     setWindowTitle(tr("Share from Nextcloud"));
     resize(640, 480);
-    setStyleSheet(
-        "QDialog { background: #141210; color: #f4efe6; }"
-        "QLabel  { color: #f4efe6; }"
-        "QListWidget { background: #1a1613; border: 1px solid #2a241f;"
-        "  border-radius: 12px; color: #f4efe6; padding: 4px; outline: none; }"
-        "QListWidget::item { padding: 8px 12px; border-radius: 8px; color: #f4efe6; }"
-        "QListWidget::item:hover    { background: #241f1a; }"
-        "QListWidget::item:selected { background: #14b8a6; color: #0e1817; }"
-        "QPushButton { background: #241f1a; color: #f4efe6; border: none;"
-        "  border-radius: 8px; padding: 8px 16px; font-size: 13px; font-weight: 500; }"
-        "QPushButton:hover   { background: #2e271f; }"
-        "QPushButton:pressed { background: #2a241f; }"
-        "QPushButton#share   { background: #14b8a6; color: #0e1817;"
-        "  font-weight: 700; letter-spacing: 0.5px;"
-        "  text-transform: uppercase; font-size: 12px; padding: 8px 18px; }"
-        "QPushButton#share:hover    { background: #2dd4bf; }"
-        "QPushButton#share:pressed  { background: #0d9488; }"
-        "QPushButton#share:disabled { background: #1c2b2a; color: #546361; }"
-    );
+    // Chrome inherited from the app-wide AppStyle sheet (theme-driven).
 
     auto *outer = new QVBoxLayout(this);
     outer->setContentsMargins(16, 16, 16, 16);
@@ -73,14 +55,15 @@ NextcloudFilePickerDialog::NextcloudFilePickerDialog(ApiClient *api, QWidget *pa
     outer->addWidget(m_list, 1);
 
     m_status = new QLabel(tr("Loading\u2026"), this);
-    m_status->setStyleSheet("color: #8a8680; font-size: 12px;");
+    m_status->setProperty("role", "secondary");
     outer->addWidget(m_status);
 
     auto *btnRow = new QHBoxLayout();
     btnRow->addStretch();
     m_cancelBtn = new QPushButton(tr("Cancel"), this);
+    m_cancelBtn->setProperty("variant", "ghost");
     m_shareBtn  = new QPushButton(tr("Share"), this);
-    m_shareBtn->setObjectName("share");
+    m_shareBtn->setProperty("variant", "primary");
     m_shareBtn->setEnabled(false);
     m_shareBtn->setDefault(true);
     btnRow->addWidget(m_cancelBtn);
@@ -132,15 +115,9 @@ void NextcloudFilePickerDialog::rebuildBreadcrumb()
     auto addCrumb = [&](const QString &label, const QString &target, bool active) {
         auto *btn = new QPushButton(label, this);
         btn->setFlat(true);
+        btn->setProperty("variant", "ghost");
         btn->setCursor(active ? Qt::ArrowCursor : Qt::PointingHandCursor);
         btn->setEnabled(!active);
-        btn->setStyleSheet(active
-            ? QStringLiteral("QPushButton { color: #e4e0da; font-weight: 600; padding: 4px 6px;"
-                             " background: transparent; border: none; }"
-                             "QPushButton:disabled { color: #e4e0da; }")
-            : QStringLiteral("QPushButton { color: #14b8a6; padding: 4px 6px;"
-                             " background: transparent; border: none; text-decoration: underline; }"
-                             "QPushButton:hover { color: #2dd4bf; }"));
         if (!active) {
             connect(btn, &QPushButton::clicked, this, [this, target]() { navigateTo(target); });
         }
@@ -154,7 +131,7 @@ void NextcloudFilePickerDialog::rebuildBreadcrumb()
     for (int i = 0; i < segments.size(); ++i) {
         acc += QStringLiteral("/") + segments[i];
         auto *sep = new QLabel(QStringLiteral("\u203A"), this);
-        sep->setStyleSheet("color: #5a5a55; padding: 4px;");
+        sep->setProperty("role", "muted");
         m_crumbLayout->insertWidget(m_crumbLayout->count() - 1, sep);
         addCrumb(segments[i], acc, i == segments.size() - 1);
     }
