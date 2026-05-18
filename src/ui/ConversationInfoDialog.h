@@ -38,6 +38,9 @@ signals:
     void roomChanged();   // name/description/members changed
     void roomDeleted();   // room deleted OR current user left
 
+protected:
+    void changeEvent(QEvent *e) override;   // re-theme on palette change
+
 private slots:
     void saveName();
     void saveDescription();
@@ -50,6 +53,7 @@ private slots:
     void onAddBotClicked();
 
 private:
+    void applyChrome();   // dialog typography/inputs, palette-driven
     void refreshParticipants();
     void populateParticipants(const QVector<RoomParticipant> &items);
     void runAddSearch();

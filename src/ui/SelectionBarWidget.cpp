@@ -7,35 +7,26 @@ SelectionBarWidget::SelectionBarWidget(QWidget *parent)
     layout->setContentsMargins(16, 8, 16, 8);
     layout->setSpacing(6);
 
-    setStyleSheet("background: #252536;");
+    // Surface + controls inherit the app-wide AppStyle sheet (theme-driven).
+    setObjectName(QStringLiteral("selectionBar"));
 
     m_countLabel = new QLabel(this);
-    m_countLabel->setStyleSheet("color: #14b8a6; font-weight: 600; font-size: 13px; background: transparent;");
+    m_countLabel->setProperty("role", "title");
     layout->addWidget(m_countLabel);
     layout->addStretch();
 
-    const QString normalStyle =
-        "QPushButton { background: #2a2a3e; color: #e0e0e0; border: none; border-radius: 8px; padding: 7px 14px; font-size: 12px; }"
-        "QPushButton:hover { background: #353550; }";
-
-    auto makeBtn = [this, layout](const QString &text, const QString &style) {
+    auto makeBtn = [this, layout](const QString &text, const char *variant) {
         auto *btn = new QPushButton(text, this);
         btn->setCursor(Qt::PointingHandCursor);
-        btn->setStyleSheet(style);
+        if (variant) btn->setProperty("variant", variant);
         layout->addWidget(btn);
         return btn;
     };
 
-    m_forwardBtn = makeBtn(QStringLiteral("\u2197\uFE0F Forward"), normalStyle);
-    m_copyBtn = makeBtn(QStringLiteral("\U0001F4CB Copy"), normalStyle);
-
-    m_deleteBtn = makeBtn(QStringLiteral("\U0001F5D1\uFE0F Delete"),
-        "QPushButton { background: rgba(248,81,73,0.15); color: #f85149; border: none; border-radius: 8px; padding: 7px 14px; font-size: 12px; }"
-        "QPushButton:hover { background: rgba(248,81,73,0.25); }");
-
-    m_cancelBtn = makeBtn(QStringLiteral("\u2715 Cancel"),
-        "QPushButton { background: #2a2a3e; color: #888; border: none; border-radius: 8px; padding: 7px 14px; font-size: 12px; }"
-        "QPushButton:hover { background: #353550; color: #bbb; }");
+    m_forwardBtn = makeBtn(QStringLiteral("\u2197\uFE0F Forward"), nullptr);
+    m_copyBtn = makeBtn(QStringLiteral("\U0001F4CB Copy"), nullptr);
+    m_deleteBtn = makeBtn(QStringLiteral("\U0001F5D1\uFE0F Delete"), "danger");
+    m_cancelBtn = makeBtn(QStringLiteral("\u2715 Cancel"), "ghost");
 
     connect(m_forwardBtn, &QPushButton::clicked, this, &SelectionBarWidget::forwardClicked);
     connect(m_copyBtn, &QPushButton::clicked, this, &SelectionBarWidget::copyClicked);

@@ -10,6 +10,7 @@
 #include <QHash>
 #include <QSet>
 #include <QImage>
+#include "ui/TalqIconButton.h"
 
 class SignalingClient;
 class MessageListModel;
@@ -79,8 +80,10 @@ private slots:
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
+    void changeEvent(QEvent *event) override;   // re-theme on palette change
 
 private:
+    void applyChrome();   // composer surface + bars, palette-driven
     bool m_nextSendSilent = false;
     int  m_minInputH = 38;
     int  m_maxInputH = 160;
@@ -89,9 +92,9 @@ private:
     int  m_inputVPad = 8;
 
     QTextEdit *m_input = nullptr;
-    QPushButton *m_sendBtn = nullptr;
-    QPushButton *m_attachBtn = nullptr;
-    QPushButton *m_emojiBtn = nullptr;
+    TalqIconButton *m_sendBtn = nullptr;
+    TalqIconButton *m_attachBtn = nullptr;
+    TalqIconButton *m_emojiBtn = nullptr;
     EmojiPickerWidget *m_picker = nullptr;
     SignalingClient *m_signaling = nullptr;
     MessageListModel *m_model = nullptr;
