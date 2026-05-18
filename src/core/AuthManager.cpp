@@ -83,6 +83,13 @@ void AuthManager::tryRestore()
 
     if (server.isEmpty() || user.isEmpty() || password.isEmpty()) {
         qDebug() << "No saved credentials";
+        // MainWindow is shown only via switchToChat()/switchToLogin(), both
+        // driven by these signals. Without an emit here the no-credentials
+        // path (e.g. right after logout) leaves the window never shown — it
+        // looks like the app started minimized/tray-only with no way to log
+        // in. m_restoringSession is already false, so the restoringChanged
+        // handler takes its `else` branch and shows the login page normally.
+        emit restoringChanged();
         return;
     }
 

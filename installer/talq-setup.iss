@@ -1,13 +1,13 @@
 [Setup]
 AppName=TalQ
-AppVersion=0.29.1
+AppVersion=0.30.1
 AppPublisher=TalQ
 AppPublisherURL=https://github.com/kalinbogatzevski/talq-desktop
 DefaultDirName={localappdata}\Programs\TalQ
 PrivilegesRequired=lowest
 DefaultGroupName=TalQ
 OutputDir=..\dist
-OutputBaseFilename=TalQ-v0.29.1-Setup
+OutputBaseFilename=TalQ-v0.30.1-Setup
 SetupIconFile=..\resources\talq.ico
 UninstallDisplayIcon={app}\talq.exe
 WizardImageFile=..\resources\talq-wizard.bmp
@@ -27,8 +27,19 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 Name: "startmenuicon"; Description: "Create a Start Menu shortcut"; GroupDescription: "Additional shortcuts:"
 Name: "autostart"; Description: "Start TalQ when Windows starts"; GroupDescription: "System:"
 
+[InstallDelete]
+; An update MUST leave the on-disk dependency set identical to the one
+; this version ships — a stale or removed GStreamer plugin / runtime DLL
+; left behind by a prior version is a dead app for a comms client (this
+; is exactly what broke 0.29.5: a new plugin dependency missing on disk).
+; Wipe the version-specific runtime here; [Files] below recopies the
+; complete, current payload. ignoreversion alone only overwrites files
+; that still exist in the new payload — it can never remove one.
+Type: filesandordirs; Name: "{app}\gst-plugins"
+Type: files; Name: "{app}\*.dll"
+
 [Files]
-Source: "..\dist\TalQ-v0.29.1-win64\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\dist\TalQ-v0.30.1-win64\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\TalQ"; Filename: "{app}\talq.exe"; Tasks: startmenuicon

@@ -50,6 +50,7 @@ GST_RUNTIME_DLLS=(
     libgstcuda-1.0-0 libgstdxva-1.0-0 libgstgl-1.0-0
     libglib-2.0-0 libgobject-2.0-0 libgio-2.0-0 libgmodule-2.0-0
     libintl-8 libiconv-2 libffi-8 libpcre2-8-0 libz
+    libx264-165
 )
 for dll in "${GST_RUNTIME_DLLS[@]}"; do
     src="$MSYS2_DIR/bin/${dll}.dll"
@@ -59,13 +60,20 @@ done
 # Step 3: Copy GStreamer plugins
 echo "[3/4] Copying GStreamer plugins..."
 mkdir -p "$BUILD_DIR/gst-plugins"
+# Keep in lockstep with scripts/build-release.sh and the startup gate in
+# src/main.cpp. typefindfunctions+playback+audioparsers are mandatory:
+# webrtcsrc builds decodebin3 internally and __fastfail-aborts the whole
+# process (uncatchable) if it or its autoplug helpers are missing.
 GST_PLUGINS=(
-    coreelements audioconvert audioresample autodetect audiotestsrc videotestsrc
+    coreelements typefindfunctions playback
+    audioconvert audioresample audioparsers opusparse autodetect audiotestsrc videotestsrc
     dtls nice opus rtp rtpmanager srtp
     wasapi wasapi2 webrtc webrtcdsp app level
     vpx openh264 videoconvertscale sctp jpeg
     winks mediafoundation winscreencap
-    d3d11 nvcodec
+    d3d11 nvcodec qsv x264
+    videoparsersbad
+    rsrtp rswebrtc
 )
 for p in "${GST_PLUGINS[@]}"; do
     src="$MSYS2_DIR/lib/gstreamer-1.0/libgst${p}.dll"

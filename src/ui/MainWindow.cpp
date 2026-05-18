@@ -26,6 +26,8 @@
 #include "core/PushClient.h"
 #include "core/SignalingClient.h"
 #include "core/CallManager.h"
+#include "core/UserStatusManager.h"
+#include "ui/StatusPopover.h"
 #include "core/DebugMonitor.h"
 #include "core/AppSettings.h"
 #include "core/MediaDeviceManager.h"
@@ -53,6 +55,8 @@
 #include <QMessageBox>
 #include <QNetworkReply>
 #include <QLabel>
+#include <QFontMetrics>
+#include <QHideEvent>
 #include <QListWidget>
 #include <QUrl>
 #include <QTextBrowser>
@@ -93,6 +97,7 @@ MainWindow::MainWindow(
     SignalingClient *signaling,
     MediaDeviceManager *deviceManager,
     CallManager *callManager,
+    UserStatusManager *userStatus,
     DebugMonitor *debug,
     AppSettings *appSettings,
     QWidget *parent)
@@ -107,6 +112,7 @@ MainWindow::MainWindow(
     , m_signaling(signaling)
     , m_deviceManager(deviceManager)
     , m_callManager(callManager)
+    , m_userStatus(userStatus)
     , m_debug(debug)
     , m_appSettings(appSettings)
     , m_settings("TalQ", "TalQ")
@@ -314,7 +320,30 @@ void MainWindow::buildChatPage()
 
     m_profileNameLabel = new QLabel(profileBar);
     m_profileNameLabel->setObjectName("sbName");
-    profileLayout->addWidget(m_profileNameLabel, 1);
+
+    // Glanceable status readout under the name; click to open the picker.
+    m_statusPill = new QPushButton(profileBar);
+    m_statusPill->setObjectName("sbStatusPill");
+    m_statusPill->setFlat(true);
+    m_statusPill->setCursor(Qt::PointingHandCursor);
+    m_statusPill->setFocusPolicy(Qt::NoFocus);
+    m_statusPill->setToolTip(tr("Set your status"));
+    connect(m_statusPill, &QPushButton::clicked, this, &MainWindow::openStatusPopover);
+
+    auto *idCol = new QWidget(profileBar);
+    auto *idLay = new QVBoxLayout(idCol);
+    idLay->setContentsMargins(0, 0, 0, 0);
+    idLay->setSpacing(1);
+    idLay->addWidget(m_profileNameLabel);
+    idLay->addWidget(m_statusPill, 0, Qt::AlignLeft);
+    profileLayout->addWidget(idCol, 1);
+
+    // Own presence dot, overlaid on the avatar's bottom-right corner
+    // (same vocabulary as the contacts' dots).
+    m_statusDot = new StatusDot(profileAvatar);
+    m_statusDot->move(profileAvatar->width() - m_statusDot->width(),
+                      profileAvatar->height() - m_statusDot->height());
+    m_statusDot->show();
 
     auto *newChatBtn = new QPushButton(QStringLiteral("\uE710"), profileBar);  // Add
     newChatBtn->setObjectName("sbIcon");
@@ -400,6 +429,10 @@ void MainWindow::buildChatPage()
         m_profileNameLabel->setText(m_auth->displayName());
         loadProfileAvatar(m_profileAvatarLabel);
     }
+
+    connect(m_userStatus, &UserStatusManager::statusChanged,
+            this, &MainWindow::refreshStatusIndicator);
+    refreshStatusIndicator();
 
     m_sidebar = new SidebarPainter(sidebarCol);
     m_sidebar->setModel(m_conversations);
@@ -1427,24 +1460,9 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
             return true;
         }
     }
-    // Avatar click -> open settings (in any mode)
+    // Avatar click -> open the status picker (Settings lives on the gear).
     if (obj == m_profileAvatarLabel && event->type() == QEvent::MouseButtonRelease) {
-        if (!m_settingsDialog) {
-            m_settingsDialog = new SettingsDialog(
-                m_deviceManager, m_notifications, m_appSettings, m_auth, this);
-            connect(m_settingsDialog, &SettingsDialog::closeToTrayChanged,
-                    this, [this](bool enabled) { m_closeToTray = enabled; });
-            connect(m_settingsDialog, &SettingsDialog::themeIdChanged,
-                    this, [this](int id) {
-                        applyThemeId(static_cast<PainterTheme::Theme>(id));
-                    });
-            connect(m_settingsDialog, &SettingsDialog::checkForUpdatesRequested,
-                    this, [this]() {
-                if (m_updateChecker) m_updateChecker->checkNow();
-            });
-        }
-        m_settingsDialog->refresh();
-        m_settingsDialog->exec();
+        openStatusPopover();
         return true;
     }
     return QMainWindow::eventFilter(obj, event);
@@ -1460,6 +1478,7 @@ void MainWindow::sidebarSqueezedChanged()
     if (m_homeBtn) m_homeBtn->setVisible(!m_sidebarSqueezed);
     m_settingsBtn->setVisible(!m_sidebarSqueezed);
     m_profileNameLabel->setVisible(!m_sidebarSqueezed);
+    if (m_statusPill) m_statusPill->setVisible(!m_sidebarSqueezed);
 
     if (m_sidebarSqueezed) {
         // Center avatar in the narrow bar
@@ -2087,6 +2106,24 @@ void MainWindow::closeEvent(QCloseEvent *event)
     }
 }
 
+void MainWindow::changeEvent(QEvent *event)
+{
+    QMainWindow::changeEvent(event);
+    // The status popover is its own top-level window; minimizing TalQ
+    // would otherwise leave it floating on the desktop.
+    if (event->type() == QEvent::WindowStateChange
+        && (windowState() & Qt::WindowMinimized)
+        && m_statusPopover)
+        m_statusPopover->hide();
+}
+
+void MainWindow::hideEvent(QHideEvent *event)
+{
+    QMainWindow::hideEvent(event);
+    // Covers close-to-tray and switchToLogin (both hide() the window).
+    if (m_statusPopover) m_statusPopover->hide();
+}
+
 void MainWindow::restoreFromTray()
 {
     if (m_wasFullScreen)
@@ -2296,6 +2333,42 @@ void MainWindow::loadProfileAvatar(QLabel *avatarLabel)
         avatarLabel->setPixmap(QPixmap::fromImage(circle));
         avatarLabel->setStyleSheet("");
     });
+}
+
+void MainWindow::openStatusPopover()
+{
+    if (!m_statusPopover)
+        m_statusPopover = new StatusPopover(m_userStatus, this);
+    if (m_profileBar) {
+        const QRect anchor(m_profileBar->mapToGlobal(QPoint(0, 0)),
+                           m_profileBar->size());
+        m_statusPopover->popupNear(anchor);
+    } else {
+        m_statusPopover->show();
+    }
+}
+
+void MainWindow::refreshStatusIndicator()
+{
+    if (!m_statusDot || !m_statusPill) return;
+
+    const auto s = m_userStatus->status();
+    const QColor c = UserStatusManager::colorFor(s);
+    m_statusDot->setColor(c);
+
+    QString text = UserStatusManager::label(s);
+    const QString msg = m_userStatus->message();
+    const QString icon = m_userStatus->icon();
+    if (!msg.isEmpty())
+        text = (icon.isEmpty() ? QString() : icon + QLatin1Char(' ')) + msg;
+
+    QFontMetrics fm(m_statusPill->font());
+    const QString elided = fm.elidedText(text, Qt::ElideRight, 150);
+    m_statusPill->setText(QStringLiteral("● ") + elided + QStringLiteral("  ▾"));
+    m_statusPill->setStyleSheet(QStringLiteral(
+        "#sbStatusPill { color:%1; background:transparent; border:none;"
+        " text-align:left; padding:0; font-size:11px; }"
+        "#sbStatusPill:hover { color:#e9e5dd; }").arg(c.name()));
 }
 
 void MainWindow::moveEvent(QMoveEvent *)

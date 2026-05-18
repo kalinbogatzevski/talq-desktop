@@ -158,7 +158,7 @@ void SignalingClient::onTextMessage(const QString &msg)
         qWarning() << "Signaling: error:" << obj["error"].toObject()["message"].toString();
     }
     else if (type == "room") {
-        qDebug() << "Signaling: joined room";
+        qInfo() << "Signaling: joined room";
         emit roomJoined();
     }
     else if (type == "message") {
@@ -172,14 +172,14 @@ void SignalingClient::onTextMessage(const QString &msg)
             QString sdp = msgData["payload"].toObject()["sdp"].toString();
             QString sid = msgData["sid"].toString();
             QString roomType = msgData["roomType"].toString("video");
-            qDebug() << "Signaling: received offer from" << senderSessionId.left(20) << "sid=" << sid;
+            qInfo() << "Signaling: received offer from" << senderSessionId.left(20) << "sid=" << sid;
             emit offerReceived(senderSessionId, sdp, sid, roomType);
             return;
         }
         if (msgType == "answer") {
             QString sdp = msgData["payload"].toObject()["sdp"].toString();
             QString roomType = msgData["roomType"].toString("video");
-            qDebug() << "Signaling: received answer from" << senderSessionId.left(20);
+            qInfo() << "Signaling: received answer from" << senderSessionId.left(20);
             emit answerReceived(senderSessionId, sdp, roomType);
             return;
         }
@@ -195,7 +195,7 @@ void SignalingClient::onTextMessage(const QString &msg)
                 candidate = payload;
             }
             QString candRoomType = msgData["roomType"].toString("video");
-            qDebug() << "Signaling: received candidate from" << senderSessionId.left(20)
+            qInfo() << "Signaling: received candidate from" << senderSessionId.left(20)
                      << "roomType=" << candRoomType;
             emit candidateReceived(senderSessionId, candidate, candRoomType);
             return;
@@ -620,19 +620,22 @@ void SignalingClient::sendOffer(const QString &toSessionId, const QString &sdp,
     // video-only (VP8) and the publisher must carry a `broadcaster`
     // field = its own session id (upstream Peer.send), or Janus can't
     // associate the screen publisher.
+    // We publish hardware **H264** (highest quality at the raised HPB
+    // bitrate ceiling, near-zero CPU). Janus is an SFU (no transcode) and
+    // forces ONE codec per room from this preference list intersected
+    // with what the publisher offers, so the first publisher's list here
+    // decides the whole room. "h264,vp8" => H264 when offered (all
+    // updated TalQ clients), VP8 only as a safety fallback. By project
+    // decision, non-H264 clients simply won't see video — we never
+    // transcode or downgrade the conference for one stale client.
     QJsonObject extra;
     if (roomType == "screen") {
-        extra["videocodec"] = QString("vp8");
+        extra["videocodec"] = QString("h264,vp8");
         if (!broadcaster.isEmpty())
             extra["broadcaster"] = broadcaster;
     } else {
         extra["audiocodec"] = QString("opus");
-        // Advertise the upstream-canonical preference list (the official
-        // client / offer-codecs uses "vp9,vp8,h264"), NOT vp8-only. With
-        // vp8-only the signaling server told Janus to expect VP8 while the
-        // pipeline actually offered H264, so Janus dropped every video RTP
-        // packet (valid SDP + ICE, but zero frames routed).
-        extra["videocodec"] = QString("vp9,vp8,h264");
+        extra["videocodec"] = QString("h264,vp8");
     }
     sendSessionMessage(toSessionId, "offer", payload, sid, extra, roomType);
     qDebug() << "Signaling: sent offer to" << toSessionId.left(20)
@@ -722,7 +725,7 @@ void SignalingClient::requestOffer(const QString &sessionId, const QString &room
     msg["message"] = message;
 
     m_ws.sendTextMessage(QJsonDocument(msg).toJson(QJsonDocument::Compact));
-    qDebug() << "Signaling: sent requestOffer to" << sessionId.left(20) << "type=" << roomType;
+    qInfo() << "Signaling: sent requestOffer to" << sessionId.left(20) << "type=" << roomType;
 }
 
 void SignalingClient::reconnect()
