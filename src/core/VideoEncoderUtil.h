@@ -101,6 +101,29 @@ inline GstElement *makeWebrtcVideoEncoder(bool screen, int bitrateBps,
             setIfExists(enc, "max-bitrate", peakKbps);
             setIfExists(enc, "gop-size", (gint)gop);
             setIfExists(enc, "bframes", 0u);
+            // mfh264enc's rc-mode is "conditionally available" and defaults
+            // to uvbr (Unconstrained VBR). On some MF hardware the property
+            // is absent / doesn't stick, leaving the camera encoder in
+            // UVBR: it holds image quality and collapses the frame rate,
+            // ignoring the bitrate entirely (the confirmed "perfect image,
+            // ~1 fps, ~300 kbps while GCC is asking for 2.5-4 Mbps" bug).
+            // A realtime camera needs a rate-targeting mode; if this MFT
+            // cannot be constrained, reject mfh264enc and fall through to
+            // x264enc (software, reliably CBR, cheap at 720p30). Screen
+            // content is fine in UVBR, so only gate the camera path.
+            if (!screen) {
+                gint rcm = 2 /* uvbr */;
+                if (g_object_class_find_property(
+                        G_OBJECT_GET_CLASS(enc), "rc-mode"))
+                    g_object_get(enc, "rc-mode", &rcm, nullptr);
+                if (rcm != 0 /* cbr */ && rcm != 1 /* pcvbr */) {
+                    qWarning() << "VideoEncoder: mfh264enc stuck in UVBR on "
+                                  "this hardware (cannot rate-target) — "
+                                  "using software x264enc for the camera";
+                    gst_object_unref(enc);
+                    continue;
+                }
+            }
         } else { /* x264enc — software fallback */
             setArg(enc, "tune", "zerolatency");
             setArg(enc, "speed-preset", "veryfast");
