@@ -652,6 +652,66 @@ void CallManager::requestPeerStream(const QString &sessionId)
         m_requestOfferRetry.start();
 }
 
+// A subscriber feed died mid-call: the SFU sent end-session, or its
+// webrtcbin ICE went "failed". On this HPB both happen routinely when the
+// publisher renegotiates (peer toggles camera, server recycles the
+// publish session). The old behaviour — hangUp() the WHOLE call — made
+// TalQ commit suicide ~9 min into calls. Instead: tear down ONLY this
+// peer's subscriber and re-subscribe to its current feed. Audio, our own
+// media, the publisher, and every other peer stay up. Bounded so a feed
+// that flaps forever can't spin the retry machinery indefinitely; the
+// budget resets whenever the subscriber successfully (re)connects. This
+// function NEVER ends the call — only a publisher failure / user hangup
+// does that.
+void CallManager::recoverSubscriber(const QString &sessionId, const QString &reason)
+{
+    if (sessionId.isEmpty()) return;
+    if (m_state != Connecting && m_state != Active) return;  // teardown owns cleanup
+
+    const bool hadSub = m_subscribePipelines.contains(sessionId);
+    if (!hadSub && m_pendingRequestOffers.contains(sessionId))
+        return;  // already recovering (end-session + ICE-failed both fired for one death)
+
+    const int n = ++m_subscriberRecoveries[sessionId];
+
+    VideoFrameProvider *deadProv = nullptr;
+    if (auto *dead = m_subscribePipelines.take(sessionId)) {
+        deadProv = dead->videoProvider();
+        dead->stop();
+        dead->deleteLater();   // we may be inside this sub's own queued signal
+    }
+    m_subscriberSids.remove(sessionId);
+    m_pendingRequestOffers.remove(sessionId);
+    m_requestOfferAttempts.remove(sessionId);
+
+    // Unbind the now-dangling provider so the UI stops painting a dead
+    // feed; a fresh SubscribeWebrtcSrc + provider is built on the re-offer.
+    if (m_remoteVideoProvider && m_remoteVideoProvider == deadProv) {
+        m_remoteVideoProvider = nullptr;
+        emit remoteVideoProviderChanged();
+    }
+    if (auto *p = m_participants.value(sessionId)) {
+        p->setCamera(nullptr);
+        p->setConnState(CallParticipant::Reconnecting);
+    }
+
+    constexpr int kMaxSubRecoveries = 8;
+    if (n > kMaxSubRecoveries) {
+        qWarning() << "CallManager: subscriber" << sessionId.left(20)
+                   << "unrecoverable after" << n << "attempts (" << reason
+                   << ") — peer video stays down, call continues";
+        setStatusDetail("Peer video unavailable");
+        if (auto *p = m_participants.value(sessionId))
+            p->setConnState(CallParticipant::Failed);
+        return;  // never hangUp() from a subscriber problem
+    }
+
+    qInfo() << "CallManager: recovering subscriber for" << sessionId.left(20)
+            << "(" << reason << ") attempt" << n << "— re-subscribing";
+    setStatusDetail("Reconnecting peer video…");
+    requestPeerStream(sessionId);
+}
+
 void CallManager::onIncomingCallDetected(const QString &callerName, const QString &token, int callFlag)
 {
     if (m_state != Idle) return;
@@ -1298,6 +1358,7 @@ void CallManager::stopAllPipelines()
     }
     m_subscribePipelines.clear();
     m_subscriberSids.clear();
+    m_subscriberRecoveries.clear();
 
     // Flush stale GLib sources from destroyed pipelines (libnice agents,
     // DTLS timers, etc.). Without this, creating a new webrtcbin on the
@@ -1631,6 +1692,7 @@ void CallManager::onOfferReceived(const QString &fromSessionId, const QString &s
         }
         if (state == "connected" || state == "completed") {
             setStatusDetail("Connected");
+            m_subscriberRecoveries.remove(fromSessionId);  // fresh budget per healthy connect
             if (m_state == Connecting) {
                 setState(Active);
                 m_durationTimer.start();
@@ -1647,8 +1709,10 @@ void CallManager::onOfferReceived(const QString &fromSessionId, const QString &s
             }
         }
         if (state == "failed") {
-            qWarning() << "CallManager: subscriber ICE failed, tearing down call";
-            hangUp();
+            qWarning() << "CallManager: subscriber ICE failed for"
+                       << fromSessionId.left(20)
+                       << "— recovering (call stays up)";
+            recoverSubscriber(fromSessionId, QStringLiteral("ice-failed"));
         }
     });
 
@@ -1677,6 +1741,12 @@ void CallManager::onOfferReceived(const QString &fromSessionId, const QString &s
 
     connect(sub, &SubscribeWebrtcSrc::error, this, [this, fromSessionId](const QString &msg) {
         qWarning() << "CallManager: subscriber pipeline error for" << fromSessionId.left(20) << ":" << msg;
+    });
+
+    connect(sub, &SubscribeWebrtcSrc::sessionEnded, this, [this, fromSessionId]() {
+        qInfo() << "CallManager: subscriber feed ended by SFU for"
+                << fromSessionId.left(20) << "— re-subscribing (call stays up)";
+        recoverSubscriber(fromSessionId, QStringLiteral("end-session"));
     });
 
     m_subscribePipelines[fromSessionId] = sub;

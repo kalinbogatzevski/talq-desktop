@@ -428,9 +428,21 @@ gboolean SubscribeWebrtcSrc::sigStop(GObject *, gpointer)
     return TRUE;
 }
 
-gboolean SubscribeWebrtcSrc::sigEndSession(GObject *, const gchar *sid, gpointer)
+gboolean SubscribeWebrtcSrc::sigEndSession(GObject *, const gchar *sid, gpointer ud)
 {
     qInfo() << "SubscribeWebrtcSrc: end-session" << (sid ? sid : "?");
+    // The SFU ended THIS subscriber feed (publisher migrated / renegotiated
+    // — e.g. peer toggled their camera). Tell CallManager so it can
+    // re-subscribe, instead of letting the follow-on webrtcbin ICE
+    // "failed" tear the whole call down. Queued: we're on a GStreamer/
+    // signaller thread; deliver on the Qt event loop.
+    auto *self = static_cast<SubscribeWebrtcSrc*>(ud);
+    if (self) {
+        QPointer<SubscribeWebrtcSrc> g(self);
+        QMetaObject::invokeMethod(self, [g]() {
+            if (g) emit g->sessionEnded();
+        }, Qt::QueuedConnection);
+    }
     return TRUE;
 }
 
