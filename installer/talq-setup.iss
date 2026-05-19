@@ -1,13 +1,13 @@
 [Setup]
 AppName=TalQ
-AppVersion=0.30.5
+AppVersion=0.30.6
 AppPublisher=TalQ
 AppPublisherURL=https://github.com/kalinbogatzevski/talq-desktop
 DefaultDirName={localappdata}\Programs\TalQ
 PrivilegesRequired=lowest
 DefaultGroupName=TalQ
 OutputDir=..\dist
-OutputBaseFilename=TalQ-v0.30.5-Setup
+OutputBaseFilename=TalQ-v0.30.6-Setup
 SetupIconFile=..\resources\talq.ico
 UninstallDisplayIcon={app}\talq.exe
 WizardImageFile=..\resources\talq-wizard.bmp
@@ -39,7 +39,7 @@ Type: filesandordirs; Name: "{app}\gst-plugins"
 Type: files; Name: "{app}\*.dll"
 
 [Files]
-Source: "..\dist\TalQ-v0.30.5-win64\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\dist\TalQ-v0.30.6-win64\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\TalQ"; Filename: "{app}\talq.exe"; Tasks: startmenuicon

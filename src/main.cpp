@@ -256,7 +256,7 @@ int main(int argc, char *argv[])
             "nicesrc","nicesink",                                     // nice
             "srtpenc","srtpdec",                                      // srtp
             "opusenc","opusdec","opusparse",                          // opus + audioparsers
-            "audioconvert","audioresample","videoconvert",            // conv/resample
+            "audioconvert","audioresample","videoconvert","videorate", // conv/resample/CFR
             "h264parse","jpegdec","level","webrtcdsp",                // parsers/jpeg/meter/aec
         };
         // Hardware-optional capabilities: at least one provider must exist.

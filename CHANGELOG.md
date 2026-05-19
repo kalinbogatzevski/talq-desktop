@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.30.6 "Bangaranga" (2026-05-19)
+
+### Fixed
+- **Peer camera no longer choppy.** Outgoing camera video is now held to a
+  constant frame rate before encoding, so a webcam that delivers an uneven
+  or low rate no longer starves the encoder into a stuttering, low-bitrate
+  stream.
+- **Screen sharing no longer balloons memory.** Capture is downscaled to
+  1080p before encoding instead of pushing full native resolution; a 4K
+  desktop previously allocated hundreds of MB of raw-frame buffers the
+  instant sharing started and forced real-time 4K encoding.
+- **Stop then re-share now works.** Starting a second screen share after
+  stopping the first showed a frozen last frame of the previous share; it
+  now rebuilds cleanly.
+- **Double-click on the call controls no longer toggles fullscreen.**
+  Rapidly clicking a control such as the camera switch could bounce the
+  window in and out of fullscreen.
+
 ## v0.30.5 "Bangaranga" (2026-05-19)
 
 ### Fixed
