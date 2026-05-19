@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.30.4 "Bangaranga" (2026-05-19)
+
+### Fixed
+- **Message input was unreadable** — the chat box rendered black text on
+  a black field on every theme. The input was baking its colours from the
+  widget palette at construction time, before the theme was applied, so
+  it never matched. It now inherits the themed input styling like every
+  other field, correct on all four themes and updated live on theme
+  switch.
+- **Status menu was cramped.** Moving the status popover onto the shared
+  app styling stripped its custom spacing, squishing the rows. It now
+  carries its own complete theme-driven styling again, restoring the
+  original comfortable layout on all four themes.
+
 ## v0.30.2 "Bangaranga" (2026-05-18)
 
 ### Changed
