@@ -460,26 +460,21 @@ void ComposerWidget::setInputFont(const QFont &font)
     m_inputVPad = vpad;
     m_input->document()->setDocumentMargin(docM);
 
-    // Own the QTextEdit stylesheet here so it is single-sourced with the
-    // height math below. Crucially it carries NO `font-size`: a stylesheet
-    // font-size overrides setFont(), which is why the composer used to
-    // ignore zoom. Padding scales with the zoom level so the box grows in
-    // proportion to the text. Viewport stays transparent for the rounded
-    // corners (otherwise the inner viewport paints over them).
-    const QPalette ip = palette();
-    auto ic = [&](QPalette::ColorRole r){ return ip.color(r).name(); };
+    // ONLY zoom-scaled geometry here. Colours (background, text, border,
+    // selection, :focus) come from AppStyle's app-wide QTextEdit rule,
+    // which is generated from PainterTheme — correct on every theme and
+    // re-applied on theme change. The previous version baked colours from
+    // palette() at construction time, before the theme palette was set,
+    // so the input rendered black-text-on-black (the transparent viewport
+    // shows the themed composer background behind the not-yet-themed
+    // baked text). Don't reintroduce a palette()-baked colour here.
+    // kInputBorder (1px) matches AppStyle's border so the height math
+    // below stays exact. Viewport stays transparent so the QTextEdit's
+    // rounded themed background isn't squared off by the inner viewport.
     m_input->setStyleSheet(QString(
-        "QTextEdit { background: %4; border: %1px solid %5;"
-        "  border-radius: 8px; padding: %2px %3px;"
-        "  color: %6; selection-background-color: %7;"
-        "  selection-color: %8; }"
-        "QTextEdit:focus { border-color: %7; background: %9; }"
+        "QTextEdit { border-radius: 8px; padding: %1px %2px; }"
         "QTextEdit > QWidget { background: transparent; }")
-        .arg(QString::number(kInputBorder), QString::number(vpad),
-             QString::number(hpad),
-             ic(QPalette::Base), ic(QPalette::Mid), ic(QPalette::WindowText),
-             ic(QPalette::Highlight), ic(QPalette::HighlightedText),
-             ic(QPalette::AlternateBase)));
+        .arg(QString::number(vpad), QString::number(hpad)));
 
     const int lineH = QFontMetrics(font).height();
     // Full vertical chrome the widget must contain so one line of text
