@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.30.7 "Bangaranga" (2026-05-19)
+
+### Fixed
+- **Peer camera no longer stuck at ~1 fps.** On hardware where the Media
+  Foundation H.264 encoder could not be held to a target bitrate, it
+  silently kept the image pristine and collapsed the frame rate to about
+  1 fps. The camera now detects that case and falls back to a software
+  H.264 encoder that honours the rate, restoring smooth full-frame-rate
+  video. Screen sharing is unaffected.
+
 ## v0.30.6 "Bangaranga" (2026-05-19)
 
 ### Fixed
