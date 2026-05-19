@@ -88,13 +88,40 @@ StatusPopover::StatusPopover(UserStatusManager *mgr, QWidget *parent)
 
 void StatusPopover::applyChrome()
 {
+    // Self-contained, palette-driven sheet that reproduces the original
+    // (pre-design-system) formatting EXACTLY: left-aligned padded status
+    // rows, a centred accent primary, themed inputs/divider. The popover
+    // must NOT depend on the global AppStyle button rules — those are
+    // intentionally zero-padding so app-wide icon buttons aren't clipped,
+    // which squished this popover. #stErr is left to AppStyle's themed
+    // role="danger" (palette has no danger token).
     const QPalette p = palette();
-    setStyleSheet(QStringLiteral(
+    auto n = [&](QPalette::ColorRole r){ return p.color(r).name(); };
+    setStyleSheet(QString(
         "QDialog#statusPopover { background:%1; border:1px solid %2;"
-        " border-radius:12px; }"
+        "  border-radius:12px; }"
+        "QLabel { color:%3; background:transparent; }"
+        "QLabel#stTitle { color:%4; font-size:11px; letter-spacing:1px; }"
+        "QPushButton { color:%3; background:transparent; border:none;"
+        "  text-align:left; padding:7px 10px; border-radius:7px; }"
+        "QPushButton:hover { background:%6; }"
+        "QPushButton#stPrimary { background:%7; color:%8; padding:7px 14px;"
+        "  text-align:center; font-weight:600; }"
+        "QPushButton#stPrimary:hover { background:%7; }"
+        "QToolButton { color:%3; background:%5; border:1px solid %2;"
+        "  border-radius:7px; padding:4px 8px; }"
+        "QToolButton:hover { background:%6; }"
+        "QLineEdit { background:%5; border:1px solid %2; border-radius:7px;"
+        "  padding:6px 8px; color:%3; }"
+        "QComboBox { background:%5; border:1px solid %2; border-radius:7px;"
+        "  padding:4px 8px; color:%3; }"
+        "QComboBox QAbstractItemView { background:%5; color:%3;"
+        "  selection-background-color:%6; outline:none; }"
         "QFrame#stDiv { background:%2; max-height:1px; border:none; }")
-        .arg(p.color(QPalette::Window).name(),
-             p.color(QPalette::Mid).name()));
+        .arg(n(QPalette::Window), n(QPalette::Mid), n(QPalette::WindowText),
+             n(QPalette::PlaceholderText), n(QPalette::Base),
+             n(QPalette::AlternateBase), n(QPalette::Highlight),
+             n(QPalette::HighlightedText)));
 }
 
 void StatusPopover::changeEvent(QEvent *e)
@@ -114,12 +141,10 @@ void StatusPopover::buildUi()
 
     auto *title = new QLabel(tr("SET STATUS"), this);
     title->setObjectName("stTitle");
-    title->setProperty("role", "secondary");
     root->addWidget(title);
 
     for (auto t : kTypes) {
         auto *b = new QPushButton(UserStatusManager::label(t), this);
-        b->setProperty("variant", "ghost");
         b->setIcon(circlePixmap(UserStatusManager::colorFor(t)));
         b->setCursor(Qt::PointingHandCursor);
         connect(b, &QPushButton::clicked, this, [this, t]() {
@@ -164,7 +189,6 @@ void StatusPopover::buildUi()
     // Action buttons
     auto *actRow = new QHBoxLayout;
     auto *clearBtn = new QPushButton(tr("Clear status"), this);
-    clearBtn->setProperty("variant", "ghost");
     clearBtn->setCursor(Qt::PointingHandCursor);
     connect(clearBtn, &QPushButton::clicked, this, [this]() {
         m_err->hide();
@@ -175,7 +199,7 @@ void StatusPopover::buildUi()
         accept();
     });
     auto *setBtn = new QPushButton(tr("Set status"), this);
-    setBtn->setProperty("variant", "primary");
+    setBtn->setObjectName("stPrimary");
     setBtn->setCursor(Qt::PointingHandCursor);
     connect(setBtn, &QPushButton::clicked, this, [this]() {
         m_err->hide();
@@ -220,7 +244,6 @@ void StatusPopover::rebuildPresets()
         auto *b = new QPushButton(
             (p.icon.isEmpty() ? QString() : p.icon + QStringLiteral("  ")) + p.message,
             m_presetHost);
-        b->setProperty("variant", "ghost");
         b->setCursor(Qt::PointingHandCursor);
         const QString id = p.id;
         connect(b, &QPushButton::clicked, this, [this, id]() {
