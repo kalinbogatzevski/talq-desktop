@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.30.5 "Bangaranga" (2026-05-19)
+
+### Fixed
+- **Calls no longer hang up on their own.** When the server migrated a
+  peer's video feed mid-call (e.g. the other side toggled their camera, a
+  routine event on the conferencing backend), the client treated the
+  resulting subscriber drop as fatal and tore down the whole call —
+  typically several minutes in. It now recovers just that peer's stream
+  in place and keeps the call and audio running; only a failure of your
+  own outbound connection or hanging up ends a call.
+
 ## v0.30.4 "Bangaranga" (2026-05-19)
 
 ### Fixed

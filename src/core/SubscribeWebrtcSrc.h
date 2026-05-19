@@ -47,6 +47,7 @@ signals:
     void mediaStateReceived(const QString &type);     // unused via webrtcsrc (signaling drives mute)
     void peerClientInfo(const QString &client, const QString &version);
     void error(const QString &message);
+    void sessionEnded();   // SFU ended this feed; CallManager re-subscribes
 
 private:
     void cleanup();
