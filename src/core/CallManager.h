@@ -146,6 +146,10 @@ private:
     // until the MCU delivers an offer; a single send races MCU readiness
     // and yields a connected call with no audio from that peer.
     void requestPeerStream(const QString &sessionId);
+    // A subscriber feed died mid-call (SFU end-session / its webrtcbin ICE
+    // went "failed" — both happen on a normal publisher renegotiation).
+    // Tear down just that subscriber and re-subscribe; never kill the call.
+    void recoverSubscriber(const QString &sessionId, const QString &reason);
 
     // --- Participant registry (additive; mirrors signaling/pipeline state) ---
     CallParticipant *ensureParticipant(const QString &sessionId, const QString &name);
@@ -164,6 +168,7 @@ private:
     PublishPipeline *m_publishPipeline = nullptr;
     QHash<QString, SubscribeWebrtcSrc*> m_subscribePipelines;
     QHash<QString, QString> m_subscriberSids;  // sessionId -> current MCU sid
+    QHash<QString, int> m_subscriberRecoveries;  // sessionId -> mid-call re-subscribe count (bounded; reset on connect)
     // P2P single pipeline
     PeerPipeline *m_peerPipeline = nullptr;
     bool m_useP2P = false;
