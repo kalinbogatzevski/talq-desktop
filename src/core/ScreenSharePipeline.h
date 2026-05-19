@@ -32,6 +32,11 @@ public:
     bool isRunning() const { return m_running; }
     // e.g. "H264 · nvh264enc · hw" — for the call codec/quality telemetry.
     QString encoderDescription() const { return m_encoderDesc; }
+    // Screen-capture downscale cap applied before encode. Default 1080p:
+    // a native 4K raw frame is ~38 MB and an unbounded native-res pool
+    // ballooned RAM ~400 MB on share start. The quality switch sets a
+    // higher cap then stop()->start(). Must be called before start().
+    void setQualityCap(int maxW, int maxH) { m_capW = maxW; m_capH = maxH; }
 
 signals:
     void localOfferReady(const QString &sdp);
@@ -61,6 +66,8 @@ private:
     // Server screen ceiling (HPB signaling [mcu] maxscreenbitrate). GCC is
     // clamped here; it drives the VBR average up/down with the content.
     int m_maxBitrate = 12000000;
+    int m_capW = 1920;   // screen-capture downscale cap (default 1080p,
+    int m_capH = 1080;   // ~4.7x less per-frame RAM than native 4K)
     GstElement *m_gccbwe = nullptr;  // rtpgccbwe, owned by webrtcbin once returned
     // Set before pipeline→NULL in cleanup(); aux-sender/GCC callbacks
     // (streaming thread) bail on it to avoid a teardown-race UAF.

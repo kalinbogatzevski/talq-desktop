@@ -90,11 +90,20 @@ bool ScreenSharePipeline::start(const QString &stunServer, const QList<TurnServe
         return false;
     }
 
-    // Chain: screenSrc → videoconvert → encoder → [h264parse] → pay
-    //        → capsfilter(ssrc). Full native screen resolution — no
-    //        videoscale; screen content stays pixel-sharp. Hardware H264
-    //        preferred (sharp at the high screen bitrate the HPB allows),
-    //        software VP8 last-resort fallback.
+    // Chain: screenSrc -> queue(leaky) -> videoconvert -> videoscale ->
+    //        scaleCaps(<= m_capW x m_capH) -> encoder -> [h264parse] ->
+    //        pay -> capsfilter(ssrc). Capture is downscaled to a cap
+    //        (default 1080p) BEFORE encode: a native 4K raw frame is
+    //        ~38 MB and the unbounded native-res capture/convert/encoder
+    //        pools ballooned RAM ~400 MB the instant sharing started (and
+    //        forced real-time 4K H264). The cap is settable via
+    //        setQualityCap() so the quality switch can stop()->start() at
+    //        a higher resolution on demand. The leaky queue bounds the
+    //        raw-frame backlog. Hardware H264 preferred, software VP8
+    //        last-resort fallback.
+    GstElement *capQueue     = gst_element_factory_make("queue", nullptr);
+    GstElement *vscale       = gst_element_factory_make("videoscale", nullptr);
+    GstElement *scaleCaps    = gst_element_factory_make("capsfilter", nullptr);
     GstElement *videoConvert = gst_element_factory_make("videoconvert", nullptr);
     GstElement *ssrcFilter   = gst_element_factory_make("capsfilter", nullptr);
     bool useH264 = false;
@@ -105,15 +114,33 @@ bool ScreenSharePipeline::start(const QString &stunServer, const QList<TurnServe
                                  useH264 ? "rtph264pay" : "rtpvp8pay", nullptr)
                            : nullptr;
 
-    if (!videoConvert || !venc || !pay || !ssrcFilter) {
+    if (!videoConvert || !venc || !pay || !ssrcFilter
+        || !capQueue || !vscale || !scaleCaps) {
         emit error("Failed to create screen share encoding elements");
         // Not bin-added yet → drop floating refs (cleanup() only nulls).
-        for (GstElement *e : { videoConvert, venc, m_videoParser,
-                               pay, ssrcFilter })
+        for (GstElement *e : { capQueue, vscale, scaleCaps, videoConvert,
+                               venc, m_videoParser, pay, ssrcFilter })
             if (e) gst_object_unref(e);
         m_videoParser = nullptr;
         cleanup();
         return false;
+    }
+    // Bound the raw-frame backlog (4K BGRA ≈ 38 MB/buffer) and cap the
+    // capture resolution before encode. Range caps + fixed PAR let a
+    // smaller screen pass through untouched while a 4K screen scales down
+    // to fit the cap, aspect preserved.
+    g_object_set(capQueue, "leaky", 2 /* downstream */,
+                 "max-size-buffers", 3, "max-size-bytes", (guint)0,
+                 "max-size-time", (guint64)0, nullptr);
+    {
+        const QString capStr = QStringLiteral(
+            "video/x-raw,width=(int)[2,%1],height=(int)[2,%2],"
+            "pixel-aspect-ratio=1/1").arg(m_capW).arg(m_capH);
+        GstCaps *cap = gst_caps_from_string(capStr.toUtf8().constData());
+        g_object_set(scaleCaps, "caps", cap, nullptr);
+        gst_caps_unref(cap);
+        qInfo().nospace() << "ScreenSharePipeline: capture capped to "
+                          << m_capW << "x" << m_capH << " before encode";
     }
 
     qDebug().nospace() << "ScreenSharePipeline: encoder = " << m_encoderDesc;
@@ -157,15 +184,17 @@ bool ScreenSharePipeline::start(const QString &stunServer, const QList<TurnServe
         gst_caps_unref(ssrcCaps);
     }
 
-    gst_bin_add_many(GST_BIN(m_pipeline), screenSrc, videoConvert,
-                     venc, pay, ssrcFilter, m_webrtcbin, nullptr);
+    gst_bin_add_many(GST_BIN(m_pipeline), screenSrc, capQueue, videoConvert,
+                     vscale, scaleCaps, venc, pay, ssrcFilter, m_webrtcbin,
+                     nullptr);
     if (m_videoParser)
         gst_bin_add(GST_BIN(m_pipeline), m_videoParser);
 
     qDebug() << "ScreenSharePipeline: elements added to pipeline";
 
     gboolean linked =
-        gst_element_link_many(screenSrc, videoConvert, venc, nullptr);
+        gst_element_link_many(screenSrc, capQueue, videoConvert, vscale,
+                              scaleCaps, venc, nullptr);
     if (m_videoParser)
         linked = linked && gst_element_link_many(venc, m_videoParser, pay,
                                                  ssrcFilter, nullptr);

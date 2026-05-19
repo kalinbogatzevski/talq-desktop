@@ -233,9 +233,23 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
         if (roomType == "screen") {
             // Incoming screen share — create a subscriber for it
             qDebug() << "CallManager: received screen share offer from" << from.left(20);
-            if (m_screenSubscribers.contains(from)) {
-                m_screenSubscribers[from]->setRemoteOffer(sdp);
-                return;
+            // A re-share (stop → share again) sends a fresh offer for a
+            // session we may still hold a screen subscriber for. Feeding
+            // the new offer into the OLD SubscribePipeline leaves its
+            // already-negotiated decode wired to the dead stream — the
+            // viewer is stuck on a frozen last frame of the previous
+            // share. Same class as the camera re-attach bug: tear the
+            // stale subscriber down and fall through to build a fresh one.
+            if (auto *stale = m_screenSubscribers.take(from)) {
+                qDebug() << "CallManager: screen re-offer for" << from.left(20)
+                         << "— rebuilding screen subscriber (avoid frozen frame)";
+                stale->stop();
+                stale->deleteLater();
+                if (m_remoteScreenProvider) {
+                    m_remoteScreenProvider = nullptr;
+                    emit remoteScreenProviderChanged();
+                }
+                if (auto *p = m_participants.value(from)) p->setScreen(nullptr);
             }
             auto *sub = new SubscribePipeline(from, this);
             connect(sub, &SubscribePipeline::localAnswerReady,

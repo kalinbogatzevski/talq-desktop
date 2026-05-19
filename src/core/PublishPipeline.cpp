@@ -332,6 +332,14 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
     GstElement *sharedConvert = gst_element_factory_make("videoconvert", "pub-shared-conv");
     m_sharedScale = gst_element_factory_make("videoscale", "pub-shared-scale");
     m_sharedCaps  = gst_element_factory_make("capsfilter", "pub-shared-caps");
+    // CFR enforcement. Webcams (especially via mfvideosrc) deliver a
+    // variable / low frame rate; feeding that into a CBR H264 encoder
+    // starves it and produces the choppy ~250 kbps peer-camera stream.
+    // videorate dup/drops to an exact constant rate so the encoder always
+    // sees steady 30 fps regardless of camera quirks. (Plugin `videorate`
+    // is kept in lockstep in build-release.sh, deploy-dev.sh and the
+    // main.cpp dependency gate — a missing one aborts startup by design.)
+    GstElement *sharedRate = gst_element_factory_make("videorate", "pub-shared-rate");
 
     // Pin a CONSTANT encoder-input resolution. The funnel multiplexes a
     // 16x16 black dummy (idle) and the live camera; without this the
@@ -344,19 +352,24 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
     // in-band (H264 SPS / VP8 frame) so this is transparent to the
     // negotiated SDP/Janus.
     {
+        // Pin framerate too (not just WxH): with videorate upstream the
+        // encoder input is a constant 1280x720@30 for BOTH the 16x16 dummy
+        // and the live camera, which strengthens the anti-reconfigure
+        // invariant this capsfilter already enforces.
         GstCaps *sc = gst_caps_from_string(
-            "video/x-raw,width=1280,height=720,pixel-aspect-ratio=1/1");
+            "video/x-raw,width=1280,height=720,pixel-aspect-ratio=1/1,"
+            "framerate=30/1");
         g_object_set(m_sharedCaps, "caps", sc, nullptr);
         gst_caps_unref(sc);
     }
     gst_bin_add_many(GST_BIN(m_pipeline), sharedConvert, m_sharedScale,
-                     m_sharedCaps, nullptr);
+                     sharedRate, m_sharedCaps, nullptr);
 
     // Link shared chain: funnel → videoconvert → videoscale → sharedCaps
     //   → encoder → [h264parse if H264] → rtp{h264,vp8}pay → ssrcFilter
     gboolean encLinked =
         gst_element_link_many(m_funnel, sharedConvert, m_sharedScale,
-                              m_sharedCaps, m_videoEncoder, nullptr);
+                              sharedRate, m_sharedCaps, m_videoEncoder, nullptr);
     if (m_videoParser) {
         encLinked = encLinked &&
             gst_element_link_many(m_videoEncoder, m_videoParser,
