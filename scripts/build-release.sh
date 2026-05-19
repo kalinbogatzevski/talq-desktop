@@ -186,7 +186,7 @@ for p in coreelements typefindfunctions playback \
     audioconvert audioresample audioparsers opusparse autodetect audiotestsrc videotestsrc \
     dtls nice opus rtp rtpmanager srtp \
     wasapi wasapi2 webrtc webrtcdsp app level \
-    vpx openh264 videoconvertscale sctp jpeg \
+    vpx openh264 videoconvertscale videorate sctp jpeg \
     winks mediafoundation winscreencap \
     d3d11 nvcodec qsv x264 videoparsersbad \
     rsrtp rswebrtc; do

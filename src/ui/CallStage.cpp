@@ -904,8 +904,19 @@ void CallStage::mouseReleaseEvent(QMouseEvent *e)
     }
 }
 
-void CallStage::mouseDoubleClickEvent(QMouseEvent *)
+void CallStage::mouseDoubleClickEvent(QMouseEvent *e)
 {
+    // A double-click on the control bar (or the draggable self-PiP) must
+    // NOT toggle fullscreen. Rapidly clicking a control — e.g. the camera
+    // switch — otherwise registers every other click as a double-click and
+    // bounces the window in and out of fullscreen. Only the bare video
+    // surface goes fullscreen on double-click.
+    const bool onControl = m_controlsVisible && !hitButton(e->position()).isEmpty();
+    const bool onPip = !m_pipRect.isNull() && m_pipRect.contains(e->position());
+    if (onControl || onPip) {
+        pokeControls();
+        return;
+    }
     emit requestToggleFullscreen();
 }
 
