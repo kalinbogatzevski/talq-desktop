@@ -361,6 +361,20 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
     m_statsTimer.setInterval(2000);
     connect(&m_statsTimer, &QTimer::timeout, this, &CallManager::updateCallStats);
 
+    // Publisher ICE-failed grace timer. Fires only if publisher ICE was
+    // still "failed" 8 s after it first failed (any "connected"/
+    // "completed" in between stops it). This is the publisher-side
+    // analogue of recoverSubscriber()'s "never suicide on a transient
+    // blip" rule — a momentary network hiccup must not kill the call.
+    m_pubIceGrace.setSingleShot(true);
+    m_pubIceGrace.setInterval(8000);
+    connect(&m_pubIceGrace, &QTimer::timeout, this, [this]() {
+        if (m_state != Connecting && m_state != Active) return;
+        qWarning() << "CallManager: publisher ICE still failed after grace "
+                      "window — tearing down call";
+        hangUp();
+    });
+
     m_speakingGrace.setSingleShot(true);
     m_speakingGrace.setInterval(500);
     connect(&m_speakingGrace, &QTimer::timeout, this, [this]() {
@@ -551,8 +565,30 @@ void CallManager::updateCallStats()
     // Subscribers
     lines << "Subscribers: " + QString::number(m_subscribePipelines.size());
     for (auto it = m_subscribePipelines.begin(); it != m_subscribePipelines.end(); ++it) {
-        QString state = it.value()->isRunning() ? "active" : "stopped";
-        lines << "  " + it.key().left(12) + "... " + state;
+        SubscribeWebrtcSrc *s = it.value();
+        const bool run = s && s->isRunning();
+        QString line = "  " + it.key().left(12) + "... "
+                     + (run ? QStringLiteral("active") : QStringLiteral("stopped"));
+        if (run) {
+            // Live receive stats for this peer. RX fps≈1 with ptsΔ≈1000 ms
+            // ⇒ peer encoding ~1 fps; ptsΔ≈33 ms with low fps ⇒ frames
+            // dropped on receive. The resolution comes from the last
+            // actually-decoded frame so it reflects what's being painted,
+            // not what was negotiated.
+            QString res = QStringLiteral("?×?");
+            if (auto *p = s->videoProvider()) {
+                QSize sz = p->lastFrameSize();
+                if (!sz.isEmpty())
+                    res = QString::number(sz.width()) + QChar(0x00D7)
+                        + QString::number(sz.height());
+            }
+            line += QStringLiteral("  RX %1 fps %2 (%3 distinct, ptsΔ %4 ms)")
+                        .arg(s->rxVideoFps())
+                        .arg(res)
+                        .arg(s->rxDistinctVideoFps())
+                        .arg(s->rxPtsGapMs());
+        }
+        lines << line;
     }
 
     // Remote peer
@@ -659,6 +695,17 @@ void CallManager::requestPeerStream(const QString &sessionId)
 {
     if (sessionId.isEmpty() || sessionId == m_signaling->sessionId()) return;
     if (m_subscribePipelines.contains(sessionId)) return;   // already subscribed
+    // Asymmetric-chop fix: the CALLER reaches this twice for the same
+    // peer (once when its publisher comes up + the remote is already
+    // joined, again on participantJoinedCall / roomPeerJoined). Without
+    // this guard, two requestOffer messages go to the MCU; the second
+    // offer triggers the stale-subscriber rebuild path in
+    // onOfferReceived, which costs a frame-loss spike → chop. The
+    // callee never double-requests (it gets one event for the existing
+    // caller). Skipping in-flight duplicates makes both directions
+    // equivalent. Retries still happen via m_requestOfferRetry, which
+    // calls signaling->requestOffer directly (not this function).
+    if (m_pendingRequestOffers.contains(sessionId)) return;
     m_pendingRequestOffers.insert(sessionId);
     m_requestOfferAttempts[sessionId] = 0;
     m_signaling->requestOffer(sessionId, "video");
@@ -873,8 +920,30 @@ void CallManager::startScreenShare(int monitorIndex, quintptr windowHandle)
     if (m_state != Active && m_state != Connecting) return;
     if (m_screenSharing) return;
 
+    // Remember target + quality so setScreenShareQuality() can re-share
+    // the SAME screen/window at a new cap without re-prompting.
+    m_ssMonitorIndex = monitorIndex;
+    m_ssWindowHandle = windowHandle;
+    m_ssQuality = QSettings("TalQ", "TalQ")
+                      .value("Video/screenShareQuality", 1).toInt();
+
     m_screenSharing = true;
     m_screenSharePipeline = new ScreenSharePipeline(this);
+    {
+        // Level → pre-encode downscale cap (set before start(), which the
+        // pipeline reads once). Native uses an 8K cap so the scaleCaps
+        // range passes the real resolution through untouched — the user
+        // opted in; #119's 4K+ RAM caveat applies there.
+        int cw = 1920, ch = 1080;
+        switch (m_ssQuality) {
+            case 0: cw = 1280; ch = 720;  break;
+            case 1: cw = 1920; ch = 1080; break;
+            case 2: cw = 2560; ch = 1440; break;
+            case 3: cw = 7680; ch = 4320; break;
+            default: break;
+        }
+        m_screenSharePipeline->setQualityCap(cw, ch);
+    }
 
     connect(m_screenSharePipeline, &ScreenSharePipeline::localOfferReady,
             this, [this](const QString &sdp) {
@@ -902,15 +971,20 @@ void CallManager::startScreenShare(int monitorIndex, quintptr windowHandle)
 
     connect(m_screenSharePipeline, &ScreenSharePipeline::iceStateChanged,
             this, [this](const QString &state) {
-        qDebug() << "CallManager: screen share ICE:" << state;
+        // qInfo so the screen-share start sequence is visible in the
+        // production field log without verbose mode (#134 diag).
+        qInfo() << "CallManager: screen share ICE:" << state;
         if (state == "connected") {
             // Send sendoffer once — HPB creates subscriber for each peer
-            for (const QString &peerId : m_subscribePipelines.keys()) {
+            const auto peers = m_subscribePipelines.keys();
+            qInfo() << "CallManager: screen pub connected — dispatching "
+                       "sendoffer to" << peers.size() << "peer(s)";
+            for (const QString &peerId : peers) {
                 QJsonObject data;
                 data["type"] = QString("sendoffer");
                 data["roomType"] = QString("screen");
                 m_signaling->sendMinimalMessage(peerId, data);
-                qDebug() << "CallManager: sent sendoffer screen to" << peerId.left(20);
+                qInfo() << "CallManager: sent sendoffer screen to" << peerId.left(20);
             }
         }
         if (state == "failed") {
@@ -941,12 +1015,32 @@ void CallManager::stopScreenShare()
 {
     if (!m_screenSharing) return;
 
+    // Mark the screen-share teardown window so the publisher-ICE-failed
+    // handler short-circuits its recovery counter / hangUp during this
+    // span. The screen pipeline's webrtcbin teardown can transiently
+    // perturb the shared signaling agent (50-iteration GLib flush
+    // below), and any spurious "failed" edge on the audio/video
+    // publisher must NOT drop the whole call — only the main audio
+    // stream truly failing should do that. Cleared at end of function.
+    m_screenShareTearingDown = true;
+
     if (m_screenSharePipeline) {
         m_screenSharePipeline->stop();
         m_screenSharePipeline->deleteLater();
         m_screenSharePipeline = nullptr;
     }
     m_screenSharing = false;
+    // Defensive: clear the per-share sid so a subsequent re-share starts
+    // from a fresh signaling identity (any straggler messages bound to
+    // the old sid get dropped instead of clobbering the new session).
+    m_screenShareSid.clear();
+    // Flush pending GStreamer/GLib callbacks (libnice agents, DTLS timers,
+    // bus messages) from the just-deleteLater'd pipeline before a possible
+    // immediate re-share creates a new webrtcbin. Same pattern as
+    // stopAllPipelines uses for the camera publish path — prevents
+    // stale-callback ↔ fresh-resource collisions in an enable→disable→
+    // enable cycle.
+    for (int i = 0; i < 50; ++i) g_main_context_iteration(nullptr, FALSE);
 
     // Send unshareScreen as room message (browser compatibility) AND
     // to ourselves (triggers HPB to close the screen publisher in Janus).
@@ -956,9 +1050,31 @@ void CallManager::stopScreenShare()
     m_signaling->sendBroadcastMessage(data);
     // Also send to own session — HPB only cleans up publisher when recipient == self
     m_signaling->sendMinimalMessage(m_signaling->sessionId(), data);
-    qDebug() << "CallManager: stopped screen sharing";
+    qInfo() << "CallManager: stopped screen sharing";
 
+    m_screenShareTearingDown = false;
     emit screenShareChanged();
+}
+
+void CallManager::setScreenShareQuality(int level)
+{
+    if (level < 0 || level > 3) return;
+    m_ssQuality = level;
+    QSettings("TalQ", "TalQ").setValue("Video/screenShareQuality", level);
+    emit screenShareQualityChanged();
+    if (!m_screenSharing) return;   // applied on next share
+
+    // Live change: quick managed re-share at the new cap, SAME target.
+    // stop+start reuses all the existing signaling/ICE/offer wiring;
+    // peers re-receive the screen at the new resolution after a brief
+    // (~sub-second) blip. startScreenShare() re-reads the persisted
+    // quality and applies the new downscale cap.
+    const int mi = m_ssMonitorIndex;
+    const quintptr wh = m_ssWindowHandle;
+    qInfo() << "CallManager: screen-share quality ->" << level
+            << "(re-sharing same target)";
+    stopScreenShare();
+    startScreenShare(mi, wh);
 }
 
 int CallManager::videoDeviceIndex() const
@@ -1191,10 +1307,40 @@ void CallManager::joinCallOnServer(bool withVideo)
 
                         connect(m_publishPipeline, &PublishPipeline::localOfferReady,
                                 this, [this, pubSid](const QString &sdp) {
+                            // TEMP (#132 Task 3 RCA): surface the simulcast lines
+                            // so the harness can verify webrtcbin echoed the rid.
+                            // Removed in Task 8 cleanup commit.
+                            qInfo() << "PUBOFFER ===";
+                            for (const QString &line : sdp.split('\n')) {
+                                if (line.startsWith("a=rid")
+                                    || line.startsWith("a=simulcast")
+                                    || line.startsWith("m=")) {
+                                    qInfo() << "PUBOFFER" << line;
+                                }
+                            }
+                            qInfo() << "PUBOFFER ===";
                             // Send offer to OUR OWN session ID (MCU intercepts)
                             setStatusDetail("Sending offer to MCU");
                             m_signaling->sendOffer(m_signaling->sessionId(), sdp, pubSid);
                             qDebug() << "CallManager: sent publish offer to own session, sid=" << pubSid;
+                        });
+
+                        // Self-heal: a forced exact camera caps that
+                        // mfvideosrc can't deliver triggers no frames →
+                        // PublishPipeline already reset the pick to Auto;
+                        // we just re-arm the camera so it comes up via
+                        // permissive negotiation (guaranteed-working).
+                        connect(m_publishPipeline, &PublishPipeline::cameraNegotiationFailed,
+                                this, [this]() {
+                            qWarning() << "CallManager: camera negotiation failed — "
+                                          "re-arming via Auto/permissive";
+                            if (!m_publishPipeline) return;
+                            m_publishPipeline->disableCamera();
+                            QTimer::singleShot(150, this, [this]() {
+                                if (!m_publishPipeline) return;
+                                m_publishPipeline->enableCamera(
+                                    videoDeviceIndex(), preferHd1080());
+                            });
                         });
 
                         connect(m_publishPipeline, &PublishPipeline::iceCandidateReady,
@@ -1214,9 +1360,53 @@ void CallManager::joinCallOnServer(bool withVideo)
                             qDebug() << "CallManager: publisher ICE:" << state;
                             if (m_state != Active)
                                 setStatusDetail("Publisher ICE " + state);
-                            if (state == "failed") {
-                                qWarning() << "CallManager: publisher ICE failed, tearing down call";
-                                hangUp();
+                            if (state == "connected" || state == "completed") {
+                                // Upstream conformance: the call is "live"
+                                // the moment the publisher PC is up — peer
+                                // video subscribers come and go independently
+                                // and shouldn't gate the top-level status.
+                                // Without this, the call stays pinned on
+                                // "Connecting" until a peer enables their
+                                // camera (callee-mid-call scenario), even
+                                // though audio is flowing both ways.
+                                if (m_state == Connecting) {
+                                    setState(Active);
+                                    m_durationTimer.start();
+                                }
+                                if (m_pubIceGrace.isActive()) {
+                                    qInfo() << "CallManager: publisher ICE "
+                                               "recovered (" << state
+                                            << ") — call stays up";
+                                    m_pubIceGrace.stop();
+                                    setStatusDetail("Connected");
+                                }
+                                m_pubIceRecoveries = 0;
+                            } else if (state == "failed") {
+                                // Suppress recovery-counter bumps when the
+                                // failed edge is collateral from a screen-
+                                // share teardown — a non-main-stream failure
+                                // must never drop the call (#138).
+                                if (m_screenShareTearingDown) {
+                                    qInfo() << "CallManager: publisher ICE "
+                                               "transient 'failed' during "
+                                               "screen-share teardown — "
+                                               "ignored (call stays up)";
+                                    return;
+                                }
+                                constexpr int kMaxPubRecoveries = 6;
+                                if (++m_pubIceRecoveries > kMaxPubRecoveries) {
+                                    qWarning() << "CallManager: publisher ICE "
+                                                  "failed" << m_pubIceRecoveries
+                                               << "times — tearing down call";
+                                    hangUp();
+                                } else if (!m_pubIceGrace.isActive()) {
+                                    qWarning() << "CallManager: publisher ICE "
+                                                  "failed — grace window, "
+                                                  "awaiting self-heal (attempt"
+                                               << m_pubIceRecoveries << ")";
+                                    setStatusDetail("Reconnecting…");
+                                    m_pubIceGrace.start();
+                                }
                             }
                         });
 
@@ -1295,8 +1485,23 @@ void CallManager::joinCallOnServer(bool withVideo)
                                     }
                                 });
                             };
-                            // Poll immediately + every 3 seconds until peer found
-                            pollParticipants();
+                            // Compliance with upstream Talk web client
+                            // (v23.0.4, MCU mode): the upstream waits for
+                            // the signaling layer's usersInCallChanged
+                            // event before calling requestOffer; it does
+                            // NOT poll the REST endpoint eagerly. An eager
+                            // immediate poll can land on the MCU before
+                            // the peer's publish is fully registered, so
+                            // the resulting subscriber binds to an
+                            // incomplete publish state — exactly the
+                            // caller-sees-callee-choppy pattern. We
+                            // remove the immediate poll() invocation and
+                            // keep the 3-s timer purely as a backup for
+                            // the documented mobile/internal-signaling
+                            // path where HPB participant events may not
+                            // fire. The HPB roomPeerJoined /
+                            // participantJoinedCall handlers will normally
+                            // trigger requestPeerStream within ms.
                             auto *pollTimer = new QTimer(this);
                             pollTimer->setInterval(3000);
                             connect(pollTimer, &QTimer::timeout, this, pollParticipants);
@@ -1314,18 +1519,31 @@ void CallManager::joinCallOnServer(bool withVideo)
         });
 }
 
-void CallManager::leaveCallOnServer()
+void CallManager::leaveCallOnServer(std::function<void()> onDone)
 {
-    if (m_callToken.isEmpty() || !m_joinedCall) return;
+    if (m_callToken.isEmpty() || !m_joinedCall) {
+        if (onDone) onDone();
+        return;
+    }
     // NC Talk API reads "all" from the request body, not query params.
     // all=true means "end the call for EVERYONE" and is moderators-only;
     // a normal hang-up must send all=false or a moderator leaving would
     // terminate the whole group call.
     QJsonObject body;
     body["all"] = false;
+    // Fire-and-callback: the result is reported when the server actually
+    // ACKs the leave (or returns an error). No UI is blocked on this —
+    // teardown() runs setState(Idle) + emit callEnded synchronously, and
+    // only the user-status revert hook depends on the ACK. If the network
+    // is dead, the callback may never fire; that's fine because the
+    // spreed-signaling participant timeout handles server-side cleanup
+    // either way.
     m_api->del("apps/spreed/api/v4/call/" + m_callToken, body,
-        [](bool ok, const QJsonObject &, int statusCode) {
-            if (!ok) qWarning() << "CallManager: failed to leave call on server, status=" << statusCode;
+        [onDone](bool ok, const QJsonObject &, int statusCode) {
+            if (!ok) qWarning() << "CallManager: leaveCall server returned "
+                                   "error status=" << statusCode;
+            else     qDebug()  << "CallManager: leaveCall ack received";
+            if (onDone) onDone();
         });
 }
 
@@ -1373,6 +1591,8 @@ void CallManager::stopAllPipelines()
     m_subscribePipelines.clear();
     m_subscriberSids.clear();
     m_subscriberRecoveries.clear();
+    m_pubIceGrace.stop();
+    m_pubIceRecoveries = 0;
 
     // Flush stale GLib sources from destroyed pipelines (libnice agents,
     // DTLS timers, etc.). Without this, creating a new webrtcbin on the
@@ -1395,15 +1615,20 @@ void CallManager::teardown(const QString &reason)
     m_ringTimeout.stop();
     m_durationTimer.stop();
     stopAllPipelines();
-    leaveCallOnServer();
 
+    // Local state cleanup runs immediately — anything that affects the
+    // user's view of the call (mic level, screen share, participants)
+    // should clear without waiting for the server. Only the callEnded
+    // signal (which gates UserStatusManager::revertStuckCall) is deferred
+    // until the server has acknowledged the leave, so the revert finds
+    // a server in the post-call state and the pre-call status snapshot
+    // can be restored.
     m_callToken.clear();
     m_remoteSessionId.clear();
     m_remotePeerName.clear();
     m_remotePeerId.clear();
     m_remotePeerClient.clear();
     m_callDuration = 0;
-    m_joinedCall = false;
     m_userActionReady = false;
     m_remoteVideoMuted = true;
     m_remoteAudioMuted = true;
@@ -1414,13 +1639,20 @@ void CallManager::teardown(const QString &reason)
     m_requestOfferAttempts.clear();
     m_requestOfferRetry.stop();
 
-    // Clean up screen sharing
+    // Clean up screen sharing. Set the teardown flag for symmetry with
+    // stopScreenShare(): if any publisher-ICE-failed edge fires during
+    // the screen pipeline destruction it must not bump the recovery
+    // counter and re-enter hangUp(). Benign here today (stopAllPipelines
+    // ran just above and queued signals can't reach a destroyed handler),
+    // but cheap defence against future reordering.
+    m_screenShareTearingDown = true;
     if (m_screenSharePipeline) {
         m_screenSharePipeline->stop();
         m_screenSharePipeline->deleteLater();
         m_screenSharePipeline = nullptr;
     }
     m_screenSharing = false;
+    m_screenShareTearingDown = false;
     if (m_remoteScreenProvider) {
         m_remoteScreenProvider->disconnect();
         m_remoteScreenProvider = nullptr;
@@ -1432,8 +1664,21 @@ void CallManager::teardown(const QString &reason)
     }
     m_screenSubscribers.clear();
 
+    // Synchronous local close — the UI must NEVER wait on the server
+    // (mid-call network drops could otherwise leave the call window
+    // pinned "in call" until Qt's transport timeout, a minute+ later).
+    m_joinedCall = false;
     setState(Idle);
     emit callEnded(reason);
+
+    // Server-side leave is fire-and-forget; whatever consumer needs to
+    // know "the server has finished processing my leave" (currently the
+    // user-status revert) listens to callServerLeaveAcked. If the network
+    // is dead the signal never fires, which is fine — the server's own
+    // participant-timeout cleans up that session.
+    leaveCallOnServer([this]() {
+        emit callServerLeaveAcked();
+    });
 }
 
 void CallManager::onAudioLevelUpdated(double level)
@@ -1563,9 +1808,20 @@ void CallManager::onParticipantJoinedCall(const QString &sessionId, int flags, c
                 p->setCamera(m_peerPipeline->remoteVideoProvider());
                 p->setConnState(CallParticipant::Connecting);
             }
-        } else {
+        } else if (flags & CALL_FLAG_WITH_VIDEO) {
+            // Upstream Talk web client (v23.0.4 MCU mode) only invokes
+            // signaling.requestOffer(user, 'video') when userHasStreams.
+            // Requesting a video subscriber before the peer has the
+            // video flag costs an MCU round-trip on an incomplete publish
+            // state and is a likely contributor to the caller-side chop.
+            // For audio-only joiners, the participantFlagsChanged handler
+            // already triggers requestPeerStream when video later toggles
+            // on — the same gate upstream uses.
             requestPeerStream(sessionId);
             qDebug() << "CallManager: sent requestOffer for remote peer";
+        } else {
+            qDebug() << "CallManager: peer joined without video flag — "
+                        "waiting for video before requesting subscriber";
         }
     }
     else if (m_state == Idle) {

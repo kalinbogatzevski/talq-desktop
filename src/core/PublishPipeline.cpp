@@ -14,6 +14,43 @@ PublishPipeline::PublishPipeline(QObject *parent)
     : QObject(parent)
 {
     m_localVideoProvider = new VideoFrameProvider(this);
+
+    // No-frames watchdog for self-healing forced camera picks: if Settings
+    // pinned an exact caps that the actually-opened mfvideosrc instance
+    // can't deliver, no preview frames arrive — fire 3 s after enable to
+    // reset the pick to Auto and signal CallManager to re-arm.
+    m_camStartWatchdog.setSingleShot(true);
+    m_camStartWatchdog.setInterval(3000);
+    connect(&m_camStartWatchdog, &QTimer::timeout, this, [this]() {
+        if (m_camFirstFrameSeen.load(std::memory_order_relaxed)) return;
+        if (!m_camForcedCapsActive) return;
+        qWarning() << "PublishPipeline: forced camera mode produced no "
+                      "frames within 3 s — falling back to Auto / permissive";
+        {
+            QSettings s("TalQ", "TalQ");
+            s.beginGroup("Video");
+            s.setValue("cameraQuality", QStringLiteral("auto"));
+            s.setValue("cameraSrcCaps", QString());
+            s.endGroup();
+        }
+        m_camForcedCapsActive = false;
+        emit cameraNegotiationFailed();
+    });
+
+    // Upstream Talk's BlackVideoEnforcer paints the canvas for 5 s after
+    // every transition to "video muted" and then disables the track so
+    // RTP halts. We mirror that timing: 5 s after the pipeline enters
+    // "camera off", close the dummy valve. With both valves closed no
+    // frames reach the funnel → no RTP — the wire goes silent.
+    m_dummyHaltTimer.setSingleShot(true);
+    m_dummyHaltTimer.setInterval(5000);
+    connect(&m_dummyHaltTimer, &QTimer::timeout, this, [this]() {
+        if (m_cameraEnabled) return;     // camera came up during the grace window
+        if (!m_dummyValve) return;       // pipeline torn down already
+        g_object_set(m_dummyValve, "drop", TRUE, nullptr);
+        qDebug() << "PublishPipeline: dummy halted after 5 s grace — "
+                    "RTP silent until camera enable (upstream conformance)";
+    });
 }
 
 PublishPipeline::~PublishPipeline()
@@ -218,107 +255,39 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
     // permanently linked to a funnel element via valves. Only one valve is
     // open at a time. Switching is just a pair of g_object_set("drop") calls.
     // No unlinking, no relinking, no pad swaps.
-    m_videoSsrc = g_random_int();
+    // --- Simulcast architecture (#132): a single shared chain feeds an
+    // outputTee, which fans out into N=3 parallel encoder branches —
+    // one per simulcast layer (rid l/m/h at 180p/360p/720p). Each branch
+    // links to its own webrtcbin sink_%u pad; per-transceiver
+    // codec-preferences carry `rid`, and webrtcbin emits a consolidated
+    // a=simulcast: send l;m;h block in the SDP offer.
 
-    // --- Shared encoder chain: funnel → [enc] → [h264parse] → pay → ssrc ---
-    // Prefer HARDWARE H264 (highest quality at the raised HPB ceiling,
-    // near-zero CPU — VP8/VP9 software at 1080p is the CPU-storm class of
-    // failure we fixed in 0.29.2). The Janus room is created H264-preferred
-    // (SignalingClient videocodec="h264,vp8"). Fallbacks: MediaFoundation
-    // H264 → x264 (sw) → vp8 (last resort, keeps a call alive if no H264
-    // encoder exists on the box). m_initBitrate is a conservative start;
-    // rtpgccbwe drives it up to the server ceiling at runtime.
-    m_funnel          = gst_element_factory_make("funnel", "pub-funnel");
-    m_videoSsrcFilter = gst_element_factory_make("capsfilter", "pub-video-ssrc-filter");
-    m_videoParser     = nullptr;
-    m_videoEncoder    = makeWebrtcVideoEncoder(/*screen=*/false, m_initBitrate,
-                                               &m_useH264, &m_videoParser,
-                                               &m_encoderDesc);
-    m_videoPayloader  = gst_element_factory_make(
-                            m_useH264 ? "rtph264pay" : "rtpvp8pay",
-                            "pub-rtppay");
-    if (!m_funnel || !m_videoEncoder || !m_videoPayloader || !m_videoSsrcFilter) {
-        emit error("Failed to create shared video encoder chain");
-        // Not bin-added yet → cleanup() (which only nulls pointers) would
-        // leak these floating refs. Sink+drop the ones we did create.
-        for (GstElement *e : { m_funnel, m_videoEncoder, m_videoParser,
-                               m_videoPayloader, m_videoSsrcFilter })
-            if (e) gst_object_unref(e);
-        m_funnel = m_videoEncoder = m_videoParser = nullptr;
-        m_videoPayloader = m_videoSsrcFilter = nullptr;
-        cleanup();
-        return false;
-    }
-    if (m_useH264) {
-        // h264parse + config-interval=-1 repeats SPS/PPS before every IDR
-        // (an SFU forwards to subscribers who join after the first
-        // keyframe — without this they get no decodable stream).
-        // rtph264pay aggregate-mode=zero-latency + au alignment for RTC.
-        g_object_set(m_videoParser, "config-interval", -1, nullptr);
-        g_object_set(m_videoPayloader, "aggregate-mode", 1 /* zero-latency */,
-                     "config-interval", -1, nullptr);
-    }
-    g_object_set(m_videoPayloader, "ssrc", m_videoSsrc, "pt", 96, nullptr);
-    // Make the payloader stamp the TWCC sequence number onto every packet
-    // with the SAME id we advertise in codec-preferences below. Without
-    // this the SDP offers transport-wide-cc but the wire carries none, so
-    // Janus has nothing to feed back and rtpgccbwe stays starved.
-    // Tracks whether the wire actually carries TWCC, so the SDP only
-    // advertises extmap when it is true (advertising it without the
-    // payloader writing it = Janus expects feedback, gets none, GCC
-    // starves — the 0.29.3 black-video regression).
-    bool twccActive = false;
-    {
-        GstRTPHeaderExtension *twcc =
-            gst_rtp_header_extension_create_from_uri(kTwccUri);
-        if (twcc) {
-            gst_rtp_header_extension_set_id(twcc, kTwccExtId);
-            g_signal_emit_by_name(m_videoPayloader, "add-extension", twcc);
-            gst_object_unref(twcc);  // payloader holds its own ref
-            twccActive = true;
-            qDebug() << "PublishPipeline: TWCC ext id" << kTwccExtId
-                     << "added to payloader";
-        } else {
-            qWarning() << "PublishPipeline: rtphdrexttwcc unavailable — "
-                          "send-side adaptive bitrate disabled";
-        }
-    }
-    {
-        GstCaps *sc = gst_caps_from_string("application/x-rtp");
-        gst_caps_set_simple(sc, "ssrc", G_TYPE_UINT, m_videoSsrc, nullptr);
-        g_object_set(m_videoSsrcFilter, "caps", sc, nullptr);
-        gst_caps_unref(sc);
-    }
+    // Funnel + shared input (unchanged from single-stream): dummy & camera
+    // multiplex into one constant 1280x720@30 source feed.
+    m_funnel = gst_element_factory_make("funnel", "pub-funnel");
+    if (!m_funnel) { emit error("funnel"); cleanup(); return false; }
 
-    // --- Dummy branch: dummySrc → dummyCaps(16x16,1fps) → dummyConv → dummyValve ---
+    // --- Dummy branch (unchanged) ---
     m_dummySrc   = gst_element_factory_make("videotestsrc", "pub-dummyvideo");
     m_dummyCaps  = gst_element_factory_make("capsfilter", "pub-dummycaps");
     m_dummyConv  = gst_element_factory_make("videoconvert", "pub-dummyconv");
     m_dummyValve = gst_element_factory_make("valve", "pub-dummyvalve");
     if (!m_dummySrc || !m_dummyCaps || !m_dummyConv || !m_dummyValve) {
-        emit error("Failed to create dummy video source");
-        cleanup();
-        return false;
+        emit error("Failed to create dummy video source"); cleanup(); return false;
     }
     g_object_set(m_dummySrc, "pattern", 2 /* black */, "is-live", TRUE, nullptr);
     {
-        GstCaps *lowCaps = gst_caps_from_string("video/x-raw,width=16,height=16,framerate=1/1");
+        GstCaps *lowCaps = gst_caps_from_string(
+            "video/x-raw,width=16,height=16,framerate=10/1");
         g_object_set(m_dummyCaps, "caps", lowCaps, nullptr);
         gst_caps_unref(lowCaps);
     }
-    g_object_set(m_dummyValve, "drop", FALSE, nullptr);  // dummy active at startup
+    g_object_set(m_dummyValve, "drop", FALSE, nullptr);
 
-    // Add shared chain + dummy branch to pipeline
-    gst_bin_add_many(GST_BIN(m_pipeline), m_funnel, m_videoEncoder, m_videoPayloader,
-                     m_videoSsrcFilter, m_dummySrc, m_dummyCaps, m_dummyConv,
-                     m_dummyValve, nullptr);
-    if (m_videoParser)  // h264parse, present iff H264 encoder selected
-        gst_bin_add(GST_BIN(m_pipeline), m_videoParser);
-
-    // Link dummy branch: dummySrc → dummyCaps → dummyConv → dummyValve
+    gst_bin_add_many(GST_BIN(m_pipeline), m_funnel,
+                     m_dummySrc, m_dummyCaps, m_dummyConv, m_dummyValve, nullptr);
     gst_element_link_many(m_dummySrc, m_dummyCaps, m_dummyConv, m_dummyValve, nullptr);
 
-    // Link dummyValve → funnel (request pad)
     {
         GstPad *dummyValveSrc = gst_element_get_static_pad(m_dummyValve, "src");
         GstPad *funnelSink = gst_element_request_pad_simple(m_funnel, "sink_%u");
@@ -327,104 +296,188 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         gst_object_unref(funnelSink);
     }
 
-    // Shared converter+scaler between funnel and encoder — handles resolution
-    // changes when switching between dummy (16x16) and camera (native resolution).
+    // --- Shared convert/scale → constant 1280x720@30 caps → outputTee ---
     GstElement *sharedConvert = gst_element_factory_make("videoconvert", "pub-shared-conv");
     m_sharedScale = gst_element_factory_make("videoscale", "pub-shared-scale");
     m_sharedCaps  = gst_element_factory_make("capsfilter", "pub-shared-caps");
-    // CFR enforcement. Webcams (especially via mfvideosrc) deliver a
-    // variable / low frame rate; feeding that into a CBR H264 encoder
-    // starves it and produces the choppy ~250 kbps peer-camera stream.
-    // videorate dup/drops to an exact constant rate so the encoder always
-    // sees steady 30 fps regardless of camera quirks. (Plugin `videorate`
-    // is kept in lockstep in build-release.sh, deploy-dev.sh and the
-    // main.cpp dependency gate — a missing one aborts startup by design.)
     GstElement *sharedRate = gst_element_factory_make("videorate", "pub-shared-rate");
-
-    // Pin a CONSTANT encoder-input resolution. The funnel multiplexes a
-    // 16x16 black dummy (idle) and the live camera; without this the
-    // encoder caps flipped 16x16↔native(1080p) on camera-enable, forcing
-    // a full vp8enc + buffer-pool reconfiguration mid-call (+281 MB/2 s,
-    // event-loop stall → the SFU dropped the publisher and the call
-    // ended). 1280x720 matches the official native (Android) client's
-    // landscape capture target; the dummy is upscaled (trivial, 1 fps
-    // black), the camera is downscaled here. The codec carries resolution
-    // in-band (H264 SPS / VP8 frame) so this is transparent to the
-    // negotiated SDP/Janus.
+    m_outputTee   = gst_element_factory_make("tee", "pub-output-tee");
+    if (!sharedConvert || !m_sharedScale || !m_sharedCaps || !sharedRate || !m_outputTee) {
+        emit error("Failed to create shared chain / outputTee"); cleanup(); return false;
+    }
     {
-        // Pin framerate too (not just WxH): with videorate upstream the
-        // encoder input is a constant 1280x720@30 for BOTH the 16x16 dummy
-        // and the live camera, which strengthens the anti-reconfigure
-        // invariant this capsfilter already enforces.
         GstCaps *sc = gst_caps_from_string(
-            "video/x-raw,width=1280,height=720,pixel-aspect-ratio=1/1,"
-            "framerate=30/1");
+            "video/x-raw,width=1280,height=720,pixel-aspect-ratio=1/1,framerate=30/1");
         g_object_set(m_sharedCaps, "caps", sc, nullptr);
         gst_caps_unref(sc);
     }
-    gst_bin_add_many(GST_BIN(m_pipeline), sharedConvert, m_sharedScale,
-                     sharedRate, m_sharedCaps, nullptr);
-
-    // Link shared chain: funnel → videoconvert → videoscale → sharedCaps
-    //   → encoder → [h264parse if H264] → rtp{h264,vp8}pay → ssrcFilter
-    gboolean encLinked =
-        gst_element_link_many(m_funnel, sharedConvert, m_sharedScale,
-                              sharedRate, m_sharedCaps, m_videoEncoder, nullptr);
-    if (m_videoParser) {
-        encLinked = encLinked &&
-            gst_element_link_many(m_videoEncoder, m_videoParser,
-                                  m_videoPayloader, m_videoSsrcFilter, nullptr);
-    } else {
-        encLinked = encLinked &&
-            gst_element_link_many(m_videoEncoder, m_videoPayloader,
-                                  m_videoSsrcFilter, nullptr);
-    }
-    if (!encLinked) {
-        emit error("Failed to link shared video encoder chain");
-        cleanup();
-        return false;
+    gst_bin_add_many(GST_BIN(m_pipeline),
+                     sharedConvert, m_sharedScale, sharedRate, m_sharedCaps,
+                     m_outputTee, nullptr);
+    if (!gst_element_link_many(m_funnel, sharedConvert, m_sharedScale,
+                                sharedRate, m_sharedCaps, m_outputTee, nullptr)) {
+        emit error("Failed to link shared chain"); cleanup(); return false;
     }
 
-    qDebug() << "PublishPipeline: encoder chain built, codec="
-             << (m_useH264 ? "H264 (hardware-preferred)" : "VP8 (fallback)")
-             << "SSRC" << m_videoSsrc;
+    // --- Three simulcast branches: each tees off m_outputTee ---
+    bool firstBranchUsesH264 = false;
+    for (size_t i = 0; i < m_layers.size(); ++i) {
+        auto &L = m_layers[i];
+        QString tag = QString::fromUtf8(L.rid);
 
-    // --- Link videoSsrcFilter to webrtcbin video sink pad ---
-    m_videoSinkPad = gst_element_request_pad_simple(m_webrtcbin, "sink_%u");
+        L.valve      = gst_element_factory_make("valve",       ("pub-valve-"      + tag).toUtf8().constData());
+        L.scale      = gst_element_factory_make("videoscale",  ("pub-scale-"      + tag).toUtf8().constData());
+        L.caps       = gst_element_factory_make("capsfilter",  ("pub-caps-"       + tag).toUtf8().constData());
+        L.ssrcFilter = gst_element_factory_make("capsfilter",  ("pub-ssrcfilter-" + tag).toUtf8().constData());
+        // Per-layer encoder + parser. Codec selection MUST agree across layers:
+        // makeWebrtcVideoEncoder is deterministic for the same `screen` flag,
+        // so all three layers pick the same factory. We pin the codec from
+        // layer 0's decision and assert it on subsequent layers.
+        bool layerUsesH264 = false;
+        L.encoder = makeWebrtcVideoEncoder(/*screen=*/false, L.nominalBitrate,
+                                            &layerUsesH264, &L.parser,
+                                            (i == 0) ? &m_encoderDesc : nullptr);
+        if (i == 0) {
+            firstBranchUsesH264 = layerUsesH264;
+            m_useH264 = layerUsesH264;
+        } else if (layerUsesH264 != firstBranchUsesH264) {
+            emit error("Simulcast branch codec mismatch");
+            cleanup();
+            return false;
+        }
+        L.payloader = gst_element_factory_make(
+            L.encoder && m_useH264 ? "rtph264pay" : "rtpvp8pay",
+            ("pub-rtppay-" + tag).toUtf8().constData());
 
-    GstWebRTCRTPTransceiver *vt = nullptr;
-    g_object_get(m_videoSinkPad, "transceiver", &vt, nullptr);
-    if (vt) {
-        GstCaps *vc = gst_caps_from_string(
-            m_useH264
-              ? "application/x-rtp,media=video,encoding-name=H264,"
-                "clock-rate=90000,payload=96"
-              : "application/x-rtp,media=video,encoding-name=VP8,"
-                "clock-rate=90000,payload=96");
-        // webrtcbin emits a=extmap in the offer from codec-preferences, not
-        // by introspecting the external payloader (whose caps aren't even
-        // negotiated yet at create-offer — the funnel is on the 16x16
-        // dummy). Putting the TWCC extmap here makes the offer carry it
-        // deterministically, so Janus negotiates transport-wide-cc and
-        // feeds GCC. set_simple is used over a caps string to avoid URI
-        // escaping pitfalls. Only advertise it if the payloader actually
-        // writes TWCC (twccActive) — otherwise SDP and wire disagree.
-        if (twccActive) {
+        if (!L.valve || !L.scale || !L.caps || !L.ssrcFilter
+            || !L.encoder || !L.payloader) {
+            emit error(QString("Failed to create simulcast branch %1").arg(tag));
+            cleanup();
+            return false;
+        }
+
+        // Per-layer raw caps (after scale, before encoder)
+        {
+            GstCaps *sc = gst_caps_from_string(
+                QString("video/x-raw,width=%1,height=%2,framerate=30/1")
+                    .arg(L.targetW).arg(L.targetH).toUtf8().constData());
+            g_object_set(L.caps, "caps", sc, nullptr);
+            gst_caps_unref(sc);
+        }
+
+        // valve open by default — BWE may close 'h' / 'm' later
+        g_object_set(L.valve, "drop", FALSE, nullptr);
+
+        // H264 niceties (mirrors the single-stream path)
+        if (m_useH264 && L.parser)
+            g_object_set(L.parser, "config-interval", -1, nullptr);
+        if (m_useH264)
+            g_object_set(L.payloader,
+                         "aggregate-mode", 1 /* zero-latency */,
+                         "config-interval", -1, nullptr);
+
+        L.ssrc = g_random_int();
+        g_object_set(L.payloader, "ssrc", L.ssrc, "pt", 96, nullptr);
+
+        // TWCC on every layer (shared id; aggregate feedback)
+        if (GstRTPHeaderExtension *twcc =
+                gst_rtp_header_extension_create_from_uri(kTwccUri)) {
+            gst_rtp_header_extension_set_id(twcc, kTwccExtId);
+            g_signal_emit_by_name(L.payloader, "add-extension", twcc);
+            gst_object_unref(twcc);
+        }
+
+        // SSRC pinning per layer
+        {
+            GstCaps *sc = gst_caps_from_string("application/x-rtp");
+            gst_caps_set_simple(sc, "ssrc", G_TYPE_UINT, L.ssrc, nullptr);
+            g_object_set(L.ssrcFilter, "caps", sc, nullptr);
+            gst_caps_unref(sc);
+        }
+
+        // Bin-add + link the branch
+        gst_bin_add_many(GST_BIN(m_pipeline),
+                         L.valve, L.scale, L.caps, L.encoder,
+                         L.payloader, L.ssrcFilter, nullptr);
+        if (L.parser) gst_bin_add(GST_BIN(m_pipeline), L.parser);
+
+        // outputTee → valve → scale → caps → encoder → (parser →) payloader → ssrcFilter
+        {
+            GstPad *teeSrc = gst_element_request_pad_simple(m_outputTee, "src_%u");
+            GstPad *valveSink = gst_element_get_static_pad(L.valve, "sink");
+            if (gst_pad_link(teeSrc, valveSink) != GST_PAD_LINK_OK) {
+                emit error(QString("Failed to link outputTee to branch %1").arg(tag));
+                gst_object_unref(teeSrc);
+                gst_object_unref(valveSink);
+                cleanup();
+                return false;
+            }
+            gst_object_unref(teeSrc);
+            gst_object_unref(valveSink);
+        }
+        if (!gst_element_link_many(L.valve, L.scale, L.caps, L.encoder, nullptr)) {
+            emit error(QString("Failed to link branch %1 pre-encoder").arg(tag));
+            cleanup();
+            return false;
+        }
+        if (L.parser) {
+            if (!gst_element_link_many(L.encoder, L.parser, L.payloader, L.ssrcFilter, nullptr)) {
+                emit error(QString("Failed to link branch %1 post-encoder (H264)").arg(tag));
+                cleanup();
+                return false;
+            }
+        } else {
+            if (!gst_element_link_many(L.encoder, L.payloader, L.ssrcFilter, nullptr)) {
+                emit error(QString("Failed to link branch %1 post-encoder (VP8)").arg(tag));
+                cleanup();
+                return false;
+            }
+        }
+
+        // Branch's tail → its own webrtcbin sink_%u (the transceiver per rid).
+        L.sinkPad = gst_element_request_pad_simple(m_webrtcbin, "sink_%u");
+        if (!L.sinkPad) {
+            emit error(QString("Failed to request webrtcbin sink for branch %1").arg(tag));
+            cleanup();
+            return false;
+        }
+        GstWebRTCRTPTransceiver *vt = nullptr;
+        g_object_get(L.sinkPad, "transceiver", &vt, nullptr);
+        if (vt) {
+            GstCaps *vc = gst_caps_from_string(
+                m_useH264
+                  ? "application/x-rtp,media=video,encoding-name=H264,clock-rate=90000,payload=96"
+                  : "application/x-rtp,media=video,encoding-name=VP8,clock-rate=90000,payload=96");
             char extField[16];
             g_snprintf(extField, sizeof(extField), "extmap-%d", kTwccExtId);
-            gst_caps_set_simple(vc, extField, G_TYPE_STRING, kTwccUri, nullptr);
+            gst_caps_set_simple(vc,
+                extField, G_TYPE_STRING, kTwccUri,
+                "rid",    G_TYPE_STRING, L.rid,
+                nullptr);
+            g_object_set(vt,
+                "direction",         GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDONLY,
+                "codec-preferences", vc,
+                nullptr);
+            gst_caps_unref(vc);
+            gst_object_unref(vt);
         }
-        g_object_set(vt, "direction", GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDONLY,
-                     "codec-preferences", vc, nullptr);
-        gst_caps_unref(vc);
-        gst_object_unref(vt);
+        GstPad *ssrcSrc = gst_element_get_static_pad(L.ssrcFilter, "src");
+        if (gst_pad_link(ssrcSrc, L.sinkPad) != GST_PAD_LINK_OK) {
+            emit error(QString("Failed to link branch %1 to webrtcbin sink").arg(tag));
+            gst_object_unref(ssrcSrc);
+            cleanup();
+            return false;
+        }
+        gst_object_unref(ssrcSrc);
+
+        qInfo().nospace() << "PublishPipeline: simulcast branch '" << tag
+                          << "' built (" << L.targetW << "x" << L.targetH
+                          << " @ " << (L.nominalBitrate/1000) << " kbps, SSRC "
+                          << L.ssrc << ")";
     }
 
-    GstPad *ssrcSrc = gst_element_get_static_pad(m_videoSsrcFilter, "src");
-    gst_pad_link(ssrcSrc, m_videoSinkPad);
-    gst_object_unref(ssrcSrc);
-
-    qDebug() << "PublishPipeline: shared chain linked to webrtcbin video pad (funnel architecture)";
+    qDebug() << "PublishPipeline: 3 simulcast branches built, codec="
+             << (m_useH264 ? "H264" : "VP8");
 
     // Add a data channel — Janus videoroom requires it for publisher registration.
     // The browser's Talk client creates "status" + "simplewebrtc" data channels.
@@ -481,11 +534,20 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
     }
 
     m_running = true;
+    // Defence in depth: cleanup() of a prior instance sets this true,
+    // and instances are normally re-created per call rather than reused
+    // — but if an instance is ever reused, the shutdown guard would
+    // silently no-op GCC / timers without this reset.
+    m_shuttingDown.store(false);
 
-    // Dummy feeds through dummyValve → funnel → shared encoder continuously.
-    // 16x16 black @ 1fps VP8 uses negligible bandwidth but maintains RTP
-    // sequence number continuity. Camera valve is drop=TRUE (inactive).
-    qDebug() << "PublishPipeline: started (send-only), dummy feeding encoder via funnel";
+    // Dummy feeds through dummyValve → funnel → shared encoder for the
+    // first 5 s only (m_dummyHaltTimer below). After that the dummy valve
+    // closes and RTP halts on the video m-line until enableCamera() flips
+    // the camera valve open — mirrors upstream Talk's
+    // BlackVideoEnforcer(5 s) → track.enabled=false pattern.
+    m_dummyHaltTimer.start();
+    qDebug() << "PublishPipeline: started (send-only), dummy feeding encoder "
+                "for 5 s grace then RTP halts until camera enable";
 
     // Don't enable camera during start() — it blocks the UI thread.
     // CallManager will call enableCamera() after the call connects.
@@ -498,6 +560,12 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
 void PublishPipeline::stop()
 {
     if (!m_running) return;
+    // Flag the shutdown BEFORE disableCamera so its dummy-halt-timer
+    // restart short-circuits (otherwise the timer is re-armed seconds
+    // before cleanup() stops it again, and on a stale Qt thread the
+    // GStreamer streaming thread can trip "QObject::startTimer: Timers
+    // can only be used with threads started with QThread").
+    m_shuttingDown.store(true);
     disableCamera();
     cleanup();
     m_running = false;
@@ -510,6 +578,8 @@ void PublishPipeline::cleanup()
     // Block any aux-sender/GCC callback that races this teardown (they run
     // on a GStreamer streaming thread; cleanup() runs on the Qt thread).
     m_shuttingDown.store(true);
+    // Stop the dummy-halt timer so it can't fire on a torn-down pipeline.
+    m_dummyHaltTimer.stop();
     // Disconnect GStreamer signals to prevent callbacks with stale userData
     if (m_webrtcbin) {
         qDebug() << "PublishPipeline::cleanup() — disconnecting signals";
@@ -538,19 +608,24 @@ void PublishPipeline::cleanup()
     m_funnel = nullptr;
     m_sharedScale = nullptr;
     m_sharedCaps = nullptr;
-    m_videoEncoder = nullptr;
     m_gccbwe = nullptr;
-    m_videoParser = nullptr;
-    m_videoPayloader = nullptr;
-    m_videoSsrcFilter = nullptr;
-    m_videoSinkPad = nullptr;
-    m_videoSsrc = 0;
+    m_outputTee = nullptr;
+    for (auto &L : m_layers) {
+        L.valve = L.scale = L.caps = L.encoder = L.parser
+              = L.payloader = L.ssrcFilter = nullptr;
+        L.sinkPad = nullptr;
+        L.ssrc = 0;
+        L.lastAppliedBitrate = 0;
+        L.active = true;
+    }
     m_cameraEnabled = false;
     m_dummySrc = nullptr;
     m_dummyCaps = nullptr;
     m_dummyConv = nullptr;
     m_dummyValve = nullptr;
     m_cameraSrc = nullptr;
+    m_camSrcCaps = nullptr;
+    m_camDecode = nullptr;
     m_videoConvert = nullptr;
     m_videoCapsFilter = nullptr;
     m_tee = nullptr;
@@ -618,21 +693,46 @@ bool PublishPipeline::buildCameraChain(int deviceIndex, bool hd1080)
     qDebug() << "PublishPipeline::buildCameraChain() — device" << deviceIndex << (hd1080 ? "1080p" : "720p");
 
     // --- Camera source: mfvideosrc preferred, ksvideosrc fallback ---
-    m_cameraSrc = gst_element_factory_make("mfvideosrc", nullptr);
-    if (m_cameraSrc) {
-        qDebug() << "PublishPipeline: camera source: mfvideosrc";
-    } else {
-        m_cameraSrc = gst_element_factory_make("ksvideosrc", nullptr);
+    // TALQ_PUB_TESTSRC (test/CI only — UNSET in production, where this
+    // path is byte-identical to before): publish a synthetic high-motion
+    // 720p feed through the REAL encoder + rtpgccbwe chain so
+    // talq-call-test can validate the #111 GCC-floor fix headlessly (no
+    // camera, no human). decodebin below passes the raw videotestsrc
+    // buffer straight through unchanged.
+    const bool kPubTestSrc = qEnvironmentVariableIsSet("TALQ_PUB_TESTSRC");
+    if (kPubTestSrc) {
+        m_cameraSrc = gst_element_factory_make("videotestsrc", nullptr);
         if (m_cameraSrc)
-            qDebug() << "PublishPipeline: camera source: ksvideosrc (fallback)";
+            // pattern=snow: full-frame random noise — EVERY pixel of EVERY
+            // frame changes, so (a) the sparse-hash RX distinct counter
+            // detects every frame unambiguously and (b) it is maximal
+            // entropy, the hardest case for the encoder = the exact #111
+            // stress condition. (ball = near-static frame, defeats the
+            // distinct heuristic — invalid for this proxy.)
+            g_object_set(m_cameraSrc, "is-live", TRUE,
+                         "pattern", 1 /* snow */, nullptr);
+        qDebug() << "PublishPipeline: TEST source (videotestsrc snow) — "
+                    "#111 harness mode";
+    } else {
+        m_cameraSrc = gst_element_factory_make("mfvideosrc", nullptr);
+        if (m_cameraSrc) {
+            qDebug() << "PublishPipeline: camera source: mfvideosrc";
+        } else {
+            m_cameraSrc = gst_element_factory_make("ksvideosrc", nullptr);
+            if (m_cameraSrc)
+                qDebug() << "PublishPipeline: camera source: ksvideosrc (fallback)";
+        }
     }
     if (!m_cameraSrc) {
         qWarning() << "PublishPipeline: no camera capture plugin available";
         return false;
     }
-    g_object_set(m_cameraSrc, "device-index", deviceIndex, nullptr);
+    if (!kPubTestSrc)
+        g_object_set(m_cameraSrc, "device-index", deviceIndex, nullptr);
 
     // Create camera branch elements
+    m_camSrcCaps      = gst_element_factory_make("capsfilter", "cam-src-caps");
+    m_camDecode       = gst_element_factory_make("decodebin", "cam-decode");
     m_videoConvert    = gst_element_factory_make("videoconvert", nullptr);
     m_videoCapsFilter = gst_element_factory_make("capsfilter", nullptr);
     m_tee             = gst_element_factory_make("tee", "camera-tee");
@@ -642,12 +742,15 @@ bool PublishPipeline::buildCameraChain(int deviceIndex, bool hd1080)
     m_previewConvert  = gst_element_factory_make("videoconvert", "preview-convert");
     m_previewAppsink  = gst_element_factory_make("appsink", "preview-sink");
 
-    if (!m_videoConvert || !m_videoCapsFilter || !m_tee || !m_encQueue ||
+    if (!m_camSrcCaps || !m_camDecode ||
+        !m_videoConvert || !m_videoCapsFilter || !m_tee || !m_encQueue ||
         !m_cameraValve || !m_previewQueue || !m_previewConvert || !m_previewAppsink) {
         qWarning() << "PublishPipeline: failed to create camera branch elements";
         // Clean up any elements that were created (not yet added to pipeline)
         auto freeIf = [](GstElement *&el) { if (el) { gst_object_unref(el); el = nullptr; } };
         freeIf(m_cameraSrc);
+        freeIf(m_camSrcCaps);
+        freeIf(m_camDecode);
         freeIf(m_videoConvert);
         freeIf(m_videoCapsFilter);
         freeIf(m_tee);
@@ -660,22 +763,72 @@ bool PublishPipeline::buildCameraChain(int deviceIndex, bool hd1080)
     }
 
     // Configure elements
-    // Camera capsfilter: prefer a device-supported mode at or below
-    // 1280x720 @ ≤30 fps (the official native client's target — it never
-    // captures 1080p, and 60 fps webcams would double convert/encode
-    // load). Two structures: try ≤720p first, else fall back to any
-    // resolution at ≤30 fps so negotiation never fails on cameras that
-    // only expose larger modes (sharedScale downsizes to 1280x720 for
-    // the encoder regardless).
+    // Camera SOURCE caps (on mfvideosrc, BEFORE decodebin). The mode is
+    // resolved in MediaDeviceManager from the device's real advertised
+    // caps (Settings → Camera Quality; "Auto" = absolute best) and stored
+    // as ONE exact structure in Video/cameraSrcCaps. A single fixed
+    // structure is what actually forces the mode — a permissive multi-
+    // structure menu lets mfvideosrc fall back to its native raw format
+    // (raw 1280x720 over USB negotiates 30/1 but delivers ~10 real fps;
+    // MJPEG is ~10:1 compressed so it fits USB and yields a true 30 fps,
+    // which is why Zoom/Telegram are smooth on the same camera).
+    // decodebin (below) auto-plugs jpegdec for MJPEG or passes raw
+    // through. If the setting is empty (device exposed no parseable
+    // modes / pre-population), fall back to the permissive ≤720p menu.
     {
-        GstCaps *caps = gst_caps_from_string(
-            "video/x-raw,width=(int)[1,1280],height=(int)[1,720],"
-            "framerate=(fraction)[1/1,30/1];"
-            "video/x-raw,framerate=(fraction)[1/1,30/1]");
-        g_object_set(m_videoCapsFilter, "caps", caps, nullptr);
+        GstCaps *caps = nullptr;
+        QString srcCapsStr;
+        bool userForced = false;   // true ⇒ a user Settings pick is in
+                                    // effect; arms the no-frames watchdog
+                                    // so a bad pick can never strand the
+                                    // camera (auto-recover to Auto).
+        if (kPubTestSrc) {
+            // Exercise exactly the pinned 720p30 path #111 is about.
+            srcCapsStr = QStringLiteral(
+                "video/x-raw,width=1280,height=720,framerate=30/1");
+            caps = gst_caps_from_string(srcCapsStr.toUtf8().constData());
+        } else {
+            QSettings s("TalQ", "TalQ");
+            s.beginGroup("Video");
+            srcCapsStr = s.value("cameraSrcCaps").toString();
+            s.endGroup();
+            if (!srcCapsStr.isEmpty()) {
+                caps = gst_caps_from_string(srcCapsStr.toUtf8().constData());
+                if (caps) userForced = true;
+            }
+        }
+        m_camForcedCapsActive = userForced;
+        if (caps) {
+            qDebug() << "PublishPipeline: forcing camera mode:" << srcCapsStr;
+        } else {
+            if (!srcCapsStr.isEmpty())
+                qWarning() << "PublishPipeline: bad cameraSrcCaps, using menu:"
+                           << srcCapsStr;
+            caps = gst_caps_from_string(
+                "image/jpeg,width=(int)[1,1280],height=(int)[1,720],"
+                  "framerate=(fraction)30/1;"
+                "video/x-raw,width=(int)[1,1280],height=(int)[1,720],"
+                  "framerate=(fraction)30/1;"
+                "image/jpeg,width=(int)[1,1280],height=(int)[1,720],"
+                  "framerate=(fraction)[15/1,60/1];"
+                "video/x-raw,width=(int)[1,1280],height=(int)[1,720],"
+                  "framerate=(fraction)[15/1,60/1];"
+                "video/x-raw,width=(int)[1,1280],height=(int)[1,720],"
+                  "framerate=(fraction)[1/1,60/1]");
+        }
+        g_object_set(m_camSrcCaps, "caps", caps, nullptr);
         gst_caps_unref(caps);
-        qDebug() << "PublishPipeline: camera caps: ≤1280x720 @ ≤30fps "
-                    "(device-supported), encoder pinned 1280x720";
+    }
+    // Post-decode capsfilter: just normalize to raw. Do NOT pin a
+    // framerate here — the shared chain's videorate (sharedRate) does
+    // CFR→30 for the encoder, and a genuinely slow raw-only webcam must
+    // not fail negotiation by being forced to 30.
+    {
+        GstCaps *raw = gst_caps_from_string("video/x-raw");
+        g_object_set(m_videoCapsFilter, "caps", raw, nullptr);
+        gst_caps_unref(raw);
+        qDebug() << "PublishPipeline: camera caps: MJPEG|raw ≤720p, "
+                    "prefer 30fps (jpegdec via decodebin)";
     }
     // Queues: leaky downstream to prevent blocking
     g_object_set(m_encQueue, "leaky", 2 /* downstream */, "max-size-buffers", 3, nullptr);
@@ -698,12 +851,34 @@ bool PublishPipeline::buildCameraChain(int deviceIndex, bool hd1080)
 
     // Add all camera elements to pipeline
     gst_bin_add_many(GST_BIN(m_pipeline),
-        m_cameraSrc, m_videoConvert, m_videoCapsFilter, m_tee,
+        m_cameraSrc, m_camSrcCaps, m_camDecode,
+        m_videoConvert, m_videoCapsFilter, m_tee,
         m_encQueue, m_cameraValve,
         m_previewQueue, m_previewConvert, m_previewAppsink, nullptr);
 
-    // Link capture chain: cameraSrc → videoConvert → videoCapsFilter → tee
-    gboolean linked = gst_element_link_many(m_cameraSrc, m_videoConvert, m_videoCapsFilter, m_tee, nullptr);
+    // Capture chain: cameraSrc → camSrcCaps → decodebin →(dynamic pad)→
+    // videoConvert → videoCapsFilter → tee. decodebin's src pad appears
+    // only once it sees data, so link it to videoConvert in pad-added.
+    g_signal_connect(m_camDecode, "pad-added",
+        G_CALLBACK(+[](GstElement *, GstPad *pad, gpointer ud) {
+            auto *conv = static_cast<GstElement *>(ud);
+            GstPad *sink = gst_element_get_static_pad(conv, "sink");
+            if (sink) {
+                if (!gst_pad_is_linked(sink)) {
+                    GstCaps *c = gst_pad_get_current_caps(pad);
+                    if (!c) c = gst_pad_query_caps(pad, nullptr);
+                    const GstStructure *s = c ? gst_caps_get_structure(c, 0) : nullptr;
+                    const gchar *n = s ? gst_structure_get_name(s) : nullptr;
+                    if (n && g_str_has_prefix(n, "video"))
+                        gst_pad_link(pad, sink);
+                    if (c) gst_caps_unref(c);
+                }
+                gst_object_unref(sink);
+            }
+        }), m_videoConvert);
+
+    gboolean linked = gst_element_link_many(m_cameraSrc, m_camSrcCaps, m_camDecode, nullptr);
+    linked = linked && gst_element_link_many(m_videoConvert, m_videoCapsFilter, m_tee, nullptr);
 
     // Link encoder branch: tee → encQueue → cameraValve
     linked = linked && gst_element_link_many(m_encQueue, m_cameraValve, nullptr);
@@ -765,6 +940,8 @@ void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)
     }
 
     // 2. Sync all camera elements to PLAYING
+    gst_element_sync_state_with_parent(m_camSrcCaps);
+    gst_element_sync_state_with_parent(m_camDecode);
     gst_element_sync_state_with_parent(m_videoConvert);
     gst_element_sync_state_with_parent(m_videoCapsFilter);
     gst_element_sync_state_with_parent(m_tee);
@@ -776,7 +953,10 @@ void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)
     // Start camera source LAST and async — mfvideosrc COM init blocks ~1s
     gst_element_set_state(m_cameraSrc, GST_STATE_PLAYING);
 
-    // 3. Flip valves — camera frames flow, dummy frames stop
+    // 3. Flip valves — camera frames flow, dummy frames stop. Also stop
+    //    the 5-s dummy-halt timer (if it hadn't fired yet) so it cannot
+    //    fire after we've intentionally taken over with the camera valve.
+    m_dummyHaltTimer.stop();
     g_object_set(m_cameraValve, "drop", FALSE, nullptr);
     g_object_set(m_dummyValve, "drop", TRUE, nullptr);
 
@@ -784,12 +964,51 @@ void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)
     gst_element_set_state(m_dummySrc, GST_STATE_PAUSED);
 
     m_cameraEnabled = true;
-    qDebug() << "PublishPipeline: camera enabled (valve flip, no relink)";
+    m_camFirstFrameSeen.store(false, std::memory_order_relaxed);
+    if (m_camForcedCapsActive) {
+        qDebug() << "PublishPipeline: arming camera-start watchdog (3 s)";
+        m_camStartWatchdog.start();
+    }
+
+    // Force an immediate I-frame so the receiver gets a clean baseline
+    // of real camera content. Without this, the encoder continues
+    // emitting P-frames referenced against the just-replaced dummy
+    // (black 16×16 upscaled), and the receiver decodes them against
+    // that wrong baseline — blocky/choppy video until the next periodic
+    // keyframe (~1 s at GOP=30, ~2 s at the old GOP=60). The standard
+    // WebRTC mechanism: GstForceKeyUnit as a CUSTOM_UPSTREAM event
+    // pushed at the pipeline; webrtcbin/encoder honor it and the very
+    // next encoded frame becomes an I-frame. Send it twice — once now
+    // (in case the first camera frame arrives before the event clears
+    // the pipeline) and again ~200 ms later, after mfvideosrc's COM
+    // init has settled and real frames are reliably flowing.
+    auto sendForceKeyUnit = [this]() {
+        if (!m_pipeline) return;
+        GstStructure *s = gst_structure_new("GstForceKeyUnit",
+            "all-headers", G_TYPE_BOOLEAN, TRUE, nullptr);
+        GstEvent *ev = gst_event_new_custom(GST_EVENT_CUSTOM_UPSTREAM, s);
+        gst_element_send_event(m_pipeline, ev);
+    };
+    sendForceKeyUnit();
+    QTimer::singleShot(200, this, sendForceKeyUnit);
+    qDebug() << "PublishPipeline: requested immediate keyframe (camera enable)";
+    // Undo the camera-off idle clamp: re-seed every active layer's encoder
+    // to its nominal bitrate and clear per-layer deadband so the next GCC
+    // notify re-applies live targets (onGccBitrate compares against
+    // L.lastAppliedBitrate per-layer).
+    for (auto &L : m_layers) {
+        L.lastAppliedBitrate = 0;
+        if (L.active && L.encoder)
+            setWebrtcVideoEncoderBitrate(L.encoder, m_useH264, (guint)L.nominalBitrate);
+    }
+    qDebug() << "PublishPipeline: camera enabled (valve flip, no relink, "
+                "encoders re-seeded, GCC re-armed)";
 }
 
 void PublishPipeline::disableCamera()
 {
     if (!m_pipeline || !m_cameraEnabled) return;
+    m_camStartWatchdog.stop();
 
     // 1. Flip valves — dummy frames flow, camera frames stop
     if (m_cameraValve) g_object_set(m_cameraValve, "drop", TRUE, nullptr);
@@ -801,7 +1020,25 @@ void PublishPipeline::disableCamera()
     if (m_cameraSrc) gst_element_set_state(m_cameraSrc, GST_STATE_PAUSED);
 
     m_cameraEnabled = false;
-    qDebug() << "PublishPipeline: camera disabled (valve flip, no relink, dummy resumed)";
+    // Re-arm the 5-s dummy-halt timer: the wire stays "alive" through the
+    // grace window (so peers/Janus see continuity through the mute), then
+    // RTP goes silent. Matches upstream's BlackVideoEnforcer mute timing.
+    // Skip during shutdown: cleanup() is about to stop the timer anyway,
+    // and starting it from a teardown call site can run on a non-Qt thread.
+    if (!m_shuttingDown.load())
+        m_dummyHaltTimer.start();
+    // Collapse every layer's encoder to a trickle while the camera is off.
+    // The transceivers stay alive (black dummy → no renegotiation), but we
+    // no longer ship GCC-padded black on any layer. Matches the official
+    // NC Talk client / libwebrtc. onGccBitrate() is gated on
+    // m_cameraEnabled so GCC cannot push its floor back onto encoders
+    // until the camera returns; enableCamera() re-seeds and re-arms GCC.
+    for (auto &L : m_layers) {
+        if (L.encoder)
+            setWebrtcVideoEncoderBitrate(L.encoder, m_useH264, 50000u);
+    }
+    qDebug() << "PublishPipeline: camera disabled (valve flip, no relink, "
+                "dummy resumed, all layers collapsed to ~50 kbps)";
 }
 
 void PublishPipeline::pollBus()
@@ -963,6 +1200,16 @@ GstFlowReturn PublishPipeline::onPreviewSample(GstAppSink *sink, gpointer userDa
     GstSample *sample = gst_app_sink_pull_sample(sink);
     if (!sample) return GST_FLOW_OK;
 
+    // First preview frame after enableCamera ⇒ the forced caps (if any)
+    // negotiated successfully. Cancel the self-heal watchdog from the
+    // Qt thread (QTimer.stop is not safe from this streaming thread).
+    if (!self->m_camFirstFrameSeen.exchange(true, std::memory_order_relaxed)) {
+        QPointer<PublishPipeline> gd(self);
+        QMetaObject::invokeMethod(self, [gd]() {
+            if (gd) gd->m_camStartWatchdog.stop();
+        }, Qt::QueuedConnection);
+    }
+
     QPointer<PublishPipeline> guard(self);
     QMetaObject::invokeMethod(self, [guard, sample]() {
         if (guard && guard->m_localVideoProvider)
@@ -984,43 +1231,104 @@ GstElement *PublishPipeline::onRequestAuxSender(GstElement *, GObject *,
                       "stays at fixed bitrate";
         return nullptr;
     }
-    // Floor keeps a usable call alive on a bad link; ceiling = server video
-    // cap so GCC never probes past what Janus will forward. Seed the
-    // estimate with our start bitrate (the element treats it as the
-    // target until feedback arrives). guint props, set while NULL.
+    // GCC floor for the camera publish path. History:
+    //   0.30.x      300k — too low, gave the *hypothesis* that encoder
+    //                       starvation caused Ilko's 30/10 dup-pad chop.
+    //   0.31.0/0.31.1 1.2M — shipped on that hypothesis; snow-proxy passed
+    //                       at this floor, but field evidence later showed
+    //                       Ilko's chop was actually camera-mode drift
+    //                       (cleared on TalQ restart), not the floor —
+    //                       and 1.2M is too high as a minimum for
+    //                       moderate uplinks: it clamps GCC above what
+    //                       the wire can carry, so excess bytes drop and
+    //                       the receiver sees decoder artifacts even
+    //                       though distinct ≈ delivered (Kalin's case).
+    //   0.31.2+      600k — libwebrtc / Zoom-ish 720p30 floor: enough
+    //                       to encode moving content at acceptable
+    //                       quality, low enough that a marginal uplink
+    //                       doesn't sustain constant loss. GCC remains
+    //                       free to ramp up to m_maxBitrate when the
+    //                       link allows.
+    // Ceiling = server video cap. Seed the estimate with our start bitrate
+    // (treated as the target until feedback arrives). guint props.
     g_object_set(gcc,
-                 "min-bitrate", (guint)300000,
+                 "min-bitrate", (guint)600000,
                  "max-bitrate", (guint)self->m_maxBitrate,
                  "estimated-bitrate", (guint)self->m_initBitrate,
                  nullptr);
     g_signal_connect(gcc, "notify::estimated-bitrate",
                      G_CALLBACK(onGccBitrate), self);
     self->m_gccbwe = gcc;
-    qInfo().nospace() << "PublishPipeline: rtpgccbwe attached (min 300k, max "
+    qInfo().nospace() << "PublishPipeline: rtpgccbwe attached (min 600k, max "
                       << self->m_maxBitrate << ", start "
                       << self->m_initBitrate << ")";
     return gcc;  // webrtcbin takes ownership
 }
 
+void PublishPipeline::setLayerActive(int i, bool on)
+{
+    if (i < 0 || i >= (int)m_layers.size()) return;
+    auto &L = m_layers[i];
+    if (L.active == on) return;
+    if (L.valve) g_object_set(L.valve, "drop", on ? FALSE : TRUE, nullptr);
+    L.active = on;
+    qInfo().nospace() << "PublishPipeline: simulcast layer '" << L.rid
+                      << "' -> " << (on ? "ACTIVE" : "MUTED")
+                      << " (BWE gate)";
+}
+
+void PublishPipeline::applyBweToLayers(int estimateBps)
+{
+    // Threshold rationale: each layer's effective wire cost exceeds its
+    // nominal target by ~25% (RTP/RTCP overhead, FEC pacing slack).
+    // Sums-of-active-layers we want to fit under: l alone ~200k,
+    // l+m ~800k, l+m+h ~3 700k. Close-thresholds chosen below the next
+    // sum-up; reopen with +200k hysteresis to avoid flapping.
+    constexpr int kCloseH      = 1'800'000;
+    constexpr int kCloseM      =   600'000;
+    constexpr int kHysteresis  =   200'000;
+
+    auto threshold = [&](int closeT, bool currentlyActive) {
+        return currentlyActive ? closeT : (closeT + kHysteresis);
+    };
+
+    bool wantH = estimateBps > threshold(kCloseH, m_layers[2].active);
+    bool wantM = estimateBps > threshold(kCloseM, m_layers[1].active);
+    // 'l' always stays on — our minimum-viable channel.
+    setLayerActive(2, wantH);
+    setLayerActive(1, wantM);
+}
+
 void PublishPipeline::onGccBitrate(GObject *gcc, GParamSpec *, gpointer userData)
 {
     auto *self = static_cast<PublishPipeline *>(userData);
-    if (self->m_shuttingDown.load() || !self->m_videoEncoder) return;
+    if (!self || self->m_shuttingDown.load()) return;
+    // Camera off: disableCamera() has clamped all encoders to an idle
+    // trickle for the black dummy (NC Talk parity). Don't let GCC re-raise
+    // them; enableCamera() clears per-layer deadband so live targets
+    // re-apply immediately.
+    if (!self->m_cameraEnabled) return;
     guint est = 0;
     g_object_get(gcc, "estimated-bitrate", &est, nullptr);
     if (est == 0) return;
     if (est > (guint)self->m_maxBitrate) est = (guint)self->m_maxBitrate;
-    // Deadband: only reconfigure the encoder on a ≥15% move (or the first
-    // estimate). GCC notifies every ~200 ms with sub-percent jitter;
-    // qsvh264enc/oneVPL rejects nearly every live reconfigure
-    // (MFX_ERR_INCOMPATIBLE_VIDEO_PARAM) and a per-tick set storms it.
-    const int last = self->m_lastAppliedBitrate;
-    if (last != 0) {
-        const guint delta = est > (guint)last ? est - last : (guint)last - est;
-        if (delta * 100u < (guint)last * 15u) return;
-    }
-    self->m_lastAppliedBitrate = (int)est;
-    setWebrtcVideoEncoderBitrate(self->m_videoEncoder, self->m_useH264, est);
-    qInfo().nospace() << "PublishPipeline: GCC -> encoder "
-                      << (est / 1000) << " kbps";
+
+    QPointer<PublishPipeline> guard(self);
+    QMetaObject::invokeMethod(self, [guard, estBps = (int)est]() {
+        if (!guard) return;
+        // Drive the layer gate first — opening/closing layers changes
+        // the aggregate target before we set per-encoder bitrates.
+        guard->applyBweToLayers(estBps);
+
+        // Per-layer encoder bitrate stays at nominal target (not GCC-divided).
+        // The deadband prevents the HW encoder from getting hammered with
+        // tiny bitrate updates that fail with MFX_ERR_INCOMPATIBLE_VIDEO_PARAM.
+        for (auto &L : guard->m_layers) {
+            if (!L.active || !L.encoder) continue;
+            if (qAbs(L.lastAppliedBitrate - L.nominalBitrate) < 50'000) continue;
+            setWebrtcVideoEncoderBitrate(L.encoder, guard->m_useH264,
+                                          (guint)L.nominalBitrate);
+            L.lastAppliedBitrate = L.nominalBitrate;
+        }
+    }, Qt::QueuedConnection);
 }
