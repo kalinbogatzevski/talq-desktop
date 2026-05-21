@@ -1281,20 +1281,15 @@ void PublishPipeline::onOfferCreated(GstPromise *promise, gpointer userData)
     // The capsfilter before webrtcbin forces a consistent SSRC that matches
     // both the SDP and the wire. (Browser keeps a=ssrc lines and it works.)
 
-    // #132 diag: dump simulcast-relevant SDP lines so we can see what webrtcbin
-    // emitted vs what we asked for in the transceiver caps. (Cosmetic; remove
-    // before stable cut.)
-    {
-        qInfo() << "PUBOFFER_SDP_BEGIN ===";
-        for (const QString &line : sdp.split('\n')) {
-            QString t = line.trimmed();
-            if (t.startsWith("m=") || t.startsWith("a=mid")
-                || t.startsWith("a=rid") || t.startsWith("a=simulcast")
-                || t.startsWith("a=extmap") || t.startsWith("a=rtpmap")
-                || t.startsWith("a=ssrc"))
-                qInfo() << "PUBOFFER" << t;
+    // #132 simulcast diag — log just the a=simulcast line so the field log
+    // confirms the publisher is offering simulcast (compact one-liner; not
+    // a full SDP dump).
+    for (const QString &line : sdp.split('\n')) {
+        QString t = line.trimmed();
+        if (t.startsWith("a=simulcast:")) {
+            qInfo() << "PublishPipeline:" << t;
+            break;
         }
-        qInfo() << "PUBOFFER_SDP_END ===";
     }
 
     QPointer<PublishPipeline> guard(self);
