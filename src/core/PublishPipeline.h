@@ -1,8 +1,10 @@
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <QObject>
 #include <QString>
+#include <QTimer>
 #include <gst/gst.h>
 #include <gst/sdp/sdp.h>
 #include <gst/webrtc/webrtc.h>
@@ -22,6 +24,20 @@
  * the funnel (vp8enc → rtpvp8pay → ssrcFilter → webrtcbin) is built once
  * and never torn down. RTP sequence number continuity is maintained across
  * all switches.
+ *
+ * Camera-off wire behavior (upstream conformance, 2026-05-21):
+ * Upstream Nextcloud Talk's BlackVideoEnforcer paints a black canvas for
+ * 5 seconds at mute-time and then sets the track's enabled=false so the
+ * browser stops emitting RTP entirely. TalQ used to pump the 16x16 dummy
+ * forever, which let the sender-side rtpgccbwe estimator and the
+ * receiver-side jitterbuffer converge to a dummy-rate profile; on the
+ * subsequent valve-flip-to-camera the receiver couldn't ramp cleanly and
+ * the caller saw the deterministic "30 fps / ~10 distinct" callee-
+ * mid-call chop. We now mirror upstream: keep the dummy active for 5 s
+ * after every transition to "camera off" (initial start without camera,
+ * or disableCamera() mid-call), then close the dummy valve. With both
+ * valves closed, no frames reach the funnel → no RTP. enableCamera()
+ * stops the halt timer and flips the valves as before.
  */
 class PublishPipeline : public QObject
 {
@@ -43,10 +59,13 @@ public:
     bool usesH264() const { return m_useH264; }
     // e.g. "H264 · nvh264enc · hw" — for the call codec/quality telemetry.
     QString encoderDescription() const { return m_encoderDesc; }
-    // Live send bitrate (bits/s): the value GCC last pushed to the
-    // encoder, or the conservative start until the estimate kicks in.
+    // Sum of nominal bitrates of currently-active layers — what the UI
+    // telemetry chip reads. The actual wire rate matches this within the
+    // RTP/RTCP overhead margin baked into the BWE thresholds.
     int currentVideoBitrate() const {
-        return m_lastAppliedBitrate > 0 ? m_lastAppliedBitrate : m_initBitrate;
+        int sum = 0;
+        for (const auto &L : m_layers) if (L.active) sum += L.nominalBitrate;
+        return sum > 0 ? sum : m_initBitrate;
     }
 
     void enableCamera(int deviceIndex, bool hd1080 = true);
@@ -64,6 +83,12 @@ signals:
     void audioLevelUpdated(double level);  // 0.0 to 1.0
     void error(const QString &message);
     void cameraError(const QString &reason);
+    // Self-healing: emitted when a forced exact camera caps fails to
+    // produce any frames within the watchdog window (mfvideosrc couldn't
+    // deliver that mode). The persisted choice is reset to Auto here;
+    // CallManager handles the disable→enable re-arm so the camera comes
+    // up via permissive negotiation (the guaranteed-working escape).
+    void cameraNegotiationFailed();
 
 public slots:
     void pollBus();  // called from CallManager's GLib timer
@@ -80,17 +105,37 @@ private:
     guint m_busWatchId = 0;
 
     // Shared encoder chain (built once, never torn down):
-    // funnel → vp8enc → rtpvp8pay → videoSsrcFilter → webrtcbin
+    // funnel → sharedConvert → sharedScale → sharedCaps → outputTee → N x simulcast branches → webrtcbin
+    // Three branches (l/m/h) fan out from outputTee. Per-branch state in m_layers.
     GstElement *m_funnel = nullptr;
-    GstElement *m_sharedScale = nullptr;  // funnel→...→sharedScale→sharedCaps→enc
-    GstElement *m_sharedCaps = nullptr;   // pins a CONSTANT enc resolution so the
-                                          // encoder never reconfigures on the
+    GstElement *m_sharedScale = nullptr;  // funnel→...→sharedScale→sharedCaps→outputTee
+    GstElement *m_sharedCaps = nullptr;   // pins a CONSTANT 1280x720@30 input so the
+                                          // encoders never reconfigure on the
                                           // 16x16-dummy↔camera source switch
-    GstElement *m_videoEncoder = nullptr;
-    GstElement *m_videoPayloader = nullptr;
-    GstElement *m_videoSsrcFilter = nullptr;
-    GstPad *m_videoSinkPad = nullptr;     // webrtcbin's video sink pad
-    guint32 m_videoSsrc = 0;
+    GstElement *m_outputTee = nullptr;    // splits shared-caps output to the 3 layers
+
+    struct SimulcastLayer {
+        const char *rid;       // "l" / "m" / "h"
+        int targetW;           // 320 / 640 / 1280
+        int targetH;           // 180 / 360 / 720
+        int nominalBitrate;    // 150_000 / 500_000 / 2_500_000 (bits/s)
+        GstElement *valve     = nullptr;  // gates frames into this branch
+        GstElement *scale     = nullptr;
+        GstElement *caps      = nullptr;
+        GstElement *encoder   = nullptr;
+        GstElement *parser    = nullptr;  // h264parse when m_useH264, else null
+        GstElement *payloader = nullptr;
+        GstElement *ssrcFilter= nullptr;
+        GstPad     *sinkPad   = nullptr;  // webrtcbin's sink_%u for this rid
+        guint32     ssrc      = 0;
+        bool        active    = true;     // BWE-gating state (false = valve drop)
+        int         lastAppliedBitrate = 0;
+    };
+    std::array<SimulcastLayer, 3> m_layers = {{
+        { "l",  320,  180,  150'000 },
+        { "m",  640,  360,  500'000 },
+        { "h", 1280,  720, 2'500'000 },
+    }};
     // Start bitrate (bits/s) handed to the encoder; rtpgccbwe drives the
     // live rate up to the server ceiling once TWCC feedback flows.
     int m_initBitrate = 2500000;
@@ -102,27 +147,35 @@ private:
     // request-aux-sender / notify::estimated-bitrate on a streaming thread
     // concurrently with Qt-thread teardown; these callbacks bail on it.
     std::atomic<bool> m_shuttingDown{false};
-    // Last bitrate actually pushed to the encoder. GCC notifies every
-    // ~200 ms with tiny deltas; hardware encoders (qsvh264enc/oneVPL)
-    // reject most live reconfigures (MFX_ERR_INCOMPATIBLE_VIDEO_PARAM) and
-    // a per-tick g_object_set storms that path. Only re-apply on a
-    // meaningful change.
-    int m_lastAppliedBitrate = 0;
-    GstElement *m_videoParser = nullptr;  // h264parse (present iff m_useH264)
     bool m_cameraEnabled = false;
+    // Self-heal state: a forced exact camera caps from Settings → if no
+    // frames in m_camStartWatchdog seconds after enableCamera, the pick
+    // is unrecoverably wrong (mfvideosrc can't deliver the mode);
+    // reset to Auto and let CallManager re-arm via permissive.
+    bool m_camForcedCapsActive = false;
+    std::atomic<bool> m_camFirstFrameSeen{false};
+    QTimer m_camStartWatchdog;
     bool m_useH264 = false;
     QString m_encoderDesc;   // human codec/encoder/hw-sw, for telemetry/pill
     int m_lvlDbg = 0;
     GstWebRTCDataChannel *m_statusDataChannel = nullptr;
 
-    // Dummy source (16x16 black, 1fps — feeds funnel when camera is off)
+    // Dummy source (16x16 black @ 10 fps, on the wire ONLY for the
+    // 5-second grace window after every "camera off" transition; then
+    // m_dummyHaltTimer closes the dummy valve so the wire goes silent).
     GstElement *m_dummySrc = nullptr;
     GstElement *m_dummyCaps = nullptr;
     GstElement *m_dummyConv = nullptr;
     GstElement *m_dummyValve = nullptr;
+    // 5 s after entering "camera off" → close the dummy valve so no RTP
+    // packets reach webrtcbin. Mirrors upstream BlackVideoEnforcer's
+    // canvas-for-5s → track.enabled=false pattern. Single-shot.
+    QTimer m_dummyHaltTimer;
 
     // Camera branch elements (built lazily in buildCameraChain(), stay alive)
     GstElement *m_cameraSrc = nullptr;
+    GstElement *m_camSrcCaps = nullptr;  // mfvideosrc out: jpeg|raw, <=720p
+    GstElement *m_camDecode = nullptr;   // decodebin: MJPEG->raw or raw passthru
     GstElement *m_videoConvert = nullptr;
     GstElement *m_videoCapsFilter = nullptr;
     GstElement *m_tee = nullptr;
@@ -146,4 +199,9 @@ private:
     static GstElement *onRequestAuxSender(GstElement *webrtc, GObject *transport,
                                           gpointer userData);
     static void onGccBitrate(GObject *gcc, GParamSpec *pspec, gpointer userData);
+
+    // BWE → layer state. Called from onGccBitrate after deadband.
+    void applyBweToLayers(int estimateBps);
+    // Open/close a layer's valve and update its `active` flag.
+    void setLayerActive(int layerIndex, bool on);
 };
