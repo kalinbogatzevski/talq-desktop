@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(talq VERSION 0.30.7 LANGUAGES CXX)
+project(talq VERSION 0.33.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -147,6 +147,16 @@ target_compile_definitions(talq PRIVATE
     # staging inspired by Bulgarian kukeri folklore).
     TALQ_VERSION_NAME="Bangaranga"
 )
+
+# Pre-release flag: when build-release.sh is invoked with --beta it
+# passes -DTALQ_PRERELEASE=ON; that bakes the compile define into the
+# binary so the UI can show a "PRE-RELEASE" badge regardless of which
+# channel ultimately served the user. Stable builds are unaffected.
+option(TALQ_PRERELEASE "Mark this binary as a pre-release/beta build" OFF)
+if(TALQ_PRERELEASE)
+    target_compile_definitions(talq PRIVATE TALQ_PRERELEASE)
+    message(STATUS "TalQ: PRE-RELEASE build (UI will show a beta badge)")
+endif()
 
 # Branding. 123NET assets live outside the tree in /private (never
 # published); the branded build pulls them in here. The default/public

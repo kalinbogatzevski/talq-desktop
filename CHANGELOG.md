@@ -1,5 +1,515 @@
 # Changelog
 
+## v0.33.0 "Bangaranga" — PRE-RELEASE (2026-05-21)
+
+First 0.33.x beta carrying the simulcast + dynamic resolution drop
+work from `docs/superpowers/specs/2026-05-21-simulcast-design.md`.
+
+### Added
+- **3-layer simulcast publisher.** `PublishPipeline` now sends three
+  rid-tagged substreams (`l`=180p@150k, `m`=360p@500k, `h`=720p@2.5M)
+  in parallel from a new outputTee + per-branch encoders +
+  `rtpfunnel` → single webrtcbin sink. The SDP offer carries the
+  canonical RFC 8853 simulcast block (`a=simulcast: send l;m;h` plus
+  three `a=rid:* send` lines) on one `m=video` line. Janus videoroom
+  on the HPB routes the appropriate substream per subscriber based on
+  per-subscriber REMB/TWCC; multi-party calls no longer drag the
+  whole room to the weakest subscriber's link.
+- **Publisher-side BWE-driven layer gate.** `rtpgccbwe`'s aggregate
+  estimate drives valve open/close per branch: estimate < 1.8 Mbps
+  closes `h`; estimate < 600 kbps closes `m`; `l` always alive. 200
+  kbps hysteresis prevents flapping at thresholds.
+- **Per-branch encoder error isolation.** A single layer's encoder
+  failure now closes only that branch's valve, leaves the other
+  layers alive. Only when ALL three branches die does the publish
+  path propagate to teardown. Mirrors v0.32.0 #138 policy.
+- **`TALQ_TEST_SIMULCAST=1`** harness scenario — asserts the
+  publisher SDP carries `a=simulcast` + three `a=rid` lines
+  (canonical) or three `m=video` lines with rid in fmtp (the
+  gst-webrtcbin 1.28 alternate shape, functionally identical).
+- **`TALQ_TEST_SIMULCAST_DROP=1`** harness scenario — env-gated BWE
+  override (`TALQ_TEST_BWE_OVERRIDE_KBPS`) drives synthetic
+  1500→400→100 kbps steps; verdict is the qInfo
+  `simulcast layer '<rid>' -> MUTED (BWE gate)` lines.
+
+### Validated
+- **v0.32.0 callee-mid-call camera-on fix preserved.**
+  `TALQ_TEST_CAMERA_TOGGLE=1` continues to PASS at avg distinct ≥75%
+  of delivered after the simulcast refactor.
+- **All three harness scenarios green:** `PUBPIPE`, `CAMERA_TOGGLE`,
+  `SIMULCAST` (canonical SDP + 29/29 distinct on peer-B).
+
+## v0.32.0 "Bangaranga" (2026-05-21)
+
+Promotes 0.31.10's structural fixes to stable. All seven scoped
+call/media bugs from the 0.31.x betas are now field-verified or
+defensively guarded.
+
+### Fixed
+- **Callee mid-call camera-on chop (the #111 saga, structural fix —
+  field-verified with Ilko).** The 16×16 1 fps black dummy that fed
+  the funnel forever while the camera was off is gone. We now mirror
+  upstream's BlackVideoEnforcer: the dummy runs for a 5-second grace
+  window after every "camera off" transition, then closes the dummy
+  valve so no RTP reaches webrtcbin — the wire goes silent, exactly
+  like Chrome's `track.enabled=false`. When the camera enables, the
+  halt timer is stopped and valves flip as before. Autonomous harness
+  reproduces the previously-broken scenario at 79–87 % distinct /
+  delivered (was ~30 % in the field) and Ilko confirms the chop is
+  gone on live calls.
+- **Stuck "Connecting" status pill until peer enables camera.** Call
+  state now flips Active on the publisher PC's ICE-connected, not on
+  the subscriber's. Matches upstream's `VideoVue.vue` connection-state
+  wiring. Audio-only joins correctly show "LIVE" immediately.
+- **Screen-share monitor sharing now picks the user's selection.**
+  ScreenSharePipeline no longer falls back to `dx9screencapsrc`/
+  `gdiscreencapsrc` when `d3d11screencapturesrc` can't construct —
+  those legacy paths interpret `monitor` as a DXGI index (wrong order
+  vs Qt's `QApplication::screens()`) and can't honor `window-handle`.
+  A clear error is emitted instead of silently capturing the wrong
+  target.
+- **Window-share property-set ordering.** d3d11screencapturesrc's
+  `capture-api` is now configured BEFORE `window-handle`, in separate
+  `g_object_set` calls; mixing them in one call risked the element
+  auto-resolving a monitor target from the (still-default) capture-api
+  mode and ignoring the late HWND. A readback log line confirms which
+  HWND the capture src actually accepted.
+- **Screen-share "stream sometimes doesn't start" silently.**
+  ScreenSharePipeline has a 10-second start watchdog: if ICE doesn't
+  reach connected within 10 s, emit error() so the UI surfaces a clear
+  failure instead of an apparently-active share that's dead on the
+  wire. Cleared on ICE-connected; cleaned up on stop().
+- **Frozen last frame from a prior screen-share when a new one starts.**
+  CallStage now drops the cached `m_scrFrame[participant]` when the
+  participant's screen-share session ends (provider becomes null).
+  Mirrors upstream's `ScreenShare.vue:228` `srcObject = null` clear.
+- **Screen-share failure no longer drops the whole call.** A new
+  `m_screenShareTearingDown` flag is set during stopScreenShare()'s
+  50-iteration GLib flush; if the publisher's ICE transiently emits
+  "failed" as collateral from the screen pipeline teardown perturbing
+  the shared signaling agent, the recovery counter is short-circuited
+  and the call stays up. Only the main audio publish stream failing
+  can hang up the call.
+- **Edited messages replaced by "You edited a message" placeholder.**
+  Added `Message::isEditMessage()` and filtered `message_edited` /
+  `message_edited_everyone` system messages from the chat scroll at
+  all three model-load sites. The in-place body update path already
+  refreshes the edited message's text; the system event was duplicating
+  it visually. Mirrors upstream's filter.
+- **User-status "On call" stuck after call ends on the caller side.**
+  Hang-up race: `callEnded` fired synchronously, the revert-call API
+  call ran BEFORE the server had processed the DELETE /call, so the
+  server returned 404 ("no stuck status") and the user stayed pinned
+  on "On call" until manual fix. Now CallManager emits a separate
+  `callServerLeaveAcked` signal that fires when the leaveCall ACK
+  actually arrives; MainWindow's revert hook listens there. UI is
+  never blocked — even on a dead network the call window closes
+  immediately; if the ACK never arrives, the server's participant
+  timeout still cleans up server-side, no retries, no deadlocks.
+
+### Added
+- **"Starting (remote) screen share…" caption on the receiver's tile**
+  while the share is negotiating (provider bound, no frame yet).
+  Previously the receiver saw only an avatar disc with no indication
+  that anything was happening.
+- **`TALQ_TEST_CAMERA_TOGGLE=1` harness scenario** in `talq-call-test`
+  that defers `enableCamera()` 8 s after publish-pipeline start, then
+  measures distinct/delivered RX over an averaged 5-s window. The
+  exact field bug, autonomously verifiable, no humans / Ilko required.
+
+## v0.31.10 "Bangaranga" — PRE-RELEASE (2026-05-21)
+
+This beta lands the structural camera/screen-share/status fixes informed
+by a ground-truth read of the upstream `nextcloud/spreed` v23.0.4 source.
+Five user-reported bugs fixed; one harness-verified end-to-end on real
+HPB/MCU; the rest ready for live 2-peer field check.
+
+### Fixed
+- **Callee mid-call camera-on chop (the #111 saga, structural fix).**
+  The 16×16 1 fps black dummy that fed the funnel forever while the
+  camera was off is gone. We now mirror upstream's BlackVideoEnforcer:
+  the dummy runs for a 5-second grace window after every "camera off"
+  transition, then `m_dummyHaltTimer` closes the dummy valve so no RTP
+  reaches webrtcbin — the wire goes silent, exactly like Chrome's
+  `track.enabled=false`. When camera enables, the halt timer is stopped
+  and valves flip as before. Killed the receiver-side dup-pad pattern
+  (30 fps cadence, ~10 distinct frames) in the autonomous harness:
+  RX 30 fps / 26 distinct under the exact callee-mid-call scenario.
+- **Stuck "Connecting" status pill until peer enables camera.**
+  Call state now flips Active on the publisher PC's ICE-connected, not
+  on the subscriber's. Matches upstream's `VideoVue.vue` connection-
+  state wiring. Audio-only joins now correctly show "LIVE" immediately.
+- **Screen-share "wrong display every time" silently picking the
+  wrong target.** ScreenSharePipeline no longer falls back to
+  `dx9screencapsrc`/`gdiscreencapsrc` when `d3d11screencapturesrc`
+  can't construct — those legacy paths interpret `monitor` as a DXGI
+  index (wrong order vs Qt) and can't honor `window-handle` at all, so
+  a window pick became a wrong-monitor capture. Now we emit a clear
+  error explaining gstd3d11 is required.
+- **Screen-share "stream sometimes doesn't start" silently.**
+  ScreenSharePipeline has a 10-second start watchdog: if ICE doesn't
+  reach connected within 10 s, emit error() so the UI surfaces a clear
+  failure instead of an apparently-active share that's dead on the
+  wire. Cleared on ICE-connected; cleaned up on stop().
+- **Frozen last frame from a prior screen-share when a new one starts.**
+  CallStage now drops the cached `m_scrFrame[participant]` when the
+  participant's screen-share session ends (provider becomes null).
+  Mirrors upstream's `ScreenShare.vue:228` `srcObject = null` clear.
+- **Edited messages replaced by "You edited a message" placeholder.**
+  Added `Message::isEditMessage()` and filtered `message_edited` /
+  `message_edited_everyone` system messages from the chat scroll at
+  all three model-load sites. The in-place body update path already
+  refreshes the edited message's text; the system event was duplicating
+  it visually. Mirrors upstream's filter for the same reason.
+- **User-status "On call" stuck after call ends on the caller side.**
+  Hang-up race: `callEnded` fired synchronously, the revert-call API
+  call ran BEFORE the server had processed the DELETE /call, so the
+  server returned 404 ("no stuck status") and the user stayed pinned
+  on "On call" until manual fix. Now CallManager emits a separate
+  `callServerLeaveAcked` signal that fires when the leaveCall ACK
+  actually arrives; MainWindow's revert hook listens there. UI is
+  never blocked — even on a dead network the call window closes
+  immediately; if the ACK never arrives, the server's participant
+  timeout still cleans up server-side, no retries, no deadlocks.
+
+### Added
+- **"Starting (remote) screen share…" caption on the receiver's tile**
+  while the share is negotiating (provider bound, no frame yet).
+  Previously the receiver saw only an avatar disc with no indication
+  that anything was happening.
+- **`TALQ_TEST_CAMERA_TOGGLE=1` harness scenario** in `talq-call-test`
+  that defers `enableCamera()` 8 s after publish-pipeline start, then
+  measures distinct/delivered RX over an averaged 5-s window. The
+  exact field bug, autonomously verifiable, no humans / Ilko required.
+
+## v0.31.9 "Bangaranga" — PRE-RELEASE (2026-05-21)
+
+This beta carries the upstream-compliance work + all deferred items
+planned for 0.32.0. Stable users remain on 0.31.2.
+
+### Fixed
+- **Upstream Talk compliance — caller-side subscribe.** Two deviations
+  from the nextcloud/spreed v23.0.4 web client's MCU flow were aligned
+  with upstream:
+  - Removed the eager immediate `pollParticipants()` REST poll on
+    caller-publisher-up. Upstream waits for the signaling layer's
+    `usersInCallChanged` event before calling `requestOffer`; the eager
+    poll could land at the MCU before the peer's publish was fully
+    registered, leaving the resulting subscriber bound to an
+    incomplete publish state. The 3-s poll remains as a backup for
+    documented mobile / internal-signaling paths.
+  - `onParticipantJoinedCall` now only calls `requestPeerStream` when
+    the peer's flags include video, exactly matching upstream's
+    `userHasStreams` gate. Audio-only joiners get their subscriber
+    when video toggles on (existing `participantFlagsChanged` path).
+- **Screen-share enable → disable → enable race hardening.** On stop
+  we now flush pending GStreamer/GLib callbacks (50 iterations) before
+  the next-share path can build a fresh webrtcbin, preventing
+  stale-callback ↔ new-resource collisions in fast re-share cycles.
+
+### Changed
+- **PIP becomes the "You" tile in the participants strip while
+  screen-sharing.** The floating self-PiP would otherwise obscure
+  shared content; during any active screen share (your own or a
+  peer's) the self camera now lives in the rail alongside the other
+  participant tiles.
+
+### Includes (from prior 0.31.x betas, carried)
+- 0.31.8: receiver issues PLI on ICE-connected; status "in call"
+  clears on every hangup; telemetry TX RES + RX resolution +
+  responsive value column.
+- 0.31.7: camera GOP 30; force-keyframe on `enableCamera()`.
+- 0.31.6: pre-release indicator in title bar + Update-available banner.
+
+## v0.31.8 "Bangaranga" — PRE-RELEASE (superseded by 0.31.9)
+
+### Fixed
+- **Subscriber requests a keyframe the moment its ICE connects.** Targets
+  the deterministic "caller-side sees the callee's camera choppy"
+  pattern: any RTP loss during the receive pipeline's bootstrap window
+  (jitter buffer / DTLS / ICE checks still settling) leaves the decoder
+  in concealment until the next periodic publisher keyframe. The
+  receiver now emits an RTCP PLI on ICE-connected so the publisher
+  sends a fresh I-frame within ~1 RTT.
+- **Status "in call" no longer sticks after hangup.** Every call-end
+  path now calls `revertStuckCall()` (idempotent), so Talk's server-side
+  automation can't leave the user reading as "in call" indefinitely.
+
+### Changed
+- **Call telemetry overlay:** the per-peer RX line now shows the
+  decoded **resolution** alongside fps/distinct/ptsΔ; a new **TX RES**
+  row shows the encoder's input resolution; the value column scales
+  with panel width so long values stop clipping on a narrow window.
+
+## v0.31.7 "Bangaranga" — PRE-RELEASE (superseded by 0.31.8)
+
+### Fixed
+- **Choppy peer video when the peer enables their camera mid-call.**
+  The encoder was emitting P-frames against the just-replaced black
+  dummy baseline, so the receiver's decoder produced blocky/smeary
+  output until the next periodic I-frame (up to ~2 s away at the old
+  GOP=60). Two targeted changes: the camera GOP is shortened to 30
+  (~1 s) and `enableCamera()` now issues an immediate
+  `GstForceKeyUnit` upstream event so the very next encoded frame is
+  an I-frame — the receiver gets a clean baseline of real camera
+  content with no transitional artifact window.
+
+### Includes
+- 0.31.5: caller-side `requestPeerStream` in-flight dedupe (defensive;
+  field-tested as no-op for the chop symptom on its own).
+- 0.31.6: "Update available" banner says PRE-RELEASE when the offered
+  update is from the beta channel.
+
+## v0.31.6 "Bangaranga" — PRE-RELEASE (superseded by 0.31.7)
+
+### Added
+- **"Update available" banner now says PRE-RELEASE** when the offered
+  update comes from the beta channel — testers see at a glance what
+  they're about to install.
+
+## v0.31.5 "Bangaranga" — PRE-RELEASE (superseded by 0.31.6)
+
+Still a pre-release for opt-in beta testers (Settings → Updates →
+"Pre-release updates"). Stable users remain on 0.31.2.
+
+### Fixed
+- **Caller-side chop on the peer's video** (deterministic in 0.31.4
+  and earlier — the *caller* always saw the *callee* choppy, the
+  callee always saw the caller fine). Root cause: the caller's
+  CallManager could request the peer's subscribe offer twice — once
+  when the publisher came up with the remote already present, and
+  again when the participant-joined event fired — and the second
+  offer triggered a stale-subscriber rebuild that cost a frame-loss
+  spike. The callee never double-requested. `requestPeerStream` now
+  skips in-flight duplicates; retries still happen via the existing
+  retry timer.
+
+## v0.31.4 "Bangaranga" — PRE-RELEASE (superseded by 0.31.5)
+
+This is a pre-release intended for opt-in beta testers (Settings →
+Updates → "Pre-release updates"). Stable users remain on 0.31.2.
+
+### Added
+- **Pre-release builds say so in the title bar.** When a binary is
+  compiled with `--beta`, the title bar reads `TalQ <version> —
+  PRE-RELEASE`, so testers always know which channel they're on.
+
+### Fixed
+- **Checkbox / radio button indicator visibility.** Unchecked
+  indicators were filled with the input-well tone, which is too close
+  to the page background on some tabs (Settings → Updates) — the boxes
+  almost vanished. Indicators now sit one tonal step up the ladder
+  (`bgSurface`), giving a clear raised affordance in every theme.
+
+### Includes (from the v0.31.3 pre-release that this supersedes)
+- 600 kbps publisher GCC floor (down from 1.2 Mbps) so a moderate
+  uplink isn't clamped above what it can carry → no more "very choppy"
+  decoder-artifact video at distinct ≈ delivered fps.
+- Screen share now shares the actual chosen window / monitor
+  (`d3d11screencapturesrc` in WGC mode for window-handle, HMONITOR for
+  monitor — DXGI's index was unrelated to Qt's screen order).
+- Right-click the share segment during a screen share → quality menu
+  (720p / 1080p / 1440p / Native) for a live re-share at the new cap.
+
+## v0.31.3 "Bangaranga" (pre-release, superseded by 0.31.4)
+
+### Fixed
+- **Choppy / blocky remote camera on moderate uplinks.** The camera
+  send-bitrate floor was 1.2 Mbps, which on a marginal uplink clamped
+  the encoder above what the link could actually carry, leading to
+  packet loss and decoder artifacts that read as "choppy" even when
+  distinct-frame counts were near 30 fps. The floor is now 600 kbps
+  (the same range libwebrtc / Zoom use for 720p30) and congestion
+  control still ramps up freely to the server ceiling on good links.
+- **Screen-share now shares the window / monitor you actually picked.**
+  Window capture needs `d3d11screencapturesrc` in WGC mode (it silently
+  ignored the chosen window in the default DXGI mode); monitor capture
+  uses HMONITOR derived from the chosen screen's geometry, instead of a
+  DXGI index that isn't guaranteed to match what the picker showed.
+
+### Added
+- **Change screen-share quality during a share.** Right-click the share
+  segment on the call control bar to switch between 720p / 1080p /
+  1440p / Native; the share continues at the new quality.
+
+## v0.31.2 "Bangaranga" (2026-05-20)
+
+### Fixed
+- **Camera Quality dropdown no longer loses entries between calls.**
+  Windows enumerates webcam capabilities differently across runs (and
+  especially after camera use); rows like `720p · 30fps · MJPEG` could
+  appear in one launch and vanish the next, including the row your
+  Settings pick referenced. The list is now cached per device and
+  unioned with each enumeration, so any mode the camera has ever
+  reported stays available.
+- **A camera that can't deliver your chosen mode now self-recovers
+  instead of staying dark.** If the camera doesn't produce a frame
+  within a few seconds of starting (the chosen mode is no longer
+  negotiable on the actual open instance), the choice is reset to Auto
+  and the camera is re-started — the indicator light comes on and the
+  preview/call works.
+- **Screen-share stop now fully clears its session identity** so a
+  subsequent re-share starts cleanly rather than racing stragglers from
+  the previous share.
+
+### Changed
+- **In-call telemetry panel is semi-transparent**, so the camera / call
+  view stays visible behind it instead of being hidden by a hard side
+  panel.
+
+## v0.31.1 "Bangaranga" (2026-05-19)
+
+### Fixed
+- **Camera works again on every webcam (critical).** v0.31.0's new
+  "Auto" camera quality forced one exact capture mode onto the camera;
+  if the actual camera couldn't deliver that exact mode the camera
+  failed to start entirely — no indicator light, no self-preview, no
+  video. **Auto** now lets the camera negotiate normally (the long
+  stable behavior, always starts); a specific resolution/frame-rate is
+  only forced when you deliberately pick one in Settings (and switching
+  back to Auto always restores a working camera).
+- **Camera no longer listed twice; Camera Quality lists real modes.**
+  On Windows the same physical camera is enumerated once per capture
+  backend (Media Foundation and KS/DirectShow). Duplicates are now
+  collapsed by name and their capability sets merged, so the camera
+  appears once and every supported resolution/frame-rate/format is
+  offered regardless of which backend exposed it. (Diagnostics also
+  record a camera's raw capabilities if it still reports none.)
+
+## v0.31.0 "Bangaranga" (2026-05-19)
+
+### Added
+- **Settings, rebuilt.** A calmer, clearer Settings window: a quiet
+  header, every option as a two-column row (name + one-line description
+  on the left, the control aligned in one column on the right), grouped
+  by rhythm instead of boxes. Fully theme-driven across all four themes.
+- **Pre-release (beta) updates, opt-in.** Settings → Updates has a new
+  toggle. On the generic build it tracks GitHub pre-releases; on the
+  branded build it follows a separate beta manifest and falls back to
+  stable automatically if no beta is available.
+- **Screen-share quality is selectable and changeable mid-share.**
+  720p / 1080p / 1440p / Native, chosen in the share picker; changing it
+  during a share re-shares the same screen/window at the new quality
+  without re-picking.
+- **The share picker now shows live thumbnails** of every screen and
+  window (refreshed while open), so you can see what you're about to
+  share. Single-window / app capture is selectable alongside whole
+  screens.
+
+### Fixed
+- **Choppy peer camera, transmit-side root cause.** When the local
+  camera/self-view is smooth but the far end sees stuttery ~10 fps, the
+  cause was the send-side congestion-control floor (300 kbps) being far
+  too low for 720p30: the encoder starved, frames were dropped, and the
+  constant-rate stage padded them back with duplicates, so the receiver
+  got "30 fps" of mostly repeated pictures. The floor is now a
+  720p30-viable 1.2 Mbps, matching what browsers/Zoom use for a 720p
+  camera. Per-peer RX telemetry (delivered vs distinct fps) makes the
+  result measurable.
+
+Includes the v0.30.12 camera capability picker below.
+
+## v0.30.12 "Bangaranga" (2026-05-19)
+
+### Added
+- **Camera quality now lists what your camera can actually do.** The old
+  fixed "Full HD / HD" radios are replaced by a per-camera list built
+  from the device's real advertised capabilities (resolution × frame
+  rate × format, e.g. "1080p · 60fps · MJPEG"), plus an **Auto** entry
+  that picks the absolute best mode the camera supports (most pixels,
+  then highest fps, MJPEG preferred). The chosen mode is now *forced* as
+  a single exact capture format instead of leaving the camera source to
+  silently fall back to a low-rate raw mode, and it applies even on a
+  fresh install where Settings was never opened. Universal across
+  cameras — it reads each device's own caps rather than assuming.
+
+### Note
+- This is the camera *capture-mode* control/determinism fix. It does not
+  by itself change the separate transmit-side investigation into choppy
+  remote video on links where the local camera/self-preview is already
+  smooth (that work continues, instrumented, pending a live test).
+
+## v0.30.11 "Bangaranga" (2026-05-19)
+
+### Fixed
+- **Incoming call shows the caller's name, not a generic "Call".** Some
+  servers omit the display name in participant events; the name is now
+  resolved from the cached participant list (or the user id) instead of
+  falling back to a literal "Call".
+
+Includes the v0.30.10 camera (MJPEG capture) and taskbar-window fixes
+below.
+
+## v0.30.10 "Bangaranga" (2026-05-19)
+
+### Fixed
+- **Peer camera no longer stuck at a low frame rate (real root cause).**
+  Proven on hardware: a USB webcam at 1280×720 *raw* advertises 30 fps
+  but only delivers ~10 (raw 720p exceeds USB bandwidth); the constant-
+  rate stage then padded it to 30 with duplicate frames, so the far end
+  saw "30 fps" but only ~10 distinct pictures — choppy. The camera now
+  accepts the webcam's **MJPEG** mode (≈10:1 compressed, fits USB →
+  true 720p30) via a decode stage, falling back to raw for cameras
+  without MJPEG. This is the same approach Zoom/Telegram use, which is
+  why they were always smooth on the affected camera.
+- **The in-call window now has its own Windows taskbar button.** It was
+  an owned window (shared the main window's button), so when another
+  app covered it you couldn't bring it back from the taskbar. It is now
+  an independent top-level window.
+
+## v0.30.9 "Bangaranga" (2026-05-19)
+
+### Changed
+- **Camera keeps the hardware encoder.** The v0.30.8 B-frame gate, which
+  fell back to software x264enc when mfh264enc couldn't prove B-frames
+  off, has been reverted: its premise (B-frames cause the choppy peer
+  camera) was disproven by a controlled real-MCU reproduction, and the
+  software fallback could itself starve a modest CPU at 720p30 and
+  produce a low-frame-rate stream. The hardware H.264 encoder is now
+  always preferred; B-frames=0 stays best-effort but is no longer a
+  reason to abandon hardware encoding.
+
+### Removed
+- **Receiver no longer auto-re-requests keyframes on concealment.** That
+  masked packet loss rather than delivering a real continuous stream;
+  removed in favour of addressing the sender encode directly.
+
+### Kept
+- The per-peer **distinct-content fps** telemetry (delivered vs actually-
+  new frames) — the validated instrument that localises the fault.
+
+## v0.30.8 "Bangaranga" (2026-05-19)
+
+### Changed
+- **Peer camera ~1 fps: hardening + instrumentation (not yet field
+  confirmed).** The leading hypothesis is B-frames in the outgoing
+  camera H.264 stream: where the Media Foundation encoder's B-frame
+  property is unavailable it was silently left on, producing a
+  high-profile stream a remote hardware decoder may conceal frame by
+  frame. The camera encoder now proves B-frames are off and, if it
+  cannot, falls back to a software encoder that guarantees a
+  constrained-baseline, B-frame-free stream — this matches what every
+  other WebRTC client does and has no downside. Honest status: a
+  controlled end-to-end reproduction with B-frames over the real MCU did
+  NOT reproduce the ~1 fps symptom, so this is defensible hardening, not
+  a confirmed fix; the defect needs the specific remote hardware to
+  confirm. (The v0.30.7 note below addressed a different failure mode
+  that did not trigger on the affected hardware.)
+- **Camera off now stops the outbound video stream.** With the camera
+  disabled the encoder is collapsed to a trickle instead of continuing
+  to push ~300 kbps of padded black, matching the official client.
+- **Call survives a transient publisher-ICE failure.** A momentary
+  network blip no longer tears down the whole call: publisher ICE
+  "failed" is grace-debounced and recovered, mirroring the existing
+  subscriber recovery, so an 11-minute call no longer dies on a hiccup.
+
+### Added
+- **Live per-peer receive diagnostics in Telemetry.** Each remote peer's
+  line now shows delivered fps, **distinct-content fps**, and mean
+  inter-frame timing. delivered≈30 with distinct≈1 pinpoints decoder
+  concealment; delivered≈distinct rules it out — turning the next real
+  call into a definitive root-cause measurement rather than a guess.
+
 ## v0.30.7 "Bangaranga" (2026-05-19)
 
 ### Fixed

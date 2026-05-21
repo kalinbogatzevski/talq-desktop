@@ -1307,19 +1307,9 @@ void CallManager::joinCallOnServer(bool withVideo)
 
                         connect(m_publishPipeline, &PublishPipeline::localOfferReady,
                                 this, [this, pubSid](const QString &sdp) {
-                            // TEMP (#132 Task 3 RCA): surface the simulcast lines
-                            // so the harness can verify webrtcbin echoed the rid.
-                            // Removed in Task 8 cleanup commit.
-                            qInfo() << "PUBOFFER ===";
-                            for (const QString &line : sdp.split('\n')) {
-                                if (line.startsWith("a=rid")
-                                    || line.startsWith("a=simulcast")
-                                    || line.startsWith("m=")) {
-                                    qInfo() << "PUBOFFER" << line;
-                                }
-                            }
-                            qInfo() << "PUBOFFER ===";
-                            // Send offer to OUR OWN session ID (MCU intercepts)
+                            // Send offer to OUR OWN session ID (MCU intercepts).
+                            // (PublishPipeline already logs the compact
+                            // a=simulcast line for field diag.)
                             setStatusDetail("Sending offer to MCU");
                             m_signaling->sendOffer(m_signaling->sessionId(), sdp, pubSid);
                             qDebug() << "CallManager: sent publish offer to own session, sid=" << pubSid;
