@@ -386,8 +386,29 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
             g_signal_emit_by_name(L.payloader, "add-extension", twcc);
             gst_object_unref(twcc);
         }
+        // MID hdr ext (id=1) — required by RFC 8843 for BUNDLE.
+        if (GstRTPHeaderExtension *midExt =
+                gst_rtp_header_extension_create_from_uri(
+                    "urn:ietf:params:rtp-hdrext:sdes:mid")) {
+            gst_rtp_header_extension_set_id(midExt, 1);
+            g_object_set(midExt, "mid", "video0", nullptr);
+            g_signal_emit_by_name(L.payloader, "add-extension", midExt);
+            gst_object_unref(midExt);
+        }
+        // RID hdr ext (id=2) — RFC 8852 simulcast identifier per RTP packet.
+        // This is the on-wire mechanism the SFU uses to know which substream
+        // a given packet belongs to.
+        if (GstRTPHeaderExtension *ridExt =
+                gst_rtp_header_extension_create_from_uri(
+                    "urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id")) {
+            gst_rtp_header_extension_set_id(ridExt, 2);
+            g_object_set(ridExt, "rid", L.rid, nullptr);
+            g_signal_emit_by_name(L.payloader, "add-extension", ridExt);
+            gst_object_unref(ridExt);
+        }
 
-        // SSRC pinning per layer
+        // SSRC pinning per layer — distinct SSRC per simulcast layer is the
+        // canonical RFC 8853 model the SFU uses to split substreams.
         {
             GstCaps *sc = gst_caps_from_string("application/x-rtp");
             gst_caps_set_simple(sc, "ssrc", G_TYPE_UINT, L.ssrc, nullptr);
@@ -395,13 +416,13 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
             gst_caps_unref(sc);
         }
 
-        // Bin-add + link the branch
+        // Bin-add the branch elements
         gst_bin_add_many(GST_BIN(m_pipeline),
                          L.valve, L.scale, L.caps, L.encoder,
                          L.payloader, L.ssrcFilter, nullptr);
         if (L.parser) gst_bin_add(GST_BIN(m_pipeline), L.parser);
 
-        // outputTee → valve → scale → caps → encoder → (parser →) payloader → ssrcFilter
+        // outputTee → valve → scale → caps → encoder → (parser →) payloader → ssrcFilter → rtpfunnel
         {
             GstPad *teeSrc = gst_element_request_pad_simple(m_outputTee, "src_%u");
             GstPad *valveSink = gst_element_get_static_pad(L.valve, "sink");
@@ -434,46 +455,115 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
             }
         }
 
-        // Branch's tail → its own webrtcbin sink_%u (the transceiver per rid).
-        L.sinkPad = gst_element_request_pad_simple(m_webrtcbin, "sink_%u");
-        if (!L.sinkPad) {
-            emit error(QString("Failed to request webrtcbin sink for branch %1").arg(tag));
-            cleanup();
-            return false;
-        }
-        GstWebRTCRTPTransceiver *vt = nullptr;
-        g_object_get(L.sinkPad, "transceiver", &vt, nullptr);
-        if (vt) {
-            GstCaps *vc = gst_caps_from_string(
-                m_useH264
-                  ? "application/x-rtp,media=video,encoding-name=H264,clock-rate=90000,payload=96"
-                  : "application/x-rtp,media=video,encoding-name=VP8,clock-rate=90000,payload=96");
-            char extField[16];
-            g_snprintf(extField, sizeof(extField), "extmap-%d", kTwccExtId);
-            gst_caps_set_simple(vc,
-                extField, G_TYPE_STRING, kTwccUri,
-                "rid",    G_TYPE_STRING, L.rid,
-                nullptr);
-            g_object_set(vt,
-                "direction",         GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDONLY,
-                "codec-preferences", vc,
-                nullptr);
-            gst_caps_unref(vc);
-            gst_object_unref(vt);
-        }
-        GstPad *ssrcSrc = gst_element_get_static_pad(L.ssrcFilter, "src");
-        if (gst_pad_link(ssrcSrc, L.sinkPad) != GST_PAD_LINK_OK) {
-            emit error(QString("Failed to link branch %1 to webrtcbin sink").arg(tag));
-            gst_object_unref(ssrcSrc);
-            cleanup();
-            return false;
-        }
-        gst_object_unref(ssrcSrc);
-
         qInfo().nospace() << "PublishPipeline: simulcast branch '" << tag
                           << "' built (" << L.targetW << "x" << L.targetH
                           << " @ " << (L.nominalBitrate/1000) << " kbps, SSRC "
                           << L.ssrc << ")";
+    }
+
+    // --- ONE rtpfunnel muxes the 3 ssrcFilters → ONE webrtcbin sink_%u pad ---
+    // This is the canonical C-webrtcbin simulcast topology per upstream test
+    // tests/check/elements/webrtcbin.c::test_simulcast (1.28). Three separate
+    // webrtcbin sink_%u pads would emit 3 m=video lines — wrong; we need ONE
+    // m-line with multi-rid + a=simulcast.
+    GstElement *rtpFunnel = gst_element_factory_make("rtpfunnel", "pub-rtpfunnel");
+    if (!rtpFunnel) {
+        emit error("Failed to create rtpfunnel — simulcast unavailable");
+        cleanup();
+        return false;
+    }
+    gst_bin_add(GST_BIN(m_pipeline), rtpFunnel);
+    for (size_t i = 0; i < m_layers.size(); ++i) {
+        auto &L = m_layers[i];
+        GstPad *src = gst_element_get_static_pad(L.ssrcFilter, "src");
+        GstPad *funnelSink = gst_element_request_pad_simple(rtpFunnel, "sink_%u");
+        if (gst_pad_link(src, funnelSink) != GST_PAD_LINK_OK) {
+            emit error(QString("Failed to link branch %1 to rtpfunnel")
+                       .arg(QString::fromUtf8(L.rid)));
+            gst_object_unref(src);
+            gst_object_unref(funnelSink);
+            cleanup();
+            return false;
+        }
+        gst_object_unref(src);
+        gst_object_unref(funnelSink);
+    }
+
+    // Capsfilter between rtpfunnel and webrtcbin's sink_%u pad. THIS is the
+    // caps webrtcbin reads when constructing the transceiver and the SDP
+    // m=video block — per upstream test
+    // tests/check/elements/webrtcbin.c::test_simulcast. Without this filter
+    // webrtcbin sees the 3 distinct upstream branches (each ssrcFilter has
+    // its own SSRC + rid in fmtp) and creates 3 transceivers / 3 m=video
+    // lines. WITH this filter providing a unified caps that includes all
+    // rid-X + a-simulcast fields, webrtcbin emits ONE m=video with
+    // a=simulcast + 3 a=rid lines.
+    GstElement *simulcastCaps = gst_element_factory_make("capsfilter", "pub-simulcastcaps");
+    if (!simulcastCaps) {
+        emit error("Failed to create simulcast capsfilter");
+        cleanup();
+        return false;
+    }
+    {
+        GstCaps *vc = gst_caps_from_string(
+            m_useH264
+              ? "application/x-rtp,media=video,encoding-name=H264,clock-rate=90000,payload=96"
+              : "application/x-rtp,media=video,encoding-name=VP8,clock-rate=90000,payload=96");
+        gst_caps_set_simple(vc,
+            "a-mid",        G_TYPE_STRING, "video0",
+            "extmap-1",     G_TYPE_STRING, "urn:ietf:params:rtp-hdrext:sdes:mid",
+            "extmap-2",     G_TYPE_STRING, "urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id",
+            nullptr);
+        char extField[16];
+        g_snprintf(extField, sizeof(extField), "extmap-%d", kTwccExtId);
+        gst_caps_set_simple(vc, extField, G_TYPE_STRING, kTwccUri, nullptr);
+        gst_caps_set_simple(vc,
+            "rid-l",        G_TYPE_STRING, "send",
+            "rid-m",        G_TYPE_STRING, "send",
+            "rid-h",        G_TYPE_STRING, "send",
+            "a-simulcast",  G_TYPE_STRING, "send l;m;h",
+            nullptr);
+        g_object_set(simulcastCaps, "caps", vc, nullptr);
+        gst_caps_unref(vc);
+    }
+    gst_bin_add(GST_BIN(m_pipeline), simulcastCaps);
+
+    // --- The single webrtcbin video sink pad ---
+    GstPad *videoSinkPad = gst_element_request_pad_simple(m_webrtcbin, "sink_%u");
+    if (!videoSinkPad) {
+        emit error("Failed to request webrtcbin video sink pad");
+        cleanup();
+        return false;
+    }
+    // Stash the pad in layer 0's sinkPad slot for cleanup ownership tracking.
+    m_layers[0].sinkPad = videoSinkPad;
+
+    // rtpfunnel → simulcastCaps → webrtcbin sink_%u
+    if (!gst_element_link(rtpFunnel, simulcastCaps)) {
+        emit error("Failed to link rtpfunnel to simulcast capsfilter");
+        cleanup();
+        return false;
+    }
+    {
+        GstPad *capsSrc = gst_element_get_static_pad(simulcastCaps, "src");
+        if (gst_pad_link(capsSrc, videoSinkPad) != GST_PAD_LINK_OK) {
+            emit error("Failed to link simulcast capsfilter to webrtcbin sink");
+            gst_object_unref(capsSrc);
+            cleanup();
+            return false;
+        }
+        gst_object_unref(capsSrc);
+    }
+
+    // Set transceiver direction (codec-preferences inherited from caps).
+    {
+        GstWebRTCRTPTransceiver *vt = nullptr;
+        g_object_get(videoSinkPad, "transceiver", &vt, nullptr);
+        if (vt) {
+            g_object_set(vt, "direction",
+                         GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDONLY, nullptr);
+            gst_object_unref(vt);
+        }
     }
 
     qDebug() << "PublishPipeline: 3 simulcast branches built, codec="
@@ -1075,9 +1165,43 @@ void PublishPipeline::pollBus()
             gst_message_parse_error(msg, &err, &dbg);
             QString errMsg = QString::fromUtf8(err->message);
             QString dbgStr = dbg ? QString::fromUtf8(dbg) : QString();
-            qWarning() << "PublishPipeline ERROR:" << errMsg << dbgStr;
+            // Identify whether the error originated in one of the simulcast
+            // branches' encoder/parser/payloader; if so, close only that
+            // branch's valve and keep the other layers + the call alive.
+            // Mirrors #138 policy: non-main-stream failure must not drop
+            // the call.
+            GstObject *src = GST_MESSAGE_SRC(msg);
+            int branchIdx = -1;
+            for (int i = 0; i < (int)m_layers.size(); ++i) {
+                const auto &L = m_layers[i];
+                if (src == GST_OBJECT(L.encoder) ||
+                    src == GST_OBJECT(L.parser)  ||
+                    src == GST_OBJECT(L.payloader)) {
+                    branchIdx = i;
+                    break;
+                }
+            }
+            if (branchIdx >= 0) {
+                qWarning().nospace()
+                    << "PublishPipeline: simulcast layer '"
+                    << m_layers[branchIdx].rid
+                    << "' encoder ERROR (" << errMsg
+                    << ") — closing branch valve, call stays up";
+                setLayerActive(branchIdx, false);
+                bool anyAlive = false;
+                for (const auto &L : m_layers)
+                    if (L.active) { anyAlive = true; break; }
+                if (!anyAlive) {
+                    qWarning() << "PublishPipeline: ALL simulcast layers "
+                                  "dead — propagating fatal";
+                    emit error(errMsg);
+                }
+            } else {
+                qWarning() << "PublishPipeline ERROR:" << errMsg << dbgStr;
+                // Non-branch error (e.g., webrtcbin transport): log only,
+                // legacy behavior. Camera stays alive.
+            }
             g_clear_error(&err); g_free(dbg);
-            // Camera stays alive — just log the error.
         }
         gst_message_unref(msg);
     }
@@ -1156,6 +1280,22 @@ void PublishPipeline::onOfferCreated(GstPromise *promise, gpointer userData)
     // Keep a=ssrc lines in the SDP — Janus requires them to map publisher SSRCs.
     // The capsfilter before webrtcbin forces a consistent SSRC that matches
     // both the SDP and the wire. (Browser keeps a=ssrc lines and it works.)
+
+    // #132 diag: dump simulcast-relevant SDP lines so we can see what webrtcbin
+    // emitted vs what we asked for in the transceiver caps. (Cosmetic; remove
+    // before stable cut.)
+    {
+        qInfo() << "PUBOFFER_SDP_BEGIN ===";
+        for (const QString &line : sdp.split('\n')) {
+            QString t = line.trimmed();
+            if (t.startsWith("m=") || t.startsWith("a=mid")
+                || t.startsWith("a=rid") || t.startsWith("a=simulcast")
+                || t.startsWith("a=extmap") || t.startsWith("a=rtpmap")
+                || t.startsWith("a=ssrc"))
+                qInfo() << "PUBOFFER" << t;
+        }
+        qInfo() << "PUBOFFER_SDP_END ===";
+    }
 
     QPointer<PublishPipeline> guard(self);
     QMetaObject::invokeMethod(self, [guard, sdp]() {
@@ -1312,6 +1452,19 @@ void PublishPipeline::onGccBitrate(GObject *gcc, GParamSpec *, gpointer userData
     g_object_get(gcc, "estimated-bitrate", &est, nullptr);
     if (est == 0) return;
     if (est > (guint)self->m_maxBitrate) est = (guint)self->m_maxBitrate;
+
+    // Test hook (#132 TALQ_TEST_SIMULCAST_DROP): when this env var is
+    // present, the value replaces the real estimate so the harness can
+    // deterministically step through BWE thresholds and watch the
+    // layer-gate close h then m. Production has it unset.
+    {
+        QByteArray ov = qgetenv("TALQ_TEST_BWE_OVERRIDE_KBPS");
+        if (!ov.isEmpty()) {
+            bool okI = false;
+            int kb = ov.toInt(&okI);
+            if (okI && kb > 0) est = (guint)(kb * 1000);
+        }
+    }
 
     QPointer<PublishPipeline> guard(self);
     QMetaObject::invokeMethod(self, [guard, estBps = (int)est]() {

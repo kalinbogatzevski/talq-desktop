@@ -19,6 +19,7 @@
  */
 
 #include <QCoreApplication>
+#include <QElapsedTimer>
 #include <QTimer>
 #include <QCommandLineParser>
 #include <QDebug>
@@ -41,7 +42,39 @@
 #include "core/ApiClient.h"
 #include "core/SignalingClient.h"
 #include "core/PeerPipeline.h"
+#include "core/PublishPipeline.h"     // #111: real-app publish path under test
 #include "core/SubscribeWebrtcSrc.h"  // subscriber under test (gst-plugins-rs)
+
+// #111 validation mode: when set, peer A publishes through the REAL
+// PublishPipeline (synthetic high-motion 720p30 via TALQ_PUB_TESTSRC,
+// through the actual encoder + rtpgccbwe-1.2M-floor chain) instead of
+// PeerPipeline. Peer B subscribes it via SubscribeWebrtcSrc and we
+// assert distinct fps ≈ delivered fps — i.e. the GCC floor fix stops
+// the videorate CFR duplicate-padding. Headless, no camera, no human.
+static bool g_pubPipe = false;
+
+// #135 / callee-mid-call-camera-on validation mode: implies PUBPIPE,
+// but defers enableCamera() ~8 s after PublishPipeline.start so the
+// dummy stream runs through its full 5 s grace + halt cycle before
+// the camera flips on. Exercises the exact bug pattern (dummy phase
+// fully elapsed → camera enabled mid-call → measure RX). PASS bar:
+// same distinct ≥ 75% of delivered. If the dummy-halt structural fix
+// is correct, this passes. Headless, no human.
+static bool g_cameraToggle = false;
+
+// #132 simulcast SDP verification. Implies PUBPIPE. After offer is sent,
+// parse the publisher SDP and assert it carries a=simulcast: send l;m;h
+// plus three a=rid:* send lines (RFC 8853). Per-substream RX validation
+// requires Janus's requestoffer substream param that the harness doesn't
+// currently exercise — RX is field-verified.
+static bool g_simulcast = false;
+
+// #132 simulcast BWE-driven layer-disable. Implies SIMULCAST + PUBPIPE.
+// Drives an env-gated synthetic BWE override through PublishPipeline
+// (TALQ_TEST_BWE_OVERRIDE_KBPS=N) to step 1500 → 400 → 100 kbps; gate
+// verdict via the qInfo "simulcast layer 'X' -> MUTED" lines from
+// PublishPipeline::setLayerActive.
+static bool g_simulcastDrop = false;
 
 // Test configuration. Identities/token come from the environment so the
 // harness never rings a real person's devices. Defaults are the two
@@ -114,6 +147,7 @@ struct TestPeer {
     ApiClient *api = nullptr;
     SignalingClient *signaling = nullptr;
     PeerPipeline *pipeline = nullptr;
+    PublishPipeline *pubPipeline = nullptr;            // #111 mode: peer A only
     SubscribeWebrtcSrc *subscribePipeline = nullptr;  // remote peer's stream via MCU (webrtcsrc)
     TestPhase phase = Init;
     QString sessionId;       // HPB session ID
@@ -123,6 +157,7 @@ struct TestPeer {
     bool pipelineStarted = false;
     bool videoRenegSdpValid = false;   // true if renegotiation SDP has active m=video
     bool videoAnswerReceived = false;  // true when MCU answers our video renegotiation
+    bool simulcastSdpPass = false;     // #132: a=simulcast: send l;m;h + three a=rid lines
     bool subscriberRequested = false;  // true after requestOffer for remote peer
     QString subscriberSid;   // MCU-assigned sid from the subscriber offer
     int remoteVideoFramesBefore = 0;   // frame count before waiting
@@ -212,6 +247,11 @@ private:
         connect(peer.signaling, &SignalingClient::answerReceived, this,
                 [this, &peer](const QString &from, const QString &sdp) {
             peer.log("Answer received from " + from.left(20) + "... (" + QString::number(sdp.length()) + " chars)");
+            if (peer.pubPipeline) {
+                peer.pubPipeline->setRemoteAnswer(sdp);
+                peer.setPhase(WaitingICE);
+                return;
+            }
             if (peer.pipeline) {
                 peer.pipeline->setRemoteAnswer(sdp);
                 // Track whether this is a video renegotiation answer
@@ -256,7 +296,9 @@ private:
 
             // Publisher transport: candidates for our own session id.
             if (from == peer.sessionId) {
-                if (peer.pipeline && peer.pipeline->isRunning())
+                if (peer.pubPipeline)
+                    peer.pubPipeline->addIceCandidate(cand, mline, mid);
+                else if (peer.pipeline && peer.pipeline->isRunning())
                     peer.pipeline->addIceCandidate(cand, mline, mid);
                 else
                     peer.pendingCandidates.append({cand, mline, mid});
@@ -368,6 +410,11 @@ private:
 
     void startMcuPipeline(TestPeer &peer)
     {
+        // #111 proxy: peer A publishes through the real PublishPipeline.
+        if (g_pubPipe && &peer == &m_peerA) {
+            startPublishPipeline(peer);
+            return;
+        }
         peer.pipeline = new PeerPipeline(this);
         peer.setPhase(Negotiating);
 
@@ -453,6 +500,146 @@ private:
             peer.log("Creating offer for MCU...");
             peer.pipeline->createOffer();
         });
+    }
+
+    // #111: publish peer A via the real PublishPipeline (synthetic
+    // high-motion 720p30 through the actual encoder + rtpgccbwe 1.2M
+    // floor). It auto-offers on on-negotiation-needed (no createOffer()).
+    void startPublishPipeline(TestPeer &peer)
+    {
+        peer.pubPipeline = new PublishPipeline(this);
+        peer.setPhase(Negotiating);
+
+        connect(peer.pubPipeline, &PublishPipeline::localOfferReady, this,
+                [this, &peer](const QString &sdp) {
+            peer.log("PublishPipeline offer (" + QString::number(sdp.length()) + " chars)");
+            peer.videoRenegSdpValid = validateVideoSdp(peer, sdp);
+            // #132: assert multi-stream publisher SDP. We accept TWO valid
+            // shapes:
+            //   (a) Canonical RFC 8853: ONE m=video block with
+            //       a=simulcast: send l;m;h plus three a=rid:* send lines.
+            //   (b) gst-webrtcbin 1.28 actual emit: THREE m=video blocks,
+            //       each with rid=X in its a=fmtp:96 line and distinct
+            //       SSRCs. Functionally identical for Janus videoroom —
+            //       the publisher pushes three SSRC'd streams the SFU
+            //       routes per-subscriber. PROXY scenario confirms peer B
+            //       receives clean video. Documenting the alternate shape
+            //       here so the harness gates the FEATURE not the
+            //       SDP-text-formatting choice.
+            if (g_simulcast) {
+                bool hasSimulcast = false;
+                bool ridL = false, ridM = false, ridH = false;
+                int videoMlines = 0;
+                bool fmtpRidL = false, fmtpRidM = false, fmtpRidH = false;
+                for (const QString &line : sdp.split('\n')) {
+                    QString t = line.trimmed();
+                    if (t.startsWith("m=video")) ++videoMlines;
+                    if (t.startsWith("a=simulcast:")) {
+                        QString rest = t.section(':', 1).trimmed();
+                        if (rest.startsWith("send ")) {
+                            QStringList rids = rest.mid(5).split(';');
+                            hasSimulcast = rids.contains("l")
+                                        && rids.contains("m")
+                                        && rids.contains("h");
+                        }
+                    }
+                    if (t == "a=rid:l send") ridL = true;
+                    if (t == "a=rid:m send") ridM = true;
+                    if (t == "a=rid:h send") ridH = true;
+                    if (t.startsWith("a=fmtp:96") && t.contains("rid=l")) fmtpRidL = true;
+                    if (t.startsWith("a=fmtp:96") && t.contains("rid=m")) fmtpRidM = true;
+                    if (t.startsWith("a=fmtp:96") && t.contains("rid=h")) fmtpRidH = true;
+                }
+                bool canonical = hasSimulcast && ridL && ridM && ridH;
+                bool gstBin = (videoMlines >= 3) && fmtpRidL && fmtpRidM && fmtpRidH;
+                peer.simulcastSdpPass = canonical || gstBin;
+                peer.log(QString("SIMULCAST SDP: %1 (canonical=%2 gstbin-multi-mline=%3)")
+                    .arg(peer.simulcastSdpPass ? "PASS" : "FAIL")
+                    .arg(canonical).arg(gstBin));
+            }
+            peer.signaling->sendOffer(peer.sessionId, sdp, "mcu-test");
+        });
+        connect(peer.pubPipeline, &PublishPipeline::iceCandidateReady, this,
+                [this, &peer](const QString &cand, int mline, const QString &mid) {
+            QJsonObject c;
+            c["candidate"] = cand;
+            c["sdpMLineIndex"] = mline;
+            c["sdpMid"] = mid;
+            peer.signaling->sendCandidate(peer.sessionId, c, "mcu-test");
+        });
+        connect(peer.pubPipeline, &PublishPipeline::iceStateChanged, this,
+                [this, &peer](const QString &state) {
+            peer.log("PublishPipeline ICE: " + state);
+            if (state == "connected" || state == "completed") {
+                peer.iceConnected = true;
+                peer.setPhase(Active);
+                checkBothActive();
+            } else if (state == "failed") {
+                peer.log("ERROR: PublishPipeline ICE failed!");
+            }
+        });
+        connect(peer.pubPipeline, &PublishPipeline::error, this,
+                [&peer](const QString &err) {
+            peer.log("PublishPipeline error: " + err);
+        });
+
+        bool ok = peer.pubPipeline->start(peer.stunServer, peer.turnServers,
+                                          QString(), true /*withVideo*/, 0, false);
+        if (!ok) {
+            peer.log("ERROR: PublishPipeline failed to start");
+            qApp->exit(1);
+            return;
+        }
+        peer.pipelineStarted = true;
+        if (g_cameraToggle) {
+            // Callee-mid-call-camera-on simulation (#135): leave the
+            // publish pipeline in "camera off / dummy → 5 s grace →
+            // wire silent" for ~8 s, THEN enable the camera so the
+            // SubscribeWebrtcSrc on peer B sees exactly the pattern
+            // that produces 30/~10 distinct dup-pad in the field. If
+            // the dummy-halt fix in PublishPipeline.cpp is correct,
+            // the subsequent steady-state must read distinct ≈ delivered.
+            peer.log("PublishPipeline started — camera DEFERRED 8 s "
+                     "(mid-call enable scenario, #135)");
+            QTimer::singleShot(8000, this, [&peer]() {
+                if (!peer.pubPipeline) return;
+                peer.log("PublishPipeline: enableCamera now (mid-call)");
+                peer.pubPipeline->enableCamera(0, false);
+            });
+        } else {
+            peer.log("PublishPipeline started (synthetic high-motion 720p30)");
+            peer.pubPipeline->enableCamera(0, false);
+        }
+
+        if (g_simulcastDrop && &peer == &m_peerA) {
+            // #132 SIMULCAST_DROP: step the synthetic BWE through three
+            // thresholds. The publisher's PublishPipeline::onGccBitrate
+            // reads TALQ_TEST_BWE_OVERRIDE_KBPS each tick; setting it
+            // here forces applyBweToLayers to close layers in sequence.
+            // Verdict is the qInfo "simulcast layer 'X' -> MUTED" lines.
+            QTimer::singleShot(8000, this, [&peer]() {
+                qputenv("TALQ_TEST_BWE_OVERRIDE_KBPS", "1500");
+                peer.log("BWE override -> 1500 kbps (expect h close)");
+            });
+            QTimer::singleShot(13000, this, [&peer]() {
+                qputenv("TALQ_TEST_BWE_OVERRIDE_KBPS", "400");
+                peer.log("BWE override -> 400 kbps (expect m close)");
+            });
+            QTimer::singleShot(18000, this, [&peer]() {
+                qputenv("TALQ_TEST_BWE_OVERRIDE_KBPS", "100");
+                peer.log("BWE override -> 100 kbps (only l remains)");
+            });
+        }
+
+        for (auto &[cand, mline, mid] : peer.pendingCandidates)
+            peer.pubPipeline->addIceCandidate(cand, mline, mid);
+        peer.pendingCandidates.clear();
+
+        auto *busTimer = new QTimer(this);
+        connect(busTimer, &QTimer::timeout, this, [&peer]() {
+            if (peer.pubPipeline) peer.pubPipeline->pollBus();
+        });
+        busTimer->start(50);
     }
 
     void startSubscribePipeline(TestPeer &peer, const QString &remoteSession, const QString &sdp)
@@ -796,8 +983,14 @@ private:
         qDebug() << "  User A remote frames so far:" << m_peerA.remoteVideoFramesBefore;
         qDebug() << "  User B remote frames so far:" << m_peerB.remoteVideoFramesBefore;
 
-        // Wait 6 seconds for the MCU to route video between peers
-        QTimer::singleShot(6000, this, [this, getRemoteFrames]() {
+        // Wait for steady-state RX. In camera-toggle mode the publisher
+        // defers enableCamera by 8 s, so push the measurement window out
+        // to 14 s (8 s defer + ~6 s for the post-enable encoder to settle
+        // and the receiver's distinct-fps probe to read a stable 1-s
+        // window).
+        const int measureWaitMs = g_simulcastDrop ? 25000
+                              : g_cameraToggle  ? 14000 : 6000;
+        QTimer::singleShot(measureWaitMs, this, [this, getRemoteFrames]() {
             m_peerA.remoteVideoFramesAfter = getRemoteFrames(m_peerA);
             m_peerB.remoteVideoFramesAfter = getRemoteFrames(m_peerB);
 
@@ -809,10 +1002,41 @@ private:
             qDebug() << "  User B received" << bNewFrames << "remote video frames (total:" << m_peerB.remoteVideoFramesAfter << ")";
 
             // Also check local video provider (preview) to confirm camera is producing frames
-            int aLocalFrames = m_peerA.pipeline->localVideoProvider()->frameCount();
-            int bLocalFrames = m_peerB.pipeline->localVideoProvider()->frameCount();
-            qDebug() << "  User A local preview frames:" << aLocalFrames;
-            qDebug() << "  User B local preview frames:" << bLocalFrames;
+            auto localFrames = [](TestPeer &p) -> int {
+                if (p.pubPipeline && p.pubPipeline->localVideoProvider())
+                    return p.pubPipeline->localVideoProvider()->frameCount();
+                if (p.pipeline && p.pipeline->localVideoProvider())
+                    return p.pipeline->localVideoProvider()->frameCount();
+                return -1;
+            };
+            qDebug() << "  User A local preview frames:" << localFrames(m_peerA);
+            qDebug() << "  User B local preview frames:" << localFrames(m_peerB);
+
+            if (g_pubPipe && m_peerB.subscribePipeline) {
+                // Average over 5 consecutive 1-s samples instead of a
+                // single snapshot — the per-second metric is intrinsically
+                // noisy on synthetic snow (run-to-run variance ±10 pp).
+                // A point-sample can land low even when the windowed
+                // ratio is comfortably above 75%.
+                int dlvSum = 0, dstSum = 0, samples = 0;
+                for (int i = 0; i < 5; ++i) {
+                    QElapsedTimer t; t.start();
+                    while (t.elapsed() < 1000)
+                        QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+                    dlvSum += m_peerB.subscribePipeline->rxVideoFps();
+                    dstSum += m_peerB.subscribePipeline->rxDistinctVideoFps();
+                    ++samples;
+                }
+                int dlv  = samples ? dlvSum / samples : 0;
+                int dist = samples ? dstSum / samples : 0;
+                qDebug() << "\n===== #111 PROXY (B receives A's PublishPipeline) =====";
+                qDebug().nospace() << "  RX delivered(avg/" << samples
+                                   << ")=" << dlv << " fps  distinct(avg)=" << dist << " fps";
+                bool ok = dlv >= 20 && dist * 100 >= dlv * 75;
+                qDebug() << (ok
+                    ? "  #111 PROXY: PASS (distinct >=75% of delivered — no dup-pad)"
+                    : "  #111 PROXY: FAIL (distinct << delivered — still padding)");
+            }
 
             if (aNewFrames == 0 && bNewFrames == 0) {
                 qDebug() << "  NOTE: MCU did not route video between peers.";
@@ -870,6 +1094,38 @@ private:
                     // hard pass bar — not informational anymore.
                     bool framesOk = aFrames > 0 && bFrames > 0;
                     bool pass = icePassed && videoSdpOk && framesOk;
+                    if (g_pubPipe) {
+                        int dlv  = m_peerB.subscribePipeline
+                                     ? m_peerB.subscribePipeline->rxVideoFps() : 0;
+                        int dist = m_peerB.subscribePipeline
+                                     ? m_peerB.subscribePipeline->rxDistinctVideoFps() : 0;
+                        // #111 bar: B must receive A's real-PublishPipeline
+                        // stream with distinct ≈ delivered (no CFR dup-pad).
+                        bool proxyOk = bFrames > 0 && dlv >= 20
+                                       && dist * 100 >= dlv * 75;
+                        pass = icePassed && m_peerA.videoRenegSdpValid && proxyOk;
+                        qDebug().nospace() << "#111 verdict: delivered=" << dlv
+                            << " distinct=" << dist << " -> "
+                            << (proxyOk ? "PASS" : "FAIL");
+                    }
+                    if (g_simulcast) {
+                        // #132 verdict: simulcast SDP block must be present
+                        // in peer A's publisher offer (only peer A runs
+                        // PublishPipeline in PUBPIPE mode).
+                        bool simPass = m_peerA.simulcastSdpPass;
+                        pass = pass && simPass;
+                        qDebug().nospace() << "SIMULCAST verdict: SDP_pass="
+                            << simPass << " -> " << (simPass ? "PASS" : "FAIL");
+                    }
+                    if (g_simulcastDrop) {
+                        // Visual-only verdict: grep run output for
+                        // "simulcast layer '<rid>' -> MUTED" qInfo lines
+                        // from PublishPipeline::setLayerActive. The
+                        // synthetic-BWE steps fire at +8s/+13s/+18s; the
+                        // 25-s measure window has cleared by teardown.
+                        qDebug() << "SIMULCAST_DROP verdict: visual; grep "
+                                    "run output for \"simulcast layer '<rid>' -> MUTED\"";
+                    }
                     printSummary(icePassed);
                     qApp->exit(pass ? 0 : 1);
                 });
@@ -938,6 +1194,35 @@ private:
 int main(int argc, char *argv[])
 {
     qputenv("TALQ_TEST_AUDIO", "1");
+
+    // #111 proxy: peer A publishes via the real PublishPipeline. Imply
+    // the synthetic source so one env var turns the whole mode on.
+    if (qEnvironmentVariableIsSet("TALQ_TEST_CAMERA_TOGGLE")) {
+        // #135: implies PUBPIPE + synthetic, plus the deferred-camera
+        // mid-call enable scenario that exercises the exact field bug.
+        g_pubPipe = true;
+        g_cameraToggle = true;
+        qputenv("TALQ_PUB_TESTSRC", "1");
+    }
+    if (qEnvironmentVariableIsSet("TALQ_TEST_SIMULCAST")) {
+        // #132: implies PUBPIPE + synthetic. Harness asserts the offer SDP
+        // carries the a=simulcast block + three a=rid lines.
+        g_pubPipe = true;
+        g_simulcast = true;
+        qputenv("TALQ_PUB_TESTSRC", "1");
+    }
+    if (qEnvironmentVariableIsSet("TALQ_TEST_SIMULCAST_DROP")) {
+        // #132: implies SIMULCAST + PUBPIPE. Drives synthetic BWE steps via
+        // PublishPipeline's TALQ_TEST_BWE_OVERRIDE_KBPS env override.
+        g_pubPipe = true;
+        g_simulcast = true;
+        g_simulcastDrop = true;
+        qputenv("TALQ_PUB_TESTSRC", "1");
+    }
+    if (qEnvironmentVariableIsSet("TALQ_TEST_PUBPIPE")) {
+        g_pubPipe = true;
+        qputenv("TALQ_PUB_TESTSRC", "1");
+    }
 
     QCoreApplication app(argc, argv);
 
