@@ -481,11 +481,18 @@ void CallManager::checkGStreamerPlugins()
 
 QString CallManager::activeVideoCodec() const
 {
-    // Return codec from the first active subscriber
+    // Prefer the codec from an active subscriber (what we're decoding).
     for (auto *sub : m_subscribePipelines) {
         if (sub->isRunning() && !sub->videoCodec().isEmpty())
             return sub->videoCodec();
     }
+    // Fall back to our own publish codec — the Janus room runs ONE codec
+    // for everyone, so the codec we send is the call's codec even before a
+    // subscriber feed exists (or if the subscriber didn't surface it). This
+    // is why the telemetry CODEC row used to read "—" for the whole call.
+    if (m_publishPipeline && m_publishPipeline->isRunning())
+        return m_publishPipeline->usesH264() ? QStringLiteral("H264")
+                                             : QStringLiteral("VP8");
     return {};
 }
 

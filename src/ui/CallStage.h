@@ -62,11 +62,17 @@ private:
     void paintControlBar(QPainter &p, const PainterTheme &th);
     void paintStatusPill(QPainter &p, const PainterTheme &th);
     void paintCodecPill(QPainter &p, const PainterTheme &th);
+    void paintSharingBadge(QPainter &p, const PainterTheme &th);
     void paintTelemetry(QPainter &p, const PainterTheme &th);
     void paintCentered(QPainter &p, const PainterTheme &th); // incoming/outgoing/alone
     void buildButtons();
     QString hitButton(const QPointF &pos) const;
     void pokeControls();              // show control bar, restart idle timer
+    // Right-click on the share segment while sharing → quality menu
+    // (720p / 1080p / 1440p / Native) → CallManager::setScreenShareQuality
+    // does a live re-share at the new cap. The picker dialog still owns
+    // the pre-share initial pick.
+    void showScreenShareQualityMenu(const QPoint &globalPos);
     bool reducedMotion() const;
     QImage avatarDisc(const QString &id, const QString &name, int size, const PainterTheme &th) const;
 

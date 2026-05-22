@@ -2,16 +2,19 @@
 #include "core/VideoFrameProvider.h"
 #include "painter/VectorIcons.h"
 
+#include <QAction>
+#include <QActionGroup>
+#include <QFontMetrics>
+#include <QKeyEvent>
+#include <QMenu>
+#include <QMouseEvent>
+#include <QPaintEvent>
 #include <QPainter>
 #include <QPainterPath>
-#include <QPaintEvent>
-#include <QMouseEvent>
-#include <QKeyEvent>
-#include <QTimer>
-#include <QSettings>
-#include <QSet>
 #include <QRegularExpression>
-#include <QFontMetrics>
+#include <QSet>
+#include <QSettings>
+#include <QTimer>
 #include <QtMath>
 
 // ── small helpers ───────────────────────────────────────────────────────
@@ -111,10 +114,20 @@ void CallStage::rebindProviders()
         if (auto *cam = p->camera())
             m_conns << connect(cam, &VideoFrameProvider::imageReady, this,
                 [this, p](const QImage &img){ onFrame(p, false, img); });
+        else
+            m_camFrame.remove(p);  // camera stream ended → drop cached frame
         if (auto *scr = p->screen())
             m_conns << connect(scr, &VideoFrameProvider::imageReady, this,
                 [this, p](const QImage &img){ onFrame(p, true, img); });
+        else
+            // Screen share ended while participant stays in the call. Drop
+            // the cached last frame so the tile renders empty instead of
+            // freezing on the prior share's last image. Mirrors upstream
+            // Talk's ScreenShare.vue `srcObject = null` clear on
+            // unshareScreen; see [[project_talq_upstream_screenshare]].
+            m_scrFrame.remove(p);
     }
+    update();
 }
 
 void CallStage::purgeStaleFrames()
@@ -214,7 +227,12 @@ QVector<CallStage::Tile> CallStage::computeLayout() const
     QList<CallParticipant*> railList;
     for (CallParticipant *p : parts) {
         if (p == src && !isScreen) continue;          // src is the stage
-        if (p->isSelf()) continue;                    // self = PiP overlay
+        // Self is a floating PiP overlay normally, BUT when a screen share
+        // is active anywhere in the call (self or peer) the stage is the
+        // screen content and the rail carries the participant tiles. In
+        // that mode the self-camera belongs in the rail (becomes the "You"
+        // tile, no floating overlay), so it doesn't obscure shared content.
+        if (p->isSelf() && !isScreen) continue;       // PiP only when no screen share
         railList << p;
     }
     const bool hasRail = !railList.isEmpty();
@@ -306,6 +324,7 @@ void CallStage::paintEvent(QPaintEvent *)
         }
         paintStatusPill(p, th);
         paintCodecPill(p, th);
+        paintSharingBadge(p, th);
         if (m_telemetryOpen) paintTelemetry(p, th);
         if (m_controlsVisible) paintControlBar(p, th);
     }
@@ -382,12 +401,19 @@ void CallStage::paintTile(QPainter &p, const Tile &t, const PainterTheme &th, bo
 
         // No silent black: always say WHY there's no picture. The
         // Reconnecting/Failed scrim below owns those states; this caption
-        // covers the normal ones (camera starting / off / waiting).
+        // covers the normal ones (camera starting / off / waiting,
+        // screen share starting).
         const bool reconn = cp->connState() == CallParticipant::Reconnecting
                          || cp->connState() == CallParticipant::Failed;
-        if (!reconn && !t.isScreen) {
+        if (!reconn) {
             QString cap;
-            if (cp->isSelf()) {
+            if (t.isScreen) {
+                // Provider exists (cp->screen()) but no frame yet → the
+                // share is being negotiated. Tell the viewer instead of
+                // showing a silent avatar tile (#134 UX gap).
+                cap = cp->isSelf() ? tr("Starting screen share…")
+                                   : tr("Starting remote screen share…");
+            } else if (cp->isSelf()) {
                 cap = m_call->isCameraOn() ? tr("Starting camera…")
                                            : tr("Camera off");
             } else if (cp->videoMuted()) {
@@ -772,25 +798,63 @@ void CallStage::paintCodecPill(QPainter &p, const PainterTheme &th)
                Qt::AlignVCenter | Qt::AlignLeft, text);
 }
 
+void CallStage::paintSharingBadge(QPainter &p, const PainterTheme &th)
+{
+    // Persistent top-center indicator while WE are sharing our screen, so
+    // the publisher always knows the share is live (#3 — previously there
+    // was no local cue). Pulsing red dot + label; click-to-stop is the
+    // existing "share" control-bar toggle.
+    if (!m_call->isScreenSharing()) return;
+
+    const QString text = tr("You're sharing your screen");
+    QFont f = monoFont(12); f.setBold(true);
+    p.setFont(f);
+    QFontMetrics fm(f);
+    qreal pillW = fm.horizontalAdvance(text) + 40;
+    QRectF pill((width() - pillW) / 2.0, 14, pillW, 28);
+
+    QColor bg = th.bgSecondary; bg.setAlphaF(0.92);
+    QColor border = th.danger;  border.setAlphaF(0.65);
+    p.setBrush(bg); p.setPen(QPen(border, 1.5));
+    p.drawRoundedRect(pill, 14, 14);
+
+    // Live red dot.
+    p.setBrush(th.danger); p.setPen(Qt::NoPen);
+    p.drawEllipse(QRectF(pill.left() + 14, pill.center().y() - 4, 8, 8));
+
+    p.setPen(th.textPrimary);
+    p.drawText(pill.adjusted(30, 0, -10, 0),
+               Qt::AlignVCenter | Qt::AlignLeft, text);
+}
+
 void CallStage::paintTelemetry(QPainter &p, const PainterTheme &th)
 {
+    // Telemetry panel: kept calm + theme-driven, but the ground is now
+    // semi-transparent (~0.78) so the camera / call view stays visible
+    // behind it — the panel reads as an overlay, not a hard split.
     qreal w = qBound(280.0, width()*0.30, 380.0);
     QRectF panel(width()-w, 0, w, height());
-    QColor bg = th.bgSecondary; bg.setAlphaF(0.97);
+    QColor bg = th.bgSecondary; bg.setAlphaF(0.78);
     p.setBrush(bg); p.setPen(Qt::NoPen);
     p.fillRect(panel, bg);
     p.setPen(QPen(th.divider, 1));
     p.drawLine(panel.topLeft(), panel.bottomLeft());
 
-    qreal x = panel.left()+18, y = 22;
-    p.setPen(th.textSecondary); p.setFont(monoFont(11));
+    qreal x = panel.left()+18, y = 24;
+    // Value column scales with panel width so a narrow window (panel
+    // width ≈ 280) doesn't clip long values like "H264 · mfh264enc · hw"
+    // while a wide panel doesn't strand the values too close to the labels.
+    const qreal valX = x + qBound(120.0, (panel.width() - 36) * 0.42, 210.0);
+    // Telemetry text bumped 11 → 13 pt: the 11 pt mono was unreadable on
+    // HiDPI call windows. Row pitch grows to match so rows don't crowd.
+    p.setPen(th.textSecondary); p.setFont(monoFont(12));
     p.drawText(QPointF(x, y), QStringLiteral("● FLIGHT LOG · TELEMETRY"));
-    y += 28;
-    p.setFont(monoFont(11));
+    y += 30;
+    p.setFont(monoFont(13));
     auto line = [&](const QString &k, const QString &v, const QColor &vc){
         p.setPen(th.textTime);  p.drawText(QPointF(x, y), k);
-        p.setPen(vc);           p.drawText(QPointF(x+136, y), v);
-        y += 20;
+        p.setPen(vc);           p.drawText(QPointF(valX, y), v);
+        y += 24;
     };
     line("CODEC",   m_call->activeVideoCodec().isEmpty() ? "—" : m_call->activeVideoCodec(), th.textPrimary);
     QString dec = m_call->activeVideoDecoder();
@@ -801,12 +865,18 @@ void CallStage::paintTelemetry(QPainter &p, const PainterTheme &th)
                         : m_call->activeVideoEncoderIsHw() ? th.success : th.amber);
     QString tx = m_call->videoTxLabel();
     line("VIDEO TX", tx.isEmpty() ? "—" : tx, th.textPrimary);
+    // TX resolution — the shared chain pins encoder input to 1280×720
+    // when the camera is on; screen share uses its quality cap.
+    QString txRes;
+    if (m_call->isScreenSharing()) txRes = QStringLiteral("screen");
+    else if (m_call->isCameraOn()) txRes = QStringLiteral("1280×720");
+    line("TX RES",  txRes.isEmpty() ? "—" : txRes, th.textPrimary);
     QString bw = m_call->streamBandwidthLabel();
     line("STREAM BW", bw.isEmpty() ? "—" : bw,
          bw.isEmpty() ? th.textPrimary : th.success);
     line("PEER",    m_call->remotePeerClient().isEmpty() ? "—" : m_call->remotePeerClient(), th.textPrimary);
-    y += 8;
-    p.setPen(th.textSecondary); p.drawText(QPointF(x, y), QStringLiteral("SUBSYSTEMS")); y += 22;
+    y += 10;
+    p.setPen(th.textSecondary); p.drawText(QPointF(x, y), QStringLiteral("SUBSYSTEMS")); y += 26;
     for (auto *cp : m_call->participants()) {
         if (cp->isSelf()) continue;
         QColor c = cp->connState()==CallParticipant::Connected ? th.success
@@ -815,16 +885,16 @@ void CallStage::paintTelemetry(QPainter &p, const PainterTheme &th)
                     : cp->connState()==CallParticipant::Failed ? "FAIL" : "…";
         QString nm = cp->displayName().left(16);
         p.setPen(th.textTime); p.drawText(QPointF(x, y), nm);
-        p.setPen(c); p.drawText(QPointF(x+200, y), stx);
-        y += 20;
+        p.setPen(c); p.drawText(QPointF(valX, y), stx);
+        y += 24;
     }
-    y += 10;
-    p.setPen(th.textSecondary); p.drawText(QPointF(x, y), QStringLiteral("STATS")); y += 20;
+    y += 12;
+    p.setPen(th.textSecondary); p.drawText(QPointF(x, y), QStringLiteral("STATS")); y += 24;
     p.setPen(th.textTime);
     const QString stats = m_call->callStats();
     for (const QString &ln : stats.split('\n', Qt::SkipEmptyParts)) {
-        p.drawText(QRectF(x, y-12, w-36, 18), Qt::TextWordWrap, ln);
-        y += 20;
+        p.drawText(QRectF(x, y-14, w-36, 20), Qt::TextWordWrap, ln);
+        y += 22;
         if (y > height()-20) break;
     }
 }
@@ -865,6 +935,16 @@ void CallStage::mousePressEvent(QMouseEvent *e)
 {
     pokeControls();
     const QString id = hitButton(e->position());
+
+    // Right-click on the share segment while sharing → quality menu
+    // (live re-share at the new cap). Any other right-click is ignored
+    // so it can't accidentally trigger a control action.
+    if (e->button() == Qt::RightButton) {
+        if (id == "share" && m_call->isScreenSharing())
+            showScreenShareQualityMenu(e->globalPosition().toPoint());
+        return;
+    }
+
     if (!id.isEmpty()) {
         if (id=="mic")        m_call->toggleMute();
         else if (id=="cam")   m_call->toggleCamera();
@@ -918,6 +998,33 @@ void CallStage::mouseDoubleClickEvent(QMouseEvent *e)
         return;
     }
     emit requestToggleFullscreen();
+}
+
+void CallStage::showScreenShareQualityMenu(const QPoint &globalPos)
+{
+    // Themed by AppStyle's app-wide QMenu sheet. Heap-alloc + DeleteOnClose
+    // so the lifetime ends with the popup (no modal blocking call).
+    auto *menu = new QMenu(this);
+    menu->setAttribute(Qt::WA_DeleteOnClose);
+    auto *group = new QActionGroup(menu);
+    group->setExclusive(true);
+    const QStringList labels = {
+        tr("720p"), tr("1080p"), tr("1440p"), tr("Native")
+    };
+    const int cur = m_call->screenShareQuality();
+    for (int i = 0; i < labels.size(); ++i) {
+        QAction *a = menu->addAction(labels[i]);
+        a->setCheckable(true);
+        a->setChecked(i == cur);
+        a->setData(i);
+        group->addAction(a);
+    }
+    connect(menu, &QMenu::triggered, this, [this, cur](QAction *picked) {
+        if (!picked) return;
+        const int lv = picked->data().toInt();
+        if (lv != cur) m_call->setScreenShareQuality(lv);
+    });
+    menu->popup(globalPos);
 }
 
 void CallStage::leaveEvent(QEvent *)
