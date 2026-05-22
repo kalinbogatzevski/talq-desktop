@@ -1,5 +1,33 @@
 # Changelog
 
+## v0.34.0 "Bangaranga" (2026-05-22)
+
+First stable release since 0.32.0, rolling up the 0.33.x call and
+notification work. Video stays a single 720p stream in stable for now
+(multi-layer simulcast continues to bake in the pre-release channel).
+
+### Fixed
+- **Hanging up now ends the call for the other person too.** A regression
+  had left the other party still "in the call" after you hung up.
+- **Your other devices no longer ring when you place a call.** Signed in
+  on more than one device, starting a call from one no longer makes the
+  others ring as if it were incoming.
+- **Telemetry codec/readability:** the in-call telemetry CODEC row now
+  resolves instead of showing "—", and its text is larger/legible.
+- **Screen share** surfaces a clear error (instead of a silent dead share)
+  when the capture source fails to start, so you can retry.
+- Edit-message events no longer render as stray chat bubbles.
+- Stuck "on call" / "in a call" user-status after a call is reliably
+  cleared.
+
+### Added
+- **Selectable notification sound** (Settings → Notifications → Sounds):
+  None / System default / six bundled tones, with preview on pick, mirrored
+  in the tray menu.
+- **Selectable call ringtone:** Classic / Bright / Soft bell, the TalQ
+  tone, or None, played when someone calls you.
+- **"You're sharing your screen"** indicator while a screen share is live.
+
 ## v0.33.6 "Bangaranga" — PRE-RELEASE (2026-05-22)
 
 ### Fixed
