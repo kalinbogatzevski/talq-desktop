@@ -2,6 +2,7 @@
 #include "painter/PainterTheme.h"
 #include "core/MediaDeviceManager.h"
 #include "core/NotificationManager.h"
+#include "core/CallManager.h"
 #include "core/AppSettings.h"
 #include "core/AuthManager.h"
 
@@ -300,10 +301,13 @@ QWidget *SettingsDialog::buildNotificationsTab()
     });
     layout->addWidget(makeSettingRow(tr("Style"), QString(), styleCtl));
 
-    // Sound — one combo for None / System default / each bundled tone.
-    // Roster comes from NotificationManager::bundledTones() so the Settings
-    // list and the tray submenu can never drift apart. Picking a real tone
-    // auditions it once.
+    layout->addSpacing(kGroupGap - kRowGap);
+    layout->addWidget(makeSectionHeader("Sounds"));
+
+    // Message sound — one combo for None / System default / each bundled
+    // tone. Roster comes from NotificationManager::bundledTones() so the
+    // Settings list and the tray submenu can never drift apart. Picking a
+    // real tone auditions it once.
     m_soundCombo = new QComboBox;
     m_soundCombo->addItem(tr("None"),           QStringLiteral("none"));
     m_soundCombo->addItem(tr("System default"), QStringLiteral("system"));
@@ -319,7 +323,29 @@ QWidget *SettingsDialog::buildNotificationsTab()
         if (id != "none" && id != "system")
             m_notifications->playCurrentSound();  // audition
     });
-    layout->addWidget(makeSettingRow(tr("Sound"), QString(), m_soundCombo));
+    layout->addWidget(makeSettingRow(
+        tr("Message sound"),
+        tr("Plays when a new message arrives."),
+        m_soundCombo));
+
+    // Incoming-call ringtone — loops while a call is ringing. Roster from
+    // CallManager::ringtones(); picking a tone auditions it once.
+    m_ringtoneCombo = new QComboBox;
+    for (const auto &r : CallManager::ringtones())
+        m_ringtoneCombo->addItem(r.second, r.first);
+    connect(m_ringtoneCombo, QOverload<int>::of(&QComboBox::activated),
+            this, [this](int idx) {
+        const QString id = m_ringtoneCombo->itemData(idx).toString();
+        m_settings.beginGroup("Calls");
+        m_settings.setValue("incomingRingtone", id);
+        m_settings.endGroup();
+        if (id != "none")
+            CallManager::auditionRingtone(id);  // brief one-shot preview
+    });
+    layout->addWidget(makeSettingRow(
+        tr("Call ringtone"),
+        tr("Plays when someone calls you."),
+        m_ringtoneCombo));
 
     layout->addSpacing(kGroupGap - kRowGap);
 
@@ -692,6 +718,15 @@ void SettingsDialog::loadNotificationSettings()
     if (idx < 0) idx = m_soundCombo->findData(QStringLiteral("chime"));
     m_soundCombo->setCurrentIndex(idx);
     m_soundCombo->blockSignals(false);
+
+    m_settings.beginGroup("Calls");
+    const QString ringId = m_settings.value("incomingRingtone", "classic").toString();
+    m_settings.endGroup();
+    m_ringtoneCombo->blockSignals(true);
+    int ridx = m_ringtoneCombo->findData(ringId);
+    if (ridx < 0) ridx = m_ringtoneCombo->findData(QStringLiteral("classic"));
+    m_ringtoneCombo->setCurrentIndex(ridx);
+    m_ringtoneCombo->blockSignals(false);
 }
 
 void SettingsDialog::loadGeneralSettings()

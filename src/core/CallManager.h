@@ -4,6 +4,9 @@
 #include <QTimer>
 #include <QHash>
 #include <QSet>
+#include <QVector>
+#include <QPair>
+#include <QByteArray>
 #include <functional>
 #include "core/ApiClient.h"
 #include "core/SignalingClient.h"
@@ -100,6 +103,14 @@ public:
     // connects. Janus adapts DOWN on its own if the link can't sustain
     // the requested layer, so this is an upper bound, not a guarantee.
     Q_INVOKABLE void requestPeerVideoQuality(const QString &sessionId, int substream);
+
+    // Incoming-call ringtone roster (id, label) for the Settings dropdown
+    // + persistence under Calls/incomingRingtone. "default" = synthesized
+    // TalQ ring; classic/bright/soft = bundled CC0 rings; "none" = silent.
+    static QVector<QPair<QString, QString>> ringtones();
+    // Play a ringtone once (no loop) for the Settings preview. Static so the
+    // Settings dialog can audition without a live CallManager instance.
+    static void auditionRingtone(const QString &id);
     VideoFrameProvider *remoteScreenProvider() const { return m_remoteScreenProvider; }
     void onIncomingCallDetected(const QString &callerName, const QString &token, int callFlag);
 
@@ -153,7 +164,12 @@ private:
     // (success, HTTP error, transport timeout) — no safety timer needed.
     // teardown() uses this to gate callEnded so the UserStatusManager
     // revert hits a server already in the post-call state.
-    void leaveCallOnServer(std::function<void()> onDone = {});
+    // token + wasJoined are snapshotted by teardown() before it clears
+    // m_callToken / m_joinedCall, so the DELETE /call still fires (and the
+    // other party gets the "left call" event). Async; onDone runs on the
+    // server ACK (or immediately if there was no joined call).
+    void leaveCallOnServer(const QString &token, bool wasJoined,
+                           std::function<void()> onDone = {});
     void teardown(const QString &reason);
     void stopAllPipelines();
     void startRingtone();
@@ -202,6 +218,7 @@ private:
     // on change.
     QHash<QString, int> m_desiredSubstream;
     QHash<QString, int> m_subscriberRecoveries;  // sessionId -> mid-call re-subscribe count (bounded; reset on connect)
+    QByteArray m_ringtoneData;  // backing buffer for the selected ring (SND_ASYNC reads from it)
     // P2P single pipeline
     PeerPipeline *m_peerPipeline = nullptr;
     bool m_useP2P = false;

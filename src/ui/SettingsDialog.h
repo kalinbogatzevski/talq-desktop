@@ -68,6 +68,7 @@ private:
     QRadioButton *m_stylePopup = nullptr;
     QRadioButton *m_styleWindows = nullptr;
     QComboBox *m_soundCombo = nullptr;   // None / System default / bundled tones
+    QComboBox *m_ringtoneCombo = nullptr; // incoming-call ringtone
 
     // General tab
     QCheckBox *m_autoStart = nullptr;
