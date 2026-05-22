@@ -81,6 +81,9 @@ public:
     Q_INVOKABLE void setRemotePeerInfo(const QString &name, const QString &peerId);
     Q_INVOKABLE void acceptCall(bool withVideo);
     Q_INVOKABLE void declineCall();
+    // True when the current incoming/active call was offered with video, so
+    // the incoming UI can offer an "answer with video" choice.
+    bool callHasVideo() const { return m_withVideo; }
     Q_INVOKABLE void setUserActionReady();
     Q_INVOKABLE void hangUp();
     // Best-effort: free the server-side call participant on a clean exit
