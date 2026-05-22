@@ -59,6 +59,10 @@ public slots:
     void setPredefined(const QString &messageId, qint64 clearAt);
     void setCustom(const QString &icon, const QString &text, qint64 clearAt);
     void clearStatusMessage();
+    // Undo Talk's "call" status automation. Idempotent (404/200) — safe
+    // to call after every call-end path, so a glitched server-side
+    // clear can't leave the user reading as "in call" indefinitely.
+    void revertStuckCall(int attempt = 0);
 
 signals:
     void statusChanged();
@@ -68,7 +72,6 @@ signals:
 private:
     void fetchPredefined();
     void fetchCurrent();
-    void revertStuckCall();
     void applyFromJson(const QJsonObject &d);
     void takeSnapshot();
     void rollback();

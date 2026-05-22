@@ -159,6 +159,7 @@ struct TestPeer {
     bool videoAnswerReceived = false;  // true when MCU answers our video renegotiation
     bool simulcastSdpPass = false;     // #132: a=simulcast: send l;m;h + three a=rid lines
     bool subscriberRequested = false;  // true after requestOffer for remote peer
+    bool substreamRequested = false;   // #132 debug: selectStream sent once
     QString subscriberSid;   // MCU-assigned sid from the subscriber offer
     int remoteVideoFramesBefore = 0;   // frame count before waiting
     int remoteVideoFramesAfter = 0;    // frame count after waiting
@@ -669,8 +670,28 @@ private:
         });
 
         connect(peer.subscribePipeline, &SubscribeWebrtcSrc::iceStateChanged, this,
-                [&peer](const QString &state) {
+                [this, &peer](const QString &state) {
             peer.log("Subscriber ICE: " + state);
+            // #132 debug: once the subscription is live, optionally request a
+            // specific simulcast substream from Janus (selectStream → HPB →
+            // videoroom configure). The per-second RX video log prints the
+            // decoded WxH, so we can SEE whether Janus actually switches the
+            // forwarded layer (e.g. 320x180 → 1280x720) or ignores us.
+            if ((state == "connected" || state == "completed")
+                && qEnvironmentVariableIsSet("TALQ_TEST_SELECT_SUBSTREAM")
+                && !peer.substreamRequested) {
+                peer.substreamRequested = true;
+                const int ss = qEnvironmentVariable("TALQ_TEST_SELECT_SUBSTREAM").toInt();
+                // small delay so the default (substream 0) stream is flowing
+                // first — the log then shows the before→after resolution.
+                QTimer::singleShot(4000, this, [this, &peer, ss]() {
+                    if (!peer.subscribePipeline) return;
+                    peer.log(QString("selectStream → substream %1 (sid=%2)")
+                             .arg(ss).arg(peer.subscriberSid.left(10)));
+                    peer.signaling->sendSelectStream(peer.remoteSessionId,
+                                                     peer.subscriberSid, ss, 2);
+                });
+            }
         });
 
         connect(peer.subscribePipeline, &SubscribeWebrtcSrc::error, this,

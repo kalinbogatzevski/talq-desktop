@@ -700,10 +700,25 @@ GstFlowReturn SubscribeWebrtcSrc::onVideoNewSample(GstAppSink *sink, gpointer ud
             self->m_rxFps.store(fps, std::memory_order_relaxed);
             self->m_rxPtsGapMs.store(gap, std::memory_order_relaxed);
             self->m_rxDistinctFps.store(dst, std::memory_order_relaxed);
+            // Decoded frame resolution (from the sample caps) — surfaces the
+            // active simulcast substream the SFU is forwarding to us, for the
+            // call-screen resolution bullet and for debugging selectStream.
+            int rw = 0, rh = 0;
+            if (GstCaps *caps = gst_sample_get_caps(sample)) {
+                if (GstStructure *st = gst_caps_get_structure(caps, 0)) {
+                    gst_structure_get_int(st, "width", &rw);
+                    gst_structure_get_int(st, "height", &rh);
+                }
+            }
+            if (rw > 0 && rh > 0) {
+                self->m_rxWidth.store(rw, std::memory_order_relaxed);
+                self->m_rxHeight.store(rh, std::memory_order_relaxed);
+            }
             qInfo().nospace() << "SubscribeWebrtcSrc["
                               << self->m_remoteSessionId.left(8)
                               << "]: RX video " << fps << " fps (" << dst
-                              << " distinct), mean ptsΔ " << gap << " ms ("
+                              << " distinct), " << rw << "x" << rh
+                              << ", mean ptsΔ " << gap << " ms ("
                               << n << " frames / " << (elapsedUs / 1000)
                               << " ms)";
             self->m_rxWinStartUs = nowUs;

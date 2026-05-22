@@ -816,6 +816,24 @@ void CallStage::paintCodecPill(QPainter &p, const PainterTheme &th)
     p.setPen(th.textSecondary);
     p.drawText(pill.adjusted(26, 0, -8, 0),
                Qt::AlignVCenter | Qt::AlignLeft, text);
+
+    // RX-resolution chip, immediately right of the codec pill: the decoded
+    // incoming resolution (active simulcast layer / BW awareness). Quiet,
+    // same row, only when we're actually receiving a decoded frame.
+    const QString rx = m_call->activeRxResolution();
+    if (!rx.isEmpty()) {
+        const QString rxText = QStringLiteral("RX ") + rx;
+        QRectF rxPill(pill.right() + 8, pill.top(),
+                      fm.horizontalAdvance(rxText) + 26, pill.height());
+        QColor rxBorder = th.divider; rxBorder.setAlphaF(0.7);
+        p.setBrush(bg); p.setPen(QPen(rxBorder, 1));
+        p.drawRoundedRect(rxPill, 11, 11);
+        p.setBrush(th.textSecondary); p.setPen(Qt::NoPen);
+        p.drawEllipse(QRectF(rxPill.left() + 11, rxPill.center().y() - 3, 6, 6));
+        p.setPen(th.textSecondary);
+        p.drawText(rxPill.adjusted(24, 0, -8, 0),
+                   Qt::AlignVCenter | Qt::AlignLeft, rxText);
+    }
 }
 
 void CallStage::paintSharingBadge(QPainter &p, const PainterTheme &th)

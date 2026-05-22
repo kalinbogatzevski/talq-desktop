@@ -224,6 +224,13 @@ target_include_directories(talq-call-test PRIVATE src ${GST_INCLUDE_DIRS})
 # SignalingClient.cpp references TALQ_VERSION (talq target defines it; the
 # test target must too or it fails to compile).
 target_compile_definitions(talq-call-test PRIVATE TALQ_VERSION="${PROJECT_VERSION}")
+# Mirror TALQ_PRERELEASE so the harness exercises the SAME publish topology
+# as the build under test: ON → 3-layer simulcast (lets the substream-
+# selection scenarios run), OFF → single 720p. Without this the harness
+# always built single-stream and couldn't test simulcast at all.
+if(TALQ_PRERELEASE)
+    target_compile_definitions(talq-call-test PRIVATE TALQ_PRERELEASE)
+endif()
 target_link_directories(talq-call-test PRIVATE ${GST_LIBRARY_DIRS})
 target_link_libraries(talq-call-test PRIVATE
     Qt6::Core

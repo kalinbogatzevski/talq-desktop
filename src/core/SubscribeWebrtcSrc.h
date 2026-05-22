@@ -51,6 +51,10 @@ public:
     // image" symptom, quantified. delivered≈distinct ⇒ decode is fine and
     // the fault is elsewhere (sender rate, render). THE decisive number.
     int rxDistinctVideoFps() const { return m_rxDistinctFps.load(std::memory_order_relaxed); }
+    // Decoded frame resolution of the substream the SFU is currently
+    // forwarding (changes live when the active simulcast layer switches).
+    int rxWidth()  const { return m_rxWidth.load(std::memory_order_relaxed); }
+    int rxHeight() const { return m_rxHeight.load(std::memory_order_relaxed); }
 
 signals:
     void localAnswerReady(const QString &sdp);
@@ -120,6 +124,8 @@ private:
     std::atomic<int> m_rxFps{0};         // delivered fps, published to UI thread
     std::atomic<int> m_rxPtsGapMs{0};    // mean PTS gap ms, published to UI thread
     std::atomic<int> m_rxDistinctFps{0}; // distinct-content fps, published to UI thread
+    std::atomic<int> m_rxWidth{0};       // decoded frame width (active substream)
+    std::atomic<int> m_rxHeight{0};      // decoded frame height (active substream)
     QString m_videoCodec;
     QString m_audioOutputDeviceId;
     bool m_running = false;
