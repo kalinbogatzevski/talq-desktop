@@ -337,11 +337,24 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         L.encoder = makeWebrtcVideoEncoder(/*screen=*/false, L.nominalBitrate,
                                             &layerUsesH264, &L.parser,
                                             (i == 0) ? &m_encoderDesc : nullptr);
+        // The branch elements are created here but only bin-added below.
+        // On any early-exit before gst_bin_add_many, they're floating refs
+        // the bin never adopts, so cleanup() (which only nulls pointers +
+        // unrefs the pipeline) would leak them. Sink+drop them on each
+        // error path before cleanup().
+        auto dropFloating = [&L]() {
+            for (GstElement *e : { L.valve, L.scale, L.caps, L.ssrcFilter,
+                                   L.encoder, L.parser, L.payloader })
+                if (e) gst_object_unref(e);
+            L.valve = L.scale = L.caps = L.ssrcFilter = nullptr;
+            L.encoder = L.parser = L.payloader = nullptr;
+        };
         if (i == 0) {
             firstBranchUsesH264 = layerUsesH264;
             m_useH264 = layerUsesH264;
         } else if (layerUsesH264 != firstBranchUsesH264) {
             emit error("Simulcast branch codec mismatch");
+            dropFloating();
             cleanup();
             return false;
         }
@@ -352,6 +365,7 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         if (!L.valve || !L.scale || !L.caps || !L.ssrcFilter
             || !L.encoder || !L.payloader) {
             emit error(QString("Failed to create simulcast branch %1").arg(tag));
+            dropFloating();
             cleanup();
             return false;
         }
