@@ -328,9 +328,20 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         emit error("Failed to link shared chain"); cleanup(); return false;
     }
 
-    // --- Three simulcast branches: each tees off m_outputTee ---
+    // Simulcast only in pre-release builds; stable sends a single 720p
+    // stream (no downgrade vs 0.32.0 while substream selection is proven).
+#ifdef TALQ_PRERELEASE
+    m_simulcast = true;
+#else
+    m_simulcast = false;
+    // Collapse the layer set to one branch carrying the 720p params.
+    m_layers[0] = SimulcastLayer{ "h", 1280, 720, 2'500'000 };
+#endif
+    const size_t nBranches = m_simulcast ? m_layers.size() : 1;
+
+    // --- Encoder branches: each tees off m_outputTee (3 for simulcast, 1 otherwise) ---
     bool firstBranchUsesH264 = false;
-    for (size_t i = 0; i < m_layers.size(); ++i) {
+    for (size_t i = 0; i < nBranches; ++i) {
         auto &L = m_layers[i];
         QString tag = QString::fromUtf8(L.rid);
 
@@ -420,14 +431,18 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         }
         // RID hdr ext (id=2) — RFC 8852 simulcast identifier per RTP packet.
         // This is the on-wire mechanism the SFU uses to know which substream
-        // a given packet belongs to.
-        if (GstRTPHeaderExtension *ridExt =
-                gst_rtp_header_extension_create_from_uri(
-                    "urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id")) {
-            gst_rtp_header_extension_set_id(ridExt, 2);
-            g_object_set(ridExt, "rid", L.rid, nullptr);
-            g_signal_emit_by_name(L.payloader, "add-extension", ridExt);
-            gst_object_unref(ridExt);
+        // a given packet belongs to. Only meaningful for simulcast; a single
+        // stream must NOT carry a rid (it would imply a simulcast envelope
+        // the SDP doesn't declare).
+        if (m_simulcast) {
+            if (GstRTPHeaderExtension *ridExt =
+                    gst_rtp_header_extension_create_from_uri(
+                        "urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id")) {
+                gst_rtp_header_extension_set_id(ridExt, 2);
+                g_object_set(ridExt, "rid", L.rid, nullptr);
+                g_signal_emit_by_name(L.payloader, "add-extension", ridExt);
+                gst_object_unref(ridExt);
+            }
         }
 
         // SSRC pinning per layer — distinct SSRC per simulcast layer is the
@@ -496,7 +511,7 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         return false;
     }
     gst_bin_add(GST_BIN(m_pipeline), rtpFunnel);
-    for (size_t i = 0; i < m_layers.size(); ++i) {
+    for (size_t i = 0; i < nBranches; ++i) {
         auto &L = m_layers[i];
         GstPad *src = gst_element_get_static_pad(L.ssrcFilter, "src");
         GstPad *funnelSink = gst_element_request_pad_simple(rtpFunnel, "sink_%u");
@@ -535,17 +550,22 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         gst_caps_set_simple(vc,
             "a-mid",        G_TYPE_STRING, "video0",
             "extmap-1",     G_TYPE_STRING, "urn:ietf:params:rtp-hdrext:sdes:mid",
-            "extmap-2",     G_TYPE_STRING, "urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id",
             nullptr);
         char extField[16];
         g_snprintf(extField, sizeof(extField), "extmap-%d", kTwccExtId);
         gst_caps_set_simple(vc, extField, G_TYPE_STRING, kTwccUri, nullptr);
-        gst_caps_set_simple(vc,
-            "rid-l",        G_TYPE_STRING, "send",
-            "rid-m",        G_TYPE_STRING, "send",
-            "rid-h",        G_TYPE_STRING, "send",
-            "a-simulcast",  G_TYPE_STRING, "send l;m;h",
-            nullptr);
+        // Multi-rid + a=simulcast directive ONLY for simulcast builds. A
+        // single-stream build emits a plain m=video (no a=rid/a=simulcast),
+        // so it must not declare the rid extmap or the rid-* fields.
+        if (m_simulcast) {
+            gst_caps_set_simple(vc,
+                "extmap-2",     G_TYPE_STRING, "urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id",
+                "rid-l",        G_TYPE_STRING, "send",
+                "rid-m",        G_TYPE_STRING, "send",
+                "rid-h",        G_TYPE_STRING, "send",
+                "a-simulcast",  G_TYPE_STRING, "send l;m;h",
+                nullptr);
+        }
         g_object_set(simulcastCaps, "caps", vc, nullptr);
         gst_caps_unref(vc);
     }
@@ -589,8 +609,9 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         }
     }
 
-    qDebug() << "PublishPipeline: 3 simulcast branches built, codec="
-             << (m_useH264 ? "H264" : "VP8");
+    qDebug().nospace() << "PublishPipeline: " << (uint)nBranches
+                       << (m_simulcast ? " simulcast branches" : " branch (single 720p)")
+                       << " built, codec=" << (m_useH264 ? "H264" : "VP8");
 
     // Add a data channel — Janus videoroom requires it for publisher registration.
     // The browser's Talk client creates "status" + "simplewebrtc" data channels.
@@ -1487,6 +1508,21 @@ void PublishPipeline::onGccBitrate(GObject *gcc, GParamSpec *, gpointer userData
     QPointer<PublishPipeline> guard(self);
     QMetaObject::invokeMethod(self, [guard, estBps = (int)est]() {
         if (!guard) return;
+
+        // Single-stream (stable) build: GCC drives the lone encoder's
+        // bitrate directly, exactly like 0.32.0 — the layer gate + nominal
+        // pinning below are simulcast-only behaviors. Deadband avoids
+        // hammering the HW encoder with tiny updates.
+        if (!guard->m_simulcast) {
+            auto &L = guard->m_layers[0];
+            if (L.encoder && qAbs(L.lastAppliedBitrate - estBps) >= 50'000) {
+                setWebrtcVideoEncoderBitrate(L.encoder, guard->m_useH264,
+                                              (guint)estBps);
+                L.lastAppliedBitrate = estBps;
+            }
+            return;
+        }
+
         // Drive the layer gate first — opening/closing layers changes
         // the aggregate target before we set per-encoder bitrates.
         guard->applyBweToLayers(estBps);
