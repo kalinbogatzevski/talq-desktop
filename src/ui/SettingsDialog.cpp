@@ -19,18 +19,66 @@
 #include <QRegularExpression>
 #include <QTimer>
 
-// Helper: section header label matching QML SectionHeader style
+// Group eyebrow: a calm uppercase caption that names a group of setting
+// rows. Colour is theme-driven (AppStyle role="eyebrow"); only the
+// letter-spacing (not a colour) is set in code, which the anti-drift
+// rule permits.
 static QLabel *makeSectionHeader(const QString &text)
 {
-    auto *label = new QLabel(text);
+    auto *label = new QLabel(text.toUpper());
     QFont f = label->font();
-    f.setPixelSize(10);
+    f.setPixelSize(11);
     f.setWeight(QFont::DemiBold);
-    f.setLetterSpacing(QFont::AbsoluteSpacing, 1);
+    f.setLetterSpacing(QFont::AbsoluteSpacing, 1.2);
     label->setFont(f);
-    label->setProperty("role", "muted");   // AppStyle, theme-driven
+    label->setProperty("role", "eyebrow");   // AppStyle, theme-driven
     return label;
 }
+
+// One setting = one row: name (+ optional one-line description) on the
+// left, the control aligned to a fixed right-hand column so every
+// control in the dialog shares one vertical edge. The calm-surface /
+// confident-control idiom from DESIGN.md; no cards, grouping by rhythm.
+static constexpr int kControlCol = 200;   // right-hand control column width
+
+static QWidget *makeSettingRow(const QString &name,
+                               const QString &desc,
+                               QWidget *control)
+{
+    auto *row = new QWidget;
+    auto *h = new QHBoxLayout(row);
+    h->setContentsMargins(0, 0, 0, 0);
+    h->setSpacing(16);
+
+    auto *textCol = new QVBoxLayout;
+    textCol->setContentsMargins(0, 0, 0, 0);
+    textCol->setSpacing(2);
+    auto *nameLbl = new QLabel(name);
+    nameLbl->setProperty("role", "settingName");
+    textCol->addWidget(nameLbl);
+    if (!desc.isEmpty()) {
+        auto *descLbl = new QLabel(desc);
+        descLbl->setProperty("role", "settingDesc");
+        descLbl->setWordWrap(true);
+        textCol->addWidget(descLbl);
+    }
+    h->addLayout(textCol, 1);
+
+    if (control) {
+        control->setMinimumWidth(kControlCol);
+        auto *ctrlWrap = new QVBoxLayout;          // top-align the control
+        ctrlWrap->setContentsMargins(0, 0, 0, 0);  // against a 2-line name
+        ctrlWrap->addWidget(control);
+        ctrlWrap->addStretch();
+        h->addLayout(ctrlWrap, 0);
+    }
+    return row;
+}
+
+// Vertical rhythm: one gap between rows in a group, a larger gap before
+// the next group's eyebrow. DESIGN.md spacing scale (8 / 20).
+static constexpr int kRowGap   = 14;
+static constexpr int kGroupGap = 26;
 
 // Helper: horizontal divider line
 static QFrame *makeDivider()
@@ -57,12 +105,30 @@ SettingsDialog::SettingsDialog(
     , m_settings("TalQ", "TalQ")
 {
     setWindowTitle("Settings");
-    setMinimumSize(460, 420);
-    resize(480, 520);
+    setMinimumSize(520, 460);
+    resize(560, 580);
 
     auto *mainLayout = new QVBoxLayout(this);
     mainLayout->setContentsMargins(0, 0, 0, 0);
     mainLayout->setSpacing(0);
+
+    // Quiet header: identity without a costume (Title tier + one
+    // secondary line), grounded on bg-primary, hairline divider beneath.
+    auto *header = new QWidget(this);
+    header->setObjectName("settingsHeader");
+    auto *hl = new QVBoxLayout(header);
+    hl->setContentsMargins(24, 18, 24, 14);
+    hl->setSpacing(2);
+    auto *hTitle = new QLabel(tr("Settings"), header);
+    hTitle->setProperty("role", "title");
+    auto *hSub = new QLabel(tr("Devices, notifications, updates and your account"),
+                            header);
+    hSub->setProperty("role", "secondary");
+    { QFont f = hSub->font(); f.setPixelSize(11); hSub->setFont(f); }
+    hl->addWidget(hTitle);
+    hl->addWidget(hSub);
+    mainLayout->addWidget(header);
+    mainLayout->addWidget(makeDivider());
 
     m_tabs = new QTabWidget(this);
     m_tabs->addTab(buildAudioVideoTab(), "Audio && Video");
@@ -110,17 +176,18 @@ QWidget *SettingsDialog::buildAudioVideoTab()
 {
     auto *page = new QWidget;
     auto *layout = new QVBoxLayout(page);
-    layout->setContentsMargins(20, 20, 20, 20);
-    layout->setSpacing(8);
+    layout->setContentsMargins(24, 22, 24, 22);
+    layout->setSpacing(kRowGap);
 
-    // Microphone
-    layout->addWidget(makeSectionHeader("MICROPHONE"));
+    // ── Audio ──
+    layout->addWidget(makeSectionHeader("Audio"));
+
     m_micCombo = new QComboBox;
-    layout->addWidget(m_micCombo);
     connect(m_micCombo, QOverload<int>::of(&QComboBox::activated),
             this, [this](int idx) { m_deviceManager->setSelectedAudioInput(idx); });
+    layout->addWidget(makeSettingRow(tr("Microphone"), QString(), m_micCombo));
 
-    m_noiseSuppression = new QCheckBox(tr("Noise suppression"));
+    m_noiseSuppression = new QCheckBox;
     m_noiseSuppression->setToolTip(
         tr("Filter background noise from your microphone during calls "
            "(applies to the next call)."));
@@ -128,73 +195,60 @@ QWidget *SettingsDialog::buildAudioVideoTab()
     m_noiseSuppression->setChecked(
         m_settings.value("noiseSuppression", true).toBool());
     m_settings.endGroup();
-    layout->addWidget(m_noiseSuppression);
     connect(m_noiseSuppression, &QCheckBox::toggled, this, [this](bool checked) {
         m_settings.beginGroup("Audio");
         m_settings.setValue("noiseSuppression", checked);
         m_settings.endGroup();
     });
+    layout->addWidget(makeSettingRow(
+        tr("Noise suppression"),
+        tr("Filter background noise during calls. Applies to the next call."),
+        m_noiseSuppression));
 
-    layout->addSpacing(4);
-
-    // Speaker
-    layout->addWidget(makeSectionHeader("SPEAKER"));
     m_speakerCombo = new QComboBox;
-    layout->addWidget(m_speakerCombo);
     connect(m_speakerCombo, QOverload<int>::of(&QComboBox::activated),
             this, [this](int idx) { m_deviceManager->setSelectedAudioOutput(idx); });
+    layout->addWidget(makeSettingRow(tr("Speaker"), QString(), m_speakerCombo));
 
-    layout->addSpacing(4);
+    layout->addSpacing(kGroupGap - kRowGap);
 
-    // Camera
-    layout->addWidget(makeSectionHeader("CAMERA"));
+    // ── Camera ──
+    layout->addWidget(makeSectionHeader("Camera"));
+
     m_cameraCombo = new QComboBox;
-    layout->addWidget(m_cameraCombo);
     connect(m_cameraCombo, QOverload<int>::of(&QComboBox::activated),
-            this, [this](int idx) { m_deviceManager->setSelectedVideoInput(idx); });
+            this, [this](int idx) {
+                m_deviceManager->setSelectedVideoInput(idx);
+                populateCameraQualityCombo();  // capabilities are per-camera
+            });
+    layout->addWidget(makeSettingRow(tr("Camera"), QString(), m_cameraCombo));
 
-    layout->addSpacing(4);
+    // Real per-camera capability list (resolution × fps × format), not
+    // fixed 1080p/720p presets. "Auto" = the absolute best mode the
+    // device advertises (#126).
+    m_cameraQualityCombo = new QComboBox;
+    connect(m_cameraQualityCombo, QOverload<int>::of(&QComboBox::activated),
+            this, [this](int) {
+                m_deviceManager->setCameraQualityChoice(
+                    m_cameraQualityCombo->currentData().toString());
+            });
+    layout->addWidget(makeSettingRow(
+        tr("Camera quality"),
+        tr("Auto picks the best mode your camera supports."),
+        m_cameraQualityCombo));
 
-    // Video quality
-    layout->addWidget(makeSectionHeader("VIDEO QUALITY"));
-    auto *qualRow = new QHBoxLayout;
-    qualRow->setSpacing(8);
-    m_res1080 = new QRadioButton("Full HD (1080p)");
-    m_res720 = new QRadioButton("HD (720p)");
-    auto *qualGroup = new QButtonGroup(this);
-    qualGroup->addButton(m_res1080, 0);
-    qualGroup->addButton(m_res720, 1);
-    qualRow->addWidget(m_res1080);
-    qualRow->addWidget(m_res720);
-    qualRow->addStretch();
-    layout->addLayout(qualRow);
+    layout->addStretch();
 
-    // Read saved resolution
-    m_settings.beginGroup("Video");
-    int savedRes = m_settings.value("resolution", 0).toInt();
-    m_settings.endGroup();
-    if (savedRes == 1) m_res720->setChecked(true);
-    else m_res1080->setChecked(true);
-
-    connect(qualGroup, &QButtonGroup::idClicked, this, [this](int id) {
-        m_settings.beginGroup("Video");
-        m_settings.setValue("resolution", id);
-        m_settings.endGroup();
-    });
-
-    // Divider + Refresh button
-    layout->addSpacing(8);
-    layout->addWidget(makeDivider());
-    layout->addSpacing(4);
-
+    auto *refreshBtn = new QPushButton(tr("Refresh devices"));
+    refreshBtn->setProperty("variant", "ghost");
+    connect(refreshBtn, &QPushButton::clicked, m_deviceManager,
+            &MediaDeviceManager::refresh);
     auto *btnRow = new QHBoxLayout;
+    btnRow->setContentsMargins(0, 0, 0, 0);
     btnRow->addStretch();
-    auto *refreshBtn = new QPushButton("Refresh Devices");
-    connect(refreshBtn, &QPushButton::clicked, m_deviceManager, &MediaDeviceManager::refresh);
     btnRow->addWidget(refreshBtn);
     layout->addLayout(btnRow);
 
-    layout->addStretch();
     return page;
 }
 
@@ -206,37 +260,37 @@ QWidget *SettingsDialog::buildNotificationsTab()
 {
     auto *page = new QWidget;
     auto *layout = new QVBoxLayout(page);
-    layout->setContentsMargins(20, 20, 20, 20);
-    layout->setSpacing(8);
+    layout->setContentsMargins(24, 22, 24, 22);
+    layout->setSpacing(kRowGap);
 
-    // Enable notifications
-    layout->addWidget(makeSectionHeader("DESKTOP NOTIFICATIONS"));
-    m_notifEnabled = new QCheckBox("Enable notifications");
-    layout->addWidget(m_notifEnabled);
+    layout->addWidget(makeSectionHeader("Notifications"));
 
+    m_notifEnabled = new QCheckBox;
     connect(m_notifEnabled, &QCheckBox::toggled, this, [this](bool checked) {
         m_notifications->setNotificationsEnabled(checked);
         m_settings.beginGroup("Notifications");
         m_settings.setValue("enabled", checked);
         m_settings.endGroup();
     });
+    layout->addWidget(makeSettingRow(
+        tr("Desktop notifications"),
+        tr("Show a notification when a new message arrives."),
+        m_notifEnabled));
 
-    layout->addSpacing(4);
-
-    // Notification style
-    layout->addWidget(makeSectionHeader("NOTIFICATION STYLE"));
-    auto *styleRow = new QHBoxLayout;
-    styleRow->setSpacing(8);
-    m_stylePopup = new QRadioButton("In-app popup");
-    m_styleWindows = new QRadioButton("Windows toast");
+    // Style — radios stacked in the row's control column.
+    m_stylePopup = new QRadioButton(tr("In-app popup"));
+    m_styleWindows = new QRadioButton(tr("Windows toast"));
     auto *styleGroup = new QButtonGroup(this);
     styleGroup->addButton(m_stylePopup, 0);
     styleGroup->addButton(m_styleWindows, 1);
-    styleRow->addWidget(m_stylePopup);
-    styleRow->addWidget(m_styleWindows);
-    styleRow->addStretch();
-    layout->addLayout(styleRow);
-
+    auto *styleCtl = new QWidget;
+    {
+        auto *v = new QVBoxLayout(styleCtl);
+        v->setContentsMargins(0, 0, 0, 0);
+        v->setSpacing(6);
+        v->addWidget(m_stylePopup);
+        v->addWidget(m_styleWindows);
+    }
     connect(styleGroup, &QButtonGroup::idClicked, this, [this](int id) {
         QString style = (id == 0) ? "popup" : "windows";
         m_notifications->setNotifStyle(style);
@@ -244,50 +298,41 @@ QWidget *SettingsDialog::buildNotificationsTab()
         m_settings.setValue("style", style);
         m_settings.endGroup();
     });
+    layout->addWidget(makeSettingRow(tr("Style"), QString(), styleCtl));
 
-    layout->addSpacing(4);
-
-    // Sound
-    layout->addWidget(makeSectionHeader("SOUND"));
-    auto *soundRow = new QHBoxLayout;
-    soundRow->setSpacing(8);
-    m_soundInternal = new QRadioButton("TalQ chime");
-    m_soundSystem = new QRadioButton("System sound");
-    m_soundNone = new QRadioButton("None");
-    auto *soundGroup = new QButtonGroup(this);
-    soundGroup->addButton(m_soundInternal, 0);
-    soundGroup->addButton(m_soundSystem, 1);
-    soundGroup->addButton(m_soundNone, 2);
-    soundRow->addWidget(m_soundInternal);
-    soundRow->addWidget(m_soundSystem);
-    soundRow->addWidget(m_soundNone);
-    soundRow->addStretch();
-    layout->addLayout(soundRow);
-
-    connect(soundGroup, &QButtonGroup::idClicked, this, [this](int id) {
-        QString mode;
-        if (id == 0) mode = "internal";
-        else if (id == 1) mode = "system";
-        else mode = "none";
-        m_notifications->setSoundMode(mode);
+    // Sound — one combo for None / System default / each bundled tone.
+    // Roster comes from NotificationManager::bundledTones() so the Settings
+    // list and the tray submenu can never drift apart. Picking a real tone
+    // auditions it once.
+    m_soundCombo = new QComboBox;
+    m_soundCombo->addItem(tr("None"),           QStringLiteral("none"));
+    m_soundCombo->addItem(tr("System default"), QStringLiteral("system"));
+    for (const auto &t : NotificationManager::bundledTones())
+        m_soundCombo->addItem(t.second, t.first);
+    connect(m_soundCombo, QOverload<int>::of(&QComboBox::activated),
+            this, [this](int idx) {
+        const QString id = m_soundCombo->itemData(idx).toString();
+        m_notifications->setSoundId(id);
         m_settings.beginGroup("Notifications");
-        m_settings.setValue("soundMode", mode);
+        m_settings.setValue("soundId", id);
         m_settings.endGroup();
+        if (id != "none" && id != "system")
+            m_notifications->playCurrentSound();  // audition
     });
+    layout->addWidget(makeSettingRow(tr("Sound"), QString(), m_soundCombo));
 
-    layout->addSpacing(12);
+    layout->addSpacing(kGroupGap - kRowGap);
 
     // Calm callout (AppStyle role="hint" — full tint, no side-stripe).
     auto *hintFrame = new QFrame;
     hintFrame->setProperty("role", "hint");
     auto *hintLayout = new QVBoxLayout(hintFrame);
     hintLayout->setContentsMargins(14, 12, 12, 12);
-    auto *hintLabel = new QLabel("To mute individual conversations, right-click on them in the sidebar.");
+    auto *hintLabel = new QLabel(
+        tr("To mute individual conversations, right-click them in the sidebar."));
     hintLabel->setWordWrap(true);
     hintLabel->setProperty("role", "secondary");
-    QFont hintFont = hintLabel->font();
-    hintFont.setPixelSize(11);
-    hintLabel->setFont(hintFont);
+    { QFont f = hintLabel->font(); f.setPixelSize(11); hintLabel->setFont(f); }
     hintLayout->addWidget(hintLabel);
     layout->addWidget(hintFrame);
 
@@ -303,15 +348,11 @@ QWidget *SettingsDialog::buildGeneralTab()
 {
     auto *page = new QWidget;
     auto *layout = new QVBoxLayout(page);
-    layout->setContentsMargins(20, 20, 20, 20);
-    layout->setSpacing(8);
+    layout->setContentsMargins(24, 22, 24, 22);
+    layout->setSpacing(kRowGap);
 
-    // Appearance section
-    layout->addWidget(makeSectionHeader("APPEARANCE"));
+    layout->addWidget(makeSectionHeader("Appearance"));
 
-    auto *themeRow = new QHBoxLayout();
-    auto *themeLbl = new QLabel(tr("Theme"));
-    themeRow->addWidget(themeLbl);
     m_themeCombo = new QComboBox();
     const PainterTheme::Theme kThemes[] = {
         PainterTheme::Theme::Ember, PainterTheme::Theme::Warm,
@@ -327,62 +368,52 @@ QWidget *SettingsDialog::buildGeneralTab()
         int idx = m_themeCombo->findData(curThemeId);
         m_themeCombo->setCurrentIndex(idx < 0 ? 2 : idx);  // 2 == Vivid (default)
     }
-    themeRow->addWidget(m_themeCombo, 1);
-    layout->addLayout(themeRow);
-
-    auto *themeHint = new QLabel(tr("Or cycle with Ctrl+D or the sidebar swatch"));
-    QFont thf = themeHint->font();
-    thf.setPixelSize(11);
-    themeHint->setFont(thf);
-    themeHint->setProperty("role", "secondary");
-    layout->addWidget(themeHint);
-
     connect(m_themeCombo, &QComboBox::currentIndexChanged, this, [this](int) {
         PainterTheme::Theme th = PainterTheme::themeFromId(
             m_themeCombo->currentData().toString(), PainterTheme::Theme::Vivid);
         emit themeIdChanged(static_cast<int>(th));
     });
+    layout->addWidget(makeSettingRow(
+        tr("Theme"),
+        tr("Or cycle with Ctrl+D or the sidebar swatch."),
+        m_themeCombo));
 
-    layout->addSpacing(8);
+    layout->addSpacing(kGroupGap - kRowGap);
+    layout->addWidget(makeSectionHeader("Startup"));
 
-    // Startup section
-    layout->addWidget(makeSectionHeader("STARTUP"));
-
-    m_autoStart = new QCheckBox("Start with Windows");
-    layout->addWidget(m_autoStart);
+    m_autoStart = new QCheckBox;
     connect(m_autoStart, &QCheckBox::toggled, this, [this](bool checked) {
         m_appSettings->setAutoStart(checked);
         m_settings.beginGroup("General");
         m_settings.setValue("autoStart", checked);
         m_settings.endGroup();
     });
+    layout->addWidget(makeSettingRow(
+        tr("Start with Windows"), QString(), m_autoStart));
 
-    m_startMinimized = new QCheckBox("Start minimized to tray");
-    layout->addWidget(m_startMinimized);
+    m_startMinimized = new QCheckBox;
     connect(m_startMinimized, &QCheckBox::toggled, this, [this](bool checked) {
         m_settings.beginGroup("General");
         m_settings.setValue("startMinimized", checked);
         m_settings.endGroup();
     });
+    layout->addWidget(makeSettingRow(
+        tr("Start minimized to tray"), QString(), m_startMinimized));
 
-    layout->addSpacing(8);
-    layout->addWidget(makeSectionHeader("BEHAVIOR"));
+    layout->addSpacing(kGroupGap - kRowGap);
+    layout->addWidget(makeSectionHeader("Behavior"));
 
-    m_closeToTray = new QCheckBox("Close to tray");
-    layout->addWidget(m_closeToTray);
-    auto *closeHint = new QLabel("Minimize to tray instead of quitting");
-    QFont hf = closeHint->font();
-    hf.setPixelSize(11);
-    closeHint->setFont(hf);
-    closeHint->setProperty("role", "secondary");
-    layout->addWidget(closeHint);
-
+    m_closeToTray = new QCheckBox;
     connect(m_closeToTray, &QCheckBox::toggled, this, [this](bool checked) {
         m_settings.beginGroup("General");
         m_settings.setValue("closeToTray", checked);
         m_settings.endGroup();
         emit closeToTrayChanged(checked);
     });
+    layout->addWidget(makeSettingRow(
+        tr("Close to tray"),
+        tr("Minimize to the tray instead of quitting."),
+        m_closeToTray));
 
     layout->addStretch();
     return page;
@@ -396,31 +427,50 @@ QWidget *SettingsDialog::buildUpdatesTab()
 {
     auto *w = new QWidget(this);
     auto *lay = new QVBoxLayout(w);
-    lay->setContentsMargins(24, 20, 24, 20);
+    lay->setContentsMargins(24, 22, 24, 22);
+    lay->setSpacing(kRowGap);
 
-    m_updatesAutoCheck = new QCheckBox(tr("Automatically check for updates"), w);
+    lay->addWidget(makeSectionHeader("Updates"));
+
+    m_updatesAutoCheck = new QCheckBox(w);
     m_updatesAutoCheck->setChecked(
         QSettings().value(QStringLiteral("updates/autoCheck"), true).toBool());
-    connect(m_updatesAutoCheck, &QCheckBox::toggled, this,
-            [](bool checked) {
+    connect(m_updatesAutoCheck, &QCheckBox::toggled, this, [](bool checked) {
         QSettings().setValue(QStringLiteral("updates/autoCheck"), checked);
     });
-    lay->addWidget(m_updatesAutoCheck);
+    lay->addWidget(makeSettingRow(
+        tr("Automatic updates"),
+        tr("Check at startup and every 5 minutes. A banner appears when a "
+           "new version is ready."),
+        m_updatesAutoCheck));
 
-    auto *note = new QLabel(
-        tr("TalQ checks once at startup and then every 5 minutes. "
-           "When a new version is available, a banner appears at the top of the chat."),
-        w);
-    note->setWordWrap(true);
-    note->setProperty("role", "secondary");
-    { QFont f = note->font(); f.setPixelSize(11); note->setFont(f); }
-    lay->addWidget(note);
+    // #116 — opt-in pre-release channel. Persist the flag and trigger a
+    // re-check (mirrors autoCheck's decoupling). UpdateChecker reads
+    // updates/betaChannel on its next check and falls back to stable when
+    // no beta build / manifest is available.
+    m_updatesBeta = new QCheckBox(w);
+    m_updatesBeta->setChecked(
+        QSettings().value(QStringLiteral("updates/betaChannel"), false).toBool());
+    connect(m_updatesBeta, &QCheckBox::toggled, this, [this](bool checked) {
+        QSettings().setValue(QStringLiteral("updates/betaChannel"), checked);
+        emit checkForUpdatesRequested();
+    });
+    lay->addWidget(makeSettingRow(
+        tr("Pre-release updates"),
+        tr("Get beta builds before general release. Falls back to stable "
+           "automatically if no beta is available."),
+        m_updatesBeta));
 
-    auto *btnRow = new QHBoxLayout;
+    lay->addSpacing(kGroupGap - kRowGap);
+
     auto *checkBtn = new QPushButton(tr("Check for updates now"), w);
+    checkBtn->setProperty("variant", "ghost");
     auto *checkStatus = new QLabel(w);
     checkStatus->setProperty("role", "secondary");
     { QFont f = checkStatus->font(); f.setPixelSize(11); checkStatus->setFont(f); }
+    auto *btnRow = new QHBoxLayout;
+    btnRow->setContentsMargins(0, 0, 0, 0);
+    btnRow->setSpacing(12);
     btnRow->addWidget(checkBtn);
     btnRow->addWidget(checkStatus, 1);
     lay->addLayout(btnRow);
@@ -429,12 +479,12 @@ QWidget *SettingsDialog::buildUpdatesTab()
         checkBtn->setEnabled(false);
         checkStatus->setText(tr("Checking…"));
         emit checkForUpdatesRequested();
-        // No checkFinished signal on UpdateChecker — re-enable + show neutral
-        // status after a delay. If an update IS found, the existing banner
+        // No checkFinished signal on UpdateChecker — re-enable + show a
+        // neutral status after a delay. If an update IS found, the banner
         // mechanism shows it at the top of the chat regardless.
         QTimer::singleShot(3500, this, [checkBtn, checkStatus]() {
             checkBtn->setEnabled(true);
-            checkStatus->setText(tr("Last checked just now — if no banner appeared, "
+            checkStatus->setText(tr("Checked just now. If no banner appeared, "
                                     "you're on the latest version."));
         });
     });
@@ -451,8 +501,8 @@ QWidget *SettingsDialog::buildAccountTab()
 {
     auto *page = new QWidget;
     auto *layout = new QVBoxLayout(page);
-    layout->setContentsMargins(20, 20, 20, 20);
-    layout->setSpacing(8);
+    layout->setContentsMargins(24, 22, 24, 22);
+    layout->setSpacing(10);
 
     // Profile
     m_displayNameLabel = new QLabel;
@@ -583,6 +633,34 @@ void SettingsDialog::populateDeviceCombos()
     m_micCombo->blockSignals(false);
     m_speakerCombo->blockSignals(false);
     m_cameraCombo->blockSignals(false);
+
+    populateCameraQualityCombo();
+}
+
+void SettingsDialog::populateCameraQualityCombo()
+{
+    if (!m_cameraQualityCombo) return;
+    m_cameraQualityCombo->blockSignals(true);
+    m_cameraQualityCombo->clear();
+
+    const int idx = m_deviceManager->selectedVideoInput();
+    const QVector<CameraMode> modes = m_deviceManager->cameraModes(idx);
+    const CameraMode best = m_deviceManager->autoCameraMode(idx);
+
+    Q_UNUSED(best);
+    // Auto = let the camera negotiate (always starts). Explicit modes
+    // below are opt-in overrides.
+    m_cameraQualityCombo->addItem(tr("Automatic (recommended)"),
+                                  QStringLiteral("auto"));
+    for (const CameraMode &m : modes)
+        m_cameraQualityCombo->addItem(m.label(), m.key());
+
+    const QString choice = m_deviceManager->cameraQualityChoice();
+    int sel = m_cameraQualityCombo->findData(choice);
+    m_cameraQualityCombo->setCurrentIndex(sel >= 0 ? sel : 0);  // 0 = Auto
+    m_cameraQualityCombo->setEnabled(m_cameraQualityCombo->count() > 1);
+
+    m_cameraQualityCombo->blockSignals(false);
 }
 
 void SettingsDialog::loadNotificationSettings()
@@ -590,7 +668,12 @@ void SettingsDialog::loadNotificationSettings()
     m_settings.beginGroup("Notifications");
     bool enabled = m_settings.value("enabled", true).toBool();
     QString style = m_settings.value("style", "popup").toString();
-    QString soundMode = m_settings.value("soundMode", "internal").toString();
+    // Migrate the pre-0.33 soundMode key if soundId isn't set yet.
+    QString soundId = m_settings.value("soundId").toString();
+    if (soundId.isEmpty()) {
+        const QString old = m_settings.value("soundMode", "internal").toString();
+        soundId = (old == "system") ? "system" : (old == "none") ? "none" : "chime";
+    }
     m_settings.endGroup();
 
     m_notifEnabled->blockSignals(true);
@@ -604,15 +687,11 @@ void SettingsDialog::loadNotificationSettings()
     m_stylePopup->blockSignals(false);
     m_styleWindows->blockSignals(false);
 
-    m_soundInternal->blockSignals(true);
-    m_soundSystem->blockSignals(true);
-    m_soundNone->blockSignals(true);
-    if (soundMode == "system") m_soundSystem->setChecked(true);
-    else if (soundMode == "none") m_soundNone->setChecked(true);
-    else m_soundInternal->setChecked(true);
-    m_soundInternal->blockSignals(false);
-    m_soundSystem->blockSignals(false);
-    m_soundNone->blockSignals(false);
+    m_soundCombo->blockSignals(true);
+    int idx = m_soundCombo->findData(soundId);
+    if (idx < 0) idx = m_soundCombo->findData(QStringLiteral("chime"));
+    m_soundCombo->setCurrentIndex(idx);
+    m_soundCombo->blockSignals(false);
 }
 
 void SettingsDialog::loadGeneralSettings()
