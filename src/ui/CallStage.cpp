@@ -56,7 +56,14 @@ CallStage::CallStage(CallManager *call, QWidget *parent)
         relayout(); update();
     });
     connect(m_call, &CallManager::durationChanged, this, [this]{ update(); });
-    connect(m_call, &CallManager::callStatsChanged, this, [this]{ if (m_telemetryOpen) update(); });
+    connect(m_call, &CallManager::callStatsChanged, this, [this]{
+        // Sample the outbound bitrate into a ring buffer (~1 s cadence, the
+        // callStats tick) so the telemetry panel can draw a live sparkline.
+        // Sample even when the panel is closed so history exists on open.
+        m_bwHistory.push_back((float)m_call->txBitrateMbps());
+        while (m_bwHistory.size() > kBwHistoryMax) m_bwHistory.pop_front();
+        if (m_telemetryOpen) update();
+    });
     connect(m_call, &CallManager::participantsChanged, this, [this]{ relayout(); update(); });
     connect(m_call, &CallManager::participantAdded, this, [this]{ rebindProviders(); relayout(); update(); });
     connect(m_call, &CallManager::participantRemoved, this, [this](const QString &){
@@ -890,73 +897,143 @@ void CallStage::paintSharingBadge(QPainter &p, const PainterTheme &th)
 
 void CallStage::paintTelemetry(QPainter &p, const PainterTheme &th)
 {
-    // Telemetry panel: kept calm + theme-driven, but the ground is now
-    // semi-transparent (~0.78) so the camera / call view stays visible
-    // behind it — the panel reads as an overlay, not a hard split.
-    qreal w = qBound(280.0, width()*0.30, 380.0);
-    QRectF panel(width()-w, 0, w, height());
-    QColor bg = th.bgSecondary; bg.setAlphaF(0.78);
+    // "Mission Control" telemetry: a header, a live outbound-bandwidth
+    // sparkline gauge, a 2-up grid of metric cards, per-participant
+    // subsystem chips, and a compact stats footer — all QPainter, theme-
+    // driven, over a semi-transparent ground so the call stays visible.
+    p.setRenderHint(QPainter::Antialiasing, true);
+    const qreal w = qBound(300.0, width()*0.32, 400.0);
+    const QRectF panel(width()-w, 0, w, height());
+    QColor bg = th.bgSecondary; bg.setAlphaF(0.82);
     p.setBrush(bg); p.setPen(Qt::NoPen);
     p.fillRect(panel, bg);
     p.setPen(QPen(th.divider, 1));
     p.drawLine(panel.topLeft(), panel.bottomLeft());
 
-    qreal x = panel.left()+18, y = 24;
-    // Value column scales with panel width so a narrow window (panel
-    // width ≈ 280) doesn't clip long values like "H264 · mfh264enc · hw"
-    // while a wide panel doesn't strand the values too close to the labels.
-    const qreal valX = x + qBound(120.0, (panel.width() - 36) * 0.42, 210.0);
-    // Telemetry text bumped 11 → 13 pt: the 11 pt mono was unreadable on
-    // HiDPI call windows. Row pitch grows to match so rows don't crowd.
-    p.setPen(th.textSecondary); p.setFont(monoFont(12));
-    p.drawText(QPointF(x, y), QStringLiteral("● FLIGHT LOG · TELEMETRY"));
-    y += 30;
-    p.setFont(monoFont(13));
-    auto line = [&](const QString &k, const QString &v, const QColor &vc){
-        p.setPen(th.textTime);  p.drawText(QPointF(x, y), k);
-        p.setPen(vc);           p.drawText(QPointF(valX, y), v);
-        y += 24;
-    };
-    line("CODEC",   m_call->activeVideoCodec().isEmpty() ? "—" : m_call->activeVideoCodec(), th.textPrimary);
-    QString dec = m_call->activeVideoDecoder();
-    line("DECODER", dec.isEmpty() ? "—" : dec, dec=="Software" ? th.danger : th.success);
+    const qreal pad = 18.0;
+    const qreal x0 = panel.left() + pad;
+    const qreal innerW = w - pad*2;
+    qreal y = 26;
+
+    // ── Header ──
+    {
+        qreal pulse = reducedMotion() ? 1.0 : (0.5 + 0.5*qSin(m_glowPhase));
+        QColor dotc = th.success; dotc.setAlphaF(pulse);
+        p.setBrush(dotc); p.setPen(Qt::NoPen);
+        p.drawEllipse(QRectF(x0, y-8, 8, 8));
+        p.setPen(th.textSecondary); p.setFont(monoFont(12));
+        p.drawText(QPointF(x0+16, y), QStringLiteral("MISSION CONTROL"));
+        const int secs = m_call->callDuration();
+        if (secs > 0) {
+            const QString dur = QStringLiteral("%1:%2")
+                .arg(secs/60).arg(secs%60, 2, 10, QChar('0'));
+            p.setPen(th.textTime);
+            p.drawText(QRectF(x0, y-12, innerW, 16), Qt::AlignRight|Qt::AlignVCenter, dur);
+        }
+        y += 18;
+    }
+
+    // ── Bandwidth gauge + sparkline ──
+    {
+        const qreal cardH = 76;
+        QRectF card(x0, y, innerW, cardH);
+        QColor cbg = th.bgPrimary; cbg.setAlphaF(0.5);
+        p.setBrush(cbg); p.setPen(QPen(th.divider, 1));
+        p.drawRoundedRect(card, 10, 10);
+
+        const QString bw = m_call->streamBandwidthLabel();
+        p.setPen(th.textTime); p.setFont(monoFont(10));
+        p.drawText(QPointF(card.left()+12, card.top()+18), QStringLiteral("OUTBOUND"));
+        p.setPen(bw.isEmpty() ? th.textSecondary : th.success);
+        p.setFont(monoFont(20));
+        p.drawText(QPointF(card.left()+12, card.top()+44),
+                   bw.isEmpty() ? QStringLiteral("—") : bw);
+
+        // Sparkline across the lower portion of the card.
+        if (m_bwHistory.size() >= 2) {
+            QRectF spark(card.left()+12, card.bottom()-22, card.width()-24, 16);
+            float mx = 0.01f;
+            for (float v : m_bwHistory) mx = qMax(mx, v);
+            QPainterPath path;
+            const int n = m_bwHistory.size();
+            for (int i = 0; i < n; ++i) {
+                const qreal px = spark.left() + spark.width() * i / (n-1);
+                const qreal py = spark.bottom() - spark.height() * (m_bwHistory[i]/mx);
+                if (i == 0) path.moveTo(px, py); else path.lineTo(px, py);
+            }
+            QColor line = th.success; line.setAlphaF(0.85);
+            p.setBrush(Qt::NoBrush); p.setPen(QPen(line, 1.5));
+            p.drawPath(path);
+        }
+        y += cardH + 12;
+    }
+
+    // ── Metric cards (2-up grid) ──
     QString enc = m_call->activeVideoEncoder();
-    line("ENCODER", enc.isEmpty() ? "—" : enc,
-         enc.isEmpty() ? th.textPrimary
-                        : m_call->activeVideoEncoderIsHw() ? th.success : th.amber);
-    QString tx = m_call->videoTxLabel();
-    line("VIDEO TX", tx.isEmpty() ? "—" : tx, th.textPrimary);
-    // TX resolution — the shared chain pins encoder input to 1280×720
-    // when the camera is on; screen share uses its quality cap.
-    QString txRes;
-    if (m_call->isScreenSharing()) txRes = QStringLiteral("screen");
-    else if (m_call->isCameraOn()) txRes = QStringLiteral("1280×720");
-    line("TX RES",  txRes.isEmpty() ? "—" : txRes, th.textPrimary);
-    QString bw = m_call->streamBandwidthLabel();
-    line("STREAM BW", bw.isEmpty() ? "—" : bw,
-         bw.isEmpty() ? th.textPrimary : th.success);
-    line("PEER",    m_call->remotePeerClient().isEmpty() ? "—" : m_call->remotePeerClient(), th.textPrimary);
-    y += 10;
-    p.setPen(th.textSecondary); p.drawText(QPointF(x, y), QStringLiteral("SUBSYSTEMS")); y += 26;
+    QString dec = m_call->activeVideoDecoder();
+    QString rx  = m_call->activeRxResolution();
+    QString txRes = m_call->isScreenSharing() ? QStringLiteral("screen")
+                  : m_call->isCameraOn()      ? QStringLiteral("1280×720")
+                                              : QString();
+    struct Metric { QString k, v; QColor c; };
+    const QVector<Metric> metrics = {
+        { "CODEC",   m_call->activeVideoCodec().isEmpty() ? "—" : m_call->activeVideoCodec(), th.textPrimary },
+        { "ENCODER", enc.isEmpty() ? "—" : enc.section(QStringLiteral(" · "), 1, 1),
+                     enc.isEmpty() ? th.textSecondary : (m_call->activeVideoEncoderIsHw() ? th.success : th.amber) },
+        { "TX RES",  txRes.isEmpty() ? "—" : txRes, th.textPrimary },
+        { "RX RES",  rx.isEmpty() ? "—" : rx, rx.isEmpty() ? th.textSecondary : th.textPrimary },
+        { "DECODER", dec.isEmpty() ? "—" : dec, dec=="Software" ? th.amber : (dec.isEmpty()?th.textSecondary:th.success) },
+        { "PEER",    m_call->remotePeerClient().isEmpty() ? "—" : m_call->remotePeerClient(), th.textPrimary },
+    };
+    {
+        const qreal gap = 8, cardW = (innerW - gap)/2.0, cardH = 46;
+        for (int i = 0; i < metrics.size(); ++i) {
+            const qreal cx = x0 + (i % 2) * (cardW + gap);
+            if (i % 2 == 0 && i > 0) y += cardH + gap;
+            QRectF card(cx, y, cardW, cardH);
+            QColor cbg = th.bgPrimary; cbg.setAlphaF(0.5);
+            p.setBrush(cbg); p.setPen(QPen(th.divider, 1));
+            p.drawRoundedRect(card, 8, 8);
+            p.setPen(th.textTime); p.setFont(monoFont(9));
+            p.drawText(QPointF(card.left()+10, card.top()+16), metrics[i].k);
+            p.setPen(metrics[i].c); p.setFont(monoFont(12));
+            QString v = p.fontMetrics().elidedText(metrics[i].v, Qt::ElideRight, (int)card.width()-18);
+            p.drawText(QPointF(card.left()+10, card.top()+36), v);
+        }
+        y += cardH + 16;
+    }
+
+    // ── Subsystems: per-participant connection chips ──
+    p.setPen(th.textSecondary); p.setFont(monoFont(10));
+    p.drawText(QPointF(x0, y), QStringLiteral("SUBSYSTEMS")); y += 20;
     for (auto *cp : m_call->participants()) {
         if (cp->isSelf()) continue;
-        QColor c = cp->connState()==CallParticipant::Connected ? th.success
-                 : cp->connState()==CallParticipant::Failed ? th.danger : th.amber;
-        QString stx = cp->connState()==CallParticipant::Connected ? "OK"
-                    : cp->connState()==CallParticipant::Failed ? "FAIL" : "…";
-        QString nm = cp->displayName().left(16);
-        p.setPen(th.textTime); p.drawText(QPointF(x, y), nm);
-        p.setPen(c); p.drawText(QPointF(valX, y), stx);
-        y += 24;
+        const bool ok   = cp->connState()==CallParticipant::Connected;
+        const bool fail = cp->connState()==CallParticipant::Failed;
+        QColor c = ok ? th.success : fail ? th.danger : th.amber;
+        QRectF chip(x0, y-12, innerW, 26);
+        QColor cbg = c; cbg.setAlphaF(0.10);
+        p.setBrush(cbg); p.setPen(QPen(c, 1)); p.drawRoundedRect(chip, 8, 8);
+        p.setBrush(c); p.setPen(Qt::NoPen);
+        p.drawEllipse(QRectF(chip.left()+10, chip.center().y()-3.5, 7, 7));
+        p.setPen(th.textPrimary); p.setFont(monoFont(11));
+        p.drawText(QPointF(chip.left()+26, chip.center().y()+4), cp->displayName().left(18));
+        p.setPen(c);
+        p.drawText(chip.adjusted(0,0,-10,0), Qt::AlignRight|Qt::AlignVCenter,
+                   ok ? "LIVE" : fail ? "FAIL" : "…");
+        y += 32;
     }
-    y += 12;
-    p.setPen(th.textSecondary); p.drawText(QPointF(x, y), QStringLiteral("STATS")); y += 24;
-    p.setPen(th.textTime);
-    const QString stats = m_call->callStats();
-    for (const QString &ln : stats.split('\n', Qt::SkipEmptyParts)) {
-        p.drawText(QRectF(x, y-14, w-36, 20), Qt::TextWordWrap, ln);
-        y += 22;
-        if (y > height()-20) break;
+
+    // ── Stats footer (compact mono) ──
+    y += 6;
+    p.setPen(th.textSecondary); p.setFont(monoFont(10));
+    p.drawText(QPointF(x0, y), QStringLiteral("FLIGHT LOG")); y += 18;
+    p.setPen(th.textTime); p.setFont(monoFont(10));
+    for (const QString &ln : m_call->callStats().split('\n', Qt::SkipEmptyParts)) {
+        p.drawText(QRectF(x0, y-12, innerW, 16), Qt::TextSingleLine,
+                   p.fontMetrics().elidedText(ln, Qt::ElideRight, (int)innerW));
+        y += 18;
+        if (y > height()-16) break;
     }
 }
 
