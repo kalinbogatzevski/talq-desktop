@@ -8,6 +8,8 @@
 #include <QPixmap>
 #include <QFont>
 #include <QFontMetrics>
+#include <QSettings>
+#include <QVector>
 #include <QDebug>
 
 #ifdef Q_OS_WIN
@@ -19,15 +21,71 @@
 NotificationManager::NotificationManager(QObject *parent)
     : QObject(parent)
 {
-    // Load embedded WAV from resources into memory
-    QFile wav(":/notification.wav");
-    if (wav.open(QIODevice::ReadOnly)) {
-        m_wavData = wav.readAll();
+    // Resolve the persisted sound id, with a one-shot migration from the
+    // pre-0.33 key "soundMode" ("internal"→"chime"). After this block
+    // m_soundId is one of none/system/<known tone> and Notifications/soundId
+    // is written.
+    QSettings s;
+    s.beginGroup("Notifications");
+    if (s.contains("soundId")) {
+        m_soundId = s.value("soundId").toString();
+    } else if (s.contains("soundMode")) {
+        const QString old = s.value("soundMode").toString();
+        if (old == "system")    m_soundId = "system";
+        else if (old == "none") m_soundId = "none";
+        else                    m_soundId = "chime";  // includes "internal"
+        s.setValue("soundId", m_soundId);
+    } else {
+        m_soundId = "chime";
+        s.setValue("soundId", m_soundId);
     }
+    s.endGroup();
+
+    loadSoundForId(m_soundId);
 
     m_baseIcon = QPixmap(":/logo.png").scaled(32, 32, Qt::KeepAspectRatio, Qt::SmoothTransformation);
 
     setupTrayIcon();
+}
+
+QVector<QPair<QString, QString>> NotificationManager::bundledTones()
+{
+    // Order = order shown in Settings combo + tray submenu. Default = first.
+    return {
+        { QStringLiteral("chime"),  QStringLiteral("Chime")  },
+        { QStringLiteral("pop"),    QStringLiteral("Pop")    },
+        { QStringLiteral("ding"),   QStringLiteral("Ding")   },
+        { QStringLiteral("notify"), QStringLiteral("Notify") },
+        { QStringLiteral("soft"),   QStringLiteral("Soft")   },
+        { QStringLiteral("tone"),   QStringLiteral("Tone")   },
+    };
+}
+
+void NotificationManager::loadSoundForId(const QString &id)
+{
+    if (id == QLatin1String("none") || id == QLatin1String("system")) {
+        m_wavData.clear();
+        return;
+    }
+    bool known = false;
+    for (const auto &t : bundledTones())
+        if (t.first == id) { known = true; break; }
+    if (!known) {
+        qWarning() << "NotificationManager: unknown soundId" << id
+                   << "— falling back to chime";
+        QSettings s;
+        s.beginGroup("Notifications");
+        s.setValue("soundId", "chime");
+        s.endGroup();
+        m_soundId = QStringLiteral("chime");
+    }
+    QFile f(QStringLiteral(":/sounds/%1.wav").arg(m_soundId == id ? id : m_soundId));
+    if (f.open(QIODevice::ReadOnly)) {
+        m_wavData = f.readAll();
+    } else {
+        qWarning() << "NotificationManager: cannot open" << f.fileName();
+        m_wavData.clear();
+    }
 }
 
 NotificationManager::~NotificationManager()
@@ -64,27 +122,23 @@ void NotificationManager::setupTrayIcon()
 
     m_trayMenu->addSeparator();
 
-    // Sound mode submenu
+    // Sound submenu — fed from bundledTones() so the tray list and the
+    // Settings combo never drift apart.
     auto *soundMenu = m_trayMenu->addMenu("Sound");
     auto *soundGroup = new QActionGroup(soundMenu);
-
-    auto *internalAction = soundMenu->addAction("TalQ chime");
-    internalAction->setCheckable(true);
-    internalAction->setChecked(m_soundMode == "internal");
-    internalAction->setActionGroup(soundGroup);
-    connect(internalAction, &QAction::triggered, this, [this]() { setSoundMode("internal"); });
-
-    auto *systemAction = soundMenu->addAction("System sound");
-    systemAction->setCheckable(true);
-    systemAction->setChecked(m_soundMode == "system");
-    systemAction->setActionGroup(soundGroup);
-    connect(systemAction, &QAction::triggered, this, [this]() { setSoundMode("system"); });
-
-    auto *noneAction = soundMenu->addAction("None");
-    noneAction->setCheckable(true);
-    noneAction->setChecked(m_soundMode == "none");
-    noneAction->setActionGroup(soundGroup);
-    connect(noneAction, &QAction::triggered, this, [this]() { setSoundMode("none"); });
+    auto addSoundAction = [this, soundMenu, soundGroup]
+                          (const QString &id, const QString &label) {
+        auto *a = soundMenu->addAction(label);
+        a->setCheckable(true);
+        a->setChecked(m_soundId == id);
+        a->setActionGroup(soundGroup);
+        connect(a, &QAction::triggered, this, [this, id]() { setSoundId(id); });
+    };
+    addSoundAction("none",   "None");
+    addSoundAction("system", "System default");
+    soundMenu->addSeparator();
+    for (const auto &t : bundledTones())
+        addSoundAction(t.first, t.second);
 
     auto *notifAction = m_trayMenu->addAction("Desktop notifications");
     notifAction->setCheckable(true);
@@ -135,10 +189,10 @@ void NotificationManager::notify(const QString &title, const QString &message, b
 
     // Play sound: always for cross-chat, only when unfocused for active chat
     if (alwaysSound || !windowActive) {
-        if (m_soundMode == "internal") {
-            playInternalSound();
-        } else if (m_soundMode == "system") {
+        if (m_soundId == "system") {
             playSystemSound();
+        } else if (m_soundId != "none") {
+            playInternalSound();  // m_wavData holds the selected tone bytes
         }
     }
 
@@ -315,12 +369,25 @@ void NotificationManager::updateTaskbarOverlay(int count)
 }
 #endif
 
-void NotificationManager::setSoundMode(const QString &mode)
+void NotificationManager::setSoundId(const QString &id)
 {
-    if (m_soundMode != mode) {
-        m_soundMode = mode;
-        emit soundModeChanged();
-    }
+    if (m_soundId == id) return;
+    m_soundId = id;
+    loadSoundForId(m_soundId);
+    QSettings s;
+    s.beginGroup("Notifications");
+    s.setValue("soundId", m_soundId);
+    s.endGroup();
+    emit soundIdChanged();
+}
+
+void NotificationManager::playCurrentSound()
+{
+    // Audition helper for the Settings dropdown — silent for none/system
+    // pick (system would just fire the OS sound; we keep audition to the
+    // bundled tones so it's a clear "this is the tone" preview).
+    if (m_soundId == "none" || m_soundId == "system") return;
+    playInternalSound();
 }
 
 void NotificationManager::setNotificationsEnabled(bool v)
