@@ -580,6 +580,21 @@ bool CallManager::activeVideoEncoderIsHw() const
     return activeVideoEncoder().endsWith(QStringLiteral("hw"));
 }
 
+QString CallManager::activeRxResolution() const
+{
+    // Decoded resolution of the substream we're receiving — from the first
+    // running subscriber with a known frame size. Reflects the active
+    // simulcast layer (changes live as the SFU switches). Empty until the
+    // first frame decodes.
+    for (auto *sub : m_subscribePipelines) {
+        if (!sub->isRunning()) continue;
+        const int w = sub->rxWidth(), h = sub->rxHeight();
+        if (w > 0 && h > 0)
+            return QStringLiteral("%1×%2").arg(w).arg(h);
+    }
+    return {};
+}
+
 QString CallManager::videoTxLabel() const
 {
     if (m_screenSharing && m_screenSharePipeline)
@@ -1889,20 +1904,21 @@ void CallManager::onParticipantJoinedCall(const QString &sessionId, int flags, c
                 p->setCamera(m_peerPipeline->remoteVideoProvider());
                 p->setConnState(CallParticipant::Connecting);
             }
-        } else if (flags & CALL_FLAG_WITH_VIDEO) {
-            // Upstream Talk web client (v23.0.4 MCU mode) only invokes
-            // signaling.requestOffer(user, 'video') when userHasStreams.
-            // Requesting a video subscriber before the peer has the
-            // video flag costs an MCU round-trip on an incomplete publish
-            // state and is a likely contributor to the caller-side chop.
-            // For audio-only joiners, the participantFlagsChanged handler
-            // already triggers requestPeerStream when video later toggles
-            // on — the same gate upstream uses.
+        } else if (flags & (CALL_FLAG_WITH_AUDIO | CALL_FLAG_WITH_VIDEO)) {
+            // Subscribe as soon as the peer publishes ANY media (audio OR
+            // video). This previously gated on the VIDEO flag only, so an
+            // audio-only peer (camera off) was never subscribed — you heard
+            // NOTHING from them until they turned their camera on (field
+            // bug, 2026-05-22). Janus forwards the whole publisher feed
+            // (audio + video) for a single subscription, so subscribing on
+            // the audio flag gets the audio immediately and video when it
+            // arrives. participantFlagsChanged still re-requests on a later
+            // video toggle for the camera-mid-call path.
             requestPeerStream(sessionId);
-            qDebug() << "CallManager: sent requestOffer for remote peer";
+            qDebug() << "CallManager: sent requestOffer for remote peer (has media)";
         } else {
-            qDebug() << "CallManager: peer joined without video flag — "
-                        "waiting for video before requesting subscriber";
+            qDebug() << "CallManager: peer joined with no media flags yet — "
+                        "waiting for audio/video before requesting subscriber";
         }
     }
     else if (m_state == Idle) {
