@@ -136,6 +136,12 @@ private:
         { "m",  640,  360,  500'000 },
         { "h", 1280,  720, 2'500'000 },
     }};
+    // Simulcast on/off. PRE-RELEASE builds send the 3 layers above; stable
+    // builds send a SINGLE 720p stream (collapse to one branch, plain SDP,
+    // GCC-driven bitrate) so stable is never a downgrade from 0.32.0's
+    // single-stream 720p while subscriber substream selection is still
+    // being proven in beta. Set in start() from the TALQ_PRERELEASE define.
+    bool m_simulcast = true;
     // Start bitrate (bits/s) handed to the encoder; rtpgccbwe drives the
     // live rate up to the server ceiling once TWCC feedback flows.
     int m_initBitrate = 2500000;
