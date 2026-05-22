@@ -44,6 +44,11 @@ public:
     // WebRTC call signaling
     QString sessionId() const { return m_sessionId; }
     QString currentRoom() const { return m_currentRoom; }
+    // Our own Nextcloud user id (for same-user multi-device checks, e.g.
+    // suppressing the incoming-call ring on the caller's other device).
+    QString userId() const { return m_userId; }
+    // Nextcloud user id behind a given HPB session id, "" if not yet known.
+    QString userIdForSession(const QString &sid) const { return m_sessionToUserId.value(sid); }
     void sendOffer(const QString &toSessionId, const QString &sdp,
                    const QString &sid, const QString &nick = {},
                    const QString &roomType = "video",

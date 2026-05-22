@@ -25,3 +25,19 @@ To replace any tone with your own sound, drop a WAV at
 `resources/sounds/<id>.wav` and rebuild — the loader is keyed by
 filename. `scripts/gen-notification-sounds.py` remains in the tree as a
 zero-dependency synthetic-tone fallback generator.
+
+## Ringtones (incoming call)
+
+The bundled call ringtones (`ring_classic`, `ring_bright`, `ring_soft`)
+are built from **CC0 1.0** bell tones, padded with a trailing silence gap
+so they loop with a natural ring…pause…ring cadence under
+`PlaySoundA(SND_LOOP)`.
+
+- Source: lavenderdotpet/CC0-Public-Domain-Sounds (CC0 1.0)
+  https://github.com/lavenderdotpet/CC0-Public-Domain-Sounds — `100-CC0-SFX/bell_0{1,2,3}.ogg`
+- ring_classic ← bell_01, ring_bright ← bell_02, ring_soft ← bell_03
+- Transcoded to mono S16LE 44.1 kHz WAV and padded with ~1.6–2.0 s
+  silence for loop cadence.
+
+The synthesized `generateIncomingRingtone()` in CallManager remains the
+"Default (TalQ)" option and the fallback if a bundled ring is missing.

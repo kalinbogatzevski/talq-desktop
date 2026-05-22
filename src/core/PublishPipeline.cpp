@@ -161,23 +161,30 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
     {
         QSettings s("TalQ", "TalQ");
         s.beginGroup("Audio");
-        const bool nsEnabled = s.value("noiseSuppression", true).toBool();
+        const bool nsEnabled  = s.value("noiseSuppression", true).toBool();
+        const bool aecEnabled = s.value("echoCancellation", true).toBool();
         s.endGroup();
-        if (nsEnabled) {
+        if (nsEnabled || aecEnabled) {
             webrtcdsp = gst_element_factory_make("webrtcdsp", "pub-webrtcdsp");
             if (webrtcdsp) {
+                // echo-cancel pairs with the webrtcechoprobe inserted on the
+                // playback path in SubscribeWebrtcSrc. With probe left at
+                // default "", webrtcdsp auto-discovers the single in-process
+                // echoprobe — clean for 1:1. (Multi-party references one
+                // peer's playback; full mix-bus AEC is a future item.)
                 g_object_set(webrtcdsp,
-                             "echo-cancel", FALSE,
-                             "noise-suppression", TRUE,
+                             "echo-cancel", aecEnabled ? TRUE : FALSE,
+                             "noise-suppression", nsEnabled ? TRUE : FALSE,
                              "noise-suppression-level", 2,   // high
                              "high-pass-filter", TRUE,
                              "gain-control", FALSE,
                              "voice-detection", FALSE,
                              nullptr);
-                qDebug() << "PublishPipeline: noise suppression ON (webrtcdsp)";
+                qDebug() << "PublishPipeline: webrtcdsp ON (noise-suppress="
+                         << nsEnabled << "echo-cancel=" << aecEnabled << ")";
             } else {
                 qWarning() << "PublishPipeline: webrtcdsp unavailable; "
-                              "continuing without noise suppression";
+                              "continuing without DSP";
             }
         }
     }
