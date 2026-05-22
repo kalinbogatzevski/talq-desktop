@@ -608,6 +608,21 @@ QString CallManager::videoTxLabel() const
     return {};
 }
 
+double CallManager::txBitrateMbps() const
+{
+    // Numeric counterpart of streamBandwidthLabel (outbound rate we
+    // control/measure) for the telemetry bandwidth gauge/sparkline.
+    double bps = 0.0;
+    if (m_screenSharing && m_screenSharePipeline)
+        bps += 2.5e6;
+    if (m_publishPipeline && m_publishPipeline->isRunning()) {
+        if (m_publishPipeline->isCameraOn())
+            bps += m_publishPipeline->currentVideoBitrate();
+        bps += 40000.0;
+    }
+    return bps / 1e6;
+}
+
 QString CallManager::streamBandwidthLabel() const
 {
     // Honest: this is the OUTBOUND rate we control/measure. Video = the

@@ -76,6 +76,8 @@ public:
     // Current outbound stream bandwidth (GCC-applied video + Opus audio),
     // e.g. "↑ 2.45 Mbps". Empty when nothing is being sent.
     QString streamBandwidthLabel() const;
+    // Numeric outbound bitrate (Mbps) for the telemetry bandwidth gauge.
+    double txBitrateMbps() const;
 
     Q_INVOKABLE void startCall(const QString &token, bool withVideo);
     Q_INVOKABLE void setRemotePeerInfo(const QString &name, const QString &peerId);

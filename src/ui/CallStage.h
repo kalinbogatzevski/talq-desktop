@@ -96,6 +96,9 @@ private:
     QTimer *m_tick = nullptr;                  // ~30fps repaint + idle/glow
     bool m_telemetryOpen = false;
     bool m_rosterOpen = false;
+    // Outbound-bitrate ring buffer (Mbps) for the telemetry sparkline.
+    static constexpr int kBwHistoryMax = 60;
+    QVector<float> m_bwHistory;
     QString m_hoverBtn;                        // control-bar button under cursor
 
     // self-PiP drag
