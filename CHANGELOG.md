@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.33.4 "Bangaranga" — PRE-RELEASE (2026-05-22)
+
+### Fixed
+- **Simulcast video was stuck at 180p for everyone.** The SFU parks a
+  new subscriber on the lowest layer until the client asks for a higher
+  one, and we never asked. The client now automatically requests the
+  substream that matches how large each peer is shown on screen — full
+  / pinned speaker → 720p, gallery tile → 360p, small strip thumbnail →
+  180p — re-evaluated whenever the layout changes. (In a 1:1 call the
+  remote peer is the main view, so you now get 720p.) The server still
+  drops to a lower layer on its own if the link can't carry the
+  requested one.
+
 ## v0.33.3 "Bangaranga" — PRE-RELEASE (2026-05-22)
 
 ### Fixed
