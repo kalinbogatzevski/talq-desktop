@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.33.5 "Bangaranga" — PRE-RELEASE (2026-05-22)
+
+### Fixed
+- **Hanging up now ends the call for the other person too.** A
+  regression left the other party still "in the call" after you hung up,
+  because the leave request to the server was skipped.
+- **Your other devices no longer ring when you place a call.** If you're
+  signed in on more than one device, starting a call from one no longer
+  makes your other devices ring as if it were incoming.
+
+### Added
+- **Acoustic echo cancellation.** Stops the person you're talking to from
+  hearing themselves echo back when you're on open speakers. On by
+  default; toggle under Settings if needed. (Headphones never had this
+  problem.)
+- **Selectable call ringtone.** Settings → Notifications → Sounds now has
+  a "Call ringtone" picker (Classic / Bright / Soft bell, the TalQ tone,
+  or None) that plays when someone calls you. Picking one previews it.
+- Notifications settings are grouped under a clearer "Sounds" section.
+
 ## v0.33.4 "Bangaranga" — PRE-RELEASE (2026-05-22)
 
 ### Fixed
