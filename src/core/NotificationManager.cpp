@@ -25,7 +25,7 @@ NotificationManager::NotificationManager(QObject *parent)
     // pre-0.33 key "soundMode" ("internal"→"chime"). After this block
     // m_soundId is one of none/system/<known tone> and Notifications/soundId
     // is written.
-    QSettings s;
+    QSettings s("TalQ", "TalQ");
     s.beginGroup("Notifications");
     if (s.contains("soundId")) {
         m_soundId = s.value("soundId").toString();
@@ -73,13 +73,16 @@ void NotificationManager::loadSoundForId(const QString &id)
     if (!known) {
         qWarning() << "NotificationManager: unknown soundId" << id
                    << "— falling back to chime";
-        QSettings s;
+        QSettings s("TalQ", "TalQ");
         s.beginGroup("Notifications");
         s.setValue("soundId", "chime");
         s.endGroup();
         m_soundId = QStringLiteral("chime");
     }
-    QFile f(QStringLiteral(":/sounds/%1.wav").arg(m_soundId == id ? id : m_soundId));
+    // m_soundId == id on the known-id path; on the unknown-id path the
+    // fallback above set m_soundId = "chime". Either way m_soundId is the
+    // tone to load.
+    QFile f(QStringLiteral(":/sounds/%1.wav").arg(m_soundId));
     if (f.open(QIODevice::ReadOnly)) {
         m_wavData = f.readAll();
     } else {
@@ -374,7 +377,7 @@ void NotificationManager::setSoundId(const QString &id)
     if (m_soundId == id) return;
     m_soundId = id;
     loadSoundForId(m_soundId);
-    QSettings s;
+    QSettings s("TalQ", "TalQ");
     s.beginGroup("Notifications");
     s.setValue("soundId", m_soundId);
     s.endGroup();
