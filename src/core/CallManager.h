@@ -177,7 +177,7 @@ private:
     // other party gets the "left call" event). Async; onDone runs on the
     // server ACK (or immediately if there was no joined call).
     void leaveCallOnServer(const QString &token, bool wasJoined,
-                           std::function<void()> onDone = {}, int attempt = 0);
+                           std::function<void()> onDone = {});
     void teardown(const QString &reason);
     void stopAllPipelines();
     void startRingtone();

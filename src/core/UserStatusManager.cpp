@@ -131,7 +131,7 @@ void UserStatusManager::fetchCurrent()
     });
 }
 
-void UserStatusManager::revertStuckCall(int attempt)
+void UserStatusManager::revertStuckCall()
 {
     // Undo a crash-stuck Talk 'call' automation: restores the pre-call
     // backup server-side. Harmless (404/200) if nothing was stuck.
@@ -140,33 +140,15 @@ void UserStatusManager::revertStuckCall(int attempt)
     // has been acknowledged by the server, so by the time we get here
     // the server has already processed the call transition and the
     // pre-call snapshot is the next thing to restore.
-    m_api->del(statusPath(QStringLiteral("/revert/call")),
-        [this, attempt](bool ok, const QJsonObject &, int statusCode) {
+    // Must-complete: the revert can be lost on a high-latency/flaky link
+    // (NC server in ZA, user in BG), leaving the status stuck "In a call".
+    // delMustComplete retries on confirmed non-delivery (status 0 / 5xx),
+    // bounded, non-blocking. 4xx (incl. 404) = nothing stuck → done.
+    m_api->delMustComplete(statusPath(QStringLiteral("/revert/call")), {}, this,
+        [this](bool ok, int statusCode) {
             if (ok) {
                 qInfo() << "UserStatus: reverted stuck 'call' status";
                 fetchCurrent();
-                return;
-            }
-            // Distinguish "nothing to revert" from "didn't reach the server".
-            // A 4xx (esp. 404) means the server processed us and there was
-            // no stuck status — done. statusCode 0 (no HTTP reply) or 5xx
-            // means the request was lost / server errored — on a
-            // high-latency or flaky link (our NC server is in South Africa,
-            // the user in Bulgaria) the fire-and-forget revert can simply
-            // not land, leaving the status stuck "In a call". Retry on those
-            // transient cases only, bounded with backoff — NOT speculative,
-            // only after a confirmed non-delivery. (A general fire-and-track
-            // outbox is the broader fix — see backlog.)
-            const bool transient = (statusCode == 0 || statusCode >= 500);
-            constexpr int kMaxAttempts = 4;
-            if (transient && attempt + 1 < kMaxAttempts) {
-                const int delayMs = 1000 * (1 << attempt);  // 1s, 2s, 4s
-                qInfo().nospace() << "UserStatus: revert/call did not reach the "
-                    "server (status " << statusCode << ") — retry "
-                    << (attempt + 1) << "/" << (kMaxAttempts - 1)
-                    << " in " << delayMs << " ms";
-                QTimer::singleShot(delayMs, this,
-                    [this, attempt]() { revertStuckCall(attempt + 1); });
             } else {
                 qInfo() << "UserStatus: no stuck 'call' status to revert "
                            "(status" << statusCode << ")";
