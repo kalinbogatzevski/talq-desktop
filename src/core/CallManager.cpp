@@ -1018,6 +1018,20 @@ void CallManager::startScreenShare(int monitorIndex, quintptr windowHandle)
     emit screenShareChanged();
 }
 
+void CallManager::requestPeerVideoQuality(const QString &sessionId, int substream)
+{
+    if (substream < 0 || substream > 2) return;
+    if (m_desiredSubstream.value(sessionId, -1) == substream) return;  // dedupe
+    m_desiredSubstream[sessionId] = substream;
+    // Only send now if we actually have a live subscriber for this peer;
+    // otherwise the value is stored and sent when the subscriber connects.
+    if (m_subscribePipelines.contains(sessionId)
+        && m_subscriberSids.contains(sessionId)) {
+        m_signaling->sendSelectStream(sessionId,
+                                      m_subscriberSids.value(sessionId), substream);
+    }
+}
+
 void CallManager::stopScreenShare()
 {
     if (!m_screenSharing) return;
@@ -1587,6 +1601,7 @@ void CallManager::stopAllPipelines()
     }
     m_subscribePipelines.clear();
     m_subscriberSids.clear();
+    m_desiredSubstream.clear();
     m_subscriberRecoveries.clear();
     m_pubIceGrace.stop();
     m_pubIceRecoveries = 0;
@@ -1964,6 +1979,12 @@ void CallManager::onOfferReceived(const QString &fromSessionId, const QString &s
                 setState(Active);
                 m_durationTimer.start();
             }
+            // #132 simulcast: Janus parks a new subscriber on substream 0
+            // (180p). Ask for the desired layer now that the subscription
+            // is live. Default is HIGH; CallStage refines per tile size.
+            const int want = m_desiredSubstream.value(fromSessionId, 2);
+            m_signaling->sendSelectStream(fromSessionId,
+                                          m_subscriberSids.value(fromSessionId), want);
             broadcastMediaState("audio", !m_muted);
             broadcastMediaState("video", m_cameraOn);
             // Announce our TalQ version on the data channel so other TalQ

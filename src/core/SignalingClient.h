@@ -55,6 +55,14 @@ public:
                        const QString &sid, const QString &roomType = "video");
     void sendEndOfCandidates(const QString &toSessionId, const QString &sid,
                              const QString &roomType = "video");
+    // #132 simulcast: ask the SFU which substream (0=180p/1=360p/2=720p)
+    // + temporal layer to forward for our subscription to `toSessionId`.
+    // Janus defaults a simulcast subscriber to substream 0; this is the
+    // only thing that steps it up. Wire format verified against spreed +
+    // the HPB Go relay (selectStream → Janus videoroom configure).
+    void sendSelectStream(const QString &toSessionId, const QString &sid,
+                          int substream, int temporal = 2,
+                          const QString &roomType = "video");
     void requestOffer(const QString &sessionId, const QString &roomType = "video");
     void sendSessionMessage(const QString &toSessionId, const QString &type,
                             const QJsonObject &payload, const QString &sid,
