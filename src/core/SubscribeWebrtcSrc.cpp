@@ -633,42 +633,20 @@ void SubscribeWebrtcSrc::onPadAdded(GstElement *, GstPad *pad, gpointer ud)
             g_object_set(sink, "device",
                          self->m_audioOutputDeviceId.toUtf8().constData(), nullptr);
 
-        // Acoustic echo cancellation: tap the far-end audio just before it
-        // hits the speakers with a webrtcechoprobe. PublishPipeline's
-        // webrtcdsp (echo-cancel=TRUE) auto-discovers this single in-process
-        // probe and subtracts it from the mic, so the remote peer doesn't
-        // hear themselves. Gated on Audio/echoCancellation. If the element
-        // is unavailable we fall back to the plain chain (no AEC).
-        GstElement *echoprobe = nullptr;
-        {
-            QSettings aecCfg("TalQ", "TalQ");
-            aecCfg.beginGroup("Audio");
-            const bool aec = aecCfg.value("echoCancellation", true).toBool();
-            aecCfg.endGroup();
-            if (aec) {
-                echoprobe = gst_element_factory_make("webrtcechoprobe", nullptr);
-                if (!echoprobe)
-                    qWarning() << "SubscribeWebrtcSrc: webrtcechoprobe "
-                                  "unavailable — no echo cancellation";
-            }
-        }
-
-        if (echoprobe) {
-            gst_bin_add_many(GST_BIN(self->m_pipeline), conv, res, echoprobe, sink, nullptr);
-            gst_element_link_many(conv, res, echoprobe, sink, nullptr);
-            gst_element_sync_state_with_parent(echoprobe);
-        } else {
-            gst_bin_add_many(GST_BIN(self->m_pipeline), conv, res, sink, nullptr);
-            gst_element_link_many(conv, res, sink, nullptr);
-        }
+        // NOTE: no webrtcechoprobe here. AEC via webrtcdsp+echoprobe can't
+        // work across TalQ's separate publish/subscribe pipelines — the
+        // publisher's webrtcdsp starts before this probe exists and fails
+        // hard ("No echo probe found"), dropping the call. Until a shared
+        // early playback bus exists, the playback chain stays plain.
+        gst_bin_add_many(GST_BIN(self->m_pipeline), conv, res, sink, nullptr);
+        gst_element_link_many(conv, res, sink, nullptr);
         gst_element_sync_state_with_parent(conv);
         gst_element_sync_state_with_parent(res);
         gst_element_sync_state_with_parent(sink);
         GstPad *cs = gst_element_get_static_pad(conv, "sink");
         gst_pad_link(pad, cs);
         gst_object_unref(cs);
-        qInfo() << "SubscribeWebrtcSrc: audio pad linked (decoded)"
-                << (echoprobe ? "+ echo probe" : "");
+        qInfo() << "SubscribeWebrtcSrc: audio pad linked (decoded)";
     }
 }
 
