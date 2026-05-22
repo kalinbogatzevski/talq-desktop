@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.37.0 "Bangaranga" — PRE-RELEASE (2026-05-22)
+
+Maintenance beta. No new user-facing features over 0.35.0; consolidates
+the must-complete API retry logic (status revert + leave-call now share
+one bounded-retry primitive) and lands the diagnosis of the simulcast
+substream issue (the layers reach the server, but the media server won't
+accept the grouping needed to switch them — a deeper fix is queued).
+All the 0.35.0 call/notification improvements carry forward.
+
 ## v0.35.0 "Bangaranga" — PRE-RELEASE (2026-05-22)
 
 First 0.35.x beta (odd = pre-release channel). Simulcast is back on in
