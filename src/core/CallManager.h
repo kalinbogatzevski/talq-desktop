@@ -87,6 +87,19 @@ public:
     Q_INVOKABLE void startScreenShare(int monitorIndex = 0, quintptr windowHandle = 0);
     Q_INVOKABLE void stopScreenShare();
     bool isScreenSharing() const { return m_screenSharing; }
+    // Runtime screen-share quality. Levels: 0=720p 1=1080p(default)
+    // 2=1440p 3=Native. Changing it while sharing does a quick managed
+    // re-share at the new cap, reusing the already-picked target.
+    Q_INVOKABLE void setScreenShareQuality(int level);
+    int screenShareQuality() const { return m_ssQuality; }
+
+    // #132 simulcast: ask the SFU to forward substream `substream`
+    // (0=180p / 1=360p / 2=720p) for our subscription to `sessionId`.
+    // Driven by CallStage from the on-screen tile size (stage→2, gallery
+    // →1, strip→0). Deduped per peer; re-sent when the subscriber (re)
+    // connects. Janus adapts DOWN on its own if the link can't sustain
+    // the requested layer, so this is an upper bound, not a guarantee.
+    Q_INVOKABLE void requestPeerVideoQuality(const QString &sessionId, int substream);
     VideoFrameProvider *remoteScreenProvider() const { return m_remoteScreenProvider; }
     void onIncomingCallDetected(const QString &callerName, const QString &token, int callFlag);
 
@@ -103,6 +116,14 @@ signals:
     void callInfoChanged();
     void incomingCall(const QString &callerName, const QString &token, bool withVideo);
     void callEnded(const QString &reason);
+    // Fires when the leaveCall DELETE actually returns from the server.
+    // Distinct from callEnded (which fires synchronously in teardown so
+    // the UI never blocks on the network). Consumers that need server-
+    // side state to be settled — currently the UserStatus call-status
+    // revert, which would 404 if it ran before the server processed the
+    // leave — should listen here. If the network is dead, this signal
+    // never fires; the server's own session timeout handles cleanup.
+    void callServerLeaveAcked();
     void audioLevelChanged();
     void callStatsChanged();
     void remoteVideoProviderChanged();
@@ -110,6 +131,7 @@ signals:
     void statusDetailChanged();
     void remoteMediaChanged();
     void screenShareChanged();
+    void screenShareQualityChanged();
     void remoteScreenProviderChanged();
     void participantAdded(CallParticipant *p);
     void participantRemoved(const QString &sessionId);
@@ -125,7 +147,13 @@ private slots:
 private:
     void setState(CallState newState);
     void joinCallOnServer(bool withVideo);
-    void leaveCallOnServer();
+    // Asynchronous: invokes `onDone` (if provided) when the DELETE /call
+    // response comes back from the server, or immediately if there's no
+    // call to leave. Qt's network reply callback fires unconditionally
+    // (success, HTTP error, transport timeout) — no safety timer needed.
+    // teardown() uses this to gate callEnded so the UserStatusManager
+    // revert hits a server already in the post-call state.
+    void leaveCallOnServer(std::function<void()> onDone = {});
     void teardown(const QString &reason);
     void stopAllPipelines();
     void startRingtone();
@@ -168,6 +196,11 @@ private:
     PublishPipeline *m_publishPipeline = nullptr;
     QHash<QString, SubscribeWebrtcSrc*> m_subscribePipelines;
     QHash<QString, QString> m_subscriberSids;  // sessionId -> current MCU sid
+    // #132 simulcast: per-peer desired receive substream (0/1/2). Default
+    // 2 (highest) so a fresh subscription / 1:1 call gets 720p; CallStage
+    // refines it down per tile size. Sent via selectStream on connect +
+    // on change.
+    QHash<QString, int> m_desiredSubstream;
     QHash<QString, int> m_subscriberRecoveries;  // sessionId -> mid-call re-subscribe count (bounded; reset on connect)
     // P2P single pipeline
     PeerPipeline *m_peerPipeline = nullptr;
@@ -204,6 +237,14 @@ private:
     QTimer m_durationTimer;
     QTimer m_ringTimeout;
     QTimer m_statsTimer;
+    // Publisher ICE "failed" is often transient (Wi-Fi/NAT blip, HPB
+    // renegotiation) and self-heals to "connected" within seconds. The
+    // old code hung up the whole call on the first "failed" — an
+    // 11-minute call died on a momentary blip. Grace-debounce it: only
+    // tear down if ICE is still failed when this single-shot timer
+    // fires; any "connected"/"completed" in the window cancels it.
+    QTimer m_pubIceGrace;
+    int    m_pubIceRecoveries = 0;
 
     bool m_joinedCall = false;
     bool m_userActionReady = false;
@@ -221,6 +262,17 @@ private:
     ScreenSharePipeline *m_screenSharePipeline = nullptr;
     bool m_screenSharing = false;
     QString m_screenShareSid;
+    // Set during stopScreenShare()'s 50-iteration GLib flush. Used by
+    // publisher-ICE-failed handler to suppress recovery-counter bumps
+    // and hangUp() while the screen pipeline teardown perturbs the
+    // shared signaling agent. A non-main-stream failure must never drop
+    // the call (#138 / user-stated policy).
+    bool m_screenShareTearingDown = false;
+    // Remembered share target so a quality change can re-share the SAME
+    // screen/window without re-prompting.
+    int m_ssMonitorIndex = 0;
+    quintptr m_ssWindowHandle = 0;
+    int m_ssQuality = 1;   // 0=720p 1=1080p 2=1440p 3=Native (persisted)
     VideoFrameProvider *m_remoteScreenProvider = nullptr;
     QHash<QString, SubscribePipeline*> m_screenSubscribers;
 

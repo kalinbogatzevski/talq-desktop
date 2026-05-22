@@ -372,6 +372,14 @@ void SignalingClient::onTextMessage(const QString &msg)
                     m_participantNames[userId] = displayName;
                 if (!userId.isEmpty())
                     m_sessionToUserId[sid] = userId;
+                // Some servers/participant events omit displayName (only
+                // actorId). Emitting an empty name is the "incoming call
+                // shows 'Call' instead of the caller" bug. Resolve from
+                // the name cache (filled by the room participant list /
+                // earlier events), else fall back to the userId itself —
+                // anything identifiable beats a generic "Call".
+                if (displayName.isEmpty() && !userId.isEmpty())
+                    displayName = m_participantNames.value(userId, userId);
 
                 if (!m_participantCallFlags.contains(sid))
                     sawNewPeer = true;
@@ -665,6 +673,17 @@ void SignalingClient::sendEndOfCandidates(const QString &toSessionId, const QStr
                                           const QString &roomType)
 {
     sendSessionMessage(toSessionId, "endOfCandidates", QJsonObject(), sid, {}, roomType);
+}
+
+void SignalingClient::sendSelectStream(const QString &toSessionId, const QString &sid,
+                                       int substream, int temporal, const QString &roomType)
+{
+    QJsonObject payload;
+    payload["substream"] = substream;
+    payload["temporal"]  = temporal;
+    sendSessionMessage(toSessionId, "selectStream", payload, sid, {}, roomType);
+    qDebug() << "Signaling: selectStream to" << toSessionId.left(20)
+             << "substream=" << substream << "temporal=" << temporal;
 }
 
 void SignalingClient::sendBroadcastMessage(const QJsonObject &data)
