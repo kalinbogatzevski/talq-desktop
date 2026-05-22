@@ -1,14 +1,66 @@
 #include "core/ScreenSharePipeline.h"
 #include "core/VideoEncoderUtil.h"
 #include <gst/rtp/rtp.h>
+#include <QApplication>
 #include <QDebug>
 #include <QPointer>
 #include <QRegularExpression>
+#include <QScreen>
 #include <QUrl>
+
+#ifdef Q_OS_WIN
+#include <windows.h>   // MonitorFromPoint / HMONITOR / HWND
+#endif
 
 ScreenSharePipeline::ScreenSharePipeline(QObject *parent)
     : QObject(parent)
 {
+    // Negotiation watchdog — 10 s from start() to "subscriber-side ICE
+    // connected". If we don't get there the share has silently failed
+    // (#134 "stream doesn't always start" pattern: SDP exchanged but the
+    // wire never carries decodable frames). Surface a clear error so the
+    // UI shows a failure instead of an apparently-active share that's
+    // dead on the wire.
+    m_startWatchdog.setSingleShot(true);
+    m_startWatchdog.setInterval(10000);
+    connect(&m_startWatchdog, &QTimer::timeout, this, [this]() {
+        if (m_iceReachedConnected) return;
+        qWarning() << "ScreenSharePipeline: start watchdog fired — "
+                      "ICE didn't reach connected within 10 s. "
+                      "Tearing down so the UI can show a clear error.";
+        emit error(QStringLiteral(
+            "Screen sharing didn't start (ICE never connected). "
+            "Try sharing again."));
+    });
+
+    // Capture-frame watchdog (#2): 6 s from start() to the first captured
+    // frame. d3d11screencapturesrc (WGC) can connect ICE but never emit a
+    // buffer if it failed to attach to the window; this catches that
+    // distinct failure mode (silent "Starting remote screen share…"
+    // forever on the receiver). Cleared on the first frame via the pad
+    // probe below.
+    m_frameWatchdog.setSingleShot(true);
+    m_frameWatchdog.setInterval(6000);
+    connect(&m_frameWatchdog, &QTimer::timeout, this, [this]() {
+        if (m_firstFrameSeen.load()) return;
+        qWarning() << "ScreenSharePipeline: capture produced NO frames within "
+                      "6 s — the capture source failed to attach to the "
+                      "target. Surfacing error for retry.";
+        emit error(QStringLiteral(
+            "Screen sharing didn't start (no frames captured). "
+            "Try sharing again, or pick a different window/screen."));
+    });
+}
+
+GstPadProbeReturn ScreenSharePipeline::onCaptureBuffer(GstPad *, GstPadProbeInfo *,
+                                                       gpointer userData)
+{
+    auto *self = static_cast<ScreenSharePipeline *>(userData);
+    if (self && !self->m_firstFrameSeen.exchange(true)) {
+        qInfo() << "ScreenSharePipeline: first captured frame seen — "
+                   "capture source attached OK";
+    }
+    return GST_PAD_PROBE_OK;
 }
 
 ScreenSharePipeline::~ScreenSharePipeline()
@@ -55,37 +107,91 @@ bool ScreenSharePipeline::start(const QString &stunServer, const QList<TurnServe
         }
     }
 
-    // Screen capture source
+    // Screen capture source. Two real Windows bugs the previous wiring hit:
+    //
+    //  - Window capture: `d3d11screencapturesrc` only honors `window-handle`
+    //    when `capture-api=1` (Windows Graphics Capture). In the default
+    //    DXGI mode it captures a monitor and silently ignores the HWND →
+    //    the picker said "this window", the peer saw a monitor.
+    //
+    //  - Monitor capture: `dx9screencapsrc`'s `monitor` is the DXGI output
+    //    index, which does NOT match `QApplication::screens()` order on
+    //    multi-monitor Windows → picking "Screen 2" could share Screen 1.
+    //    Target by HMONITOR instead (stable physical identifier), derived
+    //    from the chosen Qt screen's geometry via `MonitorFromPoint`.
     GstElement *screenSrc = nullptr;
 
+#ifdef Q_OS_WIN
     if (windowHandle != 0) {
-        // Window capture — try d3d11screencapturesrc with window-handle
-        // (Windows Graphics Capture API works even on discrete GPU for windows)
+        // Property-set order matters for d3d11screencapturesrc: capture-api
+        // must be configured BEFORE window-handle, otherwise the element
+        // may auto-resolve a monitor target from the (still-default)
+        // capture-api mode and ignore the late window-handle. Set them
+        // in two calls to make the order explicit.
         screenSrc = gst_element_factory_make("d3d11screencapturesrc", nullptr);
         if (screenSrc) {
+            g_object_set(screenSrc, "capture-api", 1 /* WGC */, nullptr);
             g_object_set(screenSrc, "window-handle", (guint64)windowHandle,
-                         "show-cursor", TRUE, nullptr);
-            qDebug() << "ScreenSharePipeline: window capture via d3d11screencapturesrc, hwnd=" << windowHandle;
+                                    "show-cursor", TRUE, nullptr);
+            // Read back to confirm the property actually took (#134
+            // wrong-window diag): if the readback differs from what we
+            // asked for, d3d11screencapturesrc rejected the HWND silently.
+            guint64 readBack = 0;
+            g_object_get(screenSrc, "window-handle", &readBack, nullptr);
+            qInfo().nospace() << "ScreenSharePipeline: window capture (WGC) "
+                              << "requested hwnd=" << (quintptr)windowHandle
+                              << " readback=" << (quintptr)readBack
+                              << ((quintptr)readBack == (quintptr)windowHandle
+                                  ? " ✓"
+                                  : " ✗ MISMATCH (capture src ignored our pick)");
         }
     }
 
     if (!screenSrc) {
-        // Monitor capture — dx9screencapsrc is most reliable across GPU configs
-        screenSrc = gst_element_factory_make("dx9screencapsrc", nullptr);
-        if (screenSrc) {
-            g_object_set(screenSrc, "monitor", monitorIndex, "cursor", TRUE, nullptr);
-            qDebug() << "ScreenSharePipeline: monitor" << monitorIndex << "via dx9screencapsrc";
+        const auto screens = QApplication::screens();
+        HMONITOR hMon = nullptr;
+        if (monitorIndex >= 0 && monitorIndex < screens.size()) {
+            const QPoint tl = screens[monitorIndex]->geometry().topLeft();
+            // +1,+1 to avoid the edge case where a top-left pixel sits on
+            // the boundary between two monitors.
+            POINT p{ tl.x() + 1, tl.y() + 1 };
+            hMon = MonitorFromPoint(p, MONITOR_DEFAULTTONEAREST);
+        }
+        if (hMon) {
+            screenSrc = gst_element_factory_make("d3d11screencapturesrc", nullptr);
+            if (screenSrc) {
+                g_object_set(screenSrc,
+                             "monitor-handle",
+                             (guint64)(quintptr)hMon,
+                             "show-cursor", TRUE, nullptr);
+                qInfo() << "ScreenSharePipeline: monitor capture via HMONITOR"
+                        << (quintptr)hMon
+                        << "(Qt screen index" << monitorIndex << ")";
+            }
         }
     }
+#endif
+
     if (!screenSrc) {
-        screenSrc = gst_element_factory_make("gdiscreencapsrc", nullptr);
-        if (screenSrc) {
-            g_object_set(screenSrc, "monitor", monitorIndex, "cursor", TRUE, nullptr);
-            qDebug() << "ScreenSharePipeline: monitor" << monitorIndex << "via gdiscreencapsrc";
-        }
-    }
-    if (!screenSrc) {
-        emit error("No screen capture plugin available");
+        // d3d11screencapturesrc unavailable / refused to construct. The
+        // older fallbacks (dx9screencapsrc, gdiscreencapsrc) interpret
+        // `monitor` as a DXGI index that does NOT match QApplication
+        // ordering, and neither of them can honor a window-handle — so
+        // a window-share request would silently turn into a monitor
+        // capture of the wrong screen ("Ilko is sharing one and the
+        // same display no matter what he selects", #134). We surface
+        // a clear error instead. If d3d11screencapturesrc is the only
+        // path that reliably honors the user's pick, missing it is a
+        // deploy problem we need to know about.
+        const QString why = (windowHandle != 0)
+            ? "Window capture requires gstd3d11 (Windows Graphics "
+              "Capture). It is not available in this TalQ build. "
+              "Window sharing is unavailable."
+            : "Monitor capture requires gstd3d11 (HMONITOR-targeted). "
+              "It is not available in this TalQ build, and the legacy "
+              "fallbacks would share the wrong display.";
+        qWarning() << "ScreenSharePipeline:" << why;
+        emit error(why);
         cleanup();
         return false;
     }
@@ -209,6 +315,19 @@ bool ScreenSharePipeline::start(const QString &stunServer, const QList<TurnServe
 
     qDebug() << "ScreenSharePipeline: chain linked";
 
+    // Frame-counter probe on the capture src's output pad (#2). Fires the
+    // first time a buffer leaves the screen capture element — clears the
+    // frame watchdog. If no buffer ever flows (WGC failed to attach), the
+    // watchdog fires instead.
+    {
+        GstPad *srcPad = gst_element_get_static_pad(screenSrc, "src");
+        if (srcPad) {
+            gst_pad_add_probe(srcPad, GST_PAD_PROBE_TYPE_BUFFER,
+                              &ScreenSharePipeline::onCaptureBuffer, this, nullptr);
+            gst_object_unref(srcPad);
+        }
+    }
+
     // Link to webrtcbin
     GstPad *ssrcSrcPad = gst_element_get_static_pad(ssrcFilter, "src");
     GstPad *sinkPad = gst_element_request_pad_simple(m_webrtcbin, "sink_%u");
@@ -272,13 +391,20 @@ bool ScreenSharePipeline::start(const QString &stunServer, const QList<TurnServe
     }
 
     m_running = true;
-    qDebug() << "ScreenSharePipeline: started, capturing primary monitor";
+    m_iceReachedConnected = false;
+    m_firstFrameSeen.store(false);
+    m_startWatchdog.start();
+    m_frameWatchdog.start();
+    qDebug() << "ScreenSharePipeline: started, capturing primary monitor "
+                "(10 s ICE + 6 s frame watchdogs armed)";
     return true;
 }
 
 void ScreenSharePipeline::stop()
 {
     if (!m_running) return;
+    m_startWatchdog.stop();
+    m_frameWatchdog.stop();
     cleanup();
     m_running = false;
     qDebug() << "ScreenSharePipeline: stopped";
@@ -287,6 +413,8 @@ void ScreenSharePipeline::stop()
 void ScreenSharePipeline::cleanup()
 {
     m_shuttingDown.store(true);
+    m_startWatchdog.stop();
+    m_frameWatchdog.stop();
     if (m_webrtcbin)
         g_signal_handlers_disconnect_by_data(m_webrtcbin, this);
     if (m_gccbwe)  // notify::estimated-bitrate is on the gcc element
@@ -415,6 +543,11 @@ void ScreenSharePipeline::onIceStateChanged(GObject *obj, GParamSpec *, gpointer
     QPointer<ScreenSharePipeline> guard(self);
     QMetaObject::invokeMethod(self, [guard, stateName]() {
         if (!guard) return;
+        if (stateName == QLatin1String("connected") ||
+            stateName == QLatin1String("completed")) {
+            guard->m_iceReachedConnected = true;
+            guard->m_startWatchdog.stop();
+        }
         emit guard->iceStateChanged(stateName);
     }, Qt::QueuedConnection);
 }
