@@ -1,5 +1,34 @@
 # Changelog
 
+## v0.35.0 "Bangaranga" — PRE-RELEASE (2026-05-22)
+
+First 0.35.x beta (odd = pre-release channel). Simulcast is back on in
+beta builds.
+
+### Fixed
+- **You now hear an audio-only peer immediately.** Previously a peer with
+  their camera off wasn't subscribed at all, so you heard nothing from
+  them until they turned the camera on. We now subscribe as soon as a peer
+  is sending any audio or video.
+- **Status no longer gets stuck "In a call" on a slow/distant connection.**
+  The "revert my status" request now retries (briefly, with backoff) if it
+  doesn't reach the server, instead of being lost — important when the
+  server is far away.
+- **Hanging up reliably ends the call for the other side too**, even on a
+  slow/distant link — the leave request now retries if it doesn't reach
+  the server the first time.
+
+### Added
+- **Answer incoming video calls with Video, Audio, or Decline.** A video
+  call now lets you pick whether to join with your camera on or audio-only,
+  instead of always answering audio-only.
+- **Incoming stream resolution chip** on the call screen, next to the
+  codec pill — shows the live decoded resolution (handy for connection /
+  quality awareness).
+- **Image viewer** is named after the file, comes to the front when
+  opened, and shows a "Loading full image…" state while the full-size
+  image downloads (so a slow link no longer looks like a stuck thumbnail).
+
 ## v0.34.0 "Bangaranga" (2026-05-22)
 
 First stable release since 0.32.0, rolling up the 0.33.x call and
