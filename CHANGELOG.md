@@ -3,13 +3,12 @@
 ## v0.33.3 "Bangaranga" — PRE-RELEASE (2026-05-22)
 
 ### Fixed
-- **Notification sound choice now persists across restart on the 123NET
-  branded build.** NotificationManager was reading/writing the default
-  QSettings store (123NET/123NET TalQ under branding) while the Settings
-  dialog used QSettings("TalQ","TalQ"); the picked tone reverted on next
-  launch. Aligned to the app-wide "TalQ"/"TalQ" store. (Code review.)
+- **Notification sound choice now persists across restart.** The sound
+  setting was read from a different settings store than the one the
+  Settings dialog wrote to, so the picked tone could revert on the next
+  launch. Both now use the same store.
 - Internal: plugged GStreamer element leaks on the simulcast builder's
-  error-exit paths; minor doc/clarity cleanups. (Code review.)
+  error-exit paths; minor doc/clarity cleanups.
 
 ## v0.33.2 "Bangaranga" — PRE-RELEASE (2026-05-22)
 
