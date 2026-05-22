@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.33.6 "Bangaranga" — PRE-RELEASE (2026-05-22)
+
+### Fixed
+- **Calls dropped immediately (0.33.5 regression).** The new echo
+  cancellation prevented the call pipeline from starting, so every call —
+  audio or video — ended the instant it began. Echo cancellation has been
+  reverted; it needs a different approach and will return later. All other
+  0.33.5 call fixes (hang-up ends both sides, no self-ring, selectable
+  ringtone) remain.
+
 ## v0.33.5 "Bangaranga" — PRE-RELEASE (2026-05-22)
 
 ### Fixed
