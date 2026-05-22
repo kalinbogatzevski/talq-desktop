@@ -5,6 +5,7 @@
 #include <QMenu>
 #include <QByteArray>
 #include <QPixmap>
+#include <QVector>
 
 class QWidget;
 
@@ -15,15 +16,16 @@ struct ITaskbarList3;
 /**
  * Manages system tray icon, desktop notifications, and notification sounds.
  *
- * Sound modes:
- * - "internal" (default): plays embedded TalQ chime from resources
- * - "system": plays Windows system notification sound
- * - "none": silent
+ * Sound id values (persisted as QSettings key Notifications/soundId):
+ * - "none"     — silent
+ * - "system"   — Windows system notification sound (PlaySoundW SND_ALIAS)
+ * - "<tone>"   — one of the bundled tones from bundledTones() (default
+ *               "chime"); bytes loaded from :/sounds/<tone>.wav
  */
 class NotificationManager : public QObject
 {
     Q_OBJECT
-    Q_PROPERTY(QString soundMode READ soundMode WRITE setSoundMode NOTIFY soundModeChanged)
+    Q_PROPERTY(QString soundId READ soundId WRITE setSoundId NOTIFY soundIdChanged)
     Q_PROPERTY(bool notificationsEnabled READ isNotificationsEnabled WRITE setNotificationsEnabled NOTIFY notificationsEnabledChanged)
 
 public:
@@ -32,8 +34,14 @@ public:
 
     void setWindow(QWidget *window);
 
-    QString soundMode() const { return m_soundMode; }
-    void setSoundMode(const QString &mode);
+    QString soundId() const { return m_soundId; }
+    void setSoundId(const QString &id);
+    // Single source of truth for the bundled tone roster. Order here is the
+    // order shown in the Settings combo and the tray sound submenu.
+    // Each pair: { id, displayLabel }.
+    static QVector<QPair<QString, QString>> bundledTones();
+    // Play the currently-selected sound once (for the Settings audition).
+    void playCurrentSound();
     bool isNotificationsEnabled() const { return m_notificationsEnabled; }
     void setNotificationsEnabled(bool v);
 
@@ -47,7 +55,7 @@ public:
     void setNotifStyle(const QString &style);
 
 signals:
-    void soundModeChanged();
+    void soundIdChanged();
     void notificationsEnabledChanged();
     void notifStyleChanged();
     void showRequested();
@@ -55,6 +63,7 @@ signals:
 
 private:
     void setupTrayIcon();
+    void loadSoundForId(const QString &id);  // fills m_wavData from :/sounds/<id>.wav
     void playInternalSound();
     void playSystemSound();
     void onTrayActivated(QSystemTrayIcon::ActivationReason reason);
@@ -62,11 +71,11 @@ private:
     QSystemTrayIcon *m_trayIcon = nullptr;
     QMenu *m_trayMenu = nullptr;
     QWidget *m_window = nullptr;
-    QString m_soundMode = "internal";  // "internal", "system", "none"
+    QString m_soundId = "chime";       // see header doc for valid values
     QString m_notifStyle = "popup";    // "popup" (Telegram-style) or "windows" (toast)
     bool m_notificationsEnabled = true;
     int m_unreadCount = 0;
-    QByteArray m_wavData;  // embedded WAV loaded from resources
+    QByteArray m_wavData;  // bytes of the currently-selected tone (empty for none/system)
     QPixmap m_baseIcon;
 
 #ifdef Q_OS_WIN

@@ -43,6 +43,7 @@ private:
     QWidget *buildAccountTab();
     QWidget *buildUpdatesTab();
     void populateDeviceCombos();
+    void populateCameraQualityCombo();  // fills from selected camera's caps
     void loadNotificationSettings();
     void loadGeneralSettings();
 
@@ -59,17 +60,14 @@ private:
     QComboBox *m_micCombo = nullptr;
     QComboBox *m_speakerCombo = nullptr;
     QComboBox *m_cameraCombo = nullptr;
-    QRadioButton *m_res1080 = nullptr;
-    QRadioButton *m_res720 = nullptr;
+    QComboBox *m_cameraQualityCombo = nullptr;
     QCheckBox *m_noiseSuppression = nullptr;
 
     // Notifications tab
     QCheckBox *m_notifEnabled = nullptr;
     QRadioButton *m_stylePopup = nullptr;
     QRadioButton *m_styleWindows = nullptr;
-    QRadioButton *m_soundInternal = nullptr;
-    QRadioButton *m_soundSystem = nullptr;
-    QRadioButton *m_soundNone = nullptr;
+    QComboBox *m_soundCombo = nullptr;   // None / System default / bundled tones
 
     // General tab
     QCheckBox *m_autoStart = nullptr;
@@ -79,6 +77,7 @@ private:
 
     // Updates tab
     QCheckBox *m_updatesAutoCheck = nullptr;
+    QCheckBox *m_updatesBeta = nullptr;
 
     // Account tab
     QLabel *m_displayNameLabel = nullptr;

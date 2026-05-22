@@ -132,6 +132,7 @@ qt_add_executable(talq
     resources/resources.qrc
     resources/twemoji.qrc
     resources/changelog.qrc
+    resources/sounds.qrc
     resources/talq.rc
 )
 
