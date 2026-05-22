@@ -27,7 +27,8 @@ ScreenSharePipeline::ScreenSharePipeline(QObject *parent)
         if (m_iceReachedConnected) return;
         qWarning() << "ScreenSharePipeline: start watchdog fired — "
                       "ICE didn't reach connected within 10 s. "
-                      "Tearing down so the UI can show a clear error.";
+                      "Emitting error so CallManager tears down + the UI "
+                      "shows a clear failure.";
         emit error(QStringLiteral(
             "Screen sharing didn't start (ICE never connected). "
             "Try sharing again."));
