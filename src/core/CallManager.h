@@ -68,6 +68,9 @@ public:
     QString activeVideoEncoder() const;
     // Whether the active video encoder is hardware-accelerated (pill tint).
     bool activeVideoEncoderIsHw() const;
+    // Decoded resolution of the incoming stream (active simulcast layer),
+    // e.g. "1280×720"; empty until the first frame decodes.
+    QString activeRxResolution() const;
     // Send resolution + live bitrate, e.g. "1280×720 · 2.5 Mbps".
     QString videoTxLabel() const;
     // Current outbound stream bandwidth (GCC-applied video + Opus audio),

@@ -146,7 +146,13 @@ void ImageViewerDialog::setImage(int fileId, const QString &fileName, const QIma
 {
     m_currentFileId = fileId;
     m_currentFileName = fileName;
-    m_titleBar->setText(m_currentFileName);
+    // Name the OS window (taskbar / alt-tab) after the file, not a generic
+    // "Image viewer", and bring it to the front — clicking an image while
+    // the viewer is already open (e.g. behind the call window) must surface
+    // it, not leave it stranded under another window.
+    setWindowTitle(fileName.isEmpty() ? tr("Image viewer") : fileName);
+    raise();
+    activateWindow();
     if (!placeholder.isNull()) applyPixmap(placeholder);
 
     if (m_api) {
@@ -155,13 +161,23 @@ void ImageViewerDialog::setImage(int fileId, const QString &fileName, const QIma
         int maxDim = 2048;
         if (auto *s = screen())
             maxDim = qMax(s->availableSize().width(), s->availableSize().height());
+        // Loading feedback: the full-res fetch can take a while on slow
+        // links, during which only the upscaled thumbnail shows. Make that
+        // explicit instead of looking like a "stuck on thumbnail" bug.
+        m_titleBar->setText(m_currentFileName + QStringLiteral("   ·   ") + tr("Loading full image…"));
         m_api->fetchFileImage(fileId, maxDim, this,
             [this, fileId](const QImage &img, const QString &err) {
             if (fileId != m_currentFileId) return; // user navigated away
-            if (!img.isNull()) applyPixmap(img);
-            else if (!err.isEmpty())
-                m_titleBar->setText(m_currentFileName + QStringLiteral("  —  ") + err);
+            if (!img.isNull()) {
+                applyPixmap(img);
+                m_titleBar->setText(m_currentFileName);
+            } else {
+                m_titleBar->setText(m_currentFileName + QStringLiteral("   ·   ")
+                    + (err.isEmpty() ? tr("Couldn't load full image") : err));
+            }
         });
+    } else {
+        m_titleBar->setText(m_currentFileName);
     }
 }
 

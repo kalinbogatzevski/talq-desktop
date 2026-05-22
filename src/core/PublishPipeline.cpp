@@ -3,6 +3,7 @@
 #include <QPointer>
 #include <QRegularExpression>
 #include <QSettings>
+#include <QSet>
 #include <QUrl>
 #include <gst/app/gstappsink.h>
 #include <gst/rtp/rtp.h>
@@ -1286,6 +1287,60 @@ void PublishPipeline::onIceCandidate(GstElement *, guint mlineIndex, gchar *cand
     }, Qt::QueuedConnection);
 }
 
+// #132 simulcast fix: webrtcbin declares only ONE a=ssrc on the rtpfunnel
+// m=video, so Janus 1.1.4 videoroom (which detects simulcast from the
+// SSRC-group, NOT from a=rid — the HPB never sends the JSEP simulcast
+// object) only knows about the first layer and forwards it forever
+// (stuck at 180p). Inject `a=ssrc-group:SIM l m h` + an a=ssrc line per
+// layer (low→mid→high), reusing the cname webrtcbin already emitted, so
+// Janus's core SSRC-group path sees all three substreams and honors
+// selectStream {substream:N}. Keeps the rid lines too. See memory
+// project_talq_simulcast_janus.
+[[maybe_unused]] static QString injectSimulcastSsrcGroup(
+        const QString &sdp, quint32 ssrcL, quint32 ssrcM, quint32 ssrcH)
+{
+    const QStringList lines = sdp.split('\n');
+    QStringList out;
+    out.reserve(lines.size() + 4);
+    bool inVideo = false;
+    QString cname;
+    QSet<quint32> present;
+    bool injected = false;
+
+    auto flushInjection = [&]() {
+        if (injected) return;
+        const QString cn = cname.isEmpty() ? QStringLiteral("talqsim") : cname;
+        auto ssrcLine = [&](quint32 s) {
+            return QStringLiteral("a=ssrc:%1 cname:%2\r").arg(s).arg(cn);
+        };
+        out << QStringLiteral("a=ssrc-group:SIM %1 %2 %3\r")
+                   .arg(ssrcL).arg(ssrcM).arg(ssrcH);
+        for (quint32 s : { ssrcL, ssrcM, ssrcH })
+            if (!present.contains(s)) out << ssrcLine(s);
+        injected = true;
+    };
+
+    for (const QString &line : lines) {
+        const QString t = line.trimmed();
+        if (t.startsWith("m=")) {
+            // Leaving the video section without having injected → do it now.
+            if (inVideo) flushInjection();
+            inVideo = t.startsWith("m=video");
+        }
+        if (inVideo && t.startsWith("a=ssrc:")) {
+            const quint32 s = t.mid(7).section(' ', 0, 0).toUInt();
+            if (s) present.insert(s);
+            if (cname.isEmpty()) {
+                const int ci = t.indexOf("cname:");
+                if (ci >= 0) cname = t.mid(ci + 6).section(' ', 0, 0).trimmed();
+            }
+        }
+        out << line;
+    }
+    if (inVideo) flushInjection();   // video was the last m-section
+    return out.join('\n');
+}
+
 void PublishPipeline::onOfferCreated(GstPromise *promise, gpointer userData)
 {
     auto *self = static_cast<PublishPipeline *>(userData);
@@ -1324,6 +1379,18 @@ void PublishPipeline::onOfferCreated(GstPromise *promise, gpointer userData)
     // Keep a=ssrc lines in the SDP — Janus requires them to map publisher SSRCs.
     // The capsfilter before webrtcbin forces a consistent SSRC that matches
     // both the SDP and the wire. (Browser keeps a=ssrc lines and it works.)
+
+    // #132 simulcast fix (DISABLED — needs more work): injecting the
+    // SSRC-group:SIM with bare a=ssrc lines broke negotiation — Janus/HPB
+    // rejected the offer (the added a=ssrc lines lack the msid attributes
+    // webrtcbin pairs with each SSRC, and the SIM SSRCs must match the
+    // wire). The SSRC-group is still the right fix per research
+    // (project_talq_simulcast_janus), but the munge must replicate the
+    // FULL a=ssrc attribute set (cname + msid) and align with the real
+    // on-wire SSRCs. Left off until that's done so simulcast calls keep
+    // working (single forwarded layer, but the call connects).
+    // if (self->m_simulcast)
+    //     sdp = injectSimulcastSsrcGroup(sdp, l, m, h);
 
     // #132 simulcast diag — log just the a=simulcast line so the field log
     // confirms the publisher is offering simulcast (compact one-liner; not
