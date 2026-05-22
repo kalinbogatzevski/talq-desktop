@@ -3,6 +3,7 @@
 #include <atomic>
 #include <QObject>
 #include <QString>
+#include <QTimer>
 #include <gst/gst.h>
 #include <gst/sdp/sdp.h>
 #include <gst/webrtc/webrtc.h>
@@ -76,8 +77,25 @@ private:
     // than a hardware encoder can honor a live reconfigure; deadband it.
     int m_lastAppliedBitrate = 0;
     QString m_encoderDesc;   // human codec/encoder/hw-sw, for telemetry/pill
+    // "Share didn't start" watchdog — set in start(), cleared when ICE
+    // reaches connected. If it fires before then, the pipeline silently
+    // failed to negotiate (#134 "stream doesn't always start") and the
+    // user sees no feedback. We emit error() so the UI surfaces it.
+    QTimer m_startWatchdog;
+    bool m_iceReachedConnected = false;
+    // "Capture produced no frames" watchdog (#2). d3d11screencapturesrc in
+    // WGC mode can silently fail to attach to a window (target minimized,
+    // protected, or a stale capture session left by a fast stop→start with
+    // a different window) — ICE connects fine but ZERO frames flow, so the
+    // receiver shows "Starting remote screen share…" forever. A pad probe
+    // on the capture src counts buffers; if none arrive within the window,
+    // emit error() so the user gets a clear failure + retry instead of a
+    // dead share. Distinct from m_startWatchdog (which only covers ICE).
+    QTimer m_frameWatchdog;
+    std::atomic<bool> m_firstFrameSeen{false};
 
     static void onNegotiationNeeded(GstElement *webrtc, gpointer userData);
+    static GstPadProbeReturn onCaptureBuffer(GstPad *pad, GstPadProbeInfo *info, gpointer userData);
     static void onIceCandidate(GstElement *webrtc, guint mlineIndex, gchar *candidate, gpointer userData);
     static void onOfferCreated(GstPromise *promise, gpointer userData);
     static void onIceStateChanged(GObject *obj, GParamSpec *pspec, gpointer userData);
