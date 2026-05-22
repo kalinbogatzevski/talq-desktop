@@ -5,6 +5,7 @@
 #include <QtMath>
 #include <QSet>
 #include <QSettings>
+#include <QFile>
 #include <QRegularExpression>
 #include <QElapsedTimer>
 #include <QCoreApplication>
@@ -109,12 +110,70 @@ static QByteArray generateIncomingRingtone()
     return buildWavHeader(pcm.size(), sampleRate) + pcm;
 }
 
+QVector<QPair<QString, QString>> CallManager::ringtones()
+{
+    // id -> label. "default" = the synthesized TalQ ring; classic/bright/
+    // soft are the bundled CC0 ring WAVs at :/sounds/ring_<id>.wav. Order
+    // here is the order shown in the Settings combo.
+    return {
+        { QStringLiteral("classic"), QStringLiteral("Classic bell") },
+        { QStringLiteral("bright"),  QStringLiteral("Bright bell")  },
+        { QStringLiteral("soft"),    QStringLiteral("Soft bell")    },
+        { QStringLiteral("default"), QStringLiteral("TalQ tone")    },
+        { QStringLiteral("none"),    QStringLiteral("None (silent)")},
+    };
+}
+
 void CallManager::startRingtone() {
 #ifdef Q_OS_WIN
     static QByteArray outgoing = generateOutgoingTone();
     static QByteArray incoming = generateIncomingRingtone();
-    const QByteArray &wav = (m_state == Incoming) ? incoming : outgoing;
-    PlaySoundA(wav.constData(), nullptr, SND_MEMORY | SND_ASYNC | SND_LOOP);
+    if (m_state == Incoming) {
+        // Incoming ring is user-selectable (Calls/incomingRingtone). A
+        // bundled CC0 ring loads from :/sounds/ring_<id>.wav; "default"
+        // uses the synthesized tone; "none" stays silent. The outgoing
+        // (calling…) tone is not customizable.
+        QSettings s("TalQ", "TalQ");
+        s.beginGroup("Calls");
+        const QString id = s.value("incomingRingtone", "classic").toString();
+        s.endGroup();
+        if (id == "none") return;
+        if (id != "default") {
+            QFile f(QStringLiteral(":/sounds/ring_%1.wav").arg(id));
+            if (f.open(QIODevice::ReadOnly)) {
+                // Keep the buffer alive: SND_ASYNC reads from it after we return.
+                m_ringtoneData = f.readAll();
+                PlaySoundA(m_ringtoneData.constData(), nullptr,
+                           SND_MEMORY | SND_ASYNC | SND_LOOP);
+                return;
+            }
+            // fall through to the synthesized ring if the file is missing
+        }
+        PlaySoundA(incoming.constData(), nullptr, SND_MEMORY | SND_ASYNC | SND_LOOP);
+        return;
+    }
+    PlaySoundA(outgoing.constData(), nullptr, SND_MEMORY | SND_ASYNC | SND_LOOP);
+#endif
+}
+
+void CallManager::auditionRingtone(const QString &id)
+{
+#ifdef Q_OS_WIN
+    // Static one-shot preview (no SND_LOOP). The buffer is function-static so
+    // it stays alive for the async playback; UI-thread-only, so overwriting
+    // it on the next audition is safe.
+    static QByteArray buf;
+    if (id == "none") return;
+    if (id == "default") {
+        buf = generateIncomingRingtone();
+    } else {
+        QFile f(QStringLiteral(":/sounds/ring_%1.wav").arg(id));
+        if (!f.open(QIODevice::ReadOnly)) return;
+        buf = f.readAll();
+    }
+    PlaySoundA(buf.constData(), nullptr, SND_MEMORY | SND_ASYNC);
+#else
+    Q_UNUSED(id);
 #endif
 }
 void CallManager::stopRingtone() {
@@ -1530,9 +1589,16 @@ void CallManager::joinCallOnServer(bool withVideo)
         });
 }
 
-void CallManager::leaveCallOnServer(std::function<void()> onDone)
+void CallManager::leaveCallOnServer(const QString &token, bool wasJoined,
+                                    std::function<void()> onDone)
 {
-    if (m_callToken.isEmpty() || !m_joinedCall) {
+    // token + wasJoined are SNAPSHOTTED by the caller before teardown's
+    // local-state cleanup, because teardown clears m_callToken /
+    // m_joinedCall up front (UI must not wait on the server). Reading the
+    // members here would see them already cleared and skip the DELETE —
+    // which is exactly the regression where the OTHER party never got the
+    // "participant left" event and stayed in the call.
+    if (token.isEmpty() || !wasJoined) {
         if (onDone) onDone();
         return;
     }
@@ -1545,11 +1611,8 @@ void CallManager::leaveCallOnServer(std::function<void()> onDone)
     // Fire-and-callback: the result is reported when the server actually
     // ACKs the leave (or returns an error). No UI is blocked on this —
     // teardown() runs setState(Idle) + emit callEnded synchronously, and
-    // only the user-status revert hook depends on the ACK. If the network
-    // is dead, the callback may never fire; that's fine because the
-    // spreed-signaling participant timeout handles server-side cleanup
-    // either way.
-    m_api->del("apps/spreed/api/v4/call/" + m_callToken, body,
+    // only the user-status revert hook depends on the ACK.
+    m_api->del("apps/spreed/api/v4/call/" + token, body,
         [onDone](bool ok, const QJsonObject &, int statusCode) {
             if (!ok) qWarning() << "CallManager: leaveCall server returned "
                                    "error status=" << statusCode;
@@ -1626,6 +1689,12 @@ void CallManager::teardown(const QString &reason)
     setStatusDetail("");
     m_ringTimeout.stop();
     m_durationTimer.stop();
+    // Snapshot the call identity BEFORE the local-state cleanup below
+    // clears it — the server-leave DELETE at the end needs the token and
+    // the joined flag, and without sending it the OTHER party never gets
+    // the "participant left" event (it stays in the call).
+    const QString leaveToken = m_callToken;
+    const bool    wasJoined  = m_joinedCall;
     stopAllPipelines();
 
     // Local state cleanup runs immediately — anything that affects the
@@ -1688,7 +1757,7 @@ void CallManager::teardown(const QString &reason)
     // user-status revert) listens to callServerLeaveAcked. If the network
     // is dead the signal never fires, which is fine — the server's own
     // participant-timeout cleans up that session.
-    leaveCallOnServer([this]() {
+    leaveCallOnServer(leaveToken, wasJoined, [this]() {
         emit callServerLeaveAcked();
     });
 }
@@ -1837,11 +1906,26 @@ void CallManager::onParticipantJoinedCall(const QString &sessionId, int flags, c
         }
     }
     else if (m_state == Idle) {
-        // Incoming call detected via signaling — route through the same path
-        // as conversation-list detection so cooldown logic is applied.
-        m_remoteSessionId = sessionId;
-        QString token = m_signaling->currentRoom();
-        onIncomingCallDetected(displayName, token, flags);
+        // Suppress self-ring: if the joining participant is OUR OWN user
+        // on another device (same Nextcloud userId, different session),
+        // this is us starting/continuing a call elsewhere — don't ring
+        // ourselves. Only fires when the userId is known; if unknown we
+        // fall through and ring (better a spurious ring than a missed
+        // real call).
+        const QString joinerUser = m_signaling->userIdForSession(sessionId);
+        const QString selfUser   = m_signaling->userId();
+        if (!joinerUser.isEmpty() && !selfUser.isEmpty()
+            && joinerUser == selfUser) {
+            qInfo() << "CallManager: ignoring call-join from our own user on "
+                       "another device (" << sessionId.left(20)
+                    << ") — not ringing self";
+        } else {
+            // Incoming call detected via signaling — route through the same
+            // path as conversation-list detection so cooldown applies.
+            m_remoteSessionId = sessionId;
+            QString token = m_signaling->currentRoom();
+            onIncomingCallDetected(displayName, token, flags);
+        }
     }
 
     // Register every in-call peer in the model (covers peers that join an
