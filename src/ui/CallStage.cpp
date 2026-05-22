@@ -556,19 +556,42 @@ void CallStage::paintCentered(QPainter &p, const PainterTheme &th)
     // Incoming → Accept / Decline. Else → status pill + control bar.
     if (state == CallManager::Incoming) {
         m_buttons.clear();
-        qreal bw = 132, bh = 46, gap = 24, cy = height()/2.0 + 84;
-        QRectF acc(width()/2.0-bw-gap/2, cy, bw, bh);
-        QRectF dec(width()/2.0+gap/2, cy, bw, bh);
-        p.setBrush(th.accent); p.setPen(Qt::NoPen);
-        p.drawRoundedRect(acc, 10, 10);
-        p.setPen(th.controlInk); p.setFont(th.nameFont());
-        p.drawText(acc, Qt::AlignCenter, tr("Accept"));
-        p.setBrush(Qt::NoBrush); p.setPen(QPen(th.danger, 1.3));
-        p.drawRoundedRect(dec, 10, 10);
-        p.setPen(th.danger);
-        p.drawText(dec, Qt::AlignCenter, tr("Decline"));
-        m_buttons.push_back({QStringLiteral("accept"), acc, {}, tr("Accept"), false, false});
-        m_buttons.push_back({QStringLiteral("decline"), dec, {}, tr("Decline"), false, true});
+        const qreal bw = 132, bh = 46, gap = 16, cy = height()/2.0 + 84;
+        p.setFont(th.nameFont());
+        if (m_call->callHasVideo()) {
+            // Video call → let the callee choose: answer WITH video, answer
+            // audio-only, or decline. Three buttons centered.
+            const qreal total = bw*3 + gap*2;
+            qreal x = width()/2.0 - total/2.0;
+            QRectF vid(x, cy, bw, bh);             x += bw + gap;
+            QRectF aud(x, cy, bw, bh);             x += bw + gap;
+            QRectF dec(x, cy, bw, bh);
+            p.setBrush(th.accent); p.setPen(Qt::NoPen);
+            p.drawRoundedRect(vid, 10, 10);
+            p.setPen(th.controlInk); p.drawText(vid, Qt::AlignCenter, tr("Video"));
+            p.setBrush(Qt::NoBrush); p.setPen(QPen(th.accent, 1.3));
+            p.drawRoundedRect(aud, 10, 10);
+            p.setPen(th.accent); p.drawText(aud, Qt::AlignCenter, tr("Audio"));
+            p.setBrush(Qt::NoBrush); p.setPen(QPen(th.danger, 1.3));
+            p.drawRoundedRect(dec, 10, 10);
+            p.setPen(th.danger); p.drawText(dec, Qt::AlignCenter, tr("Decline"));
+            m_buttons.push_back({QStringLiteral("accept-video"), vid, {}, tr("Video"), false, false});
+            m_buttons.push_back({QStringLiteral("accept"),       aud, {}, tr("Audio"), false, false});
+            m_buttons.push_back({QStringLiteral("decline"),      dec, {}, tr("Decline"), false, true});
+        } else {
+            QRectF acc(width()/2.0-bw-gap/2, cy, bw, bh);
+            QRectF dec(width()/2.0+gap/2, cy, bw, bh);
+            p.setBrush(th.accent); p.setPen(Qt::NoPen);
+            p.drawRoundedRect(acc, 10, 10);
+            p.setPen(th.controlInk);
+            p.drawText(acc, Qt::AlignCenter, tr("Accept"));
+            p.setBrush(Qt::NoBrush); p.setPen(QPen(th.danger, 1.3));
+            p.drawRoundedRect(dec, 10, 10);
+            p.setPen(th.danger);
+            p.drawText(dec, Qt::AlignCenter, tr("Decline"));
+            m_buttons.push_back({QStringLiteral("accept"), acc, {}, tr("Accept"), false, false});
+            m_buttons.push_back({QStringLiteral("decline"), dec, {}, tr("Decline"), false, true});
+        }
     } else {
         // Self-preview PiP shown immediately while calling/connecting, in
         // the exact corner it keeps once connected (no jump on transition).
@@ -991,6 +1014,7 @@ void CallStage::mousePressEvent(QMouseEvent *e)
         else if (id=="roster")    { m_rosterOpen=!m_rosterOpen; update(); }
         else if (id=="full")  emit requestToggleFullscreen();
         else if (id=="end")   m_call->hangUp();
+        else if (id=="accept-video") m_call->acceptCall(true);
         else if (id=="accept")  m_call->acceptCall(false);
         else if (id=="decline") m_call->declineCall();
         return;
