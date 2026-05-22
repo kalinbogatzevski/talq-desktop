@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.33.1 "Bangaranga" — PRE-RELEASE (2026-05-22)
+
+Backlog cleanup on top of the 0.33.0 simulcast beta.
+
+### Fixed
+- **Telemetry CODEC row read "—" for the whole call.** It only checked
+  subscriber pipelines; now falls back to the publish pipeline's own
+  codec (the Janus room runs one codec for everyone, so our send codec
+  is the call codec). Telemetry font bumped 11 → 13 pt (was unreadable
+  on HiDPI call windows) with matching row pitch + value-column
+  alignment.
+- **Screen-share could silently fail to start with no feedback.**
+  Added a 6-second capture-frame watchdog distinct from the existing
+  10-second ICE watchdog: a pad probe on the screen capture source
+  flags the first frame; if none flows within 6 s (the WGC-failed-to-
+  attach case where ICE connects but the receiver is stuck on
+  "Starting remote screen share…" forever), a clear error is surfaced
+  so the user can retry or pick a different target instead of staring
+  at a dead share.
+
+### Added
+- **Local "You're sharing your screen" badge** — a persistent
+  top-center pill with a live red dot whenever screen-share is active,
+  so the publisher always has a clear local cue. (Stop via the existing
+  share control-bar toggle.)
+
 ## v0.33.0 "Bangaranga" — PRE-RELEASE (2026-05-21)
 
 First 0.33.x beta carrying the simulcast + dynamic resolution drop
