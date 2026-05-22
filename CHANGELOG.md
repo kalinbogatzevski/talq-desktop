@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.33.2 "Bangaranga" — PRE-RELEASE (2026-05-22)
+
+### Added
+- **Selectable notification sounds.** Settings → Notifications now has a
+  Sound dropdown (None / System default / Chime / Pop / Ding / Notify /
+  Soft / Tone) replacing the old internal/system/none radios. Picking a
+  tone auditions it once; the same roster appears in the tray-icon Sound
+  submenu. Six original tones ship bundled (synthesized, no licensing);
+  swap in your own by dropping `resources/sounds/<id>.wav` and rebuilding.
+  The old `Notifications/soundMode` setting auto-migrates (internal →
+  Chime).
+
 ## v0.33.1 "Bangaranga" — PRE-RELEASE (2026-05-22)
 
 Backlog cleanup on top of the 0.33.0 simulcast beta.
