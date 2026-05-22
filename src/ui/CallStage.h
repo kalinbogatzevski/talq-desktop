@@ -56,6 +56,7 @@ private:
     void purgeStaleFrames();      // drop cached frames for departed peers
     void onFrame(CallParticipant *p, bool screen, const QImage &img);
     void relayout();
+    void updateStreamQualities();  // #132: per-tile-size simulcast substream request
     QVector<Tile> computeLayout() const;
     CallParticipant *stageSource(bool *isScreen) const;
     void paintTile(QPainter &p, const Tile &t, const PainterTheme &th, bool large);

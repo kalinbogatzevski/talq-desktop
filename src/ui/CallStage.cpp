@@ -291,6 +291,26 @@ void CallStage::relayout()
     } else {
         m_pipRect = QRectF();
     }
+
+    updateStreamQualities();
+}
+
+void CallStage::updateStreamQualities()
+{
+    // #132 simulcast: request the substream that matches how big each
+    // remote peer is rendered (upstream spreed's tile-size policy). The
+    // SFU adapts DOWN on its own, so this is an upper bound. CallManager
+    // dedupes, so calling on every relayout is cheap. Screen-share is
+    // single-layer and skipped.
+    if (!m_call) return;
+    for (const Tile &t : m_tiles) {
+        if (!t.p || t.p->isSelf() || t.isScreen) continue;
+        const qreal h = t.rect.height();
+        int substream = (t.isStage || h >= 480.0) ? 2   // HIGH  720p
+                      : (h >= 240.0)              ? 1   // MED   360p
+                                                  : 0;  // LOW   180p
+        m_call->requestPeerVideoQuality(t.p->sessionId(), substream);
+    }
 }
 
 // ── painting ────────────────────────────────────────────────────────────
