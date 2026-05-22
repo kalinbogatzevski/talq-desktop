@@ -1620,7 +1620,7 @@ void CallManager::joinCallOnServer(bool withVideo)
 }
 
 void CallManager::leaveCallOnServer(const QString &token, bool wasJoined,
-                                    std::function<void()> onDone, int attempt)
+                                    std::function<void()> onDone)
 {
     // token + wasJoined are SNAPSHOTTED by the caller before teardown's
     // local-state cleanup, because teardown clears m_callToken /
@@ -1638,38 +1638,17 @@ void CallManager::leaveCallOnServer(const QString &token, bool wasJoined,
     // terminate the whole group call.
     QJsonObject body;
     body["all"] = false;
-    // Fire-and-callback: the result is reported when the server actually
-    // ACKs the leave (or returns an error). No UI is blocked on this —
-    // teardown() runs setState(Idle) + emit callEnded synchronously, and
-    // only the user-status revert hook depends on the ACK. But the DELETE
-    // MUST land (or the other party stays "in the call"), so on a confirmed
-    // non-delivery (statusCode 0 / 5xx — the high-latency/flaky-link case,
-    // ZA server from BG) we retry with bounded backoff. Not speculative:
-    // only after the reply says it didn't reach the server.
-    m_api->del("apps/spreed/api/v4/call/" + token, body,
-        [this, token, wasJoined, onDone, attempt](bool ok, const QJsonObject &, int statusCode) {
-            if (ok) {
-                qDebug() << "CallManager: leaveCall ack received";
-                if (onDone) onDone();
-                return;
-            }
-            const bool transient = (statusCode == 0 || statusCode >= 500);
-            constexpr int kMaxAttempts = 4;
-            if (transient && attempt + 1 < kMaxAttempts) {
-                const int delayMs = 1000 * (1 << attempt);  // 1s, 2s, 4s
-                qWarning().nospace() << "CallManager: leaveCall did not reach the "
-                    "server (status " << statusCode << ") — retry "
-                    << (attempt + 1) << "/" << (kMaxAttempts - 1) << " in "
-                    << delayMs << " ms";
-                QTimer::singleShot(delayMs, this, [this, token, wasJoined, onDone, attempt]() {
-                    leaveCallOnServer(token, wasJoined, onDone, attempt + 1);
-                });
-            } else {
-                qWarning() << "CallManager: leaveCall failed (status"
-                           << statusCode << ") — giving up after" << (attempt + 1)
-                           << "attempts; server participant-timeout will clean up";
-                if (onDone) onDone();
-            }
+    // Must-complete: the DELETE MUST land or the other party stays "in the
+    // call". delMustComplete retries on confirmed non-delivery (status 0 /
+    // 5xx — the high-latency/flaky-link case, ZA server from BG), bounded
+    // and non-blocking. teardown() already ran setState(Idle)+callEnded
+    // synchronously; only the status-revert hook waits on onDone.
+    m_api->delMustComplete("apps/spreed/api/v4/call/" + token, body, this,
+        [onDone](bool ok, int statusCode) {
+            if (ok) qDebug()  << "CallManager: leaveCall ack received";
+            else    qWarning() << "CallManager: leaveCall did not complete (status"
+                               << statusCode << ") — server participant-timeout will clean up";
+            if (onDone) onDone();
         });
 }
 

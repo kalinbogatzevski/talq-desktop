@@ -62,7 +62,7 @@ public slots:
     // Undo Talk's "call" status automation. Idempotent (404/200) — safe
     // to call after every call-end path, so a glitched server-side
     // clear can't leave the user reading as "in call" indefinitely.
-    void revertStuckCall(int attempt = 0);
+    void revertStuckCall();
 
 signals:
     void statusChanged();
