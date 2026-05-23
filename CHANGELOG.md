@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.38.2 "Bangaranga" — STABLE (2026-05-24)
+
+### Fixed
+- **Settings checkboxes now align with their row labels.** The checkbox
+  indicator (17 px tall) and the row's name label (~20 px tall) used to
+  be top-aligned to separate columns, so the indicator sat visibly
+  higher than the text. The row layout now puts the name + control on
+  the same line, both vertically centred against each other; the
+  description hangs below across the full row.
+- **Build script: stable cuts now actually delete the stale beta
+  update-channel manifest.** The DELETE was gated on `[ -z "$BETA" ]`
+  but the script sets `BETA=0` (not unset), so the check was always
+  false and the manifest persisted. Beta-channel clients on a build
+  whose version equalled the stale manifest's version were stranded —
+  exactly what happened to 0.37.3-beta installs after 0.38.0/0.38.1
+  shipped. Gate fixed to `[ "$BETA" != "1" ]`.
+
 ## v0.38.1 "Bangaranga" — STABLE (2026-05-23)
 
 ### Changed
