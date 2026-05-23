@@ -70,9 +70,15 @@ private:
     // #20 Background section (#20 Phase 3.1) — Off / Blur / Image picker,
     // blur strength slider, image-path label + Choose… button. Settings
     // keys mirror upstream Talk: Talk/Backgrounds/virtualBackground*.
-    QComboBox *m_bgModeCombo         = nullptr;
+    QComboBox *m_bgModeCombo          = nullptr;
     QSlider   *m_bgBlurStrengthSlider = nullptr;
-    QLabel    *m_bgImagePathLabel    = nullptr;
+    QLabel    *m_bgImagePathLabel     = nullptr;
+    // Debouncer: dragging the slider used to fire 20 QSettings writes +
+    // 20 backgroundSettingsChanged emits in a fraction of a second; the
+    // signal handler on the CallManager side reconfigured the publisher
+    // pipeline each time. The timer collapses a continuous drag to one
+    // write + emit (~200 ms after the last drag tick).
+    QTimer    *m_bgSettingsDebounce   = nullptr;
 
     // Notifications tab
     QCheckBox *m_notifEnabled = nullptr;

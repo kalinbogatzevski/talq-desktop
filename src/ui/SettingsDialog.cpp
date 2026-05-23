@@ -338,6 +338,15 @@ QWidget *SettingsDialog::buildAudioVideoTab()
     const QString bgUrl       = m_settings.value("virtualBackgroundUrl", QString()).toString();
     m_settings.endGroup();
 
+    // Debouncer shared by the slider and Choose… button. 200 ms collapse
+    // window — fast enough that a release feels live, slow enough that
+    // dragging the slider doesn't churn the publisher pipeline.
+    m_bgSettingsDebounce = new QTimer(this);
+    m_bgSettingsDebounce->setSingleShot(true);
+    m_bgSettingsDebounce->setInterval(200);
+    connect(m_bgSettingsDebounce, &QTimer::timeout, this,
+            &SettingsDialog::backgroundSettingsChanged);
+
     m_bgModeCombo = new QComboBox;
     m_bgModeCombo->addItem(tr("Off"),   QStringLiteral("off"));
     m_bgModeCombo->addItem(tr("Blur"),  QStringLiteral("blur"));
@@ -353,12 +362,17 @@ QWidget *SettingsDialog::buildAudioVideoTab()
         m_settings.beginGroup("Talk/Backgrounds");
         m_settings.setValue("virtualBackgroundEnabled",
                             val != QStringLiteral("off"));
-        if (val != QStringLiteral("off"))
+        // Always persist Type so Enabled/Type stay coherent. Off-mode
+        // remembers the previously selected mode (defaults to "blur") so
+        // an external Enabled toggle re-activates a sane state instead of
+        // a stale (possibly-deleted-file) "image" leftover.
+        if (val != QStringLiteral("off")) {
             m_settings.setValue("virtualBackgroundType", val);
+        } else if (m_settings.value("virtualBackgroundType").toString().isEmpty()) {
+            m_settings.setValue("virtualBackgroundType", QStringLiteral("blur"));
+        }
         m_settings.endGroup();
-        // CallManager listens to "virtualBackgroundEnabled" via
-        // QSettings::sync() at the boundary; emit a signal so it
-        // applies live during a call without restarting the publisher.
+        // Mode is a discrete choice — emit immediately, no debounce.
         emit backgroundSettingsChanged();
     });
     layout->addWidget(makeSettingRow(
@@ -372,10 +386,12 @@ QWidget *SettingsDialog::buildAudioVideoTab()
     m_bgBlurStrengthSlider->setTickPosition(QSlider::NoTicks);
     connect(m_bgBlurStrengthSlider, &QSlider::valueChanged, this,
             [this](int v) {
+        // Persist eagerly (cheap INI write) but coalesce the signal so
+        // CallManager doesn't reconfigure the pipeline 20 times per drag.
         m_settings.beginGroup("Talk/Backgrounds");
         m_settings.setValue("virtualBackgroundBlurStrength", v);
         m_settings.endGroup();
-        emit backgroundSettingsChanged();
+        m_bgSettingsDebounce->start();
     });
     layout->addWidget(makeSettingRow(
         tr("Blur strength"),
@@ -389,7 +405,9 @@ QWidget *SettingsDialog::buildAudioVideoTab()
     imgLayout->setContentsMargins(0, 0, 0, 0);
     imgLayout->setSpacing(8);
     m_bgImagePathLabel = new QLabel(bgUrl.isEmpty() ? tr("(none)") : QFileInfo(bgUrl).fileName());
-    m_bgImagePathLabel->setToolTip(bgUrl);
+    // Tooltip omitted on purpose: the full path would leak in screenshare
+    // (the Settings dialog is plausibly visible during a call). Filename
+    // alone is enough for the user to recognise their chosen background.
     m_bgImagePathLabel->setProperty("role", "settingDesc");
     auto *browseBtn = new QPushButton(tr("Choose…"));
     browseBtn->setProperty("variant", "ghost");
@@ -397,13 +415,12 @@ QWidget *SettingsDialog::buildAudioVideoTab()
         const QString path = QFileDialog::getOpenFileName(this,
             tr("Choose background image"),
             QStandardPaths::writableLocation(QStandardPaths::PicturesLocation),
-            tr("Images (*.png *.jpg *.jpeg *.webp)"));
+            tr("Images (*.png *.jpg *.jpeg *.webp *.bmp *.gif);;All files (*)"));
         if (path.isEmpty()) return;
         m_settings.beginGroup("Talk/Backgrounds");
         m_settings.setValue("virtualBackgroundUrl", path);
         m_settings.endGroup();
         m_bgImagePathLabel->setText(QFileInfo(path).fileName());
-        m_bgImagePathLabel->setToolTip(path);
         emit backgroundSettingsChanged();
     });
     imgLayout->addWidget(m_bgImagePathLabel, 1);

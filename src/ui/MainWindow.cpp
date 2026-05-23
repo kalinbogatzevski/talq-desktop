@@ -87,6 +87,14 @@ static QString plainBodyText(const QVariantMap &msg)
     return body;
 }
 
+MainWindow::~MainWindow()
+{
+    // m_callWindow is a parentless top-level (so it gets its own Windows
+    // taskbar button); it has no QObject parent to auto-delete it.
+    delete m_callWindow;
+    m_callWindow = nullptr;
+}
+
 MainWindow::MainWindow(
     ApiClient *api,
     AuthManager *auth,
@@ -118,12 +126,21 @@ MainWindow::MainWindow(
     , m_appSettings(appSettings)
     , m_settings("TalQ", "TalQ")
 {
-    // Window setup
+    // Window setup. Pre-release builds get a visible " — PRE-RELEASE"
+    // suffix in the title bar so beta testers always know which channel
+    // they're on (gated by the TALQ_PRERELEASE compile define that
+    // build-release.sh --beta sets).
+    QString winTitle =
 #ifdef TALQ_BRAND_123NET
-    setWindowTitle("123NET TalQ " + QApplication::applicationVersion());
+        "123NET TalQ "
 #else
-    setWindowTitle("TalQ " + QApplication::applicationVersion());
+        "TalQ "
 #endif
+        + QApplication::applicationVersion();
+#ifdef TALQ_PRERELEASE
+    winTitle += QStringLiteral(" — PRE-RELEASE");
+#endif
+    setWindowTitle(winTitle);
     setWindowIcon(QIcon(":/logo.png"));
     setMinimumSize(380, 400);
     resize(380, 420);
@@ -394,6 +411,9 @@ void MainWindow::buildChatPage()
                     this, [this]() {
                 if (m_updateChecker) m_updateChecker->checkNow();
             });
+            // #20 — live-apply Background section changes during a call.
+            connect(m_settingsDialog, &SettingsDialog::backgroundSettingsChanged,
+                    m_callManager, &CallManager::applyBackgroundSettings);
         }
         m_settingsDialog->refresh();
         m_settingsDialog->exec();
@@ -1201,8 +1221,26 @@ void MainWindow::buildChatPage()
         m_header->setCallDuration(m_callManager->callDuration());
     });
 
-    // Call dialog (shows/hides automatically via CallManager::stateChanged)
-    m_callWindow = new CallWindow(m_callManager, m_api, this);
+    // Clear any "in call" user-status automation. We listen to
+    // callServerLeaveAcked (fires after the server has processed the
+    // DELETE /call) rather than callEnded (fires synchronously, the
+    // moment the user hangs up — at which point the server may still
+    // be transitioning and DELETE /revert/call would 404). callEnded
+    // closes the call UI immediately; the revert hooks the right
+    // moment server-side. Idempotent if nothing was actually stuck.
+    connect(m_callManager, &CallManager::callServerLeaveAcked, this,
+            [this]() {
+        if (m_userStatus) m_userStatus->revertStuckCall();
+    });
+
+    // Call dialog (shows/hides automatically via CallManager::stateChanged).
+    // Parent is nullptr ON PURPOSE: a Qt::Window with a QWidget parent is
+    // an *owned* window on Windows and shares the owner's taskbar button,
+    // so when another app covers the call window it can't be raised from
+    // the taskbar. A parentless top-level gets its own taskbar button.
+    // MainWindow is the app-lifetime singleton that holds this pointer;
+    // it is deleted in ~MainWindow.
+    m_callWindow = new CallWindow(m_callManager, m_api, nullptr);
 
     // Update userId when logged in
     connect(m_auth, &AuthManager::userInfoChanged, this, [this]() {
@@ -1229,8 +1267,14 @@ void MainWindow::buildChatPage()
     connect(m_updateChecker, &UpdateChecker::updateAvailable,
             this, [this](const UpdateChecker::Manifest &m) {
         m_pendingUpdateNotes = m.notes;
-        m_updateLabel->setText(tr("<b>Update available.</b> TalQ v%1 is ready "
-                                   "to install.").arg(m.version));
+        // Append a "PRE-RELEASE" emphasis when the offered update came
+        // from the beta channel — bold + separator dot, no inline hex
+        // (anti-drift: typography carries the signal, not bespoke color).
+        QString uText = tr("<b>Update available.</b> TalQ v%1 is ready "
+                           "to install.").arg(m.version);
+        if (m.prerelease)
+            uText += QStringLiteral(" &nbsp;·&nbsp; <b>PRE-RELEASE</b>");
+        m_updateLabel->setText(uText);
         m_updateProgress->hide();
         m_updateInstallBtn->setText(tr("Install now"));
         m_updateInstallBtn->show();
