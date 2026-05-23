@@ -122,8 +122,25 @@ bool ScreenSharePipeline::start(const QString &stunServer, const QList<TurnServe
     //    from the chosen Qt screen's geometry via `MonitorFromPoint`.
     GstElement *screenSrc = nullptr;
 
+    // Harness override: synthetic capture for talq-call-test (no real desktop
+    // session, no HWND). videotestsrc emits a moving SMPTE pattern at the
+    // requested caps so the wire payload is still encodable, decodable, and
+    // visually distinct from a black frame on the receiver side. The pipeline
+    // graph downstream of the source is identical to a real desktop capture.
+    if (qEnvironmentVariableIsSet("TALQ_SS_TESTSRC")) {
+        screenSrc = gst_element_factory_make("videotestsrc", nullptr);
+        if (screenSrc) {
+            g_object_set(screenSrc,
+                         "is-live", TRUE,
+                         "pattern", 18 /* ball — moves frame-to-frame */,
+                         nullptr);
+            qInfo() << "ScreenSharePipeline: TALQ_SS_TESTSRC=1 — synthetic "
+                       "videotestsrc replacing desktop capture";
+        }
+    }
+
 #ifdef Q_OS_WIN
-    if (windowHandle != 0) {
+    if (!screenSrc && windowHandle != 0) {
         // Property-set order matters for d3d11screencapturesrc: capture-api
         // must be configured BEFORE window-handle, otherwise the element
         // may auto-resolve a monitor target from the (still-default)

@@ -44,6 +44,8 @@
 #include "core/PeerPipeline.h"
 #include "core/PublishPipeline.h"     // #111: real-app publish path under test
 #include "core/SubscribeWebrtcSrc.h"  // subscriber under test (gst-plugins-rs)
+#include "core/ScreenSharePipeline.h" // #16: screen-share end-to-end scenario
+#include "core/VideoFrameProvider.h"  // frame counter for screen subscriber
 
 // #111 validation mode: when set, peer A publishes through the REAL
 // PublishPipeline (synthetic high-motion 720p30 via TALQ_PUB_TESTSRC,
@@ -75,6 +77,16 @@ static bool g_simulcast = false;
 // verdict via the qInfo "simulcast layer 'X' -> MUTED" lines from
 // PublishPipeline::setLayerActive.
 static bool g_simulcastDrop = false;
+
+// #16 screen-share end-to-end scenario. Implies PUBPIPE + TALQ_PUB_TESTSRC
+// + TALQ_SS_TESTSRC (synthetic videotestsrc in place of d3d11 capture).
+// After both peers reach VideoActive, peer A spawns a ScreenSharePipeline
+// and publishes to the MCU; peer B receives a fresh offer with
+// roomType=screen, builds a separate screen subscriber, and the harness
+// counts frames on its provider. Verifies the structural #10 path (own
+// PC per share, separate sid, separate ICE) without any human / desktop
+// interaction.
+static bool g_screenShare = false;
 
 // Test configuration. Identities/token come from the environment so the
 // harness never rings a real person's devices. Defaults are the two
@@ -163,12 +175,26 @@ struct TestPeer {
     QString subscriberSid;   // MCU-assigned sid from the subscriber offer
     int remoteVideoFramesBefore = 0;   // frame count before waiting
     int remoteVideoFramesAfter = 0;    // frame count after waiting
+    // #16 screen-share state — peer A is the publisher, peer B the subscriber.
+    // Lifecycle parallel to the camera publish/subscribe pair but on its own
+    // ScreenSharePipeline + SubscribeWebrtcSrc and its own sid.
+    ScreenSharePipeline *screenSharePipeline = nullptr;     // peer A
+    SubscribeWebrtcSrc *screenSubscribePipeline = nullptr;  // peer B
+    QString screenShareSid;                                 // peer A outbound
+    QString screenSubscriberSid;                            // peer B inbound
+    bool screenSharePubIceConnected = false;
+    bool screenShareKicked = false;
+    int screenFramesBefore = 0;
+    int screenFramesAfter  = 0;
     QString stunServer;
     QList<TurnServer> turnServers;
     // Pending ICE candidates (received before pipeline started)
     QList<std::tuple<QString, int, QString>> pendingCandidates;
     // Pending subscriber ICE candidates (received before subscribe pipeline started)
     QList<std::tuple<QString, int, QString>> subPendingCandidates;
+    // #16 pending candidates for the screen subscribe pipeline (offer can
+    // race ICE trickles); flushed when the screen subscriber starts.
+    QList<std::tuple<QString, int, QString>> screenSubPendingCandidates;
 
     void log(const QString &msg) {
         qDebug().noquote() << QString("[%1] %2").arg(name, msg);
@@ -246,8 +272,18 @@ private:
 
         // Answer received from MCU (in MCU mode, the MCU answers our offer)
         connect(peer.signaling, &SignalingClient::answerReceived, this,
-                [this, &peer](const QString &from, const QString &sdp) {
-            peer.log("Answer received from " + from.left(20) + "... (" + QString::number(sdp.length()) + " chars)");
+                [this, &peer](const QString &from, const QString &sdp,
+                              const QString &roomType) {
+            peer.log("Answer received from " + from.left(20) + "... roomType="
+                     + (roomType.isEmpty() ? "<empty>" : roomType)
+                     + " (" + QString::number(sdp.length()) + " chars)");
+            // #16: screen-pub answer goes to the screen publisher pipeline,
+            // not the camera one — otherwise the camera webrtcbin sees a
+            // mismatched SDP and the screen publisher waits forever.
+            if (roomType == "screen" && peer.screenSharePipeline) {
+                peer.screenSharePipeline->setRemoteAnswer(sdp);
+                return;
+            }
             if (peer.pubPipeline) {
                 peer.pubPipeline->setRemoteAnswer(sdp);
                 peer.setPhase(WaitingICE);
@@ -268,15 +304,25 @@ private:
 
         // Offer received from MCU (subscriber flow: MCU sends offer for remote peer's stream)
         connect(peer.signaling, &SignalingClient::offerReceived, this,
-                [this, &peer](const QString &from, const QString &sdp, const QString &sid) {
+                [this, &peer](const QString &from, const QString &sdp, const QString &sid,
+                              const QString &roomType) {
             peer.log("Subscriber offer from MCU for remote: " + from.left(20)
-                     + "... sid=" + sid + " (" + QString::number(sdp.length()) + " chars)");
+                     + "... sid=" + sid + " roomType=" + (roomType.isEmpty() ? "<empty>" : roomType)
+                     + " (" + QString::number(sdp.length()) + " chars)");
             // The MCU assigns a fresh sid per (re)offer; the subscriber's
             // answer + candidates MUST echo it back to the remote peer's
             // session id (not ours) or Janus can't bind them to the
             // subscriber handle and ICE fails. Read live so re-offers work.
-            peer.subscriberSid = sid;
-            startSubscribePipeline(peer, from, sdp);
+            if (roomType == "screen") {
+                // #16 — fresh screen subscriber, separate from the camera
+                // one. Janus issues this offer in response to our prior
+                // "sendoffer roomType=screen" minimal message.
+                peer.screenSubscriberSid = sid;
+                startScreenSubscribePipeline(peer, from, sdp);
+            } else {
+                peer.subscriberSid = sid;
+                startSubscribePipeline(peer, from, sdp);
+            }
         });
 
         // ICE candidates from MCU. Route exactly like the real app
@@ -289,11 +335,29 @@ private:
         connect(peer.signaling, &SignalingClient::candidateReceived, this,
                 [this, &peer](const QString &from, const QJsonObject &candidate,
                               const QString &roomType) {
-            Q_UNUSED(roomType)
             QString cand = candidate["candidate"].toString();
             int mline = candidate["sdpMLineIndex"].toInt();
             QString mid = candidate["sdpMid"].toString();
-            peer.log("ICE candidate from " + from.left(12) + ": " + cand.left(60));
+            peer.log("ICE candidate from " + from.left(12) + " roomType="
+                     + (roomType.isEmpty() ? "<empty>" : roomType)
+                     + ": " + cand.left(60));
+
+            // #16 screen pub transport: candidates for our own session id
+            // with roomType=screen go to the screen publisher.
+            if (roomType == "screen" && from == peer.sessionId) {
+                if (peer.screenSharePipeline)
+                    peer.screenSharePipeline->addIceCandidate(cand, mline, mid);
+                return;
+            }
+            // #16 screen sub transport: candidates for the remote peer
+            // with roomType=screen go to the screen subscriber.
+            if (roomType == "screen") {
+                if (peer.screenSubscribePipeline)
+                    peer.screenSubscribePipeline->addIceCandidate(cand, mline, mid);
+                else
+                    peer.screenSubPendingCandidates.append({cand, mline, mid});
+                return;
+            }
 
             // Publisher transport: candidates for our own session id.
             if (from == peer.sessionId) {
@@ -641,6 +705,134 @@ private:
             if (peer.pubPipeline) peer.pubPipeline->pollBus();
         });
         busTimer->start(50);
+    }
+
+    // #16 — Peer A's screen publisher. Wires the ScreenSharePipeline to
+    // the signaling channel the same way CallManager::startScreenShare
+    // does in the real app, but driven directly from the harness.
+    void startScreenShareOn(TestPeer &peer)
+    {
+        if (peer.screenSharePipeline) return;
+        peer.log("Starting screen share (synthetic videotestsrc)");
+        peer.screenSharePipeline = new ScreenSharePipeline(this);
+
+        connect(peer.screenSharePipeline, &ScreenSharePipeline::localOfferReady,
+                this, [this, &peer](const QString &sdp) {
+            peer.screenShareSid = QString::number(qHash(sdp)).left(10);
+            peer.log("Screen pub offer ready, sid=" + peer.screenShareSid
+                     + " (" + QString::number(sdp.length()) + " chars)");
+            peer.signaling->sendOffer(peer.signaling->sessionId(), sdp,
+                                      peer.screenShareSid, {},
+                                      "screen", peer.signaling->sessionId());
+        });
+
+        connect(peer.screenSharePipeline, &ScreenSharePipeline::iceCandidateReady,
+                this, [this, &peer](const QString &cand, int mline, const QString &mid) {
+            QJsonObject c;
+            c["candidate"] = cand;
+            c["sdpMLineIndex"] = mline;
+            c["sdpMid"] = mid;
+            peer.signaling->sendCandidate(peer.signaling->sessionId(), c,
+                                          peer.screenShareSid, "screen");
+        });
+
+        connect(peer.screenSharePipeline, &ScreenSharePipeline::iceGatheringComplete,
+                this, [this, &peer]() {
+            peer.signaling->sendEndOfCandidates(peer.signaling->sessionId(),
+                                                peer.screenShareSid, "screen");
+        });
+
+        connect(peer.screenSharePipeline, &ScreenSharePipeline::iceStateChanged,
+                this, [this, &peer](const QString &state) {
+            peer.log("Screen pub ICE: " + state);
+            if ((state == "connected" || state == "completed")
+                && !peer.screenSharePubIceConnected) {
+                peer.screenSharePubIceConnected = true;
+                // Tell HPB to issue a fresh subscriber offer to the remote
+                // peer (it then trickles a roomType=screen offer back).
+                QJsonObject data;
+                data["type"] = QString("sendoffer");
+                data["roomType"] = QString("screen");
+                peer.signaling->sendMinimalMessage(peer.remoteSessionId, data);
+                peer.log("Screen pub connected — sent sendoffer screen to "
+                         + peer.remoteSessionId.left(20));
+            }
+        });
+
+        connect(peer.screenSharePipeline, &ScreenSharePipeline::error,
+                this, [&peer](const QString &err) {
+            peer.log("Screen pub ERROR: " + err);
+        });
+
+        // Bus pump.
+        auto *busTimer = new QTimer(this);
+        connect(busTimer, &QTimer::timeout, this, [&peer]() {
+            if (peer.screenSharePipeline) peer.screenSharePipeline->pollBus();
+        });
+        busTimer->start(50);
+
+        // No real HMONITOR / HWND — TALQ_SS_TESTSRC bypasses both. Pass
+        // monitorIndex=0 just to satisfy the signature.
+        if (!peer.screenSharePipeline->start(peer.stunServer, peer.turnServers,
+                                             0 /*monitorIndex*/, 0 /*windowHandle*/)) {
+            peer.log("ERROR: ScreenSharePipeline failed to start");
+        }
+    }
+
+    // #16 — Peer B's screen subscriber. Parallel to startSubscribePipeline
+    // but on a separate SubscribeWebrtcSrc + sid so it doesn't fight with
+    // the camera subscriber that's already running.
+    void startScreenSubscribePipeline(TestPeer &peer, const QString &remoteSession,
+                                      const QString &sdp)
+    {
+        if (peer.screenSubscribePipeline) {
+            peer.log("Screen subscriber already exists, setting new offer");
+            peer.screenSubscribePipeline->setRemoteOffer(sdp);
+            return;
+        }
+
+        peer.screenSubscribePipeline = new SubscribeWebrtcSrc(remoteSession, this);
+
+        connect(peer.screenSubscribePipeline, &SubscribeWebrtcSrc::localAnswerReady,
+                this, [this, &peer, remoteSession](const QString &answer) {
+            peer.log("Screen sub answer -> " + remoteSession.left(12)
+                     + " sid=" + peer.screenSubscriberSid);
+            peer.signaling->sendAnswer(remoteSession, answer,
+                                       peer.screenSubscriberSid, {}, "screen");
+        });
+
+        connect(peer.screenSubscribePipeline, &SubscribeWebrtcSrc::iceCandidateReady,
+                this, [this, &peer, remoteSession](const QString &cand, int mline,
+                                                   const QString &mid) {
+            QJsonObject c;
+            c["candidate"] = cand;
+            c["sdpMLineIndex"] = mline;
+            c["sdpMid"] = mid;
+            peer.signaling->sendCandidate(remoteSession, c,
+                                          peer.screenSubscriberSid, "screen");
+        });
+
+        connect(peer.screenSubscribePipeline, &SubscribeWebrtcSrc::iceStateChanged,
+                this, [&peer](const QString &state) {
+            peer.log("Screen sub ICE: " + state);
+        });
+
+        connect(peer.screenSubscribePipeline, &SubscribeWebrtcSrc::error,
+                this, [&peer](const QString &err) {
+            peer.log("Screen sub error: " + err);
+        });
+
+        if (!peer.screenSubscribePipeline->start(peer.stunServer, peer.turnServers)) {
+            peer.log("ERROR: screen SubscribeWebrtcSrc failed to start");
+            return;
+        }
+        peer.log("Screen SubscribeWebrtcSrc started");
+
+        peer.screenSubscribePipeline->setRemoteOffer(sdp);
+
+        for (auto &[cand, mline, mid] : peer.screenSubPendingCandidates)
+            peer.screenSubscribePipeline->addIceCandidate(cand, mline, mid);
+        peer.screenSubPendingCandidates.clear();
     }
 
     void startSubscribePipeline(TestPeer &peer, const QString &remoteSession, const QString &sdp)
@@ -1068,6 +1260,37 @@ private:
 
             m_peerA.setPhase(VideoActive);
             m_peerB.setPhase(VideoActive);
+
+            // #16: now that the call is up, exercise the screen-share path
+            // before teardown. Peer A publishes a synthetic screen capture;
+            // peer B's screen subscriber should receive frames.
+            if (g_screenShare && !m_peerA.screenShareKicked) {
+                m_peerA.screenShareKicked = true;
+                startScreenShareOn(m_peerA);
+                // 12 s window: ScreenSharePipeline has a 10 s ICE +
+                // 6 s capture-frame watchdog, plus we want ~3 s of frames
+                // after first frame to be confident the stream is steady.
+                m_peerB.screenFramesBefore = 0;
+                QTimer::singleShot(12000, this, [this]() {
+                    int sf = 0;
+                    if (m_peerB.screenSubscribePipeline
+                        && m_peerB.screenSubscribePipeline->videoProvider())
+                        sf = m_peerB.screenSubscribePipeline->videoProvider()->frameCount();
+                    m_peerB.screenFramesAfter = sf;
+                    int delta = sf - m_peerB.screenFramesBefore;
+                    qDebug() << "\n===== #16 SCREEN SHARE =====";
+                    qDebug() << "  User B received" << delta
+                             << "screen frames (total:" << sf << ")";
+                    const bool ok = delta >= 30;   // ~3 s @ 10 fps minimum
+                    qDebug() << (ok
+                        ? "  #16 SCREEN SHARE: PASS (frames flowing through MCU)"
+                        : "  #16 SCREEN SHARE: FAIL (no screen frames)");
+                    qDebug() << "\nScreen-share scenario complete. Tearing down...";
+                    teardown();
+                });
+                return;
+            }
+
             qDebug() << "\nBidirectional video test complete. Tearing down...";
             teardown();
         });
@@ -1239,6 +1462,16 @@ int main(int argc, char *argv[])
         g_simulcast = true;
         g_simulcastDrop = true;
         qputenv("TALQ_PUB_TESTSRC", "1");
+    }
+    if (qEnvironmentVariableIsSet("TALQ_TEST_SCREENSHARE")) {
+        // #16: implies PUBPIPE + synthetic camera (so the call gets to
+        // VideoActive before the screen share kicks in) + synthetic
+        // capture for ScreenSharePipeline. Peer A publishes the screen,
+        // peer B counts frames via screenSubscribePipeline.
+        g_pubPipe = true;
+        g_screenShare = true;
+        qputenv("TALQ_PUB_TESTSRC", "1");
+        qputenv("TALQ_SS_TESTSRC", "1");
     }
     if (qEnvironmentVariableIsSet("TALQ_TEST_PUBPIPE")) {
         g_pubPipe = true;
