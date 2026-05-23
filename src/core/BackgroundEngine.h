@@ -78,13 +78,31 @@ signals:
     // and flip the QSetting back to None.
     void engineDisabled(const QString &reason);
 
+    // Fires once when an Image-mode background fails to load. UI surfaces
+    // a toast; per-frame qWarnings are then suppressed for that path
+    // until setImagePath() changes the source. Per the project rule
+    // "never hide errors silently" — surface once, then go quiet.
+    void backgroundImageFailed(const QString &path);
+
 private:
     Mode    m_mode = Mode::None;
     int     m_blurStrength = 10;   // Talk's default
     QString m_imagePath;
 
     // Owned in Phase 2a as a forward-declared pointer; the engine
-    // constructs the compositor lazily on the first non-None frame so a
-    // None-mode publisher pays zero startup cost.
+    // constructs the compositor lazily on the first non-None mode so a
+    // None-mode publisher pays zero startup cost. Lifetime is managed
+    // by Qt's parent-child ownership (parent = this engine); we do NOT
+    // delete this in the dtor (would double-free).
     BackgroundCompositor *m_compositor = nullptr;
+
+    // Image-mode caches — per Phase 2d.1 review, the disk read +
+    // SmoothTransformation scale would have happened EVERY frame
+    // (5-50 ms blocking at 30 fps on a slow share). Cache by path
+    // (invalidated in setImagePath) and by scaled size.
+    QImage  m_cachedBgRaw;          // last successful disk load
+    QString m_cachedBgPath;
+    QImage  m_cachedBgScaled;       // last scaled-to-frame image
+    QSize   m_cachedBgScaledSize;
+    bool    m_cachedBgFailed = false;   // suppress per-frame qWarning loop
 };

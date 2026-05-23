@@ -16,10 +16,10 @@ BackgroundEngine::BackgroundEngine(QObject *parent)
     : QObject(parent)
 {}
 
-BackgroundEngine::~BackgroundEngine()
-{
-    delete m_compositor;
-}
+BackgroundEngine::~BackgroundEngine() = default;
+// m_compositor: not deleted here. Qt parent-child ownership (we passed
+// `this` as parent in setMode) destroys it automatically. Deleting it
+// explicitly would double-free (review finding 4).
 
 void BackgroundEngine::setMode(Mode m)
 {
@@ -34,7 +34,17 @@ BackgroundEngine::Mode BackgroundEngine::mode() const { return m_mode; }
 void BackgroundEngine::setBlurStrength(int s) { m_blurStrength = qBound(1, s, 20); }
 int  BackgroundEngine::blurStrength() const   { return m_blurStrength; }
 
-void BackgroundEngine::setImagePath(const QString &p) { m_imagePath = p; }
+void BackgroundEngine::setImagePath(const QString &p)
+{
+    if (p == m_imagePath) return;
+    m_imagePath = p;
+    // Invalidate the image cache so the new path is loaded on next frame.
+    m_cachedBgRaw     = QImage();
+    m_cachedBgScaled  = QImage();
+    m_cachedBgPath.clear();
+    m_cachedBgScaledSize = QSize();
+    m_cachedBgFailed = false;       // give the new path a chance
+}
 QString BackgroundEngine::imagePath() const           { return m_imagePath; }
 
 namespace {
@@ -80,25 +90,44 @@ QImage BackgroundEngine::processFrame(const QImage &rgba)
         return m_compositor->compositeBlur(rgba, mask, radius);
     }
     case Mode::Image: {
-        // Load + scale the chosen background once per frame (Phase 2f
-        // caches this on the engine's QThread to avoid the disk hit).
         if (m_imagePath.isEmpty()) return rgba;
-        QImage bg(m_imagePath);
-        if (bg.isNull()) {
-            qWarning() << "BackgroundEngine: background image missing:"
-                       << m_imagePath;
-            return rgba;
+        if (m_cachedBgFailed) return rgba;   // signal already fired once
+
+        // Load from disk only when the path changes (review finding 2).
+        if (m_cachedBgRaw.isNull() || m_cachedBgPath != m_imagePath) {
+            QImage loaded(m_imagePath);
+            if (loaded.isNull()) {
+                qWarning() << "BackgroundEngine: background image missing:"
+                           << m_imagePath
+                           << "(one-shot warning; toggle Background or"
+                              " pick a different image to retry)";
+                m_cachedBgFailed = true;
+                emit backgroundImageFailed(m_imagePath);
+                return rgba;
+            }
+            m_cachedBgRaw  = std::move(loaded);
+            m_cachedBgPath = m_imagePath;
+            // Force re-scale below.
+            m_cachedBgScaled = QImage();
+            m_cachedBgScaledSize = QSize();
         }
-        QImage scaled = bg.scaled(rgba.size(), Qt::KeepAspectRatioByExpanding,
-                                  Qt::SmoothTransformation);
-        return m_compositor->compositeImage(rgba, mask, scaled);
+        // Re-scale only when the camera resolution changes — same disk
+        // image at the same scale is reused frame to frame.
+        if (m_cachedBgScaled.isNull() || m_cachedBgScaledSize != rgba.size()) {
+            m_cachedBgScaled = m_cachedBgRaw.scaled(
+                rgba.size(),
+                Qt::KeepAspectRatioByExpanding,
+                Qt::SmoothTransformation);
+            m_cachedBgScaledSize = rgba.size();
+        }
+        return m_compositor->compositeImage(rgba, mask, m_cachedBgScaled);
     }
     case Mode::None:
     case Mode::Video:
     case Mode::VideoStream:
-    default:
-        return rgba;
+        return rgba;   // None + reserved-future modes pass through.
     }
+    Q_UNREACHABLE_RETURN(rgba);
 }
 
 bool BackgroundEngine::isReady() const
