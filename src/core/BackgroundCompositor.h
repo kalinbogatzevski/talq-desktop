@@ -27,6 +27,7 @@
 class QOpenGLContext;
 class QOffscreenSurface;
 class QOpenGLFramebufferObject;
+class QOpenGLShaderProgram;
 
 class BackgroundCompositor : public QObject
 {
@@ -82,5 +83,18 @@ private:
     QOpenGLFramebufferObject   *m_fboBlurV  = nullptr;   // vertical blur pass
     QOpenGLFramebufferObject   *m_fboOutput = nullptr;   // final composite
 
+    // Shader programs — one per fragment stage, all sharing the
+    // passthrough.vert. Names mirror the shader filenames.
+    QOpenGLShaderProgram *m_progMaskRefine = nullptr;
+    QOpenGLShaderProgram *m_progBlurH      = nullptr;
+    QOpenGLShaderProgram *m_progBlurV      = nullptr;
+    QOpenGLShaderProgram *m_progCompose    = nullptr;
+
     QSize m_lastSize;   // FBOs are re-allocated when camera resolution changes
+
+    // Internal helpers split out for testability + symmetry with Talk's
+    // WebGLCompositor.js layout.
+    bool createContext();
+    bool compilePrograms();
+    void releaseAll();
 };
