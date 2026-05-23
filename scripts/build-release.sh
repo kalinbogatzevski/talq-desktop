@@ -348,12 +348,20 @@ PY
         # there is a beta version newer than the current stable. Cutting a
         # stable release whose version is >= the newest beta thus must
         # DELETE the beta manifest, otherwise beta-channel clients would
-        # see the stable version as a "beta upgrade" — wrong, because a
-        # stable build doesn't carry the TALQ_PRERELEASE define and would
-        # silently promote beta-channel users out of the pre-release
-        # contract they opted into. Inverse case (BETA=1): we just
-        # uploaded a fresh beta and keep the manifest live.
-        if [ -z "$BETA" ]; then
+        # see the stale beta manifest forever (its version equals their
+        # installed version, so they never get prompted to install the
+        # newer stable). Client side has a fall-through:
+        #   "UpdateChecker: beta channel unavailable — using stable"
+        # so a missing beta manifest correctly routes beta-opted users to
+        # the newer stable. Inverse case (BETA=1): we just uploaded a
+        # fresh beta and keep the manifest live.
+        #
+        # Bug history: this check was `[ -z "$BETA" ]`, but BETA is set to
+        # "0" (not unset) when --beta isn't passed, so -z was false and
+        # the DELETE never fired. 0.37.3 beta manifest persisted across
+        # the 0.38.0 + 0.38.1 stable cuts and left beta-channel installs
+        # stranded on 0.37.3.
+        if [ "$BETA" != "1" ]; then
             code=$(curl -sS -u "${NC_USER}:${NC_APP_PASSWORD}" \
                    -X DELETE "${NC_FOLDER}/talq-beta-latest.json" \
                    -o /dev/null -w '%{http_code}')
