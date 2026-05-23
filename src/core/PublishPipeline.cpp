@@ -513,6 +513,54 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         return false;
     }
     gst_bin_add(GST_BIN(m_pipeline), rtpFunnel);
+
+    // #15 diagnostic — print the rid RTP header extension (id=2) on the
+    // first 30 packets leaving rtpfunnel.src. Janus's runtime
+    // rid->substream map is populated from this extension; if it's
+    // missing on the wire no SDP munge or upstream patch can rescue
+    // substream switching. Auto-silences after 30 packets so it's safe
+    // to leave in builds. Simulcast only.
+    if (m_simulcast) {
+        if (GstPad *funnelSrc = gst_element_get_static_pad(rtpFunnel, "src")) {
+            gst_pad_add_probe(funnelSrc, GST_PAD_PROBE_TYPE_BUFFER,
+                [](GstPad *, GstPadProbeInfo *info, gpointer) -> GstPadProbeReturn {
+                    static std::atomic<int> logged{0};
+                    if (logged.load(std::memory_order_relaxed) >= 30)
+                        return GST_PAD_PROBE_OK;
+                    GstBuffer *buf = GST_PAD_PROBE_INFO_BUFFER(info);
+                    if (!buf) return GST_PAD_PROBE_OK;
+                    GstRTPBuffer rtp = GST_RTP_BUFFER_INIT;
+                    if (!gst_rtp_buffer_map(buf, GST_MAP_READ, &rtp))
+                        return GST_PAD_PROBE_OK;
+                    if (logged.fetch_add(1, std::memory_order_relaxed) < 30) {
+                        guint32 ssrc = gst_rtp_buffer_get_ssrc(&rtp);
+                        gpointer ridData = nullptr;
+                        guint ridSize = 0;
+                        gboolean hasRid = gst_rtp_buffer_get_extension_onebyte_header(
+                            &rtp, 2, 0, &ridData, &ridSize);
+                        gpointer midData = nullptr;
+                        guint midSize = 0;
+                        gboolean hasMid = gst_rtp_buffer_get_extension_onebyte_header(
+                            &rtp, 1, 0, &midData, &midSize);
+                        QByteArray ridVal;
+                        if (hasRid && ridData && ridSize > 0)
+                            ridVal = QByteArray(static_cast<char*>(ridData), ridSize);
+                        QByteArray midVal;
+                        if (hasMid && midData && midSize > 0)
+                            midVal = QByteArray(static_cast<char*>(midData), midSize);
+                        qInfo().nospace()
+                            << "PublishPipeline #15: rtpfunnel.src ssrc=0x"
+                            << QString::number(ssrc, 16)
+                            << " ext1(mid)=" << (hasMid ? midVal : QByteArray("MISSING"))
+                            << " ext2(rid)=" << (hasRid ? ridVal : QByteArray("MISSING"));
+                    }
+                    gst_rtp_buffer_unmap(&rtp);
+                    return GST_PAD_PROBE_OK;
+                }, nullptr, nullptr);
+            gst_object_unref(funnelSrc);
+        }
+    }
+
     for (size_t i = 0; i < nBranches; ++i) {
         auto &L = m_layers[i];
         GstPad *src = gst_element_get_static_pad(L.ssrcFilter, "src");
@@ -1288,51 +1336,74 @@ void PublishPipeline::onIceCandidate(GstElement *, guint mlineIndex, gchar *cand
     }, Qt::QueuedConnection);
 }
 
-// #132 simulcast fix (evidence-grounded via tcpdump on Janus 2026-05-22):
-// the 3 layer SSRCs DO reach Janus on the wire (PT 96, distinct SSRCs,
-// packet counts ∝ bitrate), but webrtcbin's m=video SDP declares only ONE
-// PHANTOM a=ssrc that isn't even on the wire and NO ssrc-group. Janus
-// 1.1.4 videoroom detects simulcast from the SSRC-group (not from a=rid —
-// the HPB never sends the JSEP simulcast object), so it can't associate
-// the 3 received SSRCs and forwards just one (stuck at 180p).
-// Fix: replace webrtcbin's phantom a=ssrc lines with one set per REAL wire
-// SSRC (low→mid→high, the payloader SSRCs), replicating the FULL attribute
-// block webrtcbin emitted (cname + msid — bare a=ssrc broke negotiation on
-// the first attempt), and add `a=ssrc-group:SIM l m h`. The rid lines are
-// preserved. See memory project_talq_simulcast_janus.
-[[maybe_unused]] static QString injectSimulcastSsrcGroup(
+// #9 simulcast SDP munge — rewritten 2026-05-23 against authoritative source
+// (nextcloud/spreed simplewebrtc/peer.js::mungeSdpForSimulcasting, lifted from
+// janus.js, MIT). HPB has consumed this exact format from Chrome publishers
+// for years, so Janus's core SDP parser will populate the SIM substream map
+// and Talk JS's selectStream {substream:N} will switch layers.
+//
+// Why the May 22 attempts failed ("No MCU client found"):
+//   * missing per-SSRC msid / mslabel / label (HPB's parser drops the publisher
+//     when an a=ssrc-group:SIM block lacks the full attribute set)
+//   * left a=rid / a=simulcast / extmap-2 in place, producing a rid+SIM hybrid
+//     that no Talk client ever emits and HPB doesn't validate
+//   * attempted to also replace the local description (webrtcbin rejects a
+//     post-hoc SDP whose ssrc-group lines don't match its internal sender state)
+//
+// New approach: SIGNALING-ONLY munge — webrtcbin's local description stays
+// exactly as webrtcbin generated it (3 rid-style RTP senders, internal state
+// pristine). We rewrite ONLY the SDP string sent to HPB. The 3 layer SSRCs
+// already on the wire are the ones we declare in the SIM group, so Janus's
+// substream map points to real streams. No RTX/FID groups — our publisher
+// doesn't emit RTX (verified — no rtprtxsend in PublishPipeline).
+static QString mungeOfferForSimulcast(
         const QString &sdp, quint32 ssrcL, quint32 ssrcM, quint32 ssrcH)
 {
     const QStringList lines = sdp.split('\n');
-    // The rtpfunnel single-m-line video section has NO a=ssrc of its own
-    // (webrtcbin doesn't declare one), so there's nothing to capture/replace
-    // there — we ADD the SIM group + a=ssrc lines for the 3 real wire SSRCs
-    // at the end of the video section, using the session cname (the same
-    // CNAME webrtcbin puts in RTCP for every stream; the audio section's
-    // a=ssrc cname is that value). cname is what ties the SIM group together
-    // for Janus; msid is reused if the video section declares one.
     QString cname, videoMsid;
+    int ridExtmapId = -1;
+
     bool seenVideo = false;
     for (const QString &line : lines) {
         const QString t = line.trimmed();
-        if (t.startsWith("m=video")) seenVideo = true;
+        if (t.startsWith("m=")) seenVideo = t.startsWith("m=video");
         if (cname.isEmpty() && t.startsWith("a=ssrc:")) {
             const int ci = t.indexOf("cname:");
-            if (ci >= 0) cname = t.mid(ci + 6).section(' ', 0, 0).trimmed();
+            if (ci >= 0)
+                cname = t.mid(ci + 6).section(' ', 0, 0).trimmed();
         }
         if (seenVideo && videoMsid.isEmpty() && t.startsWith("a=msid:"))
             videoMsid = t.mid(7).trimmed();
+        if (seenVideo && t.contains(
+                QLatin1String("urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id"))) {
+            // a=extmap:<id> urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id
+            const QRegularExpression rx(QStringLiteral("a=extmap:(\\d+)"));
+            const auto m = rx.match(t);
+            if (m.hasMatch()) ridExtmapId = m.captured(1).toInt();
+        }
     }
     if (cname.isEmpty()) cname = QStringLiteral("talqsim");
+    if (videoMsid.isEmpty())
+        videoMsid = QStringLiteral("talq-stream talq-track");
+    // msid format: "<mslabel> <label>" (RFC 5576 / draft-ietf-mmusic-msid).
+    const QStringList msidParts = videoMsid.split(' ');
+    const QString mslabel = msidParts.value(0);
+    const QString label   = msidParts.size() > 1 ? msidParts.value(1) : mslabel;
 
     QStringList block;
     block << QStringLiteral("a=ssrc-group:SIM %1 %2 %3\r")
                  .arg(ssrcL).arg(ssrcM).arg(ssrcH);
     for (quint32 s : { ssrcL, ssrcM, ssrcH }) {
         block << QStringLiteral("a=ssrc:%1 cname:%2\r").arg(s).arg(cname);
-        if (!videoMsid.isEmpty())
-            block << QStringLiteral("a=ssrc:%1 msid:%2\r").arg(s).arg(videoMsid);
+        block << QStringLiteral("a=ssrc:%1 msid:%2\r").arg(s).arg(videoMsid);
+        block << QStringLiteral("a=ssrc:%1 mslabel:%2\r").arg(s).arg(mslabel);
+        block << QStringLiteral("a=ssrc:%1 label:%2\r").arg(s).arg(label);
     }
+
+    const QString ridExtmapLine = ridExtmapId >= 0
+        ? QStringLiteral("a=extmap:%1 urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id")
+              .arg(ridExtmapId)
+        : QString();
 
     QStringList out;
     out.reserve(lines.size() + block.size());
@@ -1340,17 +1411,34 @@ void PublishPipeline::onIceCandidate(GstElement *, guint mlineIndex, gchar *cand
     for (const QString &line : lines) {
         const QString t = line.trimmed();
         if (t.startsWith("m=")) {
-            // Entering a new m-section: if we were in video and haven't
-            // inserted yet, append the SIM block at the video section's end.
             if (inVideo && !inserted) { out << block; inserted = true; }
             inVideo = t.startsWith("m=video");
         }
-        // Drop any stray existing a=ssrc in the video section (phantom).
-        if (inVideo && t.startsWith("a=ssrc")) continue;
+        if (inVideo) {
+            if (t.startsWith("a=rid:") || t.startsWith("a=simulcast:"))
+                continue;
+            if (!ridExtmapLine.isEmpty() && t == ridExtmapLine)
+                continue;
+            // Drop any phantom a=ssrc / a=ssrc-group webrtcbin emitted —
+            // we control the SSRC-group declaration via `block`.
+            if (t.startsWith("a=ssrc:") || t.startsWith("a=ssrc-group:"))
+                continue;
+        }
         out << line;
     }
-    if (inVideo && !inserted) out << block;  // video was the last section
-    return out.join('\n');
+    if (inVideo && !inserted) {
+        // Video is the last m-section. webrtcbin's SDP ends with the SDP
+        // terminator (trailing blank line); appending the SIM block AFTER
+        // that blank line breaks HPB's parser (RFC 4566: no blank lines
+        // mid-SDP). Strip trailing empties first.
+        while (!out.isEmpty() && out.last().trimmed().isEmpty())
+            out.removeLast();
+        out << block;
+    }
+    QString result = out.join('\n');
+    // Ensure proper SDP terminator (final CRLF).
+    if (!result.endsWith('\n')) result.append('\n');
+    return result;
 }
 
 void PublishPipeline::onOfferCreated(GstPromise *promise, gpointer userData)
@@ -1380,17 +1468,27 @@ void PublishPipeline::onOfferCreated(GstPromise *promise, gpointer userData)
     gst_webrtc_session_description_free(offer);
     gst_promise_unref(promise);
 
-    // #132 simulcast SIM-group munge — DISABLED. Evidence (tcpdump on
-    // Janus 2026-05-22): the 3 layer SSRCs DO reach Janus, but injecting
-    // an a=ssrc-group:SIM into the offer makes the HPB/Janus reject the
-    // publisher entirely ("No MCU client found to send message to") — tried
-    // sent-only AND as the local description, both break MCU registration.
-    // So SDP munging is a dead end here; the real fix needs webrtcbin to
-    // emit the SIM group natively (it doesn't for the rtpfunnel topology in
-    // 1.28), a publish-topology change, or an HPB patch to inject the JSEP
-    // `simulcast` object. injectSimulcastSsrcGroup() is kept for reference.
-    // Simulcast still works as a single forwarded layer (call connects).
-    Q_UNUSED(self->m_simulcast);
+    // #9 simulcast SIM-group munge (signaling-only). Janus's videoroom needs
+    // a=ssrc-group:SIM in the offer to build the substream map; rid-only
+    // offers leave the map empty and selectStream{substream:N} no-ops.
+    // Local description stays untouched (webrtcbin's internal RTP sender
+    // state must match what it generated); we rewrite only the wire SDP.
+    if (self->m_simulcast && self->m_layers.size() >= 3) {
+        const quint32 sL = self->m_layers[0].ssrc;
+        const quint32 sM = self->m_layers[1].ssrc;
+        const quint32 sH = self->m_layers[2].ssrc;
+        const QString mungedSdp = mungeOfferForSimulcast(sdp, sL, sM, sH);
+        if (!mungedSdp.isEmpty() && mungedSdp.contains("a=ssrc-group:SIM")) {
+            qInfo().nospace() << "PublishPipeline #9: signaling munged offer "
+                              << "with SIM(" << sL << "," << sM << "," << sH
+                              << ") — length " << sdp.length() << " -> "
+                              << mungedSdp.length();
+            sdp = mungedSdp;
+        } else {
+            qWarning() << "PublishPipeline #9: SIM munge produced empty / "
+                          "unmunged SDP, sending original";
+        }
+    }
 
     qDebug() << "PublishPipeline: offer created, SDP length=" << sdp.length() << "\n" << sdp;
 
