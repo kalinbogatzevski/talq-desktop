@@ -8,7 +8,7 @@
 
 Your team chat as a real desktop app: instant open, near-zero idle, built to be left running all day.
 
-<sub>Release codename: **Bangaranga**, for Bulgaria's Eurovision 2026 win in Vienna 🇧🇬</sub>
+<sub>Beta codename: **Aprilsko Vastanie**, honouring the 150th anniversary (2026 = 1876 + 150) of the Bulgarian April Uprising — declared at Panagyurishte, led by Raina Knyaginya's flag 🇧🇬</sub>
 
 </div>
 
