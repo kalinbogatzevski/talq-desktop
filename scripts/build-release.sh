@@ -19,15 +19,40 @@ BRAND_FLAG=""
 DIST_SUFFIX=""
 INSTALLER_ISS="talq-setup.iss"
 
-if [ "$1" = "--brand" ] && [ "$2" = "123NET" ]; then
+# #116 opt-in pre-release channel. `--beta` (position-independent, may
+# combine with --brand) publishes the branded ncloud manifest as
+# talq-beta-latest.json instead of talq-latest.json and NEVER touches the
+# stable manifest/installers — stable users are unaffected. The generic
+# beta is GitHub's own prerelease (`gh release create <tag> --prerelease`,
+# a separate manual step, same as the normal generic GitHub release).
+BETA=0
+MANIFEST_NAME="talq-latest.json"
+BETA_FLAG=""
+for _a in "$@"; do [ "$_a" = "--beta" ] && BETA=1; done
+if [ "$BETA" = "1" ]; then
+    MANIFEST_NAME="talq-beta-latest.json"
+    # -DTALQ_PRERELEASE=ON bakes the prerelease compile define into the
+    # binary so the UI shows a visible "PRE-RELEASE" badge — beta testers
+    # always know they're on a beta, regardless of which channel served it.
+    BETA_FLAG="-DTALQ_PRERELEASE=ON"
+    echo "=== BETA channel: manifest=$MANIFEST_NAME (stable left intact) ==="
+fi
+
+# Position-independent flag parsing so --brand and --beta can be combined
+# in either order (the original $1/$2 check silently failed when --beta
+# preceded --brand, producing a generic build instead of branded).
+case " $* " in
+  *" --brand 123NET "*)
     BRAND="123NET"
     BRAND_FLAG="-DTALQ_BRAND=123NET"
     DIST_SUFFIX="-123net"
     INSTALLER_ISS="123net-talk-setup.iss"
     echo "=== Building 123NET branded release ==="
-else
+    ;;
+  *)
     echo "=== Building generic release ==="
-fi
+    ;;
+esac
 
 # 123NET branding lives outside the tree (/private, never published). For a
 # branded build, restore the wizard art + installer script into the tree
@@ -55,23 +80,21 @@ fi
 BUILD_DIR="/c/build/talq-release${DIST_SUFFIX}"
 DIST_DIR="$SRC_DIR/dist/TalQ-v${VERSION}-win64${DIST_SUFFIX}"
 
-# Version consistency guard (generic build): talq-setup.iss / talq-update.iss
-# carry hardcoded versions (AppVersion, the packaged dist path, and the
-# OutputBaseFilename). CMakeLists.txt is the single source of truth; if the
-# .iss files drift, the installer silently packages the wrong dist folder or
-# emits a misnamed exe. Branded builds stamp their .iss from /private, so this
-# guard only applies to the generic path. tr -d '\r': the .iss are CRLF.
+# Version consistency guard (generic build): talq-setup.iss carries hardcoded
+# versions (AppVersion, the packaged dist path, and the OutputBaseFilename).
+# CMakeLists.txt is the single source of truth; if the .iss drifts, the
+# installer silently packages the wrong dist folder or emits a misnamed exe.
+# Branded builds stamp their .iss from /private, so this guard only applies
+# to the generic path. tr -d '\r': the .iss are CRLF.
 if [ -z "$BRAND" ]; then
-    for iss in talq-setup.iss talq-update.iss; do
-        iss_ver=$(grep -m1 '^AppVersion=' "$SRC_DIR/installer/$iss" \
-                  | cut -d= -f2 | tr -d '\r')
-        if [ "$iss_ver" != "$VERSION" ]; then
-            echo "FATAL: installer/$iss is AppVersion=$iss_ver but CMakeLists.txt"
-            echo "       is $VERSION. Bump installer/$iss (AppVersion, the dist"
-            echo "       path, and OutputBaseFilename) to $VERSION and retry."
-            exit 1
-        fi
-    done
+    iss_ver=$(grep -m1 '^AppVersion=' "$SRC_DIR/installer/talq-setup.iss" \
+              | cut -d= -f2 | tr -d '\r')
+    if [ "$iss_ver" != "$VERSION" ]; then
+        echo "FATAL: installer/talq-setup.iss is AppVersion=$iss_ver but CMakeLists.txt"
+        echo "       is $VERSION. Bump installer/talq-setup.iss (AppVersion, the dist"
+        echo "       path, and OutputBaseFilename) to $VERSION and retry."
+        exit 1
+    fi
 fi
 
 # Tool paths
@@ -106,7 +129,7 @@ rm -rf "$BUILD_DIR"
     -DCMAKE_C_COMPILER="$MINGW/gcc.exe" \
     -DCMAKE_CXX_COMPILER="$MINGW/g++.exe" \
     $CCACHE_LAUNCHER \
-    $BRAND_FLAG 2>&1 | tail -1
+    $BRAND_FLAG $BETA_FLAG 2>&1 | tail -1
 
 echo "[2/6] Building..."
 "$CMAKE" --build "$BUILD_DIR" --target talq 2>&1 | tail -1
@@ -204,16 +227,15 @@ rm -rf "$DIST_DIR/CMakeFiles" "$DIST_DIR/cmake_install.cmake" \
     "$DIST_DIR/.ninja"* "$DIST_DIR/talq_autogen" \
     "$DIST_DIR/talq-call-test_autogen" "$DIST_DIR/.qt"
 
-echo "[6/6] Building installer(s)..."
+echo "[6/6] Building installer..."
 if [ -f "$ISCC" ]; then
+    # Single installer per build. The previously-separate Update.exe always
+    # carried the FULL payload (since the 0.29.5 slim-update incident), and
+    # the in-app updater already downloads Setup.exe regardless, so the two
+    # files were 36 MB of duplicate. Setup.iss now declares an AppId so Inno
+    # detects existing installs and applies UsePreviousAppDir/Tasks — one
+    # binary handles both fresh installs and unattended upgrades.
     "$ISCC" "$SRC_DIR/installer/$INSTALLER_ISS" 2>&1 | tail -2
-    # Slim "update" installer: ships only talq.exe over an existing full
-    # install (point-release upgrade path). Generic-only — the branded
-    # channel auto-updates via ncloud with the full installer, so a slim
-    # updater there would be dead weight.
-    if [ -z "$BRAND" ]; then
-        "$ISCC" "$SRC_DIR/installer/talq-update.iss" 2>&1 | tail -2
-    fi
 else
     echo "Inno Setup not found at $ISCC — skipping installer"
 fi
@@ -320,9 +342,30 @@ PY
         # earlier installer failure aborts before the manifest is written.
         nc_put "$GEN_INSTALLER"      "TalQ-v${VERSION}-Setup.exe"
         nc_put "$BRAND_INSTALLER"    "123NET-TalQ-v${VERSION}-Setup.exe"
-        nc_put /tmp/talq-latest.json "talq-latest.json"
+        nc_put /tmp/talq-latest.json "$MANIFEST_NAME"
 
-        echo "  uploaded + verified v${VERSION} generic + 123NET + manifest to ncloud"
+        # Channel policy (user-stated): the beta manifest exists ONLY when
+        # there is a beta version newer than the current stable. Cutting a
+        # stable release whose version is >= the newest beta thus must
+        # DELETE the beta manifest, otherwise beta-channel clients would
+        # see the stable version as a "beta upgrade" — wrong, because a
+        # stable build doesn't carry the TALQ_PRERELEASE define and would
+        # silently promote beta-channel users out of the pre-release
+        # contract they opted into. Inverse case (BETA=1): we just
+        # uploaded a fresh beta and keep the manifest live.
+        if [ -z "$BETA" ]; then
+            code=$(curl -sS -u "${NC_USER}:${NC_APP_PASSWORD}" \
+                   -X DELETE "${NC_FOLDER}/talq-beta-latest.json" \
+                   -o /dev/null -w '%{http_code}')
+            case "$code" in
+                204|404)
+                    echo "  beta manifest cleared (stable v${VERSION} > beta, http=$code)" ;;
+                *)
+                    echo "  WARN: beta manifest DELETE returned $code" ;;
+            esac
+        fi
+
+        echo "  uploaded + verified v${VERSION} generic + 123NET -> ${MANIFEST_NAME} on ncloud"
     else
         echo "  skipped manifest push: need both generic + 123NET installers in dist"
     fi
