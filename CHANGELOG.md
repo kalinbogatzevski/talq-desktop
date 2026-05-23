@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.38.1 "Bangaranga" — STABLE (2026-05-23)
+
+### Changed
+- **Single installer per release.** Removed the separate `Update.exe`;
+  every release ships only `Setup.exe` now. Both were always the same
+  size (full payload) since the 0.29.5 slim-update incident, and the
+  in-app updater already downloads `Setup.exe`, so `Update.exe` was 36 MB
+  of duplicate. `Setup.exe` now declares an Inno AppId so it reliably
+  detects existing installs and runs as an upgrade (reuses install dir
+  and prior Tasks selections, no re-prompting).
+
 ## v0.38.0 "Bangaranga" — STABLE (2026-05-23)
 
 First stable cut to ship simulcast video publishing, end-to-end-verified.
