@@ -88,6 +88,14 @@ static bool g_simulcastDrop = false;
 // interaction.
 static bool g_screenShare = false;
 
+// #17 mute-toggle propagation scenario. Implies PUBPIPE. After
+// VideoActive, peer A sends mute/unmute control messages over signaling
+// (the same wire format CallManager::broadcastMediaState produces).
+// Peer B should observe remoteMuteChanged on its SignalingClient within
+// a short window. Regression-guards the control-channel path the call
+// screen uses for the remote mic/camera icons.
+static bool g_muteToggle = false;
+
 // Test configuration. Identities/token come from the environment so the
 // harness never rings a real person's devices. Defaults are the two
 // dedicated bot accounts in the "TalQ Auto Test" group room — NEVER a
@@ -186,6 +194,12 @@ struct TestPeer {
     bool screenShareKicked = false;
     int screenFramesBefore = 0;
     int screenFramesAfter  = 0;
+    // #17 mute toggle scenario — peer B observes remote A's mute changes.
+    bool muteToggleKicked = false;
+    int remoteAudioMutedEvents = 0;
+    int remoteAudioUnmutedEvents = 0;
+    int remoteVideoMutedEvents = 0;
+    int remoteVideoUnmutedEvents = 0;
     QString stunServer;
     QList<TurnServer> turnServers;
     // Pending ICE candidates (received before pipeline started)
@@ -322,6 +336,21 @@ private:
             } else {
                 peer.subscriberSid = sid;
                 startSubscribePipeline(peer, from, sdp);
+            }
+        });
+
+        // #17 — observe remote mute state transitions. The signal fires on
+        // every "mute"/"unmute" session message from any peer in the room.
+        connect(peer.signaling, &SignalingClient::remoteMuteChanged, this,
+                [&peer](const QString &sid, const QString &media, bool muted) {
+            peer.log(QString("remoteMuteChanged from %1: %2 = %3")
+                     .arg(sid.left(12), media, muted ? "MUTED" : "UNMUTED"));
+            if (media == "audio") {
+                if (muted) peer.remoteAudioMutedEvents++;
+                else       peer.remoteAudioUnmutedEvents++;
+            } else if (media == "video") {
+                if (muted) peer.remoteVideoMutedEvents++;
+                else       peer.remoteVideoUnmutedEvents++;
             }
         });
 
@@ -1261,6 +1290,50 @@ private:
             m_peerA.setPhase(VideoActive);
             m_peerB.setPhase(VideoActive);
 
+            // #17: mute toggle sequence over signaling. After the call is
+            // up, peer A broadcasts mute audio → mute video → unmute audio
+            // → unmute video at 600 ms intervals. Peer B's signaling layer
+            // should fire remoteMuteChanged for each transition. Pass when
+            // we observe ALL four expected events on peer B.
+            if (g_muteToggle && !m_peerA.muteToggleKicked) {
+                m_peerA.muteToggleKicked = true;
+                auto sendMute = [this](const QString &media, bool muted) {
+                    QJsonObject payload;
+                    payload["name"] = media;
+                    m_peerA.signaling->sendSessionMessage(
+                        m_peerA.remoteSessionId,
+                        muted ? "mute" : "unmute",
+                        payload, QString());
+                    m_peerA.log(QString("broadcast %1 %2 to remote")
+                                .arg(muted ? "mute" : "unmute", media));
+                };
+                QTimer::singleShot( 200, this, [sendMute]{ sendMute("audio", true);  });
+                QTimer::singleShot( 800, this, [sendMute]{ sendMute("video", true);  });
+                QTimer::singleShot(1500, this, [sendMute]{ sendMute("audio", false); });
+                QTimer::singleShot(2200, this, [sendMute]{ sendMute("video", false); });
+                QTimer::singleShot(3500, this, [this]() {
+                    qDebug() << "\n===== #17 MUTE TOGGLE =====";
+                    qDebug() << "  peer B observed audio muted   x"
+                             << m_peerB.remoteAudioMutedEvents;
+                    qDebug() << "  peer B observed audio unmuted x"
+                             << m_peerB.remoteAudioUnmutedEvents;
+                    qDebug() << "  peer B observed video muted   x"
+                             << m_peerB.remoteVideoMutedEvents;
+                    qDebug() << "  peer B observed video unmuted x"
+                             << m_peerB.remoteVideoUnmutedEvents;
+                    const bool ok = m_peerB.remoteAudioMutedEvents   >= 1
+                                 && m_peerB.remoteAudioUnmutedEvents >= 1
+                                 && m_peerB.remoteVideoMutedEvents   >= 1
+                                 && m_peerB.remoteVideoUnmutedEvents >= 1;
+                    qDebug() << (ok
+                        ? "  #17 MUTE TOGGLE: PASS (all 4 transitions propagated)"
+                        : "  #17 MUTE TOGGLE: FAIL (missing transitions)");
+                    qDebug() << "\nMute-toggle scenario complete. Tearing down...";
+                    teardown();
+                });
+                return;
+            }
+
             // #16: now that the call is up, exercise the screen-share path
             // before teardown. Peer A publishes a synthetic screen capture;
             // peer B's screen subscriber should receive frames.
@@ -1461,6 +1534,12 @@ int main(int argc, char *argv[])
         g_pubPipe = true;
         g_simulcast = true;
         g_simulcastDrop = true;
+        qputenv("TALQ_PUB_TESTSRC", "1");
+    }
+    if (qEnvironmentVariableIsSet("TALQ_TEST_MUTE_TOGGLE")) {
+        // #17 — bare PUBPIPE call, then sequence of mute/unmute broadcasts.
+        g_pubPipe = true;
+        g_muteToggle = true;
         qputenv("TALQ_PUB_TESTSRC", "1");
     }
     if (qEnvironmentVariableIsSet("TALQ_TEST_SCREENSHARE")) {
