@@ -23,6 +23,8 @@
 #include <QObject>
 #include <QString>
 
+class BackgroundCompositor;
+
 class BackgroundEngine : public QObject
 {
     Q_OBJECT
@@ -80,4 +82,9 @@ private:
     Mode    m_mode = Mode::None;
     int     m_blurStrength = 10;   // Talk's default
     QString m_imagePath;
+
+    // Owned in Phase 2a as a forward-declared pointer; the engine
+    // constructs the compositor lazily on the first non-None frame so a
+    // None-mode publisher pays zero startup cost.
+    BackgroundCompositor *m_compositor = nullptr;
 };

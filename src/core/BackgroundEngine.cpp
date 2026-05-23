@@ -1,19 +1,29 @@
 #include "BackgroundEngine.h"
+#include "BackgroundCompositor.h"
 
-// Phase 1 stub. The real engine — TFLite interpreter + selfie_segmenter.tflite
-// + Qt OpenGL FBO + three GLSL fragment shaders ported from Talk web's
-// WebGLCompositor.js — lands in Phase 2 / Phase 3 per
-// docs/superpowers/plans/2026-05-24-video-background.md. For now this
-// pass-through lets PublishPipeline wire the call site without dragging
-// in a half-finished engine.
+// Phase 2a additions: owns a BackgroundCompositor (lazy-constructed on
+// first non-None mode so a None-mode publisher pays zero startup cost).
+// The compositor is the QOpenGL FBO/shader chain ported from Talk's
+// WebGLCompositor.js; today it's still a skeleton — see compositor
+// header. processFrame() remains pass-through until Phase 2c.
 
 BackgroundEngine::BackgroundEngine(QObject *parent)
     : QObject(parent)
 {}
 
-BackgroundEngine::~BackgroundEngine() = default;
+BackgroundEngine::~BackgroundEngine()
+{
+    delete m_compositor;
+}
 
-void BackgroundEngine::setMode(Mode m)        { m_mode = m; }
+void BackgroundEngine::setMode(Mode m)
+{
+    m_mode = m;
+    // Lazy-construct the compositor when the user actually opts in. Pure
+    // Off-mode publishers (the vast majority today) pay nothing for this.
+    if (m != Mode::None && !m_compositor)
+        m_compositor = new BackgroundCompositor(this);
+}
 BackgroundEngine::Mode BackgroundEngine::mode() const { return m_mode; }
 
 void BackgroundEngine::setBlurStrength(int s) { m_blurStrength = qBound(1, s, 20); }
@@ -30,6 +40,7 @@ QImage BackgroundEngine::processFrame(const QImage &rgba)
 
 bool BackgroundEngine::isReady() const
 {
-    // No backend yet. Phase 2 flips this to reflect interpreter readiness.
-    return false;
+    // Phase 2a: ready when the compositor exists and reports init success.
+    // Phase 2d adds the TFLite interpreter readiness check.
+    return m_compositor && m_compositor->isReady();
 }
