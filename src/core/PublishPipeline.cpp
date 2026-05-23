@@ -1584,6 +1584,7 @@ GstFlowReturn PublishPipeline::onPreviewSample(GstAppSink *sink, gpointer userDa
     // vast majority of calls).
     QImage rgbaSnapshot;
     bool routeThroughEngine = false;
+    bool degradedThisFrame = false;
     if (self->m_backgroundEngine
         && self->m_backgroundEngine->mode() != BackgroundEngine::Mode::None) {
         GstCaps *caps = gst_sample_get_caps(sample);
@@ -1599,15 +1600,40 @@ GstFlowReturn PublishPipeline::onPreviewSample(GstAppSink *sink, gpointer userDa
             GstMapInfo map;
             if (gst_buffer_map(buf, &map, GST_MAP_READ)) {
                 if (qint64(map.size) >= qint64(width) * height * 4) {
-                    // QImage wraps map.data; .copy() detaches before unmap.
+                    // Format_RGB32 byte-aliases BGRx exactly on little-
+                    // endian — no convertToFormat needed here. .copy()
+                    // detaches into freshly-allocated storage before we
+                    // unmap. Saves ~80 MB/s on the streaming thread at
+                    // 720p30 vs the prior convertToFormat(RGBA8888).
                     QImage wrap(map.data, width, height,
                                 width * 4, QImage::Format_RGB32);
-                    rgbaSnapshot = wrap.convertToFormat(QImage::Format_RGBA8888);
+                    rgbaSnapshot = wrap.copy();
                     routeThroughEngine = true;
+                } else {
+                    degradedThisFrame = true;
                 }
                 gst_buffer_unmap(buf, &map);
+            } else {
+                degradedThisFrame = true;
             }
+        } else if (format) {
+            // Caps shifted off BGRx mid-call — real correctness/diagnostic
+            // signal worth surfacing once.
+            degradedThisFrame = true;
         }
+    }
+
+    // Surface BG preview-path degradation once per pipeline ("surface
+    // once, then quiet" — same pattern BackgroundEngine uses for
+    // engineDisabled). Without this, a caps change or map failure would
+    // silently fall back to the raw camera and the user would have no
+    // signal that their chosen Background mode isn't running.
+    if (degradedThisFrame
+        && !self->m_previewEngineDegraded.exchange(true,
+                                                    std::memory_order_relaxed)) {
+        qWarning() << "PublishPipeline: BG preview path unavailable "
+                      "(caps != BGRx, or gst_buffer_map failed) — self-PiP "
+                      "falling back to raw camera until restart";
     }
 
     QPointer<PublishPipeline> guard(self);
