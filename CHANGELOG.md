@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.37.3 "Bangaranga" — PRE-RELEASE (2026-05-23)
+
+### Fixed
+- **Simulcast video quality switching now works.** Calls were stuck at the
+  lowest layer (180p) regardless of which quality the receiver asked for —
+  the publisher's offer was missing the SSRC-style `a=ssrc-group:SIM` lines
+  that Nextcloud Talk's web client adds to make HPB/Janus build the
+  substream map. The publisher now applies the same Talk JS-style munge
+  (signaling-only — webrtcbin's internal state untouched) on the outgoing
+  offer, replicating the format HPB has accepted from Chrome publishers
+  for years. Verified end-to-end: receiver locked to 1280×720 after
+  `selectStream{substream:2}`. Pre-release only; stable channel stays on
+  the proven single-stream 720p path.
+
 ## v0.37.2 "Bangaranga" — PRE-RELEASE (2026-05-23)
 
 ### Added
