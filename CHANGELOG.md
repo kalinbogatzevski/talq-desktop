@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.37.1 "Bangaranga" — PRE-RELEASE (2026-05-23)
+
+### Added
+- **See yourself before you answer a video call.** Incoming video calls
+  now show your local camera preview on the call window so you can check
+  framing before picking up. The camera releases instantly on
+  Accept / Decline so the actual call (or the next one) can grab it.
+
 ## v0.37.0 "Bangaranga" — PRE-RELEASE (2026-05-22)
 
 Maintenance beta. No new user-facing features over 0.35.0; consolidates
