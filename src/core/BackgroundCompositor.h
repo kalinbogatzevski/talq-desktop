@@ -28,6 +28,9 @@ class QOpenGLContext;
 class QOffscreenSurface;
 class QOpenGLFramebufferObject;
 class QOpenGLShaderProgram;
+class QOpenGLBuffer;
+class QOpenGLVertexArrayObject;
+class QOpenGLTexture;
 
 class BackgroundCompositor : public QObject
 {
@@ -90,11 +93,26 @@ private:
     QOpenGLShaderProgram *m_progBlurV      = nullptr;
     QOpenGLShaderProgram *m_progCompose    = nullptr;
 
+    // Geometry — a single full-screen quad shared by all passes.
+    QOpenGLVertexArrayObject *m_vao = nullptr;
+    QOpenGLBuffer            *m_vbo = nullptr;
+
+    // Input textures — re-uploaded per frame. Owned + recreated on
+    // resolution changes via ensureFbos().
+    QOpenGLTexture *m_texFg   = nullptr;   // RGBA camera frame
+    QOpenGLTexture *m_texMask = nullptr;   // single-channel mask
+    QOpenGLTexture *m_texBg   = nullptr;   // image-mode background (cached)
+
     QSize m_lastSize;   // FBOs are re-allocated when camera resolution changes
 
     // Internal helpers split out for testability + symmetry with Talk's
     // WebGLCompositor.js layout.
     bool createContext();
     bool compilePrograms();
+    bool createGeometry();
+    bool ensureFbos(const QSize &size);
+    void uploadTexture(QOpenGLTexture *&tex, const QImage &img, bool singleChannel);
+    void runPass(QOpenGLShaderProgram *prog, QOpenGLFramebufferObject *target);
+    QImage readbackFbo(QOpenGLFramebufferObject *fbo);
     void releaseAll();
 };

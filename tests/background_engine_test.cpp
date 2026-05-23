@@ -101,6 +101,60 @@ int main(int argc, char *argv[])
         check("ensureInitialised is idempotent", secondCall);
     }
 
+    // (G) Phase 2c.2 — real three-pass GL render assertion.
+    // Build a synthetic vertical split: left half pure blue, right half
+    // pure red, sharp boundary at column 32. With an all-zero mask (frame
+    // counts as 100% background), the compose mode=1 (blur) path outputs
+    // the blurred camera plate. The blur should soften the boundary: the
+    // pixel at column 31 (was pure blue) gains red, and column 32 (was
+    // pure red) gains blue. Robust assertion — doesn't depend on the
+    // 9-tap kernel's stride pattern catching a specific dot.
+    if (initOk) {
+        const int W = 64, H = 64;
+        QImage frame(W, H, QImage::Format_RGBA8888);
+        for (int y = 0; y < H; ++y) {
+            for (int x = 0; x < W; ++x) {
+                frame.setPixelColor(x, y,
+                    x < 32 ? QColor(0, 0, 255, 255) : QColor(255, 0, 0, 255));
+            }
+        }
+
+        QImage mask(W, H, QImage::Format_Grayscale8);
+        mask.fill(0);   // 100% background — compose outputs blurred plate
+
+        QImage out = comp.compositeBlur(frame, mask, /*radius*/ 1.0f);
+        check("compositeBlur returns an image of the same size",
+              out.size() == QSize(W, H));
+
+        if (out.size() == QSize(W, H)) {
+            // Just inside the blue side. Pre-blur: pure blue. Post-blur:
+            // red should bleed in via the kernel reaching across column 32.
+            const QRgb preBlue  = frame.pixel(31, 32);
+            const QRgb postBlue = out.pixel(31, 32);
+            // Just inside the red side. Pre-blur: pure red. Post-blur:
+            // blue should bleed in.
+            const QRgb preRed   = frame.pixel(32, 32);
+            const QRgb postRed  = out.pixel(32, 32);
+
+            check("blue-side pre-blur is pure blue",
+                  qRed(preBlue) == 0 && qBlue(preBlue) == 255);
+            check("red-side pre-blur is pure red",
+                  qRed(preRed) == 255 && qBlue(preRed) == 0);
+            check("blur leaks red across the boundary into the blue side",
+                  qRed(postBlue) > 0);
+            check("blur leaks blue across the boundary into the red side",
+                  qBlue(postRed) > 0);
+
+            std::printf(
+                "    [debug] (31,32) blue side before #%02x%02x%02x, after #%02x%02x%02x\n"
+                "    [debug] (32,32) red  side before #%02x%02x%02x, after #%02x%02x%02x\n",
+                qRed(preBlue),  qGreen(preBlue),  qBlue(preBlue),
+                qRed(postBlue), qGreen(postBlue), qBlue(postBlue),
+                qRed(preRed),   qGreen(preRed),   qBlue(preRed),
+                qRed(postRed),  qGreen(postRed),  qBlue(postRed));
+        }
+    }
+
     std::printf("\n%s: %d failure(s)\n",
                 failures == 0 ? "PASS" : "FAIL", failures);
     return failures == 0 ? 0 : 1;
