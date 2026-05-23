@@ -12,8 +12,9 @@
 // blur-vs-input pixel-difference check once the composite chain renders.
 
 #include "core/BackgroundEngine.h"
+#include "core/BackgroundCompositor.h"
 
-#include <QCoreApplication>
+#include <QGuiApplication>
 #include <QImage>
 #include <cstdio>
 #include <cstdlib>
@@ -29,9 +30,11 @@ void check(const char *what, bool ok)
 
 int main(int argc, char *argv[])
 {
-    QCoreApplication app(argc, argv);
+    // QGuiApplication (not QCoreApplication) so QOpenGLContext +
+    // QOffscreenSurface have a platform integration to bind to.
+    QGuiApplication app(argc, argv);
 
-    std::printf("===== #20 BackgroundEngine Phase 2a lifecycle =====\n");
+    std::printf("===== #20 BackgroundEngine Phase 2a/2b lifecycle =====\n");
 
     BackgroundEngine engine;
 
@@ -81,6 +84,22 @@ int main(int argc, char *argv[])
           out.size() == in.size());
     check("processFrame pass-through preserves first pixel",
           out.pixel(0, 0) == in.pixel(0, 0));
+
+    // (F) Phase 2b — direct compositor GL init. Proves the offscreen
+    //     surface + GL 3.3 core context creates and the four shader
+    //     programs compile + link from the qrc.
+    BackgroundCompositor comp;
+    bool initOk = comp.ensureInitialised();
+    check("BackgroundCompositor::ensureInitialised() returns true",
+          initOk);
+    check("BackgroundCompositor::isReady() == true after init",
+          comp.isReady() == initOk);
+
+    // Idempotent: second call returns true without re-init.
+    if (initOk) {
+        bool secondCall = comp.ensureInitialised();
+        check("ensureInitialised is idempotent", secondCall);
+    }
 
     std::printf("\n%s: %d failure(s)\n",
                 failures == 0 ? "PASS" : "FAIL", failures);
