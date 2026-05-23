@@ -12,6 +12,7 @@ find_package(Qt6 REQUIRED COMPONENTS
     Gui
     Multimedia
     Network
+    OpenGL
     Sql
     Svg
     WebSockets
@@ -131,6 +132,8 @@ qt_add_executable(talq
     src/ui/UpcomingRemindersDialog.cpp
     src/core/BackgroundEngine.cpp
     src/core/BackgroundEngine.h
+    src/core/BackgroundCompositor.cpp
+    src/core/BackgroundCompositor.h
     resources/resources.qrc
     resources/twemoji.qrc
     resources/changelog.qrc
@@ -203,6 +206,7 @@ target_link_libraries(talq PRIVATE
     Qt6::Core
     Qt6::Gui
     Qt6::Network
+    Qt6::OpenGL
     Qt6::Sql
     Qt6::WebSockets
     Qt6::Widgets
@@ -283,4 +287,22 @@ add_executable(version-compare-test tests/version_compare_test.cpp)
 target_include_directories(version-compare-test PRIVATE src)
 if(WIN32)
     set_target_properties(version-compare-test PROPERTIES WIN32_EXECUTABLE FALSE)
+endif()
+
+# #20 Phase 2a — BackgroundEngine lifecycle test. Pulls in Qt6::Core +
+# Qt6::Gui (QImage) but no GStreamer; runs in a few hundred ms. Future
+# phases expand this with composite-output assertions.
+qt_add_executable(background-engine-test
+    tests/background_engine_test.cpp
+    src/core/BackgroundEngine.cpp
+    src/core/BackgroundCompositor.cpp
+)
+target_include_directories(background-engine-test PRIVATE src)
+target_link_libraries(background-engine-test PRIVATE
+    Qt6::Core
+    Qt6::Gui
+    Qt6::OpenGL
+)
+if(WIN32)
+    set_target_properties(background-engine-test PROPERTIES WIN32_EXECUTABLE FALSE)
 endif()
