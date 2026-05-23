@@ -7,9 +7,13 @@
 // unit-tested in milliseconds without spinning up QNetworkAccessManager.
 //
 // Semantics: dotted decimal segments compared numerically, left-to-right.
-// Missing trailing segments are treated as 0 ("0.37" == "0.37.0"). Non-
-// numeric segments degrade to 0 — same as Qt's QString::toInt(&ok) path
-// in the original implementation, so behaviour is preserved verbatim.
+// Missing trailing segments are treated as 0 ("0.37" == "0.37.0"). The
+// parser matches the original QString::toInt(&ok)-based path for the
+// clean dotted-decimal inputs the manifest emits (our only real input);
+// embedded non-digit characters (e.g. "1.2.3-rc1") and leading whitespace
+// are tolerated more leniently than the original — we ignore those chars
+// rather than failing the whole segment to 0. This is a deliberate
+// behavioural choice (more forgiving), not a literal re-implementation.
 
 #include <cstring>
 #include <string>
