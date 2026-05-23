@@ -112,7 +112,20 @@ private:
     bool createGeometry();
     bool ensureFbos(const QSize &size);
     void uploadTexture(QOpenGLTexture *&tex, const QImage &img, bool singleChannel);
+    // runPass: callers are expected to bind the program, set its uniforms,
+    // and call runPass(prog, fbo). The function takes care of FBO bind +
+    // viewport + clear + draw + cleanup. Doing the uniform setup inside
+    // the runPass call site (after prog->bind, before runPass) ensures
+    // the program is the active GL program when glUniform* is issued —
+    // setting uniforms after release() to glUseProgram(0) would no-op
+    // on some drivers (review B1).
     void runPass(QOpenGLShaderProgram *prog, QOpenGLFramebufferObject *target);
     QImage readbackFbo(QOpenGLFramebufferObject *fbo);
     void releaseAll();
+
+    // Identifies the currently-uploaded image-mode background texture so
+    // selecting a different image of the same dimensions re-uploads
+    // (review B2 — keying on size alone meant changing 1280x720 → other
+    // 1280x720 silently used the stale GPU texture).
+    qint64 m_texBgCacheKey = 0;
 };
