@@ -13,10 +13,13 @@ Your team chat as a real desktop app: instant open, near-zero idle, built to be 
 </div>
 
 > ⚠️ **Status:** Chat is the solid, daily-driver core. **Audio/video
-> calls and screen sharing now work end to end** and are verified in real
-> two-party use (1:1 and MCU/conference) as of v0.30.0 — we're almost
-> there; the remaining work is breadth of cross-network/NAT hardening.
-> Windows only for now.
+> calls, simulcast quality switching, and screen sharing now work end to
+> end** and are verified in real two-party use (1:1 and MCU/conference)
+> as of v0.38.0. Simulcast publishing (180p / 360p / 720p layers, with
+> per-receiver substream selection) shipped in stable after end-to-end
+> harness validation across all three substream levels. The remaining
+> work is breadth of cross-network/NAT hardening and multi-party
+> validation beyond two peers. Windows only for now.
 
 ---
 
@@ -58,11 +61,24 @@ eventually you rebuild the part that's between you and the work.
 - **Live updates** — long-poll for new messages; native notifications and
   a tray that stays out of the way.
 - **Calls** — one-to-one and group audio/video over WebRTC, screen
-  sharing, with optional noise suppression. *(Working end to end; final
-  cross-network hardening — see Status.)*
+  sharing with live thumbnail picker, optional noise suppression.
+  **Simulcast publishing** sends three layers (180p / 360p / 720p) so a
+  receiver on a weak network can drop down without dragging everyone
+  with them; a **manual Quality chip** on the call screen lets you
+  override the per-tile auto-select. *(Working end to end; multi-party
+  hardening — see Status.)*
+- **Mission Control** — a live telemetry panel on the call screen
+  (outbound bandwidth sparkline, codec / encoder / TX-RX resolution
+  cards, per-participant subsystem chips) and a matching strip on the
+  Settings dialog. One diagnostic surface, one design language.
 - **Four themes** — Ember, Warm, Vivid, Paper. Calm, warm, fast.
 - **Built to idle** — QPainter-on-QWidget rendering, no web engine; near-
   zero CPU at rest.
+- **Self-tested** — `talq-call-test` is a headless harness that runs the
+  real publish + subscribe pipelines against the MCU and asserts
+  end-to-end correctness for simulcast, substream switching, screen
+  sharing, mute propagation, and more — so regressions surface without a
+  human in the loop.
 
 ## Requirements
 
@@ -144,16 +160,22 @@ TalQ is what I use every day, but it's honest about where it is:
 - **Solid:** chat, threads, reactions, file sharing, search,
   notifications, the conversation list — the things I rely on for hours a
   day.
-- **Working, almost there:** **audio/video calls and screen sharing.** As
-  of v0.30.0 the WebRTC pipeline is verified working end to end in real
-  two-party use — 1:1 and MCU/conference video, hardware H264, screen
-  share — with crash barriers so a media failure can't take the app down.
-  The remaining work is breadth: validating across the range of NAT,
-  firewall, and device configurations real users have.
+- **Solid in two-party use:** **audio/video calls, simulcast quality
+  switching, and screen sharing.** As of v0.38.0 the WebRTC pipeline is
+  verified working end to end in real 1:1 and MCU/conference use —
+  hardware H264, three-layer simulcast publishing with auto + manual
+  substream selection, screen sharing with live-thumbnail picker — with
+  crash barriers so a media failure can't take the app down. A headless
+  self-test suite (`talq-call-test`) asserts the entire publish +
+  subscribe path against the MCU on every release.
+- **Multi-party (3+ peers):** works, but hasn't been validated as
+  exhaustively as 1:1; field reports from larger meetings are the most
+  useful contribution right now.
 - **Windows only.** Linux/macOS would need the media/compositor paths
   reworked.
-- **Help especially welcome here:** call reliability across networks is
-  where outside testing and bug reports move the needle most.
+- **Help especially welcome here:** call reliability across the range of
+  NAT, firewall, and device configurations real users have is where
+  outside testing and bug reports move the needle most.
 
 I'd rather you know that going in than discover it on a customer call.
 
