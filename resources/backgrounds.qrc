@@ -1,0 +1,15 @@
+<!DOCTYPE RCC>
+<!-- #20 video-background resources. Phase 1: just the GLSL shader source +
+     the model + 8 background JPGs are placeholders pending bundling in
+     Phase 2 / Phase 4 per docs/superpowers/plans/2026-05-24-video-background.md.
+     Empty resources are fine — Qt's :/bg/ prefix is searchable but returns
+     empty file lists until real assets land. -->
+<RCC>
+  <qresource prefix="/bg/shaders">
+    <file alias="passthrough.vert">../src/core/shaders/passthrough.vert</file>
+    <file alias="bg_mask_refine.frag">../src/core/shaders/bg_mask_refine.frag</file>
+    <file alias="bg_blur_horizontal.frag">../src/core/shaders/bg_blur_horizontal.frag</file>
+    <file alias="bg_blur_vertical.frag">../src/core/shaders/bg_blur_vertical.frag</file>
+    <file alias="bg_compose.frag">../src/core/shaders/bg_compose.frag</file>
+  </qresource>
+</RCC>

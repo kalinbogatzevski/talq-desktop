@@ -129,10 +129,13 @@ qt_add_executable(talq
     src/ui/TopicTabBar.cpp
     src/ui/UpcomingRemindersDialog.h
     src/ui/UpcomingRemindersDialog.cpp
+    src/core/BackgroundEngine.cpp
+    src/core/BackgroundEngine.h
     resources/resources.qrc
     resources/twemoji.qrc
     resources/changelog.qrc
     resources/sounds.qrc
+    resources/backgrounds.qrc
     resources/talq.rc
 )
 
@@ -157,6 +160,18 @@ option(TALQ_PRERELEASE "Mark this binary as a pre-release/beta build" OFF)
 if(TALQ_PRERELEASE)
     target_compile_definitions(talq PRIVATE TALQ_PRERELEASE)
     message(STATUS "TalQ: PRE-RELEASE build (UI will show a beta badge)")
+endif()
+
+# #20 Video background blur + replace. Build-time gate so the feature can be
+# stripped out of slim ports until the TFLite + GL composite stack is fully
+# wired. Default ON; runtime behaviour is ALSO gated by the
+# Talk/Backgrounds/virtualBackgroundEnabled QSetting (default false), so
+# turning this on at build time alone doesn't change any user-visible
+# state — the engine is a pass-through until the user opts in.
+option(TALQ_BG "Build the video-background blur + replace stack" ON)
+if(TALQ_BG)
+    target_compile_definitions(talq PRIVATE TALQ_BG)
+    message(STATUS "TalQ: video-background stack ENABLED (#20)")
 endif()
 
 # Branding. 123NET assets live outside the tree in /private (never
