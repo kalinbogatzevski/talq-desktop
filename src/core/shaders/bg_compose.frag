@@ -1,31 +1,48 @@
 // Stage C — final blend. Ported from spreed v23.0.4 WebGLCompositor.js
 // (`backgroundComposite` fragment shader). Constants kept verbatim:
-//   coverage = [0.45, 0.7 - feather*0.01]   smoothstep edge feathering
-//   lightWrapping = 0.3                     screen-blend background edge
-//                                           colour into the foreground rim
+//   coverage = vec2(0.45, 0.7 - feather*0.01)   smoothstep edge feathering
+//   lightWrapping = 0.3                          screen-blend bg edge colour
+//                                                into the foreground rim
 //
-// Phase 1 stub. Phase 2 ports the exact formula.
+// Two modes selected by u_mode:
+//   0 = image — blend the foreground over the supplied background image,
+//       with a "light wrap" screen-blend of the background's edge colour
+//       into the foreground rim so the cutout doesn't look pasted-on.
+//   1 = blur  — same blend math but the "background" texture is the
+//       output of bg_blur_v.frag (the camera's own blurred plate).
 
 #version 330 core
 
 in  vec2 v_uv;
 out vec4 outColor;
 
-uniform sampler2D u_foreground;     // camera RGBA
-uniform sampler2D u_background;     // either blurred-self or chosen image
-uniform sampler2D u_personMask;     // refined mask (alpha channel)
+uniform sampler2D u_foreground;     // raw camera RGBA
+uniform sampler2D u_background;     // blurred-self (blur mode) or image (image mode)
+uniform sampler2D u_personMask;     // refined mask (r-channel)
 uniform vec2      u_coverage;       // smoothstep edges
 uniform float     u_lightWrapping;  // 0.3 in Talk
 uniform int       u_mode;           // 0 = image, 1 = blur
 
+// Screen blend, same as Talk's: 1 - (1 - a) * (1 - b)
+vec3 screen3(vec3 a, vec3 b) { return vec3(1.0) - (vec3(1.0) - a) * (vec3(1.0) - b); }
+
 void main()
 {
-    // STUB — emit the foreground unchanged. Phase 2 implements:
-    //   personMask = smoothstep(u_coverage.x, u_coverage.y, mask.a)
-    //   if (mode == 0) {  // image
-    //       lightWrap = max(0, personMask - cov.y) / (1 - cov.y)
-    //       fg = screen(fg, lightWrap * bg)
-    //   }
-    //   outColor = vec4(mix(bg, fg.rgb, personMask), 1.0)
-    outColor = texture(u_foreground, v_uv);
+    vec3 fgColor = texture(u_foreground, v_uv).rgb;
+    vec3 bgColor = texture(u_background, v_uv).rgb;
+    float maskA  = texture(u_personMask, v_uv).r;
+
+    // Soft alpha gradient (edge feathering, no hard threshold).
+    float personMask = smoothstep(u_coverage.x, u_coverage.y, maskA);
+
+    // Image mode: light wrap — let the background's edge colour bleed
+    // into the foreground rim via a screen blend, so the cutout doesn't
+    // look pasted on.
+    if (u_mode == 0) {
+        float lightWrapMask = u_lightWrapping
+            * max(0.0, personMask - u_coverage.y) / max(1e-5, 1.0 - u_coverage.y);
+        fgColor = screen3(fgColor, lightWrapMask * bgColor);
+    }
+
+    outColor = vec4(mix(bgColor, fgColor, personMask), 1.0);
 }
