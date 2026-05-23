@@ -201,6 +201,13 @@ private:
     GstElement *m_previewAppsink = nullptr;
     VideoFrameProvider *m_localVideoProvider = nullptr;
     class BackgroundEngine *m_backgroundEngine = nullptr;   // #20, not owned
+    // Set true the first time the BG-engine preview path hits an
+    // unrecoverable degradation (caps != BGRx, gst_buffer_map failure,
+    // size mismatch). Triggers a one-shot qWarning, then suppresses
+    // further warnings — matches the "surface once, then quiet" pattern
+    // BackgroundEngine itself uses for engineDisabled. Atomic so the
+    // streaming-thread branch and Qt-thread reads stay consistent.
+    std::atomic<bool> m_previewEngineDegraded{false};
 
     static void onNegotiationNeeded(GstElement *webrtc, gpointer userData);
     static void onIceCandidate(GstElement *webrtc, guint mlineIndex, gchar *candidate, gpointer userData);
