@@ -16,9 +16,13 @@
 #include <QHBoxLayout>
 #include <QGroupBox>
 #include <QButtonGroup>
+#include <QFileDialog>
+#include <QFileInfo>
 #include <QFrame>
 #include <QFont>
 #include <QRegularExpression>
+#include <QSlider>
+#include <QStandardPaths>
 #include <QTimer>
 
 // Group eyebrow: a calm uppercase caption that names a group of setting
@@ -319,6 +323,96 @@ QWidget *SettingsDialog::buildAudioVideoTab()
         tr("Camera quality"),
         tr("Auto picks the best mode your camera supports."),
         m_cameraQualityCombo));
+
+    layout->addSpacing(kGroupGap - kRowGap);
+
+    // ── Background (#20) ──
+    // Settings keys mirror upstream Talk (spreed v23.0.4) so a hypothetical
+    // cross-config import would round-trip: Talk/Backgrounds/virtualBackground{Enabled,Type,BlurStrength,Url}.
+    layout->addWidget(makeSectionHeader("Background"));
+
+    m_settings.beginGroup("Talk/Backgrounds");
+    const bool    bgEnabled   = m_settings.value("virtualBackgroundEnabled", false).toBool();
+    const QString bgType      = m_settings.value("virtualBackgroundType", "blur").toString();
+    const int     bgStrength  = m_settings.value("virtualBackgroundBlurStrength", 10).toInt();
+    const QString bgUrl       = m_settings.value("virtualBackgroundUrl", QString()).toString();
+    m_settings.endGroup();
+
+    m_bgModeCombo = new QComboBox;
+    m_bgModeCombo->addItem(tr("Off"),   QStringLiteral("off"));
+    m_bgModeCombo->addItem(tr("Blur"),  QStringLiteral("blur"));
+    m_bgModeCombo->addItem(tr("Image"), QStringLiteral("image"));
+    {
+        const QString cur = bgEnabled ? bgType : QStringLiteral("off");
+        int idx = m_bgModeCombo->findData(cur);
+        m_bgModeCombo->setCurrentIndex(idx < 0 ? 0 : idx);
+    }
+    connect(m_bgModeCombo, QOverload<int>::of(&QComboBox::activated), this,
+            [this](int) {
+        const QString val = m_bgModeCombo->currentData().toString();
+        m_settings.beginGroup("Talk/Backgrounds");
+        m_settings.setValue("virtualBackgroundEnabled",
+                            val != QStringLiteral("off"));
+        if (val != QStringLiteral("off"))
+            m_settings.setValue("virtualBackgroundType", val);
+        m_settings.endGroup();
+        // CallManager listens to "virtualBackgroundEnabled" via
+        // QSettings::sync() at the boundary; emit a signal so it
+        // applies live during a call without restarting the publisher.
+        emit backgroundSettingsChanged();
+    });
+    layout->addWidget(makeSettingRow(
+        tr("Camera background"),
+        tr("Off, Blur, or replace with an image. Applies live during calls."),
+        m_bgModeCombo));
+
+    m_bgBlurStrengthSlider = new QSlider(Qt::Horizontal);
+    m_bgBlurStrengthSlider->setRange(1, 20);
+    m_bgBlurStrengthSlider->setValue(qBound(1, bgStrength, 20));
+    m_bgBlurStrengthSlider->setTickPosition(QSlider::NoTicks);
+    connect(m_bgBlurStrengthSlider, &QSlider::valueChanged, this,
+            [this](int v) {
+        m_settings.beginGroup("Talk/Backgrounds");
+        m_settings.setValue("virtualBackgroundBlurStrength", v);
+        m_settings.endGroup();
+        emit backgroundSettingsChanged();
+    });
+    layout->addWidget(makeSettingRow(
+        tr("Blur strength"),
+        tr("Higher = stronger blur on the background plate."),
+        m_bgBlurStrengthSlider));
+
+    // Image path picker — bare-bones for Phase 3.1. Phase 4 will replace
+    // with a thumbnail grid of the 8 bundled backgrounds + Browse.
+    auto *imgRow = new QWidget;
+    auto *imgLayout = new QHBoxLayout(imgRow);
+    imgLayout->setContentsMargins(0, 0, 0, 0);
+    imgLayout->setSpacing(8);
+    m_bgImagePathLabel = new QLabel(bgUrl.isEmpty() ? tr("(none)") : QFileInfo(bgUrl).fileName());
+    m_bgImagePathLabel->setToolTip(bgUrl);
+    m_bgImagePathLabel->setProperty("role", "settingDesc");
+    auto *browseBtn = new QPushButton(tr("Choose…"));
+    browseBtn->setProperty("variant", "ghost");
+    connect(browseBtn, &QPushButton::clicked, this, [this]() {
+        const QString path = QFileDialog::getOpenFileName(this,
+            tr("Choose background image"),
+            QStandardPaths::writableLocation(QStandardPaths::PicturesLocation),
+            tr("Images (*.png *.jpg *.jpeg *.webp)"));
+        if (path.isEmpty()) return;
+        m_settings.beginGroup("Talk/Backgrounds");
+        m_settings.setValue("virtualBackgroundUrl", path);
+        m_settings.endGroup();
+        m_bgImagePathLabel->setText(QFileInfo(path).fileName());
+        m_bgImagePathLabel->setToolTip(path);
+        emit backgroundSettingsChanged();
+    });
+    imgLayout->addWidget(m_bgImagePathLabel, 1);
+    imgLayout->addWidget(browseBtn, 0);
+    imgRow->setMinimumWidth(kControlCol);
+    layout->addWidget(makeSettingRow(
+        tr("Background image"),
+        tr("Used when Background = Image. Browse to pick a photo."),
+        imgRow));
 
     layout->addStretch();
 
