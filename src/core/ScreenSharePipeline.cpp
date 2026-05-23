@@ -123,10 +123,11 @@ bool ScreenSharePipeline::start(const QString &stunServer, const QList<TurnServe
     GstElement *screenSrc = nullptr;
 
     // Harness override: synthetic capture for talq-call-test (no real desktop
-    // session, no HWND). videotestsrc emits a moving SMPTE pattern at the
-    // requested caps so the wire payload is still encodable, decodable, and
-    // visually distinct from a black frame on the receiver side. The pipeline
-    // graph downstream of the source is identical to a real desktop capture.
+    // session, no HWND). videotestsrc emits a bouncing-ball pattern that
+    // changes frame-to-frame, so the wire payload is encodable, decodable,
+    // and visually distinct from a frozen black frame on the receiver side.
+    // The pipeline graph downstream of the source is identical to a real
+    // desktop capture.
     if (qEnvironmentVariableIsSet("TALQ_SS_TESTSRC")) {
         screenSrc = gst_element_factory_make("videotestsrc", nullptr);
         if (screenSrc) {
