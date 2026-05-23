@@ -876,12 +876,11 @@ void CallStage::paintCodecPill(QPainter &p, const PainterTheme &th)
         cursor = rxPill.right();
     }
 
-    // #8 Quality chip — only meaningful when the publisher actually emits
-    // simulcast (3 layers). Stable builds publish a single 720p layer, so
-    // selectStream has nothing to switch BETWEEN; rendering the chip would
-    // just give the user a no-op control. Gate on TALQ_PRERELEASE — same
-    // gate PublishPipeline uses to decide m_simulcast.
-#ifdef TALQ_PRERELEASE
+    // #8 Quality chip — clickable; cycles Auto -> L -> M -> H -> Auto.
+    // Active in all builds as of 0.38.0 (simulcast publishes in stable too,
+    // so the chip's selectStream actually has layers to switch between).
+    // The dot colour signals the active mode (textSecondary for Auto,
+    // accent for any forced layer) so the override is glanceable.
     static const char *const kLabels[] = { "LOW", "MED", "HIGH" };
     const QString qText = (m_qualityOverride < 0)
         ? QStringLiteral("AUTO")
@@ -899,10 +898,6 @@ void CallStage::paintCodecPill(QPainter &p, const PainterTheme &th)
     p.drawText(qPill.adjusted(24, 0, -8, 0),
                Qt::AlignVCenter | Qt::AlignLeft, qText);
     m_qualityPillRect = qPill;
-#else
-    Q_UNUSED(cursor);
-    m_qualityPillRect = QRectF();  // hit-test always misses in stable
-#endif
 }
 
 void CallStage::paintSharingBadge(QPainter &p, const PainterTheme &th)
