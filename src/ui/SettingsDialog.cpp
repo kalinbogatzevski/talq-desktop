@@ -3,6 +3,7 @@
 #include "core/MediaDeviceManager.h"
 #include "core/NotificationManager.h"
 #include "core/CallManager.h"
+#include "core/TalqLog.h"
 #include "core/AppSettings.h"
 #include "core/AuthManager.h"
 
@@ -440,6 +441,31 @@ QWidget *SettingsDialog::buildGeneralTab()
         tr("Close to tray"),
         tr("Minimize to the tray instead of quitting."),
         m_closeToTray));
+
+    layout->addSpacing(kGroupGap - kRowGap);
+    layout->addWidget(makeSectionHeader("Diagnostics"));
+
+    // Detailed debug logging. Always-on by default — a comms app dying
+    // mid-call without a log is the recurring "no evidence" failure. Users
+    // who want a smaller log can opt out here; effect on next launch (the
+    // flag is read once in main.cpp before Qt is up).
+    m_detailedLogging = new QCheckBox;
+    m_settings.beginGroup("Diagnostics");
+    m_detailedLogging->setChecked(m_settings.value("detailedLogging", true).toBool());
+    m_settings.endGroup();
+    connect(m_detailedLogging, &QCheckBox::toggled, this, [this](bool on) {
+        m_settings.beginGroup("Diagnostics");
+        m_settings.setValue("detailedLogging", on);
+        m_settings.endGroup();
+        // Live-apply for app qDebug. GST_DEBUG level is captured by GStreamer
+        // at gst_init time → only a restart flips the GST trace floor.
+        TalqLog::g_verbose = on;
+    });
+    layout->addWidget(makeSettingRow(
+        tr("Detailed debug logging"),
+        tr("Capture app diagnostics in talq_debug.log "
+           "(recommended — helps debug call issues). Disable for a smaller log."),
+        m_detailedLogging));
 
     layout->addStretch();
     return page;
