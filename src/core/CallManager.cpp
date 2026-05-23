@@ -1567,6 +1567,10 @@ void CallManager::joinCallOnServer(bool withVideo)
                         // Start publisher (send our audio to MCU)
                         qDebug() << "CallManager: creating PublishPipeline...";
                         m_publishPipeline = new PublishPipeline(this);
+                        // #20 — long-lived BackgroundEngine attached to the
+                        // publisher so its preview path routes through the
+                        // compositor when the user has Blur/Image enabled.
+                        m_publishPipeline->setBackgroundEngine(m_backgroundEngine);
                         qDebug() << "CallManager: PublishPipeline created, connecting signals...";
                         m_localVideoProvider = m_publishPipeline->localVideoProvider();
                         emit localVideoProviderChanged();
