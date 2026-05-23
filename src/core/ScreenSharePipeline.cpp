@@ -541,6 +541,9 @@ void ScreenSharePipeline::onIceStateChanged(GObject *obj, GParamSpec *, gpointer
     const char *names[] = {"new", "checking", "connected", "completed", "failed", "disconnected", "closed"};
     int idx = static_cast<int>(state);
     QString stateName = (idx < 7) ? names[idx] : "unknown";
+    // Always log the ICE transition — #10 debug: when screen-share "doesn't
+    // always start", the smoking-gun is which ICE state never advances.
+    qInfo().nospace() << "ScreenSharePipeline: ICE state -> " << stateName;
     QPointer<ScreenSharePipeline> guard(self);
     QMetaObject::invokeMethod(self, [guard, stateName]() {
         if (!guard) return;
