@@ -11,6 +11,7 @@
 #include "core/ApiClient.h"
 #include "core/SignalingClient.h"
 #include "core/PublishPipeline.h"
+#include <gst/app/gstappsink.h>   // GstAppSink (for the #13 preview new-sample callback)
 #include "core/SubscribePipeline.h"
 #include "core/SubscribeWebrtcSrc.h"
 #include "core/PeerPipeline.h"
@@ -227,6 +228,18 @@ private:
     QHash<QString, int> m_desiredSubstream;
     QHash<QString, int> m_subscriberRecoveries;  // sessionId -> mid-call re-subscribe count (bounded; reset on connect)
     QByteArray m_ringtoneData;  // backing buffer for the selected ring (SND_ASYNC reads from it)
+
+    // #13: pre-answer self-preview pipeline. Standalone camera→appsink
+    // pipeline that runs while an incoming VIDEO call rings, so the callee
+    // sees themselves before answering. STRICTLY teardown-synchronous on
+    // accept/decline (camera must be released before PublishPipeline
+    // grabs it — otherwise Windows MF device contention breaks the call).
+    GstElement *m_previewPipeline = nullptr;
+    GstElement *m_previewAppsink  = nullptr;
+    VideoFrameProvider *m_previewProvider = nullptr;
+    void startIncomingCameraPreview();
+    void stopIncomingCameraPreview();
+    static GstFlowReturn onPreviewSample(GstAppSink *sink, gpointer userData);
     // P2P single pipeline
     PeerPipeline *m_peerPipeline = nullptr;
     bool m_useP2P = false;
