@@ -330,16 +330,15 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         emit error("Failed to link shared chain"); cleanup(); return false;
     }
 
-    // Simulcast only in pre-release builds; stable sends a single 720p
-    // stream (no downgrade vs 0.32.0 while substream selection is proven).
-#ifdef TALQ_PRERELEASE
+    // Simulcast in BOTH stable and beta as of 0.38.0 — the SIM-group SDP
+    // munge (#9) is now harness-verified end-to-end across all three
+    // substream levels (180p / 360p / 720p), the rid header extension is
+    // confirmed on the wire (#15 probe), and substream switching propagates
+    // through HPB+Janus correctly (TALQ_TEST_SELECT_SUBSTREAM scenarios
+    // PASS). The earlier TALQ_PRERELEASE gate was a pre-test-coverage
+    // safety margin; the tests have done its job.
     m_simulcast = true;
-#else
-    m_simulcast = false;
-    // Collapse the layer set to one branch carrying the 720p params.
-    m_layers[0] = SimulcastLayer{ "h", 1280, 720, 2'500'000 };
-#endif
-    const size_t nBranches = m_simulcast ? m_layers.size() : 1;
+    const size_t nBranches = m_layers.size();
 
     // --- Encoder branches: each tees off m_outputTee (3 for simulcast, 1 otherwise) ---
     bool firstBranchUsesH264 = false;
@@ -1478,16 +1477,31 @@ void PublishPipeline::onOfferCreated(GstPromise *promise, gpointer userData)
         const quint32 sM = self->m_layers[1].ssrc;
         const quint32 sH = self->m_layers[2].ssrc;
         const QString mungedSdp = mungeOfferForSimulcast(sdp, sL, sM, sH);
-        if (!mungedSdp.isEmpty() && mungedSdp.contains("a=ssrc-group:SIM")) {
-            qInfo().nospace() << "PublishPipeline #9: signaling munged offer "
-                              << "with SIM(" << sL << "," << sM << "," << sH
-                              << ") — length " << sdp.length() << " -> "
-                              << mungedSdp.length();
-            sdp = mungedSdp;
-        } else {
-            qWarning() << "PublishPipeline #9: SIM munge produced empty / "
-                          "unmunged SDP, sending original";
+        if (mungedSdp.isEmpty() || !mungedSdp.contains("a=ssrc-group:SIM")) {
+            // Silently shipping the un-munged offer here would put the
+            // publisher back into the exact pre-fix state: rid-only offer,
+            // empty substream map at Janus, selectStream no-op, every
+            // receiver stuck at 180p — but with no visible error so the
+            // user wouldn't know why their quality is degraded. Surface it.
+            const QString why = QStringLiteral(
+                "Simulcast SDP munge produced %1 — refusing to publish "
+                "rid-only offer (would silently break substream switching). "
+                "Please report this build.")
+                .arg(mungedSdp.isEmpty() ? "empty output" : "no SIM line");
+            qWarning().noquote() << "PublishPipeline #9 FATAL:" << why;
+            // Emit error on the Qt thread and bail before localOfferReady
+            // fires — better to fail the call than degrade silently.
+            QPointer<PublishPipeline> gd(self);
+            QMetaObject::invokeMethod(self, [gd, why]() {
+                if (gd) emit gd->error(why);
+            }, Qt::QueuedConnection);
+            return;
         }
+        qInfo().nospace() << "PublishPipeline #9: signaling munged offer "
+                          << "with SIM(" << sL << "," << sM << "," << sH
+                          << ") — length " << sdp.length() << " -> "
+                          << mungedSdp.length();
+        sdp = mungedSdp;
     }
 
     qDebug() << "PublishPipeline: offer created, SDP length=" << sdp.length() << "\n" << sdp;
