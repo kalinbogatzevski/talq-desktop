@@ -599,6 +599,16 @@ void CallStage::paintCentered(QPainter &p, const PainterTheme &th)
             m_buttons.push_back({QStringLiteral("accept"), acc, {}, tr("Accept"), false, false});
             m_buttons.push_back({QStringLiteral("decline"), dec, {}, tr("Decline"), false, true});
         }
+        // #13: pre-answer self-preview. CallManager starts a standalone
+        // camera→appsink pipeline for incoming VIDEO calls and feeds frames
+        // into the self participant's camera provider. Paint it as the PiP
+        // (same rect the media-phase PiP uses) so the callee can see
+        // themselves before answering.
+        if (auto *self = m_call->selfParticipant();
+            self && self->camera() && !m_pipRect.isNull()) {
+            Tile s; s.p = self; s.rect = m_pipRect;
+            paintTile(p, s, th, false);
+        }
     } else {
         // Self-preview PiP shown immediately while calling/connecting, in
         // the exact corner it keeps once connected (no jump on transition).

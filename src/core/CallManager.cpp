@@ -891,6 +891,118 @@ void CallManager::onIncomingCallDetected(const QString &callerName, const QStrin
     m_ringTimeout.start();
     emit callInfoChanged();
     emit incomingCall(callerName, token, m_withVideo);
+    // #13: pre-answer self-preview for video calls. Camera turns on while
+    // the call rings so the callee can check framing before answering.
+    if (m_withVideo) startIncomingCameraPreview();
+}
+
+// #13 — Pre-answer self-preview pipeline (standalone, not coupled to
+// PublishPipeline). Starts on an incoming VIDEO call so the callee can
+// frame themselves before answering; releases the camera SYNCHRONOUSLY on
+// accept/decline/timeout/teardown so the publish pipeline can grab the
+// device cleanly (Windows MF only lets one source own a camera).
+void CallManager::startIncomingCameraPreview()
+{
+    if (m_previewPipeline) return;             // already running
+    if (!m_withVideo) return;                  // video calls only
+    const int deviceIndex = videoDeviceIndex();
+
+    // Mirrors PublishPipeline's source choice (mfvideosrc → ksvideosrc →
+    // autovideosrc). No forced-exact source caps (per memory
+    // project_talq_camera_fps_rca: never default to exact mfvideosrc caps).
+    GstElement *pipe = gst_pipeline_new("incoming-preview");
+    GstElement *src  = gst_element_factory_make("mfvideosrc", nullptr);
+    if (!src) src = gst_element_factory_make("ksvideosrc", nullptr);
+    if (!src) src = gst_element_factory_make("autovideosrc", nullptr);
+    GstElement *dec  = gst_element_factory_make("decodebin", "preview-decode");
+    GstElement *conv = gst_element_factory_make("videoconvert", nullptr);
+    GstElement *sink = gst_element_factory_make("appsink", "preview-sink");
+    if (!pipe || !src || !dec || !conv || !sink) {
+        qWarning() << "CallManager: incoming preview — element creation failed";
+        for (GstElement *e : { pipe, src, dec, conv, sink })
+            if (e && !GST_OBJECT_PARENT(e)) gst_object_unref(e);
+        return;
+    }
+    g_object_set(src, "device-index", deviceIndex, nullptr);
+
+    // appsink: same shape as PublishPipeline's preview (BGRx, drop, depth 1).
+    {
+        GstCaps *caps = gst_caps_from_string("video/x-raw,format=BGRx");
+        g_object_set(sink, "emit-signals", TRUE, "caps", caps,
+                     "drop", TRUE, "max-buffers", 1, nullptr);
+        gst_caps_unref(caps);
+    }
+    gst_bin_add_many(GST_BIN(pipe), src, dec, conv, sink, nullptr);
+    if (!gst_element_link(src, dec) || !gst_element_link(conv, sink)) {
+        qWarning() << "CallManager: incoming preview — static linking failed";
+        gst_element_set_state(pipe, GST_STATE_NULL);
+        gst_object_unref(pipe);
+        return;
+    }
+    // decodebin's src pad appears dynamically — connect to videoconvert.
+    g_signal_connect(dec, "pad-added",
+        G_CALLBACK(+[](GstElement *, GstPad *p, gpointer ud) {
+            GstPad *cs = gst_element_get_static_pad(GST_ELEMENT(ud), "sink");
+            if (cs && !gst_pad_is_linked(cs)) gst_pad_link(p, cs);
+            if (cs) gst_object_unref(cs);
+        }), conv);
+
+    m_previewPipeline = pipe;
+    m_previewAppsink  = sink;
+    m_previewProvider = new VideoFrameProvider(this);
+    g_signal_connect(sink, "new-sample",
+                     G_CALLBACK(&CallManager::onPreviewSample), this);
+
+    if (gst_element_set_state(pipe, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
+        qWarning() << "CallManager: incoming preview — pipeline failed to start";
+        stopIncomingCameraPreview();
+        return;
+    }
+    if (m_selfParticipant) m_selfParticipant->setCamera(m_previewProvider);
+    m_localVideoProvider = m_previewProvider;
+    emit localVideoProviderChanged();
+    qInfo() << "CallManager: incoming-call self-preview started (camera"
+            << deviceIndex << ")";
+}
+
+void CallManager::stopIncomingCameraPreview()
+{
+    if (!m_previewPipeline) return;
+    // Detach the participant's camera FIRST so the UI stops requesting frames.
+    if (m_selfParticipant) m_selfParticipant->setCamera(nullptr);
+    if (m_localVideoProvider == m_previewProvider) {
+        m_localVideoProvider = nullptr;
+        emit localVideoProviderChanged();
+    }
+    if (m_previewAppsink)
+        g_signal_handlers_disconnect_by_data(m_previewAppsink, this);
+    // SYNCHRONOUS teardown: set state NULL blocks until the state change
+    // completes, guaranteeing mfvideosrc has released the camera before we
+    // return — so a subsequent enableCamera on the publish pipeline can
+    // open the device. THIS IS WHY THE TEARDOWN IS A BLOCKING CALL.
+    gst_element_set_state(m_previewPipeline, GST_STATE_NULL);
+    gst_object_unref(m_previewPipeline);
+    m_previewPipeline = nullptr;
+    m_previewAppsink  = nullptr;
+    if (m_previewProvider) {
+        m_previewProvider->deleteLater();
+        m_previewProvider = nullptr;
+    }
+    qInfo() << "CallManager: incoming-call self-preview stopped";
+}
+
+GstFlowReturn CallManager::onPreviewSample(GstAppSink *sink, gpointer userData)
+{
+    auto *self = static_cast<CallManager *>(userData);
+    GstSample *sample = gst_app_sink_pull_sample(sink);
+    if (!sample) return GST_FLOW_OK;
+    QPointer<CallManager> guard(self);
+    QMetaObject::invokeMethod(self, [guard, sample]() {
+        if (guard && guard->m_previewProvider)
+            guard->m_previewProvider->feedFrame(sample);
+        gst_sample_unref(sample);
+    }, Qt::QueuedConnection);
+    return GST_FLOW_OK;
 }
 
 void CallManager::setRemotePeerInfo(const QString &name, const QString &peerId) {
@@ -911,6 +1023,12 @@ void CallManager::acceptCall(bool withVideo) {
         qDebug() << "CallManager: ignoring accept — UI not ready";
         return;
     }
+    // #13: release the camera BEFORE anything else — the publish pipeline
+    // will grab it via enableCamera below, and Windows Media Foundation
+    // only lets one source open a camera at a time. Synchronous teardown
+    // (set state NULL waits for state-change) guarantees the device is
+    // free by the time we return here.
+    stopIncomingCameraPreview();
     m_withVideo = withVideo; m_cameraOn = withVideo; m_muted = false; m_callDuration = 0;
     emit cameraChanged();
     m_ringTimeout.stop();
@@ -936,6 +1054,7 @@ void CallManager::declineCall()
     }
 
     qDebug() << "CallManager: declining call for token" << m_callToken;
+    stopIncomingCameraPreview();   // #13: release the camera
     setState(Ending);
 
     if (m_joinedCall) {
@@ -1720,6 +1839,7 @@ void CallManager::teardown(const QString &reason)
     setStatusDetail("");
     m_ringTimeout.stop();
     m_durationTimer.stop();
+    stopIncomingCameraPreview();   // #13: release the camera (safe no-op if not running)
     // Snapshot the call identity BEFORE the local-state cleanup below
     // clears it — the server-leave DELETE at the end needs the token and
     // the joined flag, and without sending it the OTHER party never gets
