@@ -1,5 +1,57 @@
 # Changelog
 
+## v0.38.0 "Bangaranga" — STABLE (2026-05-23)
+
+First stable cut to ship simulcast video publishing, end-to-end-verified.
+Includes every chat / call / UX improvement from the 0.35.x and 0.37.x
+beta lines, validated by a new self-test suite that catches regressions
+without a human in the loop.
+
+### Added — simulcast & call quality
+- **Simulcast publishing.** The publisher now sends three layers (180p / 360p /
+  720p) instead of one, so receivers on weak networks can drop to a lower
+  layer without forcing everyone else down. Auto-select adapts the layer to
+  each remote tile's size on the call screen.
+- **Manual Quality chip on the call screen.** Click the chip next to the
+  RX-resolution indicator to cycle Auto → LOW → MED → HIGH → Auto. Right-click
+  resets to Auto. Forces every remote tile to the requested layer.
+- **Pre-share quality picker.** The screen-share dialog now lets you pick
+  720p / 1080p / 1440p / Native before sharing, persisted across sessions.
+
+### Added — call UX
+- **Mission Control telemetry panel** on the call stage — live outbound
+  bandwidth sparkline, codec / encoder / TX-RX resolution metric cards, and
+  per-participant subsystem chips. Open with the telemetry button.
+- **Pre-answer self-preview** PiP on incoming video calls.
+- **Callee chooses Video / Audio / Decline** on incoming video calls.
+- **Live thumbnails** in the share-screen picker (windows + monitors), with a
+  program-icon fallback when capture isn't possible.
+
+### Added — chat & app
+- **Mission Control header strip** on Settings — version, codename, build
+  timestamp, channel chip — matching the call-screen telemetry idiom.
+- **Always-on detailed debug logging** to `talq_debug.log`. Settings → General →
+  Diagnostics lets you turn it off if you want a smaller log.
+- **Image viewer loading indicator** while the full-res preview downloads.
+
+### Fixed
+- **User status no longer stuck "In a call"** after a call ends — your previous
+  status (e.g. Vacationing) is restored once the server acknowledges leave.
+- **General API outbox** for must-complete calls (leaveCall, status revert)
+  so transient signaling drops don't strand server-side state.
+- **Audio + video routing** across reconnects + status transitions.
+
+### Internal — self-test scaffolding (does not affect runtime)
+- `TALQ_TEST_SIMULCAST` / `_SELECT_SUBSTREAM` — end-to-end simulcast +
+  substream-switch harness scenarios.
+- `TALQ_TEST_SCREENSHARE` — end-to-end screen-share scenario, headless via a
+  synthetic capture source (no real desktop session needed).
+- `TALQ_TEST_MUTE_TOGGLE` — verifies remote mute/unmute propagation.
+- Pure-C++ unit tests for the substream-policy tile-size mapping and the
+  auto-update version comparator.
+
+---
+
 ## v0.37.3 "Bangaranga" — PRE-RELEASE (2026-05-23)
 
 ### Fixed
