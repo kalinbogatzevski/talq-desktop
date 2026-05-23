@@ -249,3 +249,13 @@ if(WIN32)
     # WIN32 GUI subsystem, which detaches stdio).
     set_target_properties(talq-call-test PROPERTIES WIN32_EXECUTABLE FALSE)
 endif()
+
+# ---- Pure unit tests (no Qt runtime, no GStreamer) ----
+# #18 substream policy — header-only pure function, no Qt deps. Builds in
+# under a second; ctest can run it inline so a CallStage refactor breaking
+# the tile-size policy fails the suite immediately.
+add_executable(substream-policy-test tests/substream_policy_test.cpp)
+target_include_directories(substream-policy-test PRIVATE src)
+if(WIN32)
+    set_target_properties(substream-policy-test PROPERTIES WIN32_EXECUTABLE FALSE)
+endif()

@@ -1,6 +1,7 @@
 #include "CallStage.h"
 #include "core/VideoFrameProvider.h"
 #include "painter/VectorIcons.h"
+#include "ui/SubstreamPolicy.h"
 
 #include <QAction>
 #include <QActionGroup>
@@ -312,17 +313,8 @@ void CallStage::updateStreamQualities()
     if (!m_call) return;
     for (const Tile &t : m_tiles) {
         if (!t.p || t.p->isSelf() || t.isScreen) continue;
-        int substream;
-        if (m_qualityOverride >= 0) {
-            // #8 user forced this layer for every remote tile. Manual
-            // override beats the tile-size policy.
-            substream = m_qualityOverride;
-        } else {
-            const qreal h = t.rect.height();
-            substream = (t.isStage || h >= 480.0) ? 2   // HIGH  720p
-                      : (h >= 240.0)              ? 1   // MED   360p
-                                                  : 0;  // LOW   180p
-        }
+        const int substream = pickSubstream(m_qualityOverride,
+                                            t.rect.height(), t.isStage);
         m_call->requestPeerVideoQuality(t.p->sessionId(), substream);
     }
 }
