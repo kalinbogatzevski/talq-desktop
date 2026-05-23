@@ -74,6 +74,7 @@ private:
     QCheckBox *m_autoStart = nullptr;
     QCheckBox *m_startMinimized = nullptr;
     QCheckBox *m_closeToTray = nullptr;
+    QCheckBox *m_detailedLogging = nullptr;
     QComboBox *m_themeCombo = nullptr;
 
     // Updates tab
