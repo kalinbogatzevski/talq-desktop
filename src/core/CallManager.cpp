@@ -1,4 +1,5 @@
 #include "core/CallManager.h"
+#include "core/BackgroundEngine.h"
 #include "core/TalqLog.h"
 #include <QJsonObject>
 #include <QDateTime>
@@ -6,6 +7,7 @@
 #include <QSet>
 #include <QSettings>
 #include <QFile>
+#include <QFileInfo>
 #include <QRegularExpression>
 #include <QElapsedTimer>
 #include <QCoreApplication>
@@ -190,6 +192,12 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
     , m_signaling(signaling)
     , m_deviceManager(deviceMgr)
 {
+    // #20 — long-lived BackgroundEngine. Constructed even when the
+    // feature is Off so the publisher can ask for it later without a
+    // null check; the engine itself is the gate (Mode::None → no-op).
+    m_backgroundEngine = new BackgroundEngine(this);
+    applyBackgroundSettings();
+
     // HPB participant events
     connect(m_signaling, &SignalingClient::participantJoinedCall,
             this, &CallManager::onParticipantJoinedCall);
@@ -1314,6 +1322,35 @@ int CallManager::videoDeviceIndex() const
 bool CallManager::preferHd1080() const
 {
     return QSettings().value("video/resolution", 0).toInt() == 0;
+}
+
+void CallManager::applyBackgroundSettings()
+{
+    if (!m_backgroundEngine) return;
+
+    QSettings s("TalQ", "TalQ");
+    s.beginGroup("Talk/Backgrounds");
+    const bool enabled = s.value("virtualBackgroundEnabled", false).toBool();
+    const QString type = s.value("virtualBackgroundType", "blur").toString();
+    const int strength = s.value("virtualBackgroundBlurStrength", 10).toInt();
+    const QString url  = s.value("virtualBackgroundUrl", QString()).toString();
+    s.endGroup();
+
+    BackgroundEngine::Mode mode = BackgroundEngine::Mode::None;
+    if (enabled) {
+        if (type == QStringLiteral("image")) mode = BackgroundEngine::Mode::Image;
+        else                                  mode = BackgroundEngine::Mode::Blur;
+    }
+
+    m_backgroundEngine->setMode(mode);
+    m_backgroundEngine->setBlurStrength(strength);
+    m_backgroundEngine->setImagePath(url);
+    qInfo() << "CallManager: background mode applied —"
+            << (mode == BackgroundEngine::Mode::None  ? "Off"
+              : mode == BackgroundEngine::Mode::Blur  ? "Blur"
+              : mode == BackgroundEngine::Mode::Image ? "Image" : "?")
+            << "strength=" << strength
+            << "url=" << QFileInfo(url).fileName();
 }
 
 void CallManager::broadcastMediaState(const QString &media, bool enabled)
