@@ -259,3 +259,13 @@ target_include_directories(substream-policy-test PRIVATE src)
 if(WIN32)
     set_target_properties(substream-policy-test PROPERTIES WIN32_EXECUTABLE FALSE)
 endif()
+
+# #19 version-compare — UpdateChecker's "is the remote build newer than
+# what we're running" answer is what gates auto-update; a regression here
+# either strands users on broken builds or downgrades them. Header-only,
+# no Qt.
+add_executable(version-compare-test tests/version_compare_test.cpp)
+target_include_directories(version-compare-test PRIVATE src)
+if(WIN32)
+    set_target_properties(version-compare-test PROPERTIES WIN32_EXECUTABLE FALSE)
+endif()
