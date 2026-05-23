@@ -52,32 +52,57 @@ static QWidget *makeSettingRow(const QString &name,
                                const QString &desc,
                                QWidget *control)
 {
+    // Row structure: a top HBox that contains the NAME and the CONTROL on
+    // the SAME line, with the optional DESC hanging below the name only.
+    // Pinning name+control to one line keeps a checkbox indicator and its
+    // label on the same baseline regardless of how tall the control is
+    // intrinsically (combo box ~ 24 px, checkbox indicator ~ 17 px).
     auto *row = new QWidget;
-    auto *h = new QHBoxLayout(row);
-    h->setContentsMargins(0, 0, 0, 0);
-    h->setSpacing(16);
+    auto *outer = new QVBoxLayout(row);
+    outer->setContentsMargins(0, 0, 0, 0);
+    outer->setSpacing(2);
 
-    auto *textCol = new QVBoxLayout;
-    textCol->setContentsMargins(0, 0, 0, 0);
-    textCol->setSpacing(2);
+    auto *topLine = new QHBoxLayout;
+    topLine->setContentsMargins(0, 0, 0, 0);
+    topLine->setSpacing(16);
+
     auto *nameLbl = new QLabel(name);
     nameLbl->setProperty("role", "settingName");
-    textCol->addWidget(nameLbl);
+    // AlignVCenter so a tall control on the same line still has the name
+    // centered against it; a short label on a tall row stays centered.
+    topLine->addWidget(nameLbl, 1, Qt::AlignVCenter);
+
+    if (control) {
+        // QCheckBox / QRadioButton are intrinsically narrow (just the
+        // indicator + an empty label area, since the name is in the left
+        // column). setMinimumWidth on them stretches the widget but the
+        // indicator stays LEFT-aligned, so the indicator would float far
+        // left of where combo-box edges line up. Wrap them in a row with
+        // a leading stretch so the indicator sits flush against the same
+        // right-hand edge as combos / line edits.
+        const bool isToggle = qobject_cast<QCheckBox *>(control)
+                           || qobject_cast<QRadioButton *>(control);
+        if (isToggle) {
+            auto *rightAlign = new QHBoxLayout;
+            rightAlign->setContentsMargins(0, 0, 0, 0);
+            rightAlign->addStretch();
+            rightAlign->addWidget(control);
+            auto *holder = new QWidget;
+            holder->setLayout(rightAlign);
+            holder->setMinimumWidth(kControlCol);
+            topLine->addWidget(holder, 0, Qt::AlignVCenter);
+        } else {
+            control->setMinimumWidth(kControlCol);
+            topLine->addWidget(control, 0, Qt::AlignVCenter);
+        }
+    }
+    outer->addLayout(topLine);
+
     if (!desc.isEmpty()) {
         auto *descLbl = new QLabel(desc);
         descLbl->setProperty("role", "settingDesc");
         descLbl->setWordWrap(true);
-        textCol->addWidget(descLbl);
-    }
-    h->addLayout(textCol, 1);
-
-    if (control) {
-        control->setMinimumWidth(kControlCol);
-        auto *ctrlWrap = new QVBoxLayout;          // top-align the control
-        ctrlWrap->setContentsMargins(0, 0, 0, 0);  // against a 2-line name
-        ctrlWrap->addWidget(control);
-        ctrlWrap->addStretch();
-        h->addLayout(ctrlWrap, 0);
+        outer->addWidget(descLbl);
     }
     return row;
 }
