@@ -80,6 +80,7 @@ void BackgroundCompositor::releaseAll()
     delete m_texFg;   m_texFg   = nullptr;
     delete m_texMask; m_texMask = nullptr;
     delete m_texBg;   m_texBg   = nullptr;
+    m_texBgCacheKey = 0;
 
     delete m_vbo; m_vbo = nullptr;
     if (m_vao) { m_vao->destroy(); delete m_vao; m_vao = nullptr; }
@@ -161,10 +162,7 @@ bool BackgroundCompositor::compilePrograms()
 
 bool BackgroundCompositor::createGeometry()
 {
-    // Full-screen quad as a triangle strip: position (NDC) + uv pairs.
-    // Two-triangle strip covers [-1, +1] in NDC; uv covers [0, 1].
     static const float quadVerts[] = {
-        // x,  y,    u, v
         -1.f, -1.f,  0.f, 0.f,
          1.f, -1.f,  1.f, 0.f,
         -1.f,  1.f,  0.f, 1.f,
@@ -172,11 +170,18 @@ bool BackgroundCompositor::createGeometry()
     };
 
     m_vao = new QOpenGLVertexArrayObject;
-    if (!m_vao->create()) return false;
+    if (!m_vao->create()) {
+        qWarning() << "BackgroundCompositor: VAO create failed";
+        return false;
+    }
     m_vao->bind();
 
     m_vbo = new QOpenGLBuffer(QOpenGLBuffer::VertexBuffer);
-    if (!m_vbo->create()) return false;
+    if (!m_vbo->create()) {
+        qWarning() << "BackgroundCompositor: VBO create failed";
+        m_vao->release();
+        return false;
+    }
     m_vbo->setUsagePattern(QOpenGLBuffer::StaticDraw);
     m_vbo->bind();
     m_vbo->allocate(quadVerts, sizeof(quadVerts));
@@ -254,19 +259,27 @@ void BackgroundCompositor::uploadTexture(QOpenGLTexture *&tex,
                                           const QImage &img,
                                           bool singleChannel)
 {
-    delete tex;
-    tex = new QOpenGLTexture(QOpenGLTexture::Target2D);
-    tex->setFormat(singleChannel ? QOpenGLTexture::R8_UNorm
-                                  : QOpenGLTexture::RGBA8_UNorm);
-    tex->setSize(img.width(), img.height());
-    tex->setMipLevels(1);
-    tex->setMinificationFilter(QOpenGLTexture::Linear);
-    tex->setMagnificationFilter(QOpenGLTexture::Linear);
-    tex->setWrapMode(QOpenGLTexture::ClampToEdge);
-    tex->allocateStorage();
+    // Re-use existing texture when shape + format match — at 30 fps with
+    // two textures per frame, create/destroy was a steady stall (review I3).
+    // Only re-allocate when the input dimensions change.
+    const auto wantFormat = singleChannel ? QOpenGLTexture::R8_UNorm
+                                           : QOpenGLTexture::RGBA8_UNorm;
+    if (!tex
+        || tex->width()  != img.width()
+        || tex->height() != img.height()
+        || tex->format() != wantFormat) {
+        delete tex;
+        tex = new QOpenGLTexture(QOpenGLTexture::Target2D);
+        tex->setFormat(wantFormat);
+        tex->setSize(img.width(), img.height());
+        tex->setMipLevels(1);
+        tex->setMinificationFilter(QOpenGLTexture::Linear);
+        tex->setMagnificationFilter(QOpenGLTexture::Linear);
+        tex->setWrapMode(QOpenGLTexture::ClampToEdge);
+        tex->allocateStorage();
+    }
 
     if (singleChannel) {
-        // Mask is r-channel only. Accept an 8-bit grayscale QImage.
         QImage gray = img.format() == QImage::Format_Grayscale8
             ? img : img.convertToFormat(QImage::Format_Grayscale8);
         tex->setData(QOpenGLTexture::Red, QOpenGLTexture::UInt8,
@@ -284,12 +297,13 @@ void BackgroundCompositor::uploadTexture(QOpenGLTexture *&tex,
 void BackgroundCompositor::runPass(QOpenGLShaderProgram *prog,
                                     QOpenGLFramebufferObject *target)
 {
+    // Caller has already prog->bind()'d and set uniforms with the program
+    // active — we just bind the FBO, set viewport, clear, draw, release.
     auto *f = m_glCtx->functions();
     target->bind();
     f->glViewport(0, 0, target->width(), target->height());
     f->glClearColor(0.f, 0.f, 0.f, 1.f);
     f->glClear(GL_COLOR_BUFFER_BIT);
-    prog->bind();
     m_vao->bind();
     f->glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     m_vao->release();
@@ -305,14 +319,35 @@ QImage BackgroundCompositor::readbackFbo(QOpenGLFramebufferObject *fbo)
     return img.convertToFormat(QImage::Format_RGBA8888);
 }
 
+// Talk's smoothstep cutoff for the mask edge. The "feather" / "person
+// size" term scales the inner cutoff; Talk's reference uses 0 by default
+// (no feather adjustment). Named so the next reader doesn't read the
+// hardcoded `0.70 - 0 * 0.01` as a half-finished port (review I6).
+namespace {
+constexpr float kCoverageLow    = 0.45f;
+constexpr float kCoverageHigh   = 0.70f;
+constexpr float kEdgeFeatherPx  = 0.0f;
+constexpr float kLightWrapping  = 0.30f;   // Talk's default
+} // namespace
+
 QImage BackgroundCompositor::compositeBlur(const QImage &rgba,
                                             const QImage &mask,
                                             float radius)
 {
     if (!ensureInitialised()) return rgba;
-    if (rgba.isNull() || mask.isNull()) return rgba;
-    if (!m_glCtx->makeCurrent(m_surface)) return rgba;
-    if (!ensureFbos(rgba.size())) return rgba;
+    if (rgba.isNull() || mask.isNull()) {
+        qWarning() << "BackgroundCompositor::compositeBlur — null input";
+        return rgba;
+    }
+    if (!m_glCtx->makeCurrent(m_surface)) {
+        qWarning() << "BackgroundCompositor::compositeBlur — makeCurrent failed";
+        return rgba;
+    }
+    if (!ensureFbos(rgba.size())) {
+        qWarning() << "BackgroundCompositor::compositeBlur — FBO alloc failed for"
+                   << rgba.size();
+        return rgba;
+    }
 
     uploadTexture(m_texFg,   rgba, /*singleChannel*/ false);
     uploadTexture(m_texMask, mask, /*singleChannel*/ true);
@@ -321,7 +356,8 @@ QImage BackgroundCompositor::compositeBlur(const QImage &rgba,
     const QSize sz = rgba.size();
     const QVector2D texelSize(1.0f / sz.width(), 1.0f / sz.height());
 
-    // Pass 1: horizontal blur of (input * (1 - mask)) → m_fboBlurH.
+    // Pass 1: horizontal blur. Uniforms are set INSIDE the bound/release
+    // bracket so glUniform* always reaches an active program (review B1).
     f->glActiveTexture(GL_TEXTURE0);
     m_texFg->bind();
     f->glActiveTexture(GL_TEXTURE1);
@@ -329,12 +365,11 @@ QImage BackgroundCompositor::compositeBlur(const QImage &rgba,
     m_progBlurH->bind();
     m_progBlurH->setUniformValue("u_inputFrame", 0);
     m_progBlurH->setUniformValue("u_personMask", 1);
-    m_progBlurH->setUniformValue("u_texelSize", texelSize);
+    m_progBlurH->setUniformValue("u_texelSize",  texelSize);
     m_progBlurH->setUniformValue("u_blurRadius", radius);
-    m_progBlurH->release();
     runPass(m_progBlurH, m_fboBlurH);
 
-    // Pass 2: vertical blur of pass-1 result → m_fboBlurV.
+    // Pass 2: vertical blur of pass-1 result.
     f->glActiveTexture(GL_TEXTURE0);
     f->glBindTexture(GL_TEXTURE_2D, m_fboBlurH->texture());
     f->glActiveTexture(GL_TEXTURE1);
@@ -342,27 +377,25 @@ QImage BackgroundCompositor::compositeBlur(const QImage &rgba,
     m_progBlurV->bind();
     m_progBlurV->setUniformValue("u_inputFrame", 0);
     m_progBlurV->setUniformValue("u_personMask", 1);
-    m_progBlurV->setUniformValue("u_texelSize", texelSize);
+    m_progBlurV->setUniformValue("u_texelSize",  texelSize);
     m_progBlurV->setUniformValue("u_blurRadius", radius);
-    m_progBlurV->release();
     runPass(m_progBlurV, m_fboBlurV);
 
-    // Pass 3: compose foreground over blurred background by mask → m_fboOutput.
+    // Pass 3: compose sharp foreground over blurred background by mask.
     f->glActiveTexture(GL_TEXTURE0);
-    m_texFg->bind();                                           // sharp camera (fg)
+    m_texFg->bind();
     f->glActiveTexture(GL_TEXTURE1);
-    f->glBindTexture(GL_TEXTURE_2D, m_fboBlurV->texture());    // blurred camera (bg)
+    f->glBindTexture(GL_TEXTURE_2D, m_fboBlurV->texture());
     f->glActiveTexture(GL_TEXTURE2);
     m_texMask->bind();
     m_progCompose->bind();
-    m_progCompose->setUniformValue("u_foreground", 0);
-    m_progCompose->setUniformValue("u_background", 1);
-    m_progCompose->setUniformValue("u_personMask", 2);
+    m_progCompose->setUniformValue("u_foreground",   0);
+    m_progCompose->setUniformValue("u_background",   1);
+    m_progCompose->setUniformValue("u_personMask",   2);
     m_progCompose->setUniformValue("u_coverage",
-                                    QVector2D(0.45f, 0.70f - 0.0f * 0.01f));
-    m_progCompose->setUniformValue("u_lightWrapping", 0.3f);
+        QVector2D(kCoverageLow, kCoverageHigh - kEdgeFeatherPx * 0.01f));
+    m_progCompose->setUniformValue("u_lightWrapping", kLightWrapping);
     m_progCompose->setUniformValue("u_mode", 1);   // blur mode
-    m_progCompose->release();
     runPass(m_progCompose, m_fboOutput);
 
     return readbackFbo(m_fboOutput);
@@ -373,18 +406,31 @@ QImage BackgroundCompositor::compositeImage(const QImage &rgba,
                                              const QImage &bg)
 {
     if (!ensureInitialised()) return rgba;
-    if (rgba.isNull() || mask.isNull() || bg.isNull()) return rgba;
-    if (!m_glCtx->makeCurrent(m_surface)) return rgba;
-    if (!ensureFbos(rgba.size())) return rgba;
+    if (rgba.isNull() || mask.isNull() || bg.isNull()) {
+        qWarning() << "BackgroundCompositor::compositeImage — null input";
+        return rgba;
+    }
+    if (!m_glCtx->makeCurrent(m_surface)) {
+        qWarning() << "BackgroundCompositor::compositeImage — makeCurrent failed";
+        return rgba;
+    }
+    if (!ensureFbos(rgba.size())) {
+        qWarning() << "BackgroundCompositor::compositeImage — FBO alloc failed for"
+                   << rgba.size();
+        return rgba;
+    }
 
     uploadTexture(m_texFg,   rgba, false);
     uploadTexture(m_texMask, mask, true);
 
-    // Cache the background texture across frames as long as its cacheKey
-    // hasn't changed (selectImagePath sets a new cacheKey only on change).
-    if (!m_texBg || m_texBg->width() != bg.width()
-                 || m_texBg->height() != bg.height())
+    // Re-upload the background texture whenever the IMAGE CONTENT changes
+    // — keying on size alone let two same-dimension backgrounds silently
+    // share the stale GPU texture (review B2). QImage::cacheKey is bumped
+    // on any pixel-data change (incl. assignment).
+    if (!m_texBg || m_texBgCacheKey != bg.cacheKey()) {
         uploadTexture(m_texBg, bg, false);
+        m_texBgCacheKey = bg.cacheKey();
+    }
 
     auto *f = m_glCtx->extraFunctions();
     f->glActiveTexture(GL_TEXTURE0);
@@ -395,14 +441,13 @@ QImage BackgroundCompositor::compositeImage(const QImage &rgba,
     m_texMask->bind();
 
     m_progCompose->bind();
-    m_progCompose->setUniformValue("u_foreground", 0);
-    m_progCompose->setUniformValue("u_background", 1);
-    m_progCompose->setUniformValue("u_personMask", 2);
+    m_progCompose->setUniformValue("u_foreground",   0);
+    m_progCompose->setUniformValue("u_background",   1);
+    m_progCompose->setUniformValue("u_personMask",   2);
     m_progCompose->setUniformValue("u_coverage",
-                                    QVector2D(0.45f, 0.70f - 0.0f * 0.01f));
-    m_progCompose->setUniformValue("u_lightWrapping", 0.3f);
+        QVector2D(kCoverageLow, kCoverageHigh - kEdgeFeatherPx * 0.01f));
+    m_progCompose->setUniformValue("u_lightWrapping", kLightWrapping);
     m_progCompose->setUniformValue("u_mode", 0);   // image mode
-    m_progCompose->release();
     runPass(m_progCompose, m_fboOutput);
 
     return readbackFbo(m_fboOutput);
