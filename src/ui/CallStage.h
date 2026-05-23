@@ -37,6 +37,11 @@ public:
 signals:
     void requestToggleFullscreen();
     void requestToggleShare();    // window owns the screen-source picker
+    // #20 — right-click on the Background chip jumps to Settings →
+    // Audio & Video where the full picker + blur slider + image
+    // browser live. The window owns the dialog (MainWindow), so this
+    // signal asks it to open Settings to the right tab.
+    void requestOpenBackgroundSettings();
 
 protected:
     void paintEvent(QPaintEvent *) override;
@@ -116,4 +121,8 @@ private:
     // every remote tile gets the same forced substream.
     int m_qualityOverride = -1;
     QRectF m_qualityPillRect;
+
+    // #20 BG chip hit rectangle, updated each paint. Independent of the
+    // Quality chip so click handling stays straightforward.
+    QRectF m_bgPillRect;
 };
