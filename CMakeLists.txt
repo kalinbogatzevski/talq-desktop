@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(talq VERSION 0.38.2 LANGUAGES CXX)
+project(talq VERSION 0.39.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -149,10 +149,14 @@ target_compile_definitions(talq PRIVATE
     TALQ_BUILD_TS="${TALQ_BUILD_TS}"
     # Per-release codename (empty string = no codename pill). Set alongside
     # the version bump; shown on the Mission Control command bar.
-    # "Bangaranga": DARA's winning song at the Eurovision Song Contest 2026,
-    # Bulgaria's first-ever Eurovision win (contest's 70th anniversary;
-    # staging inspired by Bulgarian kukeri folklore).
-    TALQ_VERSION_NAME="Bangaranga"
+    # "Aprilsko Vastanie": the Bulgarian April Uprising of 1876
+    # (Българско Априлско Въстание) — the 150th anniversary falls in 2026.
+    # Panagyurishte was one of the four revolutionary districts and the
+    # town where the uprising was declared; Raina Knyaginya sewed its
+    # tricolour flag at age 20. The codename was locked in 2026-05-24
+    # while the project lead was physically in Panagyurishte for the
+    # 24 May long weekend (Day of Bulgarian Enlightenment).
+    TALQ_VERSION_NAME="Aprilsko Vastanie"
 )
 
 # Pre-release flag: when build-release.sh is invoked with --beta it

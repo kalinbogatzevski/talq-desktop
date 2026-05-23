@@ -1,5 +1,61 @@
 # Changelog
 
+## v0.39.0 "Aprilsko Vastanie" — BETA (2026-05-24)
+
+**TalQ 0.39 carries this codename in honour of the 150th anniversary of
+the Aprilsko Vastanie — the Bulgarian April Uprising of 1876, declared
+at the Oborishte assembly near Panagyurishte and led, district by
+district, against five centuries of Ottoman rule. The uprising failed
+militarily but its suppression drew European attention, catalysed the
+Russo-Turkish War of 1877-78, and ended with the restoration of the
+Bulgarian state at San Stefano. Raina Knyaginya, age 20, sewed and
+carried the Panagyurishte uprising's tricolour flag — the enduring
+symbol of the revolt.** 2026 = 1876 + 150. The codename was locked in
+on 24 May 2026, the Day of Bulgarian Enlightenment, while the project
+lead was physically in Panagyurishte for the long weekend.
+
+### Added — video backgrounds (#20, beta preview)
+
+This release ships the **scaffolding, UI, and self-preview rendering
+path** for camera background blur + image replace. The actual
+person-segmentation model + the encoded-stream integration land in
+0.39.1-beta. What you get today:
+
+* **Settings → Audio & Video → Background:** pick Off / Blur / Image,
+  set blur strength (1-20, default 10), Choose… an image background
+  from disk. Settings persist across sessions; keys mirror upstream
+  Nextcloud Talk web (`Talk/Backgrounds/virtualBackground{Enabled,Type,
+  BlurStrength,Url}`).
+* **Call screen chip** next to the Quality chip — cycles BG OFF → BG
+  BLUR → BG IMG → BG OFF on left-click. Right-click jumps to the
+  Settings page. The chip's dot turns accent-coloured when the
+  feature is on.
+* **Self-PiP composite:** the local preview now routes through the
+  new GL compositor — you see your own background blurred/replaced in
+  the self-preview during a call. The three GLSL fragment shaders
+  are direct ports of Talk's WebGLCompositor.js (joint bilateral mask
+  refinement is a Phase 2e stub; 9-tap mask-aware separable Gaussian
+  blur + smoothstep edge-feather + lightWrapping screen-blend compose
+  are byte-faithful to Talk).
+* **Test harness:** new BackgroundEngine unit test target with 24
+  assertions covering lifecycle, GL init, shader compilation, mock
+  mask, and a synthetic-frame three-pass composite producing visible
+  blur (red bleeds across a vertical blue/red split boundary).
+
+### Known limitations (intentional, 0.39.x cycle)
+
+* **Mock person mask.** The segmentation step uses a centred radial
+  gradient as a placeholder for real per-frame inference. 0.39.1-beta
+  replaces it with Talk's `selfie_segmenter.tflite` model running on
+  TFLite + GPU delegate. Until then, the "person" zone is a centred
+  ellipse — fine for proving the compositor works, not yet
+  person-shaped.
+* **Preview-only.** Receivers still see the raw camera. The encoded
+  stream → BackgroundEngine integration is queued for 0.39.1-beta
+  (it needs a GStreamer appsink/appsrc bridge in the publisher chain).
+* **Image bundling.** Talk's 8 bundled background JPGs are not yet
+  shipped — pick a user-supplied image via Choose… for now.
+
 ## v0.38.2 "Bangaranga" — STABLE (2026-05-24)
 
 ### Fixed
