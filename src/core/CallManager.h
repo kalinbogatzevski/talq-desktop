@@ -20,6 +20,8 @@
 #include "core/ScreenSharePipeline.h"
 #include "core/CallParticipant.h"
 
+class BackgroundEngine;   // #20 — owned by CallManager; lives across calls.
+
 class CallManager : public QObject
 {
     Q_OBJECT
@@ -128,6 +130,18 @@ public:
     QList<CallParticipant*> participants() const { return m_participantOrder; }
     CallParticipant *selfParticipant() const { return m_selfParticipant; }
 
+    // #20 — long-lived BackgroundEngine. Owned here so it persists across
+    // calls (saves the GL context creation cost on every call). The
+    // current PublishPipeline reads it at construction. Public for the
+    // PublishPipeline wire-up + the Settings live-apply path.
+    BackgroundEngine *backgroundEngine() const { return m_backgroundEngine; }
+
+public slots:
+    // #20 — re-read Talk/Backgrounds/* from QSettings and push to the
+    // BackgroundEngine. Hooked to SettingsDialog::backgroundSettingsChanged
+    // so changes apply live without rebuilding the publisher pipeline.
+    void applyBackgroundSettings();
+
 signals:
     void stateChanged();
     void muteChanged();
@@ -219,6 +233,10 @@ private:
     MediaDeviceManager *m_deviceManager = nullptr;
     // MCU dual pipelines
     PublishPipeline *m_publishPipeline = nullptr;
+
+    // #20 background engine — long-lived, parented to CallManager so it
+    // outlives individual calls. Constructed in CallManager's ctor.
+    BackgroundEngine *m_backgroundEngine = nullptr;
     QHash<QString, SubscribeWebrtcSrc*> m_subscribePipelines;
     QHash<QString, QString> m_subscriberSids;  // sessionId -> current MCU sid
     // #132 simulcast: per-peer desired receive substream (0/1/2). Default
