@@ -898,6 +898,32 @@ void CallStage::paintCodecPill(QPainter &p, const PainterTheme &th)
     p.drawText(qPill.adjusted(24, 0, -8, 0),
                Qt::AlignVCenter | Qt::AlignLeft, qText);
     m_qualityPillRect = qPill;
+
+    // #20 Background chip — clickable; cycles BG OFF → BLUR → IMG → OFF.
+    // Writes the Talk/Backgrounds/* QSettings keys directly so the
+    // change persists, then asks CallManager to apply live. Right-click
+    // jumps to Settings → Audio & Video where the full picker lives.
+    QSettings bgSet("TalQ", "TalQ");
+    bgSet.beginGroup("Talk/Backgrounds");
+    const bool    bgOn   = bgSet.value("virtualBackgroundEnabled", false).toBool();
+    const QString bgType = bgSet.value("virtualBackgroundType", "blur").toString();
+    bgSet.endGroup();
+    const QString bgText = !bgOn
+        ? QStringLiteral("BG OFF")
+        : (bgType == "image" ? QStringLiteral("BG IMG")
+                              : QStringLiteral("BG BLUR"));
+    QRectF bgPill(qPill.right() + 8, pill.top(),
+                  fm.horizontalAdvance(bgText) + 26, pill.height());
+    QColor bgDot    = bgOn ? th.accent : th.textSecondary;
+    QColor bgBorder = bgDot; bgBorder.setAlphaF(bgOn ? 0.65 : 0.55);
+    p.setBrush(bg); p.setPen(QPen(bgBorder, 1));
+    p.drawRoundedRect(bgPill, 11, 11);
+    p.setBrush(bgDot); p.setPen(Qt::NoPen);
+    p.drawEllipse(QRectF(bgPill.left() + 11, bgPill.center().y() - 3, 6, 6));
+    p.setPen(bgOn ? th.textPrimary : th.textSecondary);
+    p.drawText(bgPill.adjusted(24, 0, -8, 0),
+               Qt::AlignVCenter | Qt::AlignLeft, bgText);
+    m_bgPillRect = bgPill;
 }
 
 void CallStage::paintSharingBadge(QPainter &p, const PainterTheme &th)
@@ -1120,6 +1146,11 @@ void CallStage::mousePressEvent(QMouseEvent *e)
             m_qualityOverride = -1;
             updateStreamQualities();
             update();
+        } else if (!m_bgPillRect.isNull()
+                   && m_bgPillRect.contains(e->position())) {
+            // Right-click on the BG chip jumps to Settings → Audio & Video
+            // (where the full picker + blur slider + image browser live).
+            emit requestOpenBackgroundSettings();
         }
         return;
     }
@@ -1130,6 +1161,28 @@ void CallStage::mousePressEvent(QMouseEvent *e)
         && m_qualityPillRect.contains(e->position())) {
         m_qualityOverride = (m_qualityOverride + 2) % 4 - 1;  // -1,0,1,2 cycle
         updateStreamQualities();
+        update();
+        return;
+    }
+
+    // #20 Background chip — left-click cycles BG OFF -> BLUR -> IMG -> OFF.
+    // Writes the Talk/Backgrounds/* keys + asks CallManager to apply live.
+    if (e->button() == Qt::LeftButton
+        && !m_bgPillRect.isNull()
+        && m_bgPillRect.contains(e->position())) {
+        QSettings s("TalQ", "TalQ");
+        s.beginGroup("Talk/Backgrounds");
+        const bool on    = s.value("virtualBackgroundEnabled", false).toBool();
+        const QString t  = s.value("virtualBackgroundType", "blur").toString();
+        QString nextType;
+        bool nextOn;
+        if (!on)                  { nextOn = true;  nextType = "blur";  }
+        else if (t == "blur")     { nextOn = true;  nextType = "image"; }
+        else                       { nextOn = false; nextType = t;      }
+        s.setValue("virtualBackgroundEnabled", nextOn);
+        s.setValue("virtualBackgroundType",    nextType);
+        s.endGroup();
+        m_call->applyBackgroundSettings();
         update();
         return;
     }
