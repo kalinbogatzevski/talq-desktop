@@ -296,6 +296,7 @@ qt_add_executable(background-engine-test
     tests/background_engine_test.cpp
     src/core/BackgroundEngine.cpp
     src/core/BackgroundCompositor.cpp
+    resources/backgrounds.qrc
 )
 target_include_directories(background-engine-test PRIVATE src)
 target_link_libraries(background-engine-test PRIVATE
