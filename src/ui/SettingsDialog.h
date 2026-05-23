@@ -35,6 +35,10 @@ signals:
     void themeIdChanged(int themeId);   // PainterTheme::Theme as int
     void logoutRequested();
     void checkForUpdatesRequested();
+    // #20 — fires when any Talk/Backgrounds/* QSetting is changed via
+    // the Backgrounds section. CallManager listens to live-apply during
+    // calls instead of waiting for the next call's pipeline rebuild.
+    void backgroundSettingsChanged();
 
 private:
     QWidget *buildAudioVideoTab();
@@ -62,6 +66,13 @@ private:
     QComboBox *m_cameraCombo = nullptr;
     QComboBox *m_cameraQualityCombo = nullptr;
     QCheckBox *m_noiseSuppression = nullptr;
+
+    // #20 Background section (#20 Phase 3.1) — Off / Blur / Image picker,
+    // blur strength slider, image-path label + Choose… button. Settings
+    // keys mirror upstream Talk: Talk/Backgrounds/virtualBackground*.
+    QComboBox *m_bgModeCombo         = nullptr;
+    QSlider   *m_bgBlurStrengthSlider = nullptr;
+    QLabel    *m_bgImagePathLabel    = nullptr;
 
     // Notifications tab
     QCheckBox *m_notifEnabled = nullptr;
