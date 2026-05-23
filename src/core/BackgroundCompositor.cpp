@@ -1,20 +1,27 @@
 #include "BackgroundCompositor.h"
 
+#include <QOpenGLBuffer>
 #include <QOpenGLContext>
+#include <QOpenGLExtraFunctions>
 #include <QOpenGLFramebufferObject>
+#include <QOpenGLFramebufferObjectFormat>
 #include <QOpenGLFunctions>
+#include <QOpenGLFunctions_3_3_Core>
 #include <QOpenGLShaderProgram>
+#include <QOpenGLTexture>
+#include <QOpenGLVertexArrayObject>
 #include <QOffscreenSurface>
 #include <QSurfaceFormat>
 #include <QColorSpace>
 #include <QFile>
 #include <QDebug>
-#include <QResource>
+#include <QImage>
+#include <QVector2D>
 
 namespace {
+
 // Load a GLSL source file from the :/bg/shaders/ qrc prefix (registered
-// via resources/backgrounds.qrc in Phase 1) as a QByteArray. Returns
-// empty on miss; caller treats that as a fatal init error.
+// via resources/backgrounds.qrc in Phase 1) as a QByteArray.
 QByteArray loadShaderSource(const char *aliasName)
 {
     QFile f(QStringLiteral(":/bg/shaders/") + QString::fromLatin1(aliasName));
@@ -26,10 +33,6 @@ QByteArray loadShaderSource(const char *aliasName)
     return f.readAll();
 }
 
-// Compile + link a (vertex, fragment) program. The vertex shader is the
-// same passthrough.vert for every program. Returns nullptr + logs on
-// any failure so ensureInitialised can fail fast and the engine falls
-// back to pass-through.
 QOpenGLShaderProgram *buildProgram(const QByteArray &vertSrc,
                                     const QByteArray &fragSrc,
                                     const char *name)
@@ -45,6 +48,10 @@ QOpenGLShaderProgram *buildProgram(const QByteArray &vertSrc,
                    << "fragment compile failed:" << prog->log();
         delete prog; return nullptr;
     }
+    // Bind the attribute locations BEFORE link to match passthrough.vert's
+    // explicit layout(location=…) declarations on platforms that ignore them.
+    prog->bindAttributeLocation("a_position", 0);
+    prog->bindAttributeLocation("a_uv",       1);
     if (!prog->link()) {
         qWarning() << "BackgroundCompositor:" << name
                    << "link failed:" << prog->log();
@@ -53,6 +60,7 @@ QOpenGLShaderProgram *buildProgram(const QByteArray &vertSrc,
     qInfo() << "BackgroundCompositor:" << name << "compiled + linked";
     return prog;
 }
+
 } // namespace
 
 BackgroundCompositor::BackgroundCompositor(QObject *parent)
@@ -66,11 +74,15 @@ BackgroundCompositor::~BackgroundCompositor()
 
 void BackgroundCompositor::releaseAll()
 {
-    // If we ever held a GL context, make it current so program/FBO
-    // destruction releases GL handles correctly. If we never did, the
-    // pointers are nullptr and these deletes are no-ops.
     if (m_glCtx && m_surface)
         m_glCtx->makeCurrent(m_surface);
+
+    delete m_texFg;   m_texFg   = nullptr;
+    delete m_texMask; m_texMask = nullptr;
+    delete m_texBg;   m_texBg   = nullptr;
+
+    delete m_vbo; m_vbo = nullptr;
+    if (m_vao) { m_vao->destroy(); delete m_vao; m_vao = nullptr; }
 
     delete m_progMaskRefine; m_progMaskRefine = nullptr;
     delete m_progBlurH;      m_progBlurH      = nullptr;
@@ -90,20 +102,18 @@ void BackgroundCompositor::releaseAll()
     }
     delete m_surface; m_surface = nullptr;
     m_ready = false;
+    m_lastSize = QSize();
 }
 
 bool BackgroundCompositor::createContext()
 {
-    // GL 3.3 core — the lowest profile that supports both the GLSL
-    // `#version 330 core` shaders we ship and `layout(location=…)` in
-    // the vertex shader. Universally available on Windows desktop GPUs.
     QSurfaceFormat fmt;
     fmt.setRenderableType(QSurfaceFormat::OpenGL);
     fmt.setProfile(QSurfaceFormat::CoreProfile);
     fmt.setMajorVersion(3);
     fmt.setMinorVersion(3);
     fmt.setColorSpace(QColorSpace::SRgb);
-    fmt.setDepthBufferSize(0);   // compositor is 2D — no depth needed
+    fmt.setDepthBufferSize(0);
     fmt.setStencilBufferSize(0);
     fmt.setRedBufferSize(8);
     fmt.setGreenBufferSize(8);
@@ -114,35 +124,25 @@ bool BackgroundCompositor::createContext()
     m_surface->setFormat(fmt);
     m_surface->create();
     if (!m_surface->isValid()) {
-        qWarning() << "BackgroundCompositor: QOffscreenSurface invalid "
-                      "(no GL3.3 platform support?)";
         emit initFailed(QStringLiteral(
-            "Background processing needs OpenGL 3.3 — your GPU/driver "
-            "couldn't open an offscreen surface."));
+            "Background processing needs OpenGL 3.3 — couldn't open an offscreen surface."));
         return false;
     }
-
     m_glCtx = new QOpenGLContext;
     m_glCtx->setFormat(fmt);
-    if (!m_glCtx->create()) {
-        qWarning() << "BackgroundCompositor: QOpenGLContext::create() failed";
+    if (!m_glCtx->create() || !m_glCtx->makeCurrent(m_surface)) {
         emit initFailed(QStringLiteral(
             "Background processing needs OpenGL 3.3 — context creation failed."));
         return false;
     }
-    if (!m_glCtx->makeCurrent(m_surface)) {
-        qWarning() << "BackgroundCompositor: makeCurrent failed";
-        emit initFailed(QStringLiteral(
-            "Background processing needs OpenGL 3.3 — couldn't activate context."));
-        return false;
-    }
-    qInfo().nospace() << "BackgroundCompositor: GL "
-                      << reinterpret_cast<const char *>(
-                             m_glCtx->functions()->glGetString(GL_VERSION))
-                      << " context ready (renderer: "
-                      << reinterpret_cast<const char *>(
-                             m_glCtx->functions()->glGetString(GL_RENDERER))
-                      << ")";
+    qInfo().nospace()
+        << "BackgroundCompositor: GL "
+        << reinterpret_cast<const char *>(
+               m_glCtx->functions()->glGetString(GL_VERSION))
+        << " context ready (renderer: "
+        << reinterpret_cast<const char *>(
+               m_glCtx->functions()->glGetString(GL_RENDERER))
+        << ")";
     return true;
 }
 
@@ -159,48 +159,251 @@ bool BackgroundCompositor::compilePrograms()
     return m_progMaskRefine && m_progBlurH && m_progBlurV && m_progCompose;
 }
 
+bool BackgroundCompositor::createGeometry()
+{
+    // Full-screen quad as a triangle strip: position (NDC) + uv pairs.
+    // Two-triangle strip covers [-1, +1] in NDC; uv covers [0, 1].
+    static const float quadVerts[] = {
+        // x,  y,    u, v
+        -1.f, -1.f,  0.f, 0.f,
+         1.f, -1.f,  1.f, 0.f,
+        -1.f,  1.f,  0.f, 1.f,
+         1.f,  1.f,  1.f, 1.f,
+    };
+
+    m_vao = new QOpenGLVertexArrayObject;
+    if (!m_vao->create()) return false;
+    m_vao->bind();
+
+    m_vbo = new QOpenGLBuffer(QOpenGLBuffer::VertexBuffer);
+    if (!m_vbo->create()) return false;
+    m_vbo->setUsagePattern(QOpenGLBuffer::StaticDraw);
+    m_vbo->bind();
+    m_vbo->allocate(quadVerts, sizeof(quadVerts));
+
+    auto *f = m_glCtx->extraFunctions();
+    f->glEnableVertexAttribArray(0);
+    f->glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE,
+                             4 * sizeof(float),
+                             reinterpret_cast<void *>(0));
+    f->glEnableVertexAttribArray(1);
+    f->glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE,
+                             4 * sizeof(float),
+                             reinterpret_cast<void *>(2 * sizeof(float)));
+
+    m_vbo->release();
+    m_vao->release();
+    return true;
+}
+
+bool BackgroundCompositor::ensureFbos(const QSize &size)
+{
+    if (size == m_lastSize && m_fboInput) return true;
+
+    // Tear down old FBOs if the size changed.
+    delete m_fboInput;  m_fboInput  = nullptr;
+    delete m_fboMask;   m_fboMask   = nullptr;
+    delete m_fboBlurH;  m_fboBlurH  = nullptr;
+    delete m_fboBlurV;  m_fboBlurV  = nullptr;
+    delete m_fboOutput; m_fboOutput = nullptr;
+
+    QOpenGLFramebufferObjectFormat fmt;
+    fmt.setInternalTextureFormat(GL_RGBA8);
+    fmt.setAttachment(QOpenGLFramebufferObject::NoAttachment);
+    fmt.setSamples(0);
+
+    m_fboInput  = new QOpenGLFramebufferObject(size, fmt);
+    m_fboMask   = new QOpenGLFramebufferObject(size, fmt);
+    m_fboBlurH  = new QOpenGLFramebufferObject(size, fmt);
+    m_fboBlurV  = new QOpenGLFramebufferObject(size, fmt);
+    m_fboOutput = new QOpenGLFramebufferObject(size, fmt);
+
+    if (!m_fboInput->isValid() || !m_fboMask->isValid()
+        || !m_fboBlurH->isValid() || !m_fboBlurV->isValid()
+        || !m_fboOutput->isValid()) {
+        qWarning() << "BackgroundCompositor: FBO allocation failed for"
+                   << size;
+        return false;
+    }
+    m_lastSize = size;
+    return true;
+}
+
 bool BackgroundCompositor::ensureInitialised()
 {
     if (m_ready) return true;
-
-    if (!createContext()) {
-        releaseAll();
-        return false;
-    }
+    if (!createContext())   { releaseAll(); return false; }
     if (!compilePrograms()) {
         emit initFailed(QStringLiteral(
-            "Background processing — one of the shader programs failed to "
-            "compile or link. See the log for the GLSL error."));
+            "Background processing — a shader program failed to compile or link."));
         releaseAll();
         return false;
     }
-
-    // FBO allocation is deferred to the first compositeBlur/Image call
-    // when we actually know the camera resolution. m_lastSize stays
-    // empty until then.
+    if (!createGeometry()) {
+        emit initFailed(QStringLiteral(
+            "Background processing — couldn't allocate the full-screen quad."));
+        releaseAll();
+        return false;
+    }
     m_ready = true;
     qInfo() << "BackgroundCompositor: initialised";
     return true;
 }
 
-QImage BackgroundCompositor::compositeBlur(const QImage &rgba,
-                                            const QImage & /*mask*/,
-                                            float /*radius*/)
+void BackgroundCompositor::uploadTexture(QOpenGLTexture *&tex,
+                                          const QImage &img,
+                                          bool singleChannel)
 {
-    // Phase 2c will:
-    //   - upload rgba to m_fboInput
-    //   - upload mask to a texture, run bg_mask_refine through m_fboMask
-    //   - run bg_blur_horizontal then _vertical (m_fboBlurH/V)
-    //   - run bg_compose into m_fboOutput
-    //   - read m_fboOutput back to a QImage
+    delete tex;
+    tex = new QOpenGLTexture(QOpenGLTexture::Target2D);
+    tex->setFormat(singleChannel ? QOpenGLTexture::R8_UNorm
+                                  : QOpenGLTexture::RGBA8_UNorm);
+    tex->setSize(img.width(), img.height());
+    tex->setMipLevels(1);
+    tex->setMinificationFilter(QOpenGLTexture::Linear);
+    tex->setMagnificationFilter(QOpenGLTexture::Linear);
+    tex->setWrapMode(QOpenGLTexture::ClampToEdge);
+    tex->allocateStorage();
+
+    if (singleChannel) {
+        // Mask is r-channel only. Accept an 8-bit grayscale QImage.
+        QImage gray = img.format() == QImage::Format_Grayscale8
+            ? img : img.convertToFormat(QImage::Format_Grayscale8);
+        tex->setData(QOpenGLTexture::Red, QOpenGLTexture::UInt8,
+                     gray.constBits(),
+                     /*pixel-transfer-options*/ nullptr);
+    } else {
+        QImage rgba = img.format() == QImage::Format_RGBA8888
+            ? img : img.convertToFormat(QImage::Format_RGBA8888);
+        tex->setData(QOpenGLTexture::RGBA, QOpenGLTexture::UInt8,
+                     rgba.constBits(),
+                     nullptr);
+    }
+}
+
+void BackgroundCompositor::runPass(QOpenGLShaderProgram *prog,
+                                    QOpenGLFramebufferObject *target)
+{
+    auto *f = m_glCtx->functions();
+    target->bind();
+    f->glViewport(0, 0, target->width(), target->height());
+    f->glClearColor(0.f, 0.f, 0.f, 1.f);
+    f->glClear(GL_COLOR_BUFFER_BIT);
+    prog->bind();
+    m_vao->bind();
+    f->glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    m_vao->release();
+    prog->release();
+    target->release();
+}
+
+QImage BackgroundCompositor::readbackFbo(QOpenGLFramebufferObject *fbo)
+{
+    // QOpenGLFramebufferObject::toImage flips Y for us. Returns ARGB32_Premultiplied;
+    // the caller converts back to RGBA8888 if it wants to compare per-channel.
+    QImage img = fbo->toImage();
+    return img.convertToFormat(QImage::Format_RGBA8888);
+}
+
+QImage BackgroundCompositor::compositeBlur(const QImage &rgba,
+                                            const QImage &mask,
+                                            float radius)
+{
     if (!ensureInitialised()) return rgba;
-    return rgba;
+    if (rgba.isNull() || mask.isNull()) return rgba;
+    if (!m_glCtx->makeCurrent(m_surface)) return rgba;
+    if (!ensureFbos(rgba.size())) return rgba;
+
+    uploadTexture(m_texFg,   rgba, /*singleChannel*/ false);
+    uploadTexture(m_texMask, mask, /*singleChannel*/ true);
+
+    auto *f = m_glCtx->extraFunctions();
+    const QSize sz = rgba.size();
+    const QVector2D texelSize(1.0f / sz.width(), 1.0f / sz.height());
+
+    // Pass 1: horizontal blur of (input * (1 - mask)) → m_fboBlurH.
+    f->glActiveTexture(GL_TEXTURE0);
+    m_texFg->bind();
+    f->glActiveTexture(GL_TEXTURE1);
+    m_texMask->bind();
+    m_progBlurH->bind();
+    m_progBlurH->setUniformValue("u_inputFrame", 0);
+    m_progBlurH->setUniformValue("u_personMask", 1);
+    m_progBlurH->setUniformValue("u_texelSize", texelSize);
+    m_progBlurH->setUniformValue("u_blurRadius", radius);
+    m_progBlurH->release();
+    runPass(m_progBlurH, m_fboBlurH);
+
+    // Pass 2: vertical blur of pass-1 result → m_fboBlurV.
+    f->glActiveTexture(GL_TEXTURE0);
+    f->glBindTexture(GL_TEXTURE_2D, m_fboBlurH->texture());
+    f->glActiveTexture(GL_TEXTURE1);
+    m_texMask->bind();
+    m_progBlurV->bind();
+    m_progBlurV->setUniformValue("u_inputFrame", 0);
+    m_progBlurV->setUniformValue("u_personMask", 1);
+    m_progBlurV->setUniformValue("u_texelSize", texelSize);
+    m_progBlurV->setUniformValue("u_blurRadius", radius);
+    m_progBlurV->release();
+    runPass(m_progBlurV, m_fboBlurV);
+
+    // Pass 3: compose foreground over blurred background by mask → m_fboOutput.
+    f->glActiveTexture(GL_TEXTURE0);
+    m_texFg->bind();                                           // sharp camera (fg)
+    f->glActiveTexture(GL_TEXTURE1);
+    f->glBindTexture(GL_TEXTURE_2D, m_fboBlurV->texture());    // blurred camera (bg)
+    f->glActiveTexture(GL_TEXTURE2);
+    m_texMask->bind();
+    m_progCompose->bind();
+    m_progCompose->setUniformValue("u_foreground", 0);
+    m_progCompose->setUniformValue("u_background", 1);
+    m_progCompose->setUniformValue("u_personMask", 2);
+    m_progCompose->setUniformValue("u_coverage",
+                                    QVector2D(0.45f, 0.70f - 0.0f * 0.01f));
+    m_progCompose->setUniformValue("u_lightWrapping", 0.3f);
+    m_progCompose->setUniformValue("u_mode", 1);   // blur mode
+    m_progCompose->release();
+    runPass(m_progCompose, m_fboOutput);
+
+    return readbackFbo(m_fboOutput);
 }
 
 QImage BackgroundCompositor::compositeImage(const QImage &rgba,
-                                             const QImage & /*mask*/,
-                                             const QImage & /*bg*/)
+                                             const QImage &mask,
+                                             const QImage &bg)
 {
     if (!ensureInitialised()) return rgba;
-    return rgba;
+    if (rgba.isNull() || mask.isNull() || bg.isNull()) return rgba;
+    if (!m_glCtx->makeCurrent(m_surface)) return rgba;
+    if (!ensureFbos(rgba.size())) return rgba;
+
+    uploadTexture(m_texFg,   rgba, false);
+    uploadTexture(m_texMask, mask, true);
+
+    // Cache the background texture across frames as long as its cacheKey
+    // hasn't changed (selectImagePath sets a new cacheKey only on change).
+    if (!m_texBg || m_texBg->width() != bg.width()
+                 || m_texBg->height() != bg.height())
+        uploadTexture(m_texBg, bg, false);
+
+    auto *f = m_glCtx->extraFunctions();
+    f->glActiveTexture(GL_TEXTURE0);
+    m_texFg->bind();
+    f->glActiveTexture(GL_TEXTURE1);
+    m_texBg->bind();
+    f->glActiveTexture(GL_TEXTURE2);
+    m_texMask->bind();
+
+    m_progCompose->bind();
+    m_progCompose->setUniformValue("u_foreground", 0);
+    m_progCompose->setUniformValue("u_background", 1);
+    m_progCompose->setUniformValue("u_personMask", 2);
+    m_progCompose->setUniformValue("u_coverage",
+                                    QVector2D(0.45f, 0.70f - 0.0f * 0.01f));
+    m_progCompose->setUniformValue("u_lightWrapping", 0.3f);
+    m_progCompose->setUniformValue("u_mode", 0);   // image mode
+    m_progCompose->release();
+    runPass(m_progCompose, m_fboOutput);
+
+    return readbackFbo(m_fboOutput);
 }
