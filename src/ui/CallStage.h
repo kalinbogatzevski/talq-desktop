@@ -109,4 +109,11 @@ private:
 
     double m_glowPhase = 0.0;
     qreal m_statusPillBottom = 42.0;  // set by paintStatusPill; anchors codec pill
+
+    // #8 manual stream-quality selector: -1=Auto (tile-size driven by
+    // updateStreamQualities), 0=Low/180p, 1=Med/360p, 2=High/720p. Click
+    // the Quality chip to cycle Auto -> L -> M -> H -> Auto. When >=0,
+    // every remote tile gets the same forced substream.
+    int m_qualityOverride = -1;
+    QRectF m_qualityPillRect;
 };

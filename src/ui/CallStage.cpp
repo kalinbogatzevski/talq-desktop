@@ -312,10 +312,17 @@ void CallStage::updateStreamQualities()
     if (!m_call) return;
     for (const Tile &t : m_tiles) {
         if (!t.p || t.p->isSelf() || t.isScreen) continue;
-        const qreal h = t.rect.height();
-        int substream = (t.isStage || h >= 480.0) ? 2   // HIGH  720p
+        int substream;
+        if (m_qualityOverride >= 0) {
+            // #8 user forced this layer for every remote tile. Manual
+            // override beats the tile-size policy.
+            substream = m_qualityOverride;
+        } else {
+            const qreal h = t.rect.height();
+            substream = (t.isStage || h >= 480.0) ? 2   // HIGH  720p
                       : (h >= 240.0)              ? 1   // MED   360p
                                                   : 0;  // LOW   180p
+        }
         m_call->requestPeerVideoQuality(t.p->sessionId(), substream);
     }
 }
@@ -860,10 +867,11 @@ void CallStage::paintCodecPill(QPainter &p, const PainterTheme &th)
     // RX-resolution chip, immediately right of the codec pill: the decoded
     // incoming resolution (active simulcast layer / BW awareness). Quiet,
     // same row, only when we're actually receiving a decoded frame.
+    qreal cursor = pill.right();
     const QString rx = m_call->activeRxResolution();
     if (!rx.isEmpty()) {
         const QString rxText = QStringLiteral("RX ") + rx;
-        QRectF rxPill(pill.right() + 8, pill.top(),
+        QRectF rxPill(cursor + 8, pill.top(),
                       fm.horizontalAdvance(rxText) + 26, pill.height());
         QColor rxBorder = th.divider; rxBorder.setAlphaF(0.7);
         p.setBrush(bg); p.setPen(QPen(rxBorder, 1));
@@ -873,7 +881,29 @@ void CallStage::paintCodecPill(QPainter &p, const PainterTheme &th)
         p.setPen(th.textSecondary);
         p.drawText(rxPill.adjusted(24, 0, -8, 0),
                    Qt::AlignVCenter | Qt::AlignLeft, rxText);
+        cursor = rxPill.right();
     }
+
+    // #8 Quality chip — clickable; cycles Auto -> L -> M -> H -> Auto.
+    // The dot colour signals the active mode (textSecondary for Auto,
+    // accent for any forced layer) so the override is glanceable.
+    static const char *const kLabels[] = { "LOW", "MED", "HIGH" };
+    const QString qText = (m_qualityOverride < 0)
+        ? QStringLiteral("AUTO")
+        : QString::fromLatin1(kLabels[m_qualityOverride]);
+    QRectF qPill(cursor + 8, pill.top(),
+                 fm.horizontalAdvance(qText) + 26, pill.height());
+    const bool forced = (m_qualityOverride >= 0);
+    QColor qDot     = forced ? th.accent : th.textSecondary;
+    QColor qBorder  = qDot;  qBorder.setAlphaF(forced ? 0.65 : 0.55);
+    p.setBrush(bg); p.setPen(QPen(qBorder, 1));
+    p.drawRoundedRect(qPill, 11, 11);
+    p.setBrush(qDot); p.setPen(Qt::NoPen);
+    p.drawEllipse(QRectF(qPill.left() + 11, qPill.center().y() - 3, 6, 6));
+    p.setPen(forced ? th.textPrimary : th.textSecondary);
+    p.drawText(qPill.adjusted(24, 0, -8, 0),
+               Qt::AlignVCenter | Qt::AlignLeft, qText);
+    m_qualityPillRect = qPill;
 }
 
 void CallStage::paintSharingBadge(QPainter &p, const PainterTheme &th)
@@ -1090,6 +1120,23 @@ void CallStage::mousePressEvent(QMouseEvent *e)
     if (e->button() == Qt::RightButton) {
         if (id == "share" && m_call->isScreenSharing())
             showScreenShareQualityMenu(e->globalPosition().toPoint());
+        else if (!m_qualityPillRect.isNull()
+                 && m_qualityPillRect.contains(e->position())) {
+            // Right-click on the Quality chip resets to Auto.
+            m_qualityOverride = -1;
+            updateStreamQualities();
+            update();
+        }
+        return;
+    }
+
+    // #8 Quality chip — cycle Auto -> L -> M -> H -> Auto on left-click.
+    if (e->button() == Qt::LeftButton
+        && !m_qualityPillRect.isNull()
+        && m_qualityPillRect.contains(e->position())) {
+        m_qualityOverride = (m_qualityOverride + 2) % 4 - 1;  // -1,0,1,2 cycle
+        updateStreamQualities();
+        update();
         return;
     }
 
