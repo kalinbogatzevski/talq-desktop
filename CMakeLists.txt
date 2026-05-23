@@ -215,6 +215,7 @@ qt_add_executable(talq-call-test
     src/core/SignalingClient.cpp
     src/core/PeerPipeline.cpp
     src/core/PublishPipeline.cpp
+    src/core/ScreenSharePipeline.cpp
     src/core/SubscribePipeline.cpp
     src/core/SubscribeWebrtcSrc.cpp
     src/core/VideoFrameProvider.cpp
@@ -235,6 +236,7 @@ target_link_directories(talq-call-test PRIVATE ${GST_LIBRARY_DIRS})
 target_link_libraries(talq-call-test PRIVATE
     Qt6::Core
     Qt6::Gui
+    Qt6::Widgets
     Qt6::Network
     Qt6::WebSockets
     Qt6::Multimedia
