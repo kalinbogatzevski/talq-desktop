@@ -13,7 +13,7 @@
 ; dir, no dir/group pages). It is also a valid standalone install.
 [Setup]
 AppName=TalQ
-AppVersion=0.37.1
+AppVersion=0.37.2
 AppPublisher=TalQ
 AppPublisherURL=https://github.com/kalinbogatzevski/talq-desktop
 DefaultDirName={localappdata}\Programs\TalQ
@@ -22,7 +22,7 @@ PrivilegesRequired=lowest
 DisableDirPage=yes
 DisableProgramGroupPage=yes
 OutputDir=..\dist
-OutputBaseFilename=TalQ-v0.37.1-Update
+OutputBaseFilename=TalQ-v0.37.2-Update
 SetupIconFile=..\resources\talq.ico
 UninstallDisplayIcon={app}\talq.exe
 Compression=lzma2/ultra64
@@ -47,7 +47,7 @@ Type: files; Name: "{app}\*.dll"
 [Files]
 ; The COMPLETE payload — every DLL + the full GStreamer plugin set —
 ; exactly as the full installer. Never a talq.exe-only patch again.
-Source: "..\dist\TalQ-v0.37.1-win64\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\dist\TalQ-v0.37.2-win64\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Run]
 Filename: "{app}\talq.exe"; Description: "Launch TalQ"; Flags: nowait postinstall
