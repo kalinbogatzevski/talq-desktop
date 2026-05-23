@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.37.2 "Bangaranga" — PRE-RELEASE (2026-05-23)
+
+### Added
+- **Detailed debug logging is now on by default** so call/screen-share
+  issues self-diagnose from `talq_debug.log` without relaunching with a
+  flag. Settings → General → Diagnostics → "Detailed debug logging" lets
+  you turn it off for a smaller log.
+- Screen-share now records every ICE state transition in the log
+  (helps pinpoint the "share didn't start" failures).
+
 ## v0.37.1 "Bangaranga" — PRE-RELEASE (2026-05-23)
 
 ### Added
