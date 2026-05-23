@@ -1,4 +1,5 @@
 #include "core/PublishPipeline.h"
+#include "core/BackgroundEngine.h"
 #include <QDebug>
 #include <QPointer>
 #include <QRegularExpression>
@@ -1576,12 +1577,58 @@ GstFlowReturn PublishPipeline::onPreviewSample(GstAppSink *sink, gpointer userDa
         }, Qt::QueuedConnection);
     }
 
+    // #20 — copy the BGRx pixels NOW (streaming thread) so we don't keep
+    // the GstSample alive across the Qt-thread hop. If no background
+    // engine is set OR mode is None, fall back to the legacy feedFrame
+    // path (zero-copy, lowest latency for Off-mode publishers — the
+    // vast majority of calls).
+    QImage rgbaSnapshot;
+    bool routeThroughEngine = false;
+    if (self->m_backgroundEngine
+        && self->m_backgroundEngine->mode() != BackgroundEngine::Mode::None) {
+        GstCaps *caps = gst_sample_get_caps(sample);
+        GstStructure *s = caps ? gst_caps_get_structure(caps, 0) : nullptr;
+        const gchar *format = s ? gst_structure_get_string(s, "format") : nullptr;
+        int width = 0, height = 0;
+        if (s) {
+            gst_structure_get_int(s, "width", &width);
+            gst_structure_get_int(s, "height", &height);
+        }
+        if (format && g_strcmp0(format, "BGRx") == 0 && width > 0 && height > 0) {
+            GstBuffer *buf = gst_sample_get_buffer(sample);
+            GstMapInfo map;
+            if (gst_buffer_map(buf, &map, GST_MAP_READ)) {
+                if (qint64(map.size) >= qint64(width) * height * 4) {
+                    // QImage wraps map.data; .copy() detaches before unmap.
+                    QImage wrap(map.data, width, height,
+                                width * 4, QImage::Format_RGB32);
+                    rgbaSnapshot = wrap.convertToFormat(QImage::Format_RGBA8888);
+                    routeThroughEngine = true;
+                }
+                gst_buffer_unmap(buf, &map);
+            }
+        }
+    }
+
     QPointer<PublishPipeline> guard(self);
-    QMetaObject::invokeMethod(self, [guard, sample]() {
-        if (guard && guard->m_localVideoProvider)
-            guard->m_localVideoProvider->feedFrame(sample);
-        gst_sample_unref(sample);
-    }, Qt::QueuedConnection);
+    if (routeThroughEngine) {
+        gst_sample_unref(sample);   // not needed past this point
+        QMetaObject::invokeMethod(self, [guard, rgbaSnapshot]() {
+            if (!guard || !guard->m_localVideoProvider) return;
+            // Engine returns the input unchanged in Mode::None or when
+            // GL init fails — safe pass-through either way.
+            const QImage processed = guard->m_backgroundEngine
+                ? guard->m_backgroundEngine->processFrame(rgbaSnapshot)
+                : rgbaSnapshot;
+            guard->m_localVideoProvider->feedQImage(processed);
+        }, Qt::QueuedConnection);
+    } else {
+        QMetaObject::invokeMethod(self, [guard, sample]() {
+            if (guard && guard->m_localVideoProvider)
+                guard->m_localVideoProvider->feedFrame(sample);
+            gst_sample_unref(sample);
+        }, Qt::QueuedConnection);
+    }
 
     return GST_FLOW_OK;
 }
