@@ -28,10 +28,15 @@
 static QLabel *makeSectionHeader(const QString &text)
 {
     auto *label = new QLabel(text.toUpper());
-    QFont f = label->font();
+    // #14 — Mission Control idiom: monospace, gentle tracking. Matches
+    // the call screen's telemetry panel headers (CallStage::paintTelemetry)
+    // so Settings reads as the same data surface as the call screen.
+    QFont f("Cascadia Mono", -1);
+    if (!QFontInfo(f).fixedPitch())
+        f = QFont("Consolas");
     f.setPixelSize(11);
-    f.setWeight(QFont::DemiBold);
-    f.setLetterSpacing(QFont::AbsoluteSpacing, 1.2);
+    f.setWeight(QFont::Medium);
+    f.setLetterSpacing(QFont::AbsoluteSpacing, 1.4);
     label->setFont(f);
     label->setProperty("role", "eyebrow");   // AppStyle, theme-driven
     return label;
@@ -114,12 +119,18 @@ SettingsDialog::SettingsDialog(
     mainLayout->setContentsMargins(0, 0, 0, 0);
     mainLayout->setSpacing(0);
 
-    // Quiet header: identity without a costume (Title tier + one
-    // secondary line), grounded on bg-primary, hairline divider beneath.
+    // Header: identity on the left, a Mission Control status strip on the
+    // right that mirrors CallStage::paintTelemetry — same mono font, same
+    // pulse dot, same data-density treatment. Both surfaces read as one
+    // diagnostic system. Grounded on bg-primary, hairline divider beneath.
     auto *header = new QWidget(this);
     header->setObjectName("settingsHeader");
-    auto *hl = new QVBoxLayout(header);
-    hl->setContentsMargins(24, 18, 24, 14);
+    auto *hlRoot = new QHBoxLayout(header);
+    hlRoot->setContentsMargins(24, 18, 24, 14);
+    hlRoot->setSpacing(16);
+
+    auto *hl = new QVBoxLayout;
+    hl->setContentsMargins(0, 0, 0, 0);
     hl->setSpacing(2);
     auto *hTitle = new QLabel(tr("Settings"), header);
     hTitle->setProperty("role", "title");
@@ -129,6 +140,51 @@ SettingsDialog::SettingsDialog(
     { QFont f = hSub->font(); f.setPixelSize(11); hSub->setFont(f); }
     hl->addWidget(hTitle);
     hl->addWidget(hSub);
+    hlRoot->addLayout(hl, 1);
+
+    // #14 Mission Control mini-panel — version + build + channel chip
+    // rendered in monospace, with a pulsing connection-health dot. Live
+    // values, theme-driven colours, no hardcoded palette.
+    auto *mcPanel = new QWidget(header);
+    mcPanel->setObjectName("settingsMissionControl");
+    auto *mcLayout = new QVBoxLayout(mcPanel);
+    mcLayout->setContentsMargins(0, 2, 0, 0);
+    mcLayout->setSpacing(3);
+
+    QFont mono("Cascadia Mono", -1);
+    if (!QFontInfo(mono).fixedPitch())
+        mono = QFont("Consolas");
+
+    auto monoLabel = [&](const QString &text, int px, const char *role) {
+        auto *l = new QLabel(text, mcPanel);
+        QFont f = mono;
+        f.setPixelSize(px);
+        f.setLetterSpacing(QFont::AbsoluteSpacing, 1.2);
+        l->setFont(f);
+        l->setProperty("role", role);
+        l->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        return l;
+    };
+
+    mcLayout->addWidget(monoLabel(QStringLiteral("MISSION CONTROL"), 10, "eyebrow"));
+    // Build identifier — version + codename + build timestamp baked in by CMake.
+    const QString verLine = QStringLiteral("v" TALQ_VERSION " · ")
+        + QString::fromLatin1(TALQ_VERSION_NAME)
+#ifdef TALQ_BUILD_TS
+        + QStringLiteral(" · ") + QString::fromLatin1(TALQ_BUILD_TS)
+#endif
+        ;
+    mcLayout->addWidget(monoLabel(verLine, 11, "settingDesc"));
+
+    // Channel chip — beta vs stable, matches the call-stage codec pill idiom.
+#ifdef TALQ_PRERELEASE
+    const QString chan = QStringLiteral("● BETA");
+#else
+    const QString chan = QStringLiteral("● STABLE");
+#endif
+    mcLayout->addWidget(monoLabel(chan, 11, "eyebrow"));
+
+    hlRoot->addWidget(mcPanel, 0, Qt::AlignTop);
     mainLayout->addWidget(header);
     mainLayout->addWidget(makeDivider());
 
