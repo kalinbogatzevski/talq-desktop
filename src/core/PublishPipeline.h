@@ -73,6 +73,13 @@ public:
 
     VideoFrameProvider *localVideoProvider() const { return m_localVideoProvider; }
 
+    // #20 — when set (CallManager passes its long-lived engine), the
+    // preview-appsink callback routes each BGRx frame through the engine
+    // before handing it to m_localVideoProvider. Pure pass-through if
+    // the engine is Mode::None or null. The encode path is integrated
+    // separately in Phase 3.3b.
+    void setBackgroundEngine(class BackgroundEngine *engine) { m_backgroundEngine = engine; }
+
     void sendStatusMessage(const QByteArray &json);
 
 signals:
@@ -193,6 +200,7 @@ private:
     GstElement *m_previewConvert = nullptr;
     GstElement *m_previewAppsink = nullptr;
     VideoFrameProvider *m_localVideoProvider = nullptr;
+    class BackgroundEngine *m_backgroundEngine = nullptr;   // #20, not owned
 
     static void onNegotiationNeeded(GstElement *webrtc, gpointer userData);
     static void onIceCandidate(GstElement *webrtc, guint mlineIndex, gchar *candidate, gpointer userData);
