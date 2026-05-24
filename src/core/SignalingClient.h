@@ -122,6 +122,12 @@ private:
     QWebSocket m_ws;
     QTimer m_reconnectTimer;
     QTimer m_typingClearTimer;   // clear typing indicator after 15s timeout
+    // Periodic talq.client re-announce. Defense-in-depth: the one-shot
+    // hello on room-join is enough when both peers join at the same
+    // time, but a peer who joined the room BEFORE us upgraded silently
+    // can keep a stale-version cache for the lifetime of the session.
+    // Ticking every 5 min refreshes their cache without spam.
+    QTimer m_talqClientReannounce;
 
     QString m_signalingUrl;
     QString m_userId;

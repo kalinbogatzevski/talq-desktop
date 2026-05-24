@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.39.2 "Aprilsko Vastanie" — BETA (2026-05-24)
+
+Tiny hotfix on top of 0.39.1 for one defense-in-depth nicety:
+
+* **Periodic talq.client re-announce.** SignalingClient now re-broadcasts
+  the "TalQ/version" hello every 5 minutes while in a room, on top of the
+  existing room-join one-shot. Fixes the field case where a peer who
+  joined the room before us upgraded silently keeps a stale-version
+  cached value for the lifetime of their session. Receivers de-duplicate
+  by info-string equality so an unchanged version triggers no churn.
+
+---
+
 ## v0.39.1 "Aprilsko Vastanie" — BETA (2026-05-24)
 
 Second 0.39.x beta. Extends 0.39.0's video-background scaffolding to the
