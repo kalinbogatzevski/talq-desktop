@@ -1,5 +1,40 @@
 # Changelog
 
+## v0.39.1 "Aprilsko Vastanie" — BETA (2026-05-24)
+
+Second 0.39.x beta. Extends 0.39.0's video-background scaffolding to the
+encoded stream and bundles three small fixes from field use.
+
+### Added — video backgrounds reach the encoder path (#20)
+
+* **Bridge upstream of the camera tee.** Phase 3.3a only routed engine
+  output to the local PiP; remote peers still saw raw camera. Now an
+  appsink+appsrc bridge between the post-decode capsfilter and the tee
+  runs every camera frame through the BackgroundEngine BEFORE the
+  encoder branch, so receivers see your selected background too.
+  Off-mode is zero-copy push-through (gst_buffer_ref + push, no Qt
+  thread hop). On-mode preserves PTS+DTS+duration so rtpgccbwe pacing
+  and the receiver's jitter buffer stay coherent.
+* **Bridge throughput counters** on PublishPipeline
+  (`bgBridgeFramesPassThrough` / `bgBridgeFramesProcessed`) plus three
+  new talq-call-test scenarios — `TALQ_TEST_BG_BLUR` / `_IMAGE` /
+  `_FALLBACK` — assert the right counter advances and B-side delivery
+  stays clean.
+
+### Fixed
+
+* **Settings codename credit** still read the 0.38.x "Bangaranga"
+  Eurovision text; now reflects the Aprilsko Vastanie 150th-anniversary
+  release.
+* **Sidebar splitter width** is persisted across restarts (debounced
+  splitterMoved + flush on saveWindowState). Previously the chat-list
+  pane snapped back to its 280 px seed on every launch.
+* **Sidebar user-status dots** refresh on window-activation instead of
+  waiting up to a minute for the next 60 s poll, so the green/away/
+  busy indicator is current as soon as you return to TalQ.
+
+---
+
 ## v0.39.0 "Aprilsko Vastanie" — BETA (2026-05-24)
 
 **TalQ 0.39 carries this codename in honour of the 150th anniversary of
