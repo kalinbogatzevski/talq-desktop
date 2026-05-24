@@ -134,6 +134,8 @@ qt_add_executable(talq
     src/core/BackgroundEngine.h
     src/core/BackgroundCompositor.cpp
     src/core/BackgroundCompositor.h
+    src/core/TfliteSegmenter.cpp
+    src/core/TfliteSegmenter.h
     resources/resources.qrc
     resources/twemoji.qrc
     resources/changelog.qrc
@@ -300,6 +302,7 @@ qt_add_executable(background-engine-test
     tests/background_engine_test.cpp
     src/core/BackgroundEngine.cpp
     src/core/BackgroundCompositor.cpp
+    src/core/TfliteSegmenter.cpp
     resources/backgrounds.qrc
 )
 target_include_directories(background-engine-test PRIVATE src)
