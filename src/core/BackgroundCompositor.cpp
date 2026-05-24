@@ -343,7 +343,13 @@ namespace {
 constexpr float kCoverageLow    = 0.45f;
 constexpr float kCoverageHigh   = 0.70f;
 constexpr float kEdgeFeatherPx  = 0.0f;
-constexpr float kLightWrapping  = 0.30f;   // Talk's default
+// Back to Talk's default. The reduction to 0.10 in 0.40.0-RC was
+// treating the symptom; the actual fix is in bg_compose.frag where
+// lightWrapMask now uses a rim-only bell curve instead of the old
+// "uniform over the smoothstep-saturated interior" formula. With the
+// rim gate in place, 0.30 stays well-contained at the silhouette
+// boundary and matches Talk's intended halo strength.
+constexpr float kLightWrapping  = 0.30f;
 } // namespace
 
 QImage BackgroundCompositor::compositeBlur(const QImage &rgba,

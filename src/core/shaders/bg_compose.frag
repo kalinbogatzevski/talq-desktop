@@ -35,12 +35,20 @@ void main()
     // Soft alpha gradient (edge feathering, no hard threshold).
     float personMask = smoothstep(u_coverage.x, u_coverage.y, maskA);
 
-    // Image mode: light wrap — let the background's edge colour bleed
-    // into the foreground rim via a screen blend, so the cutout doesn't
-    // look pasted on.
+    // Image mode: light wrap — the background's edge colour bleeds into
+    // the foreground RIM only. The prior formula
+    //   lightWrapping * max(0, personMask - 0.70) / 0.30
+    // gave a UNIFORM 30%-of-lightWrapping tint across the entire
+    // smoothstep-saturated interior (any pixel with personMask = 1
+    // got the same wrap). Users reported "the bg image bleeds through
+    // me" because the wrap reached the chest, not just the silhouette.
+    // The bell-curve `4 * personMask * (1 - personMask)` peaks at 0.5
+    // (the rim where the smoothstep is still transitioning) and falls
+    // to zero at both 0 (background) and 1 (deep interior). That's
+    // what "rim only" should mean.
     if (u_mode == 0) {
-        float lightWrapMask = u_lightWrapping
-            * max(0.0, personMask - u_coverage.y) / max(1e-5, 1.0 - u_coverage.y);
+        float rim = personMask * (1.0 - personMask) * 4.0;   // bell, peak at 0.5
+        float lightWrapMask = u_lightWrapping * rim;
         fgColor = screen3(fgColor, lightWrapMask * bgColor);
     }
 
