@@ -1,5 +1,47 @@
 # Changelog
 
+## v0.39.4 "Aprilsko Vastanie" — BETA (2026-05-24)
+
+Post-ship code review of 0.39.1-0.39.3 caught several issues that need
+their own beta to land. **Anyone running 0.39.1-0.39.3 should upgrade**;
+the headline item below means BG-enabled calls in those three betas
+sent broken video to the encoder.
+
+### Fixed
+
+* **Critical: BG bridge elements never went to PLAYING.** Phase 3.3b
+  bin-added `m_bgAppsink` / `m_bgAppsrc` while the pipeline was already
+  running but did not call `gst_element_sync_state_with_parent` on
+  either of them, so they stayed in NULL state and the camera feed
+  never reached the encoder branch. Anyone with BG enabled in
+  0.39.1-0.39.3 was sending no video to peers. (Slipped through because
+  the harness env couldn't reach the verdict measurement -- see
+  separate harness item below.)
+* **Critical: bridge pointers were dangling across stop/start cycles.**
+  `cleanup()` nulled the rest of the camera-chain elements but not the
+  two new bridge ones. A second start() on the same PublishPipeline
+  instance would dereference freed GstObject memory.
+* **ORT per-frame failures now log once.** A persistent Run failure
+  (GPU device lost, internal panic) used to flood the log with 30
+  identical warnings per second. Now: one warning on the first
+  failure, silence after; future frame fallback to the centred-gradient
+  stub continues quietly.
+* **ORT init failure now emits `engineDisabled`.** A missing DLL or a
+  model-load fault used to leave the UI showing Blur/Image as
+  functional while the engine ran in fallback. The segmenter now emits
+  an `unavailable(reason)` signal that BackgroundEngine forwards as
+  its existing `engineDisabled` so the UI can toast the user and flip
+  the QSetting.
+* **Window-activation user-status refresh is now rate-limited to one
+  fetch per 5 s.** A busy desktop's repeated focus toggles used to
+  pile up redundant in-flight HTTP requests to /apps/user_status/...
+* **`talq-call-test` now compiles with `TALQ_BG_ORT`** so the
+  `TALQ_TEST_BG_*` harness scenarios exercise the SAME segmenter code
+  path the shipped binary uses (real ONNX inference), instead of
+  silently running on the centred-gradient stub.
+
+---
+
 ## v0.39.3 "Aprilsko Vastanie" — BETA (2026-05-24)
 
 Phase 2e of the video-background feature (#20): the mock centred-radial

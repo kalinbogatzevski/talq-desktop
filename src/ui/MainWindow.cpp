@@ -2211,10 +2211,16 @@ void MainWindow::changeEvent(QEvent *event)
     // who keep TalQ in the foreground, but anyone returning from another
     // app or from a long sleep wants the sidebar dots to reflect "now",
     // not "up to a minute ago". Trigger one out-of-band refresh on
-    // ActivationChange when we become the active window.
+    // ActivationChange when we become the active window, but rate-limit
+    // to once per 5 s so a busy desktop's repeated focus toggles don't
+    // pile up redundant in-flight HTTP requests.
     if (event->type() == QEvent::ActivationChange && isActiveWindow()
         && m_conversations) {
-        m_conversations->refreshUserStatuses();
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        if (now - m_lastActivationStatusRefreshMs >= 5000) {
+            m_lastActivationStatusRefreshMs = now;
+            m_conversations->refreshUserStatuses();
+        }
     }
 }
 

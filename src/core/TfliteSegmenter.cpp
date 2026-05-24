@@ -80,8 +80,16 @@ TfliteSegmenter::TfliteSegmenter(QObject *parent)
     // model is small (~450 KB) so the in-memory buffer is fine.
     QFile f(QStringLiteral(":/bg/models/selfie_segmenter.onnx"));
     if (!f.open(QIODevice::ReadOnly)) {
-        qWarning() << "TfliteSegmenter: bundled selfie_segmenter.onnx "
-                      "missing from qrc — falling back to centred-gradient";
+        const QString reason = QStringLiteral(
+            "bundled selfie_segmenter.onnx missing from qrc - "
+            "falling back to centred-gradient");
+        qWarning() << "TfliteSegmenter:" << reason;
+        // Deferred emit: the connect in BackgroundEngine happens after
+        // the segmenter is constructed, so a synchronous emit here
+        // would be dropped. Queue it for the next event-loop spin.
+        QMetaObject::invokeMethod(this, [this, reason]() {
+            emit unavailable(reason);
+        }, Qt::QueuedConnection);
         return;
     }
     m_modelBytes = f.readAll();
@@ -129,12 +137,17 @@ TfliteSegmenter::TfliteSegmenter(QObject *parent)
                 << "(model" << (m_modelBytes.size() / 1024) << "KB,"
                 << "input 256x256 NHWC float32)";
     } catch (const Ort::Exception &e) {
-        qWarning() << "TfliteSegmenter: ORT initialisation failed —"
-                   << e.what() << "— falling back to centred-gradient";
+        const QString reason = QStringLiteral(
+            "ORT initialisation failed: %1 - falling back to centred-gradient")
+            .arg(QString::fromLatin1(e.what()));
+        qWarning() << "TfliteSegmenter:" << reason;
         m_session.reset();
         m_sessOpts.reset();
         m_env.reset();
         m_memInfo.reset();
+        QMetaObject::invokeMethod(this, [this, reason]() {
+            emit unavailable(reason);
+        }, Qt::QueuedConnection);
     }
 #else
     qInfo() << "TfliteSegmenter: built without TALQ_BG_ORT — "
@@ -216,12 +229,15 @@ QImage TfliteSegmenter::segment(const QImage &rgba)
                                 Qt::IgnoreAspectRatio,
                                 Qt::SmoothTransformation);
     } catch (const Ort::Exception &e) {
-        // Surface once, then fall back. The engineDisabled signal on
-        // BackgroundEngine handles the user-facing toast for the
-        // session-level disable case; per-frame Run errors are usually
-        // transient (e.g. transient OOM) so we don't tear down the
-        // whole engine here.
-        qWarning() << "TfliteSegmenter: ORT Run failed —" << e.what();
+        // Surface once, then quiet. At 30 fps a persistent fault would
+        // otherwise log thousands of identical lines per minute. We do
+        // NOT tear down the engine: most Run errors are transient (e.g.
+        // momentary OOM) and a future frame will succeed on its own.
+        if (!m_runFailedOnce.exchange(true, std::memory_order_relaxed)) {
+            qWarning() << "TfliteSegmenter: ORT Run failed (first occurrence) -"
+                       << e.what()
+                       << "- further per-frame failures suppressed for this session";
+        }
         return fallbackGradientMask(rgba.size());
     }
 #else

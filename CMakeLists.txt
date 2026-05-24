@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(talq VERSION 0.39.3 LANGUAGES CXX)
+project(talq VERSION 0.39.4 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -287,6 +287,18 @@ target_compile_definitions(talq-call-test PRIVATE TALQ_VERSION="${PROJECT_VERSIO
 # always built single-stream and couldn't test simulcast at all.
 if(TALQ_PRERELEASE)
     target_compile_definitions(talq-call-test PRIVATE TALQ_PRERELEASE)
+endif()
+# Mirror talq's ORT wiring so the harness's TALQ_TEST_BG_* scenarios
+# exercise the SAME segmenter code path as the shipped binary (real
+# ONNX inference). Without this, the harness silently fell back to the
+# centred-gradient stub and couldn't catch ORT-specific regressions.
+if(TALQ_BG AND TALQ_BG_ORT)
+    target_include_directories(talq-call-test PRIVATE
+        "${CMAKE_SOURCE_DIR}/third_party/onnxruntime/include")
+    target_link_directories(talq-call-test PRIVATE
+        "${CMAKE_SOURCE_DIR}/third_party/onnxruntime/lib")
+    target_link_libraries(talq-call-test PRIVATE onnxruntime)
+    target_compile_definitions(talq-call-test PRIVATE TALQ_BG_ORT)
 endif()
 target_link_directories(talq-call-test PRIVATE ${GST_LIBRARY_DIRS})
 target_link_libraries(talq-call-test PRIVATE
