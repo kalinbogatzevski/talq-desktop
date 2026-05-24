@@ -265,6 +265,16 @@ SettingsDialog::SettingsDialog(
 
     // Connect device manager signals to refresh combos
     connect(m_deviceManager, &MediaDeviceManager::devicesChanged, this, &SettingsDialog::populateDeviceCombos);
+
+    // Disable mouse-wheel scrolling on EVERY QComboBox in the dialog.
+    // Reasoning is the same as for the BG mode combo: wheel-while-
+    // hovering can silently change a selection if the save handler is
+    // wired to activated() (click-only), which several of our combos
+    // are. The eventFilter at this dialog level returns true for any
+    // QEvent::Wheel that arrives at a QComboBox - one filter, all
+    // combos covered (including ones added in the future).
+    for (auto *combo : findChildren<QComboBox *>())
+        combo->installEventFilter(this);
 }
 
 void SettingsDialog::refresh()
@@ -728,10 +738,11 @@ QWidget *SettingsDialog::buildAudioVideoTab()
 
 bool SettingsDialog::eventFilter(QObject *obj, QEvent *event)
 {
-    // Block wheel-scroll on the BG mode combo so a scroll-while-hovered
-    // can't change the selection out from under the user. Forwards
-    // every other event normally.
-    if (obj == m_bgModeCombo && event->type() == QEvent::Wheel)
+    // Block wheel-scroll on ANY combo box in the dialog. Wheel-while-
+    // hovering used to change a combo's selection without firing
+    // activated(), so handlers that save on activated only (most of
+    // ours) would silently desync the visible from the saved value.
+    if (event->type() == QEvent::Wheel && qobject_cast<QComboBox *>(obj))
         return true;
     return QDialog::eventFilter(obj, event);
 }

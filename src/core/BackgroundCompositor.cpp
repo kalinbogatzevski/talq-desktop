@@ -324,17 +324,14 @@ QImage BackgroundCompositor::readbackFbo(QOpenGLFramebufferObject *fbo)
 // (no feather adjustment). Named so the next reader doesn't read the
 // hardcoded `0.70 - 0 * 0.01` as a half-finished port (review I6).
 namespace {
-// Talk's WebGLCompositor.js defaults are (0.45, 0.70) for the smoothstep
-// edge transition. Those values assume a CLEAN bilateral-refined mask
-// (their pipeline runs jointBilateralFilter before this stage). Our
-// 0.39.x bilateral pass is still a stub (`bg_mask_refine.frag`), so the
-// raw sigmoid output from selfie_segmenter.onnx feeds compose directly
-// and the edges show more model noise. Widening the smoothstep window
-// to (0.35, 0.75) gives ~50% more transition pixels, hiding most of the
-// noise. Once the bilateral refine ports for real, narrow back to Talk's
-// values.
-constexpr float kCoverageLow    = 0.35f;
-constexpr float kCoverageHigh   = 0.75f;
+// Talk's WebGLCompositor.js defaults for the smoothstep edge transition.
+// These assume a bilateral-refined mask (their jointBilateralFilter runs
+// before compose). Our 0.39.5 release widened to (0.35, 0.75) as a
+// noise-hiding workaround while bg_mask_refine.frag was still a stub;
+// 0.39.9 lands the real bilateral pass, so we narrow back to Talk's
+// values for crisper silhouette edges.
+constexpr float kCoverageLow    = 0.45f;
+constexpr float kCoverageHigh   = 0.70f;
 constexpr float kEdgeFeatherPx  = 0.0f;
 constexpr float kLightWrapping  = 0.30f;   // Talk's default
 } // namespace
@@ -365,12 +362,31 @@ QImage BackgroundCompositor::compositeBlur(const QImage &rgba,
     const QSize sz = rgba.size();
     const QVector2D texelSize(1.0f / sz.width(), 1.0f / sz.height());
 
-    // Pass 1: horizontal blur. Uniforms are set INSIDE the bound/release
-    // bracket so glUniform* always reaches an active program (review B1).
+    // Pass 0: joint bilateral mask refine. Snaps the raw segmentation
+    // mask edges to colour discontinuities in the camera frame, which
+    // gives a much cleaner silhouette than the upsampled sigmoid alone.
+    // Output goes into m_fboMask; subsequent passes sample that FBO's
+    // colour texture instead of m_texMask.
     f->glActiveTexture(GL_TEXTURE0);
     m_texFg->bind();
     f->glActiveTexture(GL_TEXTURE1);
     m_texMask->bind();
+    m_progMaskRefine->bind();
+    m_progMaskRefine->setUniformValue("u_inputFrame", 0);
+    m_progMaskRefine->setUniformValue("u_segMask",    1);
+    m_progMaskRefine->setUniformValue("u_texelSize",  texelSize);
+    m_progMaskRefine->setUniformValue("u_sigmaTexel",
+        qMax(texelSize.x(), texelSize.y()) * 5.0f);
+    m_progMaskRefine->setUniformValue("u_sigmaColor", 0.1f);
+    runPass(m_progMaskRefine, m_fboMask);
+
+    // Pass 1: horizontal blur. Uniforms are set INSIDE the bound/release
+    // bracket so glUniform* always reaches an active program (review B1).
+    // Reads the REFINED mask from m_fboMask, not m_texMask.
+    f->glActiveTexture(GL_TEXTURE0);
+    m_texFg->bind();
+    f->glActiveTexture(GL_TEXTURE1);
+    f->glBindTexture(GL_TEXTURE_2D, m_fboMask->texture());
     m_progBlurH->bind();
     m_progBlurH->setUniformValue("u_inputFrame", 0);
     m_progBlurH->setUniformValue("u_personMask", 1);
@@ -378,11 +394,11 @@ QImage BackgroundCompositor::compositeBlur(const QImage &rgba,
     m_progBlurH->setUniformValue("u_blurRadius", radius);
     runPass(m_progBlurH, m_fboBlurH);
 
-    // Pass 2: vertical blur of pass-1 result.
+    // Pass 2: vertical blur of pass-1 result. Mask is the refined one.
     f->glActiveTexture(GL_TEXTURE0);
     f->glBindTexture(GL_TEXTURE_2D, m_fboBlurH->texture());
     f->glActiveTexture(GL_TEXTURE1);
-    m_texMask->bind();
+    f->glBindTexture(GL_TEXTURE_2D, m_fboMask->texture());
     m_progBlurV->bind();
     m_progBlurV->setUniformValue("u_inputFrame", 0);
     m_progBlurV->setUniformValue("u_personMask", 1);
@@ -391,12 +407,14 @@ QImage BackgroundCompositor::compositeBlur(const QImage &rgba,
     runPass(m_progBlurV, m_fboBlurV);
 
     // Pass 3: compose sharp foreground over blurred background by mask.
+    // The mask sampled here is the BILATERAL-REFINED one from pass 0,
+    // not the raw segmentation. This is what gives the crisp silhouette.
     f->glActiveTexture(GL_TEXTURE0);
     m_texFg->bind();
     f->glActiveTexture(GL_TEXTURE1);
     f->glBindTexture(GL_TEXTURE_2D, m_fboBlurV->texture());
     f->glActiveTexture(GL_TEXTURE2);
-    m_texMask->bind();
+    f->glBindTexture(GL_TEXTURE_2D, m_fboMask->texture());
     m_progCompose->bind();
     m_progCompose->setUniformValue("u_foreground",   0);
     m_progCompose->setUniformValue("u_background",   1);
@@ -442,12 +460,33 @@ QImage BackgroundCompositor::compositeImage(const QImage &rgba,
     }
 
     auto *f = m_glCtx->extraFunctions();
+    const QSize sz = rgba.size();
+    const QVector2D texelSize(1.0f / sz.width(), 1.0f / sz.height());
+
+    // Pass 0: joint bilateral mask refine (same kernel as blur mode).
+    // The refined mask lands in m_fboMask and is sampled by the compose
+    // pass below.
+    f->glActiveTexture(GL_TEXTURE0);
+    m_texFg->bind();
+    f->glActiveTexture(GL_TEXTURE1);
+    m_texMask->bind();
+    m_progMaskRefine->bind();
+    m_progMaskRefine->setUniformValue("u_inputFrame", 0);
+    m_progMaskRefine->setUniformValue("u_segMask",    1);
+    m_progMaskRefine->setUniformValue("u_texelSize",  texelSize);
+    m_progMaskRefine->setUniformValue("u_sigmaTexel",
+        qMax(texelSize.x(), texelSize.y()) * 5.0f);
+    m_progMaskRefine->setUniformValue("u_sigmaColor", 0.1f);
+    runPass(m_progMaskRefine, m_fboMask);
+
+    // Pass 1: compose foreground over background image, using the
+    // refined mask for the smoothstep + lightWrapping blend.
     f->glActiveTexture(GL_TEXTURE0);
     m_texFg->bind();
     f->glActiveTexture(GL_TEXTURE1);
     m_texBg->bind();
     f->glActiveTexture(GL_TEXTURE2);
-    m_texMask->bind();
+    f->glBindTexture(GL_TEXTURE_2D, m_fboMask->texture());
 
     m_progCompose->bind();
     m_progCompose->setUniformValue("u_foreground",   0);
