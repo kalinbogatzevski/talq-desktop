@@ -205,7 +205,19 @@ private:
     class QPushButton  *m_updateWhatsNewBtn = nullptr;
     class QPushButton  *m_updateCloseBtn = nullptr;
     QString        m_pendingInstallerPath;
+    // Self-heal one-shot: a launch failure (AV quarantine, stale lock,
+    // truncated download) triggers ONE silent re-download + retry. The
+    // second failure surfaces to the user. Reset on every fresh
+    // updateAvailable so a later session gets a clean two-strike budget.
+    bool           m_updateRelaunchAttempted = false;
     QString        m_pendingUpdateNotes;
+    // Version string of the most-recently-offered update. Used to gate
+    // the self-heal one-shot reset: m_updateRelaunchAttempted only
+    // resets when a NEW version arrives, not on every periodic re-emit
+    // of the same manifest. Without this, an AV-quarantine environment
+    // could see endless silent retries because each periodic poll
+    // re-emits updateAvailable and clears the flag.
+    QString        m_lastOfferedVersion;
     bool           m_updateBannerActive = false;   // true from updateAvailable until user dismisses
 
     // Search bar

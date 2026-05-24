@@ -1297,6 +1297,15 @@ void MainWindow::buildChatPage()
 
     connect(m_updateChecker, &UpdateChecker::updateAvailable,
             this, [this](const UpdateChecker::Manifest &m) {
+        // Reset the self-heal one-shot ONLY when a genuinely new
+        // version is offered. Periodic poll re-emits the same
+        // manifest; without the version guard, an AV-quarantine
+        // environment would silently re-download forever because
+        // every re-emit cleared the flag.
+        if (m.version != m_lastOfferedVersion) {
+            m_updateRelaunchAttempted = false;
+            m_lastOfferedVersion = m.version;
+        }
         m_pendingUpdateNotes = m.notes;
         // Append a "PRE-RELEASE" emphasis when the offered update came
         // from the beta channel — bold + separator dot, no inline hex
@@ -2527,10 +2536,33 @@ void MainWindow::maybeLaunchPendingInstaller()
     };
     bool ok = QProcess::startDetached(m_pendingInstallerPath, args);
     if (!ok) {
-        m_updateLabel->setText(tr("Could not launch installer."));
+        // Self-heal: the downloaded installer can't be launched. Most
+        // common causes are AV quarantine, a stale file lock from an
+        // interrupted prior run, or zero-byte from a truncated write.
+        // Delete the cached file and re-download once - no user-visible
+        // "manual install" path required. If THAT re-download also
+        // produces an unlaunchable file, surface the failure (probably
+        // an environment issue we can't paper over).
+        QFile::remove(m_pendingInstallerPath);
+        m_pendingInstallerPath.clear();
+        if (m_updateChecker && !m_updateRelaunchAttempted) {
+            m_updateRelaunchAttempted = true;
+            m_updateLabel->setText(
+                tr("Installer was unavailable - re-downloading…"));
+            m_updateProgress->setValue(0);
+            m_updateProgress->show();
+            m_updateChecker->retryDownload();
+            return;
+        }
+        m_updateLabel->setText(tr(
+            "Auto-update failed twice. Try Retry, restart TalQ, or "
+            "download the latest installer from the project's Releases "
+            "page."));
+        // Keep the install button visible as a manual retry escape -
+        // a user who just whitelisted TalQ in AV (the most common cause
+        // of repeated launch failures) can recover without restarting.
         m_updateInstallBtn->setText(tr("Retry"));
         m_updateInstallBtn->show();
-        m_pendingInstallerPath.clear();
         return;
     }
     QTimer::singleShot(500, qApp, &QApplication::quit);

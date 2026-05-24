@@ -1,5 +1,65 @@
 # Changelog
 
+## v0.40.0 "Panagyurishte" — STABLE (2026-05-24)
+
+**First stable cut after the 0.39.x "Aprilsko Vastanie" beta cycle.**
+Codename continues the 150th-anniversary thread: Panagyurishte is the
+town where the April Uprising of 1876 was declared at the Oborishte
+assembly. The 0.39.x betas honoured the uprising itself; 0.40 stable
+dedicates the cycle to the place that lit the fuse.
+
+This release rolls up everything shipped across 0.39.1–0.39.10 plus
+the auto-update self-heal fix below. Highlights — read 0.39.x entries
+for full details:
+
+* **Video backgrounds — Blur or Image with real selfie segmentation.**
+  Bilateral mask refine, temporal EMA on the segmentation, live Settings
+  preview, custom-image grid with right-click remove, BG bridge upstream
+  of the camera tee so receivers see your effect too.
+* **Auto-away on idle** after 5 min of no keyboard/mouse input.
+  *Known limitation:* lock/sleep transitions are caught via the
+  same 30 s idle poll, not via a Windows WTS notification yet.
+* **Auto-mention in 1:1 with one enabled bot** so messages reach the
+  bot without typing `@bot-slug` every time.
+* **Periodic `talq.client` re-announce** so peers always see the right
+  version.
+* **Camera LED actually goes off on mute** instead of staying lit.
+  Costs ~1 s of COM-init latency on the next enable.
+* **Sidebar settings:** scroll-per-tab on small displays; combo-wheel
+  trap closed globally; selected background thumbnail has a clear
+  accent border; splitter widths persist across restart; user-status
+  dots refresh on window activation.
+
+### Fixed in 0.40.0
+
+* **Auto-update is self-healing now.** Field reports of "Could not
+  launch installer" after an interrupted download forced one round of
+  manual recovery. 0.40.0 fixes it three ways:
+  1. The downloaded temp file uses the real asset name
+     (`TalQ-v<ver>-Setup.exe`) instead of the generic
+     `talq-update.exe`, so Windows Defender treats it like the signed
+     installer it is and doesn't heuristic-quarantine.
+  2. On a fresh download cycle, stale `talq-update*.exe` and old
+     `TalQ-v*-Setup.exe` blobs in `%TEMP%` are swept away so a
+     half-written file from a previous run can't poison the next.
+  3. If `QProcess::startDetached` ever does return false on the
+     downloaded installer, the file is deleted and re-downloaded
+     silently, then retried once. The user never sees the broken
+     intermediate state. Only a SECOND failure surfaces a message.
+* **Image-mode "transparent person" artifact.** The compose shader's
+  `lightWrapping` was applied uniformly across the entire smoothstep-
+  saturated person interior, so bright background colour visibly
+  bled across the body — not just the silhouette rim the comment
+  claimed. Replaced with a true rim-only bell curve
+  (`4 * personMask * (1 - personMask)`) so the halo peaks at the
+  edge transition and falls to zero in the deep interior. Talk's
+  default lightWrapping of 0.30 restored now that the gate works.
+  See-through artifact on saturated background images is now
+  substantially reduced; report any remaining occurrences with a
+  screenshot of the bg image so we can tune further.
+
+---
+
 ## v0.39.10 "Aprilsko Vastanie" — BETA (2026-05-24)
 
 ### Fixed
