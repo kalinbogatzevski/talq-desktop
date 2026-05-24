@@ -9,6 +9,10 @@
 #include <QPushButton>
 #include <QSettings>
 
+class QListWidget;
+class QSlider;
+class QTimer;
+
 class MediaDeviceManager;
 class NotificationManager;
 class AppSettings;
@@ -67,12 +71,14 @@ private:
     QComboBox *m_cameraQualityCombo = nullptr;
     QCheckBox *m_noiseSuppression = nullptr;
 
-    // #20 Background section (#20 Phase 3.1) — Off / Blur / Image picker,
-    // blur strength slider, image-path label + Choose… button. Settings
-    // keys mirror upstream Talk: Talk/Backgrounds/virtualBackground*.
-    QComboBox *m_bgModeCombo          = nullptr;
-    QSlider   *m_bgBlurStrengthSlider = nullptr;
-    QLabel    *m_bgImagePathLabel     = nullptr;
+    // #20 Background section — Off / Blur / Image picker, blur strength
+    // slider, 8-bundled-thumbnail grid + Choose… for user-supplied
+    // images. Settings keys mirror upstream Talk:
+    // Talk/Backgrounds/virtualBackground*.
+    QComboBox   *m_bgModeCombo          = nullptr;
+    QSlider     *m_bgBlurStrengthSlider = nullptr;
+    QLabel      *m_bgImagePathLabel     = nullptr;
+    QListWidget *m_bgImageGrid          = nullptr;
     // Debouncer: dragging the slider used to fire 20 QSettings writes +
     // 20 backgroundSettingsChanged emits in a fraction of a second; the
     // signal handler on the CallManager side reconfigured the publisher
