@@ -245,6 +245,15 @@ qt_add_executable(talq-call-test
     src/core/SubscribeWebrtcSrc.cpp
     src/core/VideoFrameProvider.cpp
     src/core/CallSignaling.cpp
+    # #20 BG harness scenarios — PublishPipeline.cpp references
+    # BackgroundEngine, so its TU + the compositor + the segmenter
+    # must build into the harness too. The .qrc carries the bundled
+    # background images that TALQ_TEST_BG_IMAGE loads via
+    # :/bg/backgrounds/1_office.jpg.
+    src/core/BackgroundEngine.cpp
+    src/core/BackgroundCompositor.cpp
+    src/core/TfliteSegmenter.cpp
+    resources/backgrounds.qrc
 )
 target_include_directories(talq-call-test PRIVATE src ${GST_INCLUDE_DIRS})
 # SignalingClient.cpp references TALQ_VERSION (talq target defines it; the
@@ -265,6 +274,7 @@ target_link_libraries(talq-call-test PRIVATE
     Qt6::Network
     Qt6::WebSockets
     Qt6::Multimedia
+    Qt6::OpenGL          # #20 BG compositor (offscreen QOpenGLContext)
     ${GST_LIBRARIES}
 )
 if(WIN32)
