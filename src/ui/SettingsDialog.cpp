@@ -12,6 +12,8 @@
 #endif
 
 #include <QApplication>
+#include <QGuiApplication>
+#include <QScreen>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGroupBox>
@@ -22,6 +24,8 @@
 #include <QFont>
 #include <QListWidget>
 #include <QRegularExpression>
+#include <QScrollArea>
+#include <QScrollBar>
 #include <QSlider>
 #include <QStandardPaths>
 #include <QTimer>
@@ -143,7 +147,17 @@ SettingsDialog::SettingsDialog(
 {
     setWindowTitle("Settings");
     setMinimumSize(520, 460);
-    resize(560, 580);
+    // Clamp the initial height to fit a small laptop (1366×768 minus
+    // task-bar and window chrome leaves ~700 px usable). The
+    // per-tab scroll-area below handles overflow inside each tab so
+    // long content (background grid, notification list) is reachable
+    // even when the dialog is short.
+    int targetH = 580;
+    if (auto *scr = QGuiApplication::primaryScreen()) {
+        const int avail = scr->availableGeometry().height();
+        targetH = qMin(targetH, qMax(460, avail - 80));
+    }
+    resize(560, targetH);
 
     auto *mainLayout = new QVBoxLayout(this);
     mainLayout->setContentsMargins(0, 0, 0, 0);
@@ -218,12 +232,29 @@ SettingsDialog::SettingsDialog(
     mainLayout->addWidget(header);
     mainLayout->addWidget(makeDivider());
 
+    // Each tab content can outgrow a small-screen laptop (the Audio &
+    // Video tab in particular, with mic / speaker / camera / quality /
+    // 8-tile background grid). Wrap each in a vertical-scroll
+    // QScrollArea so the dialog stays at its compact default size and
+    // the user can scroll within the active tab. Horizontal scrollbar
+    // off; widgetResizable=true so the inner widget tracks the
+    // viewport's width and only vertical content overflows.
+    auto wrapInScroll = [this](QWidget *page) -> QWidget * {
+        auto *scroll = new QScrollArea(this);
+        scroll->setWidget(page);
+        scroll->setWidgetResizable(true);
+        scroll->setFrameShape(QFrame::NoFrame);
+        scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+        return scroll;
+    };
+
     m_tabs = new QTabWidget(this);
-    m_tabs->addTab(buildAudioVideoTab(), "Audio && Video");
-    m_tabs->addTab(buildNotificationsTab(), "Notifications");
-    m_tabs->addTab(buildUpdatesTab(), tr("Updates"));
-    m_tabs->addTab(buildGeneralTab(), "General");
-    m_tabs->addTab(buildAccountTab(), "Account");
+    m_tabs->addTab(wrapInScroll(buildAudioVideoTab()),    "Audio && Video");
+    m_tabs->addTab(wrapInScroll(buildNotificationsTab()), "Notifications");
+    m_tabs->addTab(wrapInScroll(buildUpdatesTab()),       tr("Updates"));
+    m_tabs->addTab(wrapInScroll(buildGeneralTab()),       "General");
+    m_tabs->addTab(wrapInScroll(buildAccountTab()),       "Account");
     mainLayout->addWidget(m_tabs);
 
     // Tab bar inherits the app-wide AppStyle sheet (theme-driven, all 4

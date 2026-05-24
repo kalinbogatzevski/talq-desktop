@@ -290,8 +290,20 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
     }
     g_object_set(m_dummySrc, "pattern", 2 /* black */, "is-live", TRUE, nullptr);
     {
+        // Camera-off "mute" dummy. Upstream NC Talk (spreed v23.0.4 +
+        // libwebrtc BlackVideoEnforcer) feeds the sender a CAMERA-
+        // RESOLUTION black canvas at ~10 fps for the first 5 s of mute,
+        // then halts. We don't know the actual camera resolution at
+        // start() time (enableCamera selects it later), so we use
+        // upstream's documented fallback: 640x480 @ 10 fps. The 5 s
+        // halt timer below closes the valve so RTP genuinely goes
+        // silent after the grace window — the wire-state portion of
+        // the upstream conformance fix. Previously 16x16 @ 1 fps was
+        // shipped, which let GCC + jitterbuffer converge to dummy-
+        // stream parameters and produced the deterministic asymmetric
+        // callee-mid-call-camera-on chop (#111 / #135).
         GstCaps *lowCaps = gst_caps_from_string(
-            "video/x-raw,width=16,height=16,framerate=10/1");
+            "video/x-raw,width=640,height=480,framerate=10/1");
         g_object_set(m_dummyCaps, "caps", lowCaps, nullptr);
         gst_caps_unref(lowCaps);
     }
