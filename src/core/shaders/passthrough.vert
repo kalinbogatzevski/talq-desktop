@@ -13,12 +13,16 @@ out vec2 v_uv;
 
 void main()
 {
-    // Flip V so the GL texture orientation (origin bottom-left) matches
-    // QImage's top-left convention. Without this, uploadTexture's
-    // top-down row-major copy puts the input's last row at GL's row 0,
-    // and the readback comes out vertically flipped - exactly the
-    // upside-down preview the user saw when Blur / Image mode kicked
-    // in, while Off mode (no compositor pass at all) stayed upright.
-    v_uv = vec2(a_uv.x, 1.0 - a_uv.y);
+    // Identity UV. The Y-flip used to live HERE in 0.39.8 because the
+    // single-pass pipeline produced QImage->GL->QImage with one
+    // implicit GL convention flip per round-trip. 0.39.9 added an
+    // intermediate FBO (the bilateral mask refine) - that re-introduced
+    // a SECOND flip and put the blur plate upside-down. The clean fix
+    // is to keep everything in GL-native bottom-up across all FBOs,
+    // mirror QImage textures ONCE on upload (see uploadTexture in
+    // BackgroundCompositor.cpp), and let fbo->toImage() flip back to
+    // QImage convention on the final readback. So this shader stays
+    // identity.
+    v_uv = a_uv;
     gl_Position = vec4(a_position, 0.0, 1.0);
 }
