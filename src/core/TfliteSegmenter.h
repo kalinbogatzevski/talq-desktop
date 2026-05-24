@@ -28,6 +28,7 @@
 #include <QImage>
 #include <QObject>
 
+#include <atomic>
 #include <memory>
 
 #ifdef TALQ_BG_ORT
@@ -59,8 +60,21 @@ public:
     // an 8-bit Grayscale8 QImage: 255 = full person, 0 = full background.
     QImage segment(const QImage &rgba);
 
+signals:
+    // Fires once when ORT initialisation failed at construction (model
+    // load fault, missing DLL, GPU device lost on first warm-up). The
+    // segmenter then runs in centred-gradient fallback for the lifetime
+    // of this instance. BackgroundEngine forwards this onto its own
+    // engineDisabled signal so the UI can toast + flip the QSetting.
+    void unavailable(const QString &reason);
+
 private:
     bool m_ready = false;
+    // One-shot guard: the per-frame Run failure path qWarning's once
+    // then stays quiet. At 30 fps a persistent fault (GPU device lost,
+    // ORT internal panic) used to flood the log with thousands of
+    // identical warnings per minute.
+    std::atomic<bool> m_runFailedOnce{false};
 
 #ifdef TALQ_BG_ORT
     // Owned. Constructed in the ctor when the model and ORT both succeed,

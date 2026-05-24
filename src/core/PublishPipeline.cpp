@@ -813,6 +813,8 @@ void PublishPipeline::cleanup()
     m_camDecode = nullptr;
     m_videoConvert = nullptr;
     m_videoCapsFilter = nullptr;
+    m_bgAppsink = nullptr;     // #20 Phase 3.3b — must null with the rest
+    m_bgAppsrc  = nullptr;     // or a second start() dereferences garbage
     m_tee = nullptr;
     m_encQueue = nullptr;
     m_cameraValve = nullptr;
@@ -1173,6 +1175,14 @@ void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)
     gst_element_sync_state_with_parent(m_camDecode);
     gst_element_sync_state_with_parent(m_videoConvert);
     gst_element_sync_state_with_parent(m_videoCapsFilter);
+    // #20 Phase 3.3b — the BG bridge sits between capsfilter and tee.
+    // Without these two syncs, the appsink/appsrc stay in NULL state
+    // (we bin-add them during enableCamera, well after start() has
+    // already promoted the pipeline to PLAYING) and the camera feed
+    // never reaches the encoder branch. Shipped broken in 0.39.1-0.39.3
+    // — caught in the post-ship code review.
+    gst_element_sync_state_with_parent(m_bgAppsink);
+    gst_element_sync_state_with_parent(m_bgAppsrc);
     gst_element_sync_state_with_parent(m_tee);
     gst_element_sync_state_with_parent(m_encQueue);
     gst_element_sync_state_with_parent(m_cameraValve);
