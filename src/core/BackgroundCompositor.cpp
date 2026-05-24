@@ -324,8 +324,17 @@ QImage BackgroundCompositor::readbackFbo(QOpenGLFramebufferObject *fbo)
 // (no feather adjustment). Named so the next reader doesn't read the
 // hardcoded `0.70 - 0 * 0.01` as a half-finished port (review I6).
 namespace {
-constexpr float kCoverageLow    = 0.45f;
-constexpr float kCoverageHigh   = 0.70f;
+// Talk's WebGLCompositor.js defaults are (0.45, 0.70) for the smoothstep
+// edge transition. Those values assume a CLEAN bilateral-refined mask
+// (their pipeline runs jointBilateralFilter before this stage). Our
+// 0.39.x bilateral pass is still a stub (`bg_mask_refine.frag`), so the
+// raw sigmoid output from selfie_segmenter.onnx feeds compose directly
+// and the edges show more model noise. Widening the smoothstep window
+// to (0.35, 0.75) gives ~50% more transition pixels, hiding most of the
+// noise. Once the bilateral refine ports for real, narrow back to Talk's
+// values.
+constexpr float kCoverageLow    = 0.35f;
+constexpr float kCoverageHigh   = 0.75f;
 constexpr float kEdgeFeatherPx  = 0.0f;
 constexpr float kLightWrapping  = 0.30f;   // Talk's default
 } // namespace
