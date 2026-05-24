@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(talq VERSION 0.39.5 LANGUAGES CXX)
+project(talq VERSION 0.39.6 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -87,6 +87,8 @@ qt_add_executable(talq
     src/ui/ComposerWidget.cpp
     src/ui/LoginWidget.cpp
     src/ui/SettingsDialog.cpp
+    src/ui/BgPreviewSource.cpp
+    src/ui/BgPreviewSource.h
     src/ui/CallStage.cpp
     src/ui/CallWindow.cpp
     src/ui/StatusPopover.h

@@ -1265,10 +1265,18 @@ void PublishPipeline::disableCamera()
     if (m_cameraValve) g_object_set(m_cameraValve, "drop", TRUE, nullptr);
     if (m_dummyValve) g_object_set(m_dummyValve, "drop", FALSE, nullptr);
 
-    // 2. Resume dummy source + convert, pause camera (save CPU)
+    // 2. Resume dummy source + convert, RELEASE the camera device. We
+    //    drop the camera source all the way to NULL so mfvideosrc's
+    //    IMFMediaSource handle is released and the hardware camera LED
+    //    goes off. PAUSED would only stop streaming, leaving the device
+    //    open and the LED on - which users read as "they can still see
+    //    me" even though TalQ has muted video. The COM-init cost
+    //    (~1 s) is paid again on the next enableCamera, but mute-toggle
+    //    isn't frame-rate-critical and the visible LED-off feedback is
+    //    worth the latency.
     gst_element_set_state(m_dummySrc, GST_STATE_PLAYING);
     gst_element_set_state(m_dummyConv, GST_STATE_PLAYING);
-    if (m_cameraSrc) gst_element_set_state(m_cameraSrc, GST_STATE_PAUSED);
+    if (m_cameraSrc) gst_element_set_state(m_cameraSrc, GST_STATE_NULL);
 
     m_cameraEnabled = false;
     // Re-arm the 5-s dummy-halt timer: the wire stays "alive" through the

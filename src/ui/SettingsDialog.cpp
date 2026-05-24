@@ -6,6 +6,8 @@
 #include "core/TalqLog.h"
 #include "core/AppSettings.h"
 #include "core/AuthManager.h"
+#include "core/BackgroundEngine.h"
+#include "BgPreviewSource.h"
 
 #ifndef TALQ_VERSION_NAME
 #define TALQ_VERSION_NAME ""   // per-release codename (set in CMake)
@@ -406,11 +408,36 @@ QWidget *SettingsDialog::buildAudioVideoTab()
         m_settings.endGroup();
         // Mode is a discrete choice — emit immediately, no debounce.
         emit backgroundSettingsChanged();
+        // Live preview reflects the new mode immediately too.
+        syncBgPreview();
     });
     layout->addWidget(makeSettingRow(
         tr("Camera background"),
         tr("Off, Blur, or replace with an image. Applies live during calls."),
         m_bgModeCombo));
+
+    // Live preview - shows the user's selected background applied to
+    // their own camera in real time, so they can dial in Blur strength
+    // or pick an image without having to start a call. Default to
+    // hidden; revealed by syncBgPreview() once the user picks a
+    // non-Off mode. The widget is a plain QLabel with a fixed 16:9
+    // aspect so the preview pipeline runs at a known size (640x360 →
+    // scaled to 320x180 for display).
+    m_bgPreviewLabel = new QLabel;
+    m_bgPreviewLabel->setFixedSize(320, 180);
+    m_bgPreviewLabel->setAlignment(Qt::AlignCenter);
+    m_bgPreviewLabel->setStyleSheet(
+        "QLabel { background:#1a1a1a; border-radius:6px; color:#888; }");
+    m_bgPreviewLabel->setText(tr("Preview will appear when Blur or Image is selected"));
+    m_bgPreviewLabel->setWordWrap(true);
+    m_bgPreviewLabel->hide();
+    {
+        auto *previewRow = new QHBoxLayout;
+        previewRow->addStretch(1);
+        previewRow->addWidget(m_bgPreviewLabel);
+        previewRow->addStretch(1);
+        layout->addLayout(previewRow);
+    }
 
     m_bgBlurStrengthSlider = new QSlider(Qt::Horizontal);
     m_bgBlurStrengthSlider->setRange(1, 20);
@@ -424,6 +451,13 @@ QWidget *SettingsDialog::buildAudioVideoTab()
         m_settings.setValue("virtualBackgroundBlurStrength", v);
         m_settings.endGroup();
         m_bgSettingsDebounce->start();
+        // Slider drag should feel live - the preview engine handles the
+        // new strength directly without waiting for the publisher-side
+        // debounce.
+        if (m_bgPreviewEngine
+            && m_bgPreviewEngine->mode() == BackgroundEngine::Mode::Blur) {
+            m_bgPreviewEngine->setBlurStrength(v);
+        }
     });
     layout->addWidget(makeSettingRow(
         tr("Blur strength"),
@@ -516,6 +550,12 @@ QWidget *SettingsDialog::buildAudioVideoTab()
         m_settings.setValue("virtualBackgroundUrl", path);
         m_settings.endGroup();
         emit backgroundSettingsChanged();
+        // Preview's image-mode engine reads the new path immediately so
+        // selecting a different bundled background updates the live view.
+        if (m_bgPreviewEngine
+            && m_bgPreviewEngine->mode() == BackgroundEngine::Mode::Image) {
+            m_bgPreviewEngine->setImagePath(path);
+        }
     });
 
     layout->addWidget(m_bgImageGrid);
@@ -561,6 +601,85 @@ QWidget *SettingsDialog::buildAudioVideoTab()
     layout->addLayout(btnRow);
 
     return page;
+}
+
+void SettingsDialog::hideEvent(QHideEvent *event)
+{
+    QDialog::hideEvent(event);
+    // Release the camera as soon as the dialog goes away so an outgoing
+    // call from the main window can claim it without contention.
+    if (m_bgPreviewSource) m_bgPreviewSource->stop();
+}
+
+void SettingsDialog::showEvent(QShowEvent *event)
+{
+    QDialog::showEvent(event);
+    // Mirror the persisted state into the preview on every open. If
+    // the user left the dialog with Blur active and reopens, they see
+    // the preview without having to re-pick the mode.
+    syncBgPreview();
+}
+
+void SettingsDialog::syncBgPreview()
+{
+    if (!m_bgPreviewLabel) return;
+
+    m_settings.beginGroup("Talk/Backgrounds");
+    const bool    enabled  = m_settings.value("virtualBackgroundEnabled", false).toBool();
+    const QString type     = m_settings.value("virtualBackgroundType",   "blur").toString();
+    const int     strength = m_settings.value("virtualBackgroundBlurStrength", 10).toInt();
+    const QString imgUrl   = m_settings.value("virtualBackgroundUrl",    QString()).toString();
+    m_settings.endGroup();
+
+    // Off mode (or feature disabled) - tear down the preview to release
+    // the camera handle. The label drops back to its placeholder text.
+    if (!enabled || type == QLatin1String("off")) {
+        if (m_bgPreviewSource) {
+            m_bgPreviewSource->stop();
+        }
+        m_bgPreviewLabel->setPixmap(QPixmap());
+        m_bgPreviewLabel->setText(
+            tr("Preview will appear when Blur or Image is selected"));
+        m_bgPreviewLabel->hide();
+        return;
+    }
+
+    // On-mode - lazy-construct engine + source on first use.
+    if (!m_bgPreviewEngine) {
+        m_bgPreviewEngine = new BackgroundEngine(this);
+    }
+    if (type == QLatin1String("image")) {
+        m_bgPreviewEngine->setImagePath(imgUrl);
+        m_bgPreviewEngine->setMode(BackgroundEngine::Mode::Image);
+    } else {
+        m_bgPreviewEngine->setBlurStrength(strength);
+        m_bgPreviewEngine->setMode(BackgroundEngine::Mode::Blur);
+    }
+
+    if (!m_bgPreviewSource) {
+        m_bgPreviewSource = new BgPreviewSource(m_bgPreviewEngine, this);
+        connect(m_bgPreviewSource, &BgPreviewSource::imageReady, this,
+                [this](const QImage &img) {
+            if (!m_bgPreviewLabel) return;
+            m_bgPreviewLabel->setPixmap(QPixmap::fromImage(img).scaled(
+                m_bgPreviewLabel->size(),
+                Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        });
+        connect(m_bgPreviewSource, &BgPreviewSource::unavailable, this,
+                [this](const QString &reason) {
+            if (!m_bgPreviewLabel) return;
+            m_bgPreviewLabel->setPixmap(QPixmap());
+            m_bgPreviewLabel->setText(
+                tr("Live preview unavailable: %1").arg(reason));
+            m_bgPreviewLabel->show();
+        });
+    }
+
+    m_bgPreviewLabel->show();
+    if (!m_bgPreviewSource->isRunning()) {
+        m_bgPreviewLabel->setText(tr("Starting camera preview…"));
+        m_bgPreviewSource->start();
+    }
 }
 
 // ============================================================
