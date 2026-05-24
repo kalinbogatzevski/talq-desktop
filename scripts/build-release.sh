@@ -195,6 +195,21 @@ for dll in libstdc++-6.dll libgcc_s_seh-1.dll libwinpthread-1.dll \
     cp "$MSYS2/$dll" . 2>/dev/null || true
 done
 
+# #20 Phase 2e — ONNX Runtime DLL for selfie segmentation. The DLL is
+# vendored under third_party/onnxruntime/bin/ (Microsoft v1.20.1 Windows
+# x64 prebuilt, MIT). The talq.exe links against it dynamically; the
+# corresponding import lib (.dll.a) lives under .../lib/ for build-time
+# linkage. Without this DLL beside talq.exe, the engine surfaces its
+# "ORT initialisation failed" warning and silently falls back to the
+# centred-gradient mask.
+ORT_DLL="$SRC_DIR/third_party/onnxruntime/bin/onnxruntime.dll"
+if [ -f "$ORT_DLL" ]; then
+    cp "$ORT_DLL" .
+else
+    echo "WARNING: onnxruntime.dll not present at $ORT_DLL — the BG"
+    echo "         engine will run in centred-gradient fallback at runtime."
+fi
+
 # GStreamer plugins (copy directly from MSYS2)
 mkdir -p gst-plugins
 # NOTE: webrtcsrc (rswebrtc) internally builds a `decodebin3` and will

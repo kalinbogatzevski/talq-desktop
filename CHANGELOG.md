@@ -1,5 +1,34 @@
 # Changelog
 
+## v0.39.3 "Aprilsko Vastanie" — BETA (2026-05-24)
+
+Phase 2e of the video-background feature (#20): the mock centred-radial
+gradient mask is replaced with real selfie segmentation from MediaPipe's
+`selfie_segmenter` model. Person-shaped now, not ellipse-shaped.
+
+### Changed — video backgrounds use real segmentation (#20 Phase 2e)
+
+* **ONNX Runtime 1.20.1 vendored** under `third_party/onnxruntime/`
+  (Microsoft official Windows x64 prebuilt, MIT-licensed redistribution)
+  with a mingw-generated import library so it links into the talq.exe
+  build without MSVC.
+* **Model conversion:** the bundled `selfie_segmenter.tflite` (MediaPipe,
+  Apache-2.0) was converted to ONNX in dev via `tf2onnx --opset 18`. One
+  TFLite-only fused op (`Convolution2DTransposeBias`) was hand-replaced
+  by the equivalent `ConvTranspose + Add` pair so the model loads with
+  stock ORT. The patched `selfie_segmenter.onnx` (~450 KB) is bundled
+  alongside the original tflite under `:/bg/models/`.
+* **Runtime:** `TfliteSegmenter` (class name kept for callsite stability)
+  loads the ONNX from qrc, runs CPU-EP inference at 256×256 per frame
+  (~10 ms on a modern CPU), upscales the sigmoid mask back to source
+  resolution. On any failure (DLL missing, model load fault, Run error)
+  it falls back to the centred-gradient mask the 0.39.x betas shipped
+  so calls never black-frame.
+* **Installer payload** grew by ~11.5 MB (onnxruntime.dll) + 450 KB
+  (.onnx). Total .exe ~54 MB → ~65 MB.
+
+---
+
 ## v0.39.2 "Aprilsko Vastanie" — BETA (2026-05-24)
 
 Tiny hotfix on top of 0.39.1 for one defense-in-depth nicety:
