@@ -20,6 +20,7 @@
 #include <QFileInfo>
 #include <QFrame>
 #include <QFont>
+#include <QListWidget>
 #include <QRegularExpression>
 #include <QSlider>
 #include <QStandardPaths>
@@ -398,18 +399,71 @@ QWidget *SettingsDialog::buildAudioVideoTab()
         tr("Higher = stronger blur on the background plate."),
         m_bgBlurStrengthSlider));
 
-    // Image path picker — bare-bones for Phase 3.1. Phase 4 will replace
-    // with a thumbnail grid of the 8 bundled backgrounds + Browse.
-    auto *imgRow = new QWidget;
-    auto *imgLayout = new QHBoxLayout(imgRow);
-    imgLayout->setContentsMargins(0, 0, 0, 0);
-    imgLayout->setSpacing(8);
-    m_bgImagePathLabel = new QLabel(bgUrl.isEmpty() ? tr("(none)") : QFileInfo(bgUrl).fileName());
-    // Tooltip omitted on purpose: the full path would leak in screenshare
-    // (the Settings dialog is plausibly visible during a call). Filename
-    // alone is enough for the user to recognise their chosen background.
+    // Image picker — 8 bundled thumbnails (from qrc :/bg/backgrounds/) in
+    // an IconMode grid + a separate "Choose…" button for user-supplied
+    // images. Selection writes the qrc path (or the file path for user
+    // images) to virtualBackgroundUrl. Bundled paths start with ":/bg/"
+    // so the engine can distinguish them; QImage loads qrc paths natively.
+    layout->addWidget(makeSectionHeader(tr("Background image")));
+
+    m_bgImageGrid = new QListWidget;
+    m_bgImageGrid->setViewMode(QListView::IconMode);
+    m_bgImageGrid->setIconSize(QSize(120, 68));
+    m_bgImageGrid->setGridSize(QSize(140, 92));
+    m_bgImageGrid->setResizeMode(QListView::Adjust);
+    m_bgImageGrid->setMovement(QListView::Static);
+    m_bgImageGrid->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_bgImageGrid->setUniformItemSizes(true);
+    m_bgImageGrid->setWrapping(true);
+    m_bgImageGrid->setSpacing(8);
+    m_bgImageGrid->setMinimumHeight(200);
+    m_bgImageGrid->setFrameShape(QFrame::NoFrame);
+
+    struct Bundled { const char *label; const char *qrc; };
+    static const Bundled kBundled[] = {
+        { "Office",        ":/bg/backgrounds/1_office.jpg"        },
+        { "Home",          ":/bg/backgrounds/2_home.jpg"          },
+        { "Abstract",      ":/bg/backgrounds/3_abstract.jpg"      },
+        { "Beach",         ":/bg/backgrounds/4_beach.jpg"         },
+        { "Park",          ":/bg/backgrounds/5_park.jpg"          },
+        { "Theater",       ":/bg/backgrounds/6_theater.jpg"       },
+        { "Library",       ":/bg/backgrounds/7_library.jpg"       },
+        { "Space Station", ":/bg/backgrounds/8_space_station.jpg" },
+    };
+    QListWidgetItem *initial = nullptr;
+    for (const Bundled &b : kBundled) {
+        QImage img(QString::fromLatin1(b.qrc));
+        QIcon icon(QPixmap::fromImage(img.scaled(QSize(240, 136),
+            Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation)));
+        auto *item = new QListWidgetItem(icon,
+            QString::fromLatin1(b.label), m_bgImageGrid);
+        item->setData(Qt::UserRole, QString::fromLatin1(b.qrc));
+        if (bgUrl == QString::fromLatin1(b.qrc)) initial = item;
+    }
+    if (initial) m_bgImageGrid->setCurrentItem(initial);
+
+    connect(m_bgImageGrid, &QListWidget::itemSelectionChanged, this, [this]() {
+        auto *item = m_bgImageGrid->currentItem();
+        if (!item) return;
+        const QString path = item->data(Qt::UserRole).toString();
+        m_settings.beginGroup("Talk/Backgrounds");
+        m_settings.setValue("virtualBackgroundUrl", path);
+        m_settings.endGroup();
+        emit backgroundSettingsChanged();
+    });
+
+    layout->addWidget(m_bgImageGrid);
+
+    // Browse… for user-supplied images. Sits below the grid; picking a
+    // file clears the grid selection (we don't try to match user files
+    // against the bundled set).
+    auto *browseRow = new QHBoxLayout;
+    browseRow->setContentsMargins(0, 0, 0, 0);
+    m_bgImagePathLabel = new QLabel(bgUrl.isEmpty() || bgUrl.startsWith(QStringLiteral(":/"))
+        ? tr("(none — pick a bundled background above, or browse for your own)")
+        : QFileInfo(bgUrl).fileName());
     m_bgImagePathLabel->setProperty("role", "settingDesc");
-    auto *browseBtn = new QPushButton(tr("Choose…"));
+    auto *browseBtn = new QPushButton(tr("Choose your own…"));
     browseBtn->setProperty("variant", "ghost");
     connect(browseBtn, &QPushButton::clicked, this, [this]() {
         const QString path = QFileDialog::getOpenFileName(this,
@@ -421,15 +475,12 @@ QWidget *SettingsDialog::buildAudioVideoTab()
         m_settings.setValue("virtualBackgroundUrl", path);
         m_settings.endGroup();
         m_bgImagePathLabel->setText(QFileInfo(path).fileName());
+        m_bgImageGrid->clearSelection();   // user file beats any bundled pick
         emit backgroundSettingsChanged();
     });
-    imgLayout->addWidget(m_bgImagePathLabel, 1);
-    imgLayout->addWidget(browseBtn, 0);
-    imgRow->setMinimumWidth(kControlCol);
-    layout->addWidget(makeSettingRow(
-        tr("Background image"),
-        tr("Used when Background = Image. Browse to pick a photo."),
-        imgRow));
+    browseRow->addWidget(m_bgImagePathLabel, 1);
+    browseRow->addWidget(browseBtn, 0);
+    layout->addLayout(browseRow);
 
     layout->addStretch();
 
