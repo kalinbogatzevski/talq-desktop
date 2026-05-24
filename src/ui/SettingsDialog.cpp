@@ -25,6 +25,7 @@
 #include <QFrame>
 #include <QFont>
 #include <QListWidget>
+#include <QMenu>
 #include <QRegularExpression>
 #include <QScrollArea>
 #include <QScrollBar>
@@ -385,6 +386,14 @@ QWidget *SettingsDialog::buildAudioVideoTab()
     m_bgModeCombo->addItem(tr("Off"),   QStringLiteral("off"));
     m_bgModeCombo->addItem(tr("Blur"),  QStringLiteral("blur"));
     m_bgModeCombo->addItem(tr("Image"), QStringLiteral("image"));
+    // Disable mouse-wheel scroll on this combo. Default Qt behaviour
+    // changes the current item on wheel hover, but our save handler is
+    // wired to activated() (click only), so a wheel scroll desyncs the
+    // visible item from the saved setting - the user sees "Off" while
+    // the engine is still running Blur/Image. Easiest fix: swallow
+    // wheel events on the combo with a tiny eventFilter.
+    m_bgModeCombo->setFocusPolicy(Qt::StrongFocus);
+    m_bgModeCombo->installEventFilter(this);
     {
         const QString cur = bgEnabled ? bgType : QStringLiteral("off");
         int idx = m_bgModeCombo->findData(cur);
@@ -483,6 +492,24 @@ QWidget *SettingsDialog::buildAudioVideoTab()
     m_bgImageGrid->setSpacing(8);
     m_bgImageGrid->setMinimumHeight(200);
     m_bgImageGrid->setFrameShape(QFrame::NoFrame);
+    // Make the currently-selected thumbnail visible at a glance: tinted
+    // background + accent-coloured border for the selected item;
+    // hovered items get a subtle lift so it's clear they're clickable.
+    // The accent picks up PainterTheme accent if available; falling
+    // back to a fixed teal that reads against all 4 themes.
+    m_bgImageGrid->setStyleSheet(
+        "QListWidget { background:transparent; }"
+        "QListWidget::item { "
+        "  border:2px solid transparent; "
+        "  border-radius:6px; "
+        "  padding:4px; }"
+        "QListWidget::item:hover { "
+        "  background:rgba(255,255,255,0.06); }"
+        "QListWidget::item:selected { "
+        "  border:2px solid #14b8a6; "
+        "  background:rgba(20,184,166,0.18); "
+        "  color:white; }"
+    );
 
     struct Bundled { const char *label; const char *qrc; };
     static const Bundled kBundled[] = {
@@ -571,7 +598,45 @@ QWidget *SettingsDialog::buildAudioVideoTab()
     m_bgImagePathLabel->setProperty("role", "settingDesc");
     auto *browseBtn = new QPushButton(tr("Choose your own…"));
     browseBtn->setProperty("variant", "ghost");
-    connect(browseBtn, &QPushButton::clicked, this, [this]() {
+    // Restore previously chosen custom images so they survive a TalQ
+    // restart. Stored as a deduped string list under
+    // Talk/Backgrounds/customImages; bundled qrc thumbs are NEVER in
+    // that list. Missing files (user moved or deleted them) are
+    // silently skipped on load.
+    auto appendCustomThumb = [this](const QString &path) -> QListWidgetItem * {
+        if (path.isEmpty() || path.startsWith(QStringLiteral(":/")))
+            return nullptr;
+        if (!QFileInfo::exists(path)) return nullptr;
+        for (int i = 0; i < m_bgImageGrid->count(); ++i) {
+            auto *it = m_bgImageGrid->item(i);
+            if (it->data(Qt::UserRole).toString() == path)
+                return it;
+        }
+        QImage img(path);
+        if (img.isNull()) return nullptr;
+        QPixmap pm = QPixmap::fromImage(img.scaled(120, 68,
+            Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation));
+        auto *item = new QListWidgetItem(QIcon(pm),
+            QFileInfo(path).completeBaseName(), m_bgImageGrid);
+        item->setData(Qt::UserRole, path);
+        // Tag custom items so the context-menu remove only fires on
+        // user-supplied paths; bundled qrc thumbs are immutable.
+        item->setData(Qt::UserRole + 1, true);
+        return item;
+    };
+    {
+        m_settings.beginGroup("Talk/Backgrounds");
+        const QStringList custom = m_settings.value("customImages")
+                                       .toStringList();
+        m_settings.endGroup();
+        for (const QString &p : custom) {
+            if (auto *it = appendCustomThumb(p);
+                it && p == bgUrl) m_bgImageGrid->setCurrentItem(it);
+        }
+    }
+
+    connect(browseBtn, &QPushButton::clicked, this,
+            [this, appendCustomThumb]() {
         const QString path = QFileDialog::getOpenFileName(this,
             tr("Choose background image"),
             QStandardPaths::writableLocation(QStandardPaths::PicturesLocation),
@@ -579,9 +644,52 @@ QWidget *SettingsDialog::buildAudioVideoTab()
         if (path.isEmpty()) return;
         m_settings.beginGroup("Talk/Backgrounds");
         m_settings.setValue("virtualBackgroundUrl", path);
+        QStringList custom = m_settings.value("customImages").toStringList();
+        if (!custom.contains(path)) {
+            custom.append(path);
+            m_settings.setValue("customImages", custom);
+        }
         m_settings.endGroup();
         m_bgImagePathLabel->setText(QFileInfo(path).fileName());
-        m_bgImageGrid->clearSelection();   // user file beats any bundled pick
+        if (auto *it = appendCustomThumb(path)) {
+            m_bgImageGrid->setCurrentItem(it);
+        }
+        emit backgroundSettingsChanged();
+    });
+
+    // Right-click on a custom thumb opens a small remove menu. Bundled
+    // thumbs are immutable - the menu only opens for user-supplied
+    // paths (marked by Qt::UserRole + 1 in appendCustomThumb).
+    m_bgImageGrid->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_bgImageGrid, &QListWidget::customContextMenuRequested, this,
+            [this](const QPoint &pos) {
+        auto *item = m_bgImageGrid->itemAt(pos);
+        if (!item) return;
+        if (!item->data(Qt::UserRole + 1).toBool()) return;
+        const QString path = item->data(Qt::UserRole).toString();
+        QMenu menu(this);
+        QAction *removeAct = menu.addAction(tr("Remove from grid"));
+        QAction *chosen = menu.exec(m_bgImageGrid->mapToGlobal(pos));
+        if (chosen != removeAct) return;
+        m_settings.beginGroup("Talk/Backgrounds");
+        QStringList custom = m_settings.value("customImages").toStringList();
+        custom.removeAll(path);
+        m_settings.setValue("customImages", custom);
+        // If the removed thumb was the active background, fall back
+        // to the first bundled image so the engine still has a valid
+        // path to render.
+        if (m_settings.value("virtualBackgroundUrl").toString() == path) {
+            const QString fallback = QStringLiteral(":/bg/backgrounds/1_office.jpg");
+            m_settings.setValue("virtualBackgroundUrl", fallback);
+            for (int i = 0; i < m_bgImageGrid->count(); ++i) {
+                if (m_bgImageGrid->item(i)->data(Qt::UserRole).toString() == fallback) {
+                    m_bgImageGrid->setCurrentRow(i);
+                    break;
+                }
+            }
+        }
+        m_settings.endGroup();
+        delete m_bgImageGrid->takeItem(m_bgImageGrid->row(item));
         emit backgroundSettingsChanged();
     });
     browseRow->addWidget(m_bgImagePathLabel, 1);
@@ -601,6 +709,16 @@ QWidget *SettingsDialog::buildAudioVideoTab()
     layout->addLayout(btnRow);
 
     return page;
+}
+
+bool SettingsDialog::eventFilter(QObject *obj, QEvent *event)
+{
+    // Block wheel-scroll on the BG mode combo so a scroll-while-hovered
+    // can't change the selection out from under the user. Forwards
+    // every other event normally.
+    if (obj == m_bgModeCombo && event->type() == QEvent::Wheel)
+        return true;
+    return QDialog::eventFilter(obj, event);
 }
 
 void SettingsDialog::hideEvent(QHideEvent *event)

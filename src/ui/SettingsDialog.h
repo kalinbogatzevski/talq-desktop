@@ -40,6 +40,10 @@ protected:
     // preview restarts naturally if the dialog re-opens.
     void hideEvent(QHideEvent *event) override;
     void showEvent(QShowEvent *event) override;
+    // Swallows wheel events on the BG mode combo (avoids the
+    // wheel-while-hovering trap that desynced the visible mode from
+    // the saved one).
+    bool eventFilter(QObject *obj, QEvent *event) override;
 
 signals:
     void closeToTrayChanged(bool enabled);

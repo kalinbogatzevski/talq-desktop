@@ -2,7 +2,8 @@
 
 ## v0.39.6 "Aprilsko Vastanie" — BETA (2026-05-24)
 
-Two improvements to the camera/background flow.
+A bundle of camera/background flow improvements driven by field
+feedback during the morning's beta cycle.
 
 ### Added
 
@@ -14,6 +15,11 @@ Two improvements to the camera/background flow.
   doesn't contend with an active call's engine for the GL context.
   Camera handle is released the instant the dialog hides so an
   outgoing call can claim it.
+* **Custom backgrounds are now visible in the grid.** Picking an
+  image via "Choose your own…" adds it as a new thumbnail next to the
+  eight bundled ones (previously it was saved but invisible). Custom
+  thumbnails persist across restart. Right-click a custom thumbnail
+  → "Remove from grid" to drop it; bundled thumbnails are immutable.
 
 ### Fixed
 
@@ -25,6 +31,23 @@ Two improvements to the camera/background flow.
   so the device handle is released and the LED goes off. Costs ~1 s
   on the next enableCamera (mfvideosrc COM init) but the visible
   feedback is worth the latency.
+* **Background mode dropdown could silently desync from a
+  mouse-wheel.** The save handler was wired to QComboBox::activated
+  (click-only), so a wheel-scroll while hovering changed the visible
+  selection without persisting it - the engine kept running Image
+  while the dropdown showed Off. Wheel events on the BG mode combo
+  are now swallowed.
+* **Currently-selected background thumbnail had no visible state on
+  dark themes.** Selection now draws a 2 px accent border + tinted
+  background; hover gets a subtle lift.
+
+### Internal (PR-review caught)
+
+* `BgPreviewSource::start()` leaked floating-ref GstElements on the
+  early-exit path when any factory returned null.
+* `BgPreviewSource::onNewSample` could dereference a destroyed
+  BackgroundEngine if the dialog torn down mid-frame. Engine pointer
+  is now QPointer-guarded.
 
 ---
 
