@@ -34,6 +34,13 @@ public:
     // Reload device combos and notification state from managers
     void refresh();
 
+protected:
+    // Tear down the live BG preview pipeline (releases the camera so a
+    // subsequent call can claim it). Sync also runs on showEvent so the
+    // preview restarts naturally if the dialog re-opens.
+    void hideEvent(QHideEvent *event) override;
+    void showEvent(QShowEvent *event) override;
+
 signals:
     void closeToTrayChanged(bool enabled);
     void themeIdChanged(int themeId);   // PainterTheme::Theme as int
@@ -45,6 +52,12 @@ signals:
     void backgroundSettingsChanged();
 
 private:
+    // Reads the current Talk/Backgrounds/* settings and either starts /
+    // reconfigures the live BG preview (Blur or Image mode) or stops it
+    // (Off mode). Called from the mode combo, the strength slider, the
+    // image grid, and the dialog show/hide events.
+    void syncBgPreview();
+
     QWidget *buildAudioVideoTab();
     QWidget *buildNotificationsTab();
     QWidget *buildGeneralTab();
@@ -79,6 +92,14 @@ private:
     QSlider     *m_bgBlurStrengthSlider = nullptr;
     QLabel      *m_bgImagePathLabel     = nullptr;
     QListWidget *m_bgImageGrid          = nullptr;
+    // Live camera preview that runs the user's selected BG mode end-to-
+    // end without joining a call. Lazy-created the first time the user
+    // picks Blur/Image, torn down on dialog close. Owns its own
+    // BackgroundEngine so it doesn't fight a call-active engine for the
+    // GL context.
+    QLabel                  *m_bgPreviewLabel   = nullptr;
+    class BgPreviewSource   *m_bgPreviewSource  = nullptr;
+    class BackgroundEngine  *m_bgPreviewEngine  = nullptr;
     // Debouncer: dragging the slider used to fire 20 QSettings writes +
     // 20 backgroundSettingsChanged emits in a fraction of a second; the
     // signal handler on the CallManager side reconfigured the publisher
