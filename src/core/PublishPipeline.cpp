@@ -7,6 +7,7 @@
 #include <QSet>
 #include <QUrl>
 #include <gst/app/gstappsink.h>
+#include <gst/app/gstappsrc.h>
 #include <gst/rtp/rtp.h>
 #include <gst/sdp/sdp.h>
 #include <thread>
@@ -919,6 +920,8 @@ bool PublishPipeline::buildCameraChain(int deviceIndex, bool hd1080)
     m_camDecode       = gst_element_factory_make("decodebin", "cam-decode");
     m_videoConvert    = gst_element_factory_make("videoconvert", nullptr);
     m_videoCapsFilter = gst_element_factory_make("capsfilter", nullptr);
+    m_bgAppsink       = gst_element_factory_make("appsink", "bg-appsink");
+    m_bgAppsrc        = gst_element_factory_make("appsrc",  "bg-appsrc");
     m_tee             = gst_element_factory_make("tee", "camera-tee");
     m_encQueue        = gst_element_factory_make("queue", "enc-queue");
     m_cameraValve     = gst_element_factory_make("valve", "camera-valve");
@@ -927,7 +930,8 @@ bool PublishPipeline::buildCameraChain(int deviceIndex, bool hd1080)
     m_previewAppsink  = gst_element_factory_make("appsink", "preview-sink");
 
     if (!m_camSrcCaps || !m_camDecode ||
-        !m_videoConvert || !m_videoCapsFilter || !m_tee || !m_encQueue ||
+        !m_videoConvert || !m_videoCapsFilter || !m_bgAppsink || !m_bgAppsrc ||
+        !m_tee || !m_encQueue ||
         !m_cameraValve || !m_previewQueue || !m_previewConvert || !m_previewAppsink) {
         qWarning() << "PublishPipeline: failed to create camera branch elements";
         // Clean up any elements that were created (not yet added to pipeline)
@@ -937,6 +941,8 @@ bool PublishPipeline::buildCameraChain(int deviceIndex, bool hd1080)
         freeIf(m_camDecode);
         freeIf(m_videoConvert);
         freeIf(m_videoCapsFilter);
+        freeIf(m_bgAppsink);
+        freeIf(m_bgAppsrc);
         freeIf(m_tee);
         freeIf(m_encQueue);
         freeIf(m_cameraValve);
@@ -1003,16 +1009,45 @@ bool PublishPipeline::buildCameraChain(int deviceIndex, bool hd1080)
         g_object_set(m_camSrcCaps, "caps", caps, nullptr);
         gst_caps_unref(caps);
     }
-    // Post-decode capsfilter: just normalize to raw. Do NOT pin a
-    // framerate here — the shared chain's videorate (sharedRate) does
-    // CFR→30 for the encoder, and a genuinely slow raw-only webcam must
-    // not fail negotiation by being forced to 30.
+    // Post-decode capsfilter — Phase 3.3b pins BGRx so the BG bridge has
+    // a consistent input format to map without per-frame caps checks.
+    // The shared chain downstream (sharedConvert) re-formats to whatever
+    // the encoder wants (NV12/I420); BGRx → encoder via convert is the
+    // same hop the pre-3.3b chain used implicitly.
     {
-        GstCaps *raw = gst_caps_from_string("video/x-raw");
+        GstCaps *raw = gst_caps_from_string("video/x-raw,format=BGRx");
         g_object_set(m_videoCapsFilter, "caps", raw, nullptr);
         gst_caps_unref(raw);
-        qDebug() << "PublishPipeline: camera caps: MJPEG|raw ≤720p, "
-                    "prefer 30fps (jpegdec via decodebin)";
+        qDebug() << "PublishPipeline: camera caps: BGRx (BG bridge needs "
+                    "consistent input); sharedConvert handles encoder format";
+    }
+    // #20 Phase 3.3b — BG appsink + appsrc. The sink pulls BGRx samples;
+    // the callback decides per-frame whether to engine-process (mode !=
+    // None) or zero-copy push-through (mode == None). The src receives
+    // BGRx buffers with the same PTS+duration. emit-signals on the sink
+    // so the C++ callback fires; is-live + format=time + block=false on
+    // the src so it integrates with the live camera clock.
+    {
+        GstCaps *bgrxCaps = gst_caps_from_string("video/x-raw,format=BGRx");
+        g_object_set(m_bgAppsink,
+            "emit-signals", TRUE,
+            "caps",  bgrxCaps,
+            "drop",  TRUE,
+            "max-buffers", 2,
+            "sync",  FALSE,    // streaming-thread already paced by the camera
+            nullptr);
+        g_object_set(m_bgAppsrc,
+            "caps",   bgrxCaps,
+            "is-live", TRUE,
+            "format", GST_FORMAT_TIME,
+            "block",   FALSE,
+            "stream-type", 0,   // GST_APP_STREAM_TYPE_STREAM
+            "max-bytes", gint64(0),   // unbounded — the appsink drop-old already paces
+            "do-timestamp", FALSE,    // we copy PTS from the input sample
+            nullptr);
+        gst_caps_unref(bgrxCaps);
+        g_signal_connect(m_bgAppsink, "new-sample",
+            G_CALLBACK(onBgSample), this);
     }
     // Queues: leaky downstream to prevent blocking
     g_object_set(m_encQueue, "leaky", 2 /* downstream */, "max-size-buffers", 3, nullptr);
@@ -1036,7 +1071,9 @@ bool PublishPipeline::buildCameraChain(int deviceIndex, bool hd1080)
     // Add all camera elements to pipeline
     gst_bin_add_many(GST_BIN(m_pipeline),
         m_cameraSrc, m_camSrcCaps, m_camDecode,
-        m_videoConvert, m_videoCapsFilter, m_tee,
+        m_videoConvert, m_videoCapsFilter,
+        m_bgAppsink, m_bgAppsrc,    // #20 Phase 3.3b bridge
+        m_tee,
         m_encQueue, m_cameraValve,
         m_previewQueue, m_previewConvert, m_previewAppsink, nullptr);
 
@@ -1062,7 +1099,15 @@ bool PublishPipeline::buildCameraChain(int deviceIndex, bool hd1080)
         }), m_videoConvert);
 
     gboolean linked = gst_element_link_many(m_cameraSrc, m_camSrcCaps, m_camDecode, nullptr);
-    linked = linked && gst_element_link_many(m_videoConvert, m_videoCapsFilter, m_tee, nullptr);
+    // #20 Phase 3.3b — break the capsfilter→tee link and insert the BG
+    // bridge: capsfilter→bgAppsink (consumer in onBgSample) … bgAppsrc→tee.
+    // Frames cross through the C++ callback whether or not the engine is
+    // active; with Off-mode the callback push-throughs the same buffer so
+    // there's a one-shot extra memcpy across the bridge boundary, which
+    // is negligible at 720p30 (≤ 70 MB/s, well under the existing convert
+    // throughput on the same thread).
+    linked = linked && gst_element_link_many(m_videoConvert, m_videoCapsFilter, m_bgAppsink, nullptr);
+    linked = linked && gst_element_link_many(m_bgAppsrc, m_tee, nullptr);
 
     // Link encoder branch: tee → encQueue → cameraValve
     linked = linked && gst_element_link_many(m_encQueue, m_cameraValve, nullptr);
@@ -1577,86 +1622,171 @@ GstFlowReturn PublishPipeline::onPreviewSample(GstAppSink *sink, gpointer userDa
         }, Qt::QueuedConnection);
     }
 
-    // #20 — copy the BGRx pixels NOW (streaming thread) so we don't keep
-    // the GstSample alive across the Qt-thread hop. If no background
-    // engine is set OR mode is None, fall back to the legacy feedFrame
-    // path (zero-copy, lowest latency for Off-mode publishers — the
-    // vast majority of calls).
-    QImage rgbaSnapshot;
-    bool routeThroughEngine = false;
-    bool degradedThisFrame = false;
-    if (self->m_backgroundEngine
-        && self->m_backgroundEngine->mode() != BackgroundEngine::Mode::None) {
-        GstCaps *caps = gst_sample_get_caps(sample);
-        GstStructure *s = caps ? gst_caps_get_structure(caps, 0) : nullptr;
-        const gchar *format = s ? gst_structure_get_string(s, "format") : nullptr;
-        int width = 0, height = 0;
-        if (s) {
-            gst_structure_get_int(s, "width", &width);
-            gst_structure_get_int(s, "height", &height);
-        }
-        if (format && g_strcmp0(format, "BGRx") == 0 && width > 0 && height > 0) {
-            GstBuffer *buf = gst_sample_get_buffer(sample);
-            GstMapInfo map;
-            if (gst_buffer_map(buf, &map, GST_MAP_READ)) {
-                if (qint64(map.size) >= qint64(width) * height * 4) {
-                    // Format_RGB32 byte-aliases BGRx exactly on little-
-                    // endian — no convertToFormat needed here. .copy()
-                    // detaches into freshly-allocated storage before we
-                    // unmap. Saves ~80 MB/s on the streaming thread at
-                    // 720p30 vs the prior convertToFormat(RGBA8888).
-                    QImage wrap(map.data, width, height,
-                                width * 4, QImage::Format_RGB32);
-                    rgbaSnapshot = wrap.copy();
-                    routeThroughEngine = true;
-                } else {
-                    degradedThisFrame = true;
-                }
-                gst_buffer_unmap(buf, &map);
-            } else {
-                degradedThisFrame = true;
-            }
-        } else if (format) {
-            // Caps shifted off BGRx mid-call — real correctness/diagnostic
-            // signal worth surfacing once.
-            degradedThisFrame = true;
-        }
-    }
-
-    // Surface BG preview-path degradation once per pipeline ("surface
-    // once, then quiet" — same pattern BackgroundEngine uses for
-    // engineDisabled). Without this, a caps change or map failure would
-    // silently fall back to the raw camera and the user would have no
-    // signal that their chosen Background mode isn't running.
-    if (degradedThisFrame
-        && !self->m_previewEngineDegraded.exchange(true,
-                                                    std::memory_order_relaxed)) {
-        qWarning() << "PublishPipeline: BG preview path unavailable "
-                      "(caps != BGRx, or gst_buffer_map failed) — self-PiP "
-                      "falling back to raw camera until restart";
-    }
-
+    // #20 Phase 3.3b — the BG engine now runs UPSTREAM of m_tee (in
+    // onBgSample), so by the time pixels reach the preview branch they
+    // are already the processed BGRx the receivers will see. Self-PiP
+    // is therefore a straight feedFrame of whatever came off the tee:
+    // identical to the legacy pre-3.3a path, no per-frame map / Qt-hop
+    // / QImage conversion required.
     QPointer<PublishPipeline> guard(self);
-    if (routeThroughEngine) {
-        gst_sample_unref(sample);   // not needed past this point
-        QMetaObject::invokeMethod(self, [guard, rgbaSnapshot]() {
-            if (!guard || !guard->m_localVideoProvider) return;
-            // Engine returns the input unchanged in Mode::None or when
-            // GL init fails — safe pass-through either way.
-            const QImage processed = guard->m_backgroundEngine
-                ? guard->m_backgroundEngine->processFrame(rgbaSnapshot)
-                : rgbaSnapshot;
-            guard->m_localVideoProvider->feedQImage(processed);
-        }, Qt::QueuedConnection);
-    } else {
-        QMetaObject::invokeMethod(self, [guard, sample]() {
-            if (guard && guard->m_localVideoProvider)
-                guard->m_localVideoProvider->feedFrame(sample);
-            gst_sample_unref(sample);
-        }, Qt::QueuedConnection);
-    }
+    QMetaObject::invokeMethod(self, [guard, sample]() {
+        if (guard && guard->m_localVideoProvider)
+            guard->m_localVideoProvider->feedFrame(sample);
+        gst_sample_unref(sample);
+    }, Qt::QueuedConnection);
 
     return GST_FLOW_OK;
+}
+
+// #20 Phase 3.3b — bridge appsink callback.
+// Sits between m_videoCapsFilter and m_tee. Every captured camera frame
+// passes here BEFORE the encoder/preview branches. Two regimes:
+//
+//   Off-mode (engine null or Mode::None): zero-cost push-through. We
+//   keep the original GstBuffer and forward it to m_bgAppsrc — same
+//   pixels, same PTS+duration, no engine, no Qt-thread hop.
+//
+//   On-mode  (Blur / Image): cross to the Qt main thread synchronously
+//   (BlockingQueuedConnection), run the GL compositor against the BGRx
+//   pixels, build a new BGRx GstBuffer with the original PTS+duration,
+//   and push that.
+//
+// PTS preservation is critical — both rtpgccbwe (BWE pacing) and the
+// receiver-side jitter buffer use it to detect timing drift. Anything
+// other than verbatim original timestamps will look like a wandering
+// clock and confuse rate control.
+GstFlowReturn PublishPipeline::onBgSample(GstAppSink *sink, gpointer userData)
+{
+    auto *self = static_cast<PublishPipeline *>(userData);
+    if (!self) return GST_FLOW_ERROR;
+    if (self->m_shuttingDown.load(std::memory_order_relaxed)) {
+        // Drain so the streaming thread doesn't back up while the
+        // pipeline is tearing down.
+        if (GstSample *drop = gst_app_sink_try_pull_sample(sink, 0))
+            gst_sample_unref(drop);
+        return GST_FLOW_OK;
+    }
+
+    GstSample *sample = gst_app_sink_pull_sample(sink);
+    if (!sample) return GST_FLOW_OK;
+    GstBuffer *inBuf = gst_sample_get_buffer(sample);
+    if (!inBuf) { gst_sample_unref(sample); return GST_FLOW_OK; }
+
+    const bool engineOn = self->m_backgroundEngine
+        && self->m_backgroundEngine->mode() != BackgroundEngine::Mode::None;
+
+    GstAppSrc *src = GST_APP_SRC(self->m_bgAppsrc);
+    if (!src) { gst_sample_unref(sample); return GST_FLOW_ERROR; }
+
+    // ---------- Off-mode: zero-allocation push-through ----------
+    if (!engineOn) {
+        // Take a strong ref on the input buffer for the appsrc and let
+        // the sample go.
+        GstBuffer *passBuf = gst_buffer_ref(inBuf);
+        gst_sample_unref(sample);
+        GstFlowReturn fr = gst_app_src_push_buffer(src, passBuf);  // takes ownership
+        return fr;
+    }
+
+    // ---------- On-mode: GL compositor round-trip ----------
+    // Snapshot caps + map BGRx pixels into a detached QImage. We do
+    // this on the streaming thread (cheap memcpy, ~70 MB/s at 720p30
+    // — the videoConvert upstream does an equal-cost convert anyway,
+    // so the bridge adds one extra copy per frame).
+    GstCaps *caps = gst_sample_get_caps(sample);
+    GstStructure *s = caps ? gst_caps_get_structure(caps, 0) : nullptr;
+    int width = 0, height = 0;
+    const gchar *format = s ? gst_structure_get_string(s, "format") : nullptr;
+    if (s) { gst_structure_get_int(s, "width", &width); gst_structure_get_int(s, "height", &height); }
+
+    if (!format || g_strcmp0(format, "BGRx") != 0 || width <= 0 || height <= 0) {
+        // Caps shifted off BGRx — fall back to push-through so the call
+        // doesn't black-frame. Surface once.
+        if (!self->m_previewEngineDegraded.exchange(true, std::memory_order_relaxed)) {
+            qWarning() << "PublishPipeline: BG bridge sees non-BGRx caps "
+                          "(" << (format ? format : "<null>") << "); push-through fallback";
+        }
+        GstBuffer *passBuf = gst_buffer_ref(inBuf);
+        gst_sample_unref(sample);
+        return gst_app_src_push_buffer(src, passBuf);
+    }
+
+    GstClockTime pts = GST_BUFFER_PTS(inBuf);
+    GstClockTime dts = GST_BUFFER_DTS(inBuf);
+    GstClockTime dur = GST_BUFFER_DURATION(inBuf);
+
+    QImage rgbaSnapshot;
+    {
+        GstMapInfo map;
+        if (!gst_buffer_map(inBuf, &map, GST_MAP_READ)) {
+            // Map failed — push-through.
+            GstBuffer *passBuf = gst_buffer_ref(inBuf);
+            gst_sample_unref(sample);
+            return gst_app_src_push_buffer(src, passBuf);
+        }
+        if (qint64(map.size) < qint64(width) * height * 4) {
+            gst_buffer_unmap(inBuf, &map);
+            GstBuffer *passBuf = gst_buffer_ref(inBuf);
+            gst_sample_unref(sample);
+            return gst_app_src_push_buffer(src, passBuf);
+        }
+        QImage wrap(map.data, width, height, width * 4, QImage::Format_RGB32);
+        rgbaSnapshot = wrap.copy();  // detach before unmap
+        gst_buffer_unmap(inBuf, &map);
+    }
+    gst_sample_unref(sample);
+
+    // Engine runs on the Qt main thread (that's where its QOpenGLContext
+    // lives). BlockingQueuedConnection stalls this streaming thread for
+    // ~5-15 ms per frame — measured cost of a 720p compose pass. At
+    // 30 fps that is ≤ 45 % of the Qt thread budget for the engine; the
+    // rest stays free for UI repaints. Off-mode (above) skips this hop.
+    QImage processed;
+    QPointer<PublishPipeline> guard(self);
+    QMetaObject::invokeMethod(self, [guard, &processed, &rgbaSnapshot]() {
+        if (!guard || !guard->m_backgroundEngine) {
+            processed = rgbaSnapshot;
+            return;
+        }
+        processed = guard->m_backgroundEngine->processFrame(rgbaSnapshot);
+    }, Qt::BlockingQueuedConnection);
+
+    if (processed.isNull() || processed.width() != width || processed.height() != height) {
+        // Engine returned garbage — push the unprocessed snapshot so the
+        // receiver still sees a valid frame.
+        processed = rgbaSnapshot;
+    }
+    if (processed.format() != QImage::Format_RGB32) {
+        // Engine should already return BGRx-aliased RGB32, but be safe.
+        processed.convertTo(QImage::Format_RGB32);
+    }
+
+    // Build a fresh GstBuffer wrapping a copy of the processed pixels.
+    const gsize bytes = gsize(width) * height * 4;
+    GstBuffer *outBuf = gst_buffer_new_allocate(nullptr, bytes, nullptr);
+    if (!outBuf) return GST_FLOW_ERROR;
+    {
+        GstMapInfo om;
+        if (!gst_buffer_map(outBuf, &om, GST_MAP_WRITE)) {
+            gst_buffer_unref(outBuf);
+            return GST_FLOW_ERROR;
+        }
+        // QImage::bits() may have row padding; copy line-by-line to
+        // honour the appsrc's tight BGRx stride (width*4).
+        const int srcStride = processed.bytesPerLine();
+        const int rowBytes  = width * 4;
+        const uchar *srcPtr = processed.constBits();
+        guint8 *dstPtr      = om.data;
+        for (int y = 0; y < height; ++y) {
+            memcpy(dstPtr + y * rowBytes, srcPtr + y * srcStride, rowBytes);
+        }
+        gst_buffer_unmap(outBuf, &om);
+    }
+    GST_BUFFER_PTS(outBuf)      = pts;
+    GST_BUFFER_DTS(outBuf)      = dts;
+    GST_BUFFER_DURATION(outBuf) = dur;
+
+    return gst_app_src_push_buffer(src, outBuf);  // takes ownership
 }
 
 GstElement *PublishPipeline::onRequestAuxSender(GstElement *, GObject *,
