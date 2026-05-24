@@ -908,17 +908,17 @@ QWidget *SettingsDialog::buildAccountTab()
     bottomRow->addWidget(logoutBtn);
     layout->addLayout(bottomRow);
 
-    // Release codename credit. The codename "Bangaranga" honours DARA's
-    // "Bangaranga", the song that won the Eurovision Song Contest 2026 for
-    // Bulgaria (the country's first Eurovision win, at the contest's 70th
-    // anniversary), with staging inspired by Bulgarian kukeri folklore.
-    // Shown only when a codename is set for the release.
+    // Release codename credit. 0.39.x betas carry "Aprilsko Vastanie"
+    // (Aprilsko vastanie / Априлско въстание — the April Uprising of
+    // 1876), marking the 150th anniversary in 2026 of the revolt that
+    // led to Bulgaria's liberation. Shown only when a codename is set
+    // for the release (TALQ_VERSION_NAME baked in by CMake).
     const QString verName = QStringLiteral(TALQ_VERSION_NAME);
     if (!verName.isEmpty()) {
         layout->addSpacing(6);
         auto *credit = new QLabel(
-            tr("Codename \"%1\" after DARA's \"Bangaranga\", "
-               "Bulgaria's first Eurovision win (2026).").arg(verName));
+            tr("Codename \"%1\" — Bulgaria's April Uprising of 1876, "
+               "150th anniversary (2026).").arg(verName));
         credit->setFont(infoFont);
         credit->setProperty("role", "secondary");
         credit->setWordWrap(true);

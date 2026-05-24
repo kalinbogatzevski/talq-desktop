@@ -1150,6 +1150,37 @@ void MainWindow::buildChatPage()
     m_splitter->setSizes({280, 0, 700});
     m_splitter->setHandleWidth(1);
 
+    // Restore the previous session's sidebar / chat-pane widths if the user
+    // ever dragged the handle. The setSizes() above is the seed; if the
+    // QSettings blob is present and not empty, restoreState() overwrites
+    // it. On first run (no blob) we keep the defaults. Use
+    // splitterMoved for live save instead of waiting for close — a crash
+    // or kill loses the new width otherwise.
+    {
+        const QByteArray saved =
+            m_settings.value("WindowGeometry/splitterState").toByteArray();
+        if (!saved.isEmpty())
+            m_splitter->restoreState(saved);
+    }
+    connect(m_splitter, &QSplitter::splitterMoved, this,
+            [this](int, int) {
+        // splitterMoved fires per pixel during drag — collapse to one
+        // QSettings write after the user releases by deferring through a
+        // 250 ms single-shot timer. Same debounce shape as the
+        // background-settings live-apply path.
+        if (!m_splitterSaveDebounce) {
+            m_splitterSaveDebounce = new QTimer(this);
+            m_splitterSaveDebounce->setSingleShot(true);
+            m_splitterSaveDebounce->setInterval(250);
+            connect(m_splitterSaveDebounce, &QTimer::timeout, this, [this]() {
+                if (m_splitter)
+                    m_settings.setValue("WindowGeometry/splitterState",
+                                        m_splitter->saveState());
+            });
+        }
+        m_splitterSaveDebounce->start();
+    });
+
     mainLayout->addWidget(m_splitter);
 
     // Initial chrome styling from the active theme (re-applied on theme change
@@ -2260,6 +2291,11 @@ void MainWindow::saveWindowState()
         m_settings.setValue("savedHeight", height());
         m_settings.setValue("savedVisibility", 2);
     }
+    // Final flush of the splitter widths. The splitterMoved debouncer
+    // already writes during normal use; this catches the rare case where
+    // the user resized < 250 ms before closing the window.
+    if (m_splitter)
+        m_settings.setValue("splitterState", m_splitter->saveState());
     m_settings.endGroup();
 }
 

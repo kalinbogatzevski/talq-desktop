@@ -63,6 +63,7 @@ public:
         AppSettings *appSettings,
         QWidget *parent = nullptr
     );
+    ~MainWindow() override;
 
     void restoreFromTray();
     void openConversation(const QString &token);
@@ -158,6 +159,10 @@ private:
     QLabel *m_uploadLabel = nullptr;
     QWidget *m_uploadProgress = nullptr;
     QSplitter *m_splitter = nullptr;
+    // Debounce for splitter-width persistence: splitterMoved fires once
+    // per pixel during a drag, so we collapse to one QSettings write
+    // ~250 ms after the user releases the handle. Owned by `this`.
+    class QTimer *m_splitterSaveDebounce = nullptr;
     QWidget *m_sidebarCol = nullptr;
     QLabel *m_profileNameLabel = nullptr;
     QLabel *m_profileAvatarLabel = nullptr;
