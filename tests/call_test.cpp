@@ -43,6 +43,7 @@
 #include "core/SignalingClient.h"
 #include "core/PeerPipeline.h"
 #include "core/PublishPipeline.h"     // #111: real-app publish path under test
+#include "core/BackgroundEngine.h"    // #20  BG-engine scenarios
 #include "core/SubscribeWebrtcSrc.h"  // subscriber under test (gst-plugins-rs)
 #include "core/ScreenSharePipeline.h" // #16: screen-share end-to-end scenario
 #include "core/VideoFrameProvider.h"  // frame counter for screen subscriber
@@ -95,6 +96,20 @@ static bool g_screenShare = false;
 // a short window. Regression-guards the control-channel path the call
 // screen uses for the remote mic/camera icons.
 static bool g_muteToggle = false;
+
+// #20 BG-engine scenarios. All three imply PUBPIPE + synthetic camera.
+// Peer A wires a BackgroundEngine into its PublishPipeline before the
+// pipeline starts, in the indicated mode. Verdict:
+//   _BG_BLUR     mode=Blur,  expect bgBridgeFramesProcessed  >> 0
+//                            and bgBridgeFramesPassThrough == 0
+//   _BG_IMAGE    mode=Image, same assertion (engine bound)
+//   _BG_FALLBACK mode=None,  expect bgBridgeFramesPassThrough >> 0
+//                            and bgBridgeFramesProcessed   == 0
+// Common in all three: B must receive > 0 frames at distinct ≈ delivered,
+// proving the bridge round-trip preserved PTS+timing for the encoder.
+static bool g_bgBlur     = false;
+static bool g_bgImage    = false;
+static bool g_bgFallback = false;
 
 // Test configuration. Identities/token come from the environment so the
 // harness never rings a real person's devices. Defaults are the two
@@ -168,6 +183,7 @@ struct TestPeer {
     SignalingClient *signaling = nullptr;
     PeerPipeline *pipeline = nullptr;
     PublishPipeline *pubPipeline = nullptr;            // #111 mode: peer A only
+    BackgroundEngine *bgEngine  = nullptr;             // #20  BG scenarios (peer A only)
     SubscribeWebrtcSrc *subscribePipeline = nullptr;  // remote peer's stream via MCU (webrtcsrc)
     TestPhase phase = Init;
     QString sessionId;       // HPB session ID
@@ -676,6 +692,33 @@ private:
                 [&peer](const QString &err) {
             peer.log("PublishPipeline error: " + err);
         });
+
+        // #20 BG harness: install a BackgroundEngine into peer A's
+        // publisher BEFORE start() so the very first camera frame
+        // through onBgSample sees the engine in the right mode. The
+        // engine is parented to TestPeer.api (lives the full run); the
+        // pipeline only holds a non-owning pointer.
+        if (&peer == &m_peerA && (g_bgBlur || g_bgImage || g_bgFallback)) {
+            peer.bgEngine = new BackgroundEngine(peer.api);
+            if (g_bgBlur) {
+                peer.bgEngine->setBlurStrength(10);
+                peer.bgEngine->setMode(BackgroundEngine::Mode::Blur);
+                peer.log("BG engine attached, Mode=Blur strength=10");
+            } else if (g_bgImage) {
+                // Use the first bundled background; no disk dependency
+                // — qrc resource path is stable across machines.
+                peer.bgEngine->setImagePath(":/bg/backgrounds/1_office.jpg");
+                peer.bgEngine->setMode(BackgroundEngine::Mode::Image);
+                peer.log("BG engine attached, Mode=Image (bundled #1)");
+            } else {
+                // FALLBACK: engine is installed but Mode=None. We expect
+                // onBgSample to take the zero-copy push-through path
+                // every frame (no engine round-trip).
+                peer.bgEngine->setMode(BackgroundEngine::Mode::None);
+                peer.log("BG engine attached, Mode=None (push-through fallback)");
+            }
+            peer.pubPipeline->setBackgroundEngine(peer.bgEngine);
+        }
 
         bool ok = peer.pubPipeline->start(peer.stunServer, peer.turnServers,
                                           QString(), true /*withVideo*/, 0, false);
@@ -1443,6 +1486,35 @@ private:
                         qDebug() << "SIMULCAST_DROP verdict: visual; grep "
                                     "run output for \"simulcast layer '<rid>' -> MUTED\"";
                     }
+                    if (g_bgBlur || g_bgImage || g_bgFallback) {
+                        // #20 BG verdict. Engine round-trip is expensive
+                        // (BlockingQueuedConnection + GL compose), so we
+                        // don't bar on processed-frame count == delivered.
+                        // The bar is: the right counter advanced AT ALL
+                        // and the other one stayed quiet, AND B saw real
+                        // decoded frames (proving the bridge preserved
+                        // PTS so the encoder could keep encoding).
+                        const quint64 fp = m_peerA.pubPipeline
+                            ? m_peerA.pubPipeline->bgBridgeFramesProcessed() : 0;
+                        const quint64 pt = m_peerA.pubPipeline
+                            ? m_peerA.pubPipeline->bgBridgeFramesPassThrough() : 0;
+                        const bool wantOn = g_bgBlur || g_bgImage;
+                        const bool counterPass = wantOn
+                            ? (fp > 0 && pt == 0)
+                            : (pt > 0 && fp == 0);
+                        // B receiving frames is the structural check —
+                        // proves the bridge didn't black-frame the call.
+                        const bool deliveryPass = bFrames > 0;
+                        const bool bgPass = counterPass && deliveryPass;
+                        pass = pass && bgPass;
+                        qDebug().nospace()
+                            << "BG verdict: mode="
+                            << (g_bgBlur ? "Blur" : g_bgImage ? "Image" : "None")
+                            << " processed=" << fp
+                            << " passthrough=" << pt
+                            << " bFrames=" << bFrames
+                            << " -> " << (bgPass ? "PASS" : "FAIL");
+                    }
                     printSummary(icePassed);
                     qApp->exit(pass ? 0 : 1);
                 });
@@ -1554,6 +1626,24 @@ int main(int argc, char *argv[])
     }
     if (qEnvironmentVariableIsSet("TALQ_TEST_PUBPIPE")) {
         g_pubPipe = true;
+        qputenv("TALQ_PUB_TESTSRC", "1");
+    }
+    // #20 BG-engine scenarios. All three imply PUBPIPE + synthetic source.
+    // BLUR/IMAGE run the GL compose path; FALLBACK exercises the zero-cost
+    // Off-mode push-through. Verdict is bridge counters + B-frame count.
+    if (qEnvironmentVariableIsSet("TALQ_TEST_BG_BLUR")) {
+        g_pubPipe = true;
+        g_bgBlur  = true;
+        qputenv("TALQ_PUB_TESTSRC", "1");
+    }
+    if (qEnvironmentVariableIsSet("TALQ_TEST_BG_IMAGE")) {
+        g_pubPipe = true;
+        g_bgImage = true;
+        qputenv("TALQ_PUB_TESTSRC", "1");
+    }
+    if (qEnvironmentVariableIsSet("TALQ_TEST_BG_FALLBACK")) {
+        g_pubPipe    = true;
+        g_bgFallback = true;
         qputenv("TALQ_PUB_TESTSRC", "1");
     }
 
