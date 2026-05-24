@@ -1,5 +1,33 @@
 # Changelog
 
+## v0.39.6 "Aprilsko Vastanie" — BETA (2026-05-24)
+
+Two improvements to the camera/background flow.
+
+### Added
+
+* **Live camera preview in Settings → Backgrounds.** Pick Blur or
+  Image and a 320×180 preview of your own camera appears with the
+  effect applied in real time. Slider drag updates the blur live;
+  picking a different bundled image swaps the background frame on the
+  next captured frame. Owns its own BackgroundEngine instance so it
+  doesn't contend with an active call's engine for the GL context.
+  Camera handle is released the instant the dialog hides so an
+  outgoing call can claim it.
+
+### Fixed
+
+* **Camera LED stayed on after muting video mid-call.** Previously
+  `disableCamera` set the camera source to GST_STATE_PAUSED, which on
+  Windows mfvideosrc keeps the IMFMediaSource handle open and the
+  hardware LED lit even though TalQ stopped sending frames - users
+  read that as "they can still see me." Now drops to GST_STATE_NULL
+  so the device handle is released and the LED goes off. Costs ~1 s
+  on the next enableCamera (mfvideosrc COM init) but the visible
+  feedback is worth the latency.
+
+---
+
 ## v0.39.5 "Aprilsko Vastanie" — BETA (2026-05-24)
 
 Three backlog items.
