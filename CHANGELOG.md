@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.39.10 "Aprilsko Vastanie" — BETA (2026-05-24)
+
+### Fixed
+
+* **Blur plate was upside-down (BG-image plate was right-side-up).**
+  The Y-flip the 0.39.8 fix added in `passthrough.vert` worked for
+  the single-FBO pipeline 0.39.8 had, but 0.39.9's new bilateral
+  refine added an intermediate FBO and every FBO-read got the flip
+  applied a second time — so the blurred-self background plate
+  ended up upside-down while the camera-frame foreground stayed
+  upright. Clean fix: identity UV in the shader, vertical mirror on
+  the QImage->GL upload, let `fbo->toImage()` flip once on readback.
+  All FBOs now stay in GL-native orientation throughout, so any
+  number of intermediate passes compose without re-flips.
+
+---
+
 ## v0.39.9 "Aprilsko Vastanie" — BETA (2026-05-24)
 
 Three layered improvements to person-segmentation quality + one field nit.

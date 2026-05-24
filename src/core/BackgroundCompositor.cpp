@@ -279,15 +279,25 @@ void BackgroundCompositor::uploadTexture(QOpenGLTexture *&tex,
         tex->allocateStorage();
     }
 
+    // Vertical mirror on upload so the GL texture is stored bottom-up
+    // (GL convention: UV (0,0) at bottom-left). With identity UV in
+    // passthrough.vert, intermediate FBOs all stay in GL-native
+    // orientation, and the final readbackFbo() / fbo->toImage() does
+    // one Y-flip back to QImage's top-left convention. Was previously
+    // handled by a `v_uv.y = 1.0 - a_uv.y` in the vertex shader, but
+    // that broke once the pipeline grew an intermediate FBO (bilateral
+    // refine) because every FBO read would re-flip.
     if (singleChannel) {
         QImage gray = img.format() == QImage::Format_Grayscale8
             ? img : img.convertToFormat(QImage::Format_Grayscale8);
+        gray = gray.mirrored(false, true);
         tex->setData(QOpenGLTexture::Red, QOpenGLTexture::UInt8,
                      gray.constBits(),
                      /*pixel-transfer-options*/ nullptr);
     } else {
         QImage rgba = img.format() == QImage::Format_RGBA8888
             ? img : img.convertToFormat(QImage::Format_RGBA8888);
+        rgba = rgba.mirrored(false, true);
         tex->setData(QOpenGLTexture::RGBA, QOpenGLTexture::UInt8,
                      rgba.constBits(),
                      nullptr);
