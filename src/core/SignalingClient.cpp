@@ -29,6 +29,20 @@ SignalingClient::SignalingClient(ApiClient *api, QObject *parent)
     });
 
     loadPersistedPeerClients();
+
+    // Periodic talq.client re-announce while in a room. Defense-in-depth
+    // for the upgrade case: a peer that joined the room before us
+    // upgraded silently keeps a stale-version cache for the whole session
+    // unless something forces a re-announce. The one-shot room-join hello
+    // covers a fresh peer-join, but co-resident sessions need this tick.
+    // 5 minutes is small relative to a long call/chat session and well
+    // under the spam threshold (the receive path de-duplicates by info
+    // string equality, so an unchanged version triggers no state churn).
+    m_talqClientReannounce.setInterval(5 * 60 * 1000);
+    connect(&m_talqClientReannounce, &QTimer::timeout, this, [this]() {
+        if (!m_currentRoom.isEmpty() && m_ws.state() == QAbstractSocket::ConnectedState)
+            sendTalqClientHello();
+    });
 }
 
 void SignalingClient::start()
@@ -39,6 +53,7 @@ void SignalingClient::start()
 void SignalingClient::stop()
 {
     m_reconnectTimer.stop();
+    m_talqClientReannounce.stop();
     sendBye();                 // graceful HPB disconnect (matches upstream)
     m_ws.close();
     m_sessionId.clear();
@@ -498,6 +513,10 @@ void SignalingClient::joinRoom(const QString &token)
             // TalQ clients cache it (by userId) and display it in conversation
             // info / call dialog. The official web client ignores it.
             sendTalqClientHello();
+            // Arm the 5-minute periodic re-announce so peers with stale
+            // caches (e.g. they joined the room while we were on the
+            // pre-upgrade build) eventually heal.
+            m_talqClientReannounce.start();
         });
 }
 
