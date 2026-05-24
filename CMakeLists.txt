@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(talq VERSION 0.39.2 LANGUAGES CXX)
+project(talq VERSION 0.39.3 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -183,6 +183,28 @@ if(TALQ_BG)
     message(STATUS "TalQ: video-background stack ENABLED (#20)")
 endif()
 
+# #20 Phase 2e — ONNX Runtime for real selfie segmentation. Vendored
+# under third_party/onnxruntime/ (Windows x64 prebuilt from
+# microsoft/onnxruntime v1.20.1, MIT-licensed redistribution). The
+# import library is mingw-generated via gendef + dlltool from the .dll.
+# Default ON when TALQ_BG is on; the option exists so a slim port
+# (e.g. a CI build that doesn't need the engine) can drop it.
+option(TALQ_BG_ORT "Link ONNX Runtime for real selfie segmentation" ON)
+if(TALQ_BG AND TALQ_BG_ORT)
+    set(_ort_dir "${CMAKE_SOURCE_DIR}/third_party/onnxruntime")
+    if(NOT EXISTS "${_ort_dir}/lib/libonnxruntime.dll.a")
+        message(FATAL_ERROR
+            "TALQ_BG_ORT=ON but ${_ort_dir}/lib/libonnxruntime.dll.a is "
+            "missing. Re-run gendef/dlltool, or disable with "
+            "-DTALQ_BG_ORT=OFF for a stub-only build.")
+    endif()
+    target_include_directories(talq PRIVATE "${_ort_dir}/include")
+    target_link_directories(talq PRIVATE   "${_ort_dir}/lib")
+    target_link_libraries(talq PRIVATE     onnxruntime)
+    target_compile_definitions(talq PRIVATE TALQ_BG_ORT)
+    message(STATUS "TalQ: ONNX Runtime ENABLED for selfie segmentation (#20 Phase 2e)")
+endif()
+
 # Branding. 123NET assets live outside the tree in /private (never
 # published); the branded build pulls them in here. The default/public
 # build is unbranded and references none of this.
@@ -321,6 +343,16 @@ target_link_libraries(background-engine-test PRIVATE
     Qt6::Gui
     Qt6::OpenGL
 )
+if(TALQ_BG AND TALQ_BG_ORT)
+    # Mirror talq target's ORT wiring so TfliteSegmenter.cpp compiles
+    # with the same TALQ_BG_ORT define + onnxruntime link.
+    target_include_directories(background-engine-test PRIVATE
+        "${CMAKE_SOURCE_DIR}/third_party/onnxruntime/include")
+    target_link_directories(background-engine-test PRIVATE
+        "${CMAKE_SOURCE_DIR}/third_party/onnxruntime/lib")
+    target_link_libraries(background-engine-test PRIVATE onnxruntime)
+    target_compile_definitions(background-engine-test PRIVATE TALQ_BG_ORT)
+endif()
 if(WIN32)
     set_target_properties(background-engine-test PROPERTIES WIN32_EXECUTABLE FALSE)
 endif()

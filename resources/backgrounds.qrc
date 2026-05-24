@@ -15,6 +15,11 @@
   </qresource>
   <qresource prefix="/bg/models">
     <file alias="selfie_segmenter.tflite">models/selfie_segmenter.tflite</file>
+    <!-- ONNX export of the same MediaPipe selfie_segmenter, converted with
+         tf2onnx (opset 18) and patched to replace the single TFLite-only
+         TFL_Convolution2DTransposeBias fused op with a ConvTranspose+Add
+         pair (mathematically identical, see Phase 2e notes). ~450 KB. -->
+    <file alias="selfie_segmenter.onnx">models/selfie_segmenter.onnx</file>
   </qresource>
   <qresource prefix="/bg/backgrounds">
     <file alias="1_office.jpg">backgrounds/1_office.jpg</file>

@@ -89,13 +89,30 @@ those attribution requirements.
 
 - **License:** Apache License 2.0
 - **Copyright:** © Google LLC, MediaPipe contributors
-- **Files:** `selfie_segmenter.tflite` (~244 KB)
-- **Usage:** Bundled verbatim from
+- **Files:** `selfie_segmenter.tflite` (~244 KB),
+  `selfie_segmenter.onnx` (~450 KB, derived)
+- **Usage:** The `.tflite` is bundled verbatim from
   `nextcloud/spreed@v23.0.4` (`src/utils/media/effects/virtual-background/vendor/models/`).
-  Runtime inference produces the per-frame person mask used by the
-  background blur / replace feature. The compositor that consumes the
-  mask is a direct port of Talk's `WebGLCompositor.js`.
+  The `.onnx` is a developer-time conversion of the same model via
+  `tf2onnx --opset 18`, with one TFLite-only fused op
+  (`Convolution2DTransposeBias`) replaced post-conversion by the
+  mathematically equivalent `ConvTranspose + Add` pair so it loads with
+  stock ONNX Runtime. Runtime inference uses the `.onnx`. The compositor
+  that consumes the resulting mask is a direct port of Talk's
+  `WebGLCompositor.js`.
 - <https://github.com/google-ai-edge/mediapipe>
+
+## ONNX Runtime (`third_party/onnxruntime/`)
+
+- **License:** MIT License
+- **Copyright:** © Microsoft Corporation
+- **Version:** 1.20.1 (Windows x64 prebuilt)
+- **Usage:** Bundled DLL (`onnxruntime.dll`) for per-frame CPU inference
+  of the MediaPipe Selfie Segmenter ONNX model. The headers from the
+  same release are vendored under `third_party/onnxruntime/include/`;
+  the mingw import library (`libonnxruntime.dll.a`) is generated locally
+  via `gendef` + `dlltool` from the redistributed DLL.
+- <https://github.com/microsoft/onnxruntime>
 
 ## Bundled background images (`resources/backgrounds/`)
 
