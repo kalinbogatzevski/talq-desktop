@@ -81,7 +81,8 @@ MessageListModel::MessageListModel(ApiClient *api, MessageCache *cache, QObject 
         if (!messages.isEmpty() && m_messages.isEmpty()) {
             QVector<Message> filtered;
             for (const auto &m : messages) {
-                if (m.isReactionMessage() || m.isCallJoinLeave())
+                if (m.isReactionMessage() || m.isCallJoinLeave()
+                    || m.isEditMessage())
                     continue;
                 if (m_hideThreadMessages && m.threadId > 0)
                     continue;
@@ -272,6 +273,46 @@ void MessageListModel::setConversationToken(const QString &token)
     m_generation++;  // invalidate all in-flight async callbacks
     m_oldestMessageId = 0;
     m_threadId = 0;
+
+    // #26 — figure out whether to enable bot auto-mention for this
+    // room. Conditions: room type == 1 (one_to_one), AND exactly one
+    // bot enabled (a state=1 entry in /apps/spreed/api/v1/bot/<token>).
+    // Default empty (no auto-prepend) until the API answers.
+    m_autoMentionBot.clear();
+    if (m_conversations && !token.isEmpty()
+        && m_conversations->conversationTypeForToken(token) == 1) {
+        const int gen = m_generation;
+        m_api->getArray("apps/spreed/api/v1/bot/" + token,
+            [this, token, gen](bool ok, const QJsonArray &data, int) {
+            // Generation guard so a stale reply for a previous token
+            // doesn't pollute the current m_autoMentionBot.
+            if (!ok || gen != m_generation || token != m_token) return;
+            QString chosen;
+            int enabledCount = 0;
+            for (const QJsonValue &v : data) {
+                const QJsonObject b = v.toObject();
+                // The bot list response shape (NC Talk Bot API v1):
+                // { "id": <int>, "state": 0|1|2, "name": "Aelita",
+                //   "description": "...", "features": ["webhook",...] }
+                // state == 1 means enabled in this conversation.
+                if (b.value(QStringLiteral("state")).toInt() != 1) continue;
+                ++enabledCount;
+                // Slug: prefer the lowercased display name; fall back
+                // to the numeric id ("@bot-7") if name is empty.
+                const QString name = b.value(QStringLiteral("name"))
+                                          .toString().trimmed().toLower();
+                chosen = !name.isEmpty() ? name
+                       : QStringLiteral("bot-%1").arg(
+                             b.value(QStringLiteral("id")).toInt());
+            }
+            if (enabledCount == 1) {
+                m_autoMentionBot = chosen;
+                qDebug() << "MessageListModel: auto-mention bot set to @"
+                         << m_autoMentionBot << "for 1:1 room";
+            }
+        });
+    }
+
     m_lastCommonRead = 0;  // async load below; will update via lastCommonReadLoaded signal
     if (m_cache) m_cache->loadLastCommonRead(token);
     m_loading = false;
@@ -406,7 +447,8 @@ void MessageListModel::loadHistory()
         QVector<Message> olderMsgs;
         for (const auto &val : data) {
             Message m = Message::fromJson(val.toObject());
-            if (m_messageIds.contains(m.id) || m.isReactionMessage() || m.isCallJoinLeave())
+            if (m_messageIds.contains(m.id) || m.isReactionMessage()
+                || m.isCallJoinLeave() || m.isEditMessage())
                 continue;
             if (m_hideThreadMessages && m.threadId > 0)
                 continue;
@@ -586,7 +628,9 @@ void MessageListModel::refreshLatest()
         QVector<Message> missing;
         for (const auto &val : data) {
             Message m = Message::fromJson(val.toObject());
-            if (m.isReactionMessage() || m.isCallJoinLeave()) continue;
+            if (m.isReactionMessage() || m.isCallJoinLeave()
+                || m.isEditMessage())
+                continue;
             if (m_hideThreadMessages && m.threadId > 0) continue;
 
             if (!m_messageIds.contains(m.id)) {
@@ -652,7 +696,8 @@ void MessageListModel::onMessagesReceived(const QJsonArray &messages)
     QVector<Message> newMsgs;
     for (const auto &val : messages) {
         Message m = Message::fromJson(val.toObject());
-        if (m_messageIds.contains(m.id) || m.isReactionMessage() || m.isCallJoinLeave())
+        if (m_messageIds.contains(m.id) || m.isReactionMessage()
+            || m.isCallJoinLeave() || m.isEditMessage())
             continue;
         if (m_hideThreadMessages && m.threadId > 0)
             continue;
@@ -730,10 +775,38 @@ void MessageListModel::postAndReplace(const QString &token, const QJsonObject &b
         });
 }
 
+void MessageListModel::setAutoMentionBot(const QString &mentionSlug)
+{
+    m_autoMentionBot = mentionSlug.trimmed();
+}
+
 void MessageListModel::sendMessage(const QString &text, int replyToId, bool silent)
 {
     if (text.trimmed().isEmpty() || m_token.isEmpty())
         return;
+
+    // #26 — in a one_to_one room with exactly one bot enabled, prepend
+    // the bot's @-mention so the message reaches it without the user
+    // having to type "@aelita" every time.
+    //
+    // We do NOT auto-prepend if:
+    //   * the bot slug is empty (no eligible bot in this room),
+    //   * we're sending as a reply (replyToId > 0; reply context already
+    //     implies the addressee),
+    //   * the text already mentions THIS bot anywhere (case-insensitive).
+    //
+    // Earlier revision used "text.contains('@')" as the gate but that
+    // suppressed auto-mention on perfectly innocent inputs like email
+    // addresses, code decorators (@param, @Override, @router.get),
+    // Twitter handles — exactly the kind of text users paste into a bot
+    // chat ABOUT code. The current gate triggers only when the message
+    // truly already addresses the bot.
+    QString actualText = text;
+    if (!m_autoMentionBot.isEmpty() && replyToId <= 0
+        && !text.contains(QStringLiteral("@") + m_autoMentionBot,
+                          Qt::CaseInsensitive)) {
+        actualText = QStringLiteral("@%1 %2").arg(m_autoMentionBot, text);
+    }
 
     static int tempIdCounter = -1;
     int tempId = tempIdCounter--;
@@ -744,7 +817,7 @@ void MessageListModel::sendMessage(const QString &text, int replyToId, bool sile
     optimistic.actorType = "users";
     optimistic.actorId = m_api->user();
     optimistic.actorDisplayName = "";
-    optimistic.message = text;
+    optimistic.message = actualText;  // #26 — auto-prepended @<bot> visible in own bubble
     optimistic.timestamp = QDateTime::currentSecsSinceEpoch();
     optimistic.messageType = "comment";
     optimistic.sendStatus = "sending";
@@ -759,7 +832,7 @@ void MessageListModel::sendMessage(const QString &text, int replyToId, bool sile
     emit newMessagesAtEnd();
 
     QJsonObject body;
-    body["message"] = text;
+    body["message"] = actualText;
     if (replyToId > 0)
         body["replyTo"] = replyToId;
     if (silent) body["silent"] = true;
