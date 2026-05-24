@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.39.8 "Aprilsko Vastanie" — BETA (2026-05-24)
+
+Two BG-feature nits caught the moment 0.39.7 hit Kalin's machine.
+
+### Fixed
+
+* **Camera preview was upside-down whenever Blur or Image mode was
+  active.** The GL compositor's passthrough vertex shader passed UV
+  through unchanged, but GL's texture-coord origin is bottom-left
+  while QImage rows are top-down — so the upload + readback round-trip
+  vertically flipped every processed frame. Affected the Settings
+  live preview, the call-time self-PiP, AND the outgoing video to
+  peers. One-line fix in `passthrough.vert`: `v_uv.y = 1.0 - a_uv.y`.
+* **Background image picker showed even when irrelevant.** The
+  "Background image" header + thumbnail grid + "Choose your own…"
+  row are now wrapped in a container that's hidden when the mode is
+  Off or Blur. Cleaner Settings on the most common paths; only
+  reveals when Image is the active mode.
+
+---
+
 ## v0.39.7 "Aprilsko Vastanie" — BETA (2026-05-24)
 
 Two backlog features.
