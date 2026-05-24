@@ -47,6 +47,10 @@ public:
     Q_INVOKABLE void refresh();
     Q_INVOKABLE void startAutoRefresh();
     Q_INVOKABLE void stopAutoRefresh();
+    // Force-refresh the user_status map outside the 60 s poll. MainWindow
+    // calls this on window-activate so the sidebar dots update as soon as
+    // the user returns to TalQ, rather than waiting up to a minute.
+    Q_INVOKABLE void refreshUserStatuses();
     Q_INVOKABLE QString tokenAt(int index) const;
     Q_INVOKABLE int lastReadMessageForToken(const QString &token) const;
     Q_INVOKABLE QString userStatusForToken(const QString &token) const;
