@@ -421,22 +421,57 @@ QWidget *SettingsDialog::buildAudioVideoTab()
 
     struct Bundled { const char *label; const char *qrc; };
     static const Bundled kBundled[] = {
-        { "Office",        ":/bg/backgrounds/1_office.jpg"        },
-        { "Home",          ":/bg/backgrounds/2_home.jpg"          },
-        { "Abstract",      ":/bg/backgrounds/3_abstract.jpg"      },
-        { "Beach",         ":/bg/backgrounds/4_beach.jpg"         },
-        { "Park",          ":/bg/backgrounds/5_park.jpg"          },
-        { "Theater",       ":/bg/backgrounds/6_theater.jpg"       },
-        { "Library",       ":/bg/backgrounds/7_library.jpg"       },
-        { "Space Station", ":/bg/backgrounds/8_space_station.jpg" },
+        // Labels wrapped with QT_TR_NOOP so lupdate picks them up; the
+        // tr() at use site below does the actual translation lookup.
+        { QT_TR_NOOP("Office"),        ":/bg/backgrounds/1_office.jpg"        },
+        { QT_TR_NOOP("Home"),          ":/bg/backgrounds/2_home.jpg"          },
+        { QT_TR_NOOP("Abstract"),      ":/bg/backgrounds/3_abstract.jpg"      },
+        { QT_TR_NOOP("Beach"),         ":/bg/backgrounds/4_beach.jpg"         },
+        { QT_TR_NOOP("Park"),          ":/bg/backgrounds/5_park.jpg"          },
+        { QT_TR_NOOP("Theater"),       ":/bg/backgrounds/6_theater.jpg"       },
+        { QT_TR_NOOP("Library"),       ":/bg/backgrounds/7_library.jpg"       },
+        { QT_TR_NOOP("Space Station"), ":/bg/backgrounds/8_space_station.jpg" },
     };
+
+    // Decoded icons cached for the process lifetime — Settings is
+    // reconstructed on every open in this codebase, so without the cache
+    // the 8 ~1 MB JPGs would re-decode + re-scale (~150–300 ms) on
+    // every Settings click. One-shot, ~2 MB of RGBA32 thumbnails resident.
+    static const QList<QIcon> kIcons = []() {
+        QList<QIcon> v;
+        for (const Bundled &b : kBundled) {
+            QImage img(QString::fromLatin1(b.qrc));
+            if (img.isNull()) {
+                qWarning() << "SettingsDialog: bundled background failed "
+                              "to load from qrc:" << b.qrc
+                           << "— tile suppressed";
+                v.append(QIcon());   // empty, used as a "skip" sentinel below
+                continue;
+            }
+            v.append(QIcon(QPixmap::fromImage(img.scaled(
+                QSize(240, 136),
+                Qt::KeepAspectRatioByExpanding,
+                Qt::SmoothTransformation))));
+        }
+        return v;
+    }();
+
     QListWidgetItem *initial = nullptr;
-    for (const Bundled &b : kBundled) {
-        QImage img(QString::fromLatin1(b.qrc));
-        QIcon icon(QPixmap::fromImage(img.scaled(QSize(240, 136),
-            Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation)));
-        auto *item = new QListWidgetItem(icon,
-            QString::fromLatin1(b.label), m_bgImageGrid);
+
+    // Lead with a (None) tile so users can clear an image-mode background
+    // without flipping the mode combo to Off. UserRole = empty string;
+    // the selection lambda writes empty + the engine returns rgba on
+    // empty URL.
+    {
+        auto *none = new QListWidgetItem(tr("(None)"), m_bgImageGrid);
+        none->setData(Qt::UserRole, QString());
+        if (bgUrl.isEmpty()) initial = none;
+    }
+
+    for (int i = 0; i < int(sizeof(kBundled) / sizeof(kBundled[0])); ++i) {
+        const Bundled &b = kBundled[i];
+        if (kIcons[i].isNull()) continue;   // skip silently-failed tiles
+        auto *item = new QListWidgetItem(kIcons[i], tr(b.label), m_bgImageGrid);
         item->setData(Qt::UserRole, QString::fromLatin1(b.qrc));
         if (bgUrl == QString::fromLatin1(b.qrc)) initial = item;
     }
