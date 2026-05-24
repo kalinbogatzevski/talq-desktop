@@ -1,9 +1,8 @@
 #include "BackgroundEngine.h"
 #include "BackgroundCompositor.h"
+#include "TfliteSegmenter.h"
 
 #include <QImage>
-#include <QPainter>
-#include <QRadialGradient>
 #include <QDebug>
 
 // Phase 2d: processFrame now wires through to the compositor. The mask
@@ -24,10 +23,12 @@ BackgroundEngine::~BackgroundEngine() = default;
 void BackgroundEngine::setMode(Mode m)
 {
     m_mode = m;
-    // Lazy-construct the compositor when the user actually opts in. Pure
-    // Off-mode publishers (the vast majority today) pay nothing for this.
-    if (m != Mode::None && !m_compositor)
-        m_compositor = new BackgroundCompositor(this);
+    // Lazy-construct the compositor + segmenter when the user actually
+    // opts in. Off-mode publishers (the vast majority today) pay nothing.
+    if (m != Mode::None) {
+        if (!m_compositor) m_compositor = new BackgroundCompositor(this);
+        if (!m_segmenter)  m_segmenter  = new TfliteSegmenter(this);
+    }
 }
 BackgroundEngine::Mode BackgroundEngine::mode() const { return m_mode; }
 
@@ -47,39 +48,19 @@ void BackgroundEngine::setImagePath(const QString &p)
 }
 QString BackgroundEngine::imagePath() const           { return m_imagePath; }
 
-namespace {
-// Mock person-mask: a centred radial gradient that's white in the middle
-// and fades to black at the edges. Stands in for real per-frame
-// segmentation until Phase 2e ports TFLite + selfie_segmenter.tflite.
-// Phase 3 onward this gets replaced by a true mask source.
-QImage makeMockMask(const QSize &size)
-{
-    QImage mask(size, QImage::Format_Grayscale8);
-    mask.fill(0);
-    QPainter p(&mask);
-    p.setRenderHint(QPainter::Antialiasing, true);
-    const QPointF c(size.width() / 2.0, size.height() / 2.0);
-    const qreal  r = qMin(size.width(), size.height()) * 0.40;
-    QRadialGradient grad(c, r);
-    grad.setColorAt(0.0, Qt::white);
-    grad.setColorAt(0.7, QColor(150, 150, 150));
-    grad.setColorAt(1.0, Qt::black);
-    p.setBrush(grad);
-    p.setPen(Qt::NoPen);
-    p.drawEllipse(c, r * 1.4, r * 1.4);
-    return mask;
-}
-} // namespace
-
 QImage BackgroundEngine::processFrame(const QImage &rgba)
 {
     // Off mode: never construct the compositor's GL context. The
     // overwhelming majority of TalQ publishes will be Off.
     if (m_mode == Mode::None || rgba.isNull())
         return rgba;
-    if (!m_compositor) return rgba;   // setMode should have built it
+    if (!m_compositor || !m_segmenter) return rgba;   // setMode builds both
 
-    const QImage mask = makeMockMask(rgba.size());
+    // Phase 2e — mask comes from the segmenter. Today's stub returns the
+    // same centred radial gradient the inline mock used to. Once TFLite
+    // ships in Phase 2e.x the mask becomes person-shaped without any
+    // caller change here.
+    const QImage mask = m_segmenter->segment(rgba);
 
     switch (m_mode) {
     case Mode::Blur: {
