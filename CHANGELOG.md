@@ -1,5 +1,41 @@
 # Changelog
 
+## v0.39.5 "Aprilsko Vastanie" — BETA (2026-05-24)
+
+Three backlog items.
+
+### Fixed
+
+* **Settings dialog overflowed small laptop displays.** Each tab's
+  content is now wrapped in a vertical-scroll QScrollArea so the
+  dialog stays at a compact default size and long content
+  (Audio & Video tab in particular, with the 8-tile background grid)
+  scrolls inside the tab. Initial dialog height is also clamped to
+  the primary screen's available height minus chrome.
+
+### Changed
+
+* **Camera-off "mute" dummy now matches upstream geometry.** TalQ has
+  been pumping a 16×16 black canvas at 1 fps while video is muted.
+  Upstream Nextcloud Talk (spreed v23.0.4 + libwebrtc) sends a
+  camera-resolution black canvas at 10 fps for the first 5 s, then
+  halts RTP. The 5 s halt timer was already correct from 0.32.0; this
+  release fixes the canvas geometry to 640×480 @ 10 fps (upstream's
+  documented fallback). Removes the GCC + jitterbuffer
+  "convergence-to-dummy-stream" effect that's been suspected as the
+  remaining tail in the callee-mid-call-camera-on chop saga
+  (#111/#135).
+* **Background edge feathering widened.** Phase 2e (0.39.3) shipped
+  the real ONNX selfie segmenter but our `bg_mask_refine.frag` is
+  still a stub (the joint bilateral filter pass hasn't ported yet).
+  Talk's web client coverage (0.45, 0.70) assumes a refined mask;
+  feeding the raw sigmoid output through that narrow smoothstep shows
+  the model's edge noise more than necessary. Widened to (0.35, 0.75)
+  for ~50% more transition pixels. Once the bilateral pass ports for
+  real, this will narrow back.
+
+---
+
 ## v0.39.4 "Aprilsko Vastanie" — BETA (2026-05-24)
 
 Post-ship code review of 0.39.1-0.39.3 caught several issues that need
