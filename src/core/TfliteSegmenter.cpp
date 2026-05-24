@@ -209,22 +209,38 @@ QImage TfliteSegmenter::segment(const QImage &rgba)
         }
         const float *mask = outs[0].GetTensorData<float>();
 
-        // 3. Convert 256×256×1 sigmoid output → Grayscale8 256×256, then
-        //    upscale to the source resolution. Talk's WebGLCompositor.js
-        //    does the upsample on the GPU after a bilateral refine; for
-        //    parity we let our shader handle the smoothstep + light wrap
-        //    and just produce a clean upsampled grayscale here.
+        // 3. Convert 256x256x1 sigmoid output -> Grayscale8 256x256.
+        //    Temporal EMA: blend with the previous frame's mask before
+        //    upsampling so frame-to-frame shimmer at the silhouette
+        //    edge is reduced. alpha=0.4 (current weight); higher alpha
+        //    tracks motion better but flickers more. Empty m_prevMask
+        //    on first frame -> seed it from the new mask directly.
+        constexpr float kEmaAlpha = 0.4f;
         QImage maskSmall(kInputW, kInputH, QImage::Format_Grayscale8);
+        const bool haveHistory = !m_prevMask.isNull()
+                              && m_prevMask.width()  == kInputW
+                              && m_prevMask.height() == kInputH
+                              && m_prevMask.format() == QImage::Format_Grayscale8;
         for (int y = 0; y < kInputH; ++y) {
             uchar *row = maskSmall.scanLine(y);
             const float *src = mask + y * kInputW;
+            const uchar *prevRow = haveHistory ? m_prevMask.constScanLine(y) : nullptr;
             for (int x = 0; x < kInputW; ++x) {
                 float v = src[x];
                 if (v < 0.0f) v = 0.0f;
                 else if (v > 1.0f) v = 1.0f;
-                row[x] = static_cast<uchar>(v * 255.0f + 0.5f);
+                uchar curr = static_cast<uchar>(v * 255.0f + 0.5f);
+                if (prevRow) {
+                    const float blended =
+                        kEmaAlpha * curr + (1.0f - kEmaAlpha) * prevRow[x];
+                    row[x] = static_cast<uchar>(blended + 0.5f);
+                } else {
+                    row[x] = curr;
+                }
             }
         }
+        // Keep a copy of the smoothed mask for the next frame's EMA.
+        m_prevMask = maskSmall;
         return maskSmall.scaled(rgba.size(),
                                 Qt::IgnoreAspectRatio,
                                 Qt::SmoothTransformation);

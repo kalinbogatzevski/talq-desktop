@@ -1,5 +1,39 @@
 # Changelog
 
+## v0.39.9 "Aprilsko Vastanie" — BETA (2026-05-24)
+
+Three layered improvements to person-segmentation quality + one field nit.
+
+### Improved — virtual background looks like a real cutout now
+
+* **Joint bilateral mask refinement** (was stubbed in 0.39.3-0.39.8).
+  The compositor now runs a 7x7 edge-aware bilateral pass that uses
+  the camera frame as a colour guide before the blur and compose
+  steps. Mask edges snap to actual colour discontinuities in the
+  image instead of leaking into the background or eating into hair.
+  Ported from Talk's `WebGLCompositor.js` jointBilateralFilter, kernel
+  reduced from 9x9 → 7x7 (~40 % less GPU work) without a perceptible
+  quality drop at 720p.
+* **Temporal EMA on the mask** (alpha 0.4). The bilateral cleans
+  spatial noise but can't reduce frame-to-frame shimmer at the
+  silhouette. Holding the previous frame's 256×256 mask and blending
+  with the new sigmoid output gives a much steadier edge in motion.
+  Always 256×256 model-space, decoupled from camera resolution.
+* **Compose smoothstep narrowed back to Talk's (0.45, 0.70).** Was
+  widened to (0.35, 0.75) in 0.39.5 to hide raw-mask noise while
+  the bilateral pass was still a stub. With the bilateral landing
+  now, narrowing gives crisper silhouette edges.
+
+### Fixed
+
+* **Mouse-wheel scrolling on Settings combo boxes no longer changes
+  the selection silently.** Was scoped to the BG mode combo in
+  0.39.6; now blocks wheel on ALL combos in Settings via a single
+  dialog-level event filter (covers camera quality, mic, speaker,
+  ringtone, theme, etc.).
+
+---
+
 ## v0.39.8 "Aprilsko Vastanie" — BETA (2026-05-24)
 
 Two BG-feature nits caught the moment 0.39.7 hit Kalin's machine.
