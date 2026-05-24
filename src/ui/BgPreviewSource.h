@@ -27,6 +27,7 @@
 
 #include <QObject>
 #include <QImage>
+#include <QPointer>
 #include <QString>
 
 #include <gst/gst.h>
@@ -62,7 +63,14 @@ signals:
 private:
     static GstFlowReturn onNewSample(GstElement *appsink, gpointer userData);
 
-    BackgroundEngine *m_engine = nullptr;   // not owned
+    // The engine is owned by the dialog and parented to it; Qt's
+    // child-destruction order is unspecified, so an in-flight queued
+    // lambda on the Qt thread might fire after the engine is gone.
+    // QPointer null-checks at lambda dispatch time so we never
+    // dereference a freed engine. Source is also parented to the
+    // dialog so the QPointer<BgPreviewSource> guard handles the
+    // post-self-destruction case independently.
+    QPointer<BackgroundEngine> m_engine;
     GstElement       *m_pipeline = nullptr;
     GstElement       *m_source   = nullptr;
     GstElement       *m_appsink  = nullptr;
