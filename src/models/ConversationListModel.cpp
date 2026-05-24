@@ -213,6 +213,14 @@ void ConversationListModel::refreshUserStatuses()
     fetchUserStatuses();
 }
 
+int ConversationListModel::conversationTypeForToken(const QString &token) const
+{
+    for (const Conversation &c : m_conversations) {
+        if (c.token == token) return c.type;
+    }
+    return 0;
+}
+
 void ConversationListModel::startAutoRefresh()
 {
     m_autoRefreshTimer.start();

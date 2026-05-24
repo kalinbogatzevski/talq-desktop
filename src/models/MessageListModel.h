@@ -71,6 +71,15 @@ public:
     QString conversationToken() const { return m_token; }
     void setConversationToken(const QString &token);
 
+    // #26 - in a one_to_one room that has exactly one bot enabled, the
+    // user's messages should reach the bot without requiring an
+    // @-mention prefix (nobody else to confuse them with). The composer
+    // / model sets this slug on entry to such a room; sendMessage
+    // prepends "@<slug> " if the user's text doesn't already contain @.
+    // Empty = no auto-prepend.
+    void setAutoMentionBot(const QString &mentionSlug);
+    QString autoMentionBot() const { return m_autoMentionBot; }
+
     int threadId() const { return m_threadId; }
     void setThreadId(int id);
 
@@ -158,6 +167,10 @@ private:
     QVector<Message> m_messages;
     QSet<int> m_messageIds;  // persistent set for O(1) dedup — updated incrementally
     QString m_token;
+    // #26 — auto-mention slug for the current room (see header comment
+    // above setAutoMentionBot). Lower-cased actorId without the "bots/"
+    // prefix; rebuilt on every setConversationToken via the bot list.
+    QString m_autoMentionBot;
     bool m_loading = false;
     bool m_hasMoreHistory = true;
     int m_oldestMessageId = 0;
