@@ -27,7 +27,18 @@ void BackgroundEngine::setMode(Mode m)
     // opts in. Off-mode publishers (the vast majority today) pay nothing.
     if (m != Mode::None) {
         if (!m_compositor) m_compositor = new BackgroundCompositor(this);
-        if (!m_segmenter)  m_segmenter  = new TfliteSegmenter(this);
+        if (!m_segmenter) {
+            m_segmenter = new TfliteSegmenter(this);
+            // Re-emit segmenter init failure as the engine-level
+            // disabled signal so the UI sees a single funnel for both
+            // GL-context and ORT failures. The segmenter still works
+            // (returns the centred-gradient stub) so we don't tear
+            // down the compositor here.
+            connect(m_segmenter, &TfliteSegmenter::unavailable, this,
+                    [this](const QString &reason) {
+                emit engineDisabled(reason);
+            });
+        }
     }
 }
 BackgroundEngine::Mode BackgroundEngine::mode() const { return m_mode; }

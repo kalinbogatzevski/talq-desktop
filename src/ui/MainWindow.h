@@ -163,6 +163,9 @@ private:
     // per pixel during a drag, so we collapse to one QSettings write
     // ~250 ms after the user releases the handle. Owned by `this`.
     class QTimer *m_splitterSaveDebounce = nullptr;
+    // Rate-limit window-activate user-status refresh to one fetch per
+    // 5 s. Stored as milliseconds-since-epoch; 0 = "never refreshed".
+    qint64 m_lastActivationStatusRefreshMs = 0;
     QWidget *m_sidebarCol = nullptr;
     QLabel *m_profileNameLabel = nullptr;
     QLabel *m_profileAvatarLabel = nullptr;
