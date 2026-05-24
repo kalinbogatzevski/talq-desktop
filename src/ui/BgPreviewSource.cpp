@@ -55,6 +55,17 @@ bool BgPreviewSource::start()
     m_appsink           = gst_element_factory_make("appsink", "preview-sink");
 
     if (!decode || !convert || !scale || !rate || !caps || !m_appsink) {
+        // Each gst_element_factory_make returns a floating reference. If
+        // we bail out before gst_bin_add_many takes ownership we MUST
+        // unref every non-null local; otherwise they leak and the next
+        // start() refuses to register elements with the same names.
+        if (decode)    gst_object_unref(decode);
+        if (convert)   gst_object_unref(convert);
+        if (scale)     gst_object_unref(scale);
+        if (rate)      gst_object_unref(rate);
+        if (caps)      gst_object_unref(caps);
+        if (m_appsink) gst_object_unref(m_appsink);
+        m_appsink = nullptr;
         emit unavailable(QStringLiteral("Failed to create preview chain elements"));
         stop();
         return false;
@@ -165,9 +176,13 @@ GstFlowReturn BgPreviewSource::onNewSample(GstElement *appsink, gpointer userDat
     QMetaObject::invokeMethod(self, [guard, snapshot]() {
         if (!guard) return;
         QImage processed = snapshot;
-        if (guard->m_engine
-            && guard->m_engine->mode() != BackgroundEngine::Mode::None) {
-            processed = guard->m_engine->processFrame(snapshot);
+        // QPointer null-checks at lambda dispatch time so we don't
+        // dereference an engine destroyed before this source. Qt
+        // destroys parent's children in unspecified order; the dialog
+        // owns both the engine and this source.
+        if (BackgroundEngine *e = guard->m_engine.data();
+            e && e->mode() != BackgroundEngine::Mode::None) {
+            processed = e->processFrame(snapshot);
         }
         emit guard->imageReady(processed);
     }, Qt::QueuedConnection);
