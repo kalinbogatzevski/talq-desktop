@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(talq VERSION 0.39.10 LANGUAGES CXX)
+project(talq VERSION 0.40.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -153,14 +153,13 @@ target_compile_definitions(talq PRIVATE
     TALQ_BUILD_TS="${TALQ_BUILD_TS}"
     # Per-release codename (empty string = no codename pill). Set alongside
     # the version bump; shown on the Mission Control command bar.
-    # "Aprilsko Vastanie": the Bulgarian April Uprising of 1876
-    # (Българско Априлско Въстание) — the 150th anniversary falls in 2026.
-    # Panagyurishte was one of the four revolutionary districts and the
-    # town where the uprising was declared; Raina Knyaginya sewed its
-    # tricolour flag at age 20. The codename was locked in 2026-05-24
-    # while the project lead was physically in Panagyurishte for the
-    # 24 May long weekend (Day of Bulgarian Enlightenment).
-    TALQ_VERSION_NAME="Aprilsko Vastanie"
+    # "Panagyurishte": the town where the Bulgarian April Uprising of
+    # 1876 was declared at the Oborishte assembly. Continues the 150th-
+    # anniversary thread the 0.39.x betas began ("Aprilsko Vastanie" —
+    # the uprising itself); 0.40 stable promotes the work and dedicates
+    # this cycle to the place that lit the fuse. Locked 2026-05-24,
+    # the same long weekend the project lead was physically there.
+    TALQ_VERSION_NAME="Panagyurishte"
 )
 
 # Pre-release flag: when build-release.sh is invoked with --beta it

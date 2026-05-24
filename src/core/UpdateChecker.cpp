@@ -4,7 +4,9 @@
 #include "VersionCompare.h"
 
 #include <QCryptographicHash>
+#include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -78,6 +80,16 @@ void UpdateChecker::checkNow()
 
 void UpdateChecker::acceptUpdate()
 {
+    if (!m_hasPendingUpdate) return;
+    startDownload();
+}
+
+void UpdateChecker::retryDownload()
+{
+    // Used by MainWindow's self-heal path. Distinct from acceptUpdate()
+    // only to make intent legible at the callsite; the work is the
+    // same. The pending-manifest guard catches the no-op case where
+    // the manifest expired or was deferred between failure and retry.
     if (!m_hasPendingUpdate) return;
     startDownload();
 }
@@ -246,8 +258,63 @@ void UpdateChecker::onManifestFetched(QNetworkReply *reply)
 }
 void UpdateChecker::startDownload()
 {
+    // Abort any still-in-flight download from a prior call. Today this
+    // can only happen if startDownload() is invoked while the previous
+    // QNetworkReply hasn't fired its finished signal yet. The current
+    // self-heal call site waits for the launch attempt (which only
+    // happens AFTER onDownloadFinished), so the previous reply is
+    // already gone in that path. But a future caller could race this
+    // - cheap defense.
+    if (m_currentReply) {
+        m_currentReply->disconnect(this);
+        m_currentReply->abort();
+        m_currentReply->deleteLater();
+        m_currentReply = nullptr;
+    }
+    if (m_currentFile) {
+        m_currentFile->close();
+        m_currentFile->deleteLater();
+        m_currentFile = nullptr;
+    }
+
     const QString tmp = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
-    m_downloadPath = tmp + QStringLiteral("/talq-update.exe");
+
+    // Use the actual asset name (TalQ-v<ver>-Setup.exe) for the temp
+    // file. Windows Defender treats files named like the published
+    // signed installer as expected; a generic "talq-update.exe" can
+    // trigger heuristic quarantine that silently leaves a zero-byte
+    // file behind and breaks subsequent launch. Falls back to the old
+    // generic name if the manifest somehow doesn't carry one.
+    QString assetName = m_lastManifest.assetFilename;
+    if (assetName.isEmpty())
+        assetName = QStringLiteral("TalQ-Setup.exe");
+    m_downloadPath = tmp + QStringLiteral("/") + assetName;
+
+    // Clean any stale TalQ installers in temp from prior interrupted
+    // downloads. Without this, an aborted run could leave a half-written
+    // file at the new download path; Truncate clears the new write but
+    // OTHER stale variants ("talq-update.exe" from old TalQ versions,
+    // older TalQ-v*-Setup.exe blobs) would still sit there and cause AV
+    // alerts. Sweep them once per new download cycle.
+    {
+        QDir tmpDir(tmp);
+        // `talq-update*.exe` already covers the old `talq-update.exe`
+        // name; no need to list both. Combined glob is one entryList
+        // call instead of three.
+        const QStringList found = tmpDir.entryList(
+            {QStringLiteral("talq-update*.exe"),
+             QStringLiteral("TalQ-v*-Setup.exe")},
+            QDir::Files);
+        const QFileInfo writeTarget(m_downloadPath);
+        for (const QString &f : found) {
+            const QFileInfo candidate(tmpDir.filePath(f));
+            // QFileInfo::operator== is path-normalized and on Windows
+            // case-insensitive; safer than QString equality if anyone
+            // ever normalizes m_downloadPath via QDir::cleanPath etc.
+            if (candidate == writeTarget) continue;
+            QFile::remove(candidate.absoluteFilePath());
+        }
+    }
 
     auto *out = new QFile(m_downloadPath);
     if (!out->open(QIODevice::WriteOnly | QIODevice::Truncate)) {
@@ -272,12 +339,16 @@ void UpdateChecker::startDownload()
     req.setTransferTimeout(10 * 60 * 1000);
 
     QNetworkReply *reply = m_nam->get(req);
+    m_currentReply = reply;
+    m_currentFile  = out;
     connect(reply, &QNetworkReply::readyRead, this, [reply, out]() {
         out->write(reply->readAll());
     });
     connect(reply, &QNetworkReply::downloadProgress,
             this, &UpdateChecker::onDownloadProgress);
     connect(reply, &QNetworkReply::finished, this, [this, reply, out]() {
+        m_currentReply = nullptr;
+        m_currentFile  = nullptr;
         onDownloadFinished(reply, out);
     });
 }
