@@ -1685,6 +1685,7 @@ GstFlowReturn PublishPipeline::onBgSample(GstAppSink *sink, gpointer userData)
         GstBuffer *passBuf = gst_buffer_ref(inBuf);
         gst_sample_unref(sample);
         GstFlowReturn fr = gst_app_src_push_buffer(src, passBuf);  // takes ownership
+        self->m_bgBridgeFramesPassThrough.fetch_add(1, std::memory_order_relaxed);
         return fr;
     }
 
@@ -1786,7 +1787,9 @@ GstFlowReturn PublishPipeline::onBgSample(GstAppSink *sink, gpointer userData)
     GST_BUFFER_DTS(outBuf)      = dts;
     GST_BUFFER_DURATION(outBuf) = dur;
 
-    return gst_app_src_push_buffer(src, outBuf);  // takes ownership
+    GstFlowReturn fr = gst_app_src_push_buffer(src, outBuf);  // takes ownership
+    self->m_bgBridgeFramesProcessed.fetch_add(1, std::memory_order_relaxed);
+    return fr;
 }
 
 GstElement *PublishPipeline::onRequestAuxSender(GstElement *, GObject *,

@@ -80,6 +80,19 @@ public:
     // separately in Phase 3.3b.
     void setBackgroundEngine(class BackgroundEngine *engine) { m_backgroundEngine = engine; }
 
+    // #20 Phase 5 — bridge throughput counters for the harness.
+    // _passThrough bumps every frame onBgSample took the Off-mode
+    // gst_buffer_ref+push path; _processed every frame the On-mode
+    // engine round-trip ran end-to-end (mapped, engine returned a
+    // same-size image, fresh GstBuffer pushed). The harness asserts
+    // the right counter is non-zero per scenario.
+    quint64 bgBridgeFramesPassThrough() const {
+        return m_bgBridgeFramesPassThrough.load(std::memory_order_relaxed);
+    }
+    quint64 bgBridgeFramesProcessed() const {
+        return m_bgBridgeFramesProcessed.load(std::memory_order_relaxed);
+    }
+
     void sendStatusMessage(const QByteArray &json);
 
 signals:
@@ -220,6 +233,10 @@ private:
     // BackgroundEngine itself uses for engineDisabled. Atomic so the
     // streaming-thread branch and Qt-thread reads stay consistent.
     std::atomic<bool> m_previewEngineDegraded{false};
+
+    // #20 Phase 5 — bridge counters, see public getters above.
+    std::atomic<quint64> m_bgBridgeFramesPassThrough{0};
+    std::atomic<quint64> m_bgBridgeFramesProcessed{0};
 
     static void onNegotiationNeeded(GstElement *webrtc, gpointer userData);
     static void onIceCandidate(GstElement *webrtc, guint mlineIndex, gchar *candidate, gpointer userData);
