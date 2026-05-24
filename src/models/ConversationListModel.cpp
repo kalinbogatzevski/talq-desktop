@@ -208,6 +208,11 @@ void ConversationListModel::fetchUserStatuses()
         });
 }
 
+void ConversationListModel::refreshUserStatuses()
+{
+    fetchUserStatuses();
+}
+
 void ConversationListModel::startAutoRefresh()
 {
     m_autoRefreshTimer.start();

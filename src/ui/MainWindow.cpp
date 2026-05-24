@@ -2207,6 +2207,15 @@ void MainWindow::changeEvent(QEvent *event)
         && (windowState() & Qt::WindowMinimized)
         && m_statusPopover)
         m_statusPopover->hide();
+    // Activation refresh: the 60 s user-status poll is fine for users
+    // who keep TalQ in the foreground, but anyone returning from another
+    // app or from a long sleep wants the sidebar dots to reflect "now",
+    // not "up to a minute ago". Trigger one out-of-band refresh on
+    // ActivationChange when we become the active window.
+    if (event->type() == QEvent::ActivationChange && isActiveWindow()
+        && m_conversations) {
+        m_conversations->refreshUserStatuses();
+    }
 }
 
 void MainWindow::hideEvent(QHideEvent *event)
