@@ -5,6 +5,11 @@ dist/
 *.a
 *.so
 *.user
+# Re-include the mingw import lib for vendored ONNX Runtime. The .a is
+# generated locally via gendef + dlltool from the redistributed DLL
+# (Microsoft, MIT) and must travel with the repo so clones build out of
+# the box without re-running the dlltool step.
+!third_party/onnxruntime/lib/libonnxruntime.dll.a
 CMakeUserPresets.json
 .cache/
 aqtinstall.log
