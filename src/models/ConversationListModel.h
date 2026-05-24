@@ -56,6 +56,10 @@ public:
     Q_INVOKABLE QString userStatusForToken(const QString &token) const;
     Q_INVOKABLE QString userStatusMessageForToken(const QString &token) const;
     Q_INVOKABLE QString userStatusIconForToken(const QString &token) const;
+    // Conversation type (1 = one_to_one, 2 = group, 3 = public, etc.).
+    // Returns 0 if the token isn't in the cached list. Used by the
+    // composer to decide whether to auto-prepend a bot mention in 1:1s.
+    Q_INVOKABLE int conversationTypeForToken(const QString &token) const;
     Q_INVOKABLE void clearUnreadForToken(const QString &token);
     // Mirror a server-side read advance into our cache without a round-trip:
     // sets lastReadMessage and clears unreadMessages for `token`. Used after

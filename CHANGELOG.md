@@ -1,5 +1,35 @@
 # Changelog
 
+## v0.39.7 "Aprilsko Vastanie" — BETA (2026-05-24)
+
+Two backlog features.
+
+### Added
+
+* **Auto-away on idle.** TalQ now follows the same pattern upstream NC
+  Talk web uses: when the user is currently Online and the OS reports
+  more than 5 minutes since the last keyboard/mouse input, the status
+  flips to Away. The flip undoes itself the moment input resumes. The
+  Windows idle source is `GetLastInputInfo`; non-Windows builds skip
+  the auto-flip entirely until a native idle source is wired. A
+  user-driven status change always wins — picking Online or Dnd
+  manually during the auto-away window clears the auto-flag and the
+  poll stops trying to "restore" your choice.
+  *Known gap:* session-lock / sleep transitions are caught by the same
+  30-second idle poll (no input → idle naturally climbs), not by a
+  Windows WTS notification. That's a follow-up.
+* **Auto-mention in 1:1 with a single enabled bot.** When the active
+  conversation is a one-to-one room AND exactly one Talk bot is
+  enabled in it (e.g., Aelita in your private chat with her), the
+  composer auto-prepends the bot's `@<slug>` so every message reaches
+  the bot without you having to type the mention. Replies skip the
+  prefix (the reply context already addresses the right recipient),
+  and messages that already mention the bot (case-insensitive) are
+  sent verbatim. The optimistic message bubble shows the prefixed
+  text so what you sent matches what you see.
+
+---
+
 ## v0.39.6 "Aprilsko Vastanie" — BETA (2026-05-24)
 
 A bundle of camera/background flow improvements driven by field
