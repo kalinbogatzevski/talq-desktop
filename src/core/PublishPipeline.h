@@ -195,6 +195,18 @@ private:
     GstElement *m_encQueue = nullptr;
     GstElement *m_cameraValve = nullptr;
 
+    // #20 Phase 3.3b — appsink/appsrc bridge inserted between the
+    // post-decode capsfilter and the encoder/preview tee, so the
+    // BackgroundEngine sees every camera frame BEFORE it reaches the
+    // encoder branch (in Phase 3.3a only the preview branch had it).
+    // When mode is Off the bridge zero-copies the input buffer straight
+    // to the appsrc; when mode is Blur/Image, frames cross to the Qt
+    // thread, run through the engine, and are pushed back as a new
+    // GstBuffer with the original PTS+duration. PTS preserved so the
+    // encoder's rate control + gccbwe still see the upstream timing.
+    GstElement *m_bgAppsink = nullptr;
+    GstElement *m_bgAppsrc  = nullptr;
+
     // Local preview (tee branch off camera)
     GstElement *m_previewQueue = nullptr;
     GstElement *m_previewConvert = nullptr;
@@ -215,6 +227,9 @@ private:
     static void onIceStateChanged(GObject *obj, GParamSpec *pspec, gpointer userData);
     static void onIceGatheringStateChanged(GObject *obj, GParamSpec *pspec, gpointer userData);
     static GstFlowReturn onPreviewSample(GstAppSink *sink, gpointer userData);
+    // #20 Phase 3.3b — bridge appsink that feeds the BG engine and
+    // pushes the (processed or pass-through) buffer back via m_bgAppsrc.
+    static GstFlowReturn onBgSample(GstAppSink *sink, gpointer userData);
     // Send-side adaptive bitrate: webrtcbin asks for an aux sender; we hand
     // back rtpgccbwe and follow its estimate live onto the encoder.
     static GstElement *onRequestAuxSender(GstElement *webrtc, GObject *transport,
