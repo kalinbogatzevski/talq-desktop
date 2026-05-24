@@ -24,6 +24,7 @@
 #include <QString>
 
 class BackgroundCompositor;
+class TfliteSegmenter;
 
 class BackgroundEngine : public QObject
 {
@@ -95,6 +96,10 @@ private:
     // by Qt's parent-child ownership (parent = this engine); we do NOT
     // delete this in the dtor (would double-free).
     BackgroundCompositor *m_compositor = nullptr;
+
+    // #20 Phase 2e — segmentation backend. Lazy-constructed alongside
+    // the compositor; stub until TFLite is vendored.
+    TfliteSegmenter *m_segmenter = nullptr;
 
     // Image-mode caches — per Phase 2d.1 review, the disk read +
     // SmoothTransformation scale would have happened EVERY frame

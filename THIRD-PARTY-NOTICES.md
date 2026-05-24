@@ -85,6 +85,34 @@ those attribution requirements.
   >
   > THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
 
+## MediaPipe Selfie Segmenter model (`resources/models/`)
+
+- **License:** Apache License 2.0
+- **Copyright:** © Google LLC, MediaPipe contributors
+- **Files:** `selfie_segmenter.tflite` (~244 KB)
+- **Usage:** Bundled verbatim from
+  `nextcloud/spreed@v23.0.4` (`src/utils/media/effects/virtual-background/vendor/models/`).
+  Runtime inference produces the per-frame person mask used by the
+  background blur / replace feature. The compositor that consumes the
+  mask is a direct port of Talk's `WebGLCompositor.js`.
+- <https://github.com/google-ai-edge/mediapipe>
+
+## Bundled background images (`resources/backgrounds/`)
+
+- **License:** GNU Affero General Public License v3.0 (AGPL-3.0)
+- **Copyright:** © Nextcloud GmbH and the Talk contributors
+- **Files:** `1_office.jpg` through `8_space_station.jpg` (eight images,
+  ~6 MB total).
+- **Usage:** Bundled verbatim from `nextcloud/spreed@v23.0.4`
+  (`img/backgrounds/`). The end-user picks one of these as a virtual
+  background; the image is composited over the camera frame on the
+  publisher side. These eight files are the only AGPL-3.0 components in
+  TalQ; everything else is licensed under Apache 2.0 (TalQ proper) or
+  the licenses listed in this file. The full text of the AGPL is at
+  <https://www.gnu.org/licenses/agpl-3.0.html>. Source for these
+  files is available at the upstream repository.
+- <https://github.com/nextcloud/spreed/tree/v23.0.4/img/backgrounds>
+
 ## System fonts (not bundled)
 
 - "Segoe Fluent Icons" / "Segoe MDL2 Assets" / "Segoe UI Symbol" are
