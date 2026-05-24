@@ -478,7 +478,16 @@ QWidget *SettingsDialog::buildAudioVideoTab()
     // images. Selection writes the qrc path (or the file path for user
     // images) to virtualBackgroundUrl. Bundled paths start with ":/bg/"
     // so the engine can distinguish them; QImage loads qrc paths natively.
-    layout->addWidget(makeSectionHeader(tr("Background image")));
+    //
+    // The whole image-picker block lives inside m_bgImageSection so it
+    // can be hidden when the mode is Off or Blur (where the picker is
+    // irrelevant) and only revealed on mode = Image. Reduces visual
+    // clutter on the most common path.
+    m_bgImageSection = new QWidget;
+    auto *imageSectionLayout = new QVBoxLayout(m_bgImageSection);
+    imageSectionLayout->setContentsMargins(0, 0, 0, 0);
+    imageSectionLayout->setSpacing(8);
+    imageSectionLayout->addWidget(makeSectionHeader(tr("Background image")));
 
     m_bgImageGrid = new QListWidget;
     m_bgImageGrid->setViewMode(QListView::IconMode);
@@ -585,7 +594,7 @@ QWidget *SettingsDialog::buildAudioVideoTab()
         }
     });
 
-    layout->addWidget(m_bgImageGrid);
+    imageSectionLayout->addWidget(m_bgImageGrid);
 
     // Browse… for user-supplied images. Sits below the grid; picking a
     // file clears the grid selection (we don't try to match user files
@@ -694,7 +703,13 @@ QWidget *SettingsDialog::buildAudioVideoTab()
     });
     browseRow->addWidget(m_bgImagePathLabel, 1);
     browseRow->addWidget(browseBtn, 0);
-    layout->addLayout(browseRow);
+    imageSectionLayout->addLayout(browseRow);
+
+    // Add the whole image-picker block to the outer tab layout. It's
+    // shown/hidden by syncBgPreview based on the current BG mode.
+    layout->addWidget(m_bgImageSection);
+    m_bgImageSection->setVisible(bgEnabled
+                                  && bgType == QLatin1String("image"));
 
     layout->addStretch();
 
@@ -748,6 +763,12 @@ void SettingsDialog::syncBgPreview()
     const int     strength = m_settings.value("virtualBackgroundBlurStrength", 10).toInt();
     const QString imgUrl   = m_settings.value("virtualBackgroundUrl",    QString()).toString();
     m_settings.endGroup();
+
+    // Show the image picker (header + grid + Choose… row) only when
+    // mode is Image. Off and Blur don't need it - hiding cuts visual
+    // clutter on the most common path.
+    if (m_bgImageSection)
+        m_bgImageSection->setVisible(enabled && type == QLatin1String("image"));
 
     // Off mode (or feature disabled) - tear down the preview to release
     // the camera handle. The label drops back to its placeholder text.

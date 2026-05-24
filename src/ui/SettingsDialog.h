@@ -96,6 +96,9 @@ private:
     QSlider     *m_bgBlurStrengthSlider = nullptr;
     QLabel      *m_bgImagePathLabel     = nullptr;
     QListWidget *m_bgImageGrid          = nullptr;
+    // Container for the "Background image" section (header + grid +
+    // browse row). Shown only when mode == Image; hidden in Off/Blur.
+    QWidget     *m_bgImageSection       = nullptr;
     // Live camera preview that runs the user's selected BG mode end-to-
     // end without joining a call. Lazy-created the first time the user
     // picks Blur/Image, torn down on dialog close. Owns its own
