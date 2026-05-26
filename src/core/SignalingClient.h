@@ -44,6 +44,11 @@ public:
     // WebRTC call signaling
     QString sessionId() const { return m_sessionId; }
     QString currentRoom() const { return m_currentRoom; }
+    // Our own Nextcloud user id (for same-user multi-device checks, e.g.
+    // suppressing the incoming-call ring on the caller's other device).
+    QString userId() const { return m_userId; }
+    // Nextcloud user id behind a given HPB session id, "" if not yet known.
+    QString userIdForSession(const QString &sid) const { return m_sessionToUserId.value(sid); }
     void sendOffer(const QString &toSessionId, const QString &sdp,
                    const QString &sid, const QString &nick = {},
                    const QString &roomType = "video",
@@ -55,6 +60,14 @@ public:
                        const QString &sid, const QString &roomType = "video");
     void sendEndOfCandidates(const QString &toSessionId, const QString &sid,
                              const QString &roomType = "video");
+    // #132 simulcast: ask the SFU which substream (0=180p/1=360p/2=720p)
+    // + temporal layer to forward for our subscription to `toSessionId`.
+    // Janus defaults a simulcast subscriber to substream 0; this is the
+    // only thing that steps it up. Wire format verified against spreed +
+    // the HPB Go relay (selectStream → Janus videoroom configure).
+    void sendSelectStream(const QString &toSessionId, const QString &sid,
+                          int substream, int temporal = 2,
+                          const QString &roomType = "video");
     void requestOffer(const QString &sessionId, const QString &roomType = "video");
     void sendSessionMessage(const QString &toSessionId, const QString &type,
                             const QJsonObject &payload, const QString &sid,
@@ -109,6 +122,12 @@ private:
     QWebSocket m_ws;
     QTimer m_reconnectTimer;
     QTimer m_typingClearTimer;   // clear typing indicator after 15s timeout
+    // Periodic talq.client re-announce. Defense-in-depth: the one-shot
+    // hello on room-join is enough when both peers join at the same
+    // time, but a peer who joined the room BEFORE us upgraded silently
+    // can keep a stale-version cache for the lifetime of the session.
+    // Ticking every 5 min refreshes their cache without spam.
+    QTimer m_talqClientReannounce;
 
     QString m_signalingUrl;
     QString m_userId;

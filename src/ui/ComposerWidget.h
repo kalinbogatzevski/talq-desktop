@@ -45,6 +45,11 @@ public:
     void cancelPendingFile();
     void setNextSendSilent(bool s) { m_nextSendSilent = s; }
     bool isNextSendSilent() const { return m_nextSendSilent; }
+
+    // Trimmed contents of the input box. Empty = composer is "clean". Used
+    // by the auto-install gate so a draft in flight can't be killed by a
+    // background self-restart.
+    QString currentText() const;
     void showReplyBar(const QString &author, const QString &preview);
     void hideReplyBar();
     void showEditingBar(const QString &originalText);

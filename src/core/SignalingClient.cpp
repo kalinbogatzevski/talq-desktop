@@ -29,6 +29,20 @@ SignalingClient::SignalingClient(ApiClient *api, QObject *parent)
     });
 
     loadPersistedPeerClients();
+
+    // Periodic talq.client re-announce while in a room. Defense-in-depth
+    // for the upgrade case: a peer that joined the room before us
+    // upgraded silently keeps a stale-version cache for the whole session
+    // unless something forces a re-announce. The one-shot room-join hello
+    // covers a fresh peer-join, but co-resident sessions need this tick.
+    // 5 minutes is small relative to a long call/chat session and well
+    // under the spam threshold (the receive path de-duplicates by info
+    // string equality, so an unchanged version triggers no state churn).
+    m_talqClientReannounce.setInterval(5 * 60 * 1000);
+    connect(&m_talqClientReannounce, &QTimer::timeout, this, [this]() {
+        if (!m_currentRoom.isEmpty() && m_ws.state() == QAbstractSocket::ConnectedState)
+            sendTalqClientHello();
+    });
 }
 
 void SignalingClient::start()
@@ -39,6 +53,7 @@ void SignalingClient::start()
 void SignalingClient::stop()
 {
     m_reconnectTimer.stop();
+    m_talqClientReannounce.stop();
     sendBye();                 // graceful HPB disconnect (matches upstream)
     m_ws.close();
     m_sessionId.clear();
@@ -372,6 +387,14 @@ void SignalingClient::onTextMessage(const QString &msg)
                     m_participantNames[userId] = displayName;
                 if (!userId.isEmpty())
                     m_sessionToUserId[sid] = userId;
+                // Some servers/participant events omit displayName (only
+                // actorId). Emitting an empty name is the "incoming call
+                // shows 'Call' instead of the caller" bug. Resolve from
+                // the name cache (filled by the room participant list /
+                // earlier events), else fall back to the userId itself —
+                // anything identifiable beats a generic "Call".
+                if (displayName.isEmpty() && !userId.isEmpty())
+                    displayName = m_participantNames.value(userId, userId);
 
                 if (!m_participantCallFlags.contains(sid))
                     sawNewPeer = true;
@@ -490,6 +513,10 @@ void SignalingClient::joinRoom(const QString &token)
             // TalQ clients cache it (by userId) and display it in conversation
             // info / call dialog. The official web client ignores it.
             sendTalqClientHello();
+            // Arm the 5-minute periodic re-announce so peers with stale
+            // caches (e.g. they joined the room while we were on the
+            // pre-upgrade build) eventually heal.
+            m_talqClientReannounce.start();
         });
 }
 
@@ -665,6 +692,17 @@ void SignalingClient::sendEndOfCandidates(const QString &toSessionId, const QStr
                                           const QString &roomType)
 {
     sendSessionMessage(toSessionId, "endOfCandidates", QJsonObject(), sid, {}, roomType);
+}
+
+void SignalingClient::sendSelectStream(const QString &toSessionId, const QString &sid,
+                                       int substream, int temporal, const QString &roomType)
+{
+    QJsonObject payload;
+    payload["substream"] = substream;
+    payload["temporal"]  = temporal;
+    sendSessionMessage(toSessionId, "selectStream", payload, sid, {}, roomType);
+    qDebug() << "Signaling: selectStream to" << toSessionId.left(20)
+             << "substream=" << substream << "temporal=" << temporal;
 }
 
 void SignalingClient::sendBroadcastMessage(const QJsonObject &data)

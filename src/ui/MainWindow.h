@@ -63,6 +63,7 @@ public:
         AppSettings *appSettings,
         QWidget *parent = nullptr
     );
+    ~MainWindow() override;
 
     void restoreFromTray();
     void openConversation(const QString &token);
@@ -85,6 +86,13 @@ protected:
 private slots:
     void onUpdateReadyToLaunch(const QString &installerPath);
     void maybeLaunchPendingInstaller();
+    // 0.40.2 —fires every few seconds while an update is staged AND
+    // auto-install-on-idle is enabled. Reads the system idle counter,
+    // checks the hard gates (no active call, empty composer, no upload),
+    // updates the banner text/countdown, and finally calls
+    // maybeLaunchPendingInstaller once the user has been idle for the
+    // configured window.
+    void onUpdateAutoInstallTick();
 
 private:
     void buildChatPage();
@@ -158,6 +166,13 @@ private:
     QLabel *m_uploadLabel = nullptr;
     QWidget *m_uploadProgress = nullptr;
     QSplitter *m_splitter = nullptr;
+    // Debounce for splitter-width persistence: splitterMoved fires once
+    // per pixel during a drag, so we collapse to one QSettings write
+    // ~250 ms after the user releases the handle. Owned by `this`.
+    class QTimer *m_splitterSaveDebounce = nullptr;
+    // Rate-limit window-activate user-status refresh to one fetch per
+    // 5 s. Stored as milliseconds-since-epoch; 0 = "never refreshed".
+    qint64 m_lastActivationStatusRefreshMs = 0;
     QWidget *m_sidebarCol = nullptr;
     QLabel *m_profileNameLabel = nullptr;
     QLabel *m_profileAvatarLabel = nullptr;
@@ -197,8 +212,29 @@ private:
     class QPushButton  *m_updateWhatsNewBtn = nullptr;
     class QPushButton  *m_updateCloseBtn = nullptr;
     QString        m_pendingInstallerPath;
+    // Self-heal one-shot: a launch failure (AV quarantine, stale lock,
+    // truncated download) triggers ONE silent re-download + retry. The
+    // second failure surfaces to the user. Reset on every fresh
+    // updateAvailable so a later session gets a clean two-strike budget.
+    bool           m_updateRelaunchAttempted = false;
     QString        m_pendingUpdateNotes;
+    // Version string of the most-recently-offered update. Used to gate
+    // the self-heal one-shot reset: m_updateRelaunchAttempted only
+    // resets when a NEW version arrives, not on every periodic re-emit
+    // of the same manifest. Without this, an AV-quarantine environment
+    // could see endless silent retries because each periodic poll
+    // re-emits updateAvailable and clears the flag.
+    QString        m_lastOfferedVersion;
     bool           m_updateBannerActive = false;   // true from updateAvailable until user dismisses
+
+    // 0.40.2 —auto-install-on-idle state. The tick polls the system
+    // idle counter and per-tick hard gates; one-shot for the lifetime
+    // of the currently-pending installer. Cancelled when the user
+    // clicks "Cancel auto-install", picks "Install now" (which bypasses
+    // the gate), or dismisses the banner with Later.
+    QTimer m_autoInstallTick;
+    bool   m_autoInstallActive = false;
+    bool   m_autoInstallCancelledForSession = false;
 
     // Search bar
     class QWidget *m_searchBar = nullptr;

@@ -1,17 +1,21 @@
 #include "CallStage.h"
 #include "core/VideoFrameProvider.h"
 #include "painter/VectorIcons.h"
+#include "ui/SubstreamPolicy.h"
 
+#include <QAction>
+#include <QActionGroup>
+#include <QFontMetrics>
+#include <QKeyEvent>
+#include <QMenu>
+#include <QMouseEvent>
+#include <QPaintEvent>
 #include <QPainter>
 #include <QPainterPath>
-#include <QPaintEvent>
-#include <QMouseEvent>
-#include <QKeyEvent>
-#include <QTimer>
-#include <QSettings>
-#include <QSet>
 #include <QRegularExpression>
-#include <QFontMetrics>
+#include <QSet>
+#include <QSettings>
+#include <QTimer>
 #include <QtMath>
 
 // ── small helpers ───────────────────────────────────────────────────────
@@ -53,7 +57,14 @@ CallStage::CallStage(CallManager *call, QWidget *parent)
         relayout(); update();
     });
     connect(m_call, &CallManager::durationChanged, this, [this]{ update(); });
-    connect(m_call, &CallManager::callStatsChanged, this, [this]{ if (m_telemetryOpen) update(); });
+    connect(m_call, &CallManager::callStatsChanged, this, [this]{
+        // Sample the outbound bitrate into a ring buffer (~1 s cadence, the
+        // callStats tick) so the telemetry panel can draw a live sparkline.
+        // Sample even when the panel is closed so history exists on open.
+        m_bwHistory.push_back((float)m_call->txBitrateMbps());
+        while (m_bwHistory.size() > kBwHistoryMax) m_bwHistory.pop_front();
+        if (m_telemetryOpen) update();
+    });
     connect(m_call, &CallManager::participantsChanged, this, [this]{ relayout(); update(); });
     connect(m_call, &CallManager::participantAdded, this, [this]{ rebindProviders(); relayout(); update(); });
     connect(m_call, &CallManager::participantRemoved, this, [this](const QString &){
@@ -111,10 +122,20 @@ void CallStage::rebindProviders()
         if (auto *cam = p->camera())
             m_conns << connect(cam, &VideoFrameProvider::imageReady, this,
                 [this, p](const QImage &img){ onFrame(p, false, img); });
+        else
+            m_camFrame.remove(p);  // camera stream ended → drop cached frame
         if (auto *scr = p->screen())
             m_conns << connect(scr, &VideoFrameProvider::imageReady, this,
                 [this, p](const QImage &img){ onFrame(p, true, img); });
+        else
+            // Screen share ended while participant stays in the call. Drop
+            // the cached last frame so the tile renders empty instead of
+            // freezing on the prior share's last image. Mirrors upstream
+            // Talk's ScreenShare.vue `srcObject = null` clear on
+            // unshareScreen; see [[project_talq_upstream_screenshare]].
+            m_scrFrame.remove(p);
     }
+    update();
 }
 
 void CallStage::purgeStaleFrames()
@@ -214,7 +235,12 @@ QVector<CallStage::Tile> CallStage::computeLayout() const
     QList<CallParticipant*> railList;
     for (CallParticipant *p : parts) {
         if (p == src && !isScreen) continue;          // src is the stage
-        if (p->isSelf()) continue;                    // self = PiP overlay
+        // Self is a floating PiP overlay normally, BUT when a screen share
+        // is active anywhere in the call (self or peer) the stage is the
+        // screen content and the rail carries the participant tiles. In
+        // that mode the self-camera belongs in the rail (becomes the "You"
+        // tile, no floating overlay), so it doesn't obscure shared content.
+        if (p->isSelf() && !isScreen) continue;       // PiP only when no screen share
         railList << p;
     }
     const bool hasRail = !railList.isEmpty();
@@ -273,6 +299,24 @@ void CallStage::relayout()
     } else {
         m_pipRect = QRectF();
     }
+
+    updateStreamQualities();
+}
+
+void CallStage::updateStreamQualities()
+{
+    // #132 simulcast: request the substream that matches how big each
+    // remote peer is rendered (upstream spreed's tile-size policy). The
+    // SFU adapts DOWN on its own, so this is an upper bound. CallManager
+    // dedupes, so calling on every relayout is cheap. Screen-share is
+    // single-layer and skipped.
+    if (!m_call) return;
+    for (const Tile &t : m_tiles) {
+        if (!t.p || t.p->isSelf() || t.isScreen) continue;
+        const int substream = pickSubstream(m_qualityOverride,
+                                            t.rect.height(), t.isStage);
+        m_call->requestPeerVideoQuality(t.p->sessionId(), substream);
+    }
 }
 
 // ── painting ────────────────────────────────────────────────────────────
@@ -306,6 +350,7 @@ void CallStage::paintEvent(QPaintEvent *)
         }
         paintStatusPill(p, th);
         paintCodecPill(p, th);
+        paintSharingBadge(p, th);
         if (m_telemetryOpen) paintTelemetry(p, th);
         if (m_controlsVisible) paintControlBar(p, th);
     }
@@ -382,12 +427,19 @@ void CallStage::paintTile(QPainter &p, const Tile &t, const PainterTheme &th, bo
 
         // No silent black: always say WHY there's no picture. The
         // Reconnecting/Failed scrim below owns those states; this caption
-        // covers the normal ones (camera starting / off / waiting).
+        // covers the normal ones (camera starting / off / waiting,
+        // screen share starting).
         const bool reconn = cp->connState() == CallParticipant::Reconnecting
                          || cp->connState() == CallParticipant::Failed;
-        if (!reconn && !t.isScreen) {
+        if (!reconn) {
             QString cap;
-            if (cp->isSelf()) {
+            if (t.isScreen) {
+                // Provider exists (cp->screen()) but no frame yet → the
+                // share is being negotiated. Tell the viewer instead of
+                // showing a silent avatar tile (#134 UX gap).
+                cap = cp->isSelf() ? tr("Starting screen share…")
+                                   : tr("Starting remote screen share…");
+            } else if (cp->isSelf()) {
                 cap = m_call->isCameraOn() ? tr("Starting camera…")
                                            : tr("Camera off");
             } else if (cp->videoMuted()) {
@@ -510,19 +562,52 @@ void CallStage::paintCentered(QPainter &p, const PainterTheme &th)
     // Incoming → Accept / Decline. Else → status pill + control bar.
     if (state == CallManager::Incoming) {
         m_buttons.clear();
-        qreal bw = 132, bh = 46, gap = 24, cy = height()/2.0 + 84;
-        QRectF acc(width()/2.0-bw-gap/2, cy, bw, bh);
-        QRectF dec(width()/2.0+gap/2, cy, bw, bh);
-        p.setBrush(th.accent); p.setPen(Qt::NoPen);
-        p.drawRoundedRect(acc, 10, 10);
-        p.setPen(th.controlInk); p.setFont(th.nameFont());
-        p.drawText(acc, Qt::AlignCenter, tr("Accept"));
-        p.setBrush(Qt::NoBrush); p.setPen(QPen(th.danger, 1.3));
-        p.drawRoundedRect(dec, 10, 10);
-        p.setPen(th.danger);
-        p.drawText(dec, Qt::AlignCenter, tr("Decline"));
-        m_buttons.push_back({QStringLiteral("accept"), acc, {}, tr("Accept"), false, false});
-        m_buttons.push_back({QStringLiteral("decline"), dec, {}, tr("Decline"), false, true});
+        const qreal bw = 132, bh = 46, gap = 16, cy = height()/2.0 + 84;
+        p.setFont(th.nameFont());
+        if (m_call->callHasVideo()) {
+            // Video call → let the callee choose: answer WITH video, answer
+            // audio-only, or decline. Three buttons centered.
+            const qreal total = bw*3 + gap*2;
+            qreal x = width()/2.0 - total/2.0;
+            QRectF vid(x, cy, bw, bh);             x += bw + gap;
+            QRectF aud(x, cy, bw, bh);             x += bw + gap;
+            QRectF dec(x, cy, bw, bh);
+            p.setBrush(th.accent); p.setPen(Qt::NoPen);
+            p.drawRoundedRect(vid, 10, 10);
+            p.setPen(th.controlInk); p.drawText(vid, Qt::AlignCenter, tr("Video"));
+            p.setBrush(Qt::NoBrush); p.setPen(QPen(th.accent, 1.3));
+            p.drawRoundedRect(aud, 10, 10);
+            p.setPen(th.accent); p.drawText(aud, Qt::AlignCenter, tr("Audio"));
+            p.setBrush(Qt::NoBrush); p.setPen(QPen(th.danger, 1.3));
+            p.drawRoundedRect(dec, 10, 10);
+            p.setPen(th.danger); p.drawText(dec, Qt::AlignCenter, tr("Decline"));
+            m_buttons.push_back({QStringLiteral("accept-video"), vid, {}, tr("Video"), false, false});
+            m_buttons.push_back({QStringLiteral("accept"),       aud, {}, tr("Audio"), false, false});
+            m_buttons.push_back({QStringLiteral("decline"),      dec, {}, tr("Decline"), false, true});
+        } else {
+            QRectF acc(width()/2.0-bw-gap/2, cy, bw, bh);
+            QRectF dec(width()/2.0+gap/2, cy, bw, bh);
+            p.setBrush(th.accent); p.setPen(Qt::NoPen);
+            p.drawRoundedRect(acc, 10, 10);
+            p.setPen(th.controlInk);
+            p.drawText(acc, Qt::AlignCenter, tr("Accept"));
+            p.setBrush(Qt::NoBrush); p.setPen(QPen(th.danger, 1.3));
+            p.drawRoundedRect(dec, 10, 10);
+            p.setPen(th.danger);
+            p.drawText(dec, Qt::AlignCenter, tr("Decline"));
+            m_buttons.push_back({QStringLiteral("accept"), acc, {}, tr("Accept"), false, false});
+            m_buttons.push_back({QStringLiteral("decline"), dec, {}, tr("Decline"), false, true});
+        }
+        // #13: pre-answer self-preview. CallManager starts a standalone
+        // camera→appsink pipeline for incoming VIDEO calls and feeds frames
+        // into the self participant's camera provider. Paint it as the PiP
+        // (same rect the media-phase PiP uses) so the callee can see
+        // themselves before answering.
+        if (auto *self = m_call->selfParticipant();
+            self && self->camera() && !m_pipRect.isNull()) {
+            Tile s; s.p = self; s.rect = m_pipRect;
+            paintTile(p, s, th, false);
+        }
     } else {
         // Self-preview PiP shown immediately while calling/connecting, in
         // the exact corner it keeps once connected (no jump on transition).
@@ -770,62 +855,245 @@ void CallStage::paintCodecPill(QPainter &p, const PainterTheme &th)
     p.setPen(th.textSecondary);
     p.drawText(pill.adjusted(26, 0, -8, 0),
                Qt::AlignVCenter | Qt::AlignLeft, text);
+
+    // RX-resolution chip, immediately right of the codec pill: the decoded
+    // incoming resolution (active simulcast layer / BW awareness). Quiet,
+    // same row, only when we're actually receiving a decoded frame.
+    qreal cursor = pill.right();
+    const QString rx = m_call->activeRxResolution();
+    if (!rx.isEmpty()) {
+        const QString rxText = QStringLiteral("RX ") + rx;
+        QRectF rxPill(cursor + 8, pill.top(),
+                      fm.horizontalAdvance(rxText) + 26, pill.height());
+        QColor rxBorder = th.divider; rxBorder.setAlphaF(0.7);
+        p.setBrush(bg); p.setPen(QPen(rxBorder, 1));
+        p.drawRoundedRect(rxPill, 11, 11);
+        p.setBrush(th.textSecondary); p.setPen(Qt::NoPen);
+        p.drawEllipse(QRectF(rxPill.left() + 11, rxPill.center().y() - 3, 6, 6));
+        p.setPen(th.textSecondary);
+        p.drawText(rxPill.adjusted(24, 0, -8, 0),
+                   Qt::AlignVCenter | Qt::AlignLeft, rxText);
+        cursor = rxPill.right();
+    }
+
+    // #8 Quality chip — clickable; cycles Auto -> L -> M -> H -> Auto.
+    // Active in all builds as of 0.38.0 (simulcast publishes in stable too,
+    // so the chip's selectStream actually has layers to switch between).
+    // The dot colour signals the active mode (textSecondary for Auto,
+    // accent for any forced layer) so the override is glanceable.
+    static const char *const kLabels[] = { "LOW", "MED", "HIGH" };
+    const QString qText = (m_qualityOverride < 0)
+        ? QStringLiteral("AUTO")
+        : QString::fromLatin1(kLabels[m_qualityOverride]);
+    QRectF qPill(cursor + 8, pill.top(),
+                 fm.horizontalAdvance(qText) + 26, pill.height());
+    const bool forced = (m_qualityOverride >= 0);
+    QColor qDot     = forced ? th.accent : th.textSecondary;
+    QColor qBorder  = qDot;  qBorder.setAlphaF(forced ? 0.65 : 0.55);
+    p.setBrush(bg); p.setPen(QPen(qBorder, 1));
+    p.drawRoundedRect(qPill, 11, 11);
+    p.setBrush(qDot); p.setPen(Qt::NoPen);
+    p.drawEllipse(QRectF(qPill.left() + 11, qPill.center().y() - 3, 6, 6));
+    p.setPen(forced ? th.textPrimary : th.textSecondary);
+    p.drawText(qPill.adjusted(24, 0, -8, 0),
+               Qt::AlignVCenter | Qt::AlignLeft, qText);
+    m_qualityPillRect = qPill;
+
+    // #20 Background chip — clickable; cycles BG OFF → BLUR → IMG → OFF.
+    // Writes the Talk/Backgrounds/* QSettings keys directly so the
+    // change persists, then asks CallManager to apply live. Right-click
+    // jumps to Settings → Audio & Video where the full picker lives.
+    QSettings bgSet("TalQ", "TalQ");
+    bgSet.beginGroup("Talk/Backgrounds");
+    const bool    bgOn   = bgSet.value("virtualBackgroundEnabled", false).toBool();
+    const QString bgType = bgSet.value("virtualBackgroundType", "blur").toString();
+    bgSet.endGroup();
+    const QString bgText = !bgOn
+        ? QStringLiteral("BG OFF")
+        : (bgType == "image" ? QStringLiteral("BG IMG")
+                              : QStringLiteral("BG BLUR"));
+    QRectF bgPill(qPill.right() + 8, pill.top(),
+                  fm.horizontalAdvance(bgText) + 26, pill.height());
+    QColor bgDot    = bgOn ? th.accent : th.textSecondary;
+    QColor bgBorder = bgDot; bgBorder.setAlphaF(bgOn ? 0.65 : 0.55);
+    p.setBrush(bg); p.setPen(QPen(bgBorder, 1));
+    p.drawRoundedRect(bgPill, 11, 11);
+    p.setBrush(bgDot); p.setPen(Qt::NoPen);
+    p.drawEllipse(QRectF(bgPill.left() + 11, bgPill.center().y() - 3, 6, 6));
+    p.setPen(bgOn ? th.textPrimary : th.textSecondary);
+    p.drawText(bgPill.adjusted(24, 0, -8, 0),
+               Qt::AlignVCenter | Qt::AlignLeft, bgText);
+    m_bgPillRect = bgPill;
+}
+
+void CallStage::paintSharingBadge(QPainter &p, const PainterTheme &th)
+{
+    // Persistent top-center indicator while WE are sharing our screen, so
+    // the publisher always knows the share is live (#3 — previously there
+    // was no local cue). Pulsing red dot + label; click-to-stop is the
+    // existing "share" control-bar toggle.
+    if (!m_call->isScreenSharing()) return;
+
+    const QString text = tr("You're sharing your screen");
+    QFont f = monoFont(12); f.setBold(true);
+    p.setFont(f);
+    QFontMetrics fm(f);
+    qreal pillW = fm.horizontalAdvance(text) + 40;
+    QRectF pill((width() - pillW) / 2.0, 14, pillW, 28);
+
+    QColor bg = th.bgSecondary; bg.setAlphaF(0.92);
+    QColor border = th.danger;  border.setAlphaF(0.65);
+    p.setBrush(bg); p.setPen(QPen(border, 1.5));
+    p.drawRoundedRect(pill, 14, 14);
+
+    // Live red dot.
+    p.setBrush(th.danger); p.setPen(Qt::NoPen);
+    p.drawEllipse(QRectF(pill.left() + 14, pill.center().y() - 4, 8, 8));
+
+    p.setPen(th.textPrimary);
+    p.drawText(pill.adjusted(30, 0, -10, 0),
+               Qt::AlignVCenter | Qt::AlignLeft, text);
 }
 
 void CallStage::paintTelemetry(QPainter &p, const PainterTheme &th)
 {
-    qreal w = qBound(280.0, width()*0.30, 380.0);
-    QRectF panel(width()-w, 0, w, height());
-    QColor bg = th.bgSecondary; bg.setAlphaF(0.97);
+    // "Mission Control" telemetry: a header, a live outbound-bandwidth
+    // sparkline gauge, a 2-up grid of metric cards, per-participant
+    // subsystem chips, and a compact stats footer — all QPainter, theme-
+    // driven, over a semi-transparent ground so the call stays visible.
+    p.setRenderHint(QPainter::Antialiasing, true);
+    const qreal w = qBound(300.0, width()*0.32, 400.0);
+    const QRectF panel(width()-w, 0, w, height());
+    QColor bg = th.bgSecondary; bg.setAlphaF(0.82);
     p.setBrush(bg); p.setPen(Qt::NoPen);
     p.fillRect(panel, bg);
     p.setPen(QPen(th.divider, 1));
     p.drawLine(panel.topLeft(), panel.bottomLeft());
 
-    qreal x = panel.left()+18, y = 22;
-    p.setPen(th.textSecondary); p.setFont(monoFont(11));
-    p.drawText(QPointF(x, y), QStringLiteral("● FLIGHT LOG · TELEMETRY"));
-    y += 28;
-    p.setFont(monoFont(11));
-    auto line = [&](const QString &k, const QString &v, const QColor &vc){
-        p.setPen(th.textTime);  p.drawText(QPointF(x, y), k);
-        p.setPen(vc);           p.drawText(QPointF(x+136, y), v);
-        y += 20;
-    };
-    line("CODEC",   m_call->activeVideoCodec().isEmpty() ? "—" : m_call->activeVideoCodec(), th.textPrimary);
-    QString dec = m_call->activeVideoDecoder();
-    line("DECODER", dec.isEmpty() ? "—" : dec, dec=="Software" ? th.danger : th.success);
+    const qreal pad = 18.0;
+    const qreal x0 = panel.left() + pad;
+    const qreal innerW = w - pad*2;
+    qreal y = 26;
+
+    // ── Header ──
+    {
+        qreal pulse = reducedMotion() ? 1.0 : (0.5 + 0.5*qSin(m_glowPhase));
+        QColor dotc = th.success; dotc.setAlphaF(pulse);
+        p.setBrush(dotc); p.setPen(Qt::NoPen);
+        p.drawEllipse(QRectF(x0, y-8, 8, 8));
+        p.setPen(th.textSecondary); p.setFont(monoFont(12));
+        p.drawText(QPointF(x0+16, y), QStringLiteral("MISSION CONTROL"));
+        const int secs = m_call->callDuration();
+        if (secs > 0) {
+            const QString dur = QStringLiteral("%1:%2")
+                .arg(secs/60).arg(secs%60, 2, 10, QChar('0'));
+            p.setPen(th.textTime);
+            p.drawText(QRectF(x0, y-12, innerW, 16), Qt::AlignRight|Qt::AlignVCenter, dur);
+        }
+        y += 18;
+    }
+
+    // ── Bandwidth gauge + sparkline ──
+    {
+        const qreal cardH = 76;
+        QRectF card(x0, y, innerW, cardH);
+        QColor cbg = th.bgPrimary; cbg.setAlphaF(0.5);
+        p.setBrush(cbg); p.setPen(QPen(th.divider, 1));
+        p.drawRoundedRect(card, 10, 10);
+
+        const QString bw = m_call->streamBandwidthLabel();
+        p.setPen(th.textTime); p.setFont(monoFont(10));
+        p.drawText(QPointF(card.left()+12, card.top()+18), QStringLiteral("OUTBOUND"));
+        p.setPen(bw.isEmpty() ? th.textSecondary : th.success);
+        p.setFont(monoFont(20));
+        p.drawText(QPointF(card.left()+12, card.top()+44),
+                   bw.isEmpty() ? QStringLiteral("—") : bw);
+
+        // Sparkline across the lower portion of the card.
+        if (m_bwHistory.size() >= 2) {
+            QRectF spark(card.left()+12, card.bottom()-22, card.width()-24, 16);
+            float mx = 0.01f;
+            for (float v : m_bwHistory) mx = qMax(mx, v);
+            QPainterPath path;
+            const int n = m_bwHistory.size();
+            for (int i = 0; i < n; ++i) {
+                const qreal px = spark.left() + spark.width() * i / (n-1);
+                const qreal py = spark.bottom() - spark.height() * (m_bwHistory[i]/mx);
+                if (i == 0) path.moveTo(px, py); else path.lineTo(px, py);
+            }
+            QColor line = th.success; line.setAlphaF(0.85);
+            p.setBrush(Qt::NoBrush); p.setPen(QPen(line, 1.5));
+            p.drawPath(path);
+        }
+        y += cardH + 12;
+    }
+
+    // ── Metric cards (2-up grid) ──
     QString enc = m_call->activeVideoEncoder();
-    line("ENCODER", enc.isEmpty() ? "—" : enc,
-         enc.isEmpty() ? th.textPrimary
-                        : m_call->activeVideoEncoderIsHw() ? th.success : th.amber);
-    QString tx = m_call->videoTxLabel();
-    line("VIDEO TX", tx.isEmpty() ? "—" : tx, th.textPrimary);
-    QString bw = m_call->streamBandwidthLabel();
-    line("STREAM BW", bw.isEmpty() ? "—" : bw,
-         bw.isEmpty() ? th.textPrimary : th.success);
-    line("PEER",    m_call->remotePeerClient().isEmpty() ? "—" : m_call->remotePeerClient(), th.textPrimary);
-    y += 8;
-    p.setPen(th.textSecondary); p.drawText(QPointF(x, y), QStringLiteral("SUBSYSTEMS")); y += 22;
+    QString dec = m_call->activeVideoDecoder();
+    QString rx  = m_call->activeRxResolution();
+    QString txRes = m_call->isScreenSharing() ? QStringLiteral("screen")
+                  : m_call->isCameraOn()      ? QStringLiteral("1280×720")
+                                              : QString();
+    struct Metric { QString k, v; QColor c; };
+    const QVector<Metric> metrics = {
+        { "CODEC",   m_call->activeVideoCodec().isEmpty() ? "—" : m_call->activeVideoCodec(), th.textPrimary },
+        { "ENCODER", enc.isEmpty() ? "—" : enc.section(QStringLiteral(" · "), 1, 1),
+                     enc.isEmpty() ? th.textSecondary : (m_call->activeVideoEncoderIsHw() ? th.success : th.amber) },
+        { "TX RES",  txRes.isEmpty() ? "—" : txRes, th.textPrimary },
+        { "RX RES",  rx.isEmpty() ? "—" : rx, rx.isEmpty() ? th.textSecondary : th.textPrimary },
+        { "DECODER", dec.isEmpty() ? "—" : dec, dec=="Software" ? th.amber : (dec.isEmpty()?th.textSecondary:th.success) },
+        { "PEER",    m_call->remotePeerClient().isEmpty() ? "—" : m_call->remotePeerClient(), th.textPrimary },
+    };
+    {
+        const qreal gap = 8, cardW = (innerW - gap)/2.0, cardH = 46;
+        for (int i = 0; i < metrics.size(); ++i) {
+            const qreal cx = x0 + (i % 2) * (cardW + gap);
+            if (i % 2 == 0 && i > 0) y += cardH + gap;
+            QRectF card(cx, y, cardW, cardH);
+            QColor cbg = th.bgPrimary; cbg.setAlphaF(0.5);
+            p.setBrush(cbg); p.setPen(QPen(th.divider, 1));
+            p.drawRoundedRect(card, 8, 8);
+            p.setPen(th.textTime); p.setFont(monoFont(9));
+            p.drawText(QPointF(card.left()+10, card.top()+16), metrics[i].k);
+            p.setPen(metrics[i].c); p.setFont(monoFont(12));
+            QString v = p.fontMetrics().elidedText(metrics[i].v, Qt::ElideRight, (int)card.width()-18);
+            p.drawText(QPointF(card.left()+10, card.top()+36), v);
+        }
+        y += cardH + 16;
+    }
+
+    // ── Subsystems: per-participant connection chips ──
+    p.setPen(th.textSecondary); p.setFont(monoFont(10));
+    p.drawText(QPointF(x0, y), QStringLiteral("SUBSYSTEMS")); y += 20;
     for (auto *cp : m_call->participants()) {
         if (cp->isSelf()) continue;
-        QColor c = cp->connState()==CallParticipant::Connected ? th.success
-                 : cp->connState()==CallParticipant::Failed ? th.danger : th.amber;
-        QString stx = cp->connState()==CallParticipant::Connected ? "OK"
-                    : cp->connState()==CallParticipant::Failed ? "FAIL" : "…";
-        QString nm = cp->displayName().left(16);
-        p.setPen(th.textTime); p.drawText(QPointF(x, y), nm);
-        p.setPen(c); p.drawText(QPointF(x+200, y), stx);
-        y += 20;
+        const bool ok   = cp->connState()==CallParticipant::Connected;
+        const bool fail = cp->connState()==CallParticipant::Failed;
+        QColor c = ok ? th.success : fail ? th.danger : th.amber;
+        QRectF chip(x0, y-12, innerW, 26);
+        QColor cbg = c; cbg.setAlphaF(0.10);
+        p.setBrush(cbg); p.setPen(QPen(c, 1)); p.drawRoundedRect(chip, 8, 8);
+        p.setBrush(c); p.setPen(Qt::NoPen);
+        p.drawEllipse(QRectF(chip.left()+10, chip.center().y()-3.5, 7, 7));
+        p.setPen(th.textPrimary); p.setFont(monoFont(11));
+        p.drawText(QPointF(chip.left()+26, chip.center().y()+4), cp->displayName().left(18));
+        p.setPen(c);
+        p.drawText(chip.adjusted(0,0,-10,0), Qt::AlignRight|Qt::AlignVCenter,
+                   ok ? "LIVE" : fail ? "FAIL" : "…");
+        y += 32;
     }
-    y += 10;
-    p.setPen(th.textSecondary); p.drawText(QPointF(x, y), QStringLiteral("STATS")); y += 20;
-    p.setPen(th.textTime);
-    const QString stats = m_call->callStats();
-    for (const QString &ln : stats.split('\n', Qt::SkipEmptyParts)) {
-        p.drawText(QRectF(x, y-12, w-36, 18), Qt::TextWordWrap, ln);
-        y += 20;
-        if (y > height()-20) break;
+
+    // ── Stats footer (compact mono) ──
+    y += 6;
+    p.setPen(th.textSecondary); p.setFont(monoFont(10));
+    p.drawText(QPointF(x0, y), QStringLiteral("FLIGHT LOG")); y += 18;
+    p.setPen(th.textTime); p.setFont(monoFont(10));
+    for (const QString &ln : m_call->callStats().split('\n', Qt::SkipEmptyParts)) {
+        p.drawText(QRectF(x0, y-12, innerW, 16), Qt::TextSingleLine,
+                   p.fontMetrics().elidedText(ln, Qt::ElideRight, (int)innerW));
+        y += 18;
+        if (y > height()-16) break;
     }
 }
 
@@ -865,6 +1133,60 @@ void CallStage::mousePressEvent(QMouseEvent *e)
 {
     pokeControls();
     const QString id = hitButton(e->position());
+
+    // Right-click on the share segment while sharing → quality menu
+    // (live re-share at the new cap). Any other right-click is ignored
+    // so it can't accidentally trigger a control action.
+    if (e->button() == Qt::RightButton) {
+        if (id == "share" && m_call->isScreenSharing())
+            showScreenShareQualityMenu(e->globalPosition().toPoint());
+        else if (!m_qualityPillRect.isNull()
+                 && m_qualityPillRect.contains(e->position())) {
+            // Right-click on the Quality chip resets to Auto.
+            m_qualityOverride = -1;
+            updateStreamQualities();
+            update();
+        } else if (!m_bgPillRect.isNull()
+                   && m_bgPillRect.contains(e->position())) {
+            // Right-click on the BG chip jumps to Settings → Audio & Video
+            // (where the full picker + blur slider + image browser live).
+            emit requestOpenBackgroundSettings();
+        }
+        return;
+    }
+
+    // #8 Quality chip — cycle Auto -> L -> M -> H -> Auto on left-click.
+    if (e->button() == Qt::LeftButton
+        && !m_qualityPillRect.isNull()
+        && m_qualityPillRect.contains(e->position())) {
+        m_qualityOverride = (m_qualityOverride + 2) % 4 - 1;  // -1,0,1,2 cycle
+        updateStreamQualities();
+        update();
+        return;
+    }
+
+    // #20 Background chip — left-click cycles BG OFF -> BLUR -> IMG -> OFF.
+    // Writes the Talk/Backgrounds/* keys + asks CallManager to apply live.
+    if (e->button() == Qt::LeftButton
+        && !m_bgPillRect.isNull()
+        && m_bgPillRect.contains(e->position())) {
+        QSettings s("TalQ", "TalQ");
+        s.beginGroup("Talk/Backgrounds");
+        const bool on    = s.value("virtualBackgroundEnabled", false).toBool();
+        const QString t  = s.value("virtualBackgroundType", "blur").toString();
+        QString nextType;
+        bool nextOn;
+        if (!on)                  { nextOn = true;  nextType = "blur";  }
+        else if (t == "blur")     { nextOn = true;  nextType = "image"; }
+        else                       { nextOn = false; nextType = t;      }
+        s.setValue("virtualBackgroundEnabled", nextOn);
+        s.setValue("virtualBackgroundType",    nextType);
+        s.endGroup();
+        m_call->applyBackgroundSettings();
+        update();
+        return;
+    }
+
     if (!id.isEmpty()) {
         if (id=="mic")        m_call->toggleMute();
         else if (id=="cam")   m_call->toggleCamera();
@@ -873,6 +1195,7 @@ void CallStage::mousePressEvent(QMouseEvent *e)
         else if (id=="roster")    { m_rosterOpen=!m_rosterOpen; update(); }
         else if (id=="full")  emit requestToggleFullscreen();
         else if (id=="end")   m_call->hangUp();
+        else if (id=="accept-video") m_call->acceptCall(true);
         else if (id=="accept")  m_call->acceptCall(false);
         else if (id=="decline") m_call->declineCall();
         return;
@@ -904,9 +1227,47 @@ void CallStage::mouseReleaseEvent(QMouseEvent *e)
     }
 }
 
-void CallStage::mouseDoubleClickEvent(QMouseEvent *)
+void CallStage::mouseDoubleClickEvent(QMouseEvent *e)
 {
+    // A double-click on the control bar (or the draggable self-PiP) must
+    // NOT toggle fullscreen. Rapidly clicking a control — e.g. the camera
+    // switch — otherwise registers every other click as a double-click and
+    // bounces the window in and out of fullscreen. Only the bare video
+    // surface goes fullscreen on double-click.
+    const bool onControl = m_controlsVisible && !hitButton(e->position()).isEmpty();
+    const bool onPip = !m_pipRect.isNull() && m_pipRect.contains(e->position());
+    if (onControl || onPip) {
+        pokeControls();
+        return;
+    }
     emit requestToggleFullscreen();
+}
+
+void CallStage::showScreenShareQualityMenu(const QPoint &globalPos)
+{
+    // Themed by AppStyle's app-wide QMenu sheet. Heap-alloc + DeleteOnClose
+    // so the lifetime ends with the popup (no modal blocking call).
+    auto *menu = new QMenu(this);
+    menu->setAttribute(Qt::WA_DeleteOnClose);
+    auto *group = new QActionGroup(menu);
+    group->setExclusive(true);
+    const QStringList labels = {
+        tr("720p"), tr("1080p"), tr("1440p"), tr("Native")
+    };
+    const int cur = m_call->screenShareQuality();
+    for (int i = 0; i < labels.size(); ++i) {
+        QAction *a = menu->addAction(labels[i]);
+        a->setCheckable(true);
+        a->setChecked(i == cur);
+        a->setData(i);
+        group->addAction(a);
+    }
+    connect(menu, &QMenu::triggered, this, [this, cur](QAction *picked) {
+        if (!picked) return;
+        const int lv = picked->data().toInt();
+        if (lv != cur) m_call->setScreenShareQuality(lv);
+    });
+    menu->popup(globalPos);
 }
 
 void CallStage::leaveEvent(QEvent *)

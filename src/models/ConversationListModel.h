@@ -47,11 +47,19 @@ public:
     Q_INVOKABLE void refresh();
     Q_INVOKABLE void startAutoRefresh();
     Q_INVOKABLE void stopAutoRefresh();
+    // Force-refresh the user_status map outside the 60 s poll. MainWindow
+    // calls this on window-activate so the sidebar dots update as soon as
+    // the user returns to TalQ, rather than waiting up to a minute.
+    Q_INVOKABLE void refreshUserStatuses();
     Q_INVOKABLE QString tokenAt(int index) const;
     Q_INVOKABLE int lastReadMessageForToken(const QString &token) const;
     Q_INVOKABLE QString userStatusForToken(const QString &token) const;
     Q_INVOKABLE QString userStatusMessageForToken(const QString &token) const;
     Q_INVOKABLE QString userStatusIconForToken(const QString &token) const;
+    // Conversation type (1 = one_to_one, 2 = group, 3 = public, etc.).
+    // Returns 0 if the token isn't in the cached list. Used by the
+    // composer to decide whether to auto-prepend a bot mention in 1:1s.
+    Q_INVOKABLE int conversationTypeForToken(const QString &token) const;
     Q_INVOKABLE void clearUnreadForToken(const QString &token);
     // Mirror a server-side read advance into our cache without a round-trip:
     // sets lastReadMessage and clears unreadMessages for `token`. Used after
