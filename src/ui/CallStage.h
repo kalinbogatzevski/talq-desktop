@@ -37,6 +37,11 @@ public:
 signals:
     void requestToggleFullscreen();
     void requestToggleShare();    // window owns the screen-source picker
+    // #20 — right-click on the Background chip jumps to Settings →
+    // Audio & Video where the full picker + blur slider + image
+    // browser live. The window owns the dialog (MainWindow), so this
+    // signal asks it to open Settings to the right tab.
+    void requestOpenBackgroundSettings();
 
 protected:
     void paintEvent(QPaintEvent *) override;
@@ -56,17 +61,24 @@ private:
     void purgeStaleFrames();      // drop cached frames for departed peers
     void onFrame(CallParticipant *p, bool screen, const QImage &img);
     void relayout();
+    void updateStreamQualities();  // #132: per-tile-size simulcast substream request
     QVector<Tile> computeLayout() const;
     CallParticipant *stageSource(bool *isScreen) const;
     void paintTile(QPainter &p, const Tile &t, const PainterTheme &th, bool large);
     void paintControlBar(QPainter &p, const PainterTheme &th);
     void paintStatusPill(QPainter &p, const PainterTheme &th);
     void paintCodecPill(QPainter &p, const PainterTheme &th);
+    void paintSharingBadge(QPainter &p, const PainterTheme &th);
     void paintTelemetry(QPainter &p, const PainterTheme &th);
     void paintCentered(QPainter &p, const PainterTheme &th); // incoming/outgoing/alone
     void buildButtons();
     QString hitButton(const QPointF &pos) const;
     void pokeControls();              // show control bar, restart idle timer
+    // Right-click on the share segment while sharing → quality menu
+    // (720p / 1080p / 1440p / Native) → CallManager::setScreenShareQuality
+    // does a live re-share at the new cap. The picker dialog still owns
+    // the pre-share initial pick.
+    void showScreenShareQualityMenu(const QPoint &globalPos);
     bool reducedMotion() const;
     QImage avatarDisc(const QString &id, const QString &name, int size, const PainterTheme &th) const;
 
@@ -89,6 +101,9 @@ private:
     QTimer *m_tick = nullptr;                  // ~30fps repaint + idle/glow
     bool m_telemetryOpen = false;
     bool m_rosterOpen = false;
+    // Outbound-bitrate ring buffer (Mbps) for the telemetry sparkline.
+    static constexpr int kBwHistoryMax = 60;
+    QVector<float> m_bwHistory;
     QString m_hoverBtn;                        // control-bar button under cursor
 
     // self-PiP drag
@@ -99,4 +114,15 @@ private:
 
     double m_glowPhase = 0.0;
     qreal m_statusPillBottom = 42.0;  // set by paintStatusPill; anchors codec pill
+
+    // #8 manual stream-quality selector: -1=Auto (tile-size driven by
+    // updateStreamQualities), 0=Low/180p, 1=Med/360p, 2=High/720p. Click
+    // the Quality chip to cycle Auto -> L -> M -> H -> Auto. When >=0,
+    // every remote tile gets the same forced substream.
+    int m_qualityOverride = -1;
+    QRectF m_qualityPillRect;
+
+    // #20 BG chip hit rectangle, updated each paint. Independent of the
+    // Quality chip so click handling stays straightforward.
+    QRectF m_bgPillRect;
 };

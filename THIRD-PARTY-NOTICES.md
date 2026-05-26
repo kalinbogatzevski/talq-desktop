@@ -85,6 +85,51 @@ those attribution requirements.
   >
   > THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
 
+## MediaPipe Selfie Segmenter model (`resources/models/`)
+
+- **License:** Apache License 2.0
+- **Copyright:** © Google LLC, MediaPipe contributors
+- **Files:** `selfie_segmenter.tflite` (~244 KB),
+  `selfie_segmenter.onnx` (~450 KB, derived)
+- **Usage:** The `.tflite` is bundled verbatim from
+  `nextcloud/spreed@v23.0.4` (`src/utils/media/effects/virtual-background/vendor/models/`).
+  The `.onnx` is a developer-time conversion of the same model via
+  `tf2onnx --opset 18`, with one TFLite-only fused op
+  (`Convolution2DTransposeBias`) replaced post-conversion by the
+  mathematically equivalent `ConvTranspose + Add` pair so it loads with
+  stock ONNX Runtime. Runtime inference uses the `.onnx`. The compositor
+  that consumes the resulting mask is a direct port of Talk's
+  `WebGLCompositor.js`.
+- <https://github.com/google-ai-edge/mediapipe>
+
+## ONNX Runtime (`third_party/onnxruntime/`)
+
+- **License:** MIT License
+- **Copyright:** © Microsoft Corporation
+- **Version:** 1.20.1 (Windows x64 prebuilt)
+- **Usage:** Bundled DLL (`onnxruntime.dll`) for per-frame CPU inference
+  of the MediaPipe Selfie Segmenter ONNX model. The headers from the
+  same release are vendored under `third_party/onnxruntime/include/`;
+  the mingw import library (`libonnxruntime.dll.a`) is generated locally
+  via `gendef` + `dlltool` from the redistributed DLL.
+- <https://github.com/microsoft/onnxruntime>
+
+## Bundled background images (`resources/backgrounds/`)
+
+- **License:** GNU Affero General Public License v3.0 (AGPL-3.0)
+- **Copyright:** © Nextcloud GmbH and the Talk contributors
+- **Files:** `1_office.jpg` through `8_space_station.jpg` (eight images,
+  ~6 MB total).
+- **Usage:** Bundled verbatim from `nextcloud/spreed@v23.0.4`
+  (`img/backgrounds/`). The end-user picks one of these as a virtual
+  background; the image is composited over the camera frame on the
+  publisher side. These eight files are the only AGPL-3.0 components in
+  TalQ; everything else is licensed under Apache 2.0 (TalQ proper) or
+  the licenses listed in this file. The full text of the AGPL is at
+  <https://www.gnu.org/licenses/agpl-3.0.html>. Source for these
+  files is available at the upstream repository.
+- <https://github.com/nextcloud/spreed/tree/v23.0.4/img/backgrounds>
+
 ## System fonts (not bundled)
 
 - "Segoe Fluent Icons" / "Segoe MDL2 Assets" / "Segoe UI Symbol" are

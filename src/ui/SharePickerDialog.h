@@ -6,6 +6,7 @@
 #include <QPushButton>
 #include <QLabel>
 #include <QTabWidget>
+#include <QTimer>
 
 struct ShareTarget {
     enum Type { Monitor, Window };
@@ -27,11 +28,13 @@ public:
 private:
     void populateMonitors();
     void populateWindows();
+    void refreshThumbnails();   // live preview, ~1.5s while the picker is open
 
     QTabWidget *m_tabs = nullptr;
     QListWidget *m_monitorList = nullptr;
     QListWidget *m_windowList = nullptr;
     QPushButton *m_shareBtn = nullptr;
+    QTimer *m_thumbTimer = nullptr;
     ShareTarget m_selected;
 
     QList<ShareTarget> m_monitors;

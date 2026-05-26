@@ -59,6 +59,10 @@ public slots:
     void setPredefined(const QString &messageId, qint64 clearAt);
     void setCustom(const QString &icon, const QString &text, qint64 clearAt);
     void clearStatusMessage();
+    // Undo Talk's "call" status automation. Idempotent (404/200) — safe
+    // to call after every call-end path, so a glitched server-side
+    // clear can't leave the user reading as "in call" indefinitely.
+    void revertStuckCall();
 
 signals:
     void statusChanged();
@@ -68,7 +72,6 @@ signals:
 private:
     void fetchPredefined();
     void fetchCurrent();
-    void revertStuckCall();
     void applyFromJson(const QJsonObject &d);
     void takeSnapshot();
     void rollback();
@@ -92,4 +95,29 @@ private:
 
     // Keeps automatic presence alive; never overwrites a user-set state.
     QTimer m_heartbeat;
+
+    // ---- Auto-away on Windows idle / lock / sleep ----
+    //
+    // Polls GetLastInputInfo every 30 s. When idle > threshold AND the
+    // user is currently Online (not user-set Away/Dnd/Invisible), flip
+    // to Away and remember the auto-flip. On the next input, restore
+    // to Online if the away was auto-set.
+    //
+    // WTSRegisterSessionNotification is used for immediate transitions
+    // on lock / unlock / sleep / resume - no 30 s wait on those.
+    QTimer m_idlePoll;
+    bool   m_autoAwayActive = false;   // true while we hold an auto-flipped Away
+    bool   m_sessionLocked  = false;
+    bool   m_inIdleTick     = false;   // reentrancy guard (nested event loops)
+public:
+    // Idle threshold in milliseconds. 5 min matches upstream NC Talk web.
+    // Public so tests/integrations can tighten it.
+    static constexpr qint64 kIdleAwayThresholdMs = 5 * 60 * 1000;
+private:
+    // Per-tick: read GetLastInputInfo, decide flip / restore.
+    void onIdleTick();
+    // Driven by WTSRegisterSessionNotification (Windows) or QGuiApplication
+    // session signals - flip Away immediately, restore on unlock.
+    void onSessionLocked();
+    void onSessionUnlocked();
 };

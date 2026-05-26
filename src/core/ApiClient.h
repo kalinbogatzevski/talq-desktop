@@ -53,6 +53,14 @@ public:
     void del(const QString &path, Callback callback);
     void del(const QString &path, const QUrlQuery &params, Callback callback);
     void del(const QString &path, const QJsonObject &body, Callback callback);
+    // "Must-complete" DELETE: bounded backoff retry on confirmed
+    // non-delivery (statusCode 0 / 5xx) so a lost request on a high-latency
+    // /flaky link still lands (leaveCall, status revert). onDone(ok,status)
+    // fires once, on success or after giving up. Never blocks the UI.
+    void delMustComplete(const QString &path, const QJsonObject &body,
+                         QObject *context,
+                         std::function<void(bool ok, int statusCode)> onDone,
+                         int attempt = 0);
     void setNotificationLevel(const QString &token, int level, Callback callback = nullptr);
 
     // Raw GET — caller handles the reply (for reading headers)

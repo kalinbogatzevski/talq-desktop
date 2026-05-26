@@ -372,6 +372,11 @@ ComposerWidget::ComposerWidget(QWidget *parent)
     applyChrome();
 }
 
+QString ComposerWidget::currentText() const
+{
+    return m_input ? m_input->toPlainText().trimmed() : QString();
+}
+
 void ComposerWidget::applyChrome()
 {
     // Composer surface + the reply/edit/pending bars — palette-driven so
