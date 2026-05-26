@@ -235,6 +235,13 @@ private:
     QTimer m_autoInstallTick;
     bool   m_autoInstallActive = false;
     bool   m_autoInstallCancelledForSession = false;
+    // 0.40.6 — ms-since-epoch when the download landed (the moment the
+    // user could realistically see the countdown banner). The tick
+    // clamps the effective idle time to (now - this) so a user who was
+    // already idle the whole download still gets to see the countdown
+    // run, rather than the install firing on the first tick because
+    // GetLastInputInfo was already past the threshold.
+    qint64 m_autoInstallReadyAtMs = 0;
 
     // Search bar
     class QWidget *m_searchBar = nullptr;
