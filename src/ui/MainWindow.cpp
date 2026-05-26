@@ -2580,6 +2580,12 @@ void MainWindow::onUpdateReadyToLaunch(const QString &installerPath)
         QSettings().value(QStringLiteral("updates/autoInstall"), true).toBool();
     if (autoInstallEnabled && !m_autoInstallCancelledForSession) {
         m_autoInstallActive = true;
+        // Anchor the wait window to download-completion time. A user who
+        // was passively watching the download for longer than the
+        // configured idle threshold would otherwise see GetLastInputInfo
+        // already past the gate on the first tick and the install would
+        // fire with no visible countdown.
+        m_autoInstallReadyAtMs = QDateTime::currentMSecsSinceEpoch();
         m_updateBannerActive = true;
         m_updateBanner->show();
         m_updateBanner->raise();
@@ -2588,7 +2594,7 @@ void MainWindow::onUpdateReadyToLaunch(const QString &installerPath)
         m_updateLaterBtn->setText(tr("Cancel auto-install"));
         m_updateLaterBtn->show();
         m_updateWhatsNewBtn->hide();
-        m_autoInstallTick.setInterval(5000);
+        m_autoInstallTick.setInterval(1000);   // 1 s so the visible MM:SS countdown ticks once a second
         m_autoInstallTick.setSingleShot(false);
         if (!m_autoInstallTick.isActive()) m_autoInstallTick.start();
         onUpdateAutoInstallTick();   // paint the banner immediately
@@ -2653,8 +2659,18 @@ void MainWindow::onUpdateAutoInstallTick()
         idleMs = qint64(idleTicks);
     }
 #else
-    const qint64 idleMs = 0;   // no idle source on non-Windows yet
+    qint64 idleMs = 0;   // no idle source on non-Windows yet
 #endif
+
+    // Clamp the effective idle to ms-since-download-ready so the
+    // countdown always runs at least once. Without this, a user who
+    // was already idle while the download streamed would skip the
+    // visible "Installing in M:SS…" banner entirely.
+    if (m_autoInstallReadyAtMs > 0) {
+        const qint64 sinceReady =
+            QDateTime::currentMSecsSinceEpoch() - m_autoInstallReadyAtMs;
+        idleMs = qMin(idleMs, sinceReady);
+    }
 
     if (idleMs >= idleWaitMs) {
         // Idle window satisfied \u2014 kick the relaunch path. We don't

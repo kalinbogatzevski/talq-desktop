@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.40.6 "Panagyurishte" — STABLE (2026-05-26)
+
+### Fixed
+
+* **Auto-install skipped the countdown when the user was already idle
+  during the download.** `GetLastInputInfo` is system-wide; if the
+  user was passively watching the download (no mouse/keyboard) for
+  longer than the configured idle threshold, the gate passed
+  instantly on the first tick and TalQ restarted with no visible
+  "Installing in M:SS…" banner. Now the effective idle time is
+  clamped to "ms since download completed", so the countdown always
+  runs at least once. Tick rate dropped to 1 s for a smooth MM:SS
+  display.
+
+---
+
 ## v0.40.5 "Panagyurishte" — STABLE (2026-05-26)
 
 ### Added
