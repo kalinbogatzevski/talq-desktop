@@ -62,7 +62,18 @@ inline GstElement *makeWebrtcVideoEncoder(bool screen, int bitrateBps,
             gst_util_set_object_arg(G_OBJECT(e), prop, nick);
     };
     const guint kbps = (guint)(bitrateBps / 1000);
-    const guint gop  = screen ? 120u : 60u;
+    // Camera GOP: 30 frames (~1 s at 30 fps) instead of 60 (~2 s).
+    // Tied to the deterministic caller-side chop: a fresh subscribe
+    // against a just-up publisher reliably eats an initial-burst packet
+    // loss, and the receiver's decoder concealment continues until the
+    // next I-frame arrives. At GOP=60 that's a ~2 s blocky window the
+    // user reads as persistent chop; the callee, subscribing against a
+    // mature publisher, doesn't see the burst at all → asymmetric.
+    // GOP=30 caps the worst-case recovery at ~1 s (and PLI on the
+    // receive side cuts it further). Screen stays at GOP=120 — its
+    // mostly-static content benefits from long GOPs and isn't subject
+    // to the same burst-loss-on-subscribe condition.
+    const guint gop  = screen ? 120u : 30u;
 
     const char *order[] = { "nvh264enc", "qsvh264enc", "mfh264enc",
                             "x264enc", nullptr };
@@ -123,6 +134,17 @@ inline GstElement *makeWebrtcVideoEncoder(bool screen, int bitrateBps,
                     gst_object_unref(enc);
                     continue;
                 }
+                // NOTE: a prior revision rejected mfh264enc here when it
+                // could not prove bframes==0, falling back to software
+                // x264enc. That rested on a B-frame hypothesis later
+                // DISPROVEN — a controlled real-MCU reproduction with
+                // B-frames did NOT reproduce the symptom, and the affected
+                // peer's stream was baseline yet still choppy. The fallback
+                // also forced capable hardware onto software x264enc that a
+                // modest CPU cannot sustain at 720p30, itself producing a
+                // low-fps stream. So: keep the HARDWARE encoder. bframes=0
+                // remains best-effort (setIfExists above) but is no longer a
+                // reason to abandon hardware encoding.
             }
         } else { /* x264enc — software fallback */
             setArg(enc, "tune", "zerolatency");
