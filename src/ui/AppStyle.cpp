@@ -94,6 +94,13 @@ QLabel[role="title"]     { color:@{ink}; font-size:15px; font-weight:600; }
 QLabel[role="danger"]    { color:@{danger}; }
 QLabel[role="success"]   { color:@{accent}; }
 
+/* Settings surface: group eyebrow + two-column setting rows. Theme-driven
+ * (tokens only); the calm-surface / confident-control idiom. */
+QLabel[role="eyebrow"]     { color:@{inkMuted}; font-size:11px; font-weight:600; }
+QLabel[role="settingName"] { color:@{ink};  font-size:13px; font-weight:600; }
+QLabel[role="settingDesc"] { color:@{ink2}; font-size:11px; }
+QWidget#settingsHeader     { background:@{bgPrimary}; }
+
 /* Named component surfaces (single-source, theme-driven — not drift). */
 QWidget#selectionBar { background:@{bgSecondary}; }
 
@@ -197,11 +204,15 @@ QComboBox QAbstractItemView {
 /* ── Checkable controls ── */
 QCheckBox, QRadioButton { background:transparent; color:@{ink}; spacing:8px; }
 QCheckBox::indicator, QRadioButton::indicator { width:16px; height:16px; }
+/* Unchecked indicator sits on the SURFACE step of the ladder, not on
+ * the input-well tone — on tabs whose ground is close to inputBg
+ * (Settings → Updates) the well-tinted indicator blends into the
+ * background. bgSurface always reads as raised-one-step (Ladder Rule). */
 QCheckBox::indicator {
-    border:1px solid @{divider}; border-radius:4px; background:@{inputBg};
+    border:1px solid @{divider}; border-radius:4px; background:@{bgSurface};
 }
 QRadioButton::indicator {
-    border:1px solid @{divider}; border-radius:8px; background:@{inputBg};
+    border:1px solid @{divider}; border-radius:8px; background:@{bgSurface};
 }
 QCheckBox::indicator:hover, QRadioButton::indicator:hover {
     border-color:@{accent};

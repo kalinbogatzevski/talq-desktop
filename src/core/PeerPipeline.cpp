@@ -374,7 +374,24 @@ void PeerPipeline::enableCamera(int deviceIndex, bool hd1080,
 
     m_videoConvert = gst_element_factory_make("videoconvert", nullptr);
     m_videoCapsFilter = gst_element_factory_make("capsfilter", nullptr);
-    m_videoEncoder = gst_element_factory_make("openh264enc", nullptr);
+    // TEST-ONLY (TALQ_TEST_BFRAMES): publish a B-frame H.264 stream to
+    // reproduce the mfh264enc-on-Ilko's-hardware defect end-to-end through
+    // the real MCU. openh264enc is structurally B-frame-free, so the
+    // default harness path cannot exercise the broken case. NEVER set in
+    // production; the failing-test run sets it, the verify run does not.
+    if (!qEnvironmentVariableIsEmpty("TALQ_TEST_BFRAMES")) {
+        m_videoEncoder = gst_element_factory_make("x264enc", nullptr);
+        if (m_videoEncoder) {
+            gst_util_set_object_arg(G_OBJECT(m_videoEncoder),
+                                    "speed-preset", "veryfast");
+            g_object_set(m_videoEncoder, "bframes", 3, "b-adapt", TRUE,
+                         "key-int-max", 60, "bitrate", 1500, nullptr);
+            qWarning() << "PeerPipeline: TEST B-FRAME mode — x264enc "
+                          "bframes=3 (reproducing the broken peer camera)";
+        }
+    } else {
+        m_videoEncoder = gst_element_factory_make("openh264enc", nullptr);
+    }
     m_videoPayloader = gst_element_factory_make("rtph264pay", nullptr);
 
     if (!m_videoConvert || !m_videoCapsFilter || !m_videoEncoder || !m_videoPayloader) {
