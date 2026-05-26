@@ -6,10 +6,50 @@
 #include <QVector>
 #include <gst/gst.h>
 
+// One discrete capture mode a camera advertises (one gst_device_get_caps
+// structure, deduped to the best fps per format+resolution). `mjpeg` =
+// image/jpeg (compressed, fits USB bandwidth at HD); otherwise video/x-raw.
+struct CameraMode {
+    bool mjpeg = false;
+    int width = 0;
+    int height = 0;
+    int fpsNum = 0;   // exact advertised framerate (e.g. 30000/1001)
+    int fpsDen = 1;
+
+    int fps() const { return fpsDen ? (fpsNum + fpsDen / 2) / fpsDen : 0; }
+    qint64 pixels() const { return qint64(width) * height; }
+
+    // Stable token for QSettings persistence of the user's explicit pick.
+    QString key() const {
+        return QStringLiteral("%1|%2|%3|%4|%5")
+            .arg(mjpeg ? "mjpeg" : "raw").arg(width).arg(height)
+            .arg(fpsNum).arg(fpsDen);
+    }
+    // Exact single-structure caps for mfvideosrc. A single fixed structure
+    // is what actually forces the mode — a permissive multi-structure menu
+    // lets mfvideosrc fall back to its native (often raw, low-fps) format.
+    QString srcCaps() const {
+        return QStringLiteral("%1,width=(int)%2,height=(int)%3,"
+                              "framerate=(fraction)%4/%5")
+            .arg(mjpeg ? "image/jpeg" : "video/x-raw")
+            .arg(width).arg(height).arg(fpsNum).arg(fpsDen);
+    }
+    // "1080p · 60fps · MJPEG" style label for the Settings combo.
+    QString label() const;
+    bool valid() const { return width > 0 && height > 0 && fpsNum > 0; }
+
+    // Inverse of key(); empty/invalid input → an invalid CameraMode.
+    // Used to rehydrate the persistent per-device modes cache that
+    // stabilizes the picker across Windows' non-deterministic
+    // GstDeviceMonitor enumeration.
+    static CameraMode fromKey(const QString &k);
+};
+
 struct MediaDevice {
     QString id;
     QString name;
     QString type;  // "audio-input", "audio-output", "video-input"
+    QVector<CameraMode> modes;  // video-input only; curated + sorted best-first
 };
 
 class MediaDeviceManager : public QObject
@@ -53,6 +93,21 @@ public:
     const QVector<MediaDevice> &audioInputs() const { return m_audioInputs; }
     const QVector<MediaDevice> &audioOutputs() const { return m_audioOutputs; }
     const QVector<MediaDevice> &videoInputs() const { return m_videoInputs; }
+
+    // --- Camera capability / quality selection ---
+    // Curated, deduped, best-first mode list for a video device.
+    QVector<CameraMode> cameraModes(int videoIdx) const;
+    // Auto pick: absolute max the device supports — most pixels, then
+    // highest fps, MJPEG preferred on ties.
+    CameraMode autoCameraMode(int videoIdx) const;
+    // Persisted user choice for the *selected* camera: empty/"auto" = Auto.
+    QString cameraQualityChoice() const;
+    void setCameraQualityChoice(const QString &key);  // "auto" or CameraMode::key()
+    // Resolve the selected camera + choice to one exact mfvideosrc caps
+    // string and persist it to Video/cameraSrcCaps. Called on device
+    // refresh, camera switch, and quality change so the pipeline always
+    // reads a current value even if Settings was never opened.
+    void resolveAndPersistCameraSrcCaps();
 
 signals:
     void devicesChanged();

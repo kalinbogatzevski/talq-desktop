@@ -74,6 +74,18 @@ public:
             || systemMessage == "call_left";
     }
 
+    // Edit-event noise: when a message is edited, spreed emits a separate
+    // system message ("{actor} edited a message") in addition to updating
+    // the original message's body in place. If we render that system
+    // event, it appears alongside (and on some scroll patterns visually
+    // replaces) the actual edited message body. Upstream Talk filters
+    // these out for exactly that reason — the in-place body update is
+    // the source of truth. Includes the moderator variant for completeness.
+    bool isEditMessage() const {
+        return systemMessage == "message_edited"
+            || systemMessage == "message_edited_everyone";
+    }
+
     // Check if this is from the same author and close in time to another message
     bool isGroupedWith(const Message &other) const {
         return actorId == other.actorId

@@ -1,5 +1,162 @@
 #include "core/MediaDeviceManager.h"
 #include <QDebug>
+#include <algorithm>
+
+CameraMode CameraMode::fromKey(const QString &k)
+{
+    CameraMode m;
+    const QStringList p = k.split(QLatin1Char('|'));
+    if (p.size() != 5) return m;
+    m.mjpeg  = (p[0] == QStringLiteral("mjpeg"));
+    bool ok1 = false, ok2 = false, ok3 = false, ok4 = false;
+    m.width  = p[1].toInt(&ok1);
+    m.height = p[2].toInt(&ok2);
+    m.fpsNum = p[3].toInt(&ok3);
+    m.fpsDen = p[4].toInt(&ok4);
+    if (!(ok1 && ok2 && ok3 && ok4) || m.fpsDen <= 0) return CameraMode{};
+    return m;
+}
+
+QString CameraMode::label() const
+{
+    QString res;
+    switch (height) {
+        case 2160: res = "4K";    break;
+        case 1440: res = "1440p"; break;
+        case 1080: res = "1080p"; break;
+        case 720:  res = "720p";  break;
+        case 480:  res = "480p";  break;
+        case 360:  res = "360p";  break;
+        default:   res = QStringLiteral("%1×%2").arg(width).arg(height);
+    }
+    QString s = QStringLiteral("%1 · %2fps").arg(res).arg(fps());
+    if (mjpeg) s += QStringLiteral(" · MJPEG");
+    return s;
+}
+
+namespace {
+
+// Largest integer a width/height field can resolve to (fixed int or the
+// max of an int-range — mfvideosrc occasionally exposes ranged dimensions).
+int fieldMaxInt(const GValue *v)
+{
+    if (!v) return 0;
+    if (G_VALUE_HOLDS_INT(v)) return g_value_get_int(v);
+    if (GST_VALUE_HOLDS_INT_RANGE(v)) return gst_value_get_int_range_max(v);
+    return 0;
+}
+
+// Highest framerate a framerate field offers (fraction / fraction-range /
+// list of fractions). Returns num/den of that maximum.
+void fieldMaxFraction(const GValue *v, int *num, int *den)
+{
+    *num = 0; *den = 1;
+    if (!v) return;
+    auto consider = [&](int n, int d) {
+        if (d > 0 && qint64(n) * (*den) > qint64(*num) * d) { *num = n; *den = d; }
+    };
+    if (GST_VALUE_HOLDS_FRACTION(v)) {
+        consider(gst_value_get_fraction_numerator(v),
+                 gst_value_get_fraction_denominator(v));
+    } else if (GST_VALUE_HOLDS_FRACTION_RANGE(v)) {
+        const GValue *mx = gst_value_get_fraction_range_max(v);
+        consider(gst_value_get_fraction_numerator(mx),
+                 gst_value_get_fraction_denominator(mx));
+    } else if (GST_VALUE_HOLDS_LIST(v)) {
+        for (guint i = 0; i < gst_value_list_get_size(v); ++i) {
+            const GValue *e = gst_value_list_get_value(v, i);
+            if (GST_VALUE_HOLDS_FRACTION(e))
+                consider(gst_value_get_fraction_numerator(e),
+                         gst_value_get_fraction_denominator(e));
+        }
+    }
+}
+
+void sortModesBestFirst(QVector<CameraMode> &m)
+{
+    std::sort(m.begin(), m.end(), [](const CameraMode &a, const CameraMode &b) {
+        if (a.pixels() != b.pixels()) return a.pixels() > b.pixels();
+        if (a.fps()    != b.fps())    return a.fps()    > b.fps();
+        return a.mjpeg && !b.mjpeg;   // MJPEG preferred on ties
+    });
+}
+
+// Union `add` into `into` (one entry per format+resolution; existing kept
+// since its fps is already the best-per-res), then re-sort best-first.
+// Used to merge the caps of the SAME physical camera enumerated by
+// multiple Windows device providers (MF + KS/DirectShow).
+void mergeCameraModes(QVector<CameraMode> &into, const QVector<CameraMode> &add)
+{
+    for (const CameraMode &m : add) {
+        bool dup = false;
+        for (const CameraMode &e : into)
+            if (e.mjpeg == m.mjpeg && e.width == m.width && e.height == m.height) {
+                dup = true; break;
+            }
+        if (!dup) into.append(m);
+    }
+    sortModesBestFirst(into);
+}
+
+// Truncated raw caps, logged only when a camera yields zero parseable
+// modes — turns "only Auto" field reports into authoritative evidence
+// without another round trip.
+QString capsSummary(GstDevice *dev)
+{
+    GstCaps *c = gst_device_get_caps(dev);
+    if (!c) return QStringLiteral("(null caps)");
+    gchar *s = gst_caps_to_string(c);
+    QString out = s ? QString::fromUtf8(s).left(500) : QStringLiteral("(empty)");
+    g_free(s);
+    gst_caps_unref(c);
+    return out;
+}
+
+// Enumerate a camera's advertised modes, then curate: keep only the best
+// fps per (format, resolution), sort absolute-best first (most pixels →
+// highest fps → MJPEG preferred). This is the "real capacity" list and
+// the basis for the Auto pick.
+QVector<CameraMode> parseCameraModes(GstDevice *dev)
+{
+    QVector<CameraMode> modes;
+    GstCaps *caps = gst_device_get_caps(dev);
+    if (!caps) return modes;
+
+    for (guint i = 0; i < gst_caps_get_size(caps); ++i) {
+        GstStructure *s = gst_caps_get_structure(caps, i);
+        const gchar *name = gst_structure_get_name(s);
+        const bool mjpeg = name && g_str_equal(name, "image/jpeg");
+        const bool raw   = name && g_str_equal(name, "video/x-raw");
+        if (!mjpeg && !raw) continue;  // skip exotic compressed formats
+
+        CameraMode m;
+        m.mjpeg = mjpeg;
+        m.width  = fieldMaxInt(gst_structure_get_value(s, "width"));
+        m.height = fieldMaxInt(gst_structure_get_value(s, "height"));
+        fieldMaxFraction(gst_structure_get_value(s, "framerate"),
+                         &m.fpsNum, &m.fpsDen);
+        if (!m.valid()) continue;
+
+        // Dedup: collapse to the best fps for each format+resolution.
+        bool merged = false;
+        for (CameraMode &e : modes) {
+            if (e.mjpeg == m.mjpeg && e.width == m.width && e.height == m.height) {
+                if (qint64(m.fpsNum) * e.fpsDen > qint64(e.fpsNum) * m.fpsDen) {
+                    e.fpsNum = m.fpsNum; e.fpsDen = m.fpsDen;
+                }
+                merged = true;
+                break;
+            }
+        }
+        if (!merged) modes.append(m);
+    }
+    gst_caps_unref(caps);
+
+    sortModesBestFirst(modes);
+    return modes;
+}
+
+}  // namespace
 
 MediaDeviceManager::MediaDeviceManager(QObject *parent)
     : QObject(parent)
@@ -54,7 +211,58 @@ void MediaDeviceManager::refresh()
             m_audioOutputs.append(md);
         } else if (deviceClass.contains("Source") && deviceClass.contains("Video")) {
             md.type = "video-input";
-            m_videoInputs.append(md);
+            md.modes = parseCameraModes(dev);
+            // Persistent per-device modes cache. GstDeviceMonitor on Windows
+            // is non-deterministic across runs and especially after camera
+            // use (MF/KS providers shift which caps they expose). Union
+            // live modes with the cumulative cache so a once-seen MJPEG /
+            // 30fps row stays in the picker forever instead of vanishing
+            // between calls — and a persisted user pick stays visible.
+            QString cacheKey = md.id;
+            cacheKey.replace(QLatin1Char('/'),  QLatin1Char('_'));
+            cacheKey.replace(QLatin1Char('\\'), QLatin1Char('_'));
+            {
+                QSettings cs("TalQ", "TalQ");
+                cs.beginGroup("Video/CameraCaps");
+                const QStringList cached = cs.value(cacheKey).toStringList();
+                cs.endGroup();
+                QVector<CameraMode> cachedModes;
+                for (const QString &k : cached) {
+                    CameraMode m = CameraMode::fromKey(k);
+                    if (m.valid()) cachedModes.append(m);
+                }
+                mergeCameraModes(md.modes, cachedModes);
+
+                QStringList toSave;
+                toSave.reserve(md.modes.size());
+                for (const CameraMode &m : md.modes) toSave << m.key();
+                cs.beginGroup("Video/CameraCaps");
+                cs.setValue(cacheKey, toSave);
+                cs.endGroup();
+            }
+            // Windows enumerates the SAME physical camera once per backend
+            // provider (Media Foundation + KS/DirectShow). Collapse by
+            // display name and UNION the capability sets so the modes
+            // survive even when the provider instance that would otherwise
+            // be selected exposed none (the "only Auto + duplicated
+            // camera" field report).
+            int existing = -1;
+            for (int i = 0; i < m_videoInputs.size(); ++i)
+                if (m_videoInputs[i].name == md.name) { existing = i; break; }
+            if (existing >= 0) {
+                mergeCameraModes(m_videoInputs[existing].modes, md.modes);
+                MediaDevice &e = m_videoInputs[existing];
+                if ((e.id.isEmpty() || e.id == e.name)
+                    && !md.id.isEmpty() && md.id != md.name)
+                    e.id = md.id;   // prefer a real strid/path over the name
+            } else {
+                m_videoInputs.append(md);
+            }
+            qInfo().nospace() << "MediaDeviceManager: video '" << md.name
+                << "' (this provider) modes=" << md.modes.size()
+                << (md.modes.isEmpty()
+                      ? QStringLiteral(" RAWCAPS=") + capsSummary(dev)
+                      : QString());
         }
 
         g_free(name);
@@ -73,6 +281,10 @@ void MediaDeviceManager::refresh()
 
     emit devicesChanged();
     restoreDevices();
+    // Recompute the exact source caps now that the selected camera is
+    // known, so the pipeline forces the best mode even on a fresh install
+    // where Settings was never opened.
+    resolveAndPersistCameraSrcCaps();
 }
 
 void MediaDeviceManager::setSelectedAudioInput(int idx)
@@ -98,8 +310,75 @@ void MediaDeviceManager::setSelectedVideoInput(int idx)
     if (m_selectedVideo != idx) {
         m_selectedVideo = idx;
         emit selectedChanged();
-        if (!m_restoring) saveDevices();
+        if (!m_restoring) {
+            saveDevices();
+            resolveAndPersistCameraSrcCaps();
+        }
     }
+}
+
+QVector<CameraMode> MediaDeviceManager::cameraModes(int videoIdx) const
+{
+    if (videoIdx >= 0 && videoIdx < m_videoInputs.size())
+        return m_videoInputs[videoIdx].modes;
+    return {};
+}
+
+CameraMode MediaDeviceManager::autoCameraMode(int videoIdx) const
+{
+    // modes are sorted absolute-best-first (pixels → fps → MJPEG).
+    const QVector<CameraMode> m = cameraModes(videoIdx);
+    return m.isEmpty() ? CameraMode{} : m.first();
+}
+
+QString MediaDeviceManager::cameraQualityChoice() const
+{
+    QSettings s("TalQ", "TalQ");
+    s.beginGroup("Video");
+    const QString v = s.value("cameraQuality", "auto").toString();
+    s.endGroup();
+    return v.isEmpty() ? QStringLiteral("auto") : v;
+}
+
+void MediaDeviceManager::setCameraQualityChoice(const QString &key)
+{
+    QSettings s("TalQ", "TalQ");
+    s.beginGroup("Video");
+    s.setValue("cameraQuality", key.isEmpty() ? QStringLiteral("auto") : key);
+    s.endGroup();
+    resolveAndPersistCameraSrcCaps();
+}
+
+void MediaDeviceManager::resolveAndPersistCameraSrcCaps()
+{
+    const int idx = m_selectedVideo >= 0 ? m_selectedVideo
+                  : (m_videoInputs.isEmpty() ? -1 : 0);
+    const QVector<CameraMode> modes = cameraModes(idx);
+
+    CameraMode chosen;
+    const QString choice = cameraQualityChoice();
+    if (choice != "auto") {
+        for (const CameraMode &m : modes)
+            if (m.key() == choice) { chosen = m; break; }
+    }
+    // CRITICAL (0.31.0 Zenbook regression): a forced exact caps that the
+    // actually-opened mfvideosrc instance cannot negotiate kills the
+    // camera outright — no LED, no preview, no capture. Auto therefore
+    // NEVER hard-forces: empty caps → PublishPipeline's permissive
+    // negotiation, which always starts the camera (the long-stable
+    // pre-0.30.12 behavior). Only an EXPLICIT user pick that exists on
+    // this camera forces its exact mode — opt-in and reversible in
+    // Settings (revert to Auto = guaranteed-working escape hatch).
+    const QString caps = chosen.valid() ? chosen.srcCaps() : QString();
+
+    QSettings s("TalQ", "TalQ");
+    s.beginGroup("Video");
+    s.setValue("cameraSrcCaps", caps);
+    s.endGroup();
+    qDebug() << "MediaDeviceManager: cameraSrcCaps ->"
+             << (caps.isEmpty() ? QStringLiteral("(auto: permissive negotiate)")
+                                 : caps)
+             << "[choice:" << choice << "idx:" << idx << "]";
 }
 
 QString MediaDeviceManager::selectedInputName() const
