@@ -1017,8 +1017,12 @@ void MainWindow::buildChatPage()
                 m_messages->markAsUnread(msgId);
             });
         }
-        // Thread action only for group conversations (type 2, 3)
-        if (m_header->conversationType() >= 2) {
+        // Threads are available in every real conversation type — 1:1,
+        // group, public. Earlier `>= 2` gate was too conservative: the
+        // upstream Talk web client offers threads in 1:1 chats, and our
+        // createNewTopic flow is just "send a seed message + name it",
+        // which is type-agnostic. Server-side capability gates the rest.
+        if (m_header->conversationType() >= 1) {
             menu->addAction(QStringLiteral("\U0001F4AC  Thread"), this, [this, msgId]() {
                 openThread(msgId, "Thread");
             });
@@ -1232,12 +1236,13 @@ void MainWindow::buildChatPage()
         }
     });
 
-    // Topics panel visibility: show in any group/public room the server allows
-    // threads in, regardless of whether topics exist yet — otherwise users
-    // can't discover the "+ New topic" button to create the first one.
+    // Topics panel visibility: show in any real conversation (1:1,
+    // group, public) the server allows threads in, regardless of
+    // whether topics exist yet — otherwise users can't discover the
+    // "+ New topic" button to create the first one.
     connect(m_threads, &ThreadListModel::hasTopicsChanged, this, [this]() {
-        const bool isGroup = m_header->conversationType() >= 2;
-        const bool active  = isGroup && m_auth->hasThreadsSupport();
+        const bool isRealConv = m_header->conversationType() >= 1;
+        const bool active     = isRealConv && m_auth->hasThreadsSupport();
         updateTopicMode(active);
     });
 
@@ -1695,10 +1700,15 @@ void MainWindow::onConversationSelected(const QString &token, const QString &nam
     m_header->setCallsAvailable(m_callManager->callsAvailable());
     m_header->setCallsUnavailableReason(m_callManager->callsUnavailableReason());
 
-    // Show the topics panel for any group/public room once threads are
-    // supported. The panel hosts the "+ New topic" button — if we wait
-    // for m_threads to signal hasTopicsChanged, empty rooms never get it.
-    const bool topicsVisible = (convType >= 2) && m_auth->hasThreadsSupport();
+    // Show the topics panel for any real conversation (1:1, group,
+    // public) once the server advertises threads support. Earlier
+    // `>= 2` gate excluded 1:1 chats, but topics there are just a
+    // sub-conversation between two people — same mechanism, same UX,
+    // useful for separating distinct conversation threads with the
+    // same contact. The panel hosts the "+ New topic" button — if we
+    // wait for m_threads to signal hasTopicsChanged, empty rooms
+    // never get it.
+    const bool topicsVisible = (convType >= 1) && m_auth->hasThreadsSupport();
     updateTopicMode(topicsVisible);
 }
 
