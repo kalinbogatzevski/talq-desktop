@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.40.5 "Panagyurishte" — STABLE (2026-05-26)
+
+### Added
+
+* **Topics + threads now work in 1:1 conversations too.** The right-
+  click "💬 Thread" action and the topics side panel (with "+ New
+  topic") were previously gated to group/public rooms only. The
+  underlying flow — send a seed message, name it as a thread — is
+  type-agnostic, and upstream Talk's web client already supports
+  threads in 1:1 chats. Useful for separating distinct conversation
+  threads with the same contact.
+
+---
+
 ## v0.40.4 "Panagyurishte" — STABLE (2026-05-26)
 
 Auto-update is now truly end-to-end automatic. 0.40.2 added auto-install
