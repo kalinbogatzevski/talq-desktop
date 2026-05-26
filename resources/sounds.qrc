@@ -1,0 +1,13 @@
+<RCC>
+    <qresource prefix="/sounds">
+        <file alias="pop.wav">sounds/pop.wav</file>
+        <file alias="chime.wav">sounds/chime.wav</file>
+        <file alias="ding.wav">sounds/ding.wav</file>
+        <file alias="notify.wav">sounds/notify.wav</file>
+        <file alias="soft.wav">sounds/soft.wav</file>
+        <file alias="tone.wav">sounds/tone.wav</file>
+        <file alias="ring_classic.wav">sounds/ring_classic.wav</file>
+        <file alias="ring_bright.wav">sounds/ring_bright.wav</file>
+        <file alias="ring_soft.wav">sounds/ring_soft.wav</file>
+    </qresource>
+</RCC>

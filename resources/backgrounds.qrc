@@ -1,0 +1,34 @@
+<!DOCTYPE RCC>
+<!-- #20 video-background resources.
+     - Shaders: in-tree GLSL ports of Talk's WebGLCompositor.js.
+     - Model:   selfie_segmenter.tflite (MediaPipe, Apache-2.0).
+                Verbatim from nextcloud/spreed v23.0.4. ~244 KB.
+     - Backgrounds: 8 bundled JPGs from spreed v23.0.4 (AGPL-3.0).
+                See NOTICE for combined-licence handling. ~6 MB. -->
+<RCC>
+  <qresource prefix="/bg/shaders">
+    <file alias="passthrough.vert">../src/core/shaders/passthrough.vert</file>
+    <file alias="bg_mask_refine.frag">../src/core/shaders/bg_mask_refine.frag</file>
+    <file alias="bg_blur_horizontal.frag">../src/core/shaders/bg_blur_horizontal.frag</file>
+    <file alias="bg_blur_vertical.frag">../src/core/shaders/bg_blur_vertical.frag</file>
+    <file alias="bg_compose.frag">../src/core/shaders/bg_compose.frag</file>
+  </qresource>
+  <qresource prefix="/bg/models">
+    <file alias="selfie_segmenter.tflite">models/selfie_segmenter.tflite</file>
+    <!-- ONNX export of the same MediaPipe selfie_segmenter, converted with
+         tf2onnx (opset 18) and patched to replace the single TFLite-only
+         TFL_Convolution2DTransposeBias fused op with a ConvTranspose+Add
+         pair (mathematically identical, see Phase 2e notes). ~450 KB. -->
+    <file alias="selfie_segmenter.onnx">models/selfie_segmenter.onnx</file>
+  </qresource>
+  <qresource prefix="/bg/backgrounds">
+    <file alias="1_office.jpg">backgrounds/1_office.jpg</file>
+    <file alias="2_home.jpg">backgrounds/2_home.jpg</file>
+    <file alias="3_abstract.jpg">backgrounds/3_abstract.jpg</file>
+    <file alias="4_beach.jpg">backgrounds/4_beach.jpg</file>
+    <file alias="5_park.jpg">backgrounds/5_park.jpg</file>
+    <file alias="6_theater.jpg">backgrounds/6_theater.jpg</file>
+    <file alias="7_library.jpg">backgrounds/7_library.jpg</file>
+    <file alias="8_space_station.jpg">backgrounds/8_space_station.jpg</file>
+  </qresource>
+</RCC>

@@ -9,6 +9,7 @@
 #include <QPainter>
 #include <QSplashScreen>
 #include <QStandardPaths>
+#include <QSettings>
 #include <QTimer>
 #include <QDir>
 #include <QFileInfo>
@@ -131,12 +132,21 @@ int main(int argc, char *argv[])
         if (a == "--debug" || a == "-d") { debugRequested = true; break; }
     }
     // Logging is ALWAYS on (release included): a comms app that can die
-    // mid-call must never do so without a log + minidump next to it. Only
-    // the VERBOSITY is gated — `--debug`/QT_DEBUG turns on the heavy
-    // GStreamer/app tracing; a normal run keeps a lean errors+warnings log
-    // and the crash backstop. This is the durable fix for the recurring
-    // "user hit a release build, no evidence" blindness.
-    bool verbose = debugRequested;
+    // mid-call must never do so without a log + minidump next to it. The
+    // FILE-LEVEL log + crash backstop are unconditional. What's tunable is:
+    //   (a) `g_verbose` — captures qDebug app diagnostics. DEFAULT ON
+    //       (user-stated 2026-05-23: "debug log must be always enabled");
+    //       Settings → Diagnostics → "Detailed logging" can opt OUT.
+    //   (b) heavy GST tracing (GST_DEBUG=2 + per-element categories) — still
+    //       opt-IN via `--debug` because it floods the log and costs perf.
+    bool detailedLogging = true;
+    {
+        QSettings s("TalQ", "TalQ");
+        s.beginGroup("Diagnostics");
+        detailedLogging = s.value("detailedLogging", true).toBool();
+        s.endGroup();
+    }
+    bool verbose = detailedLogging || debugRequested;
 #ifdef QT_DEBUG
     verbose = true;
 #endif
@@ -154,17 +164,28 @@ int main(int argc, char *argv[])
     QString logPath;
     {
         qputenv("QT_FORCE_STDERR_LOGGING", "1");
-        if (verbose) {
-            // Heavy tracing: global level 2 + the camera capture path and
-            // caps negotiation, so "camera won't start" / negotiation
-            // failures are diagnosable from the log alone.
+        // Heavy GStreamer tracing is the floody one (per-element categories at
+        // level 4-6) — keep it OPT-IN via `--debug` / QT_DEBUG, even when
+        // detailedLogging is on. Detailed-logging-on alone gives full app
+        // qDebug + GST_DEBUG=2 (info), which is enough to diagnose negotiation
+        // failures / screen-share start issues without a log-size explosion.
+        const bool heavyGst = debugRequested;
+#ifdef QT_DEBUG
+        const bool heavyGstQtDebug = true;
+#else
+        const bool heavyGstQtDebug = false;
+#endif
+        if (heavyGst || heavyGstQtDebug) {
             qputenv("GST_DEBUG",
                     "2,mfvideosrc:6,ksvideosrc:6,videoconvert:5,"
                     "capsfilter:5,GST_CAPS:5,GST_PADS:4,webrtcsrc:5,webrtcbin:4");
+        } else if (verbose) {
+            // Detailed (default): info-level GST + app qDebug, lean enough to
+            // run continuously yet rich enough to diagnose a screen-share or
+            // call failure from the log alone.
+            qputenv("GST_DEBUG", "2");
         } else {
-            // Lean always-on log: GStreamer ERRORs/WARNINGs only. Keeps the
-            // file small for normal use while still capturing what killed a
-            // call (webrtcsrc panics, pipeline errors print at this level).
+            // User opted out (Settings → Diagnostics → off): ERR/WARN only.
             qputenv("GST_DEBUG", "1");
         }
         logPath = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/talq_debug.log";
@@ -201,7 +222,9 @@ int main(int argc, char *argv[])
                 std::set_terminate(talqTerminateHandler);
             }
 #endif
-            qInfo().noquote() << "[TalQ]" << (verbose ? "verbose" : "standard")
+            qInfo().noquote() << "[TalQ]"
+                              << (verbose ? (debugRequested ? "verbose (heavy GST trace)" : "detailed")
+                                          : "minimal (Settings opted out)")
                               << "logging enabled; log at" << logPath;
         } else {
             const int savedErrno = errno;
@@ -256,7 +279,7 @@ int main(int argc, char *argv[])
             "nicesrc","nicesink",                                     // nice
             "srtpenc","srtpdec",                                      // srtp
             "opusenc","opusdec","opusparse",                          // opus + audioparsers
-            "audioconvert","audioresample","videoconvert",            // conv/resample
+            "audioconvert","audioresample","videoconvert","videorate", // conv/resample/CFR
             "h264parse","jpegdec","level","webrtcdsp",                // parsers/jpeg/meter/aec
         };
         // Hardware-optional capabilities: at least one provider must exist.

@@ -15,6 +15,7 @@
 #include <QList>
 #include <QPair>
 #include <QMutex>
+#include <atomic>
 #include <gst/gst.h>
 #include <gst/webrtc/webrtc.h>
 #include <gst/app/gstappsink.h>
@@ -38,6 +39,22 @@ public:
     VideoFrameProvider *videoProvider() const { return m_videoProvider; }
     QString videoCodec() const { return m_videoCodec; }
     QString videoDecoder() const { return QStringLiteral("webrtcsrc"); }
+    // Live receive-video diagnostics (#111/#112): decoded frames/sec
+    // actually arriving from this peer, and the mean buffer-PTS gap
+    // between them. fps≈1 with gap≈1000 ms ⇒ the sender is only emitting
+    // ~1 fps; fps≈1 with gap≈33 ms ⇒ frames are dropped on receive.
+    int rxVideoFps() const { return m_rxFps.load(std::memory_order_relaxed); }
+    int rxPtsGapMs() const { return m_rxPtsGapMs.load(std::memory_order_relaxed); }
+    // Distinct-content fps: how many of the delivered frames were actually
+    // a new picture. delivered≈30 but distinct≈1 ⇒ the decoder is
+    // concealing (repeating the last good frame) — the "perfect frozen
+    // image" symptom, quantified. delivered≈distinct ⇒ decode is fine and
+    // the fault is elsewhere (sender rate, render). THE decisive number.
+    int rxDistinctVideoFps() const { return m_rxDistinctFps.load(std::memory_order_relaxed); }
+    // Decoded frame resolution of the substream the SFU is currently
+    // forwarding (changes live when the active simulcast layer switches).
+    int rxWidth()  const { return m_rxWidth.load(std::memory_order_relaxed); }
+    int rxHeight() const { return m_rxHeight.load(std::memory_order_relaxed); }
 
 signals:
     void localAnswerReady(const QString &sdp);
@@ -47,6 +64,7 @@ signals:
     void mediaStateReceived(const QString &type);     // unused via webrtcsrc (signaling drives mute)
     void peerClientInfo(const QString &client, const QString &version);
     void error(const QString &message);
+    void sessionEnded();   // SFU ended this feed; CallManager re-subscribes
 
 private:
     void cleanup();
@@ -92,6 +110,22 @@ private:
     GstElement *m_videoConvert = nullptr;
     GstElement *m_videoAppsink = nullptr;
     VideoFrameProvider *m_videoProvider = nullptr;
+    // RX video-rate probe (#111): measures the cadence of decoded frames
+    // actually arriving from webrtcsrc, with their buffer-PTS deltas.
+    // Distinguishes "sender only emits ~1 fps" (ptsΔ ≈ frame interval, e.g.
+    // ~1000 ms) from "receiver/decoder drops frames" (ptsΔ ≈ 33 ms but few
+    // pulled). Logged once per ~1 s window.
+    qint64  m_rxWinStartUs = 0;   // streaming-thread only
+    int     m_rxFrames     = 0;   // streaming-thread only
+    quint64 m_rxLastPtsNs  = 0;   // streaming-thread only
+    quint64 m_rxDtSumNs    = 0;   // streaming-thread only
+    quint64 m_rxLastHash   = 0;   // streaming-thread only — last frame fingerprint
+    int     m_rxDistinct   = 0;   // streaming-thread only — distinct frames in window
+    std::atomic<int> m_rxFps{0};         // delivered fps, published to UI thread
+    std::atomic<int> m_rxPtsGapMs{0};    // mean PTS gap ms, published to UI thread
+    std::atomic<int> m_rxDistinctFps{0}; // distinct-content fps, published to UI thread
+    std::atomic<int> m_rxWidth{0};       // decoded frame width (active substream)
+    std::atomic<int> m_rxHeight{0};      // decoded frame height (active substream)
     QString m_videoCodec;
     QString m_audioOutputDeviceId;
     bool m_running = false;

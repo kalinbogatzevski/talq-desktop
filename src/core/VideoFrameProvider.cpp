@@ -14,6 +14,22 @@ void VideoFrameProvider::setVideoSink(QVideoSink *sink)
     }
 }
 
+void VideoFrameProvider::feedQImage(const QImage &img)
+{
+    if (img.isNull()) return;
+    m_frameCount++;
+    if (m_frameCount <= 3 || m_frameCount % 100 == 0)
+        qDebug() << "VideoFrameProvider: QImage frame" << m_frameCount
+                 << img.size();
+    emit frameCountChanged();
+    if (!m_hasVideo) {
+        m_hasVideo = true;
+        emit hasVideoChanged();
+    }
+    m_lastSize = img.size();
+    emit imageReady(img);
+}
+
 void VideoFrameProvider::feedFrame(GstSample *sample)
 {
     if (!sample) return;
@@ -37,6 +53,7 @@ void VideoFrameProvider::feedFrame(GstSample *sample)
     gst_structure_get_int(s, "width", &width);
     gst_structure_get_int(s, "height", &height);
     if (width <= 0 || height <= 0) return;
+    m_lastSize = QSize(width, height);
 
     const gchar *format = gst_structure_get_string(s, "format");
     QVideoFrameFormat::PixelFormat pixFmt = QVideoFrameFormat::Format_Invalid;

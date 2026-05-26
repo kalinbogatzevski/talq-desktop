@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(talq VERSION 0.30.4 LANGUAGES CXX)
+project(talq VERSION 0.40.4 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -12,6 +12,7 @@ find_package(Qt6 REQUIRED COMPONENTS
     Gui
     Multimedia
     Network
+    OpenGL
     Sql
     Svg
     WebSockets
@@ -86,6 +87,8 @@ qt_add_executable(talq
     src/ui/ComposerWidget.cpp
     src/ui/LoginWidget.cpp
     src/ui/SettingsDialog.cpp
+    src/ui/BgPreviewSource.cpp
+    src/ui/BgPreviewSource.h
     src/ui/CallStage.cpp
     src/ui/CallWindow.cpp
     src/ui/StatusPopover.h
@@ -129,9 +132,19 @@ qt_add_executable(talq
     src/ui/TopicTabBar.cpp
     src/ui/UpcomingRemindersDialog.h
     src/ui/UpcomingRemindersDialog.cpp
+    src/core/BackgroundEngine.cpp
+    src/core/BackgroundEngine.h
+    src/core/BackgroundWorker.cpp
+    src/core/BackgroundWorker.h
+    src/core/BackgroundCompositor.cpp
+    src/core/BackgroundCompositor.h
+    src/core/TfliteSegmenter.cpp
+    src/core/TfliteSegmenter.h
     resources/resources.qrc
     resources/twemoji.qrc
     resources/changelog.qrc
+    resources/sounds.qrc
+    resources/backgrounds.qrc
     resources/talq.rc
 )
 
@@ -142,40 +155,27 @@ target_compile_definitions(talq PRIVATE
     TALQ_BUILD_TS="${TALQ_BUILD_TS}"
     # Per-release codename (empty string = no codename pill). Set alongside
     # the version bump; shown on the Mission Control command bar.
-    # "Bangaranga": DARA's winning song at the Eurovision Song Contest 2026,
-    # Bulgaria's first-ever Eurovision win (contest's 70th anniversary;
-    # staging inspired by Bulgarian kukeri folklore).
-    TALQ_VERSION_NAME="Bangaranga"
+    # "Panagyurishte": the town where the Bulgarian April Uprising of
+    # 1876 was declared at the Oborishte assembly. Continues the 150th-
+    # anniversary thread the 0.39.x betas began ("Aprilsko Vastanie" —
+    # the uprising itself); 0.40 stable promotes the work and dedicates
+    # this cycle to the place that lit the fuse. Locked 2026-05-24,
+    # the same long weekend the project lead was physically there.
+    TALQ_VERSION_NAME="Panagyurishte"
 )
 
-# Branding. 123NET assets live outside the tree in /private (never
-# published); the branded build pulls them in here. The default/public
-# build is unbranded and references none of this.
-if(TALQ_BRAND STREQUAL "123NET")
-    # Brand identity/endpoints are NOT defined here (would leak into public
-    # source). They come from the private include store at compile time.
-    target_compile_definitions(talq PRIVATE TALQ_BRAND_123NET)
-    set(_brand_qrc "${CMAKE_SOURCE_DIR}/private/branding/123net/brand.qrc")
-    if(NOT EXISTS "${_brand_qrc}")
-        message(FATAL_ERROR
-            "TALQ_BRAND=123NET but ${_brand_qrc} is missing. "
-            "The 123NET branding store is private and not part of the "
-            "public source. Build without -DTALQ_BRAND for the generic app.")
-    endif()
-    target_sources(talq PRIVATE "${_brand_qrc}")
-    # Private update-channel config (brand_updates.inc) is included by
-    # AppSettings.h under #ifdef TALQ_BRAND_123NET; put it on the path.
-    target_include_directories(talq PRIVATE
-        "${CMAKE_SOURCE_DIR}/private/branding/123net")
-    message(STATUS "Building 123NET branded version")
+# Pre-release flag: when build-release.sh is invoked with --beta it
+# passes -DTALQ_PRERELEASE=ON; that bakes the compile define into the
+# binary so the UI can show a "PRE-RELEASE" badge regardless of which
+# channel ultimately served the user. Stable builds are unaffected.
+option(TALQ_PRERELEASE "Mark this binary as a pre-release/beta build" OFF)
+if(TALQ_PRERELEASE)
+    target_compile_definitions(talq PRIVATE TALQ_PRERELEASE)
+    message(STATUS "TalQ: PRE-RELEASE build (UI will show a beta badge)")
 endif()
 
-target_include_directories(talq PRIVATE src ${GST_INCLUDE_DIRS})
-target_link_directories(talq PRIVATE ${GST_LIBRARY_DIRS})
-
-target_link_libraries(talq PRIVATE
-    Qt6::Core
-    Qt6::Gui
-    Qt6::Network
-    Qt6::Sql
-    Qt6::WebSockets
+# #20 Video background blur + replace. Build-time gate so the feature can be
+# stripped out of slim ports until the TFLite + GL composite stack is fully
+# wired. Default ON; runtime behaviour is ALSO gated by the
+# Talk/Backgrounds/virtualBackgroundEnabled QSetting (default false), so
+# turning this on at build time alone doesn't change any user-visible

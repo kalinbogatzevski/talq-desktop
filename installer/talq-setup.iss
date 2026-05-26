@@ -1,13 +1,18 @@
 [Setup]
+; Stable AppId so Inno Setup reliably detects an existing TalQ install and
+; treats subsequent runs as upgrades (reuses the prior install dir + the
+; previously chosen [Tasks] selections, no re-prompting). This is what
+; replaces the old separate "Update" installer — one .exe, both modes.
+AppId={{B7E2A6F4-3D14-4F2A-9B5E-0A1C8F4E2D31}}
 AppName=TalQ
-AppVersion=0.30.4
+AppVersion=0.40.4
 AppPublisher=TalQ
 AppPublisherURL=https://github.com/kalinbogatzevski/talq-desktop
 DefaultDirName={localappdata}\Programs\TalQ
 PrivilegesRequired=lowest
 DefaultGroupName=TalQ
 OutputDir=..\dist
-OutputBaseFilename=TalQ-v0.30.4-Setup
+OutputBaseFilename=TalQ-v0.40.4-Setup
 SetupIconFile=..\resources\talq.ico
 UninstallDisplayIcon={app}\talq.exe
 WizardImageFile=..\resources\talq-wizard.bmp
@@ -18,6 +23,14 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 WizardStyle=modern
 DisableProgramGroupPage=yes
+; Upgrade UX — defaults are already "yes" for these, but stating them
+; explicitly so the policy isn't a hidden Inno default.
+UsePreviousAppDir=yes
+UsePreviousTasks=yes
+; Auto-updater calls us with /VERYSILENT /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS;
+; honour those flags by allowing the kill-and-restart of a running TalQ.
+CloseApplications=yes
+RestartApplications=yes
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -39,7 +52,7 @@ Type: filesandordirs; Name: "{app}\gst-plugins"
 Type: files; Name: "{app}\*.dll"
 
 [Files]
-Source: "..\dist\TalQ-v0.30.4-win64\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\dist\TalQ-v0.40.4-win64\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\TalQ"; Filename: "{app}\talq.exe"; Tasks: startmenuicon

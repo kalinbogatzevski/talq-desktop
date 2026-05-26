@@ -3,6 +3,7 @@
 #include <QDebug>
 #include <QPointer>
 #include <QRegularExpression>
+#include <QSettings>
 #include <QUrl>
 #include <cstring>
 #include <gst/app/gstappsink.h>
@@ -428,9 +429,21 @@ gboolean SubscribeWebrtcSrc::sigStop(GObject *, gpointer)
     return TRUE;
 }
 
-gboolean SubscribeWebrtcSrc::sigEndSession(GObject *, const gchar *sid, gpointer)
+gboolean SubscribeWebrtcSrc::sigEndSession(GObject *, const gchar *sid, gpointer ud)
 {
     qInfo() << "SubscribeWebrtcSrc: end-session" << (sid ? sid : "?");
+    // The SFU ended THIS subscriber feed (publisher migrated / renegotiated
+    // — e.g. peer toggled their camera). Tell CallManager so it can
+    // re-subscribe, instead of letting the follow-on webrtcbin ICE
+    // "failed" tear the whole call down. Queued: we're on a GStreamer/
+    // signaller thread; deliver on the Qt event loop.
+    auto *self = static_cast<SubscribeWebrtcSrc*>(ud);
+    if (self) {
+        QPointer<SubscribeWebrtcSrc> g(self);
+        QMetaObject::invokeMethod(self, [g]() {
+            if (g) emit g->sessionEnded();
+        }, Qt::QueuedConnection);
+    }
     return TRUE;
 }
 
@@ -509,6 +522,24 @@ void SubscribeWebrtcSrc::onWebrtcbinIceConnState(GstElement *webrtcbin,
     }
     QString state = QString::fromLatin1(s);
     qInfo() << "SubscribeWebrtcSrc: webrtcbin ICE connection state ->" << state;
+    // The moment ICE is connected, send a keyframe request upstream so
+    // webrtcsrc emits an RTCP PLI to the MCU. Janus forwards it to the
+    // publisher; the publisher's encoder generates a fresh I-frame. This
+    // recovers from any bootstrap-time packet loss (first ~RTT of RTP
+    // arrives before the receive jitter buffer / DTLS / ICE checks have
+    // fully settled) that would otherwise leave the decoder in concealment
+    // until the publisher's next periodic keyframe — the field-reported
+    // "caller-side always sees the callee choppy" pattern.
+    if (st == GST_WEBRTC_ICE_CONNECTION_STATE_CONNECTED ||
+        st == GST_WEBRTC_ICE_CONNECTION_STATE_COMPLETED) {
+        if (self->m_pipeline) {
+            GstStructure *ks = gst_structure_new("GstForceKeyUnit",
+                "all-headers", G_TYPE_BOOLEAN, TRUE, nullptr);
+            GstEvent *kev = gst_event_new_custom(GST_EVENT_CUSTOM_UPSTREAM, ks);
+            gst_element_send_event(self->m_pipeline, kev);
+            qInfo() << "SubscribeWebrtcSrc: requested PLI on ICE-connected";
+        }
+    }
     QPointer<SubscribeWebrtcSrc> g(self);
     QMetaObject::invokeMethod(self, [g, state]() {
         if (g) emit g->iceStateChanged(state);
@@ -601,6 +632,12 @@ void SubscribeWebrtcSrc::onPadAdded(GstElement *, GstPad *pad, gpointer ud)
         if (!self->m_audioOutputDeviceId.isEmpty())
             g_object_set(sink, "device",
                          self->m_audioOutputDeviceId.toUtf8().constData(), nullptr);
+
+        // NOTE: no webrtcechoprobe here. AEC via webrtcdsp+echoprobe can't
+        // work across TalQ's separate publish/subscribe pipelines — the
+        // publisher's webrtcdsp starts before this probe exists and fails
+        // hard ("No echo probe found"), dropping the call. Until a shared
+        // early playback bus exists, the playback chain stays plain.
         gst_bin_add_many(GST_BIN(self->m_pipeline), conv, res, sink, nullptr);
         gst_element_link_many(conv, res, sink, nullptr);
         gst_element_sync_state_with_parent(conv);
@@ -618,6 +655,79 @@ GstFlowReturn SubscribeWebrtcSrc::onVideoNewSample(GstAppSink *sink, gpointer ud
     auto *self = static_cast<SubscribeWebrtcSrc*>(ud);
     GstSample *sample = gst_app_sink_pull_sample(sink);
     if (!sample) return GST_FLOW_OK;
+
+    // --- RX video-rate probe (#111) — streaming thread only ---
+    // Counts decoded frames actually delivered by webrtcsrc and the mean
+    // gap between their buffer PTS. This is the decisive measurement for
+    // "is the sender even producing 30 fps": fps≈1 & ptsΔ≈1000 ms ⇒ the
+    // peer encodes ~1 fps (bytes can still look healthy — few huge frames);
+    // fps≈1 & ptsΔ≈33 ms ⇒ frames are dropped on this receive leg.
+    {
+        const qint64 nowUs = (qint64)g_get_monotonic_time();
+        if (self->m_rxWinStartUs == 0) self->m_rxWinStartUs = nowUs;
+        if (GstBuffer *buf = gst_sample_get_buffer(sample)) {
+            const quint64 pts = GST_BUFFER_PTS(buf);
+            if (pts != GST_CLOCK_TIME_NONE) {
+                if (self->m_rxLastPtsNs && pts > self->m_rxLastPtsNs)
+                    self->m_rxDtSumNs += (pts - self->m_rxLastPtsNs);
+                self->m_rxLastPtsNs = pts;
+            }
+            // Sparse FNV-1a fingerprint of the decoded frame. A decoder
+            // concealing a lost reference repeats the previous picture
+            // byte-for-byte, so an identical fingerprint ⇒ not a new
+            // frame. ~256 strided samples: O(1), no full-buffer scan.
+            GstMapInfo map;
+            if (gst_buffer_map(buf, &map, GST_MAP_READ)) {
+                quint64 h = 1469598103934665603ull;
+                const gsize stride = map.size > 256 ? map.size / 256 : 1;
+                for (gsize i = 0; i < map.size; i += stride)
+                    h = (h ^ map.data[i]) * 1099511628211ull;
+                h ^= (quint64)map.size;
+                if (h != self->m_rxLastHash) ++self->m_rxDistinct;
+                self->m_rxLastHash = h;
+                gst_buffer_unmap(buf, &map);
+            }
+        }
+        ++self->m_rxFrames;
+        const qint64 elapsedUs = nowUs - self->m_rxWinStartUs;
+        if (elapsedUs >= 1000000) {
+            const int n   = self->m_rxFrames;
+            const int fps = (int)((qint64)n * 1000000 / elapsedUs);
+            const int dst = (int)((qint64)self->m_rxDistinct * 1000000 / elapsedUs);
+            const int gap = n > 1
+                ? (int)(self->m_rxDtSumNs / (quint64)(n - 1) / 1000000ull)
+                : 0;
+            self->m_rxFps.store(fps, std::memory_order_relaxed);
+            self->m_rxPtsGapMs.store(gap, std::memory_order_relaxed);
+            self->m_rxDistinctFps.store(dst, std::memory_order_relaxed);
+            // Decoded frame resolution (from the sample caps) — surfaces the
+            // active simulcast substream the SFU is forwarding to us, for the
+            // call-screen resolution bullet and for debugging selectStream.
+            int rw = 0, rh = 0;
+            if (GstCaps *caps = gst_sample_get_caps(sample)) {
+                if (GstStructure *st = gst_caps_get_structure(caps, 0)) {
+                    gst_structure_get_int(st, "width", &rw);
+                    gst_structure_get_int(st, "height", &rh);
+                }
+            }
+            if (rw > 0 && rh > 0) {
+                self->m_rxWidth.store(rw, std::memory_order_relaxed);
+                self->m_rxHeight.store(rh, std::memory_order_relaxed);
+            }
+            qInfo().nospace() << "SubscribeWebrtcSrc["
+                              << self->m_remoteSessionId.left(8)
+                              << "]: RX video " << fps << " fps (" << dst
+                              << " distinct), " << rw << "x" << rh
+                              << ", mean ptsΔ " << gap << " ms ("
+                              << n << " frames / " << (elapsedUs / 1000)
+                              << " ms)";
+            self->m_rxWinStartUs = nowUs;
+            self->m_rxFrames     = 0;
+            self->m_rxDistinct   = 0;
+            self->m_rxDtSumNs    = 0;
+        }
+    }
+
     QPointer<SubscribeWebrtcSrc> g(self);
     QMetaObject::invokeMethod(self, [g, sample]() {
         if (g && g->m_videoProvider) g->m_videoProvider->feedFrame(sample);

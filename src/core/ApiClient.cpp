@@ -10,6 +10,7 @@
 #include <QJsonObject>
 #include <QXmlStreamReader>
 #include <QDebug>
+#include <QTimer>
 
 ApiClient::ApiClient(QObject *parent)
     : QObject(parent)
@@ -297,6 +298,35 @@ void ApiClient::del(const QString &path, const QJsonObject &body, Callback callb
     auto *reply = resend();
     m_pendingReplies.append(reply);
     handleReply(reply, callback, resend);
+}
+
+void ApiClient::delMustComplete(const QString &path, const QJsonObject &body,
+                                QObject *context,
+                                std::function<void(bool, int)> onDone, int attempt)
+{
+    // Reusable "must-complete" DELETE: sends, and on a CONFIRMED
+    // non-delivery (statusCode 0 = no HTTP reply, or 5xx) retries with
+    // bounded backoff. NOT speculative — only after the reply says it
+    // didn't land. For requests whose loss has user-visible consequences
+    // on a high-latency/flaky link (leaveCall → other party stuck in the
+    // call; status revert → stuck "In a call"). 4xx (incl. 404) is treated
+    // as "the server processed us" → done. Never blocks the UI.
+    QPointer<ApiClient> self(this);
+    del(path, body, [self, path, body, context, onDone, attempt]
+                    (bool ok, const QJsonObject &, int statusCode) {
+        if (ok) { if (onDone) onDone(true, statusCode); return; }
+        const bool transient = (statusCode == 0 || statusCode >= 500);
+        constexpr int kMaxAttempts = 4;
+        if (transient && attempt + 1 < kMaxAttempts) {
+            const int delayMs = 1000 * (1 << attempt);  // 1s, 2s, 4s
+            QObject *ctx = context ? context : self.data();
+            QTimer::singleShot(delayMs, ctx, [self, path, body, context, onDone, attempt]() {
+                if (self) self->delMustComplete(path, body, context, onDone, attempt + 1);
+            });
+        } else {
+            if (onDone) onDone(false, statusCode);
+        }
+    });
 }
 
 QNetworkReply *ApiClient::getRaw(const QString &path, const QUrlQuery &params)

@@ -87,6 +87,14 @@ static QString plainBodyText(const QVariantMap &msg)
     return body;
 }
 
+MainWindow::~MainWindow()
+{
+    // m_callWindow is a parentless top-level (so it gets its own Windows
+    // taskbar button); it has no QObject parent to auto-delete it.
+    delete m_callWindow;
+    m_callWindow = nullptr;
+}
+
 MainWindow::MainWindow(
     ApiClient *api,
     AuthManager *auth,
@@ -118,12 +126,21 @@ MainWindow::MainWindow(
     , m_appSettings(appSettings)
     , m_settings("TalQ", "TalQ")
 {
-    // Window setup
+    // Window setup. Pre-release builds get a visible " — PRE-RELEASE"
+    // suffix in the title bar so beta testers always know which channel
+    // they're on (gated by the TALQ_PRERELEASE compile define that
+    // build-release.sh --beta sets).
+    QString winTitle =
 #ifdef TALQ_BRAND_123NET
-    setWindowTitle("123NET TalQ " + QApplication::applicationVersion());
+        "123NET TalQ "
 #else
-    setWindowTitle("TalQ " + QApplication::applicationVersion());
+        "TalQ "
 #endif
+        + QApplication::applicationVersion();
+#ifdef TALQ_PRERELEASE
+    winTitle += QStringLiteral(" — PRE-RELEASE");
+#endif
+    setWindowTitle(winTitle);
     setWindowIcon(QIcon(":/logo.png"));
     setMinimumSize(380, 400);
     resize(380, 420);
@@ -156,6 +173,12 @@ MainWindow::MainWindow(
     m_saveGeometryTimer.setSingleShot(true);
     m_saveGeometryTimer.setInterval(300);
     connect(&m_saveGeometryTimer, &QTimer::timeout, this, &MainWindow::saveWindowState);
+
+    // 0.40.2 —auto-install-on-idle tick. The timer is armed only while
+    // an update is downloaded and the user hasn't opted out; the slot
+    // handles its own stop condition.
+    connect(&m_autoInstallTick, &QTimer::timeout,
+            this, &MainWindow::onUpdateAutoInstallTick);
 
     // Dark title bar on Windows
 #ifdef Q_OS_WIN
@@ -394,6 +417,9 @@ void MainWindow::buildChatPage()
                     this, [this]() {
                 if (m_updateChecker) m_updateChecker->checkNow();
             });
+            // #20 — live-apply Background section changes during a call.
+            connect(m_settingsDialog, &SettingsDialog::backgroundSettingsChanged,
+                    m_callManager, &CallManager::applyBackgroundSettings);
         }
         m_settingsDialog->refresh();
         m_settingsDialog->exec();
@@ -1130,6 +1156,37 @@ void MainWindow::buildChatPage()
     m_splitter->setSizes({280, 0, 700});
     m_splitter->setHandleWidth(1);
 
+    // Restore the previous session's sidebar / chat-pane widths if the user
+    // ever dragged the handle. The setSizes() above is the seed; if the
+    // QSettings blob is present and not empty, restoreState() overwrites
+    // it. On first run (no blob) we keep the defaults. Use
+    // splitterMoved for live save instead of waiting for close — a crash
+    // or kill loses the new width otherwise.
+    {
+        const QByteArray saved =
+            m_settings.value("WindowGeometry/splitterState").toByteArray();
+        if (!saved.isEmpty())
+            m_splitter->restoreState(saved);
+    }
+    connect(m_splitter, &QSplitter::splitterMoved, this,
+            [this](int, int) {
+        // splitterMoved fires per pixel during drag — collapse to one
+        // QSettings write after the user releases by deferring through a
+        // 250 ms single-shot timer. Same debounce shape as the
+        // background-settings live-apply path.
+        if (!m_splitterSaveDebounce) {
+            m_splitterSaveDebounce = new QTimer(this);
+            m_splitterSaveDebounce->setSingleShot(true);
+            m_splitterSaveDebounce->setInterval(250);
+            connect(m_splitterSaveDebounce, &QTimer::timeout, this, [this]() {
+                if (m_splitter)
+                    m_settings.setValue("WindowGeometry/splitterState",
+                                        m_splitter->saveState());
+            });
+        }
+        m_splitterSaveDebounce->start();
+    });
+
     mainLayout->addWidget(m_splitter);
 
     // Initial chrome styling from the active theme (re-applied on theme change
@@ -1201,8 +1258,26 @@ void MainWindow::buildChatPage()
         m_header->setCallDuration(m_callManager->callDuration());
     });
 
-    // Call dialog (shows/hides automatically via CallManager::stateChanged)
-    m_callWindow = new CallWindow(m_callManager, m_api, this);
+    // Clear any "in call" user-status automation. We listen to
+    // callServerLeaveAcked (fires after the server has processed the
+    // DELETE /call) rather than callEnded (fires synchronously, the
+    // moment the user hangs up — at which point the server may still
+    // be transitioning and DELETE /revert/call would 404). callEnded
+    // closes the call UI immediately; the revert hooks the right
+    // moment server-side. Idempotent if nothing was actually stuck.
+    connect(m_callManager, &CallManager::callServerLeaveAcked, this,
+            [this]() {
+        if (m_userStatus) m_userStatus->revertStuckCall();
+    });
+
+    // Call dialog (shows/hides automatically via CallManager::stateChanged).
+    // Parent is nullptr ON PURPOSE: a Qt::Window with a QWidget parent is
+    // an *owned* window on Windows and shares the owner's taskbar button,
+    // so when another app covers the call window it can't be raised from
+    // the taskbar. A parentless top-level gets its own taskbar button.
+    // MainWindow is the app-lifetime singleton that holds this pointer;
+    // it is deleted in ~MainWindow.
+    m_callWindow = new CallWindow(m_callManager, m_api, nullptr);
 
     // Update userId when logged in
     connect(m_auth, &AuthManager::userInfoChanged, this, [this]() {
@@ -1228,9 +1303,24 @@ void MainWindow::buildChatPage()
 
     connect(m_updateChecker, &UpdateChecker::updateAvailable,
             this, [this](const UpdateChecker::Manifest &m) {
+        // Reset the self-heal one-shot ONLY when a genuinely new
+        // version is offered. Periodic poll re-emits the same
+        // manifest; without the version guard, an AV-quarantine
+        // environment would silently re-download forever because
+        // every re-emit cleared the flag.
+        if (m.version != m_lastOfferedVersion) {
+            m_updateRelaunchAttempted = false;
+            m_lastOfferedVersion = m.version;
+        }
         m_pendingUpdateNotes = m.notes;
-        m_updateLabel->setText(tr("<b>Update available.</b> TalQ v%1 is ready "
-                                   "to install.").arg(m.version));
+        // Append a "PRE-RELEASE" emphasis when the offered update came
+        // from the beta channel — bold + separator dot, no inline hex
+        // (anti-drift: typography carries the signal, not bespoke color).
+        QString uText = tr("<b>Update available.</b> TalQ v%1 is ready "
+                           "to install.").arg(m.version);
+        if (m.prerelease)
+            uText += QStringLiteral(" &nbsp;·&nbsp; <b>PRE-RELEASE</b>");
+        m_updateLabel->setText(uText);
         m_updateProgress->hide();
         m_updateInstallBtn->setText(tr("Install now"));
         m_updateInstallBtn->show();
@@ -1239,6 +1329,21 @@ void MainWindow::buildChatPage()
         m_updateBannerActive = true;
         m_updateBanner->show();
         m_updateBanner->raise();    // ensure it's above sibling painters on Z-order
+
+        // 0.40.4 — when auto-install is enabled (default ON), kick the
+        // download immediately without waiting for a manual "Install
+        // now" click. After download completes, onUpdateReadyToLaunch
+        // parks the relaunch behind the idle gate. Manual buttons stay
+        // visible during the download in case the user wants to cancel
+        // the auto-flow for this session — the [Cancel auto-install]
+        // path takes over once the download finishes. Auto-download
+        // does NOT trigger again if the user already opted out for
+        // this session.
+        const bool autoInstallEnabled = QSettings()
+            .value(QStringLiteral("updates/autoInstall"), true).toBool();
+        if (autoInstallEnabled && !m_autoInstallCancelledForSession) {
+            m_updateChecker->acceptUpdate();
+        }
     });
     connect(m_updateChecker, &UpdateChecker::downloadProgress,
             this, [this](qreal pct) {
@@ -1262,9 +1367,40 @@ void MainWindow::buildChatPage()
             this, &MainWindow::onUpdateReadyToLaunch);
 
     connect(m_updateInstallBtn, &QPushButton::clicked, this, [this]() {
+        // 0.40.2 —if we're mid-auto-install countdown, "Install now"
+        // bypasses the idle gate and triggers immediately. Otherwise
+        // it's the classic "accept the offered update" path that kicks
+        // off the download.
+        if (m_autoInstallActive && !m_pendingInstallerPath.isEmpty()) {
+            m_autoInstallActive = false;
+            m_autoInstallTick.stop();
+            m_updateLabel->setText(tr("Update downloaded — relaunching…"));
+            m_updateInstallBtn->hide();
+            m_updateLaterBtn->hide();
+            m_updateWhatsNewBtn->hide();
+            maybeLaunchPendingInstaller();
+            return;
+        }
         m_updateChecker->acceptUpdate();
     });
     connect(m_updateLaterBtn, &QPushButton::clicked, this, [this]() {
+        // 0.40.2 —during the auto-install wait the [Later] button is
+        // relabelled "Cancel auto-install". Clicking it stops the
+        // countdown for this session but keeps the banner up with the
+        // classic [Install now] / [Later] choice so the user can still
+        // install on their own schedule.
+        if (m_autoInstallActive) {
+            m_autoInstallActive = false;
+            m_autoInstallCancelledForSession = true;
+            m_autoInstallTick.stop();
+            m_updateLabel->setText(
+                tr("<b>Update ready.</b> Click <i>Install now</i> when "
+                   "you're ready."));
+            m_updateInstallBtn->setText(tr("Install now"));
+            m_updateInstallBtn->show();
+            m_updateLaterBtn->setText(tr("Later"));
+            return;
+        }
         m_updateBannerActive = false;
         m_updateBanner->hide();
         m_updateChecker->deferUpdate();
@@ -2132,6 +2268,21 @@ void MainWindow::changeEvent(QEvent *event)
         && (windowState() & Qt::WindowMinimized)
         && m_statusPopover)
         m_statusPopover->hide();
+    // Activation refresh: the 60 s user-status poll is fine for users
+    // who keep TalQ in the foreground, but anyone returning from another
+    // app or from a long sleep wants the sidebar dots to reflect "now",
+    // not "up to a minute ago". Trigger one out-of-band refresh on
+    // ActivationChange when we become the active window, but rate-limit
+    // to once per 5 s so a busy desktop's repeated focus toggles don't
+    // pile up redundant in-flight HTTP requests.
+    if (event->type() == QEvent::ActivationChange && isActiveWindow()
+        && m_conversations) {
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        if (now - m_lastActivationStatusRefreshMs >= 5000) {
+            m_lastActivationStatusRefreshMs = now;
+            m_conversations->refreshUserStatuses();
+        }
+    }
 }
 
 void MainWindow::hideEvent(QHideEvent *event)
@@ -2216,6 +2367,11 @@ void MainWindow::saveWindowState()
         m_settings.setValue("savedHeight", height());
         m_settings.setValue("savedVisibility", 2);
     }
+    // Final flush of the splitter widths. The splitterMoved debouncer
+    // already writes during normal use; this catches the rare case where
+    // the user resized < 250 ms before closing the window.
+    if (m_splitter)
+        m_settings.setValue("splitterState", m_splitter->saveState());
     m_settings.endGroup();
 }
 
@@ -2402,12 +2558,125 @@ void MainWindow::resizeEvent(QResizeEvent *e)
 void MainWindow::onUpdateReadyToLaunch(const QString &installerPath)
 {
     m_pendingInstallerPath = installerPath;
-    m_updateLabel->setText(tr("Update downloaded \u2014 relaunching\u2026"));
     m_updateProgress->hide();
+
+    // 0.41.0 \u2014 when auto-install-on-idle is enabled (default ON), stage
+    // the install behind the idle gate instead of immediately quitting
+    // the app. The user keeps a visible "Cancel auto-install" escape
+    // hatch and an "Install now" override. Active calls / unsent text /
+    // mid-upload are hard-gated below; user activity (mouse/keyboard)
+    // resets the countdown via GetLastInputInfo.
+    const bool autoInstallEnabled =
+        QSettings().value(QStringLiteral("updates/autoInstall"), true).toBool();
+    if (autoInstallEnabled && !m_autoInstallCancelledForSession) {
+        m_autoInstallActive = true;
+        m_updateBannerActive = true;
+        m_updateBanner->show();
+        m_updateBanner->raise();
+        m_updateInstallBtn->setText(tr("Install now"));
+        m_updateInstallBtn->show();
+        m_updateLaterBtn->setText(tr("Cancel auto-install"));
+        m_updateLaterBtn->show();
+        m_updateWhatsNewBtn->hide();
+        m_autoInstallTick.setInterval(5000);
+        m_autoInstallTick.setSingleShot(false);
+        if (!m_autoInstallTick.isActive()) m_autoInstallTick.start();
+        onUpdateAutoInstallTick();   // paint the banner immediately
+        return;
+    }
+
+    // Auto-install disabled (or cancelled for this session) \u2014 original
+    // immediate-relaunch path.
+    m_updateLabel->setText(tr("Update downloaded \u2014 relaunching\u2026"));
     m_updateInstallBtn->hide();
     m_updateLaterBtn->hide();
     m_updateWhatsNewBtn->hide();
     maybeLaunchPendingInstaller();
+}
+
+void MainWindow::onUpdateAutoInstallTick()
+{
+    if (!m_autoInstallActive || m_pendingInstallerPath.isEmpty()) {
+        m_autoInstallTick.stop();
+        return;
+    }
+
+    // Hard gates: never auto-install during these states. The banner
+    // explains the reason so the user knows their work isn't going to
+    // be killed mid-stream. Any held mouse button is treated as active
+    // input even though GetLastInputInfo only tracks *events* (presses,
+    // releases, movement) — a slow drag-resize / drag-select / drag-to-
+    // scroll keeps the cursor still for minutes while the idle counter
+    // climbs, so we'd otherwise restart mid-drag.
+    QString blockReason;
+    if (m_callManager
+        && (m_callManager->state() != CallManager::Idle
+            || m_callManager->isScreenSharing())) {
+        blockReason = tr("you're in a call");
+    } else if (m_composer && !m_composer->currentText().isEmpty()) {
+        blockReason = tr("you have unsent text");
+    } else if (m_messages && m_messages->uploadProgress() >= 0.0) {
+        blockReason = tr("an upload is in progress");
+    } else if (QApplication::mouseButtons() != Qt::NoButton) {
+        blockReason = tr("a mouse button is held");
+    }
+
+    const int idleWaitMin = qBound(1,
+        QSettings().value(QStringLiteral("updates/autoInstallIdleMinutes"), 5).toInt(),
+        60);
+    const qint64 idleWaitMs = qint64(idleWaitMin) * 60 * 1000;
+
+    if (!blockReason.isEmpty()) {
+        m_updateLabel->setText(
+            tr("<b>Update ready.</b> Will install when idle \u2014 paused "
+               "because %1.").arg(blockReason));
+        return;
+    }
+
+#ifdef Q_OS_WIN
+    LASTINPUTINFO lii{};
+    lii.cbSize = sizeof(lii);
+    qint64 idleMs = 0;
+    if (GetLastInputInfo(&lii)) {
+        const DWORD nowTicks  = GetTickCount();
+        const DWORD idleTicks = nowTicks - lii.dwTime;   // modular unsigned, 49.7-day safe
+        idleMs = qint64(idleTicks);
+    }
+#else
+    const qint64 idleMs = 0;   // no idle source on non-Windows yet
+#endif
+
+    if (idleMs >= idleWaitMs) {
+        // Idle window satisfied \u2014 kick the relaunch path. We don't
+        // pre-set a "relaunching\u2026" label here: if the user has joined
+        // a call between the gate check above and the inner call gate
+        // inside maybeLaunchPendingInstaller, that path sets its own
+        // "you're in a call" label and the connection wired in the
+        // ctor will retry once the call ends.
+        m_autoInstallActive = false;
+        m_autoInstallTick.stop();
+        m_updateInstallBtn->hide();
+        m_updateLaterBtn->hide();
+        m_updateWhatsNewBtn->hide();
+        maybeLaunchPendingInstaller();
+        return;
+    }
+
+    const qint64 remainingMs = idleWaitMs - idleMs;
+    if (remainingMs <= 60 * 1000) {
+        // Last minute \u2014 visible countdown.
+        const int m = int(remainingMs / 60000);
+        const int s = int((remainingMs % 60000) / 1000);
+        m_updateLabel->setText(
+            tr("<b>Installing in %1:%2\u2026</b> Touch the mouse or "
+               "keyboard to cancel.")
+                .arg(m, 2, 10, QLatin1Char('0'))
+                .arg(s, 2, 10, QLatin1Char('0')));
+    } else {
+        m_updateLabel->setText(
+            tr("<b>Update ready.</b> Will auto-install when you've been "
+               "idle for %n minute(s).", "", idleWaitMin));
+    }
 }
 
 void MainWindow::maybeLaunchPendingInstaller()
@@ -2432,10 +2701,33 @@ void MainWindow::maybeLaunchPendingInstaller()
     };
     bool ok = QProcess::startDetached(m_pendingInstallerPath, args);
     if (!ok) {
-        m_updateLabel->setText(tr("Could not launch installer."));
+        // Self-heal: the downloaded installer can't be launched. Most
+        // common causes are AV quarantine, a stale file lock from an
+        // interrupted prior run, or zero-byte from a truncated write.
+        // Delete the cached file and re-download once - no user-visible
+        // "manual install" path required. If THAT re-download also
+        // produces an unlaunchable file, surface the failure (probably
+        // an environment issue we can't paper over).
+        QFile::remove(m_pendingInstallerPath);
+        m_pendingInstallerPath.clear();
+        if (m_updateChecker && !m_updateRelaunchAttempted) {
+            m_updateRelaunchAttempted = true;
+            m_updateLabel->setText(
+                tr("Installer was unavailable - re-downloading…"));
+            m_updateProgress->setValue(0);
+            m_updateProgress->show();
+            m_updateChecker->retryDownload();
+            return;
+        }
+        m_updateLabel->setText(tr(
+            "Auto-update failed twice. Try Retry, restart TalQ, or "
+            "download the latest installer from the project's Releases "
+            "page."));
+        // Keep the install button visible as a manual retry escape -
+        // a user who just whitelisted TalQ in AV (the most common cause
+        // of repeated launch failures) can recover without restarting.
         m_updateInstallBtn->setText(tr("Retry"));
         m_updateInstallBtn->show();
-        m_pendingInstallerPath.clear();
         return;
     }
     QTimer::singleShot(500, qApp, &QApplication::quit);
