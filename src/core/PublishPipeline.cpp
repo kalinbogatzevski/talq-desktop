@@ -1861,15 +1861,16 @@ GstFlowReturn PublishPipeline::onBgSample(GstAppSink *sink, gpointer userData)
     if (s) { gst_structure_get_int(s, "width", &width); gst_structure_get_int(s, "height", &height); }
 
     if (!format || g_strcmp0(format, "BGRx") != 0 || width <= 0 || height <= 0) {
-        // Caps shifted off BGRx — fall back to push-through so the call
-        // doesn't black-frame. Surface once.
+        // Caps shifted off BGRx — push the original sample through so
+        // downstream still sees concrete caps with dims (BG-blur OFF
+        // path uses the same trick; see comment there). Surface once.
         if (!self->m_previewEngineDegraded.exchange(true, std::memory_order_relaxed)) {
             qWarning() << "PublishPipeline: BG bridge sees non-BGRx caps "
                           "(" << (format ? format : "<null>") << "); push-through fallback";
         }
-        GstBuffer *passBuf = gst_buffer_ref(inBuf);
+        GstFlowReturn fr = gst_app_src_push_sample(src, sample);
         gst_sample_unref(sample);
-        return gst_app_src_push_buffer(src, passBuf);
+        return fr;
     }
 
     GstClockTime pts = GST_BUFFER_PTS(inBuf);
@@ -1880,21 +1881,26 @@ GstFlowReturn PublishPipeline::onBgSample(GstAppSink *sink, gpointer userData)
     {
         GstMapInfo map;
         if (!gst_buffer_map(inBuf, &map, GST_MAP_READ)) {
-            // Map failed — push-through.
-            GstBuffer *passBuf = gst_buffer_ref(inBuf);
+            // Map failed — push the original sample through with caps.
+            GstFlowReturn fr = gst_app_src_push_sample(src, sample);
             gst_sample_unref(sample);
-            return gst_app_src_push_buffer(src, passBuf);
+            return fr;
         }
         if (qint64(map.size) < qint64(width) * height * 4) {
             gst_buffer_unmap(inBuf, &map);
-            GstBuffer *passBuf = gst_buffer_ref(inBuf);
+            GstFlowReturn fr = gst_app_src_push_sample(src, sample);
             gst_sample_unref(sample);
-            return gst_app_src_push_buffer(src, passBuf);
+            return fr;
         }
         QImage wrap(map.data, width, height, width * 4, QImage::Format_RGB32);
         rgbaSnapshot = wrap.copy();  // detach before unmap
         gst_buffer_unmap(inBuf, &map);
     }
+    // Keep `caps` borrowed from sample around until after we build outSample.
+    // gst_sample_get_caps returns a borrowed pointer that's valid only while
+    // the sample is alive, so we must not unref `sample` until we've ref'd
+    // `caps` for the new outSample below.
+    GstCaps *outCaps = gst_caps_ref(caps);
     gst_sample_unref(sample);
 
     // 0.40.1 — BackgroundEngine::processFrame is now thread-safe and
@@ -1945,7 +1951,18 @@ GstFlowReturn PublishPipeline::onBgSample(GstAppSink *sink, gpointer userData)
     GST_BUFFER_DTS(outBuf)      = dts;
     GST_BUFFER_DURATION(outBuf) = dur;
 
-    GstFlowReturn fr = gst_app_src_push_buffer(src, outBuf);  // takes ownership
+    // 0.40.14 — push_SAMPLE not push_buffer. Same fix as the off-mode
+    // path: bg-appsrc's static caps have no width/height, so push_buffer
+    // leaves downstream negotiating against unbounded caps. Constructing
+    // a sample with the actual input caps (BGRx + concrete dims) makes
+    // downstream see proper caps and the preview branch fires. Ilko's
+    // PiP was black on 0.40.13 because BG-blur was ON, hitting this
+    // path — the 0.40.13 fix only covered the off-mode path.
+    GstSample *outSample = gst_sample_new(outBuf, outCaps, nullptr, nullptr);
+    gst_buffer_unref(outBuf);     // sample owns its ref
+    gst_caps_unref(outCaps);      // sample owns its ref
+    GstFlowReturn fr = gst_app_src_push_sample(src, outSample);
+    gst_sample_unref(outSample);
     self->m_bgBridgeFramesProcessed.fetch_add(1, std::memory_order_relaxed);
     return fr;
 }
