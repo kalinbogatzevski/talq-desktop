@@ -180,6 +180,15 @@ MainWindow::MainWindow(
     connect(&m_autoInstallTick, &QTimer::timeout,
             this, &MainWindow::onUpdateAutoInstallTick);
 
+    // 0.40.16 — TalQ-input idle metric. Global event filter on qApp so
+    // every mouse/key/wheel event that flows through OUR app event loop
+    // timestamps m_lastTalqInputMs. Events targeted at other processes
+    // never reach this filter — so background activity in a browser /
+    // IDE / etc. no longer resets the auto-install countdown. Seed to
+    // "now" so a freshly-launched TalQ doesn't read as idle-since-epoch.
+    m_lastTalqInputMs = QDateTime::currentMSecsSinceEpoch();
+    qApp->installEventFilter(this);
+
     // Dark title bar on Windows
 #ifdef Q_OS_WIN
     HWND hwnd = reinterpret_cast<HWND>(winId());
@@ -1604,6 +1613,21 @@ void MainWindow::runSearchQuery()
 
 bool MainWindow::eventFilter(QObject *obj, QEvent *event)
 {
+    // 0.40.16 — TalQ-input idle metric (see ctor comment). Fires for
+    // every event flowing through our app event loop; we only timestamp
+    // the user-actuated input types. Wheel + clicks + keystrokes; bare
+    // MouseMove deliberately excluded so the mouse drifting across a
+    // TalQ window edge doesn't reset the countdown.
+    switch (event->type()) {
+    case QEvent::MouseButtonPress:
+    case QEvent::KeyPress:
+    case QEvent::Wheel:
+        m_lastTalqInputMs = QDateTime::currentMSecsSinceEpoch();
+        break;
+    default:
+        break;
+    }
+
     // Escape in search input — close search bar
     if (obj == m_searchInput && event->type() == QEvent::KeyPress) {
         auto *k = static_cast<QKeyEvent*>(event);
@@ -2593,6 +2617,7 @@ void MainWindow::onUpdateReadyToLaunch(const QString &installerPath)
         QSettings().value(QStringLiteral("updates/autoInstall"), true).toBool();
     if (autoInstallEnabled && !m_autoInstallCancelledForSession) {
         m_autoInstallActive = true;
+        m_countdownNotified = false;
         // Anchor the wait window to download-completion time. A user who
         // was passively watching the download for longer than the
         // configured idle threshold would otherwise see GetLastInputInfo
@@ -2664,18 +2689,13 @@ void MainWindow::onUpdateAutoInstallTick()
         return;
     }
 
-#ifdef Q_OS_WIN
-    LASTINPUTINFO lii{};
-    lii.cbSize = sizeof(lii);
-    qint64 idleMs = 0;
-    if (GetLastInputInfo(&lii)) {
-        const DWORD nowTicks  = GetTickCount();
-        const DWORD idleTicks = nowTicks - lii.dwTime;   // modular unsigned, 49.7-day safe
-        idleMs = qint64(idleTicks);
-    }
-#else
-    qint64 idleMs = 0;   // no idle source on non-Windows yet
-#endif
+    // 0.40.16 — idle is measured AGAINST TalQ INPUT, not system input.
+    // The previous GetLastInputInfo gate reset the countdown any time
+    // the user touched the keyboard or mouse anywhere on the desktop,
+    // even in another app. Per user intent, only input that actually
+    // reaches TalQ (m_lastTalqInputMs, set by eventFilter) should reset.
+    const qint64 nowMs  = QDateTime::currentMSecsSinceEpoch();
+    qint64       idleMs = qMax<qint64>(0, nowMs - m_lastTalqInputMs);
 
     // Clamp the effective idle to ms-since-download-ready so the
     // countdown always runs at least once. Without this, a user who
@@ -2689,6 +2709,26 @@ void MainWindow::onUpdateAutoInstallTick()
 
     const qint64 remainingMs = idleWaitMs - idleMs;
     const bool inCountdown   = (remainingMs <= kCountdownMs);
+
+    // 0.40.16 \u2014 on FIRST entry into the final-minute countdown, fire a
+    // tray/desktop notification too. If the user has TalQ minimised /
+    // backgrounded the inline banner alone is invisible, so they'd
+    // otherwise only ever see "Installing in\u2026" after they happened to
+    // bring TalQ to focus. The notification gives them a real chance
+    // to alt-tab over and cancel.
+    if (inCountdown && !m_countdownNotified) {
+        m_countdownNotified = true;
+        if (m_notifications) {
+            const int sec = int(qMax<qint64>(0, remainingMs) / 1000);
+            const QString msg = sec >= 30
+                ? tr("TalQ will install the new version in about a minute. "
+                     "Open TalQ to cancel.")
+                : tr("TalQ will install the new version in %1 s. "
+                     "Open TalQ to cancel.").arg(sec);
+            m_notifications->notify(tr("Update ready to install"),
+                                    msg, /*alwaysSound*/ false, QString());
+        }
+    }
 
     // Recent activity: hide the banner unless we're already in the
     // last-minute countdown (which the user MUST see to cancel).

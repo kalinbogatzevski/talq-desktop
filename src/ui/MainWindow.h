@@ -252,6 +252,18 @@ private:
     // run, rather than the install firing on the first tick because
     // GetLastInputInfo was already past the threshold.
     qint64 m_autoInstallReadyAtMs = 0;
+    // 0.40.16 — TalQ-input idle metric. ms-since-epoch of the last
+    // mouse/key/wheel event routed through our QApplication (set by
+    // eventFilter). Replaces the previous GetLastInputInfo-based idle
+    // gate so input that goes to OTHER apps (a browser, an IDE) no
+    // longer resets the auto-install countdown. Initialised in the
+    // ctor to "now" so a fresh launch doesn't immediately count as
+    // idle for the past 49 days.
+    qint64 m_lastTalqInputMs = 0;
+    // 0.40.16 — fire the system-tray "1 min to install" notification
+    // exactly once per auto-install cycle. Cleared whenever the cycle
+    // resets (cancelled, install fired, gate-blocked, etc).
+    bool   m_countdownNotified = false;
 
     // Search bar
     class QWidget *m_searchBar = nullptr;
