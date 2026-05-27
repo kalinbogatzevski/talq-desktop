@@ -33,6 +33,9 @@ public:
 
     // Reload device combos and notification state from managers
     void refresh();
+    // 0.40.15 — opens directly on the Audio & Video tab. Used by the
+    // in-call BACKGROUND dropdown's "Open background settings…" entry.
+    void selectAudioVideoTab();
 
 protected:
     // Tear down the live BG preview pipeline (releases the camera so a

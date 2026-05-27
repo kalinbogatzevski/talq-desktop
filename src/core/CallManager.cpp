@@ -712,6 +712,22 @@ void CallManager::setState(CallState newState)
     if (m_state == newState) return;
     m_state = newState;
     qInfo() << "CallManager: state ->" << newState;
+    // 0.40.15 — Connecting→Active promotion race fix. If the publisher
+    // ICE already reached "connected"/"completed" BEFORE we got the
+    // participant-joined signal (the common case on a fast SFU with a
+    // slow-to-accept callee), the iceStateChanged handler missed its
+    // chance to promote us. As soon as we transition into Connecting,
+    // catch up: if we've already seen publisher ICE connected at some
+    // point this call, jump straight to Active. The line above already
+    // updated m_state to Connecting; recursing into setState(Active)
+    // re-enters with newState=Active and proceeds normally.
+    if (newState == Connecting && m_pubIceConnectedSeen) {
+        qInfo() << "CallManager: publisher ICE already connected at "
+                   "Connecting-time — promoting straight to Active";
+        setState(Active);
+        m_durationTimer.start();
+        return;
+    }
     if (newState == Outgoing || newState == Incoming) startRingtone();
     else stopRingtone();
     if (newState == Active) {
@@ -1621,6 +1637,13 @@ void CallManager::joinCallOnServer(bool withVideo)
                             if (m_state != Active)
                                 setStatusDetail("Publisher ICE " + state);
                             if (state == "connected" || state == "completed") {
+                                // 0.40.15 — sticky flag for the
+                                // Connecting→Active race. Even if we miss
+                                // the promotion here (state might still be
+                                // Outgoing at this point), setState() will
+                                // pick this up when participant-joined
+                                // eventually flips us into Connecting.
+                                m_pubIceConnectedSeen = true;
                                 // Upstream conformance: the call is "live"
                                 // the moment the publisher PC is up — peer
                                 // video subscribers come and go independently
@@ -1859,6 +1882,7 @@ void CallManager::stopAllPipelines()
     m_subscriberRecoveries.clear();
     m_pubIceGrace.stop();
     m_pubIceRecoveries = 0;
+    m_pubIceConnectedSeen = false;
 
     // Flush stale GLib sources from destroyed pipelines (libnice agents,
     // DTLS timers, etc.). Without this, creating a new webrtcbin on the
@@ -2124,7 +2148,15 @@ void CallManager::onParticipantJoinedCall(const QString &sessionId, int flags, c
     // Register every in-call peer in the model (covers peers that join an
     // already-active conference, and refreshes flags). Media providers are
     // attached later when their subscriber/offer arrives.
-    if (m_state == Outgoing || m_state == Connecting || m_state == Active) {
+    // 0.40.15 — also register peers seen during Incoming (the moment we
+    // ring) so by the time the callee accepts and the state moves into
+    // Outgoing→Connecting→Active, the participant is already in the
+    // model. Otherwise the signaling "joined call" event only fires once
+    // (prevFlags 0 → inCall>0) and the peer never appears on subsequent
+    // state ticks — the stage falls through to "Waiting for others to
+    // join" even though the peer is plainly in the room server-side.
+    if (m_state == Incoming || m_state == Outgoing
+        || m_state == Connecting || m_state == Active) {
         if (auto *p = ensureParticipant(sessionId, displayName)) {
             p->setAudioMuted(!(flags & CALL_FLAG_WITH_AUDIO));
             p->setVideoMuted(!(flags & CALL_FLAG_WITH_VIDEO));

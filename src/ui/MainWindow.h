@@ -86,6 +86,16 @@ protected:
 private slots:
     void onUpdateReadyToLaunch(const QString &installerPath);
     void maybeLaunchPendingInstaller();
+    // 0.40.15 — opens (or builds) SettingsDialog and switches to the
+    // Audio & Video tab (the home of the blur slider + image picker).
+    // Triggered from CallWindow's "Open background settings…" menu.
+    void openSettingsToBackgrounds();
+
+private:
+    // 0.40.15 — lazy-build SettingsDialog with all the connections the
+    // sidebar button used to set up inline. Shared by the button and by
+    // openSettingsToBackgrounds so the wiring can't drift.
+    void ensureSettingsDialog();
     // 0.40.2 —fires every few seconds while an update is staged AND
     // auto-install-on-idle is enabled. Reads the system idle counter,
     // checks the hard gates (no active call, empty composer, no upload),

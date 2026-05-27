@@ -1,5 +1,84 @@
 # Changelog
 
+## v0.40.15 "Panagyurishte" — STABLE (2026-05-27)
+
+Mission Control visual pass on the in-call surface, dropdown menus
+for the QUALITY / BACKGROUND controls, a "Waiting for others to
+join" RCA, and a long-overdue ring-only test harness mode.
+
+### Changed (in-call UI)
+
+* **Status pill, info chips, action buttons reskinned** to match the
+  empty-state Mission Control vocabulary (bg-surface card, divider
+  border, leading LED, monospace KEY + VAL). Sidebar → call now
+  speaks one language. Status pill borrows the home's exact pattern:
+  border + text both in the LED colour, no fill ("● IN CALL · 00:42"
+  with a breathing dot; transient states get an ellipsis).
+* **All top-row chrome lives on one line**: status pill, then
+  `CODEC H264 · HW`, then `QUALITY HIGH` (the live substream the SFU
+  is forwarding — distinct from the QUALITY dropdown, which is what
+  you request), then `RX 720p`. Compact 20-px tiles, 7/9-px mono.
+* **Click-cycle replaced with dropdown menus.** QUALITY opens a
+  proper menu (Auto / Low 180p / Medium 360p / High 720p) with a
+  checkmark on the current selection; BACKGROUND opens Off / Blur /
+  Image plus an "Open background settings…" entry that jumps to
+  Settings → Audio & Video (the home of the blur slider + image
+  picker). No more "I need to click three times to go back".
+* **Top chrome + control bar fade together on idle** (5 s, smooth
+  ~250 ms ease, instant for reduced-motion users). Mouse motion
+  brings them back. Status pill stays on always — Mission Control
+  "calm glance".
+* **Double-click on any chip no longer toggles fullscreen.** Each
+  rect (status, codec, quality stat, RX, both dropdown buttons) is
+  tracked per-paint and the double-click handler iterates them; only
+  the bare video surface still goes fullscreen on double-click.
+* **Open dropdown pins the chrome.** Menu can't fade out from under
+  your cursor.
+
+### Fixed
+
+* **"Waiting for others to join" after answering an incoming call.**
+  Root cause: `SignalingClient::participantJoinedCall` fires exactly
+  once per `prevFlags=0 → inCall>0` transition. If the event arrived
+  while our state was `Idle` (i.e. while we were ringing), the peer
+  was used to drive the ring UI but never added to `m_participants`.
+  Once the user accepted, the state moved Outgoing → Connecting →
+  Active without any further join event, so `remotes==0`, no tile
+  was laid out, and the centered "waiting" fallback rendered even
+  though the peer was plainly in the room server-side. Fix: also
+  `ensureParticipant` while state==Incoming.
+* **Internal status detail no longer leaks into the centered sub-
+  line.** "Publisher ICE connected" / "Joining room" / "Fetching
+  servers" were useful on the dev console, never on the user-facing
+  surface. The sub-line now stays on calm phrasing.
+* **Trailing seconds digit in the status pill no longer clipped.**
+  Old `text+26` width with `-8` right-margin left a 2-px deficit;
+  now `text+34` with `-10`.
+
+### Added (test harness)
+
+* **`TALQ_TEST_RING_ONLY=1` mode for `talq-call-test`.** Peer A
+  signaling-joins room + call (bot account, no media, no peer B),
+  sits until `--timeout`, hangs up cleanly. Used to ring a real
+  human's TalQ — e.g. test-talq calling `u2f3gbu4` rings kalin —
+  for manual in-call UI verification without needing a second
+  laptop. Default `--timeout 60`; ring-only is allowed up to 300.
+
+### Refactor
+
+* Lazy `MainWindow::ensureSettingsDialog()` helper extracted from
+  the inline sidebar-button click body. Both the button and the
+  new in-call BACKGROUND→"Open background settings…" entry now go
+  through it, so the signal wiring can't drift.
+* `m_topChromeRects` consolidates the per-paint hit rects for the
+  top row (status, codec, quality stat, RX). Cleared at the top of
+  every `paintEvent`; the double-click handler iterates the vector
+  instead of `||`-chaining six members.
+* Removed dead `paintCodecPill` rename-stub (the legacy entry that
+  only forwarded to the new split helpers).
+
+---
+
 ## v0.40.14 "Panagyurishte" — STABLE (2026-05-27)
 
 Hotfix for 0.40.13 — the push_sample fix only covered HALF the
