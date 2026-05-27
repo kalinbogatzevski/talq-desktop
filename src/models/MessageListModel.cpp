@@ -836,6 +836,14 @@ void MessageListModel::sendMessage(const QString &text, int replyToId, bool sile
     if (replyToId > 0)
         body["replyTo"] = replyToId;
     if (silent) body["silent"] = true;
+    // 0.40.9 — Talk's send-message API takes a top-level `threadId`
+    // parameter for posting INTO an existing thread. Before this, the
+    // composer wired the active thread id into `replyTo`, which the
+    // server then rendered as a reply-quote of the seed message, so
+    // every message in a topic looked like "↳ replying to 📌 Refunds".
+    // threadId is the proper hook: the message joins the thread without
+    // a spurious reply-quote.
+    if (m_threadId > 0) body["threadId"] = m_threadId;
 
     postAndReplace(m_token, body, tempId);
 }

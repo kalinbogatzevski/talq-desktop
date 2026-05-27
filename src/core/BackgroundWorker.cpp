@@ -37,6 +37,10 @@ void BackgroundWorker::applyMode(int modeInt)
             emit engineDisabled(reason);
         });
     }
+    // Compositor + segmenter constructed (ORT session is live). Tell the
+    // engine it can stop passing frames through unmodified. release-store
+    // pairs with the acquire-load in isReady() on the streaming thread.
+    m_ready.store(true, std::memory_order_release);
 }
 
 void BackgroundWorker::invalidateImageCache()

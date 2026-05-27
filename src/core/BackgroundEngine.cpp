@@ -155,6 +155,20 @@ QImage BackgroundEngine::processFrame(const QImage &rgba)
     const Mode m = m_modeAtomic.load(std::memory_order_relaxed);
     if (m == Mode::None || rgba.isNull() || !m_worker) return rgba;
 
+    // 0.40.9 — if the worker hasn't finished its first applyMode yet
+    // (compositor + segmenter ctor, including the ORT session — multiple
+    // seconds on cold start), pass the frame through unmodified instead
+    // of BlockingQueuedConnection-ing onto a busy worker event loop. The
+    // streaming thread is called from inside a GstAppSink callback while
+    // holding the camera pad's stream lock; if we park here, the lock
+    // stays held for the entire ORT init, and every subsequent
+    // gst_element_set_state() on the camera (enableCamera /
+    // disableCamera / cleanup pipeline-NULL) blocks on it. That's the
+    // BG-blur freeze pattern reported in 0.40.7. The user briefly sees
+    // raw camera in the PiP until segmentation kicks in — much better
+    // than a non-responding app and an indefinite black PiP.
+    if (!m_worker->isReady()) return rgba;
+
     QString path;
     {
         QMutexLocker locker(&m_pathMutex);

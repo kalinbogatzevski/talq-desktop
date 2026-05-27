@@ -30,6 +30,7 @@
 #include <QObject>
 #include <QImage>
 #include <QString>
+#include <atomic>
 
 class BackgroundCompositor;
 class TfliteSegmenter;
@@ -67,6 +68,18 @@ public slots:
     // engine destructor via BlockingQueuedConnection before quitting.
     void shutdown();
 
+public:
+    // Cross-thread readable flag, set true by applyMode after the
+    // compositor + segmenter are fully constructed (the ORT session in
+    // particular is the multi-second cold-init). BackgroundEngine's
+    // streaming-thread processFrame() reads this and passes the frame
+    // through unmodified while we're still initialising, instead of
+    // BlockingQueuedConnection-ing onto a busy worker event loop and
+    // pinning the camera pad's stream lock. The lock-pin used to wedge
+    // every subsequent gst_element_set_state() — Qt main's enableCamera
+    // / disableCamera / cleanup all parked on the same critical section.
+    bool isReady() const { return m_ready.load(std::memory_order_acquire); }
+
 signals:
     // Re-emitted by the engine. Cross-thread connection, queued to UI.
     void engineDisabled(const QString &reason);
@@ -84,4 +97,6 @@ private:
     QImage  m_cachedBgScaled;
     QSize   m_cachedBgScaledSize;
     bool    m_cachedBgFailed = false;
+
+    std::atomic<bool> m_ready{false};   // see isReady()
 };
