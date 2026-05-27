@@ -301,6 +301,17 @@ private:
     // fires; any "connected"/"completed" in the window cancels it.
     QTimer m_pubIceGrace;
     int    m_pubIceRecoveries = 0;
+    // 0.40.15 — sticky flag: publisher ICE has been seen at "connected"
+    // or "completed" at some point. The iceStateChanged handler only
+    // promotes Connecting→Active when the event fires WHILE m_state is
+    // already Connecting; if publisher ICE finishes BEFORE the
+    // participant-joined signal flips us into Connecting (the common
+    // case when the SFU is fast and the callee is slow to accept), the
+    // promotion is missed and we stick in Connecting until some later
+    // event nudges us. setState() now consults this flag whenever it
+    // transitions INTO Connecting and promotes immediately if it's
+    // already been "connected". Reset on every fresh call attempt.
+    bool m_pubIceConnectedSeen = false;
 
     bool m_joinedCall = false;
     bool m_userActionReady = false;

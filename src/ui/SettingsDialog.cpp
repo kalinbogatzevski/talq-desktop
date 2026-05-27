@@ -277,6 +277,11 @@ SettingsDialog::SettingsDialog(
         combo->installEventFilter(this);
 }
 
+void SettingsDialog::selectAudioVideoTab()
+{
+    if (m_tabs) m_tabs->setCurrentIndex(0);
+}
+
 void SettingsDialog::refresh()
 {
     m_deviceManager->refresh();
