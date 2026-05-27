@@ -190,17 +190,17 @@ public:
 
     // Send a chat message and get its new server-side id back — used to
     // seed a topic/thread root when the user hasn't typed anything yet.
+    // When `threadTitle` is non-empty AND the server supports the `threads`
+    // capability, Talk creates a new named topic rooted at this message in
+    // the SAME call (no follow-up endpoint needed). The earlier two-step
+    // approach — send plain message then PUT/POST a "/thread" endpoint —
+    // matches no URL Talk actually exposes (v23.0.4 verified) and always
+    // 998'd, so what looked like a created topic was just a chat line.
     void sendChatMessage(const QString &token, const QString &text,
                          QObject *context,
                          std::function<void(bool ok, int messageId,
-                                            const QString &error)> callback);
-
-    // Set the title on a thread rooted at `messageId`. This is what makes a
-    // message a named topic instead of just a reply-thread.
-    void setChatThreadTitle(const QString &token, int messageId,
-                            const QString &title,
-                            QObject *context,
-                            std::function<void(bool ok, const QString &error)> callback);
+                                            const QString &error)> callback,
+                         const QString &threadTitle = QString());
 
     // Long-poll (custom timeout). The headers map lets callers send hints like
     // X-Chat-Last-Common-Read so the server can break the long-poll early when
