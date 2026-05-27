@@ -1,5 +1,42 @@
 # Changelog
 
+## v0.40.8 "Panagyurishte" — STABLE (2026-05-27)
+
+0.40.7 fixed the READING side of topics (the chip now appears once the
+server has a real thread); this fixes the WRITING side, plus turns down
+the auto-install banner so it doesn't sit above the chat all day.
+
+### Fixed
+
+* **"New topic" actually creates a topic now.** `MainWindow::createNewTopic`
+  used to send a plain seed message and then call a separate
+  `setChatThreadTitle` that tried four different `POST`/`PUT` URL shapes
+  against `/chat/{token}/{messageId}/thread` — *none of which exist in
+  Talk v23.0.4*. Every variant returned `998 Invalid query` and the
+  error was silently swallowed (`bool /*ok2*/`), so what looked like a
+  named topic was really just a chat line with a pin emoji. The
+  correct Talk API takes a top-level `threadTitle` parameter on the
+  original `POST /chat/{token}` send-message call: when non-empty and
+  `replyTo == 0`, the server's `ChatController` creates a new thread
+  rooted at that message in the same round-trip. `sendChatMessage`
+  now accepts an optional `threadTitle`; `createNewTopic` passes it
+  directly; the broken `setChatThreadTitle` endpoint chain is removed.
+
+### Changed
+
+* **Auto-install banner is now hidden while you're actively using
+  TalQ.** Previously the banner sat above the chat permanently from
+  download-complete onward, only changing its label between
+  "auto-install when idle...", "paused because you're in a call",
+  and the final countdown. That label was useful debug telemetry
+  but visually loud during a workday. Now: while you're in a call,
+  typing, mid-upload, or holding a mouse button, the banner is
+  fully hidden. Even when the gates clear, it stays hidden until
+  you've been idle for 30 s — *or* the install is in its final
+  60-second countdown, which is always visible so you can cancel.
+
+---
+
 ## v0.40.7 "Panagyurishte" — STABLE (2026-05-27)
 
 Follow-up to 0.40.5 (topics in 1:1 chats). Creating a topic worked, but

@@ -1179,10 +1179,18 @@ void ApiClient::demoteModerator(const QString &token, qint64 attendeeId,
 
 void ApiClient::sendChatMessage(const QString &token, const QString &text,
                                 QObject *context,
-                                std::function<void(bool, int, const QString &)> callback)
+                                std::function<void(bool, int, const QString &)> callback,
+                                const QString &threadTitle)
 {
     QJsonObject body;
     body["message"] = text;
+    // Talk's send-message takes `threadTitle` as a top-level form/JSON field
+    // on the original POST. When non-empty (and replyTo == 0), the server's
+    // ChatController creates a brand-new thread rooted at this message in
+    // the same call — there is NO separate "create thread" endpoint. The
+    // single-call shape mirrors upstream Talk's web client.
+    if (!threadTitle.isEmpty())
+        body["threadTitle"] = threadTitle;
     auto req = makeRequest(QStringLiteral("apps/spreed/api/v1/chat/") + token);
     QNetworkReply *reply = m_nam.post(req, QJsonDocument(body).toJson());
     trackReply(reply);
@@ -1201,83 +1209,6 @@ void ApiClient::sendChatMessage(const QString &token, const QString &text,
             callback(false, 0, meta.value(QStringLiteral("message")).toString());
         }
     });
-}
-
-void ApiClient::setChatThreadTitle(const QString &token, int messageId,
-                                   const QString &title,
-                                   QObject *context,
-                                   std::function<void(bool, const QString &)> callback)
-{
-    // Different NC Talk versions accept different endpoint/param/verb
-    // combinations for thread-title setting; attempt them in sequence and
-    // report success the moment one works. Implemented as a heap chain that
-    // self-deletes on terminal — avoids the shared_ptr self-reference cycle
-    // that an earlier lambda-based version leaked on every call.
-    struct Attempt {
-        QString path;
-        QByteArray verb;
-        QString paramName;
-        QString apiVersion;
-    };
-
-    struct Chain {
-        ApiClient *self;
-        QObject   *context;
-        QString    title;
-        std::function<void(bool, const QString &)> callback;
-        QVector<Attempt> attempts;
-        int idx = 0;
-
-        void next() {
-            if (idx >= attempts.size()) {
-                callback(false,
-                    QCoreApplication::translate(
-                        "ApiClient",
-                        "Server rejected every known thread endpoint shape."));
-                delete this;
-                return;
-            }
-            const Attempt &a = attempts[idx];
-            QJsonObject body;
-            body[a.paramName] = title;
-            auto req = self->makeRequest(a.path);
-            QNetworkReply *reply = (a.verb == "POST")
-                ? self->m_nam.post(req, QJsonDocument(body).toJson())
-                : self->m_nam.sendCustomRequest(req, a.verb, QJsonDocument(body).toJson());
-            self->trackReply(reply);
-            QObject::connect(reply, &QNetworkReply::finished,
-                             context ? context : self,
-                             [this, reply, ver = a.apiVersion]() {
-                reply->deleteLater();
-                QJsonObject meta = QJsonDocument::fromJson(reply->readAll()).object()
-                    .value(QStringLiteral("ocs")).toObject()
-                    .value(QStringLiteral("meta")).toObject();
-                const int s = meta.value(QStringLiteral("statuscode")).toInt();
-                if (s >= 200 && s < 300) {
-                    qDebug() << "setChatThreadTitle: succeeded via" << ver;
-                    callback(true, QString());
-                    delete this;
-                    return;
-                }
-                qDebug() << "setChatThreadTitle:" << ver << "rejected with" << s
-                         << meta.value(QStringLiteral("message")).toString();
-                ++idx;
-                next();
-            });
-        }
-    };
-
-    auto *chain = new Chain{this, context, title, std::move(callback), {
-        { QStringLiteral("apps/spreed/api/v4/chat/") + token + "/" + QString::number(messageId) + "/thread",
-          "POST", QStringLiteral("title"),       QStringLiteral("v4") },
-        { QStringLiteral("apps/spreed/api/v1/chat/") + token + "/" + QString::number(messageId) + "/thread",
-          "POST", QStringLiteral("title"),       QStringLiteral("v1") },
-        { QStringLiteral("apps/spreed/api/v4/chat/") + token + "/" + QString::number(messageId) + "/thread",
-          "POST", QStringLiteral("threadTitle"), QStringLiteral("v4/threadTitle") },
-        { QStringLiteral("apps/spreed/api/v4/chat/") + token + "/" + QString::number(messageId) + "/thread",
-          "PUT",  QStringLiteral("title"),       QStringLiteral("v4-PUT") },
-    }};
-    chain->next();
 }
 
 void ApiClient::trackReply(QNetworkReply *reply)
