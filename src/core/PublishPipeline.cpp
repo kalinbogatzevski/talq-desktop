@@ -1212,19 +1212,27 @@ void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)
     gst_element_sync_state_with_parent(m_previewQueue);
     gst_element_sync_state_with_parent(m_previewConvert);
     gst_element_sync_state_with_parent(m_previewAppsink);
-    // 0.40.9 — force the preview-branch appsink to PLAYING explicitly.
+    // 0.40.9 — force every appsink in the camera chain to PLAYING.
     //
     // sync_state_with_parent inherits the parent's CURRENT state, which
     // for a sink-style element can resolve to PAUSED even when the
     // parent pipeline is PLAYING (sinks are allowed to wait in PAUSED
     // for preroll). An appsink in PAUSED only emits "new-preroll", NOT
-    // "new-sample" — our onPreviewSample handler subscribes to the
-    // latter, so the local PiP stays empty even though the camera-tee
-    // is happily fanning out hundreds of frames per second. RCA'd
-    // 2026-05-27 against an Intel UVC camera: 700+ mfvideosrc captures,
-    // chain fully linked, ZERO new-sample callbacks. Promoting the
-    // appsink explicitly to PLAYING unblocks the signal. Force the
-    // upstream preview chain too so a single restart works cleanly.
+    // "new-sample" — our onBgSample / onPreviewSample handlers
+    // subscribe to the latter, so frames never reach the encoder /
+    // preview branches even though mfvideosrc is happily producing
+    // hundreds per second. RCA'd 2026-05-27 against an Intel UVC
+    // camera: 700+ mfvideosrc captures, chain fully linked, ZERO
+    // new-sample callbacks. Promoting BOTH appsinks (bg-bridge AND
+    // preview) to PLAYING explicitly unblocks the signals. The
+    // bg-bridge sink is the structural blocker — it sits upstream of
+    // the camera-tee, so if it doesn't fire, neither encoder nor
+    // preview branches see anything. The 0.40.9 hotfix to ONLY the
+    // preview chain unblocked dev testing (where the bg bridge was
+    // bypassed) but shipped broken to users who had BG-blur paths
+    // still active — fixed in this followup edit, same release tag.
+    gst_element_set_state(m_bgAppsink,      GST_STATE_PLAYING);
+    gst_element_set_state(m_bgAppsrc,       GST_STATE_PLAYING);
     gst_element_set_state(m_previewQueue,   GST_STATE_PLAYING);
     gst_element_set_state(m_previewConvert, GST_STATE_PLAYING);
     gst_element_set_state(m_previewAppsink, GST_STATE_PLAYING);
