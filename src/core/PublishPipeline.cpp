@@ -795,12 +795,21 @@ void PublishPipeline::cleanup()
     }
 
     if (m_pipeline) {
-        qDebug() << "PublishPipeline::cleanup() — setting NULL state";
-        gst_element_set_state(m_pipeline, GST_STATE_NULL);
-        qDebug() << "PublishPipeline::cleanup() — unrefing pipeline";
-        gst_object_unref(m_pipeline);
+        // 0.40.9 — detach + NULL the pipeline on a worker thread. The
+        // synchronous set_state(NULL) waits on every pad's stream lock,
+        // and when BG-blur is on the bg-bridge appsink can hold one of
+        // those locks for the duration of an in-flight engine round-trip
+        // (GL + ORT). Qt main blocking on that = UI non-responding +
+        // black PiP. The pointer is nulled BEFORE the thread starts so
+        // re-entrant callers see no pipeline; the thread owns the local
+        // ref and unrefs after the state transition.
+        GstElement *pipe = m_pipeline;
         m_pipeline = nullptr;
-        qDebug() << "PublishPipeline::cleanup() — pipeline freed";
+        qDebug() << "PublishPipeline::cleanup() — scheduling pipeline NULL+unref on worker";
+        std::thread([pipe]() {
+            gst_element_set_state(pipe, GST_STATE_NULL);
+            gst_object_unref(pipe);
+        }).detach();
     }
     // Pipeline owns all elements — just null out the pointers
     m_webrtcbin = nullptr;
@@ -1203,6 +1212,22 @@ void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)
     gst_element_sync_state_with_parent(m_previewQueue);
     gst_element_sync_state_with_parent(m_previewConvert);
     gst_element_sync_state_with_parent(m_previewAppsink);
+    // 0.40.9 — force the preview-branch appsink to PLAYING explicitly.
+    //
+    // sync_state_with_parent inherits the parent's CURRENT state, which
+    // for a sink-style element can resolve to PAUSED even when the
+    // parent pipeline is PLAYING (sinks are allowed to wait in PAUSED
+    // for preroll). An appsink in PAUSED only emits "new-preroll", NOT
+    // "new-sample" — our onPreviewSample handler subscribes to the
+    // latter, so the local PiP stays empty even though the camera-tee
+    // is happily fanning out hundreds of frames per second. RCA'd
+    // 2026-05-27 against an Intel UVC camera: 700+ mfvideosrc captures,
+    // chain fully linked, ZERO new-sample callbacks. Promoting the
+    // appsink explicitly to PLAYING unblocks the signal. Force the
+    // upstream preview chain too so a single restart works cleanly.
+    gst_element_set_state(m_previewQueue,   GST_STATE_PLAYING);
+    gst_element_set_state(m_previewConvert, GST_STATE_PLAYING);
+    gst_element_set_state(m_previewAppsink, GST_STATE_PLAYING);
     // Start camera source LAST and async — mfvideosrc COM init blocks ~1s
     gst_element_set_state(m_cameraSrc, GST_STATE_PLAYING);
 
@@ -1278,7 +1303,21 @@ void PublishPipeline::disableCamera()
     //    worth the latency.
     gst_element_set_state(m_dummySrc, GST_STATE_PLAYING);
     gst_element_set_state(m_dummyConv, GST_STATE_PLAYING);
-    if (m_cameraSrc) gst_element_set_state(m_cameraSrc, GST_STATE_NULL);
+    // 0.40.9 — schedule the camera-source NULL transition on a worker.
+    // mfvideosrc -> NULL can park for seconds waiting on the source pad's
+    // stream lock, which a streaming thread holds while it's inside
+    // onBgSample → BackgroundEngine::processFrame (BG-blur ON path). Qt
+    // main waiting on that lock = UI non-responding and PiP black.
+    // gst_element_call_async runs our state change on GStreamer's
+    // element-pool thread; the camera LED still goes off, just a beat
+    // after the user clicks hang-up.
+    if (m_cameraSrc) {
+        gst_element_call_async(m_cameraSrc,
+            [](GstElement *elem, gpointer) {
+                gst_element_set_state(elem, GST_STATE_NULL);
+            },
+            nullptr, nullptr);
+    }
 
     m_cameraEnabled = false;
     // Re-arm the 5-s dummy-halt timer: the wire stays "alive" through the

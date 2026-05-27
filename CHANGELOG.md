@@ -1,5 +1,64 @@
 # Changelog
 
+## v0.40.9 "Panagyurishte" — STABLE (2026-05-27)
+
+Topic-mode polish + call-path recovery. Three RCAs in one release.
+
+### Fixed
+
+* **Local self-view PiP works again during video calls.** Field-RCA'd
+  2026-05-27: the preview branch appsink stayed in PAUSED after
+  `gst_element_sync_state_with_parent`, even with the parent pipeline
+  in PLAYING. An appsink in PAUSED emits `new-preroll` (which nothing
+  listens for) instead of `new-sample` (which our callback hooks), so
+  hundreds of camera frames per second hit the queue, got dropped at
+  `max-buffers=1`, and the PiP stayed empty forever. `enableCamera`
+  now promotes the preview-queue, preview-convert and preview-appsink
+  to PLAYING with explicit `gst_element_set_state` calls after the
+  sync-with-parent batch. The regression was hiding behind the
+  Phase 3.3b BG-bridge work — on most setups sync-with-parent
+  happens to transition the sink past PAUSED; on the affected
+  hardware it didn't, and the symptom was a permanently black
+  "Starting camera…" overlay.
+
+* **Hang-up no longer freezes the UI when BG-blur is on.** The
+  synchronous `gst_element_set_state(m_cameraSrc, GST_STATE_NULL)`
+  inside `disableCamera` and the pipeline-NULL inside `cleanup`
+  could park Qt main on the camera pad's stream lock for the entire
+  duration of an in-flight BG-engine round-trip (GL + ORT). Both
+  state changes now run on a worker thread:
+  `gst_element_call_async` for the camera source, a one-shot
+  `std::thread` for the cleanup pipeline-NULL. The UI stays
+  responsive; the camera LED still releases, just a beat after the
+  user clicks hang-up.
+
+* **Messages sent in a topic no longer appear as replies to the seed.**
+  The composer used to set `replyTo = m_activeThreadId` whenever a
+  topic was open, which the server rendered as "replying to 📌
+  <title>" on every message. Talk has a proper top-level `threadId`
+  parameter for posting INTO a thread; `MessageListModel::sendMessage`
+  now wires `m_threadId` (already tracked) onto the POST body and the
+  composer-send handler stops overloading `replyTo`. Explicit
+  reply-to-a-specific-message still works exactly as before.
+
+* **Topic bar now highlights the active topic.** Opening a topic via
+  the bar, the threads list, or the right-click "Thread" action
+  switched the chat to topic mode but left "All messages" lit on the
+  bar. `openThread` / `closeThread` now drive
+  `TopicTabBar::setSelectedThreadId`, so the visible state matches
+  what's actually filtered in the message list.
+
+* **Auto-update banner stays hidden while you're using TalQ.** It
+  used to sit above the chat permanently from download-complete on,
+  swapping between "auto-install when idle…", "paused because you're
+  in a call", and the final countdown. Now: while you're in a call,
+  typing, mid-upload or holding a mouse button, the banner is fully
+  hidden. Even after the gates clear it stays hidden until you've
+  been idle 30 s — or until the install is in its final 60-second
+  countdown, which is always visible so you can cancel.
+
+---
+
 ## v0.40.8 "Panagyurishte" — STABLE (2026-05-27)
 
 0.40.7 fixed the READING side of topics (the chip now appears once the
