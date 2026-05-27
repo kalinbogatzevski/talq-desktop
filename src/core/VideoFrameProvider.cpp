@@ -1,5 +1,8 @@
 #include "VideoFrameProvider.h"
 #include <QDebug>
+#include <atomic>
+#include <cstdio>
+#include <cstdlib>
 
 VideoFrameProvider::VideoFrameProvider(QObject *parent)
     : QObject(parent)
@@ -33,6 +36,19 @@ void VideoFrameProvider::feedQImage(const QImage &img)
 void VideoFrameProvider::feedFrame(GstSample *sample)
 {
     if (!sample) return;
+
+    // Gated RCA logging — TALQ_DEBUG_PIPELINE=1. Kept in the source as a
+    // reusable diagnostic for "camera frames never reach Qt main".
+    if (const char *dbg = std::getenv("TALQ_DEBUG_PIPELINE"); dbg && *dbg == '1') {
+        static std::atomic<int> count{0};
+        const int n = ++count;
+        if (n <= 5 || n % 100 == 0) {
+            if (FILE *f = std::fopen("C:/temp/talq-pipe.log", "a")) {
+                std::fprintf(f, "feedFrame n=%d this=%p\n", n, (void*)this);
+                std::fclose(f);
+            }
+        }
+    }
 
     // Always count frames, even without a videoSink (for test harness)
     m_frameCount++;
