@@ -758,8 +758,13 @@ void MainWindow::buildChatPage()
     chatLayout->addWidget(m_selectionBar);
 
     connect(m_composer, &ComposerWidget::sendMessage, this, [this](const QString &text, bool silent) {
-        int replyId = m_replyToId > 0 ? m_replyToId : m_activeThreadId;
-        m_messages->sendMessage(text, replyId, silent);
+        // 0.40.9 — only pass `replyTo` when the user explicitly clicked
+        // "Reply" on a specific message. Topic membership goes through
+        // m_messages->m_threadId (set by openThread) and the server-side
+        // `threadId` parameter, so we no longer overload `replyTo` with
+        // the thread root id — that produced a fake "↳ replying to
+        // 📌 Refunds" badge on every topic message.
+        m_messages->sendMessage(text, m_replyToId, silent);
         m_replyToId = 0;
         m_replyToAuthor.clear();
         m_replyToText.clear();
@@ -767,10 +772,9 @@ void MainWindow::buildChatPage()
     });
     connect(m_composer, &ComposerWidget::scheduleRequested, this,
             [this](const QString &text, qint64 sendAt, bool silent) {
-        // Reply context behaves the same as sendMessage — picking a future
-        // delivery time shouldn't drop the in-flight reply target.
-        int replyId = m_replyToId > 0 ? m_replyToId : m_activeThreadId;
-        m_messages->scheduleMessage(text, sendAt, replyId, silent);
+        // scheduleMessage already wires m_threadId on the body itself,
+        // so the same rule applies: replyTo only on explicit replies.
+        m_messages->scheduleMessage(text, sendAt, m_replyToId, silent);
         m_replyToId = 0;
         m_replyToAuthor.clear();
         m_replyToText.clear();
@@ -1720,6 +1724,9 @@ void MainWindow::openThread(int threadId, const QString &title)
     m_header->setActiveThreadTitle(title);
     m_messages->setThreadId(threadId);
     m_composer->setTopicName(title);
+    // 0.40.9 — sync the topic-bar selection so the active topic chip is
+    // visibly highlighted instead of "All messages" staying lit.
+    if (m_topicTabBar) m_topicTabBar->setSelectedThreadId(threadId);
 }
 
 void MainWindow::closeThread()
@@ -1730,6 +1737,7 @@ void MainWindow::closeThread()
     m_header->setActiveThreadTitle("");
     m_messages->setThreadId(0);
     m_composer->setTopicName("");
+    if (m_topicTabBar) m_topicTabBar->setSelectedThreadId(0);
 }
 
 void MainWindow::updateTopicMode(bool active)
