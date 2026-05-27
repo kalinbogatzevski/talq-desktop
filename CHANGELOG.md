@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.40.12 "Panagyurishte" — STABLE (2026-05-27)
+
+Cleanup of 0.40.9–0.40.11. The previous three releases were chasing
+the wrong tail.
+
+### Fixed
+
+* **PiP / call camera path restored to the 0.40.8 baseline.** The
+  explicit `gst_element_set_state(..., PLAYING)` block introduced in
+  0.40.9 was based on a flawed dev test where the BG bridge was
+  bypassed. With the bridge present (real release builds), forcing
+  an `appsrc` (`m_bgAppsrc`) to PLAYING before any buffer with
+  concrete dims is pushed makes downstream fixate caps to garbage
+  (width=1, height=4095) — pipeline aborts with `not-negotiated`.
+  The explicit forces are removed; the camera chain transitions via
+  `sync_state_with_parent` only, matching pre-0.40.9 behavior. The
+  other 0.40.x fixes (call-freeze on hangup, topic-mode polish,
+  idle-only banner) are preserved.
+
+---
+
 ## v0.40.11 "Panagyurishte" — STABLE (2026-05-27)
 
 Hotfix for 0.40.10 — the BG-bridge appsink fix went one element too far.
