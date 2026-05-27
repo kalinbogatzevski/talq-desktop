@@ -13,6 +13,7 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QRegularExpression>
+#include <QToolTip>
 #include <QSet>
 #include <QSettings>
 #include <QTimer>
@@ -79,10 +80,26 @@ CallStage::CallStage(CallManager *call, QWidget *parent)
     m_tick->setInterval(33);
     connect(m_tick, &QTimer::timeout, this, [this]{
         if (!reducedMotion()) m_glowPhase += 0.06;
+        // 0.40.15 — 5 s idle (was 3.5 s). The chrome was disappearing
+        // too aggressively for a manual hover/inspect workflow; this
+        // lets the eye settle on the chips before they fade.
         if (m_controlsVisible && m_call->state() == CallManager::Active
-            && m_idleTimer.elapsed() > 3500) {
+            && !m_menuOpen
+            && m_idleTimer.elapsed() > 5000) {
             m_controlsVisible = false;
             setCursor(Qt::BlankCursor);
+        }
+        // Ease the top-chrome + control-bar alpha toward visible/hidden.
+        // ~250 ms fade (step 0.13/frame at 30 fps). Reduced-motion users
+        // get an instant snap so we don't introduce gratuitous animation.
+        const double target = m_controlsVisible ? 1.0 : 0.0;
+        if (reducedMotion()) {
+            m_chromeAlpha = target;
+        } else if (qAbs(m_chromeAlpha - target) > 1e-3) {
+            const double step = 0.13;
+            m_chromeAlpha = (m_chromeAlpha < target)
+                ? qMin(target, m_chromeAlpha + step)
+                : qMax(target, m_chromeAlpha - step);
         }
         update();
     });
@@ -328,6 +345,13 @@ void CallStage::paintEvent(QPaintEvent *)
     p.setRenderHint(QPainter::SmoothPixmapTransform);
     p.fillRect(rect(), th.bgPrimary);
 
+    // Top-chrome hit rects: cleared every frame, re-populated by each
+    // paint helper that draws into the top row. Anything not drawn this
+    // frame correctly falls out of double-click-guard hit testing.
+    m_topChromeRects.clear();
+    m_qualityPillRect = QRectF();
+    m_bgPillRect      = QRectF();
+
     const auto state = m_call->state();
     const auto parts = m_call->participants();
     int remotes = 0; for (auto *q : parts) if (!q->isSelf()) remotes++;
@@ -349,10 +373,20 @@ void CallStage::paintEvent(QPaintEvent *)
             paintTile(p, s, th, false);
         }
         paintStatusPill(p, th);
-        paintCodecPill(p, th);
         paintSharingBadge(p, th);
         if (m_telemetryOpen) paintTelemetry(p, th);
-        if (m_controlsVisible) paintControlBar(p, th);
+        // Top info/action chrome + bottom control bar fade together.
+        // When fully hidden we skip painting (and skip appending hit
+        // rects), so clicks fall through to the bare video surface and
+        // double-click toggles fullscreen.
+        if (m_chromeAlpha > 1e-3) {
+            p.save();
+            p.setOpacity(m_chromeAlpha);
+            paintInfoPills(p, th);
+            paintActionPills(p, th);
+            paintControlBar(p, th);
+            p.restore();
+        }
     }
 }
 
@@ -551,11 +585,15 @@ void CallStage::paintCentered(QPainter &p, const PainterTheme &th)
     p.setFont(nf);
     p.drawText(QRectF(0, height()/2.0-6, width(), 34), Qt::AlignHCenter, name);
 
+    // 0.40.15 — never leak internal statusDetail strings ("Publisher ICE
+    // connected", "Fetching servers", "Joining room") into the user-
+    // facing sub-line. They were useful when this surface doubled as a
+    // dev console, but now the Mission Control telemetry chips + log
+    // panel carry diagnostics. Sub-line stays a calm, friendly phrase.
     QString sub = state == CallManager::Incoming ? tr("Incoming call")
                 : state == CallManager::Outgoing ? tr("Calling…")
                 : state == CallManager::Connecting ? tr("Connecting…")
-                : m_call->statusDetail().isEmpty() ? tr("Waiting for others to join")
-                                                   : m_call->statusDetail();
+                                                   : tr("Waiting for others to join");
     p.setPen(th.textSecondary); p.setFont(th.systemFont());
     p.drawText(QRectF(0, height()/2.0+30, width(), 22), Qt::AlignHCenter, sub);
 
@@ -620,7 +658,18 @@ void CallStage::paintCentered(QPainter &p, const PainterTheme &th)
             paintTile(p, s, th, false);
         }
         paintStatusPill(p, th);
-        if (m_controlsVisible) paintControlBar(p, th);
+        // Top info chips also belong here so the user can read the
+        // negotiated codec / quality / RX as soon as media starts to
+        // arrive — even before the stage flips into the multi-tile
+        // mediaPhase layout. They share the chromeAlpha fade with the
+        // control bar so they auto-hide together.
+        if (m_chromeAlpha > 1e-3) {
+            p.save();
+            p.setOpacity(m_chromeAlpha);
+            paintInfoPills(p, th);
+            paintControlBar(p, th);
+            p.restore();
+        }
     }
 }
 
@@ -803,127 +852,250 @@ void CallStage::paintStatusPill(QPainter &p, const PainterTheme &th)
     QColor dot = reconnecting ? th.danger
                : (degraded || st==CallManager::Connecting || st==CallManager::Outgoing)
                  ? th.amber : th.accent;
-    QString word = reconnecting ? tr("RECONNECTING")
-                 : st==CallManager::Outgoing ? tr("CALLING")
-                 : st==CallManager::Connecting ? tr("CONNECTING")
-                 : tr("LIVE");
-    QString dur = st==CallManager::Active ? "  "+fmtDuration(m_call->callDuration()) : QString();
+    // 0.40.15 — Mission Control lingo. The home's status pill reads
+    // "● ALL SYSTEMS NOMINAL"; we mirror that pattern here so walking
+    // sidebar → call doesn't change visual vocabulary. "LIVE" becomes
+    // "IN CALL · mm:ss" (noun phrasing + bullet separator), and the
+    // transient states get a trailing ellipsis to signal motion.
+    QString word = reconnecting ? tr("RECONNECTING…")
+                 : st==CallManager::Outgoing ? tr("CALLING…")
+                 : st==CallManager::Connecting ? tr("CONNECTING…")
+                 : tr("IN CALL");
+    QString dur = st==CallManager::Active
+                    ? QStringLiteral("  ·  ")+fmtDuration(m_call->callDuration())
+                    : QString();
     QString text = word + dur;
 
-    QFont f = monoFont(11); p.setFont(f);
+    QFont f = monoFont(9); f.setBold(true);
+    f.setLetterSpacing(QFont::AbsoluteSpacing, 0.8);
+    p.setFont(f);
     QFontMetrics fm(f);
-    QRectF pill(16, 16, fm.horizontalAdvance(text)+38, 26);
-    QColor bg = th.bgSecondary; bg.setAlphaF(0.9);
-    p.setBrush(bg); p.setPen(QPen(th.divider, 1));
-    p.drawRoundedRect(pill, 13, 13);
+    // Width = text + LED area (20px on left) + breathing room (12px on
+    // right). Earlier this was text+26 with -8 right-padding → 2-px
+    // deficit clipped the trailing seconds digit on "IN CALL · 00:42".
+    QRectF pill(16, 14, fm.horizontalAdvance(text) + 34, 20);
+
+    QColor border = dot; border.setAlphaF(0.85);
+    p.setBrush(Qt::NoBrush);
+    p.setPen(QPen(border, 1.0));
+    p.drawRoundedRect(pill, 10, 10);
 
     qreal pulse = reducedMotion() ? 1.0 : (0.55 + 0.45*qSin(m_glowPhase));
     QColor d = dot; d.setAlphaF(pulse);
     p.setBrush(d); p.setPen(Qt::NoPen);
-    p.drawEllipse(QRectF(pill.left()+13, pill.center().y()-4, 8, 8));
-    p.setPen(th.textPrimary);
-    p.drawText(pill.adjusted(30, 0, -8, 0), Qt::AlignVCenter|Qt::AlignLeft, text);
+    p.drawEllipse(QRectF(pill.left()+8, pill.center().y()-2.5, 5, 5));
+    p.setPen(dot);
+    p.drawText(pill.adjusted(20, 0, -10, 0), Qt::AlignVCenter|Qt::AlignLeft, text);
 
-    m_statusPillBottom = pill.bottom();
+    m_statusPillRect = pill;
+    m_topChromeRects.append(pill);
 }
 
-// Small secondary chip under the status pill: live proof of the negotiated
-// send codec + whether the encoder is hardware-accelerated. Quiet by
-// design — it's diagnostic reassurance, not a primary control.
-void CallStage::paintCodecPill(QPainter &p, const PainterTheme &th)
+// 0.40.15 — the top chrome is split into two distinct surfaces.
+//
+//   INFO pills (left, after the status pill): codec/HW-SW, live quality
+//   stat, RX resolution. Quiet telemetry, no interaction.
+//
+//   ACTION pills (top-right): Quality override + Background mode. Click
+//   opens a dropdown; hover surfaces a native tooltip.
+void CallStage::paintInfoPills(QPainter &p, const PainterTheme &th)
 {
+    // 0.40.15 — Mission Control telemetry tile vocabulary, laid out on
+    // the same row as the status pill so the full "what's happening"
+    // line reads left-to-right:
+    //   status · CODEC · QUALITY · RX
+    // Per tile: [ ●led · KEY (mono caption, textTime) · VAL (mono bold) ]
     const QString enc = m_call->activeVideoEncoder();
     if (enc.isEmpty()) return;
 
-    const bool hw = m_call->activeVideoEncoderIsHw();
+    QFont keyF = monoFont(7);  keyF.setBold(true);
+    keyF.setLetterSpacing(QFont::AbsoluteSpacing, 1.2);
+    QFont valF = monoFont(9);  valF.setBold(true);
+    QFontMetrics keyFm(keyF), valFm(valF);
+
+    const qreal padL     = 8.0;
+    const qreal padR     = 10.0;
+    const qreal dotW     = 5.0;
+    const qreal dotGap   = 6.0;
+    const qreal keyValGap = 7.0;
+    const qreal tileH    = 20.0;
+    const qreal radius   = 8.0;
+    const qreal gap      = 7.0;
+    QColor face = th.bgSurface; face.setAlphaF(0.88);
+
+    qreal x = m_statusPillRect.right() + gap;
+    const qreal y = m_statusPillRect.top();
+
+    auto drawTile = [&](const QString &key, const QString &val,
+                        const QColor &led) {
+        const qreal w = padL + dotW + dotGap
+                      + keyFm.horizontalAdvance(key) + keyValGap
+                      + valFm.horizontalAdvance(val) + padR;
+        QRectF tile(x, y, w, tileH);
+        p.setBrush(face);
+        p.setPen(QPen(th.divider, 1.0));
+        p.drawRoundedRect(tile, radius, radius);
+
+        p.setBrush(led); p.setPen(Qt::NoPen);
+        p.drawEllipse(QRectF(tile.left() + padL,
+                             tile.center().y() - dotW/2.0,
+                             dotW, dotW));
+
+        qreal cx = tile.left() + padL + dotW + dotGap;
+        p.setFont(keyF);
+        p.setPen(th.textTime);
+        p.drawText(QRectF(cx, tile.top(),
+                          keyFm.horizontalAdvance(key), tile.height()),
+                   Qt::AlignVCenter | Qt::AlignLeft, key);
+        cx += keyFm.horizontalAdvance(key) + keyValGap;
+        p.setFont(valF);
+        p.setPen(th.textPrimary);
+        p.drawText(QRectF(cx, tile.top(),
+                          valFm.horizontalAdvance(val), tile.height()),
+                   Qt::AlignVCenter | Qt::AlignLeft, val);
+        x = tile.right() + gap;
+        m_topChromeRects.append(tile);
+    };
+
+    const bool    hw    = m_call->activeVideoEncoderIsHw();
     const QString codec = enc.section(QStringLiteral(" · "), 0, 0);
-    const QString text  = codec + (hw ? QStringLiteral(" · HW")
+    const QString val1  = codec + (hw ? QStringLiteral(" · HW")
                                        : QStringLiteral(" · SW"));
-    const QColor sig = hw ? th.success : th.amber;
+    drawTile(QStringLiteral("CODEC"), val1, hw ? th.success : th.amber);
 
-    QFont f = monoFont(10); p.setFont(f);
-    QFontMetrics fm(f);
-    QRectF pill(16, m_statusPillBottom + 8,
-                fm.horizontalAdvance(text) + 34, 22);
-    QColor bg = th.bgSecondary; bg.setAlphaF(0.9);
-    QColor border = sig; border.setAlphaF(0.55);
-    p.setBrush(bg); p.setPen(QPen(border, 1));
-    p.drawRoundedRect(pill, 11, 11);
-
-    p.setBrush(sig); p.setPen(Qt::NoPen);
-    p.drawEllipse(QRectF(pill.left() + 11, pill.center().y() - 3, 6, 6));
-    p.setPen(th.textSecondary);
-    p.drawText(pill.adjusted(26, 0, -8, 0),
-               Qt::AlignVCenter | Qt::AlignLeft, text);
-
-    // RX-resolution chip, immediately right of the codec pill: the decoded
-    // incoming resolution (active simulcast layer / BW awareness). Quiet,
-    // same row, only when we're actually receiving a decoded frame.
-    qreal cursor = pill.right();
-    const QString rx = m_call->activeRxResolution();
-    if (!rx.isEmpty()) {
-        const QString rxText = QStringLiteral("RX ") + rx;
-        QRectF rxPill(cursor + 8, pill.top(),
-                      fm.horizontalAdvance(rxText) + 26, pill.height());
-        QColor rxBorder = th.divider; rxBorder.setAlphaF(0.7);
-        p.setBrush(bg); p.setPen(QPen(rxBorder, 1));
-        p.drawRoundedRect(rxPill, 11, 11);
-        p.setBrush(th.textSecondary); p.setPen(Qt::NoPen);
-        p.drawEllipse(QRectF(rxPill.left() + 11, rxPill.center().y() - 3, 6, 6));
-        p.setPen(th.textSecondary);
-        p.drawText(rxPill.adjusted(24, 0, -8, 0),
-                   Qt::AlignVCenter | Qt::AlignLeft, rxText);
-        cursor = rxPill.right();
+    // QUALITY chip: live readout of the substream the primary remote is
+    // forwarding. Distinct from the QUALITY DROPDOWN — the dropdown is
+    // what we REQUEST, this chip is what we GET. They agree when the
+    // SFU honours the request; they diverge when the SFU adapts down,
+    // which is exactly the moment a stats chip earns its place.
+    int sub = -1;
+    if (m_qualityOverride >= 0) {
+        sub = m_qualityOverride;
+    } else {
+        qreal bestH = 0; bool bestIsStage = false;
+        for (const Tile &t : m_tiles) {
+            if (!t.p || t.p->isSelf() || t.isScreen) continue;
+            if (t.isStage) { bestIsStage = true; bestH = t.rect.height(); break; }
+            if (t.rect.height() > bestH) bestH = t.rect.height();
+        }
+        if (bestH > 0) sub = pickSubstream(-1, bestH, bestIsStage);
+    }
+    if (sub >= 0 && sub <= 2) {
+        static const char *const kQualityLabels[] = { "LOW", "MED", "HIGH" };
+        const QColor qLed = (sub == 2) ? th.success
+                           : (sub == 1) ? th.amber : th.danger;
+        drawTile(QStringLiteral("QUALITY"),
+                 QString::fromLatin1(kQualityLabels[sub]), qLed);
     }
 
-    // #8 Quality chip — clickable; cycles Auto -> L -> M -> H -> Auto.
-    // Active in all builds as of 0.38.0 (simulcast publishes in stable too,
-    // so the chip's selectStream actually has layers to switch between).
-    // The dot colour signals the active mode (textSecondary for Auto,
-    // accent for any forced layer) so the override is glanceable.
-    static const char *const kLabels[] = { "LOW", "MED", "HIGH" };
-    const QString qText = (m_qualityOverride < 0)
-        ? QStringLiteral("AUTO")
-        : QString::fromLatin1(kLabels[m_qualityOverride]);
-    QRectF qPill(cursor + 8, pill.top(),
-                 fm.horizontalAdvance(qText) + 26, pill.height());
-    const bool forced = (m_qualityOverride >= 0);
-    QColor qDot     = forced ? th.accent : th.textSecondary;
-    QColor qBorder  = qDot;  qBorder.setAlphaF(forced ? 0.65 : 0.55);
-    p.setBrush(bg); p.setPen(QPen(qBorder, 1));
-    p.drawRoundedRect(qPill, 11, 11);
-    p.setBrush(qDot); p.setPen(Qt::NoPen);
-    p.drawEllipse(QRectF(qPill.left() + 11, qPill.center().y() - 3, 6, 6));
-    p.setPen(forced ? th.textPrimary : th.textSecondary);
-    p.drawText(qPill.adjusted(24, 0, -8, 0),
-               Qt::AlignVCenter | Qt::AlignLeft, qText);
-    m_qualityPillRect = qPill;
+    const QString rx = m_call->activeRxResolution();
+    if (!rx.isEmpty()) {
+        drawTile(QStringLiteral("RX"), rx, th.textTime);
+    }
+}
 
-    // #20 Background chip — clickable; cycles BG OFF → BLUR → IMG → OFF.
-    // Writes the Talk/Backgrounds/* QSettings keys directly so the
-    // change persists, then asks CallManager to apply live. Right-click
-    // jumps to Settings → Audio & Video where the full picker lives.
+void CallStage::paintActionPills(QPainter &p, const PainterTheme &th)
+{
+    // 0.40.15 — action BUTTONS (not pills): rectangular, button-like
+    // affordances in the top-right. Click opens a QMenu listing the
+    // available options; right-click on BG opens the full picker.
+    // The button shows the CURRENT value + ▼ caret so it reads "this
+    // is a control with a dropdown" at a glance. Hover lifts subtly
+    // (1.05x scale + accent border) and shows a native tooltip.
+    static const char *const kLabels[] = { "Low (180p)", "Medium (360p)", "High (720p)" };
+    const QString qVal = (m_qualityOverride < 0)
+        ? tr("AUTO")
+        : QString::fromLatin1(kLabels[m_qualityOverride]).toUpper();
+    const bool qActive = (m_qualityOverride >= 0);
+
     QSettings bgSet("TalQ", "TalQ");
     bgSet.beginGroup("Talk/Backgrounds");
     const bool    bgOn   = bgSet.value("virtualBackgroundEnabled", false).toBool();
     const QString bgType = bgSet.value("virtualBackgroundType", "blur").toString();
     bgSet.endGroup();
-    const QString bgText = !bgOn
-        ? QStringLiteral("BG OFF")
-        : (bgType == "image" ? QStringLiteral("BG IMG")
-                              : QStringLiteral("BG BLUR"));
-    QRectF bgPill(qPill.right() + 8, pill.top(),
-                  fm.horizontalAdvance(bgText) + 26, pill.height());
-    QColor bgDot    = bgOn ? th.accent : th.textSecondary;
-    QColor bgBorder = bgDot; bgBorder.setAlphaF(bgOn ? 0.65 : 0.55);
-    p.setBrush(bg); p.setPen(QPen(bgBorder, 1));
-    p.drawRoundedRect(bgPill, 11, 11);
-    p.setBrush(bgDot); p.setPen(Qt::NoPen);
-    p.drawEllipse(QRectF(bgPill.left() + 11, bgPill.center().y() - 3, 6, 6));
-    p.setPen(bgOn ? th.textPrimary : th.textSecondary);
-    p.drawText(bgPill.adjusted(24, 0, -8, 0),
-               Qt::AlignVCenter | Qt::AlignLeft, bgText);
-    m_bgPillRect = bgPill;
+    const QString bgVal = !bgOn
+        ? tr("OFF")
+        : (bgType == QLatin1String("image") ? tr("IMAGE") : tr("BLUR"));
+
+    // 0.40.15 — buttons share the info-tile card vocab (bg-surface +
+    // divider border at rest), with two readable distinctions: a
+    // slightly thicker border (1.3px → 1.6px on hover) and a ▼ caret.
+    // KEY in textTime, VAL in textPrimary — so a button looks like a
+    // telemetry tile that can be opened. Sized to match the info chips
+    // (22h), uniform top row.
+    QFont keyF = monoFont(7);  keyF.setBold(true);
+    keyF.setLetterSpacing(QFont::AbsoluteSpacing, 1.2);
+    QFont valF = monoFont(9);  valF.setBold(true);
+    QFontMetrics keyFm(keyF), valFm(valF);
+
+    const qreal padL     = 8.0;
+    const qreal padR     = 8.0;
+    const qreal keyValGap = 7.0;
+    const qreal caretW   = 7.0;
+    const qreal caretGap = 5.0;
+    const qreal btnH     = 20.0;
+    const qreal gap      = 7.0;
+    const qreal radius   = 8.0;
+
+    const QString qKey  = QStringLiteral("QUALITY");
+    const QString bgKey = QStringLiteral("BACKGROUND");
+
+    auto btnWidth = [&](const QString &key, const QString &val) {
+        return padL + keyFm.horizontalAdvance(key) + keyValGap
+             + valFm.horizontalAdvance(val) + caretGap + caretW + padR;
+    };
+
+    const qreal qW  = btnWidth(qKey,  qVal);
+    const qreal bgW = btnWidth(bgKey, bgVal);
+    const qreal rowRight = width() - 16.0;
+    const qreal rowTop   = 14.0;
+    QRectF bgBtn(rowRight - bgW,          rowTop, bgW, btnH);
+    QRectF qBtn (bgBtn.left() - gap - qW, rowTop, qW,  btnH);
+
+    auto drawButton = [&](const QRectF &rect, const QString &key,
+                          const QString &val, bool active, bool hovered) {
+        // 0.40.15 — hover state is now the accent-coloured border alone
+        // (no 1.5-px scale-up). The frame is enough; the micro-zoom was
+        // jittery alongside the menu open/close.
+        const QRectF r = rect;
+        QColor face   = th.bgSurface; face.setAlphaF(active ? 0.95 : 0.88);
+        QColor border = hovered ? th.accent
+                       : (active ? th.accent : th.divider);
+        if (active && !hovered) border.setAlphaF(0.75);
+        p.setBrush(face);
+        p.setPen(QPen(border, hovered ? 1.6 : 1.3));
+        p.drawRoundedRect(r, radius, radius);
+
+        qreal cx = r.left() + padL;
+        p.setFont(keyF);
+        p.setPen(th.textTime);
+        p.drawText(QRectF(cx, r.top(), keyFm.horizontalAdvance(key), r.height()),
+                   Qt::AlignVCenter | Qt::AlignLeft, key);
+        cx += keyFm.horizontalAdvance(key) + keyValGap;
+        p.setFont(valF);
+        p.setPen(active || hovered ? th.textPrimary : th.textSecondary);
+        p.drawText(QRectF(cx, r.top(), valFm.horizontalAdvance(val), r.height()),
+                   Qt::AlignVCenter | Qt::AlignLeft, val);
+
+        const qreal caretCx = r.right() - padR - caretW / 2.0;
+        const qreal caretCy = r.center().y();
+        QPainterPath caret;
+        caret.moveTo(caretCx - caretW/2.0, caretCy - 2);
+        caret.lineTo(caretCx + caretW/2.0, caretCy - 2);
+        caret.lineTo(caretCx,              caretCy + 3);
+        caret.closeSubpath();
+        QColor caretC = active || hovered ? th.textPrimary : th.textSecondary;
+        p.setBrush(caretC); p.setPen(Qt::NoPen);
+        p.drawPath(caret);
+    };
+
+    drawButton(qBtn,  qKey,  qVal,  qActive, m_hoverPill == QStringLiteral("quality"));
+    drawButton(bgBtn, bgKey, bgVal, bgOn,    m_hoverPill == QStringLiteral("bg"));
+
+    m_qualityPillRect = qBtn;
+    m_bgPillRect      = bgBtn;
+    m_topChromeRects.append(qBtn);
+    m_topChromeRects.append(bgBtn);
 }
 
 void CallStage::paintSharingBadge(QPainter &p, const PainterTheme &th)
@@ -1121,10 +1293,42 @@ void CallStage::mouseMoveEvent(QMouseEvent *e)
     }
     // Track which control-bar button is under the cursor for hover feedback.
     const QString hov = m_controlsVisible ? hitButton(e->position()) : QString();
-    if (hov != m_hoverBtn) {
-        m_hoverBtn = hov;
-        setCursor(hov.isEmpty() ? Qt::ArrowCursor : Qt::PointingHandCursor);
+    m_hoverBtn = hov;
+    // 0.40.15 — action-pill hover (Quality / BG top-right).
+    QString hovPill;
+    if (!m_qualityPillRect.isNull() && m_qualityPillRect.contains(e->position()))
+        hovPill = QStringLiteral("quality");
+    else if (!m_bgPillRect.isNull() && m_bgPillRect.contains(e->position()))
+        hovPill = QStringLiteral("bg");
+    if (hovPill != m_hoverPill) {
+        m_hoverPill = hovPill;
+        if (hovPill == QStringLiteral("quality")) {
+            static const char *const kLabels[] = { "Low (180p)", "Medium (360p)", "High (720p)" };
+            const QString cur = (m_qualityOverride < 0)
+                ? QStringLiteral("Auto")
+                : QString::fromLatin1(kLabels[m_qualityOverride]);
+            QToolTip::showText(e->globalPosition().toPoint(),
+                tr("Receive quality: %1\nClick to cycle Auto → Low → Med → High.\nRight-click to reset to Auto.").arg(cur),
+                this);
+        } else if (hovPill == QStringLiteral("bg")) {
+            QSettings bgSet("TalQ", "TalQ");
+            bgSet.beginGroup("Talk/Backgrounds");
+            const bool    on   = bgSet.value("virtualBackgroundEnabled", false).toBool();
+            const QString type = bgSet.value("virtualBackgroundType", "blur").toString();
+            bgSet.endGroup();
+            const QString cur = !on ? tr("Off")
+                              : (type == QLatin1String("image") ? tr("Image") : tr("Blur"));
+            QToolTip::showText(e->globalPosition().toPoint(),
+                tr("Background: %1\nClick to cycle Off → Blur → Image.\nRight-click to open the full picker.").arg(cur),
+                this);
+        } else {
+            QToolTip::hideText();
+        }
     }
+    // Cursor: pointing-hand over any clickable target (control button OR
+    // action pill).
+    setCursor((!hov.isEmpty() || !hovPill.isEmpty())
+              ? Qt::PointingHandCursor : Qt::ArrowCursor);
     pokeControls();
     update();
 }
@@ -1155,35 +1359,85 @@ void CallStage::mousePressEvent(QMouseEvent *e)
         return;
     }
 
-    // #8 Quality chip — cycle Auto -> L -> M -> H -> Auto on left-click.
+    // 0.40.15 — Quality / Background dropdowns share orchestration:
+    // anchor below the button, pin the chrome visible while exec()
+    // blocks, restore the idle timer afterwards. Each caller just
+    // populates the QMenu with its checkable entries.
+    auto openDropdown = [&](const QRectF &anchor, auto populate) {
+        QMenu menu(this);
+        populate(menu);
+        const QPoint origin = mapToGlobal(QPoint(int(anchor.left()),
+                                                  int(anchor.bottom() + 4)));
+        m_menuOpen = true;
+        pokeControls();
+        menu.exec(origin);
+        m_menuOpen = false;
+        pokeControls();
+    };
+
+    // 0.40.15 — Quality button: left-click opens a dropdown of all
+    // options. Previous behavior cycled Auto->L->M->H, which was
+    // confusing (no way back without three more clicks).
     if (e->button() == Qt::LeftButton
         && !m_qualityPillRect.isNull()
         && m_qualityPillRect.contains(e->position())) {
-        m_qualityOverride = (m_qualityOverride + 2) % 4 - 1;  // -1,0,1,2 cycle
-        updateStreamQualities();
-        update();
+        openDropdown(m_qualityPillRect, [this](QMenu &menu) {
+            auto add = [&](const QString &label, int ov) {
+                QAction *act = menu.addAction(label);
+                act->setCheckable(true);
+                act->setChecked(m_qualityOverride == ov);
+                connect(act, &QAction::triggered, this, [this, ov]() {
+                    m_qualityOverride = ov;
+                    updateStreamQualities();
+                    update();
+                });
+            };
+            add(tr("Auto"),         -1);
+            menu.addSeparator();
+            add(tr("Low (180p)"),    0);
+            add(tr("Medium (360p)"), 1);
+            add(tr("High (720p)"),   2);
+        });
         return;
     }
 
-    // #20 Background chip — left-click cycles BG OFF -> BLUR -> IMG -> OFF.
-    // Writes the Talk/Backgrounds/* keys + asks CallManager to apply live.
+    // 0.40.15 — Background button: dropdown menu Off/Blur/Image + a
+    // "more…" entry that opens the full picker. Right-click still
+    // jumps to the picker for power users.
     if (e->button() == Qt::LeftButton
         && !m_bgPillRect.isNull()
         && m_bgPillRect.contains(e->position())) {
         QSettings s("TalQ", "TalQ");
         s.beginGroup("Talk/Backgrounds");
-        const bool on    = s.value("virtualBackgroundEnabled", false).toBool();
-        const QString t  = s.value("virtualBackgroundType", "blur").toString();
-        QString nextType;
-        bool nextOn;
-        if (!on)                  { nextOn = true;  nextType = "blur";  }
-        else if (t == "blur")     { nextOn = true;  nextType = "image"; }
-        else                       { nextOn = false; nextType = t;      }
-        s.setValue("virtualBackgroundEnabled", nextOn);
-        s.setValue("virtualBackgroundType",    nextType);
+        const bool    curOn   = s.value("virtualBackgroundEnabled", false).toBool();
+        const QString curType = s.value("virtualBackgroundType", "blur").toString();
         s.endGroup();
-        m_call->applyBackgroundSettings();
-        update();
+        openDropdown(m_bgPillRect, [this, curOn, curType](QMenu &menu) {
+            auto apply = [this](bool on, const QString &type) {
+                QSettings s2("TalQ", "TalQ");
+                s2.beginGroup("Talk/Backgrounds");
+                s2.setValue("virtualBackgroundEnabled", on);
+                if (!type.isEmpty()) s2.setValue("virtualBackgroundType", type);
+                s2.endGroup();
+                m_call->applyBackgroundSettings();
+                update();
+            };
+            auto add = [&](const QString &label, bool on, const QString &type, bool checked) {
+                QAction *act = menu.addAction(label);
+                act->setCheckable(true);
+                act->setChecked(checked);
+                connect(act, &QAction::triggered, this, [apply, on, type]() {
+                    apply(on, type);
+                });
+            };
+            add(tr("Off"),   false, QString(),  !curOn);
+            add(tr("Blur"),  true,  "blur",      curOn && curType == "blur");
+            add(tr("Image"), true,  "image",     curOn && curType == "image");
+            menu.addSeparator();
+            QAction *picker = menu.addAction(tr("Open background settings…"));
+            connect(picker, &QAction::triggered, this,
+                    &CallStage::requestOpenBackgroundSettings);
+        });
         return;
     }
 
@@ -1229,14 +1483,20 @@ void CallStage::mouseReleaseEvent(QMouseEvent *e)
 
 void CallStage::mouseDoubleClickEvent(QMouseEvent *e)
 {
-    // A double-click on the control bar (or the draggable self-PiP) must
-    // NOT toggle fullscreen. Rapidly clicking a control — e.g. the camera
-    // switch — otherwise registers every other click as a double-click and
-    // bounces the window in and out of fullscreen. Only the bare video
-    // surface goes fullscreen on double-click.
-    const bool onControl = m_controlsVisible && !hitButton(e->position()).isEmpty();
-    const bool onPip = !m_pipRect.isNull() && m_pipRect.contains(e->position());
-    if (onControl || onPip) {
+    // A double-click on the control bar, top-row chrome, action buttons,
+    // or the draggable self-PiP must NOT toggle fullscreen. Rapidly
+    // clicking a control — e.g. the camera switch, or the Quality
+    // dropdown — otherwise registers every other click as a double-
+    // click and bounces the window in and out of fullscreen. Only the
+    // bare video surface goes fullscreen on double-click.
+    const auto pos = e->position();
+    const bool onControl = m_controlsVisible && !hitButton(pos).isEmpty();
+    const bool onPip     = !m_pipRect.isNull() && m_pipRect.contains(pos);
+    bool onChrome = false;
+    for (const QRectF &r : m_topChromeRects) {
+        if (r.contains(pos)) { onChrome = true; break; }
+    }
+    if (onControl || onPip || onChrome) {
         pokeControls();
         return;
     }
@@ -1275,6 +1535,7 @@ void CallStage::leaveEvent(QEvent *)
     // Don't strand the user with a hidden bar + blank cursor when the
     // pointer leaves while idle; restore both so re-entry is never blind.
     if (!m_hoverBtn.isEmpty()) { m_hoverBtn.clear(); setCursor(Qt::ArrowCursor); }
+    if (!m_hoverPill.isEmpty()) { m_hoverPill.clear(); QToolTip::hideText(); }
     pokeControls();
     update();
 }

@@ -404,23 +404,7 @@ void MainWindow::buildChatPage()
     profileLayout->addWidget(settingsBtn);
 
     connect(settingsBtn, &QPushButton::clicked, this, [this]() {
-        if (!m_settingsDialog) {
-            m_settingsDialog = new SettingsDialog(
-                m_deviceManager, m_notifications, m_appSettings, m_auth, this);
-            connect(m_settingsDialog, &SettingsDialog::closeToTrayChanged,
-                    this, [this](bool enabled) { m_closeToTray = enabled; });
-            connect(m_settingsDialog, &SettingsDialog::themeIdChanged,
-                    this, [this](int id) {
-                        applyThemeId(static_cast<PainterTheme::Theme>(id));
-                    });
-            connect(m_settingsDialog, &SettingsDialog::checkForUpdatesRequested,
-                    this, [this]() {
-                if (m_updateChecker) m_updateChecker->checkNow();
-            });
-            // #20 — live-apply Background section changes during a call.
-            connect(m_settingsDialog, &SettingsDialog::backgroundSettingsChanged,
-                    m_callManager, &CallManager::applyBackgroundSettings);
-        }
+        ensureSettingsDialog();
         m_settingsDialog->refresh();
         m_settingsDialog->exec();
     });
@@ -1277,6 +1261,21 @@ void MainWindow::buildChatPage()
     connect(m_callManager, &CallManager::callServerLeaveAcked, this,
             [this]() {
         if (m_userStatus) m_userStatus->revertStuckCall();
+        // 0.40.15 — also re-poll peer user-statuses so the conversation
+        // list / 1:1 header drops the "in a call" tag on the other party
+        // immediately rather than waiting up to 60 s for the next poll.
+        // The OTHER party's status reverts server-side independently
+        // (their own TalQ does DELETE /revert/call), but the only thing
+        // syncing it into our local conversation cache is the 60-s
+        // status-poll timer in ConversationListModel. Fire one extra
+        // poll right after our own leave-ack so a peer who just left
+        // is reflected within ~one round-trip instead of a minute.
+        if (m_conversations) m_conversations->refreshUserStatuses();
+        // Catch peers who leave a couple of seconds after we do
+        // (a 2-party hang-up cascade): one more poll 4 s later.
+        QTimer::singleShot(4000, this, [this]() {
+            if (m_conversations) m_conversations->refreshUserStatuses();
+        });
     });
 
     // Call dialog (shows/hides automatically via CallManager::stateChanged).
@@ -1287,6 +1286,12 @@ void MainWindow::buildChatPage()
     // MainWindow is the app-lifetime singleton that holds this pointer;
     // it is deleted in ~MainWindow.
     m_callWindow = new CallWindow(m_callManager, m_api, nullptr);
+
+    // 0.40.15 — "Open background settings…" entry on the in-call
+    // BACKGROUND dropdown jumps to Settings → Audio & Video (tab 0,
+    // home of the blur slider + image picker).
+    connect(m_callWindow, &CallWindow::backgroundSettingsRequested,
+            this, &MainWindow::openSettingsToBackgrounds);
 
     // Update userId when logged in
     connect(m_auth, &AuthManager::userInfoChanged, this, [this]() {
@@ -2978,4 +2983,32 @@ void MainWindow::openConversationInfo()
         emit m_sidebar->homeRequested();
     });
     dlg->exec();
+}
+
+void MainWindow::ensureSettingsDialog()
+{
+    if (m_settingsDialog) return;
+    m_settingsDialog = new SettingsDialog(
+        m_deviceManager, m_notifications, m_appSettings, m_auth, this);
+    connect(m_settingsDialog, &SettingsDialog::closeToTrayChanged,
+            this, [this](bool enabled) { m_closeToTray = enabled; });
+    connect(m_settingsDialog, &SettingsDialog::themeIdChanged,
+            this, [this](int id) {
+                applyThemeId(static_cast<PainterTheme::Theme>(id));
+            });
+    connect(m_settingsDialog, &SettingsDialog::checkForUpdatesRequested,
+            this, [this]() {
+        if (m_updateChecker) m_updateChecker->checkNow();
+    });
+    // #20 — live-apply Background section changes during a call.
+    connect(m_settingsDialog, &SettingsDialog::backgroundSettingsChanged,
+            m_callManager, &CallManager::applyBackgroundSettings);
+}
+
+void MainWindow::openSettingsToBackgrounds()
+{
+    ensureSettingsDialog();
+    m_settingsDialog->refresh();
+    m_settingsDialog->selectAudioVideoTab();
+    m_settingsDialog->exec();
 }

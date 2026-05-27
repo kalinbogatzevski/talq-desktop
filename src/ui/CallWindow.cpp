@@ -24,6 +24,8 @@ CallWindow::CallWindow(CallManager *call, ApiClient *api, QWidget *parent)
 
     connect(m_stage, &CallStage::requestToggleFullscreen, this, &CallWindow::toggleFullscreen);
     connect(m_stage, &CallStage::requestToggleShare, this, &CallWindow::pickShareTarget);
+    connect(m_stage, &CallStage::requestOpenBackgroundSettings,
+            this, &CallWindow::backgroundSettingsRequested);
     connect(m_call, &CallManager::stateChanged, this, &CallWindow::onCallState);
 
     onCallState();

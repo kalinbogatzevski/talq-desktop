@@ -67,7 +67,11 @@ private:
     void paintTile(QPainter &p, const Tile &t, const PainterTheme &th, bool large);
     void paintControlBar(QPainter &p, const PainterTheme &th);
     void paintStatusPill(QPainter &p, const PainterTheme &th);
-    void paintCodecPill(QPainter &p, const PainterTheme &th);
+    // 0.40.15 — split top chrome: paintInfoPills draws read-only telemetry
+    // (codec/quality stat/RX) on the left; paintActionPills draws the
+    // interactive QUALITY + BACKGROUND dropdown buttons on the right.
+    void paintInfoPills(QPainter &p, const PainterTheme &th);
+    void paintActionPills(QPainter &p, const PainterTheme &th);
     void paintSharingBadge(QPainter &p, const PainterTheme &th);
     void paintTelemetry(QPainter &p, const PainterTheme &th);
     void paintCentered(QPainter &p, const PainterTheme &th); // incoming/outgoing/alone
@@ -105,6 +109,11 @@ private:
     static constexpr int kBwHistoryMax = 60;
     QVector<float> m_bwHistory;
     QString m_hoverBtn;                        // control-bar button under cursor
+    // 0.40.15 — smooth fade for the top-row chrome (info chips + action
+    // buttons) and the bottom control bar, tied to m_controlsVisible.
+    // 1.0 = fully visible, 0.0 = fully hidden; the tick eases ~250 ms.
+    // Status pill stays at 1.0 always per Mission Control "calm glance".
+    double m_chromeAlpha = 1.0;
 
     // self-PiP drag
     int m_pipCorner = 3;                       // 0..3 TL,TR,BL,BR (default BR)
@@ -113,16 +122,36 @@ private:
     QRectF m_pipRect;
 
     double m_glowPhase = 0.0;
-    qreal m_statusPillBottom = 42.0;  // set by paintStatusPill; anchors codec pill
 
     // #8 manual stream-quality selector: -1=Auto (tile-size driven by
-    // updateStreamQualities), 0=Low/180p, 1=Med/360p, 2=High/720p. Click
-    // the Quality chip to cycle Auto -> L -> M -> H -> Auto. When >=0,
-    // every remote tile gets the same forced substream.
+    // updateStreamQualities), 0=Low/180p, 1=Med/360p, 2=High/720p.
     int m_qualityOverride = -1;
-    QRectF m_qualityPillRect;
 
-    // #20 BG chip hit rectangle, updated each paint. Independent of the
-    // Quality chip so click handling stays straightforward.
+    // 0.40.15 — Status pill rect: doubles as the layout anchor for the
+    // info pills (which start to its right) and as a hit rect. Always
+    // visible while a call is up, so it has its own member rather than
+    // living only inside m_topChromeRects.
+    QRectF m_statusPillRect;
+
+    // 0.40.15 — hit rects for the Quality / BG dropdown buttons (top-
+    // right). Updated each paint by paintActionPills; consumed by
+    // mousePressEvent + mouseMoveEvent for click + hover handling.
+    QRectF m_qualityPillRect;
     QRectF m_bgPillRect;
+
+    // 0.40.15 — every rect painted in the top chrome row (status pill,
+    // info chips, action buttons). The double-click handler iterates
+    // this to suppress fullscreen-toggle on chip clicks; cleared at the
+    // start of every paintEvent and appended-to by each top-chrome
+    // paint helper.
+    QVector<QRectF> m_topChromeRects;
+
+    // 0.40.15 — true while a Quality/BG dropdown menu is open. Used to
+    // pin the chrome visible (skip the idle auto-hide) so the menu
+    // doesn't fade out from under the cursor while it's on screen.
+    bool m_menuOpen = false;
+
+    // 0.40.15 — action-pill hover. "quality", "bg", or empty. Drives
+    // the accent-border + native QToolTip on the hovered action chip.
+    QString m_hoverPill;
 };

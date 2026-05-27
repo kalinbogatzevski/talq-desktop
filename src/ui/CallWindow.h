@@ -30,6 +30,13 @@ public:
     void exitPipDock();
     bool isPipDocked() const { return m_pipDocked; }
 
+signals:
+    // 0.40.15 — "Open background settings…" entry in the BACKGROUND
+    // dropdown (CallStage) bubbles up to MainWindow, which owns
+    // SettingsDialog. The dialog opens to its Audio & Video tab (the
+    // home of the blur slider + image picker).
+    void backgroundSettingsRequested();
+
 protected:
     void closeEvent(QCloseEvent *) override;
     void keyPressEvent(QKeyEvent *) override;
