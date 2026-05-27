@@ -63,7 +63,12 @@ void ThreadListModel::setCache(MessageCache *cache)
 
 void ThreadListModel::onCachedThreadsLoaded(const QString &token, const QVector<QJsonObject> &threads)
 {
-    if (token != m_token || threads.isEmpty() || m_conversationType == 1)
+    // 0.40.7 — previously bailed when m_conversationType == 1 (one-to-one),
+    // back when topics were group-only. 0.40.5 enabled topic creation in
+    // 1:1 chats, so the cache path must also serve them — otherwise a user
+    // who reopens a P2P with an existing topic sees nothing in the bar
+    // until the API round-trip lands.
+    if (token != m_token || threads.isEmpty())
         return;
 
     // Only use cache if we haven't loaded from API yet
@@ -203,8 +208,18 @@ void ThreadListModel::fetchThreads()
         for (const QJsonValue &val : data) {
             const QJsonObject msg = val.toObject();
 
-            // Only process messages explicitly marked as thread messages
-            if (!msg["isThread"].toBool())
+            // A message belongs to a thread if EITHER:
+            //   (a) it carries isThread:true (the API tags replies inside
+            //       a thread this way), OR
+            //   (b) it carries a non-empty threadTitle (which is how the
+            //       API marks a titled thread ROOT — the seed message
+            //       itself does NOT get isThread:true, only its replies do).
+            // 0.40.7 — previously we only checked (a), so a freshly-created
+            // topic with zero replies never showed up in the bar even after
+            // refresh(): the seed message was filtered out here.
+            const bool isThreadFlag      = msg["isThread"].toBool();
+            const QString threadTitleStr = msg["threadTitle"].toString();
+            if (!isThreadFlag && threadTitleStr.isEmpty())
                 continue;
 
             const int threadRootId = msg["threadId"].toInt();
@@ -213,12 +228,14 @@ void ThreadListModel::fetchThreads()
 
             auto &acc = threadMap[threadRootId];
             acc.threadRootId = threadRootId;
-            acc.count++;
+            // The root contributes its own existence to the thread but not
+            // a "reply" — count only the replies (isThread:true messages).
+            if (isThreadFlag)
+                acc.count++;
 
             // Use the API-provided thread title
-            const QString title = msg["threadTitle"].toString();
-            if (acc.threadTitle.isEmpty() && !title.isEmpty())
-                acc.threadTitle = title;
+            if (acc.threadTitle.isEmpty() && !threadTitleStr.isEmpty())
+                acc.threadTitle = threadTitleStr;
 
             // Track the most recent message in this thread
             const qint64 ts = msg["timestamp"].toVariant().toLongLong();

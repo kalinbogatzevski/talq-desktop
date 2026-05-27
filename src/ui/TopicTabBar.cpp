@@ -174,6 +174,14 @@ void TopicTabBar::rebuild()
 
     for (int i = 0; i < topicCount; ++i) {
         QModelIndex idx = m_model->index(i);
+        // Row 0 is the synthetic "All Messages" placeholder the model
+        // prepends to its own list (threadId=0, isAllMessages=true). We
+        // already rendered it as the leading "\u2605 All messages" chip above \u2014
+        // looping over it again produced a duplicate "# General" chip that
+        // confused users into thinking their newly-created topic wasn't
+        // there.
+        if (idx.data(ThreadListModel::IsAllMessagesRole).toBool())
+            continue;
         const int threadId = idx.data(ThreadListModel::ThreadIdRole).toInt();
         QString title      = idx.data(ThreadListModel::TitleRole).toString();
         if (title.isEmpty()) title = tr("Thread %1").arg(threadId);
