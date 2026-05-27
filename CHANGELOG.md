@@ -1,5 +1,39 @@
 # Changelog
 
+## v0.40.7 "Panagyurishte" — STABLE (2026-05-27)
+
+Follow-up to 0.40.5 (topics in 1:1 chats). Creating a topic worked, but
+the new topic chip never appeared in the bar — the bar showed only
+"★ All messages" and a stray "# General" chip. Both root causes fixed.
+
+### Fixed
+
+* **Newly-created topic was invisible until the first reply.**
+  `ThreadListModel::fetchThreads` filtered messages by `isThread:true`,
+  but the Talk API only sets that flag on REPLIES inside a thread —
+  the thread root (the seed message) carries `threadTitle` instead.
+  A freshly-created topic with zero replies therefore matched nothing
+  and never made it into the model. Now the scan also accepts roots
+  by recognising a non-empty `threadTitle`; the existing reply count
+  still comes exclusively from `isThread:true` messages so it doesn't
+  double-count the root.
+
+* **Duplicate "# General" chip in the topic bar.** `TopicTabBar::rebuild`
+  iterated every model row, including row 0 — the synthetic "All
+  Messages" placeholder the model prepends (titled "General"). That
+  produced both the leading "★ All messages" chip AND a second
+  "# General" chip for the same logical entry, which looked like
+  TalQ had silently auto-created a "General" topic. The loop now
+  skips rows tagged `isAllMessages`.
+
+* **Cached thread index was disabled for 1:1 chats.**
+  `onCachedThreadsLoaded` bailed when `m_conversationType == 1`,
+  left over from the days when topics were group-only. Reopening a
+  P2P with an existing topic now paints the bar instantly from
+  cache instead of waiting for the API round-trip.
+
+---
+
 ## v0.40.6 "Panagyurishte" — STABLE (2026-05-26)
 
 ### Fixed
