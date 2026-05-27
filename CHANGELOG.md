@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.40.10 "Panagyurishte" — STABLE (2026-05-27)
+
+Hotfix for 0.40.9 — the PiP fix was incomplete.
+
+### Fixed
+
+* **Local PiP works in real (release) builds.** 0.40.9 promoted the
+  preview-branch appsink (`m_previewAppsink`) to PLAYING but missed
+  the BG-bridge appsink (`m_bgAppsink`) — which sits UPSTREAM of the
+  camera-tee. With the bridge appsink stuck in PAUSED, its
+  `new-sample` signal never fires, no buffers flow downstream, and
+  every consumer (encoder + preview) starves identically. The
+  symptom looked exactly like the original 0.40.7 PiP-black bug.
+  `enableCamera` now promotes both appsinks AND the appsrc
+  explicitly. (The 0.40.9 dev-build appeared to work because that
+  build had the BG bridge bypassed entirely — masking the residual
+  bug from RCA. Sorry for the bounce.)
+
+---
+
 ## v0.40.9 "Panagyurishte" — STABLE (2026-05-27)
 
 Topic-mode polish + call-path recovery. Three RCAs in one release.
