@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.40.11 "Panagyurishte" — STABLE (2026-05-27)
+
+Hotfix for 0.40.10 — the BG-bridge appsink fix went one element too far.
+
+### Fixed
+
+* **Pipeline no longer aborts with "not-negotiated" on call start.**
+  0.40.10 explicitly promoted `m_bgAppsrc` to PLAYING alongside the
+  appsinks. An appsrc has a streaming task that wakes the moment the
+  element hits PLAYING; if we promote it before `onBgSample` has
+  pushed a real buffer with concrete dims, downstream negotiates
+  against the appsrc's caps property (BGRx with no width/height) and
+  fixates to garbage (width=1, height=4095) — the pipeline then
+  aborts with `not-negotiated` and the call fails outright (no PiP,
+  no remote video, GST_DEBUG full of `videoconvertscale` and
+  `videofilter` errors). This release drops the appsrc force; only
+  the two appsinks (`m_bgAppsink`, `m_previewAppsink`) are pinned
+  to PLAYING explicitly. The appsrc transitions naturally once the
+  bg sink delivers the first real-dim sample.
+
+---
+
 ## v0.40.10 "Panagyurishte" — STABLE (2026-05-27)
 
 Hotfix for 0.40.9 — the PiP fix was incomplete.
