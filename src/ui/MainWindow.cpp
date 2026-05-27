@@ -2617,35 +2617,37 @@ void MainWindow::onUpdateAutoInstallTick()
         return;
     }
 
-    // Hard gates: never auto-install during these states. The banner
-    // explains the reason so the user knows their work isn't going to
-    // be killed mid-stream. Any held mouse button is treated as active
-    // input even though GetLastInputInfo only tracks *events* (presses,
-    // releases, movement) — a slow drag-resize / drag-select / drag-to-
-    // scroll keeps the cursor still for minutes while the idle counter
-    // climbs, so we'd otherwise restart mid-drag.
-    QString blockReason;
-    if (m_callManager
-        && (m_callManager->state() != CallManager::Idle
-            || m_callManager->isScreenSharing())) {
-        blockReason = tr("you're in a call");
-    } else if (m_composer && !m_composer->currentText().isEmpty()) {
-        blockReason = tr("you have unsent text");
-    } else if (m_messages && m_messages->uploadProgress() >= 0.0) {
-        blockReason = tr("an upload is in progress");
-    } else if (QApplication::mouseButtons() != Qt::NoButton) {
-        blockReason = tr("a mouse button is held");
-    }
+    // 0.40.8 \u2014 banner-visibility constants. While the user is actively
+    // interacting with TalQ the banner is HIDDEN entirely (not just
+    // relabeled "paused..."). It returns only after a short "preview"
+    // idle window, or during the final-minute countdown. This keeps a
+    // non-urgent update prompt from sitting above the chat all day.
+    constexpr qint64 kPreviewIdleMs = 30 * 1000;   // 30 s of inactivity
+    constexpr qint64 kCountdownMs   = 60 * 1000;   // last-60 s window
+
+    // Any held mouse button counts as active input even though
+    // GetLastInputInfo only tracks events (presses, releases,
+    // movement) \u2014 a slow drag-resize / drag-select / drag-to-scroll
+    // keeps the cursor still for minutes while the idle counter climbs.
+    const bool blocked =
+        (m_callManager
+            && (m_callManager->state() != CallManager::Idle
+                || m_callManager->isScreenSharing()))
+        || (m_composer && !m_composer->currentText().isEmpty())
+        || (m_messages && m_messages->uploadProgress() >= 0.0)
+        || (QApplication::mouseButtons() != Qt::NoButton);
 
     const int idleWaitMin = qBound(1,
         QSettings().value(QStringLiteral("updates/autoInstallIdleMinutes"), 5).toInt(),
         60);
     const qint64 idleWaitMs = qint64(idleWaitMin) * 60 * 1000;
 
-    if (!blockReason.isEmpty()) {
-        m_updateLabel->setText(
-            tr("<b>Update ready.</b> Will install when idle \u2014 paused "
-               "because %1.").arg(blockReason));
+    if (blocked) {
+        // User is mid-something \u2014 fully hide the banner; the next tick
+        // will re-evaluate. Active state can't reach idleWaitMs anyway
+        // (input events keep resetting GetLastInputInfo), so the install
+        // can't fire while we're hidden here.
+        if (m_updateBanner) m_updateBanner->hide();
         return;
     }
 
@@ -2672,6 +2674,22 @@ void MainWindow::onUpdateAutoInstallTick()
         idleMs = qMin(idleMs, sinceReady);
     }
 
+    const qint64 remainingMs = idleWaitMs - idleMs;
+    const bool inCountdown   = (remainingMs <= kCountdownMs);
+
+    // Recent activity: hide the banner unless we're already in the
+    // last-minute countdown (which the user MUST see to cancel).
+    if (idleMs < kPreviewIdleMs && !inCountdown) {
+        if (m_updateBanner) m_updateBanner->hide();
+        return;
+    }
+
+    // About to be visible \u2014 make sure the banner is back on-screen.
+    if (m_updateBanner) {
+        m_updateBanner->show();
+        m_updateBanner->raise();
+    }
+
     if (idleMs >= idleWaitMs) {
         // Idle window satisfied \u2014 kick the relaunch path. We don't
         // pre-set a "relaunching\u2026" label here: if the user has joined
@@ -2688,8 +2706,7 @@ void MainWindow::onUpdateAutoInstallTick()
         return;
     }
 
-    const qint64 remainingMs = idleWaitMs - idleMs;
-    if (remainingMs <= 60 * 1000) {
+    if (inCountdown) {
         // Last minute \u2014 visible countdown.
         const int m = int(remainingMs / 60000);
         const int s = int((remainingMs % 60000) / 1000);
@@ -2899,28 +2916,28 @@ void MainWindow::createNewTopic()
     // Keep it short and recognizable so no one wonders where it came from.
     const QString seed = QStringLiteral("\U0001F4CC  ") + title;
 
+    // Single-call thread creation: Talk's POST /chat/{token} accepts a
+    // `threadTitle` form field; when non-empty (and replyTo == 0), the
+    // server creates a new thread rooted at the message in the same call.
+    // Earlier 0.40.x cuts split this into send + a separate setThreadTitle
+    // PUT/POST that DOES NOT EXIST in Talk v23.0.4 (all 4 fallback shapes
+    // return 998 Invalid query), so the seed-message-as-topic actually
+    // shipped as a plain chat line with no thread metadata.
     m_api->sendChatMessage(token, seed, this,
-        [this, token, title](bool ok, int messageId, const QString &err) {
+        [this, token, messageId_title = title](bool ok, int messageId, const QString &err) {
             if (!ok || messageId <= 0) {
                 QMessageBox::warning(this, tr("Couldn't create topic"),
                     err.isEmpty() ? tr("The server refused the seed message.")
                                   : err);
                 return;
             }
-            // Best-effort: try to set a named thread title. Different NC Talk
-            // versions accept different endpoint shapes — if all of them 404,
-            // we still have a working thread rooted at the seed message (the
-            // topic will display its seed-message text as the label).
-            m_api->setChatThreadTitle(token, messageId, title, this,
-                [this, token, messageId, title](bool /*ok2*/, const QString & /*err2*/) {
-                    // User may have switched rooms while the two-step create
-                    // was in flight — don't yank them into a topic on a
-                    // different room.
-                    if (m_activeConvToken != token) return;
-                    m_threads->refresh();
-                    openThread(messageId, title);
-                });
-        });
+            // User may have switched rooms while the create was in flight —
+            // don't yank them into a topic on a different room.
+            if (m_activeConvToken != token) return;
+            m_threads->refresh();
+            openThread(messageId, messageId_title);
+        },
+        title);
 }
 
 void MainWindow::openConversationInfo()
