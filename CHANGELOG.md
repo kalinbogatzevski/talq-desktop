@@ -1,5 +1,32 @@
 # Changelog
 
+## v0.40.16 "Panagyurishte" — STABLE (2026-05-27)
+
+Auto-install idle gate now keys off **TalQ-input** rather than
+system-wide input, and the last-minute countdown also fires a tray
+notification so a backgrounded TalQ can't surprise-install.
+
+### Changed (auto-install gate)
+
+* **Idle is measured against TalQ activity, not desktop activity.**
+  The previous `GetLastInputInfo` gate reset the countdown any time
+  the user touched the keyboard or mouse anywhere on the desktop —
+  even in a browser or IDE. Replaced with an app-level `QApplication`
+  event filter that timestamps `m_lastTalqInputMs` on every
+  `MouseButtonPress` / `KeyPress` / `Wheel` event reaching our
+  process. Events targeted at other apps never enter our event loop,
+  so working in another window now correctly DOES let TalQ count up
+  toward the install window. Bare `MouseMove` is excluded so a stray
+  cursor drift across TalQ's edge doesn't reset the timer.
+* **Tray toast when the countdown enters its final minute.** Fires
+  once per cycle via `NotificationManager::notify`. The inline
+  in-window banner is invisible while TalQ is minimised / in the
+  tray, so without this the user only saw the "Installing in M:SS…"
+  message after they happened to bring TalQ to focus. The toast
+  gives them a real chance to alt-tab over and cancel.
+
+---
+
 ## v0.40.15 "Panagyurishte" — STABLE (2026-05-27)
 
 Mission Control visual pass on the in-call surface, dropdown menus
