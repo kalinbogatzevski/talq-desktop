@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.40.14 "Panagyurishte" — STABLE (2026-05-27)
+
+Hotfix for 0.40.13 — the push_sample fix only covered HALF the
+BG-bridge code path.
+
+### Fixed
+
+* **PiP works with BG-blur enabled** (the case 0.40.13 missed).
+  `onBgSample`'s on-mode path (BG-blur active: engine actually
+  processes each frame) still used `gst_app_src_push_buffer` for
+  the processed buffer AND for the three error-fallback paths
+  (caps shifted off BGRx, buffer map failed, buffer too small).
+  Same caps-propagation problem as 0.40.13's off-mode bug: the
+  appsrc's static caps with no width/height got forwarded to
+  downstream, preview-convert and preview-appsink saw unbounded
+  caps, PiP stayed black. Switched all four push sites to
+  `gst_app_src_push_sample` — the processed-buffer path builds a
+  new GstSample with the input caps (which carry concrete BGRx
+  dims + framerate); the fallbacks push the original input sample
+  through. Field-verified with BG-blur ON on the affected device.
+
+---
+
 ## v0.40.13 "Panagyurishte" — STABLE (2026-05-27)
 
 The actual PiP fix. 0.40.9–0.40.12 were chasing guesses. This one
