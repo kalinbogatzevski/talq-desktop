@@ -11,6 +11,9 @@
 #include <gst/rtp/rtp.h>
 #include <gst/sdp/sdp.h>
 #include <thread>
+#include <atomic>
+#include <cstdio>
+#include <cstdlib>
 
 #include "core/VideoEncoderUtil.h"
 
@@ -1060,6 +1063,7 @@ bool PublishPipeline::buildCameraChain(int deviceIndex, bool hd1080)
             "drop",  TRUE,
             "max-buffers", 2,
             "sync",  FALSE,    // streaming-thread already paced by the camera
+            "async", FALSE,    // 0.40.13 — RCA: see preview-appsink below
             nullptr);
         g_object_set(m_bgAppsrc,
             "caps",   bgrxCaps,
@@ -1087,6 +1091,22 @@ bool PublishPipeline::buildCameraChain(int deviceIndex, bool hd1080)
             "caps", previewCaps,
             "drop", TRUE,
             "max-buffers", 1,
+            // 0.40.13 — async=FALSE. BaseSink defaults to async=TRUE,
+            // meaning the sink REQUIRES a preroll buffer in PAUSED
+            // before allowing the pipeline to reach PLAYING. With the
+            // BG bridge in the chain (appsink → callback → appsrc),
+            // preroll creates a circular dependency: bg-appsink emits
+            // "new-preroll" (not "new-sample") in PAUSED, our
+            // onBgSample callback hooks ONLY "new-sample", so no
+            // buffer ever gets pushed to bg-appsrc, so preview-appsink
+            // never receives its preroll buffer, so the pipeline stays
+            // pending=PLAYING forever and preview-appsink stays in
+            // READY → no PiP, no remote video.
+            // Setting async=FALSE makes the sink transition directly
+            // to PLAYING without waiting for a preroll buffer. RCA'd
+            // 2026-05-27 via TALQ_DEBUG_PIPELINE state dumps at t+200ms,
+            // t+1s, t+3s — preview-appsink stayed READY across all.
+            "async", FALSE,
             nullptr);
         gst_caps_unref(previewCaps);
         g_signal_connect(m_previewAppsink, "new-sample",
@@ -1212,8 +1232,61 @@ void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)
     gst_element_sync_state_with_parent(m_previewQueue);
     gst_element_sync_state_with_parent(m_previewConvert);
     gst_element_sync_state_with_parent(m_previewAppsink);
+    // 0.40.13 — RCA showed the pipeline was stuck in PAUSED at this
+    // point (instrumented dump after enableCamera+200ms: m_pipeline
+    // cur=PAUSED pending=PAUSED, every downstream element PAUSED).
+    // start()'s initial set_state(PLAYING) had returned NO_PREROLL /
+    // ASYNC and the pipeline never made it to PLAYING — so every
+    // child added later inherited PAUSED via sync_state_with_parent,
+    // and PAUSED appsinks don't emit `new-sample`. Re-issuing
+    // set_state(pipeline, PLAYING) here forces the cascade through
+    // the just-added camera chain. Cheap when already PLAYING.
+    gst_element_set_state(m_pipeline, GST_STATE_PLAYING);
     // Start camera source LAST and async — mfvideosrc COM init blocks ~1s
     gst_element_set_state(m_cameraSrc, GST_STATE_PLAYING);
+
+    // Pipeline-state RCA dump. Runtime-gated on env var TALQ_DEBUG_PIPELINE
+    // (e.g. `set TALQ_DEBUG_PIPELINE=1 & talq.exe`). When off (the
+    // default in shipped builds) the std::getenv check costs nothing
+    // meaningful and the timers are never armed. Dumps states at
+    // 200/1000/3000 ms so we can see whether the pipeline converges.
+    // Kept in source permanently as a reusable diagnostic.
+    if (const char *e = std::getenv("TALQ_DEBUG_PIPELINE"); e && *e == '1') {
+        auto schedule = [this](int delayMs, const char *label) {
+            QTimer::singleShot(delayMs, this, [this, label]() {
+                FILE *f = std::fopen("C:/temp/talq-pipe.log", "a");
+                if (!f) return;
+                auto dump = [f](const char *name, GstElement *el) {
+                    if (!el) { std::fprintf(f, "  %-18s = NULL pointer\n", name); return; }
+                    GstState cur = GST_STATE_VOID_PENDING, pending = GST_STATE_VOID_PENDING;
+                    gst_element_get_state(el, &cur, &pending, 0);
+                    static const char *names[] = {"VOID","NULL","READY","PAUSED","PLAYING"};
+                    int ci = (cur     >= 0 && cur     < 5) ? (int)cur     : 0;
+                    int pi = (pending >= 0 && pending < 5) ? (int)pending : 0;
+                    std::fprintf(f, "  %-18s cur=%-7s pending=%s\n", name, names[ci], names[pi]);
+                };
+                std::fprintf(f, "=== enableCamera+%s states ===\n", label);
+                dump("m_pipeline",       m_pipeline);
+                dump("m_cameraSrc",      m_cameraSrc);
+                dump("m_camSrcCaps",     m_camSrcCaps);
+                dump("m_camDecode",      m_camDecode);
+                dump("m_videoConvert",   m_videoConvert);
+                dump("m_videoCapsFilter",m_videoCapsFilter);
+                dump("m_bgAppsink",      m_bgAppsink);
+                dump("m_bgAppsrc",       m_bgAppsrc);
+                dump("m_tee",            m_tee);
+                dump("m_encQueue",       m_encQueue);
+                dump("m_cameraValve",    m_cameraValve);
+                dump("m_previewQueue",   m_previewQueue);
+                dump("m_previewConvert", m_previewConvert);
+                dump("m_previewAppsink", m_previewAppsink);
+                std::fclose(f);
+            });
+        };
+        schedule(200,  "200ms");
+        schedule(1000, "1s");
+        schedule(3000, "3s");
+    }
 
     // 3. Flip valves — camera frames flow, dummy frames stop. Also stop
     //    the 5-s dummy-halt timer (if it hadn't fired yet) so it cannot
@@ -1664,6 +1737,17 @@ void PublishPipeline::onIceGatheringStateChanged(GObject *obj, GParamSpec *, gpo
 GstFlowReturn PublishPipeline::onPreviewSample(GstAppSink *sink, gpointer userData)
 {
     auto *self = static_cast<PublishPipeline *>(userData);
+    // Gated RCA logging — TALQ_DEBUG_PIPELINE=1. See note in enableCamera.
+    if (const char *dbg = std::getenv("TALQ_DEBUG_PIPELINE"); dbg && *dbg == '1') {
+        static std::atomic<int> count{0};
+        const int n = ++count;
+        if (n <= 5 || n % 100 == 0) {
+            if (FILE *f = std::fopen("C:/temp/talq-pipe.log", "a")) {
+                std::fprintf(f, "onPreviewSample n=%d self=%p\n", n, (void*)self);
+                std::fclose(f);
+            }
+        }
+    }
     GstSample *sample = gst_app_sink_pull_sample(sink);
     if (!sample) return GST_FLOW_OK;
 
@@ -1715,6 +1799,17 @@ GstFlowReturn PublishPipeline::onPreviewSample(GstAppSink *sink, gpointer userDa
 GstFlowReturn PublishPipeline::onBgSample(GstAppSink *sink, gpointer userData)
 {
     auto *self = static_cast<PublishPipeline *>(userData);
+    // Gated RCA logging — TALQ_DEBUG_PIPELINE=1. See note in enableCamera.
+    if (const char *dbg = std::getenv("TALQ_DEBUG_PIPELINE"); dbg && *dbg == '1') {
+        static std::atomic<int> count{0};
+        const int n = ++count;
+        if (n <= 5 || n % 100 == 0) {
+            if (FILE *f = std::fopen("C:/temp/talq-pipe.log", "a")) {
+                std::fprintf(f, "onBgSample n=%d self=%p\n", n, (void*)self);
+                std::fclose(f);
+            }
+        }
+    }
     if (!self) return GST_FLOW_ERROR;
     if (self->m_shuttingDown.load(std::memory_order_relaxed)) {
         // Drain so the streaming thread doesn't back up while the
@@ -1737,11 +1832,19 @@ GstFlowReturn PublishPipeline::onBgSample(GstAppSink *sink, gpointer userData)
 
     // ---------- Off-mode: zero-allocation push-through ----------
     if (!engineOn) {
-        // Take a strong ref on the input buffer for the appsrc and let
-        // the sample go.
-        GstBuffer *passBuf = gst_buffer_ref(inBuf);
+        // 0.40.13 — push_SAMPLE not push_buffer. The appsrc's static
+        // caps property is "video/x-raw,format=BGRx" with NO width /
+        // height / framerate; push_buffer leaves those caps in place
+        // downstream, so the preview-convert and preview-appsink see
+        // unbounded caps and either fixate to garbage or never get a
+        // useful caps event at all (this is why onPreviewSample never
+        // fires in release builds). push_sample forwards the sample's
+        // full caps (the camera's actual BGRx + concrete dims +
+        // framerate), letting downstream negotiate cleanly. Same
+        // ownership model: push_sample is transfer-none, we unref
+        // the sample after.
+        GstFlowReturn fr = gst_app_src_push_sample(src, sample);
         gst_sample_unref(sample);
-        GstFlowReturn fr = gst_app_src_push_buffer(src, passBuf);  // takes ownership
         self->m_bgBridgeFramesPassThrough.fetch_add(1, std::memory_order_relaxed);
         return fr;
     }

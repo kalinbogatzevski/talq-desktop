@@ -1,5 +1,49 @@
 # Changelog
 
+## v0.40.13 "Panagyurishte" — STABLE (2026-05-27)
+
+The actual PiP fix. 0.40.9–0.40.12 were chasing guesses. This one
+was RCA'd against live ground-truth via TALQ_DEBUG_PIPELINE state
+dumps — the diagnostic instrumentation is kept in the source
+(env-gated, zero runtime cost when off) for any future recurrence.
+
+### Fixed
+
+* **Local PiP and remote video both work in release builds.** Two
+  separate bugs in the BG-bridge stalling the call's video chain:
+
+  1. **Preroll circular dependency.** BaseSink's default
+     `async=TRUE` makes appsinks wait for a preroll buffer in
+     PAUSED before the pipeline can reach PLAYING. With the BG
+     bridge in the chain (`bg-appsink` → callback → `bg-appsrc`),
+     `bg-appsink` only emits `new-preroll` (not `new-sample`) in
+     PAUSED, our callback only hooks `new-sample`, so no buffer
+     propagates to `bg-appsrc`, `preview-appsink` never gets a
+     preroll buffer, and the pipeline stays in `pending=PLAYING`
+     forever. Fixed by `async=FALSE` on both appsinks — they
+     transition straight to data-flow without waiting on preroll.
+
+  2. **Caps event lost across the BG bridge.** `onBgSample`'s
+     off-mode (BG-blur off) path called `gst_app_src_push_buffer`,
+     which leaves `bg-appsrc`'s static caps property (`BGRx` with
+     no width/height/framerate) in place downstream. The preview
+     branch and encoder branch then negotiated against unbounded
+     caps and either fixated to garbage (`width=1, height=4095`)
+     or never got a usable caps event at all — no PiP, no remote
+     video. Fixed by `gst_app_src_push_sample`, which forwards the
+     sample's full caps (camera's real BGRx + concrete dims +
+     framerate) to downstream.
+
+* **Pipeline-state instrumentation kept in source.** Set
+  `TALQ_DEBUG_PIPELINE=1` and the dev/branded binary writes
+  enableCamera-state dumps (at +200ms / +1s / +3s) and appsink
+  callback / `feedFrame` counters to `C:\temp\talq-pipe.log`. Off
+  by default; zero runtime cost when unset. Reusable for any
+  future "frames aren't reaching X" investigation without having
+  to rebuild for one-shot instrumentation.
+
+---
+
 ## v0.40.12 "Panagyurishte" — STABLE (2026-05-27)
 
 Cleanup of 0.40.9–0.40.11. The previous three releases were chasing
