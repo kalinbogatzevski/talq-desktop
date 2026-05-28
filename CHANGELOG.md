@@ -1,5 +1,39 @@
 # Changelog
 
+## v0.41.8 "Koprivshtitsa" — BETA (2026-05-28)
+
+Multi-device self-ring suppression.
+
+### Fixed
+
+* **Sibling-device self-ring on outgoing call.** When you start a
+  call from one device (e.g. laptop A) while signed in on another
+  (e.g. laptop B at home), laptop B previously rang as if the
+  call were incoming — `ConversationListModel`'s
+  `hasCall: false → true` transition detector didn't check who
+  started the call. **Now**: the same JSON also carries
+  `participantInCallFlags` — when non-zero it means OUR user is
+  already in the call (from the other device), so we silently
+  log + skip the ring. Mirrors upstream Talk's web client
+  behaviour and matches the userId-comparison check already in
+  `CallManager`'s signaling-based detection path.
+
+### Still open (P2P-for-1:1)
+
+* The experimental "Direct P2P for 1:1 calls" toggle remains
+  broken on this build: `PeerPipeline` hard-pins camera caps to
+  `image/jpeg,1920x1080@30` (or 1280×720), which fails on
+  cameras that don't advertise that exact MJPEG mode (field
+  reproduction: `mfvideosrc0 error: streaming stopped, reason
+  not-negotiated`). It also doesn't release the camera cleanly
+  on stop, so a failed P2P attempt can leave the next MCU call's
+  camera in a wedged state until TalQ is restarted. **Workaround
+  for now**: keep "Direct P2P for 1:1 calls" OFF in Settings.
+  Proper fix queued for the PeerPipeline → PublishPipeline
+  unification work.
+
+---
+
 ## v0.41.7 "Koprivshtitsa" — BETA (2026-05-28)
 
 One-line fix to the P2P-for-1:1 code path so it can actually

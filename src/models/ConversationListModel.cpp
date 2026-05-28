@@ -144,8 +144,26 @@ void ConversationListModel::refresh()
             // calls that were already active before we started).
             bool prevCall = m_callState.value(c.token, false);
             if (c.hasCall && !prevCall && m_callStateSeeded) {
-                qDebug() << "ConversationListModel: call detected in" << c.displayName << "token=" << c.token;
-                emit incomingCallDetected(c.displayName, c.token, c.callFlag);
+                // 0.41.8-beta — multi-device self-ring suppression. If
+                // `participantInCallFlags` is non-zero, OUR own user is
+                // already in this call (presumably from a sibling
+                // device — our other laptop, phone, etc.). Don't ring
+                // ourselves; the user is busy elsewhere AND probably
+                // the one who started the call. Mirrors the upstream
+                // Talk web client's behaviour and matches the
+                // userId-comparison check already in CallManager's
+                // signaling-based detection path (CallManager.cpp:2125).
+                if (c.participantInCallFlags > 0) {
+                    qInfo() << "ConversationListModel: call started in"
+                            << c.displayName
+                            << "but our user is already in it (flags="
+                            << c.participantInCallFlags
+                            << ") — not ringing self";
+                } else {
+                    qDebug() << "ConversationListModel: call detected in"
+                             << c.displayName << "token=" << c.token;
+                    emit incomingCallDetected(c.displayName, c.token, c.callFlag);
+                }
             }
             m_callState[c.token] = c.hasCall;
         }

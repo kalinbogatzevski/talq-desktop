@@ -53,6 +53,11 @@ public:
     bool hasTopics = false;
     bool hasCall = false;   // someone is in a call in this room
     int callFlag = 0;       // call flags (1=in-call, 2=audio, 4=video)
+    // 0.41.8-beta — Talk's `participantInCallFlags`: bit-flags for
+    // whether OUR user is currently in this call (from any device).
+    // Non-zero = we're already in the call (started elsewhere). Used
+    // to suppress the multi-device self-ring.
+    int participantInCallFlags = 0;
     int notificationLevel = 0;  // 0=default, 1=always, 2=mention-only, 3=never
 
     static Conversation fromJson(const QJsonObject &json);

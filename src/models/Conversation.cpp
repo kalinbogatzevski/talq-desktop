@@ -17,6 +17,7 @@ Conversation Conversation::fromJson(const QJsonObject &json)
     c.status = json["status"].toString(); // 1:1 chats include user status
     c.hasCall = json["hasCall"].toBool();
     c.callFlag = json["callFlag"].toInt();
+    c.participantInCallFlags = json["participantInCallFlags"].toInt();
     c.notificationLevel = json["notificationLevel"].toInt(0);
 
     // Extract last message preview
