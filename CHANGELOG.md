@@ -1,5 +1,45 @@
 # Changelog
 
+## v0.41.2 "Koprivshtitsa" — BETA (2026-05-28)
+
+Multi-device chat history sync fix + diagnostic logging for the
+"zero messages inside a topic tab" field report.
+
+### Fixed
+
+* **Multi-device gap-fill on chat open.** When the local cache held
+  messages 1–100 but the server's latest 50 returned IDs 251–300
+  (because another device sent ~200 messages while this client
+  was offline), the model silently left 101–250 unreachable —
+  `m_oldestMessageId` was set to the cache's oldest (1), so
+  pagination via scroll-up returned empty and `m_hasMoreHistory`
+  flipped to false. **Now**: `refreshLatest()` detects when the
+  oldest fetched ID is more than one above the newest pre-refresh
+  cached ID, then runs a backfill loop (`runGapFillStep`) that
+  pages `lookIntoFuture=0 limit=100` from `oldestFetched` backward
+  until the gap closes (or hits a 20-page = 2000-message budget
+  cap). Applies to both general chats and threads.
+
+### Added (diagnostics)
+
+* `sendMessage` logs `token + threadId + replyTo + length` at
+  `qInfo` level so we can verify the sender-side actually
+  attached the expected `threadId`.
+* `refreshLatest` logs thread-stats: how many fetched messages had
+  `threadId > 0` vs were thread-less. Helps tell apart "server has
+  the messages but tagged with a different/no threadId" from
+  "server has nothing under this token".
+
+### Known follow-ups
+
+* Field reports for "topic tab shows zero messages" and "first
+  sent message disappears after sending a second" remain under
+  investigation. A research pass against the upstream Nextcloud
+  Talk web client's reference chat-sync flow is queued; concrete
+  fixes will land in 0.41.3-beta.
+
+---
+
 ## v0.41.1 "Koprivshtitsa" — BETA (2026-05-28)
 
 Screen-share UX work that was deferred from 0.41.0. Two changes,

@@ -174,6 +174,19 @@ private:
     bool m_loading = false;
     bool m_hasMoreHistory = true;
     int m_oldestMessageId = 0;
+    // 0.41.2-beta — gap-fill state. When refreshLatest or the poller
+    // reveals new messages whose IDs are not contiguous with the
+    // cached set (e.g. the user's other device sent 200 messages
+    // since this client last polled, and refreshLatest only returns
+    // the latest 50), m_gapFillCursor is set to the OLDEST of the
+    // newly-fetched batch and m_gapFillTargetId to the cached
+    // newest-pre-refresh. The fetcher pages older until the gap
+    // closes or m_gapFillPagesRemaining is exhausted.
+    int m_gapFillCursor          = 0;
+    int m_gapFillTargetId        = 0;
+    int m_gapFillPagesRemaining  = 0;
+    class QNetworkReply *m_gapFillReply = nullptr;
+    void runGapFillStep();
     int m_lastCommonRead = 0;
     int m_unreadBoundary = 0;
     ConversationListModel *m_conversations = nullptr;
