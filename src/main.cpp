@@ -461,6 +461,9 @@ int main(int argc, char *argv[])
     SignalingClient signaling(&api);
     MediaDeviceManager deviceManager;
     CallManager callManager(&api, &signaling, &deviceManager);
+    // 0.41.5-beta — let CallManager look up the room type when picking
+    // P2P vs MCU for a call (forces P2P for 1:1 even with HPB present).
+    callManager.setConversations(&conversations);
 
     UserStatusManager userStatus(&api, &auth);
     DebugMonitor debug;

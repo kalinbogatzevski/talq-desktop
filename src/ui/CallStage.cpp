@@ -934,26 +934,36 @@ void CallStage::paintStatusPill(QPainter &p, const PainterTheme &th)
                     : QString();
     QString text = word + dur;
 
-    QFont f = monoFont(9); f.setBold(true);
+    // 0.41.5-beta — bumped 9 → 11 px + 20 → 26 px height for 2K
+    // legibility. Plus the LED gets a contrasting dark ring + a
+    // never-fully-transparent floor so it stays visible on light
+    // backgrounds (was washing out during the breathing pulse).
+    QFont f = monoFont(11); f.setBold(true);
     f.setLetterSpacing(QFont::AbsoluteSpacing, 0.8);
     p.setFont(f);
     QFontMetrics fm(f);
-    // Width = text + LED area (20px on left) + breathing room (12px on
-    // right). Earlier this was text+26 with -8 right-padding → 2-px
-    // deficit clipped the trailing seconds digit on "IN CALL · 00:42".
-    QRectF pill(16, 14, fm.horizontalAdvance(text) + 34, 20);
+    QRectF pill(16, 14, fm.horizontalAdvance(text) + 38, 26);
 
+    // Card-style background (semi-opaque bg-surface) so the pill stays
+    // readable when the call surface behind it is bright (1.0 video).
+    QColor face = th.bgSurface; face.setAlphaF(0.88);
     QColor border = dot; border.setAlphaF(0.85);
-    p.setBrush(Qt::NoBrush);
-    p.setPen(QPen(border, 1.0));
-    p.drawRoundedRect(pill, 10, 10);
+    p.setBrush(face);
+    p.setPen(QPen(border, 1.2));
+    p.drawRoundedRect(pill, 13, 13);
 
-    qreal pulse = reducedMotion() ? 1.0 : (0.55 + 0.45*qSin(m_glowPhase));
+    qreal pulse = reducedMotion() ? 0.85 : qMax(0.55, 0.55 + 0.45 * qSin(m_glowPhase));
     QColor d = dot; d.setAlphaF(pulse);
+    const QRectF ledRect(pill.left() + 11, pill.center().y() - 3.5, 7, 7);
+    // Dark contrast ring so the LED reads against light/white video.
+    QColor ledRing = th.controlInk; ledRing.setAlphaF(0.7);
+    p.setBrush(Qt::NoBrush);
+    p.setPen(QPen(ledRing, 1.0));
+    p.drawEllipse(ledRect.adjusted(-0.5, -0.5, 0.5, 0.5));
     p.setBrush(d); p.setPen(Qt::NoPen);
-    p.drawEllipse(QRectF(pill.left()+8, pill.center().y()-2.5, 5, 5));
+    p.drawEllipse(ledRect);
     p.setPen(dot);
-    p.drawText(pill.adjusted(20, 0, -10, 0), Qt::AlignVCenter|Qt::AlignLeft, text);
+    p.drawText(pill.adjusted(25, 0, -12, 0), Qt::AlignVCenter|Qt::AlignLeft, text);
 
     m_statusPillRect = pill;
     m_topChromeRects.append(pill);
@@ -976,19 +986,22 @@ void CallStage::paintInfoPills(QPainter &p, const PainterTheme &th)
     const QString enc = m_call->activeVideoEncoder();
     if (enc.isEmpty()) return;
 
-    QFont keyF = monoFont(7);  keyF.setBold(true);
+    // 0.41.5-beta — chips bumped to status-pill scale (26 h, 9/11 mono)
+    // for 1440p legibility. Field report: 7/9 px was unreadable on 2K
+    // panels at default Windows scaling.
+    QFont keyF = monoFont(9);  keyF.setBold(true);
     keyF.setLetterSpacing(QFont::AbsoluteSpacing, 1.2);
-    QFont valF = monoFont(9);  valF.setBold(true);
+    QFont valF = monoFont(11); valF.setBold(true);
     QFontMetrics keyFm(keyF), valFm(valF);
 
-    const qreal padL     = 8.0;
-    const qreal padR     = 10.0;
-    const qreal dotW     = 5.0;
-    const qreal dotGap   = 6.0;
-    const qreal keyValGap = 7.0;
-    const qreal tileH    = 20.0;
-    const qreal radius   = 8.0;
-    const qreal gap      = 7.0;
+    const qreal padL     = 11.0;
+    const qreal padR     = 12.0;
+    const qreal dotW     = 7.0;
+    const qreal dotGap   = 8.0;
+    const qreal keyValGap = 10.0;
+    const qreal tileH    = 26.0;
+    const qreal radius   = 11.0;
+    const qreal gap      = 8.0;
     QColor face = th.bgSurface; face.setAlphaF(0.88);
 
     qreal x = m_statusPillRect.right() + gap;
@@ -1030,6 +1043,14 @@ void CallStage::paintInfoPills(QPainter &p, const PainterTheme &th)
     const QString val1  = codec + (hw ? QStringLiteral(" · HW")
                                        : QStringLiteral(" · SW"));
     drawTile(QStringLiteral("CODEC"), val1, hw ? th.success : th.amber);
+
+    // 0.41.5-beta — call MODE pill: P2P (direct WebRTC) or MCU (SFU
+    // forwarding). Green for P2P (preferred low-latency for 1:1),
+    // amber for MCU. Decided per-call at signaling-room join time.
+    const bool p2p = m_call->isUsingP2P();
+    drawTile(QStringLiteral("MODE"),
+             p2p ? QStringLiteral("P2P") : QStringLiteral("MCU"),
+             p2p ? th.success : th.amber);
 
     // QUALITY chip: live readout of the substream the primary remote is
     // forwarding. Distinct from the QUALITY DROPDOWN — the dropdown is
@@ -1108,22 +1129,21 @@ void CallStage::paintActionPills(QPainter &p, const PainterTheme &th)
     // 0.40.15 — buttons share the info-tile card vocab (bg-surface +
     // divider border at rest), with two readable distinctions: a
     // slightly thicker border (1.3px → 1.6px on hover) and a ▼ caret.
-    // KEY in textTime, VAL in textPrimary — so a button looks like a
-    // telemetry tile that can be opened. Sized to match the info chips
-    // (22h), uniform top row.
-    QFont keyF = monoFont(7);  keyF.setBold(true);
+    // KEY in textTime, VAL in textPrimary.
+    // 0.41.5-beta — bumped to the new 26h scale + 9/11 mono fonts.
+    QFont keyF = monoFont(9);  keyF.setBold(true);
     keyF.setLetterSpacing(QFont::AbsoluteSpacing, 1.2);
-    QFont valF = monoFont(9);  valF.setBold(true);
+    QFont valF = monoFont(11); valF.setBold(true);
     QFontMetrics keyFm(keyF), valFm(valF);
 
-    const qreal padL     = 8.0;
-    const qreal padR     = 8.0;
-    const qreal keyValGap = 7.0;
-    const qreal caretW   = 7.0;
-    const qreal caretGap = 5.0;
-    const qreal btnH     = 20.0;
-    const qreal gap      = 7.0;
-    const qreal radius   = 8.0;
+    const qreal padL     = 11.0;
+    const qreal padR     = 10.0;
+    const qreal keyValGap = 10.0;
+    const qreal caretW   = 9.0;
+    const qreal caretGap = 7.0;
+    const qreal btnH     = 26.0;
+    const qreal gap      = 8.0;
+    const qreal radius   = 11.0;
 
     const QString qKey  = QStringLiteral("QUALITY");
     const QString bgKey = QStringLiteral("BACKGROUND");

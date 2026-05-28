@@ -1,5 +1,54 @@
 # Changelog
 
+## v0.41.5 "Koprivshtitsa" — BETA (2026-05-28)
+
+In-call chrome legibility on 2K panels, a new `MODE` pill, and an
+opt-in "direct P2P for 1:1 calls" toggle.
+
+### Changed (in-call UI)
+
+* **Bigger top-row chrome.** Status pill is now 11 px mono on a
+  26 px-tall card-style background (was 9 px on a transparent
+  outline). Info chips (CODEC / QUALITY / RX) and action buttons
+  (QUALITY / BACKGROUND / SHARE) scale to match — 9/11 px mono,
+  26 px tall, 11 px radius. Field report: 7/9 px on 1440p was
+  unreadable at default Windows scaling.
+* **Status pill LED stays readable on light video backgrounds.**
+  Added a dark contrast ring around the breathing dot and floored
+  the pulse alpha at 0.55 so it never washes out completely.
+* **`MODE` pill in the telemetry row.** Reads `P2P` (green LED)
+  when the call is direct WebRTC peer-to-peer, `MCU` (amber) when
+  it's SFU-forwarded. Decided once per call at signaling-room-join
+  time; stable for the call's lifetime.
+
+### Added (Settings → Audio & Video)
+
+* **"Direct P2P for 1:1 calls (experimental)"** checkbox. Default
+  OFF. When on, 1:1 calls (room type == 1) bypass the SFU and go
+  peer-to-peer for lower latency — useful when both peers are in
+  the same region and the SFU is far away (e.g. BG↔BG with an
+  SA-hosted HPB). Group calls (3+) always stay on the SFU. The
+  decision is per-call: if direct ICE fails, TalQ falls back to
+  the MCU automatically.
+* Note: the experimental tag is honest — `PeerPipeline`'s audio→
+  video renegotiation path needs more verification on HPB-relayed
+  signaling. Camera enable was observed failing in a 1:1 P2P call
+  during testing; turning the toggle OFF restores the MCU path
+  (the 0.40 / 0.41.0–0.41.4 behaviour) until the renegotiation
+  flow is hardened.
+
+### Known follow-ups (queued for 0.41.6-beta)
+
+* `PeerPipeline` add-camera-after-audio-handshake hardening so
+  P2P-for-1:1 can be the default.
+* Auto-cap published resolution on sustained packet loss (GCC
+  estimate < threshold for N seconds → clamp HIGH-layer target).
+* Reply-chain fallback for thread membership (admit messages
+  tagged without `threadId` but with `replyTo` pointing at the
+  seed).
+
+---
+
 ## v0.41.4 "Koprivshtitsa" — BETA (2026-05-28)
 
 UX polish on the 0.41.0 resolution work + a stickier `revertStuckCall`.
