@@ -30,7 +30,6 @@
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QSlider>
-#include <QDoubleSpinBox>
 #include <QStandardPaths>
 #include <QTimer>
 
@@ -407,33 +406,13 @@ QWidget *SettingsDialog::buildAudioVideoTab()
            "capable camera and a healthy link — TalQ adapts down to fit."),
         resCombo));
 
-    // 0.41.0-beta — Playback volume slider. Drives the receive-side
-    // `volume` element added in PeerPipeline + SubscribePipeline. 0
-    // mutes incoming, 1.0× = pre-0.41 behaviour, 1.8× = the new
-    // default, up to 3.0×. Takes effect on the next subscriber pipe.
-    auto *gainSpin = new QDoubleSpinBox(this);
-    gainSpin->setRange(0.0, 3.0);
-    gainSpin->setSingleStep(0.1);
-    gainSpin->setDecimals(1);
-    gainSpin->setSuffix(QStringLiteral("×"));
-    {
-        QSettings as("TalQ", "TalQ");
-        as.beginGroup("Audio");
-        gainSpin->setValue(as.value("playbackGain", 1.8).toDouble());
-        as.endGroup();
-    }
-    connect(gainSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [gainSpin]() {
-                QSettings as("TalQ", "TalQ");
-                as.beginGroup("Audio");
-                as.setValue("playbackGain", gainSpin->value());
-                as.endGroup();
-            });
-    layout->addWidget(makeSettingRow(
-        tr("Playback volume"),
-        tr("Receive-side gain applied to incoming voices. 1.0× is unity, "
-           "1.8× is the 0.41 default."),
-        gainSpin));
+    // 0.41.3-beta — playback-gain control removed. Telegram, Zoom and
+    // Meet do not surface a "playback volume" setting; their receive-
+    // side AudioProcessing AGC handles it automatically. TalQ now
+    // does the same with audiodynamic + rglimiter on the receive
+    // chain (PeerPipeline / SubscribePipeline). The 1.8× constant in
+    // QSettings("TalQ","TalQ")/Audio/playbackGain is the only knob,
+    // and it stays at default unless a power user edits it directly.
 
     layout->addSpacing(kGroupGap - kRowGap);
 
