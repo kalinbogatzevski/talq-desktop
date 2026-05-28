@@ -1070,10 +1070,30 @@ void CallStage::paintActionPills(QPainter &p, const PainterTheme &th)
     // The button shows the CURRENT value + ▼ caret so it reads "this
     // is a control with a dropdown" at a glance. Hover lifts subtly
     // (1.05x scale + accent border) and shows a native tooltip.
-    static const char *const kLabels[] = { "Low (180p)", "Medium (360p)", "High (720p)" };
+    // 0.41.4-beta — High-layer label tracks the publisher's "Maximum
+    // send resolution" Settings choice. Stale "720p" was the field
+    // complaint after enabling 1440p/4K. We read the LOCAL setting as
+    // a best-guess for the symmetric peer config (works in 1:1 cases
+    // where both peers run the same TalQ build with similar settings).
+    const QString highLabel = [&]() -> QString {
+        QSettings vs("TalQ", "TalQ");
+        vs.beginGroup("Video");
+        const int h = vs.value("maxSendHeight", 720).toInt();
+        vs.endGroup();
+        switch (h) {
+            case 2160: return QStringLiteral("High (4K)");
+            case 1440: return QStringLiteral("High (2K)");
+            case 1080: return QStringLiteral("High (1080p)");
+            default:   return QStringLiteral("High (720p)");
+        }
+    }();
+    const QString kLowLabel = QStringLiteral("Low (180p)");
+    const QString kMedLabel = QStringLiteral("Medium (360p)");
     const QString qVal = (m_qualityOverride < 0)
         ? tr("AUTO")
-        : QString::fromLatin1(kLabels[m_qualityOverride]).toUpper();
+        : (m_qualityOverride == 0 ? kLowLabel
+           : m_qualityOverride == 1 ? kMedLabel
+           : highLabel).toUpper();
     const bool qActive = (m_qualityOverride >= 0);
 
     QSettings bgSet("TalQ", "TalQ");
@@ -1398,12 +1418,24 @@ void CallStage::mouseMoveEvent(QMouseEvent *e)
     if (hovPill != m_hoverPill) {
         m_hoverPill = hovPill;
         if (hovPill == QStringLiteral("quality")) {
-            static const char *const kLabels[] = { "Low (180p)", "Medium (360p)", "High (720p)" };
-            const QString cur = (m_qualityOverride < 0)
-                ? QStringLiteral("Auto")
-                : QString::fromLatin1(kLabels[m_qualityOverride]);
+            QString highLab;
+            {
+                QSettings vs("TalQ", "TalQ");
+                vs.beginGroup("Video");
+                const int h = vs.value("maxSendHeight", 720).toInt();
+                vs.endGroup();
+                switch (h) {
+                    case 2160: highLab = QStringLiteral("High (4K)");    break;
+                    case 1440: highLab = QStringLiteral("High (2K)");    break;
+                    case 1080: highLab = QStringLiteral("High (1080p)"); break;
+                    default:   highLab = QStringLiteral("High (720p)");  break;
+                }
+            }
+            const QString cur = (m_qualityOverride < 0) ? QStringLiteral("Auto")
+                : (m_qualityOverride == 0 ? QStringLiteral("Low (180p)")
+                   : m_qualityOverride == 1 ? QStringLiteral("Medium (360p)") : highLab);
             QToolTip::showText(e->globalPosition().toPoint(),
-                tr("Receive quality: %1\nClick to cycle Auto → Low → Med → High.\nRight-click to reset to Auto.").arg(cur),
+                tr("Receive quality: %1\nClick to pick the substream the SFU forwards.").arg(cur),
                 this);
         } else if (hovPill == QStringLiteral("bg")) {
             QSettings bgSet("TalQ", "TalQ");
@@ -1483,7 +1515,25 @@ void CallStage::mousePressEvent(QMouseEvent *e)
     if (e->button() == Qt::LeftButton
         && !m_qualityPillRect.isNull()
         && m_qualityPillRect.contains(e->position())) {
-        openDropdown(m_qualityPillRect, [this](QMenu &menu) {
+        // 0.41.4-beta — dynamic "High" label tracks Settings →
+        // Maximum send resolution. The simulcast layer count is
+        // still three (l/m/h); only the H layer's actual resolution
+        // varies. Showing "720p" when the user just enabled 4K mode
+        // was misleading per the field report.
+        QString highLabel;
+        {
+            QSettings vs("TalQ", "TalQ");
+            vs.beginGroup("Video");
+            const int h = vs.value("maxSendHeight", 720).toInt();
+            vs.endGroup();
+            switch (h) {
+                case 2160: highLabel = tr("High (4K)");      break;
+                case 1440: highLabel = tr("High (2K)");      break;
+                case 1080: highLabel = tr("High (1080p)");   break;
+                default:   highLabel = tr("High (720p)");    break;
+            }
+        }
+        openDropdown(m_qualityPillRect, [this, highLabel](QMenu &menu) {
             auto add = [&](const QString &label, int ov) {
                 QAction *act = menu.addAction(label);
                 act->setCheckable(true);
@@ -1498,7 +1548,7 @@ void CallStage::mousePressEvent(QMouseEvent *e)
             menu.addSeparator();
             add(tr("Low (180p)"),    0);
             add(tr("Medium (360p)"), 1);
-            add(tr("High (720p)"),   2);
+            add(highLabel,           2);
         });
         return;
     }
