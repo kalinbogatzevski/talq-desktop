@@ -8,6 +8,8 @@
 #include <gst/sdp/sdp.h>
 #include <gst/webrtc/webrtc.h>
 #include "SignalingClient.h"
+#include "VideoFrameProvider.h"
+typedef struct _GstAppSink GstAppSink;
 
 /**
  * Send-only screen capture pipeline for MCU screen sharing.
@@ -33,6 +35,12 @@ public:
     bool isRunning() const { return m_running; }
     // e.g. "H264 · nvh264enc · hw" — for the call codec/quality telemetry.
     QString encoderDescription() const { return m_encoderDesc; }
+    // 0.41.1-beta — local self-preview of the screen being shared. Fed by
+    // an appsink tee taken AFTER scaleCaps so the user sees the exact
+    // post-downscale content the peer receives, not the raw monitor.
+    // Lifecycle: provider created in ctor, frames flow only while
+    // start() succeeds; nullptr otherwise.
+    VideoFrameProvider *previewProvider() const { return m_previewProvider; }
     // Screen-capture downscale cap applied before encode. Default 1080p:
     // a native 4K raw frame is ~38 MB and an unbounded native-res pool
     // ballooned RAM ~400 MB on share start. The quality switch sets a
@@ -96,6 +104,10 @@ private:
 
     static void onNegotiationNeeded(GstElement *webrtc, gpointer userData);
     static GstPadProbeReturn onCaptureBuffer(GstPad *pad, GstPadProbeInfo *info, gpointer userData);
+    static GstFlowReturn onPreviewSample(GstAppSink *sink, gpointer userData);
+
+    VideoFrameProvider *m_previewProvider = nullptr;
+    GstElement         *m_previewAppsink  = nullptr;
     static void onIceCandidate(GstElement *webrtc, guint mlineIndex, gchar *candidate, gpointer userData);
     static void onOfferCreated(GstPromise *promise, gpointer userData);
     static void onIceStateChanged(GObject *obj, GParamSpec *pspec, gpointer userData);
