@@ -374,24 +374,61 @@ QWidget *SettingsDialog::buildAudioVideoTab()
         tr("Auto picks the best mode your camera supports."),
         m_cameraQualityCombo));
 
-    // 0.41.0-beta — Maximum send resolution. Distinct from "Camera
-    // quality" above (which forces the source caps): this scales the
-    // OUTGOING encoded stream's HIGH simulcast layer + GCC ceiling.
-    // Default 720 keeps 0.40 behaviour; 1080p+ requires a capable
-    // camera AND a link that GCC can probe up to the new ceiling.
+    // 0.41.4-beta — Presentation mode + Maximum send resolution. The
+    // 0.41.0 combo exposed 720p/1080p/1440p/2160p unconditionally; a
+    // field report ("both streams froze mid-call at 22.69 Mbps") made
+    // it clear that 2K/4K saturate residential uplinks on BOTH ends
+    // and are not safe defaults for casual calls. We now gate the
+    // high tiers behind an explicit "Presentation mode" checkbox.
+    auto *presentationCheck = new QCheckBox(
+        tr("Presentation mode (2K / 4K available, high bandwidth)"), this);
     auto *resCombo = new QComboBox(this);
-    resCombo->addItem(tr("720p HD (compatible, default)"),  720);
-    resCombo->addItem(tr("1080p Full HD"),                  1080);
-    resCombo->addItem(tr("1440p 2K"),                       1440);
-    resCombo->addItem(tr("2160p 4K"),                       2160);
+
+    auto repopulateRes = [resCombo](bool presentationMode, int currentSaved) {
+        resCombo->blockSignals(true);
+        resCombo->clear();
+        resCombo->addItem(tr("720p HD (compatible, default)"),  720);
+        resCombo->addItem(tr("1080p Full HD"),                  1080);
+        if (presentationMode) {
+            resCombo->addItem(tr("1440p 2K (presentation only)"),    1440);
+            resCombo->addItem(tr("2160p 4K (presentation only)"),    2160);
+        }
+        // If the saved value is no longer in the list (e.g. user just
+        // turned presentation OFF while max was 2160), fall back to 1080.
+        int idx = resCombo->findData(currentSaved);
+        if (idx < 0 && !presentationMode && currentSaved > 1080) {
+            QSettings vs("TalQ", "TalQ");
+            vs.beginGroup("Video");
+            vs.setValue("maxSendHeight", 1080);
+            vs.endGroup();
+            idx = resCombo->findData(1080);
+        }
+        resCombo->setCurrentIndex(idx >= 0 ? idx : 0);
+        resCombo->blockSignals(false);
+    };
+
+    bool presentationMode;
+    int  savedRes;
     {
         QSettings vs("TalQ", "TalQ");
         vs.beginGroup("Video");
-        const int saved = vs.value("maxSendHeight", 720).toInt();
+        presentationMode = vs.value("presentationMode", false).toBool();
+        savedRes         = vs.value("maxSendHeight",    720).toInt();
         vs.endGroup();
-        int idx = resCombo->findData(saved);
-        resCombo->setCurrentIndex(idx >= 0 ? idx : 0);
     }
+    presentationCheck->setChecked(presentationMode);
+    repopulateRes(presentationMode, savedRes);
+
+    connect(presentationCheck, &QCheckBox::toggled, this,
+            [presentationCheck, resCombo, repopulateRes]() {
+                const bool on = presentationCheck->isChecked();
+                QSettings vs("TalQ", "TalQ");
+                vs.beginGroup("Video");
+                vs.setValue("presentationMode", on);
+                const int cur = vs.value("maxSendHeight", 720).toInt();
+                vs.endGroup();
+                repopulateRes(on, cur);
+            });
     connect(resCombo, QOverload<int>::of(&QComboBox::activated),
             this, [resCombo]() {
                 QSettings vs("TalQ", "TalQ");
@@ -400,6 +437,11 @@ QWidget *SettingsDialog::buildAudioVideoTab()
                              resCombo->currentData().toInt());
                 vs.endGroup();
             });
+    layout->addWidget(makeSettingRow(
+        tr("Presentation mode"),
+        tr("Unlocks 2K and 4K send resolutions for screen-share and "
+           "high-bandwidth demos. Casual video calls should keep this off."),
+        presentationCheck));
     layout->addWidget(makeSettingRow(
         tr("Maximum send resolution"),
         tr("Takes effect on the next call. Higher resolutions need both a "

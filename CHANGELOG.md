@@ -1,5 +1,55 @@
 # Changelog
 
+## v0.41.4 "Koprivshtitsa" — BETA (2026-05-28)
+
+UX polish on the 0.41.0 resolution work + a stickier `revertStuckCall`.
+
+### Added
+
+* **Presentation-mode gate for 2K / 4K.** Settings → Audio & Video →
+  "Presentation mode" toggle. Off by default; **the Maximum send
+  resolution combo only exposes 720p HD + 1080p Full HD until the
+  toggle is on**. Turning it on extends the combo with 1440p 2K and
+  2160p 4K. Field-driven by the 22.69 Mbps mid-call freeze where the
+  HIGH simulcast layer at 4K saturated both peers' uplinks.
+  Auto-downgrades a saved 1440/2160 value to 1080 when the toggle is
+  switched OFF, so a casual user can't strand themselves at a tier
+  the link can't sustain.
+
+### Changed
+
+* **In-call QUALITY dropdown labels now track the publisher's
+  Maximum send resolution.** Was: hard-coded "High (720p)" regardless
+  of what the publisher actually sent. Now: `High (720p)` / `High
+  (1080p)` / `High (2K)` / `High (4K)` depending on the local
+  Settings choice (best-guess symmetric peer config). Applies to the
+  button label, the dropdown menu entry, and the hover tooltip.
+  Low / Medium / Auto labels unchanged.
+
+### Fixed
+
+* **`revertStuckCall` two-stage clear.** The Talk-specific
+  `/user_status/revert/call` endpoint silently no-ops on some NC
+  builds (verified on the ZA-hosted instance), so a user-status
+  custom message of "In a call" stayed sticky after hangup. The
+  revert call now always chains a standard
+  `DELETE /user_status/message` after, which is the documented
+  endpoint to clear the auto-applied custom-status component. Both
+  calls are idempotent — if the first one worked, the second is a
+  cheap no-op; if the first didn't, the second unsticks the field
+  case. Then `fetchCurrent()` refreshes the local mirror.
+
+### Known follow-ups (queued for 0.41.5-beta)
+
+* P2P-first toggle for 1:1 calls when both peers are in the same
+  region (BG/SA HPB latency penalty observed).
+* Auto-cap published resolution on sustained packet loss (GCC
+  estimate < threshold for N seconds → clamp HIGH-layer target).
+* Reply-chain fallback for thread membership (catch messages tagged
+  without `threadId` but whose `replyTo` points at the seed).
+
+---
+
 ## v0.41.3 "Koprivshtitsa" — BETA (2026-05-28)
 
 Chat history sync hardening, modelled after the upstream Nextcloud
