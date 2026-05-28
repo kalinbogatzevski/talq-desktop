@@ -1607,6 +1607,20 @@ void CallManager::joinCallOnServer(bool withVideo)
                         }
                         m_glibTimer.start(20);
 
+                        // 0.41.7-beta — mirror the MCU path's "auto-enable
+                        // camera for video calls" step (line ~1767). The
+                        // P2P branch previously omitted this, so a video
+                        // call in P2P mode came up audio-only and the
+                        // user's camera never turned on without a manual
+                        // toggle click. PeerPipeline::enableCamera handles
+                        // the add-video-after-audio renegotiation.
+                        if (m_cameraOn) {
+                            qDebug() << "CallManager: P2P — enabling camera "
+                                        "immediately (video call)";
+                            m_peerPipeline->enableCamera(videoDeviceIndex(),
+                                                         preferHd1080());
+                        }
+
                         // If outgoing call and remote peer already known, create offer
                         if (m_state == Outgoing && !m_remoteSessionId.isEmpty()) {
                             m_peerPipeline->createOffer();

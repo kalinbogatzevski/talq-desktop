@@ -1,5 +1,38 @@
 # Changelog
 
+## v0.41.7 "Koprivshtitsa" — BETA (2026-05-28)
+
+One-line fix to the P2P-for-1:1 code path so it can actually
+carry video.
+
+### Fixed
+
+* **P2P call camera now auto-enables on video calls.** The MCU
+  branch of `CallManager` has always called
+  `m_publishPipeline->enableCamera()` immediately after the
+  pipeline is set up when `m_cameraOn` is true (mirrors what an
+  outgoing or accepted-with-video call expects). The P2P branch
+  (added in 0.41.5 behind the experimental
+  `Call/preferP2pFor1to1` toggle) was missing the equivalent
+  call — `PeerPipeline::start()` only configures audio, leaving
+  the camera unattached until the user manually toggled it.
+  Symptom: a video call in P2P mode came up audio-only and the
+  remote saw nothing. Now mirrors the MCU branch's auto-enable.
+
+### Still open in P2P mode (deferred to 0.41.8 / its own session)
+
+* Encoder parity: `PeerPipeline` uses `openh264enc` while the
+  MCU path uses the configurable `makeWebrtcVideoEncoder()`
+  factory (nvenc / qsv / mfh264 / x264enc probe with psy-tune).
+  Swap is straightforward but needs renegotiation-flow
+  verification.
+* Larger architectural unification — make P2P-for-1:1 reuse the
+  `PublishPipeline` + `SubscribePipeline` pair the MCU path
+  uses, with SDP routed peer-to-peer via signaling. Cleaner
+  long-term than the parallel `PeerPipeline` codebase.
+
+---
+
 ## v0.41.6 "Koprivshtitsa" — BETA (2026-05-28)
 
 Three backlog items + diagnostics for an active field bug.
