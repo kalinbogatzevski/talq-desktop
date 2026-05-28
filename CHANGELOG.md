@@ -1,5 +1,46 @@
 # Changelog
 
+## v0.41.1 "Koprivshtitsa" — BETA (2026-05-28)
+
+Screen-share UX work that was deferred from 0.41.0. Two changes,
+both visible only while screen-sharing is live.
+
+### Added
+
+* **In-call SHARE quality dropdown.** A third action button appears
+  in the top-right action row whenever a screen share is active,
+  alongside QUALITY and BACKGROUND. Click opens a menu with
+  720p / 1080p / 1440p / Native — same options that were previously
+  hidden behind a right-click on the bottom share button. The
+  current selection is shown directly on the button and a tooltip
+  appears on hover.
+* **Self-preview tile for the screen being shared.** A second small
+  PiP appears in the corner opposite the camera self-PiP while
+  sharing, framed in the warm-danger accent so it reads as "this
+  is what they see". Fed by an `appsink` tee on the
+  `ScreenSharePipeline` AFTER the configured downscale, so the
+  preview shows the EXACT post-encode content the peer receives —
+  not the raw monitor. A red "SHARING" badge in the corner of the
+  tile makes the role obvious even when the frame is briefly
+  black during initialisation. Tee construction is best-effort:
+  if any of the four extra elements (`tee`, `queue`,
+  `videoconvert`, `appsink`) can't be made, the share itself runs
+  un-teed exactly as in 0.41.0.
+
+### Notes
+
+* The screen-share UX consensus from
+  `docs/superpowers/specs/2026-05-28-screenshare-ux-research.md`:
+  the camera self-view is **never** replaced by the share preview
+  (Zoom, Teams, Meet, Telegram all keep both visible). TalQ
+  matches that — the camera PiP stays put, the share PiP takes
+  the opposite corner.
+* OS-level coloured monitor borders (Zoom green / Teams red) are
+  still deferred behind a future flag — they need per-platform
+  transparent click-through overlay windows.
+
+---
+
 ## v0.41.0 "Koprivshtitsa" — BETA (2026-05-28)
 
 Opens the 0.41.x beta cycle. Field-driven call-quality work —

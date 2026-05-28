@@ -1,6 +1,8 @@
 #include "core/ScreenSharePipeline.h"
 #include "core/VideoEncoderUtil.h"
 #include <gst/rtp/rtp.h>
+#include <gst/app/app.h>
+#include <QPointer>
 #include <QApplication>
 #include <QDebug>
 #include <QPointer>
@@ -14,6 +16,7 @@
 
 ScreenSharePipeline::ScreenSharePipeline(QObject *parent)
     : QObject(parent)
+    , m_previewProvider(new VideoFrameProvider(this))
 {
     // Negotiation watchdog — 10 s from start() to "subscriber-side ICE
     // connected". If we don't get there the share has silently failed
@@ -231,6 +234,17 @@ bool ScreenSharePipeline::start(const QString &stunServer, const QList<TurnServe
     GstElement *scaleCaps    = gst_element_factory_make("capsfilter", nullptr);
     GstElement *videoConvert = gst_element_factory_make("videoconvert", nullptr);
     GstElement *ssrcFilter   = gst_element_factory_make("capsfilter", nullptr);
+    // 0.41.1-beta — self-preview tee. After the encode-side downscale
+    // (scaleCaps) we split into the encoder branch (existing) + a
+    // preview branch (queue→convert→appsink). The preview frames feed
+    // m_previewProvider so the user sees a live thumbnail of what
+    // they're actually broadcasting. Construct-tolerant: if any of
+    // these factory_make() returns nullptr the share still works,
+    // just without the self-preview tile.
+    GstElement *previewTee     = gst_element_factory_make("tee",          nullptr);
+    GstElement *previewQueue   = gst_element_factory_make("queue",        nullptr);
+    GstElement *previewConvert = gst_element_factory_make("videoconvert", nullptr);
+    m_previewAppsink           = gst_element_factory_make("appsink",      "share-preview-sink");
     bool useH264 = false;
     GstElement *venc = makeWebrtcVideoEncoder(/*screen=*/true, m_initBitrate,
                                               &useH264, &m_videoParser,
@@ -309,17 +323,66 @@ bool ScreenSharePipeline::start(const QString &stunServer, const QList<TurnServe
         gst_caps_unref(ssrcCaps);
     }
 
-    gst_bin_add_many(GST_BIN(m_pipeline), screenSrc, capQueue, videoConvert,
-                     vscale, scaleCaps, venc, pay, ssrcFilter, m_webrtcbin,
-                     nullptr);
+    // 0.41.1-beta — preview branch is best-effort. Construct only if all
+    // four factories succeeded; otherwise fall back to the un-teed chain
+    // so the share itself never regresses on a missing-element install.
+    const bool previewOK = (previewTee && previewQueue
+                             && previewConvert && m_previewAppsink);
+
+    if (previewOK) {
+        gst_bin_add_many(GST_BIN(m_pipeline), screenSrc, capQueue, videoConvert,
+                         vscale, scaleCaps, previewTee,
+                         previewQueue, previewConvert, m_previewAppsink,
+                         venc, pay, ssrcFilter, m_webrtcbin, nullptr);
+    } else {
+        if (previewTee)     gst_object_unref(previewTee);
+        if (previewQueue)   gst_object_unref(previewQueue);
+        if (previewConvert) gst_object_unref(previewConvert);
+        if (m_previewAppsink) { gst_object_unref(m_previewAppsink); m_previewAppsink = nullptr; }
+        gst_bin_add_many(GST_BIN(m_pipeline), screenSrc, capQueue, videoConvert,
+                         vscale, scaleCaps, venc, pay, ssrcFilter, m_webrtcbin,
+                         nullptr);
+    }
     if (m_videoParser)
         gst_bin_add(GST_BIN(m_pipeline), m_videoParser);
 
-    qDebug() << "ScreenSharePipeline: elements added to pipeline";
+    qDebug() << "ScreenSharePipeline: elements added to pipeline (preview="
+             << (previewOK ? "ON" : "OFF") << ")";
 
-    gboolean linked =
-        gst_element_link_many(screenSrc, capQueue, videoConvert, vscale,
-                              scaleCaps, venc, nullptr);
+    gboolean linked;
+    if (previewOK) {
+        // BGRx on the preview branch — same format VideoFrameProvider
+        // consumes elsewhere; sync=FALSE so the share isn't gated on
+        // the preview branch keeping up.
+        {
+            GstCaps *bgrx = gst_caps_from_string("video/x-raw,format=BGRx");
+            g_object_set(m_previewAppsink,
+                         "caps",          bgrx,
+                         "emit-signals",  TRUE,
+                         "sync",          FALSE,
+                         "max-buffers",   (guint)2,
+                         "drop",          TRUE,
+                         nullptr);
+            gst_caps_unref(bgrx);
+        }
+        g_object_set(previewQueue,
+                     "leaky", 2 /* downstream */,
+                     "max-size-buffers", 2u,
+                     "max-size-bytes",   (guint)0,
+                     "max-size-time",    (guint64)0,
+                     nullptr);
+        g_signal_connect(m_previewAppsink, "new-sample",
+                         G_CALLBACK(onPreviewSample), this);
+        linked = gst_element_link_many(screenSrc, capQueue, videoConvert,
+                                       vscale, scaleCaps, previewTee, nullptr);
+        linked = linked && gst_element_link(previewTee, venc);
+        linked = linked && gst_element_link_many(
+                                previewTee, previewQueue,
+                                previewConvert, m_previewAppsink, nullptr);
+    } else {
+        linked = gst_element_link_many(screenSrc, capQueue, videoConvert,
+                                       vscale, scaleCaps, venc, nullptr);
+    }
     if (m_videoParser)
         linked = linked && gst_element_link_many(venc, m_videoParser, pay,
                                                  ssrcFilter, nullptr);
@@ -438,6 +501,10 @@ void ScreenSharePipeline::cleanup()
         g_signal_handlers_disconnect_by_data(m_webrtcbin, this);
     if (m_gccbwe)  // notify::estimated-bitrate is on the gcc element
         g_signal_handlers_disconnect_by_data(m_gccbwe, this);
+    // 0.41.1-beta — disconnect preview appsink callback before pipeline
+    // goes to NULL so a streaming-thread sample can't race the teardown.
+    if (m_previewAppsink)
+        g_signal_handlers_disconnect_by_data(m_previewAppsink, this);
     if (m_pipeline) {
         gst_element_set_state(m_pipeline, GST_STATE_NULL);
         gst_object_unref(m_pipeline);
@@ -447,9 +514,27 @@ void ScreenSharePipeline::cleanup()
     m_videoEncoder = nullptr;  // owned by the (now-freed) pipeline
     m_gccbwe = nullptr;        // owned by webrtcbin (now-freed)
     m_videoParser = nullptr;   // owned by the (now-freed) pipeline
+    m_previewAppsink = nullptr;
     m_useH264 = false;
     m_remoteDescSet = false;
     m_pendingCandidates.clear();
+}
+
+GstFlowReturn ScreenSharePipeline::onPreviewSample(GstAppSink *sink, gpointer userData)
+{
+    auto *self = static_cast<ScreenSharePipeline *>(userData);
+    GstSample *sample = gst_app_sink_pull_sample(sink);
+    if (!sample) return GST_FLOW_OK;
+    // Hand the sample to VideoFrameProvider on the Qt thread — same
+    // pattern as PublishPipeline::onPreviewSample. feedFrame owns the
+    // unref via the queued lambda's capture.
+    QPointer<ScreenSharePipeline> guard(self);
+    QMetaObject::invokeMethod(self, [guard, sample]() {
+        if (guard && guard->m_previewProvider)
+            guard->m_previewProvider->feedFrame(sample);
+        gst_sample_unref(sample);
+    }, Qt::QueuedConnection);
+    return GST_FLOW_OK;
 }
 
 void ScreenSharePipeline::setRemoteAnswer(const QString &sdp)

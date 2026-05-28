@@ -92,6 +92,11 @@ private:
     // Per-participant scaled frame cache (pre-scaled in onFrame, cheap paint)
     QHash<CallParticipant*, QImage> m_camFrame;
     QHash<CallParticipant*, QImage> m_scrFrame;
+    // 0.41.1-beta — latest local-screen-share preview frame, pre-scaled
+    // (height 360). Updated from the ScreenSharePipeline appsink tee
+    // via rebindProviders. Empty while not screen-sharing.
+    QImage m_selfScreenFrame;
+    QRectF m_selfSharePipRect;
     // Smoothed mic level per participant (fast attack / slow decay) so the
     // name-plate meter reads like a real VU, not a jittery raw value.
     QHash<CallParticipant*, qreal>  m_micLvl;
@@ -136,8 +141,11 @@ private:
     // 0.40.15 — hit rects for the Quality / BG dropdown buttons (top-
     // right). Updated each paint by paintActionPills; consumed by
     // mousePressEvent + mouseMoveEvent for click + hover handling.
+    // 0.41.1-beta — m_sharePillRect is the SHARE-quality dropdown,
+    // only painted (and hit-tested) while screen sharing is live.
     QRectF m_qualityPillRect;
     QRectF m_bgPillRect;
+    QRectF m_sharePillRect;
 
     // 0.40.15 — every rect painted in the top chrome row (status pill,
     // info chips, action buttons). The double-click handler iterates
