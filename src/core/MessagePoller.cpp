@@ -49,8 +49,14 @@ void MessagePoller::poll()
     if (m_lastKnownMessageId > 0)
         params.addQueryItem("lastKnownMessageId", QString::number(m_lastKnownMessageId));
 
-    if (m_threadId > 0)
-        params.addQueryItem("threadId", QString::number(m_threadId));
+    // 0.41.3-beta — DELIBERATELY DO NOT pass threadId on the long-poll.
+    // Upstream Talk's pollNewMessages omits it; the client (MessageList-
+    // Model) filters by threadId locally via passesThreadFilter. Server-
+    // side filtering caused the "topic tab shows zero messages" bug
+    // when a peer's client posted into the room without attaching a
+    // threadId — those messages were excluded from the receiver's
+    // filtered long-poll and silently lost from the topic view.
+    (void)m_threadId;
 
     QString path = "apps/spreed/api/v1/chat/" + m_token;
     QMap<QByteArray, QByteArray> headers;

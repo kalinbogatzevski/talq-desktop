@@ -1,5 +1,67 @@
 # Changelog
 
+## v0.41.3 "Koprivshtitsa" — BETA (2026-05-28)
+
+Chat history sync hardening, modelled after the upstream Nextcloud
+Talk web client. Closes two of the three load-bearing divergences
+documented in `docs/superpowers/specs/2026-05-28-upstream-talk-chat-history.md`.
+
+### Fixed
+
+* **`referenceId` dedup on send.** Every outgoing message now
+  carries a SHA-256-hex `referenceId` in the POST body (mirrors
+  upstream's `prepareTemporaryMessage`). When the long-poll
+  catches the same message back — either before OR after the
+  POST callback resolves — the receive paths
+  (`onMessagesReceived`, `refreshLatest`, `runGapFillStep`) call
+  `replaceTempByReferenceId` to remove the optimistic temp by
+  referenceId match instead of by numeric tempId. Fixes the field
+  bug "first sent message disappears after sending a second" —
+  back-to-back sends previously raced the POST callbacks against
+  the long-poll and the loser stranded.
+* **Long-poll no longer passes `threadId` server-side.** Upstream
+  Talk's `pollNewMessages` deliberately omits `threadId` and
+  filters by thread in the client. TalQ now matches: dropped the
+  `threadId=` query param from `MessagePoller::poll()`, added
+  `passesThreadFilter()` in `MessageListModel` for the client-
+  side check (used everywhere a message is admitted into the
+  model — cache load, `onMessagesReceived`, `refreshLatest`,
+  `loadHistory`, gap-fill). Why this matters: when a peer client
+  (older TalQ, or upstream web) posted into the room WITHOUT
+  attaching a clean `threadId`, our server-side filter excluded
+  those messages from the active thread tab's poll → "topic shows
+  zero messages" symptom.
+* **Client-side filter admits own optimistic temps unconditionally**
+  so a just-sent message doesn't vanish if the user switches tabs
+  while the POST is still in flight. Upstream does the same
+  (`String(id).startsWith('temp-')` exception).
+
+### Changed
+
+* **Playback-volume control removed from Settings → Audio & Video.**
+  Telegram, Zoom, Meet do not surface a manual playback gain;
+  their receive-side AGC handles it. TalQ's
+  `audiodynamic`+`rglimiter` chain (added in 0.41.0) does the
+  same job. The 1.8× internal default stays via the
+  `QSettings/Audio/playbackGain` key for power users.
+
+### Known follow-ups
+
+* The "Refunds thread shows zero messages" symptom may persist if
+  the OTHER side's messages were genuinely never tagged with a
+  `threadId` server-side AND don't have a reply-chain to the
+  seed. A reply-chain fallback is queued for 0.41.4-beta —
+  needs to validate behaviour against the upstream
+  `checkIfBelongsToContext` predicate first.
+* `revertStuckCall()` returning 404 on this server (per field
+  report: status stays "In a call" after hangup) is queued for
+  0.41.4-beta — direction is to DELETE the auto-status by id via
+  the standard `/apps/user_status/api/v1/user_status` endpoint
+  instead of the Talk-specific `/heartbeat/revert/call` path that
+  this NC build doesn't expose.
+
+---
+
 ## v0.41.2 "Koprivshtitsa" — BETA (2026-05-28)
 
 Multi-device chat history sync fix + diagnostic logging for the
