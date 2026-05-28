@@ -71,6 +71,34 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
 {
     if (m_running) return false;
 
+    // 0.41.0-beta — read the user's "Maximum send resolution" choice
+    // (QSettings("TalQ","TalQ")/Video/maxSendHeight) and resize the HIGH
+    // simulcast layer + the shared output caps + the GCC ceiling to
+    // match. Default 720 = TalQ 0.40 behaviour. Allowed: 720, 1080,
+    // 1440, 2160. Out-of-range values fall back to 720.
+    {
+        QSettings s("TalQ", "TalQ");
+        s.beginGroup("Video");
+        int h = s.value("maxSendHeight", 720).toInt();
+        s.endGroup();
+        if (h != 720 && h != 1080 && h != 1440 && h != 2160) h = 720;
+        const int w = (h * 16) / 9 & ~1;   // 16:9, even width
+        m_layers[2].targetW = w;
+        m_layers[2].targetH = h;
+        // Encoder bits-per-pixel-per-frame ≈ 0.10 at 30 fps for camera
+        // content is the "Telegram-class HQ" rule of thumb; we round to
+        // documented buckets so the bitrate set is predictable.
+        switch (h) {
+            case 720:  m_layers[2].nominalBitrate = 3'500'000; m_initBitrate = 3'500'000; m_maxBitrate =  6'000'000; break;
+            case 1080: m_layers[2].nominalBitrate = 6'000'000; m_initBitrate = 6'000'000; m_maxBitrate =  9'000'000; break;
+            case 1440: m_layers[2].nominalBitrate = 12'000'000; m_initBitrate = 12'000'000; m_maxBitrate = 18'000'000; break;
+            case 2160: m_layers[2].nominalBitrate = 22'000'000; m_initBitrate = 22'000'000; m_maxBitrate = 30'000'000; break;
+        }
+        qInfo().nospace() << "PublishPipeline: max send resolution "
+            << w << "x" << h << ", HIGH nominal=" << (m_layers[2].nominalBitrate/1000)
+            << " kbps, GCC ceiling=" << (m_maxBitrate/1000) << " kbps";
+    }
+
     qDebug() << "PublishPipeline::start() — creating pipeline...";
     m_pipeline = gst_pipeline_new(nullptr);
     qDebug() << "PublishPipeline::start() — pipeline created:" << (void*)m_pipeline;
@@ -150,6 +178,24 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
     GstElement *level = gst_element_factory_make("level", "pub-level");
     GstElement *opusenc = gst_element_factory_make("opusenc", nullptr);
     GstElement *rtpopuspay = gst_element_factory_make("rtpopuspay", "pub-rtpopuspay");
+
+    // 0.41.0-beta — explicit Opus voice-mode + FEC, the tgcalls recipe.
+    // GStreamer default is bitrate=64000, audio-type=generic, inband-fec=false.
+    // Voice mode picks the SILK-hybrid path that Telegram / Discord / Meet
+    // use for live calls; FEC restores quietly-attenuated frames on 1-2%
+    // packet loss; dtx=FALSE keeps the silence-suppression OFF so peers
+    // don't read inter-sentence gaps as drop-outs. complexity=10 is the
+    // best-quality setting at negligible CPU cost on modern hardware.
+    if (opusenc) {
+        g_object_set(opusenc,
+                     "bitrate",       48000,
+                     "inband-fec",    TRUE,
+                     "dtx",           FALSE,
+                     "complexity",    10,
+                     nullptr);
+        gst_util_set_object_arg(G_OBJECT(opusenc), "audio-type",   "voice");
+        gst_util_set_object_arg(G_OBJECT(opusenc), "bitrate-type", "cbr");
+    }
 
     if (!audiosrc || !audioconvert || !audioresample || !level || !opusenc || !rtpopuspay) {
         emit error("Failed to create audio capture elements");
@@ -334,10 +380,18 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         emit error("Failed to create shared chain / outputTee"); cleanup(); return false;
     }
     {
-        GstCaps *sc = gst_caps_from_string(
-            "video/x-raw,width=1280,height=720,pixel-aspect-ratio=1/1,framerate=30/1");
-        g_object_set(m_sharedCaps, "caps", sc, nullptr);
-        gst_caps_unref(sc);
+        // 0.41.0-beta — sharedCaps tracks the HIGH layer resolution so
+        // the source's full pixel count survives into the encoder branch
+        // instead of being downscaled to 720 unconditionally.
+        const int sw = m_layers[2].targetW;
+        const int sh = m_layers[2].targetH;
+        const QString sc = QStringLiteral(
+            "video/x-raw,width=%1,height=%2,pixel-aspect-ratio=1/1,framerate=30/1")
+            .arg(sw).arg(sh);
+        GstCaps *caps = gst_caps_from_string(sc.toUtf8().constData());
+        g_object_set(m_sharedCaps, "caps", caps, nullptr);
+        gst_caps_unref(caps);
+        qDebug() << "PublishPipeline: sharedCaps =" << sc;
     }
     gst_bin_add_many(GST_BIN(m_pipeline),
                      sharedConvert, m_sharedScale, sharedRate, m_sharedCaps,
@@ -1529,6 +1583,64 @@ void PublishPipeline::onIceCandidate(GstElement *, guint mlineIndex, gchar *cand
 // already on the wire are the ones we declare in the SIM group, so Janus's
 // substream map points to real streams. No RTX/FID groups — our publisher
 // doesn't emit RTX (verified — no rtprtxsend in PublishPipeline).
+// 0.41.0-beta — ensure the Opus media block carries the voice-mode +
+// FEC fmtp parameters so the PEER also encodes that way (our local
+// `opusenc` settings only affect what WE transmit, not what arrives).
+// Telegram's tgcalls sets useinbandfec=1 + usedtx=0 + maxaveragebitrate
+// explicitly for the same reason. Looks for the existing `a=fmtp:<pt>`
+// line for the Opus payload type and rewrites it; if missing, inserts
+// one after the matching `a=rtpmap:<pt> opus/...` line.
+static QString mungeOpusFmtp(const QString &sdp)
+{
+    const QStringList lines = sdp.split('\n');
+    int opusPt = -1;
+    for (const QString &line : lines) {
+        const QString t = line.trimmed();
+        // a=rtpmap:111 opus/48000/2
+        if (t.startsWith(QStringLiteral("a=rtpmap:"))
+            && t.contains(QStringLiteral(" opus/"), Qt::CaseInsensitive)) {
+            const int colon = t.indexOf(':');
+            const int space = t.indexOf(' ', colon + 1);
+            if (colon > 0 && space > colon) {
+                opusPt = t.mid(colon + 1, space - colon - 1).toInt();
+                break;
+            }
+        }
+    }
+    if (opusPt < 0) return sdp;          // no Opus → nothing to munge
+
+    const QString fmtpKey = QStringLiteral("a=fmtp:%1 ").arg(opusPt);
+    const QString rtpmapKey = QStringLiteral("a=rtpmap:%1 ").arg(opusPt);
+    const QString opusParams = QStringLiteral(
+        "useinbandfec=1;usedtx=0;maxaveragebitrate=48000;minptime=10;stereo=0");
+
+    QStringList out;
+    out.reserve(lines.size() + 1);
+    bool replaced = false, insertedAfter = false;
+    for (const QString &line : lines) {
+        const QString t = line.trimmed();
+        if (!replaced && t.startsWith(fmtpKey)) {
+            // Replace the params after "a=fmtp:<pt> " entirely. Keep
+            // identical line endings.
+            const int suffix = line.size() - t.size();   // \r\n etc.
+            QString rewritten = fmtpKey + opusParams;
+            if (suffix > 0) rewritten += line.right(suffix);
+            out << rewritten;
+            replaced = true;
+            continue;
+        }
+        out << line;
+        if (!replaced && !insertedAfter && t.startsWith(rtpmapKey)) {
+            // Insert a new fmtp line directly after the rtpmap. CRLF if
+            // we see one anywhere; LF otherwise.
+            const bool crlf = line.endsWith('\r');
+            out << QString(fmtpKey + opusParams + (crlf ? "\r" : ""));
+            insertedAfter = true;
+        }
+    }
+    return out.join('\n');
+}
+
 static QString mungeOfferForSimulcast(
         const QString &sdp, quint32 ssrcL, quint32 ssrcM, quint32 ssrcH)
 {
@@ -1677,6 +1789,10 @@ void PublishPipeline::onOfferCreated(GstPromise *promise, gpointer userData)
                           << mungedSdp.length();
         sdp = mungedSdp;
     }
+
+    // 0.41.0-beta — Opus voice-mode fmtp munge (applies whether or not
+    // simulcast is on). Idempotent and harmless if Opus isn't offered.
+    sdp = mungeOpusFmtp(sdp);
 
     qDebug() << "PublishPipeline: offer created, SDP length=" << sdp.length() << "\n" << sdp;
 

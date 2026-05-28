@@ -5,6 +5,7 @@
 #include <QPointer>
 #include <QRegularExpression>
 #include <QSet>
+#include <QSettings>
 #include <QStringList>
 #include <QUrl>
 #include <thread>
@@ -385,10 +386,44 @@ void SubscribePipeline::createAudioChain(GstPad *pad)
         return;
     }
 
-    gst_bin_add_many(GST_BIN(m_pipeline), depay, dec, convert, resample, sink, nullptr);
-    gst_element_link_many(depay, dec, convert, resample, sink, nullptr);
+    // 0.41.0-beta — receive-side loudness chain (mirror PeerPipeline).
+    // audiodynamic compressor + volume + rglimiter between opusdec and
+    // the sink; matches the tgcalls / libwebrtc AudioProcessing playout.
+    QSettings audSettings("TalQ", "TalQ");
+    audSettings.beginGroup("Audio");
+    const double playbackGain = qBound(0.0,
+        audSettings.value("playbackGain", 1.8).toDouble(), 4.0);
+    audSettings.endGroup();
+    GstElement *dyn   = gst_element_factory_make("audiodynamic", nullptr);
+    GstElement *gain  = gst_element_factory_make("volume",       nullptr);
+    GstElement *limit = gst_element_factory_make("rglimiter",    nullptr);
+    if (dyn) {
+        gst_util_set_object_arg(G_OBJECT(dyn), "mode",            "compressor");
+        gst_util_set_object_arg(G_OBJECT(dyn), "characteristics", "soft-knee");
+        g_object_set(dyn, "threshold", 0.25, "ratio", 0.4, nullptr);
+    }
+    if (gain) g_object_set(gain, "volume", playbackGain, nullptr);
+
+    const bool haveLoudness = (dyn && gain && limit);
+    if (haveLoudness) {
+        gst_bin_add_many(GST_BIN(m_pipeline), depay, dec, convert, resample,
+                         dyn, gain, limit, sink, nullptr);
+        gst_element_link_many(depay, dec, dyn, gain, limit,
+                              convert, resample, sink, nullptr);
+    } else {
+        if (dyn)   gst_object_unref(dyn);
+        if (gain)  gst_object_unref(gain);
+        if (limit) gst_object_unref(limit);
+        gst_bin_add_many(GST_BIN(m_pipeline), depay, dec, convert, resample, sink, nullptr);
+        gst_element_link_many(depay, dec, convert, resample, sink, nullptr);
+    }
     gst_element_sync_state_with_parent(depay);
     gst_element_sync_state_with_parent(dec);
+    if (haveLoudness) {
+        gst_element_sync_state_with_parent(dyn);
+        gst_element_sync_state_with_parent(gain);
+        gst_element_sync_state_with_parent(limit);
+    }
     gst_element_sync_state_with_parent(convert);
     gst_element_sync_state_with_parent(resample);
     gst_element_sync_state_with_parent(sink);

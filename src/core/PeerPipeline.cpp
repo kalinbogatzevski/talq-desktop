@@ -764,8 +764,42 @@ void PeerPipeline::createAudioReceiveChain(GstPad *pad)
         return;
     }
 
-    gst_bin_add_many(GST_BIN(m_pipeline), depay, dec, convert, resample, sink, nullptr);
-    gst_element_link_many(depay, dec, convert, resample, sink, nullptr);
+    // 0.41.0-beta — receive-side loudness chain. Vanilla opusdec→sink ran
+    // playback at whatever level Opus encoded, with no AGC and no limiter.
+    // tgcalls / libwebrtc run AudioProcessing (AGC2 + soft-limiter) on
+    // playout; we get most of the win with a GStreamer dynamics +
+    // constant-gain + safety-limiter triplet between opusdec and the
+    // resampler. The QSettings keys mirror Settings → Audio sliders
+    // (added later in the same release cycle).
+    QSettings audSettings("TalQ", "TalQ");
+    audSettings.beginGroup("Audio");
+    const double playbackGain = qBound(0.0,
+        audSettings.value("playbackGain", 1.8).toDouble(), 4.0);
+    audSettings.endGroup();
+    GstElement *dyn   = gst_element_factory_make("audiodynamic", nullptr);
+    GstElement *gain  = gst_element_factory_make("volume",       nullptr);
+    GstElement *limit = gst_element_factory_make("rglimiter",    nullptr);
+    if (dyn) {
+        gst_util_set_object_arg(G_OBJECT(dyn), "mode",            "compressor");
+        gst_util_set_object_arg(G_OBJECT(dyn), "characteristics", "soft-knee");
+        g_object_set(dyn, "threshold", 0.25, "ratio", 0.4, nullptr);
+    }
+    if (gain) g_object_set(gain, "volume", playbackGain, nullptr);
+
+    if (dyn && gain && limit) {
+        gst_bin_add_many(GST_BIN(m_pipeline), depay, dec, convert, resample,
+                         dyn, gain, limit, sink, nullptr);
+        gst_element_link_many(depay, dec, dyn, gain, limit,
+                              convert, resample, sink, nullptr);
+    } else {
+        // Either gst-plugins-good is incomplete or one element refused;
+        // keep audio alive without the loudness boost.
+        if (dyn)   gst_object_unref(dyn);
+        if (gain)  gst_object_unref(gain);
+        if (limit) gst_object_unref(limit);
+        gst_bin_add_many(GST_BIN(m_pipeline), depay, dec, convert, resample, sink, nullptr);
+        gst_element_link_many(depay, dec, convert, resample, sink, nullptr);
+    }
     gst_element_sync_state_with_parent(depay);
     gst_element_sync_state_with_parent(dec);
     gst_element_sync_state_with_parent(convert);

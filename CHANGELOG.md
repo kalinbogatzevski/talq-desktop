@@ -1,5 +1,79 @@
 # Changelog
 
+## v0.41.0 "Koprivshtitsa" — BETA (2026-05-28)
+
+Opens the 0.41.x beta cycle. Field-driven call-quality work —
+remote-peer playback is much quieter than Telegram on the same
+hardware (despite healthy VU meters on both ends) and 720p30 looks
+softer than Telegram on the same camera. Research briefs in
+`docs/superpowers/specs/2026-05-28-*.md`.
+
+### Changed (audio)
+
+* **Receive-side loudness chain.** Vanilla `opusdec → wasapi2sink`
+  ran playback at unity gain with no AGC, no compressor, no limiter —
+  Telegram/Discord/Zoom/Meet all run libwebrtc's `AudioProcessing`
+  (AGC2 + soft-limiter) on playout. TalQ now inserts
+  `audiodynamic` (soft-knee compressor, threshold 0.25, ratio 0.4)
+  + `volume` + `rglimiter` between `opusdec` and the resampler in
+  both `PeerPipeline` (P2P) and `SubscribePipeline` (MCU). Biggest
+  perceptible win in the cycle. Default playback gain 1.8×;
+  user-tweakable via Settings → Audio & Video → Playback volume.
+* **Opus voice-mode + FEC on publish.** `opusenc` was at defaults
+  (64 kbps, `audio-type=generic`, `inband-fec=false`, `dtx=false`).
+  Now: `bitrate=48000`, `audio-type=voice` (SILK-hybrid voice path),
+  `inband-fec=true`, `dtx=false`, `bitrate-type=cbr`, `complexity=10`.
+  Matches the tgcalls recipe.
+* **Opus SDP fmtp munge.** Local offer now carries
+  `useinbandfec=1; usedtx=0; maxaveragebitrate=48000; minptime=10`
+  on the Opus payload so the peer also encodes voice-mode + FEC.
+  Without this only OUR encode benefits; the peer stays default-mode.
+
+### Added (video resolution)
+
+* **Maximum send resolution selector.** Settings → Audio & Video →
+  "Maximum send resolution" picks **720p HD / 1080p Full HD / 1440p
+  2K / 2160p 4K**. Default 720 = 0.40 behaviour. The HIGH simulcast
+  layer + the shared output caps + the GCC bitrate ceiling all scale
+  with the choice: 720p caps at 6 Mbps, 1080p at 9 Mbps, 1440p at
+  18 Mbps, 2160p at 30 Mbps. L/M simulcast layers stay 180p/360p so
+  bandwidth-constrained subscribers still get a usable stream.
+* Pre-0.41 behaviour was: `sharedCaps` pinned to 1280×720@30
+  regardless of what the camera advertised, so HD/2K/4K capture
+  was wasted via downscale.
+
+### Changed (video quality)
+
+* **`x264enc` psy-tune.** Was `none` (the GStreamer default); now
+  `film` for camera and `animation` for screen. Single biggest
+  visible-quality delta at the same bitrate — sharper motion edges
+  on camera, preserved text edges + better scroll handling on
+  screen. Only affects the software-fallback encoder; hardware
+  (`nvh264enc`/`qsvh264enc`/`mfh264enc`) already uses its own
+  quality preset.
+* `x264enc` also gets `qp-min=18 qp-max=42` (camera), `qp-min=14`
+  (screen, crisp text), `vbv-buf-capacity=1000`, and the screen
+  branch enables `intra-refresh=true`.
+* **HIGH simulcast layer bumped 2.5 → 3.5 Mbps nominal at 720p.**
+  Scales upward with the resolution selector above.
+
+### Notes
+
+* This is a **beta** — publishes to the ncloud
+  `talq-beta-latest.json` channel only; the stable manifest is
+  untouched. Stable users on 0.40.16 are unaffected.
+* Next on the cycle: 0.41.1-beta adds the screen-share self-preview
+  tile and surfaces the existing screen-share quality picker in the
+  in-call dropdowns. Will land after field validation of this beta.
+* Codename honours the 150th-anniversary thread: 0.39.x betas
+  "Aprilsko Vastanie" → 0.40.x stable "Panagyurishte" → 0.41.x
+  betas **"Koprivshtitsa"** (the mountain town where Todor
+  Kableshkov sent the "bloody letter" that sparked the uprising
+  several days before Panagyurishte's Oborishte assembly declared
+  it).
+
+---
+
 ## v0.40.16 "Panagyurishte" — STABLE (2026-05-27)
 
 Auto-install idle gate now keys off **TalQ-input** rather than
