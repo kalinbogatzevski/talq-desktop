@@ -1,6 +1,7 @@
 #include "core/CallManager.h"
 #include "core/BackgroundEngine.h"
 #include "core/TalqLog.h"
+#include "models/ConversationListModel.h"
 #include <QJsonObject>
 #include <QDateTime>
 #include <QtMath>
@@ -1481,10 +1482,40 @@ void CallManager::joinCallOnServer(bool withVideo)
                     // Process any offers that arrived before ICE servers were available
                     processPendingOffers();
 
-                    // Use MCU when HPB has it, P2P otherwise
-                    m_useP2P = !m_signaling->hasMcu();
+                    // 0.41.5-beta — prefer P2P for 1:1 calls even when
+                    // the HPB advertises an MCU. Saves the BG↔SA↔BG
+                    // detour for nearby peers. Default on (Settings
+                    // Call/preferP2pFor1to1 = true). Group calls
+                    // (type != 1) still go via MCU when one is
+                    // available — they'd otherwise blow up into a
+                    // full-mesh and saturate uplinks.
+                    const bool hpbHasMcu = m_signaling->hasMcu();
+                    bool preferP2pFor1to1 = false;
+                    {
+                        QSettings cs("TalQ", "TalQ");
+                        cs.beginGroup("Call");
+                        // 0.41.5-beta — default OFF after field report:
+                        // PeerPipeline's add-video-after-audio renegotiation
+                        // path needs more verification on HPB-relayed signaling
+                        // before it can be the default. Opt-in via Settings →
+                        // "Direct P2P for 1:1 calls".
+                        preferP2pFor1to1 = cs.value("preferP2pFor1to1", false).toBool();
+                        cs.endGroup();
+                    }
+                    const int callRoomType = (m_conversations && !m_callToken.isEmpty())
+                        ? m_conversations->conversationTypeForToken(m_callToken)
+                        : 0;
+                    const bool isOneToOne = (callRoomType == 1);
+                    const bool forceP2pOverride =
+                        hpbHasMcu && preferP2pFor1to1 && isOneToOne;
+                    m_useP2P = forceP2pOverride || !hpbHasMcu;
                     setStatusDetail("Starting pipeline");
-                    qDebug() << "CallManager: call mode =" << (m_useP2P ? "P2P" : "MCU");
+                    qInfo().nospace() << "CallManager: call mode = "
+                        << (m_useP2P ? "P2P" : "MCU")
+                        << " (hpbHasMcu=" << hpbHasMcu
+                        << " roomType=" << callRoomType
+                        << " preferP2pFor1to1=" << preferP2pFor1to1
+                        << " forceP2pOverride=" << forceP2pOverride << ")";
 
                     if (m_useP2P) {
                         // --- P2P mode: single PeerPipeline for 1:1 calls ---
