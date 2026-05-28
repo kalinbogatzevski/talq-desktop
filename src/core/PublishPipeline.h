@@ -2,6 +2,7 @@
 
 #include <array>
 #include <atomic>
+#include <QElapsedTimer>
 #include <QObject>
 #include <QString>
 #include <QTimer>
@@ -175,6 +176,18 @@ private:
     // clamped here so it never probes past what Janus will forward.
     // 0.41.0-beta — bumped 4 → 6 Mbps to match Telegram's 720p30 target.
     int m_maxBitrate = 6000000;
+    // 0.41.6-beta — auto-cap on sustained packet loss. m_originalMaxBitrate
+    // is captured in start() after the resolution-based ceiling is picked.
+    // When the BWE estimate stays below half of it for kAutoCapLowSeconds,
+    // m_maxBitrate is clamped to (estimate × 1.2) for the rest of the
+    // call (or until the BWE recovers above 70 % of the original). The
+    // existing applyBweToLayers / setWebrtcVideoEncoderBitrate paths
+    // respect the clamped m_maxBitrate, so this protects against runaway
+    // probing on a sustainedly-saturated uplink (the mid-call freeze
+    // class of bugs).
+    int            m_originalMaxBitrate = 0;
+    QElapsedTimer  m_lowBweTimer;
+    bool           m_autoCapActive      = false;
     GstElement *m_gccbwe = nullptr;  // rtpgccbwe, owned by webrtcbin once returned
     // Set before the pipeline goes to NULL in cleanup(). webrtcbin can fire
     // request-aux-sender / notify::estimated-bitrate on a streaming thread

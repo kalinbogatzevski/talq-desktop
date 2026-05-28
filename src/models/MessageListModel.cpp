@@ -599,8 +599,25 @@ void MessageListModel::refreshLatest()
     connect(reply, &QNetworkReply::finished, this, [this, reply, currentToken, capturedGen]() {
         if (m_refreshReply == reply) m_refreshReply = nullptr;
         reply->deleteLater();
-        if (m_generation != capturedGen) return;  // conversation switched — discard
-        if (m_token != currentToken) return;
+        // 0.41.6-beta — diagnostics for the "new messages visible in
+        // conversation list but not in chat history" field report.
+        // Suspect: a fast tab-switch on chat-open bumped m_generation
+        // before refreshLatest's reply landed and the result was
+        // silently discarded. The two logs below pinpoint which path
+        // ate the reply.
+        if (m_generation != capturedGen) {
+            qInfo().nospace() << "MessageListModel: refreshLatest DROPPED "
+                              << "(generation race: capturedGen=" << capturedGen
+                              << " current=" << m_generation
+                              << " token=" << currentToken << ")";
+            return;
+        }
+        if (m_token != currentToken) {
+            qInfo().nospace() << "MessageListModel: refreshLatest DROPPED "
+                              << "(token switched: was=" << currentToken
+                              << " now=" << m_token << ")";
+            return;
+        }
 
         // Read receipt header — must be read before error check
         QByteArray lastCommonRead = reply->rawHeader("X-Chat-Last-Common-Read");
@@ -747,8 +764,23 @@ bool MessageListModel::passesThreadFilter(const Message &m) const
     // upstream Talk does the same so the user's just-sent text doesn't
     // disappear the moment they switch tabs.
     if (m.id < 0) return true;
-    if (m_threadId > 0)
-        return m.threadId == m_threadId || m.id == m_threadId;
+    if (m_threadId > 0) {
+        // 0.41.6-beta — reply-chain fallback. If a peer's client (older
+        // TalQ or an out-of-band web client) posted INTO this thread but
+        // forgot to attach `threadId` to its POST body, the message
+        // still has `replyTo` pointing at the seed (because Talk's
+        // composer wires replyTo from the active thread context). Admit
+        // those by checking the replyTo.id chain. Without this, the
+        // strict m.threadId equality blackholed Petia's-style untagged
+        // thread replies — the "topic shows zero messages" field bug.
+        if (m.threadId == m_threadId || m.id == m_threadId)
+            return true;
+        // replyTo is a JSON object — id is the parent message's numeric id.
+        if (m.replyTo.contains(QStringLiteral("id"))
+            && m.replyTo.value(QStringLiteral("id")).toInt() == m_threadId)
+            return true;
+        return false;
+    }
     return !(m_hideThreadMessages && m.threadId > 0);
 }
 

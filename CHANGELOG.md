@@ -1,5 +1,50 @@
 # Changelog
 
+## v0.41.6 "Koprivshtitsa" — BETA (2026-05-28)
+
+Three backlog items + diagnostics for an active field bug.
+
+### Added
+
+* **Reply-chain fallback for thread membership.** When a peer's
+  client posted into a thread but didn't tag `threadId` on the
+  POST body (older TalQ builds, upstream web Talk, etc.), the
+  message previously failed the strict thread filter and the
+  topic showed zero messages even though the messages were in
+  the room. `passesThreadFilter` now ALSO admits a message if
+  its `replyTo.id` equals the current thread's seed id —
+  matches upstream Talk's `checkIfBelongsToContext` predicate.
+* **Auto-cap on sustained packet loss.** `PublishPipeline`
+  captures the original GCC ceiling (`m_originalMaxBitrate`)
+  on call start. If the BWE estimate stays below half of that
+  for 15 s, `m_maxBitrate` is clamped to `estimate × 1.2` for
+  the rest of the call (or until the BWE recovers above 70 %
+  of the original). Protects against runaway probing on a
+  saturated uplink — the "both video streams froze mid-call at
+  22 Mbps" class of bug.
+
+### Added (diagnostics)
+
+* **`refreshLatest` drop tracing** — logs at `qInfo` level when
+  a reply is discarded by the generation guard or by a token
+  switch. Helps RCA an active field report: new messages visible
+  in the conversation list but not in the chat history; the
+  hypothesis is a tab-switch race between `setToken` and the
+  in-flight `refreshLatest` reply.
+
+### Deferred
+
+* **`PeerPipeline` add-camera-after-audio renegotiation** —
+  investigated; the renegotiation IS wired (`enableCamera()`
+  calls `createOffer()` after attaching the video chain), but
+  testing under HPB-relayed signaling shows the camera-enable
+  step failing in the experimental P2P-for-1:1 path. Root cause
+  is in the SDP/transceiver state during renegotiation — needs
+  two-peer end-to-end debugging, not a quick patch. P2P-for-1:1
+  stays opt-in via Settings.
+
+---
+
 ## v0.41.5 "Koprivshtitsa" — BETA (2026-05-28)
 
 In-call chrome legibility on 2K panels, a new `MODE` pill, and an
