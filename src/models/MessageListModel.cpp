@@ -619,6 +619,17 @@ void MessageListModel::refreshLatest()
             return;
         }
 
+        // 0.41.2-beta — capture the pre-refresh newest cached ID so we
+        // can detect the "multi-device gap": cache has IDs 1-100, the
+        // server's latest 50 are 251-300 because another device sent
+        // 200 messages while this one was offline. Without this we'd
+        // silently leave a gap from 101-250 unreachable (scroll-up's
+        // lastKnownMessageId points to the cache's oldest = 1, so
+        // pagination returns empty and the gap is invisible).
+        int newestPreRefreshId = 0;
+        for (int id : m_messageIds)
+            newestPreRefreshId = qMax(newestPreRefreshId, id);
+
         // Build index for existing messages (for edit detection)
         QHash<int, int> idToIndex;
         for (int i = 0; i < m_messages.size(); i++)
@@ -681,11 +692,144 @@ void MessageListModel::refreshLatest()
 
             qDebug() << "MessageListModel: refreshLatest merged" << missing.size()
                      << "missing, total=" << m_messages.size();
+
+            // 0.41.2-beta — diagnostic. Count how many fetched messages
+            // had a threadId vs were thread-less. Helps tell apart the
+            // two field-bug shapes: (a) server has the messages but
+            // tagged with a different/no threadId, or (b) server has
+            // nothing at all under this token.
+            int withThread = 0, withoutThread = 0;
+            for (const auto &m : missing)
+                (m.threadId > 0 ? withThread : withoutThread) += 1;
+            qInfo().nospace() << "MessageListModel: refreshLatest thread-stats "
+                              << "token=" << m_token
+                              << " filter=" << m_threadId
+                              << " missing-with-thread=" << withThread
+                              << " missing-without-thread=" << withoutThread;
+
+            // 0.41.2-beta — multi-device gap detection. If the oldest
+            // missing message ID is more than one above the newest
+            // pre-refresh cached ID, there is a HOLE between them that
+            // no scroll-up will ever reach. Kick off the gap-fill loop:
+            // page lookIntoFuture=0 from oldestFetched backward until
+            // we cross newestPreRefreshId (or hit the page budget).
+            int oldestFetchedId = std::numeric_limits<int>::max();
+            for (const auto &m : missing)
+                oldestFetchedId = qMin(oldestFetchedId, m.id);
+            if (newestPreRefreshId > 0
+                && oldestFetchedId != std::numeric_limits<int>::max()
+                && oldestFetchedId > newestPreRefreshId + 1) {
+                static constexpr int kMaxGapFillPages = 20;   // 20 × 100 = up to 2000 missed messages
+                m_gapFillCursor         = oldestFetchedId;    // pages older than this
+                m_gapFillTargetId       = newestPreRefreshId;
+                m_gapFillPagesRemaining = kMaxGapFillPages;
+                qInfo().nospace() << "MessageListModel: gap-fill triggered for "
+                                  << m_token
+                                  << " thread=" << m_threadId
+                                  << " — bridging " << newestPreRefreshId
+                                  << "+1 → " << oldestFetchedId << "-1";
+                runGapFillStep();
+            }
         }
 
         // Restart poller from the true latest message
         m_poller->stop();
         startPoller();
+    });
+}
+
+void MessageListModel::runGapFillStep()
+{
+    if (m_token.isEmpty()
+        || m_gapFillCursor <= 0
+        || m_gapFillPagesRemaining <= 0) {
+        m_gapFillCursor         = 0;
+        m_gapFillTargetId       = 0;
+        m_gapFillPagesRemaining = 0;
+        return;
+    }
+    QUrlQuery params;
+    params.addQueryItem("lookIntoFuture",     "0");
+    params.addQueryItem("limit",              "100");
+    params.addQueryItem("lastKnownMessageId", QString::number(m_gapFillCursor));
+    if (m_threadId > 0)
+        params.addQueryItem("threadId", QString::number(m_threadId));
+
+    const QString  token    = m_token;
+    const int      gen      = m_generation;
+    const int      targetId = m_gapFillTargetId;
+    QNetworkReply *reply    = m_api->getRaw("apps/spreed/api/v1/chat/" + m_token, params);
+    m_gapFillReply = reply;
+
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, token, gen, targetId]() {
+        if (m_gapFillReply == reply) m_gapFillReply = nullptr;
+        reply->deleteLater();
+        if (m_generation != gen || m_token != token) {
+            m_gapFillCursor = 0; m_gapFillTargetId = 0; m_gapFillPagesRemaining = 0;
+            return;
+        }
+        if (reply->error() != QNetworkReply::NoError) {
+            qWarning() << "MessageListModel: gap-fill page errored — abandoning";
+            m_gapFillCursor = 0; m_gapFillTargetId = 0; m_gapFillPagesRemaining = 0;
+            return;
+        }
+        const QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
+        const QJsonArray    data = doc.object()["ocs"].toObject()["data"].toArray();
+        if (data.isEmpty()) {
+            m_gapFillCursor = 0; m_gapFillTargetId = 0; m_gapFillPagesRemaining = 0;
+            return;
+        }
+        QVector<Message> filled;
+        int               oldestInPage = std::numeric_limits<int>::max();
+        for (const auto &val : data) {
+            Message m = Message::fromJson(val.toObject());
+            if (m.isReactionMessage() || m.isCallJoinLeave() || m.isEditMessage())
+                continue;
+            if (m_hideThreadMessages && m.threadId > 0)
+                continue;
+            oldestInPage = qMin(oldestInPage, m.id);
+            if (m_messageIds.contains(m.id))
+                continue;
+            filled.append(m);
+        }
+        if (!filled.isEmpty()) {
+            for (const auto &m : filled) {
+                m_messageIds.insert(m.id);
+                m_messages.append(m);
+            }
+            QHash<int, int> seen;
+            QVector<Message> deduped;
+            deduped.reserve(m_messages.size());
+            for (const auto &m : m_messages) {
+                if (!seen.contains(m.id)) {
+                    seen[m.id] = 1;
+                    deduped.append(m);
+                }
+            }
+            std::sort(deduped.begin(), deduped.end(),
+                      [](const Message &a, const Message &b) { return a.id > b.id; });
+            beginResetModel();
+            m_messages = std::move(deduped);
+            endResetModel();
+            if (!m_messages.isEmpty())
+                m_oldestMessageId = m_messages.last().id;
+            m_cache->saveMessages(m_token, m_messages);
+            qDebug() << "MessageListModel: gap-fill page added"
+                     << filled.size() << "msgs, total=" << m_messages.size();
+        }
+        // Continue paging if the oldest message in this page is still
+        // newer than the target (gap not yet closed).
+        if (oldestInPage != std::numeric_limits<int>::max()
+            && oldestInPage > targetId + 1) {
+            m_gapFillCursor          = oldestInPage;
+            m_gapFillPagesRemaining -= 1;
+            runGapFillStep();
+        } else {
+            qInfo() << "MessageListModel: gap-fill complete for" << m_token
+                    << "thread=" << m_threadId;
+            m_gapFillCursor = 0; m_gapFillTargetId = 0; m_gapFillPagesRemaining = 0;
+        }
     });
 }
 
@@ -844,6 +988,16 @@ void MessageListModel::sendMessage(const QString &text, int replyToId, bool sile
     // threadId is the proper hook: the message joins the thread without
     // a spurious reply-quote.
     if (m_threadId > 0) body["threadId"] = m_threadId;
+
+    // 0.41.2-beta — diagnostic. We're chasing a "zero messages in
+    // Refunds thread" field bug where one client's messages don't
+    // appear under another client's topic tab. Log the threadId we're
+    // actually attaching to the send so the server-side state can be
+    // compared against the receiver's topic filter.
+    qInfo().nospace() << "MessageListModel: sendMessage token=" << m_token
+                      << " threadId=" << m_threadId
+                      << " replyTo=" << replyToId
+                      << " len=" << actualText.length();
 
     postAndReplace(m_token, body, tempId);
 }
