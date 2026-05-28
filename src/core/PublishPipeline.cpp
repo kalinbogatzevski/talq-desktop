@@ -97,6 +97,12 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         qInfo().nospace() << "PublishPipeline: max send resolution "
             << w << "x" << h << ", HIGH nominal=" << (m_layers[2].nominalBitrate/1000)
             << " kbps, GCC ceiling=" << (m_maxBitrate/1000) << " kbps";
+        // 0.41.6-beta — capture the chosen ceiling so the sustained-low
+        // BWE auto-cap (onGccBitrate) can both clamp aggressively AND
+        // restore to the original when the link recovers.
+        m_originalMaxBitrate = m_maxBitrate;
+        m_autoCapActive      = false;
+        m_lowBweTimer.invalidate();
     }
 
     qDebug() << "PublishPipeline::start() — creating pipeline...";
@@ -2192,6 +2198,43 @@ void PublishPipeline::onGccBitrate(GObject *gcc, GParamSpec *, gpointer userData
     QPointer<PublishPipeline> guard(self);
     QMetaObject::invokeMethod(self, [guard, estBps = (int)est]() {
         if (!guard) return;
+
+        // 0.41.6-beta — sustained-low BWE auto-cap. If the estimate
+        // stays below half of the originally-chosen max for 15 s, we
+        // assume the link can't sustain the configured ceiling and
+        // clamp m_maxBitrate to (estimate × 1.2). When the estimate
+        // recovers above 70 % of the original we restore. Protects
+        // against the mid-call freeze where GCC keeps probing a
+        // saturated uplink, packet loss climbs, both ends stall.
+        constexpr int kAutoCapLowMs        = 15000;
+        if (guard->m_originalMaxBitrate > 0) {
+            const int loThreshold = guard->m_originalMaxBitrate / 2;
+            const int hiThreshold = guard->m_originalMaxBitrate * 7 / 10;
+            if (estBps < loThreshold) {
+                if (!guard->m_lowBweTimer.isValid()) guard->m_lowBweTimer.start();
+                if (!guard->m_autoCapActive
+                    && guard->m_lowBweTimer.elapsed() > kAutoCapLowMs) {
+                    guard->m_autoCapActive = true;
+                    guard->m_maxBitrate    = estBps * 6 / 5;
+                    qWarning().nospace()
+                        << "PublishPipeline: BWE sustained low ("
+                        << (estBps / 1000) << " kbps) — auto-capping max to "
+                        << (guard->m_maxBitrate / 1000) << " kbps. "
+                        << "Will restore on BWE recovery above "
+                        << (hiThreshold / 1000) << " kbps.";
+                }
+            } else {
+                guard->m_lowBweTimer.invalidate();
+                if (guard->m_autoCapActive && estBps > hiThreshold) {
+                    guard->m_maxBitrate    = guard->m_originalMaxBitrate;
+                    guard->m_autoCapActive = false;
+                    qInfo().nospace()
+                        << "PublishPipeline: BWE recovered ("
+                        << (estBps / 1000) << " kbps) — restored max to "
+                        << (guard->m_maxBitrate / 1000) << " kbps.";
+                }
+            }
+        }
 
         // Single-stream (stable) build: GCC drives the lone encoder's
         // bitrate directly, exactly like 0.32.0 — the layer gate + nominal
