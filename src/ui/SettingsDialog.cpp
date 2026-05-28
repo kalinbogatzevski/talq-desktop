@@ -30,6 +30,7 @@
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QSlider>
+#include <QDoubleSpinBox>
 #include <QStandardPaths>
 #include <QTimer>
 
@@ -373,6 +374,66 @@ QWidget *SettingsDialog::buildAudioVideoTab()
         tr("Camera quality"),
         tr("Auto picks the best mode your camera supports."),
         m_cameraQualityCombo));
+
+    // 0.41.0-beta — Maximum send resolution. Distinct from "Camera
+    // quality" above (which forces the source caps): this scales the
+    // OUTGOING encoded stream's HIGH simulcast layer + GCC ceiling.
+    // Default 720 keeps 0.40 behaviour; 1080p+ requires a capable
+    // camera AND a link that GCC can probe up to the new ceiling.
+    auto *resCombo = new QComboBox(this);
+    resCombo->addItem(tr("720p HD (compatible, default)"),  720);
+    resCombo->addItem(tr("1080p Full HD"),                  1080);
+    resCombo->addItem(tr("1440p 2K"),                       1440);
+    resCombo->addItem(tr("2160p 4K"),                       2160);
+    {
+        QSettings vs("TalQ", "TalQ");
+        vs.beginGroup("Video");
+        const int saved = vs.value("maxSendHeight", 720).toInt();
+        vs.endGroup();
+        int idx = resCombo->findData(saved);
+        resCombo->setCurrentIndex(idx >= 0 ? idx : 0);
+    }
+    connect(resCombo, QOverload<int>::of(&QComboBox::activated),
+            this, [resCombo]() {
+                QSettings vs("TalQ", "TalQ");
+                vs.beginGroup("Video");
+                vs.setValue("maxSendHeight",
+                             resCombo->currentData().toInt());
+                vs.endGroup();
+            });
+    layout->addWidget(makeSettingRow(
+        tr("Maximum send resolution"),
+        tr("Takes effect on the next call. Higher resolutions need both a "
+           "capable camera and a healthy link — TalQ adapts down to fit."),
+        resCombo));
+
+    // 0.41.0-beta — Playback volume slider. Drives the receive-side
+    // `volume` element added in PeerPipeline + SubscribePipeline. 0
+    // mutes incoming, 1.0× = pre-0.41 behaviour, 1.8× = the new
+    // default, up to 3.0×. Takes effect on the next subscriber pipe.
+    auto *gainSpin = new QDoubleSpinBox(this);
+    gainSpin->setRange(0.0, 3.0);
+    gainSpin->setSingleStep(0.1);
+    gainSpin->setDecimals(1);
+    gainSpin->setSuffix(QStringLiteral("×"));
+    {
+        QSettings as("TalQ", "TalQ");
+        as.beginGroup("Audio");
+        gainSpin->setValue(as.value("playbackGain", 1.8).toDouble());
+        as.endGroup();
+    }
+    connect(gainSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [gainSpin]() {
+                QSettings as("TalQ", "TalQ");
+                as.beginGroup("Audio");
+                as.setValue("playbackGain", gainSpin->value());
+                as.endGroup();
+            });
+    layout->addWidget(makeSettingRow(
+        tr("Playback volume"),
+        tr("Receive-side gain applied to incoming voices. 1.0× is unity, "
+           "1.8× is the 0.41 default."),
+        gainSpin));
 
     layout->addSpacing(kGroupGap - kRowGap);
 
