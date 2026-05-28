@@ -151,10 +151,16 @@ private:
         bool        active    = true;     // BWE-gating state (false = valve drop)
         int         lastAppliedBitrate = 0;
     };
+    // 0.41.0-beta — Layer ladder. L/M stay at 180p/360p for compatibility
+    // with constrained subscribers; HIGH scales with the user's
+    // QSettings("TalQ","TalQ")/Video/maxSendHeight choice (default 720).
+    // The HIGH targetW/targetH + nominalBitrate are RESET in start() from
+    // the live setting before the encoder branches are built. Values here
+    // are the 720p defaults a fresh install would see.
     std::array<SimulcastLayer, 3> m_layers = {{
         { "l",  320,  180,  150'000 },
         { "m",  640,  360,  500'000 },
-        { "h", 1280,  720, 2'500'000 },
+        { "h", 1280,  720, 3'500'000 },
     }};
     // Simulcast on/off. PRE-RELEASE builds send the 3 layers above; stable
     // builds send a SINGLE 720p stream (collapse to one branch, plain SDP,
@@ -164,10 +170,11 @@ private:
     bool m_simulcast = true;
     // Start bitrate (bits/s) handed to the encoder; rtpgccbwe drives the
     // live rate up to the server ceiling once TWCC feedback flows.
-    int m_initBitrate = 2500000;
+    int m_initBitrate = 3500000;
     // Server video ceiling (HPB signaling [mcu] maxstreambitrate). GCC is
     // clamped here so it never probes past what Janus will forward.
-    int m_maxBitrate = 4000000;
+    // 0.41.0-beta — bumped 4 → 6 Mbps to match Telegram's 720p30 target.
+    int m_maxBitrate = 6000000;
     GstElement *m_gccbwe = nullptr;  // rtpgccbwe, owned by webrtcbin once returned
     // Set before the pipeline goes to NULL in cleanup(). webrtcbin can fire
     // request-aux-sender / notify::estimated-bitrate on a streaming thread

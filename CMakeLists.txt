@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(talq VERSION 0.40.16 LANGUAGES CXX)
+project(talq VERSION 0.41.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -155,13 +155,14 @@ target_compile_definitions(talq PRIVATE
     TALQ_BUILD_TS="${TALQ_BUILD_TS}"
     # Per-release codename (empty string = no codename pill). Set alongside
     # the version bump; shown on the Mission Control command bar.
-    # "Panagyurishte": the town where the Bulgarian April Uprising of
-    # 1876 was declared at the Oborishte assembly. Continues the 150th-
-    # anniversary thread the 0.39.x betas began ("Aprilsko Vastanie" —
-    # the uprising itself); 0.40 stable promotes the work and dedicates
-    # this cycle to the place that lit the fuse. Locked 2026-05-24,
-    # the same long weekend the project lead was physically there.
-    TALQ_VERSION_NAME="Panagyurishte"
+    # "Koprivshtitsa": the small mountain town where the Bulgarian April
+    # Uprising of 1876 was actually sparked — Todor Kableshkov sent the
+    # "bloody letter" from here that triggered the rising several days
+    # before Panagyurishte declared it at Oborishte. Symbolically fits
+    # the start of a new development cycle. Continues the 150th-anniv
+    # thread (0.39.x betas "Aprilsko Vastanie" → 0.40.x stable
+    # "Panagyurishte" → 0.41.x betas "Koprivshtitsa"). Locked 2026-05-28.
+    TALQ_VERSION_NAME="Koprivshtitsa"
 )
 
 # Pre-release flag: when build-release.sh is invoked with --beta it
@@ -178,4 +179,3 @@ endif()
 # stripped out of slim ports until the TFLite + GL composite stack is fully
 # wired. Default ON; runtime behaviour is ALSO gated by the
 # Talk/Backgrounds/virtualBackgroundEnabled QSetting (default false), so
-# turning this on at build time alone doesn't change any user-visible

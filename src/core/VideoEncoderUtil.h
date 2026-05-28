@@ -147,12 +147,25 @@ inline GstElement *makeWebrtcVideoEncoder(bool screen, int bitrateBps,
                 // reason to abandon hardware encoding.
             }
         } else { /* x264enc — software fallback */
+            // 0.41.0-beta — psy-tune is the single biggest visible-quality
+            // delta at the same bitrate. `film` (= --psy-rd 1.0:0.15) gives
+            // sharper motion edges for camera; `animation` is the OBS
+            // community recipe for screen content (preserves text edges +
+            // handles scroll-jumps better than `stillimage` while staying
+            // compatible with `tune=zerolatency`). qp-min keeps "easy"
+            // frames from being over-quantised below visible loss; qp-max
+            // caps the upper bound on hard frames.
             setArg(enc, "tune", "zerolatency");
             setArg(enc, "speed-preset", "veryfast");
+            setArg(enc, "psy-tune", screen ? "animation" : "film");
             setIfExists(enc, "bitrate", avgKbps);
             setIfExists(enc, "key-int-max", gop);
             setIfExists(enc, "bframes", 0);
             setIfExists(enc, "byte-stream", FALSE);
+            setIfExists(enc, "qp-min", screen ? 14u : 18u);
+            setIfExists(enc, "qp-max", 42u);
+            setIfExists(enc, "vbv-buf-capacity", 1000u);   // ms
+            if (screen) setIfExists(enc, "intra-refresh", TRUE);
         }
         GstElement *parse = gst_element_factory_make("h264parse", nullptr);
         if (!parse) { gst_object_unref(enc); continue; }
