@@ -21,6 +21,7 @@
 #include "core/CallParticipant.h"
 
 class BackgroundEngine;   // #20 — owned by CallManager; lives across calls.
+class ConversationListModel;
 
 class CallManager : public QObject
 {
@@ -89,6 +90,15 @@ public:
     Q_INVOKABLE void startCall(const QString &token, bool withVideo);
     Q_INVOKABLE void setRemotePeerInfo(const QString &name, const QString &peerId);
     Q_INVOKABLE void acceptCall(bool withVideo);
+    // 0.41.5-beta — inject the conversation list so the call mode
+    // decision (m_useP2P) can read the room type and force P2P for
+    // 1:1 calls even when the HPB advertises an MCU. Group calls
+    // (type != 1) still use the MCU.
+    void setConversations(ConversationListModel *c) { m_conversations = c; }
+    // 0.41.5-beta — telemetry-pill readout. True = direct WebRTC P2P,
+    // false = MCU/SFU forward. Decided once per call in setState→
+    // ensureSignalingRoomJoined; stable for the call's lifetime.
+    bool isUsingP2P() const { return m_useP2P; }
     Q_INVOKABLE void declineCall();
     // True when the current incoming/active call was offered with video, so
     // the incoming UI can offer an "answer with video" choice.
@@ -265,6 +275,11 @@ private:
     // P2P single pipeline
     PeerPipeline *m_peerPipeline = nullptr;
     bool m_useP2P = false;
+    // 0.41.5-beta — set by MainWindow at construction. Used at the
+    // m_useP2P decision point to look up the current call's room type
+    // (1 = one-to-one). When the user prefers P2P for 1:1, we force
+    // P2P even on instances where the HPB advertises an MCU.
+    ConversationListModel *m_conversations = nullptr;
     QTimer m_glibTimer;  // shared GLib main context pump
 
     CallState m_state = Idle;

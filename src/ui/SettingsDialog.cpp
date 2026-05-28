@@ -448,6 +448,35 @@ QWidget *SettingsDialog::buildAudioVideoTab()
            "capable camera and a healthy link — TalQ adapts down to fit."),
         resCombo));
 
+    // 0.41.5-beta — prefer P2P (direct WebRTC) for 1:1 calls even when
+    // the server runs an MCU/HPB. Saves the MCU detour for BG↔BG (and
+    // any other case where peers are physically close to each other
+    // and far from the SFU). Group calls (3+ participants) still use
+    // the MCU when one is available — full-mesh P2P would saturate
+    // uplinks at 4+ participants.
+    auto *p2p1to1Check = new QCheckBox(
+        tr("Prefer direct (P2P) connection for 1:1 calls (experimental)"), this);
+    {
+        QSettings cs("TalQ", "TalQ");
+        cs.beginGroup("Call");
+        p2p1to1Check->setChecked(cs.value("preferP2pFor1to1", false).toBool());
+        cs.endGroup();
+    }
+    connect(p2p1to1Check, &QCheckBox::toggled, this,
+            [p2p1to1Check]() {
+                QSettings cs("TalQ", "TalQ");
+                cs.beginGroup("Call");
+                cs.setValue("preferP2pFor1to1", p2p1to1Check->isChecked());
+                cs.endGroup();
+            });
+    layout->addWidget(makeSettingRow(
+        tr("Direct P2P for 1:1 calls"),
+        tr("When on, 1:1 calls bypass the SFU and go peer-to-peer for "
+           "lower latency. Group calls still use the SFU. If a 1:1 call "
+           "fails to establish direct ICE, TalQ falls back to the SFU "
+           "automatically."),
+        p2p1to1Check));
+
     // 0.41.3-beta — playback-gain control removed. Telegram, Zoom and
     // Meet do not surface a "playback volume" setting; their receive-
     // side AudioProcessing AGC handles it automatically. TalQ now
