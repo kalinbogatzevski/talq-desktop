@@ -188,6 +188,9 @@ Message Message::fromJson(const QJsonObject &json)
         m.threadTitle = json["threadTitle"].toString();
     }
 
+    // 0.41.3-beta — optimistic-send dedup key (upstream convention).
+    m.referenceId = json["referenceId"].toString();
+
     // Reactions: { "👍": 3, "❤️": 1 }
     if (json.contains("reactions")) {
         m.reactions = json["reactions"].toObject();

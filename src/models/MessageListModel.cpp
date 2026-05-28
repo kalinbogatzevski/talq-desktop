@@ -1,6 +1,7 @@
 #include "models/MessageListModel.h"
 #include "core/MessageCache.h"
 #include "models/ConversationListModel.h"
+#include <QCryptographicHash>
 #include <QSet>
 #include <QUrlQuery>
 #include <QJsonObject>
@@ -84,7 +85,7 @@ MessageListModel::MessageListModel(ApiClient *api, MessageCache *cache, QObject 
                 if (m.isReactionMessage() || m.isCallJoinLeave()
                     || m.isEditMessage())
                     continue;
-                if (m_hideThreadMessages && m.threadId > 0)
+                if (!passesThreadFilter(m))
                     continue;
                 filtered.append(m);
             }
@@ -450,7 +451,7 @@ void MessageListModel::loadHistory()
             if (m_messageIds.contains(m.id) || m.isReactionMessage()
                 || m.isCallJoinLeave() || m.isEditMessage())
                 continue;
-            if (m_hideThreadMessages && m.threadId > 0)
+            if (!passesThreadFilter(m))
                 continue;
             olderMsgs.append(m);
         }
@@ -642,7 +643,9 @@ void MessageListModel::refreshLatest()
             if (m.isReactionMessage() || m.isCallJoinLeave()
                 || m.isEditMessage())
                 continue;
-            if (m_hideThreadMessages && m.threadId > 0) continue;
+            // 0.41.3-beta — own-message echo dedup (see onMessagesReceived).
+            replaceTempByReferenceId(m);
+            if (!passesThreadFilter(m)) continue;
 
             if (!m_messageIds.contains(m.id)) {
                 missing.append(m);
@@ -738,6 +741,34 @@ void MessageListModel::refreshLatest()
     });
 }
 
+bool MessageListModel::passesThreadFilter(const Message &m) const
+{
+    // System messages and own optimistic-still-pending always pass —
+    // upstream Talk does the same so the user's just-sent text doesn't
+    // disappear the moment they switch tabs.
+    if (m.id < 0) return true;
+    if (m_threadId > 0)
+        return m.threadId == m_threadId || m.id == m_threadId;
+    return !(m_hideThreadMessages && m.threadId > 0);
+}
+
+bool MessageListModel::replaceTempByReferenceId(const Message &real)
+{
+    if (real.referenceId.isEmpty()) return false;
+    for (int i = 0; i < m_messages.size(); ++i) {
+        const auto &t = m_messages[i];
+        if (t.id < 0 && t.referenceId == real.referenceId) {
+            const int tempId = t.id;
+            beginRemoveRows({}, i, i);
+            m_messageIds.remove(tempId);
+            m_messages.removeAt(i);
+            endRemoveRows();
+            return true;
+        }
+    }
+    return false;
+}
+
 void MessageListModel::runGapFillStep()
 {
     if (m_token.isEmpty()
@@ -786,8 +817,8 @@ void MessageListModel::runGapFillStep()
             Message m = Message::fromJson(val.toObject());
             if (m.isReactionMessage() || m.isCallJoinLeave() || m.isEditMessage())
                 continue;
-            if (m_hideThreadMessages && m.threadId > 0)
-                continue;
+            // 0.41.3-beta — same client-side filter as the receive paths.
+            if (!passesThreadFilter(m)) continue;
             oldestInPage = qMin(oldestInPage, m.id);
             if (m_messageIds.contains(m.id))
                 continue;
@@ -840,11 +871,20 @@ void MessageListModel::onMessagesReceived(const QJsonArray &messages)
     QVector<Message> newMsgs;
     for (const auto &val : messages) {
         Message m = Message::fromJson(val.toObject());
-        if (m_messageIds.contains(m.id) || m.isReactionMessage()
-            || m.isCallJoinLeave() || m.isEditMessage())
+        if (m.isReactionMessage() || m.isCallJoinLeave()
+            || m.isEditMessage())
             continue;
-        if (m_hideThreadMessages && m.threadId > 0)
-            continue;
+        // 0.41.3-beta — own-message echo dedup. If the long-poll
+        // returns a message whose referenceId matches a still-pending
+        // optimistic temp, replace the temp in-place so the user
+        // doesn't see a duplicate (or, worse, lose the temp because
+        // it was racing the POST callback).
+        replaceTempByReferenceId(m);
+        if (m_messageIds.contains(m.id)) continue;
+        // 0.41.3-beta — client-side thread filter. We no longer ask
+        // the server for a threadId-filtered poll (upstream doesn't),
+        // so the poll returns ALL room messages. Filter here.
+        if (!passesThreadFilter(m)) continue;
         newMsgs.append(m);
     }
 
@@ -884,7 +924,28 @@ void MessageListModel::postAndReplace(const QString &token, const QJsonObject &b
             for (int i = 0; i < m_messages.size(); ++i) {
                 if (m_messages[i].id == tempId) { idx = i; break; }
             }
-            if (idx < 0) return;
+            // 0.41.3-beta — the optimistic temp may already be gone:
+            // the long-poll caught the same message first and the new
+            // replaceTempByReferenceId() handler removed it. If the
+            // POST response carries a real id we already have in the
+            // model, we're done — no action needed.
+            if (idx < 0) {
+                if (ok && !data.isEmpty()) {
+                    Message real = Message::fromJson(data);
+                    if (m_messageIds.contains(real.id))
+                        return;   // poller delivered + dedup handled it
+                    // Edge case: temp gone, real not in model (rare,
+                    // e.g. cache cleared mid-flight). Insert fresh so
+                    // the user doesn't lose their just-sent message.
+                    if (!passesThreadFilter(real)) return;
+                    m_messageIds.insert(real.id);
+                    beginInsertRows({}, 0, 0);
+                    m_messages.prepend(real);
+                    endInsertRows();
+                    m_cache->saveMessages(m_token, {real});
+                }
+                return;
+            }
 
             if (ok && !data.isEmpty()) {
                 Message real = Message::fromJson(data);
@@ -955,6 +1016,20 @@ void MessageListModel::sendMessage(const QString &text, int replyToId, bool sile
     static int tempIdCounter = -1;
     int tempId = tempIdCounter--;
 
+    // 0.41.3-beta — referenceId for upstream-compatible dedup. SHA-256
+    // hex of a unique tag (mirrors `prepareTemporaryMessage.ts:96-120`).
+    // The server echoes the same referenceId back on (a) the POST
+    // response with the real numeric id, AND (b) the long-poll event
+    // that arrives concurrently for the same own message. Without
+    // this key, back-to-back sends + late POST callbacks raced and
+    // the FIRST optimistic could be erased — the field bug.
+    const QByteArray refSeed = QByteArray("talq-")
+        + QByteArray::number(QDateTime::currentMSecsSinceEpoch())
+        + QByteArray("-")
+        + QByteArray::number(tempId);
+    const QString referenceId = QString::fromLatin1(
+        QCryptographicHash::hash(refSeed, QCryptographicHash::Sha256).toHex());
+
     Message optimistic;
     optimistic.id = tempId;
     optimistic.token = m_token;
@@ -965,6 +1040,11 @@ void MessageListModel::sendMessage(const QString &text, int replyToId, bool sile
     optimistic.timestamp = QDateTime::currentSecsSinceEpoch();
     optimistic.messageType = "comment";
     optimistic.sendStatus = "sending";
+    optimistic.referenceId = referenceId;
+    // 0.41.3-beta — when sending FROM a thread tab, tag the optimistic
+    // with the thread id locally so the client-side thread filter
+    // (next paragraph) keeps it visible until the server's echo lands.
+    if (m_threadId > 0) optimistic.threadId = m_threadId;
 
     // Prepend at index 0 (newest-first: new = front)
     m_messageIds.insert(tempId);
@@ -977,6 +1057,7 @@ void MessageListModel::sendMessage(const QString &text, int replyToId, bool sile
 
     QJsonObject body;
     body["message"] = actualText;
+    body["referenceId"] = referenceId;
     if (replyToId > 0)
         body["replyTo"] = replyToId;
     if (silent) body["silent"] = true;

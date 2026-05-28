@@ -38,6 +38,15 @@ public:
     int threadId = 0;           // Root thread message ID (0 = not in a thread)
     QString threadTitle;         // Thread title if this is a thread root
     int threadReplyCount = 0;    // Number of replies (for root messages)
+    // 0.41.3-beta — upstream Talk dedup key. Sent on POST; the server
+    // echoes it on the real-message response AND on the long-poll
+    // event for the same message. We match incoming referenceId to a
+    // local optimistic temp message to avoid back-to-back-send races
+    // (the "first message disappears" field bug). Empty for system
+    // messages and historical fetches; only meaningful on temp + the
+    // server's echo of an own send. SHA-256-hex by upstream convention
+    // but we treat it as an opaque string.
+    QString referenceId;
     QJsonObject reactions;
     QString sendStatus;
     QString systemMessage;

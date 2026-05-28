@@ -187,6 +187,20 @@ private:
     int m_gapFillPagesRemaining  = 0;
     class QNetworkReply *m_gapFillReply = nullptr;
     void runGapFillStep();
+    // 0.41.3-beta — when a real message arrives whose referenceId
+    // matches a still-pending optimistic temp, remove the temp from
+    // the model. Returns true if a temp was removed (caller should
+    // skip the temp's id from m_messageIds and add the real msg
+    // fresh). Mirrors upstream `getTemporaryReferences` matching.
+    bool replaceTempByReferenceId(const Message &real);
+    // 0.41.3-beta — client-side thread filter. Replaces the previous
+    // server-side `threadId=` query param which the upstream Talk web
+    // client does NOT use on the long-poll (it pulls everything and
+    // filters in the chat store). When m_threadId>0, only messages
+    // where threadId==m_threadId OR id==m_threadId (the seed) pass.
+    // When m_threadId==0 AND m_hideThreadMessages is true, only
+    // non-thread messages pass.
+    bool passesThreadFilter(const Message &m) const;
     int m_lastCommonRead = 0;
     int m_unreadBoundary = 0;
     ConversationListModel *m_conversations = nullptr;
