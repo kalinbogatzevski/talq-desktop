@@ -68,6 +68,11 @@ CallStage::CallStage(CallManager *call, QWidget *parent)
     });
     connect(m_call, &CallManager::participantsChanged, this, [this]{ relayout(); update(); });
     connect(m_call, &CallManager::participantAdded, this, [this]{ rebindProviders(); relayout(); update(); });
+    // 0.41.1-beta — when our screen share starts/stops, rebind the
+    // local-screen preview provider connection and relayout to place
+    // (or remove) the screen-share self-PiP rect.
+    connect(m_call, &CallManager::screenShareChanged, this,
+            [this]{ rebindProviders(); relayout(); update(); });
     connect(m_call, &CallManager::participantRemoved, this, [this](const QString &){
         purgeStaleFrames();    // drop departed peers' cached frames (a raw
         rebindProviders();     // pointer key could otherwise collide with a
@@ -151,6 +156,19 @@ void CallStage::rebindProviders()
             // Talk's ScreenShare.vue `srcObject = null` clear on
             // unshareScreen; see [[project_talq_upstream_screenshare]].
             m_scrFrame.remove(p);
+    }
+    // 0.41.1-beta — local screen-share self-preview. Independent of the
+    // per-participant remote screen providers above: this is OUR
+    // outgoing share, tapped off the ScreenSharePipeline appsink tee.
+    if (auto *sp = m_call->localScreenPreviewProvider()) {
+        m_conns << connect(sp, &VideoFrameProvider::imageReady, this,
+            [this](const QImage &img) {
+                m_selfScreenFrame = img.scaledToHeight(360,
+                    Qt::SmoothTransformation);
+                update();
+            });
+    } else {
+        m_selfScreenFrame = QImage();
     }
     update();
 }
@@ -317,6 +335,22 @@ void CallStage::relayout()
         m_pipRect = QRectF();
     }
 
+    // 0.41.1-beta — second small PiP for the local screen share so the
+    // user can SEE what they're broadcasting (Zoom/Teams/Meet/Telegram
+    // consensus: never hide the camera PiP for the share — both stay).
+    // Anchor to the corner opposite the camera PiP so they don't stack.
+    if (m_call->isScreenSharing() && m_call->localScreenPreviewProvider()) {
+        const qreal w = qBound(140.0, width() * 0.16, 220.0);
+        const qreal h = w * 9.0 / 16.0;
+        const qreal m = 18;
+        const int   oppCorner = m_pipCorner ^ 1;          // flip horizontal
+        qreal x = (oppCorner % 2 == 0) ? m : width()  - w - m;
+        qreal y = (oppCorner <  2)    ? m : height() - h - m - 72;
+        m_selfSharePipRect = QRectF(x, y, w, h);
+    } else {
+        m_selfSharePipRect = QRectF();
+    }
+
     updateStreamQualities();
 }
 
@@ -371,6 +405,40 @@ void CallStage::paintEvent(QPaintEvent *)
         if (!m_pipRect.isNull() && m_call->selfParticipant()) {
             Tile s; s.p = m_call->selfParticipant(); s.rect = m_pipRect;
             paintTile(p, s, th, false);
+        }
+        // 0.41.1-beta — local screen-share self-preview tile.
+        if (!m_selfSharePipRect.isNull()) {
+            const QRectF r = m_selfSharePipRect;
+            const qreal rd = 13;
+            // bg-surface card frame so the preview reads as a tile, not
+            // a floater
+            QColor face = th.bgSurface; face.setAlphaF(0.9);
+            p.setBrush(face); p.setPen(QPen(th.danger, 1.3));
+            p.drawRoundedRect(r, rd, rd);
+            const QRectF inner = r.adjusted(2, 2, -2, -2);
+            if (!m_selfScreenFrame.isNull()) {
+                const QImage &img = m_selfScreenFrame;
+                const qreal sx = inner.width()  / img.width();
+                const qreal sy = inner.height() / img.height();
+                const qreal s  = qMin(sx, sy);
+                const QSizeF target(img.width() * s, img.height() * s);
+                const QPointF off(inner.center() - QPointF(target.width()/2,
+                                                            target.height()/2));
+                p.drawImage(QRectF(off, target), img);
+            }
+            // Small label so it's clear what this tile is, even when
+            // the preview frame is empty/black for the first ~200 ms.
+            QFont lf = monoFont(8); lf.setBold(true);
+            p.setFont(lf);
+            QColor labelBg = th.danger; labelBg.setAlphaF(0.92);
+            QFontMetrics lfm(lf);
+            const QString label = tr("SHARING");
+            const QRectF lbl(r.left() + 6, r.top() + 6,
+                              lfm.horizontalAdvance(label) + 12, 16);
+            p.setBrush(labelBg); p.setPen(Qt::NoPen);
+            p.drawRoundedRect(lbl, 5, 5);
+            p.setPen(Qt::white);
+            p.drawText(lbl, Qt::AlignCenter, label);
         }
         paintStatusPill(p, th);
         paintSharingBadge(p, th);
@@ -1039,18 +1107,36 @@ void CallStage::paintActionPills(QPainter &p, const PainterTheme &th)
 
     const QString qKey  = QStringLiteral("QUALITY");
     const QString bgKey = QStringLiteral("BACKGROUND");
+    const QString shKey = QStringLiteral("SHARE");
 
     auto btnWidth = [&](const QString &key, const QString &val) {
         return padL + keyFm.horizontalAdvance(key) + keyValGap
              + valFm.horizontalAdvance(val) + caretGap + caretW + padR;
     };
 
+    // 0.41.1-beta — SHARE quality dropdown only paints + accepts input
+    // while a screen share is live. Value mirrors CallManager's current
+    // screenShareQuality(): 0=720p / 1=1080p / 2=1440p / 3=Native. The
+    // logic itself was already there (right-click on the bottom share
+    // button), but it was invisible to users who don't know to try the
+    // right button; now it lives in the standard action-button row.
+    const bool showShare = m_call->isScreenSharing();
+    static const char *const kShLabels[] = { "720P", "1080P", "1440P", "NATIVE" };
+    QString shVal;
+    if (showShare) {
+        const int lv = qBound(0, m_call->screenShareQuality(), 3);
+        shVal = QString::fromLatin1(kShLabels[lv]);
+    }
+
     const qreal qW  = btnWidth(qKey,  qVal);
     const qreal bgW = btnWidth(bgKey, bgVal);
+    const qreal shW = showShare ? btnWidth(shKey, shVal) : 0.0;
     const qreal rowRight = width() - 16.0;
     const qreal rowTop   = 14.0;
     QRectF bgBtn(rowRight - bgW,          rowTop, bgW, btnH);
     QRectF qBtn (bgBtn.left() - gap - qW, rowTop, qW,  btnH);
+    QRectF shBtn;
+    if (showShare) shBtn = QRectF(qBtn.left() - gap - shW, rowTop, shW, btnH);
 
     auto drawButton = [&](const QRectF &rect, const QString &key,
                           const QString &val, bool active, bool hovered) {
@@ -1091,11 +1177,17 @@ void CallStage::paintActionPills(QPainter &p, const PainterTheme &th)
 
     drawButton(qBtn,  qKey,  qVal,  qActive, m_hoverPill == QStringLiteral("quality"));
     drawButton(bgBtn, bgKey, bgVal, bgOn,    m_hoverPill == QStringLiteral("bg"));
+    if (showShare) {
+        drawButton(shBtn, shKey, shVal, true,
+                   m_hoverPill == QStringLiteral("share"));
+    }
 
     m_qualityPillRect = qBtn;
     m_bgPillRect      = bgBtn;
+    m_sharePillRect   = showShare ? shBtn : QRectF();
     m_topChromeRects.append(qBtn);
     m_topChromeRects.append(bgBtn);
+    if (showShare) m_topChromeRects.append(shBtn);
 }
 
 void CallStage::paintSharingBadge(QPainter &p, const PainterTheme &th)
@@ -1295,11 +1387,14 @@ void CallStage::mouseMoveEvent(QMouseEvent *e)
     const QString hov = m_controlsVisible ? hitButton(e->position()) : QString();
     m_hoverBtn = hov;
     // 0.40.15 — action-pill hover (Quality / BG top-right).
+    // 0.41.1-beta — SHARE quality button joins, only when sharing.
     QString hovPill;
     if (!m_qualityPillRect.isNull() && m_qualityPillRect.contains(e->position()))
         hovPill = QStringLiteral("quality");
     else if (!m_bgPillRect.isNull() && m_bgPillRect.contains(e->position()))
         hovPill = QStringLiteral("bg");
+    else if (!m_sharePillRect.isNull() && m_sharePillRect.contains(e->position()))
+        hovPill = QStringLiteral("share");
     if (hovPill != m_hoverPill) {
         m_hoverPill = hovPill;
         if (hovPill == QStringLiteral("quality")) {
@@ -1320,6 +1415,13 @@ void CallStage::mouseMoveEvent(QMouseEvent *e)
                               : (type == QLatin1String("image") ? tr("Image") : tr("Blur"));
             QToolTip::showText(e->globalPosition().toPoint(),
                 tr("Background: %1\nClick to cycle Off → Blur → Image.\nRight-click to open the full picker.").arg(cur),
+                this);
+        } else if (hovPill == QStringLiteral("share")) {
+            static const char *const kShareLabels[] = { "720p", "1080p", "1440p", "Native" };
+            const int lv = qBound(0, m_call->screenShareQuality(), 3);
+            QToolTip::showText(e->globalPosition().toPoint(),
+                tr("Screen-share quality: %1\nClick to change.")
+                    .arg(QString::fromLatin1(kShareLabels[lv])),
                 this);
         } else {
             QToolTip::hideText();
@@ -1397,6 +1499,30 @@ void CallStage::mousePressEvent(QMouseEvent *e)
             add(tr("Low (180p)"),    0);
             add(tr("Medium (360p)"), 1);
             add(tr("High (720p)"),   2);
+        });
+        return;
+    }
+
+    // 0.41.1-beta — SHARE quality button: dropdown only present while
+    // screen-sharing. Same options as the right-click menu on the
+    // bottom share button (720p / 1080p / 1440p / Native).
+    if (e->button() == Qt::LeftButton
+        && !m_sharePillRect.isNull()
+        && m_sharePillRect.contains(e->position())) {
+        const int cur = qBound(0, m_call->screenShareQuality(), 3);
+        openDropdown(m_sharePillRect, [this, cur](QMenu &menu) {
+            static const char *const kLabels[] = {
+                "720p", "1080p (Full HD)", "1440p (2K)", "Native (4K-capable)"
+            };
+            for (int i = 0; i < 4; ++i) {
+                QAction *act = menu.addAction(QString::fromLatin1(kLabels[i]));
+                act->setCheckable(true);
+                act->setChecked(i == cur);
+                const int lv = i;
+                connect(act, &QAction::triggered, this, [this, lv, cur]() {
+                    if (lv != cur) m_call->setScreenShareQuality(lv);
+                });
+            }
         });
         return;
     }

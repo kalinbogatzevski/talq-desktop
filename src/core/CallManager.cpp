@@ -1309,6 +1309,12 @@ void CallManager::stopScreenShare()
     emit screenShareChanged();
 }
 
+VideoFrameProvider *CallManager::localScreenPreviewProvider() const
+{
+    return m_screenSharePipeline ? m_screenSharePipeline->previewProvider()
+                                  : nullptr;
+}
+
 void CallManager::setScreenShareQuality(int level)
 {
     if (level < 0 || level > 3) return;

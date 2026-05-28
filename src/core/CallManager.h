@@ -58,6 +58,10 @@ public:
     QString callStats() const { return m_callStats; }
     VideoFrameProvider *remoteVideoProvider() const { return m_remoteVideoProvider; }
     VideoFrameProvider *localVideoProvider() const { return m_localVideoProvider; }
+    // 0.41.1-beta — local self-preview of the screen being shared.
+    // Returns nullptr unless a screen-share pipeline exists and the
+    // BGRx appsink tee is wired (which depends on gst-plugins-base).
+    VideoFrameProvider *localScreenPreviewProvider() const;
     QString statusDetail() const { return m_statusDetail; }
     bool callsAvailable() const { return m_callsAvailable; }
     QString callsUnavailableReason() const { return m_callsUnavailableReason; }
