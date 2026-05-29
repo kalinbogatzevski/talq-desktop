@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QWidget>
+#include "painter/PainterTheme.h"
 
 class ThreadListModel;
 class QHBoxLayout;
@@ -22,6 +23,10 @@ public:
 
     void setModel(ThreadListModel *model);
     void setSelectedThreadId(int threadId);
+    // bug 10 — drive chip colors from PainterTheme (single source of truth) so
+    // the labels are readable in ALL four themes. Mirrors how every other
+    // chrome widget receives the theme; call on creation and on theme change.
+    void setTheme(PainterTheme::Theme t);
 
 protected:
     // Re-theme when the app palette changes (PainterTheme drives it).
@@ -43,4 +48,5 @@ private:
     QWidget         *m_row = nullptr;
     QHBoxLayout     *m_rowLayout = nullptr;
     int              m_selectedThreadId = 0;   // 0 = "All messages"
+    PainterTheme::Theme m_themeId = PainterTheme::Theme::Vivid;  // bug 10
 };

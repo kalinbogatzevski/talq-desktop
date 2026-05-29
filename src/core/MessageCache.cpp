@@ -161,12 +161,21 @@ QVector<Message> MessageCacheWorker::doLoadMessages(const QString &token, int li
 {
     QVector<Message> result;
 
+    // bug 12 — order by message_id, NOT timestamp. The live model orders
+    // strictly by id everywhere (onMessagesReceived prepend, refreshLatest
+    // sort a.id>b.id). Ordering the cache by timestamp made the reload
+    // DISAGREE with the live model: a reply gets the newest id but its
+    // server timestamp may not exceed the messages between its parent and the
+    // tail (clock skew / second-granularity ties / multi-device gap-fill), so
+    // the cache placed the reply back near its PARENT on reopen — "the reply
+    // appeared at the top." id is the conversation's monotonic order and the
+    // table's PRIMARY KEY (token, message_id), so this is also the efficient key.
     QSqlQuery q(m_db);
     q.prepare("SELECT json FROM ("
-              "  SELECT json, timestamp, message_id FROM messages "
+              "  SELECT json, message_id FROM messages "
               "  WHERE token = :token "
-              "  ORDER BY timestamp DESC, message_id DESC LIMIT :limit"
-              ") ORDER BY timestamp ASC, message_id ASC");
+              "  ORDER BY message_id DESC LIMIT :limit"
+              ") ORDER BY message_id ASC");
     q.bindValue(":token", token);
     q.bindValue(":limit", limit);
 

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(talq VERSION 0.41.8 LANGUAGES CXX)
+project(talq VERSION 0.42.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -153,16 +153,15 @@ string(TIMESTAMP TALQ_BUILD_TS "%m%d-%H%M")
 target_compile_definitions(talq PRIVATE
     TALQ_VERSION="${PROJECT_VERSION}"
     TALQ_BUILD_TS="${TALQ_BUILD_TS}"
-    # Per-release codename (empty string = no codename pill). Set alongside
-    # the version bump; shown on the Mission Control command bar.
-    # "Koprivshtitsa": the small mountain town where the Bulgarian April
-    # Uprising of 1876 was actually sparked — Todor Kableshkov sent the
-    # "bloody letter" from here that triggered the rising several days
-    # before Panagyurishte declared it at Oborishte. Symbolically fits
-    # the start of a new development cycle. Continues the 150th-anniv
-    # thread (0.39.x betas "Aprilsko Vastanie" → 0.40.x stable
-    # "Panagyurishte" → 0.41.x betas "Koprivshtitsa"). Locked 2026-05-28.
-    TALQ_VERSION_NAME="Koprivshtitsa"
+    # Codename pill (empty string = none). Shown on the Mission Control
+    # command bar. RULE: the codename is per MINOR LINE and is SHARED across
+    # ALL patch releases of that line — do NOT vary it per patch. 150th-anniv
+    # April-Uprising thread: 0.39.x betas "Aprilsko Vastanie" → 0.40.x stable
+    # "Panagyurishte" → 0.41.x betas "Koprivshtitsa". 0.42.0 STABLE pivots to a
+    # Hitchhiker's-Guide theme: "Deep Thought" — the supercomputer that
+    # computed 42, the Answer to Life, the Universe and Everything (0.42).
+    # Locked 2026-05-29.
+    TALQ_VERSION_NAME="Deep Thought"
 )
 
 # Pre-release flag: when build-release.sh is invoked with --beta it
@@ -179,3 +178,4 @@ endif()
 # stripped out of slim ports until the TFLite + GL composite stack is fully
 # wired. Default ON; runtime behaviour is ALSO gated by the
 # Talk/Backgrounds/virtualBackgroundEnabled QSetting (default false), so
+# turning this on at build time alone doesn't change any user-visible

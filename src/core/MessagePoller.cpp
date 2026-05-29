@@ -14,6 +14,7 @@ MessagePoller::MessagePoller(ApiClient *api, QObject *parent)
 void MessagePoller::start(const QString &conversationToken, int lastKnownMessageId)
 {
     stop();
+    m_stopping = false;   // fresh run — clear the teardown flag stop() just set
     m_token = conversationToken;
     m_lastKnownMessageId = lastKnownMessageId;
     m_polling = true;
@@ -23,6 +24,7 @@ void MessagePoller::start(const QString &conversationToken, int lastKnownMessage
 
 void MessagePoller::stop()
 {
+    m_stopping = true;
     m_polling = false;
     if (m_currentReply) {
         auto *reply = m_currentReply;
@@ -84,8 +86,22 @@ void MessagePoller::handlePollResponse()
     int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
 
     if (reply->error() == QNetworkReply::OperationCanceledError) {
-        // Intentional stop
         reply->deleteLater();
+        // Our own stop()/teardown sets m_stopping AND nulls m_currentReply
+        // (so it is caught by the !m_currentReply guard above and never gets
+        // here). An OperationCanceledError reaching this point while we are
+        // NOT stopping is therefore an UNEXPECTED abort — sleep/wake, VPN or
+        // proxy drop, an idle keep-alive socket teardown, or a global
+        // cancelAll. The old code treated it as an intentional stop and
+        // returned without re-polling and without emitting pollError, so the
+        // open room's ONLY live-update path died silently (m_connected stayed
+        // true, no reconnect UI) while the conversation list kept refreshing —
+        // "new message in the list but missing in the open room" (bug 1).
+        // Surface it and resume.
+        if (m_stopping || !m_polling)
+            return;
+        emit pollError(QStringLiteral("poll connection aborted; reconnecting"));
+        QTimer::singleShot(2000, this, &MessagePoller::poll);
         return;
     }
 

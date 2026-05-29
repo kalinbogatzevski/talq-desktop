@@ -583,6 +583,7 @@ void MainWindow::buildChatPage()
     // Topic tabs (Telegram-style horizontal strip below the header).
     m_topicTabBar = new TopicTabBar(chatCol);
     m_topicTabBar->setModel(m_threads);
+    m_topicTabBar->setTheme(m_themeId);   // bug 10 — theme the chips from PainterTheme
     chatLayout->addWidget(m_topicTabBar);
     connect(m_topicTabBar, &TopicTabBar::threadSelected, this,
             [this](int threadId, const QString &title) { openThread(threadId, title); });
@@ -1197,7 +1198,11 @@ void MainWindow::buildChatPage()
     // ── Model signals ──
     connect(m_messages, &MessageListModel::conversationTokenChanged, this, [this]() {
         closeThread();
-        m_chatPainter->scrollToBottom();
+        // bug 1 — pin to bottom across the whole open sequence (cache load,
+        // refreshLatest reset, and the ~1s-later poll delivery), so a message
+        // that lands just after open isn't left below the fold by the
+        // open-time reset churn. Cleared automatically on user scroll-up.
+        m_chatPainter->pinToBottom();
     });
 
     connect(m_messages, &MessageListModel::newMessagesAtEnd, this, [this]() {
@@ -1623,6 +1628,10 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
     case QEvent::KeyPress:
     case QEvent::Wheel:
         m_lastTalqInputMs = QDateTime::currentMSecsSinceEpoch();
+        // bug 13 — local input is the clearest "user is back" signal; restore
+        // an auto-set Away to Online immediately (no-op unless auto-away).
+        if (m_userStatus)
+            m_userStatus->tryRestoreFromAutoAway();
         break;
     default:
         break;
@@ -2324,10 +2333,22 @@ void MainWindow::changeEvent(QEvent *event)
     // pile up redundant in-flight HTTP requests.
     if (event->type() == QEvent::ActivationChange && isActiveWindow()
         && m_conversations) {
+        // bug 13 — TalQ came to the foreground: if we auto-flipped to Away
+        // while idle, restore to Online immediately (no-op otherwise).
+        if (m_userStatus)
+            m_userStatus->tryRestoreFromAutoAway();
         const qint64 now = QDateTime::currentMSecsSinceEpoch();
         if (now - m_lastActivationStatusRefreshMs >= 5000) {
             m_lastActivationStatusRefreshMs = now;
             m_conversations->refreshUserStatuses();
+            // bug 1 — also re-sync the OPEN room on activation. The
+            // conversation list self-heals on its own 30 s timer, but the open
+            // room's only live path is the long-poll; if it stalled while we
+            // were away (sleep/wake, network blip) the room would show stale
+            // messages until a full conversation switch. refreshLatest()
+            // reconciles it and restarts the poller. Shares the 5 s limit.
+            if (m_messages)
+                m_messages->refresh();
         }
     }
 }
@@ -2497,6 +2518,7 @@ void MainWindow::applyThemeId(PainterTheme::Theme t)
     m_chatPainter->setTheme(t);
     m_threadsPainter->setTheme(t);
     if (m_callWindow) m_callWindow->setTheme(t);
+    if (m_topicTabBar) m_topicTabBar->setTheme(t);   // bug 10
     applyDarkPalette();
     restyleChrome();          // search field, sidebar icons, profile, splitter
     // Re-tint the Mission Control home. Rebuilding it (delete + recreate ~30

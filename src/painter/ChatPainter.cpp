@@ -234,6 +234,13 @@ void ChatPainter::setScrollY(qreal y)
     bool wasAtBottom = atBottom();
     m_scrollY = y;
     clampScroll();
+    // bug 1 — release the open-time bottom-pin as soon as a scroll lands
+    // OFF the bottom. Only a genuine user scroll-up does this; the programmatic
+    // scrollToBottom() always lands AT the bottom and keeps the pin. So the
+    // pin never traps the user away from history, yet survives the whole
+    // open-time cache-load/refreshLatest reset storm.
+    if (m_forcePinBottom && !atBottom())
+        m_forcePinBottom = false;
     if (wasAtBottom != atBottom())
         emit atBottomChanged();
     emit scrollYChanged();
@@ -269,6 +276,18 @@ void ChatPainter::setScrollY(qreal y)
 void ChatPainter::scrollToBottom()
 {
     setScrollY(qMax(0.0, m_contentHeight - height()));
+}
+
+void ChatPainter::pinToBottom()
+{
+    // bug 1 — set the "keep me at the bottom" intent for a freshly-opened
+    // conversation and scroll there now. Every subsequent rebuildAllLayouts
+    // (cache insert, refreshLatest reset, the ~1s-later poll delivery) will
+    // re-land at the true bottom while the flag holds, so newly-arrived
+    // messages are never left below the fold by the open-time reset churn.
+    // setScrollY clears the flag the moment the user scrolls up.
+    m_forcePinBottom = true;
+    scrollToBottom();
 }
 
 void ChatPainter::enterSelectionMode(int firstMessageId)
@@ -611,8 +630,11 @@ void ChatPainter::rebuildAllLayouts()
     if (!qFuzzyCompare(oldH, m_contentHeight))
         emit contentHeightChanged();
 
-    // Auto-scroll to bottom if we were at bottom
-    if (wasAtBottom)
+    // Auto-scroll to bottom if we were at bottom, OR if the view is force-
+    // pinned for the just-opened conversation (bug 1: keeps the newest
+    // messages visible across the open-time cache-load/refreshLatest reset
+    // storm, independent of the transient m_scrollY during those resets).
+    if (wasAtBottom || m_forcePinBottom)
         scrollToBottom();
 
     update();
