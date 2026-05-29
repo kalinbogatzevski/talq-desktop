@@ -8,7 +8,7 @@
 
 Your team chat as a real desktop app: instant open, near-zero idle, built to be left running all day.
 
-<sub>Stable codename: **Panagyurishte**, the town where the Bulgarian April Uprising of 1876 was declared at the Oborishte assembly. 2026 = 1876 + 150. The 0.39.x beta cycle that fed this stable carried the codename of the uprising itself, *Aprilsko Vastanie* 🇧🇬</sub>
+<sub>Stable codename: **Deep Thought** — the supercomputer from *The Hitchhiker's Guide to the Galaxy* that computed **42**, the Answer to Life, the Universe and Everything (a nod to version 0.42). The cycles that fed this stable honoured the 150th anniversary of Bulgaria's 1876 April Uprising: *Aprilsko Vastanie* (0.39 beta) → *Panagyurishte* (0.40 stable) → *Koprivshtitsa* (0.41 beta) 🇧🇬</sub>
 
 </div>
 
