@@ -44,7 +44,12 @@ class CallManager : public QObject
     Q_PROPERTY(QString remotePeerClient READ remotePeerClient NOTIFY callInfoChanged)
 
 public:
-    enum CallState { Idle, Outgoing, Incoming, Connecting, Active, Ending };
+    // Reconnecting sits between Active and Ending: the call is logically
+    // still up but the publisher media path is being actively rebuilt after
+    // an ICE failure (Zoom-style — we never auto-drop). Appended before
+    // Ending so Idle..Active keep their existing int values; consumers
+    // compare by enum name, not literal.
+    enum CallState { Idle, Outgoing, Incoming, Connecting, Active, Reconnecting, Ending };
     Q_ENUM(CallState)
 
     explicit CallManager(ApiClient *api, SignalingClient *signaling, MediaDeviceManager *deviceMgr, QObject *parent = nullptr);
@@ -232,6 +237,19 @@ private:
     // Tear down just that subscriber and re-subscribe; never kill the call.
     void recoverSubscriber(const QString &sessionId, const QString &reason);
 
+    // Publisher (our send leg) reconnect — the Zoom-style "never drop"
+    // counterpart to recoverSubscriber. recoverPublisher() enters/keeps the
+    // Reconnecting state and arms m_pubRetryTimer with backoff (never tears
+    // the call down). rebuildPublisherAndReoffer() runs on the timer: it
+    // deleteLater()s the dead publisher and rebuilds via buildAndStartPublisher().
+    // buildAndStartPublisher() creates the PublishPipeline, wires its signals,
+    // starts it on the CACHED m_stunServer/m_turnServers and re-offers; it is
+    // also the first-join path (factored out of joinCallOnServer). Returns
+    // false if the pipeline failed to start (caller decides retry vs teardown).
+    void recoverPublisher(const QString &reason);
+    void rebuildPublisherAndReoffer();
+    bool buildAndStartPublisher();
+
     // --- Participant registry (additive; mirrors signaling/pipeline state) ---
     CallParticipant *ensureParticipant(const QString &sessionId, const QString &name);
     CallParticipant *ensureSelfParticipant();
@@ -312,14 +330,18 @@ private:
     QTimer m_durationTimer;
     QTimer m_ringTimeout;
     QTimer m_statsTimer;
-    // Publisher ICE "failed" is often transient (Wi-Fi/NAT blip, HPB
-    // renegotiation) and self-heals to "connected" within seconds. The
-    // old code hung up the whole call on the first "failed" — an
-    // 11-minute call died on a momentary blip. Grace-debounce it: only
-    // tear down if ICE is still failed when this single-shot timer
-    // fires; any "connected"/"completed" in the window cancels it.
-    QTimer m_pubIceGrace;
-    int    m_pubIceRecoveries = 0;
+    // Publisher ICE "failed" means our send path to the MCU died (e.g. a
+    // long-haul link revoking ICE consent). Zoom-style recovery: NEVER
+    // auto-drop. On "failed" we enter the Reconnecting state and arm this
+    // single-shot timer with exponential backoff; each fire rebuilds the
+    // publisher pipeline and re-offers to the MCU (reusing the cached
+    // STUN/TURN so it works even while the network is still down). Only a
+    // user Cancel/Leave, the peer leaving, or the room closing ends the
+    // call. Any publisher ICE "connected"/"completed" cancels recovery and
+    // returns us to Active.
+    QTimer m_pubRetryTimer;
+    int    m_pubRetryAttempts   = 0;     // resets to 0 on ICE connected/completed
+    bool   m_pubRebuildInFlight = false; // serialize rebuilds (one at a time)
     // 0.40.15 — sticky flag: publisher ICE has been seen at "connected"
     // or "completed" at some point. The iceStateChanged handler only
     // promotes Connecting→Active when the event fires WHILE m_state is

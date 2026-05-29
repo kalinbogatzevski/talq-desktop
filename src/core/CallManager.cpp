@@ -463,18 +463,17 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
     m_statsTimer.setInterval(2000);
     connect(&m_statsTimer, &QTimer::timeout, this, &CallManager::updateCallStats);
 
-    // Publisher ICE-failed grace timer. Fires only if publisher ICE was
-    // still "failed" 8 s after it first failed (any "connected"/
-    // "completed" in between stops it). This is the publisher-side
-    // analogue of recoverSubscriber()'s "never suicide on a transient
-    // blip" rule — a momentary network hiccup must not kill the call.
-    m_pubIceGrace.setSingleShot(true);
-    m_pubIceGrace.setInterval(8000);
-    connect(&m_pubIceGrace, &QTimer::timeout, this, [this]() {
-        if (m_state != Connecting && m_state != Active) return;
-        qWarning() << "CallManager: publisher ICE still failed after grace "
-                      "window — tearing down call";
-        hangUp();
+    // Publisher reconnect timer (Zoom-style — NEVER auto-drops the call).
+    // Armed with exponential backoff by recoverPublisher() while the call is
+    // in the Reconnecting state; each fire rebuilds the publisher pipeline and
+    // re-offers to the MCU. A fire that arrives after we already recovered
+    // (back to Active) or after teardown is a no-op — the m_state guard makes
+    // a stale fire harmless. The ONLY ways out of Reconnecting are: ICE
+    // recovers → Active, or the user cancels / the peer leaves → teardown.
+    m_pubRetryTimer.setSingleShot(true);
+    connect(&m_pubRetryTimer, &QTimer::timeout, this, [this]() {
+        if (m_state != Reconnecting) return;
+        rebuildPublisherAndReoffer();
     });
 
     m_speakingGrace.setSingleShot(true);
@@ -926,6 +925,188 @@ void CallManager::recoverSubscriber(const QString &sessionId, const QString &rea
             << "(" << reason << ") attempt" << n << "— re-subscribing";
     setStatusDetail("Reconnecting peer video…");
     requestPeerStream(sessionId);
+}
+
+bool CallManager::buildAndStartPublisher()
+{
+    // Publisher SID (matches NC Talk: Date.now().toString()). A FRESH sid on
+    // every (re)build makes Janus spin a clean publisher session, discarding
+    // any half-dead one left from a previous attempt.
+    const QString pubSid = QString::number(QDateTime::currentMSecsSinceEpoch());
+
+    qDebug() << "CallManager: creating PublishPipeline...";
+    m_publishPipeline = new PublishPipeline(this);
+    m_publishPipeline->setBackgroundEngine(m_backgroundEngine);
+    m_localVideoProvider = m_publishPipeline->localVideoProvider();
+    emit localVideoProviderChanged();
+
+    connect(m_publishPipeline, &PublishPipeline::localOfferReady,
+            this, [this, pubSid](const QString &sdp) {
+        setStatusDetail("Sending offer to MCU");
+        m_signaling->sendOffer(m_signaling->sessionId(), sdp, pubSid);
+        qDebug() << "CallManager: sent publish offer to own session, sid=" << pubSid;
+    });
+
+    // Self-heal: forced-exact camera caps mfvideosrc can't deliver → no frames;
+    // PublishPipeline resets the pick to Auto, we re-arm via permissive nego.
+    connect(m_publishPipeline, &PublishPipeline::cameraNegotiationFailed,
+            this, [this]() {
+        qWarning() << "CallManager: camera negotiation failed — re-arming via Auto/permissive";
+        if (!m_publishPipeline) return;
+        m_publishPipeline->disableCamera();
+        QTimer::singleShot(150, this, [this]() {
+            if (!m_publishPipeline) return;
+            m_publishPipeline->enableCamera(videoDeviceIndex(), preferHd1080());
+        });
+    });
+
+    connect(m_publishPipeline, &PublishPipeline::iceCandidateReady,
+            this, [this, pubSid](const QString &candidate, int mline, const QString &mid) {
+        m_signaling->sendCandidate(m_signaling->sessionId(), makeCandidateJson(candidate, mline, mid), pubSid);
+    });
+
+    connect(m_publishPipeline, &PublishPipeline::iceGatheringComplete,
+            this, [this, pubSid]() {
+        m_signaling->sendEndOfCandidates(m_signaling->sessionId(), pubSid);
+    });
+
+    connect(m_publishPipeline, &PublishPipeline::iceStateChanged,
+            this, [this](const QString &state) {
+        qDebug() << "CallManager: publisher ICE:" << state;
+        if (m_state != Active)
+            setStatusDetail("Publisher ICE " + state);
+        if (state == "connected" || state == "completed") {
+            // 0.40.15 — sticky flag for the Connecting→Active race (publisher
+            // ICE may connect before participant-joined flips us to Connecting).
+            m_pubIceConnectedSeen = true;
+            if (m_state == Connecting) {
+                setState(Active);
+                m_durationTimer.start();
+            }
+            // Reconnect succeeded — the rebuilt publisher is up. Cancel the
+            // pending retry, clear the in-flight guard, return to Active.
+            if (m_state == Reconnecting) {
+                qInfo() << "CallManager: publisher reconnected (" << state << ") — call resumed";
+                setState(Active);
+                setStatusDetail("Connected");
+            }
+            m_pubRetryTimer.stop();
+            m_pubRetryAttempts   = 0;
+            m_pubRebuildInFlight = false;
+        } else if (state == "failed") {
+            // A failed edge collateral to a screen-share teardown must never
+            // touch the call (#138).
+            if (m_screenShareTearingDown) {
+                qInfo() << "CallManager: publisher ICE transient 'failed' during "
+                           "screen-share teardown — ignored (call stays up)";
+                return;
+            }
+            // This rebuild attempt has concluded (failed); clear the in-flight
+            // guard so recoverPublisher() can arm the next backoff. Zoom-style:
+            // NEVER auto-drop — enter Reconnecting and keep retrying.
+            m_pubRebuildInFlight = false;
+            if (m_state == Active || m_state == Connecting)
+                setState(Reconnecting);
+            recoverPublisher("ice-failed");
+        }
+    });
+
+    connect(m_publishPipeline, &PublishPipeline::audioLevelUpdated,
+            this, &CallManager::onAudioLevelUpdated);
+
+    connect(m_publishPipeline, &PublishPipeline::error, this, [this](const QString &msg) {
+        qWarning() << "CallManager: publish pipeline error:" << msg;
+        teardown(msg);
+    });
+
+    connect(m_publishPipeline, &PublishPipeline::cameraError, this, [this](const QString &reason) {
+        qWarning() << "CallManager: camera error:" << reason;
+        m_cameraOn = false;
+        m_cameraFallbackTried = false;
+        emit cameraChanged();
+        qDebug() << "CallManager: camera disabled, continuing audio-only";
+    });
+
+    qDebug() << "CallManager: calling PublishPipeline::start()...";
+    if (!m_publishPipeline->start(m_stunServer, m_turnServers,
+        m_deviceManager ? m_deviceManager->selectedInputDeviceId() : QString(),
+        m_withVideo, videoDeviceIndex(), preferHd1080())) {
+        qWarning() << "CallManager: failed to start publish pipeline";
+        return false;
+    }
+    m_glibTimer.start(20);
+
+    // Camera comes up immediately for a video call (mfvideosrc starts async, so
+    // this doesn't block); isCameraOn() prevents a double-enable.
+    if (m_cameraOn && m_publishPipeline && !m_publishPipeline->isCameraOn()) {
+        qDebug() << "CallManager: enabling camera immediately (video call)";
+        m_publishPipeline->enableCamera(videoDeviceIndex(), preferHd1080());
+        m_localVideoProvider = m_publishPipeline->localVideoProvider();
+        emit localVideoProviderChanged();
+    }
+    return true;
+}
+
+void CallManager::recoverPublisher(const QString &reason)
+{
+    // Never ends the call — only schedules the next rebuild. teardown owns all
+    // termination. The ONLY exits from Reconnecting are: ICE recovers (→Active),
+    // or user Cancel / peer-left / room-closed (→teardown).
+    if (m_state != Reconnecting && m_state != Active)
+        return;                       // Idle/Ending → teardown handles cleanup
+    if (m_pubRebuildInFlight)
+        return;                       // a rebuild is mid-flight; don't stack
+    if (m_pubRetryTimer.isActive())
+        return;                       // next attempt already scheduled
+
+    // Exponential backoff, capped at 30s, INDEFINITE (no attempt cap). First
+    // attempt waits 1s — preserves the old "transient blip" tolerance.
+    static const int kBackoff[] = { 1000, 2000, 4000, 8000, 15000, 30000 };
+    const int delay = kBackoff[qMin(m_pubRetryAttempts, 5)];
+    ++m_pubRetryAttempts;
+    setStatusDetail(tr("Reconnecting… (attempt %1)").arg(m_pubRetryAttempts));
+    qInfo() << "CallManager: publisher reconnect (" << reason << ") — attempt"
+            << m_pubRetryAttempts << "in" << delay << "ms (no auto-drop)";
+    m_pubRetryTimer.start(delay);
+}
+
+void CallManager::rebuildPublisherAndReoffer()
+{
+    if (m_state != Reconnecting) return;   // recovered or torn down meanwhile
+
+    m_pubRebuildInFlight = true;
+    qInfo() << "CallManager: rebuilding publisher (reconnect attempt"
+            << m_pubRetryAttempts << ")";
+
+    // Tear down ONLY the publisher, re-entrancy-safe. Disconnect its signals
+    // FIRST so a queued stale ICE edge from the dying pipeline can't be mistaken
+    // for the new one, then deleteLater (NOT synchronous delete — we may be one
+    // hop from its own callbacks; mirrors the bug-11 P2P fix). Subscribers, the
+    // GLib timer and the participant registry stay intact — the MCU keeps the
+    // room and peer feeds alive across a publisher-only rebuild.
+    if (m_publishPipeline) {
+        m_publishPipeline->disconnect(this);
+        m_publishPipeline->stop();
+        m_publishPipeline->deleteLater();
+        m_publishPipeline = nullptr;
+    }
+
+    // Rebuild on the CACHED STUN/TURN — no network fetch, so this works even
+    // while the link is still flapping. Success is signalled asynchronously by
+    // the new pipeline's ICE reaching connected (which clears the in-flight
+    // guard and returns to Active). If it can't even start, don't drop — arm
+    // the next backoff.
+    if (!buildAndStartPublisher()) {
+        qWarning() << "CallManager: publisher rebuild failed to start — will retry";
+        if (m_publishPipeline) {
+            m_publishPipeline->disconnect(this);
+            m_publishPipeline->stop();
+            m_publishPipeline->deleteLater();
+            m_publishPipeline = nullptr;
+        }
+        m_pubRebuildInFlight = false;
+        recoverPublisher("rebuild-start-failed");
+    }
 }
 
 void CallManager::onIncomingCallDetected(const QString &callerName, const QString &token, int callFlag)
@@ -1712,162 +1893,13 @@ void CallManager::joinCallOnServer(bool withVideo)
                             qDebug() << "CallManager: creating initial P2P offer";
                         }
                     } else {
-                        // --- MCU mode: dual PublishPipeline + SubscribePipeline ---
-                        // Generate publisher SID (matches NC Talk: Date.now().toString())
-                        QString pubSid = QString::number(QDateTime::currentMSecsSinceEpoch());
-
-                        // Start publisher (send our audio to MCU)
-                        qDebug() << "CallManager: creating PublishPipeline...";
-                        m_publishPipeline = new PublishPipeline(this);
-                        // #20 — long-lived BackgroundEngine attached to the
-                        // publisher so its preview path routes through the
-                        // compositor when the user has Blur/Image enabled.
-                        m_publishPipeline->setBackgroundEngine(m_backgroundEngine);
-                        qDebug() << "CallManager: PublishPipeline created, connecting signals...";
-                        m_localVideoProvider = m_publishPipeline->localVideoProvider();
-                        emit localVideoProviderChanged();
-
-                        connect(m_publishPipeline, &PublishPipeline::localOfferReady,
-                                this, [this, pubSid](const QString &sdp) {
-                            // Send offer to OUR OWN session ID (MCU intercepts).
-                            // (PublishPipeline already logs the compact
-                            // a=simulcast line for field diag.)
-                            setStatusDetail("Sending offer to MCU");
-                            m_signaling->sendOffer(m_signaling->sessionId(), sdp, pubSid);
-                            qDebug() << "CallManager: sent publish offer to own session, sid=" << pubSid;
-                        });
-
-                        // Self-heal: a forced exact camera caps that
-                        // mfvideosrc can't deliver triggers no frames →
-                        // PublishPipeline already reset the pick to Auto;
-                        // we just re-arm the camera so it comes up via
-                        // permissive negotiation (guaranteed-working).
-                        connect(m_publishPipeline, &PublishPipeline::cameraNegotiationFailed,
-                                this, [this]() {
-                            qWarning() << "CallManager: camera negotiation failed — "
-                                          "re-arming via Auto/permissive";
-                            if (!m_publishPipeline) return;
-                            m_publishPipeline->disableCamera();
-                            QTimer::singleShot(150, this, [this]() {
-                                if (!m_publishPipeline) return;
-                                m_publishPipeline->enableCamera(
-                                    videoDeviceIndex(), preferHd1080());
-                            });
-                        });
-
-                        connect(m_publishPipeline, &PublishPipeline::iceCandidateReady,
-                                this, [this, pubSid](const QString &candidate, int mline, const QString &mid) {
-                            m_signaling->sendCandidate(m_signaling->sessionId(), makeCandidateJson(candidate, mline, mid), pubSid);
-                        });
-
-                        connect(m_publishPipeline, &PublishPipeline::iceGatheringComplete,
-                                this, [this, pubSid]() {
-                            // Upstream terminates trickle with endOfCandidates
-                            // (publisher candidates go to our own session).
-                            m_signaling->sendEndOfCandidates(m_signaling->sessionId(), pubSid);
-                        });
-
-                        connect(m_publishPipeline, &PublishPipeline::iceStateChanged,
-                                this, [this](const QString &state) {
-                            qDebug() << "CallManager: publisher ICE:" << state;
-                            if (m_state != Active)
-                                setStatusDetail("Publisher ICE " + state);
-                            if (state == "connected" || state == "completed") {
-                                // 0.40.15 — sticky flag for the
-                                // Connecting→Active race. Even if we miss
-                                // the promotion here (state might still be
-                                // Outgoing at this point), setState() will
-                                // pick this up when participant-joined
-                                // eventually flips us into Connecting.
-                                m_pubIceConnectedSeen = true;
-                                // Upstream conformance: the call is "live"
-                                // the moment the publisher PC is up — peer
-                                // video subscribers come and go independently
-                                // and shouldn't gate the top-level status.
-                                // Without this, the call stays pinned on
-                                // "Connecting" until a peer enables their
-                                // camera (callee-mid-call scenario), even
-                                // though audio is flowing both ways.
-                                if (m_state == Connecting) {
-                                    setState(Active);
-                                    m_durationTimer.start();
-                                }
-                                if (m_pubIceGrace.isActive()) {
-                                    qInfo() << "CallManager: publisher ICE "
-                                               "recovered (" << state
-                                            << ") — call stays up";
-                                    m_pubIceGrace.stop();
-                                    setStatusDetail("Connected");
-                                }
-                                m_pubIceRecoveries = 0;
-                            } else if (state == "failed") {
-                                // Suppress recovery-counter bumps when the
-                                // failed edge is collateral from a screen-
-                                // share teardown — a non-main-stream failure
-                                // must never drop the call (#138).
-                                if (m_screenShareTearingDown) {
-                                    qInfo() << "CallManager: publisher ICE "
-                                               "transient 'failed' during "
-                                               "screen-share teardown — "
-                                               "ignored (call stays up)";
-                                    return;
-                                }
-                                constexpr int kMaxPubRecoveries = 6;
-                                if (++m_pubIceRecoveries > kMaxPubRecoveries) {
-                                    qWarning() << "CallManager: publisher ICE "
-                                                  "failed" << m_pubIceRecoveries
-                                               << "times — tearing down call";
-                                    hangUp();
-                                } else if (!m_pubIceGrace.isActive()) {
-                                    qWarning() << "CallManager: publisher ICE "
-                                                  "failed — grace window, "
-                                                  "awaiting self-heal (attempt"
-                                               << m_pubIceRecoveries << ")";
-                                    setStatusDetail("Reconnecting…");
-                                    m_pubIceGrace.start();
-                                }
-                            }
-                        });
-
-                        connect(m_publishPipeline, &PublishPipeline::audioLevelUpdated,
-                                this, &CallManager::onAudioLevelUpdated);
-
-                        connect(m_publishPipeline, &PublishPipeline::error, this, [this](const QString &msg) {
-                            qWarning() << "CallManager: publish pipeline error:" << msg;
-                            teardown(msg);
-                        });
-
-                        connect(m_publishPipeline, &PublishPipeline::cameraError, this, [this](const QString &reason) {
-                            qWarning() << "CallManager: camera error:" << reason;
-                            // Give up on camera — don't retry, as it floods signaling with offers
-                            m_cameraOn = false;
-                            m_cameraFallbackTried = false;
-                            emit cameraChanged();
-                            qDebug() << "CallManager: camera disabled, continuing audio-only";
-                        });
-
-                        qDebug() << "CallManager: calling PublishPipeline::start()...";
-                        if (!m_publishPipeline->start(m_stunServer, turnServers,
-                            m_deviceManager ? m_deviceManager->selectedInputDeviceId() : QString(),
-                            m_withVideo, videoDeviceIndex(), preferHd1080())) {
-                            qWarning() << "CallManager: failed to start publish pipeline";
+                        // --- MCU mode: build + start the publisher (send leg). ---
+                        // Factored into buildAndStartPublisher() so the
+                        // Zoom-style reconnect path can rebuild the publisher on
+                        // the cached STUN/TURN without re-joining the call.
+                        if (!buildAndStartPublisher()) {
                             teardown("Failed to start audio pipeline");
                             return;
-                        }
-                        m_glibTimer.start(20);
-
-                        // Camera must come up IMMEDIATELY for a video call —
-                        // the local preview should be live the moment the call
-                        // starts, not deferred until it reaches Active (a call
-                        // that stalls in Connecting must still show your own
-                        // camera). mfvideosrc starts async so this does not
-                        // block the UI. The setState(Active) block remains
-                        // only as a late fallback (guarded by isCameraOn()).
-                        if (m_cameraOn && m_publishPipeline && !m_publishPipeline->isCameraOn()) {
-                            qDebug() << "CallManager: enabling camera immediately (video call)";
-                            m_publishPipeline->enableCamera(videoDeviceIndex(), preferHd1080());
-                            m_localVideoProvider = m_publishPipeline->localVideoProvider();
-                            emit localVideoProviderChanged();
                         }
 
                         // If remote peer already joined (incoming call), request their stream
@@ -2025,8 +2057,9 @@ void CallManager::stopAllPipelines()
     m_subscriberSids.clear();
     m_desiredSubstream.clear();
     m_subscriberRecoveries.clear();
-    m_pubIceGrace.stop();
-    m_pubIceRecoveries = 0;
+    m_pubRetryTimer.stop();
+    m_pubRetryAttempts   = 0;
+    m_pubRebuildInFlight = false;
     m_pubIceConnectedSeen = false;
 
     // Flush stale GLib sources from destroyed pipelines (libnice agents,

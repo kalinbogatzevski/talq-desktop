@@ -298,8 +298,14 @@ void HeaderPainter::paintEvent(QPaintEvent *)
         painter->drawText(QRectF(rightX, 0, textW, h), Qt::AlignVCenter, unavailText);
     }
 
-    // Call buttons (1:1, not in call, calls available)
-    if (m_conversationType == 1 && m_callState == 0 && m_callsAvailable) {
+    // Call buttons. 1:1 (type 1) shows them only when the peer is callable
+    // (m_callsAvailable); group (2) and public (3) rooms are ALWAYS callable —
+    // anyone can start/join a group call — so show the buttons there too. This
+    // is the group-call entry point (the buttons start a group call via the MCU
+    // on the same conversation token). Exclude changelog (4) / note-to-self (6).
+    const bool isGroupRoom = (m_conversationType == 2 || m_conversationType == 3);
+    const bool callable = (m_conversationType == 1 && m_callsAvailable) || isGroupRoom;
+    if (callable && m_callState == 0) {
         // Video call button
         qreal btnY = (h - ButtonSize) / 2.0;
         rightX -= ButtonSize;

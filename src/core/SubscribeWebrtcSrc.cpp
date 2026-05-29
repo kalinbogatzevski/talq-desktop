@@ -6,6 +6,7 @@
 #include <QSettings>
 #include <QUrl>
 #include <cstring>
+#include <thread>
 #include <gst/app/gstappsink.h>
 #include <gst/sdp/sdp.h>
 #include <gst/webrtc/webrtc.h>
@@ -323,9 +324,17 @@ void SubscribeWebrtcSrc::cleanup()
     if (m_signaller)    g_signal_handlers_disconnect_by_data(m_signaller, this);
     m_webrtcbin = nullptr;  // webrtcsrc-owned; not unref'd
     if (m_pipeline) {
-        gst_element_set_state(m_pipeline, GST_STATE_NULL);
-        gst_object_unref(m_pipeline);
+        // 0.43.0 — detach the NULL transition to a worker thread (same fix as
+        // PeerPipeline/PublishPipeline): the synchronous set_state(NULL) of a
+        // webrtcsrc + decodebin3 + HW decoder can block the Qt main thread on a
+        // pad stream lock / GPU teardown when a peer leaves, freezing the app.
+        // Null the pointer first so re-entrant callers see no pipeline.
+        GstElement *pipe = m_pipeline;
         m_pipeline = nullptr;
+        std::thread([pipe]() {
+            gst_element_set_state(pipe, GST_STATE_NULL);
+            gst_object_unref(pipe);
+        }).detach();
     }
     if (m_signaller) { g_object_unref(m_signaller); m_signaller = nullptr; }
     m_webrtcsrc = nullptr;

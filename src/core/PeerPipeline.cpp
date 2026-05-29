@@ -237,11 +237,23 @@ void PeerPipeline::cleanup()
     if (m_webrtcbin)
         g_signal_handlers_disconnect_by_data(m_webrtcbin, this);
     if (m_pipeline) {
-        qDebug() << "PeerPipeline: cleanup — setting pipeline to NULL";
-        gst_element_set_state(m_pipeline, GST_STATE_NULL);
-        qDebug() << "PeerPipeline: cleanup — pipeline NULL done";
-        gst_object_unref(m_pipeline);
+        // 0.43.0 — detach + NULL the pipeline on a worker thread, mirroring
+        // PublishPipeline::cleanup() (0.40.9). The synchronous set_state(NULL)
+        // waits on every pad's stream lock and tears down BOTH a HW encoder
+        // (send leg) AND a HW decoder (receive leg) on this single P2P
+        // pipeline; on some GPUs that wedges the driver and froze the whole
+        // machine when the remote party hung up — the callee teardown ran this
+        // synchronously on the Qt main thread (caller hangs up → onParticipant-
+        // LeftCall → teardown → stop() → cleanup()). Null the pointer BEFORE
+        // the thread starts so re-entrant callers / pollBus see no pipeline;
+        // the worker owns the local ref and unrefs after the NULL transition.
+        GstElement *pipe = m_pipeline;
         m_pipeline = nullptr;
+        qDebug() << "PeerPipeline: cleanup — scheduling pipeline NULL+unref on worker";
+        std::thread([pipe]() {
+            gst_element_set_state(pipe, GST_STATE_NULL);
+            gst_object_unref(pipe);
+        }).detach();
     }
     m_webrtcbin = nullptr;
     m_remoteDescSet = false;

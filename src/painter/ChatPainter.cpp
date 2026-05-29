@@ -526,9 +526,18 @@ void ChatPainter::rebuildAllLayouts()
     if (!m_unreadSepDismissed) {
         for (int i = 0; i < count; ++i) {
             int modelRow = count - 1 - i;
-            int id = m_model->data(m_model->index(modelRow),
-                                   MessageListModel::IdRole).toInt();
-            if (id > m_unreadBoundary) { firstUnreadLayoutIdx = i; break; }
+            auto mi = m_model->index(modelRow);
+            int id = m_model->data(mi, MessageListModel::IdRole).toInt();
+            if (id <= m_unreadBoundary) continue;
+            // Skip system rows (call started/ended, joins/leaves, etc.) — they
+            // are not "messages you haven't read", so the New-messages divider
+            // must anchor on the first genuine unread message, never above a
+            // call event. If the only new rows are system events, no divider
+            // shows at all (firstUnreadLayoutIdx stays -1).
+            if (m_model->data(mi, MessageListModel::IsSystemRole).toBool())
+                continue;
+            firstUnreadLayoutIdx = i;
+            break;
         }
     }
 
