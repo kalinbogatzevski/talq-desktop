@@ -1,4 +1,5 @@
 #include "core/MessagePoller.h"
+#include <QCoreApplication>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QUrlQuery>
@@ -29,7 +30,16 @@ void MessagePoller::stop()
     if (m_currentReply) {
         auto *reply = m_currentReply;
         m_currentReply = nullptr;
-        reply->abort();
+        // A late finished() must not re-enter a half-torn-down poller.
+        disconnect(reply, nullptr, this, nullptr);
+        // During application teardown (~QCoreApplication: the event loop and
+        // network dispatcher are already gone) abort() dereferences dead Qt
+        // state and crashes. The reply is a child of the NAM and is freed with
+        // it, so skipping abort() at shutdown leaks nothing. In normal
+        // operation (e.g. switching conversations) the loop is alive, so the
+        // in-flight long-poll is aborted exactly as before.
+        if (!QCoreApplication::closingDown())
+            reply->abort();
         reply->deleteLater();
     }
 }
