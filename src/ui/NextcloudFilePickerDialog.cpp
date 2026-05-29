@@ -59,9 +59,11 @@ NextcloudFilePickerDialog::NextcloudFilePickerDialog(ApiClient *api, QWidget *pa
     outer->addWidget(m_status);
 
     auto *btnRow = new QHBoxLayout();
+    btnRow->setContentsMargins(0, 4, 0, 0);
+    btnRow->setSpacing(8);
     btnRow->addStretch();
     m_cancelBtn = new QPushButton(tr("Cancel"), this);
-    m_cancelBtn->setProperty("variant", "ghost");
+    m_cancelBtn->setProperty("variant", "default");
     m_shareBtn  = new QPushButton(tr("Share"), this);
     m_shareBtn->setProperty("variant", "primary");
     m_shareBtn->setEnabled(false);

@@ -213,10 +213,19 @@ ConversationInfoDialog::ConversationInfoDialog(ApiClient *api,
 
     // Footer buttons
     auto *footer = new QHBoxLayout();
+    footer->setContentsMargins(0, 8, 0, 0);
+    footer->setSpacing(8);
     m_leaveBtn = new QPushButton(tr("Leave"), this);
     m_leaveBtn->setProperty("variant", "danger");
     m_leaveBtn->setCursor(Qt::PointingHandCursor);
     footer->addWidget(m_leaveBtn);
+
+    m_clearHistoryBtn = new QPushButton(tr("Clear history"), this);
+    m_clearHistoryBtn->setProperty("variant", "danger");
+    m_clearHistoryBtn->setCursor(Qt::PointingHandCursor);
+    // Moderators/owners (any room) + both parties of a 1:1 may clear history.
+    m_clearHistoryBtn->setVisible(m_amOwnerOrMod || m_roomType == 1);
+    footer->addWidget(m_clearHistoryBtn);
 
     m_deleteBtn = new QPushButton(tr("Delete"), this);
     m_deleteBtn->setProperty("variant", "danger");
@@ -226,7 +235,7 @@ ConversationInfoDialog::ConversationInfoDialog(ApiClient *api,
 
     footer->addStretch();
     m_closeBtn = new QPushButton(tr("Done"), this);
-    m_closeBtn->setProperty("variant", "ghost");
+    m_closeBtn->setProperty("variant", "primary");
     m_closeBtn->setCursor(Qt::PointingHandCursor);
     m_closeBtn->setDefault(true);
     footer->addWidget(m_closeBtn);
@@ -247,6 +256,7 @@ ConversationInfoDialog::ConversationInfoDialog(ApiClient *api,
         if (auto *item = m_memberList->itemAt(pos)) onRemoveMember(item);
     });
     connect(m_leaveBtn,  &QPushButton::clicked, this, &ConversationInfoDialog::onLeaveClicked);
+    connect(m_clearHistoryBtn, &QPushButton::clicked, this, &ConversationInfoDialog::onClearHistoryClicked);
     connect(m_deleteBtn, &QPushButton::clicked, this, &ConversationInfoDialog::onDeleteClicked);
     connect(m_closeBtn,  &QPushButton::clicked, this, &QDialog::accept);
 
@@ -491,6 +501,28 @@ void ConversationInfoDialog::onLeaveClicked()
             emit roomDeleted();
             accept();
         });
+}
+
+void ConversationInfoDialog::onClearHistoryClicked()
+{
+    auto reply = QMessageBox::warning(this, tr("Clear chat history?"),
+        tr("This deletes ALL messages in this conversation for EVERYONE, on every "
+           "device, and cannot be undone."),
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    if (reply != QMessageBox::Yes) return;
+    m_status->setText(tr("Clearing history…"));
+    m_api->clearChatHistory(m_token, this, [this](bool ok, const QString &err) {
+        if (!ok) {
+            m_status->setProperty("role", "danger");
+            m_status->setText(err.isEmpty()
+                ? tr("Only moderators can clear the history.") : err);
+            return;
+        }
+        // The open conversation purges itself when the server's "history_cleared"
+        // system message arrives via the poller (here and on every other device).
+        m_status->setText(tr("History cleared."));
+        accept();
+    });
 }
 
 void ConversationInfoDialog::onDeleteClicked()

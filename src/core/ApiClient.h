@@ -171,6 +171,11 @@ public:
                     std::function<void(bool ok, const QString &error)> callback);
     void leaveRoom(const QString &token, QObject *context,
                    std::function<void(bool ok, const QString &error)> callback);
+    // Clear the ENTIRE chat history (moderator-only; capability "clear-history").
+    // Server-side, so it clears for everyone and every device; the server emits
+    // a "history_cleared" system message that clients purge their cache on.
+    void clearChatHistory(const QString &token, QObject *context,
+                          std::function<void(bool ok, const QString &error)> callback);
 
     // Participants.
     void fetchRoomParticipants(const QString &token, QObject *context,

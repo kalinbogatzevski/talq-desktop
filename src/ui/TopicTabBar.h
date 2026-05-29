@@ -1,12 +1,14 @@
 #pragma once
 
 #include <QWidget>
+#include <QPointer>
 #include "painter/PainterTheme.h"
 
 class ThreadListModel;
 class QHBoxLayout;
 class QScrollArea;
 class QPushButton;
+class QWheelEvent;
 
 /**
  * Horizontal topic/thread picker shown above the chat area, inspired by
@@ -31,6 +33,10 @@ public:
 protected:
     // Re-theme when the app palette changes (PainterTheme drives it).
     void changeEvent(QEvent *e) override;
+    // Vertical wheel scrolls the topic strip horizontally — the strip is a
+    // single row, so a normal wheel must move through the topics, not be lost.
+    // Filters the scroll viewport (the QScrollArea would otherwise eat wheels).
+    bool eventFilter(QObject *watched, QEvent *e) override;
 
 signals:
     void threadSelected(int threadId, const QString &title);
@@ -47,6 +53,7 @@ private:
     QScrollArea     *m_scroll = nullptr;
     QWidget         *m_row = nullptr;
     QHBoxLayout     *m_rowLayout = nullptr;
+    QPointer<QPushButton> m_selectedChip;  // for auto-scroll-into-view on rebuild
     int              m_selectedThreadId = 0;   // 0 = "All messages"
     PainterTheme::Theme m_themeId = PainterTheme::Theme::Vivid;  // bug 10
 };

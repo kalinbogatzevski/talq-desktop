@@ -806,6 +806,35 @@ void MainWindow::buildChatPage()
     connect(m_composer, &ComposerWidget::editingBarCancelled, this, [this]() {
         m_editingMessageId = 0;
     });
+    // Up-arrow on an empty composer → edit the newest own editable message
+    // (Telegram-style). Skip system rows, files (not editable), and unacked
+    // optimistic rows. The server enforces the edit time-window; if it's too
+    // old the edit PUT fails and editMessage surfaces the error.
+    connect(m_composer, &ComposerWidget::editLastRequested, this, [this]() {
+        if (!m_messages || !m_auth) return;
+        const QString self = m_auth->userId();
+        const int rows = m_messages->rowCount();
+        for (int i = 0; i < rows; ++i) {   // index 0 = newest
+            const QModelIndex idx = m_messages->index(i);
+            if (m_messages->data(idx, MessageListModel::ActorIdRole).toString() != self)
+                continue;
+            if (m_messages->data(idx, MessageListModel::IsSystemRole).toBool())
+                continue;
+            if (m_messages->data(idx, MessageListModel::HasFileRole).toBool())
+                continue;   // edit isn't allowed on file messages
+            const int id = m_messages->data(idx, MessageListModel::IdRole).toInt();
+            if (id <= 0)
+                continue;   // optimistic/not-yet-acked row
+            QTextDocument doc;
+            doc.setHtml(m_messages->data(idx, MessageListModel::MessageTextRole).toString());
+            const QString plain = doc.toPlainText().trimmed();
+            if (plain.isEmpty())
+                continue;
+            m_editingMessageId = id;
+            m_composer->showEditingBar(plain);
+            break;
+        }
+    });
     // Dismiss the "New messages" divider the moment the user engages with
     // the composer (click, focus, type, or send).
     connect(m_composer, &ComposerWidget::userInteracted,

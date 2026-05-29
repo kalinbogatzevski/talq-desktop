@@ -497,7 +497,7 @@ QWidget *SettingsDialog::buildAudioVideoTab()
     layout->addStretch();
 
     auto *refreshBtn = new QPushButton(tr("Refresh devices"));
-    refreshBtn->setProperty("variant", "ghost");
+    refreshBtn->setProperty("variant", "default");
     connect(refreshBtn, &QPushButton::clicked, m_deviceManager,
             &MediaDeviceManager::refresh);
     auto *btnRow = new QHBoxLayout;
@@ -770,7 +770,7 @@ QWidget *SettingsDialog::buildBackgroundTab()
         : QFileInfo(bgUrl).fileName());
     m_bgImagePathLabel->setProperty("role", "settingDesc");
     auto *browseBtn = new QPushButton(tr("Choose your own…"));
-    browseBtn->setProperty("variant", "ghost");
+    browseBtn->setProperty("variant", "default");
     // Restore previously chosen custom images so they survive a TalQ
     // restart. Stored as a deduped string list under
     // Talk/Backgrounds/customImages; bundled qrc thumbs are NEVER in
@@ -1281,7 +1281,7 @@ QWidget *SettingsDialog::buildUpdatesTab()
     lay->addSpacing(kGroupGap - kRowGap);
 
     auto *checkBtn = new QPushButton(tr("Check for updates now"), w);
-    checkBtn->setProperty("variant", "ghost");
+    checkBtn->setProperty("variant", "default");
     auto *checkStatus = new QLabel(w);
     checkStatus->setProperty("role", "secondary");
     { QFont f = checkStatus->font(); f.setPixelSize(11); checkStatus->setFont(f); }

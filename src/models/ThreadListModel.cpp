@@ -3,6 +3,9 @@
 #include <QJsonObject>
 #include <QUrlQuery>
 #include <QPointer>
+#include <QSettings>
+#include <QSet>
+#include <QStringList>
 #include <algorithm>
 #include <memory>
 
@@ -81,8 +84,11 @@ void ThreadListModel::onCachedThreadsLoaded(const QString &token, const QVector<
 
     QVector<ThreadInfo> cached;
     for (const auto &t : threads) {
+        const int tid = t["threadId"].toInt();
+        if (m_hiddenTopics.contains(tid))
+            continue;   // user hid this topic (client-side, persisted)
         ThreadInfo info;
-        info.threadId = t["threadId"].toInt();
+        info.threadId = tid;
         info.title = t["title"].toString();
         info.iconColor = t["iconColor"].toInt();
         info.lastActivity = t["lastActivity"].toInteger();
@@ -92,6 +98,13 @@ void ThreadListModel::onCachedThreadsLoaded(const QString &token, const QVector<
         info.lastReadMessageId = t["lastReadMessageId"].toInt();
         cached.append(info);
     }
+
+    // Match the live ordering: most recent first (the cache carries no unread
+    // counts, so unread-first is moot here — fetchThreads re-sorts with unread
+    // once it lands).
+    std::sort(cached.begin(), cached.end(), [](const ThreadInfo &a, const ThreadInfo &b) {
+        return a.lastActivity > b.lastActivity;
+    });
 
     // Add "All Messages" at index 0
     ThreadInfo allMsg;
@@ -119,6 +132,7 @@ void ThreadListModel::setConversationToken(const QString &token)
         return;
     m_token = token;
     emit tokenChanged();
+    loadHiddenTopics();   // per-room hidden set
 
     // Blank the list immediately — without this, the previous room's topics
     // stay visible (and also gate out the cache path, which bails when
@@ -219,12 +233,78 @@ void ThreadListModel::deleteTopic(int threadId)
                 if (!delOk)
                     ++(*failed);
                 if (--(*remaining) == 0 && guard) {
+                    // Talk only tombstones messages, so a FULLY-deleted topic
+                    // would otherwise linger (full of "deleted" markers) — hide
+                    // it client-side so it disappears as the user expects. But if
+                    // anything could NOT be deleted (others' messages, or past
+                    // the edit window), the topic still holds real content, so
+                    // do NOT hide it — leave it visible and just report what
+                    // remained.
+                    if (*failed == 0)
+                        hideTopic(threadId);
                     emit topicDeleteFinished(threadId, total - *failed, *failed);
-                    refresh();   // drops the chip once the topic has no messages
                 }
             });
         }
     });
+}
+
+void ThreadListModel::hideTopic(int threadId)
+{
+    if (threadId <= 0) return;
+    if (!m_hiddenTopics.contains(threadId)) {
+        m_hiddenTopics.insert(threadId);
+        saveHiddenTopics();
+    }
+    if (m_selectedThreadId == threadId)
+        m_selectedThreadId = -1;
+    // Remove the chip immediately (no server round-trip); the persisted hidden
+    // set filters it out of every future rebuild.
+    for (int i = 0; i < m_threads.size(); ++i) {
+        if (m_threads[i].threadId == threadId) {
+            const bool hadTopics = m_threads.size() > 1;
+            beginRemoveRows(QModelIndex(), i, i);
+            m_threads.removeAt(i);
+            endRemoveRows();
+            emit countChanged();
+            if (hadTopics != (m_threads.size() > 1))
+                emit hasTopicsChanged();
+            break;
+        }
+    }
+}
+
+void ThreadListModel::unhideAllTopics()
+{
+    if (m_hiddenTopics.isEmpty()) return;
+    m_hiddenTopics.clear();
+    saveHiddenTopics();
+    refresh();   // re-fetch to bring the previously-hidden topics back
+}
+
+void ThreadListModel::loadHiddenTopics()
+{
+    m_hiddenTopics.clear();
+    if (m_token.isEmpty()) return;
+    QSettings s(QStringLiteral("TalQ"), QStringLiteral("TalQ"));
+    const QStringList ids =
+        s.value(QStringLiteral("Topics/hidden/") + m_token).toStringList();
+    for (const QString &id : ids) {
+        bool ok = false;
+        const int v = id.toInt(&ok);
+        if (ok && v > 0)
+            m_hiddenTopics.insert(v);
+    }
+}
+
+void ThreadListModel::saveHiddenTopics()
+{
+    if (m_token.isEmpty()) return;
+    QStringList ids;
+    for (int id : m_hiddenTopics)
+        ids << QString::number(id);
+    QSettings s(QStringLiteral("TalQ"), QStringLiteral("TalQ"));
+    s.setValue(QStringLiteral("Topics/hidden/") + m_token, ids);
 }
 
 void ThreadListModel::fetchThreads()
@@ -293,16 +373,23 @@ void ThreadListModel::fetchThreads()
 
             auto &acc = threadMap[threadRootId];
             acc.threadRootId = threadRootId;
-            // The root contributes its own existence to the thread but not
-            // a "reply" — count only the replies (isThread:true messages).
-            if (isThreadFlag)
+
+            // Only real comments count toward the reply count and unread badge —
+            // exclude deleted tombstones (messageType "comment_deleted") and
+            // system events ("system"), so a topic whose messages were all
+            // deleted shows 0, not the count of "You deleted a message" markers.
+            const bool isRealComment = (msg["messageType"].toString() == QLatin1String("comment"));
+
+            // The root contributes its existence but not a "reply" — count only
+            // the replies (isThread:true), and only real comments.
+            if (isThreadFlag && isRealComment)
                 acc.count++;
 
-            // Per-topic unread: any message in this topic newer than the room's
-            // read marker. The marker advances as the user reads (or sends), so
-            // own/just-read messages stop counting on the next refresh. Drives
-            // the "· N" badge on the topic chip.
-            if (m_roomLastReadId > 0 && msg["id"].toInt() > m_roomLastReadId)
+            // Per-topic unread: real comments newer than the room read marker.
+            // The marker advances as the user reads (or sends), so own/just-read
+            // messages stop counting on the next refresh. Drives the "· N" badge.
+            if (isRealComment && m_roomLastReadId > 0
+                && msg["id"].toInt() > m_roomLastReadId)
                 acc.unread++;
 
             // Use the API-provided thread title
@@ -324,6 +411,8 @@ void ThreadListModel::fetchThreads()
 
         for (auto it = threadMap.cbegin(); it != threadMap.cend(); ++it) {
             const auto &acc = it.value();
+            if (m_hiddenTopics.contains(acc.threadRootId))
+                continue;   // user hid this topic (client-side, persisted)
             ThreadInfo info;
             info.threadId = acc.threadRootId;
             info.title = acc.threadTitle;
@@ -341,8 +430,13 @@ void ThreadListModel::fetchThreads()
             threads.append(info);
         }
 
-        // Sort by most recent activity first
+        // Sort: topics with unread first, then by most recent activity. Keeps
+        // the topics that need attention at the front of the bar; everything
+        // else is ordered by the last message received.
         std::sort(threads.begin(), threads.end(), [](const ThreadInfo &a, const ThreadInfo &b) {
+            const bool au = a.unreadCount > 0;
+            const bool bu = b.unreadCount > 0;
+            if (au != bu) return au;
             return a.lastActivity > b.lastActivity;
         });
 

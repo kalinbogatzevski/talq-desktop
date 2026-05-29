@@ -1064,6 +1064,27 @@ void ApiClient::deleteRoom(const QString &token, QObject *context,
     });
 }
 
+void ApiClient::clearChatHistory(const QString &token, QObject *context,
+                                 std::function<void(bool, const QString &)> callback)
+{
+    // DELETE /chat/{token} clears the whole conversation for everyone. The
+    // server emits a "history_cleared" system message which every client (this
+    // device + the user's other PCs + the peer) purges its local cache on.
+    auto req = makeRequest(QStringLiteral("apps/spreed/api/v1/chat/") + token);
+    QNetworkReply *reply = m_nam.sendCustomRequest(req, "DELETE");
+    trackReply(reply);
+    connect(reply, &QNetworkReply::finished, context ? context : this,
+            [reply, callback]() {
+        reply->deleteLater();
+        QJsonObject meta = QJsonDocument::fromJson(reply->readAll()).object()
+                               .value(QStringLiteral("ocs")).toObject()
+                               .value(QStringLiteral("meta")).toObject();
+        const int s = meta.value(QStringLiteral("statuscode")).toInt();
+        if (s >= 200 && s < 300) { callback(true, QString()); return; }
+        callback(false, meta.value(QStringLiteral("message")).toString());
+    });
+}
+
 void ApiClient::leaveRoom(const QString &token, QObject *context,
                           std::function<void(bool, const QString &)> callback)
 {

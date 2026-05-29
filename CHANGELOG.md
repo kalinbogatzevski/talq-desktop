@@ -1,5 +1,40 @@
 # Changelog
 
+## v0.43.3 "Magrathea" — BETA (2026-05-29)
+
+> Same **Magrathea** beta line — codename is per minor line.
+
+### Added
+
+* **Edit your last message with ↑.** Press the up-arrow in an empty message box
+  to jump straight into editing your most recent message — no hovering to hunt
+  for the edit action.
+* **Clear a conversation's history.** From a conversation's info panel (a
+  moderator action, also available in one-to-one chats) you can clear the whole
+  chat history. It's done server-side, so it clears on every one of your devices
+  and for the other party too, not just locally.
+* **Scroll the topic bar with your mouse wheel**, and the selected topic now
+  scrolls itself into view — so rooms with many topics stay easy to navigate.
+
+### Changed
+
+* **Every button looks like a button.** Buttons across all dialogs and message
+  boxes (delete/leave confirmations, Clear history, New chat, Forward, the file
+  and share pickers, scheduled messages, reminders) now have a real, consistent
+  shape — proper fill or outline, padding, and hover/pressed states — themed for
+  all four themes, with no more buttons jammed against each other or rendering as
+  plain text. Message-box buttons are styled once, app-wide, so the accept button
+  always reads as the clear primary action.
+* **Photos sit edge-to-edge in chat.** An image shared on its own is now framed
+  tightly with no wasted padding — portrait photos no longer float in a wide box
+  with dead space on either side — and the timestamp floats neatly over the
+  bottom-right of the picture.
+* **Topics are ordered by what needs attention.** The topic bar lists topics with
+  unread messages first, then by most recent activity.
+* **Deleted messages no longer leave noise.** Removing a message no longer leaves
+  a "deleted message" placeholder cluttering the thread (as in Telegram) — it
+  simply disappears.
+
 ## v0.43.2 "Magrathea" — BETA (2026-05-29)
 
 > Same **Magrathea** beta line.

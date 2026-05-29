@@ -9,7 +9,10 @@
 #include <QMessageBox>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QScrollBar>
+#include <QTimer>
 #include <QVBoxLayout>
+#include <QWheelEvent>
 
 namespace {
 struct Pal {
@@ -42,6 +45,10 @@ Pal pal(PainterTheme::Theme t)
              n(th.bgHover),        // hover background
              n(blend(th.accent, th.bgSecondary, 0.18)) };  // accentSoft — calm selected tint
 }
+
+// QMessageBox button styling now lives once in the global app sheet
+// (AppStyle::sheet → "QMessageBox QPushButton"), so the boxes here inherit it
+// like every other message box. No per-box stylesheet needed.
 } // namespace
 
 TopicTabBar::TopicTabBar(QWidget *parent)
@@ -68,6 +75,8 @@ TopicTabBar::TopicTabBar(QWidget *parent)
     m_rowLayout->setAlignment(Qt::AlignVCenter | Qt::AlignLeft);
     m_rowLayout->addStretch();
     m_scroll->setWidget(m_row);
+    // Vertical wheel → horizontal scroll over the strip (see eventFilter).
+    m_scroll->viewport()->installEventFilter(this);
 
     hide();
 }
@@ -98,6 +107,26 @@ void TopicTabBar::changeEvent(QEvent *e)
     }
 }
 
+bool TopicTabBar::eventFilter(QObject *watched, QEvent *e)
+{
+    if (m_scroll && watched == m_scroll->viewport()
+        && e->type() == QEvent::Wheel) {
+        QScrollBar *h = m_scroll->horizontalScrollBar();
+        if (h && h->maximum() > h->minimum()) {
+            auto *we = static_cast<QWheelEvent *>(e);
+            // Honour a real horizontal wheel; otherwise map the vertical wheel
+            // onto horizontal travel so the strip scrolls under a normal mouse.
+            const QPoint d = we->angleDelta();
+            const int delta = d.x() != 0 ? d.x() : d.y();
+            if (delta != 0) {
+                h->setValue(h->value() - delta);
+                return true;   // consumed — don't let the area swallow it
+            }
+        }
+    }
+    return QWidget::eventFilter(watched, e);
+}
+
 void TopicTabBar::setModel(ThreadListModel *model)
 {
     if (m_model == model) return;
@@ -111,12 +140,15 @@ void TopicTabBar::setModel(ThreadListModel *model)
         // Report a partial topic delete (some messages couldn't be removed).
         connect(m_model, &ThreadListModel::topicDeleteFinished, this,
                 [this](int, int deleted, int failed) {
-            if (failed > 0)
-                QMessageBox::information(this, tr("Delete topic"),
-                    tr("Deleted %1 message(s); %2 could not be deleted. You can "
-                       "only delete your own messages (within the edit window), "
-                       "or others' if you moderate this conversation.")
-                       .arg(deleted).arg(failed));
+            if (failed <= 0)
+                return;
+            QMessageBox box(QMessageBox::Information, tr("Delete topic"),
+                tr("Deleted %1 message(s); %2 could not be deleted. You can "
+                   "only delete your own messages (within the edit window), "
+                   "or others' if you moderate this conversation.")
+                   .arg(deleted).arg(failed),
+                QMessageBox::Ok, this);
+            box.exec();
         });
     }
     rebuild();
@@ -170,31 +202,45 @@ QPushButton *TopicTabBar::makeChip(const QString &label, int threadId,
         else               emit threadSelected(threadId, label);
     });
 
-    // Real topics (not "General"/All-messages) get a right-click "Delete topic"
-    // action. There's no server thread-delete, so it best-effort deletes the
-    // topic's messages — confirm first and be honest about the limits.
-    if (threadId > 0) {
-        b->setContextMenuPolicy(Qt::CustomContextMenu);
-        connect(b, &QPushButton::customContextMenuRequested, this,
-                [this, b, threadId, label](const QPoint &pos) {
-            QMenu menu(this);
-            QAction *del = menu.addAction(tr("Delete topic"));
-            if (menu.exec(b->mapToGlobal(pos)) != del || !m_model)
-                return;
-            QString name = label;
-            name.remove(QStringLiteral("#  "));   // strip the chip prefix
-            const auto answer = QMessageBox::warning(
-                this, tr("Delete topic"),
-                tr("Delete the topic “%1”?\n\nNextcloud Talk has no "
-                   "topic-delete, so this removes the topic's messages where the "
-                   "server allows — your own (within the edit window) and "
-                   "others' only if you moderate this conversation. Anything it "
-                   "can't delete will remain. This can't be undone.").arg(name),
-                QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
-            if (answer == QMessageBox::Yes)
-                m_model->deleteTopic(threadId);
-        });
-    }
+    // Right-click menu. Real topics get Hide (reliable, client-side) + Delete
+    // (best-effort message delete, since Talk has no thread-delete). The
+    // "General"/All chip offers to restore any hidden topics.
+    b->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(b, &QPushButton::customContextMenuRequested, this,
+            [this, b, threadId, label](const QPoint &pos) {
+        if (!m_model) return;
+        QMenu menu(this);
+
+        if (threadId > 0) {
+            QAction *hide = menu.addAction(tr("Hide topic"));
+            QAction *del  = menu.addAction(tr("Delete topic"));
+            QAction *chosen = menu.exec(b->mapToGlobal(pos));
+            if (chosen == hide) {
+                m_model->hideTopic(threadId);
+            } else if (chosen == del) {
+                QString name = label;
+                name.remove(QStringLiteral("#  "));   // strip the chip prefix
+                QMessageBox box(QMessageBox::Warning, tr("Delete topic"),
+                    tr("Delete the topic “%1”?\n\nNextcloud Talk has no "
+                       "topic-delete, so this removes the topic's messages where "
+                       "the server allows — your own (within the edit window) and "
+                       "others' only if you moderate this conversation. Anything "
+                       "it can't delete is left, and the topic is then hidden from "
+                       "your view. This can't be undone.").arg(name),
+                    QMessageBox::Yes | QMessageBox::No, this);
+                box.setDefaultButton(QMessageBox::No);
+                if (box.exec() == QMessageBox::Yes)
+                    m_model->deleteTopic(threadId);
+            }
+        } else {
+            // General / All-messages chip: restore hidden topics.
+            const int n = m_model->hiddenTopicCount();
+            if (n <= 0) return;
+            QAction *unhide = menu.addAction(tr("Show %n hidden topic(s)", nullptr, n));
+            if (menu.exec(b->mapToGlobal(pos)) == unhide)
+                m_model->unhideAllTopics();
+        }
+    });
     return b;
 }
 
@@ -206,6 +252,7 @@ void TopicTabBar::rebuild()
         if (it->widget()) it->widget()->deleteLater();
         delete it;
     }
+    m_selectedChip = nullptr;   // re-captured below; drives auto-scroll-into-view
 
     const int topicCount = m_model ? m_model->rowCount() : 0;
     if (!m_model || topicCount == 0) {
@@ -231,6 +278,7 @@ void TopicTabBar::rebuild()
     // "All messages" chip first.
     auto *all = makeChip(QStringLiteral("\u2605  ") + tr("All messages"),
                          0, 0, m_selectedThreadId == 0);
+    if (m_selectedThreadId == 0) m_selectedChip = all;
     m_rowLayout->insertWidget(m_rowLayout->count() - 1, all);
 
     for (int i = 0; i < topicCount; ++i) {
@@ -250,6 +298,7 @@ void TopicTabBar::rebuild()
 
         auto *chip = makeChip(QStringLiteral("#  ") + title, threadId, unread,
                               m_selectedThreadId == threadId);
+        if (m_selectedThreadId == threadId) m_selectedChip = chip;
         m_rowLayout->insertWidget(m_rowLayout->count() - 1, chip);
     }
 
@@ -266,6 +315,17 @@ void TopicTabBar::rebuild()
     ).arg(pal(m_themeId).accent, pal(m_themeId).hoverBg));
     connect(add, &QPushButton::clicked, this, &TopicTabBar::newTopicRequested);
     m_rowLayout->insertWidget(m_rowLayout->count() - 1, add);
+
+    // Bring the selected topic into view (deferred so the row has laid out
+    // its chips first). Keeps the active topic visible even when there are
+    // more topics than fit the strip.
+    if (m_selectedChip) {
+        QPointer<TopicTabBar> self(this);
+        QTimer::singleShot(0, this, [self]() {
+            if (self && self->m_selectedChip && self->m_scroll)
+                self->m_scroll->ensureWidgetVisible(self->m_selectedChip, 24, 0);
+        });
+    }
 
     // Visibility is controlled from MainWindow::updateTopicMode — a rebuild
     // triggered by a model reset shouldn't unhide a 1-on-1's tab bar.
