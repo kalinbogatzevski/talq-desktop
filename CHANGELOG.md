@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.43.1 "Magrathea" — BETA (2026-05-29)
+
+> Same **Magrathea** beta line as 0.43.0 — codename is per minor line.
+
+### Added
+
+* **Unread counts on topic chips.** Each topic in the conversation header now
+  shows a ` · N` badge for messages newer than your read position, updated live;
+  opening a topic clears its badge. (Previously the count was never populated,
+  so topics gave no hint of new activity.)
+
+### Changed
+
+* **Calmer topic chips.** The selected topic chip used a bold, fully-saturated
+  fill that felt too loud. It now uses a soft accent tint with accent-coloured
+  text and a thin accent border — clearly "active" but much quieter.
+* **Debug logs survive restarts.** The diagnostic log is no longer wiped on
+  every launch. Each session's previous log is archived under a timestamped name
+  and the most recent 12 sessions are kept — so a crash's log is preserved for
+  diagnosis across any number of restarts (the live log still stays lean).
+
 ## v0.43.0 "Magrathea" — BETA (2026-05-29)
 
 > Codename **Magrathea** — the legendary planet-building world from *The

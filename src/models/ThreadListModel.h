@@ -5,6 +5,8 @@
 #include "core/ApiClient.h"
 #include "core/MessageCache.h"
 
+class ConversationListModel;
+
 struct ThreadInfo {
     int threadId = 0;
     QString title;
@@ -59,6 +61,18 @@ public:
     Q_INVOKABLE void selectTopic(int threadId);
     Q_INVOKABLE int colorForThread(int threadId) const;
 
+    // The room's read marker (this user's lastReadMessage for the whole
+    // conversation). Per-topic unread = messages in that topic with id > this.
+    // Fed by MainWindow; the next refresh()/scan uses it to populate the chip
+    // counters. Set it BEFORE refreshing so the counts reflect the latest read
+    // position.
+    void setRoomLastReadId(int id) { m_roomLastReadId = id; }
+
+    // Lets the model pull the room's read marker itself at scan time (kept in
+    // sync by ConversationListModel's poll), so per-topic counts stay current
+    // without per-refresh wiring.
+    void setConversations(ConversationListModel *c) { m_conversations = c; }
+
 private slots:
     void onCachedThreadsLoaded(const QString &token, const QVector<QJsonObject> &threads);
 
@@ -78,4 +92,6 @@ private:
     MessageCache *m_cache = nullptr;
     int m_selectedThreadId = -1;
     int m_conversationType = 0;
+    int m_roomLastReadId = 0;
+    ConversationListModel *m_conversations = nullptr;
 };

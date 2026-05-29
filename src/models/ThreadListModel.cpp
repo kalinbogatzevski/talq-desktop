@@ -1,4 +1,5 @@
 #include "ThreadListModel.h"
+#include "models/ConversationListModel.h"
 #include <QJsonObject>
 #include <QUrlQuery>
 #include <QPointer>
@@ -190,6 +191,12 @@ void ThreadListModel::fetchThreads()
             return;
         }
 
+        // Pull the room's current read marker so per-topic unread counts reflect
+        // the latest read position at scan time (ConversationListModel keeps it
+        // fresh via its poll). Falls back to any value set via setRoomLastReadId.
+        if (m_conversations)
+            m_roomLastReadId = m_conversations->lastReadMessageForToken(m_token);
+
         // Use the API-provided thread fields:
         //   isThread: true    — message belongs to a thread
         //   threadId: N       — the thread root message ID
@@ -202,6 +209,7 @@ void ThreadListModel::fetchThreads()
             QString latestMessage;
             QString latestAuthor;
             int count = 0;
+            int unread = 0;   // messages in this topic with id > room read marker
         };
         QHash<int, ThreadAccumulator> threadMap;
 
@@ -233,6 +241,13 @@ void ThreadListModel::fetchThreads()
             if (isThreadFlag)
                 acc.count++;
 
+            // Per-topic unread: any message in this topic newer than the room's
+            // read marker. The marker advances as the user reads (or sends), so
+            // own/just-read messages stop counting on the next refresh. Drives
+            // the "· N" badge on the topic chip.
+            if (m_roomLastReadId > 0 && msg["id"].toInt() > m_roomLastReadId)
+                acc.unread++;
+
             // Use the API-provided thread title
             if (acc.threadTitle.isEmpty() && !threadTitleStr.isEmpty())
                 acc.threadTitle = threadTitleStr;
@@ -260,6 +275,7 @@ void ThreadListModel::fetchThreads()
             info.lastAuthor = acc.latestAuthor;
             info.lastActivity = acc.latestTimestamp;
             info.replyCount = acc.count;
+            info.unreadCount = acc.unread;
 
             // Deterministic color from title hash
             uint hash = qHash(info.title);
