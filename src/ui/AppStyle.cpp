@@ -137,7 +137,7 @@ QPushButton:focus    { outline:none; }
 
 QPushButton[variant="primary"] {
     background:@{accent}; color:@{controlInk}; font-weight:600;
-    padding:7px 16px;
+    padding:8px 18px;
 }
 QPushButton[variant="primary"]:hover  { background:@{accentHi}; }
 QPushButton[variant="primary"]:pressed{ background:@{accentDim}; }
@@ -146,18 +146,57 @@ QPushButton[variant="primary"]:disabled{ background:@{accentDim};
 
 QPushButton[variant="danger"] {
     background:transparent; color:@{danger};
-    border:1px solid @{danger}; padding:5px 12px;
+    border:1px solid @{danger}; padding:8px 14px;
 }
 QPushButton[variant="danger"]:hover  { background:@{dangerWash};
                                        color:@{dangerHi};
                                        border-color:@{dangerHi}; }
 QPushButton[variant="danger"]:pressed{ background:@{dangerWash}; }
 
+/* Default — the quiet workhorse (DESIGN.md). A neutral, tactile button for
+ * standalone secondary actions (Cancel / Done / Refresh / Edit): a filled
+ * well tone + hairline border so it ALWAYS reads as a button at rest, never
+ * as plain text. Matches the message-box button metric for one consistent
+ * neutral-button look app-wide. */
+QPushButton[variant="default"] {
+    background:@{inputBg}; color:@{ink};
+    border:1px solid @{divider}; border-radius:@{rS}px;
+    padding:8px 16px;
+}
+QPushButton[variant="default"]:hover    { background:@{hoverWash}; border-color:@{accent}; }
+QPushButton[variant="default"]:pressed  { background:@{bgSelected}; }
+QPushButton[variant="default"]:disabled { color:@{inkMuted}; background:@{bgSecondary}; }
+
+/* Ghost is the quiet tertiary affordance — INLINE only (breadcrumbs, chips),
+ * never a standalone footer button (those use "default" so they read as
+ * buttons at rest). Flat-but-tactile: fill only on hover. */
 QPushButton[variant="ghost"] {
-    background:transparent; color:@{ink2}; border:none;
+    background:transparent; color:@{ink2}; border:none; padding:7px 14px;
 }
 QPushButton[variant="ghost"]:hover  { color:@{ink}; background:@{hoverWash}; }
 QPushButton[variant="ghost"]:pressed{ background:@{bgSelected}; }
+
+/* ── Message boxes ──
+ * Every QMessageBox button gets the real button look app-wide, so no box is
+ * ever styled by hand again. Non-default buttons read as a quiet outlined
+ * control on the input-well tone; the default/accept button is the accent
+ * fill. Scoped to QMessageBox descendants so it can never touch the app's
+ * icon-glyph buttons. Themed from existing tokens → re-tints live on theme
+ * change with the rest of the sheet. */
+QMessageBox QPushButton {
+    background:@{inputBg}; color:@{ink};
+    border:1px solid @{divider}; border-radius:@{rS}px;
+    padding:8px 16px; min-width:84px; font-weight:500;
+}
+QMessageBox QPushButton:hover    { background:@{hoverWash}; border-color:@{accent}; }
+QMessageBox QPushButton:pressed  { background:@{bgSelected}; }
+QMessageBox QPushButton:disabled { color:@{inkMuted}; background:@{bgSecondary}; }
+QMessageBox QPushButton:default {
+    background:@{accent}; color:@{controlInk};
+    border:1px solid @{accent}; font-weight:600;
+}
+QMessageBox QPushButton:default:hover   { background:@{accentHi}; border-color:@{accentHi}; }
+QMessageBox QPushButton:default:pressed { background:@{accentDim}; }
 
 /* Icon-style tool buttons — quiet until touched, never resized. */
 QToolButton {

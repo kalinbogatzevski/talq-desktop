@@ -50,6 +50,7 @@ private slots:
     void onRemoveMember(QListWidgetItem *item);
     void onLeaveClicked();
     void onDeleteClicked();
+    void onClearHistoryClicked();
     void onAddBotClicked();
 
 private:
@@ -79,6 +80,7 @@ private:
     class QTimer *m_addDebounce = nullptr;
 
     QPushButton *m_leaveBtn = nullptr;
+    QPushButton *m_clearHistoryBtn = nullptr;
     QPushButton *m_deleteBtn = nullptr;
     QPushButton *m_closeBtn = nullptr;
     QLabel      *m_status = nullptr;

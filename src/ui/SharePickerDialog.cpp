@@ -133,7 +133,7 @@ SharePickerDialog::SharePickerDialog(QWidget *parent)
     // CallManager::startScreenShare reads; it can also be changed live
     // mid-share via CallManager::setScreenShareQuality (#120).
     auto *bottom = new QHBoxLayout;
-    bottom->setContentsMargins(0, 0, 0, 0);
+    bottom->setContentsMargins(0, 8, 0, 0);
     bottom->setSpacing(10);
     auto *qLbl = new QLabel(tr("Quality"), this);
     qLbl->setProperty("role", "secondary");

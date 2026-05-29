@@ -2,6 +2,7 @@
 #include <QAbstractListModel>
 #include <QVector>
 #include <QJsonArray>
+#include <QSet>
 #include "core/ApiClient.h"
 #include "core/MessageCache.h"
 
@@ -70,6 +71,15 @@ public:
     // drops the chip once the topic has no surviving messages.
     Q_INVOKABLE void deleteTopic(int threadId);
 
+    // Client-side hide. Talk has no thread delete and only tombstones messages,
+    // so the only reliable way to make a topic disappear from view is to hide
+    // it locally. Persisted per-conversation in QSettings and filtered out of
+    // the chip list; survives restarts. The topic still exists server-side and
+    // on other clients. unhideAllTopics() restores them.
+    Q_INVOKABLE void hideTopic(int threadId);
+    Q_INVOKABLE void unhideAllTopics();
+    int hiddenTopicCount() const { return m_hiddenTopics.size(); }
+
     // The room's read marker (this user's lastReadMessage for the whole
     // conversation). Per-topic unread = messages in that topic with id > this.
     // Fed by MainWindow; the next refresh()/scan uses it to populate the chip
@@ -96,6 +106,8 @@ signals:
 
 private:
     void fetchThreads();
+    void loadHiddenTopics();   // from QSettings for m_token
+    void saveHiddenTopics();
 
     ApiClient *m_api;
     QVector<ThreadInfo> m_threads;
@@ -106,4 +118,5 @@ private:
     int m_conversationType = 0;
     int m_roomLastReadId = 0;
     ConversationListModel *m_conversations = nullptr;
+    QSet<int> m_hiddenTopics;   // per-room, persisted; filtered from the chips
 };

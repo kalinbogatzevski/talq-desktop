@@ -33,10 +33,14 @@ UpcomingRemindersDialog::UpcomingRemindersDialog(ApiClient *api, QWidget *parent
     outer->addWidget(m_status);
 
     auto *btnRow = new QHBoxLayout();
+    btnRow->setContentsMargins(0, 4, 0, 0);
+    btnRow->setSpacing(8);
     m_refreshBtn = new QPushButton(tr("Refresh"), this);
+    m_refreshBtn->setProperty("variant", "default");
     btnRow->addWidget(m_refreshBtn);
     btnRow->addStretch();
     m_closeBtn = new QPushButton(tr("Close"), this);
+    m_closeBtn->setProperty("variant", "primary");
     m_closeBtn->setDefault(true);
     btnRow->addWidget(m_closeBtn);
     outer->addLayout(btnRow);

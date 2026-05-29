@@ -155,6 +155,14 @@ private slots:
     // event, so reactions added by OTHER clients appear (and survive cache
     // reload). Never shown as a visible message.
     void applyReactionSystemMessage(const QJsonObject &systemMessageJson);
+    // Remove a single message row by id (local only — no server call). Used to
+    // hide deletion tombstones live when a "message_deleted" event arrives.
+    void removeMessageById(int id);
+
+    // Purge the whole conversation locally (model + cache). Driven by the
+    // server's "history_cleared" system message (DELETE /chat/{token}), so it
+    // fires on every device — the actor's and the peer's — not just the caller.
+    void clearLocalHistory();
 
 private:
     void startPoller();

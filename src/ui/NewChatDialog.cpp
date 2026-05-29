@@ -178,17 +178,18 @@ NewChatDialog::NewChatDialog(ApiClient *api, QWidget *parent)
     outer->addSpacing(6);
 
     auto *btnRow = new QHBoxLayout();
+    btnRow->setContentsMargins(0, 0, 0, 0);
+    btnRow->setSpacing(8);
     btnRow->addStretch();
     m_cancelBtn = new QPushButton(tr("Cancel"), this);
-    m_cancelBtn->setObjectName("cancel");
+    m_cancelBtn->setProperty("variant", "default");
     m_cancelBtn->setCursor(Qt::PointingHandCursor);
     m_createBtn = new QPushButton(tr("Create room"), this);
-    m_createBtn->setObjectName("primary");
+    m_createBtn->setProperty("variant", "primary");
     m_createBtn->setEnabled(false);
     m_createBtn->setDefault(true);
     m_createBtn->setCursor(Qt::PointingHandCursor);
     btnRow->addWidget(m_cancelBtn);
-    btnRow->addSpacing(6);
     btnRow->addWidget(m_createBtn);
     outer->addLayout(btnRow);
 
@@ -248,15 +249,8 @@ void NewChatDialog::applyChrome()
         "QRadioButton:checked { color: %2; }"
         "QScrollArea, QScrollArea > QWidget, QScrollArea > QWidget > QWidget {"
         "  background: transparent; border: none; }"
-        "QPushButton#cancel  { background: transparent; color: %3; border: none;"
-        "  padding: 10px 18px; font-size: 12px; letter-spacing: 0.5px;"
-        "  text-transform: uppercase; font-weight: 600; }"
-        "QPushButton#cancel:hover { color: %2; }"
-        "QPushButton#primary { background: %7; color: %8; border: none;"
-        "  border-radius: 22px; padding: 10px 28px; font-size: 12px;"
-        "  letter-spacing: 0.5px; text-transform: uppercase; font-weight: 700; }"
-        "QPushButton#primary:hover    { background: %7; }"
-        "QPushButton#primary:disabled { background: %6; color: %3; }"
+        // Cancel / Create use the global variant contract (ghost / primary) —
+        // no per-dialog button QSS, no pill (8px control radius, DESIGN.md).
     ).arg(bg, ink, dim, line, listBg, hover, accent, onAcc));
 }
 

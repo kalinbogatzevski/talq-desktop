@@ -94,6 +94,12 @@ protected:
             e->accept();
             return;
         }
+        // Up-arrow on an empty composer edits the last own message (Telegram).
+        // Only when empty so multi-line cursor navigation is unaffected.
+        if (e->key() == Qt::Key_Up && toPlainText().isEmpty()
+            && !(e->modifiers() & (Qt::ShiftModifier | Qt::ControlModifier))) {
+            if (m_owner->requestEditLast()) { e->accept(); return; }
+        }
         if (e->key() == Qt::Key_Return || e->key() == Qt::Key_Enter) {
             if (e->modifiers() & Qt::ShiftModifier) {
                 QTextEdit::keyPressEvent(e);
@@ -608,6 +614,15 @@ void ComposerWidget::hideEditingBar()
     m_editingBar->hide();
     m_input->clear();
     emit editingBarCancelled();
+}
+
+bool ComposerWidget::requestEditLast()
+{
+    // Don't hijack Up while already editing or composing a reply.
+    if (m_editing) return false;
+    if (m_replyBar && m_replyBar->isVisible()) return false;
+    emit editLastRequested();   // MainWindow loads the last own message, if any
+    return true;
 }
 
 void ComposerWidget::sendAction()

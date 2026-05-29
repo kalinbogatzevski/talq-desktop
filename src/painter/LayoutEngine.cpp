@@ -15,8 +15,18 @@ std::pair<qreal, qreal> LayoutEngine::fileRectSize(
 {
     bool isImage = mime.startsWith(QLatin1String("image/"));
     if (isImage && imageAspectRatio > 0.01) {
+        // imageAspectRatio is height/width. Size the rect TIGHT to the image:
+        // begin from the max thumb width, and if the resulting height would
+        // exceed the cap (portrait / tall images) shrink the WIDTH back to keep
+        // the aspect ratio. Otherwise a tall image sits centred inside an
+        // over-wide rect, leaving dead space on both sides (and the bubble
+        // around it inherits that wasted width).
         qreal w = qMin(maxWidth, maxThumbW);
-        qreal h = qMin(w * imageAspectRatio, maxThumbH);
+        qreal h = w * imageAspectRatio;
+        if (h > maxThumbH) {
+            h = maxThumbH;
+            w = h / imageAspectRatio;
+        }
         return {w, h};
     }
     return {maxWidth, 44.0};
@@ -167,6 +177,47 @@ MessageLayout LayoutEngine::computeLayout(
         qreal nameW = qMin((qreal)fmName.horizontalAdvance(ml.actorName) + 4, maxContentW + 2 * bubblePadX);
         ml.nameRect = QRectF(bubbleLeft, y, nameW, nameH);
         y += nameH + 4;
+    }
+
+    // ── Edge-to-edge image bubble ──
+    // A pure-image message (a photo with no caption, reply or reactions)
+    // becomes the bubble itself: the image spans the full bubble with no inner
+    // padding, rounded to the bubble radius, and the timestamp floats over the
+    // bottom-right on a scrim. Removes the dead padding a photo otherwise sits
+    // inside, plus the separate timestamp row beneath it.
+    {
+        QString imgBody = ml.bodyHtml;
+        imgBody.remove(s_htmlTagRe);
+        const bool pureImage =
+            ml.hasFile
+            && ml.fileMime.startsWith(QLatin1String("image/"))
+            && imageAspectRatio > 0.01
+            && imgBody.trimmed().isEmpty()
+            && ml.replyToText.isEmpty()
+            && ml.reactions.isEmpty();
+        if (pureImage) {
+            const qreal maxThumbW = ml.isOwn ? 240.0 : 380.0;
+            const qreal maxThumbH = ml.isOwn ? 300.0 : 380.0;
+            // The flush image may use the bubble's full width (no inner padding),
+            // capped by the bubble's max width and the per-side thumb cap.
+            const qreal imgMaxW = qMin(bubbleMaxWidth - avatarCol - margin, maxThumbW);
+            auto [iw, ih] = fileRectSize(ml.fileMime, imgMaxW, imgMaxW,
+                                         maxThumbH, imageAspectRatio);
+            ml.imageBubble  = true;
+            ml.bubbleRect   = QRectF(bubbleLeft, y, iw, ih);
+            ml.fileRect     = ml.bubbleRect;
+            ml.contentRight = bubbleLeft + iw;
+            // Timestamp overlay rect, anchored bottom-right inside the image; the
+            // painter draws a scrim behind it for legibility over any photo.
+            const qreal pad   = 8;
+            const qreal th    = fmTime.height();
+            const qreal right = bubbleLeft + iw - pad;
+            const qreal left  = qMax(bubbleLeft + pad, right - timeW);
+            ml.timeRect = QRectF(left, y + ih - th - pad, right - left, th);
+            y += ih + 2;   // inter-message gap
+            ml.totalHeight = y - startY;
+            return ml;
+        }
     }
 
     // ── Measure body text ──

@@ -102,6 +102,12 @@ struct MessageLayout
     // File attachment area
     QRectF fileRect;        // image preview or file pill rect
 
+    // Edge-to-edge image: a pure-image message (no caption / reply / reactions)
+    // where the image IS the bubble — drawn flush to the bubble edges, rounded
+    // to the bubble radius, with the timestamp floated over the bottom-right on
+    // a scrim. Set by LayoutEngine; consumed by ChatPainter.
+    bool imageBubble = false;
+
     // Reactions bar
     QRectF reactBarRect;
 
