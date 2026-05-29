@@ -55,6 +55,14 @@ CallStage::CallStage(CallManager *call, QWidget *parent)
 
     connect(m_call, &CallManager::stateChanged, this, [this]{
         if (m_call->state() == CallManager::Idle) { m_camFrame.clear(); m_scrFrame.clear(); }
+        // Keep the control bar (with the Leave/Cancel button) reachable while
+        // reconnecting. Auto-hide only runs in Active, but if the chrome had
+        // already faded when ICE failed, force it back so the user can always
+        // cancel a stuck reconnect.
+        if (m_call->state() == CallManager::Reconnecting) {
+            m_controlsVisible = true;
+            m_idleTimer.restart();
+        }
         relayout(); update();
     });
     connect(m_call, &CallManager::durationChanged, this, [this]{ update(); });
@@ -908,15 +916,17 @@ void CallStage::paintControlBar(QPainter &p, const PainterTheme &th)
 
 void CallStage::paintStatusPill(QPainter &p, const PainterTheme &th)
 {
-    // Aggregate state → the one signal colour.
-    bool reconnecting = false, degraded = false;
+    // Aggregate state → the one signal colour. Whole-call Reconnecting (our
+    // publisher media path being rebuilt) OR any per-peer subscriber reconnect
+    // both light the pill red with "RECONNECTING…".
+    const auto st = m_call->state();
+    bool reconnecting = (st == CallManager::Reconnecting), degraded = false;
     for (auto *cp : m_call->participants()) {
         if (cp->isSelf()) continue;
         if (cp->connState()==CallParticipant::Reconnecting
             || cp->connState()==CallParticipant::Failed) reconnecting = true;
         if (cp->connState()==CallParticipant::Connecting) degraded = true;
     }
-    const auto st = m_call->state();
     QColor dot = reconnecting ? th.danger
                : (degraded || st==CallManager::Connecting || st==CallManager::Outgoing)
                  ? th.amber : th.accent;

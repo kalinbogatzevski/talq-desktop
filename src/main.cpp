@@ -551,6 +551,26 @@ int main(int argc, char *argv[])
         callManager.onIncomingCallDetected(name, token, callFlag);
     });
 
+    // "Call ended" desktop notification. callEnded fires once per terminal
+    // teardown. Skip the user's OWN hang-up (they just clicked it); notify when
+    // the call ends for another reason — peer left, connection lost after the
+    // reconnect retries gave nothing, declined, no answer — so the call window
+    // vanishing is never silent/confusing. alwaysSound=true shows it even if the
+    // call window had focus; empty token keeps it a non-interactive toast.
+    QObject::connect(&callManager, &CallManager::callEnded, &notifications,
+                     [&notifications](const QString &reason) {
+        const QString r = reason.toLower();
+        if (r.contains("hung up") || r.contains("cancel")) return;
+        QString msg;
+        if (r.contains("declined"))        msg = QObject::tr("Call declined.");
+        else if (r.contains("no answer"))  msg = QObject::tr("No answer.");
+        else if (r.contains("failed") || r.contains("ice")
+                 || r.contains("pipeline") || r.contains("start"))
+            msg = QObject::tr("Connection lost.");
+        else                               msg = QObject::tr("The call ended.");
+        notifications.notify(QObject::tr("Call ended"), msg, /*alwaysSound=*/true, QString());
+    });
+
     // Tray unread count
     QObject::connect(&conversations, &ConversationListModel::totalUnreadChanged,
                      &notifications, [&conversations, &notifications]() {
