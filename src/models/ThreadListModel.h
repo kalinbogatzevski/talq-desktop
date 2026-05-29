@@ -61,6 +61,15 @@ public:
     Q_INVOKABLE void selectTopic(int threadId);
     Q_INVOKABLE int colorForThread(int threadId) const;
 
+    // Best-effort "delete topic". Nextcloud Talk has NO thread-delete endpoint
+    // (upstream issue #17146), so a topic is a grouping of messages with no
+    // entity to remove. This deletes the topic's MESSAGES (root + replies) via
+    // the per-message delete API — bounded by server rules (own messages within
+    // the edit window; others' only with moderator rights). Messages that can't
+    // be deleted remain; topicDeleteFinished reports the tally and refresh()
+    // drops the chip once the topic has no surviving messages.
+    Q_INVOKABLE void deleteTopic(int threadId);
+
     // The room's read marker (this user's lastReadMessage for the whole
     // conversation). Per-topic unread = messages in that topic with id > this.
     // Fed by MainWindow; the next refresh()/scan uses it to populate the chip
@@ -81,6 +90,9 @@ signals:
     void loadingChanged();
     void countChanged();
     void hasTopicsChanged();
+    // Emitted when deleteTopic() finishes: how many of the topic's messages were
+    // deleted vs left behind (server permission/time limits).
+    void topicDeleteFinished(int threadId, int deleted, int failed);
 
 private:
     void fetchThreads();

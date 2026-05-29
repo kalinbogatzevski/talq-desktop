@@ -4,6 +4,7 @@
 #include <QUrlQuery>
 #include <QPointer>
 #include <algorithm>
+#include <memory>
 
 ThreadListModel::ThreadListModel(ApiClient *api, QObject *parent)
     : QAbstractListModel(parent)
@@ -168,6 +169,62 @@ int ThreadListModel::colorForThread(int threadId) const
             return t.iconColor;
     }
     return 0;
+}
+
+void ThreadListModel::deleteTopic(int threadId)
+{
+    if (threadId <= 0 || m_token.isEmpty())
+        return;
+
+    const QString token = m_token;
+    QUrlQuery params;
+    params.addQueryItem("limit", "200");
+    params.addQueryItem("lookIntoFuture", "0");
+
+    QPointer<ThreadListModel> guard(this);
+    // No server-side thread delete exists (upstream #17146), so collect the
+    // topic's messages — the root (id == threadId) plus any reply whose
+    // threadId matches — and delete each individually, best-effort.
+    m_api->getArray("apps/spreed/api/v1/chat/" + token, params,
+        [this, guard, token, threadId](bool ok, const QJsonArray &data, int) {
+        if (!guard || token != m_token || !ok)
+            return;
+
+        QVector<int> ids;
+        for (const QJsonValue &v : data) {
+            const QJsonObject m = v.toObject();
+            const int id  = m["id"].toInt();
+            const int tId = m["threadId"].toInt();
+            if (id > 0 && (id == threadId || tId == threadId))
+                ids.append(id);
+        }
+
+        if (ids.isEmpty()) {
+            emit topicDeleteFinished(threadId, 0, 0);
+            refresh();
+            return;
+        }
+
+        // Shared tally across the async per-message deletes; the last callback
+        // to land reports the result and refreshes the bar.
+        auto remaining = std::make_shared<int>(ids.size());
+        auto failed    = std::make_shared<int>(0);
+        const int total = ids.size();
+
+        for (int id : ids) {
+            const QString path = "apps/spreed/api/v1/chat/" + token
+                                 + "/" + QString::number(id);
+            m_api->del(path, [this, guard, threadId, total, remaining, failed]
+                              (bool delOk, const QJsonObject &, int) {
+                if (!delOk)
+                    ++(*failed);
+                if (--(*remaining) == 0 && guard) {
+                    emit topicDeleteFinished(threadId, total - *failed, *failed);
+                    refresh();   // drops the chip once the topic has no messages
+                }
+            });
+        }
+    });
 }
 
 void ThreadListModel::fetchThreads()
