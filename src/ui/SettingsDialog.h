@@ -66,6 +66,7 @@ private:
     void syncBgPreview();
 
     QWidget *buildAudioVideoTab();
+    QWidget *buildBackgroundTab();
     QWidget *buildNotificationsTab();
     QWidget *buildGeneralTab();
     QWidget *buildAccountTab();

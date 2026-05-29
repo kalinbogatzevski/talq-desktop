@@ -359,6 +359,12 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
             qDebug() << "CallManager: screen subscriber offer set";
             return;
         }
+        // P2P camera negotiation rides the talq.p2p.* overlay; a reserved
+        // "offer" here in P2P mode is a Janus/MCU artifact — ignore it.
+        if (m_useP2P) {
+            qDebug() << "CallManager: ignoring reserved offer in P2P mode (overlay carries it)";
+            return;
+        }
         onOfferReceived(from, sdp, sid);
     });
     connect(m_signaling, &SignalingClient::answerReceived,
@@ -368,7 +374,34 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
             qDebug() << "CallManager: set screen share answer";
             return;
         }
+        if (m_useP2P) {
+            qDebug() << "CallManager: ignoring reserved answer in P2P mode (overlay carries it)";
+            return;
+        }
         onAnswerReceived(from, sdp);
+    });
+    // 0.41.x — TalQ-private P2P signaling overlay receiver. The HPB relays
+    // these custom session-targeted messages untouched (Janus never sees
+    // them), so 1:1 SDP + ICE travels peer-to-peer and the media goes direct
+    // even when the server has an MCU. Mirrors the proven talq-call-test
+    // routing. Guarded on m_useP2P + m_peerPipeline.
+    connect(m_signaling, &SignalingClient::p2pSignalReceived,
+            this, [this](const QString &from, const QString &subtype, const QJsonObject &payload) {
+        if (!m_useP2P || !m_peerPipeline) return;
+        if (m_remoteSessionId.isEmpty()) m_remoteSessionId = from;
+        if (subtype == "offer") {
+            qDebug() << "CallManager: P2P overlay offer from" << from.left(20);
+            m_peerPipeline->setRemoteOffer(payload["sdp"].toString());
+        } else if (subtype == "answer") {
+            qDebug() << "CallManager: P2P overlay answer from" << from.left(20);
+            m_peerPipeline->setRemoteAnswer(payload["sdp"].toString());
+        } else if (subtype == "candidate") {
+            m_peerPipeline->addIceCandidate(payload["candidate"].toString(),
+                                            payload["sdpMLineIndex"].toInt(),
+                                            payload["sdpMid"].toString());
+        }
+        // subtype == "end" (end-of-candidates): no-op; webrtcbin tolerates
+        // trickle without an explicit terminator.
     });
     connect(m_signaling, &SignalingClient::candidateReceived,
             this, [this](const QString &fromSessionId, const QJsonObject &candidate, const QString &roomType) {
@@ -379,12 +412,8 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
         int mline = c["sdpMLineIndex"].toInt();
         QString mid = c["sdpMid"].toString();
 
-        if (m_useP2P && m_peerPipeline) {
-            m_peerPipeline->addIceCandidate(cStr, mline, mid);
-            return;
-        }
-
         // Route by roomType: screen candidates go to screen pipelines
+        // (screen share is independent of the camera P2P/MCU decision).
         if (roomType == "screen") {
             if (m_screenSubscribers.contains(fromSessionId)) {
                 m_screenSubscribers[fromSessionId]->addIceCandidate(cStr, mline, mid);
@@ -394,7 +423,12 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
             return;
         }
 
-        // Video candidates
+        // P2P camera: candidates ride the talq.p2p.* OVERLAY
+        // (onP2pSignalReceived), so a RESERVED candidate arriving here while
+        // we're in P2P mode is a Janus/MCU loopback artifact — ignore it.
+        if (m_useP2P) return;
+
+        // Video candidates (MCU path)
         if (fromSessionId == m_signaling->sessionId() && m_publishPipeline) {
             m_publishPipeline->addIceCandidate(cStr, mline, mid);
         } else if (m_subscribePipelines.contains(fromSessionId)) {
@@ -1482,72 +1516,77 @@ void CallManager::joinCallOnServer(bool withVideo)
                     // Process any offers that arrived before ICE servers were available
                     processPendingOffers();
 
-                    // 0.41.5-beta — prefer P2P for 1:1 calls even when
-                    // the HPB advertises an MCU. Saves the BG↔SA↔BG
-                    // detour for nearby peers. Default on (Settings
-                    // Call/preferP2pFor1to1 = true). Group calls
-                    // (type != 1) still go via MCU when one is
-                    // available — they'd otherwise blow up into a
-                    // full-mesh and saturate uplinks.
+                    // 0.41.x — Zoom-style hybrid: a 1:1 conversation goes
+                    // DIRECT peer-to-peer (lower latency, no server media
+                    // relay); 3+ participants route through the MCU. P2P
+                    // rides the talq.p2p.* signaling OVERLAY — a custom
+                    // session-targeted message type the HPB relays untouched
+                    // — so it works even when the HPB has a Janus MCU (which
+                    // hijacks the RESERVED offer/answer/candidate types:
+                    // RCA 2026-05-28 saw Janus answer "from self" + trickled
+                    // candidates hit client_not_found). Non-TalQ peers or a
+                    // failed/stalled P2P attempt fall back to the MCU (the
+                    // ICE-failed handler below + the connect-timeout).
                     const bool hpbHasMcu = m_signaling->hasMcu();
-                    bool preferP2pFor1to1 = false;
-                    {
-                        QSettings cs("TalQ", "TalQ");
-                        cs.beginGroup("Call");
-                        // 0.41.5-beta — default OFF after field report:
-                        // PeerPipeline's add-video-after-audio renegotiation
-                        // path needs more verification on HPB-relayed signaling
-                        // before it can be the default. Opt-in via Settings →
-                        // "Direct P2P for 1:1 calls".
-                        preferP2pFor1to1 = cs.value("preferP2pFor1to1", false).toBool();
-                        cs.endGroup();
-                    }
-                    const int callRoomType = (m_conversations && !m_callToken.isEmpty())
-                        ? m_conversations->conversationTypeForToken(m_callToken)
-                        : 0;
-                    const bool isOneToOne = (callRoomType == 1);
-                    const bool forceP2pOverride =
-                        hpbHasMcu && preferP2pFor1to1 && isOneToOne;
-                    m_useP2P = forceP2pOverride || !hpbHasMcu;
+                    const bool isOneToOne = m_conversations
+                        && m_conversations->conversationTypeForToken(m_callToken) == 1;
+                    // Experimental, opt-in: while the direct-P2P media path is
+                    // being field-validated, default 1:1 calls to the proven
+                    // MCU path. Settings → "Direct P2P for 1:1 calls" flips
+                    // this on so it can be tested end-to-end on real machines
+                    // without risking every 1:1 call. Flip the default once
+                    // confirmed in the field.
+                    const bool p2pOptIn =
+                        QSettings("TalQ", "TalQ").value("Video/p2pForOneToOne", false).toBool();
+                    m_useP2P = isOneToOne && p2pOptIn;
                     setStatusDetail("Starting pipeline");
                     qInfo().nospace() << "CallManager: call mode = "
-                        << (m_useP2P ? "P2P" : "MCU")
-                        << " (hpbHasMcu=" << hpbHasMcu
-                        << " roomType=" << callRoomType
-                        << " preferP2pFor1to1=" << preferP2pFor1to1
-                        << " forceP2pOverride=" << forceP2pOverride << ")";
+                        << (m_useP2P ? "P2P (1:1 direct via talq.p2p overlay)" : "MCU")
+                        << " (1:1=" << isOneToOne << " p2pOptIn=" << p2pOptIn
+                        << " hpbHasMcu=" << hpbHasMcu << ")";
 
                     if (m_useP2P) {
                         // --- P2P mode: single PeerPipeline for 1:1 calls ---
-                        QString p2pSid = QString::number(QDateTime::currentMSecsSinceEpoch());
-
                         m_peerPipeline = new PeerPipeline(this);
+                        // 0.41.9 — P2P video is bidirectional on a single
+                        // m-line (both peers send their camera + receive the
+                        // other's). Must be set before enableCamera.
+                        m_peerPipeline->setVideoSendRecv(true);
                         m_localVideoProvider = m_peerPipeline->localVideoProvider();
                         emit localVideoProviderChanged();
                         m_remoteVideoProvider = m_peerPipeline->remoteVideoProvider();
                         emit remoteVideoProviderChanged();
 
+                        // SDP + ICE ride the talq.p2p.* OVERLAY (bypasses the
+                        // MCU). Payload format matches onP2pSignalReceived /
+                        // the talq-call-test routing.
                         connect(m_peerPipeline, &PeerPipeline::localOfferReady,
-                                this, [this, p2pSid](const QString &sdp) {
+                                this, [this](const QString &sdp) {
                             setStatusDetail("Sending offer");
-                            m_signaling->sendOffer(m_remoteSessionId, sdp, p2pSid);
-                            qDebug() << "CallManager: sent P2P offer to" << m_remoteSessionId.left(20);
+                            QJsonObject p; p["sdp"] = sdp;
+                            m_signaling->sendP2pSignal(m_remoteSessionId, "offer", p);
+                            qDebug() << "CallManager: sent P2P overlay offer to" << m_remoteSessionId.left(20);
                         });
 
                         connect(m_peerPipeline, &PeerPipeline::localAnswerReady,
-                                this, [this, p2pSid](const QString &sdp) {
-                            m_signaling->sendAnswer(m_remoteSessionId, sdp, p2pSid);
-                            qDebug() << "CallManager: sent P2P answer to" << m_remoteSessionId.left(20);
+                                this, [this](const QString &sdp) {
+                            QJsonObject p; p["sdp"] = sdp;
+                            m_signaling->sendP2pSignal(m_remoteSessionId, "answer", p);
+                            qDebug() << "CallManager: sent P2P overlay answer to" << m_remoteSessionId.left(20);
                         });
 
                         connect(m_peerPipeline, &PeerPipeline::iceCandidateReady,
-                                this, [this, p2pSid](const QString &candidate, int mline, const QString &mid) {
-                            m_signaling->sendCandidate(m_remoteSessionId, makeCandidateJson(candidate, mline, mid), p2pSid);
+                                this, [this](const QString &candidate, int mline, const QString &mid) {
+                            QJsonObject c;
+                            c["candidate"] = candidate;
+                            c["sdpMLineIndex"] = mline;
+                            c["sdpMid"] = mid;
+                            m_signaling->sendP2pSignal(m_remoteSessionId, "candidate", c);
                         });
 
                         connect(m_peerPipeline, &PeerPipeline::iceGatheringComplete,
-                                this, [this, p2pSid]() {
-                            m_signaling->sendEndOfCandidates(m_remoteSessionId, p2pSid);
+                                this, [this]() {
+                            m_signaling->sendP2pSignal(m_remoteSessionId, "end", QJsonObject());
                         });
 
                         connect(m_peerPipeline, &PeerPipeline::iceStateChanged,
@@ -1587,16 +1626,25 @@ void CallManager::joinCallOnServer(bool withVideo)
                         connect(m_peerPipeline, &PeerPipeline::audioLevelUpdated,
                                 this, &CallManager::onAudioLevelUpdated);
 
+                        // bug 11 — QueuedConnection is REQUIRED, not cosmetic.
+                        // PeerPipeline lives on the main thread and emits these
+                        // from inside pollBus()'s gst_bus_pop loop; a default
+                        // (Direct) connection runs these slots INLINE within
+                        // that emit. The error slot calls teardown() which
+                        // deletes the PeerPipeline — freeing the object mid
+                        // pollBus() frame → NULL-deref crash in Qt6Core on both
+                        // ends. Queuing defers both slots until pollBus() has
+                        // fully unwound, so teardown/camera-off run safely.
                         connect(m_peerPipeline, &PeerPipeline::cameraError, this, [this](const QString &reason) {
                             qWarning() << "CallManager: P2P camera error:" << reason;
                             m_cameraOn = false;
                             emit cameraChanged();
-                        });
+                        }, Qt::QueuedConnection);
 
                         connect(m_peerPipeline, &PeerPipeline::error, this, [this](const QString &msg) {
                             qWarning() << "CallManager: peer pipeline error:" << msg;
                             teardown(msg);
-                        });
+                        }, Qt::QueuedConnection);
 
                         if (!m_peerPipeline->start(m_stunServer, turnServers,
                             m_deviceManager ? m_deviceManager->selectedInputDeviceId() : QString(),
@@ -1607,6 +1655,35 @@ void CallManager::joinCallOnServer(bool withVideo)
                         }
                         m_glibTimer.start(20);
 
+                        // 0.41.x — P2P connect-timeout → MCU fallback. A 1:1
+                        // peer that is NOT a TalQ client (web/mobile Talk)
+                        // never answers the talq.p2p overlay, so ICE never
+                        // starts and "failed" never fires — the call would
+                        // sit silent. If the peer HAS joined (remote session
+                        // known) but P2P still isn't Active after a grace
+                        // period and the server has an MCU, abandon P2P and
+                        // re-join via the MCU. The guard on m_remoteSessionId
+                        // avoids a premature fallback while an outgoing call
+                        // is merely still ringing. A fast TalQ↔TalQ P2P
+                        // connect (~1-2 s) makes this a no-op.
+                        QTimer::singleShot(12000, this, [this]() {
+                            if (m_useP2P && m_peerPipeline && m_state != Active
+                                && !m_remoteSessionId.isEmpty() && m_signaling->hasMcu()) {
+                                qWarning() << "CallManager: P2P did not connect in time "
+                                              "(peer not TalQ?) — falling back to MCU";
+                                m_peerPipeline->stop();
+                                m_peerPipeline->deleteLater();
+                                m_peerPipeline = nullptr;
+                                m_useP2P = false;
+                                m_localVideoProvider = nullptr;
+                                emit localVideoProviderChanged();
+                                m_remoteVideoProvider = nullptr;
+                                emit remoteVideoProviderChanged();
+                                setStatusDetail("Falling back to MCU");
+                                joinCallOnServer(m_withVideo);
+                            }
+                        });
+
                         // 0.41.7-beta — mirror the MCU path's "auto-enable
                         // camera for video calls" step (line ~1767). The
                         // P2P branch previously omitted this, so a video
@@ -1615,10 +1692,18 @@ void CallManager::joinCallOnServer(bool withVideo)
                         // toggle click. PeerPipeline::enableCamera handles
                         // the add-video-after-audio renegotiation.
                         if (m_cameraOn) {
-                            qDebug() << "CallManager: P2P — enabling camera "
-                                        "immediately (video call)";
+                            qDebug() << "CallManager: P2P — attaching camera "
+                                        "chain (offer deferred to participant-joined)";
+                            // triggerOffer=false: the single negotiation
+                            // offer is driven by onParticipantJoinedCall
+                            // (caller) or the incoming setRemoteOffer→
+                            // answer (callee). Auto-offering here would
+                            // double-offer (0.41.7 latent bug) since the
+                            // remote session may not be known yet.
                             m_peerPipeline->enableCamera(videoDeviceIndex(),
-                                                         preferHd1080());
+                                                         preferHd1080(),
+                                                         /*forceTestSource=*/false,
+                                                         /*triggerOffer=*/false);
                         }
 
                         // If outgoing call and remote peer already known, create offer
@@ -1912,7 +1997,16 @@ void CallManager::stopAllPipelines()
     m_glibTimer.stop();
     if (m_peerPipeline) {
         m_peerPipeline->stop();
-        delete m_peerPipeline;
+        // bug 11 — NEVER synchronously `delete` the PeerPipeline here: teardown
+        // can be reached inline from PeerPipeline::pollBus() (main-thread bus
+        // loop) via a DirectConnection error/cameraError emit, so a synchronous
+        // delete frees the object whose own pollBus()/signal frame is still on
+        // the stack → Qt6Core dereferences freed QObject state → 0xC0000005
+        // NULL crash that took down both ends of a 1:1 P2P call. deleteLater
+        // defers destruction to the next event-loop turn; null the member NOW
+        // so the pollBus `if (m_peerPipeline)` guard and the MCU-fallback path
+        // immediately see it gone.
+        m_peerPipeline->deleteLater();
         m_peerPipeline = nullptr;
     }
     if (m_publishPipeline) {
@@ -2384,6 +2478,17 @@ void CallManager::onOfferReceived(const QString &fromSessionId, const QString &s
             m_remotePeerClient = info;
             qDebug() << "CallManager: peer client" << info;
             emit callInfoChanged();
+        }
+        // bug 3 — feed the LIVE in-call version back into the persisted,
+        // freshness-stamped cache so the conversation header / sidebar / chat
+        // badge show a current value after the call instead of reverting to a
+        // long-stale signaling-overheard one. This also heals devices on a
+        // server without standalone HPB, where signaling broadcasts never run
+        // but a call's data channel does. Map session → userId first.
+        if (m_signaling) {
+            const QString peerUid = m_signaling->userIdForSession(fromSessionId);
+            if (!peerUid.isEmpty())
+                m_signaling->updatePeerClient(peerUid, info);
         }
     });
 

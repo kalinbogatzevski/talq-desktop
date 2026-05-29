@@ -200,8 +200,8 @@ bool ScreenSharePipeline::start(const QString &stunServer, const QList<TurnServe
         // `monitor` as a DXGI index that does NOT match QApplication
         // ordering, and neither of them can honor a window-handle — so
         // a window-share request would silently turn into a monitor
-        // capture of the wrong screen ("Ilko is sharing one and the
-        // same display no matter what he selects", #134). We surface
+        // capture of the wrong screen (a field report: "sharing one and the
+        // same display no matter what is selected", #134). We surface
         // a clear error instead. If d3d11screencapturesrc is the only
         // path that reliably honors the user's pick, missing it is a
         // deploy problem we need to know about.

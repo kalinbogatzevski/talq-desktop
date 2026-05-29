@@ -1,6 +1,7 @@
 #include "core/UserStatusManager.h"
 #include "core/ApiClient.h"
 #include "core/AuthManager.h"
+#include "core/TalqLog.h"
 
 #include <QColor>
 #include <QJsonObject>
@@ -199,30 +200,56 @@ void UserStatusManager::onIdleTick()
         });
     } else if (m_autoAwayActive && idleMs < kIdleAwayThresholdMs
                && !m_sessionLocked) {
-        // User came back. Restore to Online. setStatusType clears
-        // m_autoAwayActive when the user makes an explicit choice, so
-        // reaching here means the Away really was our auto-flip.
-        const Status priorStatus = m_status;
-        const bool   priorAuto   = m_autoAwayActive;
-        m_status         = Status::Online;
-        m_autoAwayActive = false;
-        emit statusChanged();
-        qInfo() << "UserStatusManager: user returned, restoring to Online";
-
-        QJsonObject body;
-        body["statusType"] = "online";
-        m_api->put(statusPath(QStringLiteral("/status")), body,
-                   [this, priorStatus, priorAuto](bool ok, const QJsonObject &, int) {
-            if (!ok) {
-                m_status         = priorStatus;
-                m_autoAwayActive = priorAuto;
-                emit statusChanged();
-                qWarning() << "UserStatusManager: auto-Away restore PUT failed, "
-                              "reverting local state - will retry next tick";
-            }
-        });
+        // OS-wide idle dropped below threshold — the user is back. (bug 13:
+        // this is also reached IMMEDIATELY via tryRestoreFromAutoAway() on
+        // TalQ window activation / local input, so the restore no longer waits
+        // up to 30 s for this poll tick.)
+        tryRestoreFromAutoAway();
     }
 #endif
+}
+
+void UserStatusManager::tryRestoreFromAutoAway()
+{
+    // bug 13 — restore an AUTO-set Away back to Online the moment the user is
+    // demonstrably back (TalQ window activated or local input). No-op unless
+    // WE auto-flipped to Away: a user-chosen Away/DND/Invisible never sets
+    // m_autoAwayActive (setStatusType clears it), so this never overrides an
+    // intentional status. Cross-platform: the caller's activity is the
+    // "user is back" signal, so no OS idle query is needed here.
+    if (m_sessionLocked) return;
+    // bug 13 (broadened) — restore on activity for ANY *automatic* Away, not
+    // just one WE set: either m_autoAwayActive (TalQ flipped it) OR the status
+    // is Away and NOT user-defined (the server's presence-based auto-away, or
+    // another device's auto-away). A user-chosen Away/DND/Invisible has
+    // statusIsUserDefined=true and is never touched.
+    const bool autoAway = m_autoAwayActive
+                       || (m_status == Status::Away && !m_userDefined);
+    if (TalqLog::g_verbose)
+        qDebug().nospace() << "[BUG13] tryRestore status=" << static_cast<int>(m_status)
+                      << " autoFlag=" << m_autoAwayActive
+                      << " userDefined=" << m_userDefined
+                      << " -> willRestore=" << autoAway;
+    if (!autoAway)
+        return;
+    const Status priorStatus = m_status;
+    m_status         = Status::Online;
+    m_autoAwayActive = false;
+    emit statusChanged();
+    qInfo() << "UserStatusManager: user active again — restoring to Online";
+
+    QJsonObject body;
+    body["statusType"] = "online";
+    m_api->put(statusPath(QStringLiteral("/status")), body,
+               [this, priorStatus](bool ok, const QJsonObject &, int) {
+        if (!ok) {
+            m_status         = priorStatus;
+            m_autoAwayActive = true;
+            emit statusChanged();
+            qWarning() << "UserStatusManager: auto-Away restore PUT failed — "
+                          "reverting local state, will retry on next activity/tick";
+        }
+    });
 }
 
 void UserStatusManager::onSessionLocked()
@@ -254,9 +281,9 @@ void UserStatusManager::onSessionLocked()
 void UserStatusManager::onSessionUnlocked()
 {
     m_sessionLocked = false;
-    // Don't restore eagerly here - the idle poll's next tick will see
-    // that we're below threshold and put us back to Online. That keeps
-    // the "we're back" decision in one place.
+    // bug 13 — restore immediately on unlock instead of waiting for the next
+    // idle tick (unlocking IS "the user is back").
+    tryRestoreFromAutoAway();
 }
 
 void UserStatusManager::fetchPredefined()
@@ -332,6 +359,12 @@ void UserStatusManager::applyFromJson(const QJsonObject &d)
     m_messageId   = d.value(QStringLiteral("messageId")).toString();
     m_clearAt     = d.value(QStringLiteral("clearAt")).toVariant().toLongLong();
     m_userDefined = d.value(QStringLiteral("statusIsUserDefined")).toBool();
+    // bug 13 — keep the auto-away tracker consistent with the server truth: if
+    // the server says we're Online, we're no longer in an auto-flipped Away,
+    // so clear the flag (otherwise a stale m_autoAwayActive could confuse the
+    // next restore/idle decision).
+    if (m_status == Status::Online)
+        m_autoAwayActive = false;
 }
 
 void UserStatusManager::takeSnapshot()

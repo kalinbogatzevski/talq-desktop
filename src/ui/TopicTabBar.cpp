@@ -5,28 +5,31 @@
 #include <QAbstractItemModel>
 #include <QEvent>
 #include <QHBoxLayout>
-#include <QPalette>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QVBoxLayout>
 
 namespace {
-// Theme palette (set app-wide from PainterTheme via QApplication::setPalette).
 struct Pal {
     QString accent, onAccent, barBg, chipBg, border, ink, inkDim, hoverBg;
 };
-Pal pal(const QWidget *w)
+// bug 10 — source chip colors DIRECTLY from PainterTheme tokens (the single
+// source of truth every other chrome widget uses), NOT from the QApplication
+// QPalette. The old QPalette path stringified roles with HexRgb (dropping
+// alpha) and relied on stylesheet-polished palette propagation, which made the
+// labels collapse to #000000 in the light (Paper) theme — black, unreadable.
+Pal pal(PainterTheme::Theme t)
 {
-    const QPalette p = w->palette();
+    const PainterTheme th(t, 1.0);
     auto n = [](const QColor &c){ return c.name(QColor::HexRgb); };
-    return { n(p.color(QPalette::Highlight)),
-             n(p.color(QPalette::HighlightedText)),
-             n(p.color(QPalette::Window)),
-             n(p.color(QPalette::AlternateBase)),
-             n(p.color(QPalette::Mid)),
-             n(p.color(QPalette::WindowText)),
-             n(p.color(QPalette::PlaceholderText)),
-             n(p.color(QPalette::Base)) };
+    return { n(th.accent),         // accent fill (selected chip background)
+             n(th.controlInk),     // on-accent ink (selected chip TEXT) — readable in all themes
+             n(th.bgSecondary),    // bar background
+             n(th.bgSurface),      // unselected chip background
+             n(th.divider),        // border
+             n(th.textPrimary),    // hover text
+             n(th.textSecondary),  // unselected chip TEXT — was black in light theme
+             n(th.bgHover) };      // hover background
 }
 } // namespace
 
@@ -60,7 +63,7 @@ TopicTabBar::TopicTabBar(QWidget *parent)
 
 void TopicTabBar::applyBarChrome()
 {
-    const Pal c = pal(this);
+    const Pal c = pal(m_themeId);
     setStyleSheet(QStringLiteral(
         "TopicTabBar { background: %1; border-bottom: 1px solid %2; }"
         "QScrollArea, QScrollArea > QWidget, QScrollArea > QWidget > QWidget {"
@@ -105,6 +108,14 @@ void TopicTabBar::setSelectedThreadId(int threadId)
     rebuild();
 }
 
+void TopicTabBar::setTheme(PainterTheme::Theme t)
+{
+    if (m_themeId == t) return;   // first call from a default-constructed bar still applies
+    m_themeId = t;
+    applyBarChrome();
+    rebuild();
+}
+
 QPushButton *TopicTabBar::makeChip(const QString &label, int threadId,
                                    int unreadCount, bool active)
 {
@@ -116,7 +127,7 @@ QPushButton *TopicTabBar::makeChip(const QString &label, int threadId,
     b->setCursor(Qt::PointingHandCursor);
     b->setFixedHeight(32);
     b->setFocusPolicy(Qt::NoFocus);
-    const Pal c = pal(this);
+    const Pal c = pal(m_themeId);
     b->setStyleSheet(active
         ? QStringLiteral(
             "QPushButton { background: %1; color: %2; border: none;"
@@ -159,7 +170,7 @@ void TopicTabBar::rebuild()
             "  border: 1px dashed %1; border-radius: 14px; padding: 0 14px;"
             "  font-size: 12px; font-weight: 600; letter-spacing: 0.5px; }"
             "QPushButton:hover { background: %2; }"
-        ).arg(pal(this).accent, pal(this).hoverBg));
+        ).arg(pal(m_themeId).accent, pal(m_themeId).hoverBg));
         connect(add, &QPushButton::clicked, this, &TopicTabBar::newTopicRequested);
         m_rowLayout->insertWidget(m_rowLayout->count() - 1, add);
         // Visibility is controlled from MainWindow::updateTopicMode — a rebuild
@@ -202,7 +213,7 @@ void TopicTabBar::rebuild()
         "  border: 1px dashed %1; border-radius: 14px;"
         "  font-size: 15px; font-weight: 700; }"
         "QPushButton:hover { background: %2; }"
-    ).arg(pal(this).accent, pal(this).hoverBg));
+    ).arg(pal(m_themeId).accent, pal(m_themeId).hoverBg));
     connect(add, &QPushButton::clicked, this, &TopicTabBar::newTopicRequested);
     m_rowLayout->insertWidget(m_rowLayout->count() - 1, add);
 

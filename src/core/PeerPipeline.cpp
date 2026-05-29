@@ -1,4 +1,5 @@
 #include "core/PeerPipeline.h"
+#include "core/VideoEncoderUtil.h"
 #include <QDebug>
 #include <QPointer>
 #include <QRegularExpression>
@@ -236,7 +237,9 @@ void PeerPipeline::cleanup()
     if (m_webrtcbin)
         g_signal_handlers_disconnect_by_data(m_webrtcbin, this);
     if (m_pipeline) {
+        qDebug() << "PeerPipeline: cleanup — setting pipeline to NULL";
         gst_element_set_state(m_pipeline, GST_STATE_NULL);
+        qDebug() << "PeerPipeline: cleanup — pipeline NULL done";
         gst_object_unref(m_pipeline);
         m_pipeline = nullptr;
     }
@@ -339,7 +342,7 @@ void PeerPipeline::setMuted(bool muted)
 }
 
 void PeerPipeline::enableCamera(int deviceIndex, bool hd1080,
-                                bool forceTestSource)
+                                bool forceTestSource, bool triggerOffer)
 {
     if (m_cameraEnabled || !m_pipeline) return;
 
@@ -356,7 +359,16 @@ void PeerPipeline::enableCamera(int deviceIndex, bool hd1080,
     if (testVideo) {
         m_cameraSrc = gst_element_factory_make("videotestsrc", nullptr);
         if (m_cameraSrc) {
-            g_object_set(m_cameraSrc, "is-live", TRUE, "pattern", 0 /* SMPTE */, nullptr);
+            // TEST-ONLY source (gated on TALQ_TEST_VIDEO / forceTestSource;
+            // production always uses the real mfvideosrc, which is a genuine
+            // self-pacing live source and exhibits none of the quirks below).
+            // is-live=FALSE: when a videotestsrc is added to an ALREADY-
+            // PLAYING pipeline (enableCamera runs after start()), is-live=TRUE
+            // wedges on base-time/clock pacing and emits ~0 buffers; is-live=
+            // FALSE produces continuously (verified: 1125 buffers / run) so
+            // the send+receive chain is actually exercised. It floods faster
+            // than 30 fps, but the leaky enc/preview queues bound that.
+            g_object_set(m_cameraSrc, "is-live", FALSE, "pattern", 0 /* SMPTE */, nullptr);
             qDebug() << "PeerPipeline: using videotestsrc (TALQ_TEST_VIDEO)";
         }
     }
@@ -372,13 +384,26 @@ void PeerPipeline::enableCamera(int deviceIndex, bool hd1080,
     if (!testVideo)
         g_object_set(m_cameraSrc, "device-index", deviceIndex, nullptr);
 
+    // 0.41.9-beta — robust capture chain ported from PublishPipeline.
+    //   mfvideosrc → camSrcCaps → decodebin →(dynamic pad)→ videoConvert
+    //   → videoCapsFilter(I420) → tee → {encoder, preview}
+    // decodebin auto-handles MJPEG *or* raw, so we no longer hard-pin a
+    // single image/jpeg structure (the cause of "not-negotiated (-4)" on
+    // cameras lacking that exact mode).
+    m_camSrcCaps   = gst_element_factory_make("capsfilter", "peer-cam-src-caps");
+    m_camDecode    = gst_element_factory_make("decodebin",  "peer-cam-decode");
     m_videoConvert = gst_element_factory_make("videoconvert", nullptr);
     m_videoCapsFilter = gst_element_factory_make("capsfilter", nullptr);
+
+    const int w = hd1080 ? 1920 : 1280;
+    const int h = hd1080 ? 1080 : 720;
+    const int bitrate = hd1080 ? 3000000 : 1500000;
+
     // TEST-ONLY (TALQ_TEST_BFRAMES): publish a B-frame H.264 stream to
-    // reproduce the mfh264enc-on-Ilko's-hardware defect end-to-end through
-    // the real MCU. openh264enc is structurally B-frame-free, so the
-    // default harness path cannot exercise the broken case. NEVER set in
-    // production; the failing-test run sets it, the verify run does not.
+    // reproduce the mfh264enc-on-some-hardware defect end-to-end. NEVER
+    // set in production.
+    bool useH264 = false;
+    QString encDesc;
     if (!qEnvironmentVariableIsEmpty("TALQ_TEST_BFRAMES")) {
         m_videoEncoder = gst_element_factory_make("x264enc", nullptr);
         if (m_videoEncoder) {
@@ -386,31 +411,60 @@ void PeerPipeline::enableCamera(int deviceIndex, bool hd1080,
                                     "speed-preset", "veryfast");
             g_object_set(m_videoEncoder, "bframes", 3, "b-adapt", TRUE,
                          "key-int-max", 60, "bitrate", 1500, nullptr);
-            qWarning() << "PeerPipeline: TEST B-FRAME mode — x264enc "
-                          "bframes=3 (reproducing the broken peer camera)";
+            m_videoParser = gst_element_factory_make("h264parse", nullptr);
+            useH264 = true;
+            qWarning() << "PeerPipeline: TEST B-FRAME mode — x264enc bframes=3";
         }
     } else {
-        m_videoEncoder = gst_element_factory_make("openh264enc", nullptr);
+        // Shared factory: hardware probe (nvh264enc/qsvh264enc/mfh264enc)
+        // → x264enc fallback, with the 0.41.0 psy-tune / qp tuning. Sets
+        // the bitrate + rate-control itself and returns an h264parse.
+        m_videoEncoder = makeWebrtcVideoEncoder(/*screen=*/false, bitrate,
+                                                &useH264, &m_videoParser,
+                                                &encDesc);
+        if (m_videoEncoder && !useH264) {
+            // VP8 path isn't wired for P2P (codec-prefs are H264-pinned
+            // below). Shouldn't happen on Windows — x264enc is the
+            // guaranteed software H264 fallback. Drop + use openh264enc.
+            if (m_videoParser) { gst_object_unref(m_videoParser); m_videoParser = nullptr; }
+            gst_object_unref(m_videoEncoder);
+            m_videoEncoder = gst_element_factory_make("openh264enc", nullptr);
+            if (m_videoEncoder)
+                g_object_set(m_videoEncoder, "bitrate", bitrate, nullptr);
+            useH264 = true;
+            qWarning() << "PeerPipeline: factory returned non-H264 — using openh264enc";
+        }
+        if (!encDesc.isEmpty())
+            qDebug() << "PeerPipeline: video encoder =" << encDesc;
     }
     m_videoPayloader = gst_element_factory_make("rtph264pay", nullptr);
 
-    if (!m_videoConvert || !m_videoCapsFilter || !m_videoEncoder || !m_videoPayloader) {
+    if (!m_camSrcCaps || !m_camDecode || !m_videoConvert || !m_videoCapsFilter
+        || !m_videoEncoder || !m_videoPayloader) {
         emit cameraError("Failed to create video encoding elements");
-        if (m_cameraSrc) { gst_object_unref(m_cameraSrc); m_cameraSrc = nullptr; }
-        if (m_videoConvert) { gst_object_unref(m_videoConvert); m_videoConvert = nullptr; }
-        if (m_videoCapsFilter) { gst_object_unref(m_videoCapsFilter); m_videoCapsFilter = nullptr; }
-        if (m_videoEncoder) { gst_object_unref(m_videoEncoder); m_videoEncoder = nullptr; }
-        if (m_videoPayloader) { gst_object_unref(m_videoPayloader); m_videoPayloader = nullptr; }
+        auto freeIf = [](GstElement *&el){ if (el){ gst_object_unref(el); el=nullptr; } };
+        freeIf(m_cameraSrc); freeIf(m_camSrcCaps); freeIf(m_camDecode);
+        freeIf(m_videoConvert); freeIf(m_videoCapsFilter);
+        freeIf(m_videoEncoder); freeIf(m_videoParser); freeIf(m_videoPayloader);
         return;
     }
 
     // Pin the video wire SSRC to the SDP a=ssrc (mirrors PublishPipeline):
     // a capsfilter between the payloader and webrtcbin forces rtpbin to
-    // keep this SSRC, otherwise Janus drops all video RTP as "Unknown
-    // SSRC" and forwards nothing to subscribers.
+    // keep this SSRC, otherwise the peer drops all video RTP as "Unknown
+    // SSRC" and renders nothing.
     m_videoSsrc = g_random_int();
     // PT 97 must match the video codec-preferences below (audio OPUS = 96).
     g_object_set(m_videoPayloader, "ssrc", m_videoSsrc, "pt", 97, nullptr);
+    if (useH264) {
+        // Repeat SPS/PPS before every IDR so a peer that starts decoding
+        // mid-stream (or after packet loss) recovers without waiting for
+        // the next natural keyframe.
+        if (m_videoParser)
+            g_object_set(m_videoParser, "config-interval", -1, nullptr);
+        g_object_set(m_videoPayloader, "config-interval", -1,
+                     "aggregate-mode", 1 /* zero-latency */, nullptr);
+    }
     m_videoSsrcFilter = gst_element_factory_make("capsfilter", "peer-video-ssrc-filter");
     if (m_videoSsrcFilter) {
         GstCaps *sc = gst_caps_from_string("application/x-rtp");
@@ -419,27 +473,50 @@ void PeerPipeline::enableCamera(int deviceIndex, bool hd1080,
         gst_caps_unref(sc);
     }
 
-    int w = hd1080 ? 1920 : 1280;
-    int h = hd1080 ? 1080 : 720;
-    int bitrate = hd1080 ? 3000000 : 1500000;
-
-    // In test mode, videotestsrc outputs raw video — no jpegdec needed.
-    // In real mode, camera outputs JPEG at high res, raw only at 640x480.
-    if (testVideo) {
-        m_jpegDec = nullptr;
-        QString capsStr = QString("video/x-raw,width=%1,height=%2,framerate=30/1").arg(w).arg(h);
-        GstCaps *caps = gst_caps_from_string(capsStr.toUtf8().constData());
-        g_object_set(m_videoCapsFilter, "caps", caps, nullptr);
-        gst_caps_unref(caps);
-    } else {
-        m_jpegDec = gst_element_factory_make("jpegdec", nullptr);
-        QString capsStr = QString("image/jpeg,width=%1,height=%2,framerate=30/1").arg(w).arg(h);
-        GstCaps *caps = gst_caps_from_string(capsStr.toUtf8().constData());
-        g_object_set(m_videoCapsFilter, "caps", caps, nullptr);
+    // Camera SOURCE caps (on mfvideosrc, BEFORE decodebin).
+    {
+        GstCaps *caps = nullptr;
+        if (testVideo) {
+            // videotestsrc emits raw — pin a fixed mode.
+            QString capsStr = QStringLiteral(
+                "video/x-raw,width=%1,height=%2,framerate=30/1").arg(w).arg(h);
+            caps = gst_caps_from_string(capsStr.toUtf8().constData());
+        } else {
+            // User-forced exact mode wins (Settings → Camera quality);
+            // else a PERMISSIVE menu. MJPEG first (real 30 fps over USB),
+            // raw fallbacks after. A single fixed structure is what made
+            // mfvideosrc fail to negotiate on cameras lacking that mode.
+            QSettings s("TalQ", "TalQ");
+            s.beginGroup("Video");
+            const QString srcCapsStr = s.value("cameraSrcCaps").toString();
+            s.endGroup();
+            if (!srcCapsStr.isEmpty())
+                caps = gst_caps_from_string(srcCapsStr.toUtf8().constData());
+            if (!caps) {
+                const QString menu = QStringLiteral(
+                    "image/jpeg,width=(int)[1,%1],height=(int)[1,%2],framerate=(fraction)30/1;"
+                    "video/x-raw,width=(int)[1,%1],height=(int)[1,%2],framerate=(fraction)30/1;"
+                    "image/jpeg,width=(int)[1,%1],height=(int)[1,%2],framerate=(fraction)[15/1,60/1];"
+                    "video/x-raw,width=(int)[1,%1],height=(int)[1,%2],framerate=(fraction)[15/1,60/1];"
+                    "video/x-raw,width=(int)[1,%1],height=(int)[1,%2],framerate=(fraction)[1/1,60/1]")
+                    .arg(w).arg(h);
+                caps = gst_caps_from_string(menu.toUtf8().constData());
+            }
+        }
+        g_object_set(m_camSrcCaps, "caps", caps, nullptr);
         gst_caps_unref(caps);
     }
-
-    g_object_set(m_videoEncoder, "bitrate", bitrate, "rate-control", 1, "complexity", 1, nullptr);
+    // Post-decode caps: guarantee RAW only — do NOT pin a format. The
+    // encoder negotiates its native format (e.g. NV12 for qsvh264enc)
+    // back through videoConvert; the preview branch has its own convert.
+    // Over-pinning format=I420 here both starved a NV12-only encoder and
+    // narrowed the tee src caps enough to trip GST_PAD_LINK_NOFORMAT.
+    {
+        GstCaps *raw = gst_caps_from_string("video/x-raw");
+        g_object_set(m_videoCapsFilter, "caps", raw, nullptr);
+        gst_caps_unref(raw);
+    }
+    m_jpegDec = nullptr;   // legacy element no longer used
 
     // Create tee + preview branch elements
     m_tee = gst_element_factory_make("tee", "camera-tee");
@@ -467,62 +544,111 @@ void PeerPipeline::enableCamera(int deviceIndex, bool hd1080,
             "caps", previewCaps,
             "drop", TRUE,
             "max-buffers", 1,
+            // #63 — async=FALSE. This appsink is bin-added to an ALREADY-
+            // PLAYING pipeline; with the BaseSink default (async=TRUE) it waits
+            // for a preroll buffer in PAUSED, and a live mfvideosrc (camera
+            // warmup latency) may never deliver one — so "new-sample" never
+            // fires, onPreviewSample never runs, and the P2P self-view PiP
+            // stays black on both ends. The proven MCU PublishPipeline sets
+            // async=FALSE here for exactly this reason (0.40.13). videotestsrc
+            // prerolls instantly, which is why the harness never caught it.
+            "async", FALSE,
             nullptr);
         gst_caps_unref(previewCaps);
         g_signal_connect(m_previewAppsink, "new-sample",
             G_CALLBACK(onPreviewSample), this);
     }
 
-    if (!m_jpegDec) {
-        qWarning() << "PeerPipeline: jpegdec not available, trying raw capture";
-        // Fallback: raw capture (640x480 max)
-        GstCaps *rawCaps = gst_caps_from_string("video/x-raw,framerate=30/1");
-        g_object_set(m_videoCapsFilter, "caps", rawCaps, nullptr);
-        gst_caps_unref(rawCaps);
-
-        if (m_tee) {
-            gst_bin_add_many(GST_BIN(m_pipeline), m_cameraSrc, m_videoConvert, m_videoCapsFilter,
-                m_tee, m_encQueue, m_videoEncoder, m_videoPayloader,
-                m_previewQueue, m_previewConvert, m_previewAppsink, nullptr);
-        } else {
-            gst_bin_add_many(GST_BIN(m_pipeline), m_cameraSrc, m_videoConvert, m_videoCapsFilter,
-                m_videoEncoder, m_videoPayloader, nullptr);
-        }
-    } else {
-        if (m_tee) {
-            gst_bin_add_many(GST_BIN(m_pipeline), m_cameraSrc, m_videoCapsFilter, m_jpegDec, m_videoConvert,
-                m_tee, m_encQueue, m_videoEncoder, m_videoPayloader,
-                m_previewQueue, m_previewConvert, m_previewAppsink, nullptr);
-        } else {
-            gst_bin_add_many(GST_BIN(m_pipeline), m_cameraSrc, m_videoCapsFilter, m_jpegDec, m_videoConvert,
-                m_videoEncoder, m_videoPayloader, nullptr);
-        }
+    // 0.41.9-beta — decodebin's src pad is dynamic (appears once it sees
+    // data); link it to videoConvert's sink when it shows up, only if
+    // it's a video pad. Mirrors PublishPipeline's pad-added handler.
+    // Only needed for the REAL camera (which may be MJPEG) — the synthetic
+    // raw path (testVideo) bypasses decodebin entirely below.
+    if (!testVideo) {
+        g_signal_connect(m_camDecode, "pad-added",
+            G_CALLBACK(+[](GstElement *, GstPad *pad, gpointer ud) {
+                auto *conv = static_cast<GstElement *>(ud);
+                GstPad *sink = gst_element_get_static_pad(conv, "sink");
+                if (sink) {
+                    if (!gst_pad_is_linked(sink)) {
+                        GstCaps *c = gst_pad_get_current_caps(pad);
+                        if (!c) c = gst_pad_query_caps(pad, nullptr);
+                        const GstStructure *s = c ? gst_caps_get_structure(c, 0) : nullptr;
+                        const gchar *n = s ? gst_structure_get_name(s) : nullptr;
+                        if (n && g_str_has_prefix(n, "video"))
+                            gst_pad_link(pad, sink);
+                        if (c) gst_caps_unref(c);
+                    }
+                    gst_object_unref(sink);
+                }
+            }), m_videoConvert);
     }
+
+    // encoder → [h264parse] → payloader. The factory hands back an
+    // h264parse for hardware encoders; openh264enc fallback returns none.
+    auto linkEncoderTail = [this]() -> gboolean {
+        if (m_videoParser)
+            return gst_element_link_many(m_videoEncoder, m_videoParser, m_videoPayloader, nullptr);
+        return gst_element_link_many(m_videoEncoder, m_videoPayloader, nullptr);
+    };
+    auto step = [](const char *what, gboolean ok) -> gboolean {
+        if (!ok) qWarning() << "PeerPipeline: link FAILED at" << what;
+        return ok;
+    };
 
     gboolean linked;
     if (m_tee) {
-        // Link capture chain up to tee
-        if (m_jpegDec) {
-            linked = gst_element_link_many(m_cameraSrc, m_videoCapsFilter, m_jpegDec, m_videoConvert, m_tee, nullptr);
+        // testVideo (videotestsrc, raw): KEEP camSrcCaps (it pins
+        // video/x-raw,WxH,framerate=30/1 — without it the is-live source has
+        // no framerate to pace against and emits a single frame then stalls),
+        // but SKIP decodebin (m_camDecode errors on already-raw input —
+        // "Internal data stream error"). videotestsrc → camSrcCaps →
+        // videoConvert. The unused m_camDecode stays un-added; disableCamera's
+        // parent-guard unrefs it. The real camera keeps the decodebin path.
+        if (testVideo) {
+            gst_bin_add_many(GST_BIN(m_pipeline),
+                m_cameraSrc, m_camSrcCaps, m_videoConvert, m_videoCapsFilter,
+                m_tee, m_encQueue, m_videoEncoder, m_videoPayloader,
+                m_previewQueue, m_previewConvert, m_previewAppsink, nullptr);
+            if (m_videoParser) gst_bin_add(GST_BIN(m_pipeline), m_videoParser);
+            linked = step("cameraSrc→camSrcCaps→videoConvert (raw)",
+                          gst_element_link_many(m_cameraSrc, m_camSrcCaps, m_videoConvert, nullptr));
         } else {
-            linked = gst_element_link_many(m_cameraSrc, m_videoConvert, m_videoCapsFilter, m_tee, nullptr);
+            gst_bin_add_many(GST_BIN(m_pipeline),
+                m_cameraSrc, m_camSrcCaps, m_camDecode,
+                m_videoConvert, m_videoCapsFilter,
+                m_tee, m_encQueue, m_videoEncoder, m_videoPayloader,
+                m_previewQueue, m_previewConvert, m_previewAppsink, nullptr);
+            if (m_videoParser) gst_bin_add(GST_BIN(m_pipeline), m_videoParser);
+            linked = step("cameraSrc→camSrcCaps→decodebin",
+                          gst_element_link_many(m_cameraSrc, m_camSrcCaps, m_camDecode, nullptr));
         }
-        // Link encoder branch: encQueue -> encoder -> payloader
-        linked = linked && gst_element_link_many(m_encQueue, m_videoEncoder, m_videoPayloader, nullptr);
-        // Link preview branch: previewQueue -> previewConvert -> previewAppsink
-        linked = linked && gst_element_link_many(m_previewQueue, m_previewConvert, m_previewAppsink, nullptr);
+        linked = linked && step("videoConvert→capsFilter→tee",
+                      gst_element_link_many(m_videoConvert, m_videoCapsFilter, m_tee, nullptr));
+        linked = linked && step("encQueue→encoder",
+                      gst_element_link(m_encQueue, m_videoEncoder));
+        linked = linked && step("encoder→[parser]→payloader", linkEncoderTail());
+        linked = linked && step("previewQueue→convert→appsink",
+                      gst_element_link_many(m_previewQueue, m_previewConvert, m_previewAppsink, nullptr));
 
         if (linked) {
-            // Request tee src pads and link to each branch
+            // GST_PAD_LINK_CHECK_NOTHING: the tee sink's caps are not yet
+            // resolved at link time because decodebin connects videoConvert
+            // dynamically (pad-added). Deferring the caps check to runtime
+            // negotiation is the idiomatic pattern here — without it the
+            // tee→queue link fails GST_PAD_LINK_NOFORMAT (-4) even though
+            // negotiation succeeds once frames flow.
             GstPad *teeSrcEnc = gst_element_request_pad_simple(m_tee, "src_%u");
             GstPad *encQueueSink = gst_element_get_static_pad(m_encQueue, "sink");
-            GstPadLinkReturn r1 = gst_pad_link(teeSrcEnc, encQueueSink);
+            GstPadLinkReturn r1 = gst_pad_link_full(teeSrcEnc, encQueueSink,
+                                                    GST_PAD_LINK_CHECK_NOTHING);
             gst_object_unref(teeSrcEnc);
             gst_object_unref(encQueueSink);
 
             GstPad *teeSrcPreview = gst_element_request_pad_simple(m_tee, "src_%u");
             GstPad *previewQueueSink = gst_element_get_static_pad(m_previewQueue, "sink");
-            GstPadLinkReturn r2 = gst_pad_link(teeSrcPreview, previewQueueSink);
+            GstPadLinkReturn r2 = gst_pad_link_full(teeSrcPreview, previewQueueSink,
+                                                    GST_PAD_LINK_CHECK_NOTHING);
             gst_object_unref(teeSrcPreview);
             gst_object_unref(previewQueueSink);
 
@@ -532,12 +658,15 @@ void PeerPipeline::enableCamera(int deviceIndex, bool hd1080,
             }
         }
     } else {
-        // No tee fallback: original direct path
-        if (m_jpegDec) {
-            linked = gst_element_link_many(m_cameraSrc, m_videoCapsFilter, m_jpegDec, m_videoConvert, m_videoEncoder, m_videoPayloader, nullptr);
-        } else {
-            linked = gst_element_link_many(m_cameraSrc, m_videoConvert, m_videoCapsFilter, m_videoEncoder, m_videoPayloader, nullptr);
-        }
+        // No-preview fallback: direct cameraSrc → … → encoder → payloader.
+        gst_bin_add_many(GST_BIN(m_pipeline),
+            m_cameraSrc, m_camSrcCaps, m_camDecode,
+            m_videoConvert, m_videoCapsFilter,
+            m_videoEncoder, m_videoPayloader, nullptr);
+        if (m_videoParser) gst_bin_add(GST_BIN(m_pipeline), m_videoParser);
+        linked = gst_element_link_many(m_cameraSrc, m_camSrcCaps, m_camDecode, nullptr);
+        linked = linked && gst_element_link_many(m_videoConvert, m_videoCapsFilter, m_videoEncoder, nullptr);
+        linked = linked && linkEncoderTail();
     }
 
     if (!linked) {
@@ -562,12 +691,19 @@ void PeerPipeline::enableCamera(int deviceIndex, bool hd1080,
         // dropping all video. Use 97 for H264.
         GstCaps *videoCaps = gst_caps_from_string(
             "application/x-rtp,media=video,encoding-name=H264,clock-rate=90000,payload=97");
+        // 0.41.9 — SENDRECV in P2P so the one video m-line carries both
+        // directions (each peer sends its camera + receives the other's).
+        // SENDONLY only for the MCU-publisher path.
+        const auto dir = m_videoSendRecv
+            ? GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDRECV
+            : GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDONLY;
         g_object_set(transceiver,
-                     "direction", GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDONLY,
+                     "direction", dir,
                      "codec-preferences", videoCaps,
                      nullptr);
         gst_caps_unref(videoCaps);
-        qDebug() << "PeerPipeline: configured video transceiver (sendonly, H264)";
+        qDebug() << "PeerPipeline: configured video transceiver ("
+                 << (m_videoSendRecv ? "sendrecv" : "sendonly") << ", H264)";
         gst_object_unref(transceiver);
     } else {
         qWarning() << "PeerPipeline: could not get transceiver from video pad";
@@ -593,27 +729,61 @@ void PeerPipeline::enableCamera(int deviceIndex, bool hd1080,
         return;
     }
 
-    gst_element_sync_state_with_parent(m_cameraSrc);
-    gst_element_sync_state_with_parent(m_videoConvert);
-    gst_element_sync_state_with_parent(m_videoCapsFilter);
-    if (m_jpegDec) gst_element_sync_state_with_parent(m_jpegDec);
-    if (m_tee) {
-        gst_element_sync_state_with_parent(m_tee);
-        gst_element_sync_state_with_parent(m_encQueue);
-        gst_element_sync_state_with_parent(m_previewQueue);
-        gst_element_sync_state_with_parent(m_previewConvert);
-        gst_element_sync_state_with_parent(m_previewAppsink);
-    }
-    gst_element_sync_state_with_parent(m_videoEncoder);
-    gst_element_sync_state_with_parent(m_videoPayloader);
+    // 0.41.x — bring the chain to PLAYING DOWNSTREAM-FIRST, source LAST.
+    // We add these elements to an already-PLAYING pipeline; if the source
+    // reaches PLAYING and starts pushing before the tee/queues/encoder have
+    // finished their own state change, those not-yet-ready sink pads return
+    // GST_FLOW_FLUSHING and gst_base_src_loop PAUSES the source task for
+    // good — i.e. the camera emits ~1 frame then dies. A slow hardware
+    // mfvideosrc happened to survive (warmup outlasts the downstream state
+    // change); a synthetic videotestsrc pushes instantly and tripped it
+    // every time. Syncing sink→source guarantees every consumer is PLAYING
+    // before the producer runs.
     gst_element_sync_state_with_parent(m_videoSsrcFilter);
+    gst_element_sync_state_with_parent(m_videoPayloader);
+    if (m_videoParser) gst_element_sync_state_with_parent(m_videoParser);
+    gst_element_sync_state_with_parent(m_videoEncoder);
+    if (m_tee) {
+        gst_element_sync_state_with_parent(m_previewAppsink);
+        gst_element_sync_state_with_parent(m_previewConvert);
+        gst_element_sync_state_with_parent(m_previewQueue);
+        gst_element_sync_state_with_parent(m_encQueue);
+        gst_element_sync_state_with_parent(m_tee);
+    }
+    gst_element_sync_state_with_parent(m_videoCapsFilter);
+    gst_element_sync_state_with_parent(m_videoConvert);
+    gst_element_sync_state_with_parent(m_camDecode);
+    gst_element_sync_state_with_parent(m_camSrcCaps);
+    gst_element_sync_state_with_parent(m_cameraSrc);
+
+    // #63 — force the cascade to PLAYING. enableCamera runs on an already-
+    // PLAYING pipeline, but start()'s transition can return NO_PREROLL/ASYNC
+    // with a live capture source, leaving the pipeline PAUSED; the children
+    // synced above then inherit PAUSED, and a PAUSED appsink emits
+    // "new-preroll" (not "new-sample"), so onPreviewSample never fires and the
+    // self-view stays black. Re-issue PLAYING on the pipeline (idempotent when
+    // already PLAYING; GStreamer transitions children sink→source internally)
+    // and explicitly start the live capture source LAST — mirrors the proven
+    // MCU PublishPipeline. This advances element states only; it does NOT
+    // trigger an offer (negotiation-needed is intentionally not connected —
+    // CallManager drives offers explicitly), so the deferred-offer contract
+    // (triggerOffer=false) is preserved.
+    gst_element_set_state(m_pipeline, GST_STATE_PLAYING);
+    gst_element_set_state(m_cameraSrc, GST_STATE_PLAYING);
 
     m_cameraEnabled = true;
     qDebug() << "PeerPipeline: camera enabled successfully";
 
-    // Renegotiation needed after adding video track
-    qDebug() << "PeerPipeline: triggering renegotiation for video";
-    createOffer();
+    // Renegotiation after adding the video track — but only when we're
+    // the offering side. The answerer (and the start-time auto-enable,
+    // whose offer is driven by participant-joined) passes triggerOffer
+    // =false to avoid offer glare in true P2P.
+    if (triggerOffer) {
+        qDebug() << "PeerPipeline: triggering renegotiation for video";
+        createOffer();
+    } else {
+        qDebug() << "PeerPipeline: video chain attached (offer deferred)";
+    }
 }
 
 void PeerPipeline::disableCamera()
@@ -623,13 +793,36 @@ void PeerPipeline::disableCamera()
 
     qDebug() << "PeerPipeline: disabling camera";
 
+    // 0.41.9 — guard against gst_bin_remove on an element that was created
+    // but never added to the bin (a link-failure early-return can leave
+    // e.g. m_videoSsrcFilter floating). Removing a non-child emits a
+    // GLib-CRITICAL and leaks the float ref; unref it directly instead.
     auto removeElement = [this](GstElement *&el) {
-        if (el) {
-            gst_element_set_state(el, GST_STATE_NULL);
+        if (!el) return;
+        gst_element_set_state(el, GST_STATE_NULL);
+        if (GST_OBJECT_PARENT(el) == GST_OBJECT(m_pipeline))
             gst_bin_remove(GST_BIN(m_pipeline), el);
-            el = nullptr;
-        }
+        else
+            gst_object_unref(el);
+        el = nullptr;
     };
+    // 0.41.x — STOP THE SOURCE FIRST. Tearing the chain down sink→source
+    // while the source is still actively pushing buffers deadlocks: the
+    // source streaming thread blocks pushing into a downstream element we've
+    // already set to NULL, while set_state(NULL) on that element waits for
+    // the very same thread to finish. Driving the source to NULL up front
+    // halts production cleanly, so the rest of the chain tears down with no
+    // data in flight. (mfvideosrc tolerated the old order by luck — its
+    // hardware-stop raced ahead; videotestsrc, pushing flat out, hung every
+    // time.) NULL also releases mfvideosrc's device handle for the next call.
+    if (m_cameraSrc)
+        gst_element_set_state(m_cameraSrc, GST_STATE_NULL);
+
+    // 0.41.9 — drop the decodebin pad-added handler (captures m_videoConvert
+    // as raw user-data) BEFORE tearing the chain down, so a late pad-added
+    // can't hand a removed element to gst_element_get_static_pad.
+    if (m_camDecode)
+        g_signal_handlers_disconnect_by_data(m_camDecode, m_videoConvert);
 
     GstElement *videoTail = m_videoSsrcFilter ? m_videoSsrcFilter : m_videoPayloader;
     if (videoTail && m_videoSinkPad) {
@@ -654,13 +847,21 @@ void PeerPipeline::disableCamera()
     removeElement(m_encQueue);
     removeElement(m_videoSsrcFilter);
     removeElement(m_videoPayloader);
+    removeElement(m_videoParser);     // 0.41.9 — h264parse (factory path)
     removeElement(m_videoEncoder);
     removeElement(m_videoCapsFilter);
-    removeElement(m_jpegDec);
+    removeElement(m_jpegDec);          // legacy, normally null
     removeElement(m_videoConvert);
+    removeElement(m_camDecode);        // 0.41.9 — decodebin
+    removeElement(m_camSrcCaps);       // 0.41.9 — source capsfilter
+    // Release the camera device LAST + to NULL so mfvideosrc's
+    // IMFMediaSource handle is freed before the next call's pipeline
+    // tries to open the same device (the "camera wedged after a failed
+    // P2P attempt" symptom). removeElement already drives it to NULL.
     removeElement(m_cameraSrc);
 
     m_cameraEnabled = false;
+    qDebug() << "PeerPipeline: camera disabled (teardown of capture chain complete)";
 }
 
 void PeerPipeline::pollBus()
@@ -696,9 +897,23 @@ void PeerPipeline::pollBus()
             GError *err = nullptr; gchar *dbg = nullptr;
             gst_message_parse_error(msg, &err, &dbg);
             QString errMsg = QString::fromUtf8(err->message);
-            qWarning() << "PeerPipeline ERROR:" << errMsg << (dbg ? dbg : "");
+            // webrtcbin's internal transport (nicesrc/dtlssrtp/rtpbin) can
+            // post a transient "Internal data stream error / not-linked"
+            // while the RECEIVE flow is (re)wired during the SENDRECV
+            // renegotiation handshake. That is a transport race, not a
+            // capture failure — tearing the camera down on it kills a call
+            // whose send path is healthy and whose media is already flowing.
+            // Only errors from our OWN capture/encode elements (which live
+            // OUTSIDE webrtcbin) are fatal to the camera.
+            GstObject *src = GST_MESSAGE_SRC(msg);
+            const bool fromWebrtc = src && m_webrtcbin &&
+                (src == GST_OBJECT(m_webrtcbin) ||
+                 gst_object_has_as_ancestor(src, GST_OBJECT(m_webrtcbin)));
+            qWarning() << "PeerPipeline ERROR:" << errMsg
+                       << (fromWebrtc ? "[webrtcbin-internal — non-fatal]" : "")
+                       << (dbg ? dbg : "");
             g_clear_error(&err); g_free(dbg);
-            if (m_cameraEnabled) {
+            if (!fromWebrtc && m_cameraEnabled) {
                 disableCamera();
                 emit cameraError(errMsg);
             }
@@ -821,23 +1036,27 @@ void PeerPipeline::createVideoReceiveChain(GstPad *pad, const gchar *encoding)
     qDebug() << "PeerPipeline: creating video receive chain for" << encoding;
 
     GstElement *depay = nullptr;
-    GstElement *decoder = nullptr;
-
-    if (encoding && g_ascii_strcasecmp(encoding, "VP8") == 0) {
+    if (encoding && g_ascii_strcasecmp(encoding, "VP8") == 0)
         depay = gst_element_factory_make("rtpvp8depay", nullptr);
-        decoder = gst_element_factory_make("vp8dec", nullptr);
-    } else {
+    else
         depay = gst_element_factory_make("rtph264depay", nullptr);
-        decoder = gst_element_factory_make("openh264dec", nullptr);
-    }
 
+    // 0.41.x — decode via decodebin, which auto-selects the best available
+    // decoder (d3d11/qsv hardware → software) AND inserts whatever caps/
+    // memory-download steps that decoder needs. This mirrors the MCU receive
+    // path (webrtcsrc → decodebin), which delivers frames reliably (verified:
+    // 180 frames). The previous explicit depay→openh264dec→appsink chain
+    // negotiated and linked "successfully" yet produced ZERO decoded frames
+    // P2P — openh264dec alone couldn't drive the live RTP stream into the
+    // appsink. Let decodebin own decoder selection.
+    GstElement *decode = gst_element_factory_make("decodebin", nullptr);
     GstElement *convert = gst_element_factory_make("videoconvert", nullptr);
     GstElement *appsink = gst_element_factory_make("appsink", nullptr);
 
-    if (!depay || !decoder || !convert || !appsink) {
+    if (!depay || !decode || !convert || !appsink) {
         qWarning() << "PeerPipeline: failed to create video receive elements";
         if (depay) gst_object_unref(depay);
-        if (decoder) gst_object_unref(decoder);
+        if (decode) gst_object_unref(decode);
         if (convert) gst_object_unref(convert);
         if (appsink) gst_object_unref(appsink);
         return;
@@ -855,13 +1074,37 @@ void PeerPipeline::createVideoReceiveChain(GstPad *pad, const gchar *encoding)
     g_signal_connect(appsink, "new-sample",
         G_CALLBACK(onRemoteVideoSample), this);
 
-    gst_bin_add_many(GST_BIN(m_pipeline), depay, decoder, convert, appsink, nullptr);
-    gst_element_link_many(depay, decoder, convert, appsink, nullptr);
+    // decodebin's src pad is dynamic (appears once it identifies the stream);
+    // link it to videoconvert when it shows up, video pads only.
+    g_signal_connect(decode, "pad-added",
+        G_CALLBACK(+[](GstElement *, GstPad *p, gpointer ud) {
+            auto *cv = static_cast<GstElement *>(ud);
+            GstPad *sink = gst_element_get_static_pad(cv, "sink");
+            if (sink) {
+                if (!gst_pad_is_linked(sink)) {
+                    GstCaps *c = gst_pad_get_current_caps(p);
+                    if (!c) c = gst_pad_query_caps(p, nullptr);
+                    const GstStructure *s = c ? gst_caps_get_structure(c, 0) : nullptr;
+                    const gchar *n = s ? gst_structure_get_name(s) : nullptr;
+                    if (n && g_str_has_prefix(n, "video"))
+                        gst_pad_link(p, sink);
+                    if (c) gst_caps_unref(c);
+                }
+                gst_object_unref(sink);
+            }
+        }), convert);
 
-    gst_element_sync_state_with_parent(depay);
-    gst_element_sync_state_with_parent(decoder);
-    gst_element_sync_state_with_parent(convert);
+    gst_bin_add_many(GST_BIN(m_pipeline), depay, decode, convert, appsink, nullptr);
+    // depay → decodebin and convert → appsink are static; decodebin → convert
+    // joins dynamically (pad-added above).
+    gst_element_link(depay, decode);
+    gst_element_link(convert, appsink);
+
+    // Sink→source so every consumer is PLAYING before data flows.
     gst_element_sync_state_with_parent(appsink);
+    gst_element_sync_state_with_parent(convert);
+    gst_element_sync_state_with_parent(decode);
+    gst_element_sync_state_with_parent(depay);
 
     GstPad *sinkPad = gst_element_get_static_pad(depay, "sink");
     GstPadLinkReturn ret = gst_pad_link(pad, sinkPad);
@@ -870,7 +1113,7 @@ void PeerPipeline::createVideoReceiveChain(GstPad *pad, const gchar *encoding)
     if (ret != GST_PAD_LINK_OK)
         qWarning() << "PeerPipeline: video receive pad link failed:" << ret;
     else
-        qDebug() << "PeerPipeline: video receive chain linked successfully";
+        qDebug() << "PeerPipeline: video receive chain linked successfully (decodebin)";
 }
 
 // --- GStreamer callbacks (marshal to Qt thread) ---
@@ -1003,23 +1246,25 @@ void PeerPipeline::onPadAdded(GstElement *, GstPad *pad, gpointer userData)
         return;
     }
 
-    // Ref the pad so it survives until the Qt thread processes it
-    gst_object_ref(pad);
-
-    QPointer<PeerPipeline> guard(self);
-    QMetaObject::invokeMethod(self, [guard, pad, isAudio, isVideo, encodingCopy]() {
-        if (!guard) { gst_object_unref(pad); return; }
-        auto *self = guard.data();
-
-        if (isAudio && !self->m_audioChainCreated) {
-            self->createAudioReceiveChain(pad);
-            self->m_audioChainCreated = true;
-        } else if (isVideo && !self->m_videoChainCreated) {
-            self->createVideoReceiveChain(pad, encodingCopy.constData());
-            self->m_videoChainCreated = true;
-        }
-        gst_object_unref(pad);
-    }, Qt::QueuedConnection);
+    // 0.41.x-beta — link the receive chain SYNCHRONOUSLY, here on the
+    // streaming thread, BEFORE returning from pad-added. webrtcbin begins
+    // pushing RTP into this src pad the instant we return; deferring the
+    // link to the Qt event loop (the old Qt::QueuedConnection path) left the
+    // pad unlinked for the first buffers → GST_FLOW_NOT_LINKED, which
+    // propagates up to the shared bundled-transport nicesrc and PERMANENTLY
+    // stops streaming — taking the send direction down with it (the SENDRECV
+    // transport is bundled). That race was deterministic (the queued lambda
+    // always ran after pad-added returned), which is why P2P video never
+    // delivered a frame. gst_bin_add/link/sync_state are all thread-safe;
+    // remote frames still reach the UI because the appsink "new-sample"
+    // handler marshals each sample to the Qt thread via invokeMethod.
+    if (isAudio && !self->m_audioChainCreated) {
+        self->createAudioReceiveChain(pad);
+        self->m_audioChainCreated = true;
+    } else if (isVideo && !self->m_videoChainCreated) {
+        self->createVideoReceiveChain(pad, encodingCopy.constData());
+        self->m_videoChainCreated = true;
+    }
 }
 
 void PeerPipeline::onIceStateChanged(GObject *obj, GParamSpec *, gpointer userData)

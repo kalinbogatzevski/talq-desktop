@@ -78,6 +78,14 @@ public:
     int hoveredIndex() const { return m_hoveredIndex; }
 
     void scrollToBottom();
+    // bug 1 — pin the view to the bottom across the open-time load/reset storm.
+    // Set on conversation open; every rebuildAllLayouts then re-lands at the
+    // true bottom (immune to the transient m_scrollY churn from the multiple
+    // cache-load/refreshLatest resets), so messages that arrive ~1s after open
+    // via the poller are visible without a manual re-open. Auto-cleared by
+    // setScrollY the moment a scroll lands off-bottom (i.e. a genuine user
+    // scroll-up), so it never traps the user away from history.
+    void pinToBottom();
     QString hitTestAt(qreal x, qreal y);
     QVariantMap messageAt(qreal x, qreal y);
     void setHoveredPos(qreal x, qreal y);
@@ -197,6 +205,7 @@ private:
     PainterTheme::Theme m_themeId = PainterTheme::Theme::Vivid;
     qreal m_fontScale = 1.0;
     qreal m_scrollY = 0;
+    bool  m_forcePinBottom = false;   // bug 1 — keep view at bottom across open-time reset storm
     qreal m_contentHeight = 0;
     int m_hoveredIndex = -1;
 

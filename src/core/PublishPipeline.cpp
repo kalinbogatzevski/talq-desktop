@@ -2077,8 +2077,8 @@ GstFlowReturn PublishPipeline::onBgSample(GstAppSink *sink, gpointer userData)
     // path: bg-appsrc's static caps have no width/height, so push_buffer
     // leaves downstream negotiating against unbounded caps. Constructing
     // a sample with the actual input caps (BGRx + concrete dims) makes
-    // downstream see proper caps and the preview branch fires. Ilko's
-    // PiP was black on 0.40.13 because BG-blur was ON, hitting this
+    // downstream see proper caps and the preview branch fires. In the
+    // field, PiP was black on 0.40.13 because BG-blur was ON, hitting this
     // path — the 0.40.13 fix only covered the off-mode path.
     GstSample *outSample = gst_sample_new(outBuf, outCaps, nullptr, nullptr);
     gst_buffer_unref(outBuf);     // sample owns its ref
@@ -2102,16 +2102,16 @@ GstElement *PublishPipeline::onRequestAuxSender(GstElement *, GObject *,
     }
     // GCC floor for the camera publish path. History:
     //   0.30.x      300k — too low, gave the *hypothesis* that encoder
-    //                       starvation caused Ilko's 30/10 dup-pad chop.
+    //                       starvation caused the field 30/10 dup-pad chop.
     //   0.31.0/0.31.1 1.2M — shipped on that hypothesis; snow-proxy passed
     //                       at this floor, but field evidence later showed
-    //                       Ilko's chop was actually camera-mode drift
+    //                       the chop was actually camera-mode drift
     //                       (cleared on TalQ restart), not the floor —
     //                       and 1.2M is too high as a minimum for
     //                       moderate uplinks: it clamps GCC above what
     //                       the wire can carry, so excess bytes drop and
     //                       the receiver sees decoder artifacts even
-    //                       though distinct ≈ delivered (Kalin's case).
+    //                       though distinct ≈ delivered (a field case).
     //   0.31.2+      600k — libwebrtc / Zoom-ish 720p30 floor: enough
     //                       to encode moving content at acceptable
     //                       quality, low enough that a marginal uplink

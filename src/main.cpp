@@ -557,11 +557,30 @@ int main(int argc, char *argv[])
         notifications.updateUnreadCount(conversations.totalUnread());
     });
 
+    // bug 9 — a topic (thread) created by another member must appear LIVE in
+    // the open room's TopicTabBar, not only after a manual room switch. The
+    // thread list (ThreadListModel) was refreshed nowhere on incoming
+    // activity. Refresh it on the same push/signaling signals as messages,
+    // scoped to the OPEN room and rate-limited so a busy room doesn't spam
+    // GET /chat/{token}. ThreadListModel persists its selected chip across the
+    // model reset, so a live refresh won't drop the active topic.
+    auto refreshOpenRoomThreads = [&threads](const QString &roomToken) {
+        if (threads.conversationToken().isEmpty()) return;                       // no room open
+        if (!roomToken.isEmpty() && threads.conversationToken() != roomToken)    // not the open room
+            return;
+        static qint64 lastThreadRefreshMs = 0;
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        if (now - lastThreadRefreshMs < 4000) return;                           // rate-limit
+        lastThreadRefreshMs = now;
+        threads.refresh();
+    };
+
     // Push events -> refresh
-    QObject::connect(&push, &PushClient::pushReceived, &conversations, [&conversations, &messages](const QString &type) {
+    QObject::connect(&push, &PushClient::pushReceived, &conversations, [&conversations, &messages, refreshOpenRoomThreads](const QString &type) {
         qDebug() << "Push event received:" << type << "-- refreshing conversations + messages";
         conversations.refresh();
         messages.refresh();  // instant read status + new message pickup
+        refreshOpenRoomThreads(QString());  // bug 9: open room's topic list (push carries no room token)
     });
 
     // HPB signaling chat events -> refresh. This is the channel the official
@@ -570,13 +589,15 @@ int main(int argc, char *argv[])
     // /push/ws WebSocket), this is the only mechanism that delivers read-
     // marker advances without a follow-up message from the other party.
     QObject::connect(&signaling, &SignalingClient::chatRefreshNeeded,
-                     &messages, [&messages, &conversations](const QString &roomToken) {
+                     &messages, [&messages, &conversations, refreshOpenRoomThreads](const QString &roomToken) {
         conversations.refresh();
         // Only refresh the open chat if the event is for that room — refreshing
         // a different room would just fetch+discard 50 messages of someone
         // else's conversation.
-        if (messages.conversationToken() == roomToken)
+        if (messages.conversationToken() == roomToken) {
             messages.refresh();
+            refreshOpenRoomThreads(roomToken);  // bug 9: open room's topic list
+        }
     });
 
     // Start push + signaling after login (both fresh login AND session restore)

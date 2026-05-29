@@ -49,10 +49,17 @@ public:
     QString userId() const { return m_userId; }
     // Nextcloud user id behind a given HPB session id, "" if not yet known.
     QString userIdForSession(const QString &sid) const { return m_sessionToUserId.value(sid); }
+    // 0.41.9-beta — mcuCodecHints: when true (default) the offer carries
+    // audiocodec/videocodec fields that the HPB uses to provision a Janus
+    // MCU publisher (the production path). For TRUE peer-to-peer relay we
+    // must OMIT them, otherwise the HPB intercepts the offer as an MCU
+    // publish (Janus answers "from self" + trickled candidates hit no
+    // Janus handle → client_not_found). P2P callers pass false.
     void sendOffer(const QString &toSessionId, const QString &sdp,
                    const QString &sid, const QString &nick = {},
                    const QString &roomType = "video",
-                   const QString &broadcaster = {});
+                   const QString &broadcaster = {},
+                   bool mcuCodecHints = true);
     void sendAnswer(const QString &toSessionId, const QString &sdp,
                     const QString &sid, const QString &nick = {},
                     const QString &roomType = "video");
@@ -77,9 +84,31 @@ public:
     void sendMinimalMessage(const QString &toSessionId, const QJsonObject &data);
     bool hasMcu() const { return m_hasMcu; }
 
+    // 0.41.x-beta — TalQ-private P2P signaling overlay (Zoom-style: direct
+    // P2P for 1:1, MCU for 3+). The HPB hijacks the reserved offer/answer/
+    // candidate types as MCU operations, but transparently RELAYS custom
+    // session-targeted message types (same path as the talq.client
+    // broadcast). So we ride SDP + ICE on a custom "talq.p2p.<subtype>"
+    // type, which Janus never sees — the media goes direct. subtype is
+    // "offer" | "answer" | "candidate" | "end". payload carries sdp /
+    // candidate. Routed session-to-session; emits p2pSignalReceived.
+    void sendP2pSignal(const QString &toSessionId, const QString &subtype,
+                       const QJsonObject &payload);
+
     // TalQ peer client info: userId -> "TalQ/X.Y.Z". Populated from HPB
-    // talq.client broadcasts. Returns empty for non-TalQ peers or unknown.
-    QString peerClientInfo(const QString &userId) const { return m_peerClientInfo.value(userId); }
+    // talq.client broadcasts and (bug 3) refreshed from the in-call data
+    // channel. Returns empty for non-TalQ peers, unknown peers, OR a value not
+    // freshly observed within the freshness window — so the UI shows no version
+    // chip rather than a confidently-wrong long-stale number (the home-shows-
+    // 0.28.3-while-office-shows-0.40.x divergence).
+    QString peerClientInfo(const QString &userId) const;
+
+    // Record/refresh a peer's TalQ client string with a fresh timestamp and
+    // persist it. Called by the HPB broadcast handlers and by CallManager when
+    // a live call observes the peer's version over the data channel (which
+    // heals the cache even on servers without standalone signaling). Ignores
+    // the self user and empty ids.
+    void updatePeerClient(const QString &userId, const QString &info);
 
 signals:
     void connectedChanged();
@@ -91,6 +120,9 @@ signals:
     void answerReceived(const QString &fromSessionId, const QString &sdp, const QString &roomType);
     void candidateReceived(const QString &fromSessionId, const QJsonObject &candidate, const QString &roomType);
     void endOfCandidatesReceived(const QString &fromSessionId);
+    // 0.41.x-beta — TalQ-private P2P overlay (bypasses the MCU for 1:1).
+    void p2pSignalReceived(const QString &fromSessionId, const QString &subtype,
+                           const QJsonObject &payload);
     void participantJoinedCall(const QString &sessionId, int flags, const QString &displayName);
     void participantLeftCall(const QString &sessionId);
     void participantFlagsChanged(const QString &sessionId, int oldFlags, int newFlags);
@@ -149,6 +181,10 @@ private:
     // broadcasts. Survives room switches because TalQ identity travels with
     // the user, not the session.
     QHash<QString, QString> m_peerClientInfo;
+    // bug 3 — per-userId last-observed timestamp (ms since epoch), parallel to
+    // m_peerClientInfo. A value older than the freshness window is treated as
+    // unknown so a long-stale version is never displayed as if current.
+    QHash<QString, qint64>  m_peerClientSeen;
     QHash<QString, QString> m_sessionToUserId;  // sessionId → userId (for DC-only fallback)
 
     void sendTalqClientHello();

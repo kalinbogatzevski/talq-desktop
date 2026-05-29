@@ -55,6 +55,11 @@ public slots:
     void onLoggedIn();
     void onLoggedOut();
 
+    // bug 13 — restore an auto-set Away to Online immediately when the user is
+    // back (call from window activation / local input). No-op unless WE
+    // auto-flipped to Away; never touches a user-chosen status.
+    void tryRestoreFromAutoAway();
+
     void setStatusType(Status s);
     void setPredefined(const QString &messageId, qint64 clearAt);
     void setCustom(const QString &icon, const QString &text, qint64 clearAt);
@@ -103,8 +108,10 @@ private:
     // to Away and remember the auto-flip. On the next input, restore
     // to Online if the away was auto-set.
     //
-    // WTSRegisterSessionNotification is used for immediate transitions
-    // on lock / unlock / sleep / resume - no 30 s wait on those.
+    // NOTE: lock / unlock / sleep / resume are currently handled best-effort by
+    // the 30 s GetLastInputInfo poll above — WTSRegisterSessionNotification is
+    // NOT yet wired (onSessionLocked/onSessionUnlocked are defined but never
+    // connected), so m_sessionLocked stays false at runtime. Follow-up.
     QTimer m_idlePoll;
     bool   m_autoAwayActive = false;   // true while we hold an auto-flipped Away
     bool   m_sessionLocked  = false;
@@ -116,8 +123,9 @@ public:
 private:
     // Per-tick: read GetLastInputInfo, decide flip / restore.
     void onIdleTick();
-    // Driven by WTSRegisterSessionNotification (Windows) or QGuiApplication
-    // session signals - flip Away immediately, restore on unlock.
+    // Intended to be driven by WTSRegisterSessionNotification (Windows) to flip
+    // Away immediately on lock and restore on unlock. NOT yet connected — see
+    // the m_idlePoll note above; today lock/unlock is covered by the idle poll.
     void onSessionLocked();
     void onSessionUnlocked();
 };

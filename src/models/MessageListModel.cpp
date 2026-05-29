@@ -1,5 +1,7 @@
 #include "models/MessageListModel.h"
 #include "core/MessageCache.h"
+#include "core/ChatSyncLogic.h"
+#include "core/TalqLog.h"
 #include "models/ConversationListModel.h"
 #include <QCryptographicHash>
 #include <QSet>
@@ -90,8 +92,15 @@ MessageListModel::MessageListModel(ApiClient *api, MessageCache *cache, QObject 
                 filtered.append(m);
             }
             if (!filtered.isEmpty()) {
-                // Reverse to newest-first
-                std::reverse(filtered.begin(), filtered.end());
+                // bug 12 — enforce the model invariant explicitly: newest-first
+                // by id (index 0 = newest), matching every live path
+                // (onMessagesReceived prepend, refreshLatest a.id>b.id). Don't
+                // merely reverse the cache's row order: if the cache ever orders
+                // by anything but id, a reply (newest id, lower/tied timestamp)
+                // would land back near its parent on reopen. Sorting by id here
+                // makes the reload order identical to the live order.
+                std::sort(filtered.begin(), filtered.end(),
+                          [](const Message &a, const Message &b) { return a.id > b.id; });
                 beginInsertRows({}, 0, filtered.size() - 1);
                 m_messages = filtered;
                 for (const auto &m : filtered)
@@ -233,8 +242,17 @@ QHash<int, QByteArray> MessageListModel::roleNames() const
 
 void MessageListModel::setConversationToken(const QString &token)
 {
-    if (m_token == token)
+    if (m_token == token) {
+        // bug 1 — re-selecting the already-open conversation must not be a
+        // dead no-op. If the live poll loop died (an unexpected socket abort,
+        // or a room the server isn't pushing chat-refresh events for) this is
+        // the user's instinctive recovery action. Re-sync against the server
+        // and restart the poller (refreshLatest ends in startPoller), WITHOUT
+        // a full model reset that would wipe scroll position.
+        if (!token.isEmpty())
+            refreshLatest();
         return;
+    }
 
     int newBoundary = (m_conversations && !token.isEmpty())
         ? m_conversations->lastReadMessageForToken(token)
@@ -467,6 +485,12 @@ void MessageListModel::loadHistory()
             beginInsertRows({}, first, first + olderMsgs.size() - 1);
             m_messages.append(olderMsgs);
             endInsertRows();
+
+            // bug 1 — defensive: the append assumes every fetched id is older
+            // than the current tail. lookIntoFuture=0 guarantees that today, but
+            // keep the same single ordering authority here so a future API/race
+            // change can't silently bury a row at the append seam.
+            enforceNewestFirstInvariant();
         }
 
         if (!m_messages.isEmpty())
@@ -519,6 +543,15 @@ void MessageListModel::startPoller()
         qDebug() << "Poller: NOT starting — no messages loaded yet for" << m_token;
         return;  // never poll with lastKnown=0, it downloads entire history
     }
+    // bug 1 — never seed the poll cursor BACKWARD. The open sequence fires
+    // several competing startPoller() calls (cache→refreshLatest, topic-mode
+    // reload, push/activation refresh); one of them can run while m_messages
+    // index-0 is momentarily the older cached id, which reverted the live
+    // cursor (e.g. 18055→18054) and triggered a redundant re-fetch + model
+    // reset — the churn behind the intermittent "message not in the room".
+    // Clamp to the value the poller already reached for this same room.
+    if (m_poller->currentToken() == m_token)
+        lastId = qMax(lastId, m_poller->lastKnownMessageId());
     m_poller->setThreadId(m_threadId);
     m_poller->setLastKnownCommonRead(m_lastCommonRead);
     m_poller->start(m_token, lastId);
@@ -637,6 +670,30 @@ void MessageListModel::refreshLatest()
             return;
         }
 
+        // bug 1 (FIX) — rebuild the dedup index from the AUTHORITATIVE message
+        // list before missing-detection. A concurrent open-time reset can
+        // leave m_messageIds holding ids no longer in m_messages; the
+        // `!m_messageIds.contains(m.id)` test below would then skip a
+        // genuinely-new server message as "already known", so it is never
+        // merged and the room is missing it until a full re-open. This is the
+        // SECOND ingest path with the same desync hazard as onMessagesReceived.
+        m_messageIds.clear();
+        for (const auto &existing : m_messages)
+            m_messageIds.insert(existing.id);
+
+        // [BUG1] trace (verbose only): data is newest-first, so data[0].id is
+        // the server's newest. If fetchedNewest carries the missing message
+        // but the final model newest (logged at DONE) does not, it was lost in
+        // the merge; if fetchedNewest itself lacks it, the server fetch didn't
+        // return it.
+        if (TalqLog::g_verbose)
+            qDebug().nospace() << "[BUG1] refreshLatest token=" << currentToken
+                          << " threadId=" << m_threadId
+                          << " fetched=" << data.size()
+                          << " fetchedNewest=" << (data.isEmpty() ? 0 : data.first().toObject().value(QStringLiteral("id")).toInt())
+                          << " modelBefore=" << m_messages.size()
+                          << " newestBefore=" << (m_messages.isEmpty() ? 0 : m_messages.first().id);
+
         // 0.41.2-beta — capture the pre-refresh newest cached ID so we
         // can detect the "multi-device gap": cache has IDs 1-100, the
         // server's latest 50 are 251-300 because another device sent
@@ -656,9 +713,15 @@ void MessageListModel::refreshLatest()
         // API returns newest-first; process to find missing and edited messages
         QVector<Message> missing;
         for (const auto &val : data) {
-            Message m = Message::fromJson(val.toObject());
-            if (m.isReactionMessage() || m.isCallJoinLeave()
-                || m.isEditMessage())
+            const QJsonObject obj = val.toObject();
+            Message m = Message::fromJson(obj);
+            if (m.isReactionMessage()) {
+                // bug 8 — apply the reaction delta to its target (see
+                // onMessagesReceived) instead of dropping the refresh event.
+                applyReactionSystemMessage(obj);
+                continue;
+            }
+            if (m.isCallJoinLeave() || m.isEditMessage())
                 continue;
             // 0.41.3-beta — own-message echo dedup (see onMessagesReceived).
             replaceTempByReferenceId(m);
@@ -667,8 +730,23 @@ void MessageListModel::refreshLatest()
             if (!m_messageIds.contains(m.id)) {
                 missing.append(m);
             } else {
-                // Existing message — check if edited (message text changed)
+                // Existing message — check if edited (message text changed).
+                // H2 (ChatSyncLogic.h): replaceTempByReferenceId() above can
+                // remove a row earlier in THIS loop, shifting/invalidating the
+                // idToIndex map built once before the loop. Indexing
+                // m_messages[idx] with a stale idx was an out-of-bounds
+                // read+write that crashed the app on a just-sent/concurrent
+                // message (bug 7). Validate the cached index still maps to this
+                // id; if not, fall back to a fresh lookup so edit detection
+                // still works and we never index out of bounds.
                 int idx = idToIndex.value(m.id, -1);
+                const int idAtIdx = (idx >= 0 && idx < m_messages.size())
+                                        ? m_messages[idx].id : -1;
+                if (!talq::reconcileIndexValid(idx, m_messages.size(), idAtIdx, m.id)) {
+                    idx = -1;
+                    for (int j = 0; j < m_messages.size(); ++j)
+                        if (m_messages[j].id == m.id) { idx = j; break; }
+                }
                 if (idx >= 0 && m_messages[idx].message != m.message) {
                     m_messages[idx] = m;
                     QModelIndex mi = index(idx);
@@ -752,10 +830,51 @@ void MessageListModel::refreshLatest()
             }
         }
 
+        // bug 1 (REAL FIX) — enforce the newest-first invariant. The in-place
+        // (no-missing) merge path above does not re-sort, so a model that had
+        // drifted out of order would keep the newest messages buried below the
+        // fold. Shared single authority (see enforceNewestFirstInvariant()).
+        enforceNewestFirstInvariant();
+
+        // [BUG1] trace (verbose only): final model state after the merge.
+        if (TalqLog::g_verbose)
+            qDebug().nospace() << "[BUG1] refreshLatest DONE token=" << currentToken
+                               << " model=" << m_messages.size()
+                               << " newest=" << (m_messages.isEmpty() ? 0 : m_messages.first().id);
+
         // Restart poller from the true latest message
         m_poller->stop();
         startPoller();
     });
+}
+
+bool MessageListModel::enforceNewestFirstInvariant()
+{
+    // Cheap O(n) ordered-check first: pay the reset+sort cost only on real drift.
+    bool ordered = true;
+    for (int i = 1; i < m_messages.size(); ++i)
+        if (m_messages[i - 1].id < m_messages[i].id) { ordered = false; break; }
+    if (ordered)
+        return false;
+
+    // The view renders newest-at-bottom from index 0, so an older id at the
+    // front buries the genuinely-newest messages and they stay invisible until
+    // a room switch forces a full reload — the "message missing from the open
+    // room until I switch away and back" field bug. Re-sort to newest-first and
+    // rebuild the dedup mirror + oldest cursor from the corrected list.
+    if (TalqLog::g_verbose)
+        qDebug().nospace() << "[BUG1] enforceNewestFirstInvariant RE-SORT (front was "
+                           << (m_messages.isEmpty() ? 0 : m_messages.first().id) << ")";
+    beginResetModel();
+    std::sort(m_messages.begin(), m_messages.end(),
+              [](const Message &a, const Message &b) { return a.id > b.id; });
+    endResetModel();
+    m_messageIds.clear();
+    for (const auto &mm : m_messages)
+        m_messageIds.insert(mm.id);
+    if (!m_messages.isEmpty())
+        m_oldestMessageId = m_messages.last().id;
+    return true;
 }
 
 bool MessageListModel::passesThreadFilter(const Message &m) const
@@ -771,7 +890,7 @@ bool MessageListModel::passesThreadFilter(const Message &m) const
         // still has `replyTo` pointing at the seed (because Talk's
         // composer wires replyTo from the active thread context). Admit
         // those by checking the replyTo.id chain. Without this, the
-        // strict m.threadId equality blackholed Petia's-style untagged
+        // strict m.threadId equality blackholed untagged-style
         // thread replies — the "topic shows zero messages" field bug.
         if (m.threadId == m_threadId || m.id == m_threadId)
             return true;
@@ -900,11 +1019,39 @@ void MessageListModel::onMessagesReceived(const QJsonArray &messages)
 {
     if (messages.isEmpty()) return;
 
+    // bug 1 (TRUE root cause) — the open-time load race can leave m_messageIds
+    // (the dedup index) out of sync with m_messages: an id is present in the
+    // SET but absent from the LIST. The dedup below then silently DROPS a
+    // genuinely-new poll message as a "duplicate" it doesn't actually have —
+    // the reproduced "message shows in the conversation list but is missing
+    // from the open room" (field log: poller reported "29 new" yet msgs:62
+    // never grew). Rebuild the index from the authoritative list so dedup can
+    // never reject a message that isn't truly present. O(n) once per batch.
+    m_messageIds.clear();
+    for (const auto &existing : m_messages)
+        m_messageIds.insert(existing.id);
+
+    // [BUG1] trace (verbose only).
+    if (TalqLog::g_verbose)
+        qDebug().nospace() << "[BUG1] onMessagesReceived n=" << messages.size()
+                      << " token=" << m_token
+                      << " threadId=" << m_threadId
+                      << " modelBefore=" << m_messages.size()
+                      << " newestBefore=" << (m_messages.isEmpty() ? 0 : m_messages.first().id);
+
     QVector<Message> newMsgs;
     for (const auto &val : messages) {
-        Message m = Message::fromJson(val.toObject());
-        if (m.isReactionMessage() || m.isCallJoinLeave()
-            || m.isEditMessage())
+        const QJsonObject obj = val.toObject();
+        Message m = Message::fromJson(obj);
+        if (m.isReactionMessage()) {
+            // bug 8 — a reaction added by another client arrives as a system
+            // message whose `parent` is the target comment carrying the
+            // updated reactions map. Apply the delta to the target instead of
+            // silently dropping it; still keep it out of the visible list.
+            applyReactionSystemMessage(obj);
+            continue;
+        }
+        if (m.isCallJoinLeave() || m.isEditMessage())
             continue;
         // 0.41.3-beta — own-message echo dedup. If the long-poll
         // returns a message whose referenceId matches a still-pending
@@ -912,14 +1059,29 @@ void MessageListModel::onMessagesReceived(const QJsonArray &messages)
         // doesn't see a duplicate (or, worse, lose the temp because
         // it was racing the POST callback).
         replaceTempByReferenceId(m);
-        if (m_messageIds.contains(m.id)) continue;
+        if (m_messageIds.contains(m.id)) {
+            if (TalqLog::g_verbose)
+                qDebug().nospace() << "[BUG1] skip DEDUP id=" << m.id;
+            continue;
+        }
         // 0.41.3-beta — client-side thread filter. We no longer ask
         // the server for a threadId-filtered poll (upstream doesn't),
         // so the poll returns ALL room messages. Filter here.
-        if (!passesThreadFilter(m)) continue;
+        if (!passesThreadFilter(m)) {
+            if (TalqLog::g_verbose)
+                qDebug().nospace() << "[BUG1] skip THREADFILTER id=" << m.id
+                              << " m.threadId=" << m.threadId
+                              << " filterThreadId=" << m_threadId;
+            continue;
+        }
         newMsgs.append(m);
     }
 
+    // [BUG1] trace (verbose only): how many survived dedup+filter. If the
+    // poller reported new messages but this is 0, they were dropped here.
+    if (TalqLog::g_verbose)
+        qDebug().nospace() << "[BUG1] onMessagesReceived passedDedupFilter=" << newMsgs.size()
+                      << " of " << messages.size() << " incoming";
     if (newMsgs.isEmpty()) return;
 
     // Save only the newly received messages to cache (not the full list)
@@ -934,6 +1096,20 @@ void MessageListModel::onMessagesReceived(const QJsonArray &messages)
     newMsgs.append(std::move(m_messages));
     m_messages = std::move(newMsgs);
     endInsertRows();
+
+    // bug 1 (REAL FIX) — the prepend above assumes the batch strictly dominates
+    // the current head. Under concurrency (thread-filtered subsets, a late POST
+    // echo, the poll cursor running ahead of the model head) that can leave an
+    // older id at index 0, burying the newest messages with NO refreshLatest to
+    // correct it while the user sits in the room. Enforce the invariant on every
+    // live batch — same single authority as refreshLatest, so it can't drift.
+    enforceNewestFirstInvariant();
+
+    // [BUG1] trace (verbose only): final state after prepend.
+    if (TalqLog::g_verbose)
+        qDebug().nospace() << "[BUG1] onMessagesReceived added=" << toCache.size()
+                      << " modelAfter=" << m_messages.size()
+                      << " newestAfter=" << (m_messages.isEmpty() ? 0 : m_messages.first().id);
 
     m_cache->saveMessages(m_token, toCache);
 
@@ -1004,12 +1180,41 @@ void MessageListModel::postAndReplace(const QString &token, const QJsonObject &b
                     m_messages[idx] = real;
                     emit dataChanged(index(idx), index(idx));
                     m_cache->saveMessages(m_token, {real});
+                    // bug 7 — a brand-new group opened empty never started the
+                    // poller (startPoller bails when there is no message id to
+                    // anchor the long-poll on). Now that the first send has a
+                    // real server id, start the live poll loop so peer replies
+                    // appear without the user having to re-select the room.
+                    if (m_poller && !m_poller->isPolling())
+                        startPoller();
                 }
             } else {
                 m_messages[idx].sendStatus = "failed";
                 emit dataChanged(index(idx), index(idx), {SendStatusRole});
             }
         });
+
+    // bug 7 — a brand-new group (no poller yet) or a POST callback that never
+    // lands would otherwise leave the optimistic stuck on "Sending" forever
+    // with no way to retry. Arm a timeout: if the temp is still pending after
+    // 20 s (not reconciled by the POST callback above nor by the poller's
+    // referenceId echo), mark it failed so the user sees it and can retry.
+    // Self-cancels — if the temp was reconciled it no longer exists, so the
+    // loop is a no-op. Generation+token guarded so a slow-but-successful send
+    // after a conversation switch is never falsely failed.
+    const int genAtSend = m_generation;
+    const QString tokenAtSend = token;
+    QTimer::singleShot(20000, this, [this, tempId, tokenAtSend, genAtSend]() {
+        if (m_token != tokenAtSend || m_generation != genAtSend) return;
+        for (int i = 0; i < m_messages.size(); ++i) {
+            if (m_messages[i].id == tempId
+                && m_messages[i].sendStatus == QStringLiteral("sending")) {
+                m_messages[i].sendStatus = QStringLiteral("failed");
+                emit dataChanged(index(i), index(i), {SendStatusRole});
+                break;
+            }
+        }
+    });
 }
 
 void MessageListModel::setAutoMentionBot(const QString &mentionSlug)
@@ -1077,6 +1282,25 @@ void MessageListModel::sendMessage(const QString &text, int replyToId, bool sile
     // with the thread id locally so the client-side thread filter
     // (next paragraph) keeps it visible until the server's echo lands.
     if (m_threadId > 0) optimistic.threadId = m_threadId;
+
+    // bug 4 — populate the optimistic message's reply parent from the target
+    // already in the model, so the quote renders IMMEDIATELY rather than only
+    // after the server echo replaces the temp. The echo later refines replyTo
+    // with the server's full parent object.
+    if (replyToId > 0) {
+        for (const auto &p : m_messages) {
+            if (p.id != replyToId) continue;
+            optimistic.replyToId = replyToId;
+            QJsonObject r;
+            r[QStringLiteral("id")]               = p.id;
+            r[QStringLiteral("actorId")]          = p.actorId;
+            r[QStringLiteral("actorType")]        = p.actorType;
+            r[QStringLiteral("actorDisplayName")] = p.actorDisplayName;
+            r[QStringLiteral("message")]          = p.message;
+            optimistic.replyTo = r;
+            break;
+        }
+    }
 
     // Prepend at index 0 (newest-first: new = front)
     m_messageIds.insert(tempId);
@@ -1187,6 +1411,24 @@ void MessageListModel::updateReactions(int messageId, const QJsonObject &data)
         m_messages[idx].rawJson["reactions"] = data;
     emit dataChanged(index(idx), index(idx), {ReactionsRole});
     m_cache->saveMessages(m_token, {m_messages[idx]});
+}
+
+void MessageListModel::applyReactionSystemMessage(const QJsonObject &systemMessageJson)
+{
+    // bug 8 — Nextcloud Talk delivers a reaction by another user as a system
+    // message (systemMessage == "reaction" / "reaction_revoked") whose `parent`
+    // is the target comment, carrying the authoritative updated reactions map.
+    // Previously these events were dropped at ingestion and the target's
+    // reactions never updated (and stayed missing across reopen/restart because
+    // the cached snapshot was never refreshed). Apply the delta via the same
+    // path the local addReaction uses — which updates m_messages, rawJson, the
+    // ReactionsRole, and the cache. No-op if the parent/map is absent or the
+    // target isn't currently loaded.
+    const QJsonObject parent = systemMessageJson.value(QStringLiteral("parent")).toObject();
+    const int targetId = parent.value(QStringLiteral("id")).toInt();
+    if (targetId <= 0 || !parent.contains(QStringLiteral("reactions")))
+        return;
+    updateReactions(targetId, parent.value(QStringLiteral("reactions")).toObject());
 }
 
 void MessageListModel::createTopic(const QString &title)
@@ -1653,6 +1895,21 @@ void MessageListModel::markAsRead()
 
     if (lastId <= 0) return;
 
+    // Forward-only read marker (H1, ChatSyncLogic.h). The /read endpoint stores
+    // exactly the value we POST — it does NOT forward-clamp (that is precisely
+    // how markAsUnread() below moves the marker backward). So if this device is
+    // behind the per-user read marker — stale cache, a dropped refreshLatest
+    // (generation race), another device that read further, or a topic/thread
+    // filter making `lastId` the newest THREAD message rather than the room's
+    // true newest — POSTing `lastId` would drag the server marker BACKWARD and
+    // the next /room refresh would re-inflate the server-authoritative unread
+    // badge and re-seed the "New messages" divider above already-read messages
+    // (bugs 2/5/6). Only POST when it strictly advances the known marker.
+    const int knownServerRead = m_conversations
+        ? m_conversations->lastReadMessageForToken(m_token) : 0;
+    if (!talq::shouldPostReadMarker(lastId, knownServerRead))
+        return;
+
     QString token = m_token;
 
     // POST /apps/spreed/api/v1/chat/{token}/read
@@ -1666,6 +1923,14 @@ void MessageListModel::markAsRead()
             // unread messages until the next 30 s auto-refresh — and a
             // chat switch in that window would re-show the divider.
             m_conversations->markReadAt(token, lastId);
+            // Advance the local "New messages" divider anchor on this confirmed
+            // read so the separator moves below the messages we just read
+            // WITHIN the session — not only after navigating away and back
+            // (bug 6). Forward-only, mirroring markReadAt's own guard.
+            if (lastId > m_unreadBoundary) {
+                m_unreadBoundary = lastId;
+                emit unreadBoundaryChanged();
+            }
         });
 }
 

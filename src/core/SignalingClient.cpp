@@ -1,7 +1,16 @@
 #include "core/SignalingClient.h"
 #include "core/TalqLog.h"
+#include "core/ChatSyncLogic.h"
 #include <QJsonDocument>
 #include <QSettings>
+#include <QDateTime>
+
+// bug 3 — a cached peer TalQ version is only trusted as "current" if observed
+// within this window; older entries render as no chip rather than a wrong
+// number. Generous because TalQ identity is sticky and re-announces are
+// infrequent (room overlap / calls), so we would rather under-blank than show
+// a confidently-wrong stale version.
+static constexpr qint64 kPeerVersionFreshMs = 30LL * 24 * 60 * 60 * 1000; // 30 days
 
 SignalingClient::SignalingClient(ApiClient *api, QObject *parent)
     : QObject(parent)
@@ -219,6 +228,17 @@ void SignalingClient::onTextMessage(const QString &msg)
             emit endOfCandidatesReceived(senderSessionId);
             return;
         }
+        // 0.41.x-beta — TalQ-private P2P overlay. Custom session-targeted
+        // type the HPB relays untouched (Janus never sees it), so 1:1 SDP
+        // + ICE travels peer-to-peer and the media goes direct.
+        if (msgType.startsWith(QStringLiteral("talq.p2p."))) {
+            const QString subtype = msgType.mid(9);
+            qInfo() << "Signaling: received talq.p2p." << subtype
+                    << "from" << senderSessionId.left(20);
+            emit p2pSignalReceived(senderSessionId, subtype,
+                                   msgData["payload"].toObject());
+            return;
+        }
         if (msgType == "mute" || msgType == "unmute") {
             QString media = msgData["payload"].toObject()["name"].toString();
             bool muted = (msgType == "mute");
@@ -283,12 +303,7 @@ void SignalingClient::onTextMessage(const QString &msg)
                 const QString client = msgData["client"].toString();
                 const QString version = msgData["version"].toString();
                 const QString info = client + "/" + version;
-                if (m_peerClientInfo.value(senderUid) != info) {
-                    m_peerClientInfo[senderUid] = info;
-                    persistPeerClient(senderUid, info);
-                    qDebug() << "Signaling: peer TalQ client" << senderUid << "=" << info;
-                    emit peerClientInfoChanged(senderUid, info);
-                }
+                updatePeerClient(senderUid, info);  // bug 3 — stamps freshness + persists
                 if (!senderSid.isEmpty())
                     m_sessionToUserId[senderSid] = senderUid;
             } else {
@@ -334,12 +349,7 @@ void SignalingClient::onTextMessage(const QString &msg)
                 if (senderUid.isEmpty()) senderUid = m_sessionToUserId.value(senderSid);
                 if (senderSid != m_sessionId && senderUid != m_userId && !senderUid.isEmpty()) {
                     const QString info = data["client"].toString() + "/" + data["version"].toString();
-                    if (m_peerClientInfo.value(senderUid) != info) {
-                        m_peerClientInfo[senderUid] = info;
-                        persistPeerClient(senderUid, info);
-                        qDebug() << "Signaling: peer TalQ client (event-path)" << senderUid << "=" << info;
-                        emit peerClientInfoChanged(senderUid, info);
-                    }
+                    updatePeerClient(senderUid, info);  // bug 3 — stamps freshness + persists
                 }
             }
         }
@@ -540,6 +550,43 @@ void SignalingClient::sendTalqClientHello()
 
 // QSettings keys treat '/' as a group separator and choke on other characters
 // that can appear in federated user IDs, so the userId is percent-encoded.
+QString SignalingClient::peerClientInfo(const QString &userId) const
+{
+    // bug 3 — only report a cached version if it was observed recently. A
+    // value loaded from disk that predates the freshness window (or a legacy
+    // entry with no recorded timestamp, lastSeen==0) is treated as unknown so
+    // the UI shows no chip instead of a confidently-wrong stale number.
+    const qint64 lastSeen = m_peerClientSeen.value(userId, 0);
+    if (!talq::isPeerVersionFresh(lastSeen,
+                                  QDateTime::currentMSecsSinceEpoch(),
+                                  kPeerVersionFreshMs))
+        return QString();
+    return m_peerClientInfo.value(userId);
+}
+
+void SignalingClient::updatePeerClient(const QString &userId, const QString &info)
+{
+    // bug 3 — single entry point that records a peer's TalQ version with a
+    // fresh timestamp and persists it. Used by the HPB broadcast handlers and
+    // by CallManager's in-call data-channel observation. The timestamp is
+    // always refreshed (so a re-announce of the same version keeps it fresh);
+    // peerClientInfoChanged is emitted whenever the displayed string changes
+    // or a previously-stale value becomes current again, so the chrome
+    // repaints.
+    if (userId.isEmpty() || userId == m_userId || info.isEmpty())
+        return;
+    const QString prev = peerClientInfo(userId);   // freshness-gated current display
+    m_peerClientInfo[userId] = info;
+    m_peerClientSeen[userId] = QDateTime::currentMSecsSinceEpoch();
+    persistPeerClient(userId, info);
+    if (prev != info) {
+        qDebug() << "Signaling: peer TalQ client" << userId << "=" << info;
+        emit peerClientInfoChanged(userId, info);
+    }
+}
+
+// QSettings keys treat '/' as a group separator and choke on other characters
+// that can appear in federated user IDs, so the userId is percent-encoded.
 void SignalingClient::loadPersistedPeerClients()
 {
     QSettings s;
@@ -553,6 +600,19 @@ void SignalingClient::loadPersistedPeerClients()
             m_peerClientInfo[uid] = info;
     }
     s.endGroup();
+    // bug 3 — parallel last-seen timestamps. Entries written by an older build
+    // have no timestamp here, so they default to 0 and are treated as stale by
+    // peerClientInfo() — which is exactly what prevents the long-stale 0.28.3
+    // entry from being shown as current after upgrade.
+    s.beginGroup(QStringLiteral("peerClientsSeen"));
+    const QStringList seenKeys = s.childKeys();
+    for (const QString &k : seenKeys) {
+        const QString uid = QString::fromUtf8(
+            QByteArray::fromPercentEncoding(k.toLatin1()));
+        if (!uid.isEmpty())
+            m_peerClientSeen[uid] = s.value(k).toLongLong();
+    }
+    s.endGroup();
     if (!m_peerClientInfo.isEmpty())
         qDebug() << "Signaling: loaded" << m_peerClientInfo.size()
                  << "persisted peer client(s)";
@@ -561,9 +621,14 @@ void SignalingClient::loadPersistedPeerClients()
 void SignalingClient::persistPeerClient(const QString &userId, const QString &info)
 {
     if (userId.isEmpty()) return;
+    const QString key = QString::fromLatin1(userId.toUtf8().toPercentEncoding());
     QSettings s;
     s.beginGroup(QStringLiteral("peerClients"));
-    s.setValue(QString::fromLatin1(userId.toUtf8().toPercentEncoding()), info);
+    s.setValue(key, info);
+    s.endGroup();
+    // Persist the freshness timestamp alongside (set by updatePeerClient).
+    s.beginGroup(QStringLiteral("peerClientsSeen"));
+    s.setValue(key, m_peerClientSeen.value(userId, QDateTime::currentMSecsSinceEpoch()));
     s.endGroup();
 }
 
@@ -635,7 +700,8 @@ void SignalingClient::sendSessionMessage(const QString &toSessionId, const QStri
 
 void SignalingClient::sendOffer(const QString &toSessionId, const QString &sdp,
                                 const QString &sid, const QString &nick,
-                                const QString &roomType, const QString &broadcaster)
+                                const QString &roomType, const QString &broadcaster,
+                                bool mcuCodecHints)
 {
     QJsonObject payload;
     payload["type"] = QString("offer");
@@ -656,13 +722,17 @@ void SignalingClient::sendOffer(const QString &toSessionId, const QString &sdp,
     // decision, non-H264 clients simply won't see video — we never
     // transcode or downgrade the conference for one stale client.
     QJsonObject extra;
-    if (roomType == "screen") {
-        extra["videocodec"] = QString("h264,vp8");
-        if (!broadcaster.isEmpty())
-            extra["broadcaster"] = broadcaster;
-    } else {
-        extra["audiocodec"] = QString("opus");
-        extra["videocodec"] = QString("h264,vp8");
+    // 0.41.9 — omit codec hints for true P2P so the HPB relays the offer
+    // session-to-session instead of hijacking it as a Janus MCU publish.
+    if (mcuCodecHints) {
+        if (roomType == "screen") {
+            extra["videocodec"] = QString("h264,vp8");
+            if (!broadcaster.isEmpty())
+                extra["broadcaster"] = broadcaster;
+        } else {
+            extra["audiocodec"] = QString("opus");
+            extra["videocodec"] = QString("h264,vp8");
+        }
     }
     sendSessionMessage(toSessionId, "offer", payload, sid, extra, roomType);
     qDebug() << "Signaling: sent offer to" << toSessionId.left(20)
@@ -721,6 +791,19 @@ void SignalingClient::sendBroadcastMessage(const QJsonObject &data)
 
     m_ws.sendTextMessage(QJsonDocument(msg).toJson(QJsonDocument::Compact));
     qDebug() << "Signaling: sent broadcast message" << data["type"].toString();
+}
+
+void SignalingClient::sendP2pSignal(const QString &toSessionId, const QString &subtype,
+                                    const QJsonObject &payload)
+{
+    // Custom type → the HPB relays it session-to-session verbatim (NOT
+    // intercepted as an MCU op), so the SDP/ICE rides peer-to-peer and the
+    // media goes direct WebRTC, bypassing Janus. See header comment.
+    QJsonObject data;
+    data["type"]    = QStringLiteral("talq.p2p.") + subtype;
+    data["payload"] = payload;
+    sendMinimalMessage(toSessionId, data);
+    qDebug() << "Signaling: sent talq.p2p." << subtype << "to" << toSessionId.left(20);
 }
 
 void SignalingClient::sendMinimalMessage(const QString &toSessionId, const QJsonObject &data)

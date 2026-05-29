@@ -36,11 +36,24 @@ public:
     void addIceCandidate(const QString &candidate, int sdpMLineIndex, const QString &sdpMid);
 
     void setMuted(bool muted);
+    // 0.41.9-beta — video transceiver direction. Default SENDONLY (the
+    // harness MCU-publisher path: Janus receives our video on a publisher
+    // handle). For TRUE P2P set SENDRECV BEFORE enableCamera so the single
+    // video m-line carries both directions — otherwise both peers offer
+    // sendonly and neither receives the other's camera. CallManager's P2P
+    // branch + the TALQ_TEST_P2P harness set this true.
+    void setVideoSendRecv(bool v) { m_videoSendRecv = v; }
     // forceTestSource: use videotestsrc regardless of env (test harness
     // only — lets one in-process peer use the real camera while another
     // uses synthetic, since two mfvideosrc consumers of one device race).
+    // triggerOffer: whether to create a (re)negotiation offer once the
+    // video chain is attached. Default true = mid-call "turn camera on"
+    // renegotiation. Pass false for the answerer (it will answer the
+    // peer's offer instead) and for the start-time auto-enable (the
+    // single offer is driven by participant-joined), avoiding offer
+    // glare in true P2P.
     void enableCamera(int deviceIndex, bool hd1080 = true,
-                      bool forceTestSource = false);
+                      bool forceTestSource = false, bool triggerOffer = true);
     void disableCamera();
 
     VideoFrameProvider *localVideoProvider() const { return m_localVideoProvider; }
@@ -73,15 +86,24 @@ private:
 
     // Video send elements
     GstElement *m_cameraSrc = nullptr;
+    // 0.41.9-beta — robust camera capture, ported from PublishPipeline:
+    // mfvideosrc → camSrcCaps (permissive menu / user setting) →
+    // decodebin →(dynamic)→ videoConvert → videoCapsFilter(I420) → tee.
+    // Replaces the previous hard-pinned image/jpeg caps + fixed jpegdec
+    // which failed `not-negotiated (-4)` on cameras that don't advertise
+    // that exact MJPEG mode.
+    GstElement *m_camSrcCaps = nullptr;     // capsfilter on mfvideosrc output
+    GstElement *m_camDecode = nullptr;      // decodebin (MJPEG or raw)
     GstElement *m_videoConvert = nullptr;
     GstElement *m_videoCapsFilter = nullptr;
     GstElement *m_videoEncoder = nullptr;
+    GstElement *m_videoParser = nullptr;    // h264parse when the factory picks H264
     GstElement *m_videoPayloader = nullptr;
     GstElement *m_videoSsrcFilter = nullptr;
     guint32 m_videoSsrc = 0;
     GstElement *m_audioSsrcFilter = nullptr;
     guint32 m_audioSsrc = 0;
-    GstElement *m_jpegDec = nullptr;
+    GstElement *m_jpegDec = nullptr;        // legacy, unused since 0.41.9
     GstElement *m_tee = nullptr;
     GstElement *m_encQueue = nullptr;
     GstElement *m_previewQueue = nullptr;
@@ -89,6 +111,7 @@ private:
     GstElement *m_previewAppsink = nullptr;
     GstPad *m_videoSinkPad = nullptr;
     bool m_cameraEnabled = false;
+    bool m_videoSendRecv = false;   // 0.41.9 — SENDRECV for P2P, SENDONLY for MCU
     bool m_audioChainCreated = false;
     bool m_videoChainCreated = false;
     int m_lvlDbg = 0;
