@@ -5,6 +5,8 @@
 #include <QAbstractItemModel>
 #include <QEvent>
 #include <QHBoxLayout>
+#include <QMenu>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QVBoxLayout>
@@ -106,6 +108,16 @@ void TopicTabBar::setModel(ThreadListModel *model)
         connect(m_model, &QAbstractItemModel::rowsInserted,  this, &TopicTabBar::rebuild);
         connect(m_model, &QAbstractItemModel::rowsRemoved,   this, &TopicTabBar::rebuild);
         connect(m_model, &QAbstractItemModel::dataChanged,   this, &TopicTabBar::rebuild);
+        // Report a partial topic delete (some messages couldn't be removed).
+        connect(m_model, &ThreadListModel::topicDeleteFinished, this,
+                [this](int, int deleted, int failed) {
+            if (failed > 0)
+                QMessageBox::information(this, tr("Delete topic"),
+                    tr("Deleted %1 message(s); %2 could not be deleted. You can "
+                       "only delete your own messages (within the edit window), "
+                       "or others' if you moderate this conversation.")
+                       .arg(deleted).arg(failed));
+        });
     }
     rebuild();
 }
@@ -157,6 +169,32 @@ QPushButton *TopicTabBar::makeChip(const QString &label, int threadId,
         if (threadId == 0) emit allMessagesSelected();
         else               emit threadSelected(threadId, label);
     });
+
+    // Real topics (not "General"/All-messages) get a right-click "Delete topic"
+    // action. There's no server thread-delete, so it best-effort deletes the
+    // topic's messages — confirm first and be honest about the limits.
+    if (threadId > 0) {
+        b->setContextMenuPolicy(Qt::CustomContextMenu);
+        connect(b, &QPushButton::customContextMenuRequested, this,
+                [this, b, threadId, label](const QPoint &pos) {
+            QMenu menu(this);
+            QAction *del = menu.addAction(tr("Delete topic"));
+            if (menu.exec(b->mapToGlobal(pos)) != del || !m_model)
+                return;
+            QString name = label;
+            name.remove(QStringLiteral("#  "));   // strip the chip prefix
+            const auto answer = QMessageBox::warning(
+                this, tr("Delete topic"),
+                tr("Delete the topic “%1”?\n\nNextcloud Talk has no "
+                   "topic-delete, so this removes the topic's messages where the "
+                   "server allows — your own (within the edit window) and "
+                   "others' only if you moderate this conversation. Anything it "
+                   "can't delete will remain. This can't be undone.").arg(name),
+                QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+            if (answer == QMessageBox::Yes)
+                m_model->deleteTopic(threadId);
+        });
+    }
     return b;
 }
 

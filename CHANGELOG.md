@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.43.2 "Magrathea" — BETA (2026-05-29)
+
+> Same **Magrathea** beta line.
+
+### Added
+
+* **Delete a topic.** Right-click a topic chip in the conversation header and
+  choose **Delete topic**. Nextcloud Talk has no server-side thread delete, so
+  this is best-effort: it removes the topic's messages where the server allows —
+  your own (within the edit window) and others' only if you moderate the
+  conversation. Anything that can't be deleted is left in place and reported,
+  and the chip disappears once the topic has no surviving messages. A
+  confirmation makes the scope and limits clear before anything is deleted.
+
 ## v0.43.1 "Magrathea" — BETA (2026-05-29)
 
 > Same **Magrathea** beta line as 0.43.0 — codename is per minor line.
