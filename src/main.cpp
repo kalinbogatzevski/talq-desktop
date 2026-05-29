@@ -190,6 +190,34 @@ int main(int argc, char *argv[])
         }
         logPath = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/talq_debug.log";
         QDir().mkpath(QFileInfo(logPath).absolutePath());
+        // Preserve previous sessions' logs before this one truncates the live
+        // file. A crash usually takes the app down without a clean diagnosis,
+        // and the old "w" truncate destroyed the crashed session's log on the
+        // next launch (e.g. the callee hang-up freeze). A single ".prev" wasn't
+        // enough — a SECOND restart would purge it. So ARCHIVE each previous
+        // session under a timestamped name (never overwritten by later
+        // restarts) and keep the most recent N. The live log stays at the fixed
+        // talq_debug.log name (the crash backstop + in-app viewer read it).
+        {
+            const QString logDir = QFileInfo(logPath).absolutePath();
+            if (QFile::exists(logPath)) {
+                QDateTime mtime = QFileInfo(logPath).lastModified();
+                if (!mtime.isValid()) mtime = QDateTime::currentDateTime();
+                const QString archived = logDir + "/talq_debug_"
+                    + mtime.toString("yyyyMMdd_HHmmss") + ".log";
+                QFile::remove(archived);          // same-second restart → overwrite
+                QFile::rename(logPath, archived);
+            }
+            // Prune oldest archives, keep the most recent N sessions. Names are
+            // timestamped so QDir::Name sort is chronological (oldest first).
+            constexpr int kKeepSessions = 12;
+            QDir d(logDir);
+            const QStringList olds = d.entryList(
+                QStringList() << QStringLiteral("talq_debug_*.log"),
+                QDir::Files, QDir::Name);
+            for (int i = 0; i < olds.size() - kKeepSessions; ++i)
+                QFile::remove(d.absoluteFilePath(olds.at(i)));
+        }
         // Redirect C stderr so GStreamer / any fprintf output is captured
         // (Release builds have no attached console). If freopen fails, stderr
         // is now closed per POSIX — skip installing our handler so subsequent
@@ -456,6 +484,7 @@ int main(int argc, char *argv[])
     MessageListModel messages(&api, &cache);
     ThreadListModel threads(&api);
     threads.setCache(&cache);
+    threads.setConversations(&conversations);  // pull the room read marker for per-topic unread counts
     NotificationManager notifications;
     PushClient push(&api);
     SignalingClient signaling(&api);

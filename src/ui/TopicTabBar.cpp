@@ -11,7 +11,7 @@
 
 namespace {
 struct Pal {
-    QString accent, onAccent, barBg, chipBg, border, ink, inkDim, hoverBg;
+    QString accent, onAccent, barBg, chipBg, border, ink, inkDim, hoverBg, accentSoft;
 };
 // bug 10 — source chip colors DIRECTLY from PainterTheme tokens (the single
 // source of truth every other chrome widget uses), NOT from the QApplication
@@ -22,14 +22,23 @@ Pal pal(PainterTheme::Theme t)
 {
     const PainterTheme th(t, 1.0);
     auto n = [](const QColor &c){ return c.name(QColor::HexRgb); };
-    return { n(th.accent),         // accent fill (selected chip background)
-             n(th.controlInk),     // on-accent ink (selected chip TEXT) — readable in all themes
+    // Pre-blend the accent at low strength over the bar background → a calm,
+    // solid tint (no alpha needed in the stylesheet). Used for the SELECTED
+    // chip so it reads as "active" without a loud saturated fill.
+    auto blend = [](const QColor &fg, const QColor &bg, double a) {
+        return QColor(int(fg.red()   * a + bg.red()   * (1 - a)),
+                      int(fg.green() * a + bg.green() * (1 - a)),
+                      int(fg.blue()  * a + bg.blue()  * (1 - a)));
+    };
+    return { n(th.accent),         // accent (selected chip TEXT + border now)
+             n(th.controlInk),     // on-accent ink (legacy; unused by the calm style)
              n(th.bgSecondary),    // bar background
              n(th.bgSurface),      // unselected chip background
              n(th.divider),        // border
              n(th.textPrimary),    // hover text
              n(th.textSecondary),  // unselected chip TEXT — was black in light theme
-             n(th.bgHover) };      // hover background
+             n(th.bgHover),        // hover background
+             n(blend(th.accent, th.bgSecondary, 0.18)) };  // accentSoft — calm selected tint
 }
 } // namespace
 
@@ -130,11 +139,14 @@ QPushButton *TopicTabBar::makeChip(const QString &label, int threadId,
     const Pal c = pal(m_themeId);
     b->setStyleSheet(active
         ? QStringLiteral(
-            "QPushButton { background: %1; color: %2; border: none;"
+            // Calm selected style: a soft accent TINT fill + accent-coloured
+            // text + a 1px accent border. Clearly "active" without the loud
+            // solid-accent fill that read as too aggressive.
+            "QPushButton { background: %1; color: %2; border: 1px solid %2;"
             "  border-radius: 16px; padding: 6px 16px; font-size: 13px;"
             "  font-weight: 600; letter-spacing: 0.1px; }"
             "QPushButton:hover { background: %1; }"
-          ).arg(c.accent, c.onAccent)
+          ).arg(c.accentSoft, c.accent)
         : QStringLiteral(
             "QPushButton { background: %1; color: %2; border: 1px solid %3;"
             "  border-radius: 16px; padding: 6px 16px; font-size: 13px;"
