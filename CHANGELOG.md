@@ -1,5 +1,43 @@
 # Changelog
 
+## v0.44.0 "Magrathea" — STABLE (2026-05-30)
+
+> Promotes the **Magrathea** beta line (0.43.0–0.43.3) to the stable channel,
+> keeping the codename. The headlines are below; the 0.43.x entries have the
+> full detail.
+
+### Added
+
+* **Calls reconnect instead of dropping.** When the connection to the call
+  server is lost, the call no longer hangs up after a few seconds — it enters a
+  **Reconnecting…** state and keeps re-establishing your media with backoff,
+  while everyone else stays in the call. A **Leave** button cancels a stuck
+  reconnect, and you get a **"Call ended"** notification when a call really ends.
+* **Start a call in group conversations.** Audio and video call buttons now
+  appear in group and public rooms, not just one-to-one chats.
+* **Topics:** unread counts on topic chips; hide or delete a topic from its
+  right-click menu; the topic bar scrolls with the mouse wheel, keeps the
+  selected topic in view, and lists topics with unread first then most-recent.
+* **Edit your last message with ↑**, **clear a conversation's history**
+  (server-side — clears on all your devices and the other party's).
+
+### Changed
+
+* **Buttons look like buttons everywhere.** Every dialog and message-box button
+  now has a consistent, real shape with proper hover/pressed states across all
+  four themes; cramped button rows got breathing room.
+* **Photos sit edge-to-edge in chat** — tighter framing (no dead space around
+  portrait images) with the timestamp floated over the picture.
+* **Deleted messages no longer leave a placeholder** in the thread.
+* Debug logs are kept across restarts (last 12 sessions) for easier diagnosis.
+
+### Fixed
+
+* **The callee no longer freezes when a call is hung up** — the hardware-specific
+  whole-machine freeze on hang-up. The HW codec teardown was moved off the UI
+  thread (applied to every call pipeline).
+* A rare crash when quitting the app while a chat was open.
+
 ## v0.43.3 "Magrathea" — BETA (2026-05-29)
 
 > Same **Magrathea** beta line — codename is per minor line.
