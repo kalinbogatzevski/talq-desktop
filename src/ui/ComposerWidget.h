@@ -56,10 +56,15 @@ public:
     void hideEditingBar();
     bool isEditing() const { return m_editing; }
 
+    // Up-arrow on an empty composer → edit the last own message (Telegram-style).
+    // Returns true if it consumed the key (composer was idle, request emitted).
+    bool requestEditLast();
+
 signals:
     void sendMessage(const QString &text, bool silent);
     void replyBarCancelled();
     void editMessageRequested(const QString &newText);
+    void editLastRequested();   // up-arrow on empty composer
     void editingBarCancelled();
     void userInteracted();   // user clicked/typed in composer — divider can dismiss
     // Right-click on the send button → user picked a future delivery time.

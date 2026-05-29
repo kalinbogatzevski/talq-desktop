@@ -95,6 +95,15 @@ public:
             || systemMessage == "message_edited_everyone";
     }
 
+    // Deleted-message noise. Talk replaces a deleted comment with messageType
+    // "comment_deleted" and emits a "message_deleted" system event — which the
+    // upstream API docs explicitly say clients should NOT show (use it to remove
+    // the original from storage). We hide both for Telegram-style clean deletes.
+    bool isDeletedMessage() const {
+        return messageType == "comment_deleted"
+            || systemMessage == "message_deleted";
+    }
+
     // Check if this is from the same author and close in time to another message
     bool isGroupedWith(const Message &other) const {
         return actorId == other.actorId

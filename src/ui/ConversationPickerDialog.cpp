@@ -10,17 +10,8 @@ ConversationPickerDialog::ConversationPickerDialog(ConversationListModel *model,
 {
     setWindowTitle("Forward to...");
     setFixedSize(380, 480);
-    setStyleSheet(
-        "QDialog { background: #1e1e2e; }"
-        "QLineEdit { background: #2a2a3e; color: #e0e0e0; border: 1px solid #363c48;"
-        "  border-radius: 8px; padding: 8px 12px; font-size: 13px; }"
-        "QLineEdit:focus { border-color: #14b8a6; }"
-        "QListWidget { background: transparent; border: none; outline: none; }"
-        "QListWidget::item { color: #e0e0e0; padding: 10px 12px; border-radius: 8px;"
-        "  font-size: 13px; }"
-        "QListWidget::item:hover { background: rgba(255,255,255,0.06); }"
-        "QListWidget::item:selected { background: rgba(46,196,182,0.15); }"
-    );
+    // Inherits the themed app stylesheet (AppStyle) — no hardcoded colours, so
+    // it tracks all four themes, including the light (Paper) theme.
 
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(12, 12, 12, 12);

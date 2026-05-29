@@ -1615,7 +1615,9 @@ void ChatPainter::paintOwnMessage(QPainter *p, const MessageLayout &ml, qreal of
         paintReactions(p, ml, offsetY);
 
     // Timestamp + read status (draw once, not twice)
-    {
+    if (ml.imageBubble) {
+        paintImageTimeOverlay(p, ml, offsetY);
+    } else {
         QRectF tr = ml.timeRect.translated(0, offsetY);
         QColor timeColor = m_theme.textTime;   // warm, No-Gray (was white-alpha)
 
@@ -1780,8 +1782,10 @@ void ChatPainter::paintOtherMessage(QPainter *p, const MessageLayout &ml, qreal 
     if (!ml.reactions.isEmpty() && !ml.reactBarRect.isNull())
         paintReactions(p, ml, offsetY);
 
-    // Time (inside bubble, below body)
-    if (!ml.timeRect.isNull()) {
+    // Time (inside bubble, below body — or floated over the image)
+    if (ml.imageBubble) {
+        paintImageTimeOverlay(p, ml, offsetY);
+    } else if (!ml.timeRect.isNull()) {
         QRectF tr = ml.timeRect.translated(0, offsetY);
         p->setPen(m_theme.textTime);
         p->setFont(m_theme.timeFont());
@@ -1790,6 +1794,63 @@ void ChatPainter::paintOtherMessage(QPainter *p, const MessageLayout &ml, qreal 
             : ml.timeString;
         p->drawText(tr, Qt::AlignRight | Qt::AlignVCenter, timeLabel);
     }
+}
+
+// ─── Image timestamp overlay (edge-to-edge image bubbles) ─────
+// The timestamp floats over the bottom-right of a flush photo on a dark scrim
+// so it stays legible against any image content. Mirrors the in-bubble time +
+// read-status geometry, just on a pill instead of bare text.
+void ChatPainter::paintImageTimeOverlay(QPainter *p, const MessageLayout &ml, qreal offsetY)
+{
+    if (ml.timeRect.isNull()) return;
+    const QRectF tr = ml.timeRect.translated(0, offsetY);
+
+    const QString timeLabel = ml.lastEditTimestamp > 0
+        ? QStringLiteral("(edited) ") + ml.timeString : ml.timeString;
+    const QString timeText = ml.sendStatus == QLatin1String("sending")
+        ? QStringLiteral("Sending...") : timeLabel;
+
+    const QColor onScrim(248, 248, 248);   // near-white ink on the dark scrim
+    QString statusChar;
+    QColor statusColor = onScrim;
+    if (ml.sendStatus == QLatin1String("failed")) {
+        statusChar = QStringLiteral("⚠");
+        statusColor = m_theme.danger;
+    } else if (ml.isOwn && ml.sendStatus != QLatin1String("sending")) {
+        statusChar = ml.isRead ? QStringLiteral("◉") : QStringLiteral("○");
+        statusColor = ml.isRead ? m_theme.accent : onScrim;
+    }
+
+    QFont timeFont = m_theme.timeFont();
+    QFont statusFont = timeFont;
+    statusFont.setPixelSize(12);
+    const int sw = statusChar.isEmpty() ? 0
+                 : QFontMetrics(statusFont).horizontalAdvance(statusChar) + 4;
+
+    // Scrim pill, sized to the time rect and kept inside the image (the layout
+    // anchored timeRect 8px in from the image's bottom-right corner).
+    const QRectF scrim = tr.adjusted(-8, -3, 8, 3);
+    p->save();
+    p->setRenderHint(QPainter::Antialiasing, true);
+    p->setPen(Qt::NoPen);
+    // Dark scrim works over any photo in any theme; alpha tuned so a near-white
+    // time on it stays legible even over a light/white image (Paper theme).
+    p->setBrush(QColor(0, 0, 0, 150));
+    p->drawRoundedRect(scrim, scrim.height() / 2.0, scrim.height() / 2.0);
+
+    // Time text (right-aligned, leaving room for the status icon)
+    p->setPen(onScrim);
+    p->setFont(timeFont);
+    p->drawText(tr.adjusted(0, 0, -sw, 0), Qt::AlignRight | Qt::AlignVCenter, timeText);
+
+    // Read/sent status icon at the right end
+    if (!statusChar.isEmpty()) {
+        const QRectF sr(tr.right() - sw + 2, tr.top(), sw - 2, tr.height());
+        p->setPen(statusColor);
+        p->setFont(statusFont);
+        p->drawText(sr, Qt::AlignCenter, statusChar);
+    }
+    p->restore();
 }
 
 // ─── Reply quote (shared between own and other) ─────
@@ -1841,26 +1902,42 @@ void ChatPainter::paintFileAttachment(QPainter *p, const MessageLayout &ml, qrea
     if (isImage) {
         // Try to draw the loaded preview image
         QImage preview = fetchFilePreview(ml.fileId);
+        const qreal radius = ml.imageBubble ? PainterTheme::radiusNormal
+                                            : PainterTheme::radiusSmall;
         if (!preview.isNull()) {
-            // Scale to fit within the rect while keeping aspect ratio
-            QImage scaled = preview.scaled(
-                qRound(fr.width()), qRound(fr.height()),
-                Qt::KeepAspectRatio, Qt::SmoothTransformation);
-            // Center horizontally within the file rect
-            qreal imgX = fr.left() + (fr.width() - scaled.width()) / 2.0;
-            // Draw with rounded corners
-            p->save();
-            QPainterPath clip;
-            clip.addRoundedRect(QRectF(imgX, fr.top(), scaled.width(), scaled.height()),
-                                PainterTheme::radiusSmall, PainterTheme::radiusSmall);
-            p->setClipPath(clip);
-            p->drawImage(QPointF(imgX, fr.top()), scaled);
-            p->restore();
+            if (ml.imageBubble) {
+                // Flush fill: fileRect is already aspect-tight, so fill it
+                // exactly and round all four corners to the bubble radius.
+                QImage scaled = preview.scaled(
+                    qRound(fr.width()), qRound(fr.height()),
+                    Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+                p->save();
+                QPainterPath clip;
+                clip.addRoundedRect(fr, radius, radius);
+                p->setClipPath(clip);
+                p->drawImage(fr.topLeft(), scaled);
+                p->restore();
+            } else {
+                // Scale to fit within the rect while keeping aspect ratio
+                QImage scaled = preview.scaled(
+                    qRound(fr.width()), qRound(fr.height()),
+                    Qt::KeepAspectRatio, Qt::SmoothTransformation);
+                // Center horizontally within the file rect
+                qreal imgX = fr.left() + (fr.width() - scaled.width()) / 2.0;
+                // Draw with rounded corners
+                p->save();
+                QPainterPath clip;
+                clip.addRoundedRect(QRectF(imgX, fr.top(), scaled.width(), scaled.height()),
+                                    radius, radius);
+                p->setClipPath(clip);
+                p->drawImage(QPointF(imgX, fr.top()), scaled);
+                p->restore();
+            }
         } else {
-            // Placeholder: gray rect with filename
+            // Placeholder: surface rect with filename
             p->setPen(Qt::NoPen);
             p->setBrush(m_theme.bgSurface);
-            p->drawRoundedRect(fr, PainterTheme::radiusSmall, PainterTheme::radiusSmall);
+            p->drawRoundedRect(fr, radius, radius);
 
             p->setPen(m_theme.textSecondary);
             p->setFont(m_theme.timeFont());
@@ -1996,8 +2073,20 @@ QRectF ChatPainter::hoverBarReactRect(const MessageLayout &ml) const
 
     // Right of bubble
     qreal x = ml.contentRight + gap;
-    qreal refTop = ml.bodyRect.isNull() ? ml.totalY : ml.bodyRect.top();
-    qreal refBottom = ml.bodyRect.isNull() ? ml.totalY + ml.totalHeight : ml.bodyRect.bottom();
+    // For an edge-to-edge image bubble there is no bodyRect; centre the hover
+    // buttons on the image itself (bubbleRect), not the whole message block —
+    // which includes the author-name/avatar gap above a portrait photo.
+    qreal refTop, refBottom;
+    if (ml.imageBubble && !ml.bubbleRect.isNull()) {
+        refTop    = ml.bubbleRect.top();
+        refBottom = ml.bubbleRect.bottom();
+    } else if (!ml.bodyRect.isNull()) {
+        refTop    = ml.bodyRect.top();
+        refBottom = ml.bodyRect.bottom();
+    } else {
+        refTop    = ml.totalY;
+        refBottom = ml.totalY + ml.totalHeight;
+    }
     qreal y = refTop + (refBottom - refTop - btnSize) / 2.0;
     y = qBound(ml.totalY, y, ml.totalY + ml.totalHeight - btnSize);
     return QRectF(x, y, btnSize, btnSize);
@@ -2205,8 +2294,14 @@ void ChatPainter::requestFilePreview(int fileId)
             totalBytes += it.value().sizeInBytes();
         while (totalBytes > 50 * 1024 * 1024 && m_previewCache.size() > 1) {
             auto oldest = m_previewCache.begin();
+            const int evictedId = oldest.key();
             totalBytes -= oldest.value().sizeInBytes();
             m_previewCache.erase(oldest);
+            // Keep the aspect cache coherent: if we drop the pixels, drop the
+            // remembered aspect too, so the next layout falls back to the
+            // compact placeholder (imageBubble=false) and re-requests, instead
+            // of an over-sized flush-image placeholder on a stale aspect.
+            m_previewAspect.remove(evictedId);
         }
 
         if (aspectChanged)

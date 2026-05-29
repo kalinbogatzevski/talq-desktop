@@ -85,7 +85,7 @@ MessageListModel::MessageListModel(ApiClient *api, MessageCache *cache, QObject 
             QVector<Message> filtered;
             for (const auto &m : messages) {
                 if (m.isReactionMessage() || m.isCallJoinLeave()
-                    || m.isEditMessage())
+                    || m.isEditMessage() || m.isDeletedMessage())
                     continue;
                 if (!passesThreadFilter(m))
                     continue;
@@ -467,7 +467,7 @@ void MessageListModel::loadHistory()
         for (const auto &val : data) {
             Message m = Message::fromJson(val.toObject());
             if (m_messageIds.contains(m.id) || m.isReactionMessage()
-                || m.isCallJoinLeave() || m.isEditMessage())
+                || m.isCallJoinLeave() || m.isEditMessage() || m.isDeletedMessage())
                 continue;
             if (!passesThreadFilter(m))
                 continue;
@@ -670,6 +670,18 @@ void MessageListModel::refreshLatest()
             return;
         }
 
+        // Clear-history reconciliation: if the fetch carries a "history_cleared"
+        // event, purge our (possibly stale, cached) view BEFORE merging. Covers
+        // a device that wasn't viewing the room when another device cleared it —
+        // it opens, loads the stale cache, then this fetch wipes it.
+        for (const QJsonValue &val : data) {
+            if (val.toObject().value(QStringLiteral("systemMessage")).toString()
+                    == QLatin1String("history_cleared")) {
+                clearLocalHistory();
+                break;
+            }
+        }
+
         // bug 1 (FIX) — rebuild the dedup index from the AUTHORITATIVE message
         // list before missing-detection. A concurrent open-time reset can
         // leave m_messageIds holding ids no longer in m_messages; the
@@ -715,13 +727,15 @@ void MessageListModel::refreshLatest()
         for (const auto &val : data) {
             const QJsonObject obj = val.toObject();
             Message m = Message::fromJson(obj);
+            if (m.systemMessage == QLatin1String("history_cleared"))
+                continue;   // purge already handled by the pre-scan above
             if (m.isReactionMessage()) {
                 // bug 8 — apply the reaction delta to its target (see
                 // onMessagesReceived) instead of dropping the refresh event.
                 applyReactionSystemMessage(obj);
                 continue;
             }
-            if (m.isCallJoinLeave() || m.isEditMessage())
+            if (m.isCallJoinLeave() || m.isEditMessage() || m.isDeletedMessage())
                 continue;
             // 0.41.3-beta — own-message echo dedup (see onMessagesReceived).
             replaceTempByReferenceId(m);
@@ -966,7 +980,8 @@ void MessageListModel::runGapFillStep()
         int               oldestInPage = std::numeric_limits<int>::max();
         for (const auto &val : data) {
             Message m = Message::fromJson(val.toObject());
-            if (m.isReactionMessage() || m.isCallJoinLeave() || m.isEditMessage())
+            if (m.isReactionMessage() || m.isCallJoinLeave() || m.isEditMessage()
+                || m.isDeletedMessage())
                 continue;
             // 0.41.3-beta — same client-side filter as the receive paths.
             if (!passesThreadFilter(m)) continue;
@@ -1043,12 +1058,31 @@ void MessageListModel::onMessagesReceived(const QJsonArray &messages)
     for (const auto &val : messages) {
         const QJsonObject obj = val.toObject();
         Message m = Message::fromJson(obj);
+        if (m.systemMessage == QLatin1String("history_cleared")) {
+            // Whole-conversation clear (DELETE /chat/{token}) — purge locally on
+            // every device that receives the event (actor + peer). Upstream says
+            // to drop all cached messages on this system message.
+            clearLocalHistory();
+            continue;
+        }
         if (m.isReactionMessage()) {
             // bug 8 — a reaction added by another client arrives as a system
             // message whose `parent` is the target comment carrying the
             // updated reactions map. Apply the delta to the target instead of
             // silently dropping it; still keep it out of the visible list.
             applyReactionSystemMessage(obj);
+            continue;
+        }
+        if (m.isDeletedMessage()) {
+            // Hide deletion noise (Telegram-style) AND remove the original from
+            // the live view. Upstream's "message_deleted" event exists for
+            // exactly this — its `parent` is the deleted message; a
+            // "comment_deleted" carries the deleted id itself.
+            int target = m.id;
+            if (m.systemMessage == QLatin1String("message_deleted"))
+                target = obj.value(QStringLiteral("parent")).toObject()
+                            .value(QStringLiteral("id")).toInt();
+            removeMessageById(target);
             continue;
         }
         if (m.isCallJoinLeave() || m.isEditMessage())
@@ -1429,6 +1463,41 @@ void MessageListModel::applyReactionSystemMessage(const QJsonObject &systemMessa
     if (targetId <= 0 || !parent.contains(QStringLiteral("reactions")))
         return;
     updateReactions(targetId, parent.value(QStringLiteral("reactions")).toObject());
+}
+
+void MessageListModel::removeMessageById(int id)
+{
+    if (id <= 0 || !m_messageIds.contains(id))
+        return;
+    for (int i = 0; i < m_messages.size(); ++i) {
+        if (m_messages[i].id == id) {
+            beginRemoveRows(QModelIndex(), i, i);
+            m_messages.removeAt(i);
+            endRemoveRows();
+            m_messageIds.remove(id);
+            return;
+        }
+    }
+}
+
+void MessageListModel::clearLocalHistory()
+{
+    qInfo() << "MessageListModel: clearing local history for" << m_token;
+    if (!m_messages.isEmpty()) {
+        beginResetModel();
+        m_messages.clear();
+        m_messageIds.clear();
+        endResetModel();
+    } else {
+        m_messageIds.clear();
+    }
+    m_oldestMessageId = 0;
+    m_unreadBoundary = 0;
+    m_hasMoreHistory = false;
+    if (m_cache && !m_token.isEmpty())
+        m_cache->clearConversation(m_token);
+    emit unreadBoundaryChanged();
+    emit hasMoreHistoryChanged();
 }
 
 void MessageListModel::createTopic(const QString &title)

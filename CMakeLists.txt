@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(talq VERSION 0.43.2 LANGUAGES CXX)
+project(talq VERSION 0.43.3 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -150,18 +150,28 @@ qt_add_executable(talq
 
 # Build timestamp
 string(TIMESTAMP TALQ_BUILD_TS "%m%d-%H%M")
-target_compile_definitions(talq PRIVATE
-    TALQ_VERSION="${PROJECT_VERSION}"
-    TALQ_BUILD_TS="${TALQ_BUILD_TS}"
-    # Codename pill (empty string = none). Shown on the Mission Control
-    # command bar. RULE: the codename is per MINOR LINE and is SHARED across
-    # ALL patch releases of that line — do NOT vary it per patch. 150th-anniv
-    # April-Uprising thread: 0.39.x betas "Aprilsko Vastanie" → 0.40.x stable
-    # "Panagyurishte" → 0.41.x betas "Koprivshtitsa". 0.42.0 STABLE pivoted to a
-    # Hitchhiker's-Guide theme: "Deep Thought" — the supercomputer that computed
-    # 42. 0.43.x BETA continues that line with "Magrathea" — the legendary
-    # planet-building world from the Guide. Locked 2026-05-29.
-    TALQ_VERSION_NAME="Magrathea"
+# Version / codename / build-timestamp defines are scoped to ONLY the source
+# files that read them — deliberately NOT target-wide. As PRIVATE target defs
+# they were injected into EVERY translation unit, so the per-build TALQ_BUILD_TS
+# (and every version bump) changed every compile command and busted the ENTIRE
+# ccache: each clean release cut recompiled all ~78 objects (~6 min) instead of
+# hitting the cache. Scoped here, a cut recompiles only these few files; the
+# rest are ccache hits. Only these 6 files reference the macros (grep-verified).
+#
+# Codename RULE: per MINOR LINE, shared across ALL patch releases of that line —
+# do NOT vary it per patch. 150th-anniv April-Uprising thread: 0.39.x "Aprilsko
+# Vastanie" → 0.40.x "Panagyurishte" → 0.41.x "Koprivshtitsa". 0.42.x pivoted to
+# Hitchhiker's-Guide "Deep Thought" (computed 42). 0.43.x BETA = "Magrathea",
+# the Guide's legendary planet-building world. Locked 2026-05-29.
+set_source_files_properties(
+    src/main.cpp
+    src/core/CallManager.cpp
+    src/core/SignalingClient.cpp
+    src/core/UpdateChecker.cpp
+    src/ui/SettingsDialog.cpp
+    src/ui/MainWindow.cpp
+    PROPERTIES COMPILE_DEFINITIONS
+      "TALQ_VERSION=\"${PROJECT_VERSION}\";TALQ_VERSION_NAME=\"Magrathea\";TALQ_BUILD_TS=\"${TALQ_BUILD_TS}\""
 )
 
 # Pre-release flag: when build-release.sh is invoked with --beta it
@@ -169,13 +179,3 @@ target_compile_definitions(talq PRIVATE
 # binary so the UI can show a "PRE-RELEASE" badge regardless of which
 # channel ultimately served the user. Stable builds are unaffected.
 option(TALQ_PRERELEASE "Mark this binary as a pre-release/beta build" OFF)
-if(TALQ_PRERELEASE)
-    target_compile_definitions(talq PRIVATE TALQ_PRERELEASE)
-    message(STATUS "TalQ: PRE-RELEASE build (UI will show a beta badge)")
-endif()
-
-# #20 Video background blur + replace. Build-time gate so the feature can be
-# stripped out of slim ports until the TFLite + GL composite stack is fully
-# wired. Default ON; runtime behaviour is ALSO gated by the
-# Talk/Backgrounds/virtualBackgroundEnabled QSetting (default false), so
-# turning this on at build time alone doesn't change any user-visible

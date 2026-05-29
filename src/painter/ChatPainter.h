@@ -175,6 +175,9 @@ private:
     void paintOtherMessage(QPainter *p, const MessageLayout &ml, qreal offsetY);
     void paintReplyQuote(QPainter *p, const MessageLayout &ml, qreal offsetY);
     void paintFileAttachment(QPainter *p, const MessageLayout &ml, qreal offsetY);
+    // Timestamp floated over the bottom-right of an edge-to-edge image bubble,
+    // on a dark scrim so it stays legible over any photo.
+    void paintImageTimeOverlay(QPainter *p, const MessageLayout &ml, qreal offsetY);
     void paintReactions(QPainter *p, const MessageLayout &ml, qreal offsetY);
     void paintHoverBar(QPainter *p, const MessageLayout &ml, qreal offsetY);
     void drawEmoji(QPainter *p, const QString &codepoints, const QRectF &rect);

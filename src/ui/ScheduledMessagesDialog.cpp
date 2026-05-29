@@ -46,6 +46,8 @@ ScheduledMessagesDialog::ScheduledMessagesDialog(ApiClient *api, const QString &
     auto *closeBtn = new QPushButton(tr("Close"), this);
     closeBtn->setProperty("variant", "primary");
     auto *btnRow = new QHBoxLayout();
+    btnRow->setContentsMargins(0, 4, 0, 0);
+    btnRow->setSpacing(8);
     btnRow->addStretch();
     btnRow->addWidget(closeBtn);
     root->addLayout(btnRow);
@@ -112,6 +114,7 @@ void ScheduledMessagesDialog::renderItems(const QJsonArray &items)
         // above; the round-trip is the user's recall, not a perfect copy.
         const QString editPrefill = text;
         auto *editBtn = new QPushButton(tr("Edit"), row);
+        editBtn->setProperty("variant", "default");
         editBtn->setFixedWidth(70);
         connect(editBtn, &QPushButton::clicked, this, [this, messageId, editPrefill, sendAt]() {
             editItem(messageId, editPrefill, sendAt);
