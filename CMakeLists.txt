@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(talq VERSION 0.42.1 LANGUAGES CXX)
+project(talq VERSION 0.43.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -157,11 +157,11 @@ target_compile_definitions(talq PRIVATE
     # command bar. RULE: the codename is per MINOR LINE and is SHARED across
     # ALL patch releases of that line — do NOT vary it per patch. 150th-anniv
     # April-Uprising thread: 0.39.x betas "Aprilsko Vastanie" → 0.40.x stable
-    # "Panagyurishte" → 0.41.x betas "Koprivshtitsa". 0.42.0 STABLE pivots to a
-    # Hitchhiker's-Guide theme: "Deep Thought" — the supercomputer that
-    # computed 42, the Answer to Life, the Universe and Everything (0.42).
-    # Locked 2026-05-29.
-    TALQ_VERSION_NAME="Deep Thought"
+    # "Panagyurishte" → 0.41.x betas "Koprivshtitsa". 0.42.0 STABLE pivoted to a
+    # Hitchhiker's-Guide theme: "Deep Thought" — the supercomputer that computed
+    # 42. 0.43.x BETA continues that line with "Magrathea" — the legendary
+    # planet-building world from the Guide. Locked 2026-05-29.
+    TALQ_VERSION_NAME="Magrathea"
 )
 
 # Pre-release flag: when build-release.sh is invoked with --beta it

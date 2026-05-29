@@ -1,5 +1,41 @@
 # Changelog
 
+## v0.43.0 "Magrathea" — BETA (2026-05-29)
+
+> Codename **Magrathea** — the legendary planet-building world from *The
+> Hitchhiker's Guide to the Galaxy*, continuing the Guide theme opened by 0.42's
+> *Deep Thought*. A **pre-release** beta line for call-resilience work; 0.42.x
+> remains the stable channel.
+
+### Added
+
+* **Start a call in group conversations.** The audio and video call buttons now
+  appear in group and public rooms, not just 1:1 chats — start or join a group
+  call straight from the conversation header.
+
+### Changed
+
+* **Calls reconnect instead of dropping (Zoom-style).** When your connection to
+  the call server is lost (a flaky long-haul link revoking ICE consent, a
+  NAT/Wi-Fi blip), the call no longer hangs up after a few seconds. It enters a
+  **Reconnecting…** state and keeps actively re-establishing your media with
+  backoff for as long as it takes, while everyone else stays in the call. The
+  control bar stays visible with a **Leave** button so you can cancel a stuck
+  reconnect, and you now get a **"Call ended"** notification when a call really
+  ends (instead of the window silently vanishing).
+
+### Fixed
+
+* **Hanging up no longer freezes the other side.** On some hardware the peer's
+  app — and occasionally the whole machine — could lock up when a call was torn
+  down, because the media pipeline was shut down synchronously on the UI thread
+  and a synchronous hardware-codec teardown could wedge the GPU driver. Every
+  call pipeline (1:1 direct, the server send/receive legs, and screen share) now
+  releases on a worker thread, off the UI thread.
+* **Call events no longer sit under "New messages".** "Started a call" / "Call
+  ended" are system events, not unread messages — the *New messages* divider now
+  anchors on your first genuine unread message and skips call rows.
+
 ## v0.42.1 "Deep Thought" — STABLE (2026-05-29)
 
 > Codename **Deep Thought** — the supercomputer from *The Hitchhiker's Guide

@@ -2,6 +2,7 @@
 #include "core/VideoEncoderUtil.h"
 #include <gst/rtp/rtp.h>
 #include <gst/app/app.h>
+#include <thread>
 #include <QPointer>
 #include <QApplication>
 #include <QDebug>
@@ -506,9 +507,16 @@ void ScreenSharePipeline::cleanup()
     if (m_previewAppsink)
         g_signal_handlers_disconnect_by_data(m_previewAppsink, this);
     if (m_pipeline) {
-        gst_element_set_state(m_pipeline, GST_STATE_NULL);
-        gst_object_unref(m_pipeline);
+        // 0.43.0 — detach the NULL transition (same fix as PeerPipeline/
+        // PublishPipeline). A HW-encoder screen pipeline's synchronous
+        // set_state(NULL) can block the Qt main thread / wedge the GPU during
+        // teardown. Null the pointer first so re-entrant callers see none.
+        GstElement *pipe = m_pipeline;
         m_pipeline = nullptr;
+        std::thread([pipe]() {
+            gst_element_set_state(pipe, GST_STATE_NULL);
+            gst_object_unref(pipe);
+        }).detach();
     }
     m_webrtcbin = nullptr;
     m_videoEncoder = nullptr;  // owned by the (now-freed) pipeline
