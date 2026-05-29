@@ -149,6 +149,12 @@ private slots:
     void onLastCommonReadChanged(int messageId);
 
     void updateReactions(int messageId, const QJsonObject &data);
+    // bug 8 — a reaction/reaction_revoked system message (from the long-poll or
+    // a refresh) carries the target comment + its updated reactions map in
+    // `parent`. Apply that delta to the target message instead of dropping the
+    // event, so reactions added by OTHER clients appear (and survive cache
+    // reload). Never shown as a visible message.
+    void applyReactionSystemMessage(const QJsonObject &systemMessageJson);
 
 private:
     void startPoller();
@@ -201,6 +207,14 @@ private:
     // When m_threadId==0 AND m_hideThreadMessages is true, only
     // non-thread messages pass.
     bool passesThreadFilter(const Message &m) const;
+
+    // bug 1 — the SINGLE reconciliation authority for the model's core
+    // invariant: m_messages strictly newest-first by id (index 0 = newest)
+    // and m_messageIds an exact mirror. Every ingest path calls this so the
+    // ordering guarantee can never drift between paths. Returns true if a
+    // corrective re-sort was performed (cheap O(n) check when already ordered).
+    bool enforceNewestFirstInvariant();
+
     int m_lastCommonRead = 0;
     int m_unreadBoundary = 0;
     ConversationListModel *m_conversations = nullptr;

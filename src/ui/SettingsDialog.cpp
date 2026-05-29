@@ -254,6 +254,7 @@ SettingsDialog::SettingsDialog(
 
     m_tabs = new QTabWidget(this);
     m_tabs->addTab(wrapInScroll(buildAudioVideoTab()),    "Audio && Video");
+    m_tabs->addTab(wrapInScroll(buildBackgroundTab()),    "Background");
     m_tabs->addTab(wrapInScroll(buildNotificationsTab()), "Notifications");
     m_tabs->addTab(wrapInScroll(buildUpdatesTab()),       tr("Updates"));
     m_tabs->addTab(wrapInScroll(buildGeneralTab()),       "General");
@@ -380,8 +381,12 @@ QWidget *SettingsDialog::buildAudioVideoTab()
     // it clear that 2K/4K saturate residential uplinks on BOTH ends
     // and are not safe defaults for casual calls. We now gate the
     // high tiers behind an explicit "Presentation mode" checkbox.
-    auto *presentationCheck = new QCheckBox(
-        tr("Presentation mode (2K / 4K available, high bandwidth)"), this);
+    // No intrinsic label text: makeSettingRow() supplies the name in the
+    // left column and right-aligns the bare indicator. A text label here
+    // would render a SECOND (wide) caption inside the narrow control column
+    // that overflows left and collides with the row name — the "checkboxes
+    // overlapping" report.
+    auto *presentationCheck = new QCheckBox(this);
     auto *resCombo = new QComboBox(this);
 
     auto repopulateRes = [resCombo](bool presentationMode, int currentSaved) {
@@ -448,34 +453,38 @@ QWidget *SettingsDialog::buildAudioVideoTab()
            "capable camera and a healthy link — TalQ adapts down to fit."),
         resCombo));
 
-    // 0.41.5-beta — prefer P2P (direct WebRTC) for 1:1 calls even when
-    // the server runs an MCU/HPB. Saves the MCU detour for BG↔BG (and
-    // any other case where peers are physically close to each other
-    // and far from the SFU). Group calls (3+ participants) still use
-    // the MCU when one is available — full-mesh P2P would saturate
-    // uplinks at 4+ participants.
-    auto *p2p1to1Check = new QCheckBox(
-        tr("Prefer direct (P2P) connection for 1:1 calls (experimental)"), this);
+    // 0.41.x — "Direct P2P for 1:1 calls" toggle, RE-ENABLED. The 0.41.5
+    // version was removed because a client could not force P2P under a Janus
+    // MCU (the HPB hijacked the reserved offer/answer/candidate types). The
+    // talq.p2p.* signaling OVERLAY (a custom session-targeted type the HPB
+    // relays untouched) bypasses that, so 1:1 SDP + ICE can now travel
+    // peer-to-peer even on an MCU server. Experimental + opt-in (default
+    // OFF) while the direct media path is field-validated; non-TalQ peers
+    // and any P2P failure fall back to the MCU automatically.
+    auto *p2pCheck = new QCheckBox();   // label comes from makeSettingRow name
+    p2pCheck->setToolTip(
+        tr("Connect one-to-one calls directly to the other person instead of "
+           "routing media through the server — lower latency and bandwidth "
+           "when you are both near each other. Group calls always use the "
+           "server. Falls back to the server automatically if direct fails."));
     {
-        QSettings cs("TalQ", "TalQ");
-        cs.beginGroup("Call");
-        p2p1to1Check->setChecked(cs.value("preferP2pFor1to1", false).toBool());
-        cs.endGroup();
+        QSettings vs("TalQ", "TalQ");
+        vs.beginGroup("Video");
+        p2pCheck->setChecked(vs.value("p2pForOneToOne", false).toBool());
+        vs.endGroup();
     }
-    connect(p2p1to1Check, &QCheckBox::toggled, this,
-            [p2p1to1Check]() {
-                QSettings cs("TalQ", "TalQ");
-                cs.beginGroup("Call");
-                cs.setValue("preferP2pFor1to1", p2p1to1Check->isChecked());
-                cs.endGroup();
-            });
+    connect(p2pCheck, &QCheckBox::toggled, this, [](bool checked) {
+        QSettings vs("TalQ", "TalQ");
+        vs.beginGroup("Video");
+        vs.setValue("p2pForOneToOne", checked);
+        vs.endGroup();
+    });
     layout->addWidget(makeSettingRow(
         tr("Direct P2P for 1:1 calls"),
-        tr("When on, 1:1 calls bypass the SFU and go peer-to-peer for "
-           "lower latency. Group calls still use the SFU. If a 1:1 call "
-           "fails to establish direct ICE, TalQ falls back to the SFU "
-           "automatically."),
-        p2p1to1Check));
+        tr("Experimental. Connects one-to-one calls directly (lower latency) "
+           "instead of via the server; falls back to the server if needed. "
+           "Takes effect on the next call."),
+        p2pCheck));
 
     // 0.41.3-beta — playback-gain control removed. Telegram, Zoom and
     // Meet do not surface a "playback volume" setting; their receive-
@@ -485,7 +494,36 @@ QWidget *SettingsDialog::buildAudioVideoTab()
     // QSettings("TalQ","TalQ")/Audio/playbackGain is the only knob,
     // and it stays at default unless a power user edits it directly.
 
-    layout->addSpacing(kGroupGap - kRowGap);
+    layout->addStretch();
+
+    auto *refreshBtn = new QPushButton(tr("Refresh devices"));
+    refreshBtn->setProperty("variant", "ghost");
+    connect(refreshBtn, &QPushButton::clicked, m_deviceManager,
+            &MediaDeviceManager::refresh);
+    auto *btnRow = new QHBoxLayout;
+    btnRow->setContentsMargins(0, 0, 0, 0);
+    btnRow->addStretch();
+    btnRow->addWidget(refreshBtn);
+    layout->addLayout(btnRow);
+
+    return page;
+}
+
+// ============================================================
+// Tab: Background (selfie blur / image replacement, #20)
+// ============================================================
+// Split out of the Audio & Video tab (0.41.x): the background controls —
+// live preview, blur slider, the 8-tile image grid and the file picker —
+// are the single biggest block in Settings and made the combined tab a
+// long, dense scroll. On their own page they have room to breathe and the
+// Audio & Video tab is back to a short, scannable device list.
+
+QWidget *SettingsDialog::buildBackgroundTab()
+{
+    auto *page = new QWidget;
+    auto *layout = new QVBoxLayout(page);
+    layout->setContentsMargins(24, 22, 24, 22);
+    layout->setSpacing(kRowGap);
 
     // ── Background (#20) ──
     // Settings keys mirror upstream Talk (spreed v23.0.4) so a hypothetical
@@ -838,17 +876,6 @@ QWidget *SettingsDialog::buildAudioVideoTab()
                                   && bgType == QLatin1String("image"));
 
     layout->addStretch();
-
-    auto *refreshBtn = new QPushButton(tr("Refresh devices"));
-    refreshBtn->setProperty("variant", "ghost");
-    connect(refreshBtn, &QPushButton::clicked, m_deviceManager,
-            &MediaDeviceManager::refresh);
-    auto *btnRow = new QHBoxLayout;
-    btnRow->setContentsMargins(0, 0, 0, 0);
-    btnRow->addStretch();
-    btnRow->addWidget(refreshBtn);
-    layout->addLayout(btnRow);
-
     return page;
 }
 
@@ -1376,9 +1403,20 @@ QWidget *SettingsDialog::buildAccountTab()
     const QString verName = QStringLiteral(TALQ_VERSION_NAME);
     if (!verName.isEmpty()) {
         layout->addSpacing(6);
-        auto *credit = new QLabel(
-            tr("Codename \"%1\" — Bulgaria's April Uprising of 1876, "
-               "150th anniversary (2026).").arg(verName));
+        // Blurb chosen by codename so it always matches TALQ_VERSION_NAME:
+        // 0.39.x–0.41.x honoured Bulgaria's 1876 April Uprising; from 0.42.0
+        // the stable line pivots to a Hitchhiker's-Guide theme ("Deep Thought").
+        QString creditText;
+        if (verName == QStringLiteral("Deep Thought")) {
+            creditText = tr("Codename \"%1\" — the supercomputer from The "
+                            "Hitchhiker's Guide to the Galaxy that computed 42, "
+                            "the Answer to Life, the Universe and Everything "
+                            "(a nod to version 0.42).").arg(verName);
+        } else {
+            creditText = tr("Codename \"%1\" — Bulgaria's April Uprising of 1876, "
+                            "150th anniversary (2026).").arg(verName);
+        }
+        auto *credit = new QLabel(creditText);
         credit->setFont(infoFont);
         credit->setProperty("role", "secondary");
         credit->setWordWrap(true);

@@ -26,6 +26,12 @@ public:
     void stop();
     bool isPolling() const { return m_polling; }
     QString currentToken() const { return m_token; }
+    // bug 1 — the cursor the poller has already advanced to (from the
+    // X-Chat-Last-Given header). startPoller clamps against this so a
+    // competing refresh/restart can never seed the cursor BACKWARD (the
+    // 18055→18054 revert seen in the field log), which caused redundant
+    // re-fetches and model-reset churn around conversation open.
+    int lastKnownMessageId() const { return m_lastKnownMessageId; }
 
     void setThreadId(int id) { m_threadId = id; }
     int threadId() const { return m_threadId; }
@@ -53,6 +59,10 @@ private:
     int m_lastKnownMessageId = 0;
     int m_lastKnownCommonRead = 0;
     bool m_polling = false;
+    // Set by stop() (and cleared by start()) to distinguish OUR intentional
+    // teardown from an unexpected socket abort in handlePollResponse — see
+    // bug 1: a transient cancel must resume the loop, not silently kill it.
+    bool m_stopping = false;
     int m_threadId = 0;
     static constexpr int POLL_TIMEOUT_SECS = 15;
 };

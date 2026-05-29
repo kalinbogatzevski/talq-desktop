@@ -1,5 +1,220 @@
 # Changelog
 
+## v0.42.1 "Deep Thought" — STABLE (2026-05-29)
+
+> Codename **Deep Thought** — the supercomputer from *The Hitchhiker's Guide
+> to the Galaxy* that computed **42**, the Answer to Life, the Universe and
+> Everything (a nod to version 0.42). It opens a new naming line after the
+> 1876 April-Uprising cycle (*Aprilsko Vastanie* → *Panagyurishte* →
+> *Koprivshtitsa*).
+
+### Fixed
+
+* **New messages always appear immediately — on open and while you're in
+  the room.** A message that arrived while you were in another room, before
+  the app was focused, or even while you were sitting in the conversation
+  could be missing until you switched away and back. The message list now
+  enforces a single newest-first ordering rule across *every* path that adds
+  messages (first load, live updates, scroll-back history), so the newest
+  message is always at the bottom the instant it arrives — no switching.
+* **"Away" returns to "Online" as soon as you're back.** After an
+  automatic idle-away, returning to TalQ (focusing the window or any
+  keypress/click) restores your status to online immediately, instead of
+  waiting up to ~30 seconds for the next idle check. This now also covers an
+  away set automatically by the server or by another device.
+* **In-app release notes render fully.** The changelog screen could turn
+  unreadable partway down (a stray markup character cut the rest off); it
+  now displays correctly all the way through.
+* **Settings codename credit** now matches the build (the "Deep Thought"
+  release no longer shows the previous April-Uprising blurb).
+
+## v0.42.0 "Deep Thought" — STABLE (2026-05-29)
+
+The chat-room reliability work from the 0.41.x beta series, promoted to
+stable. This release makes conversations, unread state, reactions,
+replies and topics behave correctly and consistently.
+
+### Fixed — chat reliability
+
+* **Open conversations stay up to date.** New messages always appear in
+  the open chat, even after a network blip — the live message connection
+  now detects an unexpected drop and reconnects instead of going quiet
+  (previously a message could show in the conversation list but not
+  inside the open room until you switched away and back).
+* **Unread counts are correct and consistent across devices.** The app no
+  longer over-counts unread messages or moves your read position
+  backwards; the badge clears as you read, and the "New messages" divider
+  no longer re-appears above messages you've already read.
+* **Reactions from other people now show up** on your messages, and
+  survive reopening the conversation and restarting the app.
+* **Replies stay in the right place** — a reply no longer jumps to sit
+  next to the original message after reopening the conversation; it stays
+  in order with a quote of the message it answers, which now fills in
+  immediately when you send.
+* **New topics appear instantly for everyone** in a group, without having
+  to leave and re-open the conversation.
+* **Light theme: topic labels are readable** again, following the active
+  theme in all four themes.
+
+### Other
+
+* **A contact's TalQ version** is no longer shown as a stale/wrong value —
+  it's hidden when it hasn't been confirmed recently and refreshes on a
+  call.
+* **Experimental "Direct P2P for 1:1 calls"** (opt-in, off by default):
+  fixed a crash and the missing self-view camera; when a direct
+  connection isn't possible the call falls back to the server-routed path
+  automatically. Leave it off unless you're specifically testing it.
+
+### Under the hood
+
+* Core chat-sync rules (forward-only read marker, message-list
+  reconciliation, peer-version freshness) are now pure, unit-tested
+  invariants so these regressions can't quietly return.
+
+## v0.41.11 "Koprivshtitsa" — BETA (2026-05-29)
+
+More fixes from field testing: topics, the light theme, message reply
+ordering, and a crash in the experimental direct-call mode.
+
+### Fixed
+
+* **New topics appear instantly for everyone.** When a member created a
+  topic, others in the group didn't see it (and couldn't open it or read
+  its messages) until they left the conversation and came back. The
+  topic bar now updates live for everyone.
+* **Light theme: topic labels are readable again.** The topic-bar labels
+  rendered black/low-contrast in the light theme; they now follow the
+  theme's text colors like the rest of the app, in all four themes.
+* **Replies stay in the right place.** A reply could jump to sit next to
+  the original message (near the top of the history) after reopening the
+  conversation, instead of staying in order with a quote of the message
+  it answers. Message ordering is now consistent between the live view
+  and what's restored from the local cache.
+* **Fixed a crash in experimental 1:1 "Direct P2P" calls.** If a direct
+  call couldn't bring up the camera, the app could die on both ends a few
+  seconds in. It no longer crashes and now falls back to the
+  server-routed call path. Direct P2P stays opt-in / off by default while
+  it's stabilised (the self-view camera in that mode is still being
+  worked on).
+
+## v0.41.10 "Koprivshtitsa" — BETA (2026-05-29)
+
+A focused hardening pass on chat synchronisation. Messages, unread
+state, reactions, replies and sending are now far more reliable, and a
+crash when sending the first message in a brand-new group is fixed.
+
+### Fixed — chat sync
+
+* **New messages now appear in the open conversation reliably.** The
+  open chat could silently stop updating after a transient network
+  blip (sleep/wake, VPN or proxy reconnect) — new messages showed in
+  the conversation list but not inside the room you were looking at,
+  until you switched away and back. The live message connection now
+  detects an unexpected drop and reconnects instead of going quiet,
+  re-syncs the open room when you bring the window back to the
+  foreground, and recovers immediately if you re-click the open
+  conversation.
+* **Unread counts no longer over-count.** The app could send the
+  server a read position that moved *backwards* (for example when a
+  topic tab was open, or this device was behind another you had
+  already read on), which inflated the unread badge — e.g. showing 23
+  when you had 4. The read marker is now strictly forward-only, so it
+  can never drag your read position backwards or re-inflate the count
+  across devices.
+* **The unread badge clears as you read**, and the **"New messages"
+  divider no longer re-appears above messages you have already read**
+  when you return to a conversation.
+* **Replies show the quoted message immediately.** A reply you sent
+  showed a blank quote until the server echo arrived; the quoted
+  message is now filled in the moment you send.
+* **Reactions added by other people now show up** (and survive
+  re-opening the room and restarting the app). Previously an emoji
+  another participant added to your message never appeared.
+* **Sending the first message in a brand-new group no longer gets
+  stuck on "Sending" or crashes the app.** Sends that do not complete
+  now surface a clear failed state you can retry, and a new group
+  starts receiving replies without needing to re-open it.
+* **A contact's TalQ version is no longer shown as a stale, wrong
+  value.** The version a peer reported is now timestamped; if it has
+  not been confirmed recently it simply is not shown rather than
+  displaying an old number, and a call refreshes it.
+
+### Under the hood
+
+* Core sync rules (forward-only read marker, safe message-list index
+  reconciliation that fixes the new-group send crash, and peer-version
+  freshness) are now extracted into pure, unit-tested helpers so these
+  regressions cannot quietly return.
+
+## v0.41.9 "Koprivshtitsa" — BETA (2026-05-28)
+
+Zoom-style direct peer-to-peer for one-to-one calls, plus a deep
+overhaul of the peer-to-peer media engine.
+
+### Added — direct peer-to-peer for 1:1 calls (experimental, opt-in)
+
+* **One-to-one calls can now connect directly between the two
+  people** instead of routing audio and video through the server —
+  lower latency and bandwidth when you are near each other. Group
+  calls (3+) keep using the server, exactly like Zoom. Enable it in
+  **Settings → "Direct P2P for 1:1 calls"** (off by default while the
+  direct media path is being validated in the field). If the other
+  person is on a non-TalQ client, or the direct connection can't be
+  established, the call falls back to the server automatically.
+* **How it bypasses the media server.** Earlier attempts to force
+  direct calls failed because the standalone-signaling server, when
+  configured with a media server, intercepts the standard
+  offer/answer/ICE-candidate messages and treats them as
+  server-publish operations (a relayed 1:1 offer came back answered
+  "from self" and ICE candidates were rejected). TalQ now rides a
+  private signaling overlay — a custom message type the server relays
+  untouched — so the call setup travels straight between the two
+  clients and the media goes direct.
+
+### Fixed — peer-to-peer media engine
+
+* **Receiving video now works.** The incoming-media chain was linked
+  on the wrong thread, *after* media had already started arriving,
+  which permanently stalled the shared transport (and, because send
+  and receive share it, killed the outgoing direction too). It is now
+  linked synchronously the moment the stream appears.
+* **Decoding switched to auto-selection** (the same approach the
+  server-receive path uses), which reliably picks a working hardware
+  or software H.264 decoder; the previous fixed decoder negotiated but
+  produced no frames.
+* **Camera no longer emits one frame then freezes.** The capture
+  elements were being started in the wrong order relative to the rest
+  of the pipeline, so the camera pushed into a not-yet-ready stage and
+  paused itself. Now started in dependency order.
+* **Hanging up no longer freezes the app.** Tearing the call down while
+  the camera was still streaming could deadlock; the source is now
+  stopped first.
+* **A transient transport hiccup no longer kills your camera** — only
+  genuine capture/encoder failures end the video now.
+* **Robust camera capture + hardware encoder** carried over: permissive
+  capture formats + `decodebin` (fixes `mfvideosrc … not-negotiated`
+  on cameras without an exact MJPEG mode), hardware H.264 encoder
+  selection, and clean camera-device release on teardown.
+
+### Unchanged & verified — the server (MCU) call path
+
+* All calls that route through the media server (every call today, and
+  all 3+ group calls) are **unaffected and re-verified end-to-end**:
+  180 H.264 frames flowing publisher → server → subscriber in the
+  automated harness, with no regression from any of the above.
+
+### Added — test infrastructure
+
+* **`TALQ_TEST_P2P` harness mode** exercises the private overlay,
+  ICE, DTLS and the peer-to-peer media chain between the two bot
+  accounts. The overlay relay, ICE connectivity and call teardown are
+  verified; full two-way decoded-frame delivery is validated on real
+  separate machines (the single-process harness runs two full media
+  engines at once, which the direct test cannot fully represent).
+
+---
+
 ## v0.41.8 "Koprivshtitsa" — BETA (2026-05-28)
 
 Multi-device self-ring suppression.
@@ -515,7 +730,7 @@ join" RCA, and a long-overdue ring-only test harness mode.
 * **`TALQ_TEST_RING_ONLY=1` mode for `talq-call-test`.** Peer A
   signaling-joins room + call (bot account, no media, no peer B),
   sits until `--timeout`, hangs up cleanly. Used to ring a real
-  human's TalQ — e.g. test-talq calling `u2f3gbu4` rings kalin —
+  human's TalQ — e.g. test-talq calling `u2f3gbu4` rings a real user —
   for manual in-call UI verification without needing a second
   laptop. Default `--timeout 60`; ring-only is allowed up to 300.
 
@@ -699,7 +914,7 @@ Topic-mode polish + call-path recovery. Three RCAs in one release.
 * **Messages sent in a topic no longer appear as replies to the seed.**
   The composer used to set `replyTo = m_activeThreadId` whenever a
   topic was open, which the server rendered as "replying to 📌
-  <title>" on every message. Talk has a proper top-level `threadId`
+  `<title>`" on every message. Talk has a proper top-level `threadId`
   parameter for posting INTO a thread; `MessageListModel::sendMessage`
   now wires `m_threadId` (already tracked) onto the POST body and the
   composer-send handler stops overloading `replyTo`. Explicit
@@ -1039,7 +1254,7 @@ Three layered improvements to person-segmentation quality + one field nit.
 
 ## v0.39.8 "Aprilsko Vastanie" — BETA (2026-05-24)
 
-Two BG-feature nits caught the moment 0.39.7 hit Kalin's machine.
+Two BG-feature nits caught the moment 0.39.7 hit a dev machine.
 
 ### Fixed
 
@@ -1666,7 +1881,7 @@ defensively guarded.
 
 ### Fixed
 - **Callee mid-call camera-on chop (the #111 saga, structural fix —
-  field-verified with Ilko).** The 16×16 1 fps black dummy that fed
+  field-verified on live calls).** The 16×16 1 fps black dummy that fed
   the funnel forever while the camera was off is gone. We now mirror
   upstream's BlackVideoEnforcer: the dummy runs for a 5-second grace
   window after every "camera off" transition, then closes the dummy
@@ -1674,7 +1889,7 @@ defensively guarded.
   like Chrome's `track.enabled=false`. When the camera enables, the
   halt timer is stopped and valves flip as before. Autonomous harness
   reproduces the previously-broken scenario at 79–87 % distinct /
-  delivered (was ~30 % in the field) and Ilko confirms the chop is
+  delivered (was ~30 % in the field) and a field tester confirms the chop is
   gone on live calls.
 - **Stuck "Connecting" status pill until peer enables camera.** Call
   state now flips Active on the publisher PC's ICE-connected, not on
@@ -1734,7 +1949,7 @@ defensively guarded.
 - **`TALQ_TEST_CAMERA_TOGGLE=1` harness scenario** in `talq-call-test`
   that defers `enableCamera()` 8 s after publish-pipeline start, then
   measures distinct/delivered RX over an averaged 5-s window. The
-  exact field bug, autonomously verifiable, no humans / Ilko required.
+  exact field bug, autonomously verifiable, no humans required.
 
 ## v0.31.10 "Bangaranga" — PRE-RELEASE (2026-05-21)
 
@@ -1799,7 +2014,7 @@ HPB/MCU; the rest ready for live 2-peer field check.
 - **`TALQ_TEST_CAMERA_TOGGLE=1` harness scenario** in `talq-call-test`
   that defers `enableCamera()` 8 s after publish-pipeline start, then
   measures distinct/delivered RX over an averaged 5-s window. The
-  exact field bug, autonomously verifiable, no humans / Ilko required.
+  exact field bug, autonomously verifiable, no humans required.
 
 ## v0.31.9 "Bangaranga" — PRE-RELEASE (2026-05-21)
 
@@ -3493,7 +3708,7 @@ Root cause: three protocol compliance issues found by comparing TalQ's SDP with 
 
 ### Automated Call Testing
 - **talq-call-test.exe** — headless two-user MCU call test harness
-- Authenticates kalin + test-talq, joins call via HPB, creates WebRTC pipelines, verifies ICE connection through real STUN/TURN, validates 3s stability, tears down cleanly
+- Authenticates a real user + test-talq, joins call via HPB, creates WebRTC pipelines, verifies ICE connection through real STUN/TURN, validates 3s stability, tears down cleanly
 - Catches SDP issues, ICE failures, and signaling bugs without GUI
 
 ### Build & Deploy
