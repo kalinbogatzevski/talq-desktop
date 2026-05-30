@@ -757,9 +757,10 @@ void CallManager::setState(CallState newState)
     // point this call, jump straight to Active. The line above already
     // updated m_state to Connecting; recursing into setState(Active)
     // re-enters with newState=Active and proceeds normally.
-    if (newState == Connecting && m_pubIceConnectedSeen) {
-        qInfo() << "CallManager: publisher ICE already connected at "
-                   "Connecting-time — promoting straight to Active";
+    if (newState == Connecting && (m_pubIceConnectedSeen || m_p2pIceConnectedSeen)) {
+        qInfo() << "CallManager: media ICE already connected at Connecting-time"
+                   " — promoting straight to Active"
+                << (m_p2pIceConnectedSeen ? "(P2P)" : "(MCU)");
         setState(Active);
         m_durationTimer.start();
         return;
@@ -1797,8 +1798,14 @@ void CallManager::joinCallOnServer(bool withVideo)
                                 this, [this](const QString &state) {
                             qDebug() << "CallManager: P2P ICE:" << state;
                             setStatusDetail("ICE " + state);
-                            if (state == "connected") {
+                            if (state == "connected" || state == "completed") {
                                 setStatusDetail("Connected");
+                                // #66 — sticky flag for the Connecting→Active
+                                // race: P2P ICE can connect before participant
+                                // discovery flips us to Connecting, in which
+                                // case setState(Connecting) promotes via this
+                                // flag instead of waiting on the 12 s fallback.
+                                m_p2pIceConnectedSeen = true;
                                 if (m_state == Connecting) {
                                     setState(Active);
                                     m_durationTimer.start();
@@ -2084,6 +2091,7 @@ void CallManager::stopAllPipelines()
     m_pubRetryAttempts   = 0;
     m_pubRebuildInFlight = false;
     m_pubIceConnectedSeen = false;
+    m_p2pIceConnectedSeen = false;
 
     // Flush stale GLib sources from destroyed pipelines (libnice agents,
     // DTLS timers, etc.). Without this, creating a new webrtcbin on the

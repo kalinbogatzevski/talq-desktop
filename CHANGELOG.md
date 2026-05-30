@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.45.1 "Margaritka" — BETA (2026-05-30)
+
+> Same **Margaritka** beta line (the codename runs per minor line). A small fix
+> to the experimental direct-call path.
+
+### Fixed
+
+* **Direct (peer-to-peer) one-to-one calls go live faster.** A direct call could
+  linger on "Connecting…" for a few seconds before connecting when the media
+  link came up before the other side was discovered; it now switches to the live
+  call the moment the connection is ready. Direct P2P is still an opt-in
+  experiment; calls through the server are unaffected.
+
 ## v0.45.0 "Margaritka" — BETA (2026-05-30)
 
 > A new beta line named **Margaritka** (Маргаритка, "the daisy") for **1 June,

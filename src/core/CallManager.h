@@ -355,6 +355,11 @@ private:
     // transitions INTO Connecting and promotes immediately if it's
     // already been "connected". Reset on every fresh call attempt.
     bool m_pubIceConnectedSeen = false;
+    // #66 — P2P twin of the above. A 1:1 direct call's ICE can reach
+    // "connected" before participant discovery flips us to Connecting; remember
+    // it so setState(Connecting) promotes straight to Active instead of waiting
+    // on the 12 s MCU-fallback timer. Reset on every fresh call attempt.
+    bool m_p2pIceConnectedSeen = false;
 
     bool m_joinedCall = false;
     bool m_userActionReady = false;
