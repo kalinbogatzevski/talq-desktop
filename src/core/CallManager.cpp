@@ -1,6 +1,8 @@
 #include "core/CallManager.h"
 #include "core/BackgroundEngine.h"
 #include "core/TalqLog.h"
+#include "core/WasapiDucking.h"
+#include "ui/ShareOverlay.h"
 #include "models/ConversationListModel.h"
 #include <QJsonObject>
 #include <QDateTime>
@@ -1461,6 +1463,13 @@ void CallManager::startScreenShare(int monitorIndex, quintptr windowHandle)
         m_screenSharing = false;
         m_screenSharePipeline->deleteLater();
         m_screenSharePipeline = nullptr;
+    } else if (windowHandle == 0) {
+        // #72 — frame the shared MONITOR with the coloured "you are sharing"
+        // border. Window shares (windowHandle != 0) don't get a monitor frame.
+        // The overlay excludes itself from capture so the peer never sees it.
+        if (!m_shareOverlay)
+            m_shareOverlay = new ShareOverlay();
+        m_shareOverlay->showForMonitor(monitorIndex);
     }
 
     emit screenShareChanged();
@@ -1483,6 +1492,14 @@ void CallManager::requestPeerVideoQuality(const QString &sessionId, int substrea
 void CallManager::stopScreenShare()
 {
     if (!m_screenSharing) return;
+
+    // #72 — drop the monitor border first so it vanishes the instant sharing
+    // ends, regardless of how the pipeline teardown below proceeds.
+    if (m_shareOverlay) {
+        m_shareOverlay->hide();
+        m_shareOverlay->deleteLater();
+        m_shareOverlay = nullptr;
+    }
 
     // Mark the screen-share teardown window so the publisher-ICE-failed
     // handler short-circuits its recovery counter / hangUp during this
@@ -1640,6 +1657,12 @@ void CallManager::updateCallFlags()
 
 void CallManager::joinCallOnServer(bool withVideo)
 {
+    // Keep our call audio at full volume even if another app opens a Windows
+    // "communications" stream (which would otherwise duck us). Best-effort,
+    // idempotent; this is the common funnel for outgoing, accept, and the
+    // P2P→MCU fallback, so one call here covers every path. No-op off Windows.
+    talq::disableCommunicationsDucking();
+
     QJsonObject body;
     body["flags"] = callFlags(withVideo, !m_muted);
     // Match the official client's POST call/{token} parameter shape.
@@ -2125,6 +2148,14 @@ void CallManager::teardown(const QString &reason)
         m_screenSharePipeline->stop();
         m_screenSharePipeline->deleteLater();
         m_screenSharePipeline = nullptr;
+    }
+    // #72 — a call can end while screen-sharing without going through
+    // stopScreenShare(), so drop the monitor-border overlay here too, else its
+    // top-level window is orphaned on screen after the call.
+    if (m_shareOverlay) {
+        m_shareOverlay->hide();
+        m_shareOverlay->deleteLater();
+        m_shareOverlay = nullptr;
     }
     m_screenSharing = false;
     m_screenShareTearingDown = false;

@@ -372,6 +372,25 @@ QNetworkReply *ApiClient::putAbsoluteUrl(const QString &path, const QByteArray &
     return m_nam.put(req, body);
 }
 
+QNetworkReply *ApiClient::davRequest(const QByteArray &verb, const QString &path,
+                                     const QByteArray &body,
+                                     const QMap<QByteArray, QByteArray> &headers)
+{
+    QNetworkRequest req{QUrl(m_serverUrl + path)};
+    applyBasicAuth(req);
+    for (auto it = headers.constBegin(); it != headers.constEnd(); ++it)
+        req.setRawHeader(it.key(), it.value());
+    if (body.isEmpty())
+        return m_nam.sendCustomRequest(req, verb);   // MKCOL / MOVE — no payload
+    // PUT a chunk: own a QBuffer that outlives the request.
+    auto *buf = new QBuffer();
+    buf->setData(body);
+    buf->open(QIODevice::ReadOnly);
+    auto *reply = m_nam.sendCustomRequest(req, verb, buf);
+    buf->setParent(reply);
+    return reply;
+}
+
 QNetworkReply *ApiClient::postAbsoluteUrl(const QString &path, const QByteArray &body)
 {
     QNetworkRequest req{QUrl(m_serverUrl + path)};

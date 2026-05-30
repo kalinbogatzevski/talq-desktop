@@ -98,6 +98,7 @@ private:
     GstElement *m_videoCapsFilter = nullptr;
     GstElement *m_videoEncoder = nullptr;
     GstElement *m_videoParser = nullptr;    // h264parse when the factory picks H264
+    GstElement *m_videoProfileCaps = nullptr; // #69 capsfilter forcing H264 High profile (P2P only)
     GstElement *m_videoPayloader = nullptr;
     GstElement *m_videoSsrcFilter = nullptr;
     guint32 m_videoSsrc = 0;
