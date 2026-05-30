@@ -16,6 +16,7 @@
 #include <cstdlib>
 
 #include "core/VideoEncoderUtil.h"
+#include "core/CaptureDsp.h"
 
 PublishPipeline::PublishPipeline(QObject *parent)
     : QObject(parent)
@@ -155,8 +156,15 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
     GstElement *audiosrc = nullptr;
     if (qEnvironmentVariableIsSet("TALQ_TEST_AUDIO")) {
         audiosrc = gst_element_factory_make("audiotestsrc", "pub-audiosrc");
-        g_object_set(audiosrc, "is-live", TRUE, "wave", 0, "freq", 440.0, nullptr);
-        qDebug() << "PublishPipeline: audio source: audiotestsrc (TEST MODE)";
+        // TALQ_TEST_AUDIO_VOL lets the AGC harness feed a known-quiet tone
+        // (e.g. 0.1 ≈ -20 dBFS peak) so the gain boost is observable. Default
+        // 0.8 matches audiotestsrc's own default (loud) for other scenarios.
+        double testVol = 0.8;
+        if (qEnvironmentVariableIsSet("TALQ_TEST_AUDIO_VOL"))
+            testVol = qEnvironmentVariable("TALQ_TEST_AUDIO_VOL").toDouble();
+        g_object_set(audiosrc, "is-live", TRUE, "wave", 0, "freq", 440.0,
+                     "volume", testVol, nullptr);
+        qDebug() << "PublishPipeline: audio source: audiotestsrc (TEST MODE) vol=" << testVol;
     } else {
         audiosrc = gst_element_factory_make("wasapi2src", "pub-audiosrc");
         if (audiosrc) {
@@ -212,16 +220,23 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
     // Configure level element: report every 100ms
     g_object_set(level, "post-messages", TRUE, "interval", (guint64)100000000, nullptr);
 
-    // Optional WebRTC noise suppression (webrtcdsp). Enabled by default; the
-    // setting and the plugin's presence in the deployed GStreamer both gate
-    // it. If the plugin is missing we fall back to the plain chain so calls
-    // still work on installs without libgstwebrtcdsp.
+    // Optional WebRTC DSP (webrtcdsp): noise suppression and/or automatic gain
+    // control on the capture leg. Each is independently gated by its own
+    // setting (both default ON); the element is created if EITHER is enabled
+    // and the plugin is present. If the plugin is missing we fall back to the
+    // plain chain so calls still work on installs without libgstwebrtcdsp.
     GstElement *webrtcdsp = nullptr;
     {
         QSettings s("TalQ", "TalQ");
         s.beginGroup("Audio");
         const bool nsEnabled = s.value("noiseSuppression", true).toBool();
+        bool agcEnabled      = s.value("audioAutoGainControl", true).toBool();
         s.endGroup();
+        // Deterministic override for the TALQ_TEST_AUDIO_AGC harness: force AGC
+        // on ("1") or off ("0") regardless of the persisted setting so the test
+        // doesn't depend on whatever the dev machine last saved.
+        if (qEnvironmentVariableIsSet("TALQ_FORCE_AGC"))
+            agcEnabled = (qgetenv("TALQ_FORCE_AGC") != "0");
         // echo-cancel is intentionally OFF. webrtcdsp's echo-cancel mode
         // requires a webrtcechoprobe to exist AT pipeline-start, but the
         // only place to tap the far-end audio is the SubscribeWebrtcSrc
@@ -231,21 +246,16 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         // whole publish pipeline — hence EVERY call, audio-only included —
         // dropped immediately. Cross-pipeline AEC needs a different design
         // (an early/shared probe on a mixed playback bus); tracked separately.
-        if (nsEnabled) {
+        if (nsEnabled || agcEnabled) {
             webrtcdsp = gst_element_factory_make("webrtcdsp", "pub-webrtcdsp");
             if (webrtcdsp) {
-                g_object_set(webrtcdsp,
-                             "echo-cancel", FALSE,
-                             "noise-suppression", TRUE,
-                             "noise-suppression-level", 2,   // high
-                             "high-pass-filter", TRUE,
-                             "gain-control", FALSE,
-                             "voice-detection", FALSE,
-                             nullptr);
-                qDebug() << "PublishPipeline: noise suppression ON (webrtcdsp)";
+                // Same config helper the AGC harness (talq-agc-test) exercises.
+                talq::configureCaptureDsp(webrtcdsp, nsEnabled, agcEnabled);
+                qInfo() << "PublishPipeline: webrtcdsp NS=" << nsEnabled
+                        << "AGC=" << agcEnabled;
             } else {
                 qWarning() << "PublishPipeline: webrtcdsp unavailable; "
-                              "continuing without noise suppression";
+                              "continuing without NS/AGC";
             }
         }
     }

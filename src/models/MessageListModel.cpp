@@ -16,6 +16,9 @@
 #include <QUrl>
 #include <QTimer>
 #include <QNetworkReply>
+#include <QUuid>
+#include <functional>
+#include <memory>
 #include <QGuiApplication>
 #include <QClipboard>
 #include <QMimeData>
@@ -1691,12 +1694,30 @@ void MessageListModel::sendFileWithCaption(const QString &filePath, const QStrin
     fileName.replace("..", "_");
     if (fileName.isEmpty()) fileName = "upload";
 
-    // D3: reject files over 100 MB to avoid freezing the main thread on readAll
-    // TODO: replace readAll with chunked/streaming upload for large files
-    if (file.size() > 100 * 1024 * 1024) {
-        emit errorOccurred("File too large (max 100 MB)");
+    const qint64 fileSize = file.size();
+
+    // Files at/above the threshold stream via chunked upload (Nextcloud v2) so
+    // we never readAll() the whole thing into memory or block the main thread.
+    // Default boundary is 100 MB (the old hard reject limit); TALQ_CHUNK_-
+    // THRESHOLD_BYTES lowers it so the harness can exercise chunking on a small
+    // file deterministically.
+    qint64 chunkThreshold = 100LL * 1024 * 1024;
+    if (qEnvironmentVariableIsSet("TALQ_CHUNK_THRESHOLD_BYTES"))
+        chunkThreshold = qMax<qint64>(1, qEnvironmentVariable("TALQ_CHUNK_THRESHOLD_BYTES").toLongLong());
+
+    // Show upload progress
+    m_uploadProgress = 0;
+    m_uploadFileName = fileName;
+    emit uploadProgressChanged();
+
+    if (fileSize >= chunkThreshold) {
+        file.close();   // uploadFileChunked re-opens and streams it in slices
+        uploadFileChunked(readPath, fileName, m_token, caption, tempCopy);
         return;
     }
+
+    // Small file: a single WebDAV PUT of the whole body is fine under the
+    // threshold.
     QByteArray fileData = file.readAll();
     file.close();
     if (!tempCopy.isEmpty())
@@ -1704,12 +1725,6 @@ void MessageListModel::sendFileWithCaption(const QString &filePath, const QStrin
 
     qDebug() << "Uploading file:" << fileName << "(" << fileData.size() << "bytes)";
 
-    // Show upload progress
-    m_uploadProgress = 0;
-    m_uploadFileName = fileName;
-    emit uploadProgressChanged();
-
-    // Step 1: Upload via WebDAV PUT
     QString uploadPath = "/remote.php/dav/files/" + m_api->user() + "/Talk/" + fileName;
     auto *uploadReply = m_api->putAbsoluteUrl(uploadPath, fileData);
 
@@ -1737,39 +1752,179 @@ void MessageListModel::sendFileWithCaption(const QString &filePath, const QStrin
 
         m_uploadProgress = 1.0;
         emit uploadProgressChanged();
-        qDebug() << "File uploaded, sharing to conversation" << token;
+        shareUploadedFile(fileName, token, caption);
+    });
+}
 
-        // Step 2: Share to conversation
-        QJsonObject body;
-        body["shareType"] = 10;  // share to Talk conversation
-        body["shareWith"] = token;
-        body["path"] = QString("Talk/" + fileName);
-        body["permissions"] = 1;  // read permission for recipients
+void MessageListModel::shareUploadedFile(const QString &fileName, const QString &token,
+                                         const QString &caption)
+{
+    qDebug() << "File uploaded, sharing to conversation" << token;
 
-        // Attach caption via talkMetaData (server capability: media-caption)
-        if (!caption.isEmpty()) {
-            QJsonObject metaData;
-            metaData["caption"] = caption;
-            body["talkMetaData"] = QString::fromUtf8(QJsonDocument(metaData).toJson(QJsonDocument::Compact));
-        }
+    QJsonObject body;
+    body["shareType"] = 10;  // share to Talk conversation
+    body["shareWith"] = token;
+    body["path"] = QString("Talk/" + fileName);
+    body["permissions"] = 1;  // read permission for recipients
 
-        m_api->post("apps/files_sharing/api/v1/shares", body,
-            [this, fileName, token](bool ok, const QJsonObject &, int) {
-                m_uploadProgress = -1;
-                m_uploadFileName.clear();
-                emit uploadProgressChanged();
+    // Attach caption via talkMetaData (server capability: media-caption)
+    if (!caption.isEmpty()) {
+        QJsonObject metaData;
+        metaData["caption"] = caption;
+        body["talkMetaData"] = QString::fromUtf8(QJsonDocument(metaData).toJson(QJsonDocument::Compact));
+    }
 
-                if (ok) {
-                    qDebug() << "File shared:" << fileName;
-                    // Refresh to pick up the server-generated file share message
-                    // (file shares don't create an optimistic placeholder)
-                    if (m_token == token) {
-                        refreshLatest();
-                    }
-                } else {
-                    emit errorOccurred("Failed to share file to conversation");
+    m_api->post("apps/files_sharing/api/v1/shares", body,
+        [this, fileName, token](bool ok, const QJsonObject &, int) {
+            m_uploadProgress = -1;
+            m_uploadFileName.clear();
+            emit uploadProgressChanged();
+
+            if (ok) {
+                qDebug() << "File shared:" << fileName;
+                // Refresh to pick up the server-generated file share message
+                // (file shares don't create an optimistic placeholder)
+                if (m_token == token) {
+                    refreshLatest();
                 }
-            });
+            } else {
+                emit errorOccurred("Failed to share file to conversation");
+            }
+        });
+}
+
+// Chunked-upload state. Held alive only by the in-flight QNetworkReply callback;
+// when the last reply completes the shared_ptr drops and the file handle closes
+// — no self-referential std::function, so nothing leaks.
+struct ChunkUploadState {
+    QFile   file;
+    qint64  size = 0;
+    qint64  offset = 0;
+    int     index = 0;
+    qint64  chunkSize = 10LL * 1024 * 1024;   // 10 MB (Nextcloud allows 5 MB–5 GB)
+    QString uploadFolder;                     // /remote.php/dav/uploads/<user>/<uuid>
+    QString destUrl;                          // full URL of the final dav/files target
+    QString fileName, token, caption, tempCopy;
+};
+
+void MessageListModel::uploadFileChunked(const QString &readPath, const QString &fileName,
+                                         const QString &token, const QString &caption,
+                                         const QString &tempCopy)
+{
+    // Per-upload state shared across the async MKCOL → chunk PUTs → MOVE chain.
+    auto st = std::make_shared<ChunkUploadState>();
+    st->file.setFileName(readPath);
+    if (!st->file.open(QIODevice::ReadOnly)) {
+        emit errorOccurred("Cannot open file for upload: " + st->file.errorString());
+        if (!tempCopy.isEmpty()) QFile::remove(tempCopy);
+        m_uploadProgress = -1; m_uploadFileName.clear(); emit uploadProgressChanged();
+        return;
+    }
+    st->size = st->file.size();
+    st->fileName = fileName; st->token = token; st->caption = caption; st->tempCopy = tempCopy;
+    if (qEnvironmentVariableIsSet("TALQ_CHUNK_SIZE_BYTES"))
+        st->chunkSize = qMax<qint64>(1, qEnvironmentVariable("TALQ_CHUNK_SIZE_BYTES").toLongLong());
+
+    const QString uuid = QUuid::createUuid().toString(QUuid::Id128);  // 32 hex chars, no braces
+    st->uploadFolder = "/remote.php/dav/uploads/" + m_api->user() + "/talq-" + uuid;
+    st->destUrl = m_api->serverUrl()
+                + "/remote.php/dav/files/" + m_api->user() + "/Talk/" + fileName;
+
+    qDebug() << "Chunked upload:" << fileName << "(" << st->size << "bytes, "
+             << st->chunkSize << "B chunks) ->" << st->uploadFolder;
+
+    // Ensure the destination parent (…/Talk) exists, then MKCOL the upload
+    // session folder, then start sending chunks. Each MKCOL accepts 201
+    // (created) or 405 (already exists). Creating Talk/ defensively avoids the
+    // 409-on-MOVE when a fresh account has never had the folder auto-created.
+    const QString destParent = "/remote.php/dav/files/" + m_api->user() + "/Talk";
+    auto *mkParent = m_api->davRequest("MKCOL", destParent);
+    connect(mkParent, &QNetworkReply::finished, this, [this, mkParent, st]() {
+        mkParent->deleteLater();
+        const int ps = mkParent->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if (ps != 201 && ps != 405) {
+            qWarning() << "Chunked upload: destination-parent MKCOL failed:" << ps;
+            failChunkedUpload(st, "Failed to prepare upload destination");
+            return;
+        }
+        auto *mk = m_api->davRequest("MKCOL", st->uploadFolder);
+        connect(mk, &QNetworkReply::finished, this, [this, mk, st]() {
+            mk->deleteLater();
+            const int status = mk->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+            if (status != 201 && status != 405) {
+                qWarning() << "Chunked upload MKCOL failed:" << status << mk->errorString();
+                failChunkedUpload(st, "Failed to start chunked upload");
+                return;
+            }
+            uploadNextChunk(st);   // keeps st alive only via the in-flight reply
+        });
+    });
+}
+
+void MessageListModel::failChunkedUpload(const std::shared_ptr<ChunkUploadState> &st,
+                                         const QString &msg)
+{
+    st->file.close();
+    if (!st->tempCopy.isEmpty()) QFile::remove(st->tempCopy);
+    m_uploadProgress = -1; m_uploadFileName.clear(); emit uploadProgressChanged();
+    emit errorOccurred(msg);
+}
+
+void MessageListModel::uploadNextChunk(std::shared_ptr<ChunkUploadState> st)
+{
+    if (st->offset >= st->size) {
+        // All chunks uploaded — MOVE .file to assemble at the destination. The
+        // Destination/OC-Total-Length headers go ONLY on the MOVE: empirically
+        // this Nextcloud rejects a Destination header on the chunk PUTs with
+        // 404 (the v2 doc says to send it, but the deployed server does not).
+        QMap<QByteArray, QByteArray> moveHeaders;
+        moveHeaders["Destination"]     = st->destUrl.toUtf8();
+        moveHeaders["OC-Total-Length"] = QByteArray::number(st->size);
+        auto *mv = m_api->davRequest("MOVE", st->uploadFolder + "/.file",
+                                     QByteArray(), moveHeaders);
+        connect(mv, &QNetworkReply::finished, this, [this, st, mv]() {
+            mv->deleteLater();
+            const int status = mv->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+            if (status != 201 && status != 204) {
+                qWarning() << "Chunked upload MOVE failed:" << status << mv->errorString();
+                failChunkedUpload(st, "Failed to assemble uploaded file");
+                return;
+            }
+            st->file.close();
+            if (!st->tempCopy.isEmpty()) QFile::remove(st->tempCopy);
+            m_uploadProgress = 1.0; emit uploadProgressChanged();
+            shareUploadedFile(st->fileName, st->token, st->caption);
+        });
+        return;
+    }
+
+    const qint64 thisLen = qMin(st->chunkSize, st->size - st->offset);
+    st->file.seek(st->offset);
+    const QByteArray chunk = st->file.read(thisLen);
+    if (chunk.size() != thisLen) {
+        failChunkedUpload(st, "Failed to read file for upload");
+        return;
+    }
+    ++st->index;
+    const QString chunkName = QStringLiteral("%1").arg(st->index, 5, 10, QLatin1Char('0'));
+    const qint64 base = st->offset;
+    auto *put = m_api->davRequest("PUT", st->uploadFolder + "/" + chunkName, chunk);
+    connect(put, &QNetworkReply::uploadProgress, this, [this, st, base](qint64 sent, qint64) {
+        if (st->size > 0) {
+            m_uploadProgress = static_cast<double>(base + sent) / st->size;
+            emit uploadProgressChanged();
+        }
+    });
+    connect(put, &QNetworkReply::finished, this, [this, st, put, thisLen]() {
+        put->deleteLater();
+        const int status = put->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if (status != 201 && status != 204 && status != 200) {
+            qWarning() << "Chunk PUT failed:" << status << put->errorString();
+            failChunkedUpload(st, "Failed to upload file chunk");
+            return;
+        }
+        st->offset += thisLen;
+        uploadNextChunk(st);
     });
 }
 

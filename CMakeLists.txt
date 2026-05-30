@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(talq VERSION 0.44.0 LANGUAGES CXX)
+project(talq VERSION 0.45.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -60,6 +60,7 @@ qt_add_executable(talq
     src/core/PublishPipeline.cpp
     src/core/SubscribePipeline.cpp
     src/core/SubscribeWebrtcSrc.cpp
+    src/core/WasapiDucking.cpp
     src/core/VideoFrameProvider.h
     src/core/VideoFrameProvider.cpp
     src/core/MediaDeviceManager.cpp
@@ -130,6 +131,8 @@ qt_add_executable(talq
     src/ui/NextcloudFilePickerDialog.cpp
     src/ui/TopicTabBar.h
     src/ui/TopicTabBar.cpp
+    src/ui/ShareOverlay.h
+    src/ui/ShareOverlay.cpp
     src/ui/UpcomingRemindersDialog.h
     src/ui/UpcomingRemindersDialog.cpp
     src/core/BackgroundEngine.cpp
@@ -171,11 +174,8 @@ set_source_files_properties(
     src/ui/SettingsDialog.cpp
     src/ui/MainWindow.cpp
     PROPERTIES COMPILE_DEFINITIONS
-      "TALQ_VERSION=\"${PROJECT_VERSION}\";TALQ_VERSION_NAME=\"Magrathea\";TALQ_BUILD_TS=\"${TALQ_BUILD_TS}\""
+      "TALQ_VERSION=\"${PROJECT_VERSION}\";TALQ_VERSION_NAME=\"Margaritka\";TALQ_BUILD_TS=\"${TALQ_BUILD_TS}\""
 )
 
 # Pre-release flag: when build-release.sh is invoked with --beta it
 # passes -DTALQ_PRERELEASE=ON; that bakes the compile define into the
-# binary so the UI can show a "PRE-RELEASE" badge regardless of which
-# channel ultimately served the user. Stable builds are unaffected.
-option(TALQ_PRERELEASE "Mark this binary as a pre-release/beta build" OFF)

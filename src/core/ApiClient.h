@@ -75,6 +75,13 @@ public:
     // PUT with absolute path — for WebDAV file uploads
     QNetworkReply *putAbsoluteUrl(const QString &path, const QByteArray &body);
 
+    // Generic WebDAV verb (MKCOL / MOVE / PUT) with an absolute path, used by the
+    // chunked large-file upload. `body` may be empty (MKCOL/MOVE); `headers`
+    // carries Destination / OC-Total-Length etc.
+    QNetworkReply *davRequest(const QByteArray &verb, const QString &path,
+                              const QByteArray &body = QByteArray(),
+                              const QMap<QByteArray, QByteArray> &headers = {});
+
     // GET with absolute path (no OCS prefix, no OCS headers)
     QNetworkReply *getAbsoluteUrl(const QString &path);
 
