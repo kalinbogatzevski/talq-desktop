@@ -4,12 +4,14 @@
 #include <QVector>
 #include <QJsonArray>
 #include <QTimer>
+#include <memory>
 #include "models/Message.h"
 #include "core/ApiClient.h"
 #include "core/MessagePoller.h"
 
 class MessageCache;
 class ConversationListModel;
+struct ChunkUploadState;   // chunked large-file upload state (defined in the .cpp)
 
 /**
  * QAbstractListModel for chat messages in a conversation.
@@ -168,6 +170,20 @@ private:
     void startPoller();
     void trimOldMessages();
     void refreshLatest();
+    // File-upload helpers (used by sendFileWithCaption). shareUploadedFile posts
+    // the Talk share once the bytes are on the server (shared by the single-PUT
+    // and chunked paths); uploadFileChunked streams a large file via Nextcloud
+    // chunked-upload v2 so we never readAll() the whole file into memory.
+    void shareUploadedFile(const QString &fileName, const QString &token,
+                           const QString &caption);
+    void uploadFileChunked(const QString &readPath, const QString &fileName,
+                           const QString &token, const QString &caption,
+                           const QString &tempCopy);
+    // Uploads the next chunk (or MOVE-assembles + shares when done). Re-invoked
+    // from each chunk's finished() callback — no self-referential std::function,
+    // so the state is released cleanly when the last reply completes.
+    void uploadNextChunk(std::shared_ptr<ChunkUploadState> st);
+    void failChunkedUpload(const std::shared_ptr<ChunkUploadState> &st, const QString &msg);
     // Lightweight pull just to refresh X-Chat-Last-Common-Read.
     // Used by m_readMarkerTimer because this server's HPB doesn't relay
     // read-marker events (only new-message events), so the long-poll never

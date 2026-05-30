@@ -7,6 +7,7 @@
 #include <QVector>
 #include <QPair>
 #include <QByteArray>
+#include <QPointer>
 #include <functional>
 #include "core/ApiClient.h"
 #include "core/SignalingClient.h"
@@ -22,6 +23,7 @@
 
 class BackgroundEngine;   // #20 — owned by CallManager; lives across calls.
 class ConversationListModel;
+class ShareOverlay;       // #72 — coloured monitor border while screen-sharing.
 
 class CallManager : public QObject
 {
@@ -368,6 +370,7 @@ private:
 
     // Screen sharing
     ScreenSharePipeline *m_screenSharePipeline = nullptr;
+    QPointer<ShareOverlay> m_shareOverlay;   // #72 coloured monitor border (monitor shares)
     bool m_screenSharing = false;
     QString m_screenShareSid;
     // Set during stopScreenShare()'s 50-iteration GLib flush. Used by

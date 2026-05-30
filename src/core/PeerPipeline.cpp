@@ -451,6 +451,29 @@ void PeerPipeline::enableCamera(int deviceIndex, bool hd1080,
     }
     m_videoPayloader = gst_element_factory_make("rtph264pay", nullptr);
 
+    // #69 — P2P-only H.264 High profile + CABAC. TalQ↔TalQ P2P decodes via
+    // decodebin (which reads the profile from the in-band SPS), and our
+    // codec-preferences pin no profile-level-id, so we can run High profile
+    // here for ~10-15% better quality-per-bitrate WITHOUT the browser/Janus
+    // interop constraint that keeps the MCU path on Constrained Baseline.
+    // A downstream capsfilter forces High (verified: x264enc/nv/qsv/mf all
+    // advertise High in their src caps); CABAC is the encoders' default and
+    // High profile requires it. Gated to the factory H.264 encoders — the
+    // openh264enc fallback is Baseline-only and leaves m_videoParser null, so
+    // it's skipped. TALQ_P2P_HIGH_PROFILE=0 forces Baseline if it ever
+    // misbehaves on some hardware.
+    if (useH264 && m_videoParser
+        && qEnvironmentVariable("TALQ_P2P_HIGH_PROFILE", QStringLiteral("1"))
+               != QLatin1String("0")) {
+        m_videoProfileCaps = gst_element_factory_make("capsfilter", nullptr);
+        if (m_videoProfileCaps) {
+            GstCaps *hp = gst_caps_from_string("video/x-h264,profile=high");
+            g_object_set(m_videoProfileCaps, "caps", hp, nullptr);
+            gst_caps_unref(hp);
+            qInfo() << "PeerPipeline: P2P H.264 High profile + CABAC enabled";
+        }
+    }
+
     if (!m_camSrcCaps || !m_camDecode || !m_videoConvert || !m_videoCapsFilter
         || !m_videoEncoder || !m_videoPayloader) {
         emit cameraError("Failed to create video encoding elements");
@@ -458,6 +481,7 @@ void PeerPipeline::enableCamera(int deviceIndex, bool hd1080,
         freeIf(m_cameraSrc); freeIf(m_camSrcCaps); freeIf(m_camDecode);
         freeIf(m_videoConvert); freeIf(m_videoCapsFilter);
         freeIf(m_videoEncoder); freeIf(m_videoParser); freeIf(m_videoPayloader);
+        freeIf(m_videoProfileCaps);
         return;
     }
 
@@ -596,12 +620,21 @@ void PeerPipeline::enableCamera(int deviceIndex, bool hd1080,
             }), m_videoConvert);
     }
 
-    // encoder → [h264parse] → payloader. The factory hands back an
-    // h264parse for hardware encoders; openh264enc fallback returns none.
+    // encoder → [profileCaps] → [h264parse] → payloader. The factory hands
+    // back an h264parse for hardware/x264 encoders; openh264enc fallback
+    // returns none. m_videoProfileCaps (#69) forces H264 High profile on the
+    // P2P path and is null on the MCU/openh264enc/baseline paths.
     auto linkEncoderTail = [this]() -> gboolean {
-        if (m_videoParser)
-            return gst_element_link_many(m_videoEncoder, m_videoParser, m_videoPayloader, nullptr);
-        return gst_element_link_many(m_videoEncoder, m_videoPayloader, nullptr);
+        GstElement *tail = m_videoEncoder;
+        if (m_videoProfileCaps) {
+            if (!gst_element_link(tail, m_videoProfileCaps)) return FALSE;
+            tail = m_videoProfileCaps;
+        }
+        if (m_videoParser) {
+            if (!gst_element_link(tail, m_videoParser)) return FALSE;
+            tail = m_videoParser;
+        }
+        return gst_element_link(tail, m_videoPayloader);
     };
     auto step = [](const char *what, gboolean ok) -> gboolean {
         if (!ok) qWarning() << "PeerPipeline: link FAILED at" << what;
@@ -623,6 +656,7 @@ void PeerPipeline::enableCamera(int deviceIndex, bool hd1080,
                 m_tee, m_encQueue, m_videoEncoder, m_videoPayloader,
                 m_previewQueue, m_previewConvert, m_previewAppsink, nullptr);
             if (m_videoParser) gst_bin_add(GST_BIN(m_pipeline), m_videoParser);
+            if (m_videoProfileCaps) gst_bin_add(GST_BIN(m_pipeline), m_videoProfileCaps);
             linked = step("cameraSrc→camSrcCaps→videoConvert (raw)",
                           gst_element_link_many(m_cameraSrc, m_camSrcCaps, m_videoConvert, nullptr));
         } else {
@@ -632,6 +666,7 @@ void PeerPipeline::enableCamera(int deviceIndex, bool hd1080,
                 m_tee, m_encQueue, m_videoEncoder, m_videoPayloader,
                 m_previewQueue, m_previewConvert, m_previewAppsink, nullptr);
             if (m_videoParser) gst_bin_add(GST_BIN(m_pipeline), m_videoParser);
+            if (m_videoProfileCaps) gst_bin_add(GST_BIN(m_pipeline), m_videoProfileCaps);
             linked = step("cameraSrc→camSrcCaps→decodebin",
                           gst_element_link_many(m_cameraSrc, m_camSrcCaps, m_camDecode, nullptr));
         }
@@ -676,6 +711,7 @@ void PeerPipeline::enableCamera(int deviceIndex, bool hd1080,
             m_videoConvert, m_videoCapsFilter,
             m_videoEncoder, m_videoPayloader, nullptr);
         if (m_videoParser) gst_bin_add(GST_BIN(m_pipeline), m_videoParser);
+        if (m_videoProfileCaps) gst_bin_add(GST_BIN(m_pipeline), m_videoProfileCaps);
         linked = gst_element_link_many(m_cameraSrc, m_camSrcCaps, m_camDecode, nullptr);
         linked = linked && gst_element_link_many(m_videoConvert, m_videoCapsFilter, m_videoEncoder, nullptr);
         linked = linked && linkEncoderTail();
@@ -754,6 +790,7 @@ void PeerPipeline::enableCamera(int deviceIndex, bool hd1080,
     gst_element_sync_state_with_parent(m_videoSsrcFilter);
     gst_element_sync_state_with_parent(m_videoPayloader);
     if (m_videoParser) gst_element_sync_state_with_parent(m_videoParser);
+    if (m_videoProfileCaps) gst_element_sync_state_with_parent(m_videoProfileCaps);
     gst_element_sync_state_with_parent(m_videoEncoder);
     if (m_tee) {
         gst_element_sync_state_with_parent(m_previewAppsink);
@@ -860,6 +897,7 @@ void PeerPipeline::disableCamera()
     removeElement(m_videoSsrcFilter);
     removeElement(m_videoPayloader);
     removeElement(m_videoParser);     // 0.41.9 — h264parse (factory path)
+    removeElement(m_videoProfileCaps); // #69 — High-profile capsfilter (P2P)
     removeElement(m_videoEncoder);
     removeElement(m_videoCapsFilter);
     removeElement(m_jpegDec);          // legacy, normally null

@@ -1,5 +1,34 @@
 # Changelog
 
+## v0.45.0 "Margaritka" — BETA (2026-05-30)
+
+> A new beta line named **Margaritka** (Маргаритка, "the daisy") for **1 June,
+> Children's Day in Bulgaria** — after Todor Dinov's beloved 1965 animated short.
+> Five long-standing wishlist items land together.
+
+### Added
+
+* **Automatic microphone leveling.** Calls now even out your microphone volume
+  so quiet speakers come through clearly without loud ones distorting. It's **on
+  by default**; you can turn it off under **Settings → Audio & Video →
+  "Automatic gain control"**.
+* **Send large files.** The old 100 MB attachment limit is gone. Big files now
+  upload in chunks, so they no longer freeze the app or get rejected — the upload
+  bar simply fills as the file streams up.
+* **Screen-share monitor border.** While you share a whole screen, a green border
+  frames the monitor you're sharing so you always know what others can see. The
+  border is hidden from the picture your viewers receive.
+
+### Changed
+
+* **Your call audio keeps its volume.** Windows no longer quietens TalQ during a
+  call when another communications app (Teams, Skype, a softphone) opens in the
+  background.
+* **Sharper direct one-to-one calls.** When a 1:1 call connects directly between
+  two TalQ apps, video now uses a higher-quality H.264 profile for more detail at
+  the same bandwidth. (Direct peer-to-peer is still an opt-in experiment; calls
+  through the server are unaffected and keep their broad compatibility.)
+
 ## v0.44.0 "Magrathea" — STABLE (2026-05-30)
 
 > Promotes the **Magrathea** beta line (0.43.0–0.43.3) to the stable channel,

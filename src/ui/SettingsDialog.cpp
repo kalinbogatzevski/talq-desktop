@@ -343,6 +343,25 @@ QWidget *SettingsDialog::buildAudioVideoTab()
         tr("Filter background noise during calls. Applies to the next call."),
         m_noiseSuppression));
 
+    m_autoGainControl = new QCheckBox;
+    m_autoGainControl->setToolTip(
+        tr("Automatically level your microphone volume so you stay at a "
+           "consistent loudness (applies to the next call)."));
+    m_settings.beginGroup("Audio");
+    m_autoGainControl->setChecked(
+        m_settings.value("audioAutoGainControl", true).toBool());
+    m_settings.endGroup();
+    connect(m_autoGainControl, &QCheckBox::toggled, this, [this](bool checked) {
+        m_settings.beginGroup("Audio");
+        m_settings.setValue("audioAutoGainControl", checked);
+        m_settings.endGroup();
+    });
+    layout->addWidget(makeSettingRow(
+        tr("Automatic gain control"),
+        tr("Keep your mic at a steady level so quiet speech is boosted. "
+           "Applies to the next call."),
+        m_autoGainControl));
+
     m_speakerCombo = new QComboBox;
     connect(m_speakerCombo, QOverload<int>::of(&QComboBox::activated),
             this, [this](int idx) { m_deviceManager->setSelectedAudioOutput(idx); });
