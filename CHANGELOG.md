@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.45.2 "Margaritka" -- BETA (2026-06-01)
+
+> More dependable screen sharing, and a calmer "you are sharing" indicator.
+
+### Changed
+
+* **The screen-share border is now optional and subtler.** Sharing a full screen
+  draws a thin, semi-transparent frame instead of the previous bold one, and you
+  can switch it off entirely under Settings -> Audio & Video -> "Show border
+  around shared screen". Sharing a single window never draws a border.
+
+### Fixed
+
+* **Screen shares start reliably.** TalQ now confirms a share is actually live on
+  the wire (not just negotiated) and automatically retries a fresh attempt if it
+  does not come up in time, instead of hanging on "Starting...". Starting a new
+  share right after stopping one no longer makes you wait a few seconds first.
+
 ## v0.45.1 "Margaritka" — BETA (2026-05-30)
 
 > Same **Margaritka** beta line (the codename runs per minor line). A small fix

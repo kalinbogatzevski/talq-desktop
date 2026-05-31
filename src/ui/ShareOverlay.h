@@ -1,5 +1,7 @@
 #pragma once
 #include <QWidget>
+#include <QColor>
+#include <QtGlobal>
 
 // A frameless, click-through, always-on-top overlay that paints a coloured
 // border around a monitor to signal an active screen-share (the Zoom green /
@@ -15,6 +17,16 @@ public:
     // Frame the monitor at `monitorIndex` (index into QApplication::screens()).
     // Out-of-range falls back to the primary screen.
     void showForMonitor(int monitorIndex);
+
+    // #72 (subtler / optional) — style + gating exposed as pure statics so
+    // the headless overlay test can assert them and CallManager can decide
+    // whether to show the border without constructing the widget.
+    static int borderWidthPx();   // pen width in logical px (thin: 2)
+    static QColor borderColor();  // semi-transparent "sharing" green
+    // Show the monitor border only when the user setting is ON *and* this is
+    // a full-monitor share. Window shares (windowHandle != 0) never get a
+    // frame — that matches Zoom's per-app share, the original request.
+    static bool shouldShowForShare(bool borderEnabled, quintptr windowHandle);
 
 protected:
     void paintEvent(QPaintEvent *) override;

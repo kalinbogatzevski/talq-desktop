@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <memory>
 #include <QObject>
 #include <QString>
 #include <QTimer>
@@ -53,6 +54,16 @@ signals:
     void iceStateChanged(const QString &state);
     void iceGatheringComplete();           // ICE gathering done → endOfCandidates
     void error(const QString &message);
+    // Outbound RTP is actually climbing — the only publisher-observable proof
+    // the screen publish is live on the wire (the SDP answer is NOT). Emitted
+    // once, after two consecutive positive packets-sent deltas. Together with
+    // ICE-connected this is what marks the share confirmed (ShareStartPolicy).
+    void mediaFlowing();
+    // The async GStreamer teardown (detached NULL transition) has completed and
+    // the capture device is released. Lets the owner safely start a new share
+    // without colliding with a still-held d3d11 capture device (the back-to-
+    // back "wait several seconds between shares" fix). Always main-thread.
+    void released();
 
 public slots:
     void pollBus();
@@ -101,6 +112,23 @@ private:
     // dead share. Distinct from m_startWatchdog (which only covers ICE).
     QTimer m_frameWatchdog;
     std::atomic<bool> m_firstFrameSeen{false};
+    // Outbound-RTP confirmation (the real "publish is live" ack). On a short
+    // timer we ask webrtcbin for stats and read the outbound-rtp packets-sent
+    // counter; two consecutive positive deltas → emit mediaFlowing() once.
+    QTimer m_statsTimer;
+    guint64 m_lastPacketsSent = 0;
+    int m_packetsRisingStreak = 0;
+    bool m_mediaFlowingEmitted = false;
+    void pollOutboundRtp();
+    static void onStatsReady(GstPromise *promise, gpointer userData);
+    // Lifetime token for the async get-stats promise. The promise callback
+    // fires on a GStreamer thread and must NOT touch `this` if we've been
+    // destroyed meanwhile. The callback copies this shared_ptr out, parses the
+    // reply (self-independent), then hops to the main thread and only touches
+    // members if the token is still true. Set false in the destructor (main
+    // thread), so the check and the destruction are serialized on one thread.
+    std::shared_ptr<std::atomic<bool>> m_alive {
+        std::make_shared<std::atomic<bool>>(true) };
 
     static void onNegotiationNeeded(GstElement *webrtc, gpointer userData);
     static GstPadProbeReturn onCaptureBuffer(GstPad *pad, GstPadProbeInfo *info, gpointer userData);
