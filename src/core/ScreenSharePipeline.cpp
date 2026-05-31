@@ -55,6 +55,16 @@ ScreenSharePipeline::ScreenSharePipeline(QObject *parent)
             "Screen sharing didn't start (no frames captured). "
             "Try sharing again, or pick a different window/screen."));
     });
+
+    // Outbound-RTP confirmation poller. Frames reaching the encoder
+    // (m_frameWatchdog) only proves CAPTURE works; it does NOT prove anything
+    // left the machine. webrtcbin's outbound-rtp "packets-sent" is the
+    // publisher-observable proof that media is actually on the wire to the MCU
+    // — the SDP answer alone is not (verified vs the spreed client + Janus
+    // docs). Poll every 500 ms; two consecutive rises → emit mediaFlowing().
+    m_statsTimer.setInterval(500);
+    connect(&m_statsTimer, &QTimer::timeout, this,
+            &ScreenSharePipeline::pollOutboundRtp);
 }
 
 GstPadProbeReturn ScreenSharePipeline::onCaptureBuffer(GstPad *, GstPadProbeInfo *,
@@ -70,6 +80,11 @@ GstPadProbeReturn ScreenSharePipeline::onCaptureBuffer(GstPad *, GstPadProbeInfo
 
 ScreenSharePipeline::~ScreenSharePipeline()
 {
+    // Mark dead BEFORE teardown so any in-flight get-stats promise callback
+    // that hops to the main thread after us sees the token false and bails
+    // instead of touching freed members (destruction is main-thread, same as
+    // the token check, so the two are serialized).
+    if (m_alive) m_alive->store(false);
     stop();
 }
 
@@ -476,10 +491,14 @@ bool ScreenSharePipeline::start(const QString &stunServer, const QList<TurnServe
     m_running = true;
     m_iceReachedConnected = false;
     m_firstFrameSeen.store(false);
+    m_lastPacketsSent = 0;
+    m_packetsRisingStreak = 0;
+    m_mediaFlowingEmitted = false;
     m_startWatchdog.start();
     m_frameWatchdog.start();
+    m_statsTimer.start();
     qDebug() << "ScreenSharePipeline: started, capturing primary monitor "
-                "(10 s ICE + 6 s frame watchdogs armed)";
+                "(10 s ICE + 6 s frame watchdogs + RTP confirm poller armed)";
     return true;
 }
 
@@ -488,6 +507,7 @@ void ScreenSharePipeline::stop()
     if (!m_running) return;
     m_startWatchdog.stop();
     m_frameWatchdog.stop();
+    m_statsTimer.stop();
     cleanup();
     m_running = false;
     qDebug() << "ScreenSharePipeline: stopped";
@@ -498,6 +518,7 @@ void ScreenSharePipeline::cleanup()
     m_shuttingDown.store(true);
     m_startWatchdog.stop();
     m_frameWatchdog.stop();
+    m_statsTimer.stop();
     if (m_webrtcbin)
         g_signal_handlers_disconnect_by_data(m_webrtcbin, this);
     if (m_gccbwe)  // notify::estimated-bitrate is on the gcc element
@@ -511,12 +532,32 @@ void ScreenSharePipeline::cleanup()
         // PublishPipeline). A HW-encoder screen pipeline's synchronous
         // set_state(NULL) can block the Qt main thread / wedge the GPU during
         // teardown. Null the pointer first so re-entrant callers see none.
+        //
+        // When the NULL transition completes the d3d11 capture device is truly
+        // released; post released() back to the main thread so the owner can
+        // safely start a NEW share without colliding with a still-held device
+        // (the back-to-back "wait several seconds between shares" fix). The
+        // worker captures only `pipe` (not `this`) for the GStreamer teardown;
+        // the QPointer guard makes the released() post a no-op if we've since
+        // been destroyed.
         GstElement *pipe = m_pipeline;
         m_pipeline = nullptr;
-        std::thread([pipe]() {
+        QPointer<ScreenSharePipeline> guard(this);
+        std::thread([pipe, guard]() {
             gst_element_set_state(pipe, GST_STATE_NULL);
             gst_object_unref(pipe);
+            QMetaObject::invokeMethod(qApp, [guard]() {
+                if (guard) emit guard->released();
+            }, Qt::QueuedConnection);
         }).detach();
+    } else {
+        // No pipeline to tear down (e.g. a failed/partial start). Still post
+        // released() so an owner awaiting it to fire a queued retry/start is
+        // never stranded waiting on a teardown that won't happen.
+        QPointer<ScreenSharePipeline> guard(this);
+        QMetaObject::invokeMethod(qApp, [guard]() {
+            if (guard) emit guard->released();
+        }, Qt::QueuedConnection);
     }
     m_webrtcbin = nullptr;
     m_videoEncoder = nullptr;  // owned by the (now-freed) pipeline
@@ -593,6 +634,88 @@ void ScreenSharePipeline::pollBus()
         gst_message_unref(msg);
     }
     gst_object_unref(bus);
+}
+
+namespace {
+// Heap context handed to the get-stats promise: a raw self pointer (only
+// dereferenced on the main thread after the alive-token is checked) plus a copy
+// of the pipeline's lifetime token. Freed by the promise's GDestroyNotify.
+struct StatsCtx {
+    ScreenSharePipeline *self;
+    std::shared_ptr<std::atomic<bool>> alive;
+};
+void statsCtxFree(gpointer p) { delete static_cast<StatsCtx *>(p); }
+} // namespace
+
+void ScreenSharePipeline::pollOutboundRtp()
+{
+    if (!m_webrtcbin || m_mediaFlowingEmitted) return;
+    // webrtcbin "get-stats" is async: it replies via a GstPromise carrying a
+    // GstStructure of all RTC stats. Ask for the whole report (pad = NULL) and
+    // parse it in onStatsReady on a GStreamer thread, hopping back to the Qt
+    // main thread (guarded by the alive token) to touch our members / emit.
+    auto *ctx = new StatsCtx{ this, m_alive };
+    GstPromise *promise =
+        gst_promise_new_with_change_func(onStatsReady, ctx, statsCtxFree);
+    g_signal_emit_by_name(m_webrtcbin, "get-stats", nullptr, promise);
+}
+
+void ScreenSharePipeline::onStatsReady(GstPromise *promise, gpointer userData)
+{
+    // Copy self + the alive token out of ctx BEFORE unref'ing the promise:
+    // the unref may run the GDestroyNotify that frees ctx. We do NOT touch
+    // `self` here (GStreamer thread) -- only on the main-thread hop below.
+    auto *ctx = static_cast<StatsCtx *>(userData);
+    ScreenSharePipeline *self = ctx->self;
+    std::shared_ptr<std::atomic<bool>> alive = ctx->alive;
+
+    const GstStructure *reply = gst_promise_get_reply(promise);
+    guint64 packetsSent = 0;
+    bool found = false;
+    if (reply) {
+        // The report is a flat structure whose fields are themselves
+        // GstStructures, one per stat object. Find the outbound-rtp entry and
+        // read its packets-sent counter.
+        const int n = gst_structure_n_fields(reply);
+        for (int i = 0; i < n && !found; ++i) {
+            const gchar *name = gst_structure_nth_field_name(reply, i);
+            const GValue *val = gst_structure_get_value(reply, name);
+            if (!val || !GST_VALUE_HOLDS_STRUCTURE(val)) continue;
+            const GstStructure *s = static_cast<const GstStructure *>(
+                g_value_get_boxed(val));
+            if (!s) continue;
+            GstWebRTCStatsType type;
+            if (gst_structure_get(s, "type", GST_TYPE_WEBRTC_STATS_TYPE, &type, nullptr)
+                && type == GST_WEBRTC_STATS_OUTBOUND_RTP) {
+                guint64 ps = 0;
+                if (gst_structure_get_uint64(s, "packets-sent", &ps)) {
+                    packetsSent = ps;
+                    found = true;
+                }
+            }
+        }
+    }
+    gst_promise_unref(promise);
+
+    if (!found) return;
+    QPointer<ScreenSharePipeline> guard(self);
+    QMetaObject::invokeMethod(self, [guard, packetsSent]() {
+        if (!guard || guard->m_mediaFlowingEmitted) return;
+        // Two consecutive rises = media is genuinely climbing, not a single
+        // stray packet. Then the publish is confirmed live on the wire.
+        if (packetsSent > guard->m_lastPacketsSent) {
+            if (++guard->m_packetsRisingStreak >= 2) {
+                guard->m_mediaFlowingEmitted = true;
+                guard->m_statsTimer.stop();
+                qInfo() << "ScreenSharePipeline: outbound RTP confirmed flowing "
+                           "(packets-sent=" << packetsSent << ") — share is live";
+                emit guard->mediaFlowing();
+            }
+        } else {
+            guard->m_packetsRisingStreak = 0;
+        }
+        guard->m_lastPacketsSent = packetsSent;
+    }, Qt::QueuedConnection);
 }
 
 // --- Static callbacks ---

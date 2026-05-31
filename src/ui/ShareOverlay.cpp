@@ -18,12 +18,25 @@
 #endif
 
 namespace {
-// Sharing-active indicator colour (a confident green, the near-universal
-// "live / sharing" convention) and the border geometry.
-constexpr int kBorderPx = 4;
+// Sharing-active indicator colour (the near-universal "live / sharing"
+// green) and the border geometry. #72 follow-up: the original 4 px fully
+// opaque frame read as the "ugly Zoom green frame"; we drop to a thin 2 px
+// stroke at ~60% opacity so it still signals "you are sharing" without
+// dominating the screen edge. It stays excluded from the captured stream.
+constexpr int kBorderPx = 2;
 constexpr int kRadiusPx = 10;
-inline QColor shareColor() { return QColor(0x2E, 0xA0, 0x43); }
+inline QColor shareColor() { return QColor(0x2E, 0xA0, 0x43, 0x99); }
 } // namespace
+
+int ShareOverlay::borderWidthPx() { return kBorderPx; }
+QColor ShareOverlay::borderColor() { return shareColor(); }
+
+bool ShareOverlay::shouldShowForShare(bool borderEnabled, quintptr windowHandle)
+{
+    // windowHandle == 0 means a full-monitor share; only then (and only when
+    // the user hasn't switched the border off) do we frame the screen.
+    return borderEnabled && windowHandle == 0;
+}
 
 ShareOverlay::ShareOverlay(QWidget *parent)
     : QWidget(parent, Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint

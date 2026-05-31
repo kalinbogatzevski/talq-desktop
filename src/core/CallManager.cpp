@@ -201,6 +201,16 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
     m_backgroundEngine = new BackgroundEngine(this);
     applyBackgroundSettings();
 
+    // #share-reliability: bound how long we wait for proof a screen share is
+    // live (ICE connected + outbound RTP flowing) before the policy retries a
+    // fresh pipeline. Without this connect()+interval the whole confirm/retry
+    // feature is dead (the timer would never fire its handler). 8s comfortably
+    // covers ICE + first RTP on a healthy link; provisional pending live tuning.
+    m_shareConfirmTimer.setSingleShot(true);
+    m_shareConfirmTimer.setInterval(8000);
+    connect(&m_shareConfirmTimer, &QTimer::timeout,
+            this, &CallManager::onShareConfirmTimeout);
+
     // HPB participant events
     connect(m_signaling, &SignalingClient::participantJoinedCall,
             this, &CallManager::onParticipantJoinedCall);
@@ -1376,16 +1386,45 @@ void CallManager::toggleCamera() {
 void CallManager::startScreenShare(int monitorIndex, quintptr windowHandle)
 {
     if (m_state != Active && m_state != Connecting) return;
-    if (m_screenSharing) return;
 
-    // Remember target + quality so setScreenShareQuality() can re-share
-    // the SAME screen/window at a new cap without re-prompting.
+    // Remember the target so a confirm-timeout retry / queued back-to-back
+    // start rebuilds the SAME screen/window without re-prompting.
     m_ssMonitorIndex = monitorIndex;
     m_ssWindowHandle = windowHandle;
+
+    // #share-reliability — gate the start through the policy. StartQueued means
+    // a previous share is still releasing its capture device; the released()
+    // handler fires this start once it's safe to re-acquire (the back-to-back
+    // "wait several seconds between shares" fix). Anything other than StartNow
+    // (already starting/confirming/active) is ignored — no double-start.
+    const ShareAction act = m_sharePolicy.requestStart();
+    if (act == ShareAction::StartQueued) {
+        qInfo() << "CallManager: screen share queued behind teardown";
+        return;
+    }
+    if (act != ShareAction::StartNow)
+        return;
+
+    m_screenSharing = true;
+    buildAndStartSharePipeline(monitorIndex, windowHandle);
+    if (!m_screenSharePipeline)
+        return;   // build failed; already cleaned up + policy reset
+
+    // The monitor border is shown inside buildAndStartSharePipeline() so the
+    // initial start, a confirm-timeout retry, and a queued back-to-back start
+    // all frame the screen uniformly.
+
+    emit screenShareChanged();
+}
+
+// Build, wire and start a fresh screen-share pipeline. Used for the initial
+// start and for each confirm-timeout retry / queued back-to-back start, so the
+// retry path reuses the exact proven signaling wiring.
+void CallManager::buildAndStartSharePipeline(int monitorIndex, quintptr windowHandle)
+{
     m_ssQuality = QSettings("TalQ", "TalQ")
                       .value("Video/screenShareQuality", 1).toInt();
 
-    m_screenSharing = true;
     m_screenSharePipeline = new ScreenSharePipeline(this);
     {
         // Level → pre-encode downscale cap (set before start(), which the
@@ -1433,6 +1472,10 @@ void CallManager::startScreenShare(int monitorIndex, quintptr windowHandle)
         // production field log without verbose mode (#134 diag).
         qInfo() << "CallManager: screen share ICE:" << state;
         if (state == "connected") {
+            // ICE up is HALF the confirmation; the policy marks the share live
+            // only once outbound RTP is also flowing (mediaFlowing below).
+            if (m_sharePolicy.onIceConnected() == ShareAction::Confirmed)
+                onShareConfirmed();
             // Send sendoffer once — HPB creates subscriber for each peer
             const auto peers = m_subscribePipelines.keys();
             qInfo() << "CallManager: screen pub connected — dispatching "
@@ -1457,6 +1500,17 @@ void CallManager::startScreenShare(int monitorIndex, quintptr windowHandle)
         stopScreenShare();
     });
 
+    // #share-reliability — the two reliability signals. mediaFlowing() is the
+    // other half of the confirmation (outbound RTP is climbing); released()
+    // tells us the async teardown finished and the capture device is free.
+    connect(m_screenSharePipeline, &ScreenSharePipeline::mediaFlowing,
+            this, [this]() {
+        if (m_sharePolicy.onMediaFlowing() == ShareAction::Confirmed)
+            onShareConfirmed();
+    });
+    connect(m_screenSharePipeline, &ScreenSharePipeline::released,
+            this, &CallManager::onSharePipelineReleased);
+
     connect(&m_glibTimer, &QTimer::timeout, m_screenSharePipeline, &ScreenSharePipeline::pollBus);
 
     if (!m_screenSharePipeline->start(m_stunServer, m_turnServers, monitorIndex, windowHandle)) {
@@ -1464,16 +1518,32 @@ void CallManager::startScreenShare(int monitorIndex, quintptr windowHandle)
         m_screenSharing = false;
         m_screenSharePipeline->deleteLater();
         m_screenSharePipeline = nullptr;
-    } else if (windowHandle == 0) {
-        // #72 — frame the shared MONITOR with the coloured "you are sharing"
-        // border. Window shares (windowHandle != 0) don't get a monitor frame.
-        // The overlay excludes itself from capture so the peer never sees it.
+        m_sharePolicy.requestStop();   // back to a clean Idle
+        return;
+    }
+
+    // Pipeline is PLAYING — now wait for the protocol to confirm the share is
+    // actually live (ICE connected AND outbound RTP flowing). Arm the bounded
+    // confirm timer; if confirmation doesn't arrive the policy retries a fresh
+    // pipeline, which is what makes a share start reliably instead of silently
+    // failing and forcing the user to try again.
+    m_sharePolicy.onPipelineStarted();
+    m_shareConfirmArmed = true;
+    m_shareConfirmTimer.start();
+
+    // #72 -- frame the shared MONITOR with a thin, semi-transparent border,
+    // gated on the user setting; monitor shares only (window shares stay
+    // frameless). Done here (not only in startScreenShare) so a confirm-timeout
+    // retry or a queued back-to-back start re-shows the frame for its target
+    // rather than dropping it. showForMonitor is idempotent on re-show.
+    if (ShareOverlay::shouldShowForShare(
+            QSettings("TalQ", "TalQ")
+                .value("Video/screenShareBorder", true).toBool(),
+            windowHandle)) {
         if (!m_shareOverlay)
             m_shareOverlay = new ShareOverlay();
         m_shareOverlay->showForMonitor(monitorIndex);
     }
-
-    emit screenShareChanged();
 }
 
 void CallManager::requestPeerVideoQuality(const QString &sessionId, int substream)
@@ -1493,6 +1563,13 @@ void CallManager::requestPeerVideoQuality(const QString &sessionId, int substrea
 void CallManager::stopScreenShare()
 {
     if (!m_screenSharing) return;
+
+    // User-initiated stop: cancel any pending confirm/retry so a late timeout
+    // can't resurrect a share we're tearing down.
+    m_shareConfirmTimer.stop();
+    m_shareConfirmArmed = false;
+    m_shareRetryTeardown = false;
+    m_sharePolicy.requestStop();
 
     // #72 — drop the monitor border first so it vanishes the instant sharing
     // ends, regardless of how the pipeline teardown below proceeds.
@@ -1541,6 +1618,65 @@ void CallManager::stopScreenShare()
 
     m_screenShareTearingDown = false;
     emit screenShareChanged();
+}
+
+void CallManager::onShareConfirmed()
+{
+    // ICE connected AND outbound RTP flowing — the share is genuinely live.
+    m_shareConfirmTimer.stop();
+    m_shareConfirmArmed = false;
+    qInfo() << "CallManager: screen share confirmed live (ICE + outbound RTP)";
+}
+
+void CallManager::onShareConfirmTimeout()
+{
+    if (!m_shareConfirmArmed) return;
+    m_shareConfirmArmed = false;
+
+    const ShareAction a = m_sharePolicy.onConfirmTimeout();
+    if (a == ShareAction::Retry) {
+        qWarning() << "CallManager: screen share not confirmed in time — "
+                      "retrying with a fresh pipeline";
+        emit screenShareRetrying();
+        // Tear the current pipeline down but KEEP the object alive so its async
+        // cleanup can emit released(); onSharePipelineReleased() then deletes it
+        // and rebuilds with the saved target. m_shareRetryTeardown distinguishes
+        // this from a user stop in that handler; m_screenShareTearingDown
+        // protects the A/V publisher during the teardown window.
+        if (m_screenSharePipeline) {
+            m_shareRetryTeardown = true;
+            m_screenShareTearingDown = true;
+            m_screenSharePipeline->stop();
+        } else if (m_sharePolicy.onReleased() == ShareAction::StartNow) {
+            buildAndStartSharePipeline(m_ssMonitorIndex, m_ssWindowHandle);
+        }
+    } else if (a == ShareAction::Fail) {
+        // Retries exhausted — surface a clear failure instead of a silently
+        // dead share ("Starting remote screen share…" forever) and clean up.
+        qWarning() << "CallManager: screen share failed to start after retries";
+        emit screenShareFailed(
+            tr("Couldn't start screen sharing. Please try again."));
+        stopScreenShare();
+    }
+}
+
+void CallManager::onSharePipelineReleased()
+{
+    // The async GStreamer teardown finished and the d3d11 capture device is
+    // free. For a retry teardown, delete the retained old pipeline now; for a
+    // normal/user stop the pipeline is already gone and this is a no-op.
+    if (m_shareRetryTeardown) {
+        m_shareRetryTeardown = false;
+        m_screenShareTearingDown = false;
+        if (m_screenSharePipeline) {
+            m_screenSharePipeline->deleteLater();
+            m_screenSharePipeline = nullptr;
+        }
+    }
+    // If a start is queued (a retry, or a back-to-back share requested during
+    // teardown), fire it now that the device is safe to re-acquire.
+    if (m_sharePolicy.onReleased() == ShareAction::StartNow)
+        buildAndStartSharePipeline(m_ssMonitorIndex, m_ssWindowHandle);
 }
 
 VideoFrameProvider *CallManager::localScreenPreviewProvider() const

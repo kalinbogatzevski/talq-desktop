@@ -19,6 +19,7 @@
 #include "core/MediaDeviceManager.h"
 #include "core/VideoFrameProvider.h"
 #include "core/ScreenSharePipeline.h"
+#include "core/ShareStartPolicy.h"
 #include "core/CallParticipant.h"
 
 class BackgroundEngine;   // #20 — owned by CallManager; lives across calls.
@@ -186,6 +187,8 @@ signals:
     void statusDetailChanged();
     void remoteMediaChanged();
     void screenShareChanged();
+    void screenShareRetrying();            // share didn't confirm; auto-retrying
+    void screenShareFailed(const QString &reason);  // gave up after retries
     void screenShareQualityChanged();
     void remoteScreenProviderChanged();
     void participantAdded(CallParticipant *p);
@@ -389,6 +392,20 @@ private:
     int m_ssMonitorIndex = 0;
     quintptr m_ssWindowHandle = 0;
     int m_ssQuality = 1;   // 0=720p 1=1080p 2=1440p 3=Native (persisted)
+    // #share-reliability — start/confirm/retry. A share is "confirmed" only
+    // once ICE is connected AND outbound RTP is flowing (the SDP answer is not
+    // proof); if that doesn't arrive within m_shareConfirmTimer the policy tears
+    // down and retries a fresh pipeline (bounded), and a start requested while a
+    // prior share is still releasing its capture device is queued until
+    // ScreenSharePipeline::released(). Pure logic lives in ShareStartPolicy.
+    ShareStartPolicy m_sharePolicy;
+    QTimer m_shareConfirmTimer;
+    bool m_shareConfirmArmed = false;
+    bool m_shareRetryTeardown = false;   // a stop() in flight is a retry, not a user stop
+    void buildAndStartSharePipeline(int monitorIndex, quintptr windowHandle);
+    void onShareConfirmed();
+    void onShareConfirmTimeout();
+    void onSharePipelineReleased();
     VideoFrameProvider *m_remoteScreenProvider = nullptr;
     QHash<QString, SubscribePipeline*> m_screenSubscribers;
 

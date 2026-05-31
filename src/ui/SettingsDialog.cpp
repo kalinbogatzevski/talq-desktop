@@ -505,6 +505,29 @@ QWidget *SettingsDialog::buildAudioVideoTab()
            "Takes effect on the next call."),
         p2pCheck));
 
+    // #72 — screen-share monitor border toggle. The thin frame around a
+    // full-screen share is on by default as a "you are sharing" signal;
+    // users who find it distracting (the Zoom-green-frame complaint) switch
+    // it off here. Window/app shares never draw a frame regardless.
+    m_ssBorderCheck = new QCheckBox;
+    m_ssBorderCheck->setToolTip(
+        tr("Draw a thin border around the screen you are sharing. Only applies "
+           "to full-screen shares; sharing a single window never shows a "
+           "border."));
+    {
+        QSettings vs("TalQ", "TalQ");
+        m_ssBorderCheck->setChecked(
+            vs.value("Video/screenShareBorder", true).toBool());
+    }
+    connect(m_ssBorderCheck, &QCheckBox::toggled, this, [](bool checked) {
+        QSettings("TalQ", "TalQ").setValue("Video/screenShareBorder", checked);
+    });
+    layout->addWidget(makeSettingRow(
+        tr("Show border around shared screen"),
+        tr("A thin frame marks the screen you're sharing. Applies to the next "
+           "share. Sharing a single window never shows a border."),
+        m_ssBorderCheck));
+
     // 0.41.3-beta — playback-gain control removed. Telegram, Zoom and
     // Meet do not surface a "playback volume" setting; their receive-
     // side AudioProcessing AGC handles it automatically. TalQ now
