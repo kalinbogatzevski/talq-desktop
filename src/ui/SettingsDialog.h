@@ -92,6 +92,7 @@ private:
     QComboBox *m_cameraQualityCombo = nullptr;
     QCheckBox *m_noiseSuppression = nullptr;
     QCheckBox *m_autoGainControl = nullptr;
+    QCheckBox *m_ssBorderCheck = nullptr;   // #72 — monitor-share border toggle
 
     // #20 Background section — Off / Blur / Image picker, blur strength
     // slider, 8-bundled-thumbnail grid + Choose… for user-supplied
