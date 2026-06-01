@@ -190,6 +190,10 @@ int main(int argc, char *argv[])
         }
         logPath = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/talq_debug.log";
         QDir().mkpath(QFileInfo(logPath).absolutePath());
+        // Publish the resolved path so Settings can offer "Save a copy" / "Open
+        // log folder" without recomputing it (this runs before the app/org name
+        // is set, so the path differs from a naive AppDataLocation lookup).
+        TalqLog::g_logPath = logPath;
         // Preserve previous sessions' logs before this one truncates the live
         // file. A crash usually takes the app down without a clean diagnosis,
         // and the old "w" truncate destroyed the crashed session's log on the

@@ -1,5 +1,32 @@
 # Changelog
 
+## v0.45.3 "Margaritka" -- BETA (2026-06-01)
+
+> Clearer feedback when your camera can't start, a tidier call status, and an
+> easy way to send your log when reporting a problem.
+
+### Added
+
+* **Send your log straight from Settings.** Settings -> General -> Diagnostics now
+  has "Save a copy..." and "Open log folder" buttons, so you can grab the
+  diagnostic log and send it when reporting an issue without hunting through
+  hidden AppData folders.
+
+### Fixed
+
+* **You're now told when your camera can't be used.** If TalQ can't open your
+  camera during a call -- because it's missing, already in use by another app, or
+  blocked in Windows privacy settings -- it shows a clear "Camera unavailable"
+  notice with how to fix it, instead of sitting silently on "Starting camera...".
+  The other person sees "Camera off" rather than waiting forever for video that
+  will never arrive. Once you've freed the camera up, turn it off and on again to
+  retry without leaving the call.
+
+* **No more "Connecting..." on a call that's already connected.** Once a call is
+  established, a participant whose video hasn't come through yet now reads
+  "Waiting for video..." with the status light staying green, instead of
+  misleadingly showing "Connecting".
+
 ## v0.45.2 "Margaritka" -- BETA (2026-06-01)
 
 > More dependable screen sharing, and a calmer "you are sharing" indicator.
