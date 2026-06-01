@@ -1,5 +1,48 @@
 # Changelog
 
+## v0.46.0 "Margaritka" -- STABLE (2026-06-01)
+
+> **Margaritka -- shipped on Children's Day.** *Margaritka* (Bulgarian
+> margaritka / маргаритка) is the daisy: the small, sun-following meadow flower
+> of early summer, the one children thread into chains and pull petals from. We
+> cut this stable on **1 June -- International Children's Day** (Den na deteto,
+> marked in Bulgaria every year since 1927), and named it for the season's
+> plainest, hardiest flower. It fits the work, too: a daisy shrugs off a gust of
+> wind or a passing cloud, and this release taught TalQ to do the same on a call
+> -- to quietly ride out a dropped Wi-Fi, a flaky signal, a mid-call reconnect
+> and reopen none the worse. It promotes the whole 0.45.x "Margaritka" beta line
+> to stable, with three resilience fixes from live two-party testing on top.
+
+### Fixed
+
+* **Your call survives the other side's network blip.** A 1:1 call no longer
+  ends the instant the other person's Wi-Fi drops for a few seconds. TalQ holds
+  the call in a brief "reconnecting" state and automatically re-joins their
+  video when they come back -- even if they reconnect under a new session. Only
+  a genuine, lasting departure ends the call.
+* **Frozen remote video recovers on its own.** If the other side reconnects and
+  their video freezes (their stream changed mid-call while the server kept the
+  old, dead connection alive), TalQ now notices the stall and rebuilds the feed
+  automatically instead of leaving you on a frozen frame.
+* **Changing screen-share quality no longer drops the share.** Switching the
+  shared-screen resolution mid-call used to kill the share and refuse to
+  restart; it now blips and resumes cleanly at the new quality.
+* **A clear message when a call can't start.** If the server rejects a call
+  setup (a transient server error), TalQ retries briefly and then tells you
+  plainly what happened instead of failing silently -- and a failed outbound
+  call no longer rebounds as a phantom "incoming call".
+
+### Also in Margaritka (now on stable)
+
+* **Camera-unavailable notice.** If your camera can't open -- missing, in use by
+  another app, or blocked in Windows privacy settings -- TalQ shows a loud,
+  plain-language banner telling you exactly what to do, instead of sitting
+  silently on "Starting camera...".
+* **Tidier call status** (no more misleading "Connecting..." on a call that's
+  already up), **send your log from Settings -> Diagnostics**, reliable
+  screen-share start with an optional monitor border, and the earlier Margaritka
+  chat-sync, large-file upload, and call-audio improvements.
+
 ## v0.45.3 "Margaritka" -- BETA (2026-06-01)
 
 > Clearer feedback when your camera can't start, a tidier call status, and an

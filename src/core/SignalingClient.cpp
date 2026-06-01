@@ -372,6 +372,26 @@ void SignalingClient::onTextMessage(const QString &msg)
                 sendTalqClientHello();
         }
 
+        // #bug2 -- room peer LEFT (HPB room/leave). The payload is an array of
+        // session-id strings on this HPB (tolerate the object form defensively).
+        // Previously this event was logged and dropped: a vanished session emits
+        // no inCall>0 -> 0 transition, so participantLeftCall never fired and a
+        // peer whose publisher reconnected (new session/SSRCs) left the other
+        // side decoding dead SSRCs forever.
+        if (target == "room" && eventType == "leave") {
+            const QJsonArray leaves = event["leave"].toArray();
+            for (const QJsonValue &l : leaves) {
+                QString sid = l.toString();
+                if (sid.isEmpty())
+                    sid = l.toObject()["sessionid"].toString();
+                if (sid.isEmpty() || sid == m_sessionId)
+                    continue;
+                qDebug() << "Signaling: room peer left:" << sid.left(20);
+                m_participantCallFlags.remove(sid);
+                emit roomPeerLeft(sid);
+            }
+        }
+
         if (target == "participants") {
             QJsonObject update = event["update"].toObject();
             QJsonArray users = update["users"].toArray();
