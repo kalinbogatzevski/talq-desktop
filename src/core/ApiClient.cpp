@@ -135,7 +135,21 @@ void ApiClient::handleReply(QNetworkReply *reply, Callback callback,
                 handleReply(r2, callback, resend, attempt + 1);
                 return;
             }
-            qWarning() << "API error:" << reply->errorString() << "status:" << status;
+            // Capture the response BODY on error — Qt's errorString() is just
+            // "server replied:" with an empty tail, so the server's real reason
+            // (e.g. an OCS meta.message like "Call not found" / a participant-
+            // session error) is otherwise lost. This is what lets us diagnose a
+            // failed POST call/{token} from the log alone.
+            const QByteArray errBody = reply->readAll();
+            QString ocsMsg;
+            if (!errBody.isEmpty()) {
+                const QJsonObject m = QJsonDocument::fromJson(errBody)
+                    .object().value("ocs").toObject().value("meta").toObject();
+                ocsMsg = m.value("message").toString();
+            }
+            qWarning() << "API error:" << reply->errorString() << "status:" << status
+                       << "ocsMsg:" << (ocsMsg.isEmpty() ? QStringLiteral("(none)") : ocsMsg)
+                       << "body:" << QString::fromUtf8(errBody.left(500));
             callback(false, {}, status);
             return;
         }
@@ -184,7 +198,16 @@ void ApiClient::handleArrayReply(QNetworkReply *reply, ArrayCallback callback,
                 handleArrayReply(r2, callback, resend, attempt + 1);
                 return;
             }
-            qWarning() << "API error:" << reply->errorString() << "status:" << status;
+            const QByteArray errBody = reply->readAll();
+            QString ocsMsg;
+            if (!errBody.isEmpty()) {
+                const QJsonObject m = QJsonDocument::fromJson(errBody)
+                    .object().value("ocs").toObject().value("meta").toObject();
+                ocsMsg = m.value("message").toString();
+            }
+            qWarning() << "API error:" << reply->errorString() << "status:" << status
+                       << "ocsMsg:" << (ocsMsg.isEmpty() ? QStringLiteral("(none)") : ocsMsg)
+                       << "body:" << QString::fromUtf8(errBody.left(500));
             callback(false, {}, status);
             return;
         }

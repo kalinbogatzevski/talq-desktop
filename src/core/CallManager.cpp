@@ -810,6 +810,7 @@ void CallManager::startCall(const QString &token, bool withVideo)
     m_callToken = token;
     m_withVideo = withVideo;
     m_cameraOn = withVideo;
+    m_cameraUnavailable = false;   // fresh call: clear any prior failure
     emit cameraChanged();
     m_muted = false;
     m_callDuration = 0;
@@ -1035,9 +1036,26 @@ bool CallManager::buildAndStartPublisher()
     connect(m_publishPipeline, &PublishPipeline::cameraError, this, [this](const QString &reason) {
         qWarning() << "CallManager: camera error:" << reason;
         m_cameraOn = false;
+        // Idiot-proofing: do NOT stay silent. Flag the device as unavailable
+        // so the call surface shows a loud "Camera unavailable" notice with
+        // recovery steps, instead of sitting on "Starting camera..." forever.
+        m_cameraUnavailable = true;
         m_cameraFallbackTried = false;
         emit cameraChanged();
-        qDebug() << "CallManager: camera disabled, continuing audio-only";
+        // Tell the other side our video is off so their tile reads
+        // "Camera off" rather than waiting forever for frames that the
+        // failed camera will never send.
+        broadcastMediaState("video", false);
+        updateCallFlags();
+        qDebug() << "CallManager: camera unavailable, continuing audio-only";
+        // Reset the publisher's camera chain so a later toggle can RETRY
+        // (after the user closes the other app / fixes Windows privacy).
+        // Deferred: cameraError can fire from inside PublishPipeline::pollBus()
+        // while it iterates the GStreamer bus, so bouncing the camera inline
+        // could re-enter the bus we're popping.
+        QTimer::singleShot(0, this, [this]() {
+            if (m_publishPipeline) m_publishPipeline->disableCamera();
+        });
     });
 
     qDebug() << "CallManager: calling PublishPipeline::start()...";
@@ -1283,6 +1301,7 @@ void CallManager::acceptCall(bool withVideo) {
     // free by the time we return here.
     stopIncomingCameraPreview();
     m_withVideo = withVideo; m_cameraOn = withVideo; m_muted = false; m_callDuration = 0;
+    m_cameraUnavailable = false;   // fresh call: clear any prior failure
     emit cameraChanged();
     m_ringTimeout.stop();
     setStatusDetail("Joining room");
@@ -1361,6 +1380,10 @@ void CallManager::toggleMute() {
 
 void CallManager::toggleCamera() {
     m_cameraOn = !m_cameraOn;
+    // Turning the camera back on is a retry: clear the "unavailable" notice
+    // so the banner/caption disappear. If the device fails again, the
+    // PublishPipeline::cameraError path re-raises the flag.
+    if (m_cameraOn) m_cameraUnavailable = false;
 
     // Do the actual swap BEFORE emitting signals
     if (m_useP2P && m_peerPipeline) {
@@ -1985,7 +2008,13 @@ void CallManager::joinCallOnServer(bool withVideo)
                         connect(m_peerPipeline, &PeerPipeline::cameraError, this, [this](const QString &reason) {
                             qWarning() << "CallManager: P2P camera error:" << reason;
                             m_cameraOn = false;
+                            // Same idiot-proofing as the MCU path: surface
+                            // "Camera unavailable" and tell the peer our
+                            // video is off rather than failing silently.
+                            m_cameraUnavailable = true;
                             emit cameraChanged();
+                            broadcastMediaState("video", false);
+                            updateCallFlags();
                         }, Qt::QueuedConnection);
 
                         connect(m_peerPipeline, &PeerPipeline::error, this, [this](const QString &msg) {

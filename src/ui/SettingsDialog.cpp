@@ -22,6 +22,13 @@
 #include <QButtonGroup>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFile>
+#include <QDir>
+#include <QUrl>
+#include <QDateTime>
+#include <QMessageBox>
+#include <QPushButton>
+#include <QDesktopServices>
 #include <QFrame>
 #include <QFont>
 #include <QListWidget>
@@ -1229,6 +1236,65 @@ QWidget *SettingsDialog::buildGeneralTab()
         tr("Capture app diagnostics in talq_debug.log "
            "(recommended — helps debug call issues). Disable for a smaller log."),
         m_detailedLogging));
+
+    // Log access — make it easy to send the log when reporting a call/video
+    // issue, without hunting through AppData. "Save a copy…" writes the live
+    // talq_debug.log somewhere the user picks (defaults to the Desktop);
+    // "Open log folder" reveals it in the file manager.
+    {
+        auto *saveBtn = new QPushButton(tr("Save a copy…"));
+        saveBtn->setProperty("variant", "default");
+        connect(saveBtn, &QPushButton::clicked, this, [this]() {
+            const QString src = TalqLog::g_logPath;
+            if (src.isEmpty() || !QFile::exists(src)) {
+                QMessageBox::information(this, tr("Save log"),
+                    tr("No log file is available yet."));
+                return;
+            }
+            // Default name carries a timestamp so multiple saved logs don't
+            // overwrite each other (e.g. talq_debug_20260601_111530.log).
+            const QString stamp =
+                QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss");
+            const QString suggested =
+                QStandardPaths::writableLocation(QStandardPaths::DesktopLocation)
+                + "/talq_debug_" + stamp + ".log";
+            const QString dst = QFileDialog::getSaveFileName(this,
+                tr("Save log copy"), suggested, tr("Log files (*.log)"));
+            if (dst.isEmpty()) return;   // cancelled
+            QFile::remove(dst);          // overwrite if the user picked an existing name
+            if (QFile::copy(src, dst)) {
+                QMessageBox::information(this, tr("Save log"),
+                    tr("Saved a copy of the log to:\n%1").arg(dst));
+            } else {
+                QMessageBox::warning(this, tr("Save log"),
+                    tr("Couldn't save the log copy. The log may be in use; "
+                       "try again."));
+            }
+        });
+
+        auto *openBtn = new QPushButton(tr("Open log folder"));
+        openBtn->setProperty("variant", "default");
+        connect(openBtn, &QPushButton::clicked, this, [this]() {
+            const QString src = TalqLog::g_logPath;
+            const QString dir = src.isEmpty()
+                ? QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+                : QFileInfo(src).absolutePath();
+            QDesktopServices::openUrl(QUrl::fromLocalFile(dir));
+        });
+
+        auto *logRow = new QWidget;
+        auto *logRowLayout = new QHBoxLayout(logRow);
+        logRowLayout->setContentsMargins(0, 0, 0, 0);
+        logRowLayout->setSpacing(8);
+        logRowLayout->addStretch();
+        logRowLayout->addWidget(saveBtn);
+        logRowLayout->addWidget(openBtn);
+        layout->addWidget(makeSettingRow(
+            tr("Diagnostic log"),
+            tr("Save a copy to send when reporting a call or video problem, "
+               "or open the folder it lives in."),
+            logRow));
+    }
 
     layout->addStretch();
     return page;

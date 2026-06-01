@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QDebug>
+#include <QString>
 
 // TalQ logging macros. Gated by a runtime flag:
 //   - Debug builds: verbose flag defaults to true.
@@ -26,6 +27,14 @@ namespace TalqLog {
 #else
         false;
 #endif
+
+    // The ACTUAL resolved path of the live talq_debug.log, set once by main.cpp
+    // after it computes the path. Settings reads this to offer "Save a copy" /
+    // "Open log folder" — do NOT recompute AppDataLocation in the UI: main.cpp
+    // resolves the path BEFORE setApplicationName/OrganizationName run, so the
+    // file lives at .../Roaming/talq_debug.log (no TalQ/TalQ subfolder); a naive
+    // recompute would point at the wrong place.
+    inline QString g_logPath;
 }
 
 #define TLOG(msg)       do { if (TalqLog::g_verbose) qDebug().noquote() << "[TalQ]" << msg; } while (0)
