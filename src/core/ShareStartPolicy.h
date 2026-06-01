@@ -100,6 +100,21 @@ public:
         return ShareAction::None;
     }
 
+    // Terminal-teardown escape hatch. Unconditionally returns the policy to
+    // Idle (clearing any queued start + retry budget). The caller uses this when
+    // it tears a share down WITHOUT a guaranteed release() — e.g. retries are
+    // exhausted (Fail) and the pipeline is deleteLater()'d, which suppresses the
+    // released() signal so onReleased() would never fire. Without this the policy
+    // stays stuck in Stopping and every later start is queued forever ("queued
+    // behind teardown"). Safe to call from any state.
+    void reset()
+    {
+        m_state = ShareState::Idle;
+        m_queuedStart = false;
+        m_iceOk = m_mediaOk = false;
+        m_retriesLeft = 0;
+    }
+
     // The pipeline's async teardown finished (capture device released).
     ShareAction onReleased()
     {

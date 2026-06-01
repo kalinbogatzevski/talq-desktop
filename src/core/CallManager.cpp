@@ -1555,23 +1555,40 @@ void CallManager::startScreenShare(int monitorIndex, quintptr windowHandle)
 // retry path reuses the exact proven signaling wiring.
 void CallManager::buildAndStartSharePipeline(int monitorIndex, quintptr windowHandle)
 {
+    // Never overwrite a live pipeline -- that orphans it (leaking its glib
+    // timer + wired signals). Guards the race where a stale deferred-rebuild
+    // timer (kShareDeviceSettleMs) fires after a new share was already started
+    // within the settle window (#0.47.0 review).
+    if (m_screenSharePipeline) {
+        qWarning() << "CallManager: buildAndStartSharePipeline called with a "
+                      "live pipeline -- ignoring (stale rebuild?)";
+        return;
+    }
+
     m_ssQuality = QSettings("TalQ", "TalQ")
                       .value("Video/screenShareQuality", 1).toInt();
 
     m_screenSharePipeline = new ScreenSharePipeline(this);
     {
-        // Level → pre-encode downscale cap (set before start(), which the
-        // pipeline reads once). Native uses an 8K cap so the scaleCaps
-        // range passes the real resolution through untouched — the user
-        // opted in; #119's 4K+ RAM caveat applies there.
+        // Level -> pre-encode downscale cap (set before start(), which the
+        // pipeline reads once). The cap is a CEILING: a smaller monitor frame
+        // passes through untouched, a larger one is downscaled to fit.
         int cw = 1920, ch = 1080;
         switch (m_ssQuality) {
             case 0: cw = 1280; ch = 720;  break;
             case 1: cw = 1920; ch = 1080; break;
             case 2: cw = 2560; ch = 1440; break;
-            case 3: cw = 7680; ch = 4320; break;
+            case 3: cw = 3840; ch = 2160; break;   // "High" = up to 4K
             default: break;
         }
+        // Hard 4K ceiling. The hardware H264 encoder (Intel QSV / qsvh264enc)
+        // tops out around 4K (4096x2304); a native 8K monitor frame produced
+        // ZERO encoded output, so the share's outbound RTP never confirmed and
+        // it silently failed + wedged the subsystem (field report 2026-06-01).
+        // Clamp every tier so a big/8K monitor downscales instead of feeding the
+        // encoder a resolution it cannot handle.
+        cw = qMin(cw, 3840);
+        ch = qMin(ch, 2160);
         m_screenSharePipeline->setQualityCap(cw, ch);
     }
 
@@ -1649,8 +1666,13 @@ void CallManager::buildAndStartSharePipeline(int monitorIndex, quintptr windowHa
     if (!m_screenSharePipeline->start(m_stunServer, m_turnServers, monitorIndex, windowHandle)) {
         qWarning() << "CallManager: failed to start screen share pipeline";
         m_screenSharing = false;
-        m_screenSharePipeline->deleteLater();
-        m_screenSharePipeline = nullptr;
+        // start() can emit error() synchronously (DirectConnection ->
+        // stopScreenShare), which may already have deleteLater'd + nulled the
+        // pipeline before we reach here -- don't deref a null (pre-existing).
+        if (m_screenSharePipeline) {
+            m_screenSharePipeline->deleteLater();
+            m_screenSharePipeline = nullptr;
+        }
         m_sharePolicy.requestStop();   // back to a clean Idle
         return;
     }
@@ -1750,6 +1772,12 @@ void CallManager::stopScreenShare()
     qInfo() << "CallManager: stopped screen sharing";
 
     m_screenShareTearingDown = false;
+    // Terminal teardown: drive the share policy straight back to Idle. This path
+    // deleteLater()s the pipeline, which suppresses released() -- so
+    // onSharePipelineReleased() never runs and the policy would otherwise stay
+    // stuck in Stopping, leaving every later start "queued behind teardown"
+    // forever (the retries-exhausted wedge, field report 2026-06-01).
+    m_sharePolicy.reset();
     emit screenShareChanged();
 }
 
@@ -1760,6 +1788,14 @@ void CallManager::onShareConfirmed()
     m_shareConfirmArmed = false;
     qInfo() << "CallManager: screen share confirmed live (ICE + outbound RTP)";
 }
+
+// Settle delay between a screen-share teardown's released() and re-acquiring the
+// capture device on the rebuild. released() now proves the GStreamer NULL
+// transition settled (ScreenSharePipeline blocks on it), but the DXGI desktop-
+// duplication device can take a moment longer to actually free; rebuilding the
+// instant released() arrives still races it (SetThreadDesktop ERROR_BUSY). 300 ms
+// is grounded in Sunshine's DDAPI 200ms-x2 retry precedent, with margin.
+static constexpr int kShareDeviceSettleMs = 300;
 
 void CallManager::onShareConfirmTimeout()
 {
@@ -1781,7 +1817,13 @@ void CallManager::onShareConfirmTimeout()
             m_screenShareTearingDown = true;
             m_screenSharePipeline->stop();
         } else if (m_sharePolicy.onReleased() == ShareAction::StartNow) {
-            buildAndStartSharePipeline(m_ssMonitorIndex, m_ssWindowHandle);
+            // No live pipeline to tear down; the device is already releasing.
+            // Defer the rebuild for the same DXGI settle reason as the main
+            // released() path below (state-guarded against a racing user stop).
+            QTimer::singleShot(kShareDeviceSettleMs, this, [this]() {
+                if (m_sharePolicy.state() == ShareState::Starting)
+                    buildAndStartSharePipeline(m_ssMonitorIndex, m_ssWindowHandle);
+            });
         }
     } else if (a == ShareAction::Fail) {
         // Retries exhausted — surface a clear failure instead of a silently
@@ -1808,8 +1850,19 @@ void CallManager::onSharePipelineReleased()
     }
     // If a start is queued (a retry, or a back-to-back share requested during
     // teardown), fire it now that the device is safe to re-acquire.
-    if (m_sharePolicy.onReleased() == ShareAction::StartNow)
-        buildAndStartSharePipeline(m_ssMonitorIndex, m_ssWindowHandle);
+    if (m_sharePolicy.onReleased() == ShareAction::StartNow) {
+        // Defer the rebuild by a short settle: released() now means the
+        // GStreamer NULL transition has settled, but the DXGI desktop-
+        // duplication capture device can take a moment longer to actually free
+        // -- re-acquiring instantly races it (SetThreadDesktop ERROR_BUSY ->
+        // capture stalls after one frame). State-guarded so a user stop / call
+        // end during the settle (which resets the policy to Idle) can't
+        // resurrect a torn-down share.
+        QTimer::singleShot(kShareDeviceSettleMs, this, [this]() {
+            if (m_sharePolicy.state() == ShareState::Starting)
+                buildAndStartSharePipeline(m_ssMonitorIndex, m_ssWindowHandle);
+        });
+    }
 }
 
 VideoFrameProvider *CallManager::localScreenPreviewProvider() const
@@ -2533,6 +2586,13 @@ void CallManager::teardown(const QString &reason)
     }
     m_screenSharing = false;
     m_screenShareTearingDown = false;
+    // A call can end while a share is Active/Confirming/Stopping. m_sharePolicy
+    // is a persistent member and the deleteLater() above suppresses released(),
+    // so without an explicit reset the policy survives into the NEXT call in a
+    // non-Idle state -- the share button would then silently do nothing (or stay
+    // "queued behind teardown") for that whole call. Reset to Idle, same as the
+    // terminal stopScreenShare() path (#0.46.1 review finding).
+    m_sharePolicy.reset();
     if (m_remoteScreenProvider) {
         m_remoteScreenProvider->disconnect();
         m_remoteScreenProvider = nullptr;

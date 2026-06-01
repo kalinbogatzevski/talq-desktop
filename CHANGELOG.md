@@ -1,5 +1,36 @@
 # Changelog
 
+## v0.47.0 "Botev" -- BETA (2026-06-02)
+
+> Named for **2 June -- the Day of Hristo Botev and those who fell for Bulgaria's
+> freedom** (Heroes' Day), when sirens sound for two minutes at noon and the
+> whole country stands still. Botev -- poet, journalist, revolutionary -- was
+> killed in the Stara Planina in 1876, the same struggle the earlier "Aprilsko
+> Vastanie" / "Panagyurishte" / "Koprivshtitsa" releases honoured. A reliability
+> beta fixing the screen-share issues found in live two-party testing on 0.46.0
+> "Margaritka".
+
+### Fixed
+
+* **Changing screen-share quality mid-call no longer drops the share.** The
+  resolution switch tore down and instantly re-grabbed the Windows screen-
+  capture device before the OS had released it, so the new capture stalled after
+  one frame and the share died (and, before that, got stuck). The teardown now
+  waits for the capture device to actually free, with a brief settle, before
+  re-acquiring -- so a quality change blips and resumes at the new resolution
+  instead of dropping. A capture error that does slip through now fails fast and
+  visibly instead of silently timing out.
+* **A failed screen share recovers instead of wedging.** If a share fails to
+  start, the share button no longer goes silently dead -- you can start a new
+  share immediately (previously it stayed stuck until you restarted the app), and
+  ending a call while sharing no longer leaves sharing broken for the next call.
+
+### Known in this beta (being worked on)
+
+* Sharing a single application window currently shows your whole screen instead
+  (a limitation of the bundled media components) -- share a whole screen for now.
+* Hanging up a 1:1 call can take a few seconds to clear on the other side.
+
 ## v0.46.0 "Margaritka" -- STABLE (2026-06-01)
 
 > **Margaritka -- shipped on Children's Day.** *Margaritka* (Bulgarian
