@@ -127,6 +127,11 @@ signals:
     void participantLeftCall(const QString &sessionId);
     void participantFlagsChanged(const QString &sessionId, int oldFlags, int newFlags);
     void roomPeerJoined(const QString &sessionId);
+    // #bug2 -- a peer's signaling session LEFT the room (HPB room/leave).
+    // Distinct from participantLeftCall, which needs an inCall>0 -> 0 transition
+    // that a vanished session never emits. Lets CallManager drop a now-zombie
+    // subscriber whose publisher reconnected under a new session/SSRCs.
+    void roomPeerLeft(const QString &sessionId);
     void roomJoined();
     void remoteMuteChanged(const QString &sessionId, const QString &media, bool muted);
     void screenShareStopped(const QString &sessionId);

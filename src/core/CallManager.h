@@ -20,6 +20,7 @@
 #include "core/VideoFrameProvider.h"
 #include "core/ScreenSharePipeline.h"
 #include "core/ShareStartPolicy.h"
+#include "core/SubscriberStallPolicy.h"
 #include "core/CallParticipant.h"
 
 class BackgroundEngine;   // #20 — owned by CallManager; lives across calls.
@@ -178,6 +179,12 @@ signals:
     void callInfoChanged();
     void incomingCall(const QString &callerName, const QString &token, bool withVideo);
     void callEnded(const QString &reason);
+    // A call we tried to place was rejected by the SERVER (e.g. HTTP 5xx on
+    // POST call/{token}) and could not be established. Distinct from callEnded
+    // (a normal terminal teardown): this carries a plain-language title +
+    // message the UI shows as a prominent, must-dismiss dialog, so a server
+    // outage never looks like a silent, unexplained call drop.
+    void callFailed(const QString &title, const QString &message);
     // Fires when the leaveCall DELETE actually returns from the server.
     // Distinct from callEnded (which fires synchronously in teardown so
     // the UI never blocks on the network). Consumers that need server-
@@ -243,6 +250,9 @@ private:
     // until the MCU delivers an offer; a single send races MCU readiness
     // and yields a connected call with no audio from that peer.
     void requestPeerStream(const QString &sessionId);
+    // #bug3 -- if `sessionId` is the 1:1 peer returning from a grace hold (same
+    // NC userId), re-adopt + re-subscribe and cancel grace. Returns true if so.
+    bool tryAdoptReturningPeer(const QString &sessionId);
     // A subscriber feed died mid-call (SFU end-session / its webrtcbin ICE
     // went "failed" — both happen on a normal publisher renegotiation).
     // Tear down just that subscriber and re-subscribe; never kill the call.
@@ -288,6 +298,11 @@ private:
     // on change.
     QHash<QString, int> m_desiredSubstream;
     QHash<QString, int> m_subscriberRecoveries;  // sessionId -> mid-call re-subscribe count (bounded; reset on connect)
+    // #bug2 -- per-peer frame-stall watchdog. updateCallStats() ticks each
+    // subscriber's SubscriberStallPolicy every 2 s; a feed that delivered frames
+    // then froze (its publisher reconnected under new SSRCs, with no ICE-failed
+    // to trip recovery) fires recoverSubscriber. Pruned on recover/re-offer/left.
+    QHash<QString, SubscriberStallPolicy> m_subStall;
     QByteArray m_ringtoneData;  // backing buffer for the selected ring (SND_ASYNC reads from it)
 
     // #13: pre-answer self-preview pipeline. Standalone camera→appsink
@@ -357,6 +372,14 @@ private:
     QTimer m_pubRetryTimer;
     int    m_pubRetryAttempts   = 0;     // resets to 0 on ICE connected/completed
     bool   m_pubRebuildInFlight = false; // serialize rebuilds (one at a time)
+    // #bug3 -- peer-grace: a transient remote-1:1-peer inCall=0 (WiFi blip) or a
+    // full session drop+rejoin under a NEW NC session id must NOT end the call.
+    // Separate from m_pubRetryTimer -- both drive Reconnecting and can be live at
+    // once (a link flap downs our publisher AND the peer). MCU path only.
+    QTimer  m_peerGraceTimer;            // single-shot, armed on remote-peer-left
+    bool    m_peerGraceActive = false;   // true while waiting for the peer to return
+    QString m_remotePeerUserId;          // NC userId of the 1:1 peer (correlation key)
+    QString m_graceLeftSid;              // the (now dead) session id the peer left under
     // 0.40.15 — sticky flag: publisher ICE has been seen at "connected"
     // or "completed" at some point. The iceStateChanged handler only
     // promotes Connecting→Active when the event fires WHILE m_state is
@@ -379,6 +402,14 @@ private:
 
     QString m_lastDeclinedToken;
     QDateTime m_lastDeclinedTime;
+    // A call we just TRIED to place that the server rejected (e.g. 5xx). Used
+    // to (a) bound auto-retry of the call-join POST and (b) suppress the
+    // phantom incoming-call re-ring the signaling echo would otherwise bounce
+    // our own failed outgoing into. See joinCallOnServer / onIncomingCallDetected.
+    QString m_lastOutgoingToken;
+    QDateTime m_lastOutgoingTime;
+    int m_callJoinAttempts = 0;
+    static constexpr int kMaxCallJoinAttempts = 2;   // 2 quick retries, then inform
     QDateTime m_incomingTime;  // when incoming call was detected
     bool m_remoteVideoMuted = true;
     bool m_remoteAudioMuted = true;

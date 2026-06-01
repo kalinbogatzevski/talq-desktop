@@ -8,7 +8,7 @@
 
 Your team chat as a real desktop app: instant open, near-zero idle, built to be left running all day.
 
-<sub>Stable codename: **Deep Thought** — the supercomputer from *The Hitchhiker's Guide to the Galaxy* that computed **42**, the Answer to Life, the Universe and Everything (a nod to version 0.42). The cycles that fed this stable honoured the 150th anniversary of Bulgaria's 1876 April Uprising: *Aprilsko Vastanie* (0.39 beta) → *Panagyurishte* (0.40 stable) → *Koprivshtitsa* (0.41 beta) 🇧🇬</sub>
+<sub>Stable codename: **Margaritka** (Bulgarian *маргаритка*, "daisy") — cut on **1 June, International Children's Day** (*Ден на детето*, marked in Bulgaria every year since 1927) and named for the small, hardy, sun-following meadow flower of early summer: the one children thread into chains, and the one that shrugs off a gust of wind or a passing cloud — just as this 0.46 stable taught calls to ride out a dropped network. It follows the *Hitchhiker's Guide* stables *Deep Thought* (0.42, the computer that found **42**) and *Magrathea* (0.44), and the 150th-anniversary cycle of Bulgaria's 1876 April Uprising before them: *Aprilsko Vastanie* → *Panagyurishte* → *Koprivshtitsa* 🇧🇬</sub>
 
 </div>
 
