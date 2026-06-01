@@ -245,6 +245,7 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
     // Room peer joined — request their stream if we're in a call
     connect(m_signaling, &SignalingClient::roomPeerJoined,
             this, [this](const QString &sessionId) {
+        if (tryAdoptReturningPeer(sessionId)) return;   // #bug3 -- peer back from grace
         if ((m_state == Connecting || m_state == Active)
             && !m_subscribePipelines.contains(sessionId)) {
             if (m_remoteSessionId.isEmpty()) {
@@ -265,6 +266,23 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
                 qDebug() << "CallManager: sent screen sendoffer to new peer"
                          << sessionId.left(20);
             }
+        }
+    });
+
+    // #bug2 -- a peer's signaling session LEFT the room (HPB room/leave; this
+    // event used to be logged and dropped). If we hold a subscriber for that
+    // peer it is now a zombie decoding SSRCs that no longer exist (its publisher
+    // reconnected under a new session). Rebuild via recoverSubscriber -- which
+    // is call-safe, bounded, and re-requests the offer -- NOT onParticipantLeftCall,
+    // which teardown()s the whole 1:1 call when sid==m_remoteSessionId and would
+    // drop the call on a transient publisher-reconnect blip.
+    connect(m_signaling, &SignalingClient::roomPeerLeft,
+            this, [this](const QString &sessionId) {
+        if (m_state != Connecting && m_state != Active) return;
+        if (m_subscribePipelines.contains(sessionId)) {
+            qInfo() << "CallManager: peer" << sessionId.left(20)
+                    << "left room -- rebuilding its subscriber (#bug2)";
+            recoverSubscriber(sessionId, QStringLiteral("room-leave"));
         }
     });
 
@@ -486,6 +504,19 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
     connect(&m_pubRetryTimer, &QTimer::timeout, this, [this]() {
         if (m_state != Reconnecting) return;
         rebuildPublisherAndReoffer();
+    });
+
+    // #bug3 -- peer-grace: a transient remote-peer inCall=0 / drop+rejoin must
+    // NOT end a 1:1 call. We hold Reconnecting for this window and auto-re-
+    // subscribe when the same userId returns (tryAdoptReturningPeer). Only a
+    // true no-return within the window ends the call.
+    m_peerGraceTimer.setSingleShot(true);
+    m_peerGraceTimer.setInterval(28000);
+    connect(&m_peerGraceTimer, &QTimer::timeout, this, [this]() {
+        if (!m_peerGraceActive) return;             // already recovered / torn down
+        qInfo() << "CallManager: remote peer did not return within grace -- ending call";
+        m_peerGraceActive = false;
+        teardown("Call ended");                     // the ONLY teardown for peer-left now
     });
 
     m_speakingGrace.setSingleShot(true);
@@ -741,6 +772,32 @@ void CallManager::updateCallStats()
         lines << line;
     }
 
+    // #bug2 -- subscriber frame-stall watchdog. A subscriber whose decoded
+    // frame count stops advancing (peer in-call, not video-muted) is a zombie
+    // feed left behind when the publisher reconnected under new SSRCs: the MCU
+    // keeps the old subscriber's ICE/DTLS alive, so no ICE-failed/session-ended
+    // fires and the remote tile just freezes. Rebuild it. Deferred-fire because
+    // recoverSubscriber take()s from m_subscribePipelines (mutating it mid-loop
+    // would be UB) -- collect stalled sids, then recover after the loop.
+    QStringList stalledSubs;
+    for (auto it = m_subscribePipelines.constBegin();
+         it != m_subscribePipelines.constEnd(); ++it) {
+        const QString &sid = it.key();
+        SubscribeWebrtcSrc *s = it.value();
+        if (!s || !s->isRunning()) { m_subStall.remove(sid); continue; }
+        const int fc = s->videoProvider() ? s->videoProvider()->frameCount() : 0;
+        CallParticipant *p = m_participants.value(sid);
+        const bool muted   = (p && p->videoMuted());
+        const bool pending = m_pendingRequestOffers.contains(sid);
+        if (m_subStall[sid].onTick(fc, muted, pending))
+            stalledSubs << sid;
+    }
+    for (const QString &sid : stalledSubs) {
+        qWarning() << "CallManager: subscriber" << sid.left(20)
+                   << "frame-stalled -- rebuilding (publisher likely reconnected)";
+        recoverSubscriber(sid, QStringLiteral("frame-stall"));
+    }
+
     // Remote peer
     if (!m_remoteSessionId.isEmpty())
         lines << "Remote: " + m_remoteSessionId.left(16) + "...";
@@ -808,6 +865,8 @@ void CallManager::startCall(const QString &token, bool withVideo)
               << "sigRoom=" << m_signaling->currentRoom()
               << "sigSession=" << m_signaling->sessionId().left(20));
     m_callToken = token;
+    m_callJoinAttempts = 0;
+    m_peerGraceActive = false; m_peerGraceTimer.stop();   // #bug3 -- fresh call, no stale grace
     m_withVideo = withVideo;
     m_cameraOn = withVideo;
     m_cameraUnavailable = false;   // fresh call: clear any prior failure
@@ -857,6 +916,37 @@ void CallManager::ensureSignalingRoomJoined(std::function<void()> next)
     // joinRoom() POSTs participants/active (yielding the NC sessionId) and
     // then sends the WS `room` message.
     m_signaling->joinRoom(m_callToken);
+}
+
+bool CallManager::tryAdoptReturningPeer(const QString &sessionId)
+{
+    if (!m_peerGraceActive) return false;
+    if (sessionId == m_signaling->sessionId()) return false;
+    const QString joinUser = m_signaling->userIdForSession(sessionId);
+    // Require a userId match so a DIFFERENT person joining during grace is not
+    // mistaken for the returning peer. If userId is unknown, fall back to an
+    // exact sid match (covers the rare same-session inCall flap).
+    const bool sameUser = !joinUser.isEmpty() && !m_remotePeerUserId.isEmpty()
+                          && joinUser == m_remotePeerUserId;
+    const bool sameSid  = (sessionId == m_graceLeftSid);
+    if (!sameUser && !sameSid) return false;
+    qInfo() << "CallManager: 1:1 peer returned (sid=" << sessionId.left(20)
+            << "user=" << joinUser << ") -- re-adopting, canceling grace (#bug3)";
+    m_remoteSessionId = sessionId;
+    emit callInfoChanged();
+    m_peerGraceActive = false;
+    m_peerGraceTimer.stop();
+    m_graceLeftSid.clear();
+    requestPeerStream(sessionId);          // single re-subscribe funnel
+    // Only flip back to Active if the publisher recovery isn't ALSO mid-flight
+    // (a link flap can down both). If it is, stay Reconnecting; the publisher
+    // ICE-connected path flips us to Active when it recovers.
+    if (m_state == Reconnecting
+        && !m_pubRetryTimer.isActive() && !m_pubRebuildInFlight) {
+        setState(Active);
+        setStatusDetail("Connected");
+    }
+    return true;
 }
 
 void CallManager::requestPeerStream(const QString &sessionId)
@@ -910,6 +1000,7 @@ void CallManager::recoverSubscriber(const QString &sessionId, const QString &rea
         dead->deleteLater();   // we may be inside this sub's own queued signal
     }
     m_subscriberSids.remove(sessionId);
+    m_subStall.remove(sessionId);   // #bug2 -- fresh baseline for the rebuilt feed
     m_pendingRequestOffers.remove(sessionId);
     m_requestOfferAttempts.remove(sessionId);
 
@@ -1001,8 +1092,14 @@ bool CallManager::buildAndStartPublisher()
             // pending retry, clear the in-flight guard, return to Active.
             if (m_state == Reconnecting) {
                 qInfo() << "CallManager: publisher reconnected (" << state << ") — call resumed";
-                setState(Active);
-                setStatusDetail("Connected");
+                // #bug3 -- if the PEER is also mid-grace (a link flap downed
+                // both), stay Reconnecting; tryAdoptReturningPeer flips us to
+                // Active when the peer returns. Whichever recovery finishes last
+                // makes the Active flip.
+                if (!m_peerGraceActive) {
+                    setState(Active);
+                    setStatusDetail("Connected");
+                }
             }
             m_pubRetryTimer.stop();
             m_pubRetryAttempts   = 0;
@@ -1149,6 +1246,17 @@ void CallManager::onIncomingCallDetected(const QString &callerName, const QStrin
         && m_lastDeclinedTime.isValid()
         && m_lastDeclinedTime.msecsTo(QDateTime::currentDateTime()) < 10000) {
         qDebug() << "CallManager: ignoring re-detection of recently declined call" << token;
+        return;
+    }
+
+    // Cooldown: a call we just TRIED to place that failed (e.g. server 5xx)
+    // leaves the room flagged "in call" server-side; the signaling echo would
+    // otherwise immediately re-ring us as a phantom incoming call on our own
+    // token (showing our own camera self-preview). Suppress that briefly.
+    if (token == m_lastOutgoingToken
+        && m_lastOutgoingTime.isValid()
+        && m_lastOutgoingTime.msecsTo(QDateTime::currentDateTime()) < 10000) {
+        qDebug() << "CallManager: ignoring phantom incoming re-ring of just-failed outgoing" << token;
         return;
     }
 
@@ -1301,6 +1409,8 @@ void CallManager::acceptCall(bool withVideo) {
     // free by the time we return here.
     stopIncomingCameraPreview();
     m_withVideo = withVideo; m_cameraOn = withVideo; m_muted = false; m_callDuration = 0;
+    m_callJoinAttempts = 0;
+    m_peerGraceActive = false; m_peerGraceTimer.stop();   // #bug3 -- fresh call, no stale grace
     m_cameraUnavailable = false;   // fresh call: clear any prior failure
     emit cameraChanged();
     m_ringTimeout.stop();
@@ -1716,17 +1826,54 @@ void CallManager::setScreenShareQuality(int level)
     emit screenShareQualityChanged();
     if (!m_screenSharing) return;   // applied on next share
 
-    // Live change: quick managed re-share at the new cap, SAME target.
-    // stop+start reuses all the existing signaling/ICE/offer wiring;
-    // peers re-receive the screen at the new resolution after a brief
-    // (~sub-second) blip. startScreenShare() re-reads the persisted
-    // quality and applies the new downscale cap.
-    const int mi = m_ssMonitorIndex;
-    const quintptr wh = m_ssWindowHandle;
+    // Live change: managed re-share at the new cap, SAME target. We must NOT
+    // use the terminal stopScreenShare() here: it deleteLater()s the pipeline
+    // immediately, which nulls the QPointer guard in ScreenSharePipeline's
+    // detached NULL-transition worker so released() is never emitted -- the
+    // queued start (requestStop()+requestStart() == StartQueued) is then
+    // orphaned and never resumes ("queued behind teardown" forever).
+    //
+    // Instead reuse the proven confirm-timeout RETRY teardown: keep the
+    // pipeline object ALIVE (stop() only, no deleteLater), let its async
+    // teardown fire released() -> onSharePipelineReleased(), which deletes the
+    // retained pipeline (m_shareRetryTeardown) and then, because the policy has
+    // a queued start, rebuilds via buildAndStartSharePipeline(m_ssMonitorIndex,
+    // m_ssWindowHandle). buildAndStartSharePipeline re-reads the persisted
+    // quality (set just above) and applies the new downscale cap. The monitor
+    // border is intentionally left up across the blip (re-shown idempotently on
+    // rebuild) so a quality tweak doesn't flicker the frame.
     qInfo() << "CallManager: screen-share quality ->" << level
             << "(re-sharing same target)";
-    stopScreenShare();
-    startScreenShare(mi, wh);
+
+    if (!m_screenSharePipeline) {
+        // No live pipeline object (shouldn't happen while m_screenSharing is
+        // true, but be defensive): fall back to the terminal stop+start.
+        const int mi = m_ssMonitorIndex;
+        const quintptr wh = m_ssWindowHandle;
+        stopScreenShare();
+        startScreenShare(mi, wh);
+        return;
+    }
+
+    // Cancel any in-flight confirm/retry so a late confirm-timeout can't race
+    // this managed re-share.
+    m_shareConfirmTimer.stop();
+    m_shareConfirmArmed = false;
+
+    // Drive the policy: Active -> Stopping (requestStop), then queue the start
+    // (requestStart returns StartQueued, setting the pending start that
+    // onReleased() will convert to StartNow once the device is free).
+    m_sharePolicy.requestStop();
+    m_sharePolicy.requestStart();
+
+    // Keep the pipeline alive through teardown so released() actually fires;
+    // mark this as a retry-style teardown so onSharePipelineReleased() deletes
+    // the retained pipeline and rebuilds. m_screenShareTearingDown protects the
+    // A/V publisher from spurious ICE "failed" edges during the teardown window
+    // (cleared in onSharePipelineReleased via the retry-teardown branch).
+    m_shareRetryTeardown = true;
+    m_screenShareTearingDown = true;
+    m_screenSharePipeline->stop();
 }
 
 int CallManager::videoDeviceIndex() const
@@ -1829,13 +1976,59 @@ void CallManager::joinCallOnServer(bool withVideo)
     body["silent"] = false;            // ring participants normally
     body["recordingConsent"] = false;  // no consent UI; server enforces only if required
     m_api->post("apps/spreed/api/v4/call/" + m_callToken, body,
-        [this](bool ok, const QJsonObject &, int statusCode) {
+        [this, withVideo](bool ok, const QJsonObject &, int statusCode) {
             if (!ok) {
-                qWarning() << "CallManager: failed to join call, status=" << statusCode;
+                // The SERVER rejected our call-join (e.g. a 5xx). Never silently
+                // drop the call with no word to the user. First absorb a brief
+                // transient blip with a couple of quick auto-retries; if it
+                // still fails, intercept it and surface a clear, plain-language
+                // message -- and remember the token so the signaling echo does
+                // not immediately re-ring us as a phantom incoming call.
+                const bool transient   = (statusCode == 0) || (statusCode >= 500 && statusCode <= 599);
+                const bool stillTrying = (m_state == Outgoing || m_state == Connecting || m_state == Incoming);
+                if (transient && stillTrying && m_callJoinAttempts < kMaxCallJoinAttempts) {
+                    ++m_callJoinAttempts;
+                    const int delayMs = 600 * m_callJoinAttempts;   // 600 ms, then 1200 ms
+                    qWarning() << "CallManager: call-join failed status=" << statusCode
+                               << "- auto-retry" << m_callJoinAttempts << "of"
+                               << kMaxCallJoinAttempts << "in" << delayMs << "ms";
+                    setStatusDetail(tr("Server busy, retrying..."));
+                    QTimer::singleShot(delayMs, this, [this, withVideo]() {
+                        if (m_state == Outgoing || m_state == Connecting || m_state == Incoming)
+                            joinCallOnServer(withVideo);
+                    });
+                    return;
+                }
+
+                qWarning() << "CallManager: failed to join call, status=" << statusCode
+                           << "(retries exhausted; informing user)";
+                m_callJoinAttempts = 0;
+                m_lastOutgoingToken = m_callToken;
+                m_lastOutgoingTime  = QDateTime::currentDateTime();
+
+                const QString codeStr = (statusCode == 0)
+                    ? tr("no response") : QString::number(statusCode);
+                const QString title = tr("Couldn't start the call");
+                QString msg;
+                if (statusCode == 0 || statusCode >= 500)
+                    msg = tr("The server reported an error (%1), so the call couldn't "
+                             "be started.\n\nThis is a problem on the server, not on your "
+                             "device. Please try again in a moment -- if it keeps "
+                             "happening, let your administrator know.").arg(codeStr);
+                else if (statusCode == 403)
+                    msg = tr("You don't have permission to start a call in this "
+                             "conversation (403).");
+                else if (statusCode == 404)
+                    msg = tr("This conversation could not be found on the server (404).");
+                else
+                    msg = tr("The call couldn't be started (%1). Please try again.").arg(codeStr);
+
+                emit callFailed(title, msg);
                 teardown("Failed to join call");
                 return;
             }
 
+            m_callJoinAttempts = 0;
             m_joinedCall = true;
             setStatusDetail("Fetching servers");
             qDebug() << "CallManager: joined call, MCU=" << m_signaling->hasMcu();
@@ -2257,6 +2450,14 @@ void CallManager::stopAllPipelines()
     m_pubRebuildInFlight = false;
     m_pubIceConnectedSeen = false;
     m_p2pIceConnectedSeen = false;
+    // #bug3 -- clear peer-grace here (the single cleanup point): stopAllPipelines
+    // runs first in teardown (before m_remoteSessionId.clear) AND on every fresh
+    // call start, so an in-flight grace timer can't re-enter teardown and a stale
+    // grace can't fire into the next call.
+    m_peerGraceTimer.stop();
+    m_peerGraceActive = false;
+    m_remotePeerUserId.clear();
+    m_graceLeftSid.clear();
 
     // Flush stale GLib sources from destroyed pipelines (libnice agents,
     // DTLS timers, etc.). Without this, creating a new webrtcbin on the
@@ -2468,6 +2669,15 @@ void CallManager::onParticipantJoinedCall(const QString &sessionId, int flags, c
         return;
     }
 
+    // #bug3 -- a 1:1 peer returning from a grace hold (same userId, likely a NEW
+    // session id). Take priority over the empty-guard adopt below so the userId
+    // correlation wins (and a wrong group joiner during grace is not adopted).
+    if (tryAdoptReturningPeer(sessionId)) {
+        if (m_state == Active || m_state == Connecting || m_state == Reconnecting)
+            ensureParticipant(sessionId, displayName);
+        return;
+    }
+
     if ((m_state == Outgoing || m_state == Connecting) && m_remoteSessionId.isEmpty()) {
         m_remoteSessionId = sessionId;
         if (!displayName.isEmpty()) m_remotePeerName = displayName;
@@ -2559,14 +2769,46 @@ void CallManager::onParticipantLeftCall(const QString &sessionId)
         m_subscribePipelines[sessionId]->deleteLater();
         m_subscribePipelines.remove(sessionId);
         m_subscriberSids.remove(sessionId);
+        m_subStall.remove(sessionId);   // #bug2
         qDebug() << "CallManager: removed subscriber for" << sessionId.left(20);
     }
 
     removeParticipant(sessionId);
 
     if (sessionId == m_remoteSessionId) {
-        qDebug() << "CallManager: remote peer left call";
-        teardown("Call ended");
+        // #bug3 -- peer-grace (do-NOT-end + auto-recover) applies ONLY to an MCU
+        // 1:1 call with a KNOWN-userId peer. P2P media rides m_peerPipeline (the
+        // re-subscribe funnel can't recover it); in a GROUP call m_remoteSessionId
+        // is merely the first-joiner, not a sole peer, so a grace hold would wrongly
+        // freeze a multi-party call; a guest's userId is unknown so a new-session
+        // rejoin can't be correlated. In all those cases keep the clean immediate end.
+        const bool isOneToOne = m_conversations
+            && m_conversations->conversationTypeForToken(m_callToken) == 1;
+        const QString peerUserId = m_signaling->userIdForSession(sessionId);
+        if (m_useP2P || !isOneToOne || peerUserId.isEmpty()) {
+            qDebug() << "CallManager: remote peer left call ("
+                     << (m_useP2P ? "P2P" : (!isOneToOne ? "group" : "guest"))
+                     << ") -- ending";
+            teardown("Call ended");
+            return;
+        }
+        // MCU 1:1, known peer: a transient WiFi-reconnect blip is indistinguishable
+        // here (the peer is often still in the room and returns seconds later under
+        // a NEW NC session id; m_sessionToUserId is NOT pruned on leave so the userId
+        // above resolves). Enter a peer-grace Reconnecting hold and auto-re-subscribe
+        // on return. Only a true no-return ends the call (grace timer).
+        qInfo() << "CallManager: remote peer left call (sid=" << sessionId.left(20)
+                << "user=" << peerUserId << ") -- entering peer-grace, NOT ending";
+        m_remotePeerUserId = peerUserId;
+        m_graceLeftSid     = sessionId;
+        m_peerGraceActive  = true;
+        m_remoteSessionId.clear();        // reopen the empty-guarded adopt paths
+        emit callInfoChanged();
+        if (m_state == Active || m_state == Connecting)
+            setState(Reconnecting);
+        setStatusDetail(tr("Reconnecting, waiting for peer..."));
+        if (!m_peerGraceTimer.isActive())
+            m_peerGraceTimer.start();
     }
 }
 
@@ -2626,6 +2868,7 @@ void CallManager::onOfferReceived(const QString &fromSessionId, const QString &s
             old->stop();
             old->deleteLater();
         }
+        m_subStall.remove(fromSessionId);   // #bug2 -- re-baseline the fresh subscriber
     }
 
     // New subscriber

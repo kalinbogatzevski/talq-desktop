@@ -604,6 +604,15 @@ int main(int argc, char *argv[])
         notifications.notify(QObject::tr("Call ended"), msg, /*alwaysSound=*/true, QString());
     });
 
+    // A call the SERVER rejected (e.g. HTTP 5xx on POST call/{token}) must never
+    // be a silent drop. CallManager intercepts it and emits callFailed with a
+    // plain-language title + message; show it as a prominent, must-dismiss
+    // dialog so a non-technical user knows exactly what happened and what to do.
+    QObject::connect(&callManager, &CallManager::callFailed, &window,
+                     [&window](const QString &title, const QString &message) {
+        QMessageBox::warning(&window, title, message);
+    });
+
     // Tray unread count
     QObject::connect(&conversations, &ConversationListModel::totalUnreadChanged,
                      &notifications, [&conversations, &notifications]() {
