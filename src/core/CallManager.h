@@ -32,6 +32,7 @@ class CallManager : public QObject
     Q_PROPERTY(CallState state READ state NOTIFY stateChanged)
     Q_PROPERTY(bool isMuted READ isMuted NOTIFY muteChanged)
     Q_PROPERTY(bool isCameraOn READ isCameraOn NOTIFY cameraChanged)
+    Q_PROPERTY(bool isCameraUnavailable READ isCameraUnavailable NOTIFY cameraChanged)
     Q_PROPERTY(int callDuration READ callDuration NOTIFY durationChanged)
     Q_PROPERTY(QString remotePeerName READ remotePeerName NOTIFY callInfoChanged)
     Q_PROPERTY(QString remotePeerId READ remotePeerId NOTIFY callInfoChanged)
@@ -60,6 +61,11 @@ public:
     CallState state() const { return m_state; }
     bool isMuted() const { return m_muted; }
     bool isCameraOn() const { return m_cameraOn; }
+    // True when the camera device failed to open during this call (missing,
+    // in use by another app, or blocked by OS privacy). Distinct from
+    // "camera off" (a deliberate user toggle): the call surface uses this to
+    // show a "Camera unavailable" notice instead of a silent black tile.
+    bool isCameraUnavailable() const { return m_cameraUnavailable; }
     int callDuration() const { return m_callDuration; }
     QString remotePeerName() const { return m_remotePeerName; }
     QString remotePeerId() const { return m_remotePeerId; }
@@ -315,6 +321,10 @@ private:
     QString m_remotePeerClient;  // "TalQ/X.Y.Z" or empty for non-TalQ peers
     bool m_muted = false;
     bool m_cameraOn = false;
+    // Set when the camera device fails to start mid-call; drives the
+    // "Camera unavailable" UI. Reset at the start of every call and whenever
+    // the user toggles the camera back on (a retry).
+    bool m_cameraUnavailable = false;
     bool m_speaking = false;
     QTimer m_speakingGrace;
     bool m_cameraFallbackTried = false;

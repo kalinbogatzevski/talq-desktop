@@ -1533,6 +1533,19 @@ void PublishPipeline::pollBus()
                                   "dead — propagating fatal";
                     emit error(errMsg);
                 }
+            } else if (m_cameraSrc && src == GST_OBJECT(m_cameraSrc)) {
+                // The camera SOURCE failed to start (e.g. MediaFoundation
+                // "No available video capture device" -- camera missing,
+                // busy in another app, or blocked by Windows privacy).
+                // NOT fatal to the call: audio + receive-video keep working.
+                // But it must NOT stay silent -- route it to cameraError so
+                // CallManager can surface "Camera unavailable" to the user
+                // (otherwise the self-tile sits on "Starting camera..."
+                // forever). cameraError is non-fatal (continues audio-only).
+                qWarning() << "PublishPipeline: camera source ERROR --" << errMsg
+                           << dbgStr << "(camera unavailable; call stays up)";
+                emit cameraError(errMsg.isEmpty()
+                                 ? QStringLiteral("Camera unavailable") : errMsg);
             } else {
                 qWarning() << "PublishPipeline ERROR:" << errMsg << dbgStr;
                 // Non-branch error (e.g., webrtcbin transport): log only,

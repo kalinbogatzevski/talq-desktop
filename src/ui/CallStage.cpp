@@ -450,6 +450,9 @@ void CallStage::paintEvent(QPaintEvent *)
         }
         paintStatusPill(p, th);
         paintSharingBadge(p, th);
+        // Camera-unavailable banner: painted OUTSIDE the fading chrome block
+        // below so it stays put the whole time the problem is live.
+        paintCameraBanner(p, th);
         if (m_telemetryOpen) paintTelemetry(p, th);
         // Top info/action chrome + bottom control bar fade together.
         // When fully hidden we skip painting (and skip appending hit
@@ -549,12 +552,22 @@ void CallStage::paintTile(QPainter &p, const Tile &t, const PainterTheme &th, bo
                 // showing a silent avatar tile (#134 UX gap).
                 cap = cp->isSelf() ? tr("Starting screen share…")
                                    : tr("Starting remote screen share…");
+            } else if (cp->isSelf() && m_call->isCameraUnavailable()) {
+                // Idiot-proofing: never sit silently on "Starting camera...".
+                // The device couldn't open (missing / busy / OS-blocked); the
+                // top banner carries the full how-to-fix text, this is the
+                // tile-level echo.
+                cap = tr("Camera unavailable");
             } else if (cp->isSelf()) {
                 cap = m_call->isCameraOn() ? tr("Starting camera…")
                                            : tr("Camera off");
             } else if (cp->videoMuted()) {
                 cap = tr("Camera off");
-            } else if (cp->connState() == CallParticipant::Connecting) {
+            } else if (cp->connState() == CallParticipant::Connecting
+                       && m_call->state() != CallManager::Active) {
+                // Only say "Connecting" while the CALL is still being set up.
+                // Once it's established, a peer with no video yet is "waiting
+                // for video", never "connecting" -- the call is already up.
                 cap = tr("Connecting…");
             } else {
                 cap = tr("Waiting for video…");
@@ -925,7 +938,11 @@ void CallStage::paintStatusPill(QPainter &p, const PainterTheme &th)
         if (cp->isSelf()) continue;
         if (cp->connState()==CallParticipant::Reconnecting
             || cp->connState()==CallParticipant::Failed) reconnecting = true;
-        if (cp->connState()==CallParticipant::Connecting) degraded = true;
+        // Once the call is established, a peer's "Connecting" substream state
+        // must not paint the pill amber -- the call IS up. Only pre-Active
+        // states drive the connecting/degraded indicator.
+        if (cp->connState()==CallParticipant::Connecting
+            && st != CallManager::Active) degraded = true;
     }
     QColor dot = reconnecting ? th.danger
                : (degraded || st==CallManager::Connecting || st==CallManager::Outgoing)
@@ -977,6 +994,59 @@ void CallStage::paintStatusPill(QPainter &p, const PainterTheme &th)
 
     m_statusPillRect = pill;
     m_topChromeRects.append(pill);
+}
+
+void CallStage::paintCameraBanner(QPainter &p, const PainterTheme &th)
+{
+    // Idiot-proofing: when our own camera can't be opened we must NOT fail
+    // silently. A persistent, plain-language banner near the top tells the
+    // user their camera isn't being sent and exactly how to fix it. No
+    // jargon -- the people running TalQ may not know what a "capture device"
+    // is. Drawn every frame this state is live (not gated by chrome fade).
+    if (!m_call || !m_call->isCameraUnavailable()) return;
+
+    const QString title = tr("Your camera isn't available");
+    const QString hint  = tr("Others can't see you. Close any app that might "
+                             "be using the camera, or allow camera access in "
+                             "Windows Settings > Privacy > Camera, then turn "
+                             "your camera off and on again.");
+
+    QFont tf = th.systemFont(); tf.setBold(true);
+    QFont hf = th.systemFont();
+    QFontMetrics tfm(tf), hfm(hf);
+
+    const qreal pad   = 14.0;
+    const qreal bw    = qMin<qreal>(width() - 40.0, 560.0);
+    const qreal textX = pad + 6.0;          // +6 clears the warning stripe
+    const qreal textW = bw - textX - pad;
+    const QRect hintR = hfm.boundingRect(QRect(0, 0, int(textW), 1000),
+                                         Qt::TextWordWrap, hint);
+    const qreal bh = pad + tfm.height() + 4.0 + hintR.height() + pad;
+    const qreal bx = (width() - bw) / 2.0;
+    const qreal by = 52.0;                   // below the top status/info pills
+    const QRectF banner(bx, by, bw, bh);
+
+    QColor face = th.bgSurface; face.setAlphaF(0.96);
+    QColor edge = th.amber;     edge.setAlphaF(0.90);
+    p.setBrush(face);
+    p.setPen(QPen(edge, 1.4));
+    p.drawRoundedRect(banner, 12, 12);
+
+    // Left warning stripe so it reads as "attention" at a glance.
+    QPainterPath clip; clip.addRoundedRect(banner, 12, 12);
+    p.save();
+    p.setClipPath(clip);
+    QColor stripe = th.amber; stripe.setAlphaF(0.92);
+    p.fillRect(QRectF(banner.left(), banner.top(), 4.0, banner.height()), stripe);
+    p.restore();
+
+    p.setFont(tf); p.setPen(th.textPrimary);
+    p.drawText(QRectF(banner.left()+textX, banner.top()+pad, textW, tfm.height()),
+               Qt::AlignLeft|Qt::AlignVCenter, title);
+    p.setFont(hf); p.setPen(th.textSecondary);
+    p.drawText(QRectF(banner.left()+textX, banner.top()+pad+tfm.height()+4.0,
+                      textW, hintR.height()),
+               Qt::TextWordWrap, hint);
 }
 
 // 0.40.15 — the top chrome is split into two distinct surfaces.

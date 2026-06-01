@@ -67,6 +67,11 @@ private:
     void paintTile(QPainter &p, const Tile &t, const PainterTheme &th, bool large);
     void paintControlBar(QPainter &p, const PainterTheme &th);
     void paintStatusPill(QPainter &p, const PainterTheme &th);
+    // Idiot-proofing: a loud, plain-language banner shown when the local
+    // camera can't be opened (missing / in use by another app / blocked by
+    // OS privacy). Drawn outside the fading chrome so a non-technical user
+    // is never left silently wondering why nobody can see them.
+    void paintCameraBanner(QPainter &p, const PainterTheme &th);
     // 0.40.15 — split top chrome: paintInfoPills draws read-only telemetry
     // (codec/quality stat/RX) on the left; paintActionPills draws the
     // interactive QUALITY + BACKGROUND dropdown buttons on the right.
