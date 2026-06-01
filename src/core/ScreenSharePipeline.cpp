@@ -545,6 +545,18 @@ void ScreenSharePipeline::cleanup()
         QPointer<ScreenSharePipeline> guard(this);
         std::thread([pipe, guard]() {
             gst_element_set_state(pipe, GST_STATE_NULL);
+            // released() must mean the capture DEVICE is actually free, not just
+            // that NULL was requested. set_state(NULL) can return
+            // GST_STATE_CHANGE_ASYNC, so BLOCK (bounded) until the NULL
+            // transition has really settled before dropping our ref + signalling
+            // released(). Without this, a mid-call quality change / confirm-retry
+            // rebuilds and re-acquires the DXGI desktop-duplication device while
+            // the old one is still releasing -> SetThreadDesktop ERROR_BUSY ->
+            // the new capture stalls after one frame and outbound RTP never
+            // confirms. This runs on a detached worker (never the Qt main
+            // thread) and is capped at 3 s so a wedged element can't hang us.
+            GstState st = GST_STATE_NULL;
+            gst_element_get_state(pipe, &st, nullptr, 3 * GST_SECOND);
             gst_object_unref(pipe);
             QMetaObject::invokeMethod(qApp, [guard]() {
                 if (guard) emit guard->released();
@@ -634,6 +646,11 @@ void ScreenSharePipeline::pollBus()
         gst_message_unref(msg);
     }
     gst_object_unref(bus);
+    // NOTE: a bus ERROR is deliberately NOT escalated to error()/stopScreenShare
+    // here. A transient d3d11 capture-init error (the DXGI rebuild race this
+    // patch targets) is recovered by the confirm-timeout RETRY path (which now
+    // settles the capture device before re-acquiring); hard-failing here would
+    // bypass that retry budget and turn a recoverable blip into a dead share.
 }
 
 namespace {
