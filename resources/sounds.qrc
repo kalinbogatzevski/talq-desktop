@@ -9,5 +9,9 @@
         <file alias="ring_classic.wav">sounds/ring_classic.wav</file>
         <file alias="ring_bright.wav">sounds/ring_bright.wav</file>
         <file alias="ring_soft.wav">sounds/ring_soft.wav</file>
+        <file alias="ring_landline.wav">sounds/ring_landline.wav</file>
+        <file alias="ring_uk.wav">sounds/ring_uk.wav</file>
+        <file alias="ring_oldphone.wav">sounds/ring_oldphone.wav</file>
+        <file alias="ring_trill.wav">sounds/ring_trill.wav</file>
     </qresource>
 </RCC>

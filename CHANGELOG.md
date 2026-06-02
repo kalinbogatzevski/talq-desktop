@@ -1,5 +1,45 @@
 # Changelog
 
+## v0.48.0 "Botev" -- STABLE (2026-06-02)
+
+> **The "Botev" line, promoted to stable on Heroes' Day week.** Named for
+> **2 June -- the Day of Hristo Botev and those who fell for Bulgaria's
+> freedom**, when the sirens sound and the country stands still. This stable
+> carries a full day of live two-party testing against the official Nextcloud
+> Talk (web + Android): calls that used to die after a few minutes now hold,
+> and TalQ interoperates with the official clients in both directions.
+
+### Fixed
+
+* **Calls no longer drop after a few minutes.** TalQ now keeps its signaling
+  connection alive and transparently resumes it across a brief network blip, so
+  a call survives instead of silently ending with the other side stuck on
+  "waiting for others to join."
+* **You can join a call that's already in progress.** If someone keeps a
+  conversation/call open and you join it, TalQ now connects immediately instead
+  of ringing to "no answer."
+* **You reliably see the other side's camera and screen.** Fixed an ICE
+  candidate timing race that could leave you stuck on "waiting for video," and a
+  case where a not-yet-ready stream was accepted empty. Receiving a screen share
+  from the official web/Android client now works.
+
+### Added
+
+* **Full interoperability with the official Nextcloud Talk (web + Android).**
+  Your camera and screen share now display correctly on the official clients (a
+  missing H.264 parameter previously left them black there).
+* **More ringtones** -- a classic landline, a UK double-ring, an old telephone,
+  and a digital trill, alongside the existing set.
+* **Automatic updates are on by default** so everyone stays on current builds.
+
+### Known issues (being worked on)
+
+* Changing screen-share **quality mid-call** can still drop the share -- stop and
+  re-share at the new quality for now.
+* In a call with **3+ participants**, TalQ currently shows one remote stream.
+* Sharing a single **application window** shows your whole screen (a bundled-
+  media limitation) -- share a whole screen for now.
+
 ## v0.47.0 "Botev" -- BETA (2026-06-02)
 
 > Named for **2 June -- the Day of Hristo Botev and those who fell for Bulgaria's

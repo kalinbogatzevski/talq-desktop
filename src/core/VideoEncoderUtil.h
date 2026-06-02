@@ -84,7 +84,12 @@ inline GstElement *makeWebrtcVideoEncoder(bool screen, int bitrateBps,
     const char *rc       = screen ? "vbr" : "cbr";
     const guint peakKbps = kbps;                       /* configured ceiling */
     const guint avgKbps  = screen ? (kbps / 3 ? kbps / 3 : 1) : kbps;
+    // #android-static A/B (2026-06-02): force the software x264enc -- the
+    // documented known-good encoder for browser/libwebrtc H264 interop -- to test
+    // whether the HW (qsv) bitstream is what strict decoders snow on.
+    const bool forceX264 = qEnvironmentVariableIsSet("TALQ_TEST_X264");
     for (int i = 0; order[i]; ++i) {
+        if (forceX264 && g_strcmp0(order[i], "x264enc") != 0) continue;
         GstElement *enc = gst_element_factory_make(order[i], nullptr);
         if (!enc) continue;
         const bool hw = g_strcmp0(order[i], "x264enc") != 0;

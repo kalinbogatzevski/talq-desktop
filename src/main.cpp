@@ -387,6 +387,20 @@ int main(int argc, char *argv[])
 #endif
     app.setWindowIcon(QIcon(":/logo.png"));
 
+    // 0.48.0 -- one-time: force auto-install of updates ON for ALL existing
+    // users (including anyone who had explicitly disabled it), so the whole
+    // base lands on current builds. `updates/autoInstall` already defaults to
+    // true, so this only flips the explicit-false users. Guarded by a
+    // version-stamped flag so it runs EXACTLY once; users may still turn it
+    // off again afterwards (we do not re-force it on every launch).
+    {
+        QSettings s;
+        if (!s.value(QStringLiteral("updates/forcedAutoInstall_v0480"), false).toBool()) {
+            s.setValue(QStringLiteral("updates/autoInstall"), true);
+            s.setValue(QStringLiteral("updates/forcedAutoInstall_v0480"), true);
+        }
+    }
+
     // EmojiData reads/writes recents via QSettings — must run after
     // setApplicationName/setOrganizationName so the right storage is used.
     EmojiData::initialize();
