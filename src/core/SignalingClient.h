@@ -33,6 +33,13 @@ public:
     void start();
     void stop();
     bool isConnected() const { return m_authenticated; }
+    // Forget the cached per-session inCall flags so the NEXT participants
+    // update re-emits participantJoinedCall for everyone currently in the
+    // call. Called by CallManager when WE start/join a call: peers already
+    // in the call produced no flag transition (we recorded them while idle),
+    // so without this the call rings to "no answer" against an already-active
+    // room (the "remote keeps the call open, I join" case).
+    void forceCallParticipantResync() { m_participantCallFlags.clear(); }
 
     QString typingUser() const { return m_typingUser; }
     QString typingRoom() const { return m_typingRoom; }
@@ -165,12 +172,31 @@ private:
     // can keep a stale-version cache for the lifetime of the session.
     // Ticking every 5 min refreshes their cache without spam.
     QTimer m_talqClientReannounce;
+    // HPB signaling keepalive. The standalone signaling server (strukturag)
+    // closes a session whose WebSocket goes quiet for 60 s (pongWait): it
+    // PINGs every 54 s and drops the socket if no inbound frame arrives in
+    // time, then removes the session after a 30 s grace -- which ends a 1:1
+    // call for the OTHER party too ("waiting for others to join"). Qt's
+    // QWebSocket auto-PONGs the server's pings, but an idle proxy/NAT can
+    // still cull the otherwise-silent TCP flow around the ~3-min mark. So we
+    // also send our OWN ping every 25 s: traffic then flows both ways (the
+    // server auto-PONGs ours) with comfortable margin under the 60 s
+    // deadline. Purely transport-level -- the protocol has no JSON ping.
+    QTimer m_keepAliveTimer;
 
     QString m_signalingUrl;
     QString m_userId;
     QString m_ticket;
     QString m_helloV2Token;   // signed JWT for hello v2.0 (preferred when present)
     QString m_sessionId;
+    // HPB session resume (api-v1 "Resuming sessions"): the resume id from the
+    // hello response. On a WS blip we reconnect and send a short hello with
+    // this id to RESUME the same session -- staying in the room/call -- instead
+    // of a fresh hello that starts a new session and drops us from the call
+    // (the strukturag server holds the session ~30s for exactly this). Without
+    // it, every transient disconnect on a long path killed the call.
+    QString m_resumeId;
+    bool    m_resuming = false;  // a resume hello is in flight (vs fresh auth)
     QString m_currentRoom;
     QString m_typingUser;
     QString m_typingRoom;  // room token where typing was detected

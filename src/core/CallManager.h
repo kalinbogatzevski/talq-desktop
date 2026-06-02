@@ -454,6 +454,14 @@ private:
     struct PendingOffer { QString fromSessionId; QString sdp; QString sid; };
     QList<PendingOffer> m_pendingOffers;
     void processPendingOffers();
+    // Trickle-ICE early candidates: the MCU sends a subscriber's remote
+    // candidates together with (or just before) its offer, which can land
+    // ~100ms before onOfferReceived has built the SubscribeWebrtcSrc. Queue
+    // them per remote session and flush when the subscriber is created --
+    // otherwise the subscriber starts with ZERO remote candidates and ICE
+    // never leaves "new" ("waiting for video"). The official client queues.
+    struct PendingIceCandidate { QString candidate; int mline; QString mid; };
+    QHash<QString, QVector<PendingIceCandidate>> m_pendingSubCandidates;
 
     // requestoffer retry (upstream resends ~every 8s until the offer lands)
     QSet<QString> m_pendingRequestOffers;

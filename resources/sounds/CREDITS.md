@@ -39,5 +39,17 @@ so they loop with a natural ring…pause…ring cadence under
 - Transcoded to mono S16LE 44.1 kHz WAV and padded with ~1.6–2.0 s
   silence for loop cadence.
 
+The phone-style ringtones (`ring_landline`, `ring_uk`, `ring_oldphone`,
+`ring_trill`) are **synthesized from first principles** (dual-tone sines +
+cadence/tremolo envelopes) by `scripts/gen-ringtones.py` — original work, no
+third-party samples, effectively public domain. They emulate classic
+telephone cadences:
+- `ring_landline` — US ringback dual-tone (440+480 Hz), bell warble, ring…pause
+- `ring_uk` — UK/European double-ring (400+450 Hz): brr-brr … brr-brr
+- `ring_oldphone` — old rotary-bell warble (~1200 Hz + harmonic, 25 Hz tremolo)
+- `ring_trill` — bright electronic desk-phone trill (1000↔1320 Hz)
+
+Regenerate with `python scripts/gen-ringtones.py`.
+
 The synthesized `generateIncomingRingtone()` in CallManager remains the
 "Default (TalQ)" option and the fallback if a bundled ring is missing.
