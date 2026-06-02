@@ -52,6 +52,20 @@ SignalingClient::SignalingClient(ApiClient *api, QObject *parent)
         if (!m_currentRoom.isEmpty() && m_ws.state() == QAbstractSocket::ConnectedState)
             sendTalqClientHello();
     });
+
+    // HPB signaling keepalive (see m_keepAliveTimer). Ping every 25 s while
+    // the socket is up so the server's 60 s read-deadline -- and any idle
+    // proxy/NAT -- never culls the connection mid-call. Started on connect,
+    // stopped on disconnect.
+    m_keepAliveTimer.setInterval(25 * 1000);
+    connect(&m_keepAliveTimer, &QTimer::timeout, this, [this]() {
+        if (m_ws.state() == QAbstractSocket::ConnectedState)
+            m_ws.ping();
+    });
+    connect(&m_ws, &QWebSocket::pong, this,
+            [](quint64 elapsed, const QByteArray &) {
+        qDebug() << "Signaling: keepalive pong, RTT" << elapsed << "ms";
+    });
 }
 
 void SignalingClient::start()
@@ -63,9 +77,12 @@ void SignalingClient::stop()
 {
     m_reconnectTimer.stop();
     m_talqClientReannounce.stop();
+    m_keepAliveTimer.stop();
     sendBye();                 // graceful HPB disconnect (matches upstream)
     m_ws.close();
     m_sessionId.clear();
+    m_resumeId.clear();        // bye released the session -- no resume after a deliberate stop
+    m_resuming = false;
     m_reconnectDelay = 2000;
     if (m_authenticated) {
         m_authenticated = false;
@@ -127,11 +144,13 @@ void SignalingClient::onConnected()
 {
     qDebug() << "Signaling: WebSocket connected, waiting for welcome";
     m_reconnectDelay = 2000;
+    m_keepAliveTimer.start();   // keep the HPB session alive (see m_keepAliveTimer)
 }
 
 void SignalingClient::onDisconnected()
 {
     qDebug() << "Signaling: disconnected";
+    m_keepAliveTimer.stop();
     bool wasAuth = m_authenticated;
     m_authenticated = false;
     m_sessionId.clear();
@@ -160,26 +179,54 @@ void SignalingClient::onTextMessage(const QString &msg)
     else if (type == "hello") {
         QJsonObject helloObj = obj["hello"].toObject();
         m_sessionId = helloObj["sessionid"].toString();
+        // Capture the resume id so a later WS blip can RESUME this session
+        // rather than start a new one (which drops us from the call). A fresh
+        // hello response carries it; a resume response omits it -> keep ours.
+        const QString rid = helloObj["resumeid"].toString();
+        if (!rid.isEmpty()) m_resumeId = rid;
         m_authenticated = true;
 
-        // Check server features (MCU, etc.)
-        QJsonArray features = helloObj["server"].toObject()["features"].toArray();
-        QStringList featureList;
-        for (const auto &f : features)
-            featureList << f.toString();
-        m_hasMcu = featureList.contains("mcu");
-        qDebug() << "Signaling: features:" << featureList.join(", ") << "MCU:" << m_hasMcu;
+        const bool wasResume = m_resuming;
+        m_resuming = false;
+
+        // Server features (MCU, etc.) are only present in a FRESH hello
+        // response; a resume response omits them, so keep the cached value.
+        if (helloObj.contains("server")) {
+            QJsonArray features = helloObj["server"].toObject()["features"].toArray();
+            QStringList featureList;
+            for (const auto &f : features)
+                featureList << f.toString();
+            m_hasMcu = featureList.contains("mcu");
+            qDebug() << "Signaling: features:" << featureList.join(", ") << "MCU:" << m_hasMcu;
+        }
 
         emit connectedChanged();
-        qDebug() << "Signaling: authenticated, session:" << m_sessionId.left(20) + "...";
 
-        // Re-join room if we had one
-        if (!m_currentRoom.isEmpty()) {
-            joinRoom(m_currentRoom);
+        if (wasResume) {
+            // Resumed: the server kept us in the room/call across the blip,
+            // so do NOT re-join (that would be a fresh join and the peers
+            // would see us leave+rejoin). The call survives untouched.
+            qDebug() << "Signaling: session RESUMED" << m_sessionId.left(16) + "..."
+                     << "room" << m_currentRoom;
+        } else {
+            qDebug() << "Signaling: authenticated, session:" << m_sessionId.left(20) + "...";
+            // Fresh session -- re-join room if we had one.
+            if (!m_currentRoom.isEmpty())
+                joinRoom(m_currentRoom);
         }
     }
     else if (type == "error") {
-        qWarning() << "Signaling: error:" << obj["error"].toObject()["message"].toString();
+        QJsonObject errObj = obj["error"].toObject();
+        const QString code = errObj["code"].toString();
+        qWarning() << "Signaling: error:" << code << errObj["message"].toString();
+        if (m_resuming) {
+            // Resume rejected (e.g. no_such_session -- the ~30s grace lapsed).
+            // Drop the stale id and fall back to a full fresh hello + re-join.
+            qWarning() << "Signaling: resume rejected -> full re-hello";
+            m_resuming = false;
+            m_resumeId.clear();
+            sendHello();
+        }
     }
     else if (type == "room") {
         qInfo() << "Signaling: joined room";
@@ -464,6 +511,24 @@ void SignalingClient::sendHello()
     hello["type"] = QString("hello");
 
     QJsonObject helloData;
+    helloData["version"] = QString("1.0");
+
+    // Reconnect-resume: if we hold a resume id from a prior hello, ask the
+    // server to RESUME that session (short hello, no auth handshake). On
+    // success we stay in the room/call as if the blip never happened; on
+    // rejection the "error" handler clears the id and re-calls sendHello()
+    // for a full fresh handshake.
+    if (!m_resumeId.isEmpty()) {
+        helloData["resumeid"] = m_resumeId;
+        hello["hello"] = helloData;
+        m_resuming = true;
+        QString rjson = QJsonDocument(hello).toJson(QJsonDocument::Compact);
+        qDebug() << "Signaling: WS >> hello RESUME" << m_resumeId.left(12) + "...";
+        m_ws.sendTextMessage(rjson);
+        return;
+    }
+    m_resuming = false;
+
     // hello v1.0 (userid + ticket). This is a server-accepted protocol
     // version and is the path that actually connects against the
     // standalone signaling backend. A v2.0 (signed-JWT) attempt was
@@ -471,8 +536,6 @@ void SignalingClient::sendHello()
     // (the exact v2 envelope this server expects is unverified), so we
     // stay on v1.0 rather than ship a broken handshake — the rest of the
     // flow (room/MCU/offer) is identical regardless of hello version.
-    helloData["version"] = QString("1.0");
-
     QJsonObject auth;
     auth["url"] = m_api->serverUrl() + "/ocs/v2.php/apps/spreed/api/v3/signaling/backend";
 

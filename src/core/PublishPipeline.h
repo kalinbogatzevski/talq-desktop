@@ -145,6 +145,7 @@ private:
         GstElement *caps      = nullptr;
         GstElement *encoder   = nullptr;
         GstElement *parser    = nullptr;  // h264parse when m_useH264, else null
+        GstElement *profileCaps= nullptr; // H264: pins encoder to constrained-baseline
         GstElement *payloader = nullptr;
         GstElement *ssrcFilter= nullptr;
         GstPad     *sinkPad   = nullptr;  // webrtcbin's sink_%u for this rid

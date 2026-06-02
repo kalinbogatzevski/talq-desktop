@@ -424,8 +424,12 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
     // through HPB+Janus correctly (TALQ_TEST_SELECT_SUBSTREAM scenarios
     // PASS). The earlier TALQ_PRERELEASE gate was a pre-test-coverage
     // safety margin; the tests have done its job.
-    m_simulcast = true;
-    const size_t nBranches = m_layers.size();
+    // Test bisection (TALQ_TEST_SINGLE_STREAM=1): publish ONE stream (no
+    // simulcast, no SIM ssrc-group, no per-layer keyframe routing) to isolate
+    // whether the simulcast layering is what a strict receiver (official NC
+    // Talk Android/web) chokes on -> "old TV" static. #android-static 2026-06-02.
+    m_simulcast = !qEnvironmentVariableIsSet("TALQ_TEST_SINGLE_STREAM");
+    const size_t nBranches = m_simulcast ? m_layers.size() : 1;
 
     // --- Encoder branches: each tees off m_outputTee (3 for simulcast, 1 otherwise) ---
     bool firstBranchUsesH264 = false;
@@ -452,10 +456,10 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         // error path before cleanup().
         auto dropFloating = [&L]() {
             for (GstElement *e : { L.valve, L.scale, L.caps, L.ssrcFilter,
-                                   L.encoder, L.parser, L.payloader })
+                                   L.encoder, L.parser, L.payloader, L.profileCaps })
                 if (e) gst_object_unref(e);
             L.valve = L.scale = L.caps = L.ssrcFilter = nullptr;
-            L.encoder = L.parser = L.payloader = nullptr;
+            L.encoder = L.parser = L.payloader = L.profileCaps = nullptr;
         };
         if (i == 0) {
             firstBranchUsesH264 = layerUsesH264;
@@ -469,6 +473,23 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         L.payloader = gst_element_factory_make(
             L.encoder && m_useH264 ? "rtph264pay" : "rtpvp8pay",
             ("pub-rtppay-" + tag).toUtf8().constData());
+
+        // H264: pin the encoder output to Constrained Baseline -- the profile the
+        // official NC Talk / libwebrtc client uses (profile-level-id 42e01f). The
+        // HW encoders (qsv/nv/mf) default to High/Main, which strict receivers
+        // can't decode -> black video on the official client. `profile` is a caps
+        // field (not a settable property), so constrain it with a capsfilter on
+        // the encoder src. (#android-black-video, 2026-06-01.)
+        if (m_useH264) {
+            L.profileCaps = gst_element_factory_make(
+                "capsfilter", ("pub-profilecaps-" + tag).toUtf8().constData());
+            if (L.profileCaps) {
+                GstCaps *pc = gst_caps_from_string(
+                    "video/x-h264,profile=constrained-baseline");
+                g_object_set(L.profileCaps, "caps", pc, nullptr);
+                gst_caps_unref(pc);
+            }
+        }
 
         if (!L.valve || !L.scale || !L.caps || !L.ssrcFilter
             || !L.encoder || !L.payloader) {
@@ -494,8 +515,13 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         if (m_useH264 && L.parser)
             g_object_set(L.parser, "config-interval", -1, nullptr);
         if (m_useH264)
+            // aggregate-mode=0 (none): emit ONE NAL per RTP packet, no STAP-A
+            // aggregation. zero-latency(1) still STAP-A-aggregates SPS+PPS+slice
+            // into one packet, which strict libwebrtc depacketizers (official NC
+            // Talk Android/web) snow on while GStreamer tolerates it. config-
+            // interval=-1 keeps SPS/PPS on every IDR. #android-static 2026-06-02.
             g_object_set(L.payloader,
-                         "aggregate-mode", 1 /* zero-latency */,
+                         "aggregate-mode", 0 /* none -- max interop */,
                          "config-interval", -1, nullptr);
 
         L.ssrc = g_random_int();
@@ -547,8 +573,9 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
                          L.valve, L.scale, L.caps, L.encoder,
                          L.payloader, L.ssrcFilter, nullptr);
         if (L.parser) gst_bin_add(GST_BIN(m_pipeline), L.parser);
+        if (L.profileCaps) gst_bin_add(GST_BIN(m_pipeline), L.profileCaps);
 
-        // outputTee → valve → scale → caps → encoder → (parser →) payloader → ssrcFilter → rtpfunnel
+        // outputTee → valve → scale → caps → encoder → (profileCaps →)(parser →) payloader → ssrcFilter → rtpfunnel
         {
             GstPad *teeSrc = gst_element_request_pad_simple(m_outputTee, "src_%u");
             GstPad *valveSink = gst_element_get_static_pad(L.valve, "sink");
@@ -568,7 +595,13 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
             return false;
         }
         if (L.parser) {
-            if (!gst_element_link_many(L.encoder, L.parser, L.payloader, L.ssrcFilter, nullptr)) {
+            // encoder -> [profileCaps=constrained-baseline] -> parser -> payloader
+            const bool linked = L.profileCaps
+                ? gst_element_link_many(L.encoder, L.profileCaps, L.parser,
+                                        L.payloader, L.ssrcFilter, nullptr)
+                : gst_element_link_many(L.encoder, L.parser,
+                                        L.payloader, L.ssrcFilter, nullptr);
+            if (!linked) {
                 emit error(QString("Failed to link branch %1 post-encoder (H264)").arg(tag));
                 cleanup();
                 return false;
@@ -683,6 +716,30 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
             m_useH264
               ? "application/x-rtp,media=video,encoding-name=H264,clock-rate=90000,payload=96"
               : "application/x-rtp,media=video,encoding-name=VP8,clock-rate=90000,payload=96");
+        if (m_useH264) {
+            // WebRTC H264 interop (#android-black-video, 2026-06-01): advertise
+            // packetization-mode=1 + profile-level-id=42e01f (Constrained Baseline
+            // 3.1) so STRICT libwebrtc receivers (official NC Talk Android/web)
+            // can depacketize AND decode our stream. Without the fmtp, webrtcbin
+            // emits NO a=fmtp:96; the official client assumes mode 0 + (per RFC
+            // 6184) baseline, but our HW encoder emitted FU-A mode-1 High/Main
+            // -> can't depacketize/decode -> black VIDEO TILE. The encoder is now
+            // pinned to constrained-baseline (above) so the stream MATCHES this
+            // advertised profile. GStreamer receivers are lenient (auto-detect),
+            // which is why TalQ<->TalQ always worked and this stayed invisible
+            // until the first TalQ<->Android test.
+            // Browser/libwebrtc H264 standard fmtp (researched 2026-06-02):
+            // profile-level-id=42e01f (Constrained Baseline, the ONLY profile
+            // browsers publicly claim) + packetization-mode=1 +
+            // level-asymmetry-allowed=1 (lets the receiver accept a higher
+            // transmit level than 3.1, covering our level-4.0 SPS). The encoder
+            // must produce a CONFORMANT constrained-baseline bitstream to match.
+            gst_caps_set_simple(vc,
+                "packetization-mode",      G_TYPE_STRING, "1",
+                "profile-level-id",        G_TYPE_STRING, "42e01f",
+                "level-asymmetry-allowed", G_TYPE_STRING, "1",
+                nullptr);
+        }
         gst_caps_set_simple(vc,
             "a-mid",        G_TYPE_STRING, "video0",
             "extmap-1",     G_TYPE_STRING, "urn:ietf:params:rtp-hdrext:sdes:mid",
@@ -893,7 +950,7 @@ void PublishPipeline::cleanup()
     m_outputTee = nullptr;
     for (auto &L : m_layers) {
         L.valve = L.scale = L.caps = L.encoder = L.parser
-              = L.payloader = L.ssrcFilter = nullptr;
+              = L.profileCaps = L.payloader = L.ssrcFilter = nullptr;
         L.sinkPad = nullptr;
         L.ssrc = 0;
         L.lastAppliedBitrate = 0;

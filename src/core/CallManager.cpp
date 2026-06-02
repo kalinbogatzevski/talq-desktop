@@ -121,11 +121,15 @@ QVector<QPair<QString, QString>> CallManager::ringtones()
     // soft are the bundled CC0 ring WAVs at :/sounds/ring_<id>.wav. Order
     // here is the order shown in the Settings combo.
     return {
-        { QStringLiteral("classic"), QStringLiteral("Classic bell") },
-        { QStringLiteral("bright"),  QStringLiteral("Bright bell")  },
-        { QStringLiteral("soft"),    QStringLiteral("Soft bell")    },
-        { QStringLiteral("default"), QStringLiteral("TalQ tone")    },
-        { QStringLiteral("none"),    QStringLiteral("None (silent)")},
+        { QStringLiteral("classic"),  QStringLiteral("Classic bell")    },
+        { QStringLiteral("bright"),   QStringLiteral("Bright bell")     },
+        { QStringLiteral("soft"),     QStringLiteral("Soft bell")       },
+        { QStringLiteral("landline"), QStringLiteral("Landline (US)")   },
+        { QStringLiteral("uk"),       QStringLiteral("Double ring (UK)")},
+        { QStringLiteral("oldphone"), QStringLiteral("Old telephone")   },
+        { QStringLiteral("trill"),    QStringLiteral("Digital trill")   },
+        { QStringLiteral("default"),  QStringLiteral("TalQ tone")       },
+        { QStringLiteral("none"),     QStringLiteral("None (silent)")   },
     };
 }
 
@@ -463,6 +467,14 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
             m_publishPipeline->addIceCandidate(cStr, mline, mid);
         } else if (m_subscribePipelines.contains(fromSessionId)) {
             m_subscribePipelines[fromSessionId]->addIceCandidate(cStr, mline, mid);
+        } else if (fromSessionId != m_signaling->sessionId()) {
+            // Subscriber for this peer isn't built yet: the MCU trickles its
+            // remote candidates with/just before the offer, which can arrive
+            // ~100ms before onOfferReceived constructs the SubscribeWebrtcSrc.
+            // Dropping them leaves the subscriber with no remote candidates ->
+            // ICE stuck at "new" -> permanent "waiting for video". Queue per
+            // session; onOfferReceived flushes once the subscriber exists.
+            m_pendingSubCandidates[fromSessionId].append({cStr, mline, mid});
         }
     });
 
@@ -876,6 +888,14 @@ void CallManager::startCall(const QString &token, bool withVideo)
     setState(Outgoing);
     setStatusDetail("Joining room");
     m_ringTimeout.start();
+
+    // Joining an ALREADY-ACTIVE call (the remote kept the room/call open):
+    // peers already in the call produced no inCall 0->N transition (we cached
+    // their flags while idle), so no participantJoinedCall fires and we ring to
+    // "no answer". Drop the cached flags so the next participants update (the
+    // HPB pushes one when we join) re-emits a JOINED for everyone in the call,
+    // which onParticipantJoinedCall then subscribes + connects to.
+    m_signaling->forceCallParticipantResync();
 
     // Join call — but only once the signaling room is actually joined.
     // Posting POST call/{token} before the HPB hello+room handshake
@@ -2902,6 +2922,29 @@ void CallManager::onOfferReceived(const QString &fromSessionId, const QString &s
     }
 
     // An offer arrived for this peer — stop retrying requestoffer for it.
+    // Data-only subscriber offer (m=application/datachannel only, NO m=video)
+    // means the remote publisher's media is not registered in Janus yet -- we
+    // requested the offer before their camera feed came up (a race when joining
+    // a call where the peer is already present, e.g. an open room). Building a
+    // subscriber from it yields a permanently video-less "waiting for video"
+    // tile, AND stops the requestoffer retry (m_subscribePipelines then
+    // contains the sid). Instead drop this offer and keep re-requesting until
+    // the MCU returns a real audio/video offer -- exactly what the official
+    // Talk client does (gate on flags + retry on its requestoffer timer).
+    // Verified against spreed: a correct requestoffer returns full a/v/data in
+    // one shot; data-only == publisher not yet publishing media.
+    if (!sdp.contains("m=video")) {
+        qInfo() << "CallManager: subscriber offer from" << fromSessionId.left(20)
+                << "is data-only (no m=video) -- publisher media not ready, re-requesting";
+        if (!m_pendingRequestOffers.contains(fromSessionId)) {
+            m_pendingRequestOffers.insert(fromSessionId);
+            m_requestOfferAttempts[fromSessionId] = 0;
+        }
+        if (!m_requestOfferRetry.isActive())
+            m_requestOfferRetry.start();
+        return;
+    }
+
     m_pendingRequestOffers.remove(fromSessionId);
     m_requestOfferAttempts.remove(fromSessionId);
 
@@ -3060,6 +3103,21 @@ void CallManager::onOfferReceived(const QString &fromSessionId, const QString &s
     qDebug() << "CallManager: calling setRemoteOffer...";
     sub->setRemoteOffer(sdp);
     qDebug() << "CallManager: setRemoteOffer returned";
+
+    // Trickle-ICE race fix: flush remote candidates that arrived before this
+    // subscriber existed (the MCU sends them with/just before the offer, which
+    // can land ~100ms before we build the subscriber). The remote description
+    // is now set, so webrtcbin will accept them. Without this the subscriber
+    // can start with ZERO remote candidates -> ICE stuck at "new" -> permanent
+    // "waiting for video" (the timing race is why some peers connect and some
+    // don't on the same call).
+    if (m_pendingSubCandidates.contains(fromSessionId)) {
+        const auto pend = m_pendingSubCandidates.take(fromSessionId);
+        for (const auto &pc : pend)
+            sub->addIceCandidate(pc.candidate, pc.mline, pc.mid);
+        qInfo() << "CallManager: flushed" << pend.size()
+                << "queued remote ICE candidates into subscriber" << fromSessionId.left(20);
+    }
 }
 
 void CallManager::onAnswerReceived(const QString &fromSessionId, const QString &sdp)
