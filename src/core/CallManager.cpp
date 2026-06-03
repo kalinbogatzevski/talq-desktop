@@ -169,7 +169,7 @@ void CallManager::startRingtone() {
     {
         QSettings so("TalQ", "TalQ");
         so.beginGroup("Calls");
-        const QString oid = so.value("outgoingRingtone", "ringback").toString();
+        const QString oid = so.value("outgoingRingtone", "landline").toString();
         so.endGroup();
         if (oid == "none") return;
         if (oid == "default") {

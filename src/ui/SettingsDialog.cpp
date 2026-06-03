@@ -1794,11 +1794,11 @@ void SettingsDialog::loadNotificationSettings()
     m_ringtoneCombo->blockSignals(false);
 
     m_settings.beginGroup("Calls");
-    const QString outRingId = m_settings.value("outgoingRingtone", "ringback").toString();
+    const QString outRingId = m_settings.value("outgoingRingtone", "landline").toString();
     m_settings.endGroup();
     m_outgoingRingtoneCombo->blockSignals(true);
     int oidx = m_outgoingRingtoneCombo->findData(outRingId);
-    if (oidx < 0) oidx = m_outgoingRingtoneCombo->findData(QStringLiteral("ringback"));
+    if (oidx < 0) oidx = m_outgoingRingtoneCombo->findData(QStringLiteral("landline"));
     m_outgoingRingtoneCombo->setCurrentIndex(oidx);
     m_outgoingRingtoneCombo->blockSignals(false);
 }
