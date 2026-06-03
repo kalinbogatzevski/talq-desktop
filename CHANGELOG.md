@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.48.8 "Botev" -- STABLE (2026-06-03)
+
+### Added
+
+* **A separate sound for outgoing calls.** Settings > Audio now has an
+  "Outgoing call sound" picker, distinct from your incoming ringtone, so you
+  can use one of the bundled tones (or the classic ringback) for when *you're*
+  calling someone. Defaults to the ringback tone.
+
+### Fixed
+
+* **Speakers no longer show up in the Microphone list.** Windows exposes
+  speakers as loopback capture sources; those are now filtered out, so the
+  Microphone picker shows only real microphones.
+* **The mic test now works.** It reads the correct device identifier (so the
+  level meter actually captures the selected microphone), and falls back to the
+  system default if the chosen device can't be opened.
+
 ## v0.48.7 "Botev" -- STABLE (2026-06-03)
 
 ### Changed

@@ -191,12 +191,25 @@ void MediaDeviceManager::refresh()
 
         MediaDevice md;
         md.name = QString::fromUtf8(name);
+        gboolean isLoopback = FALSE;
         GstStructure *props = gst_device_get_properties(dev);
         if (props) {
             const gchar *strid = gst_structure_get_string(props, "device.strid");
             if (!strid)
                 strid = gst_structure_get_string(props, "device.path");
+            // wasapi2 (the Windows audio provider) exposes neither strid nor
+            // path — its real, openable id is `device.id` ({GUID} form, exactly
+            // what `wasapi2src device=...` expects). Falling back to the friendly
+            // NAME here is what made wasapi2src fail to open the selected device
+            // (mic test stayed flat; calls fell back to default) — read device.id
+            // before giving up to the name.
+            if (!strid)
+                strid = gst_structure_get_string(props, "device.id");
             md.id = strid ? QString::fromUtf8(strid) : md.name;
+            // wasapi2 also lists RENDER endpoints (speakers) as Audio/Source for
+            // loopback capture; those are NOT microphones (loopback=true). Flag
+            // them so they stay out of the mic picker.
+            gst_structure_get_boolean(props, "wasapi2.device.loopback", &isLoopback);
             gst_structure_free(props);
         } else {
             md.id = md.name;
@@ -204,8 +217,14 @@ void MediaDeviceManager::refresh()
 
         QString deviceClass = QString::fromUtf8(cls);
         if (deviceClass.contains("Source") && deviceClass.contains("Audio")) {
-            md.type = "audio-input";
-            m_audioInputs.append(md);
+            if (isLoopback) {
+                // Speaker exposed as a loopback source — skip; it's not a mic.
+                qInfo() << "MediaDeviceManager: skipping loopback (speaker) source"
+                        << md.name;
+            } else {
+                md.type = "audio-input";
+                m_audioInputs.append(md);
+            }
         } else if (deviceClass.contains("Sink") && deviceClass.contains("Audio")) {
             md.type = "audio-output";
             m_audioOutputs.append(md);
