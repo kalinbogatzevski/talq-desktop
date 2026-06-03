@@ -1,5 +1,6 @@
 #include "core/CallManager.h"
 #include "core/BackgroundEngine.h"
+#include "core/SharedFarEndBus.h"
 #include "core/TalqLog.h"
 #include "core/WasapiDucking.h"
 #include "ui/ShareOverlay.h"
@@ -1234,6 +1235,31 @@ bool CallManager::buildAndStartPublisher()
             updateCallFlags();
         });
     });
+
+    // AEC: bring the shared far-end probe bus to PLAYING BEFORE the publisher
+    // so webrtcdsp(echo-cancel) can acquire the "talq-aec-probe" the instant it
+    // hits PAUSED. Strictly non-fatal — if the bus can't build, AEC just stays
+    // off and the call is unaffected (the original "No echo probe" call-drop
+    // can't recur because we only enable echo-cancel once the probe is live).
+    // See docs/aec-design.md.
+    {
+        QSettings s("TalQ", "TalQ");
+        s.beginGroup("Audio");
+        const bool aecWanted = s.value("echoCancellation", true).toBool();
+        s.endGroup();
+        if (aecWanted && !m_farEndBus) {
+            m_farEndBus = new SharedFarEndBus(this);
+            if (m_farEndBus->start()) {
+                m_publishPipeline->setEchoCancellation(true);
+                qInfo() << "CallManager: AEC enabled — far-end probe bus up before publisher";
+            } else {
+                qWarning() << "CallManager: AEC requested but far-end bus failed to build "
+                              "— continuing without echo cancellation";
+                m_farEndBus->deleteLater();
+                m_farEndBus = nullptr;
+            }
+        }
+    }
 
     qDebug() << "CallManager: calling PublishPipeline::start()...";
     if (!m_publishPipeline->start(m_stunServer, m_turnServers,
@@ -2580,10 +2606,19 @@ void CallManager::stopAllPipelines()
         m_publishPipeline = nullptr;
     }
     for (auto *sub : m_subscribePipelines) {
-        sub->stop();
+        sub->stop();   // detaches itself from m_farEndBus and disconnects the tap
         delete sub;
     }
     m_subscribePipelines.clear();
+    // AEC: tear the far-end bus down LAST — after every subscriber (whose tap
+    // pushes into it) is stopped and after the publisher above (whose
+    // webrtcdsp held the probe; m_publishPipeline->stop() released it
+    // synchronously). Nothing can push into or acquire the probe now.
+    if (m_farEndBus) {
+        m_farEndBus->stop();
+        m_farEndBus->deleteLater();
+        m_farEndBus = nullptr;
+    }
     m_subscriberSids.clear();
     m_desiredSubstream.clear();
     m_subscriberRecoveries.clear();
@@ -3055,6 +3090,10 @@ void CallManager::onOfferReceived(const QString &fromSessionId, const QString &s
 
     // New subscriber
     auto *sub = new SubscribeWebrtcSrc(fromSessionId, this);
+    // AEC: tap this peer's decoded audio into the shared far-end probe bus so
+    // the publisher's echo canceller has the composite playback reference.
+    // No-op when AEC is off (m_farEndBus null); the playback path is untouched.
+    if (m_farEndBus) sub->setFarEndBus(m_farEndBus);
 
     connect(sub, &SubscribeWebrtcSrc::localAnswerReady,
             this, [this, fromSessionId](const QString &sdp) {

@@ -256,6 +256,7 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
     // and the plugin is present. If the plugin is missing we fall back to the
     // plain chain so calls still work on installs without libgstwebrtcdsp.
     GstElement *webrtcdsp = nullptr;
+    GstElement *aecCaps = nullptr;   // 48k/S16LE/mono pin before webrtcdsp (AEC only)
     {
         QSettings s("TalQ", "TalQ");
         s.beginGroup("Audio");
@@ -267,30 +268,52 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         // doesn't depend on whatever the dev machine last saved.
         if (qEnvironmentVariableIsSet("TALQ_FORCE_AGC"))
             agcEnabled = (qgetenv("TALQ_FORCE_AGC") != "0");
-        // echo-cancel is intentionally OFF. webrtcdsp's echo-cancel mode
-        // requires a webrtcechoprobe to exist AT pipeline-start, but the
-        // only place to tap the far-end audio is the SubscribeWebrtcSrc
-        // playback pipeline, which starts AFTER the publisher (and not at
-        // all until a subscriber connects). echo-cancel=TRUE therefore made
-        // gst_webrtc_dsp_start fail ("No echo probe ... found") and the
-        // whole publish pipeline — hence EVERY call, audio-only included —
-        // dropped immediately. Cross-pipeline AEC needs a different design
-        // (an early/shared probe on a mixed playback bus); tracked separately.
-        if (nsEnabled || agcEnabled) {
+        // echo-cancel (AEC) is driven by CallManager, NOT this setting block:
+        // m_aecEnabled is only true once the shared webrtcechoprobe bus is
+        // already PLAYING (SharedFarEndBus, brought up before this publisher).
+        // That ordering is what makes gst_webrtc_dsp_start succeed instead of
+        // failing "No echo probe found" and dropping the call. See
+        // docs/aec-design.md. If m_aecEnabled is false, echo-cancel stays off.
+        const bool aecEnabled = m_aecEnabled;
+        if (nsEnabled || agcEnabled || aecEnabled) {
             webrtcdsp = gst_element_factory_make("webrtcdsp", "pub-webrtcdsp");
             if (webrtcdsp) {
                 // Same config helper the AGC harness (talq-agc-test) exercises.
-                talq::configureCaptureDsp(webrtcdsp, nsEnabled, agcEnabled);
+                talq::configureCaptureDsp(webrtcdsp, nsEnabled, agcEnabled,
+                                          aecEnabled, "talq-aec-probe");
                 qInfo() << "PublishPipeline: webrtcdsp NS=" << nsEnabled
-                        << "AGC=" << agcEnabled;
+                        << "AGC=" << agcEnabled << "AEC=" << aecEnabled;
             } else {
                 qWarning() << "PublishPipeline: webrtcdsp unavailable; "
-                              "continuing without NS/AGC";
+                              "continuing without NS/AGC/AEC";
+            }
+        }
+
+        // AEC needs the capture leg pinned to the probe's exact format
+        // (48k/S16LE/MONO — mono also avoids the wap-1.x stereo-collapse bug).
+        // Inserted between audioresample and webrtcdsp only when AEC is on.
+        if (aecEnabled && webrtcdsp) {
+            aecCaps = gst_element_factory_make("capsfilter", "pub-aec-caps");
+            if (aecCaps) {
+                GstCaps *ac = gst_caps_from_string(
+                    "audio/x-raw,rate=48000,format=S16LE,channels=1,layout=interleaved");
+                g_object_set(aecCaps, "caps", ac, nullptr);
+                gst_caps_unref(ac);
             }
         }
     }
 
-    if (webrtcdsp) {
+    if (webrtcdsp && aecCaps) {
+        // AEC chain: …audioresample → aecCaps(48k/S16LE/mono) → webrtcdsp → level…
+        gst_bin_add_many(GST_BIN(m_pipeline), audiosrc, audioconvert, audioresample,
+                         aecCaps, webrtcdsp, level, opusenc, rtpopuspay, m_webrtcbin, nullptr);
+        if (!gst_element_link_many(audiosrc, audioconvert, audioresample,
+                                   aecCaps, webrtcdsp, level, opusenc, rtpopuspay, nullptr)) {
+            emit error("Failed to link audio capture chain");
+            cleanup();
+            return false;
+        }
+    } else if (webrtcdsp) {
         gst_bin_add_many(GST_BIN(m_pipeline), audiosrc, audioconvert, audioresample,
                          webrtcdsp, level, opusenc, rtpopuspay, m_webrtcbin, nullptr);
         if (!gst_element_link_many(audiosrc, audioconvert, audioresample,
