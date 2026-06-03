@@ -104,6 +104,14 @@ signals:
     void audioLevelUpdated(double level);  // 0.0 to 1.0
     void error(const QString &message);
     void cameraError(const QString &reason);
+    // Non-fatal mic failure. Emitted when the microphone could NOT be opened
+    // and the publisher fell back to a SILENT audio source so the call still
+    // connects (peer hears silence) instead of dropping the whole call.
+    // Mirrors cameraError: CallManager surfaces a "microphone unavailable"
+    // banner rather than tearing the call down. (A successful fall-back to the
+    // SYSTEM-DEFAULT device — the common "selected device id won't resolve"
+    // case — does NOT emit this; the mic works, it's just a different device.)
+    void audioError(const QString &reason);
     // Self-healing: emitted when a forced exact camera caps fails to
     // produce any frames within the watchdog window (mfvideosrc couldn't
     // deliver that mode). The persisted choice is reset to Auto here;

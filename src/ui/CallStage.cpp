@@ -391,6 +391,9 @@ void CallStage::paintEvent(QPaintEvent *)
     // paint helper that draws into the top row. Anything not drawn this
     // frame correctly falls out of double-click-guard hit testing.
     m_topChromeRects.clear();
+    // No action buttons until paintActionPills runs this frame → info pills may
+    // use the full width; paintActionPills lowers this to the button block's left.
+    m_actionPillsLeft = width();
     m_qualityPillRect = QRectF();
     m_bgPillRect      = QRectF();
 
@@ -453,6 +456,7 @@ void CallStage::paintEvent(QPaintEvent *)
         // Camera-unavailable banner: painted OUTSIDE the fading chrome block
         // below so it stays put the whole time the problem is live.
         paintCameraBanner(p, th);
+        paintMicBanner(p, th);
         if (m_telemetryOpen) paintTelemetry(p, th);
         // Top info/action chrome + bottom control bar fade together.
         // When fully hidden we skip painting (and skip appending hit
@@ -461,8 +465,10 @@ void CallStage::paintEvent(QPaintEvent *)
         if (m_chromeAlpha > 1e-3) {
             p.save();
             p.setOpacity(m_chromeAlpha);
-            paintInfoPills(p, th);
+            // Action buttons FIRST: they publish m_actionPillsLeft so the info
+            // pills below can wrap before colliding with them on a narrow window.
             paintActionPills(p, th);
+            paintInfoPills(p, th);
             paintControlBar(p, th);
             p.restore();
         }
@@ -1049,6 +1055,61 @@ void CallStage::paintCameraBanner(QPainter &p, const PainterTheme &th)
                Qt::TextWordWrap, hint);
 }
 
+void CallStage::paintMicBanner(QPainter &p, const PainterTheme &th)
+{
+    // Idiot-proofing twin of paintCameraBanner: when our microphone can't be
+    // opened the publisher falls back to silent audio so the call survives —
+    // but the user must be TOLD, in plain language, that nobody can hear them
+    // and how to fix it. If the camera banner is also up, this stacks beneath
+    // it instead of overlapping.
+    if (!m_call || !m_call->isMicUnavailable()) return;
+
+    const QString title = tr("Your microphone isn't available");
+    const QString hint  = tr("Others can't hear you. Close any app that might "
+                             "be using the microphone, or allow microphone "
+                             "access in Windows Settings > Privacy > "
+                             "Microphone, then end and rejoin the call.");
+
+    QFont tf = th.systemFont(); tf.setBold(true);
+    QFont hf = th.systemFont();
+    QFontMetrics tfm(tf), hfm(hf);
+
+    const qreal pad   = 14.0;
+    const qreal bw    = qMin<qreal>(width() - 40.0, 560.0);
+    const qreal textX = pad + 6.0;          // +6 clears the warning stripe
+    const qreal textW = bw - textX - pad;
+    const QRect hintR = hfm.boundingRect(QRect(0, 0, int(textW), 1000),
+                                         Qt::TextWordWrap, hint);
+    const qreal bh = pad + tfm.height() + 4.0 + hintR.height() + pad;
+    const qreal bx = (width() - bw) / 2.0;
+    // Sit below the camera banner when both failures are live (rare but real
+    // on a machine with neither device available); otherwise take the same
+    // top slot the camera banner uses.
+    const qreal by = m_call->isCameraUnavailable() ? 52.0 + bh + 10.0 : 52.0;
+    const QRectF banner(bx, by, bw, bh);
+
+    QColor face = th.bgSurface; face.setAlphaF(0.96);
+    QColor edge = th.amber;     edge.setAlphaF(0.90);
+    p.setBrush(face);
+    p.setPen(QPen(edge, 1.4));
+    p.drawRoundedRect(banner, 12, 12);
+
+    QPainterPath clip; clip.addRoundedRect(banner, 12, 12);
+    p.save();
+    p.setClipPath(clip);
+    QColor stripe = th.amber; stripe.setAlphaF(0.92);
+    p.fillRect(QRectF(banner.left(), banner.top(), 4.0, banner.height()), stripe);
+    p.restore();
+
+    p.setFont(tf); p.setPen(th.textPrimary);
+    p.drawText(QRectF(banner.left()+textX, banner.top()+pad, textW, tfm.height()),
+               Qt::AlignLeft|Qt::AlignVCenter, title);
+    p.setFont(hf); p.setPen(th.textSecondary);
+    p.drawText(QRectF(banner.left()+textX, banner.top()+pad+tfm.height()+4.0,
+                      textW, hintR.height()),
+               Qt::TextWordWrap, hint);
+}
+
 // 0.40.15 — the top chrome is split into two distinct surfaces.
 //
 //   INFO pills (left, after the status pill): codec/HW-SW, live quality
@@ -1085,13 +1146,26 @@ void CallStage::paintInfoPills(QPainter &p, const PainterTheme &th)
     QColor face = th.bgSurface; face.setAlphaF(0.88);
 
     qreal x = m_statusPillRect.right() + gap;
-    const qreal y = m_statusPillRect.top();
+    qreal y = m_statusPillRect.top();
+    const qreal rowStartX = m_statusPillRect.left();  // wrapped rows left-justify here
+    const qreal rowGap    = 6.0;
 
     auto drawTile = [&](const QString &key, const QString &val,
                         const QColor &led) {
         const qreal w = padL + dotW + dotGap
                       + keyFm.horizontalAdvance(key) + keyValGap
                       + valFm.horizontalAdvance(val) + padR;
+        // Wrap to a new row when this tile would overlap the right-anchored
+        // action buttons (first row, boundary = m_actionPillsLeft) or run off
+        // the right edge (wrapped rows own the full width). A row's FIRST tile
+        // never wraps, so a tile wider than the row can't loop forever.
+        const bool  firstRow = (y <= m_statusPillRect.top() + 0.5);
+        const qreal rowRight = firstRow ? (m_actionPillsLeft - gap)
+                                        : (width() - 16.0);
+        if (x > rowStartX + 0.5 && x + w > rowRight) {
+            y += tileH + rowGap;
+            x  = rowStartX;
+        }
         QRectF tile(x, y, w, tileH);
         p.setBrush(face);
         p.setPen(QPen(th.divider, 1.0));
@@ -1301,6 +1375,9 @@ void CallStage::paintActionPills(QPainter &p, const PainterTheme &th)
         drawButton(shBtn, shKey, shVal, true,
                    m_hoverPill == QStringLiteral("share"));
     }
+
+    // Publish the block's left edge so paintInfoPills wraps before reaching it.
+    m_actionPillsLeft = (showShare ? shBtn.left() : qBtn.left());
 
     m_qualityPillRect = qBtn;
     m_bgPillRect      = bgBtn;

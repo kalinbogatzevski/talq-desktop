@@ -1,5 +1,52 @@
 # Changelog
 
+## v0.48.4 "Botev" -- STABLE (2026-06-03)
+
+> A point release on the "Botev" line, polishing call UX from continued live
+> testing.
+
+### Fixed
+
+* **Rejoining a call now restores the other person's camera and audio, not
+  just their screen.** If you dropped and came back while someone was sharing
+  their screen, you'd see the share but get no picture or sound from them.
+  Their camera and microphone now come through on rejoin as well.
+* **The call info chips no longer overlap the buttons on a narrow window.** The
+  codec / mode / quality / resolution chips now wrap onto a second row when the
+  call window is too narrow to fit them on one line, instead of sliding under
+  the Quality / Background / Share controls.
+
+## v0.48.3 "Botev" -- STABLE (2026-06-03)
+
+> A point release on the "Botev" line, from continued live testing against the
+> official Nextcloud Talk (web + Android).
+
+### Added
+
+* **Share a single application window.** You can now share just one app window
+  instead of your whole screen, and the other side sees only that window --
+  nothing else on your desktop. Picking a window previously fell back to
+  sharing the entire monitor; that's fixed. Sharing a whole screen still works
+  exactly as before. (Validated live end-to-end, including a 2K window with
+  moving video.)
+
+## v0.48.2 "Botev" -- STABLE (2026-06-03)
+
+> A point release on the "Botev" line, from continued live testing against the
+> official Nextcloud Talk (web + Android).
+
+### Fixed
+
+* **A microphone that won't start no longer drops the whole call.** If your
+  selected mic can't be opened (in use by another app, blocked in Windows
+  privacy settings, unplugged, or simply not responding), the call now keeps
+  going instead of ending for both sides. TalQ automatically tries the system
+  default microphone, and if no microphone can be opened at all it connects
+  with your audio muted -- your video and the other person stay fully
+  connected -- and shows a clear "Your microphone isn't available" notice
+  telling you how to fix it. Previously a single uncooperative microphone
+  tore down the entire call, video included.
+
 ## v0.48.1 "Botev" -- STABLE (2026-06-03)
 
 > A point release on the "Botev" line, from continued live testing against the
