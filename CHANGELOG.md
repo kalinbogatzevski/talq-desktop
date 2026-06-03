@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.49.0 "Slartibartfast" -- BETA (2026-06-04)
+
+### Added
+
+* **Echo cancellation (AEC).** When you take a call on speakers instead of a
+  headset, the people you are talking to no longer hear their own voice echoed
+  back to them. TalQ now removes your speaker output from your microphone in
+  real time -- the same acoustic echo cancellation a browser does
+  automatically. Switch it on or off under **Settings -> Echo cancellation**
+  (on by default; takes effect on your next call). It helps most with
+  speakers; a headset has little echo to cancel.
+
+### Notes
+
+* This is a **beta** so echo cancellation can be validated on real hardware
+  across different rooms and speaker setups. The feature is strictly optional
+  and self-disabling: if anything about it cannot start, the call connects
+  exactly as before with echo cancellation simply off -- it can never drop a
+  call.
+
 ## v0.48.9 "Botev" -- STABLE (2026-06-03)
 
 ### Fixed

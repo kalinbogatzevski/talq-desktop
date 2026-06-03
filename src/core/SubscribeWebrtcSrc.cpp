@@ -1,5 +1,6 @@
 #include "core/SubscribeWebrtcSrc.h"
 #include "core/VideoFrameProvider.h"
+#include "core/SharedFarEndBus.h"
 #include <QDebug>
 #include <QPointer>
 #include <QRegularExpression>
@@ -315,13 +316,43 @@ void SubscribeWebrtcSrc::stop()
     qInfo() << "SubscribeWebrtcSrc: stopped";
 }
 
+void SubscribeWebrtcSrc::setFarEndBus(SharedFarEndBus *bus)
+{
+    // Called on the Qt thread before/around start(). Storing the pointer arms
+    // the tap branch in onPadAdded; attach() reserves our mixer pad now so the
+    // probe's composite reference includes this peer the moment audio flows.
+    m_farBus = bus;
+    if (bus) bus->attach(m_remoteSessionId);
+}
+
+GstFlowReturn SubscribeWebrtcSrc::onFarEndSample(GstAppSink *sink, gpointer ud)
+{
+    auto *self = static_cast<SubscribeWebrtcSrc*>(ud);
+    GstSample *sample = gst_app_sink_pull_sample(sink);
+    if (!sample) return GST_FLOW_OK;
+    // Single read of the (Qt-thread-written) pointer. The handler is
+    // disconnected in cleanup() before the bus is detached, so a non-null read
+    // here means the bus is still live; pushSample is a no-op if the peer was
+    // already detached. push_sample does not take ownership — we unref.
+    SharedFarEndBus *bus = self->m_farBus;
+    if (bus) bus->pushSample(self->m_remoteSessionId, sample);
+    gst_sample_unref(sample);
+    return GST_FLOW_OK;
+}
+
 void SubscribeWebrtcSrc::cleanup()
 {
     if (m_busWatchId > 0) { g_source_remove(m_busWatchId); m_busWatchId = 0; }
     if (m_webrtcsrc)    g_signal_handlers_disconnect_by_data(m_webrtcsrc, this);
     if (m_webrtcbin)    g_signal_handlers_disconnect_by_data(m_webrtcbin, this);
     if (m_videoAppsink) g_signal_handlers_disconnect_by_data(m_videoAppsink, this);
+    if (m_farAppsink)   g_signal_handlers_disconnect_by_data(m_farAppsink, this);
     if (m_signaller)    g_signal_handlers_disconnect_by_data(m_signaller, this);
+    // AEC: stop tapping and release our mixer pad on the shared bus BEFORE the
+    // pipeline tears down. The far-end appsink handler is disconnected just
+    // above (same pattern as the video appsink) so onFarEndSample can't fire
+    // into a half-freed bus; detach then removes our per-peer appsrc branch.
+    if (m_farBus) { m_farBus->detach(m_remoteSessionId); m_farBus = nullptr; }
     m_webrtcbin = nullptr;  // webrtcsrc-owned; not unref'd
     if (m_pipeline) {
         // 0.43.0 — detach the NULL transition to a worker thread (same fix as
@@ -340,6 +371,8 @@ void SubscribeWebrtcSrc::cleanup()
     m_webrtcsrc = nullptr;
     m_videoConvert = nullptr;
     m_videoAppsink = nullptr;
+    m_audioTee = nullptr;       // owned by the pipeline (freed with it)
+    m_farAppsink = nullptr;     // owned by the pipeline (freed with it)
     m_offerDelivered = false;
     m_webrtcStarted = false;
     m_pendingRemoteIce.clear();
@@ -642,19 +675,75 @@ void SubscribeWebrtcSrc::onPadAdded(GstElement *, GstPad *pad, gpointer ud)
             g_object_set(sink, "device",
                          self->m_audioOutputDeviceId.toUtf8().constData(), nullptr);
 
-        // NOTE: no webrtcechoprobe here. AEC via webrtcdsp+echoprobe can't
-        // work across TalQ's separate publish/subscribe pipelines — the
-        // publisher's webrtcdsp starts before this probe exists and fails
-        // hard ("No echo probe found"), dropping the call. Until a shared
-        // early playback bus exists, the playback chain stays plain.
+        // Playback chain (unchanged, proven): conv → res → wasapi2sink.
         gst_bin_add_many(GST_BIN(self->m_pipeline), conv, res, sink, nullptr);
         gst_element_link_many(conv, res, sink, nullptr);
         gst_element_sync_state_with_parent(conv);
         gst_element_sync_state_with_parent(res);
         gst_element_sync_state_with_parent(sink);
-        GstPad *cs = gst_element_get_static_pad(conv, "sink");
-        gst_pad_link(pad, cs);
-        gst_object_unref(cs);
+
+        // AEC far-end tap (parallel — NEVER disturbs the playback chain above):
+        //   decoded pad → tee ─→ queue → conv (playback) …
+        //                    └─→ queue → audioconvert → audioresample
+        //                              → caps(48k/S16LE/mono) → appsink → bus
+        // appsink pushes each decoded buffer into the shared webrtcechoprobe
+        // bus so the publisher's webrtcdsp has a composite far-end reference.
+        // If any tap element fails we silently fall back to the direct link so
+        // playback is never affected. See docs/aec-design.md.
+        GstPad *headSink = nullptr;
+        if (self->m_farBus) {
+            GstElement *tee   = gst_element_factory_make("tee", nullptr);
+            GstElement *pq    = gst_element_factory_make("queue", nullptr);
+            GstElement *tq    = gst_element_factory_make("queue", nullptr);
+            GstElement *tconv = gst_element_factory_make("audioconvert", nullptr);
+            GstElement *tres  = gst_element_factory_make("audioresample", nullptr);
+            GstElement *tcaps = gst_element_factory_make("capsfilter", nullptr);
+            GstElement *asink = gst_element_factory_make("appsink", nullptr);
+            if (tee && pq && tq && tconv && tres && tcaps && asink) {
+                GstCaps *fc = gst_caps_from_string(
+                    "audio/x-raw,rate=48000,format=S16LE,channels=1,layout=interleaved");
+                g_object_set(tcaps, "caps", fc, nullptr);
+                g_object_set(asink, "emit-signals", TRUE, "sync", FALSE,
+                             "drop", TRUE, "max-buffers", 8, "caps", fc, nullptr);
+                gst_caps_unref(fc);
+                g_signal_connect(asink, "new-sample",
+                                 G_CALLBACK(&SubscribeWebrtcSrc::onFarEndSample), self);
+                gst_bin_add_many(GST_BIN(self->m_pipeline),
+                                 tee, pq, tq, tconv, tres, tcaps, asink, nullptr);
+                const bool tok =
+                       gst_element_link(tee, pq)            // tee → playback queue
+                    && gst_element_link(pq, conv)           // → existing playback conv
+                    && gst_element_link(tee, tq)            // tee → tap queue
+                    && gst_element_link_many(tq, tconv, tres, tcaps, asink, nullptr);
+                if (tok) {
+                    gst_element_sync_state_with_parent(tee);
+                    gst_element_sync_state_with_parent(pq);
+                    gst_element_sync_state_with_parent(tq);
+                    gst_element_sync_state_with_parent(tconv);
+                    gst_element_sync_state_with_parent(tres);
+                    gst_element_sync_state_with_parent(tcaps);
+                    gst_element_sync_state_with_parent(asink);
+                    self->m_audioTee   = tee;
+                    self->m_farAppsink = asink;
+                    headSink = gst_element_get_static_pad(tee, "sink");
+                    qInfo() << "SubscribeWebrtcSrc: AEC far-end tap armed for"
+                            << self->m_remoteSessionId.left(20);
+                } else {
+                    qWarning() << "SubscribeWebrtcSrc: AEC tap link failed — playback only";
+                    g_signal_handlers_disconnect_by_data(asink, self);
+                    gst_bin_remove_many(GST_BIN(self->m_pipeline),
+                                        tee, pq, tq, tconv, tres, tcaps, asink, nullptr);
+                }
+            } else {
+                for (GstElement *e : {tee, pq, tq, tconv, tres, tcaps, asink})
+                    if (e) gst_object_unref(e);
+            }
+        }
+
+        if (!headSink)
+            headSink = gst_element_get_static_pad(conv, "sink");
+        gst_pad_link(pad, headSink);
+        gst_object_unref(headSink);
         qInfo() << "SubscribeWebrtcSrc: audio pad linked (decoded)";
     }
 }

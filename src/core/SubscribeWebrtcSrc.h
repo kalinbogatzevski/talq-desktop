@@ -22,6 +22,7 @@
 #include "SignalingClient.h"
 
 class VideoFrameProvider;
+class SharedFarEndBus;
 
 class SubscribeWebrtcSrc : public QObject
 {
@@ -33,6 +34,13 @@ public:
     bool start(const QString &stunServer, const QList<TurnServer> &turnServers,
                const QString &audioOutputDeviceId = {});
     void stop();
+
+    // AEC: when set, this subscriber TEES its decoded playback audio into the
+    // shared far-end probe bus (in addition to its own wasapi2sink). The
+    // playback path is untouched; the tap is a parallel appsink that pushes
+    // 48k/S16LE/mono buffers to the bus. Attaches the peer immediately and
+    // detaches on teardown. See docs/aec-design.md.
+    void setFarEndBus(SharedFarEndBus *bus);
     void setRemoteOffer(const QString &sdp);
     void addIceCandidate(const QString &candidate, int sdpMLineIndex, const QString &sdpMid);
     bool isRunning() const { return m_running; }
@@ -100,6 +108,9 @@ private:
                                         GParamSpec *pspec, gpointer self);
     static void onPadAdded(GstElement *src, GstPad *pad, gpointer self);
     static GstFlowReturn onVideoNewSample(GstAppSink *sink, gpointer self);
+    // AEC far-end tap: pulls each decoded playback sample and pushes it to the
+    // shared bus. Runs on a GStreamer streaming thread.
+    static GstFlowReturn onFarEndSample(GstAppSink *sink, gpointer self);
 
     QString m_remoteSessionId;
     QString m_sessionId = QStringLiteral("talq");  // our id within the signaller
@@ -110,6 +121,10 @@ private:
     GstElement *m_videoConvert = nullptr;
     GstElement *m_videoAppsink = nullptr;
     VideoFrameProvider *m_videoProvider = nullptr;
+    // AEC far-end tap (parallel to the playback wasapi2sink; null = AEC off).
+    SharedFarEndBus *m_farBus = nullptr;     // not owned (CallManager-owned)
+    GstElement *m_audioTee   = nullptr;      // splits decoded audio: playback + tap
+    GstElement *m_farAppsink = nullptr;      // tap sink → m_farBus->pushSample
     // RX video-rate probe (#111): measures the cadence of decoded frames
     // actually arriving from webrtcsrc, with their buffer-PTS deltas.
     // Distinguishes "sender only emits ~1 fps" (ptsΔ ≈ frame interval, e.g.

@@ -66,7 +66,7 @@ mkdir -p "$BUILD_DIR/gst-plugins"
 # process (uncatchable) if it or its autoplug helpers are missing.
 GST_PLUGINS=(
     coreelements typefindfunctions playback
-    audioconvert audioresample audioparsers opusparse autodetect audiotestsrc videotestsrc
+    audioconvert audioresample audiomixer audioparsers opusparse autodetect audiotestsrc videotestsrc
     dtls nice opus rtp rtpmanager srtp
     wasapi wasapi2 webrtc webrtcdsp app level
     vpx openh264 videoconvertscale videorate sctp jpeg
