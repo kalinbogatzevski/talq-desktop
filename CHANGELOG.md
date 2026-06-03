@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.48.5 "Botev" -- STABLE (2026-06-03)
+
+> Call stability + chat polish on the "Botev" line, from continued live testing.
+
+### Added
+
+* **A "Syncing…" indicator while chat history loads.** When you open a
+  conversation and the history is still being fetched from the server -- or a
+  conversation is being checked for updates -- TalQ now shows a small animated
+  indicator instead of a blank panel, so you can tell it's working rather than
+  stuck. It only appears when a fetch actually takes a moment, so a fast
+  connection never flickers it.
+* **A microphone test in Settings.** Settings > Audio now has a live level bar
+  under the Microphone picker -- speak, and the bar moves if the selected
+  microphone is working. A quick way to confirm your mic before a call.
+
+### Fixed
+
+* **Messages you're looking at are now reliably marked as read.** Under some
+  timing, a message that arrived while you had the conversation open could stay
+  marked unread; it's now marked read no matter which path delivered it.
+* **More stable calls.** Fixed a crash that could happen while a call was being
+  torn down (a publisher pipeline freed while it was still finishing its own
+  work), and trimmed memory that was being held across calls.
+
 ## v0.48.4 "Botev" -- STABLE (2026-06-03)
 
 > A point release on the "Botev" line, polishing call UX from continued live
