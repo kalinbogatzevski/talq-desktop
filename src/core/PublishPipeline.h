@@ -72,6 +72,12 @@ public:
     void enableCamera(int deviceIndex, bool hd1080 = true);
     void disableCamera();
 
+    // AEC: when set true BEFORE start(), the capture-leg webrtcdsp runs with
+    // echo-cancel=true probe="talq-aec-probe". CallManager only enables this
+    // once the SharedFarEndBus probe is already PLAYING (see docs/aec-design.md);
+    // calling it has no effect after start().
+    void setEchoCancellation(bool on) { m_aecEnabled = on; }
+
     VideoFrameProvider *localVideoProvider() const { return m_localVideoProvider; }
 
     // #20 — when set (CallManager passes its long-lived engine), the
@@ -203,6 +209,9 @@ private:
     // concurrently with Qt-thread teardown; these callbacks bail on it.
     std::atomic<bool> m_shuttingDown{false};
     bool m_cameraEnabled = false;
+    // AEC on the capture leg (echo-cancel + probe). Set via setEchoCancellation
+    // before start(); CallManager guarantees the probe exists first.
+    bool m_aecEnabled = false;
     // Self-heal state: a forced exact camera caps from Settings → if no
     // frames in m_camStartWatchdog seconds after enableCamera, the pick
     // is unrecoverably wrong (mfvideosrc can't deliver the mode);

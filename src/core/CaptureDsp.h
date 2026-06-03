@@ -13,23 +13,42 @@
 // / fixed-digital(2). AGC values follow the 2026-05-28 call-quality spec.
 namespace talq {
 
-inline void configureCaptureDsp(GstElement *dsp, bool nsEnabled, bool agcEnabled)
+inline void configureCaptureDsp(GstElement *dsp, bool nsEnabled, bool agcEnabled,
+                                bool aecEnabled = false,
+                                const char *aecProbeName = "talq-aec-probe")
 {
     if (!dsp)
         return;
 
-    // echo-cancel stays OFF: webrtcdsp's AEC needs a webrtcechoprobe present at
-    // pipeline start, but the only far-end tap (SubscribeWebrtcSrc playback)
-    // does not exist until a subscriber connects. echo-cancel=TRUE therefore
-    // made gst_webrtc_dsp_start fail and dropped every call. AEC needs a
-    // separate shared-probe design (tracked elsewhere).
-    g_object_set(dsp,
-                 "echo-cancel",             FALSE,
-                 "noise-suppression",       nsEnabled ? TRUE : FALSE,
-                 "noise-suppression-level", 2,            // high
-                 "high-pass-filter",        TRUE,          // voice-friendly rumble cut
-                 "voice-detection",         FALSE,
-                 nullptr);
+    // echo-cancel (AEC). When enabled, the named webrtcechoprobe MUST already
+    // exist in the process-global registry (brought up by SharedFarEndBus
+    // BEFORE this publisher starts) — otherwise gst_webrtc_dsp_start fails
+    // ("No echo probe found") and the call drops. The caller (CallManager)
+    // guarantees that ordering and only passes aecEnabled=true once the bus is
+    // PLAYING. delay-agnostic lets the APM self-estimate the cross-pipeline
+    // capture↔playback delay (auto/harmless on AEC3 wap 1.x; load-bearing on
+    // the legacy 0.3.x library). See docs/aec-design.md.
+    if (aecEnabled) {
+        g_object_set(dsp,
+                     "echo-cancel",             TRUE,
+                     "probe",                   aecProbeName,
+                     "delay-agnostic",          TRUE,
+                     "extended-filter",         TRUE,
+                     "noise-suppression",       nsEnabled ? TRUE : FALSE,
+                     "noise-suppression-level", 2,            // high
+                     "high-pass-filter",        TRUE,          // voice-friendly rumble cut
+                     "voice-detection",         FALSE,
+                     nullptr);
+    } else {
+        // echo-cancel OFF — the safe default when no probe is available.
+        g_object_set(dsp,
+                     "echo-cancel",             FALSE,
+                     "noise-suppression",       nsEnabled ? TRUE : FALSE,
+                     "noise-suppression-level", 2,            // high
+                     "high-pass-filter",        TRUE,          // voice-friendly rumble cut
+                     "voice-detection",         FALSE,
+                     nullptr);
+    }
 
     if (agcEnabled) {
         // Bring quiet speakers up toward a consistent peak target without

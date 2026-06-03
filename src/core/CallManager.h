@@ -26,6 +26,7 @@
 class BackgroundEngine;   // #20 — owned by CallManager; lives across calls.
 class ConversationListModel;
 class ShareOverlay;       // #72 — coloured monitor border while screen-sharing.
+class SharedFarEndBus;    // AEC — far-end probe bus, lives per call.
 
 class CallManager : public QObject
 {
@@ -292,6 +293,10 @@ private:
     MediaDeviceManager *m_deviceManager = nullptr;
     // MCU dual pipelines
     PublishPipeline *m_publishPipeline = nullptr;
+    // AEC — shared far-end probe bus. Built before the publisher at call-start
+    // (so webrtcdsp can acquire the probe), torn down last. Null when AEC is
+    // off or the bus failed to build. See docs/aec-design.md.
+    SharedFarEndBus *m_farEndBus = nullptr;
 
     // #20 background engine — long-lived, parented to CallManager so it
     // outlives individual calls. Constructed in CallManager's ctor.

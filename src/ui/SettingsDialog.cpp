@@ -498,6 +498,25 @@ QWidget *SettingsDialog::buildAudioVideoTab()
            "Applies to the next call."),
         m_autoGainControl));
 
+    m_echoCancellation = new QCheckBox;
+    m_echoCancellation->setToolTip(
+        tr("Stop the people you call from hearing their own voice echoed back "
+           "when you use speakers instead of a headset (applies to the next call)."));
+    m_settings.beginGroup("Audio");
+    m_echoCancellation->setChecked(
+        m_settings.value("echoCancellation", true).toBool());
+    m_settings.endGroup();
+    connect(m_echoCancellation, &QCheckBox::toggled, this, [this](bool checked) {
+        m_settings.beginGroup("Audio");
+        m_settings.setValue("echoCancellation", checked);
+        m_settings.endGroup();
+    });
+    layout->addWidget(makeSettingRow(
+        tr("Echo cancellation"),
+        tr("Remove your speaker output from your microphone so callers don't "
+           "hear themselves. Best with speakers. Applies to the next call."),
+        m_echoCancellation));
+
     m_speakerCombo = new QComboBox;
     connect(m_speakerCombo, QOverload<int>::of(&QComboBox::activated),
             this, [this](int idx) { m_deviceManager->setSelectedAudioOutput(idx); });
