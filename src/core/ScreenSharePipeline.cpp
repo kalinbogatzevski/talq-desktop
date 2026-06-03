@@ -294,6 +294,7 @@ bool ScreenSharePipeline::start(const QString &stunServer, const QList<TurnServe
         GstCaps *cap = gst_caps_from_string(capStr.toUtf8().constData());
         g_object_set(scaleCaps, "caps", cap, nullptr);
         gst_caps_unref(cap);
+        m_scaleCaps = scaleCaps;   // borrowed ref for LIVE setQualityCap()
         qInfo().nospace() << "ScreenSharePipeline: capture capped to "
                           << m_capW << "x" << m_capH << " before encode";
     }
@@ -502,6 +503,31 @@ bool ScreenSharePipeline::start(const QString &stunServer, const QList<TurnServe
     return true;
 }
 
+void ScreenSharePipeline::setQualityCap(int maxW, int maxH)
+{
+    m_capW = maxW;
+    m_capH = maxH;
+    // While the share is LIVE, re-set the downscale capsfilter so the encoder
+    // reconfigures to the new resolution IN PLACE. Resolution is not carried in
+    // the SDP, so this needs NO renegotiation / new offer -- which is exactly
+    // what avoids the stale-MCU-screen-handle confirm failure the old
+    // stop()->start() re-share hit (ICE reconnected but RTP never confirmed ->
+    // retry churn -> drop). The H264 encoder emits a fresh SPS/PPS+IDR on the
+    // resolution change (config-interval=-1 repeats them) so the peer re-syncs
+    // at the new size. Before start() (m_scaleCaps null) this only stores the
+    // cap for the build.
+    if (m_scaleCaps && m_running && !m_shuttingDown.load()) {
+        const QString capStr = QStringLiteral(
+            "video/x-raw,width=(int)[2,%1],height=(int)[2,%2],"
+            "pixel-aspect-ratio=1/1").arg(maxW).arg(maxH);
+        GstCaps *cap = gst_caps_from_string(capStr.toUtf8().constData());
+        g_object_set(m_scaleCaps, "caps", cap, nullptr);
+        gst_caps_unref(cap);
+        qInfo().nospace() << "ScreenSharePipeline: LIVE quality cap -> "
+                          << maxW << "x" << maxH << " (in-place, no re-offer)";
+    }
+}
+
 void ScreenSharePipeline::stop()
 {
     if (!m_running) return;
@@ -573,6 +599,7 @@ void ScreenSharePipeline::cleanup()
     }
     m_webrtcbin = nullptr;
     m_videoEncoder = nullptr;  // owned by the (now-freed) pipeline
+    m_scaleCaps = nullptr;     // borrowed ref into the now-freed pipeline
     m_gccbwe = nullptr;        // owned by webrtcbin (now-freed)
     m_videoParser = nullptr;   // owned by the (now-freed) pipeline
     m_previewAppsink = nullptr;

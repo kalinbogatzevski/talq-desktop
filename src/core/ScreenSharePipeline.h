@@ -46,7 +46,13 @@ public:
     // a native 4K raw frame is ~38 MB and an unbounded native-res pool
     // ballooned RAM ~400 MB on share start. The quality switch sets a
     // higher cap then stop()->start(). Must be called before start().
-    void setQualityCap(int maxW, int maxH) { m_capW = maxW; m_capH = maxH; }
+    // Sets the screen-capture downscale cap. Before start(): just stored. While
+    // RUNNING: applied LIVE by re-setting the downscale capsfilter, so a mid-
+    // share quality change reconfigures the encoder in place (resolution is not
+    // in the SDP -> no renegotiation, no new MCU offer/handle). This replaces
+    // the old stop()->start() re-share, which re-offered on the same session and
+    // the MCU's stale screen handle never confirmed the new publish (churn/drop).
+    void setQualityCap(int maxW, int maxH);
 
 signals:
     void localOfferReady(const QString &sdp);
@@ -74,6 +80,7 @@ private:
     GstElement *m_pipeline = nullptr;
     GstElement *m_webrtcbin = nullptr;
     GstElement *m_videoEncoder = nullptr;  // kept for proper adaptive (todo)
+    GstElement *m_scaleCaps = nullptr;     // downscale capsfilter; re-set LIVE by setQualityCap() for mid-share quality changes
     GstElement *m_videoParser = nullptr;   // h264parse, present iff H264
     bool m_useH264 = false;
     bool m_running = false;

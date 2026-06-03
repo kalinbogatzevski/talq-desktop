@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.48.1 "Botev" -- STABLE (2026-06-03)
+
+> A point release on the "Botev" line, from continued live testing against the
+> official Nextcloud Talk (web + Android).
+
+### Fixed
+
+* **Changing screen-share quality mid-share no longer drops the share, and the
+  switch is instant.** The quality change now reconfigures the running stream
+  in place instead of tearing it down and re-publishing, so you can change the
+  resolution as often as you like -- up or down -- and the share keeps running
+  smoothly at the new quality, with no "reconnecting" and no dropped share.
+
 ## v0.48.0 "Botev" -- STABLE (2026-06-02)
 
 > **The "Botev" line, promoted to stable on Heroes' Day week.** Named for
