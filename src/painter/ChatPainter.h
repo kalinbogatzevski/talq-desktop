@@ -242,19 +242,14 @@ private:
     class QTimer *m_resizeDebounceTimer = nullptr;
     qreal m_lastWidth = 0;
 
-    // ── Chat-history "syncing" indicator ──
-    // A subtle animated spinner shown while the message model is fetching
-    // history from the server (room open / paging older). Gated behind a short
-    // delay so a fast link never flickers it — it only appears on a SLOW fetch.
-    // Empty + loading -> centred "Syncing messages…"; messages + loading -> a
-    // small top spinner (older history); empty + done -> a calm empty state.
+    // ── Chat-history load state ──
+    // Tracks MessageListModel::isLoading() only to pick the empty-body text
+    // (blank while loading vs "No messages yet" when done). The ANIMATED
+    // loading line itself now lives in the header (HeaderPainter), wired from
+    // the same loadingChanged signal in MainWindow — so there is no spinner in
+    // the chat body any more.
     void updateLoadingState();
-    void paintSyncIndicator(QPainter &p, const QPointF &center, qreal radius);
-    bool m_modelLoading = false;   // raw model isLoading()
-    bool m_showSync     = false;   // loading AND past the slow-link delay
-    qreal m_syncPhase   = 0.0;     // spinner rotation phase
-    class QTimer *m_syncDelayTimer = nullptr;   // single-shot slow-link gate
-    class QTimer *m_syncAnimTimer  = nullptr;   // drives the spinner
+    bool m_modelLoading = false;
 
     // ── Image caches ──
     QHash<QString, QImage> m_avatarCache;   // userId -> circular avatar

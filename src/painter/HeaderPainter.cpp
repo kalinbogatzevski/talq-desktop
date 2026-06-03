@@ -14,6 +14,8 @@
 #include <QCursor>
 #include <QToolTip>
 #include <QtMath>
+#include <QTimer>
+#include <QLinearGradient>
 
 // ═══════════════════════════════════════════════════════
 // Constructor
@@ -26,6 +28,26 @@ HeaderPainter::HeaderPainter(QWidget *parent)
     setAttribute(Qt::WA_Hover);
     setMouseTracking(true);
     setFixedHeight(HeaderHeight);
+
+    // Loading line: a slow-link delay gate (the line only appears if the fetch
+    // actually drags, so a fast cache-only open never flashes it) + an anim
+    // timer that sweeps the bright segment across, browser/messenger-style.
+    m_loadingDelayTimer = new QTimer(this);
+    m_loadingDelayTimer->setSingleShot(true);
+    m_loadingDelayTimer->setInterval(250);
+    connect(m_loadingDelayTimer, &QTimer::timeout, this, [this]() {
+        if (!m_loading) return;
+        m_lineVisible = true;
+        if (!m_loadingAnimTimer->isActive()) m_loadingAnimTimer->start();
+        update();
+    });
+    m_loadingAnimTimer = new QTimer(this);
+    m_loadingAnimTimer->setInterval(16);   // ~60 fps for a smooth sweep
+    connect(m_loadingAnimTimer, &QTimer::timeout, this, [this]() {
+        m_loadingPhase += 0.012;            // ~1.4 s per sweep
+        if (m_loadingPhase > 1.0) m_loadingPhase -= 1.0;
+        update();
+    });
 }
 
 // ═══════════════════════════════════════════════════════
@@ -112,7 +134,39 @@ void HeaderPainter::setMessageCount(int v) {
 void HeaderPainter::setLoading(bool v) {
     if (m_loading == v) return;
     m_loading = v;
+    if (v) {
+        // Arm the slow-link gate; the line only appears if still loading when
+        // it fires.
+        if (!m_lineVisible && !m_loadingDelayTimer->isActive())
+            m_loadingDelayTimer->start();
+    } else {
+        // Fetch finished — drop the line and stop animating.
+        m_loadingDelayTimer->stop();
+        m_loadingAnimTimer->stop();
+        m_lineVisible = false;
+    }
     update();
+}
+
+void HeaderPainter::paintLoadingLine(QPainter *p)
+{
+    if (!m_lineVisible) return;
+    const qreal h = 2.5;
+    const qreal y = HeaderHeight - h;
+    // Faint full-width track.
+    QColor track = m_theme.accent; track.setAlphaF(0.14);
+    p->setPen(Qt::NoPen);
+    p->fillRect(QRectF(0, y, width(), h), track);
+    // Bright accent segment sweeping left -> right (indeterminate, browser-style).
+    const qreal segW = qMax<qreal>(60.0, width() * 0.30);
+    const qreal x = -segW + (width() + segW) * m_loadingPhase;
+    QColor a0 = m_theme.accent; a0.setAlphaF(0.0);
+    QColor a1 = m_theme.accent; a1.setAlphaF(0.95);
+    QLinearGradient g(x, 0, x + segW, 0);
+    g.setColorAt(0.0, a0);
+    g.setColorAt(0.5, a1);
+    g.setColorAt(1.0, a0);
+    p->fillRect(QRectF(x, y, segW, h), g);
 }
 
 void HeaderPainter::setTypingUser(const QString &v) {
@@ -206,6 +260,10 @@ void HeaderPainter::paintEvent(QPaintEvent *)
     painter->setPen(Qt::NoPen);
     painter->setBrush(m_theme.divider);
     painter->drawRect(QRectF(0, h - 1, w, 1));
+
+    // Chat-history loading line along the bottom edge (browser/messenger style).
+    // Sits where no other header content paints, so z-order is fine here.
+    paintLoadingLine(painter);
 
     // Clear hit-test rects
     m_expandBtnRect = QRectF();
