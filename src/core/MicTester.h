@@ -42,6 +42,7 @@ private slots:
 
 private:
     void cleanup();
+    bool tryStart(const QString &deviceId);   // one attempt on a specific device
 
     GstElement *m_pipeline = nullptr;
     QTimer      m_busTimer;

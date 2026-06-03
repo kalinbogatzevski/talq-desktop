@@ -21,8 +21,26 @@ bool MicTester::start(const QString &deviceId)
 {
     cleanup();   // restart cleanly if already running
 
+    // Try the selected device; if it won't open, fall back to the SYSTEM
+    // DEFAULT (no device set) so the meter still works — mirrors the call
+    // publisher's tiered fallback. (With the device.id fix in
+    // MediaDeviceManager the selected device should open directly; this is the
+    // belt-and-suspenders for a busy / OS-blocked / unresolvable id.)
+    if (tryStart(deviceId))
+        return true;
+    if (!deviceId.isEmpty()) {
+        qWarning() << "MicTester: selected device failed to open — falling back "
+                      "to the system default";
+        if (tryStart(QString()))
+            return true;
+    }
+    return false;
+}
+
+bool MicTester::tryStart(const QString &deviceId)
+{
     // Build src -> audioconvert -> audioresample -> level -> fakesink. The
-    // device id (a wasapi2 strid) can contain characters that gst_parse_launch
+    // device id (a wasapi2 {GUID}) can contain characters that gst_parse_launch
     // would choke on, so parse the fixed chain by element NAME and set the
     // device property programmatically.
     GError *err = nullptr;
@@ -48,8 +66,6 @@ bool MicTester::start(const QString &deviceId)
 
     if (gst_element_set_state(m_pipeline, GST_STATE_PLAYING)
             == GST_STATE_CHANGE_FAILURE) {
-        // Couldn't open the device (busy / unresolvable id / OS-blocked) — the
-        // meter staying flat is the user's signal that this device won't work.
         qWarning() << "MicTester: device" << deviceId << "failed to open";
         cleanup();
         return false;
