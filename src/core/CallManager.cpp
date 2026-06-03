@@ -1899,54 +1899,41 @@ void CallManager::setScreenShareQuality(int level)
     emit screenShareQualityChanged();
     if (!m_screenSharing) return;   // applied on next share
 
-    // Live change: managed re-share at the new cap, SAME target. We must NOT
-    // use the terminal stopScreenShare() here: it deleteLater()s the pipeline
-    // immediately, which nulls the QPointer guard in ScreenSharePipeline's
-    // detached NULL-transition worker so released() is never emitted -- the
-    // queued start (requestStop()+requestStart() == StartQueued) is then
-    // orphaned and never resumes ("queued behind teardown" forever).
-    //
-    // Instead reuse the proven confirm-timeout RETRY teardown: keep the
-    // pipeline object ALIVE (stop() only, no deleteLater), let its async
-    // teardown fire released() -> onSharePipelineReleased(), which deletes the
-    // retained pipeline (m_shareRetryTeardown) and then, because the policy has
-    // a queued start, rebuilds via buildAndStartSharePipeline(m_ssMonitorIndex,
-    // m_ssWindowHandle). buildAndStartSharePipeline re-reads the persisted
-    // quality (set just above) and applies the new downscale cap. The monitor
-    // border is intentionally left up across the blip (re-shown idempotently on
-    // rebuild) so a quality tweak doesn't flicker the frame.
-    qInfo() << "CallManager: screen-share quality ->" << level
-            << "(re-sharing same target)";
+    // Map the quality level to the downscale cap (kept in lockstep with
+    // buildAndStartSharePipeline). Hard 4K ceiling: the qsv encoder tops out
+    // ~4K and a larger frame yields zero encoded output.
+    int cw = 1920, ch = 1080;
+    switch (level) {
+        case 0: cw = 1280; ch = 720;  break;
+        case 1: cw = 1920; ch = 1080; break;
+        case 2: cw = 2560; ch = 1440; break;
+        case 3: cw = 3840; ch = 2160; break;
+        default: break;
+    }
+    cw = qMin(cw, 3840);
+    ch = qMin(ch, 2160);
 
-    if (!m_screenSharePipeline) {
-        // No live pipeline object (shouldn't happen while m_screenSharing is
-        // true, but be defensive): fall back to the terminal stop+start.
-        const int mi = m_ssMonitorIndex;
-        const quintptr wh = m_ssWindowHandle;
-        stopScreenShare();
-        startScreenShare(mi, wh);
+    // LIVE quality change -- reconfigure the RUNNING pipeline's downscale cap in
+    // place (ScreenSharePipeline::setQualityCap re-sets the scale capsfilter).
+    // Resolution is NOT in the SDP, so no new offer is sent -- which avoids the
+    // stale-MCU-screen-handle confirm failure the old stop()->start() re-share
+    // hit (ICE reconnected but the rebuilt publish never confirmed RTP -> retry
+    // churn -> the share dropped after a few seconds). The encoder reconfigures
+    // and emits a fresh keyframe; the peer re-syncs at the new resolution with
+    // no teardown, no border flicker, no drop.
+    if (m_screenSharePipeline) {
+        qInfo() << "CallManager: screen-share quality ->" << level
+                << "-- LIVE in-place re-cap" << cw << "x" << ch;
+        m_screenSharePipeline->setQualityCap(cw, ch);
         return;
     }
 
-    // Cancel any in-flight confirm/retry so a late confirm-timeout can't race
-    // this managed re-share.
-    m_shareConfirmTimer.stop();
-    m_shareConfirmArmed = false;
-
-    // Drive the policy: Active -> Stopping (requestStop), then queue the start
-    // (requestStart returns StartQueued, setting the pending start that
-    // onReleased() will convert to StartNow once the device is free).
-    m_sharePolicy.requestStop();
-    m_sharePolicy.requestStart();
-
-    // Keep the pipeline alive through teardown so released() actually fires;
-    // mark this as a retry-style teardown so onSharePipelineReleased() deletes
-    // the retained pipeline and rebuilds. m_screenShareTearingDown protects the
-    // A/V publisher from spurious ICE "failed" edges during the teardown window
-    // (cleared in onSharePipelineReleased via the retry-teardown branch).
-    m_shareRetryTeardown = true;
-    m_screenShareTearingDown = true;
-    m_screenSharePipeline->stop();
+    // Defensive fallback (no live pipeline object while m_screenSharing is true
+    // -- should not happen): terminal stop+start at the new quality.
+    const int mi = m_ssMonitorIndex;
+    const quintptr wh = m_ssWindowHandle;
+    stopScreenShare();
+    startScreenShare(mi, wh);
 }
 
 int CallManager::videoDeviceIndex() const
