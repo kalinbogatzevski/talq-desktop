@@ -161,6 +161,32 @@ void CallManager::startRingtone() {
         PlaySoundA(incoming.constData(), nullptr, SND_MEMORY | SND_ASYNC | SND_LOOP);
         return;
     }
+    // Outgoing (calling…) tone is user-selectable too (Calls/outgoingRingtone) —
+    // some of the bundled tones suit the calling side better than receiving.
+    // Default "ringback" = the synthesized brrr-brrr ringback (prior behaviour);
+    // a bundled id plays its WAV; "default" = the synthesized TalQ tone; "none"
+    // stays silent.
+    {
+        QSettings so("TalQ", "TalQ");
+        so.beginGroup("Calls");
+        const QString oid = so.value("outgoingRingtone", "ringback").toString();
+        so.endGroup();
+        if (oid == "none") return;
+        if (oid == "default") {
+            PlaySoundA(incoming.constData(), nullptr, SND_MEMORY | SND_ASYNC | SND_LOOP);
+            return;
+        }
+        if (oid != "ringback") {
+            QFile f(QStringLiteral(":/sounds/ring_%1.wav").arg(oid));
+            if (f.open(QIODevice::ReadOnly)) {
+                m_ringtoneData = f.readAll();
+                PlaySoundA(m_ringtoneData.constData(), nullptr,
+                           SND_MEMORY | SND_ASYNC | SND_LOOP);
+                return;
+            }
+            // fall through to the ringback if the bundled file is missing
+        }
+    }
     PlaySoundA(outgoing.constData(), nullptr, SND_MEMORY | SND_ASYNC | SND_LOOP);
 #endif
 }
@@ -173,7 +199,9 @@ void CallManager::auditionRingtone(const QString &id)
     // it on the next audition is safe.
     static QByteArray buf;
     if (id == "none") return;
-    if (id == "default") {
+    if (id == "ringback") {
+        buf = generateOutgoingTone();          // the outgoing brrr-brrr ringback
+    } else if (id == "default") {
         buf = generateIncomingRingtone();
     } else {
         QFile f(QStringLiteral(":/sounds/ring_%1.wav").arg(id));

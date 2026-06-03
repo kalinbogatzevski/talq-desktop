@@ -1252,6 +1252,27 @@ QWidget *SettingsDialog::buildNotificationsTab()
         tr("Plays when someone calls you."),
         m_ringtoneCombo));
 
+    // Outgoing-call (calling…) tone — separate from the incoming ringtone, since
+    // some of the bundled tones suit the calling side better. "Ringback tone"
+    // (default) is the classic brrr-brrr; the rest mirror the ringtone roster.
+    m_outgoingRingtoneCombo = new QComboBox;
+    m_outgoingRingtoneCombo->addItem(tr("Ringback tone"), QStringLiteral("ringback"));
+    for (const auto &r : CallManager::ringtones())
+        m_outgoingRingtoneCombo->addItem(r.second, r.first);
+    connect(m_outgoingRingtoneCombo, QOverload<int>::of(&QComboBox::activated),
+            this, [this](int idx) {
+        const QString id = m_outgoingRingtoneCombo->itemData(idx).toString();
+        m_settings.beginGroup("Calls");
+        m_settings.setValue("outgoingRingtone", id);
+        m_settings.endGroup();
+        if (id != "none")
+            CallManager::auditionRingtone(id);  // brief one-shot preview
+    });
+    layout->addWidget(makeSettingRow(
+        tr("Outgoing call sound"),
+        tr("Plays while you're calling someone."),
+        m_outgoingRingtoneCombo));
+
     layout->addSpacing(kGroupGap - kRowGap);
 
     // Calm callout (AppStyle role="hint" — full tint, no side-stripe).
@@ -1771,6 +1792,15 @@ void SettingsDialog::loadNotificationSettings()
     if (ridx < 0) ridx = m_ringtoneCombo->findData(QStringLiteral("classic"));
     m_ringtoneCombo->setCurrentIndex(ridx);
     m_ringtoneCombo->blockSignals(false);
+
+    m_settings.beginGroup("Calls");
+    const QString outRingId = m_settings.value("outgoingRingtone", "ringback").toString();
+    m_settings.endGroup();
+    m_outgoingRingtoneCombo->blockSignals(true);
+    int oidx = m_outgoingRingtoneCombo->findData(outRingId);
+    if (oidx < 0) oidx = m_outgoingRingtoneCombo->findData(QStringLiteral("ringback"));
+    m_outgoingRingtoneCombo->setCurrentIndex(oidx);
+    m_outgoingRingtoneCombo->blockSignals(false);
 }
 
 void SettingsDialog::loadGeneralSettings()
