@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.48.9 "Botev" -- STABLE (2026-06-03)
+
+### Fixed
+
+* **Service messages now show their time.** Missed calls, call started/ended,
+  and other system messages were rendering with no timestamp; they now show
+  when they happened.
+
+### Changed
+
+* **Outgoing call sound now defaults to "Landline (US)."**
+
 ## v0.48.8 "Botev" -- STABLE (2026-06-03)
 
 ### Added
