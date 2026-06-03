@@ -808,6 +808,17 @@ void MessageListModel::refreshLatest()
             qDebug() << "MessageListModel: refreshLatest merged" << missing.size()
                      << "missing, total=" << m_messages.size();
 
+            // Advance the read marker for messages that arrived via THIS path.
+            // The poller's onMessagesReceived marks read on new messages, but
+            // when the "chat refresh" signaling hint makes refreshLatest merge a
+            // new message FIRST, the poller then dedups it out and returns at its
+            // `newMsgs.isEmpty()` guard BEFORE reaching its own markAsRead() — so
+            // a message you're looking at in the open room is shown but never
+            // marked read on the server (the intermittent "I see it but it's not
+            // tagged as read" field bug, 2026-06-03). markAsRead is forward-only
+            // and self-dedupes, so it's a safe no-op on a pure gap-fill/re-merge.
+            markAsRead();
+
             // 0.41.2-beta — diagnostic. Count how many fetched messages
             // had a threadId vs were thread-less. Helps tell apart the
             // two field-bug shapes: (a) server has the messages but
