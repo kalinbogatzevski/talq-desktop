@@ -143,6 +143,23 @@ private:
 
     VideoFrameProvider *m_previewProvider = nullptr;
     GstElement         *m_previewAppsink  = nullptr;
+
+    // --- Single-WINDOW capture via Windows Graphics Capture (WGC) ---
+    // MinGW's gstd3d11 has no WGC, so d3d11screencapturesrc can't capture a
+    // single application window (it silently falls back to a whole monitor —
+    // the "shares full screen" bug). Instead, for a window share we load a
+    // tiny MSVC-built C-ABI DLL (talq_wgc.dll) at runtime and pump its BGRA
+    // frames into an appsrc that replaces the capture source. These are live
+    // only while sharing a window (windowHandle != 0); a monitor share is
+    // unchanged (d3d11 HMONITOR path).
+    GstElement *m_wgcAppsrc  = nullptr;  // owned by the pipeline once bin-added
+    void       *m_wgcSession = nullptr;  // opaque talq_wgc_session*, NULL = none
+    int         m_wgcW = 0, m_wgcH = 0;  // last pushed frame size (drives caps)
+    // Frame callback the DLL invokes on its own capture thread; copies the
+    // BGRA rows tightly-packed and pushes them into m_wgcAppsrc. C-ABI shape
+    // (void *user, const BGRA*, width, height, stride).
+    static void onWgcFrame(void *user, const unsigned char *bgra,
+                           int width, int height, int stride);
     static void onIceCandidate(GstElement *webrtc, guint mlineIndex, gchar *candidate, gpointer userData);
     static void onOfferCreated(GstPromise *promise, gpointer userData);
     static void onIceStateChanged(GObject *obj, GParamSpec *pspec, gpointer userData);

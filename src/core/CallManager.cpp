@@ -389,6 +389,20 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
                 p->setScreen(sub->videoProvider());
                 p->setScreenSharing(true);
             }
+            // Receiving a peer's SCREEN is definitive proof they are live in the
+            // call — so make sure we ALSO subscribe their PRIMARY (camera+mic)
+            // feed. On a normal mid-call share this is already done
+            // (requestPeerStream self-dedupes on m_subscribePipelines /
+            // m_pendingRequestOffers, so it's a no-op). On a REJOIN to an
+            // already-active call the peer generates no fresh join event for
+            // us, participantJoinedCall may not re-fire, and the REST poll
+            // backup self-disables once a session is adopted / is deleted when
+            // the call goes Active before its first tick — so the primary
+            // subscribe was being missed, leaving the peer's screen visible but
+            // their camera AND audio absent (field bug, 2026-06-03). The screen
+            // offer is the reliable hook that was missing.
+            if (m_state != Idle && m_state != Ending)
+                requestPeerStream(from);
             sub->setRemoteOffer(sdp);
             qDebug() << "CallManager: screen subscriber offer set";
             return;
@@ -882,6 +896,7 @@ void CallManager::startCall(const QString &token, bool withVideo)
     m_withVideo = withVideo;
     m_cameraOn = withVideo;
     m_cameraUnavailable = false;   // fresh call: clear any prior failure
+    m_micUnavailable = false;      // fresh call: clear any prior mic failure
     emit cameraChanged();
     m_muted = false;
     m_callDuration = 0;
@@ -1175,6 +1190,23 @@ bool CallManager::buildAndStartPublisher()
         });
     });
 
+    connect(m_publishPipeline, &PublishPipeline::audioError, this, [this](const QString &reason) {
+        qWarning() << "CallManager: microphone error:" << reason;
+        // Non-fatal (mirrors cameraError): the publisher already fell back to a
+        // SILENT source so the call connected — a mic that won't open must
+        // never drop the whole call. Flag it so the surface shows a loud
+        // "microphone unavailable" banner instead of pretending we're sending
+        // audio, and tell the peer our audio is off so they don't wait on it.
+        m_micUnavailable = true;
+        // Defer the wire broadcast: audioError can fire synchronously from
+        // inside PublishPipeline::start() before the call has fully joined.
+        QTimer::singleShot(0, this, [this]() {
+            if (m_state == Idle || m_state == Ending) return;
+            broadcastMediaState("audio", false);
+            updateCallFlags();
+        });
+    });
+
     qDebug() << "CallManager: calling PublishPipeline::start()...";
     if (!m_publishPipeline->start(m_stunServer, m_turnServers,
         m_deviceManager ? m_deviceManager->selectedInputDeviceId() : QString(),
@@ -1432,6 +1464,7 @@ void CallManager::acceptCall(bool withVideo) {
     m_callJoinAttempts = 0;
     m_peerGraceActive = false; m_peerGraceTimer.stop();   // #bug3 -- fresh call, no stale grace
     m_cameraUnavailable = false;   // fresh call: clear any prior failure
+    m_micUnavailable = false;      // fresh call: clear any prior mic failure
     emit cameraChanged();
     m_ringTimeout.stop();
     setStatusDetail("Joining room");
@@ -2492,10 +2525,18 @@ void CallManager::stopAllPipelines()
     if (m_publishPipeline) {
         qDebug() << "CallManager::teardown — stopping publish pipeline";
         m_publishPipeline->stop();
-        qDebug() << "CallManager::teardown — deleting publish pipeline";
-        delete m_publishPipeline;
+        // 1.0 audit — SAME use-after-free hazard the m_peerPipeline block above
+        // documents: teardown can be reached INLINE from PublishPipeline::pollBus()
+        // (the main-thread bus loop driven by m_glibTimer) via a DirectConnection
+        // error() emit — e.g. all simulcast layers dying. A synchronous delete then
+        // frees the pipeline whose own pollBus() frame is still on the stack, and the
+        // unwind dereferences freed state (gst_message_unref / gst_object_unref / the
+        // next gst_bus_pop) → 0xC0000005. deleteLater() defers the free to the next
+        // event-loop turn (after pollBus unwinds); null the member NOW so re-entrant
+        // guards immediately see it gone. (Mirrors m_peerPipeline + ScreenSharePipeline.)
+        qDebug() << "CallManager::teardown — scheduling publish pipeline deletion";
+        m_publishPipeline->deleteLater();
         m_publishPipeline = nullptr;
-        qDebug() << "CallManager::teardown — publish pipeline deleted";
     }
     for (auto *sub : m_subscribePipelines) {
         sub->stop();
@@ -2505,6 +2546,14 @@ void CallManager::stopAllPipelines()
     m_subscriberSids.clear();
     m_desiredSubstream.clear();
     m_subscriberRecoveries.clear();
+    // 1.0 audit — these two per-session maps are created lazily (m_subStall via
+    // operator[] in updateCallStats; m_pendingSubCandidates on early trickle-ICE)
+    // and were only ever removed per-session, never bulk-cleared on full teardown.
+    // A full call teardown deletes the subscribers in the loop above WITHOUT
+    // touching them, so each call leaked one-or-more entries keyed by an ephemeral
+    // session id. Reset them with the rest of the per-call subscriber state.
+    m_subStall.clear();
+    m_pendingSubCandidates.clear();
     m_pubRetryTimer.stop();
     m_pubRetryAttempts   = 0;
     m_pubRebuildInFlight = false;

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(talq VERSION 0.48.1 LANGUAGES CXX)
+project(talq VERSION 0.48.4 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -64,6 +64,8 @@ qt_add_executable(talq
     src/core/VideoFrameProvider.h
     src/core/VideoFrameProvider.cpp
     src/core/MediaDeviceManager.cpp
+    src/core/MicTester.h
+    src/core/MicTester.cpp
     src/core/UserStatusManager.h
     src/core/UserStatusManager.cpp
     src/core/CallManager.cpp
@@ -177,5 +179,3 @@ set_source_files_properties(
       "TALQ_VERSION=\"${PROJECT_VERSION}\";TALQ_VERSION_NAME=\"Botev\";TALQ_BUILD_TS=\"${TALQ_BUILD_TS}\""
 )
 
-# Pre-release flag: when build-release.sh is invoked with --beta it
-# passes -DTALQ_PRERELEASE=ON; that bakes the compile define into the

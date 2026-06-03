@@ -67,6 +67,12 @@ public:
     // "camera off" (a deliberate user toggle): the call surface uses this to
     // show a "Camera unavailable" notice instead of a silent black tile.
     bool isCameraUnavailable() const { return m_cameraUnavailable; }
+    // True when the microphone could not be opened during this call (missing,
+    // in use by another app, OS-blocked, or a device id wasapi2 couldn't
+    // resolve) and the publisher fell back to a SILENT source. The call still
+    // runs (video + receive intact); the surface shows a "microphone
+    // unavailable" banner instead of pretending the mic is live.
+    bool isMicUnavailable() const { return m_micUnavailable; }
     int callDuration() const { return m_callDuration; }
     QString remotePeerName() const { return m_remotePeerName; }
     QString remotePeerId() const { return m_remotePeerId; }
@@ -340,6 +346,9 @@ private:
     // "Camera unavailable" UI. Reset at the start of every call and whenever
     // the user toggles the camera back on (a retry).
     bool m_cameraUnavailable = false;
+    // Set when the mic can't be opened and the publisher fell back to silent
+    // audio; drives the "microphone unavailable" banner. Reset at every call.
+    bool m_micUnavailable = false;
     bool m_speaking = false;
     QTimer m_speakingGrace;
     bool m_cameraFallbackTried = false;

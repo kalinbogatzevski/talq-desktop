@@ -2,6 +2,7 @@
 #include "core/VideoEncoderUtil.h"
 #include <gst/rtp/rtp.h>
 #include <gst/app/app.h>
+#include <cstring>      // memcpy (WGC frame copy)
 #include <thread>
 #include <QPointer>
 #include <QApplication>
@@ -13,6 +14,60 @@
 
 #ifdef Q_OS_WIN
 #include <windows.h>   // MonitorFromPoint / HMONITOR / HWND
+
+// --- Windows Graphics Capture bridge (talq_wgc.dll) ---------------------
+// Single-window capture needs WGC, whose WinRT headers ship only with the
+// MSVC/Win11-SDK toolchain — the MinGW GStreamer TalQ links against has no
+// WGC, so d3d11screencapturesrc can't honour a window-handle. talq_wgc.dll
+// is built separately with MSVC (native/wgc/) and loaded HERE at runtime.
+// Only this plain-C boundary crosses the MSVC<->MinGW line; frame bytes are
+// copied inside the callback, so no heap object is owned across it.
+namespace {
+extern "C" {
+    typedef void (*talq_wgc_frame_cb)(void *user, const unsigned char *bgra,
+                                      int width, int height, int stride);
+    typedef int   (*pfn_wgc_available)(void);
+    typedef void *(*pfn_wgc_start_window)(HWND hwnd, talq_wgc_frame_cb cb,
+                                          void *user, int show_border);
+    typedef void  (*pfn_wgc_stop)(void *s);
+}
+pfn_wgc_available    g_wgc_available = nullptr;
+pfn_wgc_start_window g_wgc_start     = nullptr;
+pfn_wgc_stop         g_wgc_stop      = nullptr;
+
+// Load + resolve talq_wgc.dll once. Returns true iff window capture is usable
+// (DLL present, all three entry points resolved, WGC supported by the OS).
+bool ensureWgcLoaded()
+{
+    static bool tried = false;
+    static bool ok    = false;
+    if (tried) return ok;
+    tried = true;
+    HMODULE h = LoadLibraryW(L"talq_wgc.dll");
+    if (!h) {
+        qWarning() << "ScreenSharePipeline: talq_wgc.dll not found — single-"
+                      "window capture unavailable (monitor share still works)";
+        return false;
+    }
+    g_wgc_available = reinterpret_cast<pfn_wgc_available>(
+        reinterpret_cast<void *>(GetProcAddress(h, "talq_wgc_available")));
+    g_wgc_start = reinterpret_cast<pfn_wgc_start_window>(
+        reinterpret_cast<void *>(GetProcAddress(h, "talq_wgc_start_window")));
+    g_wgc_stop = reinterpret_cast<pfn_wgc_stop>(
+        reinterpret_cast<void *>(GetProcAddress(h, "talq_wgc_stop")));
+    if (!g_wgc_available || !g_wgc_start || !g_wgc_stop) {
+        qWarning() << "ScreenSharePipeline: talq_wgc.dll missing entry points";
+        return false;
+    }
+    if (!g_wgc_available()) {
+        qWarning() << "ScreenSharePipeline: WGC not supported on this OS";
+        return false;
+    }
+    ok = true;
+    qInfo() << "ScreenSharePipeline: talq_wgc.dll loaded — WGC window capture ready";
+    return true;
+}
+}  // namespace
 #endif
 
 ScreenSharePipeline::ScreenSharePipeline(QObject *parent)
@@ -160,32 +215,36 @@ bool ScreenSharePipeline::start(const QString &stunServer, const QList<TurnServe
     }
 
 #ifdef Q_OS_WIN
-    if (!screenSrc && windowHandle != 0) {
-        // Property-set order matters for d3d11screencapturesrc: capture-api
-        // must be configured BEFORE window-handle, otherwise the element
-        // may auto-resolve a monitor target from the (still-default)
-        // capture-api mode and ignore the late window-handle. Set them
-        // in two calls to make the order explicit.
-        screenSrc = gst_element_factory_make("d3d11screencapturesrc", nullptr);
-        if (screenSrc) {
-            g_object_set(screenSrc, "capture-api", 1 /* WGC */, nullptr);
-            g_object_set(screenSrc, "window-handle", (guint64)windowHandle,
-                                    "show-cursor", TRUE, nullptr);
-            // Read back to confirm the property actually took (#134
-            // wrong-window diag): if the readback differs from what we
-            // asked for, d3d11screencapturesrc rejected the HWND silently.
-            guint64 readBack = 0;
-            g_object_get(screenSrc, "window-handle", &readBack, nullptr);
-            qInfo().nospace() << "ScreenSharePipeline: window capture (WGC) "
-                              << "requested hwnd=" << (quintptr)windowHandle
-                              << " readback=" << (quintptr)readBack
-                              << ((quintptr)readBack == (quintptr)windowHandle
-                                  ? " ✓"
-                                  : " ✗ MISMATCH (capture src ignored our pick)");
+    if (!screenSrc && windowHandle != 0 && ensureWgcLoaded()) {
+        // Single-WINDOW capture via WGC (talq_wgc.dll). The DLL delivers BGRA
+        // frames on its own capture thread; onWgcFrame() pumps them into this
+        // appsrc, which then feeds the SAME convert/scale/encode/webrtc chain
+        // as a monitor capture. The capture SESSION is started after the
+        // pipeline reaches PLAYING (below), so the first frames have a live
+        // pipeline to flow into. This replaces the old d3d11screencapturesrc
+        // window-handle path, which on MinGW gstd3d11 (no WGC) silently
+        // captured a whole monitor — the "window share shows full screen" bug.
+        m_wgcAppsrc = gst_element_factory_make("appsrc", "wgc-appsrc");
+        if (m_wgcAppsrc) {
+            g_object_set(m_wgcAppsrc,
+                         "is-live",      TRUE,
+                         "do-timestamp", TRUE,
+                         "format",       GST_FORMAT_TIME,
+                         "max-bytes",    (guint64)(16 * 1024 * 1024),
+                         "block",        FALSE,   // never stall the WGC thread
+                         nullptr);
+            gst_util_set_object_arg(G_OBJECT(m_wgcAppsrc), "stream-type", "stream");
+            screenSrc = m_wgcAppsrc;
+            qInfo().nospace() << "ScreenSharePipeline: window capture via WGC "
+                              << "(talq_wgc.dll) hwnd=" << (quintptr)windowHandle;
         }
     }
 
-    if (!screenSrc) {
+    // A monitor share targets a screen by HMONITOR. Guarded to windowHandle==0
+    // so a window share whose WGC path failed above does NOT silently fall back
+    // to capturing a monitor (it hits the clear "window capture unavailable"
+    // error below instead — never the wrong-surface bug).
+    if (!screenSrc && windowHandle == 0) {
         const auto screens = QApplication::screens();
         HMONITOR hMon = nullptr;
         if (monitorIndex >= 0 && monitorIndex < screens.size()) {
@@ -489,6 +548,31 @@ bool ScreenSharePipeline::start(const QString &stunServer, const QList<TurnServe
         return false;
     }
 
+#ifdef Q_OS_WIN
+    // Pipeline is PLAYING — now start the WGC capture session feeding the
+    // appsrc. Started post-PLAYING so pushed frames have a live graph to flow
+    // into. show_border=0 hides the Win11 yellow capture frame (window shares
+    // don't get the monitor overlay either). A NULL session means the window
+    // closed / is capture-protected: surface a clear error + retry, never a
+    // silent black share.
+    if (m_wgcAppsrc && windowHandle != 0) {
+        m_wgcSession = g_wgc_start(reinterpret_cast<HWND>(windowHandle),
+                                   &ScreenSharePipeline::onWgcFrame, this,
+                                   /*show_border=*/0);
+        if (!m_wgcSession) {
+            qWarning() << "ScreenSharePipeline: talq_wgc_start_window failed for hwnd"
+                       << (quintptr)windowHandle << "— window gone / protected";
+            emit error(QStringLiteral(
+                "Couldn't capture that window (it may have closed or be "
+                "protected). Try again, or share the whole screen."));
+            cleanup();
+            return false;
+        }
+        qInfo() << "ScreenSharePipeline: WGC capture session live for hwnd"
+                << (quintptr)windowHandle;
+    }
+#endif
+
     m_running = true;
     m_iceReachedConnected = false;
     m_firstFrameSeen.store(false);
@@ -542,6 +626,19 @@ void ScreenSharePipeline::stop()
 void ScreenSharePipeline::cleanup()
 {
     m_shuttingDown.store(true);
+#ifdef Q_OS_WIN
+    // Stop the WGC capture session BEFORE the pipeline goes to NULL. g_wgc_stop
+    // blocks until the capture pool drains, so no onWgcFrame() callback can fire
+    // into the appsrc after this returns — making the appsrc/pipeline teardown
+    // below race-free. The appsrc is owned by the pipeline (freed by its NULL
+    // transition); we only drop our pointer + session handle here.
+    if (m_wgcSession) {
+        if (g_wgc_stop) g_wgc_stop(m_wgcSession);
+        m_wgcSession = nullptr;
+    }
+    m_wgcAppsrc = nullptr;
+    m_wgcW = m_wgcH = 0;
+#endif
     m_startWatchdog.stop();
     m_frameWatchdog.stop();
     m_statsTimer.stop();
@@ -607,6 +704,55 @@ void ScreenSharePipeline::cleanup()
     m_remoteDescSet = false;
     m_pendingCandidates.clear();
 }
+
+#ifdef Q_OS_WIN
+void ScreenSharePipeline::onWgcFrame(void *user, const unsigned char *bgra,
+                                     int width, int height, int stride)
+{
+    auto *self = static_cast<ScreenSharePipeline *>(user);
+    if (!self) return;
+    // Valid for the whole callback: g_wgc_stop() drains the pool before
+    // cleanup() nulls m_wgcAppsrc, so no callback runs past a live appsrc.
+    GstElement *src = self->m_wgcAppsrc;
+    if (!src || width <= 0 || height <= 0 || stride < width * 4) return;
+
+    // (Re)negotiate appsrc caps on the first frame and whenever the captured
+    // window changes size (WGC recreates its pool on resize). videoscale
+    // downstream absorbs the change; the scaleCaps range cap keeps the encoder
+    // input within the quality bound.
+    if (width != self->m_wgcW || height != self->m_wgcH) {
+        self->m_wgcW = width;
+        self->m_wgcH = height;
+        GstCaps *caps = gst_caps_new_simple(
+            "video/x-raw",
+            "format",    G_TYPE_STRING,     "BGRA",
+            "width",     G_TYPE_INT,        width,
+            "height",    G_TYPE_INT,        height,
+            "framerate", GST_TYPE_FRACTION, 30, 1,
+            nullptr);
+        gst_app_src_set_caps(GST_APP_SRC(src), caps);
+        gst_caps_unref(caps);
+    }
+
+    // Copy the BGRA rows tightly-packed (the WGC staging texture's RowPitch is
+    // often > width*4). A tightly-packed buffer needs no GstVideoMeta for the
+    // downstream videoconvert to interpret it correctly.
+    const int   rowBytes = width * 4;
+    const gsize size     = (gsize)rowBytes * (gsize)height;
+    GstBuffer  *buf      = gst_buffer_new_allocate(nullptr, size, nullptr);
+    if (!buf) return;
+    GstMapInfo mi;
+    if (gst_buffer_map(buf, &mi, GST_MAP_WRITE)) {
+        for (int y = 0; y < height; ++y)
+            memcpy(mi.data + (gsize)y * rowBytes,
+                   bgra   + (gsize)y * stride, rowBytes);
+        gst_buffer_unmap(buf, &mi);
+        gst_app_src_push_buffer(GST_APP_SRC(src), buf);  // takes ownership
+    } else {
+        gst_buffer_unref(buf);
+    }
+}
+#endif
 
 GstFlowReturn ScreenSharePipeline::onPreviewSample(GstAppSink *sink, gpointer userData)
 {

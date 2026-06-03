@@ -100,6 +100,18 @@ for dll in liborc-0.4-0.dll zlib1.dll \
     cp "$MSYS2_DIR/bin/$dll" "$BUILD_DIR/" 2>/dev/null || true
 done
 
+# Step 5: WGC single-window capture helper DLL (MSVC-built, self-contained
+# /MT). Required to share ONE application window instead of a whole monitor —
+# MinGW's gstd3d11 has no Windows Graphics Capture. Built via native/wgc/build.bat.
+WGC_DLL="$(cd "$(dirname "$0")/.." && pwd)/native/wgc/talq_wgc.dll"
+if [ -f "$WGC_DLL" ]; then
+    cp "$WGC_DLL" "$BUILD_DIR/"
+    echo "[wgc] talq_wgc.dll deployed (single-window capture)"
+else
+    echo "[wgc] WARNING: native/wgc/talq_wgc.dll missing — window sharing will"
+    echo "      fall back to an error (run: cmd //c native/wgc/build.bat)"
+fi
+
 echo "Deploy complete."
 
 if [ "$NO_RUN" = false ]; then

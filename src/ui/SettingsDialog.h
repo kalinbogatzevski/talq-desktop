@@ -87,6 +87,11 @@ private:
 
     // Audio & Video tab
     QComboBox *m_micCombo = nullptr;
+    // Live "is my mic working?" test under the Microphone picker: a capture
+    // pipeline on the SELECTED device feeding a level meter. Started on dialog
+    // open / device change, stopped on close.
+    class MicTester   *m_micTester = nullptr;
+    class MicLevelBar *m_micLevel  = nullptr;
     QComboBox *m_speakerCombo = nullptr;
     QComboBox *m_cameraCombo = nullptr;
     QComboBox *m_cameraQualityCombo = nullptr;

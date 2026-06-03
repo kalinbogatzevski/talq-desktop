@@ -72,6 +72,9 @@ private:
     // OS privacy). Drawn outside the fading chrome so a non-technical user
     // is never left silently wondering why nobody can see them.
     void paintCameraBanner(QPainter &p, const PainterTheme &th);
+    // Twin of paintCameraBanner for a microphone that won't open: the call
+    // continues on silent audio, but the user is told nobody can hear them.
+    void paintMicBanner(QPainter &p, const PainterTheme &th);
     // 0.40.15 — split top chrome: paintInfoPills draws read-only telemetry
     // (codec/quality stat/RX) on the left; paintActionPills draws the
     // interactive QUALITY + BACKGROUND dropdown buttons on the right.
@@ -142,6 +145,11 @@ private:
     // visible while a call is up, so it has its own member rather than
     // living only inside m_topChromeRects.
     QRectF m_statusPillRect;
+    // Left edge of the right-anchored action-button block, published by
+    // paintActionPills each frame so paintInfoPills (drawn after it) can wrap
+    // its telemetry tiles to a new row before they collide with the buttons on
+    // a narrow window. Reset to width() each frame (no action pills = full width).
+    qreal m_actionPillsLeft = 0;
 
     // 0.40.15 — hit rects for the Quality / BG dropdown buttons (top-
     // right). Updated each paint by paintActionPills; consumed by

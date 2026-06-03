@@ -7,7 +7,9 @@
 #include "core/AppSettings.h"
 #include "core/AuthManager.h"
 #include "core/BackgroundEngine.h"
+#include "core/MicTester.h"
 #include "BgPreviewSource.h"
+#include <QPainter>
 
 #ifndef TALQ_VERSION_NAME
 #define TALQ_VERSION_NAME ""   // per-release codename (set in CMake)
@@ -39,6 +41,55 @@
 #include <QSlider>
 #include <QStandardPaths>
 #include <QTimer>
+
+// A small horizontal mic-test level meter: a calm track with a fill that
+// tracks the live capture level (green, warming to amber then red near the
+// top) plus a slowly-decaying peak tick. No Q_OBJECT — pure paint, driven by
+// setLevel() from MicTester. Green/amber/red here are functional level
+// semantics (like an audio VU), not theme chrome.
+class MicLevelBar : public QWidget
+{
+public:
+    explicit MicLevelBar(QWidget *parent = nullptr) : QWidget(parent)
+    {
+        setFixedHeight(10);
+    }
+    void setLevel(double v)
+    {
+        m_level = qBound(0.0, v, 1.0);
+        m_peak  = (m_level > m_peak) ? m_level : qMax(0.0, m_peak - 0.04);
+        update();
+    }
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        const QRectF r = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+        const qreal rad = r.height() / 2.0;
+        p.setPen(Qt::NoPen);
+        QColor track = palette().color(QPalette::Mid); track.setAlphaF(0.35);
+        p.setBrush(track);
+        p.drawRoundedRect(r, rad, rad);
+        if (m_level > 0.001) {
+            QRectF f = r; f.setWidth(r.width() * m_level);
+            const QColor c = (m_level < 0.7) ? QColor(0x35, 0xC7, 0x59)
+                           : (m_level < 0.9) ? QColor(0xE8, 0xB3, 0x39)
+                                             : QColor(0xE0, 0x5A, 0x4F);
+            p.setBrush(c);
+            p.drawRoundedRect(f, rad, rad);
+        }
+        if (m_peak > 0.02) {
+            const qreal x = r.left() + r.width() * m_peak;
+            QColor pk = palette().color(QPalette::Text); pk.setAlphaF(0.6);
+            p.setPen(QPen(pk, 1.5));
+            p.drawLine(QPointF(x, r.top() + 1), QPointF(x, r.bottom() - 1));
+        }
+    }
+private:
+    double m_level = 0.0;
+    double m_peak  = 0.0;
+};
 
 // Group eyebrow: a calm uppercase caption that names a group of setting
 // rows. Colour is theme-driven (AppStyle role="eyebrow"); only the
@@ -329,8 +380,27 @@ QWidget *SettingsDialog::buildAudioVideoTab()
 
     m_micCombo = new QComboBox;
     connect(m_micCombo, QOverload<int>::of(&QComboBox::activated),
-            this, [this](int idx) { m_deviceManager->setSelectedAudioInput(idx); });
+            this, [this](int idx) {
+        m_deviceManager->setSelectedAudioInput(idx);
+        // Re-point the live test at the newly chosen device.
+        if (m_micTester && isVisible())
+            m_micTester->start(m_deviceManager->selectedInputDeviceId());
+    });
     layout->addWidget(makeSettingRow(tr("Microphone"), QString(), m_micCombo));
+
+    // Live mic test: a level meter that moves when you speak, so you can
+    // confirm the selected device actually captures (the lowest-friction
+    // "is my mic working?" check). Fed by a MicTester capture pipeline on the
+    // selected device; started/stopped with the dialog (showEvent/hideEvent).
+    m_micLevel = new MicLevelBar;
+    layout->addWidget(makeSettingRow(
+        tr("Mic test"),
+        tr("Speak — the bar moves if the selected microphone is working."),
+        m_micLevel));
+    m_micTester = new MicTester(this);
+    connect(m_micTester, &MicTester::level, this, [this](double v) {
+        if (m_micLevel) m_micLevel->setLevel(v);
+    });
 
     m_noiseSuppression = new QCheckBox;
     m_noiseSuppression->setToolTip(
@@ -945,6 +1015,8 @@ void SettingsDialog::hideEvent(QHideEvent *event)
     // Release the camera as soon as the dialog goes away so an outgoing
     // call from the main window can claim it without contention.
     if (m_bgPreviewSource) m_bgPreviewSource->stop();
+    // Stop the mic test so it doesn't hold the capture device open.
+    if (m_micTester) m_micTester->stop();
 }
 
 void SettingsDialog::showEvent(QShowEvent *event)
@@ -954,6 +1026,9 @@ void SettingsDialog::showEvent(QShowEvent *event)
     // the user left the dialog with Blur active and reopens, they see
     // the preview without having to re-pick the mode.
     syncBgPreview();
+    // Start the live mic test on the currently-selected input device.
+    if (m_micTester)
+        m_micTester->start(m_deviceManager->selectedInputDeviceId());
 }
 
 void SettingsDialog::syncBgPreview()

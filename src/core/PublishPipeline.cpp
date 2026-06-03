@@ -106,6 +106,19 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         m_lowBweTimer.invalidate();
     }
 
+    // Audio-source resilience (0.48.x): a microphone that won't OPEN must
+    // never drop the whole call. We build the pipeline and try to PLAY it; if
+    // the audio source is the reason PLAYING fails, we tear down and rebuild
+    // with the next, more-defensive audio tier:
+    //   tier 0 — the user's SELECTED capture device (if any)
+    //   tier 1 — the SYSTEM-DEFAULT device (a stale / wrong-provider /
+    //            friendly-name device id that wasapi2src can't resolve into an
+    //            IMMDevice is the most common open failure — 0x80070057)
+    //   tier 2 — a SILENT source, so the call still connects (peer hears
+    //            silence) and CallManager shows a "microphone unavailable"
+    //            banner, instead of the entire call dropping.
+    int audioTier = 0;
+    for (;;) {
     qDebug() << "PublishPipeline::start() — creating pipeline...";
     m_pipeline = gst_pipeline_new(nullptr);
     qDebug() << "PublishPipeline::start() — pipeline created:" << (void*)m_pipeline;
@@ -165,25 +178,42 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         g_object_set(audiosrc, "is-live", TRUE, "wave", 0, "freq", 440.0,
                      "volume", testVol, nullptr);
         qDebug() << "PublishPipeline: audio source: audiotestsrc (TEST MODE) vol=" << testVol;
+    } else if (audioTier >= 2) {
+        // Tier 2 — every real capture device failed to OPEN. Substitute a
+        // SILENT live source so the audio m-line still negotiates and the call
+        // CONNECTS (peer hears silence) instead of dropping. CallManager shows
+        // the "microphone unavailable" banner (audioError, emitted below).
+        audiosrc = gst_element_factory_make("audiotestsrc", "pub-audiosrc");
+        if (audiosrc)
+            g_object_set(audiosrc, "is-live", TRUE, "wave", 4 /* silence */,
+                         "volume", 0.0, nullptr);
+        qWarning() << "PublishPipeline: audio tier 2 — SILENT source "
+                      "(microphone could not be opened; call stays up)";
     } else {
+        // Tier 0 = the user's selected device (if one is set). Tier 1 = system
+        // default (drop the explicit device — the usual culprit is a device id
+        // wasapi2src can't resolve into an IMMDevice).
+        const bool useSelected = (audioTier == 0) && !audioDeviceId.isEmpty();
         audiosrc = gst_element_factory_make("wasapi2src", "pub-audiosrc");
         if (audiosrc) {
-            qDebug() << "PublishPipeline: audio source: wasapi2src";
-            if (!audioDeviceId.isEmpty())
+            qDebug() << "PublishPipeline: audio source: wasapi2src"
+                     << (useSelected ? "(selected device)" : "(system default)");
+            if (useSelected)
                 g_object_set(audiosrc, "device", audioDeviceId.toUtf8().constData(), nullptr);
         } else {
             audiosrc = gst_element_factory_make("wasapisrc", "pub-audiosrc");
             if (audiosrc) {
                 g_object_set(audiosrc, "low-latency", FALSE, nullptr);
-                qDebug() << "PublishPipeline: audio source: wasapisrc";
-                if (!audioDeviceId.isEmpty())
+                qDebug() << "PublishPipeline: audio source: wasapisrc"
+                         << (useSelected ? "(selected device)" : "(system default)");
+                if (useSelected)
                     g_object_set(audiosrc, "device", audioDeviceId.toUtf8().constData(), nullptr);
             } else {
                 audiosrc = gst_element_factory_make("autoaudiosrc", "pub-audiosrc");
                 qDebug() << "PublishPipeline: audio source: autoaudiosrc";
             }
         }
-        if (!audioDeviceId.isEmpty())
+        if (useSelected)
             qDebug() << "PublishPipeline: using audio input device" << audioDeviceId;
     }
 
@@ -842,22 +872,62 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         // Get the actual GStreamer error from the bus
         GstBus *bus = gst_element_get_bus(m_pipeline);
         GstMessage *errMsg = gst_bus_pop_filtered(bus, GST_MESSAGE_ERROR);
+        QString detail = QStringLiteral("Failed to start publish pipeline");
+        bool audioCulprit = false;
         if (errMsg) {
             GError *err = nullptr;
             gchar *dbg = nullptr;
             gst_message_parse_error(errMsg, &err, &dbg);
-            QString detail = QString("%1 (%2)").arg(err->message, dbg ? dbg : "no details");
-            qWarning() << "PublishPipeline: GStreamer error:" << detail;
-            emit error(detail);
+            detail = QString("%1 (%2)").arg(err->message, dbg ? dbg : "no details");
+            // Was the AUDIO SOURCE the reason PLAYING failed? (mic busy,
+            // OS-blocked, unplugged, or a device id wasapi2 can't resolve).
+            // If so this is NOT fatal — fall the mic back a tier and rebuild,
+            // so a bad microphone never drops the whole call.
+            GstObject *src = GST_MESSAGE_SRC(errMsg);
+            if (src) {
+                if (audiosrc && src == GST_OBJECT(audiosrc)) {
+                    audioCulprit = true;
+                } else if (gchar *sn = gst_object_get_name(src)) {
+                    audioCulprit = (g_strcmp0(sn, "pub-audiosrc") == 0);
+                    g_free(sn);
+                }
+            }
+            qWarning() << "PublishPipeline: GStreamer error:" << detail
+                       << (audioCulprit ? "[audio source]" : "");
             g_clear_error(&err);
             g_free(dbg);
             gst_message_unref(errMsg);
-        } else {
-            emit error("Failed to start publish pipeline");
         }
         gst_object_unref(bus);
         cleanup();
+        if (audioCulprit && audioTier < 2) {
+            const int prev = audioTier;
+            // Skip the redundant default-device retry when no device was
+            // selected (tier 0 was already the default): jump straight to
+            // the silent fallback.
+            audioTier = (audioTier == 0 && audioDeviceId.isEmpty()) ? 2
+                                                                    : audioTier + 1;
+            qWarning().nospace()
+                << "PublishPipeline: microphone open failed at tier " << prev
+                << " — rebuilding at tier " << audioTier << " (call stays up)";
+            continue;   // rebuild the publisher with the next audio tier
+        }
+        emit error(detail);
         return false;
+    }
+
+    // The microphone could not be opened on ANY real device; we connected with
+    // a SILENT source so the call survives. Tell CallManager so it can show the
+    // "microphone unavailable" banner (non-fatal — mirrors cameraError). A
+    // successful tier-1 fall-back to the default device is NOT surfaced: the
+    // mic works, it's just a different device than the one selected.
+    if (audioTier >= 2) {
+        qWarning() << "PublishPipeline: connected with SILENT audio — "
+                      "microphone unavailable, call continues";
+        emit audioError(QStringLiteral("Microphone unavailable"));
+    } else if (audioTier == 1) {
+        qInfo() << "PublishPipeline: connected on the system-default microphone "
+                   "(the selected capture device could not be opened)";
     }
 
     m_running = true;
@@ -882,6 +952,7 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
     Q_UNUSED(withVideo)
 
     return true;
+    }   // for (;;) audio-tier retry — only the audio-open failure path loops
 }
 
 void PublishPipeline::stop()
