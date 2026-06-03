@@ -326,7 +326,7 @@ void ThreadsPainter::paintEvent(QPaintEvent *)
         p.setFont(loadFont);
         p.setPen(m_theme.textSecondary);
         qreal cy = (listTop() + listBottom()) / 2.0;
-        p.drawText(QRectF(0, cy - 10, width(), 20), Qt::AlignCenter, QStringLiteral("Loading..."));
+        p.drawText(QRectF(0, cy - 10, width(), 20), Qt::AlignCenter, tr("Loading..."));
     }
 
     paintNewTopicButton(&p);
@@ -358,7 +358,7 @@ void ThreadsPainter::paintHeader(QPainter *p)
     p->setFont(nameFont);
     p->setPen(m_theme.textPrimary);
 
-    QString title = m_groupName.isEmpty() ? QStringLiteral("Topics") : m_groupName;
+    QString title = m_groupName.isEmpty() ? tr("Topics") : m_groupName;
     qreal textLeft = PainterTheme::spacingSmall + 30;
     qreal textRight = width() - PainterTheme::spacingNormal;
     QFontMetrics fm(nameFont);
@@ -502,7 +502,7 @@ void ThreadsPainter::paintUnreadBadge(QPainter *p, int count, const QColor &colo
     p->drawRoundedRect(QRectF(badgeX, badgeY, badgeW, BadgeHeight),
                        BadgeHeight / 2.0, BadgeHeight / 2.0);
 
-    p->setPen(QColor("#000000"));
+    p->setPen(m_theme.controlInk);   // No-Gray: ink on accent, not #000
     p->setFont(badgeFont);
     p->drawText(QRectF(badgeX, badgeY, badgeW, BadgeHeight), Qt::AlignCenter, countStr);
 }
@@ -547,7 +547,7 @@ void ThreadsPainter::paintNewTopicButton(QPainter *p)
     p->drawText(QRectF(plusLeft + plusW + PainterTheme::spacingSmall, btnTop,
                         width() - plusLeft - plusW - PainterTheme::spacingSmall - PainterTheme::spacingLarge,
                         NewTopicHeight),
-                Qt::AlignLeft | Qt::AlignVCenter, QStringLiteral("New Topic"));
+                Qt::AlignLeft | Qt::AlignVCenter, tr("New Topic"));
 }
 
 // ===============================================================
@@ -579,16 +579,20 @@ void ThreadsPainter::paintEmptyState(QPainter *p)
     titleFont.setWeight(QFont::DemiBold);
     p->setFont(titleFont);
     p->setPen(m_theme.textPrimary);
-    p->drawText(QRectF(0, cy - 4, width(), 24), Qt::AlignHCenter | Qt::AlignTop,
-                QStringLiteral("No topics yet"));
+    qreal titleH = QFontMetrics(titleFont).height();
+    qreal titleTop = cy - 4;
+    p->drawText(QRectF(0, titleTop, width(), titleH), Qt::AlignHCenter | Qt::AlignTop,
+                tr("No topics yet"));
 
     // "Reply to a message to start a thread"
     QFont subFont;
     subFont.setPixelSize(m_theme.fontSizeSmall);
     p->setFont(subFont);
     p->setPen(m_theme.textSecondary);
-    p->drawText(QRectF(0, cy + 22, width(), 20), Qt::AlignHCenter | Qt::AlignTop,
-                QStringLiteral("Reply to a message to start a thread"));
+    qreal subH = QFontMetrics(subFont).height();
+    qreal subTop = titleTop + titleH + PainterTheme::spacingSmall;
+    p->drawText(QRectF(0, subTop, width(), subH), Qt::AlignHCenter | Qt::AlignTop,
+                tr("Reply to a message to start a thread"));
 }
 
 // ===============================================================

@@ -1,5 +1,41 @@
 # Changelog
 
+## v0.48.6 "Botev" -- STABLE (2026-06-03)
+
+> A pre-1.0 polish pass: theme consistency across all four themes,
+> translatable strings, several dialog fixes, and stability/memory hardening
+> from a full-codebase audit.
+
+### Changed
+
+* **Consistent theming everywhere.** A pass over menus, dialogs, popups and
+  list rows replaced colours that were baked to the dark theme with ones that
+  follow the active theme -- so the right-click message menu, search results,
+  the reminder / new-topic / participants / new-chat dialogs, the in-app
+  notification popup, and assorted badges and status dots now look right on
+  every theme, including the light **Paper** theme (where some of them used to
+  show up as dark boxes or wrong-coloured accents).
+* **More of the interface is translatable.** Many user-facing strings that
+  were hard-coded in English (composer placeholder, "Sending…", "Muted",
+  "Loading…", thread and share-picker labels, the selection count, and more)
+  are now wrapped for translation.
+
+### Added
+
+* **Cancel an upcoming reminder from the reminders list.** The list showed
+  your reminders but had no way to cancel one from there; now each row does.
+* **Clearer feedback in the screen-share picker and scheduled messages.** The
+  Screens/Windows picker shows a message when nothing is shareable instead of
+  a blank grid, and editing/cancelling a scheduled message now tells you if
+  the server refused instead of silently doing nothing.
+
+### Fixed
+
+* **Stability + memory.** Fixed a crash that could occur during call teardown
+  and several small memory leaks that accumulated across calls and over long
+  sessions (from a full-codebase pre-1.0 audit), plus a per-frame leak in the
+  background-blur path.
+
 ## v0.48.5 "Botev" -- STABLE (2026-06-03)
 
 > Call stability + chat polish on the "Botev" line, from continued live testing.

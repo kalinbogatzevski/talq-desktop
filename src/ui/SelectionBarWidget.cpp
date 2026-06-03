@@ -38,8 +38,7 @@ SelectionBarWidget::SelectionBarWidget(QWidget *parent)
 
 void SelectionBarWidget::setCount(int count)
 {
-    m_countLabel->setText(QString("%1 message%2 selected")
-        .arg(count).arg(count == 1 ? "" : "s"));
+    m_countLabel->setText(tr("%n message(s) selected", nullptr, count));
 }
 
 void SelectionBarWidget::setDeleteVisible(bool visible)

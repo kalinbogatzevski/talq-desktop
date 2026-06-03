@@ -83,6 +83,8 @@ void SignalingClient::stop()
     m_sessionId.clear();
     m_resumeId.clear();        // bye released the session -- no resume after a deliberate stop
     m_resuming = false;
+    m_sessionToUserId.clear(); // 1.0 audit — release the session->userId map on a
+                               // deliberate disconnect/logout (no grace after stop)
     m_reconnectDelay = 2000;
     if (m_authenticated) {
         m_authenticated = false;
@@ -565,6 +567,13 @@ void SignalingClient::sendBye()
 
 void SignalingClient::joinRoom(const QString &token)
 {
+    // 1.0 audit — m_sessionToUserId is otherwise INSERT-ONLY for the whole client
+    // life (one entry per session/reconnect, never pruned), so bound it by
+    // clearing on a real ROOM SWITCH. NOT on a same-room re-join (a signaling
+    // reconnect calls joinRoom for the current room) — the peer-grace
+    // correlation (CallManager: "m_sessionToUserId is NOT pruned on leave")
+    // must survive a reconnect, so only wipe it when the room actually changes.
+    const bool roomChanged = (token != m_currentRoom);
     m_currentRoom = token;
 
     // Clear state from previous room
@@ -575,6 +584,8 @@ void SignalingClient::joinRoom(const QString &token)
     }
     m_participantCallFlags.clear();
     m_participantNames.clear();
+    if (roomChanged)
+        m_sessionToUserId.clear();
 
     // Join as active participant — the response contains the sessionId
     // which the signaling server needs to verify room access

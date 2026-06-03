@@ -2,6 +2,7 @@
 
 #include "core/ApiClient.h"
 #include "core/NcUser.h"
+#include "painter/PainterTheme.h"
 
 #include <QCursor>
 #include <QEvent>
@@ -25,20 +26,36 @@
 #include <QDesktopServices>
 #include <QPointer>
 #include <QSet>
+#include <QSettings>
 
 namespace {
 constexpr int kAttendeeIdRole    = Qt::UserRole + 1;
 constexpr int kActorIdRole       = Qt::UserRole + 2;
 constexpr int kParticipantTypeRole = Qt::UserRole + 3;
 
+// Resolve the active theme (single source of truth = PainterTheme), so the
+// bot chrome below tints from the user's theme accent rather than a hardcoded
+// dark-theme literal. Reads the same QSettings key MainWindow/SettingsDialog
+// persist the picker to.
+PainterTheme activeTheme()
+{
+    QSettings s("TalQ", "TalQ");
+    s.beginGroup("Theme");
+    const QString id = s.value("theme",
+        PainterTheme::themeId(PainterTheme::Theme::Vivid)).toString();
+    s.endGroup();
+    return PainterTheme(PainterTheme::themeFromId(id, PainterTheme::Theme::Vivid));
+}
+
 QPixmap makeBotIcon(int sizePx)
 {
+    const PainterTheme th = activeTheme();
     QPixmap pm(sizePx, sizePx);
     pm.fill(Qt::transparent);
     QPainter p(&pm);
     p.setRenderHint(QPainter::Antialiasing);
     p.setPen(Qt::NoPen);
-    p.setBrush(QColor("#14b8a6"));
+    p.setBrush(th.accent);
     // Inset 0.5px so the antialiased edge is not clipped at the pixmap's
     // right/bottom boundary (drawing the full 0..sizePx bounds cuts it).
     p.drawEllipse(QRectF(0.5, 0.5, sizePx - 1.0, sizePx - 1.0));
@@ -46,9 +63,28 @@ QPixmap makeBotIcon(int sizePx)
     f.setPixelSize(int(sizePx * 0.55));
     f.setWeight(QFont::Black);
     p.setFont(f);
-    p.setPen(QColor("#0e1817"));
+    p.setPen(th.controlInk);
     p.drawText(QRect(0, 0, sizePx, sizePx), Qt::AlignCenter, QStringLiteral("B"));
     return pm;
+}
+
+// Self-contained primary-button QSS built from theme tokens (accent fill +
+// control-ink text, hover/pressed shift within the accent). Set directly on
+// the button so it wins over the selector-less `background` that leaks in from
+// m_botsContainer / the inherited dialog QSS and can't reach the global
+// AppStyle "primary" variant from here.
+QString primaryButtonStyle(const QString &extra = QString())
+{
+    const PainterTheme th = activeTheme();
+    auto n = [](const QColor &c){ return c.name(QColor::HexRgb); };
+    return QStringLiteral(
+        "QPushButton { background: %1; color: %2;"
+        "  font-weight: 700; font-size: 12px; border: none;"
+        "  border-radius: 8px; padding: 8px 18px; %5 }"
+        "QPushButton:hover   { background: %3; }"
+        "QPushButton:pressed { background: %4; }")
+        .arg(n(th.accent), n(th.controlInk),
+             n(th.accent.lighter(115)), n(th.accent.darker(115)), extra);
 }
 
 QString roleLabel(int pt)
@@ -727,15 +763,11 @@ void ConversationInfoDialog::populateBotRow(const BotInfo &bot)
             // Disabled here \u2192 any moderator can enable it (no admin/CLI
             // needed) provided the bot wasn't installed with --no-setup.
             auto *enableBtn = new QPushButton(tr("Enable"), row);
-            // Explicit, self-contained style: a stylesheet set directly on the
-            // button wins over the selector-less `background` on m_botsContainer
-            // that would otherwise leak in and make #primary unreadable here.
-            enableBtn->setStyleSheet(
-                "QPushButton { background: #14b8a6; color: #0e1817;"
-                "  font-weight: 700; font-size: 12px; border: none;"
-                "  border-radius: 8px; padding: 8px 18px; }"
-                "QPushButton:hover   { background: #2dd4bf; }"
-                "QPushButton:pressed { background: #0d9488; }");
+            // Explicit, self-contained style (theme-tokenized): set directly on
+            // the button so it wins over the selector-less `background` on
+            // m_botsContainer that would otherwise leak in and make #primary
+            // unreadable here.
+            enableBtn->setStyleSheet(primaryButtonStyle());
             enableBtn->setCursor(Qt::PointingHandCursor);
             connect(enableBtn, &QPushButton::clicked, this, [this, botId]() {
                 m_status->setProperty("role", "secondary");
@@ -835,14 +867,10 @@ void ConversationInfoDialog::onAddBotClicked()
             txt->setStyleSheet("font-weight: 500;");
             rl->addWidget(txt, 1);
             auto *enableBtn = new QPushButton(tr("Enable"), row);
-            // Explicit style (not #primary): self-contained so it survives
-            // both the inherited dialog QSS and the early sizeHint pass.
-            enableBtn->setStyleSheet(
-                "QPushButton { background: #14b8a6; color: #0e1817;"
-                "  font-weight: 700; font-size: 12px; border: none;"
-                "  border-radius: 8px; padding: 8px 18px; min-height: 18px; }"
-                "QPushButton:hover   { background: #2dd4bf; }"
-                "QPushButton:pressed { background: #0d9488; }");
+            // Explicit style (not #primary), theme-tokenized: self-contained so
+            // it survives both the inherited dialog QSS and the early sizeHint
+            // pass. Extra min-height keeps the styled button from being clipped.
+            enableBtn->setStyleSheet(primaryButtonStyle("min-height: 18px;"));
             enableBtn->setCursor(Qt::PointingHandCursor);
             const int botId = b.id;
             connect(enableBtn, &QPushButton::clicked, dlg, [this, botId, status, dlg]() {

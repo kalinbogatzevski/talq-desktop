@@ -43,6 +43,17 @@ ScheduledMessagesDialog::ScheduledMessagesDialog(ApiClient *api, const QString &
     m_empty->hide();
     root->addWidget(m_empty);
 
+    // Inline status line for failed mutations (cancel/save). Theme-driven via
+    // the role="danger" QSS token; stays empty/hidden until the server refuses
+    // a request, mirroring ConversationInfoDialog's m_status. Looked up by
+    // objectName from deleteItem()/editItem() so no header change is needed.
+    auto *status = new QLabel(QString(), this);
+    status->setObjectName(QStringLiteral("status"));
+    status->setProperty("role", "danger");
+    status->setWordWrap(true);
+    status->hide();
+    root->addWidget(status);
+
     auto *closeBtn = new QPushButton(tr("Close"), this);
     closeBtn->setProperty("variant", "primary");
     auto *btnRow = new QHBoxLayout();
@@ -59,6 +70,11 @@ ScheduledMessagesDialog::ScheduledMessagesDialog(ApiClient *api, const QString &
 void ScheduledMessagesDialog::reload()
 {
     m_list->clear();
+    // Drop any stale failure notice from a prior cancel/save attempt.
+    if (auto *status = findChild<QLabel *>(QStringLiteral("status"))) {
+        status->clear();
+        status->hide();
+    }
     if (!m_api || m_token.isEmpty()) { renderEmpty(); return; }
 
     m_api->getArray("apps/spreed/api/v1/chat/" + m_token + "/schedule",
@@ -142,7 +158,15 @@ void ScheduledMessagesDialog::deleteItem(qint64 messageId)
     const QString path = QStringLiteral("apps/spreed/api/v1/chat/%1/schedule/%2")
                             .arg(m_token).arg(messageId);
     m_api->del(path, [this](bool ok, const QJsonObject &, int) {
-        if (ok) reload();
+        if (ok) {
+            reload();
+        } else if (auto *status = findChild<QLabel *>(QStringLiteral("status"))) {
+            // Server refused the cancel — surface it instead of silently
+            // leaving the (still-pending) row in place.
+            status->setText(tr("Couldn't cancel — the message may have already "
+                               "been sent."));
+            status->show();
+        }
     });
 }
 
@@ -188,6 +212,13 @@ void ScheduledMessagesDialog::editItem(qint64 messageId, const QString &currentT
     const QString path = QStringLiteral("apps/spreed/api/v1/chat/%1/schedule/%2")
                             .arg(m_token).arg(messageId);
     m_api->post(path, body, [this](bool ok, const QJsonObject &, int) {
-        if (ok) reload();
+        if (ok) {
+            reload();
+        } else if (auto *status = findChild<QLabel *>(QStringLiteral("status"))) {
+            // Server refused the edit — the inline edit popup has already
+            // closed, so report on the list dialog's persistent status line.
+            status->setText(tr("Couldn't save changes."));
+            status->show();
+        }
     });
 }
