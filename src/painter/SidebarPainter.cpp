@@ -459,7 +459,7 @@ void SidebarPainter::paintRowNormal(QPainter *p, const ConversationLayout &cl, i
     if (cl.conversationType == 1) {
         QColor dotColor;
         if (cl.userStatus == QStringLiteral("online")) dotColor = m_theme.online;
-        else if (cl.userStatus == QStringLiteral("away")) dotColor = QColor("#f0a050");  // author-amber
+        else if (cl.userStatus == QStringLiteral("away")) dotColor = m_theme.amber;       // warm secondary
         else if (cl.userStatus == QStringLiteral("dnd")) dotColor = m_theme.danger;      // warm clay, not fire-engine
         if (dotColor.isValid()) {
             qreal dotSize = StatusDotSize;
@@ -495,7 +495,7 @@ void SidebarPainter::paintRowNormal(QPainter *p, const ConversationLayout &cl, i
     // it must NOT use the teal accent (which competes with unread/active).
     if (cl.isFavorite) {
         p->setPen(Qt::NoPen);
-        p->setBrush(QColor("#f0a050"));   // author-amber: warm "starred"
+        p->setBrush(m_theme.amber);   // warm "starred"
         qreal dotY2 = nameY + (m_theme.fontSizeNormal - FavDotSize) / 2.0 + 3;
         p->drawEllipse(QRectF(nameLeft, dotY2, FavDotSize, FavDotSize));
         nameLeft += FavDotSize + PainterTheme::spacingSmall;
@@ -520,6 +520,9 @@ void SidebarPainter::paintRowNormal(QPainter *p, const ConversationLayout &cl, i
     // ── Bottom row: Preview ............ [badge] [muted] ──
     qreal bottomY = nameY + m_theme.fontSizeNormal + 6 + 3;
 
+    // Defined once so the measured and drawn strings stay identical.
+    const QString mutedLabel = tr("Muted");
+
     // Compute right-side width for badge + muted label
     qreal rightStuffW = 0;
     if (cl.unreadCount > 0) {
@@ -537,7 +540,7 @@ void SidebarPainter::paintRowNormal(QPainter *p, const ConversationLayout &cl, i
         QFont mutedFont;
         mutedFont.setPixelSize(9);
         QFontMetrics mfm(mutedFont);
-        rightStuffW += mfm.horizontalAdvance(QStringLiteral("Muted")) + PainterTheme::spacingSmall;
+        rightStuffW += mfm.horizontalAdvance(mutedLabel) + PainterTheme::spacingSmall;
     }
 
     // Preview text — textSecondary gives readable contrast against the warm
@@ -566,7 +569,7 @@ void SidebarPainter::paintRowNormal(QPainter *p, const ConversationLayout &cl, i
                          m_theme.textSecondary.blue(), 153));  // 0.6 opacity
         p->setFont(mutedFont);
         p->drawText(QRectF(textRight - 30, bottomY, 30, m_theme.fontSizeSmall + 4),
-                    Qt::AlignRight | Qt::AlignVCenter, QStringLiteral("Muted"));
+                    Qt::AlignRight | Qt::AlignVCenter, mutedLabel);
     }
 }
 
@@ -678,7 +681,7 @@ void SidebarPainter::paintAvatar(QPainter *p, const ConversationLayout &cl, cons
             // teal One-Signal accent nor the old foreign cobalt. In-palette
             // violet keeps it distinct and warm.
             p->setPen(QPen(m_theme.bgSidebar, qMax(1.0, badgeSize * 0.08)));
-            p->setBrush(QColor("#9b7cd4"));   // author-violet (in-palette)
+            p->setBrush(PainterTheme::topicColor(4));   // in-palette violet, per-theme
             p->drawEllipse(badge);
 
             QFont qFont;

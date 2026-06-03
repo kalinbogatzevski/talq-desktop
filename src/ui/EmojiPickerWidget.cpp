@@ -41,7 +41,12 @@ protected:
         QPainter p(this);
         p.setRenderHint(QPainter::SmoothPixmapTransform);
         if (underMouse()) {
-            p.fillRect(rect(), QColor(255,255,255,20));
+            // Theme-driven hover wash: a low-alpha accent tint reads as a soft
+            // hover state on every theme (the old hardcoded white vanished on
+            // the light Paper surface). Accent = QPalette::Highlight here.
+            QColor wash = palette().color(QPalette::Highlight);
+            wash.setAlpha(36);
+            p.fillRect(rect(), wash);
         }
         QPixmap pm = EmojiData::pixmapFor(m_entry->codepoints, 32);
         if (!pm.isNull())

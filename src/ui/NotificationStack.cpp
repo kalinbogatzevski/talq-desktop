@@ -3,9 +3,28 @@
 
 #include <QApplication>
 #include <QScreen>
+#include <QSettings>
 
 NotificationStack::NotificationStack(QObject *parent)
-    : QObject(parent) {}
+    : QObject(parent)
+{
+    // Seed from the persisted theme (same store MainWindow writes) so the
+    // first toast is themed even before any live theme switch arrives.
+    QSettings settings(QStringLiteral("TalQ"), QStringLiteral("TalQ"));
+    settings.beginGroup(QStringLiteral("Theme"));
+    m_theme = PainterTheme::themeFromId(
+        settings.value(QStringLiteral("theme"),
+                       PainterTheme::themeId(PainterTheme::Theme::Vivid)).toString(),
+        PainterTheme::Theme::Vivid);
+    settings.endGroup();
+}
+
+void NotificationStack::setTheme(PainterTheme::Theme theme)
+{
+    m_theme = theme;
+    for (const Entry &e : m_stack)
+        if (e.popup) e.popup->setTheme(theme);
+}
 
 NotificationStack::~NotificationStack()
 {
@@ -37,6 +56,7 @@ void NotificationStack::notify(const QString &title, const QString &message,
     while (m_stack.size() >= kMaxVisible) dropOldest();
 
     auto *popup = new NotificationPopup();
+    popup->setTheme(m_theme);   // theme before first show
     connect(popup, &NotificationPopup::clicked, this,
             [this, popup](const QString &t) {
         emit clicked(t);

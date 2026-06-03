@@ -9,6 +9,7 @@ class QLineEdit;
 class QComboBox;
 class QToolButton;
 class QLabel;
+class QPushButton;
 class QVBoxLayout;
 
 /**
@@ -57,6 +58,7 @@ private:
     void buildUi();
     void rebuildPresets();
     void refreshFromManager();
+    void refreshSetEnabled();   // enable "Set status" only with a message or icon
     void openEmojiPicker();
     qint64 selectedClearAt() const;
     static QString codepointsToEmoji(const QString &cp);
@@ -66,6 +68,7 @@ private:
     QList<QWidget *> m_typeRows;          // index aligns with kTypes
     QToolButton  *m_emojiBtn = nullptr;
     QLineEdit    *m_msg = nullptr;
+    QPushButton  *m_setBtn = nullptr;     // "Set status"; disabled when empty
     QComboBox    *m_clear = nullptr;
     QWidget      *m_presetHost = nullptr;
     QVBoxLayout  *m_presetLay = nullptr;

@@ -944,35 +944,40 @@ void MainWindow::buildChatPage()
         bool hasFile = msg.value("hasFile").toBool();
         QString fileMime = msg.value("fileMime").toString();
 
+        PainterTheme th(m_themeId, m_fontScale);
+        auto hx = [](const QColor &c){ return c.name(QColor::HexRgb); };
+
         auto *menu = new QMenu(this);
         menu->setAttribute(Qt::WA_DeleteOnClose);
-        menu->setStyleSheet(
+        menu->setStyleSheet(QStringLiteral(
             "QMenu {"
-            "  background: #262b34;"
-            "  border: 1px solid #363c48;"
+            "  background: %1;"
+            "  border: 1px solid %2;"
             "  border-radius: 10px;"
             "  padding: 6px 0;"
             "}"
             "QMenu::item {"
             "  padding: 6px 16px 6px 12px;"
-            "  color: #b0aca5;"
+            "  color: %3;"
             "  font-size: 13px;"
             "}"
             "QMenu::item:selected {"
-            "  background: rgba(255,255,255,0.08);"
-            "  color: #e4e0da;"
+            "  background: %4;"
+            "  color: %5;"
             "}"
             "QMenu::separator {"
             "  height: 1px;"
-            "  background: rgba(255,255,255,0.08);"
+            "  background: %2;"
             "  margin: 4px 8px;"
             "}"
-        );
+        ).arg(hx(th.bgSecondary), hx(th.divider), hx(th.textSecondary),
+              hx(th.bgHover), hx(th.textPrimary)));
 
         // Emoji quick-react row
         auto *emojiRow = new QWidgetAction(menu);
         auto *emojiWidget = new QWidget(menu);
-        emojiWidget->setStyleSheet("background: rgba(255,255,255,0.04); border-radius: 8px; margin: 2px;");
+        emojiWidget->setStyleSheet(QStringLiteral("background: %1; border-radius: 8px; margin: 2px;")
+            .arg(hx(th.bgSurface)));
         auto *emojiLayout = new QHBoxLayout(emojiWidget);
         emojiLayout->setContentsMargins(6, 4, 6, 4);
         emojiLayout->setSpacing(2);
@@ -982,10 +987,10 @@ void MainWindow::buildChatPage()
             btn->setFixedSize(34, 34);
             btn->setFlat(true);
             btn->setCursor(Qt::PointingHandCursor);
-            btn->setStyleSheet(
+            btn->setStyleSheet(QStringLiteral(
                 "QPushButton { font-size: 18px; border: none; border-radius: 8px; background: transparent; }"
-                "QPushButton:hover { background: rgba(255,255,255,0.12); }"
-            );
+                "QPushButton:hover { background: %1; }"
+            ).arg(hx(th.bgHover)));
             connect(btn, &QPushButton::clicked, this, [this, msgId, emoji, menu]() {
                 m_messages->addReaction(msgId, emoji);
                 menu->close();
@@ -1122,11 +1127,14 @@ void MainWindow::buildChatPage()
 
     // React from hover button — show quick emoji menu next to button
     connect(m_chatPainter, &ChatPainter::reactRequested, this, [this](int msgId, const QPoint &globalPos) {
+        PainterTheme th(m_themeId, m_fontScale);
+        auto hx = [](const QColor &c){ return c.name(QColor::HexRgb); };
+
         auto *menu = new QMenu(this);
         menu->setAttribute(Qt::WA_DeleteOnClose);
-        menu->setStyleSheet(
-            "QMenu { background: #262b34; border: 1px solid #363c48; border-radius: 20px; padding: 4px; }"
-        );
+        menu->setStyleSheet(QStringLiteral(
+            "QMenu { background: %1; border: 1px solid %2; border-radius: 20px; padding: 4px; }"
+        ).arg(hx(th.bgSecondary), hx(th.divider)));
         auto *emojiRow = new QWidgetAction(menu);
         auto *w = new QWidget(menu);
         auto *layout = new QHBoxLayout(w);
@@ -1138,10 +1146,10 @@ void MainWindow::buildChatPage()
             btn->setFixedSize(34, 34);
             btn->setFlat(true);
             btn->setCursor(Qt::PointingHandCursor);
-            btn->setStyleSheet(
+            btn->setStyleSheet(QStringLiteral(
                 "QPushButton { font-size: 18px; border: none; border-radius: 8px; }"
-                "QPushButton:hover { background: rgba(255,255,255,0.12); }"
-            );
+                "QPushButton:hover { background: %1; }"
+            ).arg(hx(th.bgHover)));
             connect(btn, &QPushButton::clicked, this, [this, msgId, emoji, menu]() {
                 m_messages->addReaction(msgId, emoji);
                 menu->close();
@@ -1566,11 +1574,15 @@ void MainWindow::buildSearchBar(QWidget *chatCol)
 
     m_searchResults = new QListWidget(this);
     m_searchResults->setWindowFlags(Qt::Popup);
-    m_searchResults->setStyleSheet(
-        "QListWidget { background: #222230; color: #eee; border: 1px solid #333; border-radius: 6px; }"
-        "QListWidget::item { padding: 6px 10px; }"
-        "QListWidget::item:selected { background: #3a3a55; }"
-    );
+    {
+        PainterTheme th(m_themeId, m_fontScale);
+        auto hx = [](const QColor &c){ return c.name(QColor::HexRgb); };
+        m_searchResults->setStyleSheet(QStringLiteral(
+            "QListWidget { background: %1; color: %2; border: 1px solid %3; border-radius: 6px; }"
+            "QListWidget::item { padding: 6px 10px; }"
+            "QListWidget::item:selected { background: %4; }"
+        ).arg(hx(th.bgSecondary), hx(th.textPrimary), hx(th.divider), hx(th.bgSelected)));
+    }
 
     connect(m_searchResults, &QListWidget::itemActivated, this, [this](QListWidgetItem *it) {
         int msgId = it->data(Qt::UserRole).toInt();
@@ -2636,10 +2648,12 @@ void MainWindow::refreshStatusIndicator()
     QFontMetrics fm(m_statusPill->font());
     const QString elided = fm.elidedText(text, Qt::ElideRight, 150);
     m_statusPill->setText(QStringLiteral("● ") + elided + QStringLiteral("  ▾"));
+    PainterTheme th(m_themeId, m_fontScale);
     m_statusPill->setStyleSheet(QStringLiteral(
         "#sbStatusPill { color:%1; background:transparent; border:none;"
         " text-align:left; padding:0; font-size:11px; }"
-        "#sbStatusPill:hover { color:#e9e5dd; }").arg(c.name()));
+        "#sbStatusPill:hover { color:%2; }")
+        .arg(c.name(), th.textPrimary.name(QColor::HexRgb)));
 }
 
 void MainWindow::moveEvent(QMoveEvent *)
@@ -2902,15 +2916,18 @@ QDateTime MainWindow::askReminderTime()
 {
     QDialog dlg(this);
     dlg.setWindowTitle(tr("Remind me at\u2026"));
-    dlg.setStyleSheet(
-        "QDialog { background: #1a1a18; color: #e4e0da; }"
-        "QLabel, QDateTimeEdit { color: #e4e0da; }"
-        "QDateTimeEdit { background: #222220; border: 1px solid #2a2a26;"
+    PainterTheme th(m_themeId, m_fontScale);
+    auto hx = [](const QColor &c){ return c.name(QColor::HexRgb); };
+    dlg.setStyleSheet(QStringLiteral(
+        "QDialog { background: %1; color: %2; }"
+        "QLabel, QDateTimeEdit { color: %2; }"
+        "QDateTimeEdit { background: %3; border: 1px solid %4;"
         " border-radius: 6px; padding: 6px 8px; font-size: 14px; }"
-        "QPushButton { background: #2a2a26; color: #e4e0da; border: none;"
+        "QPushButton { background: %5; color: %2; border: none;"
         " border-radius: 6px; padding: 6px 16px; }"
-        "QPushButton:default { background: #14b8a6; color: white; }"
-    );
+        "QPushButton:default { background: %6; color: %7; }"
+    ).arg(hx(th.bgPrimary), hx(th.textPrimary), hx(th.bgSurface), hx(th.divider),
+          hx(th.bgHover), hx(th.accent), hx(th.controlInk)));
     auto *lay = new QVBoxLayout(&dlg);
     lay->setContentsMargins(16, 16, 16, 16);
     lay->setSpacing(12);
@@ -2965,23 +2982,26 @@ void MainWindow::createNewTopic()
     QDialog dlg(this);
     dlg.setWindowTitle(tr("New topic"));
     dlg.setMinimumWidth(380);
-    dlg.setStyleSheet(
-        "QDialog { background: #161614; color: #e4e0da; }"
-        "QLabel { color: #e4e0da; }"
-        "QLabel#eyebrow { color: #6f6a62; font-size: 10px; letter-spacing: 2px;"
+    PainterTheme th(m_themeId, m_fontScale);
+    auto hx = [](const QColor &c){ return c.name(QColor::HexRgb); };
+    dlg.setStyleSheet(QStringLiteral(
+        "QDialog { background: %1; color: %2; }"
+        "QLabel { color: %2; }"
+        "QLabel#eyebrow { color: %3; font-size: 10px; letter-spacing: 2px;"
         "  text-transform: uppercase; font-weight: 600; }"
         "QLineEdit { background: transparent; border: none;"
-        "  border-bottom: 1px solid #2a2a26; padding: 8px 0; color: #f4f0ea;"
+        "  border-bottom: 1px solid %4; padding: 8px 0; color: %2;"
         "  font-size: 18px; font-weight: 500; }"
-        "QLineEdit:focus { border-bottom-color: #14b8a6; }"
-        "QPushButton { background: transparent; color: #8a8680; border: none;"
+        "QLineEdit:focus { border-bottom-color: %5; }"
+        "QPushButton { background: transparent; color: %3; border: none;"
         "  padding: 8px 14px; font-size: 12px; letter-spacing: 1px;"
         "  text-transform: uppercase; font-weight: 600; }"
-        "QPushButton:hover { color: #e4e0da; }"
-        "QPushButton#primary { background: #14b8a6; color: #0e1817; border-radius: 6px; }"
-        "QPushButton#primary:hover { background: #2dd4bf; }"
-        "QPushButton#primary:disabled { background: #1c2b2a; color: #546361; }"
-    );
+        "QPushButton:hover { color: %2; }"
+        "QPushButton#primary { background: %5; color: %6; border-radius: 6px; }"
+        "QPushButton#primary:hover { background: %5; }"
+        "QPushButton#primary:disabled { background: %7; color: %8; }"
+    ).arg(hx(th.bgPrimary), hx(th.textPrimary), hx(th.textSecondary), hx(th.divider),
+          hx(th.accent), hx(th.controlInk), hx(th.bgSurface), hx(th.textMuted)));
     auto *lay = new QVBoxLayout(&dlg);
     lay->setContentsMargins(20, 18, 20, 16);
     lay->setSpacing(10);

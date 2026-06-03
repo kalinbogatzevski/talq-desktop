@@ -8,6 +8,7 @@
 #include <QListWidgetItem>
 #include <QPushButton>
 #include <QVBoxLayout>
+#include <QWidget>
 #include <QDateTime>
 
 namespace {
@@ -79,8 +80,31 @@ void UpcomingRemindersDialog::populate(const QVector<Reminder> &items)
                            .arg(relativeWhen(r.when),
                                 r.actorName.isEmpty() ? tr("Unknown") : r.actorName,
                                 preview.isEmpty() ? tr("(message)") : preview);
-        auto *item = new QListWidgetItem(line, m_list);
+
+        // Row widget so each reminder carries a Cancel affordance (wired to the
+        // existing cancelRow()). The row label keeps the two-line preview; the
+        // item still activates on row click to open the conversation.
+        auto *row = new QWidget(m_list);
+        auto *rowLayout = new QHBoxLayout(row);
+        rowLayout->setContentsMargins(10, 8, 10, 8);
+        rowLayout->setSpacing(10);
+
+        auto *textLabel = new QLabel(line, row);
+        textLabel->setWordWrap(true);
+        rowLayout->addWidget(textLabel, 1);
+
+        auto *cancelBtn = new QPushButton(tr("Cancel reminder"), row);
+        cancelBtn->setProperty("variant", "danger");
+        connect(cancelBtn, &QPushButton::clicked, this, [this, i]() {
+            cancelRow(i);
+        });
+        rowLayout->addWidget(cancelBtn);
+
+        auto *item = new QListWidgetItem(m_list);
         item->setData(kIndexRole, i);
+        item->setSizeHint(row->sizeHint());
+        m_list->addItem(item);
+        m_list->setItemWidget(item, row);
     }
     m_status->setText(m_items.isEmpty()
         ? tr("No upcoming reminders.")

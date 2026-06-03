@@ -1,6 +1,7 @@
 #include "NewChatDialog.h"
 
 #include "core/ApiClient.h"
+#include "painter/PainterTheme.h"
 
 #include <QHBoxLayout>
 #include <QLabel>
@@ -9,6 +10,7 @@
 #include <QListWidgetItem>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QSettings>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QApplication>
@@ -22,6 +24,49 @@ constexpr int kUserIdRole     = Qt::UserRole + 1;
 constexpr int kUserNameRole   = Qt::UserRole + 2;
 constexpr int kUserSourceRole = Qt::UserRole + 3;
 constexpr int kPickedRole     = Qt::UserRole + 4;
+
+// Resolve the active theme (single source of truth = PainterTheme) from the
+// same QSettings key the picker persists to. Mirrors ConversationInfoDialog's
+// activeTheme() so result-row chrome tints from the user's theme rather than a
+// hardcoded dark-theme literal.
+PainterTheme activeTheme()
+{
+    QSettings s("TalQ", "TalQ");
+    s.beginGroup("Theme");
+    const QString id = s.value("theme",
+        PainterTheme::themeId(PainterTheme::Theme::Vivid)).toString();
+    s.endGroup();
+    return PainterTheme(PainterTheme::themeFromId(id, PainterTheme::Theme::Vivid));
+}
+
+// Single source for the result-row delegate stylesheet, driven entirely from
+// PainterTheme tokens (accent / controlInk / textPrimary / textSecondary) --
+// de-duplicates the two near-identical blocks addResultRow/replaceResultRow
+// used to carry, and keeps them in step on theme change.
+QString rowDelegateSheet()
+{
+    const PainterTheme th = activeTheme();
+    auto n = [](const QColor &c){ return c.name(QColor::HexRgb); };
+    const QString accent  = n(th.accent);         // glyph / selected fill / status
+    const QString onAcc   = n(th.controlInk);     // ink on the accent-filled chip
+    const QString name    = n(th.textPrimary);    // display name
+    const QString meta    = n(th.textSecondary);  // secondary id/source line
+    return QString(
+        "QWidget#row { background: transparent; }"
+        "QLabel#glyph   { color: %1; font-size: 22px; }"
+        "QLabel#glyph[picked=\"1\"]   { color: %2; background: %1;"
+        "  border-radius: 16px; min-width: 32px; min-height: 32px; max-width: 32px; max-height: 32px;"
+        "  qproperty-alignment: AlignCenter; font-size: 14px; font-weight: 700; }"
+        "QLabel#glyph[picked=\"0\"]   { color: %1; border: 1.5px solid %1;"
+        "  border-radius: 16px; min-width: 30px; min-height: 30px; max-width: 30px; max-height: 30px;"
+        "  qproperty-alignment: AlignCenter; font-size: 14px; }"
+        "QLabel#name    { color: %3; font-size: 14px; font-weight: 500; }"
+        "QLabel#meta    { color: %4; font-size: 11px;"
+        "  letter-spacing: 1px; text-transform: uppercase; }"
+        "QLabel#status  { color: %1; font-size: 11px; font-weight: 600;"
+        "  letter-spacing: 1px; text-transform: uppercase; }"
+    ).arg(accent, onAcc, name, meta);
+}
 
 QString glyphForSource(const QString &source)
 {
@@ -319,21 +364,7 @@ void NewChatDialog::addResultRow(const NcUser &u)
 
     auto *row = new QWidget(m_results);
     row->setObjectName("row");
-    row->setStyleSheet(
-        "QWidget#row { background: transparent; }"
-        "QLabel#glyph   { color: #14b8a6; font-size: 22px; }"
-        "QLabel#glyph[picked=\"1\"]   { color: #0e1817; background: #14b8a6;"
-        "  border-radius: 16px; min-width: 32px; min-height: 32px; max-width: 32px; max-height: 32px;"
-        "  qproperty-alignment: AlignCenter; font-size: 14px; font-weight: 700; }"
-        "QLabel#glyph[picked=\"0\"]   { color: #14b8a6; border: 1.5px solid #14b8a6;"
-        "  border-radius: 16px; min-width: 30px; min-height: 30px; max-width: 30px; max-height: 30px;"
-        "  qproperty-alignment: AlignCenter; font-size: 14px; }"
-        "QLabel#name    { color: #f4f0ea; font-size: 14px; font-weight: 500; }"
-        "QLabel#meta    { color: #7f7a72; font-size: 11px;"
-        "  letter-spacing: 1px; text-transform: uppercase; }"
-        "QLabel#status  { color: #14b8a6; font-size: 11px; font-weight: 600;"
-        "  letter-spacing: 1px; text-transform: uppercase; }"
-    );
+    row->setStyleSheet(rowDelegateSheet());
     auto *rowLay = new QHBoxLayout(row);
     rowLay->setContentsMargins(10, 8, 14, 8);
     rowLay->setSpacing(12);
@@ -419,20 +450,7 @@ void NewChatDialog::replaceResultRow(QListWidgetItem *item, const NcUser &u)
     // Build widget inline (duplicates addResultRow's construction for a single item).
     auto *w = new QWidget(m_results);
     w->setObjectName("row");
-    w->setStyleSheet(
-        "QWidget#row { background: transparent; }"
-        "QLabel#glyph[picked=\"1\"] { color: #0e1817; background: #14b8a6;"
-        "  border-radius: 16px; min-width: 32px; min-height: 32px; max-width: 32px; max-height: 32px;"
-        "  qproperty-alignment: AlignCenter; font-size: 14px; font-weight: 700; }"
-        "QLabel#glyph[picked=\"0\"] { color: #14b8a6; border: 1.5px solid #14b8a6;"
-        "  border-radius: 16px; min-width: 30px; min-height: 30px; max-width: 30px; max-height: 30px;"
-        "  qproperty-alignment: AlignCenter; font-size: 14px; }"
-        "QLabel#name    { color: #f4f0ea; font-size: 14px; font-weight: 500; }"
-        "QLabel#meta    { color: #7f7a72; font-size: 11px;"
-        "  letter-spacing: 1px; text-transform: uppercase; }"
-        "QLabel#status  { color: #14b8a6; font-size: 11px; font-weight: 600;"
-        "  letter-spacing: 1px; text-transform: uppercase; }"
-    );
+    w->setStyleSheet(rowDelegateSheet());
     auto *lay = new QHBoxLayout(w);
     lay->setContentsMargins(10, 8, 14, 8);
     lay->setSpacing(12);

@@ -92,19 +92,28 @@ To build from source, read on.
 
 ## Build from source (Windows)
 
+TalQ builds with the **MinGW** toolchain (Qt's `mingw_64` kit) and links
+**GStreamer from MSYS2**. Both are required; calls won't compile without
+GStreamer. The toolchain is intentionally pinned (Qt 6.8.2 + MinGW 13.1 +
+GStreamer 1.28.x) — other versions may work but these are what's tested.
+
 ### Prerequisites
 
 - **Python 3.10+** (for `aqtinstall`)
-- **Git**
-- **GStreamer** (MSYS2 `mingw-w64-x86_64` packages) for calls
+- **Git** (Git Bash provides the shell the commands below assume)
+- **MSYS2** — provides the GStreamer runtime + dev packages
+- *(optional)* **Visual Studio 2022 Build Tools** with the C++ workload +
+  a Windows 11 SDK — only needed to build the single-**window** screen-share
+  helper (see step 5). Everything else, including whole-screen sharing,
+  builds without it.
 
 ### 1. Install Qt 6.8.2 + build tools
 
 ```bash
 pip install aqtinstall
 
-# Qt 6.8.2 with MinGW + WebSockets module
-python -m aqt install-qt windows desktop 6.8.2 win64_mingw --outputdir C:\Qt -m qtwebsockets
+# Qt 6.8.2 with MinGW + WebSockets + Multimedia
+python -m aqt install-qt windows desktop 6.8.2 win64_mingw --outputdir C:\Qt -m qtwebsockets qtmultimedia
 
 # MinGW 13.1 compiler, CMake, Ninja
 python -m aqt install-tool windows desktop tools_mingw1310 --outputdir C:\Qt
@@ -115,7 +124,30 @@ python -m aqt install-tool windows desktop tools_ninja --outputdir C:\Qt
 You should now have `C:\Qt\6.8.2\mingw_64\`, `C:\Qt\Tools\mingw1310_64\`,
 `C:\Qt\Tools\CMake_64\`, `C:\Qt\Tools\Ninja\`.
 
-### 2. Clone
+### 2. Install MSYS2 + GStreamer
+
+Install **MSYS2** from <https://www.msys2.org> (default location
+`C:\msys64`). Then, in an **MSYS2 MinGW64** shell, install GStreamer and the
+plugin sets TalQ uses (WebRTC, the codec/parser elements, the Windows
+capture/output backends):
+
+```bash
+pacman -Syu     # update first (re-open the shell if it asks you to)
+pacman -S --needed \
+  mingw-w64-x86_64-gstreamer \
+  mingw-w64-x86_64-gst-plugins-base \
+  mingw-w64-x86_64-gst-plugins-good \
+  mingw-w64-x86_64-gst-plugins-bad \
+  mingw-w64-x86_64-gst-plugins-ugly \
+  mingw-w64-x86_64-gst-plugins-rs \
+  mingw-w64-x86_64-gst-libav
+```
+
+CMake looks for GStreamer under `C:/msys64/mingw64` by default (the
+`GSTREAMER_ROOT` cache variable). If your MSYS2 is elsewhere, pass
+`-DGSTREAMER_ROOT=/path/to/mingw64` at configure time.
+
+### 3. Clone
 
 ```bash
 git clone https://github.com/kalinbogatzevski/talq-desktop.git
@@ -125,25 +157,44 @@ cd talq-desktop
 > Use a path without non-ASCII characters — Qt's tooling breaks on
 > Cyrillic/OneDrive paths.
 
-### 3. Configure and build
+### 4. Configure and build
 
 ```bash
-# Git Bash
-export PATH="/c/Qt/Tools/mingw1310_64/bin:/c/Qt/Tools/CMake_64/bin:/c/Qt/Tools/Ninja:$PATH"
+# Git Bash — MinGW + CMake + Ninja on PATH
+export PATH="/c/Qt/Tools/mingw1310_64/bin:/c/Qt/Tools/CMake_64/bin:/c/Qt/Tools/Ninja:/c/msys64/mingw64/bin:$PATH"
 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_PREFIX_PATH=/c/Qt/6.8.2/mingw_64 -DCMAKE_CXX_COMPILER=g++ -Wno-dev
-cmake --build build
+cmake --build build --target talq
 ```
 
-### 4. Run
+### 5. *(optional)* Build the window-capture helper
+
+Sharing a **single application window** (rather than a whole monitor) uses
+Windows Graphics Capture, whose headers ship only with MSVC + the Windows 11
+SDK — not with the MinGW GStreamer TalQ otherwise uses. So it lives in a tiny,
+self-contained C-ABI DLL loaded at runtime. Whole-screen sharing works without
+it; if you skip this step, picking a window just reports that window capture
+is unavailable.
 
 ```bash
-export PATH="/c/Qt/6.8.2/mingw_64/bin:/c/Qt/Tools/mingw1310_64/bin:$PATH"
-./build/talq.exe
+# From a shell where cmd is available (needs VS2022 Build Tools + Win11 SDK):
+cmd //c native/wgc/build.bat     # produces native/wgc/talq_wgc.dll
 ```
 
-For full runtime DLL deployment (Qt + GStreamer) into a run directory,
-see `scripts/deploy-dev.sh`.
+### 6. Deploy the runtime + run
+
+The app needs the Qt and GStreamer DLLs (and GStreamer plugins) beside the
+executable. `scripts/deploy-dev.sh` copies them all into the build dir and
+launches:
+
+```bash
+bash scripts/deploy-dev.sh        # deploy Qt + GStreamer DLLs/plugins (+ talq_wgc.dll) and run
+# or, to deploy without launching:
+bash scripts/deploy-dev.sh --no-run
+```
+
+To produce a packaged Windows installer (Inno Setup required, `ISCC` on
+PATH), see `scripts/build-release.sh`.
 
 ## Usage
 

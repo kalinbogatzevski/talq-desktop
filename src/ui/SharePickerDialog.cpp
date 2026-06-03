@@ -88,12 +88,23 @@ QPixmap windowProgramIcon(HWND hwnd)
 }
 #endif
 
+// When a populate pass finds nothing, drop in a single non-selectable
+// placeholder so the tab reads as "empty", not "broken" (a blank grid with a
+// silently-disabled Share button). Non-selectable → it can never enable Share.
+void addEmptyPlaceholder(QListWidget *lw, const QString &text)
+{
+    if (lw->count() > 0) return;
+    auto *item = new QListWidgetItem(text, lw);
+    item->setFlags(Qt::NoItemFlags);
+    item->setTextAlignment(Qt::AlignCenter);
+}
+
 } // namespace
 
 SharePickerDialog::SharePickerDialog(QWidget *parent)
     : QDialog(parent, Qt::Dialog)
 {
-    setWindowTitle("Share Screen");
+    setWindowTitle(tr("Share Screen"));
     setMinimumSize(560, 440);
     resize(640, 500);
     // Chrome inherited from the app-wide AppStyle sheet (theme-driven).
@@ -102,7 +113,7 @@ SharePickerDialog::SharePickerDialog(QWidget *parent)
     layout->setContentsMargins(20, 16, 20, 16);
     layout->setSpacing(12);
 
-    auto *title = new QLabel("Choose what to share", this);
+    auto *title = new QLabel(tr("Choose what to share"), this);
     title->setProperty("role", "title");
     layout->addWidget(title);
 
@@ -123,11 +134,11 @@ SharePickerDialog::SharePickerDialog(QWidget *parent)
 
     m_monitorList = new QListWidget(this);
     styleList(m_monitorList);
-    m_tabs->addTab(m_monitorList, "Screens");
+    m_tabs->addTab(m_monitorList, tr("Screens"));
 
     m_windowList = new QListWidget(this);
     styleList(m_windowList);
-    m_tabs->addTab(m_windowList, "Windows");
+    m_tabs->addTab(m_windowList, tr("Windows"));
 
     // Quality (pre-share). Persisted to Video/screenShareQuality, which
     // CallManager::startScreenShare reads; it can also be changed live
@@ -157,7 +168,7 @@ SharePickerDialog::SharePickerDialog(QWidget *parent)
     bottom->addWidget(qCombo);
     bottom->addStretch();
 
-    m_shareBtn = new QPushButton("Share", this);
+    m_shareBtn = new QPushButton(tr("Share"), this);
     m_shareBtn->setProperty("variant", "primary");
     m_shareBtn->setEnabled(false);
     bottom->addWidget(m_shareBtn);
@@ -215,6 +226,7 @@ void SharePickerDialog::populateMonitors()
                                          t.name, m_monitorList);
         item->setTextAlignment(Qt::AlignHCenter | Qt::AlignTop);
     }
+    addEmptyPlaceholder(m_monitorList, tr("No shareable screens found"));
 }
 
 void SharePickerDialog::populateWindows()
@@ -254,6 +266,7 @@ void SharePickerDialog::populateWindows()
         return TRUE;
     }, reinterpret_cast<LPARAM>(this));
 #endif
+    addEmptyPlaceholder(m_windowList, tr("No shareable windows found"));
 }
 
 void SharePickerDialog::refreshThumbnails()

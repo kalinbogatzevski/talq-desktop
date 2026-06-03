@@ -1057,8 +1057,15 @@ void PublishPipeline::setRemoteAnswer(const QString &sdp)
     QByteArray sdpUtf8 = sdp.toUtf8();
     GstSDPMessage *sdpMsg;
     gst_sdp_message_new(&sdpMsg);
-    gst_sdp_message_parse_buffer((const guint8 *)sdpUtf8.constData(),
-                                  sdpUtf8.size(), sdpMsg);
+    // 1.0 audit — reject a malformed answer instead of handing a partially-parsed
+    // SDP to webrtcbin (mirrors SubscribePipeline::setRemoteOffer). Free the
+    // message on failure so it isn't leaked either.
+    if (gst_sdp_message_parse_buffer((const guint8 *)sdpUtf8.constData(),
+                                     sdpUtf8.size(), sdpMsg) != GST_SDP_OK) {
+        qWarning() << "PublishPipeline: failed to parse remote answer SDP — ignoring";
+        gst_sdp_message_free(sdpMsg);
+        return;
+    }
 
     GstWebRTCSessionDescription *desc = gst_webrtc_session_description_new(
         GST_WEBRTC_SDP_TYPE_ANSWER, sdpMsg);
@@ -2202,11 +2209,12 @@ GstFlowReturn PublishPipeline::onBgSample(GstAppSink *sink, gpointer userData)
     // Build a fresh GstBuffer wrapping a copy of the processed pixels.
     const gsize bytes = gsize(width) * height * 4;
     GstBuffer *outBuf = gst_buffer_new_allocate(nullptr, bytes, nullptr);
-    if (!outBuf) return GST_FLOW_ERROR;
+    if (!outBuf) { gst_caps_unref(outCaps); return GST_FLOW_ERROR; }  // 1.0 audit: was leaking outCaps
     {
         GstMapInfo om;
         if (!gst_buffer_map(outBuf, &om, GST_MAP_WRITE)) {
             gst_buffer_unref(outBuf);
+            gst_caps_unref(outCaps);   // 1.0 audit: was leaking outCaps on this error path
             return GST_FLOW_ERROR;
         }
         // QImage::bits() may have row padding; copy line-by-line to
