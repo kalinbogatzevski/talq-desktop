@@ -2434,14 +2434,20 @@ void CallManager::joinCallOnServer(bool withVideo)
                             // fire. The HPB roomPeerJoined /
                             // participantJoinedCall handlers will normally
                             // trigger requestPeerStream within ms.
-                            auto *pollTimer = new QTimer(this);
-                            pollTimer->setInterval(3000);
-                            connect(pollTimer, &QTimer::timeout, this, pollParticipants);
-                            connect(this, &CallManager::stateChanged, pollTimer, [pollTimer, this]() {
-                                if (m_state == Idle || m_state == Active)
-                                    pollTimer->deleteLater();
-                            });
-                            pollTimer->start();
+                            // 1.0 audit — owned by m_callPollTimer and killed in
+                            // stopAllPipelines (which runs on teardown AND on a
+                            // fresh call start), so a re-entered setup can't leak
+                            // the prior timer. Once the peer is found
+                            // pollParticipants early-returns, so it idles cheaply
+                            // until teardown rather than needing a self-delete edge.
+                            if (m_callPollTimer) {
+                                m_callPollTimer->stop();
+                                m_callPollTimer->deleteLater();
+                            }
+                            m_callPollTimer = new QTimer(this);
+                            m_callPollTimer->setInterval(3000);
+                            connect(m_callPollTimer, &QTimer::timeout, this, pollParticipants);
+                            m_callPollTimer->start();
                         }
 
                         // Video is now included in the initial pipeline (no delayed renegotiation)
@@ -2508,6 +2514,13 @@ void CallManager::leaveCallBeacon()
 void CallManager::stopAllPipelines()
 {
     m_glibTimer.stop();
+    // 1.0 audit — kill the per-call REST poll timer here (runs on teardown AND
+    // fresh-call start) so it can't accumulate across calls.
+    if (m_callPollTimer) {
+        m_callPollTimer->stop();
+        m_callPollTimer->deleteLater();
+        m_callPollTimer = nullptr;
+    }
     if (m_peerPipeline) {
         m_peerPipeline->stop();
         // bug 11 — NEVER synchronously `delete` the PeerPipeline here: teardown
@@ -2886,6 +2899,8 @@ void CallManager::onParticipantLeftCall(const QString &sessionId)
         m_subscribePipelines.remove(sessionId);
         m_subscriberSids.remove(sessionId);
         m_subStall.remove(sessionId);   // #bug2
+        m_desiredSubstream.remove(sessionId);      // 1.0 audit — were leaking a
+        m_subscriberRecoveries.remove(sessionId);  // stale entry per peer-leave
         qDebug() << "CallManager: removed subscriber for" << sessionId.left(20);
     }
 

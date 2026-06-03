@@ -287,7 +287,7 @@ void HeaderPainter::paintEvent(QPaintEvent *)
 
     // Calls unavailable label (1:1, not in call, calls not available)
     if (m_conversationType == 1 && !m_callsAvailable && m_callState == 0) {
-        QString unavailText = QStringLiteral("Calls unavailable");
+        QString unavailText = tr("Calls unavailable");
         QFont unavailFont;
         unavailFont.setPixelSize(m_theme.fontSizeTiny);
         QFontMetrics fm(unavailFont);
@@ -370,7 +370,7 @@ void HeaderPainter::paintEvent(QPaintEvent *)
     } else if (!m_conversationName.isEmpty()) {
         titleText = m_conversationName;
     } else {
-        titleText = QStringLiteral("Select a conversation");
+        titleText = tr("Select a conversation");
     }
 
     // Clean Inter title. Two-Lever Rule: the placeholder is differentiated
@@ -403,7 +403,7 @@ void HeaderPainter::paintEvent(QPaintEvent *)
             subtitleColor = m_theme.online;
         } else if (m_peerStatus == QStringLiteral("away")) {
             subtitleText = tr("Away");
-            subtitleColor = QColor("#f0a050");  // warning color
+            subtitleColor = m_theme.amber;  // warm secondary (away)
         } else if (m_peerStatus == QStringLiteral("dnd")) {
             subtitleText = tr("Do not disturb");
             subtitleColor = m_theme.danger;

@@ -83,6 +83,9 @@ StatusPopover::StatusPopover(UserStatusManager *mgr, QWidget *parent)
     connect(m_mgr, &UserStatusManager::error, this, [this](const QString &m) {
         m_err->setText(m);
         m_err->show();
+        // Re-grow the fixed-width card so a long wrapped error doesn't clip,
+        // matching popupNear()'s adjustSize().
+        adjustSize();
     });
 }
 
@@ -196,19 +199,24 @@ void StatusPopover::buildUi()
         m_msg->clear();
         m_icon.clear();
         m_emojiBtn->setText(QStringLiteral("🙂"));
+        refreshSetEnabled();
         accept();
     });
-    auto *setBtn = new QPushButton(tr("Set status"), this);
-    setBtn->setObjectName("stPrimary");
-    setBtn->setCursor(Qt::PointingHandCursor);
-    connect(setBtn, &QPushButton::clicked, this, [this]() {
+    m_setBtn = new QPushButton(tr("Set status"), this);
+    m_setBtn->setObjectName("stPrimary");
+    m_setBtn->setCursor(Qt::PointingHandCursor);
+    connect(m_setBtn, &QPushButton::clicked, this, [this]() {
         m_err->hide();
         m_mgr->setCustom(m_icon, m_msg->text().trimmed(), selectedClearAt());
         accept();
     });
+    // Disable while there's nothing to set (empty message AND no emoji) so a
+    // click can't push an empty custom status.
+    connect(m_msg, &QLineEdit::textChanged, this, &StatusPopover::refreshSetEnabled);
+    refreshSetEnabled();
     actRow->addWidget(clearBtn);
     actRow->addStretch(1);
-    actRow->addWidget(setBtn);
+    actRow->addWidget(m_setBtn);
     root->addLayout(actRow);
 
     auto *div2 = new QFrame(this);
@@ -261,7 +269,15 @@ void StatusPopover::refreshFromManager()
         m_msg->setText(m_mgr->message());
         m_icon = m_mgr->icon();
         m_emojiBtn->setText(m_icon.isEmpty() ? QStringLiteral("🙂") : m_icon);
+        refreshSetEnabled();
     }
+}
+
+void StatusPopover::refreshSetEnabled()
+{
+    if (m_setBtn)
+        m_setBtn->setEnabled(!m_msg->text().trimmed().isEmpty()
+                             || !m_icon.isEmpty());
 }
 
 qint64 StatusPopover::selectedClearAt() const
@@ -309,6 +325,7 @@ void StatusPopover::openEmojiPicker()
             [this, picker](const QString &codepoints) {
         m_icon = codepointsToEmoji(codepoints);
         m_emojiBtn->setText(m_icon.isEmpty() ? QStringLiteral("🙂") : m_icon);
+        refreshSetEnabled();
         picker->close();
     });
     connect(picker, &EmojiPickerWidget::cancelled, picker, &QWidget::close);

@@ -448,7 +448,7 @@ void CallStage::paintEvent(QPaintEvent *)
                               lfm.horizontalAdvance(label) + 12, 16);
             p.setBrush(labelBg); p.setPen(Qt::NoPen);
             p.drawRoundedRect(lbl, 5, 5);
-            p.setPen(Qt::white);
+            p.setPen(th.controlInk);
             p.drawText(lbl, Qt::AlignCenter, label);
         }
         paintStatusPill(p, th);

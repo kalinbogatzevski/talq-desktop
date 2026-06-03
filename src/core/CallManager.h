@@ -379,6 +379,10 @@ private:
     // call. Any publisher ICE "connected"/"completed" cancels recovery and
     // returns us to Active.
     QTimer m_pubRetryTimer;
+    // REST participant-poll backup (mobile/internal-signaling fallback). Owned
+    // as a member + killed in stopAllPipelines so a re-entered call setup can't
+    // leak the prior one (1.0 audit).
+    QTimer *m_callPollTimer = nullptr;
     int    m_pubRetryAttempts   = 0;     // resets to 0 on ICE connected/completed
     bool   m_pubRebuildInFlight = false; // serialize rebuilds (one at a time)
     // #bug3 -- peer-grace: a transient remote-1:1-peer inCall=0 (WiFi blip) or a

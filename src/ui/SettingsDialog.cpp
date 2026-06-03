@@ -193,6 +193,65 @@ static QFrame *makeDivider()
     return line;
 }
 
+// The active theme as persisted by the picker (same key MainWindow reads),
+// so the Background tab's hand-styled chrome is tinted with the user's
+// chosen theme instead of a fixed teal/gray.
+static PainterTheme activeTheme()
+{
+    QSettings s("TalQ", "TalQ");
+    s.beginGroup("Theme");
+    const QString tid = s.value("theme",
+        PainterTheme::themeId(PainterTheme::Theme::Vivid)).toString();
+    s.endGroup();
+    return PainterTheme(PainterTheme::themeFromId(tid, PainterTheme::Theme::Vivid));
+}
+
+// Re-style the Background tab's two hand-rolled chrome widgets from the
+// active PainterTheme. The live-preview placeholder uses a recessed ground
+// (one step down the warm ladder) + secondary text; the image grid marks
+// the selected thumbnail with an accent tint + accent border + primary
+// text and lifts hovered items by one ladder step. Re-applied on
+// ApplicationPaletteChange so a live theme switch retints both. The mic
+// test's level-meter colours are functional (VU semantics) and live in
+// MicLevelBar — untouched here.
+static void styleBackgroundChrome(QLabel *previewLabel, QListWidget *imageGrid)
+{
+    const PainterTheme th = activeTheme();
+    auto n = [](const QColor &c) { return c.name(QColor::HexRgb); };
+    // Pre-blend the accent over the surface ground so the selected-tile fill
+    // is a calm solid tint (no alpha in the stylesheet), matching the
+    // TopicTabBar selected-chip idiom.
+    auto blend = [](const QColor &fg, const QColor &bg, double a) {
+        return QColor(int(fg.red()   * a + bg.red()   * (1 - a)),
+                      int(fg.green() * a + bg.green() * (1 - a)),
+                      int(fg.blue()  * a + bg.blue()  * (1 - a)));
+    };
+
+    if (previewLabel) {
+        previewLabel->setStyleSheet(QStringLiteral(
+            "QLabel { background:%1; border-radius:6px; color:%2; }")
+            .arg(n(th.bgSidebar), n(th.textSecondary)));
+    }
+    if (imageGrid) {
+        imageGrid->setStyleSheet(QStringLiteral(
+            "QListWidget { background:transparent; }"
+            "QListWidget::item { "
+            "  border:2px solid transparent; "
+            "  border-radius:6px; "
+            "  padding:4px; }"
+            "QListWidget::item:hover { "
+            "  background:%1; }"
+            "QListWidget::item:selected { "
+            "  border:2px solid %2; "
+            "  background:%3; "
+            "  color:%4; }")
+            .arg(n(th.bgHover),
+                 n(th.accent),
+                 n(blend(th.accent, th.bgSurface, 0.18)),
+                 n(th.textPrimary)));
+    }
+}
+
 SettingsDialog::SettingsDialog(
     MediaDeviceManager *deviceManager,
     NotificationManager *notifications,
@@ -718,8 +777,8 @@ QWidget *SettingsDialog::buildBackgroundTab()
     m_bgPreviewLabel = new QLabel;
     m_bgPreviewLabel->setFixedSize(320, 180);
     m_bgPreviewLabel->setAlignment(Qt::AlignCenter);
-    m_bgPreviewLabel->setStyleSheet(
-        "QLabel { background:#1a1a1a; border-radius:6px; color:#888; }");
+    // Chrome (recessed ground + secondary placeholder text) is theme-driven;
+    // styled together with the image grid below via styleBackgroundChrome().
     m_bgPreviewLabel->setText(tr("Preview will appear when Blur or Image is selected"));
     m_bgPreviewLabel->setWordWrap(true);
     m_bgPreviewLabel->hide();
@@ -784,24 +843,17 @@ QWidget *SettingsDialog::buildBackgroundTab()
     m_bgImageGrid->setSpacing(8);
     m_bgImageGrid->setMinimumHeight(200);
     m_bgImageGrid->setFrameShape(QFrame::NoFrame);
-    // Make the currently-selected thumbnail visible at a glance: tinted
-    // background + accent-coloured border for the selected item;
-    // hovered items get a subtle lift so it's clear they're clickable.
-    // The accent picks up PainterTheme accent if available; falling
-    // back to a fixed teal that reads against all 4 themes.
-    m_bgImageGrid->setStyleSheet(
-        "QListWidget { background:transparent; }"
-        "QListWidget::item { "
-        "  border:2px solid transparent; "
-        "  border-radius:6px; "
-        "  padding:4px; }"
-        "QListWidget::item:hover { "
-        "  background:rgba(255,255,255,0.06); }"
-        "QListWidget::item:selected { "
-        "  border:2px solid #14b8a6; "
-        "  background:rgba(20,184,166,0.18); "
-        "  color:white; }"
-    );
+    // Make the currently-selected thumbnail visible at a glance: an accent
+    // tint + accent-coloured border for the selected item; hovered items
+    // get a one-ladder-step lift so it's clear they're clickable. All
+    // colours resolve from the active PainterTheme (see
+    // styleBackgroundChrome), so the picker retints with the user's theme
+    // instead of a fixed teal.
+    styleBackgroundChrome(m_bgPreviewLabel, m_bgImageGrid);
+    // Re-tint both chrome widgets when the app palette changes (live theme
+    // switch). Installed app-wide so this dialog sees ApplicationPaletteChange
+    // even while it isn't the active window; handled in eventFilter().
+    qApp->installEventFilter(this);
 
     struct Bundled { const char *label; const char *qrc; };
     static const Bundled kBundled[] = {
@@ -1000,6 +1052,13 @@ QWidget *SettingsDialog::buildBackgroundTab()
 
 bool SettingsDialog::eventFilter(QObject *obj, QEvent *event)
 {
+    // Live theme switch: re-tint the Background tab's hand-styled chrome
+    // (preview placeholder + image grid) from the new PainterTheme. The
+    // filter is installed on qApp, so gate on obj==this to fire exactly
+    // once per palette change. ApplicationPaletteChange (NOT PaletteChange)
+    // — the latter recurses via setStyleSheet.
+    if (obj == this && event->type() == QEvent::ApplicationPaletteChange)
+        styleBackgroundChrome(m_bgPreviewLabel, m_bgImageGrid);
     // Block wheel-scroll on ANY combo box in the dialog. Wheel-while-
     // hovering used to change a combo's selection without firing
     // activated(), so handlers that save on activated only (most of

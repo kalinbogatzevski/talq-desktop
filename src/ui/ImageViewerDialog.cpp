@@ -1,6 +1,7 @@
 #include "ImageViewerDialog.h"
 
 #include "core/ApiClient.h"
+#include "painter/PainterTheme.h"
 
 #include <QApplication>
 #include <QClipboard>
@@ -25,18 +26,53 @@
 #include <QVBoxLayout>
 #include <QWheelEvent>
 
+namespace {
+// A media viewer keeps a deliberately dark backdrop (DESIGN.md sanctions a dark
+// media surface), so chrome must stay legible on that dark scrim regardless of
+// the app theme. We drive every text/scrim/hover colour from PainterTheme, but
+// for the always-dark backdrop we resolve a warm-DARK theme: the user's active
+// theme unless it's the light Paper one, in which case we fall back to the warm
+// Vivid default so text doesn't render dark-on-dark.
+PainterTheme viewerChromeTheme()
+{
+    QSettings s;
+    s.beginGroup(QStringLiteral("Theme"));
+    PainterTheme::Theme t = PainterTheme::themeFromId(
+        s.value(QStringLiteral("theme"),
+                PainterTheme::themeId(PainterTheme::Theme::Vivid)).toString(),
+        PainterTheme::Theme::Vivid);
+    s.endGroup();
+    if (t == PainterTheme::Theme::Paper)
+        t = PainterTheme::Theme::Vivid;
+    return PainterTheme(t, 1.0);
+}
+} // namespace
+
 ImageViewerDialog::ImageViewerDialog(ApiClient *api, QWidget *parent)
     : QWidget(parent, Qt::Window), m_api(api)
 {
     setWindowTitle(tr("Image viewer"));
-    setStyleSheet("QWidget { background: #000; color: #eee; }");
+
+    const PainterTheme th = viewerChromeTheme();
+    const QString ink = th.textPrimary.name(QColor::HexRgb);
+    // Translucent "rgba(r,g,b,a)" from a theme colour — for warm scrims/hovers
+    // that sit over the image, replacing the old #000/#fff-alpha literals.
+    auto rgba = [](const QColor &c, double a) {
+        return QStringLiteral("rgba(%1,%2,%3,%4)")
+            .arg(c.red()).arg(c.green()).arg(c.blue()).arg(a, 0, 'g', 3);
+    };
+    // Dark media backdrop is intentional; use the darkest warm ground token
+    // (never #000) so the window chrome stays on-theme and warm, not cold black.
+    const QString backdrop = th.bgSidebar.name(QColor::HexRgb);
+    setStyleSheet(QStringLiteral("QWidget { background: %1; color: %2; }")
+                      .arg(backdrop, ink));
 
     auto *root = new QVBoxLayout(this);
     root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(0);
 
     auto *titleRow = new QWidget(this);
-    titleRow->setStyleSheet("background: rgba(0,0,0,0.6);");
+    titleRow->setStyleSheet(QStringLiteral("background: %1;").arg(rgba(th.bgSidebar, 0.6)));
     auto *titleRowLayout = new QHBoxLayout(titleRow);
     titleRowLayout->setContentsMargins(12, 6, 6, 6);
     titleRowLayout->setSpacing(6);
@@ -50,10 +86,10 @@ ImageViewerDialog::ImageViewerDialog(ApiClient *api, QWidget *parent)
     m_menuBtn->setFlat(true);
     m_menuBtn->setFixedSize(28, 24);
     m_menuBtn->setCursor(Qt::PointingHandCursor);
-    m_menuBtn->setStyleSheet(
-        "QPushButton { background: transparent; color: #eee; font-size: 16px; border: none; }"
-        "QPushButton:hover { background: rgba(255,255,255,0.08); border-radius: 4px; }"
-    );
+    m_menuBtn->setStyleSheet(QStringLiteral(
+        "QPushButton { background: transparent; color: %1; font-size: 16px; border: none; }"
+        "QPushButton:hover { background: %2; border-radius: 4px; }"
+    ).arg(ink, rgba(th.textPrimary, 0.08)));
     titleRowLayout->addWidget(m_menuBtn);
 
     root->addWidget(titleRow);
@@ -74,13 +110,13 @@ ImageViewerDialog::ImageViewerDialog(ApiClient *api, QWidget *parent)
     // Centered confirmation pill. Parented to the dialog so it floats above
     // the QGraphicsView regardless of where the user has scrolled/zoomed.
     m_toast = new QLabel(this);
-    m_toast->setStyleSheet(
-        "background: rgba(0,0,0,0.78);"
-        "color: #ffffff;"
+    m_toast->setStyleSheet(QStringLiteral(
+        "background: %1;"
+        "color: %2;"
         "font-size: 14px;"
         "padding: 10px 18px;"
         "border-radius: 18px;"
-    );
+    ).arg(rgba(th.bgSidebar, 0.78), ink));
     m_toast->setAlignment(Qt::AlignCenter);
     m_toast->setAttribute(Qt::WA_TransparentForMouseEvents);  // never steals clicks
     m_toast->hide();
@@ -270,7 +306,22 @@ void ImageViewerDialog::keyPressEvent(QKeyEvent *event)
 
 void ImageViewerDialog::mouseMoveEvent(QMouseEvent *event)
 {
+    // Reveal the title bar on movement, then auto-hide it after a short idle so
+    // it doesn't sit over the image. The hide timer is created lazily and kept
+    // as a named child (no extra header member) and restarted on every move.
     m_titleBar->show();
+    auto *hideTimer = findChild<QTimer *>(QStringLiteral("titleBarHideTimer"),
+                                          Qt::FindDirectChildrenOnly);
+    if (!hideTimer) {
+        hideTimer = new QTimer(this);
+        hideTimer->setObjectName(QStringLiteral("titleBarHideTimer"));
+        hideTimer->setSingleShot(true);
+        hideTimer->setInterval(2000);
+        connect(hideTimer, &QTimer::timeout, this, [this]() {
+            if (m_titleBar) m_titleBar->hide();
+        });
+    }
+    hideTimer->start();
     QWidget::mouseMoveEvent(event);
 }
 

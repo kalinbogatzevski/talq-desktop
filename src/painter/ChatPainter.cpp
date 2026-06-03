@@ -1742,7 +1742,7 @@ void ChatPainter::paintOwnMessage(QPainter *p, const MessageLayout &ml, qreal of
             ? QStringLiteral("(edited) ") + ml.timeString
             : ml.timeString;
         QString timeText = ml.sendStatus == QLatin1String("sending")
-            ? QStringLiteral("Sending...") : timeLabel;
+            ? ChatPainter::tr("Sending...") : timeLabel;   // qualified: local QRectF `tr` shadows QObject::tr
 
         // Determine status icon — ◉ read (green), ○ delivered (muted)
         QString statusChar;
@@ -1925,7 +1925,7 @@ void ChatPainter::paintImageTimeOverlay(QPainter *p, const MessageLayout &ml, qr
     const QString timeLabel = ml.lastEditTimestamp > 0
         ? QStringLiteral("(edited) ") + ml.timeString : ml.timeString;
     const QString timeText = ml.sendStatus == QLatin1String("sending")
-        ? QStringLiteral("Sending...") : timeLabel;
+        ? ChatPainter::tr("Sending...") : timeLabel;   // qualified: local QRectF `tr` shadows QObject::tr
 
     const QColor onScrim(248, 248, 248);   // near-white ink on the dark scrim
     QString statusChar;

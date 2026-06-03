@@ -430,9 +430,9 @@ void ComposerWidget::setTopicName(const QString &name)
 {
     m_topicName = name;
     if (name.isEmpty())
-        m_input->setPlaceholderText("Message...");
+        m_input->setPlaceholderText(tr("Message…"));
     else
-        m_input->setPlaceholderText("Reply in " + name + "...");
+        m_input->setPlaceholderText(tr("Reply in %1…").arg(name));
 }
 
 void ComposerWidget::setSignaling(SignalingClient *sig)
@@ -568,15 +568,16 @@ void ComposerWidget::cancelPendingFile()
     m_pendingFilePath.clear();
     m_pendingBar->hide();
     m_input->setPlaceholderText(m_topicName.isEmpty()
-        ? QStringLiteral("Message...")
-        : QStringLiteral("Reply in %1...").arg(m_topicName));
+        ? tr("Message…")
+        : tr("Reply in %1…").arg(m_topicName));
     m_input->setFocus();
 }
 
 void ComposerWidget::showReplyBar(const QString &author, const QString &preview)
 {
-    m_replyLabel->setText(QStringLiteral("<span style='color:#14b8a6; font-weight:600;'>%1</span>  %2")
-        .arg(author.toHtmlEscaped(), preview.toHtmlEscaped()));
+    m_replyLabel->setText(QStringLiteral("<span style='color:%1; font-weight:600;'>%2</span>  %3")
+        .arg(palette().color(QPalette::Highlight).name(),
+             author.toHtmlEscaped(), preview.toHtmlEscaped()));
     m_replyLabel->setTextFormat(Qt::RichText);
     m_replyBar->show();
 }

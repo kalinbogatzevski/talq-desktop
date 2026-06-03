@@ -1,5 +1,7 @@
 #pragma once
 
+#include "painter/PainterTheme.h"
+
 #include <QObject>
 #include <QPoint>
 #include <QList>
@@ -23,12 +25,18 @@ public:
 
     void notify(const QString &title, const QString &message, const QString &token);
 
+    // Theme every popup (current and future) so in-app toasts follow the
+    // active theme. Called on construction and on a live theme switch.
+    void setTheme(PainterTheme::Theme theme);
+
 signals:
     void clicked(const QString &token);
 
 private:
     void reposition();
     void dropOldest();
+
+    PainterTheme::Theme m_theme = PainterTheme::Theme::Vivid;
 
     struct Entry {
         NotificationPopup *popup = nullptr;
