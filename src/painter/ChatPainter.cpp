@@ -111,45 +111,17 @@ ChatPainter::ChatPainter(QWidget *parent)
     m_resizeDebounceTimer->setInterval(50);
     connect(m_resizeDebounceTimer, &QTimer::timeout,
             this, &ChatPainter::rebuildAllLayouts);
-
-    // Chat-history sync indicator. The delay timer is the slow-link gate: only
-    // a fetch still in flight after ~350 ms surfaces the spinner, so a fast
-    // link never flickers it. The anim timer rotates the spinner while shown.
-    m_syncDelayTimer = new QTimer(this);
-    m_syncDelayTimer->setSingleShot(true);
-    m_syncDelayTimer->setInterval(350);
-    connect(m_syncDelayTimer, &QTimer::timeout, this, [this]() {
-        if (!m_modelLoading) return;
-        m_showSync = true;
-        if (!m_syncAnimTimer->isActive()) m_syncAnimTimer->start();
-        update();
-    });
-
-    m_syncAnimTimer = new QTimer(this);
-    m_syncAnimTimer->setInterval(60);   // ~16 fps, plenty for a calm spinner
-    connect(m_syncAnimTimer, &QTimer::timeout, this, [this]() {
-        m_syncPhase += 0.18;
-        if (m_syncPhase > 1000.0) m_syncPhase = 0.0;   // avoid unbounded growth
-        update();
-    });
 }
 
 void ChatPainter::updateLoadingState()
 {
+    // Only tracks loading so the empty body shows blank (while loading) vs
+    // "No messages yet" (when done). The animated loading line is the header's
+    // job now (HeaderPainter), so there is no spinner/timers here.
     const bool loading = m_model && m_model->isLoading();
     if (loading == m_modelLoading) return;
     m_modelLoading = loading;
-    if (loading) {
-        // Arm the slow-link gate; the spinner only appears if still loading
-        // when it fires.
-        if (!m_showSync && !m_syncDelayTimer->isActive())
-            m_syncDelayTimer->start();
-    } else {
-        // Fetch finished — drop the indicator and stop animating.
-        m_syncDelayTimer->stop();
-        m_syncAnimTimer->stop();
-        if (m_showSync) { m_showSync = false; update(); }
-    }
+    update();
 }
 
 // ═══════════════════════════════════════════════════════
@@ -190,10 +162,7 @@ void ChatPainter::setModel(MessageListModel *mdl)
                 this, &ChatPainter::updateLoadingState);
         setUnreadBoundary(m_model->unreadBoundary());  // initial pull
     } else {
-        // No model — make sure no stale spinner keeps ticking.
-        m_modelLoading = m_showSync = false;
-        if (m_syncDelayTimer) m_syncDelayTimer->stop();
-        if (m_syncAnimTimer)  m_syncAnimTimer->stop();
+        m_modelLoading = false;
     }
 
     updateLoadingState();   // reflect the new model's current fetch state
@@ -1421,26 +1390,15 @@ void ChatPainter::paintEvent(QPaintEvent *)
     }
 
     if (m_layouts.isEmpty()) {
-        // Nothing to render yet. (1.0 audit: this used to be a bare `return`
-        // that left a blank panel with zero feedback.) Three states:
-        //   • loading, past the slow-link delay  -> animated "Syncing messages…"
-        //   • genuinely empty (not loading)       -> a calm prompt
-        //   • loading but within the delay        -> blank (avoids flashing the
-        //                                            empty prompt before the spinner)
-        const qreal cx = width() / 2.0;
-        const qreal cy = height() / 2.0;
-        if (m_showSync) {
-            paintSyncIndicator(p, QPointF(cx, cy - 18.0), 13.0);
+        // Empty body. Show "No messages yet" only once the fetch is DONE; while
+        // history is still loading, stay blank — the header's moving loading
+        // line shows the activity (so there's no competing spinner here).
+        // (1.0 audit: this used to be a bare `return` with zero feedback.)
+        if (!m_modelLoading) {
             QFont lf; lf.setPixelSize(m_theme.fontSizeNormal);
             p.setFont(lf);
             p.setPen(m_theme.textSecondary);
-            p.drawText(QRectF(0, cy + 6.0, width(), 22.0),
-                       Qt::AlignHCenter | Qt::AlignTop, tr("Syncing messages…"));
-        } else if (!m_modelLoading) {
-            QFont lf; lf.setPixelSize(m_theme.fontSizeNormal);
-            p.setFont(lf);
-            p.setPen(m_theme.textSecondary);
-            p.drawText(QRectF(0, cy - 11.0, width(), 22.0),
+            p.drawText(QRectF(0, height() / 2.0 - 11.0, width(), 22.0),
                        Qt::AlignCenter, tr("No messages yet"));
         }
         return;
@@ -1527,53 +1485,6 @@ void ChatPainter::paintEvent(QPaintEvent *)
         p.setBrush(thumbColor);
         p.drawRoundedRect(QRectF(scrollbarX, thumbY, scrollbarW, thumbH), 2, 2);
     }
-
-    // Chat-history "syncing" pill — shown at the top while the model is fetching
-    // fresh history from the server AND we already have (cached) messages on
-    // screen, so the user knows the visible history is being checked/updated
-    // against the server (the slow-link feedback Kalin asked for). Painted last
-    // so it floats above the messages; gated by the slow-link delay (m_showSync).
-    if (m_showSync) {
-        const QString label = tr("Syncing…");
-        QFont sf; sf.setPixelSize(m_theme.fontSizeSmall);
-        QFontMetrics fm(sf);
-        const qreal spin = 11.0, padX = 12.0, padY = 5.0, gap = 8.0;
-        const qreal tw = fm.horizontalAdvance(label);
-        const qreal pw = padX + spin + gap + tw + padX;
-        const qreal ph = qMax<qreal>(spin, fm.height()) + padY * 2.0;
-        const QRectF pill((width() - pw) / 2.0, 10.0, pw, ph);
-        QColor face = m_theme.bgSurface; face.setAlphaF(0.96);
-        p.setPen(QPen(m_theme.divider, 1.0));
-        p.setBrush(face);
-        p.drawRoundedRect(pill, ph / 2.0, ph / 2.0);
-        paintSyncIndicator(p, QPointF(pill.left() + padX + spin / 2.0, pill.center().y()),
-                           spin / 2.0);
-        p.setFont(sf);
-        p.setPen(m_theme.textSecondary);
-        p.drawText(QRectF(pill.left() + padX + spin + gap, pill.top(), tw + 2.0, pill.height()),
-                   Qt::AlignVCenter | Qt::AlignLeft, label);
-    }
-}
-
-// ─── Chat-history sync spinner ───────────────────────
-
-void ChatPainter::paintSyncIndicator(QPainter &p, const QPointF &center, qreal radius)
-{
-    // A calm rotating arc: a faint full ring with a ~270° accent stroke that
-    // spins, driven by m_syncPhase (advanced by m_syncAnimTimer).
-    p.save();
-    p.setRenderHint(QPainter::Antialiasing, true);
-    const QRectF box(center.x() - radius, center.y() - radius, radius * 2.0, radius * 2.0);
-    const qreal pen = qMax<qreal>(2.0, radius * 0.32);
-    QColor ring = m_theme.textMuted; ring.setAlphaF(0.22);
-    p.setBrush(Qt::NoBrush);
-    p.setPen(QPen(ring, pen, Qt::SolidLine, Qt::RoundCap));
-    p.drawEllipse(box);
-    QColor arc = m_theme.accent; arc.setAlphaF(0.95);
-    p.setPen(QPen(arc, pen, Qt::SolidLine, Qt::RoundCap));
-    const int startDeg = int(m_syncPhase * 100.0) % 360;   // phase -> spin angle
-    p.drawArc(box, -startDeg * 16, -270 * 16);              // Qt 1/16°, negative = CW
-    p.restore();
 }
 
 // ─── Date separator ─────────────────────────────────
