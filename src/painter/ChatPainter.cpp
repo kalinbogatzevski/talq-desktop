@@ -1544,6 +1544,12 @@ void ChatPainter::paintSystemMessage(QPainter *p, const MessageLayout &ml, qreal
     // Strip HTML for system messages (they're usually plain)
     QString plain = ml.bodyHtml;
     plain.remove(QRegularExpression("<[^>]*>"));
+    // Append the time so SERVICE messages (missed calls, call started/ended,
+    // joins/leaves, "created the conversation", etc.) show WHEN they happened —
+    // they previously rendered with no timestamp at all. bodyRect is full-width
+    // and the line stays centred, so the time just rides along after a dot.
+    if (!ml.timeString.isEmpty())
+        plain += QStringLiteral("  ·  ") + ml.timeString;
     p->drawText(r, Qt::AlignHCenter | Qt::AlignVCenter, plain);
 }
 
