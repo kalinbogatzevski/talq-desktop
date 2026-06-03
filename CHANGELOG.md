@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.48.7 "Botev" -- STABLE (2026-06-03)
+
+### Changed
+
+* **A clearer chat-loading indicator.** While a conversation's history is being
+  fetched, a thin progress line now sweeps along the bottom of the chat header
+  -- the way browsers and other messengers show loading -- replacing the small
+  centered spinner that was easy to miss. It only appears when a load actually
+  takes a moment, so quick opens stay clean.
+
 ## v0.48.6 "Botev" -- STABLE (2026-06-03)
 
 > A pre-1.0 polish pass: theme consistency across all four themes,

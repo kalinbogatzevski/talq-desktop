@@ -155,6 +155,14 @@ private:
     QString m_conversationToken;
     int m_messageCount = 0;
     bool m_loading = false;
+    // Browser/messenger-style indeterminate loading LINE along the header's
+    // bottom edge while chat history is fetched. Gated by a short delay so a
+    // fast cache-only open never flashes it; a bright segment sweeps across.
+    bool   m_lineVisible  = false;
+    qreal  m_loadingPhase = 0.0;
+    class QTimer *m_loadingDelayTimer = nullptr;
+    class QTimer *m_loadingAnimTimer  = nullptr;
+    void paintLoadingLine(QPainter *p);
     QString m_typingUser;
     bool m_isTyping = false;
     int m_callState = 0;
