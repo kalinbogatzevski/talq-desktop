@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.49.1 "Slartibartfast" -- BETA (2026-06-04)
+
+### Fixed
+
+* **A sent message could disappear or jump when you sent a second one right
+  after it.** Sending two messages back-to-back could make the first one
+  vanish from the open conversation (or reorder so the newer one sat above the
+  older). The optimistic "sending" row is now swapped in place for the
+  confirmed message instead of being removed and re-added, and pending messages
+  always stay at the newest position -- so a just-sent message can no longer be
+  dropped or sorted to the wrong spot. (Carries the echo cancellation from
+  0.49.0.)
+
 ## v0.49.0 "Slartibartfast" -- BETA (2026-06-04)
 
 ### Added
