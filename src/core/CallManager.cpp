@@ -1693,6 +1693,18 @@ void CallManager::buildAndStartSharePipeline(int monitorIndex, quintptr windowHa
             case 3: cw = 3840; ch = 2160; break;   // "High" = up to 4K
             default: break;
         }
+        // A WINDOW app share captures at NATIVE resolution regardless of the
+        // quality level — downscaling a single window (especially one on a
+        // high-DPI / large screen) just softens its text; the encoder's
+        // adaptive bitrate (GCC) handles bandwidth instead of dropping pixels.
+        // MONITOR shares keep the user's quality choice, since downscaling a
+        // whole 4K desktop to 1440p saves real bandwidth with little loss.
+        // (Kalin 2026-06-04: "window app shares must be in native resolutions
+        // and only after that downscale the stream itself.") Still 4K-clamped
+        // below for the encoder.
+        if (windowHandle != 0) {
+            cw = 3840; ch = 2160;
+        }
         // Hard 4K ceiling. The hardware H264 encoder (Intel QSV / qsvh264enc)
         // tops out around 4K (4096x2304); a native 8K monitor frame produced
         // ZERO encoded output, so the share's outbound RTP never confirmed and
@@ -2001,6 +2013,12 @@ void CallManager::setScreenShareQuality(int level)
         case 2: cw = 2560; ch = 1440; break;
         case 3: cw = 3840; ch = 2160; break;
         default: break;
+    }
+    // A window share stays at native resolution regardless of the quality
+    // level (the dropdown only re-scales MONITOR shares) — see
+    // buildAndStartSharePipeline.
+    if (m_ssWindowHandle != 0) {
+        cw = 3840; ch = 2160;
     }
     cw = qMin(cw, 3840);
     ch = qMin(ch, 2160);
