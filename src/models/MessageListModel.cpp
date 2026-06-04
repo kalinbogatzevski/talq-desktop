@@ -39,6 +39,13 @@
 // History loads append at the end (appear at top on scroll-up).
 // ============================================================================
 
+// Chat history page size. NC Talk's /chat endpoint caps `limit` at 200
+// (default 100); requesting the max means the initial open and scroll-back
+// need ~4x fewer round-trips than the old 50. The server cost is negligible
+// (the chat table is tiny and fully cached); the win is one fat request over
+// a warm HTTP/2 connection instead of many serial ones over WAN latency.
+static constexpr int kChatPageLimit = 200;
+
 MessageListModel::MessageListModel(ApiClient *api, MessageCache *cache, QObject *parent)
     : QAbstractListModel(parent)
     , m_api(api)
@@ -354,9 +361,9 @@ void MessageListModel::setConversationToken(const QString &token)
     if (token.isEmpty())
         return;
 
-    // Load last 20 from local cache for instant display,
-    // then fetch fresh from API in background (triggered after cache loads)
-    m_cache->loadMessages(token, 50);
+    // Show the most recent page from the local cache instantly, then fetch
+    // fresh from the API in the background (triggered after the cache loads).
+    m_cache->loadMessages(token, kChatPageLimit);
 
     // Mark as read
     QJsonObject body;
@@ -418,7 +425,7 @@ void MessageListModel::loadHistory()
 
     QUrlQuery params;
     params.addQueryItem("lookIntoFuture", "0");
-    params.addQueryItem("limit", "50");
+    params.addQueryItem("limit", QString::number(kChatPageLimit));
     if (m_oldestMessageId > 0)
         params.addQueryItem("lastKnownMessageId", QString::number(m_oldestMessageId));
 
@@ -460,7 +467,7 @@ void MessageListModel::loadHistory()
         }
 
         // Less than requested = no more pages
-        if (data.size() < 50) {
+        if (data.size() < kChatPageLimit) {
             m_hasMoreHistory = false;
             emit hasMoreHistoryChanged();
         }
@@ -562,7 +569,10 @@ void MessageListModel::startPoller()
 
 void MessageListModel::trimOldMessages()
 {
-    static constexpr int MAX_MESSAGES = 200;
+    // Memory cap for the live model. Holds several full pages so a live
+    // message arriving (which triggers this trim) doesn't discard history the
+    // user just scrolled back to load. Trimmed rows are re-fetchable on scroll.
+    static constexpr int MAX_MESSAGES = 600;
     if (m_messages.size() <= MAX_MESSAGES) return;
 
     int trimCount = m_messages.size() - MAX_MESSAGES;
@@ -618,11 +628,11 @@ void MessageListModel::refreshLatest()
 {
     if (m_token.isEmpty()) return;
 
-    // Fetch the latest 50 messages from the server (lookIntoFuture=0, no lastKnownMessageId)
+    // Fetch the latest page from the server (lookIntoFuture=0, no lastKnownMessageId).
     // This gets the absolute newest messages, regardless of what the cache had.
     QUrlQuery params;
     params.addQueryItem("lookIntoFuture", "0");
-    params.addQueryItem("limit", "50");
+    params.addQueryItem("limit", QString::number(kChatPageLimit));
 
     if (m_threadId > 0)
         params.addQueryItem("threadId", QString::number(m_threadId));
