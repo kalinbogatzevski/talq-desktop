@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.50.1 "Slartibartfast" -- STABLE (2026-06-04)
+
+### Changed
+
+* **Faster chat history.** Conversations load and scroll back in larger pages,
+  so opening a busy room and paging through its history take far fewer
+  round-trips to the server -- noticeably quicker on slower or remote
+  connections, and lighter on the server too.
+
 ## v0.50.0 "Slartibartfast" -- STABLE (2026-06-04)
 
 The Slartibartfast line, promoted to stable. The headlines since 0.48.9:
