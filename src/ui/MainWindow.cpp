@@ -1022,7 +1022,14 @@ void MainWindow::buildChatPage()
             m_replyToId = msgId;
             m_replyToAuthor = author;
             m_replyToText = text;
-            // Focus composer for reply
+            // Show the reply preview bar above the composer \u2014 same as the
+            // hover-icon path. Without this the reply was armed but invisible,
+            // so it looked like nothing happened (field report 2026-06-04).
+            QString plain = text;
+            static const QRegularExpression htmlRe("<[^>]*>");
+            plain.remove(htmlRe);
+            if (plain.length() > 60) plain = plain.left(60) + "...";
+            m_composer->showReplyBar(author, plain);
             m_composer->setFocus();
         });
         menu->addAction(QStringLiteral("\u2197\uFE0F  Forward"), this, [this, msg]() {

@@ -5,8 +5,10 @@
 #include <QVBoxLayout>
 #include <QCloseEvent>
 #include <QKeyEvent>
+#include <QMoveEvent>
 #include <QGuiApplication>
 #include <QScreen>
+#include <QDebug>
 
 CallWindow::CallWindow(CallManager *call, ApiClient *api, QWidget *parent)
     : QWidget(parent, Qt::Window)
@@ -14,7 +16,10 @@ CallWindow::CallWindow(CallManager *call, ApiClient *api, QWidget *parent)
     , m_api(api)
 {
     setWindowTitle(tr("Call"));
-    setMinimumSize(360, 280);
+    // Floor the call window so the video stage can't be squeezed down to a
+    // smashed/illegible tile (field report 2026-06-04). 640x480 keeps the
+    // video + control bar usable on the smallest laptop screens.
+    setMinimumSize(640, 480);
     resize(960, 600);
 
     auto *lay = new QVBoxLayout(this);
@@ -65,13 +70,38 @@ void CallWindow::toggleFullscreen()
 {
     if (m_pipDocked) exitPipDock();
     if (m_fullscreen) {
+        qInfo() << "CallWindow: EXIT fullscreen";
         m_fullscreen = false;
         showNormal();
         if (m_normalGeom.isValid()) setGeometry(m_normalGeom);
     } else {
+        QScreen *sc = screen();
+        qInfo().nospace() << "CallWindow: ENTER fullscreen on screen "
+                          << (sc ? sc->name() : QStringLiteral("?"))
+                          << " " << (sc ? sc->geometry() : QRect())
+                          << " dpr=" << (sc ? sc->devicePixelRatio() : 0.0);
         m_normalGeom = geometry();
         m_fullscreen = true;
         showFullScreen();
+    }
+}
+
+void CallWindow::moveEvent(QMoveEvent *e)
+{
+    QWidget::moveEvent(e);
+    // Log cross-display moves so the "video smashed after moving the call to
+    // another monitor, then drops on fullscreen" report can be correlated in
+    // the debug log against frame flow (CallStage::onFrame) + the fullscreen
+    // toggle above. A DPI change between monitors is the prime suspect.
+    QScreen *now = screen();
+    if (now != m_lastScreen) {
+        const QRect g = now ? now->geometry() : QRect();
+        qInfo().nospace() << "CallWindow: moved to screen "
+                          << (now ? now->name() : QStringLiteral("?"))
+                          << " (" << g.width() << "x" << g.height()
+                          << " dpr=" << (now ? now->devicePixelRatio() : 0.0) << ")"
+                          << (m_lastScreen ? " — CROSS-DISPLAY MOVE" : "");
+        m_lastScreen = now;
     }
 }
 

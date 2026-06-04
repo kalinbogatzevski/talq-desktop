@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(talq VERSION 0.49.4 LANGUAGES CXX)
+project(talq VERSION 0.49.5 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -61,6 +61,7 @@ qt_add_executable(talq
     src/core/SubscribePipeline.cpp
     src/core/SubscribeWebrtcSrc.cpp
     src/core/SharedFarEndBus.cpp
+    src/core/Diagnostics.cpp
     src/core/WasapiDucking.cpp
     src/core/VideoFrameProvider.h
     src/core/VideoFrameProvider.cpp
@@ -178,4 +179,3 @@ set_source_files_properties(
     src/ui/MainWindow.cpp
     PROPERTIES COMPILE_DEFINITIONS
       "TALQ_VERSION=\"${PROJECT_VERSION}\";TALQ_VERSION_NAME=\"Slartibartfast\";TALQ_BUILD_TS=\"${TALQ_BUILD_TS}\""
-)

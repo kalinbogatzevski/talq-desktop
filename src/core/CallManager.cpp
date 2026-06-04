@@ -1672,8 +1672,13 @@ void CallManager::buildAndStartSharePipeline(int monitorIndex, quintptr windowHa
         return;
     }
 
+    // Default 1440p (level 2): a single shared window/app is cheap bandwidth-
+    // wise, and 1080p downscales hi-DPI / 2K windows enough to soften text
+    // (field report 2026-06-04). The cap is a CEILING + 4K hard-clamp + GCC
+    // adaptive bitrate still protect a full-4K-monitor share. Existing users
+    // keep their saved choice.
     m_ssQuality = QSettings("TalQ", "TalQ")
-                      .value("Video/screenShareQuality", 1).toInt();
+                      .value("Video/screenShareQuality", 2).toInt();
 
     m_screenSharePipeline = new ScreenSharePipeline(this);
     {
