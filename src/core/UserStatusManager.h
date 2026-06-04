@@ -98,6 +98,13 @@ private:
     QString m_messageId;
     qint64  m_clearAt = 0;
     bool    m_userDefined = false;
+    // Wall-clock ms of the last LOCAL (user-initiated) status write.
+    // refreshFromServer skips applying the server snapshot within ~10 s of this
+    // so a stale read — fired by the popover-close window-activation (or the 60 s
+    // tick) BEFORE our own PUT has propagated — can't revert the change the user
+    // just made on THIS device. Bug: "status changed from TalQ doesn't apply /
+    // display", 2026-06-04.
+    qint64  m_lastUserChangeMs = 0;
     QVector<Predefined> m_predefined;
 
     // Rollback snapshot for optimistic writes.
