@@ -32,6 +32,32 @@ inline bool reconcileIndexValid(int idx, int size, int idAtIdx, int expectedId)
     return idx >= 0 && idx < size && idAtIdx == expectedId;
 }
 
+// H5 — newest-first ordering that respects optimistic temps. A pending
+// optimistic message carries a NEGATIVE id (a decrementing counter, so a later
+// send is MORE negative). It is the NEWEST message and must sort to the FRONT,
+// but a plain `a.id > b.id` sinks negatives to the OLDEST slot — that reorders
+// (or buries) the user's just-sent message and corrupts the oldest-cursor
+// (m_oldestMessageId becomes a negative temp id). Returns true iff message id
+// `a` should sort BEFORE `b` in a newest-first list (front = newest = bottom of
+// the view). Used by enforceNewestFirstInvariant + the refreshLatest merge so
+// both share one ordering authority. Bug: "send two messages, the first one
+// disappears/jumps", 2026-06-04.
+inline bool messageSortsBefore(int a, int b)
+{
+    const bool aPending = a < 0, bPending = b < 0;
+    if (aPending != bPending) return aPending;  // any pending temp is newer than any real
+    if (aPending)             return a < b;     // both temp: more-negative = later send = newer
+    return a > b;                               // both real: higher server id = newer
+}
+
+// True iff the pair (prevId then curId) is already in newest-first order, i.e.
+// curId is NOT newer than prevId. Lets the O(n) ordered-check share the exact
+// ordering used by the sort, so the check and the sort can never disagree.
+inline bool messagePairOrdered(int prevId, int curId)
+{
+    return !messageSortsBefore(curId, prevId);
+}
+
 // H4 — peer-version freshness. Returns true iff a cached peer-version value
 // last observed at lastSeenMs is still within windowMs of nowMs. A
 // lastSeenMs of 0 (never stamped) is treated as stale. Outside the window the
