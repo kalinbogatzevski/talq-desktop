@@ -76,6 +76,20 @@ QString wgcAvailability()
     FreeLibrary(h);
     return r;
 }
+
+// Trim a DXGI adapter description to a compact display name:
+// "NVIDIA GeForce RTX 3070 Laptop GPU" -> "NVIDIA RTX 3070",
+// "Intel(R) UHD Graphics" -> "Intel UHD".
+QString shortGpuName(QString n)
+{
+    n.remove(QStringLiteral("(R)"));
+    n.remove(QStringLiteral("(TM)"));
+    n.remove(QStringLiteral(" Corporation"));
+    n.remove(QStringLiteral(" Laptop GPU"));
+    n.remove(QStringLiteral("GeForce "));
+    n.replace(QStringLiteral(" Graphics"), QString());
+    return n.simplified();
+}
 #endif // Q_OS_WIN
 
 void gstElement(QTextStream &s, const char *name)
@@ -182,6 +196,39 @@ QString tailDebugLog(qint64 maxBytes)
                      .arg(maxBytes / 1024).arg(sz / 1024);
     }
     return header + QString::fromUtf8(f.readAll());
+}
+
+QStringList gpuAdapterNames()
+{
+    QStringList out;
+#ifdef Q_OS_WIN
+    HMODULE h = LoadLibraryW(L"dxgi.dll");
+    if (!h) return out;
+    typedef HRESULT(WINAPI * PFN_Create)(REFIID, void **);
+    auto create = reinterpret_cast<PFN_Create>(
+        reinterpret_cast<void *>(GetProcAddress(h, "CreateDXGIFactory1")));
+    if (!create) { FreeLibrary(h); return out; }
+    IDXGIFactory1 *factory = nullptr;
+    if (FAILED(create(IID_IDXGIFactory1, reinterpret_cast<void **>(&factory))) || !factory) {
+        FreeLibrary(h);
+        return out;
+    }
+    for (UINT i = 0;; ++i) {
+        IDXGIAdapter1 *ad = nullptr;
+        if (factory->EnumAdapters1(i, &ad) == DXGI_ERROR_NOT_FOUND) break;
+        if (!ad) continue;
+        DXGI_ADAPTER_DESC1 d{};
+        // Skip the software "Microsoft Basic Render Driver" — show real GPUs only.
+        if (SUCCEEDED(ad->GetDesc1(&d)) && !(d.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)) {
+            const QString name = shortGpuName(QString::fromWCharArray(d.Description));
+            if (!name.isEmpty()) out << name;
+        }
+        ad->Release();
+    }
+    factory->Release();
+    FreeLibrary(h);
+#endif
+    return out;
 }
 
 } // namespace talq

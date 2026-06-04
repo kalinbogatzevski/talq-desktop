@@ -26,6 +26,7 @@
 #include "core/PushClient.h"
 #include "core/SignalingClient.h"
 #include "core/CallManager.h"
+#include "core/Diagnostics.h"
 #include "core/UserStatusManager.h"
 #include "ui/StatusPopover.h"
 #include "ui/AppStyle.h"
@@ -1874,6 +1875,12 @@ void MainWindow::refreshWelcomeStatus()
     const QString gpu = m_callManager ? m_callManager->gpuAccelStatus()
                                       : QStringLiteral("Software only");
     const bool gpuOn  = (gpu != QLatin1String("Software only"));
+    // Show ALL real GPUs (a 2-GPU laptop should read "NVIDIA RTX 3070 + Intel
+    // UHD"), with the hardware-accel codec on the sub-line. Falls back to the
+    // accel string if adapter enumeration is unavailable.
+    const QStringList gpuNames = talq::gpuAdapterNames();
+    const QString gpuBig = gpuNames.isEmpty() ? gpu
+                                              : gpuNames.join(QStringLiteral(" + "));
 
     QString url = m_auth ? m_auth->serverUrl() : QString();
     url.remove(QRegularExpression(QStringLiteral("^https?://")));
@@ -1903,8 +1910,8 @@ void MainWindow::refreshWelcomeStatus()
                                            : QStringLiteral("Polling"),
                                     pushOn ? QStringLiteral("websocket up")
                                            : QStringLiteral("fallback")));
-    m_welcomeGpuLabel->setText(val(gpu,
-                                   gpuOn ? QStringLiteral("hardware accelerated")
+    m_welcomeGpuLabel->setText(val(gpuBig,
+                                   gpuOn ? QStringLiteral("hardware accelerated · %1").arg(gpu)
                                          : QStringLiteral("software only")));
 
     auto setLed = [&](QLabel *led, bool ok) {
