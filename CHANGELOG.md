@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.49.4 "Slartibartfast" -- BETA (2026-06-04)
+
+### Fixed
+
+* **Changing your status from TalQ now applies and sticks.** A regression in
+  0.49.2's cross-device status sync could briefly revert the status you just set
+  -- the background refresh read the server a moment before your change had
+  propagated, and snapped it back. Your own change now wins for a short window
+  after you make it; cross-device sync from your other instances is unchanged.
+
 ## v0.49.3 "Slartibartfast" -- BETA (2026-06-04)
 
 ### Fixed
