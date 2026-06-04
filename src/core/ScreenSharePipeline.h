@@ -150,10 +150,12 @@ private:
     // the "shares full screen" bug). Instead, for a window share we load a
     // tiny MSVC-built C-ABI DLL (talq_wgc.dll) at runtime and pump its BGRA
     // frames into an appsrc that replaces the capture source. These are live
-    // only while sharing a window (windowHandle != 0); a monitor share is
-    // unchanged (d3d11 HMONITOR path).
+    // only while sharing a window (windowHandle != 0). A MONITOR share now also
+    // prefers WGC (m_wgcMonitor set) because DXGI Desktop Duplication fails on
+    // hybrid-GPU laptops; it falls back to the d3d11 HMONITOR path otherwise.
     GstElement *m_wgcAppsrc  = nullptr;  // owned by the pipeline once bin-added
     void       *m_wgcSession = nullptr;  // opaque talq_wgc_session*, NULL = none
+    quintptr    m_wgcMonitor = 0;        // HMONITOR for a WGC MONITOR capture (0 = window/none)
     int         m_wgcW = 0, m_wgcH = 0;  // last pushed frame size (drives caps)
     // Frame callback the DLL invokes on its own capture thread; copies the
     // BGRA rows tightly-packed and pushes them into m_wgcAppsrc. C-ABI shape
