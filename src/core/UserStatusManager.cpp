@@ -223,13 +223,15 @@ void UserStatusManager::tryRestoreFromAutoAway()
     // statusIsUserDefined=true and is never touched.
     const bool autoAway = m_autoAwayActive
                        || (m_status == Status::Away && !m_userDefined);
-    if (TalqLog::g_verbose)
-        qDebug().nospace() << "[BUG13] tryRestore status=" << static_cast<int>(m_status)
-                      << " autoFlag=" << m_autoAwayActive
-                      << " userDefined=" << m_userDefined
-                      << " -> willRestore=" << autoAway;
     if (!autoAway)
-        return;
+        return;   // no-op (the common case) — log NOTHING: this runs on every
+                  // mouse/key/wheel input, so the old unconditional [BUG13]
+                  // trace flooded the debug log (2026-06-04).
+    if (TalqLog::g_verbose)
+        qInfo().nospace() << "[BUG13] tryRestore RESTORING auto-Away -> Online "
+                          << "(status=" << static_cast<int>(m_status)
+                          << " autoFlag=" << m_autoAwayActive
+                          << " userDefined=" << m_userDefined << ")";
     const Status priorStatus = m_status;
     m_status         = Status::Online;
     m_autoAwayActive = false;

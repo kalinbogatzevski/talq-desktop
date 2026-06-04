@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.49.6 "Slartibartfast" -- BETA (2026-06-04)
+
+### Changed
+
+* **Sharing a single window now captures at native resolution.** Window app
+  shares no longer downscale before sending, so text stays crisp even from a
+  high-DPI or large screen -- the bitrate adapts to bandwidth instead of
+  throwing away resolution. (Whole-screen shares still follow the quality
+  setting.)
+
+### Fixed
+
+* **Clearer message when single-window sharing isn't supported.** On older
+  Windows without Windows Graphics Capture, the error now explains that your
+  Windows version doesn't support it (and suggests sharing the whole screen),
+  instead of wrongly blaming the app.
+
+* **Quieter debug log.** Removed a status-restore trace that fired on every
+  click and flooded the log.
+
 ## v0.49.5 "Slartibartfast" -- BETA (2026-06-04)
 
 ### Fixed

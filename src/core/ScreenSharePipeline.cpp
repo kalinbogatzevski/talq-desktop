@@ -315,13 +315,16 @@ bool ScreenSharePipeline::start(const QString &stunServer, const QList<TurnServe
         // a clear error instead. If d3d11screencapturesrc is the only
         // path that reliably honors the user's pick, missing it is a
         // deploy problem we need to know about.
+        // Reworded 2026-06-04: the talq_wgc.dll ships in the build, so a failure
+        // here is the OS lacking Windows Graphics Capture (old Win10 / LTSC), not
+        // a missing component — don't blame "this build". Monitor capture now
+        // tries WGC then DXGI, so reaching here means both failed.
         const QString why = (windowHandle != 0)
-            ? "Window capture requires gstd3d11 (Windows Graphics "
-              "Capture). It is not available in this TalQ build. "
-              "Window sharing is unavailable."
-            : "Monitor capture requires gstd3d11 (HMONITOR-targeted). "
-              "It is not available in this TalQ build, and the legacy "
-              "fallbacks would share the wrong display.";
+            ? "Single-window sharing needs Windows Graphics Capture, which this "
+              "version of Windows doesn't support. Update Windows, or share your "
+              "whole screen instead."
+            : "Couldn't start screen capture on this system. Try sharing a single "
+              "window instead, or update your graphics drivers.";
         qWarning() << "ScreenSharePipeline:" << why;
         emit error(why);
         cleanup();
