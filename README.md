@@ -10,6 +10,8 @@ Your team chat as a real desktop app: instant open, near-zero idle, built to be 
 
 <sub>Stable codename: **Botev** — named for **2 June, the Day of Hristo Botev and of those who fell for Bulgaria's freedom** (*Ден на Ботев и на загиналите за свободата на България*), when at noon the sirens sound across the whole country and everyone — drivers, pedestrians, entire cities — stops and stands still for a minute. Hristo Botev was the poet-revolutionary who crossed the Danube on the *Radetzky* in 1876 to fight for that freedom and was killed in the Vratsa mountains at twenty-eight; the date the country still stops for him. It fits a release line that taught calls to *stand* — to ride out a dropped or stalled network instead of dropping with it. It follows **Margaritka** (0.46, Children's Day), and before it the *Hitchhiker's Guide* stables *Deep Thought* (0.42, the computer that found **42**) and *Magrathea* (0.44), and the 150th-anniversary cycle of Bulgaria's 1876 April Uprising: *Aprilsko Vastanie* → *Panagyurishte* → *Koprivshtitsa* 🇧🇬</sub>
 
+<sub>Beta codename: **Slartibartfast** (0.49.x) — the *Hitchhiker's Guide* planetary coastline designer who won an award for the fjords of Norway and liked to sign his name in the crinkly bits. He carries the Guide thread forward (*Deep Thought* → *Magrathea* → *Slartibartfast*) and suits a beta that sweats the fine detail: acoustic **echo cancellation** (subtracting the room's own reflections from your mic) and chat-sync correctness. 🌌</sub>
+
 </div>
 
 > ⚠️ **Status:** Chat is the solid, daily-driver core. **Audio/video
