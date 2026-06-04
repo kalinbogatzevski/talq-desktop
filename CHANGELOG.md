@@ -1,5 +1,36 @@
 # Changelog
 
+## v0.50.0 "Slartibartfast" -- STABLE (2026-06-04)
+
+The Slartibartfast line, promoted to stable. The headlines since 0.48.9:
+
+### Added
+
+* **Echo cancellation.** Take a call on speakers without the people you're
+  talking to hearing their own voice echoed back to them. On by default;
+  toggle under Settings -> Echo cancellation.
+* **Full-display sharing on laptops with two graphics cards.** Sharing your
+  whole screen now works on hybrid-GPU laptops (e.g. Intel + NVIDIA) where it
+  could previously fail to start.
+* **"Collect diagnostics" button** in Settings -- one click writes a text file
+  with your system info and recent log, to send when reporting a problem.
+
+### Changed
+
+* **Sharper screen sharing.** Single windows are captured at native resolution,
+  and the default quality is higher, so shared text stays readable.
+* The Home screen now lists all of your graphics cards.
+
+### Fixed
+
+* **Your status behaves.** A custom status (like "Working remotely") no longer
+  resets to "Online" when you restart, it syncs across your devices, and
+  changing it from TalQ applies reliably.
+* **Messages don't vanish.** Sending two messages in quick succession no longer
+  makes the first one disappear.
+* Right-click -> Reply now shows the reply preview above the message box.
+* A range of call-screen, Settings, and update-check layout fixes.
+
 ## v0.49.7 "Slartibartfast" -- BETA (2026-06-04)
 
 ### Changed
