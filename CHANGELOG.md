@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.49.3 "Slartibartfast" -- BETA (2026-06-04)
+
+### Fixed
+
+* **Call-screen pills now wrap instead of overlapping on narrow windows.** When
+  the call window is small -- especially while you're screen-sharing -- the
+  status, telemetry, and action pills stack onto their own rows instead of
+  colliding, and the "You're sharing your screen" badge sits on its own clear
+  row below them instead of being hidden behind the other pills.
+
 ## v0.49.2 "Slartibartfast" -- BETA (2026-06-04)
 
 ### Fixed

@@ -150,6 +150,16 @@ private:
     // its telemetry tiles to a new row before they collide with the buttons on
     // a narrow window. Reset to width() each frame (no action pills = full width).
     qreal m_actionPillsLeft = 0;
+    // Bottom Y of the top-chrome "anchor" row (status pill + action-button
+    // block). When the window is too narrow to hold the status pill and the
+    // action buttons side by side, paintActionPills drops the buttons to their
+    // own row and this grows accordingly. Wrapped info-pill rows start BELOW
+    // this so they never land on top of the action buttons.
+    qreal m_chromeRowsBottom = 0;
+    // Bottom Y actually reached by the info-pill tiles (incl. wrapped rows).
+    // Published by paintInfoPills so the persistent "sharing" badge can sit
+    // clear BELOW every top-chrome element instead of being overlapped by it.
+    qreal m_infoPillsBottom = 0;
 
     // 0.40.15 — hit rects for the Quality / BG dropdown buttons (top-
     // right). Updated each paint by paintActionPills; consumed by
