@@ -7,6 +7,8 @@
 
 class ApiClient;
 class CallStage;
+class QScreen;
+class QMoveEvent;
 
 /**
  * Top-level call window. Thin shell around CallStage: owns window state
@@ -41,6 +43,11 @@ protected:
     void closeEvent(QCloseEvent *) override;
     void keyPressEvent(QKeyEvent *) override;
     void mouseDoubleClickEvent(QMouseEvent *) override;
+    // Instrumentation for the "video smashed after dragging the call between
+    // displays, then drops on fullscreen" report: logs cross-monitor moves so
+    // the next debug log can be correlated against frame flow + the fullscreen
+    // toggle (2026-06-04).
+    void moveEvent(QMoveEvent *) override;
 
 private slots:
     void onCallState();
@@ -55,4 +62,5 @@ private:
     bool m_fullscreen = false;
     bool m_pipDocked = false;
     QRect m_normalGeom;
+    QScreen *m_lastScreen = nullptr;   // for cross-display-move logging
 };

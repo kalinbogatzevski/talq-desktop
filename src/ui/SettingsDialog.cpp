@@ -1,6 +1,7 @@
 #include "SettingsDialog.h"
 #include "painter/PainterTheme.h"
 #include "core/MediaDeviceManager.h"
+#include "core/Diagnostics.h"
 #include "core/NotificationManager.h"
 #include "core/CallManager.h"
 #include "core/TalqLog.h"
@@ -1470,6 +1471,68 @@ QWidget *SettingsDialog::buildGeneralTab()
             logRow));
     }
 
+    // One-click full diagnostics: app/OS/GPU/displays/GStreamer/WGC/devices/
+    // settings + the recent log, written to a single .txt the user can send.
+    // This is what answers "what GPU / Windows build / plugins do they have?"
+    // in one shot instead of a remote-debugging back-and-forth.
+    {
+        auto *diagBtn = new QPushButton(tr("Collect diagnostics…"));
+        diagBtn->setProperty("variant", "default");
+        connect(diagBtn, &QPushButton::clicked, this, [this]() {
+            QString text =
+                QStringLiteral("TalQ diagnostics\n================\nGenerated: ")
+                + QDateTime::currentDateTime().toString(Qt::ISODate)
+                + QStringLiteral("\n\n[App]\nVersion:  ")
+                + QString::fromLatin1(TALQ_VERSION) + " \""
+                + QString::fromLatin1(TALQ_VERSION_NAME) + "\"\n";
+#ifdef TALQ_BUILD_TS
+            text += QStringLiteral("Build:    ") + QString::fromLatin1(TALQ_BUILD_TS) + "\n";
+#endif
+#ifdef TALQ_PRERELEASE
+            text += QStringLiteral("Channel:  PRE-RELEASE build\n");
+#else
+            text += QStringLiteral("Channel:  stable build\n");
+#endif
+#ifdef TALQ_BRAND_123NET
+            text += QStringLiteral("Brand:    123NET\n");
+#else
+            text += QStringLiteral("Brand:    generic\n");
+#endif
+            text += "\n";
+            text += talq::collectSystemDiagnostics();
+            text += QStringLiteral("\n[Recent log: talq_debug.log]\n");
+            text += talq::tailDebugLog(2 * 1024 * 1024);
+
+            const QString stamp =
+                QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss");
+            const QString path =
+                QStandardPaths::writableLocation(QStandardPaths::DesktopLocation)
+                + "/TalQ-diagnostics-" + stamp + ".txt";
+            QFile f(path);
+            if (f.open(QIODevice::WriteOnly | QIODevice::Text)) {
+                f.write(text.toUtf8());
+                f.close();
+                QDesktopServices::openUrl(QUrl::fromLocalFile(path));
+                QMessageBox::information(this, tr("Diagnostics"),
+                    tr("Saved diagnostics to:\n%1\n\nIt has been opened — send "
+                       "this file to the developers when reporting a problem.").arg(path));
+            } else {
+                QMessageBox::warning(this, tr("Diagnostics"),
+                    tr("Couldn't write the diagnostics file."));
+            }
+        });
+        auto *diagRow = new QWidget;
+        auto *diagRowLayout = new QHBoxLayout(diagRow);
+        diagRowLayout->setContentsMargins(0, 0, 0, 0);
+        diagRowLayout->addStretch();
+        diagRowLayout->addWidget(diagBtn);
+        layout->addWidget(makeSettingRow(
+            tr("Debug info"),
+            tr("Collect your system info (OS, graphics, devices, plugins) and "
+               "recent log into one text file to share with the developers."),
+            diagRow));
+    }
+
     layout->addStretch();
     return page;
 }
@@ -1566,6 +1629,7 @@ QWidget *SettingsDialog::buildUpdatesTab()
     checkBtn->setProperty("variant", "default");
     auto *checkStatus = new QLabel(w);
     checkStatus->setProperty("role", "secondary");
+    checkStatus->setWordWrap(true);   // long "Checked just now…" text was clipped
     { QFont f = checkStatus->font(); f.setPixelSize(11); checkStatus->setFont(f); }
     auto *btnRow = new QHBoxLayout;
     btnRow->setContentsMargins(0, 0, 0, 0);

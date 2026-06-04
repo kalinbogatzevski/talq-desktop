@@ -1,5 +1,40 @@
 # Changelog
 
+## v0.49.5 "Slartibartfast" -- BETA (2026-06-04)
+
+### Fixed
+
+* **Sharing your whole screen now works on laptops with two graphics cards.**
+  On hybrid-GPU laptops (e.g. Intel + NVIDIA, with displays driven by different
+  cards), full-display sharing could fail to start. TalQ now captures the
+  display through Windows Graphics Capture -- the same engine single-window
+  sharing already uses -- which works no matter which GPU drives the screen.
+  (Older Windows without that support falls back to the previous method.)
+
+* **Right-click → Reply now shows the reply preview.** Choosing Reply from the
+  message right-click menu armed the reply but didn't show the preview bar above
+  the message box, so it looked like nothing happened. (The reply icon next to a
+  message already worked.)
+
+* **Shared screens and windows look sharper by default.** The default sharing
+  quality is now 1440p instead of 1080p, so text in a shared window stays
+  readable -- a window on a high-DPI or large screen was being downscaled enough
+  to soften text. ("High" quality captures most windows at native resolution.)
+
+* **The "check for updates" result text no longer gets cut off** in Settings.
+
+### Added
+
+* **Settings -> "Collect diagnostics".** One click writes a text file with your
+  system info (Windows version, graphics cards, displays, audio/video devices,
+  installed components) and the recent log -- easy to send when reporting a
+  problem.
+
+### Changed
+
+* The call window now has a larger minimum size so the video can't be squeezed
+  down to an unreadable sliver.
+
 ## v0.49.4 "Slartibartfast" -- BETA (2026-06-04)
 
 ### Fixed

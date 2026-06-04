@@ -29,11 +29,14 @@ extern "C" {
     typedef int   (*pfn_wgc_available)(void);
     typedef void *(*pfn_wgc_start_window)(HWND hwnd, talq_wgc_frame_cb cb,
                                           void *user, int show_border);
+    typedef void *(*pfn_wgc_start_monitor)(HMONITOR mon, talq_wgc_frame_cb cb,
+                                           void *user, int show_border);
     typedef void  (*pfn_wgc_stop)(void *s);
 }
-pfn_wgc_available    g_wgc_available = nullptr;
-pfn_wgc_start_window g_wgc_start     = nullptr;
-pfn_wgc_stop         g_wgc_stop      = nullptr;
+pfn_wgc_available     g_wgc_available    = nullptr;
+pfn_wgc_start_window  g_wgc_start        = nullptr;
+pfn_wgc_start_monitor g_wgc_start_monitor= nullptr;   // null on older DLLs → DXGI fallback
+pfn_wgc_stop          g_wgc_stop         = nullptr;
 
 // Load + resolve talq_wgc.dll once. Returns true iff window capture is usable
 // (DLL present, all three entry points resolved, WGC supported by the OS).
@@ -53,6 +56,11 @@ bool ensureWgcLoaded()
         reinterpret_cast<void *>(GetProcAddress(h, "talq_wgc_available")));
     g_wgc_start = reinterpret_cast<pfn_wgc_start_window>(
         reinterpret_cast<void *>(GetProcAddress(h, "talq_wgc_start_window")));
+    // Monitor capture is OPTIONAL (added later) — resolve but don't require it,
+    // so an older talq_wgc.dll still gives window capture and falls back to DXGI
+    // for monitors.
+    g_wgc_start_monitor = reinterpret_cast<pfn_wgc_start_monitor>(
+        reinterpret_cast<void *>(GetProcAddress(h, "talq_wgc_start_monitor")));
     g_wgc_stop = reinterpret_cast<pfn_wgc_stop>(
         reinterpret_cast<void *>(GetProcAddress(h, "talq_wgc_stop")));
     if (!g_wgc_available || !g_wgc_start || !g_wgc_stop) {
@@ -255,15 +263,42 @@ bool ScreenSharePipeline::start(const QString &stunServer, const QList<TurnServe
             hMon = MonitorFromPoint(p, MONITOR_DEFAULTTONEAREST);
         }
         if (hMon) {
-            screenSrc = gst_element_factory_make("d3d11screencapturesrc", nullptr);
-            if (screenSrc) {
-                g_object_set(screenSrc,
-                             "monitor-handle",
-                             (guint64)(quintptr)hMon,
-                             "show-cursor", TRUE, nullptr);
-                qInfo() << "ScreenSharePipeline: monitor capture via HMONITOR"
-                        << (quintptr)hMon
-                        << "(Qt screen index" << monitorIndex << ")";
+            // Prefer WGC for monitor capture too: it is adapter-AGNOSTIC, so it
+            // works on hybrid-GPU laptops where DXGI Desktop Duplication
+            // (d3d11screencapturesrc) fails with DXGI_ERROR_UNSUPPORTED because
+            // the monitor is driven by a different GPU than the one TalQ runs on
+            // (field-confirmed 2026-06-04, 2-GPU laptop). Fall back to DXGI when
+            // WGC or the monitor entry point is unavailable (older OS / DLL).
+            if (ensureWgcLoaded() && g_wgc_start_monitor) {
+                m_wgcAppsrc = gst_element_factory_make("appsrc", "wgc-appsrc");
+                if (m_wgcAppsrc) {
+                    g_object_set(m_wgcAppsrc,
+                                 "is-live",      TRUE,
+                                 "do-timestamp", TRUE,
+                                 "format",       GST_FORMAT_TIME,
+                                 "max-bytes",    (guint64)(16 * 1024 * 1024),
+                                 "block",        FALSE,
+                                 nullptr);
+                    gst_util_set_object_arg(G_OBJECT(m_wgcAppsrc), "stream-type", "stream");
+                    screenSrc = m_wgcAppsrc;
+                    m_wgcMonitor = (quintptr)hMon;   // capture started post-PLAYING
+                    qInfo().nospace() << "ScreenSharePipeline: monitor capture via WGC "
+                                      << "(talq_wgc.dll) hMon=" << (quintptr)hMon
+                                      << " (Qt screen index " << monitorIndex << ")";
+                }
+            }
+            if (!screenSrc) {
+                // DXGI Desktop Duplication fallback (single-GPU / pre-WGC OS).
+                screenSrc = gst_element_factory_make("d3d11screencapturesrc", nullptr);
+                if (screenSrc) {
+                    g_object_set(screenSrc,
+                                 "monitor-handle",
+                                 (guint64)(quintptr)hMon,
+                                 "show-cursor", TRUE, nullptr);
+                    qInfo() << "ScreenSharePipeline: monitor capture via DXGI HMONITOR"
+                            << (quintptr)hMon
+                            << "(Qt screen index" << monitorIndex << ")";
+                }
             }
         }
     }
@@ -570,6 +605,21 @@ bool ScreenSharePipeline::start(const QString &stunServer, const QList<TurnServe
         }
         qInfo() << "ScreenSharePipeline: WGC capture session live for hwnd"
                 << (quintptr)windowHandle;
+    } else if (m_wgcAppsrc && m_wgcMonitor && g_wgc_start_monitor) {
+        // Full-display capture via WGC (hybrid-GPU-safe; chosen above).
+        m_wgcSession = g_wgc_start_monitor(reinterpret_cast<HMONITOR>(m_wgcMonitor),
+                                           &ScreenSharePipeline::onWgcFrame, this,
+                                           /*show_border=*/0);
+        if (!m_wgcSession) {
+            qWarning() << "ScreenSharePipeline: talq_wgc_start_monitor failed for hMon"
+                       << m_wgcMonitor;
+            emit error(QStringLiteral(
+                "Couldn't start full-display sharing. Please try again."));
+            cleanup();
+            return false;
+        }
+        qInfo() << "ScreenSharePipeline: WGC monitor capture session live for hMon"
+                << m_wgcMonitor;
     }
 #endif
 
@@ -637,6 +687,7 @@ void ScreenSharePipeline::cleanup()
         m_wgcSession = nullptr;
     }
     m_wgcAppsrc = nullptr;
+    m_wgcMonitor = 0;
     m_wgcW = m_wgcH = 0;
 #endif
     m_startWatchdog.stop();
