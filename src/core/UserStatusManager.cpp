@@ -4,6 +4,7 @@
 #include "core/TalqLog.h"
 
 #include <QColor>
+#include <QDateTime>
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QDebug>
@@ -313,6 +314,16 @@ void UserStatusManager::refreshFromServer(bool keepAliveOnline)
 {
     m_api->get(statusPath(), [this, keepAliveOnline](bool ok, const QJsonObject &d, int) {
         if (!ok) return;   // transient; try again next cycle
+        // Don't let a stale read revert a status the user JUST changed on this
+        // device: closing the status popover re-activates the window (and the
+        // 60 s tick can land) and fires a GET whose response can predate our own
+        // PUT propagating. Within the grace window, trust the local optimistic
+        // state + the in-flight PUT; cross-device sync resumes right after.
+        if (QDateTime::currentMSecsSinceEpoch() - m_lastUserChangeMs < 10000) {
+            if (TalqLog::g_verbose)
+                qDebug() << "UserStatus: refresh skipped (recent local change)";
+            return;
+        }
         const Status  prevStatus    = m_status;
         const QString prevMessage   = m_message;
         const QString prevIcon      = m_icon;
@@ -434,6 +445,7 @@ void UserStatusManager::setStatusType(Status s)
     // to "restore" their intentional choice to Online.
     m_autoAwayActive = false;
     takeSnapshot();
+    m_lastUserChangeMs = QDateTime::currentMSecsSinceEpoch();
     m_status = s;
     m_userDefined = true;
     emit statusChanged();  // optimistic
@@ -449,6 +461,7 @@ void UserStatusManager::setStatusType(Status s)
 void UserStatusManager::setPredefined(const QString &messageId, qint64 clearAt)
 {
     takeSnapshot();
+    m_lastUserChangeMs = QDateTime::currentMSecsSinceEpoch();
     m_messageId = messageId;
     for (const auto &p : m_predefined) {
         if (p.id == messageId) { m_message = p.message; m_icon = p.icon; break; }
@@ -470,6 +483,7 @@ void UserStatusManager::setPredefined(const QString &messageId, qint64 clearAt)
 void UserStatusManager::setCustom(const QString &icon, const QString &text, qint64 clearAt)
 {
     takeSnapshot();
+    m_lastUserChangeMs = QDateTime::currentMSecsSinceEpoch();
     m_icon = icon;
     m_message = text;
     m_messageId.clear();
@@ -491,6 +505,7 @@ void UserStatusManager::setCustom(const QString &icon, const QString &text, qint
 void UserStatusManager::clearStatusMessage()
 {
     takeSnapshot();
+    m_lastUserChangeMs = QDateTime::currentMSecsSinceEpoch();
     m_message.clear();
     m_icon.clear();
     m_messageId.clear();
