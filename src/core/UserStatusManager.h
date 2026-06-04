@@ -60,6 +60,14 @@ public slots:
     // auto-flipped to Away; never touches a user-chosen status.
     void tryRestoreFromAutoAway();
 
+    // Poll the authoritative (per-user, server-side) status so a change made on
+    // ANOTHER TalQ/Talk instance of the same account propagates here, then —
+    // only when keepAliveOnline and the SERVER truth is Online — re-assert
+    // online to keep presence alive. Read-before-write so a stale local
+    // "online" can't stomp an Away/DND/custom status another device just set.
+    // Driven by the 60 s heartbeat (keepAlive=true) + window activation (false).
+    void refreshFromServer(bool keepAliveOnline);
+
     void setStatusType(Status s);
     void setPredefined(const QString &messageId, qint64 clearAt);
     void setCustom(const QString &icon, const QString &text, qint64 clearAt);

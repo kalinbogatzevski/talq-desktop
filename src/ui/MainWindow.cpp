@@ -2382,6 +2382,13 @@ void MainWindow::changeEvent(QEvent *event)
         if (now - m_lastActivationStatusRefreshMs >= 5000) {
             m_lastActivationStatusRefreshMs = now;
             m_conversations->refreshUserStatuses();
+            // Multi-instance sync: pull OUR OWN status too, so a status set on
+            // another TalQ/Talk instance of this account shows here the moment we
+            // alt-tab back (not only on the 60 s heartbeat). keepAlive=false —
+            // the tryRestoreFromAutoAway() above already handles "user is back",
+            // this is purely a read. Shares the 5 s rate limit.
+            if (m_userStatus)
+                m_userStatus->refreshFromServer(false);
             // bug 1 — also re-sync the OPEN room on activation. The
             // conversation list self-heals on its own 30 s timer, but the open
             // room's only live path is the long-poll; if it stalled while we

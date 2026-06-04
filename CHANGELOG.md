@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.49.2 "Slartibartfast" -- BETA (2026-06-04)
+
+### Fixed
+
+* **Your custom status no longer resets to "Online" when you restart TalQ.** A
+  status like "Working remotely" was being cleared on every launch (and after
+  every call). TalQ now only undoes the automatic "In a call" status that Talk
+  itself sets during a call, and never touches a status you chose.
+
+* **Your status now syncs across your devices.** If you change your status in
+  another TalQ or Talk instance signed in to the same account, this one updates
+  to match -- within about a minute, or instantly when you switch back to the
+  window -- instead of showing a stale status. (It also no longer re-asserts a
+  stale "Online" over an Away/Do-not-disturb you set elsewhere.)
+
 ## v0.49.1 "Slartibartfast" -- BETA (2026-06-04)
 
 ### Fixed
