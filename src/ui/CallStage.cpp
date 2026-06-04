@@ -394,6 +394,8 @@ void CallStage::paintEvent(QPaintEvent *)
     // No action buttons until paintActionPills runs this frame → info pills may
     // use the full width; paintActionPills lowers this to the button block's left.
     m_actionPillsLeft = width();
+    m_chromeRowsBottom = 40.0;   // status-pill row bottom (14 + 26) by default
+    m_infoPillsBottom  = 0.0;
     m_qualityPillRect = QRectF();
     m_bgPillRect      = QRectF();
 
@@ -452,7 +454,6 @@ void CallStage::paintEvent(QPaintEvent *)
             p.drawText(lbl, Qt::AlignCenter, label);
         }
         paintStatusPill(p, th);
-        paintSharingBadge(p, th);
         // Camera-unavailable banner: painted OUTSIDE the fading chrome block
         // below so it stays put the whole time the problem is live.
         paintCameraBanner(p, th);
@@ -465,13 +466,21 @@ void CallStage::paintEvent(QPaintEvent *)
         if (m_chromeAlpha > 1e-3) {
             p.save();
             p.setOpacity(m_chromeAlpha);
-            // Action buttons FIRST: they publish m_actionPillsLeft so the info
-            // pills below can wrap before colliding with them on a narrow window.
+            // Action buttons FIRST: they publish m_actionPillsLeft +
+            // m_chromeRowsBottom so the info pills below wrap before colliding
+            // with them (and drop BELOW them) on a narrow window.
             paintActionPills(p, th);
             paintInfoPills(p, th);
             paintControlBar(p, th);
             p.restore();
         }
+        // Persistent "you're sharing your screen" badge — painted LAST, at full
+        // opacity, on its OWN row BELOW the top-chrome block (status + info +
+        // action rows). Previously it shared the top row and the info/action
+        // pills (drawn after it) painted ON TOP, so on a narrow window it sat
+        // "under" them. Now it always has a clear row and stays visible while
+        // the chrome fades.
+        paintSharingBadge(p, th);
     }
 }
 
@@ -1147,6 +1156,7 @@ void CallStage::paintInfoPills(QPainter &p, const PainterTheme &th)
 
     qreal x = m_statusPillRect.right() + gap;
     qreal y = m_statusPillRect.top();
+    bool  onRow0 = true;                              // row shared with status/actions
     const qreal rowStartX = m_statusPillRect.left();  // wrapped rows left-justify here
     const qreal rowGap    = 6.0;
 
@@ -1155,16 +1165,18 @@ void CallStage::paintInfoPills(QPainter &p, const PainterTheme &th)
         const qreal w = padL + dotW + dotGap
                       + keyFm.horizontalAdvance(key) + keyValGap
                       + valFm.horizontalAdvance(val) + padR;
-        // Wrap to a new row when this tile would overlap the right-anchored
-        // action buttons (first row, boundary = m_actionPillsLeft) or run off
-        // the right edge (wrapped rows own the full width). A row's FIRST tile
-        // never wraps, so a tile wider than the row can't loop forever.
-        const bool  firstRow = (y <= m_statusPillRect.top() + 0.5);
-        const qreal rowRight = firstRow ? (m_actionPillsLeft - gap)
-                                        : (width() - 16.0);
+        // Wrap when this tile would overlap the action-button block (row 0,
+        // boundary = m_actionPillsLeft) or run off the right edge (wrapped rows
+        // own the full width). A row's FIRST tile never wraps, so a tile wider
+        // than the row can't loop forever. The FIRST wrap drops BELOW the whole
+        // anchor block (m_chromeRowsBottom) so info never lands on top of the
+        // action buttons — even when they were dropped to their own row.
+        const qreal rowRight = onRow0 ? (m_actionPillsLeft - gap)
+                                      : (width() - 16.0);
         if (x > rowStartX + 0.5 && x + w > rowRight) {
-            y += tileH + rowGap;
-            x  = rowStartX;
+            y = onRow0 ? (m_chromeRowsBottom + rowGap) : (y + tileH + rowGap);
+            x = rowStartX;
+            onRow0 = false;
         }
         QRectF tile(x, y, w, tileH);
         p.setBrush(face);
@@ -1189,6 +1201,7 @@ void CallStage::paintInfoPills(QPainter &p, const PainterTheme &th)
                           valFm.horizontalAdvance(val), tile.height()),
                    Qt::AlignVCenter | Qt::AlignLeft, val);
         x = tile.right() + gap;
+        m_infoPillsBottom = qMax(m_infoPillsBottom, tile.bottom());
         m_topChromeRects.append(tile);
     };
 
@@ -1332,6 +1345,24 @@ void CallStage::paintActionPills(QPainter &p, const PainterTheme &th)
     QRectF shBtn;
     if (showShare) shBtn = QRectF(qBtn.left() - gap - shW, rowTop, shW, btnH);
 
+    // Narrow-window guard: if the right-anchored button block would overlap the
+    // left-anchored status pill, there isn't room for both on one row — drop the
+    // WHOLE block to its own row directly under the status pill so they never
+    // collide. (paintStatusPill ran earlier this frame → m_statusPillRect is
+    // current.)
+    const qreal blockLeft0  = showShare ? shBtn.left() : qBtn.left();
+    const qreal statusRight = m_statusPillRect.isValid() ? m_statusPillRect.right() : 0.0;
+    bool actionsDropped = false;
+    if (blockLeft0 < statusRight + gap) {
+        const qreal newTop = (m_statusPillRect.isValid() ? m_statusPillRect.bottom()
+                                                          : 40.0) + 6.0;
+        const qreal dy = newTop - rowTop;
+        bgBtn.translate(0, dy);
+        qBtn.translate(0, dy);
+        if (showShare) shBtn.translate(0, dy);
+        actionsDropped = true;
+    }
+
     auto drawButton = [&](const QRectF &rect, const QString &key,
                           const QString &val, bool active, bool hovered) {
         // 0.40.15 — hover state is now the accent-coloured border alone
@@ -1376,8 +1407,16 @@ void CallStage::paintActionPills(QPainter &p, const PainterTheme &th)
                    m_hoverPill == QStringLiteral("share"));
     }
 
-    // Publish the block's left edge so paintInfoPills wraps before reaching it.
-    m_actionPillsLeft = (showShare ? shBtn.left() : qBtn.left());
+    // Publish the layout boundaries paintInfoPills needs:
+    //  - m_actionPillsLeft: where row-0 info tiles must stop. If we dropped the
+    //    block to its own row, row 0 is clear of buttons → info gets full width.
+    //  - m_chromeRowsBottom: the bottom of the anchor row(s); wrapped info rows
+    //    start below it so they clear the (possibly dropped) button block.
+    m_actionPillsLeft = actionsDropped ? width()
+                                       : (showShare ? shBtn.left() : qBtn.left());
+    const qreal statusBottom = m_statusPillRect.isValid() ? m_statusPillRect.bottom() : 40.0;
+    const qreal actionBottom = (showShare ? shBtn.bottom() : bgBtn.bottom());
+    m_chromeRowsBottom = qMax(statusBottom, actionBottom);
 
     m_qualityPillRect = qBtn;
     m_bgPillRect      = bgBtn;
@@ -1400,7 +1439,12 @@ void CallStage::paintSharingBadge(QPainter &p, const PainterTheme &th)
     p.setFont(f);
     QFontMetrics fm(f);
     qreal pillW = fm.horizontalAdvance(text) + 40;
-    QRectF pill((width() - pillW) / 2.0, 14, pillW, 28);
+    // Sit on a clear row BELOW the top-chrome block (status pill, info pills incl.
+    // any wrapped rows, and the action buttons) so the badge can't be overlapped
+    // by them on a narrow window. m_chromeRowsBottom/m_infoPillsBottom are
+    // published earlier this frame by paintActionPills/paintInfoPills.
+    const qreal badgeY = qMax(m_chromeRowsBottom, m_infoPillsBottom) + 8.0;
+    QRectF pill((width() - pillW) / 2.0, badgeY, pillW, 28);
 
     QColor bg = th.bgSecondary; bg.setAlphaF(0.92);
     QColor border = th.danger;  border.setAlphaF(0.65);
