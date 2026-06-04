@@ -29,17 +29,13 @@ UserStatusManager::UserStatusManager(ApiClient *api, AuthManager *auth, QObject 
     , m_api(api)
     , m_auth(auth)
 {
-    m_heartbeat.setInterval(120000);
+    m_heartbeat.setInterval(60000);
     connect(&m_heartbeat, &QTimer::timeout, this, [this]() {
-        // Keep automatic presence alive without ever stomping a user-set
-        // Away/DND/Invisible. PUT .../status only changes the type, never
-        // the message, so an online re-assert can't wipe a custom message.
-        if (m_status == Status::Online) {
-            QJsonObject body;
-            body["statusType"] = "online";
-            m_api->put(statusPath(QStringLiteral("/status")), body,
-                       [](bool, const QJsonObject &, int) {});
-        }
+        // Each cycle: pull the authoritative status (so a change on ANOTHER
+        // instance of this account shows up here within ~60 s) and keep our
+        // online presence alive — read-before-write so we never re-assert a
+        // stale local "online" over an Away/DND/custom another device just set.
+        refreshFromServer(/*keepAliveOnline=*/true);
     });
 
     // Idle-poll wakeup. 30 s cadence is the upstream NC Talk web idle
@@ -113,10 +109,11 @@ QColor UserStatusManager::colorFor(Status s)
 void UserStatusManager::onLoggedIn()
 {
     fetchPredefined();
-    fetchCurrent();
-    // Order matters only for correctness, not race: revert is idempotent
-    // and re-fetches on success, so a stuck 'call' status is corrected
-    // even if it loaded into m_status a moment ago.
+    // revertStuckCall() now fetches + applies the current status first, then
+    // undoes ONLY a stuck Talk "in a call" status (messageId=="call"). It
+    // doubles as the initial status load and can never clobber a user-chosen
+    // status, so no separate fetchCurrent() is needed here (it would just be a
+    // redundant second GET).
     revertStuckCall();
     m_heartbeat.start();
     m_idlePoll.start();
@@ -312,43 +309,85 @@ void UserStatusManager::fetchCurrent()
     });
 }
 
+void UserStatusManager::refreshFromServer(bool keepAliveOnline)
+{
+    m_api->get(statusPath(), [this, keepAliveOnline](bool ok, const QJsonObject &d, int) {
+        if (!ok) return;   // transient; try again next cycle
+        const Status  prevStatus    = m_status;
+        const QString prevMessage   = m_message;
+        const QString prevIcon      = m_icon;
+        const QString prevMessageId = m_messageId;
+        applyFromJson(d);
+        // Multi-instance sync: NC user_status is per-USER, so this GET returns
+        // whatever the newest write (this device or another) left. Repaint only
+        // on a real change to avoid needless churn.
+        if (m_status != prevStatus || m_message != prevMessage
+            || m_icon != prevIcon || m_messageId != prevMessageId) {
+            emit statusChanged();
+            qInfo() << "UserStatus: refreshed from server (status now"
+                    << statusKey(m_status) << "msg=" << m_message << ")";
+        }
+        // Keep online presence alive ONLY when the authoritative status is
+        // Online and we're not holding an auto-Away / locked session. This is
+        // the read-before-write guard: if another device set Away/DND/custom,
+        // m_status now reflects that and we do NOT re-assert online over it.
+        if (keepAliveOnline && m_status == Status::Online
+            && !m_autoAwayActive && !m_sessionLocked) {
+            QJsonObject body;
+            body["statusType"] = "online";
+            m_api->put(statusPath(QStringLiteral("/status")), body,
+                       [](bool, const QJsonObject &, int) {});
+        }
+    });
+}
+
 void UserStatusManager::revertStuckCall()
 {
-    // 0.41.4-beta — two-stage clear for the stuck "In a call" custom
-    // message that survives hangup on servers that don't implement /
-    // don't fire the /revert/call Talk hook.
-    //
-    // Stage 1: the Talk-specific revert endpoint. Restores the pre-call
-    //  snapshot on the user_status app side. Works on most NC builds.
-    //
-    // Stage 2 (fallback): standard /message DELETE — clears the custom
-    //  status message that Talk set. Field report (NC build in ZA): the
-    //  /revert/call call returns 404 / no-op on this server and the
-    //  "In a call" custom message stays sticky. Chaining the standard
-    //  message-clear after the revert is idempotent (if revert worked,
-    //  there's no custom message left to delete; if it didn't, this
-    //  unsticks it). Then fetchCurrent to refresh the local state.
-    m_api->delMustComplete(statusPath(QStringLiteral("/revert/call")), {}, this,
-        [this](bool ok, int statusCode) {
-            if (ok) {
-                qInfo() << "UserStatus: reverted stuck 'call' status via /revert/call";
-            } else {
-                qInfo() << "UserStatus: /revert/call did not clear the stuck status"
-                        << "(status" << statusCode << ") — falling back to /message DELETE";
-            }
-            // Always run the message clear too — it's safe when nothing
-            // is stuck (returns 200 with empty body) and unsticks the
-            // common case where /revert/call no-ops on this server.
-            m_api->delMustComplete(statusPath(QStringLiteral("/message")), {}, this,
-                [this](bool ok2, int statusCode2) {
-                    if (ok2)
-                        qInfo() << "UserStatus: cleared custom status message via /message DELETE";
-                    else
-                        qInfo() << "UserStatus: /message DELETE did not clear"
-                                << "(status" << statusCode2 << ") — server state may still be stuck";
-                    fetchCurrent();
-                });
-        });
+    // Undo ONLY Talk's stuck "in a call" automation. Talk sets the user_status
+    // with messageId "call" (the /revert/call endpoint reverts exactly that id;
+    // NO user-selectable predefined — meeting/remote-work/sick-leave/etc — uses
+    // it). We MUST gate on that marker: the /message DELETE fallback below
+    // clears ANY custom message, so running it unconditionally wiped the user's
+    // real status (e.g. "Working remotely") to plain "Online" on every login
+    // AND every call-end — the field bug (2026-06-04). So: fetch the current
+    // status first; if it isn't the stuck call status, do nothing at all.
+    m_api->get(statusPath(), [this](bool ok, const QJsonObject &d, int) {
+        if (ok) { applyFromJson(d); emit statusChanged(); }   // also the initial load
+        if (!ok || m_messageId != QLatin1String("call")) {
+            if (TalqLog::g_verbose)
+                qDebug().nospace() << "UserStatus: no stuck 'call' status (ok=" << ok
+                                   << " messageId=" << m_messageId
+                                   << ") — leaving the user's status untouched";
+            return;
+        }
+        qInfo() << "UserStatus: detected stuck 'call' status — reverting";
+
+        // 0.41.4-beta — two-stage clear for the stuck "In a call" status that
+        // survives hangup on servers that don't fire the /revert/call hook.
+        //   Stage 1: the Talk-specific revert endpoint (restores the pre-call
+        //    snapshot on the user_status app side). Works on most NC builds.
+        //   Stage 2 (fallback): standard /message DELETE — clears the custom
+        //    status Talk set. Field report (NC build in ZA): /revert/call 404s
+        //    on that server and the "In a call" message stays sticky. Now safe
+        //    to chain because we've confirmed messageId=="call" above.
+        m_api->delMustComplete(statusPath(QStringLiteral("/revert/call")), {}, this,
+            [this](bool okR, int statusCode) {
+                if (okR)
+                    qInfo() << "UserStatus: reverted stuck 'call' via /revert/call";
+                else
+                    qInfo() << "UserStatus: /revert/call did not clear (status"
+                            << statusCode << ") — falling back to /message DELETE";
+                m_api->delMustComplete(statusPath(QStringLiteral("/message")), {}, this,
+                    [this](bool ok2, int statusCode2) {
+                        if (ok2)
+                            qInfo() << "UserStatus: cleared stuck status via /message DELETE";
+                        else
+                            qInfo() << "UserStatus: /message DELETE did not clear (status"
+                                    << statusCode2 << ") — server state may still be stuck";
+                        fetchCurrent();
+                    });
+            });
+    });
 }
 
 void UserStatusManager::applyFromJson(const QJsonObject &d)
