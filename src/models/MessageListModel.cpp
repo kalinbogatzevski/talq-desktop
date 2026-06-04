@@ -103,7 +103,7 @@ MessageListModel::MessageListModel(ApiClient *api, MessageCache *cache, QObject 
                 // would land back near its parent on reopen. Sorting by id here
                 // makes the reload order identical to the live order.
                 std::sort(filtered.begin(), filtered.end(),
-                          [](const Message &a, const Message &b) { return a.id > b.id; });
+                          [](const Message &a, const Message &b) { return talq::messageSortsBefore(a.id, b.id); });
                 beginInsertRows({}, 0, filtered.size() - 1);
                 m_messages = filtered;
                 for (const auto &m : filtered)
@@ -792,15 +792,18 @@ void MessageListModel::refreshLatest()
                 }
             }
             std::sort(deduped.begin(), deduped.end(), [](const Message &a, const Message &b) {
-                return a.id > b.id;
+                return talq::messageSortsBefore(a.id, b.id);
             });
 
             beginResetModel();
             m_messages = std::move(deduped);
             endResetModel();
 
-            if (!m_messages.isEmpty())
-                m_oldestMessageId = m_messages.last().id;
+            // Oldest cursor must be a REAL id, never a pending temp's negative
+            // id (which would poison scroll-up pagination). Temps sort to the
+            // front, so the last positive id is the oldest real message.
+            for (int i = m_messages.size() - 1; i >= 0; --i)
+                if (m_messages[i].id > 0) { m_oldestMessageId = m_messages[i].id; break; }
 
             // Save updated cache
             m_cache->saveMessages(m_token, m_messages);
@@ -879,9 +882,14 @@ void MessageListModel::refreshLatest()
 bool MessageListModel::enforceNewestFirstInvariant()
 {
     // Cheap O(n) ordered-check first: pay the reset+sort cost only on real drift.
+    // messagePairOrdered shares the exact ordering the sort below uses, so a
+    // pending optimistic temp (negative id) at the FRONT counts as correctly
+    // newest-first and does NOT trigger a spurious re-sort.
     bool ordered = true;
     for (int i = 1; i < m_messages.size(); ++i)
-        if (m_messages[i - 1].id < m_messages[i].id) { ordered = false; break; }
+        if (!talq::messagePairOrdered(m_messages[i - 1].id, m_messages[i].id)) {
+            ordered = false; break;
+        }
     if (ordered)
         return false;
 
@@ -895,13 +903,19 @@ bool MessageListModel::enforceNewestFirstInvariant()
                            << (m_messages.isEmpty() ? 0 : m_messages.first().id) << ")";
     beginResetModel();
     std::sort(m_messages.begin(), m_messages.end(),
-              [](const Message &a, const Message &b) { return a.id > b.id; });
+              [](const Message &a, const Message &b) {
+                  return talq::messageSortsBefore(a.id, b.id);
+              });
     endResetModel();
     m_messageIds.clear();
     for (const auto &mm : m_messages)
         m_messageIds.insert(mm.id);
-    if (!m_messages.isEmpty())
-        m_oldestMessageId = m_messages.last().id;
+    // Oldest cursor must be a REAL (server) id — never a pending temp's
+    // negative id, which would poison scroll-up pagination. After the sort
+    // temps are at the front and reals descend, so the last positive id is the
+    // oldest real message.
+    for (int i = m_messages.size() - 1; i >= 0; --i)
+        if (m_messages[i].id > 0) { m_oldestMessageId = m_messages[i].id; break; }
     return true;
 }
 
@@ -937,11 +951,22 @@ bool MessageListModel::replaceTempByReferenceId(const Message &real)
     for (int i = 0; i < m_messages.size(); ++i) {
         const auto &t = m_messages[i];
         if (t.id < 0 && t.referenceId == real.referenceId) {
+            // REPLACE IN PLACE (do not remove + rely on the caller to re-add).
+            // The old remove-only form lost the message whenever a later
+            // `continue` in the ingest loop (thread filter) skipped the re-add,
+            // and it left a negative-id temp in the list across a sort — which
+            // reordered/duplicated the user's just-sent message and corrupted
+            // m_oldestMessageId. Swapping the row in place keeps the message
+            // present unconditionally, updates the dedup mirror, and — because
+            // no row is removed — leaves all other cached indices valid (this
+            // also removes the H2 mid-loop index-invalidation hazard).
+            // Bug: "send two messages, the first one disappears", 2026-06-04.
             const int tempId = t.id;
-            beginRemoveRows({}, i, i);
             m_messageIds.remove(tempId);
-            m_messages.removeAt(i);
-            endRemoveRows();
+            m_messageIds.insert(real.id);
+            m_messages[i] = real;
+            const QModelIndex mi = index(i);
+            emit dataChanged(mi, mi);
             return true;
         }
     }
@@ -1019,7 +1044,7 @@ void MessageListModel::runGapFillStep()
                 }
             }
             std::sort(deduped.begin(), deduped.end(),
-                      [](const Message &a, const Message &b) { return a.id > b.id; });
+                      [](const Message &a, const Message &b) { return talq::messageSortsBefore(a.id, b.id); });
             beginResetModel();
             m_messages = std::move(deduped);
             endResetModel();
