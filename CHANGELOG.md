@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.49.7 "Slartibartfast" -- BETA (2026-06-04)
+
+### Changed
+
+* **The Home screen GPU tile now shows all your graphics cards.** On a laptop
+  with two GPUs (e.g. NVIDIA + Intel) it lists both, with the hardware-
+  acceleration codec on the line below, instead of showing only the one doing
+  the work.
+
 ## v0.49.6 "Slartibartfast" -- BETA (2026-06-04)
 
 ### Changed
