@@ -64,5 +64,9 @@ private:
     // bug 1: a transient cancel must resume the loop, not silently kill it.
     bool m_stopping = false;
     int m_threadId = 0;
+    // One-shot per poller run: log the negotiated transport (HTTP/2 + reuse)
+    // on the first poll response, to confirm in field diagnostics that the
+    // long-poll rides a warm connection rather than reconnecting each cycle.
+    bool m_loggedTransport = false;
     static constexpr int POLL_TIMEOUT_SECS = 15;
 };
