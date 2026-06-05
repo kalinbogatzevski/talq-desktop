@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.50.4 "Slartibartfast" -- STABLE (2026-06-05)
+
+### Changed
+
+* **Lighter video on machines without a dedicated graphics card.** On laptops
+  with integrated (or no) graphics, TalQ now sends your camera at a resolution
+  the machine can comfortably encode -- up to 720p on integrated graphics, 480p
+  when no hardware video acceleration is detected -- instead of pushing full HD
+  and overloading the GPU (which could stutter audio, choke video, or in the
+  worst case lock the machine up). Machines with a dedicated GPU are unchanged,
+  and the Home screen now shows the limit that applies to your device.
+
 ## v0.50.3 "Slartibartfast" -- STABLE (2026-06-05)
 
 ### Fixed

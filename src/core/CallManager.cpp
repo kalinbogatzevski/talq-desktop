@@ -1291,6 +1291,7 @@ bool CallManager::buildAndStartPublisher()
     }
 
     qDebug() << "CallManager: calling PublishPipeline::start()...";
+    m_publishPipeline->setGpuAccel(m_gpuAccelStatus);   // encode-load tier cap (720p iGPU / 480p software)
     if (!m_publishPipeline->start(m_stunServer, m_turnServers,
         m_deviceManager ? m_deviceManager->selectedInputDeviceId() : QString(),
         m_withVideo, videoDeviceIndex(), preferHd1080())) {
