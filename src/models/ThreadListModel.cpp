@@ -194,6 +194,7 @@ void ThreadListModel::deleteTopic(int threadId)
     QUrlQuery params;
     params.addQueryItem("limit", "200");
     params.addQueryItem("lookIntoFuture", "0");
+    params.addQueryItem("setReadMarker", "0");  // collecting a topic's msgs to delete must not mark the room read (server default is 1)
 
     QPointer<ThreadListModel> guard(this);
     // No server-side thread delete exists (upstream #17146), so collect the
@@ -315,6 +316,7 @@ void ThreadListModel::fetchThreads()
     QUrlQuery params;
     params.addQueryItem("limit", "200");
     params.addQueryItem("lookIntoFuture", "0");
+    params.addQueryItem("setReadMarker", "0");  // fetching the thread list must not mark the room read (server default is 1)
 
     const QString path = "apps/spreed/api/v1/chat/" + m_token;
 

@@ -626,6 +626,9 @@ void ConversationInfoDialog::refreshSharedFiles()
     QUrlQuery params;
     params.addQueryItem("lookIntoFuture", "0");
     params.addQueryItem("limit", "200");
+    // Browsing the shared-files panel must NOT mark the conversation read — the
+    // NC server marks read by default when setReadMarker is absent on a /chat GET.
+    params.addQueryItem("setReadMarker", "0");
 
     QPointer<ConversationInfoDialog> guard(this);
     m_api->getArray("apps/spreed/api/v1/chat/" + m_token, params,

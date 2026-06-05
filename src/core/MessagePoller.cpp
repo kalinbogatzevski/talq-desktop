@@ -18,6 +18,7 @@ void MessagePoller::start(const QString &conversationToken, int lastKnownMessage
     m_stopping = false;   // fresh run — clear the teardown flag stop() just set
     m_token = conversationToken;
     m_lastKnownMessageId = lastKnownMessageId;
+    m_loggedTransport = false;
     m_polling = true;
     qDebug() << "Poller: starting for" << conversationToken << "lastKnown:" << lastKnownMessageId;
     poll();
@@ -55,7 +56,11 @@ void MessagePoller::poll()
     params.addQueryItem("lookIntoFuture", "1");
     params.addQueryItem("timeout", QString::number(POLL_TIMEOUT_SECS));
     params.addQueryItem("limit", "100");
-    params.addQueryItem("setReadMarker", "true");
+    // Do NOT mark messages read as a side-effect of polling — the read marker
+    // must only advance while TalQ is the focused window (driven by
+    // MessageListModel::markAsRead under m_windowActive). Polling here merely
+    // fetches new messages; an open room in the background stays unread.
+    params.addQueryItem("setReadMarker", "false");
     params.addQueryItem("includeLastKnown", "0");
 
     if (m_lastKnownMessageId > 0)
@@ -144,6 +149,15 @@ void MessagePoller::handlePollResponse()
         int v = lastCommonRead.toInt();
         if (v > m_lastKnownCommonRead) m_lastKnownCommonRead = v;
         emit lastCommonReadChanged(v);
+    }
+
+    // One-shot transport proof for the field log: confirm the long-poll is on a
+    // reused HTTP/2 connection (the basis of the chat-speed work), not a fresh
+    // connect each cycle. Logged once per poller run to avoid per-cycle spam.
+    if (!m_loggedTransport) {
+        m_loggedTransport = true;
+        qInfo().nospace() << "Poller: transport for " << m_token
+                          << " HTTP/2=" << reply->attribute(QNetworkRequest::Http2WasUsedAttribute).toBool();
     }
 
     reply->deleteLater();
