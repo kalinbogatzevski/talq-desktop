@@ -2,6 +2,7 @@
 
 #include <array>
 #include <atomic>
+#include <memory>
 #include <QElapsedTimer>
 #include <QObject>
 #include <QString>
@@ -101,6 +102,16 @@ public:
     }
 
     void sendStatusMessage(const QByteArray &json);
+
+    // Outbound-RTP stall watchdog support (PublisherStallPolicy). CallManager
+    // calls pollOutboundRtp() each 2 s stats tick (async get-stats) and reads
+    // outboundPacketsSent(); a summed packets-sent that stops rising while the
+    // publisher should be sending means the send leg is dead (consent revoked
+    // while ice-connection-state stays "completed") -> recoverPublisher.
+    void pollOutboundRtp();
+    quint64 outboundPacketsSent() const {
+        return m_outboundPacketsSent->load(std::memory_order_relaxed);
+    }
 
 signals:
     void localOfferReady(const QString &sdp);
@@ -208,6 +219,13 @@ private:
     // request-aux-sender / notify::estimated-bitrate on a streaming thread
     // concurrently with Qt-thread teardown; these callbacks bail on it.
     std::atomic<bool> m_shuttingDown{false};
+    // Outbound-RTP packets-sent cell for the stall watchdog (PublisherStallPolicy).
+    // Written by the async get-stats callback on a GStreamer thread, read by
+    // CallManager's 2 s tick. A SHARED-PTR CELL (not a raw member) so the
+    // callback NEVER dereferences `this` — it writes the cell, which outlives
+    // the pipeline if a late reply races teardown. Closes the get-stats UAF.
+    std::shared_ptr<std::atomic<quint64>> m_outboundPacketsSent{
+        std::make_shared<std::atomic<quint64>>(0)};
     bool m_cameraEnabled = false;
     // AEC on the capture leg (echo-cancel + probe). Set via setEchoCancellation
     // before start(); CallManager guarantees the probe exists first.
@@ -281,6 +299,10 @@ private:
     static void onOfferCreated(GstPromise *promise, gpointer userData);
     static void onIceStateChanged(GObject *obj, GParamSpec *pspec, gpointer userData);
     static void onIceGatheringStateChanged(GObject *obj, GParamSpec *pspec, gpointer userData);
+    // webrtcbin get-stats reply (async, GStreamer thread): sums outbound-rtp
+    // packets-sent and stores it for the stall watchdog. Lifetime-guarded by
+    // m_alive + a QPointer main-thread hop.
+    static void onStatsReady(GstPromise *promise, gpointer userData);
     static GstFlowReturn onPreviewSample(GstAppSink *sink, gpointer userData);
     // #20 Phase 3.3b — bridge appsink that feeds the BG engine and
     // pushes the (processed or pass-through) buffer back via m_bgAppsrc.

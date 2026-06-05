@@ -21,6 +21,7 @@
 #include "core/ScreenSharePipeline.h"
 #include "core/ShareStartPolicy.h"
 #include "core/SubscriberStallPolicy.h"
+#include "core/PublisherStallPolicy.h"
 #include "core/CallParticipant.h"
 
 class BackgroundEngine;   // #20 — owned by CallManager; lives across calls.
@@ -314,6 +315,13 @@ private:
     // then froze (its publisher reconnected under new SSRCs, with no ICE-failed
     // to trip recovery) fires recoverSubscriber. Pruned on recover/re-offer/left.
     QHash<QString, SubscriberStallPolicy> m_subStall;
+    // Publisher outbound-RTP stall watchdog. updateCallStats() ticks it every
+    // 2 s with the summed packets-sent; when the local publisher stops sending
+    // while it should be (consent revoked but publisher ICE stuck "completed",
+    // e.g. the peer left without a clean leave), it fires recoverPublisher --
+    // stopping the "consent revoked" nicesink hot-loop that froze a peer's
+    // laptop. Reset on each publisher (re)build + full call teardown.
+    PublisherStallPolicy m_pubStall;
     QByteArray m_ringtoneData;  // backing buffer for the selected ring (SND_ASYNC reads from it)
 
     // #13: pre-answer self-preview pipeline. Standalone camera→appsink
