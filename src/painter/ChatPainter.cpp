@@ -261,9 +261,15 @@ void ChatPainter::setScrollY(qreal y)
         emit atBottomChanged();
     emit scrollYChanged();
 
-    // Near the top (oldest visible): request more history.
-    // Debounced implicitly because MessageListModel ignores re-entrant loads while m_loading.
-    if (m_scrollY < 200.0 && m_contentHeight > height())
+    // Prefetch older history BEFORE the user reaches the very top: fire when
+    // within ~1.5 viewports of the top so the next page (200 msgs) loads while
+    // there is still buffer to scroll, making the load spinner invisible.
+    // Debounced implicitly because MessageListModel ignores re-entrant loads
+    // while m_loading; a prefetch and a later user scroll converge on the same
+    // single-flight loadHistory. Keep the m_contentHeight>height() guard so it
+    // never fires on a short, non-scrollable chat.
+    const qreal prefetchLead = qMax(200.0, height() * 1.5);
+    if (m_scrollY < prefetchLead && m_contentHeight > height())
         emit moreHistoryRequested();
 
     // Unread divider auto-clear: if the separator has scrolled above the

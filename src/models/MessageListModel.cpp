@@ -365,10 +365,15 @@ void MessageListModel::setConversationToken(const QString &token)
     // fresh from the API in the background (triggered after the cache loads).
     m_cache->loadMessages(token, kChatPageLimit);
 
-    // Mark as read
-    QJsonObject body;
-    m_api->post("apps/spreed/api/v1/chat/" + token + "/read", body,
-        [](bool, const QJsonObject &, int) {});
+    // Mark as read on open — but ONLY if TalQ is focused. Opening a room while
+    // the app is in the background (a notification raising it, or a saved room
+    // restored on launch into the tray) must not mark it read; focus returning
+    // later does that via setWindowActive() -> markAsRead().
+    if (m_windowActive) {
+        QJsonObject body;
+        m_api->post("apps/spreed/api/v1/chat/" + token + "/read", body,
+            [](bool, const QJsonObject &, int) {});
+    }
 
     // Begin the periodic read-marker pull while this chat is open.
     m_readMarkerTimer.start();
@@ -426,6 +431,10 @@ void MessageListModel::loadHistory()
     QUrlQuery params;
     params.addQueryItem("lookIntoFuture", "0");
     params.addQueryItem("limit", QString::number(kChatPageLimit));
+    // Read marker must NOT advance as a side-effect of fetching history — the
+    // NC server marks read by DEFAULT when setReadMarker is absent. Reads are
+    // driven only by the focus-gated markAsRead(). (Upstream Talk forces 0 too.)
+    params.addQueryItem("setReadMarker", "0");
     if (m_oldestMessageId > 0)
         params.addQueryItem("lastKnownMessageId", QString::number(m_oldestMessageId));
 
@@ -633,6 +642,11 @@ void MessageListModel::refreshLatest()
     QUrlQuery params;
     params.addQueryItem("lookIntoFuture", "0");
     params.addQueryItem("limit", QString::number(kChatPageLimit));
+    // Do NOT mark read here — the server marks read by default when
+    // setReadMarker is absent, which would defeat the focus gate on open
+    // (refreshLatest runs on every open, focused or not). The focus-gated
+    // markAsRead() below is the only authority that advances the marker.
+    params.addQueryItem("setReadMarker", "0");
 
     if (m_threadId > 0)
         params.addQueryItem("threadId", QString::number(m_threadId));
@@ -996,6 +1010,7 @@ void MessageListModel::runGapFillStep()
     QUrlQuery params;
     params.addQueryItem("lookIntoFuture",     "0");
     params.addQueryItem("limit",              "100");
+    params.addQueryItem("setReadMarker",      "0");  // never mark read on backfill (server default is 1)
     params.addQueryItem("lastKnownMessageId", QString::number(m_gapFillCursor));
     if (m_threadId > 0)
         params.addQueryItem("threadId", QString::number(m_threadId));
@@ -2154,6 +2169,13 @@ void MessageListModel::markAsRead()
 {
     if (m_token.isEmpty()) return;
 
+    // Read marker only advances while TalQ is the focused/active window —
+    // opening a room (or having one open in the background) must NOT mark its
+    // messages read; the user hasn't actually seen them. MainWindow drives
+    // m_windowActive via setWindowActive(), which re-runs markAsRead() when
+    // focus returns so the room the user is now looking at catches up.
+    if (!m_windowActive) return;
+
     // Find the newest message ID (index 0 in newest-first order)
     int lastId = 0;
     for (int i = 0; i < m_messages.size(); ++i) {
@@ -2202,6 +2224,19 @@ void MessageListModel::markAsRead()
                 emit unreadBoundaryChanged();
             }
         });
+}
+
+void MessageListModel::setWindowActive(bool active)
+{
+    if (m_windowActive == active) return;
+    m_windowActive = active;
+    // Regained focus with a room open: mark what the user is now looking at as
+    // read. Messages that arrived while unfocused were deliberately left unread
+    // (setReadMarker=false on the poll + the gate in markAsRead). markAsRead is
+    // forward-only and self-deduping, so this is a no-op if already current or
+    // if no room is open.
+    if (active)
+        markAsRead();
 }
 
 void MessageListModel::scheduleMessage(const QString &text, qint64 sendAt,

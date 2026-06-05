@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.50.2 "Slartibartfast" -- STABLE (2026-06-05)
+
+### Changed
+
+* **Read receipts follow your attention, not just an open window.** Messages
+  are marked read only while TalQ is the focused window. A conversation left
+  open in the background -- or opened from a notification or the tray -- stays
+  unread until you actually switch to TalQ, so you keep getting notified about
+  messages you haven't seen yet.
+* **Smoother history scroll-back.** Older messages start loading a little before
+  you reach the top, so scrolling up through a long conversation no longer
+  pauses on a spinner.
+
 ## v0.50.1 "Slartibartfast" -- STABLE (2026-06-04)
 
 ### Changed
