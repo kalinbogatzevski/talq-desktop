@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.50.3 "Slartibartfast" -- STABLE (2026-06-05)
+
+### Fixed
+
+* **Read receipts work reliably again.** A 0.50.2 regression could leave
+  messages never marked read after restarting TalQ or restoring it from the
+  tray; read-marking now follows the app's focus directly and can't get stuck.
+* **A call can no longer freeze your computer.** When the other person left a
+  call -- even by hanging up -- their departure could, in rare cases, leave
+  your side endlessly retrying to send, pegging the CPU/GPU. TalQ now detects a
+  stalled outgoing stream and recovers it automatically.
+
 ## v0.50.2 "Slartibartfast" -- STABLE (2026-06-05)
 
 ### Changed

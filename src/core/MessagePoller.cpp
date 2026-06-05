@@ -57,9 +57,9 @@ void MessagePoller::poll()
     params.addQueryItem("timeout", QString::number(POLL_TIMEOUT_SECS));
     params.addQueryItem("limit", "100");
     // Do NOT mark messages read as a side-effect of polling — the read marker
-    // must only advance while TalQ is the focused window (driven by
-    // MessageListModel::markAsRead under m_windowActive). Polling here merely
-    // fetches new messages; an open room in the background stays unread.
+    // must only advance while TalQ is the foreground app (gated in
+    // MessageListModel::markAsRead). Polling here merely fetches new
+    // messages; an open room in the background stays unread.
     params.addQueryItem("setReadMarker", "false");
     params.addQueryItem("includeLastKnown", "0");
 

@@ -853,6 +853,34 @@ void CallManager::updateCallStats()
         recoverSubscriber(sid, QStringLiteral("frame-stall"));
     }
 
+    // Publisher outbound-RTP stall watchdog. The publisher webrtcbin keeps
+    // ice-connection-state "completed" when libnice loses send consent (the
+    // peer left -- even a normal hang-up -- without a clean signaling leave
+    // reaching us), and the "consent revoked" warning never hits the bus, so
+    // nothing else observes the dead send leg while the encoder + nicesink
+    // hot-loop ~89x/s (it froze a peer's laptop). packets-sent ceasing to rise
+    // is the one observable signal. On a sustained stall, route through the
+    // EXISTING recoverPublisher (publisher-only rebuild, Zoom-style -- never a
+    // call drop): the rebuild stop()s the flooding pipeline, ending the flood.
+    // Suppressed while a rebuild/retry is in flight or a screen-share is tearing
+    // down, so it can't double- or false-fire; the policy fires once then
+    // re-arms. When not eligible, reset so a resumed publisher re-baselines.
+    if (m_publishPipeline && m_publishPipeline->isRunning()
+        && !m_screenShareTearingDown && !m_pubRebuildInFlight
+        && !m_pubRetryTimer.isActive()) {
+        m_publishPipeline->pollOutboundRtp();   // async refresh for the next tick
+        const bool expectedToSend = m_cameraOn || !m_muted;
+        if (m_pubStall.onTick(m_publishPipeline->outboundPacketsSent(), expectedToSend)) {
+            qWarning() << "CallManager: publisher outbound-RTP stalled -- recovering "
+                          "(consent likely revoked; publisher ICE still 'completed')";
+            if (m_state == Active || m_state == Connecting)
+                setState(Reconnecting);
+            recoverPublisher(QStringLiteral("publish-stall"));
+        }
+    } else {
+        m_pubStall.reset();
+    }
+
     // Remote peer
     if (!m_remoteSessionId.isEmpty())
         lines << "Remote: " + m_remoteSessionId.left(16) + "...";
@@ -1105,6 +1133,7 @@ bool CallManager::buildAndStartPublisher()
 
     qDebug() << "CallManager: creating PublishPipeline...";
     m_publishPipeline = new PublishPipeline(this);
+    m_pubStall.reset();   // fresh outbound-RTP baseline for this (re)built publisher
     m_publishPipeline->setBackgroundEngine(m_backgroundEngine);
     m_localVideoProvider = m_publishPipeline->localVideoProvider();
     emit localVideoProviderChanged();
@@ -2652,6 +2681,7 @@ void CallManager::stopAllPipelines()
     // touching them, so each call leaked one-or-more entries keyed by an ephemeral
     // session id. Reset them with the rest of the per-call subscriber state.
     m_subStall.clear();
+    m_pubStall.reset();
     m_pendingSubCandidates.clear();
     m_pubRetryTimer.stop();
     m_pubRetryAttempts   = 0;
