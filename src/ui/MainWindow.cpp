@@ -27,6 +27,7 @@
 #include "core/SignalingClient.h"
 #include "core/CallManager.h"
 #include "core/Diagnostics.h"
+#include "core/EncodeTier.h"
 #include "core/UserStatusManager.h"
 #include "ui/StatusPopover.h"
 #include "ui/AppStyle.h"
@@ -1910,9 +1911,17 @@ void MainWindow::refreshWelcomeStatus()
                                            : QStringLiteral("Polling"),
                                     pushOn ? QStringLiteral("websocket up")
                                            : QStringLiteral("fallback")));
-    m_welcomeGpuLabel->setText(val(gpuBig,
-                                   gpuOn ? QStringLiteral("hardware accelerated · %1").arg(gpu)
-                                         : QStringLiteral("software only")));
+    // Encode-load cap (same rule PublishPipeline applies, via EncodeTier.h): on
+    // a weak/iGPU/software encoder TalQ caps the camera SEND resolution so it
+    // can't saturate the GPU. Surface it on the GPU tile so the user knows why
+    // their outgoing video is limited; the full reason is the tooltip.
+    const talq::EncodeTierCap encCap = talq::encodeTierCap(gpu);
+    QString gpuSub = gpuOn ? QStringLiteral("hardware accelerated · %1").arg(gpu)
+                           : QStringLiteral("software only");
+    if (encCap.maxSendHeight > 0)
+        gpuSub += QStringLiteral(" · camera ≤%1p").arg(encCap.maxSendHeight);
+    m_welcomeGpuLabel->setText(val(gpuBig, gpuSub));
+    m_welcomeGpuLabel->setToolTip(encCap.homeText);   // empty = no tooltip
 
     auto setLed = [&](QLabel *led, bool ok) {
         if (led) led->setStyleSheet(QString("color:%1;font-size:9px;")

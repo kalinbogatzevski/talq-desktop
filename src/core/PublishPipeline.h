@@ -79,6 +79,13 @@ public:
     // calling it has no effect after start().
     void setEchoCancellation(bool on) { m_aecEnabled = on; }
 
+    // Encode-load mitigation: CallManager passes the detected GPU accel tier
+    // ("NVIDIA NVDEC" / "Intel DXVA" / "DXVA (H264 only)" / "Software only")
+    // BEFORE start(). On a non-discrete-GPU box, start() caps the camera send
+    // resolution and sheds the HIGH simulcast layer so the publisher can't
+    // saturate the iGPU it also decodes on (the field freeze 2026-06-05).
+    void setGpuAccel(const QString &accel) { m_gpuAccel = accel; }
+
     VideoFrameProvider *localVideoProvider() const { return m_localVideoProvider; }
 
     // #20 — when set (CallManager passes its long-lived engine), the
@@ -226,6 +233,13 @@ private:
     // the pipeline if a late reply races teardown. Closes the get-stats UAF.
     std::shared_ptr<std::atomic<quint64>> m_outboundPacketsSent{
         std::make_shared<std::atomic<quint64>>(0)};
+    // GPU accel tier from CallManager (set before start()); drives the
+    // encode-load cap in start().
+    QString m_gpuAccel;
+    // Highest simulcast layer index allowed to send (2 = all l/m/h, 1 = l/m,
+    // 0 = l only). Lowered up front on a weak encode tier (sheds HIGH); the BWE
+    // gate in applyBweToLayers honors it so it can't re-open a capped layer.
+    int m_loadCapMaxLayer = 2;
     bool m_cameraEnabled = false;
     // AEC on the capture leg (echo-cancel + probe). Set via setEchoCancellation
     // before start(); CallManager guarantees the probe exists first.

@@ -17,6 +17,7 @@
 
 #include "core/VideoEncoderUtil.h"
 #include "core/CaptureDsp.h"
+#include "core/EncodeTier.h"
 
 PublishPipeline::PublishPipeline(QObject *parent)
     : QObject(parent)
@@ -83,6 +84,24 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         int h = s.value("maxSendHeight", 720).toInt();
         s.endGroup();
         if (h != 720 && h != 1080 && h != 1440 && h != 2160) h = 720;
+        // Encode-load mitigation (field freeze 2026-06-05): cap the camera SEND
+        // by GPU tier so a publisher can't saturate a weak/iGPU/software encoder
+        // (it also has to decode the peer). Single source of truth = EncodeTier.h
+        // (the Home screen shows the SAME cap). "When in doubt" (unknown tier) is
+        // treated as the WEAKEST — if we can't confirm HW accel, assume none. The
+        // res cap only bites users who chose >cap (Petia's log shows 1080p);
+        // default-720 users are unchanged. The full CPU-load controller (later)
+        // lifts this dynamically when headroom exists.
+        const talq::EncodeTierCap tier = talq::encodeTierCap(m_gpuAccel);
+        if (tier.maxSendHeight > 0 && h > tier.maxSendHeight) {
+            qInfo().nospace() << "PublishPipeline: GPU tier '"
+                << (m_gpuAccel.isEmpty() ? QStringLiteral("unknown") : m_gpuAccel)
+                << "' -- capping camera send resolution " << h << "p -> "
+                << tier.maxSendHeight << "p";
+            h = tier.maxSendHeight;
+        }
+        if (tier.shedHighLayer)
+            m_loadCapMaxLayer = 1;   // no HW encode -> send l+m only
         const int w = (h * 16) / 9 & ~1;   // 16:9, even width
         m_layers[2].targetW = w;
         m_layers[2].targetH = h;
@@ -90,6 +109,7 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         // content is the "Telegram-class HQ" rule of thumb; we round to
         // documented buckets so the bitrate set is predictable.
         switch (h) {
+            case 480:  m_layers[2].nominalBitrate = 1'200'000; m_initBitrate = 1'200'000; m_maxBitrate =  2'000'000; break;
             case 720:  m_layers[2].nominalBitrate = 3'500'000; m_initBitrate = 3'500'000; m_maxBitrate =  6'000'000; break;
             case 1080: m_layers[2].nominalBitrate = 6'000'000; m_initBitrate = 6'000'000; m_maxBitrate =  9'000'000; break;
             case 1440: m_layers[2].nominalBitrate = 12'000'000; m_initBitrate = 12'000'000; m_maxBitrate = 18'000'000; break;
@@ -561,8 +581,13 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
             gst_caps_unref(sc);
         }
 
-        // valve open by default — BWE may close 'h' / 'm' later
-        g_object_set(L.valve, "drop", FALSE, nullptr);
+        // valve open by default — BWE may close 'h' / 'm' later. On a weak
+        // encode tier the HIGH layer (index 2) is shed up front via
+        // m_loadCapMaxLayer; start a capped layer's valve dropped so no frames
+        // ever reach its encoder (saves the iGPU the per-frame encode work).
+        const bool layerAllowed = ((int)i <= m_loadCapMaxLayer);
+        g_object_set(L.valve, "drop", layerAllowed ? FALSE : TRUE, nullptr);
+        L.active = layerAllowed;
 
         // H264 niceties (mirrors the single-stream path)
         if (m_useH264 && L.parser)
@@ -2421,8 +2446,11 @@ void PublishPipeline::applyBweToLayers(int estimateBps)
         return currentlyActive ? closeT : (closeT + kHysteresis);
     };
 
-    bool wantH = estimateBps > threshold(kCloseH, m_layers[2].active);
-    bool wantM = estimateBps > threshold(kCloseM, m_layers[1].active);
+    // Effective cap = MIN(network, encode-load): a layer sends only if BOTH the
+    // BWE estimate AND the encode-load cap (m_loadCapMaxLayer) allow it, so the
+    // CPU veto can't be overridden by a healthy network estimate.
+    bool wantH = (m_loadCapMaxLayer >= 2) && estimateBps > threshold(kCloseH, m_layers[2].active);
+    bool wantM = (m_loadCapMaxLayer >= 1) && estimateBps > threshold(kCloseM, m_layers[1].active);
     // 'l' always stays on — our minimum-viable channel.
     setLayerActive(2, wantH);
     setLayerActive(1, wantM);
