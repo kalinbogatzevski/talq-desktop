@@ -2037,6 +2037,84 @@ void PublishPipeline::onIceGatheringStateChanged(GObject *obj, GParamSpec *, gpo
     }, Qt::QueuedConnection);
 }
 
+namespace {
+// Heap context for the publisher get-stats promise: ONLY a copy of the
+// shared-ptr packets-sent cell — no `self` pointer. The async reply callback
+// writes the cell and never touches the PublishPipeline, so a late reply that
+// races teardown is harmless (the cell outlives the pipeline). Freed by the
+// promise's GDestroyNotify.
+struct PubStatsCtx {
+    std::shared_ptr<std::atomic<quint64>> cell;
+};
+void pubStatsCtxFree(gpointer p) { delete static_cast<PubStatsCtx *>(p); }
+} // namespace
+
+void PublishPipeline::pollOutboundRtp()
+{
+    if (!m_webrtcbin || m_shuttingDown.load()) return;
+    // webrtcbin "get-stats" is async: it replies via a GstPromise carrying a
+    // GstStructure of all RTC stats. onStatsReady parses it on a GStreamer
+    // thread, sums every outbound-rtp leg's packets-sent, and writes the shared
+    // cell that CallManager's PublisherStallPolicy reads on the next 2 s tick.
+    auto *ctx = new PubStatsCtx{ m_outboundPacketsSent };
+    GstPromise *promise =
+        gst_promise_new_with_change_func(onStatsReady, ctx, pubStatsCtxFree);
+    g_signal_emit_by_name(m_webrtcbin, "get-stats", nullptr, promise);
+}
+
+void PublishPipeline::onStatsReady(GstPromise *promise, gpointer userData)
+{
+    // Runs on a GStreamer thread. Touches ONLY the shared cell (which outlives
+    // the pipeline) — never `this` — so a late reply during teardown is safe.
+    auto *ctx = static_cast<PubStatsCtx *>(userData);
+    std::shared_ptr<std::atomic<quint64>> cell = ctx->cell;
+
+    const GstStructure *reply = gst_promise_get_reply(promise);
+    guint64 sumPacketsSent = 0;
+    bool found = false;
+    bool sawOutboundRtp = false;
+    if (reply) {
+        // The report is a flat structure whose fields are themselves
+        // GstStructures, one per stat object. SUM packets-sent across EVERY
+        // outbound-rtp entry (audio + each simulcast layer): a single layer's
+        // BWE valve close must NOT read as a stall, only ALL legs going quiet.
+        const int n = gst_structure_n_fields(reply);
+        for (int i = 0; i < n; ++i) {
+            const gchar *name = gst_structure_nth_field_name(reply, i);
+            const GValue *val = gst_structure_get_value(reply, name);
+            if (!val || !GST_VALUE_HOLDS_STRUCTURE(val)) continue;
+            const GstStructure *s = static_cast<const GstStructure *>(
+                g_value_get_boxed(val));
+            if (!s) continue;
+            GstWebRTCStatsType type;
+            if (gst_structure_get(s, "type", GST_TYPE_WEBRTC_STATS_TYPE, &type, nullptr)
+                && type == GST_WEBRTC_STATS_OUTBOUND_RTP) {
+                sawOutboundRtp = true;
+                guint64 ps = 0;
+                if (gst_structure_get_uint64(s, "packets-sent", &ps)) {
+                    sumPacketsSent += ps;
+                    found = true;
+                }
+            }
+        }
+    }
+    gst_promise_unref(promise);
+
+    if (found) {
+        cell->store(sumPacketsSent, std::memory_order_relaxed);
+    } else if (sawOutboundRtp) {
+        // An outbound-rtp object exists but its packets-sent could not be read:
+        // a stat-shape mismatch on this libgstwebrtc would leave the watchdog
+        // silently INERT (never sees packets rise -> never arms -> never fires).
+        // Surface once, loudly, so it is caught rather than a silent no-op.
+        static std::atomic<bool> warned{false};
+        if (!warned.exchange(true))
+            qWarning() << "PublishPipeline: outbound-rtp stat has no readable "
+                          "packets-sent — publisher stall watchdog is INERT "
+                          "(libgstwebrtc stat-shape mismatch)";
+    }
+}
+
 GstFlowReturn PublishPipeline::onPreviewSample(GstAppSink *sink, gpointer userData)
 {
     auto *self = static_cast<PublishPipeline *>(userData);

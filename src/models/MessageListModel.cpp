@@ -124,6 +124,19 @@ MessageListModel::MessageListModel(ApiClient *api, MessageCache *cache, QObject 
         qDebug() << "Cache loaded" << m_messages.size() << "messages for" << m_token;
         refreshLatest();
     });
+
+    // Read-on-focus catch-up: when TalQ becomes the FOREGROUND/active app, mark
+    // the open room read (messages received while unfocused were deliberately
+    // left unread). Driven by the app foreground state (robust) rather than a
+    // cached per-window flag, which on Windows could stick "inactive" after a
+    // tray-restore / notification focus-steal / restart and stop marking read.
+    // markAsRead live-checks the state and self-dedupes, so it is a no-op if no
+    // room is open or the marker is already current.
+    connect(qGuiApp, &QGuiApplication::applicationStateChanged, this,
+            [this](Qt::ApplicationState s) {
+        if (s == Qt::ApplicationActive)
+            markAsRead();
+    });
 }
 
 MessageListModel::~MessageListModel()
@@ -365,11 +378,11 @@ void MessageListModel::setConversationToken(const QString &token)
     // fresh from the API in the background (triggered after the cache loads).
     m_cache->loadMessages(token, kChatPageLimit);
 
-    // Mark as read on open — but ONLY if TalQ is focused. Opening a room while
-    // the app is in the background (a notification raising it, or a saved room
-    // restored on launch into the tray) must not mark it read; focus returning
-    // later does that via setWindowActive() -> markAsRead().
-    if (m_windowActive) {
+    // Mark as read on open — but ONLY if TalQ is the foreground app. Opening a
+    // room while TalQ is in the background (a notification raising it, or a
+    // saved room restored on launch into the tray) must not mark it read; focus
+    // returning later does, via the applicationStateChanged hook in the ctor.
+    if (QGuiApplication::applicationState() == Qt::ApplicationActive) {
         QJsonObject body;
         m_api->post("apps/spreed/api/v1/chat/" + token + "/read", body,
             [](bool, const QJsonObject &, int) {});
@@ -2169,12 +2182,15 @@ void MessageListModel::markAsRead()
 {
     if (m_token.isEmpty()) return;
 
-    // Read marker only advances while TalQ is the focused/active window —
+    // Read marker only advances while TalQ is the FOREGROUND/active app —
     // opening a room (or having one open in the background) must NOT mark its
-    // messages read; the user hasn't actually seen them. MainWindow drives
-    // m_windowActive via setWindowActive(), which re-runs markAsRead() when
-    // focus returns so the room the user is now looking at catches up.
-    if (!m_windowActive) return;
+    // messages read; the user hasn't actually seen them. Query the LIVE app
+    // state, never a cached flag: on Windows a cached "is active" bool could
+    // stick false after a tray-restore / notification focus-steal / restart and
+    // then never mark anything read again (the 0.50.2 regression). markAsRead
+    // is re-invoked on focus-return (applicationStateChanged) and on every new
+    // message, so a live query self-corrects.
+    if (QGuiApplication::applicationState() != Qt::ApplicationActive) return;
 
     // Find the newest message ID (index 0 in newest-first order)
     int lastId = 0;
@@ -2224,19 +2240,6 @@ void MessageListModel::markAsRead()
                 emit unreadBoundaryChanged();
             }
         });
-}
-
-void MessageListModel::setWindowActive(bool active)
-{
-    if (m_windowActive == active) return;
-    m_windowActive = active;
-    // Regained focus with a room open: mark what the user is now looking at as
-    // read. Messages that arrived while unfocused were deliberately left unread
-    // (setReadMarker=false on the poll + the gate in markAsRead). markAsRead is
-    // forward-only and self-deduping, so this is a no-op if already current or
-    // if no room is open.
-    if (active)
-        markAsRead();
 }
 
 void MessageListModel::scheduleMessage(const QString &text, qint64 sendAt,

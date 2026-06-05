@@ -98,10 +98,6 @@ public:
     Q_INVOKABLE void scheduleMessage(const QString &text, qint64 sendAt,
                                       int replyToId = 0, bool silent = false);
     Q_INVOKABLE void markAsRead();
-    // MainWindow pushes window-focus state here on activation changes. Read
-    // markers only advance while active; on regaining focus this re-runs
-    // markAsRead() so the open room catches up to what the user now sees.
-    void setWindowActive(bool active);
     // Mark this message and everything newer as unread. Implemented as a
     // POST /read with lastReadMessage = messageId - 1 (the docs accept any
     // integer; server clamps to existing IDs). The conversation's unread
@@ -249,12 +245,6 @@ private:
     int m_threadId = 0;
     bool m_hideThreadMessages = false;
     bool m_connected = true;  // assume connected until proven otherwise
-    // True while TalQ is the focused/active window. Gates read-marking so a
-    // room that is merely open (in the background, restored on launch, or
-    // raised by a notification) never marks its messages read. Default true so
-    // the normal launch-then-open flow (window already focused) works; the
-    // first ActivationChange corrects it. Driven by setWindowActive().
-    bool m_windowActive = true;
     double m_uploadProgress = -1;
     QString m_uploadFileName;
     QNetworkReply *m_historyReply = nullptr;   // cancel on chat switch

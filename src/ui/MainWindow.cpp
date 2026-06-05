@@ -2386,14 +2386,6 @@ void MainWindow::changeEvent(QEvent *event)
     // ActivationChange when we become the active window, but rate-limit
     // to once per 5 s so a busy desktop's repeated focus toggles don't
     // pile up redundant in-flight HTTP requests.
-    // Drive the message model's focus state so messages are marked read ONLY
-    // while TalQ is the active window — not merely because a room is open in the
-    // background. Fires on BOTH gaining and losing focus (the block below only
-    // runs on gain). On gain, setWindowActive() re-runs markAsRead() to catch
-    // up the open room.
-    if (event->type() == QEvent::ActivationChange && m_messages)
-        m_messages->setWindowActive(isActiveWindow());
-
     if (event->type() == QEvent::ActivationChange && isActiveWindow()
         && m_conversations) {
         // bug 13 — TalQ came to the foreground: if we auto-flipped to Away
