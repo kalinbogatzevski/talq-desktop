@@ -105,6 +105,17 @@ private:
     bool m_callStateSeeded = false;          // true after first load — prevents ringing for stale calls
     QTimer m_autoRefreshTimer;
     QTimer m_statusPollTimer;
+    // Watchdog for the m_loading latch. m_loading is cleared only inside the
+    // /room reply callback; if that reply never completes (a hung/half-open
+    // connection with no transfer timeout), m_loading would stay true forever
+    // and EVERY later refresh() would early-return at `if (m_loading) return;`
+    // — the list freezes until an app restart. The watchdog force-clears the
+    // latch and retries so it can self-heal.
+    QTimer m_loadWatchdog;
     bool m_loading = false;
+    // Set when a refresh() is requested while one is already in flight (e.g. a
+    // push arrives mid-load). Instead of silently dropping it, we run one more
+    // refresh after the in-flight one completes, so new rooms are never missed.
+    bool m_pendingRefresh = false;
     int m_totalUnread = 0;
 };

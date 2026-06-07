@@ -1749,18 +1749,45 @@ QWidget *SettingsDialog::buildAccountTab()
     const QString verName = QStringLiteral(TALQ_VERSION_NAME);
     if (!verName.isEmpty()) {
         layout->addSpacing(6);
-        // Blurb chosen by codename so it always matches TALQ_VERSION_NAME:
-        // 0.39.x–0.41.x honoured Bulgaria's 1876 April Uprising; from 0.42.0
-        // the stable line pivots to a Hitchhiker's-Guide theme ("Deep Thought").
+        // Blurb chosen PER codename so it always matches TALQ_VERSION_NAME.
+        // A previous version special-cased only "Deep Thought" and lumped
+        // every other codename into the April-Uprising blurb, which then
+        // mis-described the Hitchhiker's-Guide names (Magrathea,
+        // Slartibartfast) and the Bulgarian-holiday names (Botev = Heroes'
+        // Day, Margaritka = Children's Day). Unknown/future codenames now
+        // fall back to a neutral label rather than a wrong story.
         QString creditText;
         if (verName == QStringLiteral("Deep Thought")) {
             creditText = tr("Codename \"%1\" — the supercomputer from The "
                             "Hitchhiker's Guide to the Galaxy that computed 42, "
                             "the Answer to Life, the Universe and Everything "
                             "(a nod to version 0.42).").arg(verName);
-        } else {
+        } else if (verName == QStringLiteral("Magrathea")) {
+            creditText = tr("Codename \"%1\" — the legendary planet-building "
+                            "world from The Hitchhiker's Guide to the Galaxy, "
+                            "where bespoke luxury planets are made to order.")
+                            .arg(verName);
+        } else if (verName == QStringLiteral("Slartibartfast")) {
+            creditText = tr("Codename \"%1\" — the Hitchhiker's Guide planetary "
+                            "coastline designer who won an award for the fjords "
+                            "of Norway and liked to sign his name in the crinkly "
+                            "bits; a maker who sweats the fine detail.")
+                            .arg(verName);
+        } else if (verName == QStringLiteral("Botev")) {
+            creditText = tr("Codename \"%1\" — Hristo Botev, the poet-"
+                            "revolutionary honoured on Bulgaria's Heroes' Day "
+                            "(2 June).").arg(verName);
+        } else if (verName == QStringLiteral("Margaritka")) {
+            creditText = tr("Codename \"%1\" — the daisy (margaritka), for "
+                            "Bulgaria's Children's Day (1 June).").arg(verName);
+        } else if (verName == QStringLiteral("Aprilsko Vastanie")
+                   || verName == QStringLiteral("Panagyurishte")
+                   || verName == QStringLiteral("Koprivshtitsa")) {
             creditText = tr("Codename \"%1\" — Bulgaria's April Uprising of 1876, "
                             "150th anniversary (2026).").arg(verName);
+        } else {
+            // Unknown/future codename: a neutral credit, never a wrong story.
+            creditText = tr("Codename \"%1\".").arg(verName);
         }
         auto *credit = new QLabel(creditText);
         credit->setFont(infoFont);

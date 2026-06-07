@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.50.5 "Slartibartfast" -- STABLE (2026-06-07)
+
+### Fixed
+
+* **New conversations and messages now appear without a restart.** A group
+  created on your phone -- or a reply in a chat that wasn't in your list yet --
+  could be missing from TalQ's chat list until you restarted the app. Two
+  things caused it: the background connection that signals "something changed"
+  had no keepalive, so after the laptop slept or sat idle it could go silent
+  without TalQ noticing, and the chat list wasn't refreshed when you brought
+  TalQ back to the foreground. Now that connection is kept alive and reconnects
+  when it drops, the chat list refreshes the moment you return to TalQ, and a
+  refresh is never silently skipped or left stuck while another is in progress.
+* **Correct release codename note in Settings.** The codename credit on the
+  Account tab described every codename except "Deep Thought" as Bulgaria's
+  April Uprising; it now shows the right note for each name (Slartibartfast,
+  Magrathea, Botev, Margaritka, and the April Uprising cycle), and a neutral
+  note for any future codename.
+
 ## v0.50.4 "Slartibartfast" -- STABLE (2026-06-05)
 
 ### Changed

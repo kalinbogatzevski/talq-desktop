@@ -11,6 +11,21 @@ ConversationListModel::ConversationListModel(ApiClient *api, QObject *parent)
 
     m_statusPollTimer.setInterval(60 * 1000);
     connect(&m_statusPollTimer, &QTimer::timeout, this, &ConversationListModel::fetchUserStatuses);
+
+    // Stuck-latch watchdog (see m_loadWatchdog in the header). If a /room
+    // fetch hasn't returned within 15 s, assume the reply is never coming,
+    // clear the latch and retry — otherwise the whole list would freeze until
+    // an app restart. 15 s sits above any healthy fetch and below the 30 s
+    // fallback timer.
+    m_loadWatchdog.setSingleShot(true);
+    m_loadWatchdog.setInterval(15 * 1000);
+    connect(&m_loadWatchdog, &QTimer::timeout, this, [this]() {
+        if (!m_loading) return;
+        qWarning() << "ConversationListModel: /room refresh stalled >15s — "
+                      "clearing latch and retrying";
+        m_loading = false;
+        refresh();
+    });
 }
 
 int ConversationListModel::rowCount(const QModelIndex &) const
@@ -86,15 +101,29 @@ QHash<int, QByteArray> ConversationListModel::roleNames() const
 
 void ConversationListModel::refresh()
 {
-    if (m_loading) return;
+    // A refresh is already in flight — don't drop this request, remember it.
+    // The in-flight fetch may have started BEFORE the event that prompted this
+    // call (e.g. a push announcing a brand-new room), so its response could
+    // miss that room. We run exactly one more refresh when it completes.
+    if (m_loading) { m_pendingRefresh = true; return; }
 
     // Only show loading indicator on initial load (empty list)
     bool isInitialLoad = m_conversations.isEmpty();
     m_loading = true;
+    m_loadWatchdog.start();   // self-heal if the reply never arrives
     if (isInitialLoad) emit loadingChanged();
 
     m_api->getArray("apps/spreed/api/v4/room", [this, isInitialLoad](bool ok, const QJsonArray &data, int) {
         m_loading = false;
+        m_loadWatchdog.stop();
+        // If a refresh was requested while this one was in flight, honour it
+        // now (after the current response is fully applied below) so a new
+        // room announced mid-fetch can't be lost. Deferred via the event loop
+        // to avoid deep recursion on a burst of pushes.
+        if (m_pendingRefresh) {
+            m_pendingRefresh = false;
+            QTimer::singleShot(0, this, &ConversationListModel::refresh);
+        }
         if (isInitialLoad) emit loadingChanged();
 
         if (!ok) {

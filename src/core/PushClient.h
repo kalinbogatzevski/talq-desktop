@@ -39,6 +39,13 @@ private:
     ApiClient *m_api;
     QWebSocket m_ws;
     QTimer m_reconnectTimer;
+    // Application-level keepalive. notify_push sends nothing while idle, so a
+    // sleeping laptop or an idle NAT/proxy can silently drop the TCP socket
+    // without Qt ever firing disconnected() — the socket goes "zombie" and we
+    // stop receiving push events (no conversation-list refresh) until a manual
+    // restart. A periodic ping forces traffic so the dead connection surfaces
+    // as an error → disconnected() → reconnect(). Mirrors SignalingClient.
+    QTimer m_keepAliveTimer;
     QString m_pushEndpoint;
     bool m_connected = false;
     bool m_authenticated = false;

@@ -12,6 +12,21 @@ PushClient::PushClient(ApiClient *api, QObject *parent)
 
     m_reconnectTimer.setSingleShot(true);
     connect(&m_reconnectTimer, &QTimer::timeout, this, &PushClient::start);
+
+    // Keepalive: ping every 30 s while the socket is up so an idle
+    // proxy/NAT/sleeping link can't silently cull the connection. Writing the
+    // ping over a dead socket forces the OS to report the broken pipe, which
+    // fires disconnected() and triggers reconnect(). Started once we're
+    // authenticated, stopped on disconnect/stop. (See m_keepAliveTimer.)
+    m_keepAliveTimer.setInterval(30 * 1000);
+    connect(&m_keepAliveTimer, &QTimer::timeout, this, [this]() {
+        if (m_ws.state() == QAbstractSocket::ConnectedState)
+            m_ws.ping();
+    });
+    connect(&m_ws, &QWebSocket::pong, this,
+            [](quint64 elapsed, const QByteArray &) {
+        qDebug() << "Push: keepalive pong, RTT" << elapsed << "ms";
+    });
 }
 
 void PushClient::start()
@@ -32,6 +47,7 @@ void PushClient::stop()
 {
     m_stopped = true;
     m_reconnectTimer.stop();
+    m_keepAliveTimer.stop();
     m_ws.close();
     m_authenticated = false;
     if (m_connected) {
@@ -81,6 +97,7 @@ void PushClient::onConnected()
 void PushClient::onDisconnected()
 {
     qDebug() << "Push: WebSocket disconnected";
+    m_keepAliveTimer.stop();
     m_authenticated = false;
     if (m_connected) {
         m_connected = false;
@@ -99,6 +116,7 @@ void PushClient::onTextMessageReceived(const QString &message)
             m_authenticated = true;
             m_connected = true;
             emit connectedChanged();
+            m_keepAliveTimer.start();   // keep the push socket from going zombie
             qDebug() << "Push: authenticated! Listening for events.";
         } else {
             qWarning() << "Push: auth response:" << msg;

@@ -2413,13 +2413,22 @@ void MainWindow::changeEvent(QEvent *event)
             if (m_userStatus)
                 m_userStatus->refreshFromServer(false);
             // bug 1 — also re-sync the OPEN room on activation. The
-            // conversation list self-heals on its own 30 s timer, but the open
-            // room's only live path is the long-poll; if it stalled while we
-            // were away (sleep/wake, network blip) the room would show stale
+            // open room's only live path is the long-poll; if it stalled while
+            // we were away (sleep/wake, network blip) the room would show stale
             // messages until a full conversation switch. refreshLatest()
             // reconciles it and restarts the poller. Shares the 5 s limit.
             if (m_messages)
                 m_messages->refresh();
+            // Re-sync the CONVERSATION LIST on activation too. A new group
+            // created on another device generates no push to its creator, and
+            // a reply in a mention-only group may produce no push at all — so
+            // the list previously only updated on the 30 s fallback timer (or a
+            // restart). Refreshing the moment the user returns to TalQ makes a
+            // newly-created/just-active conversation appear right away. Shares
+            // the 5 s rate limit; ConversationListModel coalesces if a refresh
+            // is already in flight.
+            if (m_conversations)
+                m_conversations->refresh();
         }
     }
 }
