@@ -312,6 +312,13 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
     // drop the call on a transient publisher-reconnect blip.
     connect(m_signaling, &SignalingClient::roomPeerLeft,
             this, [this](const QString &sessionId) {
+        // Screen-sub cleanup must NOT be gated on call state. A peer's session can
+        // vanish (room/leave only, with NO participantLeftCall — #bug2) while WE
+        // are in Reconnecting from our OWN publisher rebuild; if we skipped cleanup
+        // then, the zombie screen subscriber would pin our camera to a single LOW
+        // layer for the rest of the call (the exact latch fix B targets). This is a
+        // safe no-op when there is no sub, so run it before the call-state guard.
+        removeScreenSubscriber(sessionId);
         if (m_state != Connecting && m_state != Active) return;
         if (m_subscribePipelines.contains(sessionId)) {
             qInfo() << "CallManager: peer" << sessionId.left(20)
@@ -336,21 +343,11 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
     connect(m_signaling, &SignalingClient::screenShareStopped,
             this, [this](const QString &sessionId) {
         qDebug() << "CallManager: remote screen share stopped from" << sessionId.left(20);
-        // Disconnect video provider BEFORE deleting subscriber
-        if (m_remoteScreenProvider) {
-            m_remoteScreenProvider->disconnect();
-            m_remoteScreenProvider = nullptr;
-        }
-        emit remoteScreenProviderChanged();
-        if (m_screenSubscribers.contains(sessionId)) {
-            m_screenSubscribers[sessionId]->stop();
-            m_screenSubscribers[sessionId]->deleteLater();
-            m_screenSubscribers.remove(sessionId);
-        }
-        if (auto *p = m_participants.value(sessionId)) {
-            p->setScreen(nullptr);
-            p->setScreenSharing(false);
-        }
+        // Drop ONLY this peer's screen subscriber (and recompute suppression). A
+        // different peer that is still sharing keeps our camera suppressed — the
+        // old code nulled the single render pointer unconditionally, wrongly
+        // restoring our full simulcast while another peer's share was still up.
+        removeScreenSubscriber(sessionId);
     });
 
     // Keep the self participant mirrored to our own media state.
@@ -358,6 +355,15 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
                       &CallManager::screenShareChanged,
                       &CallManager::localVideoProviderChanged })
         connect(this, sig, this, [this]{ syncSelfParticipant(); });
+
+    // Camera suppression (drop our camera to a single LOW layer while a screen is
+    // shared) is re-evaluated EXPLICITLY wherever the set of active screen shares
+    // changes: remote add (screen-offer handler), remote remove
+    // (removeScreenSubscriber), local share start/stop, and publisher rebuild. It
+    // is deliberately NOT wired to remoteScreenProviderChanged — that render-
+    // pointer signal also fires mid-rebuild (a re-offer nulls then re-sets the
+    // provider in one event-loop turn), which would briefly un-suppress and churn
+    // the camera's m/h simulcast layers exactly while a screen decode is rebuilt.
 
     // HPB WebSocket signaling messages
     connect(m_signaling, &SignalingClient::offerReceived,
@@ -376,8 +382,15 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
                 qDebug() << "CallManager: screen re-offer for" << from.left(20)
                          << "— rebuilding screen subscriber (avoid frozen frame)";
                 stale->stop();
+                VideoFrameProvider *staleProv = stale->videoProvider();
                 stale->deleteLater();
-                if (m_remoteScreenProvider) {
+                // Only drop the render slot if WE were rendering THIS peer's
+                // (now-stale) screen — in a multi-sharer call another peer may be
+                // the one on-screen, and the re-add below re-points to this peer's
+                // fresh provider anyway. Suppression is deliberately NOT recomputed
+                // here (the take()+re-add must not churn it — done at the explicit
+                // recompute after the new subscriber is in place).
+                if (m_remoteScreenProvider == staleProv) {
                     m_remoteScreenProvider = nullptr;
                     emit remoteScreenProviderChanged();
                 }
@@ -410,6 +423,15 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
                 qWarning() << "CallManager: failed to start screen subscriber pipeline";
                 m_screenSubscribers.remove(from);
                 sub->deleteLater();
+                // A re-offer's stale subscriber was already torn down above; if the
+                // rebuild fails, leaving the participant flagged screen-sharing with
+                // a null screen would be inconsistent. Clear it + recompute so we
+                // don't stay latched to LOW.
+                if (auto *p = m_participants.value(from)) {
+                    p->setScreen(nullptr);
+                    p->setScreenSharing(false);
+                }
+                updateCameraSuppression();
                 return;
             }
             qDebug() << "CallManager: screen subscriber started, setting offer...";
@@ -419,6 +441,9 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
                 p->setScreen(sub->videoProvider());
                 p->setScreenSharing(true);
             }
+            // A remote peer is now screen-sharing — drop our camera to a single
+            // LOW layer (relieves the sharer's decode + every sender's encode).
+            updateCameraSuppression();
             // Receiving a peer's SCREEN is definitive proof they are live in the
             // call — so make sure we ALSO subscribe their PRIMARY (camera+mic)
             // feed. On a normal mid-call share this is already done
@@ -1295,10 +1320,10 @@ bool CallManager::buildAndStartPublisher()
 
     qDebug() << "CallManager: calling PublishPipeline::start()...";
     m_publishPipeline->setGpuAccel(m_gpuAccelStatus);   // encode-load tier cap (720p iGPU / 480p software)
-    // If a screen share is already live (publisher rebuild mid-share), keep the
-    // camera simulcast suppressed on the fresh pipeline too.
-    if (m_screenSharing)
-        m_publishPipeline->setScreenShareSuppression(true);
+    // If any screen share is live (publisher rebuild mid-share — local OR a
+    // remote peer's), keep the camera simulcast suppressed on the fresh
+    // pipeline too. Runs before start() so its build-time layer gate applies.
+    updateCameraSuppression();
     if (!m_publishPipeline->start(m_stunServer, m_turnServers,
         m_deviceManager ? m_deviceManager->selectedInputDeviceId() : QString(),
         m_withVideo, videoDeviceIndex(), preferHd1080())) {
@@ -1660,6 +1685,58 @@ void CallManager::toggleCamera() {
     updateCallFlags();
 }
 
+void CallManager::updateCameraSuppression()
+{
+    // Any screen share in the room — ours OR a remote peer's — reduces every
+    // camera to a small PIP, so drop our camera to a single LOW simulcast layer
+    // for its duration. This cuts encode load on every sender AND, just as
+    // importantly, decode load on the sharer: a weak/iGPU box already maxed
+    // encoding the screen then only has a 180p peer camera to decode instead of
+    // a full 1080p one. setScreenShareSuppression() early-outs when unchanged,
+    // so calling this redundantly from every trigger (local share start/stop,
+    // remote-screen change, publisher rebuild) is safe.
+    if (!m_publishPipeline)
+        return;
+    // Drive off the SET of active remote screen subscribers, not the single
+    // render pointer m_remoteScreenProvider: with two peers sharing, one stopping
+    // nulls that pointer while the other is still sharing — keying on the map
+    // keeps us correctly suppressed until the LAST remote share ends.
+    const bool suppress = m_screenSharing || !m_screenSubscribers.isEmpty();
+    m_publishPipeline->setScreenShareSuppression(suppress);
+}
+
+void CallManager::removeScreenSubscriber(const QString &sessionId)
+{
+    auto *sub = m_screenSubscribers.take(sessionId);
+    if (!sub)
+        return;                       // no remote screen from this peer — nothing to do
+    // If this peer's screen was the one being rendered, unbind it so the UI
+    // stops painting a dead feed.
+    if (m_remoteScreenProvider && m_remoteScreenProvider == sub->videoProvider()) {
+        // Broad disconnect() is INTENTIONAL here: this provider is about to be
+        // deleteLater()'d with its subscriber, so every painter bound to it must
+        // stop now (it is being destroyed, not merely reassigned).
+        m_remoteScreenProvider->disconnect();
+        m_remoteScreenProvider = nullptr;
+        // If ANOTHER peer is still sharing, switch the single render slot to it
+        // rather than going blank (TalQ shows one remote screen at a time).
+        if (!m_screenSubscribers.isEmpty()) {
+            auto it = m_screenSubscribers.begin();
+            m_remoteScreenProvider = it.value()->videoProvider();
+            if (auto *np = m_participants.value(it.key()))
+                np->setScreen(m_remoteScreenProvider);
+        }
+        emit remoteScreenProviderChanged();
+    }
+    sub->stop();
+    sub->deleteLater();
+    if (auto *p = m_participants.value(sessionId)) {
+        p->setScreen(nullptr);
+        p->setScreenSharing(false);
+    }
+    updateCameraSuppression();        // a sharer vanished — recompute (don't latch LOW)
+}
+
 void CallManager::startScreenShare(int monitorIndex, quintptr windowHandle)
 {
     if (m_state != Active && m_state != Connecting) return;
@@ -1689,8 +1766,8 @@ void CallManager::startScreenShare(int monitorIndex, quintptr windowHandle)
 
     // Stop the camera's simulcast while sharing — the share is a second encode
     // on top of the camera layers and the two together stall a weak/iGPU box.
-    if (m_publishPipeline)
-        m_publishPipeline->setScreenShareSuppression(true);
+    // m_screenSharing is already true above, so the helper resolves to suppress.
+    updateCameraSuppression();
 
     // The monitor border is shown inside buildAndStartSharePipeline() so the
     // initial start, a confirm-timeout retry, and a queued back-to-back start
@@ -1926,10 +2003,12 @@ void CallManager::stopScreenShare()
         m_screenSharePipeline->deleteLater();
         m_screenSharePipeline = nullptr;
     }
-    // Share over — let the camera send its full simulcast set again.
-    if (m_publishPipeline)
-        m_publishPipeline->setScreenShareSuppression(false);
+    // OUR share is over — clear the flag BEFORE recomputing so the camera
+    // sends its full simulcast set again. If a remote peer is still sharing,
+    // updateCameraSuppression() keeps suppression on (its predicate sees the
+    // remaining m_screenSubscribers entries).
     m_screenSharing = false;
+    updateCameraSuppression();
     // Defensive: clear the per-share sid so a subsequent re-share starts
     // from a fresh signaling identity (any straggler messages bound to
     // the old sid get dropped instead of clobbering the new session).
@@ -3049,6 +3128,12 @@ void CallManager::onParticipantLeftCall(const QString &sessionId)
         m_subscriberRecoveries.remove(sessionId);  // stale entry per peer-leave
         qDebug() << "CallManager: removed subscriber for" << sessionId.left(20);
     }
+
+    // A peer that leaves the CALL while screen-sharing (incl. an ungraceful
+    // crash/WiFi-drop, where no "unshareScreen" message arrives) would otherwise
+    // leave a zombie screen subscriber pinning our camera to a single LOW layer
+    // for the rest of the call. Drop it + recompute suppression. No-op if none.
+    removeScreenSubscriber(sessionId);
 
     removeParticipant(sessionId);
 
