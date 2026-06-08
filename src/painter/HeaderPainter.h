@@ -30,6 +30,11 @@ public:
     int conversationType() const { return m_conversationType; }
     void setConversationType(int v);
 
+    // Mark the header avatar stale so the next paint re-fetches it (keeps the
+    // current image until the new one loads). Called on window focus so a
+    // changed avatar shows up without a restart.
+    void invalidateAvatars() { m_avatarFetchedMs.clear(); update(); }
+
     QString peerStatus() const { return m_peerStatus; }
     void setPeerStatus(const QString &state, const QString &message, const QString &icon);
 
@@ -129,6 +134,7 @@ private:
     void requestAvatar(const QString &userId);
     QHash<QString, QImage> m_avatarCache;
     QSet<QString> m_avatarPending;
+    QHash<QString, qint64> m_avatarFetchedMs; // key -> last fetch epoch-ms (TTL)
 
     // ── Painting helpers ──
     // Shared rounded-pill background for every action button (hover/pressed).

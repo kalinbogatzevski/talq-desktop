@@ -12,6 +12,7 @@
 #include <QNetworkReply>
 #include <QFontMetrics>
 #include <QCursor>
+#include <QDateTime>
 #include <QToolTip>
 #include <QtMath>
 #include <QTimer>
@@ -69,6 +70,7 @@ void HeaderPainter::setConversationUserId(const QString &v) {
 void HeaderPainter::setAvatarImage(const QImage &img) {
     if (!img.isNull() && !m_conversationUserId.isEmpty()) {
         m_avatarCache[m_conversationUserId] = img;
+        m_avatarFetchedMs[m_conversationUserId] = QDateTime::currentMSecsSinceEpoch();
         update();
     }
 }
@@ -718,14 +720,26 @@ void HeaderPainter::paintAvatar(QPainter *p, const QRectF &rect)
 // Avatar loading
 // ═══════════════════════════════════════════════════════
 
+// Avatar cache freshness — see the matching note in ChatPainter.cpp. No HTTP
+// cache exists, so the server always returns the current avatar; re-fetch once
+// the cached copy ages past the TTL (shorter backoff for a failed fetch).
+static constexpr qint64 kAvatarTtlMs      = 15 * 60 * 1000;  // 15 min
+static constexpr qint64 kAvatarErrorTtlMs = 60 * 1000;       // 1 min
+
 QImage HeaderPainter::fetchAvatar(const QString &userId)
 {
     if (userId.isEmpty())
         return QImage();
 
     auto it = m_avatarCache.find(userId);
-    if (it != m_avatarCache.end())
+    if (it != m_avatarCache.end()) {
+        const qint64 age = QDateTime::currentMSecsSinceEpoch()
+                           - m_avatarFetchedMs.value(userId, 0);
+        const qint64 ttl = it.value().isNull() ? kAvatarErrorTtlMs : kAvatarTtlMs;
+        if (age >= ttl)
+            requestAvatar(userId);   // refresh in background; keep showing this one
         return it.value();
+    }
 
     requestAvatar(userId);
     return QImage();
@@ -754,6 +768,7 @@ void HeaderPainter::requestAvatar(const QString &userId)
     connect(reply, &QNetworkReply::finished, this, [this, reply, userId]() {
         reply->deleteLater();
         m_avatarPending.remove(userId);
+        m_avatarFetchedMs[userId] = QDateTime::currentMSecsSinceEpoch();
 
         if (reply->error() != QNetworkReply::NoError) {
             m_avatarCache[userId] = QImage();
