@@ -2429,6 +2429,15 @@ void MainWindow::changeEvent(QEvent *event)
             // is already in flight.
             if (m_conversations)
                 m_conversations->refresh();
+            // Avatars only ever lived in each painter's in-memory cache and
+            // were never invalidated, so a group/user avatar changed elsewhere
+            // stayed stale until restart. Mark them stale on focus; the next
+            // paint re-fetches in the background (the current image stays up
+            // until the new one loads). A 15-min TTL inside the painters covers
+            // the always-focused case.
+            if (m_sidebar)     m_sidebar->invalidateAvatars();
+            if (m_header)      m_header->invalidateAvatars();
+            if (m_chatPainter) m_chatPainter->invalidateAvatars();
         }
     }
 }
