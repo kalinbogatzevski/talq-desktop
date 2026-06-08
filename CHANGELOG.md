@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.50.7 "Slartibartfast" -- STABLE (2026-06-08)
+
+### Fixed
+
+* **Screen sharing no longer overloads low-power laptops.** On a machine with
+  integrated graphics (or no hardware video encoder), sharing your screen on
+  top of your camera could gradually bog it down until it froze. TalQ now caps
+  the shared screen to 720p (540p when no hardware encoder is present) on those
+  machines, and pauses the camera's extra quality layers while you share, so the
+  graphics chip is never asked to encode more than it can handle at once.
+  Machines with a dedicated GPU are unchanged.
+* **The receive-quality menu shows the sender's real resolution.** The "High"
+  option was labelled from your OWN maximum-send setting, so it could read
+  "High (1080p)" even when the other person was only sending 720p. It now
+  reflects the resolution actually arriving from them.
+
 ## v0.50.6 "Slartibartfast" -- STABLE (2026-06-08)
 
 ### Fixed
