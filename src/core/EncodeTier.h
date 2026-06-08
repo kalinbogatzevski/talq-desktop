@@ -41,4 +41,19 @@ inline EncodeTierCap encodeTierCap(const QString &gpuAccel)
                        "integrated graphics.") };
 }
 
+// Screen-share device-tier ceiling. A screen share adds a SECOND video encode
+// on top of the camera's simulcast layers; on a weak / iGPU encoder the two
+// together saturate the single fixed-function media engine (field freeze
+// 2026-06-08: Intel UHD 620 software-fed 1440p30 share + 3 camera layers ->
+// gradual lock-up). Mirrors the camera cap: clamp the screen capture height by
+// tier. 0 = no clamp (discrete GPU keeps the user's quality choice).
+inline int screenTierMaxHeight(const QString &gpuAccel)
+{
+    if (gpuAccel == QLatin1String("NVIDIA NVDEC"))
+        return 0;                                  // discrete dGPU: no clamp
+    if (gpuAccel.isEmpty() || gpuAccel == QLatin1String("Software only"))
+        return 540;                                // no HW encode: 540p ceiling
+    return 720;                                    // Intel iGPU: 720p (max HD)
+}
+
 } // namespace talq

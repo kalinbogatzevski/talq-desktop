@@ -585,7 +585,7 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         // encode tier the HIGH layer (index 2) is shed up front via
         // m_loadCapMaxLayer; start a capped layer's valve dropped so no frames
         // ever reach its encoder (saves the iGPU the per-frame encode work).
-        const bool layerAllowed = ((int)i <= m_loadCapMaxLayer);
+        const bool layerAllowed = ((int)i <= effectiveLayerCeiling());
         g_object_set(L.valve, "drop", layerAllowed ? FALSE : TRUE, nullptr);
         L.active = layerAllowed;
 
@@ -2419,6 +2419,25 @@ GstElement *PublishPipeline::onRequestAuxSender(GstElement *, GObject *,
     return gcc;  // webrtcbin takes ownership
 }
 
+void PublishPipeline::setScreenShareSuppression(bool on)
+{
+    if (on == m_screenShareSuppress) return;
+    m_screenShareSuppress = on;
+    // Apply the new effective ceiling to the live valves NOW (don't wait for the
+    // next BWE tick). On a not-yet-started pipeline the valves are null, so this
+    // is a no-op and start()'s build-time gate (effectiveLayerCeiling) applies.
+    const int ceil = effectiveLayerCeiling();
+    setLayerActive(1, ceil >= 1);
+    setLayerActive(2, ceil >= 2);
+    qInfo().nospace() << "PublishPipeline: screen share "
+                      << (on ? "active -> camera simulcast LOW only"
+                             : "ended -> camera simulcast restored")
+                      << " (ceiling " << ceil << ", tier cap "
+                      << m_loadCapMaxLayer << ")";
+    // When un-suppressing, the next onGccBitrate tick re-confirms m/h against
+    // the live network estimate; the optimistic re-open above is corrected then.
+}
+
 void PublishPipeline::setLayerActive(int i, bool on)
 {
     if (i < 0 || i >= (int)m_layers.size()) return;
@@ -2449,8 +2468,9 @@ void PublishPipeline::applyBweToLayers(int estimateBps)
     // Effective cap = MIN(network, encode-load): a layer sends only if BOTH the
     // BWE estimate AND the encode-load cap (m_loadCapMaxLayer) allow it, so the
     // CPU veto can't be overridden by a healthy network estimate.
-    bool wantH = (m_loadCapMaxLayer >= 2) && estimateBps > threshold(kCloseH, m_layers[2].active);
-    bool wantM = (m_loadCapMaxLayer >= 1) && estimateBps > threshold(kCloseM, m_layers[1].active);
+    const int ceil = effectiveLayerCeiling();   // tier cap AND screen-share overlay
+    bool wantH = (ceil >= 2) && estimateBps > threshold(kCloseH, m_layers[2].active);
+    bool wantM = (ceil >= 1) && estimateBps > threshold(kCloseM, m_layers[1].active);
     // 'l' always stays on — our minimum-viable channel.
     setLayerActive(2, wantH);
     setLayerActive(1, wantM);

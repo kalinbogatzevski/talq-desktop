@@ -1,6 +1,7 @@
 #include "core/CallManager.h"
 #include "core/BackgroundEngine.h"
 #include "core/SharedFarEndBus.h"
+#include "core/EncodeTier.h"
 #include "core/TalqLog.h"
 #include "core/WasapiDucking.h"
 #include "ui/ShareOverlay.h"
@@ -729,8 +730,10 @@ QString CallManager::activeRxResolution() const
     for (auto *sub : m_subscribePipelines) {
         if (!sub->isRunning()) continue;
         const int w = sub->rxWidth(), h = sub->rxHeight();
-        if (w > 0 && h > 0)
+        if (w > 0 && h > 0) {
+            if (h > m_peerPeakRxHeight) m_peerPeakRxHeight = h;  // honest HIGH-label basis
             return QStringLiteral("%1×%2").arg(w).arg(h);
+        }
     }
     return {};
 }
@@ -1292,6 +1295,10 @@ bool CallManager::buildAndStartPublisher()
 
     qDebug() << "CallManager: calling PublishPipeline::start()...";
     m_publishPipeline->setGpuAccel(m_gpuAccelStatus);   // encode-load tier cap (720p iGPU / 480p software)
+    // If a screen share is already live (publisher rebuild mid-share), keep the
+    // camera simulcast suppressed on the fresh pipeline too.
+    if (m_screenSharing)
+        m_publishPipeline->setScreenShareSuppression(true);
     if (!m_publishPipeline->start(m_stunServer, m_turnServers,
         m_deviceManager ? m_deviceManager->selectedInputDeviceId() : QString(),
         m_withVideo, videoDeviceIndex(), preferHd1080())) {
@@ -1680,11 +1687,27 @@ void CallManager::startScreenShare(int monitorIndex, quintptr windowHandle)
     if (!m_screenSharePipeline)
         return;   // build failed; already cleaned up + policy reset
 
+    // Stop the camera's simulcast while sharing — the share is a second encode
+    // on top of the camera layers and the two together stall a weak/iGPU box.
+    if (m_publishPipeline)
+        m_publishPipeline->setScreenShareSuppression(true);
+
     // The monitor border is shown inside buildAndStartSharePipeline() so the
     // initial start, a confirm-timeout retry, and a queued back-to-back start
     // all frame the screen uniformly.
 
     emit screenShareChanged();
+}
+
+void CallManager::clampScreenToGpuTier(int &cw, int &ch) const
+{
+    const int maxH = talq::screenTierMaxHeight(m_gpuAccelStatus);
+    if (maxH <= 0 || ch <= maxH) return;   // discrete GPU or already within cap
+    cw = ((cw * maxH) / ch) & ~1;          // preserve aspect, even width
+    ch = maxH;
+    qInfo().nospace() << "CallManager: GPU tier '" << m_gpuAccelStatus
+                      << "' -- capping screen share to " << cw << "x" << ch
+                      << " (weak/iGPU encoder)";
 }
 
 // Build, wire and start a fresh screen-share pipeline. Used for the initial
@@ -1743,6 +1766,7 @@ void CallManager::buildAndStartSharePipeline(int monitorIndex, quintptr windowHa
         // encoder a resolution it cannot handle.
         cw = qMin(cw, 3840);
         ch = qMin(ch, 2160);
+        clampScreenToGpuTier(cw, ch);   // weak/iGPU encoder: cap to 720p/540p
         m_screenSharePipeline->setQualityCap(cw, ch);
     }
 
@@ -1902,6 +1926,9 @@ void CallManager::stopScreenShare()
         m_screenSharePipeline->deleteLater();
         m_screenSharePipeline = nullptr;
     }
+    // Share over — let the camera send its full simulcast set again.
+    if (m_publishPipeline)
+        m_publishPipeline->setScreenShareSuppression(false);
     m_screenSharing = false;
     // Defensive: clear the per-share sid so a subsequent re-share starts
     // from a fresh signaling identity (any straggler messages bound to
@@ -2052,6 +2079,7 @@ void CallManager::setScreenShareQuality(int level)
     }
     cw = qMin(cw, 3840);
     ch = qMin(ch, 2160);
+    clampScreenToGpuTier(cw, ch);   // weak/iGPU encoder: cap to 720p/540p
 
     // LIVE quality change -- reconfigure the RUNNING pipeline's downscale cap in
     // place (ScreenSharePipeline::setQualityCap re-sets the scale capsfilter).
@@ -2716,6 +2744,7 @@ void CallManager::stopAllPipelines()
 void CallManager::teardown(const QString &reason)
 {
     setStatusDetail("");
+    m_peerPeakRxHeight = 0;        // fresh basis for the next call's quality label
     m_ringTimeout.stop();
     m_durationTimer.stop();
     stopIncomingCameraPreview();   // #13: release the camera (safe no-op if not running)

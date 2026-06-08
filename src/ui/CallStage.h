@@ -81,6 +81,10 @@ private:
     void paintInfoPills(QPainter &p, const PainterTheme &th);
     void paintActionPills(QPainter &p, const PainterTheme &th);
     void paintSharingBadge(QPainter &p, const PainterTheme &th);
+    // Label for the receive-quality dropdown's HIGH entry, bucketed from the
+    // PEER's peak decoded height (CallManager::peerPeakRxHeight) — the remote's
+    // real top layer, not our own send setting. "High" alone until observed.
+    QString highQualityLabel() const;
     void paintTelemetry(QPainter &p, const PainterTheme &th);
     void paintCentered(QPainter &p, const PainterTheme &th); // incoming/outgoing/alone
     void buildButtons();

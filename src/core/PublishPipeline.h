@@ -86,6 +86,14 @@ public:
     // saturate the iGPU it also decodes on (the field freeze 2026-06-05).
     void setGpuAccel(const QString &accel) { m_gpuAccel = accel; }
 
+    // While the user is screen-sharing, stop the camera's simulcast: a share is
+    // a second encode on top of the camera's layers, and on a weak/iGPU encoder
+    // the two together stall the machine (field freeze 2026-06-08). Drops the
+    // camera to the LOW layer only by clamping m_loadCapMaxLayer to 0 (which
+    // applyBweToLayers already honours as a hard ceiling, so BWE can't re-open
+    // m/h); restores the prior ceiling when the share ends. Idempotent.
+    void setScreenShareSuppression(bool on);
+
     VideoFrameProvider *localVideoProvider() const { return m_localVideoProvider; }
 
     // #20 — when set (CallManager passes its long-lived engine), the
@@ -240,6 +248,15 @@ private:
     // 0 = l only). Lowered up front on a weak encode tier (sheds HIGH); the BWE
     // gate in applyBweToLayers honors it so it can't re-open a capped layer.
     int m_loadCapMaxLayer = 2;
+    // Screen-share camera-simulcast suppression — a separate boolean OVERLAY on
+    // the tier ceiling (not a mutation of it), so build/BWE ordering can't lose
+    // the natural ceiling. While true, the effective ceiling is forced to 0
+    // (LOW only); when cleared the tier ceiling applies again.
+    bool m_screenShareSuppress = false;
+    // Active layers gate on this, NOT m_loadCapMaxLayer directly.
+    int effectiveLayerCeiling() const {
+        return m_screenShareSuppress ? 0 : m_loadCapMaxLayer;
+    }
     bool m_cameraEnabled = false;
     // AEC on the capture leg (echo-cancel + probe). Set via setEchoCancellation
     // before start(); CallManager guarantees the probe exists first.
