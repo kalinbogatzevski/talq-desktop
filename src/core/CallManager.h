@@ -481,6 +481,21 @@ private:
     // Clamp a screen-share capture size DOWN to the GPU tier's ceiling (720p
     // iGPU / 540p software; no clamp on a discrete GPU), preserving aspect.
     void clampScreenToGpuTier(int &cw, int &ch) const;
+    // Drop OUR camera to a single LOW layer whenever ANY screen share is active
+    // in the call — ours OR a remote peer's. While the room is focused on a
+    // shared screen the cameras are just small PIPs, so this frees encode load
+    // on every sender AND decode load on every receiver (the sharer, already
+    // maxed encoding the screen, then only decodes a 180p peer camera). Driven
+    // by (m_screenSharing || !m_screenSubscribers.isEmpty()); recomputed
+    // explicitly at every point the active-share set changes (local share
+    // start/stop, remote add via the screen-offer handler, remote remove via
+    // removeScreenSubscriber, publisher rebuild).
+    void updateCameraSuppression();
+    // Tear down the screen subscriber for `sessionId` (no-op if none): stop +
+    // delete its pipeline, drop it from m_screenSubscribers, unbind the rendered
+    // screen provider if it was this peer's, and re-evaluate camera suppression
+    // so a vanished/zombie sharer can't pin our camera to a single LOW layer.
+    void removeScreenSubscriber(const QString &sessionId);
     void onShareConfirmed();
     void onShareConfirmTimeout();
     void onSharePipelineReleased();

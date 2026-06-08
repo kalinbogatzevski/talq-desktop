@@ -12,8 +12,12 @@
 //
 // Tiers:
 //   "NVIDIA NVDEC" (discrete dGPU)         -> no cap, all 3 layers (full quality)
-//   "Intel DXVA" / "DXVA (H264 only)"      -> cap 720p, keep 3 layers
+//   "Intel DXVA" / "DXVA (H264 only)"      -> cap 480p, keep 3 layers
 //   "Software only" OR unknown/undetected  -> cap 480p AND shed HIGH (send l+m)
+// The 480p iGPU ceiling matches the official Talk web client, whose own top
+// quality tier is only 720x540@30 (it never sends 1080p, and drops fps as
+// quality falls) -- so 480p@30 is a comfortably-within-spec send ceiling for a
+// shared-media-engine iGPU. fps is NOT capped here: the shared caps stay 30.
 // "When in doubt" (empty/unrecognised tier) is treated as the WEAKEST: if we
 // can't confirm hardware acceleration, assume there is none.
 
@@ -35,9 +39,11 @@ inline EncodeTierCap encodeTierCap(const QString &gpuAccel)
             QStringLiteral("Camera video is sent at up to 480p — no hardware "
                            "video acceleration was detected on this device.") };
 
-    // Intel iGPU (Intel DXVA / DXVA H264-only): keep 3 layers, cap resolution.
-    return { 720, false,
-        QStringLiteral("Camera video is sent at up to 720p — this device uses "
+    // Intel iGPU (Intel DXVA / DXVA H264-only): keep 3 layers, cap resolution
+    // to 480p (matches the official Talk web client's send ceiling; HW encode
+    // handles three light 180/360/480 layers without saturating the engine).
+    return { 480, false,
+        QStringLiteral("Camera video is sent at up to 480p — this device uses "
                        "integrated graphics.") };
 }
 

@@ -161,6 +161,23 @@ int main(int argc, char *argv[])
         qputenv("GST_PLUGIN_PATH", QByteArray::fromStdString(gstPath));
     }
 
+    // Single-instance detection — MUST run before any logging side effects.
+    // The log setup below archives + truncates (freopen "w") the shared
+    // talq_debug.log. A *second* launch (e.g. clicking the taskbar icon while
+    // TalQ is already running) used to do that too and only THEN discover it
+    // should exit — corrupting the PRIMARY's in-progress log: the primary keeps
+    // writing at its old file offset, so the truncated file is re-extended with
+    // a multi-MB NUL gap that destroys an active call's diagnostics. So decide
+    // primary-vs-secondary HERE; only the primary owns (archives/truncates) the
+    // log file. The secondary still signals the primary to surface its window,
+    // but later — after QApplication exists (QLocalSocket needs it) — at the
+    // guard below. The lock must outlive the whole run, so it is declared in
+    // main()'s scope.
+    QSharedMemory singleInstance("TalQ_SingleInstance_Lock");
+    singleInstance.attach();
+    singleInstance.detach();
+    const bool isPrimary = singleInstance.create(1);
+
     QString logPath;
     {
         qputenv("QT_FORCE_STDERR_LOGGING", "1");
@@ -202,7 +219,9 @@ int main(int argc, char *argv[])
         // session under a timestamped name (never overwritten by later
         // restarts) and keep the most recent N. The live log stays at the fixed
         // talq_debug.log name (the crash backstop + in-app viewer read it).
-        {
+        // PRIMARY-only: a secondary instance must never archive/truncate the
+        // primary's live log (see the single-instance note above).
+        if (isPrimary) {
             const QString logDir = QFileInfo(logPath).absolutePath();
             if (QFile::exists(logPath)) {
                 QDateTime mtime = QFileInfo(logPath).lastModified();
@@ -226,7 +245,9 @@ int main(int argc, char *argv[])
         // (Release builds have no attached console). If freopen fails, stderr
         // is now closed per POSIX — skip installing our handler so subsequent
         // writes don't go to a dead FD, and let Qt's default handler remain.
-        FILE *fp = freopen(logPath.toUtf8().constData(), "w", stderr);
+        // A secondary instance must NOT open (truncate) the shared log file.
+        FILE *fp = isPrimary ? freopen(logPath.toUtf8().constData(), "w", stderr)
+                             : nullptr;
         if (fp) {
             qInstallMessageHandler([](QtMsgType t, const QMessageLogContext &, const QString &msg) {
                 // Non-verbose: drop qDebug() noise, keep info/warn/critical
@@ -258,7 +279,10 @@ int main(int argc, char *argv[])
                               << (verbose ? (debugRequested ? "verbose (heavy GST trace)" : "detailed")
                                           : "minimal (Settings opted out)")
                               << "logging enabled; log at" << logPath;
-        } else {
+        } else if (isPrimary) {
+            // PRIMARY-only: fp==nullptr here means freopen genuinely FAILED.
+            // (A secondary instance has fp==nullptr by design — it skipped
+            // freopen — so it must NOT take this error path / show the modal.)
             const int savedErrno = errno;
 #ifdef Q_OS_WIN
             // Only nag with a modal if the user explicitly asked for
@@ -357,11 +381,9 @@ int main(int argc, char *argv[])
                 << "media checks OK";
     }
 
-    // Single-instance guard
-    QSharedMemory singleInstance("TalQ_SingleInstance_Lock");
-    singleInstance.attach();
-    singleInstance.detach();
-    if (!singleInstance.create(1)) {
+    // Single-instance guard (detection ran earlier, before any log setup, so a
+    // secondary never archives/truncates the primary's live log).
+    if (!isPrimary) {
         // Another instance holds the lock. Ask it to surface its window —
         // this is the path hit when the user clicks the pinned taskbar
         // icon while TalQ is hidden in the tray (Windows launches a fresh
