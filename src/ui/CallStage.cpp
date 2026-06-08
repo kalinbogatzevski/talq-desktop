@@ -1250,6 +1250,24 @@ void CallStage::paintInfoPills(QPainter &p, const PainterTheme &th)
     }
 }
 
+QString CallStage::highQualityLabel() const
+{
+    // The receive-quality dropdown controls which of the REMOTE's simulcast
+    // layers the SFU forwards, so its HIGH label must reflect the REMOTE's top
+    // layer — not our own "Maximum send resolution" (the old bug: a 1080p local
+    // setting showed "High (1080p)" even when the peer capped at 720p / shed
+    // HIGH). Bucket the peak height we've actually decoded from the peer.
+    const int h = m_call ? m_call->peerPeakRxHeight() : 0;
+    if (h <= 0)    return tr("High");          // not observed yet — claim nothing
+    if (h >= 1800) return tr("High (4K)");
+    if (h >= 1260) return tr("High (2K)");
+    if (h >= 900)  return tr("High (1080p)");
+    if (h >= 630)  return tr("High (720p)");
+    if (h >= 450)  return tr("High (540p)");
+    if (h >= 270)  return tr("High (360p)");
+    return tr("High (180p)");
+}
+
 void CallStage::paintActionPills(QPainter &p, const PainterTheme &th)
 {
     // 0.40.15 — action BUTTONS (not pills): rectangular, button-like
@@ -1258,23 +1276,9 @@ void CallStage::paintActionPills(QPainter &p, const PainterTheme &th)
     // The button shows the CURRENT value + ▼ caret so it reads "this
     // is a control with a dropdown" at a glance. Hover lifts subtly
     // (1.05x scale + accent border) and shows a native tooltip.
-    // 0.41.4-beta — High-layer label tracks the publisher's "Maximum
-    // send resolution" Settings choice. Stale "720p" was the field
-    // complaint after enabling 1440p/4K. We read the LOCAL setting as
-    // a best-guess for the symmetric peer config (works in 1:1 cases
-    // where both peers run the same TalQ build with similar settings).
-    const QString highLabel = [&]() -> QString {
-        QSettings vs("TalQ", "TalQ");
-        vs.beginGroup("Video");
-        const int h = vs.value("maxSendHeight", 720).toInt();
-        vs.endGroup();
-        switch (h) {
-            case 2160: return QStringLiteral("High (4K)");
-            case 1440: return QStringLiteral("High (2K)");
-            case 1080: return QStringLiteral("High (1080p)");
-            default:   return QStringLiteral("High (720p)");
-        }
-    }();
+    // High-layer label reflects the REMOTE peer's actual top layer (peak
+    // decoded height), not our own send setting — see highQualityLabel().
+    const QString highLabel = highQualityLabel();
     const QString kLowLabel = QStringLiteral("Low (180p)");
     const QString kMedLabel = QStringLiteral("Medium (360p)");
     const QString qVal = (m_qualityOverride < 0)
@@ -1639,19 +1643,7 @@ void CallStage::mouseMoveEvent(QMouseEvent *e)
     if (hovPill != m_hoverPill) {
         m_hoverPill = hovPill;
         if (hovPill == QStringLiteral("quality")) {
-            QString highLab;
-            {
-                QSettings vs("TalQ", "TalQ");
-                vs.beginGroup("Video");
-                const int h = vs.value("maxSendHeight", 720).toInt();
-                vs.endGroup();
-                switch (h) {
-                    case 2160: highLab = QStringLiteral("High (4K)");    break;
-                    case 1440: highLab = QStringLiteral("High (2K)");    break;
-                    case 1080: highLab = QStringLiteral("High (1080p)"); break;
-                    default:   highLab = QStringLiteral("High (720p)");  break;
-                }
-            }
+            const QString highLab = highQualityLabel();
             const QString cur = (m_qualityOverride < 0) ? QStringLiteral("Auto")
                 : (m_qualityOverride == 0 ? QStringLiteral("Low (180p)")
                    : m_qualityOverride == 1 ? QStringLiteral("Medium (360p)") : highLab);
@@ -1736,24 +1728,10 @@ void CallStage::mousePressEvent(QMouseEvent *e)
     if (e->button() == Qt::LeftButton
         && !m_qualityPillRect.isNull()
         && m_qualityPillRect.contains(e->position())) {
-        // 0.41.4-beta — dynamic "High" label tracks Settings →
-        // Maximum send resolution. The simulcast layer count is
-        // still three (l/m/h); only the H layer's actual resolution
-        // varies. Showing "720p" when the user just enabled 4K mode
-        // was misleading per the field report.
-        QString highLabel;
-        {
-            QSettings vs("TalQ", "TalQ");
-            vs.beginGroup("Video");
-            const int h = vs.value("maxSendHeight", 720).toInt();
-            vs.endGroup();
-            switch (h) {
-                case 2160: highLabel = tr("High (4K)");      break;
-                case 1440: highLabel = tr("High (2K)");      break;
-                case 1080: highLabel = tr("High (1080p)");   break;
-                default:   highLabel = tr("High (720p)");    break;
-            }
-        }
+        // The HIGH entry's resolution tracks the REMOTE peer's actual top
+        // layer (peak decoded height), not our own send setting — so a peer
+        // that capped to 720p / shed HIGH no longer shows a phantom 1080p.
+        const QString highLabel = highQualityLabel();
         openDropdown(m_qualityPillRect, [this, highLabel](QMenu &menu) {
             auto add = [&](const QString &label, int ov) {
                 QAction *act = menu.addAction(label);

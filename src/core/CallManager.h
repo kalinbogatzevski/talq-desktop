@@ -102,6 +102,11 @@ public:
     // Decoded resolution of the incoming stream (active simulcast layer),
     // e.g. "1280×720"; empty until the first frame decodes.
     QString activeRxResolution() const;
+    // Peak decoded height observed from the remote this call (across substream
+    // switches) — the honest basis for the receive-quality dropdown's HIGH
+    // label, instead of guessing from our OWN send setting. 0 until a frame
+    // decodes. Reset on call teardown.
+    int peerPeakRxHeight() const { return m_peerPeakRxHeight; }
     // Send resolution + live bitrate, e.g. "1280×720 · 2.5 Mbps".
     QString videoTxLabel() const;
     // Current outbound stream bandwidth (GCC-applied video + Opus audio),
@@ -373,6 +378,9 @@ private:
     bool m_callsAvailable = true;
     QString m_callsUnavailableReason;
     QString m_gpuAccelStatus;
+    // Peak remote decoded height this call (see peerPeakRxHeight()). mutable:
+    // accumulated lazily inside the const activeRxResolution() read path.
+    mutable int m_peerPeakRxHeight = 0;
     void checkGStreamerPlugins();
     void updateCallStats();
     void setStatusDetail(const QString &detail) {
@@ -470,6 +478,9 @@ private:
     bool m_shareConfirmArmed = false;
     bool m_shareRetryTeardown = false;   // a stop() in flight is a retry, not a user stop
     void buildAndStartSharePipeline(int monitorIndex, quintptr windowHandle);
+    // Clamp a screen-share capture size DOWN to the GPU tier's ceiling (720p
+    // iGPU / 540p software; no clamp on a discrete GPU), preserving aspect.
+    void clampScreenToGpuTier(int &cw, int &ch) const;
     void onShareConfirmed();
     void onShareConfirmTimeout();
     void onSharePipelineReleased();
