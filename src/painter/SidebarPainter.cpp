@@ -12,6 +12,7 @@
 #include <QNetworkReply>
 #include <QFontMetrics>
 #include <QtMath>
+#include <QDateTime>
 #include <algorithm>
 
 // ═══════════════════════════════════════════════════════
@@ -764,13 +765,27 @@ QString SidebarPainter::avatarCacheKey(const QString &userId, const QString &tok
     return QStringLiteral("room:") + token;
 }
 
+// Avatar cache freshness — see the matching note in ChatPainter.cpp. No HTTP
+// cache exists, so the server always returns the current avatar; re-fetch once
+// the cached copy ages past the TTL (shorter backoff for a failed fetch).
+static constexpr qint64 kAvatarTtlMs      = 15 * 60 * 1000;  // 15 min
+static constexpr qint64 kAvatarErrorTtlMs = 60 * 1000;       // 1 min
+
 QImage SidebarPainter::fetchAvatar(const QString &userId, const QString &token, int convType, int size)
 {
     QString key = avatarCacheKey(userId, token, convType);
     auto it = m_avatarCache.find(key);
     if (it != m_avatarCache.end()) {
-        // Return cached, but re-scale if size differs
         const QImage &cached = it.value();
+        // Re-fetch in the background once the cached entry is stale so a
+        // changed avatar appears without a restart; a failed (null) entry
+        // retries on the shorter error backoff instead of staying blank.
+        const qint64 age = QDateTime::currentMSecsSinceEpoch()
+                           - m_avatarFetchedMs.value(key, 0);
+        const qint64 ttl = cached.isNull() ? kAvatarErrorTtlMs : kAvatarTtlMs;
+        if (age >= ttl)
+            requestAvatar(userId, token, convType, size);
+        // Return cached, but re-scale if size differs
         if (cached.isNull()) return cached;
         if (cached.width() == size) return cached;
         return cached.scaled(size, size, Qt::KeepAspectRatio, Qt::SmoothTransformation);
@@ -803,9 +818,12 @@ void SidebarPainter::requestAvatar(const QString &userId, const QString &token, 
     connect(reply, &QNetworkReply::finished, this, [this, reply, key, size]() {
         reply->deleteLater();
         m_avatarPending.remove(key);
+        // Stamp fetch time (success OR failure) so the TTL/backoff in
+        // fetchAvatar drives the next retry instead of caching forever.
+        m_avatarFetchedMs[key] = QDateTime::currentMSecsSinceEpoch();
 
         if (reply->error() != QNetworkReply::NoError) {
-            m_avatarCache[key] = QImage(); // cache empty so we don't retry
+            m_avatarCache[key] = QImage(); // short error TTL lets it retry
             return;
         }
 

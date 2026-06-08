@@ -94,6 +94,11 @@ public:
     // ── Cache stats (for DebugMonitor) ──
     int avatarCacheCount() const { return m_avatarCache.size(); }
     qint64 avatarCacheBytes() const;
+    // Mark every cached avatar stale so the next paint re-fetches it in the
+    // background (the old image stays on screen until the new one arrives).
+    // Called when the window regains focus so an avatar changed elsewhere
+    // shows up without a restart.
+    void invalidateAvatars() { m_avatarFetchedMs.clear(); update(); }
     int previewCacheCount() const { return m_previewCache.size(); }
     qint64 previewCacheBytes() const;
     int layoutCacheCount() const { return m_layoutCache.size(); }
@@ -254,6 +259,7 @@ private:
     // ── Image caches ──
     QHash<QString, QImage> m_avatarCache;   // userId -> circular avatar
     QSet<QString> m_avatarPending;          // in-flight avatar requests
+    QHash<QString, qint64> m_avatarFetchedMs; // userId -> last fetch epoch-ms (TTL)
     QHash<int, QImage> m_previewCache;      // fileId -> preview image
     QHash<int, qreal> m_previewAspect;     // fileId -> height/width ratio (0 = unknown)
     QSet<int> m_previewPending;            // in-flight preview requests

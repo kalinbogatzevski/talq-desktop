@@ -64,6 +64,10 @@ public:
     void setSqueezed(bool sq);
 
     QImage cachedAvatar(const QString &key) const { return m_avatarCache.value(key); }
+    // Mark every cached row avatar stale so the next paint re-fetches it (the
+    // current image stays visible until the new one loads). Called on window
+    // focus so a changed group/user avatar shows up without a restart.
+    void invalidateAvatars() { m_avatarFetchedMs.clear(); update(); }
 
     // Cache stats (for DebugMonitor)
     int avatarCacheCount() const { return m_avatarCache.size(); }
@@ -163,4 +167,5 @@ private:
     // ── Image caches ──
     QHash<QString, QImage> m_avatarCache;   // cacheKey -> circular avatar
     QSet<QString> m_avatarPending;          // in-flight avatar requests
+    QHash<QString, qint64> m_avatarFetchedMs; // cacheKey -> last fetch epoch-ms (TTL)
 };

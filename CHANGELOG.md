@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.50.6 "Slartibartfast" -- STABLE (2026-06-08)
+
+### Fixed
+
+* **Avatars now update without a restart.** When someone changed a group's
+  picture, or a contact changed their own, TalQ kept showing the old avatar
+  until you restarted — every avatar was cached in memory for the whole session
+  and never refreshed. Avatars now refresh when you return to TalQ, and at least
+  every 15 minutes while it stays open, and a picture that briefly failed to
+  load is retried shortly after instead of staying blank until restart.
+
 ## v0.50.5 "Slartibartfast" -- STABLE (2026-06-07)
 
 ### Fixed

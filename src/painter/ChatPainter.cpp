@@ -2219,11 +2219,25 @@ void ChatPainter::paintHoverBar(QPainter *p, const MessageLayout &ml, qreal offs
 
 // ─── Avatar image loading ───────────────────────────
 
+// Avatar cache freshness. There is no HTTP cache in TalQ, so the server always
+// returns the CURRENT avatar — the in-memory cache is the only staleness
+// source. Re-fetch a cached avatar once it ages past the TTL so a changed
+// avatar appears without restarting; a failed (null) fetch retries on a much
+// shorter backoff instead of staying blank until restart.
+static constexpr qint64 kAvatarTtlMs      = 15 * 60 * 1000;  // 15 min
+static constexpr qint64 kAvatarErrorTtlMs = 60 * 1000;       // 1 min
+
 QImage ChatPainter::fetchAvatar(const QString &userId)
 {
     auto it = m_avatarCache.find(userId);
-    if (it != m_avatarCache.end())
+    if (it != m_avatarCache.end()) {
+        const qint64 age = QDateTime::currentMSecsSinceEpoch()
+                           - m_avatarFetchedMs.value(userId, 0);
+        const qint64 ttl = it.value().isNull() ? kAvatarErrorTtlMs : kAvatarTtlMs;
+        if (age >= ttl)
+            requestAvatar(userId);   // refresh in background; keep showing this one
         return it.value();
+    }
 
     // Start async fetch if not already pending
     requestAvatar(userId);
@@ -2246,9 +2260,13 @@ void ChatPainter::requestAvatar(const QString &userId)
     connect(reply, &QNetworkReply::finished, this, [this, reply, userId]() {
         reply->deleteLater();
         m_avatarPending.remove(userId);
+        // Stamp the fetch time (success OR failure) so the TTL/backoff in
+        // fetchAvatar governs the next retry instead of caching forever.
+        m_avatarFetchedMs[userId] = QDateTime::currentMSecsSinceEpoch();
 
         if (reply->error() != QNetworkReply::NoError) {
-            // Cache empty image so we don't retry
+            // Cache empty image; the short error TTL lets a transient failure
+            // retry rather than staying blank until restart.
             m_avatarCache[userId] = QImage();
             return;
         }
