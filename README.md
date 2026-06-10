@@ -268,6 +268,13 @@ reliability across real networks** — if you can reproduce a call failure
 with details about your NAT/firewall/devices, that's gold. Please keep the
 *calm, warm, fast* design intent in mind for UI changes.
 
+## Privacy
+
+TalQ collects **no** telemetry, analytics, or crash reports. It talks only to
+the Nextcloud server you configure (your data, your server) and checks GitHub
+for new versions. Everything else stays on your machine. See
+[`PRIVACY.md`](PRIVACY.md).
+
 ## License
 
 TalQ is licensed under the **Apache License 2.0** — see [`LICENSE`](LICENSE).
