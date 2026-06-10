@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.51.0 "Bafana Bafana" -- BETA (2026-06-11)
+
+Codename **Bafana Bafana** — the nickname ("the boys") of South Africa's
+national football team — for the **FIFA 2026 World Cup**, where South Africa
+plays the Opening Match. Fitting on two counts: TalQ's call server lives in
+South Africa, and it's built by a Cape Town company.
+
+### Added
+
+* **Automatic quality scaling for slower computers (beta).** During a call TalQ
+  now measures how hard your computer is actually working to encode and decode
+  video, and — if it can't keep up — gently steps the picture down (fewer
+  simulcast layers, a lower frame rate, lower incoming resolution from other
+  people) to keep the call smooth, then restores quality once there's headroom
+  again. It adapts to your *hardware*, separately from how it already adapts to
+  your *network*. Powerful machines are unaffected (no change). This is the
+  long-promised "Zoom-style" load controller: it keeps weak laptops from
+  freezing during camera + screen-share calls. The person you're looking at
+  stays sharpest; smaller tiles give way first. Still in beta — if it ever
+  misbehaves it can be turned off.
+
 ## v0.50.11 "Slartibartfast" -- STABLE (2026-06-10)
 
 ### Fixed

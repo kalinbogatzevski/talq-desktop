@@ -95,6 +95,13 @@ public:
     // m/h); restores the prior ceiling when the share ends. Idempotent.
     void setScreenShareSuppression(bool on);
 
+    // 0.51.x dynamic encode-load controller (CallManager owns it, ticks ~1 s).
+    // Applies the controller's SEND caps: layerCeiling 0..2 (folds into
+    // effectiveLayerCeiling + re-gates the valves live) and fps 10..60 (drives
+    // the shared videorate via m_sharedCaps). Idempotent — only re-gates /
+    // renegotiates on a real change. See MediaLoadController.h.
+    void setLoadCaps(int layerCeiling, int fps);
+
     VideoFrameProvider *localVideoProvider() const { return m_localVideoProvider; }
 
     // #20 — when set (CallManager passes its long-lived engine), the
@@ -128,6 +135,13 @@ public:
     quint64 outboundPacketsSent() const {
         return m_outboundPacketsSent->load(std::memory_order_relaxed);
     }
+
+    // 0.51.x encode-load probe: the fraction of wall-clock time the send encoders
+    // spent encoding since the previous call (main thread; resets the accumulator
+    // each call). Feeds the MediaLoadController via CallManager's ~1 s tick. Can
+    // exceed 1.0 when several simulcast encoders run concurrently — that's the
+    // intended "total encode demand" signal.
+    double encodeUsage();
 
 signals:
     void localOfferReady(const QString &sdp);
@@ -242,6 +256,17 @@ private:
     // the pipeline if a late reply races teardown. Closes the get-stats UAF.
     std::shared_ptr<std::atomic<quint64>> m_outboundPacketsSent{
         std::make_shared<std::atomic<quint64>>(0)};
+    // 0.51.x encode-load probe. The encoder sink→src pad probes write encode
+    // busy-time into this SHARED cell (they capture a shared_ptr, never `this`,
+    // so a late buffer racing teardown can't UAF — same discipline as the
+    // packets-sent cell above). encodeUsage() drains it against wall time.
+    struct EncodeLoadCell {
+        std::atomic<long long> busyNs{0};                  // accumulated encode busy time (ns)
+        std::array<std::atomic<long long>, 3> sinkNs{};    // per-layer last sink-entry time (ns)
+    };
+    std::shared_ptr<EncodeLoadCell> m_encodeLoad{std::make_shared<EncodeLoadCell>()};
+    long long m_encodeLoadLastReadNs = 0;   // wall time of the last encodeUsage() read
+    struct EncProbeCtx { std::shared_ptr<EncodeLoadCell> cell; int layer; bool isSrc; };
     // GPU encode-capability class from CallManager (set before start()); drives
     // the encode-load cap in start().
     talq::GpuClass m_gpuClass = talq::GpuClass::Software;
@@ -254,9 +279,20 @@ private:
     // the natural ceiling. While true, the effective ceiling is forced to 0
     // (LOW only); when cleared the tier ceiling applies again.
     bool m_screenShareSuppress = false;
+    // 0.51.x dynamic load controller: a fourth, runtime-MEASURED ceiling axis
+    // (driven by MediaLoadController via setLoadCaps). 2 = no cap.
+    // effectiveLayerCeiling is the MIN of the static device tier, this dynamic
+    // axis, and the screen-share overlay — every axis is a ceiling, so the
+    // controller can only ever pull BELOW what the tier/BWE already allow.
+    int m_dynLoadCeiling     = 2;
+    int m_loadFps            = 30;  // controller send-fps target (drives m_sharedCaps)
+    int m_lastBweEstimateBps = 0;   // last GCC estimate, so a ceiling change re-gates
     // Active layers gate on this, NOT m_loadCapMaxLayer directly.
     int effectiveLayerCeiling() const {
-        return m_screenShareSuppress ? 0 : m_loadCapMaxLayer;
+        if (m_screenShareSuppress) return 0;
+        int c = m_loadCapMaxLayer;
+        if (m_dynLoadCeiling < c) c = m_dynLoadCeiling;
+        return c;
     }
     bool m_cameraEnabled = false;
     // AEC on the capture leg (echo-cancel + probe). Set via setEchoCancellation
@@ -335,6 +371,9 @@ private:
     // packets-sent and stores it for the stall watchdog. Lifetime-guarded by
     // m_alive + a QPointer main-thread hop.
     static void onStatsReady(GstPromise *promise, gpointer userData);
+    // 0.51.x encode-load probe callback (one per encoder sink+src pad). Times
+    // each frame's encode and accumulates it into the shared EncodeLoadCell.
+    static GstPadProbeReturn onEncodeProbe(GstPad *pad, GstPadProbeInfo *info, gpointer user);
     static GstFlowReturn onPreviewSample(GstAppSink *sink, gpointer userData);
     // #20 Phase 3.3b — bridge appsink that feeds the BG engine and
     // pushes the (processed or pass-through) buffer back via m_bgAppsrc.
@@ -347,6 +386,9 @@ private:
 
     // BWE → layer state. Called from onGccBitrate after deadband.
     void applyBweToLayers(int estimateBps);
+    // Update the shared videorate's target framerate live (m_sharedCaps),
+    // preserving the pinned width/height. The controller's fps lever.
+    void applySharedFramerate(int fps);
     // Open/close a layer's valve and update its `active` flag.
     void setLayerActive(int layerIndex, bool on);
 };
