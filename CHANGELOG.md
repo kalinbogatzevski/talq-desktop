@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.50.11 "Slartibartfast" -- STABLE (2026-06-10)
+
+### Fixed
+
+* **The remote microphone meter now moves.** On the call screen, each
+  participant has a small audio-level meter next to their name. Only your own
+  meter ever moved — every remote participant's stayed flat, because TalQ never
+  measured their incoming audio. It now measures each remote participant's
+  decoded sound and animates their meter, so you can see at a glance who is
+  talking.
+
 ## v0.50.10 "Slartibartfast" -- STABLE (2026-06-10)
 
 ### Fixed
