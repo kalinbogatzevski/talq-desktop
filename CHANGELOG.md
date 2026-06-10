@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.50.8 "Slartibartfast" -- STABLE (2026-06-08)
+
+### Fixed
+
+* **A second launch no longer disturbs the diagnostic log.** Clicking TalQ's
+  taskbar icon while it was already running could corrupt the debug log being
+  written for the active session — so a log you sent in to report a call problem
+  could come back empty or truncated. A second launch now simply re-opens the
+  already-running window and leaves the live log untouched.
+* **Smoother calls while someone shares their screen.** When another person in
+  the call shares their screen, TalQ now also eases your own camera down to a
+  single light stream for the duration — the shared screen is what everyone is
+  looking at, and this frees up both your machine and the sharer's, so a screen
+  share stays smooth on busy or low-power computers. Your full camera quality
+  returns automatically when the share ends, or if that person leaves or briefly
+  drops out.
+
+### Changed
+
+* **Camera quality on integrated-graphics laptops.** On machines that rely on
+  integrated graphics, your camera is now sent at up to 480p (in line with the
+  official web client) so the graphics chip stays comfortably within its limits
+  during a call. Machines with a dedicated GPU are unchanged.
+
 ## v0.50.7 "Slartibartfast" -- STABLE (2026-06-08)
 
 ### Fixed
