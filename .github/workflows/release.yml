@@ -65,8 +65,12 @@ jobs:
           # TALQ_BG_ORT=OFF: the ONNX selfie-segmentation runtime + model live in
           # third_party/onnxruntime, which is NOT in the public repo — so the
           # public build stubs background blur/replace (everything else is full).
+          # GSTREAMER_ROOT defaults to the LOCAL dev path (C:/msys64/mingw64) which
+          # doesn't exist on the runner — point it at the CI MSYS2 prefix so the
+          # gstreamer/glib include + lib dirs resolve (fatal error: gst/gst.h).
           cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_PREFIX_PATH=/mingw64 -DTALQ_BG_ORT=OFF
+            -DCMAKE_PREFIX_PATH=/mingw64 -DTALQ_BG_ORT=OFF \
+            -DGSTREAMER_ROOT="$(cygpath -m /mingw64)"
           cmake --build build --target talq
 
       - name: Deploy runtime (Qt + GStreamer + plugin scanner) next to talq.exe
