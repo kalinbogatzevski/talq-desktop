@@ -80,15 +80,36 @@ eventually you rebuild the part that's between you and the work.
   sharing, mute propagation, and more — so regressions surface without a
   human in the loop.
 
+## Download
+
+**[⬇ Download the latest TalQ installer](https://github.com/kalinbogatzevski/talq-desktop/releases/latest)** — Windows 10/11, 64-bit.
+
+Grab the `TalQ-v<version>-Setup.exe` asset from the latest release and run it,
+then point TalQ at your Nextcloud server. The same installer performs in-place
+upgrades (it reuses your existing install location and shortcuts).
+
+### Code signing
+
+The generic TalQ Windows builds (`TalQ-…-Setup.exe` and `talq.exe`) are
+code-signed through **SignPath Foundation**'s free code-signing program for
+open-source projects. Each signed binary is built — and its provenance
+verified against this public repository — by the
+[release CI workflow](.github/workflows/release.yml).
+
+> This project uses free code signing provided by
+> [SignPath.io](https://signpath.io/) and a free code-signing certificate by
+> the [SignPath Foundation](https://signpath.org/).
+
+See [CODE_SIGNING.md](CODE_SIGNING.md) for the full signing policy.
+
 ## Requirements
 
 - **Windows 10/11, 64-bit.** TalQ currently uses Windows-specific media
   and compositor paths; Linux/macOS are not supported yet.
 - A **Nextcloud server with the Talk app** enabled, and an account on it.
 
-Prebuilt installers are published on the
-[Releases](https://github.com/kalinbogatzevski/talq-desktop/releases) page.
-To build from source, read on.
+Prebuilt installers are on the [Releases](https://github.com/kalinbogatzevski/talq-desktop/releases)
+page (see [Download](#download) above). To build from source, read on.
 
 ## Build from source (Windows)
 
