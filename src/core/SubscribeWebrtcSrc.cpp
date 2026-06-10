@@ -289,6 +289,27 @@ bool SubscribeWebrtcSrc::start(const QString &stunServer,
             QMetaObject::invokeMethod(self, [g, m]() { if (g) emit g->error(m); },
                                       Qt::QueuedConnection);
             g_clear_error(&e); g_free(d);
+        } else if (GST_MESSAGE_TYPE(msg) == GST_MESSAGE_ELEMENT) {
+            // `level` element on the playback chain posts the decoded remote
+            // audio peak here → forward as a 0..1 level so this peer's VU meter
+            // moves. Same dB→level mapping + perceptual curve the publisher uses
+            // for the self meter (PublishPipeline::pollBus), so both read alike.
+            const GstStructure *ls = gst_message_get_structure(msg);
+            if (ls && g_strcmp0(gst_structure_get_name(ls), "level") == 0) {
+                GValueArray *arr = nullptr;
+                gst_structure_get(ls, "peak", G_TYPE_VALUE_ARRAY, &arr, nullptr);
+                if (arr && arr->n_values > 0) {
+                    gdouble db = g_value_get_double(arr->values);
+                    double lvl = qBound(0.0, (db + 100.0) / 100.0, 1.0);
+                    lvl = lvl * lvl;   // perceptual curve (match self meter)
+                    auto *self = static_cast<SubscribeWebrtcSrc*>(ud);
+                    QPointer<SubscribeWebrtcSrc> g(self);
+                    QMetaObject::invokeMethod(self, [g, lvl]() {
+                        if (g) emit g->audioLevelUpdated(lvl);
+                    }, Qt::QueuedConnection);
+                }
+                if (arr) g_value_array_free(arr);
+            }
         }
         return TRUE;
     }, this);
@@ -675,9 +696,24 @@ void SubscribeWebrtcSrc::onPadAdded(GstElement *, GstPad *pad, gpointer ud)
             g_object_set(sink, "device",
                          self->m_audioOutputDeviceId.toUtf8().constData(), nullptr);
 
-        // Playback chain (unchanged, proven): conv → res → wasapi2sink.
-        gst_bin_add_many(GST_BIN(self->m_pipeline), conv, res, sink, nullptr);
-        gst_element_link_many(conv, res, sink, nullptr);
+        // Playback chain (proven): conv → res → [level] → wasapi2sink.
+        // The `level` element measures the decoded remote audio and posts peak
+        // messages on the bus → this peer's VU meter in the call UI (the remote
+        // mic indicator). It sits AFTER res / BEFORE the sink so it measures
+        // exactly what is played out, and is purely a passthrough on the audio.
+        // If the element can't be created we fall back to the original direct
+        // chain (meter stays still, but playback is never affected).
+        GstElement *lvl = gst_element_factory_make("level", nullptr);
+        if (lvl) {
+            g_object_set(lvl, "post-messages", TRUE,
+                         "interval", (guint64)100000000, nullptr);
+            gst_bin_add_many(GST_BIN(self->m_pipeline), conv, res, lvl, sink, nullptr);
+            gst_element_link_many(conv, res, lvl, sink, nullptr);
+            gst_element_sync_state_with_parent(lvl);
+        } else {
+            gst_bin_add_many(GST_BIN(self->m_pipeline), conv, res, sink, nullptr);
+            gst_element_link_many(conv, res, sink, nullptr);
+        }
         gst_element_sync_state_with_parent(conv);
         gst_element_sync_state_with_parent(res);
         gst_element_sync_state_with_parent(sink);

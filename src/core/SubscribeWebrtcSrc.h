@@ -71,6 +71,11 @@ signals:
     void iceStateChanged(const QString &state);
     void mediaStateReceived(const QString &type);     // unused via webrtcsrc (signaling drives mute)
     void peerClientInfo(const QString &client, const QString &version);
+    // Decoded remote-mic peak level (0..1) from a `level` element on this
+    // peer's playback chain — drives the per-peer VU meter in the call UI.
+    // Without it the remote mic indicator never moved (only the self meter,
+    // fed by the publisher's level element, did).
+    void audioLevelUpdated(double level);
     void error(const QString &message);
     void sessionEnded();   // SFU ended this feed; CallManager re-subscribes
 

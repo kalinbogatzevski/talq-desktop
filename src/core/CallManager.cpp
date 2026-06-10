@@ -3370,6 +3370,16 @@ void CallManager::onOfferReceived(const QString &fromSessionId, const QString &s
         else if (type == "stoppedSpeaking") { if (p) p->setSpeaking(false); }
     });
 
+    // Decoded remote-mic level → this peer's VU meter. Routes to the CORRECT
+    // remote participant (fromSessionId), unlike onAudioLevelUpdated which is
+    // hardwired to the self participant. (Speaking state stays peer-reported
+    // via the data channel above; this only drives the meter's movement.)
+    connect(sub, &SubscribeWebrtcSrc::audioLevelUpdated,
+            this, [this, fromSessionId](double level) {
+        if (auto *p = m_participants.value(fromSessionId))
+            p->setAudioLevel(level);
+    });
+
     connect(sub, &SubscribeWebrtcSrc::peerClientInfo,
             this, [this, fromSessionId](const QString &client, const QString &version) {
         const QString info = client + "/" + version;
