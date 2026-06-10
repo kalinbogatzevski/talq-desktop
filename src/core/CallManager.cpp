@@ -611,6 +611,10 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
         }
     });
 
+    // 0.51.x dynamic load controller — ~1 s tick, armed per call by
+    // startLoadController() and stopped in teardown().
+    connect(&m_loadTimer, &QTimer::timeout, this, &CallManager::onLoadTick);
+
     // requestoffer retry — upstream resends ~every 8s until the MCU
     // delivers the offer (a single send races MCU room-creation and
     // leaves that peer silent). Stops once nothing is outstanding.
@@ -1372,6 +1376,10 @@ bool CallManager::buildAndStartPublisher()
         m_localVideoProvider = m_publishPipeline->localVideoProvider();
         emit localVideoProviderChanged();
     }
+    // 0.51.x: arm the dynamic load controller for this call (idempotent restart;
+    // publisher-only reconnects via rebuildPublisherAndReoffer don't pass here, so
+    // the controller keeps its state across a reconnect).
+    startLoadController();
     return true;
 }
 
@@ -1991,6 +1999,36 @@ void CallManager::buildAndStartSharePipeline(int monitorIndex, quintptr windowHa
 void CallManager::requestPeerVideoQuality(const QString &sessionId, int substream)
 {
     if (substream < 0 || substream > 2) return;
+    // `substream` is the tile-size-driven WANT. Remember it raw so a later
+    // load-cap change (or a focus change) can be re-applied without the UI
+    // re-deciding, then send the load-capped effective value.
+    m_peerSubstreamWant[sessionId] = substream;
+    sendDesiredSubstream(sessionId, effectiveSubstreamFor(sessionId, substream));
+}
+
+int CallManager::effectiveSubstreamFor(const QString &sessionId, int want) const
+{
+    // No receive-load cap in force → honour the tile-size want verbatim.
+    if (m_recvLoadSubstreamCap >= 2) return want;
+    // Focused tile = the peer the UI wants at the HIGHEST substream (largest
+    // tile / stage). Keyed off tile size, NOT the peer-reported speaking flag
+    // (unreliable on the webrtcsrc path). Exempt it unless the controller has
+    // escalated to capping the focused tile too (top rungs only).
+    if (!m_recvLoadCapFocused && sessionId == focusedPeer()) return want;
+    return want < m_recvLoadSubstreamCap ? want : m_recvLoadSubstreamCap;
+}
+
+QString CallManager::focusedPeer() const
+{
+    QString best; int bestWant = -1;
+    for (auto it = m_peerSubstreamWant.constBegin(); it != m_peerSubstreamWant.constEnd(); ++it)
+        if (it.value() > bestWant) { bestWant = it.value(); best = it.key(); }
+    return best;
+}
+
+void CallManager::sendDesiredSubstream(const QString &sessionId, int substream)
+{
+    if (substream < 0 || substream > 2) return;
     if (m_desiredSubstream.value(sessionId, -1) == substream) return;  // dedupe
     m_desiredSubstream[sessionId] = substream;
     // Only send now if we actually have a live subscriber for this peer;
@@ -2000,6 +2038,81 @@ void CallManager::requestPeerVideoQuality(const QString &sessionId, int substrea
         m_signaling->sendSelectStream(sessionId,
                                       m_subscriberSids.value(sessionId), substream);
     }
+}
+
+void CallManager::applyReceiveLoadCaps(int substreamCap, bool capFocused)
+{
+    substreamCap = qBound(0, substreamCap, 2);
+    if (substreamCap == m_recvLoadSubstreamCap && capFocused == m_recvLoadCapFocused)
+        return;  // idempotent — no change
+    m_recvLoadSubstreamCap = substreamCap;
+    m_recvLoadCapFocused   = capFocused;
+    // Re-apply to every peer we have a remembered want for (focusedPeer() is
+    // stable across this loop — m_peerSubstreamWant isn't mutated here).
+    for (auto it = m_peerSubstreamWant.constBegin(); it != m_peerSubstreamWant.constEnd(); ++it)
+        sendDesiredSubstream(it.key(), effectiveSubstreamFor(it.key(), it.value()));
+}
+
+void CallManager::startLoadController()
+{
+    // Kill-switch: TALQ_DISABLE_LOAD_CONTROLLER=1 disables the controller
+    // entirely (falls back to static device-tier + network/BWE only).
+    m_loadControllerEnabled = qgetenv("TALQ_DISABLE_LOAD_CONTROLLER").trimmed() != "1";
+    if (!m_loadControllerEnabled) return;
+
+    // Synthetic-load seam (design §8.1): drive the controller from env on the
+    // dev box, whose NVENC GPU won't reproduce real overload. Production leaves
+    // these unset → 0 → the controller sits at level 0 until the encode/decode
+    // latency probes feed real load (Stage 4).
+    bool okE = false, okD = false;
+    const double e = qgetenv("TALQ_TEST_ENCODE_USAGE").toDouble(&okE);
+    const double d = qgetenv("TALQ_TEST_DECODE_USAGE").toDouble(&okD);
+    m_synthEncodeUsage = okE ? e : 0.0;
+    m_synthDecodeUsage = okD ? d : 0.0;
+
+    m_loadController = talq::MediaLoadController();   // fresh state per call
+    if (!m_loadTimer.isActive()) m_loadTimer.start(1000);
+}
+
+void CallManager::stopLoadController()
+{
+    m_loadTimer.stop();
+    m_recvLoadSubstreamCap = 2;     // reset so the next call starts uncapped
+    m_recvLoadCapFocused   = false;
+}
+
+void CallManager::onLoadTick()
+{
+    if (!m_loadControllerEnabled) return;
+
+    // SEND load: real measurement from the publisher's encoder pad probes
+    // (busy-time fraction; >1 when several simulcast encoders run at once).
+    const double enc = m_publishPipeline ? m_publishPipeline->encodeUsage() : 0.0;
+
+    // RECEIVE load: a work-PROXY from each live subscriber's decoded
+    // resolution×fps (webrtcsrc hides its decoder, so a true decode-latency
+    // probe isn't reachable — refine later). 1 unit ≈ one 1080p30 decode.
+    double dec = 0.0;
+    for (auto it = m_subscribePipelines.constBegin(); it != m_subscribePipelines.constEnd(); ++it) {
+        SubscribeWebrtcSrc *sub = it.value();
+        if (!sub) continue;
+        const double px = double(sub->rxWidth()) * double(sub->rxHeight())
+                        * double(sub->rxVideoFps());
+        dec += px / (1920.0 * 1080.0 * 30.0);
+    }
+
+    talq::LoadSample s;
+    // The synthetic seam ADDS on top of the measured load, so overload can be
+    // injected for validation on the dev box (NVENC won't reproduce it). In
+    // production TALQ_TEST_* are unset → pure measured load.
+    s.encodeUsage = enc + m_synthEncodeUsage;
+    s.decodeUsage = dec + m_synthDecodeUsage;
+    s.dropBurst   = false;
+
+    const talq::LoadCaps caps = m_loadController.onTick(s);
+    if (m_publishPipeline)
+        m_publishPipeline->setLoadCaps(caps.sendLayerCeiling, caps.sendFps);
+    applyReceiveLoadCaps(caps.recvSubstreamCap, caps.recvCapFocused);
 }
 
 void CallManager::stopScreenShare()
@@ -2813,6 +2926,7 @@ void CallManager::stopAllPipelines()
     }
     m_subscriberSids.clear();
     m_desiredSubstream.clear();
+    m_peerSubstreamWant.clear();   // 0.51.x receive-load raw wants
     m_subscriberRecoveries.clear();
     // 1.0 audit — these two per-session maps are created lazily (m_subStall via
     // operator[] in updateCallStats; m_pendingSubCandidates on early trickle-ICE)
@@ -2856,6 +2970,7 @@ void CallManager::teardown(const QString &reason)
 {
     setStatusDetail("");
     m_peerPeakRxHeight = 0;        // fresh basis for the next call's quality label
+    stopLoadController();          // 0.51.x: disarm the tick + reset caps to full
     m_ringTimeout.stop();
     m_durationTimer.stop();
     stopIncomingCameraPreview();   // #13: release the camera (safe no-op if not running)
@@ -3157,6 +3272,7 @@ void CallManager::onParticipantLeftCall(const QString &sessionId)
         m_subscriberSids.remove(sessionId);
         m_subStall.remove(sessionId);   // #bug2
         m_desiredSubstream.remove(sessionId);      // 1.0 audit — were leaking a
+        m_peerSubstreamWant.remove(sessionId);     // 0.51.x receive-load raw want
         m_subscriberRecoveries.remove(sessionId);  // stale entry per peer-leave
         qDebug() << "CallManager: removed subscriber for" << sessionId.left(20);
     }
