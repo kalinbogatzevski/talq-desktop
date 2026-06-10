@@ -45,6 +45,10 @@ jobs:
             mingw-w64-x86_64-qt6-base
             mingw-w64-x86_64-qt6-declarative
             mingw-w64-x86_64-qt6-svg
+            mingw-w64-x86_64-qt6-multimedia
+            mingw-w64-x86_64-qt6-websockets
+            mingw-w64-x86_64-qt6-shadertools
+            mingw-w64-x86_64-qt6-tools
             mingw-w64-x86_64-gstreamer
             mingw-w64-x86_64-gst-plugins-base
             mingw-w64-x86_64-gst-plugins-good
