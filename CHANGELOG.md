@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.50.10 "Slartibartfast" -- STABLE (2026-06-10)
+
+### Fixed
+
+* **Faster, leaner startup.** TalQ was loading its entire media-plugin set into
+  the app's own memory on every launch — a ~600 MB spike — because the GStreamer
+  plugin scanner wasn't being bundled. It now scans plugins out-of-process and
+  caches the result, so startup is quicker and uses far less memory.
+
 ## v0.50.9 "Slartibartfast" -- STABLE (2026-06-10)
 
 ### Fixed
