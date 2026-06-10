@@ -35,7 +35,10 @@ jobs:
         uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
-          update: true
+          # update:false — install the requested packages (+ their deps) WITHOUT a
+          # full `pacman -Syu` of the base image (~290 pkgs incl. a huge ffmpeg/
+          # whisper tree), which was hitting a flaky mirror ("Operation too slow").
+          update: false
           # NOTE: validate this list on the first run — names/availability drift.
           install: >-
             base-devel git
