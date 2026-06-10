@@ -696,6 +696,24 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
                           << "' built (" << L.targetW << "x" << L.targetH
                           << " @ " << (L.nominalBitrate/1000) << " kbps, SSRC "
                           << L.ssrc << ")";
+
+        // 0.51.x encode-load probe: time each frame's encode (sink→src) into the
+        // shared cell. Each probe carries its own heap ctx (freed by the pad's
+        // destroy-notify) holding a shared_ptr to the cell — never `this`.
+        if (L.encoder) {
+            if (GstPad *esink = gst_element_get_static_pad(L.encoder, "sink")) {
+                gst_pad_add_probe(esink, GST_PAD_PROBE_TYPE_BUFFER, onEncodeProbe,
+                                  new EncProbeCtx{ m_encodeLoad, (int)i, false },
+                                  [](gpointer p){ delete static_cast<EncProbeCtx *>(p); });
+                gst_object_unref(esink);
+            }
+            if (GstPad *esrc = gst_element_get_static_pad(L.encoder, "src")) {
+                gst_pad_add_probe(esrc, GST_PAD_PROBE_TYPE_BUFFER, onEncodeProbe,
+                                  new EncProbeCtx{ m_encodeLoad, (int)i, true },
+                                  [](gpointer p){ delete static_cast<EncProbeCtx *>(p); });
+                gst_object_unref(esrc);
+            }
+        }
     }
 
     // --- ONE rtpfunnel muxes the 3 ssrcFilters → ONE webrtcbin sink_%u pad ---
@@ -2452,6 +2470,7 @@ void PublishPipeline::setLayerActive(int i, bool on)
 
 void PublishPipeline::applyBweToLayers(int estimateBps)
 {
+    m_lastBweEstimateBps = estimateBps;   // remembered so a load-ceiling change re-gates
     // Threshold rationale: each layer's effective wire cost exceeds its
     // nominal target by ~25% (RTP/RTCP overhead, FEC pacing slack).
     // Sums-of-active-layers we want to fit under: l alone ~200k,
@@ -2474,6 +2493,81 @@ void PublishPipeline::applyBweToLayers(int estimateBps)
     // 'l' always stays on — our minimum-viable channel.
     setLayerActive(2, wantH);
     setLayerActive(1, wantM);
+}
+
+void PublishPipeline::setLoadCaps(int layerCeiling, int fps)
+{
+    layerCeiling = qBound(0, layerCeiling, 2);
+    fps          = qBound(10, fps, 60);
+
+    if (layerCeiling != m_dynLoadCeiling) {
+        m_dynLoadCeiling = layerCeiling;
+        // Re-gate the valves under the new ceiling now (don't wait for the next
+        // GCC tick). applyBweToLayers MINs the network estimate with
+        // effectiveLayerCeiling(), so a tighter ceiling closes h/m immediately
+        // and a looser one re-opens only as far as the last estimate allows.
+        applyBweToLayers(m_lastBweEstimateBps);
+    }
+    if (fps != m_loadFps) {
+        m_loadFps = fps;
+        applySharedFramerate(fps);
+    }
+}
+
+void PublishPipeline::applySharedFramerate(int fps)
+{
+    // Drive the shared videorate by retargeting m_sharedCaps' framerate while
+    // preserving its pinned width/height/PAR (videorate drops frames to match).
+    // Framerate is timing metadata — unlike a resolution change it doesn't force
+    // the encoders to reconfigure, so this is a cheap live knob.
+    if (!m_sharedCaps) return;
+    GstCaps *cur = nullptr;
+    g_object_get(m_sharedCaps, "caps", &cur, nullptr);
+    if (!cur) return;
+    GstCaps *nc = gst_caps_copy(cur);
+    gst_caps_set_simple(nc, "framerate", GST_TYPE_FRACTION, fps, 1, nullptr);
+    g_object_set(m_sharedCaps, "caps", nc, nullptr);
+    gst_caps_unref(nc);
+    gst_caps_unref(cur);
+    qDebug() << "PublishPipeline: load controller set send framerate" << fps << "fps";
+}
+
+GstPadProbeReturn PublishPipeline::onEncodeProbe(GstPad *, GstPadProbeInfo *info,
+                                                 gpointer user)
+{
+    // Runs on a GStreamer streaming thread. Touches ONLY the shared cell (which
+    // outlives the pipeline) — never `this`. The constrained-baseline encoders
+    // emit no B-frames, so a frame's sink→src delta ≈ its encode latency.
+    auto *c = static_cast<EncProbeCtx *>(user);
+    if (!c || !(GST_PAD_PROBE_INFO_TYPE(info) & GST_PAD_PROBE_TYPE_BUFFER))
+        return GST_PAD_PROBE_OK;
+    if (c->layer < 0 || c->layer >= (int)c->cell->sinkNs.size())
+        return GST_PAD_PROBE_OK;
+    const long long now = (long long)g_get_monotonic_time() * 1000;   // µs → ns
+    if (!c->isSrc) {
+        c->cell->sinkNs[c->layer].store(now, std::memory_order_relaxed);
+    } else {
+        const long long in = c->cell->sinkNs[c->layer].load(std::memory_order_relaxed);
+        if (in > 0) {
+            const long long d = now - in;
+            // Ignore >500 ms deltas: those are queue stalls / first-frame warmup,
+            // not encode cost, and would spike the usage falsely.
+            if (d > 0 && d < 500000000LL)
+                c->cell->busyNs.fetch_add(d, std::memory_order_relaxed);
+        }
+    }
+    return GST_PAD_PROBE_OK;
+}
+
+double PublishPipeline::encodeUsage()
+{
+    const long long now  = (long long)g_get_monotonic_time() * 1000;
+    const long long busy = m_encodeLoad->busyNs.exchange(0, std::memory_order_relaxed);
+    const long long wall = (m_encodeLoadLastReadNs > 0) ? (now - m_encodeLoadLastReadNs) : 0;
+    m_encodeLoadLastReadNs = now;
+    if (wall <= 0) return 0.0;
+    const double u = double(busy) / double(wall);
+    return u < 0.0 ? 0.0 : u;
 }
 
 void PublishPipeline::onGccBitrate(GObject *gcc, GParamSpec *, gpointer userData)

@@ -24,6 +24,7 @@
 #include "core/SubscriberStallPolicy.h"
 #include "core/PublisherStallPolicy.h"
 #include "core/CallParticipant.h"
+#include "core/MediaLoadController.h"   // 0.51.x dynamic encode/decode load controller
 
 class BackgroundEngine;   // #20 — owned by CallManager; lives across calls.
 class ConversationListModel;
@@ -159,6 +160,12 @@ public:
     // the requested layer, so this is an upper bound, not a guarantee.
     Q_INVOKABLE void requestPeerVideoQuality(const QString &sessionId, int substream);
 
+    // 0.51.x dynamic load controller — receive actuator. Cap every peer's
+    // received substream at `substreamCap` (min with the tile-size want), EXEMPT
+    // the focused/largest tile unless `capFocused`. Re-sends selectStream only
+    // where the effective substream changed. Idempotent. See MediaLoadController.h.
+    void applyReceiveLoadCaps(int substreamCap, bool capFocused);
+
     // Incoming-call ringtone roster (id, label) for the Settings dropdown
     // + persistence under Calls/incomingRingtone. "default" = synthesized
     // TalQ ring; classic/bright/soft = bundled CC0 rings; "none" = silent.
@@ -232,6 +239,14 @@ private slots:
 
 private:
     void setState(CallState newState);
+
+    // 0.51.x load controller internals.
+    int     effectiveSubstreamFor(const QString &sessionId, int want) const; // apply recv cap + focus exemption
+    QString focusedPeer() const;                       // peer with the highest tile-size want
+    void    sendDesiredSubstream(const QString &sessionId, int substream);   // dedupe + selectStream
+    void    startLoadController();   // arm the ~1 s tick for a live call (kill-switch aware)
+    void    stopLoadController();    // disarm + reset caps to full on call end
+    void    onLoadTick();            // one controller tick → apply send + receive caps
     void joinCallOnServer(bool withVideo);
     // Asynchronous: invokes `onDone` (if provided) when the DELETE /call
     // response comes back from the server, or immediately if there's no
@@ -316,6 +331,22 @@ private:
     // refines it down per tile size. Sent via selectStream on connect +
     // on change.
     QHash<QString, int> m_desiredSubstream;
+    // 0.51.x load controller — receive side. m_peerSubstreamWant is the RAW
+    // tile-size want per peer (before the load cap), so a load-cap or focus
+    // change can be re-applied without the UI re-deciding. m_recvLoadSubstreamCap
+    // (2 = no cap) + m_recvLoadCapFocused are set by the controller tick.
+    QHash<QString, int> m_peerSubstreamWant;
+    int  m_recvLoadSubstreamCap = 2;
+    bool m_recvLoadCapFocused   = false;
+    // The controller itself (pure logic) + its ~1 s tick. Owned here because
+    // load is a property of THIS machine, not of any one peer. The synthetic
+    // fields feed it on the dev box (NVENC won't overload) until the encode/
+    // decode latency probes land; TALQ_DISABLE_LOAD_CONTROLLER is the kill-switch.
+    talq::MediaLoadController m_loadController;
+    QTimer m_loadTimer;
+    bool   m_loadControllerEnabled = true;
+    double m_synthEncodeUsage = 0.0;   // TALQ_TEST_ENCODE_USAGE
+    double m_synthDecodeUsage = 0.0;   // TALQ_TEST_DECODE_USAGE
     QHash<QString, int> m_subscriberRecoveries;  // sessionId -> mid-call re-subscribe count (bounded; reset on connect)
     // #bug2 -- per-peer frame-stall watchdog. updateCallStats() ticks each
     // subscriber's SubscriberStallPolicy every 2 s; a feed that delivered frames
