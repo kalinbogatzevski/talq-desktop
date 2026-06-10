@@ -179,3 +179,100 @@ set_source_files_properties(
     src/ui/MainWindow.cpp
     PROPERTIES COMPILE_DEFINITIONS
       "TALQ_VERSION=\"${PROJECT_VERSION}\";TALQ_VERSION_NAME=\"Slartibartfast\";TALQ_BUILD_TS=\"${TALQ_BUILD_TS}\""
+)
+
+# Pre-release flag: when build-release.sh is invoked with --beta it
+# passes -DTALQ_PRERELEASE=ON; that bakes the compile define into the
+# binary so the UI can show a "PRE-RELEASE" badge regardless of which
+# channel ultimately served the user. Stable builds are unaffected.
+option(TALQ_PRERELEASE "Mark this binary as a pre-release/beta build" OFF)
+if(TALQ_PRERELEASE)
+    target_compile_definitions(talq PRIVATE TALQ_PRERELEASE)
+    message(STATUS "TalQ: PRE-RELEASE build (UI will show a beta badge)")
+endif()
+
+# #20 Video background blur + replace. Build-time gate so the feature can be
+# stripped out of slim ports until the TFLite + GL composite stack is fully
+# wired. Default ON; runtime behaviour is ALSO gated by the
+# Talk/Backgrounds/virtualBackgroundEnabled QSetting (default false), so
+# turning this on at build time alone doesn't change any user-visible
+# state — the engine is a pass-through until the user opts in.
+option(TALQ_BG "Build the video-background blur + replace stack" ON)
+if(TALQ_BG)
+    target_compile_definitions(talq PRIVATE TALQ_BG)
+    message(STATUS "TalQ: video-background stack ENABLED (#20)")
+endif()
+
+# #20 Phase 2e — ONNX Runtime for real selfie segmentation. Vendored
+# under third_party/onnxruntime/ (Windows x64 prebuilt from
+# microsoft/onnxruntime v1.20.1, MIT-licensed redistribution). The
+# import library is mingw-generated via gendef + dlltool from the .dll.
+# Default ON when TALQ_BG is on; the option exists so a slim port
+# (e.g. a CI build that doesn't need the engine) can drop it.
+option(TALQ_BG_ORT "Link ONNX Runtime for real selfie segmentation" ON)
+if(TALQ_BG AND TALQ_BG_ORT)
+    set(_ort_dir "${CMAKE_SOURCE_DIR}/third_party/onnxruntime")
+    if(NOT EXISTS "${_ort_dir}/lib/libonnxruntime.dll.a")
+        message(FATAL_ERROR
+            "TALQ_BG_ORT=ON but ${_ort_dir}/lib/libonnxruntime.dll.a is "
+            "missing. Re-run gendef/dlltool, or disable with "
+            "-DTALQ_BG_ORT=OFF for a stub-only build.")
+    endif()
+    target_include_directories(talq PRIVATE "${_ort_dir}/include")
+    target_link_directories(talq PRIVATE   "${_ort_dir}/lib")
+    target_link_libraries(talq PRIVATE     onnxruntime)
+    target_compile_definitions(talq PRIVATE TALQ_BG_ORT)
+    message(STATUS "TalQ: ONNX Runtime ENABLED for selfie segmentation (#20 Phase 2e)")
+endif()
+
+# Branding. 123NET assets live outside the tree in /private (never
+# published); the branded build pulls them in here. The default/public
+# build is unbranded and references none of this.
+if(TALQ_BRAND STREQUAL "123NET")
+    # Brand identity/endpoints are NOT defined here (would leak into public
+    # source). They come from the private include store at compile time.
+    target_compile_definitions(talq PRIVATE TALQ_BRAND_123NET)
+    set(_brand_qrc "${CMAKE_SOURCE_DIR}/private/branding/123net/brand.qrc")
+    if(NOT EXISTS "${_brand_qrc}")
+        message(FATAL_ERROR
+            "TALQ_BRAND=123NET but ${_brand_qrc} is missing. "
+            "The 123NET branding store is private and not part of the "
+            "public source. Build without -DTALQ_BRAND for the generic app.")
+    endif()
+    target_sources(talq PRIVATE "${_brand_qrc}")
+    # Private update-channel config (brand_updates.inc) is included by
+    # AppSettings.h under #ifdef TALQ_BRAND_123NET; put it on the path.
+    target_include_directories(talq PRIVATE
+        "${CMAKE_SOURCE_DIR}/private/branding/123net")
+    message(STATUS "Building 123NET branded version")
+endif()
+
+target_include_directories(talq PRIVATE src ${GST_INCLUDE_DIRS})
+target_link_directories(talq PRIVATE ${GST_LIBRARY_DIRS})
+
+target_link_libraries(talq PRIVATE
+    Qt6::Core
+    Qt6::Gui
+    Qt6::Network
+    Qt6::OpenGL
+    Qt6::Sql
+    Qt6::WebSockets
+    Qt6::Widgets
+    Qt6::Svg
+    Qt6::Concurrent
+    Qt6::Multimedia
+    ${GST_LIBRARIES}
+)
+
+# Windows-specific settings
+if(WIN32)
+    # Debug builds: show console for logging. Release: GUI only (no console).
+    if(CMAKE_BUILD_TYPE STREQUAL "Release")
+        set_target_properties(talq PROPERTIES WIN32_EXECUTABLE TRUE)
+    endif()
+    target_link_libraries(talq PRIVATE dwmapi winmm ole32 uuid dbghelp)
+endif()
+
+install(TARGETS talq RUNTIME DESTINATION bin)
+
+# ==== sync-public truncates here (the generic app target is complete above; the private test harnesses below reference tests/ files that are not in the public mirror) ====
