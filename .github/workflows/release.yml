@@ -111,7 +111,10 @@ jobs:
           New-Item -ItemType Directory -Force "dist/TalQ-v$ver-win64" | Out-Null
           Copy-Item -Recurse -Force build/* "dist/TalQ-v$ver-win64/"
           Remove-Item -Recurse -Force "dist/TalQ-v$ver-win64/CMakeFiles","dist/TalQ-v$ver-win64/*.cmake","dist/TalQ-v$ver-win64/build.ninja" -ErrorAction SilentlyContinue
-          & "$Env:ProgramFiles(x86)\Inno Setup 6\ISCC.exe" installer\talq-setup.iss
+          # NOTE: the env-var name literally contains "(x86)" — it MUST be wrapped
+          # in ${...} or PowerShell parses it as $Env:ProgramFiles + literal "(x86)"
+          # and you get "C:\Program Files(x86)" (no space) → ISCC.exe not found.
+          & "${Env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" installer\talq-setup.iss
 
       # ── SignPath signing (enable after the Foundation account is approved) ──
       # - name: Sign with SignPath
