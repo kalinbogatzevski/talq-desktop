@@ -1,65 +1,111 @@
 #pragma once
 
 #include <QString>
+#include <QStringList>
 
-// Single source of truth for the encode-load device-tier cap: maps the detected
-// GPU acceleration tier (CallManager::gpuAccelStatus) to the camera SEND
-// resolution ceiling + whether to shed the HIGH simulcast layer, so a publisher
-// can't saturate a weak / iGPU / software encoder (the field freeze 2026-06-05:
-// 3 simulcast layers up to 1080p starved audio + choked decode on an Intel-only
-// laptop). Used by BOTH PublishPipeline::start() (to APPLY the cap) and the Home
-// screen (to SHOW it) — keeping them in lockstep.
+// Single source of truth for the encode-load device caps. The camera SEND
+// resolution + screen-share resolution are capped on weak encoders so a publisher
+// can't saturate a shared/iGPU/software media engine (the field freeze 2026-06-05:
+// 3 camera simulcast layers + a 1440p screen on a single fixed-function engine).
 //
-// Tiers:
-//   "NVIDIA NVDEC" (discrete dGPU)         -> no cap, all 3 layers (full quality)
-//   "Intel DXVA" / "DXVA (H264 only)"      -> cap 480p, keep 3 layers
-//   "Software only" OR unknown/undetected  -> cap 480p AND shed HIGH (send l+m)
-// The 480p iGPU ceiling matches the official Talk web client, whose own top
-// quality tier is only 720x540@30 (it never sends 1080p, and drops fps as
-// quality falls) -- so 480p@30 is a comfortably-within-spec send ceiling for a
-// shared-media-engine iGPU. fps is NOT capped here: the shared caps stay 30.
-// "When in doubt" (empty/unrecognised tier) is treated as the WEAKEST: if we
-// can't confirm hardware acceleration, assume there is none.
+// The cap follows ENCODE capability, classified into GpuClass:
+//   Capable  -- discrete dGPU OR a capable iGPU (Intel Iris/Iris Xe/Arc, AMD
+//               Radeon, NVIDIA GeForce/RTX/Quadro): NO cap, native screen share.
+//   WeakIgpu -- a weak integrated GPU WITH hardware encode (Intel UHD/HD 6xx, or
+//               any unrecognised HW-encode GPU): camera 480p, screen 720p, 3 layers.
+//   Software -- NO hardware H.264 encoder at all (x264/openh264 only): camera 480p
+//               AND shed the HIGH layer (send l+m), screen 540p.
+//
+// IMPORTANT: this is classified from the GPU ENCODER capability + GPU MODEL NAME,
+// NOT from which video DECODER factory exists (the old proxy mislabelled capable
+// iGPUs like Iris Xe as weak and throttled them to 480p). Screen-share suppression
+// of the camera simulcast (camera -> single LOW layer while sharing) applies to
+// ALL classes regardless, so even a Capable box sends native screen + ONE low
+// camera, never 3 camera layers + screen. The 480p iGPU ceiling matches the
+// official Talk web client's 720x540@30 send tier.
 
 namespace talq {
 
+enum class GpuClass {
+    Capable,    // no cap, native screen share
+    WeakIgpu,   // HW encode but weak iGPU -> protective caps
+    Software,   // no HW encode -> hardest cap + shed HIGH
+};
+
+// User override (Settings -> Video/gpuClassOverride). Auto wins to the classifier.
+enum class GpuClassOverride { Auto = 0, AlwaysFull = 1, AlwaysProtected = 2 };
+
+// Classify ENCODE capability from: whether a hardware H.264 encoder exists, the
+// GPU adapter model name(s) (talq::gpuAdapterNames()), and the user override.
+inline GpuClass gpuClassFromSignals(bool hwH264Encoder,
+                                    const QStringList &adapterNames,
+                                    GpuClassOverride override)
+{
+    if (override == GpuClassOverride::AlwaysFull)      return GpuClass::Capable;
+    if (override == GpuClassOverride::AlwaysProtected) return GpuClass::WeakIgpu;
+
+    if (!hwH264Encoder)
+        return GpuClass::Software;   // x264/openh264 only -- protect hardest
+
+    // HW encode present: capable vs weak by GPU model. A Capable match on ANY
+    // enumerated adapter wins (hybrid iGPU + dGPU laptops use the better one; the
+    // manual override corrects the rare mismatch). An unrecognised HW-encode GPU
+    // stays WeakIgpu -- conservative "when in doubt, protect" (override to lift).
+    static const char *kCapable[] = {
+        "iris", "arc", "radeon", "rx ", "vega",
+        "geforce", "rtx", "gtx", "quadro", "titan",
+    };
+    for (const QString &raw : adapterNames) {
+        const QString n = raw.toLower();
+        for (const char *p : kCapable)
+            if (n.contains(QLatin1String(p)))
+                return GpuClass::Capable;
+    }
+    return GpuClass::WeakIgpu;
+}
+
+inline QString gpuClassName(GpuClass cls)
+{
+    switch (cls) {
+    case GpuClass::Capable:  return QStringLiteral("Capable");
+    case GpuClass::WeakIgpu: return QStringLiteral("WeakIgpu");
+    case GpuClass::Software: return QStringLiteral("Software");
+    }
+    return QStringLiteral("Software");
+}
+
 struct EncodeTierCap {
-    int     maxSendHeight = 0;     // 0 = no cap (discrete GPU); else 720 / 480
-    bool    shedHighLayer = false; // true = send l+m only (no HW accel)
+    int     maxSendHeight = 0;     // 0 = no cap (Capable); else 480
+    bool    shedHighLayer = false; // true = send l+m only (no HW encode)
     QString homeText;              // short Home-screen note ("" = no restriction)
 };
 
-inline EncodeTierCap encodeTierCap(const QString &gpuAccel)
+inline EncodeTierCap encodeTierCap(GpuClass cls)
 {
-    if (gpuAccel == QLatin1String("NVIDIA NVDEC"))
-        return { 0, false, QString() };   // discrete dGPU: full quality, no note
-
-    if (gpuAccel.isEmpty() || gpuAccel == QLatin1String("Software only"))
-        return { 480, true,
-            QStringLiteral("Camera video is sent at up to 480p — no hardware "
-                           "video acceleration was detected on this device.") };
-
-    // Intel iGPU (Intel DXVA / DXVA H264-only): keep 3 layers, cap resolution
-    // to 480p (matches the official Talk web client's send ceiling; HW encode
-    // handles three light 180/360/480 layers without saturating the engine).
-    return { 480, false,
-        QStringLiteral("Camera video is sent at up to 480p — this device uses "
-                       "integrated graphics.") };
+    switch (cls) {
+    case GpuClass::Capable:
+        return { 0, false, QString() };   // full quality, no note
+    case GpuClass::WeakIgpu:
+        return { 480, false,
+            QStringLiteral("Camera video is sent at up to 480p — this device uses "
+                           "integrated graphics.") };
+    case GpuClass::Software:
+        break;
+    }
+    return { 480, true,
+        QStringLiteral("Camera video is sent at up to 480p — no hardware video "
+                       "acceleration was detected on this device.") };
 }
 
-// Screen-share device-tier ceiling. A screen share adds a SECOND video encode
-// on top of the camera's simulcast layers; on a weak / iGPU encoder the two
-// together saturate the single fixed-function media engine (field freeze
-// 2026-06-08: Intel UHD 620 software-fed 1440p30 share + 3 camera layers ->
-// gradual lock-up). Mirrors the camera cap: clamp the screen capture height by
-// tier. 0 = no clamp (discrete GPU keeps the user's quality choice).
-inline int screenTierMaxHeight(const QString &gpuAccel)
+// Screen-share capture height ceiling by class. 0 = no clamp (native).
+inline int screenTierMaxHeight(GpuClass cls)
 {
-    if (gpuAccel == QLatin1String("NVIDIA NVDEC"))
-        return 0;                                  // discrete dGPU: no clamp
-    if (gpuAccel.isEmpty() || gpuAccel == QLatin1String("Software only"))
-        return 540;                                // no HW encode: 540p ceiling
-    return 720;                                    // Intel iGPU: 720p (max HD)
+    switch (cls) {
+    case GpuClass::Capable:  return 0;     // native, no clamp
+    case GpuClass::WeakIgpu: return 720;   // Intel iGPU: 720p (max HD)
+    case GpuClass::Software: break;
+    }
+    return 540;                            // no HW encode: 540p ceiling
 }
 
 } // namespace talq

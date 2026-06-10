@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.50.9 "Slartibartfast" -- STABLE (2026-06-10)
+
+### Fixed
+
+* **Capable graphics cards are no longer held back.** The protection that caps
+  video quality on weak integrated graphics (added to stop screen sharing from
+  freezing low-power laptops) was being applied too broadly — capable GPUs such
+  as Intel Iris Xe, AMD Radeon and NVIDIA cards were also being limited to a
+  480p camera and a 720p screen share. TalQ now identifies the graphics chip and
+  only protects genuinely weak integrated GPUs; capable machines send a
+  full-quality camera and share their screen at native resolution.
+
+### Added
+
+* **"GPU performance" setting (Settings → Audio & Video).** If TalQ guesses your
+  graphics capability wrong, you can override it: "Always full quality" lifts the
+  caps, "Always protected" keeps them. Defaults to Auto. Takes effect on your
+  next call.
+
 ## v0.50.8 "Slartibartfast" -- STABLE (2026-06-08)
 
 ### Fixed
