@@ -62,8 +62,11 @@ jobs:
       - name: Configure + build
         run: |
           export PATH="/mingw64/bin:$PATH"
+          # TALQ_BG_ORT=OFF: the ONNX selfie-segmentation runtime + model live in
+          # third_party/onnxruntime, which is NOT in the public repo — so the
+          # public build stubs background blur/replace (everything else is full).
           cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_PREFIX_PATH=/mingw64
+            -DCMAKE_PREFIX_PATH=/mingw64 -DTALQ_BG_ORT=OFF
           cmake --build build --target talq
 
       - name: Deploy runtime (Qt + GStreamer + plugin scanner) next to talq.exe
