@@ -12,6 +12,7 @@
 #include <gst/webrtc/webrtc.h>
 #include "SignalingClient.h"
 #include "VideoFrameProvider.h"
+#include "EncodeTier.h"
 
 /**
  * Send-only GStreamer webrtcbin pipeline for MCU publishing.
@@ -84,7 +85,7 @@ public:
     // BEFORE start(). On a non-discrete-GPU box, start() caps the camera send
     // resolution and sheds the HIGH simulcast layer so the publisher can't
     // saturate the iGPU it also decodes on (the field freeze 2026-06-05).
-    void setGpuAccel(const QString &accel) { m_gpuAccel = accel; }
+    void setGpuClass(talq::GpuClass cls) { m_gpuClass = cls; }
 
     // While the user is screen-sharing, stop the camera's simulcast: a share is
     // a second encode on top of the camera's layers, and on a weak/iGPU encoder
@@ -241,9 +242,9 @@ private:
     // the pipeline if a late reply races teardown. Closes the get-stats UAF.
     std::shared_ptr<std::atomic<quint64>> m_outboundPacketsSent{
         std::make_shared<std::atomic<quint64>>(0)};
-    // GPU accel tier from CallManager (set before start()); drives the
-    // encode-load cap in start().
-    QString m_gpuAccel;
+    // GPU encode-capability class from CallManager (set before start()); drives
+    // the encode-load cap in start().
+    talq::GpuClass m_gpuClass = talq::GpuClass::Software;
     // Highest simulcast layer index allowed to send (2 = all l/m/h, 1 = l/m,
     // 0 = l only). Lowered up front on a weak encode tier (sheds HIGH); the BWE
     // gate in applyBweToLayers honors it so it can't re-open a capped layer.

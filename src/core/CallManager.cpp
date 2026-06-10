@@ -2,6 +2,7 @@
 #include "core/BackgroundEngine.h"
 #include "core/SharedFarEndBus.h"
 #include "core/EncodeTier.h"
+#include "core/Diagnostics.h"
 #include "core/TalqLog.h"
 #include "core/WasapiDucking.h"
 #include "ui/ShareOverlay.h"
@@ -702,6 +703,36 @@ void CallManager::checkGStreamerPlugins()
     if (dxvaVp8 && !nvvp8) gst_object_unref(dxvaVp8);
     if (dxvaH264 && !nvvp8 && !dxvaVp8) gst_object_unref(dxvaH264);
     qDebug() << "CallManager: GPU accel:" << m_gpuAccelStatus;
+    detectGpuClass();
+}
+
+// Classify the device's ENCODE capability (drives the camera + screen caps).
+// Re-run per call (from buildAndStartPublisher) so a Settings "GPU performance"
+// override change takes effect on the NEXT call without an app restart — the
+// HW-encoder + adapter probes are fixed at runtime, only Video/gpuClassOverride
+// changes. Based on a hardware-H.264-encoder probe + the GPU model name + the
+// override — NOT the decode tier, which mislabelled capable iGPUs (Intel Iris Xe,
+// AMD Radeon) as weak and throttled them to 480p/720p.
+void CallManager::detectGpuClass()
+{
+    bool hwEnc = false;
+    for (const char *e : { "nvh264enc", "qsvh264enc", "mfh264enc" }) {
+        if (GstElementFactory *f = gst_element_factory_find(e)) {
+            gst_object_unref(f);
+            hwEnc = true;
+            break;
+        }
+    }
+    talq::GpuClassOverride ov = talq::GpuClassOverride::Auto;
+    {
+        QSettings s("TalQ", "TalQ");
+        s.beginGroup("Video");
+        ov = static_cast<talq::GpuClassOverride>(s.value("gpuClassOverride", 0).toInt());
+        s.endGroup();
+    }
+    m_gpuClass = talq::gpuClassFromSignals(hwEnc, talq::gpuAdapterNames(), ov);
+    qInfo().noquote() << "CallManager: GPU class:" << talq::gpuClassName(m_gpuClass)
+                      << "(hwEncode=" << hwEnc << " override=" << int(ov) << ")";
 }
 
 QString CallManager::activeVideoCodec() const
@@ -1319,7 +1350,8 @@ bool CallManager::buildAndStartPublisher()
     }
 
     qDebug() << "CallManager: calling PublishPipeline::start()...";
-    m_publishPipeline->setGpuAccel(m_gpuAccelStatus);   // encode-load tier cap (720p iGPU / 480p software)
+    detectGpuClass();   // re-read the GPU-performance override so a Settings change applies this call
+    m_publishPipeline->setGpuClass(m_gpuClass);   // encode-load cap (Capable=none / iGPU=480p / sw=480p+shed)
     // If any screen share is live (publisher rebuild mid-share — local OR a
     // remote peer's), keep the camera simulcast suppressed on the fresh
     // pipeline too. Runs before start() so its build-time layer gate applies.
@@ -1778,12 +1810,12 @@ void CallManager::startScreenShare(int monitorIndex, quintptr windowHandle)
 
 void CallManager::clampScreenToGpuTier(int &cw, int &ch) const
 {
-    const int maxH = talq::screenTierMaxHeight(m_gpuAccelStatus);
-    if (maxH <= 0 || ch <= maxH) return;   // discrete GPU or already within cap
+    const int maxH = talq::screenTierMaxHeight(m_gpuClass);
+    if (maxH <= 0 || ch <= maxH) return;   // Capable GPU (native) or already within cap
     cw = ((cw * maxH) / ch) & ~1;          // preserve aspect, even width
     ch = maxH;
-    qInfo().nospace() << "CallManager: GPU tier '" << m_gpuAccelStatus
-                      << "' -- capping screen share to " << cw << "x" << ch
+    qInfo().nospace() << "CallManager: GPU class " << talq::gpuClassName(m_gpuClass)
+                      << " -- capping screen share to " << cw << "x" << ch
                       << " (weak/iGPU encoder)";
 }
 
