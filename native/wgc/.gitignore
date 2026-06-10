@@ -1,0 +1,10 @@
+# MSVC build artifacts. The DLL itself (talq_wgc.dll) IS committed as a
+# deployment dependency (build-release.sh / deploy-dev.sh copy it beside
+# talq.exe), the same way third_party/onnxruntime/bin/onnxruntime.dll is
+# vendored. When you change the WGC source, rebuild via build.bat and commit
+# the refreshed talq_wgc.dll alongside.
+*.obj
+*.lib
+*.exp
+*.exe
+wgc_frame.*

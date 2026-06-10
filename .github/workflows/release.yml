@@ -76,6 +76,9 @@ jobs:
             cp "/mingw64/lib/gstreamer-1.0/libgst${p}.dll" gst-plugins/ 2>/dev/null || true
           done
           cp /mingw64/libexec/gstreamer-1.0/gst-plugin-scanner.exe . 2>/dev/null || true
+          # WGC single-window capture helper (native/wgc is now public) — without
+          # it, window app-sharing falls back to full-monitor capture.
+          cp ../native/wgc/talq_wgc.dll . 2>/dev/null || true
           # MinGW runtime + transitive GStreamer deps (the curated list lives in
           # scripts/deploy-dev.sh — keep in sync; CI copies what talq.exe needs).
           # TODO(iterate): widen this from the first run's "missing DLL" errors.
