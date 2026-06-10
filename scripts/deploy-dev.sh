@@ -80,6 +80,12 @@ for p in "${GST_PLUGINS[@]}"; do
     [ -f "$src" ] && cp "$src" "$BUILD_DIR/gst-plugins/"
 done
 
+# Out-of-process plugin scanner next to talq.exe (main.cpp points
+# GST_PLUGIN_SCANNER at it) — without it GStreamer scans every plugin in-process,
+# ballooning the process ~450 MB per launch. Lockstep with build-release.sh.
+SCANNER="$MSYS2_DIR/libexec/gstreamer-1.0/gst-plugin-scanner.exe"
+[ -f "$SCANNER" ] && cp "$SCANNER" "$BUILD_DIR/"
+
 # Step 4: Copy MSYS2's MinGW runtime DLLs (overwrite any Qt copies)
 # Both Qt and GStreamer DLLs work with MSYS2's libstdc++ (tested).
 # Qt's bundled MinGW 13.1 libstdc++ causes 0xC0000139 (Entry Point Not Found).

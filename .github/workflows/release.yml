@@ -1,0 +1,123 @@
+# Build (and, once SignPath is set up, sign) the GENERIC TalQ Windows installer
+# from the PUBLIC source, so SignPath Foundation can verify build provenance.
+#
+# ⚠️ DRAFT-1 — expect a few iterations on real runs. The hard part is the
+# Qt + MinGW + GStreamer toolchain match; this uses ONE toolchain (MSYS2's
+# mingw-w64, which ships Qt6 + GStreamer built with the same compiler) to avoid
+# the aqtinstall-Qt-vs-MSYS2-GStreamer ABI mismatch the local build works around.
+#
+# Scope: GENERIC build only (no 123NET config, no native/wgc — those are kept
+# out of the public repo). Window-share falls back to full-monitor without WGC.
+#
+# SignPath signing is the LAST step (commented until the Foundation account +
+# org/project slugs exist) — see CODE_SIGNING.md.
+
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write   # attach the installer to the GitHub release
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up MSYS2 + toolchain + Qt6 + GStreamer
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          # NOTE: validate this list on the first run — names/availability drift.
+          install: >-
+            base-devel git
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-qt6-base
+            mingw-w64-x86_64-qt6-declarative
+            mingw-w64-x86_64-qt6-svg
+            mingw-w64-x86_64-gstreamer
+            mingw-w64-x86_64-gst-plugins-base
+            mingw-w64-x86_64-gst-plugins-good
+            mingw-w64-x86_64-gst-plugins-bad
+            mingw-w64-x86_64-gst-plugins-rs
+            mingw-w64-x86_64-libnice
+
+      - name: Configure + build
+        run: |
+          export PATH="/mingw64/bin:$PATH"
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH=/mingw64
+          cmake --build build --target talq
+
+      - name: Deploy runtime (Qt + GStreamer + plugin scanner) next to talq.exe
+        run: |
+          export PATH="/mingw64/bin:$PATH"
+          cd build
+          # Qt deploy
+          windeployqt6 --release --no-translations talq.exe
+          # GStreamer plugins + the OUT-OF-PROCESS scanner (the fix that keeps
+          # startup lean — see GST_PLUGIN_SCANNER in src/main.cpp).
+          mkdir -p gst-plugins
+          for p in coreelements typefindfunctions playback audioconvert audioresample \
+                   audiomixer audioparsers opusparse autodetect dtls nice opus rtp rtpmanager \
+                   srtp wasapi wasapi2 webrtc webrtcdsp app level vpx openh264 \
+                   videoconvertscale videorate sctp jpeg winks mediafoundation winscreencap \
+                   d3d11 nvcodec qsv x264 videoparsersbad rsrtp rswebrtc; do
+            cp "/mingw64/lib/gstreamer-1.0/libgst${p}.dll" gst-plugins/ 2>/dev/null || true
+          done
+          cp /mingw64/libexec/gstreamer-1.0/gst-plugin-scanner.exe . 2>/dev/null || true
+          # MinGW runtime + transitive GStreamer deps (the curated list lives in
+          # scripts/deploy-dev.sh — keep in sync; CI copies what talq.exe needs).
+          # TODO(iterate): widen this from the first run's "missing DLL" errors.
+          for d in libstdc++-6 libgcc_s_seh-1 libwinpthread-1 liborc-0.4-0 \
+                   libnice-10 libsrtp2-1 libopus-0 libssl-3-x64 libcrypto-3-x64 \
+                   libjpeg-8 libopenh264-7 libvpx-1 libz; do
+            cp "/mingw64/bin/${d}.dll" . 2>/dev/null || true
+          done
+
+      - name: Build installer (Inno Setup)
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress -y
+          $ver = (Select-String -Path CMakeLists.txt -Pattern 'project\(talq VERSION ([^ ]+)').Matches.Groups[1].Value
+          # talq-setup.iss packages ..\dist\TalQ-v<ver>-win64 ; stage it there.
+          New-Item -ItemType Directory -Force "dist/TalQ-v$ver-win64" | Out-Null
+          Copy-Item -Recurse -Force build/* "dist/TalQ-v$ver-win64/"
+          Remove-Item -Recurse -Force "dist/TalQ-v$ver-win64/CMakeFiles","dist/TalQ-v$ver-win64/*.cmake","dist/TalQ-v$ver-win64/build.ninja" -ErrorAction SilentlyContinue
+          & "$Env:ProgramFiles(x86)\Inno Setup 6\ISCC.exe" installer\talq-setup.iss
+
+      # ── SignPath signing (enable after the Foundation account is approved) ──
+      # - name: Sign with SignPath
+      #   uses: signpath/github-action-submit-signing-request@v1
+      #   with:
+      #     api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+      #     organization-id: ${{ vars.SIGNPATH_ORG_ID }}
+      #     project-slug: talq-desktop
+      #     signing-policy-slug: release-signing
+      #     artifact-configuration-slug: installer
+      #     github-artifact-id: ${{ steps.upload.outputs.artifact-id }}
+      #     wait-for-completion: true
+      #     output-artifact-directory: signed/
+
+      - name: Upload installer artifact
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: talq-setup
+          path: dist/*Setup.exe
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*Setup.exe

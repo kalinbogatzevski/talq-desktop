@@ -159,6 +159,16 @@ int main(int argc, char *argv[])
         std::string appDir = (lastSlash != std::string::npos) ? exePath.substr(0, lastSlash) : ".";
         std::string gstPath = appDir + "/gst-plugins";
         qputenv("GST_PLUGIN_PATH", QByteArray::fromStdString(gstPath));
+        // Point at the deployed out-of-process plugin scanner. Without it
+        // GStreamer logs "Couldn't create helper process" and falls back to
+        // scanning EVERY plugin in-process, which balloons the main process by
+        // ~450 MB on each launch (field: ~780 MB peak) and doesn't cache the
+        // registry cleanly, so it re-scans every time. With the scanner present
+        // GStreamer scans out-of-process and caches the registry — fast, lean
+        // startups. The scanner is deployed next to talq.exe by the build/deploy
+        // scripts.
+        std::string scanner = appDir + "/gst-plugin-scanner.exe";
+        qputenv("GST_PLUGIN_SCANNER", QByteArray::fromStdString(scanner));
     }
 
     // Single-instance detection — MUST run before any logging side effects.
