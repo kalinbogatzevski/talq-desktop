@@ -20,6 +20,7 @@
 #include "core/VideoFrameProvider.h"
 #include "core/ScreenSharePipeline.h"
 #include "core/ShareStartPolicy.h"
+#include "core/EncodeTier.h"
 #include "core/SubscriberStallPolicy.h"
 #include "core/PublisherStallPolicy.h"
 #include "core/CallParticipant.h"
@@ -93,6 +94,7 @@ public:
     bool remoteAudioMuted() const { return m_remoteAudioMuted; }
     QString remotePeerClient() const { return m_remotePeerClient; }
     QString gpuAccelStatus() const { return m_gpuAccelStatus; }
+    talq::GpuClass gpuClass() const { return m_gpuClass; }
     QString activeVideoCodec() const;
     QString activeVideoDecoder() const;
     // Publish (or screen-share) encoder, e.g. "H264 · nvh264enc · hw".
@@ -378,10 +380,14 @@ private:
     bool m_callsAvailable = true;
     QString m_callsUnavailableReason;
     QString m_gpuAccelStatus;
+    // Encode-capability class (drives the camera/screen caps) — from HW-encoder
+    // presence + GPU model name + the user override, NOT the decode tier above.
+    talq::GpuClass m_gpuClass = talq::GpuClass::Software;
     // Peak remote decoded height this call (see peerPeakRxHeight()). mutable:
     // accumulated lazily inside the const activeRxResolution() read path.
     mutable int m_peerPeakRxHeight = 0;
     void checkGStreamerPlugins();
+    void detectGpuClass();   // (re)classify encode capability; re-run per call
     void updateCallStats();
     void setStatusDetail(const QString &detail) {
         if (m_statusDetail != detail) { m_statusDetail = detail; emit statusDetailChanged(); }

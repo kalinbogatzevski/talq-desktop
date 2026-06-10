@@ -628,6 +628,39 @@ QWidget *SettingsDialog::buildAudioVideoTab()
            "capable camera and a healthy link — TalQ adapts down to fit."),
         resCombo));
 
+    // GPU performance override. The device-capability caps (camera 480p + capped
+    // screen share on weak iGPUs, to stop the screen-share overload freeze)
+    // auto-classify the GPU from its model name + hardware encoder. This lets a
+    // user override a wrong guess: "Always full quality" lifts the caps (native
+    // screen share + uncapped camera) on a capable GPU TalQ didn't recognise;
+    // "Always protected" forces the caps. Stored at Video/gpuClassOverride
+    // (0 Auto / 1 AlwaysFull / 2 AlwaysProtected), read in CallManager at startup.
+    auto *gpuPerfCombo = new QComboBox(this);
+    gpuPerfCombo->addItem(tr("Auto (recommended)"),           0);
+    gpuPerfCombo->addItem(tr("Always full quality"),          1);
+    gpuPerfCombo->addItem(tr("Always protected (cap video)"), 2);
+    {
+        QSettings vs("TalQ", "TalQ");
+        vs.beginGroup("Video");
+        const int cur = vs.value("gpuClassOverride", 0).toInt();
+        vs.endGroup();
+        const int gi = gpuPerfCombo->findData(cur);
+        gpuPerfCombo->setCurrentIndex(gi >= 0 ? gi : 0);
+    }
+    connect(gpuPerfCombo, QOverload<int>::of(&QComboBox::activated),
+            this, [gpuPerfCombo]() {
+                QSettings vs("TalQ", "TalQ");
+                vs.beginGroup("Video");
+                vs.setValue("gpuClassOverride", gpuPerfCombo->currentData().toInt());
+                vs.endGroup();
+            });
+    layout->addWidget(makeSettingRow(
+        tr("GPU performance"),
+        tr("TalQ caps video quality on weak integrated GPUs to stop screen "
+           "sharing from overloading them. Auto detects your GPU; choose "
+           "“Always full quality” to lift the caps (takes effect next call)."),
+        gpuPerfCombo));
+
     // 0.41.x — "Direct P2P for 1:1 calls" toggle, RE-ENABLED. The 0.41.5
     // version was removed because a client could not force P2P under a Janus
     // MCU (the HPB hijacked the reserved offer/answer/candidate types). The

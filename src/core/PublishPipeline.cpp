@@ -92,11 +92,11 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         // res cap only bites users who chose >cap (Petia's log shows 1080p);
         // default-720 users are unchanged. The full CPU-load controller (later)
         // lifts this dynamically when headroom exists.
-        const talq::EncodeTierCap tier = talq::encodeTierCap(m_gpuAccel);
+        const talq::EncodeTierCap tier = talq::encodeTierCap(m_gpuClass);
         if (tier.maxSendHeight > 0 && h > tier.maxSendHeight) {
-            qInfo().nospace() << "PublishPipeline: GPU tier '"
-                << (m_gpuAccel.isEmpty() ? QStringLiteral("unknown") : m_gpuAccel)
-                << "' -- capping camera send resolution " << h << "p -> "
+            qInfo().nospace() << "PublishPipeline: GPU class "
+                << talq::gpuClassName(m_gpuClass)
+                << " -- capping camera send resolution " << h << "p -> "
                 << tier.maxSendHeight << "p";
             h = tier.maxSendHeight;
         }

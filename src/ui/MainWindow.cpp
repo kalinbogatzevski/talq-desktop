@@ -1915,7 +1915,8 @@ void MainWindow::refreshWelcomeStatus()
     // a weak/iGPU/software encoder TalQ caps the camera SEND resolution so it
     // can't saturate the GPU. Surface it on the GPU tile so the user knows why
     // their outgoing video is limited; the full reason is the tooltip.
-    const talq::EncodeTierCap encCap = talq::encodeTierCap(gpu);
+    const talq::EncodeTierCap encCap = talq::encodeTierCap(
+        m_callManager ? m_callManager->gpuClass() : talq::GpuClass::Software);
     QString gpuSub = gpuOn ? QStringLiteral("hardware accelerated · %1").arg(gpu)
                            : QStringLiteral("software only");
     if (encCap.maxSendHeight > 0)
