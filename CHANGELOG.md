@@ -5,7 +5,7 @@
 Codename **Bafana Bafana** — the nickname ("the boys") of South Africa's
 national football team — for the **FIFA 2026 World Cup**, where South Africa
 plays the Opening Match. Fitting on two counts: TalQ's call server lives in
-South Africa, and it's built by a Cape Town company.
+South Africa, and so does the company that builds it.
 
 ### Added
 
