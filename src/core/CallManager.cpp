@@ -1328,28 +1328,24 @@ bool CallManager::buildAndStartPublisher()
         });
     });
 
-    // AEC: bring the shared far-end probe bus to PLAYING BEFORE the publisher
-    // so webrtcdsp(echo-cancel) can acquire the "talq-aec-probe" the instant it
-    // hits PAUSED. Strictly non-fatal — if the bus can't build, AEC just stays
-    // off and the call is unaffected (the original "No echo probe" call-drop
-    // can't recur because we only enable echo-cancel once the probe is live).
-    // See docs/aec-design.md.
+    // AEC (0.51.x single-pipeline fix): the webrtcechoprobe now lives INLINE in
+    // the publisher pipeline on a single shared real wasapi2sink — so it shares
+    // one clock + base-time with webrtcdsp (the actual fix for "runs but doesn't
+    // cancel"; the old separate SharedFarEndBus pipeline could never time-align).
+    // We just enable AEC + route the shared playout sink to the selected output
+    // device BEFORE start(); the publisher builds the tail in start() and
+    // degrades to AEC-off (no call drop) if it can't. Each subscriber then feeds
+    // its decoded audio into the publisher's far-end mixer (see setFarEndAppsrc).
     {
         QSettings s("TalQ", "TalQ");
         s.beginGroup("Audio");
         const bool aecWanted = s.value("echoCancellation", true).toBool();
         s.endGroup();
-        if (aecWanted && !m_farEndBus) {
-            m_farEndBus = new SharedFarEndBus(this);
-            if (m_farEndBus->start()) {
-                m_publishPipeline->setEchoCancellation(true);
-                qInfo() << "CallManager: AEC enabled — far-end probe bus up before publisher";
-            } else {
-                qWarning() << "CallManager: AEC requested but far-end bus failed to build "
-                              "— continuing without echo cancellation";
-                m_farEndBus->deleteLater();
-                m_farEndBus = nullptr;
-            }
+        if (aecWanted) {
+            m_publishPipeline->setEchoCancellation(true);
+            m_publishPipeline->setFarEndOutputDevice(
+                m_deviceManager ? m_deviceManager->selectedOutputDeviceId() : QString());
+            qInfo() << "CallManager: AEC enabled — inline webrtcechoprobe in the publisher pipeline";
         }
     }
 
@@ -1376,10 +1372,24 @@ bool CallManager::buildAndStartPublisher()
         m_localVideoProvider = m_publishPipeline->localVideoProvider();
         emit localVideoProviderChanged();
     }
-    // 0.51.x: arm the dynamic load controller for this call (idempotent restart;
-    // publisher-only reconnects via rebuildPublisherAndReoffer don't pass here, so
-    // the controller keeps its state across a reconnect).
+    // 0.51.x: arm the dynamic load controller for this call (rebuildPublisherAndReoffer
+    // also lands here, so the controller restarts on a publisher reconnect — fine,
+    // it just re-ramps from level 0).
     startLoadController();
+
+    // 0.51.x AEC: on a publisher REBUILD (rebuildPublisherAndReoffer also calls
+    // this) the fresh pipeline has a new far-end mixer with NO peers — re-point
+    // every surviving subscriber at it (each still holds a ref to the now-dead old
+    // appsrc, which would silence that peer + kill AEC for the rest of the call).
+    // No-op on the initial build (no subscribers yet; onOfferReceived attaches
+    // them) and when AEC is off.
+    if (m_publishPipeline->aecPlayoutActive()) {
+        for (auto it = m_subscribePipelines.constBegin(); it != m_subscribePipelines.constEnd(); ++it) {
+            if (!it.value()) continue;
+            if (GstElement *src = m_publishPipeline->addFarEndPeer(it.key()))
+                it.value()->setFarEndAppsrc(src);
+        }
+    }
     return true;
 }
 
@@ -3269,6 +3279,10 @@ void CallManager::onParticipantLeftCall(const QString &sessionId)
         m_subscribePipelines[sessionId]->stop();
         m_subscribePipelines[sessionId]->deleteLater();
         m_subscribePipelines.remove(sessionId);
+        // 0.51.x AEC: release this peer's far-end appsrc + audiomixer request pad
+        // in the publisher (the subscriber stopped pushing above; removeFarEndPeer
+        // NULLs the appsrc first so any in-flight push short-circuits — no UAF).
+        if (m_publishPipeline) m_publishPipeline->removeFarEndPeer(sessionId);
         m_subscriberSids.remove(sessionId);
         m_subStall.remove(sessionId);   // #bug2
         m_desiredSubstream.remove(sessionId);      // 1.0 audit — were leaking a
@@ -3406,10 +3420,15 @@ void CallManager::onOfferReceived(const QString &fromSessionId, const QString &s
 
     // New subscriber
     auto *sub = new SubscribeWebrtcSrc(fromSessionId, this);
-    // AEC: tap this peer's decoded audio into the shared far-end probe bus so
-    // the publisher's echo canceller has the composite playback reference.
-    // No-op when AEC is off (m_farEndBus null); the playback path is untouched.
-    if (m_farEndBus) sub->setFarEndBus(m_farEndBus);
+    // AEC (0.51.x single-pipeline fix): when the publisher built its inline
+    // playout tail (echoCancellation on), route THIS peer's decoded audio into
+    // the publisher's far-end mixer (and play it out via the one shared, probed
+    // sink) instead of the subscriber's own wasapi2sink. addFarEndPeer returns
+    // the appsrc to push into; null (AEC off / tail failed) → legacy per-sub sink.
+    if (m_publishPipeline && m_publishPipeline->aecPlayoutActive()) {
+        if (GstElement *src = m_publishPipeline->addFarEndPeer(fromSessionId))
+            sub->setFarEndAppsrc(src);
+    }
 
     connect(sub, &SubscribeWebrtcSrc::localAnswerReady,
             this, [this, fromSessionId](const QString &sdp) {

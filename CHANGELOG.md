@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.51.2 "Bafana Bafana" -- BETA (2026-06-11)
+
+### Fixed
+
+* **Echo cancellation actually cancels now (beta).** A long-standing bug meant
+  TalQ's echo cancellation *ran* but couldn't remove the echo — so if the person
+  you were talking to used speakers, you'd hear your own voice come back a
+  fraction of a second later. The decoded audio is now routed so the canceller
+  has a correctly-timed reference of exactly what's being played, which is what
+  it needs to subtract the echo. **Please test it on speakers** (both sides) and
+  let us know. If anything sounds wrong, echo cancellation can still be turned
+  off under Settings → Audio & Video.
+
 ## v0.51.1 "Bafana Bafana" -- BETA (2026-06-11)
 
 ### Fixed
