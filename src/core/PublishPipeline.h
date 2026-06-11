@@ -6,6 +6,7 @@
 #include <QElapsedTimer>
 #include <QObject>
 #include <QString>
+#include <QHash>
 #include <QTimer>
 #include <gst/gst.h>
 #include <gst/sdp/sdp.h>
@@ -79,6 +80,22 @@ public:
     // once the SharedFarEndBus probe is already PLAYING (see docs/aec-design.md);
     // calling it has no effect after start().
     void setEchoCancellation(bool on) { m_aecEnabled = on; }
+
+    // 0.51.x AEC single-pipeline fix. The publisher pipeline (which holds
+    // webrtcdsp) now also hosts the playout tail: per-peer appsrc → audiomixer →
+    // caps(48k/S16LE/mono) → webrtcechoprobe("talq-aec-probe") → queue →
+    // wasapi2sink. Probe + dsp share ONE clock, and the reference IS the real
+    // played audio at its real render latency — the fix for the cross-pipeline
+    // defect that defeated cancellation. Built in start() when AEC is on (else
+    // these no-op and subscribers keep their own sinks).
+    // addFarEndPeer returns the appsrc a subscriber pushes its decoded
+    // 48k/S16LE/mono audio into (idempotent per peerId; null if AEC off / failed).
+    GstElement *addFarEndPeer(const QString &peerId);
+    // Release a peer's far-end appsrc + its audiomixer request pad (on peer-leave),
+    // so per-peer churn doesn't leak pads/elements. Idempotent; safe if AEC off.
+    void        removeFarEndPeer(const QString &peerId);
+    void        setFarEndOutputDevice(const QString &deviceId);
+    bool        aecPlayoutActive() const { return m_farMixer != nullptr; }
 
     // Encode-load mitigation: CallManager passes the detected GPU accel tier
     // ("NVIDIA NVDEC" / "Intel DXVA" / "DXVA (H264 only)" / "Software only")
@@ -298,6 +315,16 @@ private:
     // AEC on the capture leg (echo-cancel + probe). Set via setEchoCancellation
     // before start(); CallManager guarantees the probe exists first.
     bool m_aecEnabled = false;
+    // 0.51.x AEC playout tail (lives in THIS pipeline → shared clock with
+    // webrtcdsp). m_farMixer != null means the tail is up. Built before the
+    // webrtcdsp config in start() so the probe exists for the dsp's lookup and a
+    // tail-build failure degrades to AEC-off (never a call drop).
+    GstElement *m_farMixer = nullptr;
+    GstElement *m_farProbe = nullptr;
+    GstElement *m_farSink  = nullptr;
+    QString     m_farOutputDeviceId;
+    QHash<QString, GstElement*> m_farPeerAppsrcs;
+    bool buildFarEndTail();
     // Self-heal state: a forced exact camera caps from Settings → if no
     // frames in m_camStartWatchdog seconds after enableCamera, the pick
     // is unrecoverably wrong (mfvideosrc can't deliver the mode);

@@ -9,6 +9,7 @@
 #include <cstring>
 #include <thread>
 #include <gst/app/gstappsink.h>
+#include <gst/app/gstappsrc.h>   // 0.51.x AEC: push decoded audio to the publisher far-end mixer
 #include <gst/sdp/sdp.h>
 #include <gst/webrtc/webrtc.h>
 
@@ -361,6 +362,49 @@ GstFlowReturn SubscribeWebrtcSrc::onFarEndSample(GstAppSink *sink, gpointer ud)
     return GST_FLOW_OK;
 }
 
+void SubscribeWebrtcSrc::setFarEndAppsrc(GstElement *appsrc)
+{
+    // Qt thread (before start(), and again on a publisher REBUILD to re-point at
+    // the new mixer). REF the appsrc so our streaming-thread pushes stay valid
+    // across a publisher-teardown race; atomically swap and unref the previous
+    // one. The final ref is dropped in cleanup() after this pipeline's NULL.
+    GstElement *fresh = appsrc ? GST_ELEMENT(gst_object_ref(appsrc)) : nullptr;
+    GstElement *prev;
+    {
+        std::lock_guard<std::mutex> lk(m_farAppsrcMutex);
+        prev = m_farAppsrcExt;
+        m_farAppsrcExt = fresh;
+    }
+    // Unref the old OUTSIDE the lock. A concurrent onAecPlayoutSample either
+    // grabbed its own ref under the lock before this swap (so `prev` stays alive
+    // through its push) or runs after and reads `fresh`.
+    if (prev) gst_object_unref(prev);
+}
+
+GstFlowReturn SubscribeWebrtcSrc::onAecPlayoutSample(GstAppSink *sink, gpointer ud)
+{
+    auto *self = static_cast<SubscribeWebrtcSrc*>(ud);
+    GstSample *sample = gst_app_sink_pull_sample(sink);
+    if (!sample) return GST_FLOW_OK;
+    // Take a ref on the current appsrc UNDER the lock, so a concurrent
+    // setFarEndAppsrc/cleanup swap-then-unref (rebuild re-point) can't free it
+    // while we push. Push OUTSIDE the lock (push_sample can block on a full
+    // queue; we must not hold the lock across it). push_sample doesn't take
+    // ownership of the sample — we unref it.
+    GstElement *appsrc = nullptr;
+    {
+        std::lock_guard<std::mutex> lk(self->m_farAppsrcMutex);
+        appsrc = self->m_farAppsrcExt;
+        if (appsrc) gst_object_ref(appsrc);
+    }
+    if (appsrc) {
+        gst_app_src_push_sample(GST_APP_SRC(appsrc), sample);
+        gst_object_unref(appsrc);
+    }
+    gst_sample_unref(sample);
+    return GST_FLOW_OK;
+}
+
 void SubscribeWebrtcSrc::cleanup()
 {
     if (m_busWatchId > 0) { g_source_remove(m_busWatchId); m_busWatchId = 0; }
@@ -368,6 +412,7 @@ void SubscribeWebrtcSrc::cleanup()
     if (m_webrtcbin)    g_signal_handlers_disconnect_by_data(m_webrtcbin, this);
     if (m_videoAppsink) g_signal_handlers_disconnect_by_data(m_videoAppsink, this);
     if (m_farAppsink)   g_signal_handlers_disconnect_by_data(m_farAppsink, this);
+    if (m_aecPlayoutSink) g_signal_handlers_disconnect_by_data(m_aecPlayoutSink, this); // AEC single-pipeline
     if (m_signaller)    g_signal_handlers_disconnect_by_data(m_signaller, this);
     // AEC: stop tapping and release our mixer pad on the shared bus BEFORE the
     // pipeline tears down. The far-end appsink handler is disconnected just
@@ -382,10 +427,17 @@ void SubscribeWebrtcSrc::cleanup()
         // pad stream lock / GPU teardown when a peer leaves, freezing the app.
         // Null the pointer first so re-entrant callers see no pipeline.
         GstElement *pipe = m_pipeline;
+        // 0.51.x AEC fix: hand our ref on the publisher's far-end appsrc to the
+        // worker so it's unrefed AFTER this pipeline's NULL — by then the AEC
+        // appsink + its streaming thread are stopped, so no push can race the
+        // unref (the handler was already disconnected above).
+        GstElement *farAppsrc;
+        { std::lock_guard<std::mutex> lk(m_farAppsrcMutex); farAppsrc = m_farAppsrcExt; m_farAppsrcExt = nullptr; }
         m_pipeline = nullptr;
-        std::thread([pipe]() {
+        std::thread([pipe, farAppsrc]() {
             gst_element_set_state(pipe, GST_STATE_NULL);
             gst_object_unref(pipe);
+            if (farAppsrc) gst_object_unref(farAppsrc);
         }).detach();
     }
     if (m_signaller) { g_object_unref(m_signaller); m_signaller = nullptr; }
@@ -394,6 +446,12 @@ void SubscribeWebrtcSrc::cleanup()
     m_videoAppsink = nullptr;
     m_audioTee = nullptr;       // owned by the pipeline (freed with it)
     m_farAppsink = nullptr;     // owned by the pipeline (freed with it)
+    m_aecPlayoutSink = nullptr; // owned by the pipeline (freed with it)
+    // AEC fix: if there was no pipeline, the worker block above didn't run — drop
+    // our appsrc ref here (null if the worker already took it).
+    GstElement *fa;
+    { std::lock_guard<std::mutex> lk(m_farAppsrcMutex); fa = m_farAppsrcExt; m_farAppsrcExt = nullptr; }
+    if (fa) gst_object_unref(fa);
     m_offerDelivered = false;
     m_webrtcStarted = false;
     m_pendingRemoteIce.clear();
@@ -684,6 +742,53 @@ void SubscribeWebrtcSrc::onPadAdded(GstElement *, GstPad *pad, gpointer ud)
         gst_object_unref(cs);
         qInfo() << "SubscribeWebrtcSrc: video pad linked (decoded)";
     } else if (isAudio) {
+        // Plain read: set on the Qt thread before start() (published by the PLAYING
+        // transition); a rebuild re-point only happens later, mid-call.
+        if (self->m_farAppsrcExt) {
+            // 0.51.x AEC single-pipeline fix: playback runs through the publisher
+            // pipeline's ONE shared probed sink (probe + webrtcdsp share a clock),
+            // NOT a per-subscriber wasapi2sink. Decoded pad → audioconvert →
+            // audioresample → caps(48k/S16LE/mono) → level(VU) → appsink, whose
+            // new-sample pushes into m_farAppsrcExt (the publisher far-end mixer).
+            GstElement *aconv = gst_element_factory_make("audioconvert", nullptr);
+            GstElement *ares  = gst_element_factory_make("audioresample", nullptr);
+            GstElement *acaps = gst_element_factory_make("capsfilter", nullptr);
+            GstElement *alvl  = gst_element_factory_make("level", nullptr);
+            GstElement *asink = gst_element_factory_make("appsink", nullptr);
+            if (!aconv || !ares || !acaps || !alvl || !asink) {
+                for (GstElement *e : { aconv, ares, acaps, alvl, asink }) if (e) gst_object_unref(e);
+                qWarning() << "SubscribeWebrtcSrc: AEC playout chain element missing — "
+                              "falling back to direct playback (no echo cancellation for this peer)";
+                goto legacyPlayback;   // H2: never leave the peer silent
+            }
+            GstCaps *fc = gst_caps_from_string(
+                "audio/x-raw,rate=48000,format=S16LE,channels=1,layout=interleaved");
+            g_object_set(acaps, "caps", fc, nullptr);
+            g_object_set(asink, "emit-signals", TRUE, "sync", FALSE,
+                         "drop", TRUE, "max-buffers", 8, "caps", fc, nullptr);
+            gst_caps_unref(fc);
+            g_object_set(alvl, "post-messages", TRUE, "interval", (guint64)100000000, nullptr); // VU
+            g_signal_connect(asink, "new-sample",
+                             G_CALLBACK(&SubscribeWebrtcSrc::onAecPlayoutSample), self);
+            self->m_aecPlayoutSink = asink;
+            gst_bin_add_many(GST_BIN(self->m_pipeline), aconv, ares, acaps, alvl, asink, nullptr);
+            if (!gst_element_link_many(aconv, ares, acaps, alvl, asink, nullptr)) {
+                qWarning() << "SubscribeWebrtcSrc: AEC playout chain link failed — "
+                              "falling back to direct playback (no echo cancellation for this peer)";
+                self->m_aecPlayoutSink = nullptr;
+                g_signal_handlers_disconnect_by_data(asink, self);
+                gst_bin_remove_many(GST_BIN(self->m_pipeline), aconv, ares, acaps, alvl, asink, nullptr);
+                goto legacyPlayback;   // H2: never leave the peer silent
+            }
+            for (GstElement *e : { aconv, ares, acaps, alvl, asink })
+                gst_element_sync_state_with_parent(e);
+            GstPad *cs = gst_element_get_static_pad(aconv, "sink");
+            gst_pad_link(pad, cs);
+            gst_object_unref(cs);
+            qInfo() << "SubscribeWebrtcSrc: audio → shared AEC playout sink (no per-sub wasapi2sink)";
+            return;
+        }
+    legacyPlayback: ;   // H2 fall-through: AEC chain failed → build the proven per-sub sink
         GstElement *conv = gst_element_factory_make("audioconvert", nullptr);
         GstElement *res  = gst_element_factory_make("audioresample", nullptr);
         GstElement *sink = gst_element_factory_make("wasapi2sink", nullptr);
