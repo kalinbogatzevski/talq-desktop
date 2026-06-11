@@ -64,6 +64,10 @@ public:
     ~MediaDeviceManager() override;
 
     Q_INVOKABLE void refresh();
+    // Non-blocking refresh: enumerates devices on a worker thread and emits
+    // devicesChanged on completion (debounced). Used when opening Settings so the
+    // dialog isn't blocked on the slow camera-capability probing.
+    Q_INVOKABLE void refreshAsync();
     void saveDevices();
     void restoreDevices();
 
@@ -122,4 +126,5 @@ private:
     QVector<MediaDevice> m_videoInputs;
     QSettings m_settings;
     bool m_restoring = false;  // suppress saveDevices() during restoreDevices()
+    bool m_refreshing = false; // a worker-thread refreshAsync() scan is in flight
 };

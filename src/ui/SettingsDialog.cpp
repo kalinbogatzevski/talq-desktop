@@ -403,7 +403,12 @@ void SettingsDialog::selectAudioVideoTab()
 
 void SettingsDialog::refresh()
 {
-    m_deviceManager->refresh();
+    // Non-blocking: pop the dialog instantly from the cached device list and
+    // kick the slow GstDeviceMonitor camera-capability probe onto a worker
+    // thread. When it lands it emits devicesChanged() -> populateDeviceCombos()
+    // and the combos refresh in place. (Synchronous refresh() here used to
+    // stall the whole dialog open by ~hundreds of ms while cameras were probed.)
+    m_deviceManager->refreshAsync();
     populateDeviceCombos();
     loadNotificationSettings();
     loadGeneralSettings();
@@ -730,7 +735,7 @@ QWidget *SettingsDialog::buildAudioVideoTab()
     auto *refreshBtn = new QPushButton(tr("Refresh devices"));
     refreshBtn->setProperty("variant", "default");
     connect(refreshBtn, &QPushButton::clicked, m_deviceManager,
-            &MediaDeviceManager::refresh);
+            &MediaDeviceManager::refreshAsync);
     auto *btnRow = new QHBoxLayout;
     btnRow->setContentsMargins(0, 0, 0, 0);
     btnRow->addStretch();

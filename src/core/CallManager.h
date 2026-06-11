@@ -61,6 +61,20 @@ public:
     enum CallState { Idle, Outgoing, Incoming, Connecting, Active, Reconnecting, Ending };
     Q_ENUM(CallState)
 
+    // True only once a call has fully torn down (Idle) or is tearing down
+    // (Ending). Used to reject signaling — subscriber/screen OFFERS and ICE
+    // CANDIDATES — that the MCU emits a beat after we hang up: without this an
+    // in-flight offer rebuilds a pipeline post-teardown and plays the peer's
+    // audio with no call screen (orphan-audio-after-hangup, seen in the
+    // dual-call/glare case). It deliberately does NOT cover Outgoing/Incoming:
+    // during an outgoing MCU ring the publisher legitimately exchanges trickle
+    // ICE with Janus (remote candidates arrive from our OWN session and it needs
+    // them to connect), and a peer already in an open room can offer before we
+    // reach Connecting. Mirrors the established m_state!=Idle&&!=Ending guard.
+    bool callTornDown() const {
+        return m_state == Idle || m_state == Ending;
+    }
+
     explicit CallManager(ApiClient *api, SignalingClient *signaling, MediaDeviceManager *deviceMgr, QObject *parent = nullptr);
 
     CallState state() const { return m_state; }
