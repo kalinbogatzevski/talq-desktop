@@ -270,6 +270,17 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
     // Configure level element: report every 100ms
     g_object_set(level, "post-messages", TRUE, "interval", (guint64)100000000, nullptr);
 
+    // 0.51.x AEC single-pipeline fix: build the inline playout tail (probe +
+    // shared real wasapi2sink) in THIS pipeline BEFORE webrtcdsp is configured,
+    // so the webrtcechoprobe is present for the dsp's probe lookup (the single
+    // pipeline's two-phase NULL→READY→PAUSED registers the probe before the dsp
+    // acquires it) and a tail-build failure degrades to AEC-off instead of a
+    // "No echo probe" call drop.
+    if (m_aecEnabled && !buildFarEndTail()) {
+        qWarning() << "PublishPipeline: AEC playout tail failed — disabling AEC for this call";
+        m_aecEnabled = false;
+    }
+
     // Optional WebRTC DSP (webrtcdsp): noise suppression and/or automatic gain
     // control on the capture leg. Each is independently gated by its own
     // setting (both default ON); the element is created if EITHER is enabled
@@ -940,6 +951,7 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         GstMessage *errMsg = gst_bus_pop_filtered(bus, GST_MESSAGE_ERROR);
         QString detail = QStringLiteral("Failed to start publish pipeline");
         bool audioCulprit = false;
+        bool farSinkCulprit = false;   // 0.51.x AEC: the shared playout wasapi2sink
         if (errMsg) {
             GError *err = nullptr;
             gchar *dbg = nullptr;
@@ -954,7 +966,8 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
                 if (audiosrc && src == GST_OBJECT(audiosrc)) {
                     audioCulprit = true;
                 } else if (gchar *sn = gst_object_get_name(src)) {
-                    audioCulprit = (g_strcmp0(sn, "pub-audiosrc") == 0);
+                    if (g_strcmp0(sn, "pub-far-sink") == 0)  farSinkCulprit = true; // AEC playout sink
+                    else audioCulprit = (g_strcmp0(sn, "pub-audiosrc") == 0);
                     g_free(sn);
                 }
             }
@@ -966,6 +979,17 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         }
         gst_object_unref(bus);
         cleanup();
+        if (farSinkCulprit) {
+            // 0.51.x AEC: the shared playout sink (real wasapi2sink) failed to open
+            // — must NOT drop the call (mirrors the old SharedFarEndBus "AEC never
+            // drops the call" guarantee). Disable AEC and rebuild; buildFarEndTail()
+            // is gated on m_aecEnabled, so the retry has no far sink/probe and the
+            // publisher comes up cleanly AEC-off.
+            m_aecEnabled = false;
+            qWarning() << "PublishPipeline: AEC playout sink failed to open — "
+                          "rebuilding without echo cancellation (call stays up)";
+            continue;
+        }
         if (audioCulprit && audioTier < 2) {
             const int prev = audioTier;
             // Skip the redundant default-device retry when no device was
@@ -1085,6 +1109,9 @@ void PublishPipeline::cleanup()
     m_sharedCaps = nullptr;
     m_gccbwe = nullptr;
     m_outputTee = nullptr;
+    // 0.51.x AEC playout tail (owned by m_pipeline — just null the handles).
+    m_farMixer = m_farProbe = m_farSink = nullptr;
+    m_farPeerAppsrcs.clear();
     for (auto &L : m_layers) {
         L.valve = L.scale = L.caps = L.encoder = L.parser
               = L.profileCaps = L.payloader = L.ssrcFilter = nullptr;
@@ -2568,6 +2595,125 @@ double PublishPipeline::encodeUsage()
     if (wall <= 0) return 0.0;
     const double u = double(busy) / double(wall);
     return u < 0.0 ? 0.0 : u;
+}
+
+bool PublishPipeline::buildFarEndTail()
+{
+    // 0.51.x AEC fix. Mirrors the proven SharedFarEndBus element setup (silent
+    // keepalive so the mixer always produces, even with zero peers; 48k/S16LE/
+    // mono everywhere) but lives in THIS pipeline and ends in a REAL wasapi2sink
+    // — so the probe and webrtcdsp share one clock and the probe records exactly
+    // what hits the speaker, at its real latency.
+    if (!m_pipeline) return false;
+    GstElement *ka     = gst_element_factory_make("audiotestsrc", "pub-far-keepalive");
+    GstElement *kaCaps = gst_element_factory_make("capsfilter",   "pub-far-ka-caps");
+    m_farMixer         = gst_element_factory_make("audiomixer",   "pub-far-mix");
+    GstElement *caps   = gst_element_factory_make("capsfilter",   "pub-far-caps");
+    m_farProbe         = gst_element_factory_make("webrtcechoprobe", "talq-aec-probe");
+    GstElement *q      = gst_element_factory_make("queue",        "pub-far-q");
+    m_farSink          = gst_element_factory_make("wasapi2sink",  "pub-far-sink");
+    if (!ka || !kaCaps || !m_farMixer || !caps || !m_farProbe || !q || !m_farSink) {
+        qWarning() << "PublishPipeline: AEC playout tail element unavailable — AEC off";
+        for (GstElement *e : { ka, kaCaps, m_farMixer, caps, m_farProbe, q, m_farSink })
+            if (e) gst_object_unref(e);
+        m_farMixer = m_farProbe = m_farSink = nullptr;
+        return false;
+    }
+
+    GstCaps *c = gst_caps_from_string(
+        "audio/x-raw,rate=48000,format=S16LE,channels=1,layout=interleaved");
+    g_object_set(caps,   "caps", c, nullptr);
+    g_object_set(kaCaps, "caps", c, nullptr);
+    gst_caps_unref(c);
+    gst_util_set_object_arg(G_OBJECT(ka), "wave", "silence");
+    g_object_set(ka, "is-live", TRUE, nullptr);
+    // Don't let the playout sink gate the publisher's PLAYING transition with its
+    // own async preroll (the live keepalive keeps it producing anyway), and don't
+    // retain the last sample — mirrors the retired SharedFarEndBus fakesink intent.
+    g_object_set(m_farSink, "async", FALSE, "enable-last-sample", FALSE, nullptr);
+    if (!m_farOutputDeviceId.isEmpty())
+        g_object_set(m_farSink, "device", m_farOutputDeviceId.toUtf8().constData(), nullptr);
+
+    gst_bin_add_many(GST_BIN(m_pipeline),
+                     ka, kaCaps, m_farMixer, caps, m_farProbe, q, m_farSink, nullptr);
+
+    bool ok = gst_element_link(ka, kaCaps);
+    if (ok) {   // keepalive → a mixer request pad
+        GstPad *src = gst_element_get_static_pad(kaCaps, "src");
+        GstPad *mp  = gst_element_request_pad_simple(m_farMixer, "sink_%u");
+        ok = src && mp && (gst_pad_link(src, mp) == GST_PAD_LINK_OK);
+        if (src) gst_object_unref(src);
+        if (mp)  gst_object_unref(mp);
+    }
+    if (ok)     // mixer → caps → probe → queue → real speaker
+        ok = gst_element_link_many(m_farMixer, caps, m_farProbe, q, m_farSink, nullptr);
+
+    if (!ok) {
+        qWarning() << "PublishPipeline: AEC playout tail link failed — AEC off";
+        gst_bin_remove_many(GST_BIN(m_pipeline),
+                            ka, kaCaps, m_farMixer, caps, m_farProbe, q, m_farSink, nullptr);
+        m_farMixer = m_farProbe = m_farSink = nullptr;
+        return false;
+    }
+    qInfo() << "PublishPipeline: AEC playout tail built in publisher pipeline "
+               "(probe inline + shared wasapi2sink) — single-clock AEC";
+    return true;
+}
+
+GstElement *PublishPipeline::addFarEndPeer(const QString &peerId)
+{
+    if (!m_farMixer || !m_pipeline) return nullptr;           // AEC tail not up
+    if (auto *ex = m_farPeerAppsrcs.value(peerId)) return ex; // idempotent per peer
+    GstElement *src = gst_element_factory_make("appsrc", nullptr);
+    if (!src) return nullptr;
+    GstCaps *c = gst_caps_from_string(
+        "audio/x-raw,rate=48000,format=S16LE,channels=1,layout=interleaved");
+    g_object_set(src, "is-live", TRUE, "format", GST_FORMAT_TIME,
+                 "do-timestamp", TRUE, "caps", c, nullptr);
+    gst_caps_unref(c);
+    gst_bin_add(GST_BIN(m_pipeline), src);
+    GstPad *sp = gst_element_get_static_pad(src, "src");
+    GstPad *mp = gst_element_request_pad_simple(m_farMixer, "sink_%u");
+    const bool ok = sp && mp && (gst_pad_link(sp, mp) == GST_PAD_LINK_OK);
+    if (sp) gst_object_unref(sp);
+    if (mp) gst_object_unref(mp);
+    if (!ok) {
+        qWarning() << "PublishPipeline: far-end peer link failed" << peerId.left(12);
+        gst_bin_remove(GST_BIN(m_pipeline), src);
+        return nullptr;
+    }
+    gst_element_sync_state_with_parent(src);
+    m_farPeerAppsrcs.insert(peerId, src);
+    qInfo() << "PublishPipeline: far-end peer added to AEC reference mix" << peerId.left(12);
+    return src;
+}
+
+void PublishPipeline::setFarEndOutputDevice(const QString &deviceId)
+{
+    m_farOutputDeviceId = deviceId;
+    if (m_farSink && !deviceId.isEmpty())
+        g_object_set(m_farSink, "device", deviceId.toUtf8().constData(), nullptr);
+}
+
+void PublishPipeline::removeFarEndPeer(const QString &peerId)
+{
+    GstElement *src = m_farPeerAppsrcs.take(peerId);
+    if (!src) return;                 // unknown peer / AEC off
+    if (!m_pipeline) return;          // pipeline gone → the appsrc died with it
+    // NULL the appsrc first so any in-flight subscriber push short-circuits
+    // (push_sample returns FLUSHING, no UAF), then release its audiomixer request
+    // pad and remove it from the bin (gst_bin_remove drops the bin's ref).
+    gst_element_set_state(src, GST_STATE_NULL);
+    if (GstPad *sp = gst_element_get_static_pad(src, "src")) {
+        if (GstPad *mp = gst_pad_get_peer(sp)) {
+            gst_pad_unlink(sp, mp);
+            if (m_farMixer) gst_element_release_request_pad(m_farMixer, mp);
+            gst_object_unref(mp);
+        }
+        gst_object_unref(sp);
+    }
+    gst_bin_remove(GST_BIN(m_pipeline), src);
+    qInfo() << "PublishPipeline: far-end peer removed from AEC mix" << peerId.left(12);
 }
 
 void PublishPipeline::onGccBitrate(GObject *gcc, GParamSpec *, gpointer userData)
