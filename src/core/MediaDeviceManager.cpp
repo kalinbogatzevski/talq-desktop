@@ -1,6 +1,10 @@
 #include "core/MediaDeviceManager.h"
 #include <QDebug>
+#include <QPointer>
+#include <QCoreApplication>
 #include <algorithm>
+#include <memory>
+#include <thread>
 
 CameraMode CameraMode::fromKey(const QString &k)
 {
@@ -165,12 +169,15 @@ MediaDeviceManager::MediaDeviceManager(QObject *parent)
 
 MediaDeviceManager::~MediaDeviceManager() = default;
 
-void MediaDeviceManager::refresh()
+// Pure enumeration into the three lists via a fresh one-shot GstDeviceMonitor.
+// No member access; the free helpers (parseCameraModes/mergeCameraModes) and the
+// local QSettings camera-caps cache are thread-safe (Qt serialises QSettings),
+// so this ALSO runs on a worker thread (refreshAsync) to keep the Settings dialog
+// from blocking on the slow camera-capability probing.
+static void enumerateDevicesImpl(QVector<MediaDevice> &aIn,
+                                 QVector<MediaDevice> &aOut,
+                                 QVector<MediaDevice> &vid)
 {
-    m_audioInputs.clear();
-    m_audioOutputs.clear();
-    m_videoInputs.clear();
-
     GstDeviceMonitor *monitor = gst_device_monitor_new();
 
     gst_device_monitor_add_filter(monitor, "Audio/Source", nullptr);
@@ -223,11 +230,11 @@ void MediaDeviceManager::refresh()
                         << md.name;
             } else {
                 md.type = "audio-input";
-                m_audioInputs.append(md);
+                aIn.append(md);
             }
         } else if (deviceClass.contains("Sink") && deviceClass.contains("Audio")) {
             md.type = "audio-output";
-            m_audioOutputs.append(md);
+            aOut.append(md);
         } else if (deviceClass.contains("Source") && deviceClass.contains("Video")) {
             md.type = "video-input";
             md.modes = parseCameraModes(dev);
@@ -266,16 +273,16 @@ void MediaDeviceManager::refresh()
             // be selected exposed none (the "only Auto + duplicated
             // camera" field report).
             int existing = -1;
-            for (int i = 0; i < m_videoInputs.size(); ++i)
-                if (m_videoInputs[i].name == md.name) { existing = i; break; }
+            for (int i = 0; i < vid.size(); ++i)
+                if (vid[i].name == md.name) { existing = i; break; }
             if (existing >= 0) {
-                mergeCameraModes(m_videoInputs[existing].modes, md.modes);
-                MediaDevice &e = m_videoInputs[existing];
+                mergeCameraModes(vid[existing].modes, md.modes);
+                MediaDevice &e = vid[existing];
                 if ((e.id.isEmpty() || e.id == e.name)
                     && !md.id.isEmpty() && md.id != md.name)
                     e.id = md.id;   // prefer a real strid/path over the name
             } else {
-                m_videoInputs.append(md);
+                vid.append(md);
             }
             qInfo().nospace() << "MediaDeviceManager: video '" << md.name
                 << "' (this provider) modes=" << md.modes.size()
@@ -293,17 +300,52 @@ void MediaDeviceManager::refresh()
     gst_device_monitor_stop(monitor);
     gst_object_unref(monitor);
 
-    qDebug() << "MediaDeviceManager: found"
-             << m_audioInputs.size() << "mic(s),"
-             << m_audioOutputs.size() << "speaker(s),"
-             << m_videoInputs.size() << "camera(s)";
+    qDebug() << "MediaDeviceManager: enumerated"
+             << aIn.size() << "mic(s),"
+             << aOut.size() << "speaker(s),"
+             << vid.size() << "camera(s)";
+}
 
+void MediaDeviceManager::refresh()
+{
+    // Synchronous — used by the explicit "Refresh devices" button. Enumerate
+    // into the live lists, then re-apply the saved selection + persist camera caps.
+    m_audioInputs.clear(); m_audioOutputs.clear(); m_videoInputs.clear();
+    enumerateDevicesImpl(m_audioInputs, m_audioOutputs, m_videoInputs);
     emit devicesChanged();
     restoreDevices();
-    // Recompute the exact source caps now that the selected camera is
-    // known, so the pipeline forces the best mode even on a fresh install
-    // where Settings was never opened.
     resolveAndPersistCameraSrcCaps();
+}
+
+void MediaDeviceManager::refreshAsync()
+{
+    // Non-blocking — for opening Settings. The slow GstDeviceMonitor enumeration
+    // (camera capability probing especially) runs on a worker thread so the dialog
+    // pops instantly with the cached list; the combos update via devicesChanged
+    // when the scan lands. Debounced so a flurry of opens spawns one scan.
+    if (m_refreshing) return;
+    m_refreshing = true;
+    QPointer<MediaDeviceManager> guard(this);
+    std::thread([guard]() {
+        auto *aIn  = new QVector<MediaDevice>();
+        auto *aOut = new QVector<MediaDevice>();
+        auto *vid  = new QVector<MediaDevice>();
+        enumerateDevicesImpl(*aIn, *aOut, *vid);
+        // Hop back to the main thread to swap in the results + run the UI-thread
+        // tail (selection match + caps persist + signal). qApp is always alive;
+        // the QPointer bails if the manager itself was destroyed mid-scan.
+        QMetaObject::invokeMethod(qApp, [guard, aIn, aOut, vid]() {
+            std::unique_ptr<QVector<MediaDevice>> a(aIn), b(aOut), v(vid);
+            if (!guard) return;
+            guard->m_audioInputs  = std::move(*a);
+            guard->m_audioOutputs = std::move(*b);
+            guard->m_videoInputs  = std::move(*v);
+            guard->m_refreshing   = false;
+            emit guard->devicesChanged();
+            guard->restoreDevices();
+            guard->resolveAndPersistCameraSrcCaps();
+        }, Qt::QueuedConnection);
+    }).detach();
 }
 
 void MediaDeviceManager::setSelectedAudioInput(int idx)

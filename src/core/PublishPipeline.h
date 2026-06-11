@@ -96,6 +96,10 @@ public:
     void        removeFarEndPeer(const QString &peerId);
     void        setFarEndOutputDevice(const QString &deviceId);
     bool        aecPlayoutActive() const { return m_farMixer != nullptr; }
+    // Has the camera delivered at least one real frame since the last enable?
+    // Diagnostics: "camera on (intent) but firstFrame=0" after a few seconds is
+    // the silent mfvideosrc-failure signature (the "her camera stopped" symptom).
+    bool        cameraFirstFrameSeen() const { return m_camFirstFrameSeen.load(std::memory_order_relaxed); }
 
     // Encode-load mitigation: CallManager passes the detected GPU accel tier
     // ("NVIDIA NVDEC" / "Intel DXVA" / "DXVA (H264 only)" / "Software only")

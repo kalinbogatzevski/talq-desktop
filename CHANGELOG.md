@@ -1,5 +1,35 @@
 # Changelog
 
+## v0.51.3 "Bafana Bafana" -- BETA (2026-06-11)
+
+### Fixed
+
+* **Echo cancellation now actually starts.** On some machines (notably ones
+  using their built-in speakers) the echo canceller silently failed to
+  initialize, because the reference-audio path it listens to couldn't match the
+  speaker's audio format — so echo wasn't removed even with the feature on. The
+  audio is now converted to the speaker's format correctly and cancellation
+  engages. **Please re-test on speakers, on a normal one-to-one call** (have one
+  side call and the other answer — don't both dial at once). It can still be
+  turned off under Settings → Audio & Video.
+
+* **No more "ghost" audio after hanging up.** In a rare timing case — most
+  likely when both people start the call at the same moment — you could keep
+  hearing the other person for a few seconds after you'd hung up, with no call
+  window on screen. Call signals that arrive a beat after you leave are now
+  ignored, on both the camera and screen-share paths.
+
+* **Settings opens instantly.** Opening Settings no longer briefly freezes while
+  it scans your cameras and microphones; the scan runs in the background and the
+  device lists fill in a moment later.
+
+### Improved
+
+* **Better diagnostics for hard-to-reproduce freezes.** If the app or the
+  machine locks up during a call, the log now records what the call was doing
+  right up to the moment it stopped — and forces those lines to disk — so a
+  frozen session can finally be diagnosed afterwards. No effect on normal use.
+
 ## v0.51.2 "Bafana Bafana" -- BETA (2026-06-11)
 
 ### Fixed
