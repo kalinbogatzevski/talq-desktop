@@ -1,4 +1,5 @@
 #include "core/DebugMonitor.h"
+#include "core/TalqLog.h"
 #include <QDebug>
 #include <QDateTime>
 
@@ -60,6 +61,12 @@ void DebugMonitor::tick()
         m_summaryTickCounter = 0;
         summaryLog();
     }
+
+    // Force the log to physical disk on every 2s tick so that, after a HARD
+    // freeze + power-reset, the on-disk log retains everything up to the last
+    // ~2s before the freeze (fflush alone only reaches the lost OS cache). This
+    // is what finally lets a frozen session be diagnosed from its archived log.
+    TalqLog::syncToDisk();
 }
 
 void DebugMonitor::summaryLog()

@@ -2611,10 +2611,23 @@ bool PublishPipeline::buildFarEndTail()
     GstElement *caps   = gst_element_factory_make("capsfilter",   "pub-far-caps");
     m_farProbe         = gst_element_factory_make("webrtcechoprobe", "talq-aec-probe");
     GstElement *q      = gst_element_factory_make("queue",        "pub-far-q");
+    // The probe records mono/S16LE/48k (the AEC reference format webrtcdsp wants),
+    // but the REAL wasapi2sink is a Windows render endpoint that negotiates the
+    // device mix format (shared-mode is typically 48k float STEREO) and does NOT
+    // convert internally. Without conv+res in front of it the sink returns
+    // NOT_NEGOTIATED, which propagates back up through probe→mixer→keepalive
+    // ("streaming stopped, reason not-negotiated (-4)") and collapses the whole
+    // tail → AEC silently off AND the bus error churns the publisher into
+    // Reconnecting. (The retired SharedFarEndBus ended in a fakesink, which
+    // accepts anything, so this never surfaced until the real sink in 0.51.2.)
+    // Mirror the PROVEN subscriber playout chain (SubscribeWebrtcSrc legacy path):
+    // conv → res → wasapi2sink. Probe stays upstream so it still sees mono.
+    GstElement *farConv = gst_element_factory_make("audioconvert",  "pub-far-conv");
+    GstElement *farRes  = gst_element_factory_make("audioresample", "pub-far-res");
     m_farSink          = gst_element_factory_make("wasapi2sink",  "pub-far-sink");
-    if (!ka || !kaCaps || !m_farMixer || !caps || !m_farProbe || !q || !m_farSink) {
+    if (!ka || !kaCaps || !m_farMixer || !caps || !m_farProbe || !q || !farConv || !farRes || !m_farSink) {
         qWarning() << "PublishPipeline: AEC playout tail element unavailable — AEC off";
-        for (GstElement *e : { ka, kaCaps, m_farMixer, caps, m_farProbe, q, m_farSink })
+        for (GstElement *e : { ka, kaCaps, m_farMixer, caps, m_farProbe, q, farConv, farRes, m_farSink })
             if (e) gst_object_unref(e);
         m_farMixer = m_farProbe = m_farSink = nullptr;
         return false;
@@ -2627,6 +2640,11 @@ bool PublishPipeline::buildFarEndTail()
     gst_caps_unref(c);
     gst_util_set_object_arg(G_OBJECT(ka), "wave", "silence");
     g_object_set(ka, "is-live", TRUE, nullptr);
+    // Keep the probe→speaker buffering small and stable: a default queue can grow
+    // to 1s under jitter, which inflates the (delay-agnostic) AEC's far-end→mic
+    // alignment and lets echo leak. Bound to ~100ms, leak old data downstream.
+    g_object_set(q, "max-size-time", (guint64)100000000, "max-size-buffers", (guint)0,
+                 "max-size-bytes", (guint)0, "leaky", 2 /*GST_QUEUE_LEAK_DOWNSTREAM*/, nullptr);
     // Don't let the playout sink gate the publisher's PLAYING transition with its
     // own async preroll (the live keepalive keeps it producing anyway), and don't
     // retain the last sample — mirrors the retired SharedFarEndBus fakesink intent.
@@ -2635,7 +2653,7 @@ bool PublishPipeline::buildFarEndTail()
         g_object_set(m_farSink, "device", m_farOutputDeviceId.toUtf8().constData(), nullptr);
 
     gst_bin_add_many(GST_BIN(m_pipeline),
-                     ka, kaCaps, m_farMixer, caps, m_farProbe, q, m_farSink, nullptr);
+                     ka, kaCaps, m_farMixer, caps, m_farProbe, q, farConv, farRes, m_farSink, nullptr);
 
     bool ok = gst_element_link(ka, kaCaps);
     if (ok) {   // keepalive → a mixer request pad
@@ -2645,13 +2663,13 @@ bool PublishPipeline::buildFarEndTail()
         if (src) gst_object_unref(src);
         if (mp)  gst_object_unref(mp);
     }
-    if (ok)     // mixer → caps → probe → queue → real speaker
-        ok = gst_element_link_many(m_farMixer, caps, m_farProbe, q, m_farSink, nullptr);
+    if (ok)     // mixer → caps(mono) → probe → queue → conv → res → real speaker
+        ok = gst_element_link_many(m_farMixer, caps, m_farProbe, q, farConv, farRes, m_farSink, nullptr);
 
     if (!ok) {
         qWarning() << "PublishPipeline: AEC playout tail link failed — AEC off";
         gst_bin_remove_many(GST_BIN(m_pipeline),
-                            ka, kaCaps, m_farMixer, caps, m_farProbe, q, m_farSink, nullptr);
+                            ka, kaCaps, m_farMixer, caps, m_farProbe, q, farConv, farRes, m_farSink, nullptr);
         m_farMixer = m_farProbe = m_farSink = nullptr;
         return false;
     }

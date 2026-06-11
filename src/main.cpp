@@ -266,7 +266,20 @@ int main(int argc, char *argv[])
                 QByteArray line = (QTime::currentTime().toString("HH:mm:ss.zzz") + " " + msg + "\n").toUtf8();
                 fwrite(line.constData(), 1, line.size(), stderr);
                 fflush(stderr);
+                // A warning/error is often the last thing logged before a hard
+                // freeze (e.g. a camera/encoder fault on the weak-iGPU box). flush
+                // alone only reaches the OS cache, which a power-reset loses — so
+                // force these lines to physical disk so the freeze precursor
+                // actually survives. (Periodic 2s sync handles the steady state.)
+                if (t == QtFatalMsg)
+                    TalqLog::syncToDisk();           // last line before abort — always
+                else if (t == QtWarningMsg || t == QtCriticalMsg)
+                    TalqLog::syncToDiskThrottled();  // rate-limited against a warning burst
             });
+            // Disk logging is now live — allow syncToDisk()/syncToDiskThrottled()
+            // to actually _commit (they no-op until this is set, so a logless
+            // primary / secondary never flushes a closed handle).
+            TalqLog::g_diskLogActive = true;
 #ifdef Q_OS_WIN
             // Crash backstop — ALWAYS armed (release included): a native
             // fault / abort / Rust panic now leaves a minidump next to the

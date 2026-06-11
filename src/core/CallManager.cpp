@@ -372,6 +372,18 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
         if (roomType == "screen") {
             // Incoming screen share — create a subscriber for it
             qDebug() << "CallManager: received screen share offer from" << from.left(20);
+            // Same orphan-after-hangup guard: a screen offer (or a peer mid-share)
+            // can land a beat after teardown in the dual-call/glare scramble and
+            // this branch builds a full SubscribePipeline (real wasapi2sink if the
+            // screen carries audio) + a remote-screen tile before onOfferReceived's
+            // guard. Gate on torn-down (Idle/Ending) only; teardown() clears
+            // m_screenSubscribers before leaving the active states, so returning
+            // here can't strand a stale subscriber.
+            if (callTornDown()) {
+                qInfo() << "CallManager: ignoring screen-share offer from"
+                        << from.left(20) << "— call torn down (state" << m_state << ")";
+                return;
+            }
             // A re-share (stop → share again) sends a fresh offer for a
             // session we may still hold a screen subscriber for. Feeding
             // the new offer into the OLD SubscribePipeline leaves its
@@ -515,6 +527,15 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
         QString cStr = c["candidate"].toString();
         int mline = c["sdpMLineIndex"].toInt();
         QString mid = c["sdpMid"].toString();
+
+        // Orphan-after-hangup guard (covers the screen branch below + the MCU
+        // routing): a late candidate the MCU trickles a beat after teardown must
+        // not feed an orphan subscriber into "new"→connected. Gate on torn-down
+        // ONLY (Idle/Ending) — NOT Outgoing/Incoming: during an outgoing MCU ring
+        // the publisher's OWN remote candidates trickle from Janus and are routed
+        // below (it needs them to connect), and early subscriber candidates must
+        // still queue into m_pendingSubCandidates.
+        if (callTornDown()) return;
 
         // Route by roomType: screen candidates go to screen pipelines
         // (screen share is independent of the camera P2P/MCU decision).
@@ -2065,15 +2086,17 @@ void CallManager::applyReceiveLoadCaps(int substreamCap, bool capFocused)
 
 void CallManager::startLoadController()
 {
-    // Kill-switch: TALQ_DISABLE_LOAD_CONTROLLER=1 disables the controller
-    // entirely (falls back to static device-tier + network/BWE only).
+    // Kill-switch: TALQ_DISABLE_LOAD_CONTROLLER=1 disables load SHEDDING (falls
+    // back to static device-tier + network/BWE only) — but the 1s timer still
+    // runs so the [MEDIA] freeze heartbeat in onLoadTick is logged even when the
+    // controller is killed (the natural support step on a box that freezes
+    // mid-call). The enabled flag is checked inside onLoadTick, not here.
     m_loadControllerEnabled = qgetenv("TALQ_DISABLE_LOAD_CONTROLLER").trimmed() != "1";
-    if (!m_loadControllerEnabled) return;
 
     // Synthetic-load seam (design §8.1): drive the controller from env on the
     // dev box, whose NVENC GPU won't reproduce real overload. Production leaves
     // these unset → 0 → the controller sits at level 0 until the encode/decode
-    // latency probes feed real load (Stage 4).
+    // latency probes feed real load (Stage 4). Only meaningful when enabled.
     bool okE = false, okD = false;
     const double e = qgetenv("TALQ_TEST_ENCODE_USAGE").toDouble(&okE);
     const double d = qgetenv("TALQ_TEST_DECODE_USAGE").toDouble(&okD);
@@ -2093,7 +2116,9 @@ void CallManager::stopLoadController()
 
 void CallManager::onLoadTick()
 {
-    if (!m_loadControllerEnabled) return;
+    // Measure SEND/RECEIVE load every tick REGARDLESS of the controller, so the
+    // [MEDIA] freeze heartbeat below is logged even with the controller killed
+    // (TALQ_DISABLE_LOAD_CONTROLLER=1). Only the load-SHEDDING work is gated.
 
     // SEND load: real measurement from the publisher's encoder pad probes
     // (busy-time fraction; >1 when several simulcast encoders run at once).
@@ -2111,18 +2136,48 @@ void CallManager::onLoadTick()
         dec += px / (1920.0 * 1080.0 * 30.0);
     }
 
-    talq::LoadSample s;
-    // The synthetic seam ADDS on top of the measured load, so overload can be
-    // injected for validation on the dev box (NVENC won't reproduce it). In
-    // production TALQ_TEST_* are unset → pure measured load.
-    s.encodeUsage = enc + m_synthEncodeUsage;
-    s.decodeUsage = dec + m_synthDecodeUsage;
-    s.dropBurst   = false;
+    talq::LoadCaps caps;        // default = uncapped (lyr2/fps30); used for the log when disabled
+    int loadLevel = -1;         // -1 in the log = controller disabled
+    if (m_loadControllerEnabled) {
+        talq::LoadSample s;
+        // The synthetic seam ADDS on top of the measured load, so overload can be
+        // injected for validation on the dev box (NVENC won't reproduce it). In
+        // production TALQ_TEST_* are unset → pure measured load.
+        s.encodeUsage = enc + m_synthEncodeUsage;
+        s.decodeUsage = dec + m_synthDecodeUsage;
+        s.dropBurst   = false;
+        caps = m_loadController.onTick(s);
+        loadLevel = m_loadController.loadLevel();
+        if (m_publishPipeline)
+            m_publishPipeline->setLoadCaps(caps.sendLayerCeiling, caps.sendFps);
+        applyReceiveLoadCaps(caps.recvSubstreamCap, caps.recvCapFocused);
+    }
 
-    const talq::LoadCaps caps = m_loadController.onTick(s);
-    if (m_publishPipeline)
-        m_publishPipeline->setLoadCaps(caps.sendLayerCeiling, caps.sendFps);
-    applyReceiveLoadCaps(caps.recvSubstreamCap, caps.recvCapFocused);
+    // [MEDIA] freeze-diagnostic heartbeat (1s during a call, qInfo so it's always
+    // logged). After a hard freeze, the LAST [MEDIA] line shows the trajectory
+    // into it: a camera that stopped feeding the encoders (cam=1 enc=0.00),
+    // encode/decode load climbing on the single-engine iGPU, layer/fps thrashing,
+    // or a peer's decode ballooning. lc=0 records the kill-switch state. The line
+    // is fflush'd per-write and force-synced to disk by DebugMonitor's 2s tick —
+    // deliberately NOT _commit'd here, so the 1s cadence can't stall the
+    // main-thread bus pump on a slow disk.
+    const bool camOn    = m_cameraOn;
+    const bool camFrame = m_publishPipeline && m_publishPipeline->cameraFirstFrameSeen();
+    const bool pubRun   = m_publishPipeline && m_publishPipeline->isRunning();
+    const bool aecOn    = m_publishPipeline && m_publishPipeline->aecPlayoutActive();
+    qInfo().noquote() << QString(
+        "[MEDIA] st=%1 cam=%2 camFrame=%3 pub=%4 aec=%5 enc=%6 dec=%7 load=L%8 "
+        "caps=lyr%9/fps%10 rxPeers=%11 rxPeak=%12p share=%13 lc=%14")
+        .arg(int(m_state))
+        .arg(camOn ? 1 : 0).arg(camFrame ? 1 : 0).arg(pubRun ? 1 : 0).arg(aecOn ? 1 : 0)
+        .arg(QString::number(enc, 'f', 2))
+        .arg(QString::number(dec, 'f', 2))
+        .arg(loadLevel)
+        .arg(caps.sendLayerCeiling).arg(caps.sendFps)
+        .arg(m_subscribePipelines.size())
+        .arg(peerPeakRxHeight())
+        .arg(m_screenSharing ? 1 : 0)
+        .arg(m_loadControllerEnabled ? 1 : 0);
 }
 
 void CallManager::stopScreenShare()
@@ -3352,6 +3407,23 @@ void CallManager::onOfferReceived(const QString &fromSessionId, const QString &s
 {
     setStatusDetail("Received offer");
     qDebug() << "CallManager: received offer from" << fromSessionId.left(20) << "sid=" << sid;
+
+    // Orphan-audio-after-hangup guard. The MCU keeps emitting subscriber offers
+    // for a beat after we leave (especially in a dual-call/glare scramble where
+    // several requestOffers were in flight). teardown() clears our pending/retry
+    // state, but an offer ALREADY on the wire still lands here — and without this
+    // guard the block below builds a fresh SubscribeWebrtcSrc, answers it, and
+    // plays the peer's audio out its own wasapi2sink while m_state is Idle, i.e.
+    // with no call screen. Reject only once the call has fully torn down
+    // (Idle/Ending); an offer can legitimately arrive during the Outgoing/Incoming
+    // ring when a peer is already in an open room (processPendingOffers flush).
+    // P2P offers are handled by the m_peerPipeline branch below (mid-call only).
+    if (callTornDown()) {
+        qInfo() << "CallManager: ignoring subscriber offer from"
+                << fromSessionId.left(20) << "— call torn down (state"
+                << m_state << ")";
+        return;
+    }
 
     if (m_useP2P && m_peerPipeline) {
         m_peerPipeline->setRemoteOffer(sdp);
