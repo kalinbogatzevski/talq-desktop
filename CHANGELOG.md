@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.51.1 "Bafana Bafana" -- BETA (2026-06-11)
+
+### Fixed
+
+* **The standard build now installs reliably on managed/work machines.** The
+  standard (non-123NET) build is now code-signed, so Windows no longer mis-flags
+  it as untrusted during install on centrally-managed or cert-trusted computers —
+  the same trust the 123NET build already had. (On a personal/unmanaged PC,
+  Windows Defender may still need a one-time exclusion until the public signing
+  certificate is in place.)
+
 ## v0.51.0 "Bafana Bafana" -- BETA (2026-06-11)
 
 Codename **Bafana Bafana** — the nickname ("the boys") of South Africa's
