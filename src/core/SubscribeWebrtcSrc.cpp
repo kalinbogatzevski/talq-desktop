@@ -1,6 +1,7 @@
 #include "core/SubscribeWebrtcSrc.h"
 #include "core/VideoFrameProvider.h"
 #include "core/SharedFarEndBus.h"
+#include "core/LeakStats.h"
 #include <QDebug>
 #include <QPointer>
 #include <QRegularExpression>
@@ -968,9 +969,11 @@ GstFlowReturn SubscribeWebrtcSrc::onVideoNewSample(GstAppSink *sink, gpointer ud
     }
 
     QPointer<SubscribeWebrtcSrc> g(self);
+    talq::leak::subPosted.fetch_add(1, std::memory_order_relaxed);
     QMetaObject::invokeMethod(self, [g, sample]() {
         if (g && g->m_videoProvider) g->m_videoProvider->feedFrame(sample);
         gst_sample_unref(sample);
+        talq::leak::subDelivered.fetch_add(1, std::memory_order_relaxed);
     }, Qt::QueuedConnection);
     return GST_FLOW_OK;
 }

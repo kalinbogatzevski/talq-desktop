@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.51.4 "Bafana Bafana" -- BETA (2026-06-12)
+
+### Fixed
+
+* **Memory leak during video calls — the cause of the freezes.** On a longer
+  video call TalQ's memory could climb very fast (about 100 MB per second) until
+  it exhausted the machine and froze it. The internal buffer that hands camera
+  frames to the encoder was unbounded, so when the new quality-adapter throttled
+  the encoder the frames piled up forever instead of being dropped. It is now
+  bounded and drops the oldest frame under pressure, so memory stays flat. **This
+  is what was freezing machines on 0.51.x — please update.**
+
 ## v0.51.3 "Bafana Bafana" -- BETA (2026-06-11)
 
 ### Fixed
