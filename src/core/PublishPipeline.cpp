@@ -1,5 +1,6 @@
 #include "core/PublishPipeline.h"
 #include "core/BackgroundEngine.h"
+#include "core/LeakStats.h"
 #include <QDebug>
 #include <QPointer>
 #include <QRegularExpression>
@@ -1369,7 +1370,18 @@ bool PublishPipeline::buildCameraChain(int deviceIndex, bool hd1080)
             "format", GST_FORMAT_TIME,
             "block",   FALSE,
             "stream-type", 0,   // GST_APP_STREAM_TYPE_STREAM
-            "max-bytes", gint64(0),   // unbounded — the appsink drop-old already paces
+            // 0.51.x OOM/FREEZE FIX. This was max-bytes=0 (UNBOUNDED) on the
+            // assumption that downstream always drains it. The 0.51.0 encode-load
+            // controller broke that assumption: when it throttles the encoders
+            // (sheds layers / drops fps), the encoder branch stops consuming and
+            // every captured camera frame piled into this appsrc FOREVER — the
+            // [LEAK] heartbeat showed bgQ growing ~108MB/s (one 720p frame per
+            // camera frame) → native memory exhaustion → the machine froze. Bound
+            // the queue to a few frames and DROP THE OLDEST when full (a stalled
+            // encoder must cost dropped frames, never unbounded memory). The
+            // healthy path never hits the bound (downstream keeps it near-empty).
+            "max-bytes", gint64(32 * 1024 * 1024),   // ~4×1080p / ~8×720p BGRx
+            "leaky-type", 2 /* GST_APP_LEAKY_TYPE_DOWNSTREAM — drop OLDEST when full */,
             "do-timestamp", FALSE,    // we copy PTS from the input sample
             nullptr);
         gst_caps_unref(bgrxCaps);
@@ -2219,10 +2231,12 @@ GstFlowReturn PublishPipeline::onPreviewSample(GstAppSink *sink, gpointer userDa
     // identical to the legacy pre-3.3a path, no per-frame map / Qt-hop
     // / QImage conversion required.
     QPointer<PublishPipeline> guard(self);
+    talq::leak::previewPosted.fetch_add(1, std::memory_order_relaxed);
     QMetaObject::invokeMethod(self, [guard, sample]() {
         if (guard && guard->m_localVideoProvider)
             guard->m_localVideoProvider->feedFrame(sample);
         gst_sample_unref(sample);
+        talq::leak::previewDelivered.fetch_add(1, std::memory_order_relaxed);
     }, Qt::QueuedConnection);
 
     return GST_FLOW_OK;
@@ -2297,6 +2311,7 @@ GstFlowReturn PublishPipeline::onBgSample(GstAppSink *sink, gpointer userData)
         GstFlowReturn fr = gst_app_src_push_sample(src, sample);
         gst_sample_unref(sample);
         self->m_bgBridgeFramesPassThrough.fetch_add(1, std::memory_order_relaxed);
+        talq::leak::bgPassThrough.fetch_add(1, std::memory_order_relaxed);
         return fr;
     }
 

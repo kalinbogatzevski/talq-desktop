@@ -100,6 +100,15 @@ public:
     // Diagnostics: "camera on (intent) but firstFrame=0" after a few seconds is
     // the silent mfvideosrc-failure signature (the "her camera stopped" symptom).
     bool        cameraFirstFrameSeen() const { return m_camFirstFrameSeen.load(std::memory_order_relaxed); }
+    // Diagnostic (0.51.x leak hunt): bytes currently queued inside the BG-bridge
+    // appsrc. It's max-bytes=0 (unbounded); if this climbs during a call the
+    // camera frames are accumulating in the appsrc instead of draining downstream.
+    qint64      bgAppsrcQueuedBytes() const {
+        if (!m_bgAppsrc) return 0;
+        guint64 cur = 0;
+        g_object_get(m_bgAppsrc, "current-level-bytes", &cur, nullptr);
+        return (qint64)cur;
+    }
 
     // Encode-load mitigation: CallManager passes the detected GPU accel tier
     // ("NVIDIA NVDEC" / "Intel DXVA" / "DXVA (H264 only)" / "Software only")

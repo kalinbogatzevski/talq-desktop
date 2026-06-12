@@ -1,6 +1,7 @@
 #include "core/CallManager.h"
 #include "core/BackgroundEngine.h"
 #include "core/SharedFarEndBus.h"
+#include "core/LeakStats.h"
 #include "core/EncodeTier.h"
 #include "core/Diagnostics.h"
 #include "core/TalqLog.h"
@@ -2178,6 +2179,23 @@ void CallManager::onLoadTick()
         .arg(peerPeakRxHeight())
         .arg(m_screenSharing ? 1 : 0)
         .arg(m_loadControllerEnabled ? 1 : 0);
+
+    // [LEAK] 0.51.x OOM hunt: per-frame cross-thread delivery gauges. prevPend /
+    // subPend = frames POSTED to the Qt main thread minus those DELIVERED — if
+    // either climbs into the hundreds/thousands during the call, that path's
+    // unbounded QueuedConnection is the leak (fix = coalesce/drop intermediates).
+    // bgQ = bytes queued in the unbounded BG-bridge appsrc — if THAT climbs, the
+    // leak is in-pipeline instead. (Temporary; remove with the fix.)
+    qInfo().noquote() << QString(
+        "[LEAK] prevPend=%1 prevPost=%2 subPend=%3 subPost=%4 bgPass=%5 bgQ=%6KB")
+        .arg(talq::leak::previewPosted.load(std::memory_order_relaxed)
+             - talq::leak::previewDelivered.load(std::memory_order_relaxed))
+        .arg(talq::leak::previewPosted.load(std::memory_order_relaxed))
+        .arg(talq::leak::subPosted.load(std::memory_order_relaxed)
+             - talq::leak::subDelivered.load(std::memory_order_relaxed))
+        .arg(talq::leak::subPosted.load(std::memory_order_relaxed))
+        .arg(talq::leak::bgPassThrough.load(std::memory_order_relaxed))
+        .arg(m_publishPipeline ? m_publishPipeline->bgAppsrcQueuedBytes() / 1024 : 0);
 }
 
 void CallManager::stopScreenShare()
