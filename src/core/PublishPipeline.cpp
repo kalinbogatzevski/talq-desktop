@@ -2558,20 +2558,20 @@ void PublishPipeline::setLoadCaps(int layerCeiling, int fps)
 
 void PublishPipeline::applySharedFramerate(int fps)
 {
-    // Drive the shared videorate by retargeting m_sharedCaps' framerate while
-    // preserving its pinned width/height/PAR (videorate drops frames to match).
-    // Framerate is timing metadata — unlike a resolution change it doesn't force
-    // the encoders to reconfigure, so this is a cheap live knob.
-    if (!m_sharedCaps) return;
-    GstCaps *cur = nullptr;
-    g_object_get(m_sharedCaps, "caps", &cur, nullptr);
-    if (!cur) return;
-    GstCaps *nc = gst_caps_copy(cur);
-    gst_caps_set_simple(nc, "framerate", GST_TYPE_FRACTION, fps, 1, nullptr);
-    g_object_set(m_sharedCaps, "caps", nc, nullptr);
-    gst_caps_unref(nc);
-    gst_caps_unref(cur);
-    qDebug() << "PublishPipeline: load controller set send framerate" << fps << "fps";
+    // DISABLED (0.51.5). The old body retargeted m_sharedCaps' framerate live on
+    // the assumption that "framerate is timing metadata, the encoders won't
+    // reconfigure." That assumption is FALSE on this pipeline: setting the shared
+    // capsfilter to a new framerate forces a renegotiation the encoder branch
+    // can't satisfy, and it threw NOT_NEGOTIATED (-4) on pub-dummyvideo /
+    // bg-appsrc / enc-queue, WEDGING the whole video path → the camera froze on
+    // BOTH ends (and the wedged-but-still-fed bg-appsrc was the memory leak fixed
+    // in 0.51.4). Proven from Kalin+Ilko's log: "load controller set send
+    // framerate 20 fps" was immediately followed by those three NOT_NEGOTIATED
+    // errors. The encode-load controller now sheds via simulcast LAYERS only
+    // (setLayerActive → valve drop, which renegotiates nothing). A real fps knob
+    // would use videorate's `max-rate` property against a non-fixed-framerate
+    // capsfilter (no caps renegotiation); deferred until it can be live-tested.
+    Q_UNUSED(fps);
 }
 
 GstPadProbeReturn PublishPipeline::onEncodeProbe(GstPad *, GstPadProbeInfo *info,
