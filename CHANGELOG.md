@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.51.5 "Bafana Bafana" -- BETA (2026-06-12)
+
+### Fixed
+
+* **Camera no longer freezes a few seconds into a video call.** The quality
+  adapter that lowers the frame rate under load was changing the framerate in a
+  way the encoder couldn't accept on the fly, which stalled the whole video
+  pipeline — your camera (and the other side's view of you) would freeze after a
+  few seconds. The adapter now reduces quality only by dropping simulcast layers,
+  which is safe, so the video keeps flowing. Together with the 0.51.4 memory fix
+  this resolves the video-call freezes on 0.51.x.
+
 ## v0.51.4 "Bafana Bafana" -- BETA (2026-06-12)
 
 ### Fixed
