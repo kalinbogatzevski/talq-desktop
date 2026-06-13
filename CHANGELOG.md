@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.51.7 "Bafana Bafana" -- BETA (2026-06-14)
+
+### Changed
+
+* **The offline indicator is now quiet and unobtrusive.** When the server can't
+  be reached, TalQ now shows a thin, muted "Connecting…" strip at the top —
+  instead of the previous alarming red banner — and no longer pops a desktop
+  notification for a connection blip. The rest of the app stays fully usable
+  while offline: your chat list and message history remain readable and
+  scrollable from the local cache, nothing is locked.
+
 ## v0.51.6 "Bafana Bafana" -- BETA (2026-06-13)
 
 ### Added
