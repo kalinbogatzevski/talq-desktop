@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.51.6 "Bafana Bafana" -- BETA (2026-06-13)
+
+### Added
+
+* **TalQ now tells you when it can't reach the server.** If your connection
+  drops or the server becomes unreachable, a clear banner appears across the top
+  ("No connection to the server — you're offline. Reconnecting…") and a desktop
+  notification is shown, so you know right away — even if TalQ is minimized to the
+  tray. As soon as the server is reachable again the banner clears and you get a
+  "reconnected" notification. The Home screen's "server" tile now reflects the
+  real connection state too, instead of always showing "reachable".
+
 ## v0.51.5 "Bafana Bafana" -- BETA (2026-06-12)
 
 ### Fixed
