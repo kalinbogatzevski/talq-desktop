@@ -139,6 +139,8 @@ private:
     void restyleChrome();          // re-apply theme tokens to QSS-styled chrome
     void showThemeToast(const QString &name);  // brief "Theme: X" overlay
     void refreshWelcomeStatus();   // repaint Mission Control telemetry/LEDs/pill
+    // Show/hide the offline banner + desktop-notify on server up/down.
+    void onServerReachabilityChanged(bool online);
 
     // ── Pointers to backend (not owned) ──
     ApiClient *m_api;
@@ -211,6 +213,13 @@ private:
     QLabel *m_wcSignalLed = nullptr;            // status LEDs for live subsystems
     QLabel *m_wcPushLed = nullptr;
     QLabel *m_wcGpuLed = nullptr;
+
+    // Offline banner — shown whenever ApiClient reports the Nextcloud server
+    // unreachable (REST calls not landing). Inserted at the top of the chat
+    // column so it overlays both the Home screen and an open conversation.
+    QWidget *m_offlineBanner = nullptr;
+    QLabel  *m_offlineLabel = nullptr;
+    bool     m_serverWasOffline = false;   // gates the online↔offline desktop notify
 
     // Auto-update banner
     UpdateChecker *m_updateChecker = nullptr;

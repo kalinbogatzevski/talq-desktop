@@ -15,6 +15,11 @@
 ApiClient::ApiClient(QObject *parent)
     : QObject(parent)
 {
+    // While offline, actively re-probe for recovery so "reconnected" is
+    // noticed within ~15 s instead of waiting for the next conversation-list
+    // poll. Started/stopped by setReachable().
+    m_reachProbeTimer.setInterval(15000);
+    connect(&m_reachProbeTimer, &QTimer::timeout, this, [this]{ probeReachability(); });
 }
 
 void ApiClient::setServerUrl(const QString &url)
@@ -24,6 +29,10 @@ void ApiClient::setServerUrl(const QString &url)
         cleaned.chop(1);
     if (m_serverUrl != cleaned) {
         m_serverUrl = cleaned;
+        // A server change (login / switch) starts a fresh reachability slate:
+        // don't inherit a stale "offline" from the previous server/session.
+        m_reachMisses = 0;
+        setReachable(true);
         emit serverUrlChanged();
     }
 }
@@ -109,6 +118,66 @@ bool ApiClient::isRetryableTransportError(QNetworkReply *reply) const
                        "was established"), Qt::CaseInsensitive);
 }
 
+void ApiClient::noteNetworkOutcome(QNetworkReply *reply)
+{
+    if (!reply) return;
+    const QNetworkReply::NetworkError err = reply->error();
+    // A deliberately-aborted request (logout cancelAll, context death) is not
+    // an outage — ignore it so teardown can't trip the offline banner.
+    if (err == QNetworkReply::OperationCanceledError) return;
+
+    const int httpStatus =
+        reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+
+    // The server answered at the HTTP layer (any status — a 401/404/500 still
+    // proves the box is reachable), so we're online. Recovery is instant.
+    if (err == QNetworkReply::NoError || httpStatus > 0) {
+        m_reachMisses = 0;
+        setReachable(true);
+        return;
+    }
+
+    // Transport failure with no HTTP response: the request never reached the
+    // server. Confirm a first miss fast with an active probe (don't wait for
+    // the 30 s poll); flip offline once misses cross the threshold.
+    if (++m_reachMisses == 1 && !m_probeInFlight)
+        QTimer::singleShot(2000, this, [this]{ probeReachability(); });
+    if (m_reachMisses >= kOfflineMisses)
+        setReachable(false);
+}
+
+void ApiClient::setReachable(bool online)
+{
+    if (m_serverReachable == online) return;
+    m_serverReachable = online;
+    if (online) {
+        m_reachProbeTimer.stop();
+        qInfo() << "ApiClient: server reachability -> ONLINE";
+    } else {
+        m_reachProbeTimer.start();   // re-probe for recovery while down
+        qWarning() << "ApiClient: server reachability -> OFFLINE"
+                   << "(server not answering REST requests)";
+    }
+    emit serverReachabilityChanged(online);
+}
+
+void ApiClient::probeReachability()
+{
+    if (m_serverUrl.isEmpty() || m_probeInFlight) return;
+    m_probeInFlight = true;
+    // status.php is Nextcloud's canonical, unauthenticated health endpoint —
+    // tiny JSON, no OCS envelope, present on every server. Feeds the same
+    // reachability tracker as normal traffic via noteNetworkOutcome().
+    QNetworkRequest req{QUrl(m_serverUrl + QStringLiteral("/status.php"))};
+    req.setTransferTimeout(10000);
+    QNetworkReply *reply = m_nam.get(req);
+    connect(reply, &QNetworkReply::finished, this, [this, reply]{
+        m_probeInFlight = false;
+        noteNetworkOutcome(reply);
+        reply->deleteLater();
+    });
+}
+
 void ApiClient::handleReply(QNetworkReply *reply, Callback callback,
                             std::function<QNetworkReply*()> resend, int attempt)
 {
@@ -118,6 +187,7 @@ void ApiClient::handleReply(QNetworkReply *reply, Callback callback,
         reply->deleteLater();
 
         int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        noteNetworkOutcome(reply);
 
         if (reply->error() != QNetworkReply::NoError) {
             // First call after an idle period (e.g. joining a call) rides a
@@ -186,6 +256,7 @@ void ApiClient::handleArrayReply(QNetworkReply *reply, ArrayCallback callback,
         reply->deleteLater();
 
         int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        noteNetworkOutcome(reply);
 
         if (reply->error() != QNetworkReply::NoError) {
             if (attempt == 0 && resend && isRetryableTransportError(reply)) {
