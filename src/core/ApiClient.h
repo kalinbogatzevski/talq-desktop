@@ -10,6 +10,7 @@
 #include <QUrl>
 #include <QUrlQuery>
 #include <QVector>
+#include <QTimer>
 #include <functional>
 #include "MentionCandidate.h"
 #include "BotInfo.h"
@@ -28,6 +29,7 @@ class ApiClient : public QObject
     Q_OBJECT
     Q_PROPERTY(QString serverUrl READ serverUrl WRITE setServerUrl NOTIFY serverUrlChanged)
     Q_PROPERTY(bool authenticated READ isAuthenticated NOTIFY authenticatedChanged)
+    Q_PROPERTY(bool serverReachable READ isServerReachable NOTIFY serverReachabilityChanged)
 
 public:
     explicit ApiClient(QObject *parent = nullptr);
@@ -41,6 +43,24 @@ public:
     void setCredentials(const QString &user, const QString &password);
     bool isAuthenticated() const { return !m_user.isEmpty() && !m_password.isEmpty(); }
     QString user() const { return m_user; }
+
+    // ── Server reachability ───────────────────────────────────────────────
+    // Whether the Nextcloud server is answering REST requests at all. This is
+    // the authoritative "is the server connection working" signal: it is
+    // derived from every finished reply — an HTTP response (any status, even
+    // 401/500) proves the server is reachable; a transport failure with no
+    // HTTP status (DNS fail, connection refused/timeout, no route) is a
+    // "miss", and after a couple of consecutive misses we declare the server
+    // offline. Optimistic at startup (true until proven otherwise). The two
+    // realtime WebSockets (SignalingClient/PushClient) are secondary — they
+    // are absent on servers without an HPB and so can't stand in for this.
+    bool isServerReachable() const { return m_serverReachable; }
+    // Active lightweight health check — an unauthenticated GET of the
+    // server's /status.php (Nextcloud's canonical health endpoint). Feeds the
+    // same reachability tracker, so it can both confirm an outage fast and
+    // detect recovery. Safe to call any time (window-activation, manual). A
+    // no-op while the server URL is unset or a probe is already in flight.
+    Q_INVOKABLE void probeReachability();
 
     // OCS API calls — return data from ocs.data
     void get(const QString &path, const QUrlQuery &params, Callback callback);
@@ -241,6 +261,10 @@ public:
 signals:
     void serverUrlChanged();
     void authenticatedChanged();
+    // Emitted only on an actual online↔offline transition (debounced), never
+    // per request. `online == false` means REST calls are not reaching the
+    // server — the UI should surface an "offline / reconnecting" state.
+    void serverReachabilityChanged(bool online);
 
 private:
     QNetworkRequest makeRequest(const QString &path, const QUrlQuery &params = QUrlQuery()) const;
@@ -258,9 +282,25 @@ private:
                           std::function<QNetworkReply*()> resend = {}, int attempt = 0);
     void trackReply(QNetworkReply *reply);
 
+    // Update reachability from a finished reply (called once per reply).
+    // Ignores deliberately-cancelled requests so logout/teardown can't be
+    // mistaken for an outage.
+    void noteNetworkOutcome(QNetworkReply *reply);
+    void setReachable(bool online);
+
     QNetworkAccessManager m_nam;
     QString m_serverUrl;
     QString m_user;
     QString m_password;
     QList<QNetworkReply*> m_pendingReplies;
+
+    // Reachability state. Misses are consecutive transport failures (no HTTP
+    // status); kOfflineMisses of them flips us offline. While offline a slow
+    // timer actively re-probes /status.php so recovery is noticed promptly
+    // rather than only on the next 30 s conversation-list poll.
+    bool   m_serverReachable = true;
+    int    m_reachMisses = 0;
+    bool   m_probeInFlight = false;
+    QTimer m_reachProbeTimer;
+    static constexpr int kOfflineMisses = 2;
 };

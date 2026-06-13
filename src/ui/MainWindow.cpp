@@ -637,6 +637,32 @@ void MainWindow::buildChatPage()
     m_chatPainter->hide();
     chatLayout->addWidget(m_chatPainter, 1);
 
+    // ── Offline banner (server unreachable; styled by restyleChrome) ──
+    m_offlineBanner = new QWidget(chatCol);
+    m_offlineBanner->setObjectName("offlineRoot");
+    m_offlineBanner->hide();
+    m_offlineBanner->setFixedHeight(40);
+    auto *offLay = new QHBoxLayout(m_offlineBanner);
+    offLay->setContentsMargins(18, 4, 18, 4);
+    offLay->setSpacing(10);
+    auto *offGlyph = new QLabel(QStringLiteral("⚠"), m_offlineBanner);  // warning sign
+    offGlyph->setObjectName("offlineGlyph");
+    offLay->addWidget(offGlyph);
+    m_offlineLabel = new QLabel(m_offlineBanner);
+    m_offlineLabel->setObjectName("offlineLabel");
+    m_offlineLabel->setText(tr("No connection to the server — you're offline. Reconnecting…"));
+    offLay->addWidget(m_offlineLabel, 1);
+    chatLayout->insertWidget(0, m_offlineBanner);
+
+    // React to live reachability changes from the REST layer (the
+    // authoritative "server connection working" signal).
+    connect(m_api, &ApiClient::serverReachabilityChanged, this,
+            &MainWindow::onServerReachabilityChanged, Qt::UniqueConnection);
+    // Reflect whatever state the ApiClient already holds (e.g. it went offline
+    // before the chat page was built).
+    if (m_api && !m_api->isServerReachable())
+        onServerReachabilityChanged(false);
+
     // ── Auto-update banner (prominent; styled by restyleChrome from tokens) ──
     m_updateBanner = new QWidget(chatCol);
     m_updateBanner->setObjectName("ubRoot");
@@ -1894,11 +1920,16 @@ void MainWindow::refreshWelcomeStatus()
                  hx(th.textSecondary), sub.toHtmlEscaped());
     };
 
+    // Real reachability — not just "a URL is configured". The ApiClient
+    // tracks whether REST calls are actually landing on the server.
+    const bool srvOn = !url.isEmpty() && (!m_api || m_api->isServerReachable());
+
     m_welcomeNameLabel->setText(QStringLiteral("Welcome back, ")
         + (m_auth ? m_auth->displayName() : QString()));
     m_welcomeServerLabel->setText(val(url.isEmpty() ? QStringLiteral("offline") : url,
                                       url.isEmpty() ? QStringLiteral("not connected")
-                                                    : QStringLiteral("reachable")));
+                                      : srvOn       ? QStringLiteral("reachable")
+                                                    : QStringLiteral("unreachable")));
     m_welcomeNcLabel->setText(val(m_auth ? m_auth->nextcloudVersion() : QStringLiteral("?"),
                                   QStringLiteral("core api")));
     m_welcomeTalkLabel->setText(val(m_auth ? m_auth->talkVersion() : QStringLiteral("?"),
@@ -1933,7 +1964,7 @@ void MainWindow::refreshWelcomeStatus()
     setLed(m_wcGpuLed, gpuOn);
 
     if (m_wcStatusPill) {
-        const bool nominal = sigOn && pushOn && gpuOn;
+        const bool nominal = srvOn && sigOn && pushOn && gpuOn;
         const QColor c = nominal ? th.online : th.amber;
         m_wcStatusPill->setText(nominal
             ? QStringLiteral("●  ALL SYSTEMS NOMINAL")
@@ -1943,6 +1974,40 @@ void MainWindow::refreshWelcomeStatus()
             "border:1px solid %1;border-radius:999px;padding:6px 13px;")
             .arg(hx(c)));
     }
+}
+
+// React to the REST layer's reachability verdict: toggle the offline banner,
+// fire a one-shot desktop notification on the actual transition (so the user
+// learns the server dropped even when the window is in the tray), and refresh
+// the Home "server" tile. Only the change is announced — never per request.
+void MainWindow::onServerReachabilityChanged(bool online)
+{
+    if (m_offlineBanner) {
+        if (online) {
+            m_offlineBanner->hide();
+        } else {
+            m_offlineBanner->show();
+            m_offlineBanner->raise();   // keep above sibling painter widgets
+        }
+    }
+
+    QString host = m_auth ? m_auth->serverUrl() : QString();
+    host.remove(QRegularExpression(QStringLiteral("^https?://")));
+    if (host.isEmpty()) host = tr("the server");
+
+    if (!online && !m_serverWasOffline) {
+        if (m_notifications)
+            m_notifications->notify(tr("TalQ is offline"),
+                tr("Can't reach %1. Messages and calls are paused until the "
+                   "connection is back.").arg(host));
+    } else if (online && m_serverWasOffline) {
+        if (m_notifications)
+            m_notifications->notify(tr("TalQ reconnected"),
+                tr("Connection to %1 restored.").arg(host));
+    }
+    m_serverWasOffline = !online;
+
+    refreshWelcomeStatus();   // update the Home "server" tile + status pill
 }
 
 // Builds (or rebuilds, on theme change) the Mission Control content inside
@@ -2325,6 +2390,21 @@ void MainWindow::restyleChrome()
         m_splitter->setStyleSheet(QString("QSplitter::handle{background:%1;}")
                                       .arg(hx(t.divider)));
 
+    if (m_offlineBanner) {
+        // Danger-toned strip: a soft danger fill with the danger hue for the
+        // glyph/text so it reads as "attention" without screaming.
+        const QColor fill = t.danger;
+        const QString softFill = QString("rgba(%1,%2,%3,0.15)")
+            .arg(fill.red()).arg(fill.green()).arg(fill.blue());
+        m_offlineBanner->setStyleSheet(QString(
+            "QWidget#offlineRoot{background:%1;border-top:1px solid %2;"
+            "border-bottom:1px solid %2;}"
+            "QLabel#offlineGlyph{color:%2;font-size:16px;background:transparent;}"
+            "QLabel#offlineLabel{color:%3;font-size:13px;font-weight:600;"
+            "background:transparent;}")
+            .arg(softFill, fill.name(QColor::HexRgb), hx(t.danger)));
+    }
+
     if (m_updateBanner) {
         const QString accentHi = t.accent.lighter(118).name(QColor::HexRgb);
         m_updateBanner->setStyleSheet(QString(
@@ -2439,6 +2519,10 @@ void MainWindow::changeEvent(QEvent *event)
             if (m_sidebar)     m_sidebar->invalidateAvatars();
             if (m_header)      m_header->invalidateAvatars();
             if (m_chatPainter) m_chatPainter->invalidateAvatars();
+            // Re-check the server the moment the user returns (laptop wake,
+            // network change): an active /status.php probe confirms reachability
+            // without waiting for one of the refreshes above to fail/succeed.
+            if (m_api) m_api->probeReachability();
         }
     }
 }
