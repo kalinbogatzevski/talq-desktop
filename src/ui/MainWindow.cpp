@@ -637,22 +637,33 @@ void MainWindow::buildChatPage()
     m_chatPainter->hide();
     chatLayout->addWidget(m_chatPainter, 1);
 
-    // ── Offline banner (server unreachable; styled by restyleChrome) ──
+    // ── Connection-status strip (Telegram-style "Connecting…"; restyleChrome) ──
+    // Deliberately quiet: a thin, centred, muted bar — NOT an alarming error
+    // panel — so it reads as "reconnecting in the background." It never grabs
+    // focus or disables a widget, so the cached chat list + history stay fully
+    // usable while offline.
     m_offlineBanner = new QWidget(chatCol);
     m_offlineBanner->setObjectName("offlineRoot");
     m_offlineBanner->hide();
-    m_offlineBanner->setFixedHeight(40);
+    m_offlineBanner->setFixedHeight(26);
     auto *offLay = new QHBoxLayout(m_offlineBanner);
-    offLay->setContentsMargins(18, 4, 18, 4);
-    offLay->setSpacing(10);
-    auto *offGlyph = new QLabel(QStringLiteral("⚠"), m_offlineBanner);  // warning sign
-    offGlyph->setObjectName("offlineGlyph");
-    offLay->addWidget(offGlyph);
+    offLay->setContentsMargins(12, 0, 12, 0);
+    offLay->setSpacing(0);
     m_offlineLabel = new QLabel(m_offlineBanner);
     m_offlineLabel->setObjectName("offlineLabel");
-    m_offlineLabel->setText(tr("No connection to the server — you're offline. Reconnecting…"));
+    m_offlineLabel->setAlignment(Qt::AlignCenter);
+    m_offlineLabel->setText(tr("Connecting…"));
     offLay->addWidget(m_offlineLabel, 1);
     chatLayout->insertWidget(0, m_offlineBanner);
+
+    // Animate the trailing dots (Telegram cycles "Connecting" with 1–3 dots) so
+    // the strip reads as actively working, not stuck. Runs only while offline.
+    m_offlineAnimTimer.setInterval(450);
+    connect(&m_offlineAnimTimer, &QTimer::timeout, this, [this]{
+        if (!m_offlineLabel) return;
+        m_offlineDots = (m_offlineDots % 3) + 1;
+        m_offlineLabel->setText(tr("Connecting") + QString(m_offlineDots, QChar(u'.')));
+    });
 
     // React to live reachability changes from the REST layer (the
     // authoritative "server connection working" signal).
@@ -1976,36 +1987,25 @@ void MainWindow::refreshWelcomeStatus()
     }
 }
 
-// React to the REST layer's reachability verdict: toggle the offline banner,
-// fire a one-shot desktop notification on the actual transition (so the user
-// learns the server dropped even when the window is in the tray), and refresh
-// the Home "server" tile. Only the change is announced — never per request.
+// React to the REST layer's reachability verdict, Telegram-style: just show or
+// hide the quiet "Connecting…" strip and refresh the Home tile. Intentionally
+// NO desktop/OS notification — chat apps don't toast you for a transient
+// connection blip — and nothing here disables any widget, so the cached chat
+// list and history stay fully usable while offline.
 void MainWindow::onServerReachabilityChanged(bool online)
 {
-    if (m_offlineBanner) {
-        if (online) {
-            m_offlineBanner->hide();
-        } else {
+    if (online) {
+        m_offlineAnimTimer.stop();
+        if (m_offlineBanner) m_offlineBanner->hide();
+    } else {
+        m_offlineDots = 0;
+        if (m_offlineLabel) m_offlineLabel->setText(tr("Connecting…"));
+        if (m_offlineBanner) {
             m_offlineBanner->show();
             m_offlineBanner->raise();   // keep above sibling painter widgets
         }
+        if (!m_offlineAnimTimer.isActive()) m_offlineAnimTimer.start();
     }
-
-    QString host = m_auth ? m_auth->serverUrl() : QString();
-    host.remove(QRegularExpression(QStringLiteral("^https?://")));
-    if (host.isEmpty()) host = tr("the server");
-
-    if (!online && !m_serverWasOffline) {
-        if (m_notifications)
-            m_notifications->notify(tr("TalQ is offline"),
-                tr("Can't reach %1. Messages and calls are paused until the "
-                   "connection is back.").arg(host));
-    } else if (online && m_serverWasOffline) {
-        if (m_notifications)
-            m_notifications->notify(tr("TalQ reconnected"),
-                tr("Connection to %1 restored.").arg(host));
-    }
-    m_serverWasOffline = !online;
 
     refreshWelcomeStatus();   // update the Home "server" tile + status pill
 }
@@ -2391,18 +2391,15 @@ void MainWindow::restyleChrome()
                                       .arg(hx(t.divider)));
 
     if (m_offlineBanner) {
-        // Danger-toned strip: a soft danger fill with the danger hue for the
-        // glyph/text so it reads as "attention" without screaming.
-        const QColor fill = t.danger;
-        const QString softFill = QString("rgba(%1,%2,%3,0.15)")
-            .arg(fill.red()).arg(fill.green()).arg(fill.blue());
+        // Quiet, neutral strip (Telegram-style): a muted secondary-surface fill
+        // with a hairline divider and soft secondary text — informational, not
+        // an alarm. No red: offline is a transient background state here, not an
+        // error the user must act on.
         m_offlineBanner->setStyleSheet(QString(
-            "QWidget#offlineRoot{background:%1;border-top:1px solid %2;"
-            "border-bottom:1px solid %2;}"
-            "QLabel#offlineGlyph{color:%2;font-size:16px;background:transparent;}"
-            "QLabel#offlineLabel{color:%3;font-size:13px;font-weight:600;"
-            "background:transparent;}")
-            .arg(softFill, fill.name(QColor::HexRgb), hx(t.danger)));
+            "QWidget#offlineRoot{background:%1;border-bottom:1px solid %2;}"
+            "QLabel#offlineLabel{color:%3;font-size:12px;font-weight:500;"
+            "letter-spacing:0.2px;background:transparent;}")
+            .arg(hx(t.bgSecondary), hx(t.divider), hx(t.textSecondary)));
     }
 
     if (m_updateBanner) {

@@ -59,7 +59,9 @@ eventually you rebuild the part that's between you and the work.
 - **Files** — share from disk or Nextcloud, image previews, and a
   per-conversation "shared files" view.
 - **Live updates** — long-poll for new messages; native notifications and
-  a tray that stays out of the way.
+  a tray that stays out of the way. If the server drops off the network, a
+  quiet "Connecting…" strip says so while you keep reading and scrolling
+  your cached conversations — nothing locks up.
 - **Calls** — one-to-one and group audio/video over WebRTC, screen
   sharing with live thumbnail picker, optional noise suppression.
   **Simulcast publishing** sends three layers (180p / 360p / 720p) so a

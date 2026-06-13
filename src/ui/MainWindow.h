@@ -214,12 +214,16 @@ private:
     QLabel *m_wcPushLed = nullptr;
     QLabel *m_wcGpuLed = nullptr;
 
-    // Offline banner — shown whenever ApiClient reports the Nextcloud server
-    // unreachable (REST calls not landing). Inserted at the top of the chat
-    // column so it overlays both the Home screen and an open conversation.
+    // Connection-status strip — a quiet, Telegram-style "Connecting…" bar
+    // shown whenever ApiClient reports the Nextcloud server unreachable (REST
+    // calls not landing). Inserted at the top of the chat column so it sits
+    // above both the Home screen and an open conversation. It is purely
+    // informational: it never grabs focus or disables any widget, so cached
+    // chat history stays fully readable while offline.
     QWidget *m_offlineBanner = nullptr;
     QLabel  *m_offlineLabel = nullptr;
-    bool     m_serverWasOffline = false;   // gates the online↔offline desktop notify
+    QTimer   m_offlineAnimTimer;           // animates the trailing "…" while offline
+    int      m_offlineDots = 0;
 
     // Auto-update banner
     UpdateChecker *m_updateChecker = nullptr;
