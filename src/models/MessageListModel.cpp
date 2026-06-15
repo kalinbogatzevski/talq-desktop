@@ -904,6 +904,18 @@ void MessageListModel::refreshLatest()
         // fold. Shared single authority (see enforceNewestFirstInvariant()).
         enforceNewestFirstInvariant();
 
+        // Read-receipt guarantee: mark read on ANY latest-id advance while the
+        // open room is visible+active — not only on the missing-merge path that
+        // already calls markAsRead() above. This covers the in-place merge (no
+        // `missing`) and the cache-load→refreshLatest reopen where the server
+        // fetch returns nothing new, both of which previously left the newest
+        // message unread on the server. markAsRead() is forward-only,
+        // focus-gated (ApplicationActive) and self-dedupes via
+        // shouldPostReadMarker(lastId > knownServerRead), so it's a cheap no-op
+        // when nothing advanced — never spams /read, never clears unread for a
+        // backgrounded room.
+        markAsRead();
+
         // [BUG1] trace (verbose only): final model state after the merge.
         if (TalqLog::g_verbose)
             qDebug().nospace() << "[BUG1] refreshLatest DONE token=" << currentToken

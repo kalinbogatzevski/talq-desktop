@@ -1932,3 +1932,16 @@ void CallStage::resizeEvent(QResizeEvent *)
 {
     relayout();
 }
+
+void CallStage::forceRelayout()
+{
+    // Frames are pre-scaled to the OLD size() cap in onFrame(); after a DPI or
+    // geometry change that cached image is the wrong resolution and gets
+    // stretched into the new tile rect (the "smashed" tile, #5). Drop the
+    // caches so the next live frame repopulates at the new tile size, then
+    // recompute the layout for the current geometry.
+    m_camFrame.clear();
+    m_scrFrame.clear();
+    relayout();
+    update();
+}

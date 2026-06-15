@@ -699,6 +699,31 @@ QWidget *SettingsDialog::buildAudioVideoTab()
            "Takes effect on the next call."),
         p2pCheck));
 
+    // Verbose call diagnostics — gates the per-second [MEDIA]/[LEAK] heartbeats
+    // CallManager logs during a call (call-health trajectory + cross-thread
+    // frame-flow gauges) for tracking down freezes / memory growth in the
+    // field. OFF by default (they qInfo every second and force a disk sync).
+    // Write-only here; CallManager reads Debug/mediaDiagnostics at the start of
+    // each call (and the TALQ_MEDIA_DIAG env var overrides it on dev builds).
+    auto *diagCheck = new QCheckBox();
+    diagCheck->setToolTip(
+        tr("Logs detailed per-second call diagnostics to the debug log to help "
+           "track down call freezes or memory issues. Leave off for normal "
+           "use; turn it on only when reproducing a problem."));
+    {
+        QSettings ds("TalQ", "TalQ");
+        diagCheck->setChecked(ds.value("Debug/mediaDiagnostics", false).toBool());
+    }
+    connect(diagCheck, &QCheckBox::toggled, this, [](bool checked) {
+        QSettings ds("TalQ", "TalQ");
+        ds.setValue("Debug/mediaDiagnostics", checked);
+    });
+    layout->addWidget(makeSettingRow(
+        tr("Verbose call diagnostics"),
+        tr("Logs detailed call diagnostics for troubleshooting freezes or "
+           "memory issues. Off by default; takes effect on the next call."),
+        diagCheck));
+
     // #72 — screen-share monitor border toggle. The thin frame around a
     // full-screen share is on by default as a "you are sharing" signal;
     // users who find it distracting (the Zoom-green-frame complaint) switch

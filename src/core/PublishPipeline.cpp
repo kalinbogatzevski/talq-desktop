@@ -1111,8 +1111,13 @@ void PublishPipeline::cleanup()
     m_gccbwe = nullptr;
     m_outputTee = nullptr;
     // 0.51.x AEC playout tail (owned by m_pipeline — just null the handles).
-    m_farMixer = m_farProbe = m_farSink = nullptr;
-    m_farPeerAppsrcs.clear();
+    // Under the far-end lock so a concurrent add/removeFarEndPeer can't observe
+    // a half-cleared map or a dangling mixer handle.
+    {
+        QMutexLocker farLk(&m_farPeerMutex);
+        m_farMixer = m_farProbe = m_farSink = nullptr;
+        m_farPeerAppsrcs.clear();
+    }
     for (auto &L : m_layers) {
         L.valve = L.scale = L.caps = L.encoder = L.parser
               = L.profileCaps = L.payloader = L.ssrcFilter = nullptr;
@@ -2695,6 +2700,7 @@ bool PublishPipeline::buildFarEndTail()
 
 GstElement *PublishPipeline::addFarEndPeer(const QString &peerId)
 {
+    QMutexLocker farLk(&m_farPeerMutex);                      // serialise vs remove/teardown
     if (!m_farMixer || !m_pipeline) return nullptr;           // AEC tail not up
     if (auto *ex = m_farPeerAppsrcs.value(peerId)) return ex; // idempotent per peer
     GstElement *src = gst_element_factory_make("appsrc", nullptr);
@@ -2730,6 +2736,7 @@ void PublishPipeline::setFarEndOutputDevice(const QString &deviceId)
 
 void PublishPipeline::removeFarEndPeer(const QString &peerId)
 {
+    QMutexLocker farLk(&m_farPeerMutex);   // serialise vs add/teardown
     GstElement *src = m_farPeerAppsrcs.take(peerId);
     if (!src) return;                 // unknown peer / AEC off
     if (!m_pipeline) return;          // pipeline gone → the appsrc died with it

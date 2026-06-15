@@ -29,7 +29,6 @@
 class BackgroundEngine;   // #20 — owned by CallManager; lives across calls.
 class ConversationListModel;
 class ShareOverlay;       // #72 — coloured monitor border while screen-sharing.
-class SharedFarEndBus;    // AEC — far-end probe bus, lives per call.
 
 class CallManager : public QObject
 {
@@ -330,10 +329,6 @@ private:
     MediaDeviceManager *m_deviceManager = nullptr;
     // MCU dual pipelines
     PublishPipeline *m_publishPipeline = nullptr;
-    // AEC — shared far-end probe bus. Built before the publisher at call-start
-    // (so webrtcdsp can acquire the probe), torn down last. Null when AEC is
-    // off or the bus failed to build. See docs/aec-design.md.
-    SharedFarEndBus *m_farEndBus = nullptr;
 
     // #20 background engine — long-lived, parented to CallManager so it
     // outlives individual calls. Constructed in CallManager's ctor.
@@ -359,6 +354,12 @@ private:
     talq::MediaLoadController m_loadController;
     QTimer m_loadTimer;
     bool   m_loadControllerEnabled = true;
+    // Verbose [MEDIA]/[LEAK] call-diagnostic heartbeats — OFF by default. The
+    // talq::leak counters always count (cheap), but the per-second qInfo lines
+    // + their forced disk sync only fire when this is on. Resolved per call in
+    // startLoadController() from TALQ_MEDIA_DIAG (env override) or the
+    // persisted Debug/mediaDiagnostics setting. See LeakStats.h.
+    bool   m_mediaDiag = false;
     double m_synthEncodeUsage = 0.0;   // TALQ_TEST_ENCODE_USAGE
     double m_synthDecodeUsage = 0.0;   // TALQ_TEST_DECODE_USAGE
     QHash<QString, int> m_subscriberRecoveries;  // sessionId -> mid-call re-subscribe count (bounded; reset on connect)
