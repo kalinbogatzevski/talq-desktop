@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.51.8 "Bafana Bafana" -- BETA (2026-06-15)
+
+### Fixed
+
+* **The taskbar button now shows your unread-message count.** A red badge with
+  the number of unread messages now appears on TalQ's main taskbar icon — not
+  just the small system-tray icon — and updates as messages arrive and as you
+  read them. It now reliably reappears after you reopen TalQ from the tray (and
+  after the Windows taskbar restarts). The badge shows whenever TalQ is running
+  with a window on the taskbar; while TalQ is fully closed, the tray icon keeps
+  carrying the count.
+
 ## v0.51.7 "Bafana Bafana" -- BETA (2026-06-14)
 
 ### Changed
