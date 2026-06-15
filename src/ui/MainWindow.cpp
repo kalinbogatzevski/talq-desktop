@@ -46,6 +46,7 @@
 #include <QGridLayout>
 #include <QFrame>
 #include <QCloseEvent>
+#include <QShowEvent>
 #include <QScreen>
 #include <QMenu>
 #include <QActionGroup>
@@ -196,6 +197,12 @@ MainWindow::MainWindow(
     HWND hwnd = reinterpret_cast<HWND>(winId());
     BOOL darkMode = TRUE;
     DwmSetWindowAttribute(hwnd, 20, &darkMode, sizeof(darkMode));
+    // Register for the taskbar-button-created broadcast so nativeEvent() can
+    // re-apply the unread overlay badge whenever Windows (re)creates our
+    // taskbar button. Without this, a badge set while we were hidden in the
+    // tray is dropped and never reappears on restore — which is why the badge
+    // never showed on the taskbar button despite the tray badge working.
+    m_taskbarButtonCreatedMsg = RegisterWindowMessageW(L"TaskbarButtonCreated");
 #endif
 
     // ── Keyboard shortcuts ──
@@ -2529,6 +2536,40 @@ void MainWindow::hideEvent(QHideEvent *event)
     QMainWindow::hideEvent(event);
     // Covers close-to-tray and switchToLogin (both hide() the window).
     if (m_statusPopover) m_statusPopover->hide();
+}
+
+bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr *result)
+{
+#ifdef Q_OS_WIN
+    // Windows broadcasts the registered "TaskbarButtonCreated" message every
+    // time our taskbar button appears — first show, restore from the tray, or
+    // an Explorer restart. The unread overlay badge (ITaskbarList3::
+    // SetOverlayIcon) only persists while that button exists, so we re-assert
+    // it here. This is the documented requirement that was missing, and the
+    // reason the badge never showed: badges pushed while the window was hidden
+    // in the tray were dropped, and nothing re-applied them on restore.
+    if (m_taskbarButtonCreatedMsg && m_notifications) {
+        const MSG *msg = static_cast<const MSG *>(message);
+        if (msg && msg->message == m_taskbarButtonCreatedMsg)
+            m_notifications->reapplyTaskbarOverlay();
+    }
+#endif
+    return QMainWindow::nativeEvent(eventType, message, result);
+}
+
+void MainWindow::showEvent(QShowEvent *event)
+{
+    QMainWindow::showEvent(event);
+#ifdef Q_OS_WIN
+    // Belt-and-suspenders alongside the TaskbarButtonCreated handler: re-assert
+    // the overlay badge when the window is shown again after close-to-tray.
+    // Deferred one event-loop turn so the freshly-created taskbar button exists
+    // by the time we push the icon.
+    if (m_notifications) {
+        QPointer<NotificationManager> n(m_notifications);
+        QTimer::singleShot(0, this, [n]() { if (n) n->reapplyTaskbarOverlay(); });
+    }
+#endif
 }
 
 void MainWindow::restoreFromTray()

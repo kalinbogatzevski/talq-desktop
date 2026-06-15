@@ -81,6 +81,8 @@ protected:
     void resizeEvent(QResizeEvent *event) override;
     void changeEvent(QEvent *event) override;   // hide status popover on minimize
     void hideEvent(QHideEvent *event) override;  // hide status popover with window
+    void showEvent(QShowEvent *event) override;  // re-assert taskbar unread badge on (re)show
+    bool nativeEvent(const QByteArray &eventType, void *message, qintptr *result) override;  // catch TaskbarButtonCreated → re-apply overlay
     bool eventFilter(QObject *obj, QEvent *event) override;
 
 private slots:
@@ -292,6 +294,12 @@ private:
     bool m_showTopics = false;
     bool m_sidebarSqueezed = false;
     bool m_closeToTray = true;
+    // Windows: RegisterWindowMessage id for the "TaskbarButtonCreated"
+    // broadcast Windows sends whenever our taskbar button is created (first
+    // show, restore-from-tray, Explorer restart). nativeEvent() watches for it
+    // and re-applies the unread overlay badge, which SetOverlayIcon otherwise
+    // loses each time the button is destroyed. 0 until registered / non-Windows.
+    unsigned int m_taskbarButtonCreatedMsg = 0;
     bool m_wasMaximized = false;
     bool m_wasFullScreen = false;  // remembered separately because isMaximized() is false in fullscreen
     bool m_geometrySaveEnabled = false;
