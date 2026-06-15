@@ -23,7 +23,6 @@
 #include "SignalingClient.h"
 
 class VideoFrameProvider;
-class SharedFarEndBus;
 
 class SubscribeWebrtcSrc : public QObject
 {
@@ -36,12 +35,6 @@ public:
                const QString &audioOutputDeviceId = {});
     void stop();
 
-    // AEC: when set, this subscriber TEES its decoded playback audio into the
-    // shared far-end probe bus (in addition to its own wasapi2sink). The
-    // playback path is untouched; the tap is a parallel appsink that pushes
-    // 48k/S16LE/mono buffers to the bus. Attaches the peer immediately and
-    // detaches on teardown. See docs/aec-design.md.
-    void setFarEndBus(SharedFarEndBus *bus);
     // 0.51.x AEC single-pipeline fix: when set BEFORE start(), the decoded audio
     // branch pushes 48k/S16LE/mono into THIS external appsrc (the publisher
     // pipeline's far-end mixer) and does NOT create its own wasapi2sink — so
@@ -123,9 +116,6 @@ private:
                                         GParamSpec *pspec, gpointer self);
     static void onPadAdded(GstElement *src, GstPad *pad, gpointer self);
     static GstFlowReturn onVideoNewSample(GstAppSink *sink, gpointer self);
-    // AEC far-end tap: pulls each decoded playback sample and pushes it to the
-    // shared bus. Runs on a GStreamer streaming thread.
-    static GstFlowReturn onFarEndSample(GstAppSink *sink, gpointer self);
     // 0.51.x AEC single-pipeline fix: pulls each decoded sample and pushes it to
     // m_farAppsrcExt (the publisher pipeline's far-end mixer) — this IS the
     // playout path now (no per-subscriber wasapi2sink). Streaming thread.
@@ -140,10 +130,6 @@ private:
     GstElement *m_videoConvert = nullptr;
     GstElement *m_videoAppsink = nullptr;
     VideoFrameProvider *m_videoProvider = nullptr;
-    // AEC far-end tap (parallel to the playback wasapi2sink; null = AEC off).
-    SharedFarEndBus *m_farBus = nullptr;     // not owned (CallManager-owned)
-    GstElement *m_audioTee   = nullptr;      // splits decoded audio: playback + tap
-    GstElement *m_farAppsink = nullptr;      // tap sink → m_farBus->pushSample
     // 0.51.x AEC single-pipeline fix: external appsrc (publisher pipeline's
     // far-end mixer) that decoded audio is pushed into INSTEAD of a per-sub
     // wasapi2sink. Refed in setFarEndAppsrc, unrefed in cleanup (after the

@@ -8,6 +8,8 @@
 #include <QMoveEvent>
 #include <QGuiApplication>
 #include <QScreen>
+#include <QWindow>
+#include <QTimer>
 #include <QDebug>
 
 CallWindow::CallWindow(CallManager *call, ApiClient *api, QWidget *parent)
@@ -63,6 +65,16 @@ void CallWindow::onCallState()
         show();
         raise();
         activateWindow();
+        // #5 — cross-monitor (DPI) moves don't reliably fire a resizeEvent, so
+        // the call tiles never re-lay-out and the stage tile is smashed/stretched
+        // until something else triggers a resize. windowHandle() exists now that
+        // we're shown; QWindow::screenChanged fires on every monitor cross.
+        // UniqueConnection keeps it idempotent across show/hide cycles.
+        if (QWindow *wh = windowHandle()) {
+            connect(wh, &QWindow::screenChanged, this, [this](QScreen *) {
+                if (m_stage) m_stage->forceRelayout();
+            }, Qt::UniqueConnection);
+        }
     }
 }
 
@@ -84,6 +96,11 @@ void CallWindow::toggleFullscreen()
         m_fullscreen = true;
         showFullScreen();
     }
+    // #5 — the fullscreen/normal geometry settles asynchronously and a
+    // resizeEvent isn't guaranteed to land with the final size, which can leave
+    // the stage tile placed for the old geometry (it "drops" off-screen).
+    // Re-lay-out on the next event-loop turn, against the settled size.
+    QTimer::singleShot(0, this, [this] { if (m_stage) m_stage->forceRelayout(); });
 }
 
 void CallWindow::moveEvent(QMoveEvent *e)

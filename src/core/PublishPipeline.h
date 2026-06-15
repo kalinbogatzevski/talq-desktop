@@ -7,6 +7,7 @@
 #include <QObject>
 #include <QString>
 #include <QHash>
+#include <QMutex>
 #include <QTimer>
 #include <gst/gst.h>
 #include <gst/sdp/sdp.h>
@@ -337,6 +338,13 @@ private:
     GstElement *m_farSink  = nullptr;
     QString     m_farOutputDeviceId;
     QHash<QString, GstElement*> m_farPeerAppsrcs;
+    // Serialises far-end peer add/remove and tail teardown against each other:
+    // the hash mutations PLUS the structural pipeline edits (audiomixer
+    // request/release pad, bin add/remove) must be atomic, so a peer leaving
+    // can't race a peer joining or a teardown clearing the map. The decoded-
+    // audio PUSH into each appsrc is guarded separately on the subscriber side
+    // (SubscribeWebrtcSrc::m_farAppsrcMutex + a ref + NULL-first short-circuit).
+    QMutex m_farPeerMutex;
     bool buildFarEndTail();
     // Self-heal state: a forced exact camera caps from Settings → if no
     // frames in m_camStartWatchdog seconds after enableCamera, the pick

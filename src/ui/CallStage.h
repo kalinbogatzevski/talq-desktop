@@ -33,6 +33,12 @@ public:
 
     void setTheme(PainterTheme::Theme t);
     bool telemetryOpen() const { return m_telemetryOpen; }
+    // #5 — force a fresh tile layout + frame-cache flush. The owning CallWindow
+    // calls this on a cross-monitor (DPI) move and after a fullscreen toggle,
+    // where no resizeEvent is guaranteed even though the effective tile size /
+    // backing-store devicePixelRatio changed — leaving the stage tile smashed
+    // or dropped off-screen.
+    void forceRelayout();
 
 signals:
     void requestToggleFullscreen();
