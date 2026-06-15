@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.51.9 "Bafana Bafana" -- BETA (2026-06-15)
+
+### Fixed
+
+* **Call video no longer breaks when you move the call between monitors or go
+  fullscreen.** Dragging the call window to a second screen with different
+  display scaling could leave the video tile stretched/distorted, and
+  double-clicking to enter fullscreen could make the video drop off-screen. The
+  call now re-lays-out the video correctly on a monitor change and on the
+  fullscreen toggle.
+* **Messages you've read are now reliably marked as read.** Closed a case where a
+  message you had already seen in the open, focused conversation could stay
+  marked unread for the other person. The read marker now advances whenever the
+  newest message changes while you're looking at the chat.
+
+### Added
+
+* **"Verbose call diagnostics" setting (off by default).** A new option under
+  Settings logs detailed per-second call information to help track down call
+  freezes or audio issues. It's off for normal use — turn it on only when
+  reproducing a problem, and it takes effect on the next call.
+
 ## v0.51.8 "Bafana Bafana" -- BETA (2026-06-15)
 
 ### Fixed

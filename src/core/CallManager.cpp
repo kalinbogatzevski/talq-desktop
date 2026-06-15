@@ -1,6 +1,5 @@
 #include "core/CallManager.h"
 #include "core/BackgroundEngine.h"
-#include "core/SharedFarEndBus.h"
 #include "core/LeakStats.h"
 #include "core/EncodeTier.h"
 #include "core/Diagnostics.h"
@@ -2094,6 +2093,24 @@ void CallManager::startLoadController()
     // mid-call). The enabled flag is checked inside onLoadTick, not here.
     m_loadControllerEnabled = qgetenv("TALQ_DISABLE_LOAD_CONTROLLER").trimmed() != "1";
 
+    // Verbose [MEDIA]/[LEAK] heartbeats are OFF by default — they qInfo every
+    // second and the debug log force-syncs them to disk, needless I/O on a
+    // healthy call. Re-resolved per call: the TALQ_MEDIA_DIAG env var wins
+    // (1/true/on/yes → enabled) for instant dev-build control; otherwise the
+    // persisted "Verbose call diagnostics" setting (Debug/mediaDiagnostics,
+    // default off) that testers flip in Settings. The talq::leak atomic
+    // counters keep counting regardless, so the gauges are valid the instant
+    // this is switched on (no warm-up needed).
+    {
+        const QByteArray envDiag = qgetenv("TALQ_MEDIA_DIAG").trimmed().toLower();
+        if (!envDiag.isEmpty())
+            m_mediaDiag = (envDiag == "1" || envDiag == "true"
+                           || envDiag == "on" || envDiag == "yes");
+        else
+            m_mediaDiag = QSettings("TalQ", "TalQ")
+                              .value("Debug/mediaDiagnostics", false).toBool();
+    }
+
     // Synthetic-load seam (design §8.1): drive the controller from env on the
     // dev box, whose NVENC GPU won't reproduce real overload. Production leaves
     // these unset → 0 → the controller sits at level 0 until the encode/decode
@@ -2154,8 +2171,15 @@ void CallManager::onLoadTick()
         applyReceiveLoadCaps(caps.recvSubstreamCap, caps.recvCapFocused);
     }
 
-    // [MEDIA] freeze-diagnostic heartbeat (1s during a call, qInfo so it's always
-    // logged). After a hard freeze, the LAST [MEDIA] line shows the trajectory
+    // Everything below is the verbose freeze/leak diagnostics, OFF by default
+    // (m_mediaDiag — Settings "Verbose call diagnostics" or TALQ_MEDIA_DIAG).
+    // It's the last work in this tick, so just bail when disabled rather than
+    // qInfo-spamming the log + forcing a disk sync every second on a healthy
+    // call. The talq::leak counters keep counting either way.
+    if (!m_mediaDiag) return;
+
+    // [MEDIA] freeze-diagnostic heartbeat (1s during a call). After a hard
+    // freeze, the LAST [MEDIA] line shows the trajectory
     // into it: a camera that stopped feeding the encoders (cam=1 enc=0.00),
     // encode/decode load climbing on the single-engine iGPU, layer/fps thrashing,
     // or a peer's decode ballooning. lc=0 records the kill-switch state. The line
@@ -2994,19 +3018,10 @@ void CallManager::stopAllPipelines()
         m_publishPipeline = nullptr;
     }
     for (auto *sub : m_subscribePipelines) {
-        sub->stop();   // detaches itself from m_farEndBus and disconnects the tap
+        sub->stop();   // stops the subscriber pipeline + releases its far-end appsrc
         delete sub;
     }
     m_subscribePipelines.clear();
-    // AEC: tear the far-end bus down LAST — after every subscriber (whose tap
-    // pushes into it) is stopped and after the publisher above (whose
-    // webrtcdsp held the probe; m_publishPipeline->stop() released it
-    // synchronously). Nothing can push into or acquire the probe now.
-    if (m_farEndBus) {
-        m_farEndBus->stop();
-        m_farEndBus->deleteLater();
-        m_farEndBus = nullptr;
-    }
     m_subscriberSids.clear();
     m_desiredSubstream.clear();
     m_peerSubstreamWant.clear();   // 0.51.x receive-load raw wants
