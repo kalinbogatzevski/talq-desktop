@@ -48,6 +48,12 @@ public:
     Q_INVOKABLE void notify(const QString &title, const QString &message, bool alwaysSound = false, const QString &token = QString());
     Q_INVOKABLE void clearNotifications();
     Q_INVOKABLE void updateUnreadCount(int count);
+    // Re-assert the Windows taskbar overlay badge for the CURRENT unread count,
+    // bypassing updateUnreadCount()'s "count unchanged" early-return. MainWindow
+    // calls this whenever the taskbar button is (re)created — first show,
+    // restore-from-tray, Explorer restart — because ITaskbarList3::SetOverlayIcon
+    // only persists while the button exists. No-op on non-Windows.
+    void reapplyTaskbarOverlay();
 
     Q_PROPERTY(QString notifStyle READ notifStyle WRITE setNotifStyle NOTIFY notifStyleChanged)
 

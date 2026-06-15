@@ -341,7 +341,10 @@ void NotificationManager::updateTaskbarOverlay(int count)
     if (!hwnd) return;
 
     if (count <= 0) {
-        m_taskbar->SetOverlayIcon(hwnd, nullptr, L"");
+        HRESULT hr = m_taskbar->SetOverlayIcon(hwnd, nullptr, L"");
+        qInfo() << "TalQ taskbar overlay: cleared, hwnd="
+                << reinterpret_cast<quintptr>(hwnd)
+                << "hr=0x" + QString::number(static_cast<quint32>(hr), 16);
         return;
     }
 
@@ -367,10 +370,24 @@ void NotificationManager::updateTaskbarOverlay(int count)
 
     HICON icon = QImageToHICON(img);
     const std::wstring desc = QString("%1 unread").arg(count).toStdWString();
-    m_taskbar->SetOverlayIcon(hwnd, icon, desc.c_str());
+    HRESULT hr = m_taskbar->SetOverlayIcon(hwnd, icon, desc.c_str());
+    qInfo() << "TalQ taskbar overlay: count=" << count
+            << "hwnd=" << reinterpret_cast<quintptr>(hwnd)
+            << "icon=" << (icon != nullptr)
+            << "hr=0x" + QString::number(static_cast<quint32>(hr), 16);
     if (icon) DestroyIcon(icon);
 }
 #endif
+
+void NotificationManager::reapplyTaskbarOverlay()
+{
+#ifdef Q_OS_WIN
+    // Push the current count onto the (possibly freshly-created) taskbar
+    // button. Deliberately bypasses updateUnreadCount()'s change guard: the
+    // count hasn't changed, the button has.
+    updateTaskbarOverlay(m_unreadCount);
+#endif
+}
 
 void NotificationManager::setSoundId(const QString &id)
 {
