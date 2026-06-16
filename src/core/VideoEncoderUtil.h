@@ -13,7 +13,37 @@
 // to the bin) or nullptr on total failure.
 
 #include <QString>
+#include <QDebug>
+#include <atomic>
 #include <gst/gst.h>
+
+// Runtime latch: "NVENC can't open a session on THIS machine." Some 2-GPU
+// (Optimus) laptops register nvh264enc, but the process — pinned to the Intel
+// iGPU — can't open an NVENC session (CUDA_ERROR_NO_DEVICE), so it dies the
+// instant the camera starts and used to drop the whole call. We can't reliably
+// PREDICT this (a throwaway-pipeline probe can't replicate the real GPU-memory
+// upload path nvenc needs), so we DETECT it from the real pipeline's failure and
+// set this latch; makeWebrtcVideoEncoder then skips nvh264enc and uses Intel QSV
+// (or software x264). CallManager persists it to QSettings Video/avoidNvenc so a
+// machine that fails once never tries NVENC again. Atomic: read on the GStreamer
+// build thread, set from the bus handler / loaded on the Qt thread.
+inline std::atomic<bool> &talqAvoidNvenc()
+{
+    static std::atomic<bool> v{false};
+    return v;
+}
+
+// Second-stage latch: "no hardware H264 encoder works here — use software
+// x264." Set only if the call ALREADY skipped NVENC and the next hardware
+// encoder (Intel QSV / MediaFoundation) ALSO failed to open. x264 is software
+// and always works, so this is the guaranteed floor that gets video back on a
+// machine where every hardware encoder is unusable. Also persisted by
+// CallManager (QSettings Video/forceSoftwareVideo).
+inline std::atomic<bool> &talqForceSoftwareVideo()
+{
+    static std::atomic<bool> v{false};
+    return v;
+}
 
 // Transport-Wide Congestion Control. webrtcbin builds the offer's
 // a=extmap lines from the transceiver codec-preferences caps, so the
@@ -87,9 +117,18 @@ inline GstElement *makeWebrtcVideoEncoder(bool screen, int bitrateBps,
     // #android-static A/B (2026-06-02): force the software x264enc -- the
     // documented known-good encoder for browser/libwebrtc H264 interop -- to test
     // whether the HW (qsv) bitstream is what strict decoders snow on.
-    const bool forceX264 = qEnvironmentVariableIsSet("TALQ_TEST_X264");
+    const bool forceX264 = qEnvironmentVariableIsSet("TALQ_TEST_X264")
+                           || talqForceSoftwareVideo().load();
     for (int i = 0; order[i]; ++i) {
         if (forceX264 && g_strcmp0(order[i], "x264enc") != 0) continue;
+        // Skip NVENC entirely once it has been shown to be unusable on this
+        // machine (a 2-GPU/Optimus laptop where the process can't open an NVENC
+        // session). Without this, every call would pick nvh264enc, fail at
+        // camera-on, and have to recover — this latch makes it go straight to
+        // Intel QSV / software. Latched by CallManager on the first failure and
+        // restored from QSettings on startup.
+        if (!g_strcmp0(order[i], "nvh264enc") && talqAvoidNvenc().load())
+            continue;
         GstElement *enc = gst_element_factory_make(order[i], nullptr);
         if (!enc) continue;
         const bool hw = g_strcmp0(order[i], "x264enc") != 0;

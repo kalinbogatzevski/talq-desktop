@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.51.11 "Bafana Bafana" -- BETA (2026-06-16)
+
+### Fixed
+
+* **A call no longer drops when the graphics card's video encoder can't start.**
+  On some laptops with two graphics chips, the hardware H.264 encoder can fail
+  to initialize — previously this ended the whole call with no explanation. Now
+  the call keeps going (with audio, and a clear on-screen message), and TalQ
+  automatically switches to a working encoder for your next call and remembers
+  it, so the problem doesn't recur. A video-encoder fault can no longer end a
+  call.
+
 ## v0.51.10 "Bafana Bafana" -- BETA (2026-06-16)
 
 ### Fixed

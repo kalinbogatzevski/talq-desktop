@@ -1,6 +1,7 @@
 #include "core/CallManager.h"
 #include "core/BackgroundEngine.h"
 #include "core/LeakStats.h"
+#include "core/VideoEncoderUtil.h"   // talqAvoidNvenc() latch
 #include "core/EncodeTier.h"
 #include "core/Diagnostics.h"
 #include "core/TalqLog.h"
@@ -230,6 +231,18 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
     , m_signaling(signaling)
     , m_deviceManager(deviceMgr)
 {
+    // Restore the "NVENC is unusable on this machine" latch (set the first time
+    // an NVENC session failed to open — e.g. an iGPU-pinned 2-GPU/Optimus
+    // laptop). With it set, the encoder ladder skips NVENC and uses Intel QSV /
+    // software from the very first call, so the machine never repeats the
+    // mid-call encoder failure that used to drop the call.
+    {
+        QSettings vs("TalQ", "TalQ");
+        talqAvoidNvenc().store(vs.value("Video/avoidNvenc", false).toBool());
+        talqForceSoftwareVideo().store(
+            vs.value("Video/forceSoftwareVideo", false).toBool());
+    }
+
     // #20 — long-lived BackgroundEngine. Constructed even when the
     // feature is Off so the publisher can ask for it later without a
     // null check; the engine itself is the gate (Mode::None → no-op).
@@ -1305,6 +1318,20 @@ bool CallManager::buildAndStartPublisher()
     connect(m_publishPipeline, &PublishPipeline::error, this, [this](const QString &msg) {
         qWarning() << "CallManager: publish pipeline error:" << msg;
         teardown(msg);
+    });
+
+    connect(m_publishPipeline, &PublishPipeline::hwVideoEncoderUnavailable, this, []() {
+        // NVENC can't open on this machine (e.g. an iGPU-pinned 2-GPU/Optimus
+        // laptop). The publisher already latched talqAvoidNvenc() in-process;
+        // persist it so EVERY future call + launch skips NVENC and uses Intel
+        // QSV / software from the start — the machine fails NVENC once, never
+        // again.
+        QSettings s("TalQ", "TalQ");
+        s.setValue("Video/avoidNvenc", talqAvoidNvenc().load());
+        s.setValue("Video/forceSoftwareVideo", talqForceSoftwareVideo().load());
+        qWarning() << "CallManager: persisted video-encoder latch — avoidNvenc="
+                   << talqAvoidNvenc().load()
+                   << "forceSoftware=" << talqForceSoftwareVideo().load();
     });
 
     connect(m_publishPipeline, &PublishPipeline::cameraError, this, [this](const QString &reason) {

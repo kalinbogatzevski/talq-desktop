@@ -1774,9 +1774,33 @@ void PublishPipeline::pollBus()
                 for (const auto &L : m_layers)
                     if (L.active) { anyAlive = true; break; }
                 if (!anyAlive) {
-                    qWarning() << "PublishPipeline: ALL simulcast layers "
-                                  "dead — propagating fatal";
-                    emit error(errMsg);
+                    // A comms call MUST NOT drop because video ENCODING failed.
+                    // The usual cause is NVENC failing to OPEN on a 2-GPU
+                    // (Optimus) laptop where the process is pinned to the iGPU
+                    // (CUDA_ERROR_NO_DEVICE). We can't predict that reliably, so
+                    // we latch "avoid NVENC" on the first failure — the rest of
+                    // this session (and, once CallManager persists it, every
+                    // future run) builds with Intel QSV / software instead — and
+                    // degrade THIS call to audio-only with a message rather than
+                    // tearing it down.
+                    qWarning().nospace()
+                        << "PublishPipeline: all video encoders failed ("
+                        << errMsg << ") — call stays up (audio only)";
+                    // Escalate the encoder latch so the NEXT call uses a
+                    // different one: 1st failure → skip NVENC (use Intel QSV);
+                    // 2nd failure (QSV also dead) → force software x264, which
+                    // always works. Persisted by CallManager so it sticks.
+                    bool latched = false;
+                    if (!talqAvoidNvenc().load()) {
+                        talqAvoidNvenc().store(true); latched = true;
+                    } else if (!talqForceSoftwareVideo().load()) {
+                        talqForceSoftwareVideo().store(true); latched = true;
+                    }
+                    if (latched) emit hwVideoEncoderUnavailable();  // persist
+                    emit cameraError(QStringLiteral(
+                        "Video can't be sent from this device right now — the "
+                        "call continues with audio. Video will use a different "
+                        "encoder on your next call."));
                 }
             } else if (m_cameraSrc && src == GST_OBJECT(m_cameraSrc)) {
                 // The camera SOURCE failed to start (e.g. MediaFoundation
