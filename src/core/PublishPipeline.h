@@ -182,6 +182,12 @@ signals:
     void audioLevelUpdated(double level);  // 0.0 to 1.0
     void error(const QString &message);
     void cameraError(const QString &reason);
+    // The hardware video encoder (NVENC) could not open a session on this
+    // machine — the publisher has latched talqAvoidNvenc() for the rest of the
+    // session. CallManager persists the latch (QSettings Video/avoidNvenc) so
+    // every future call/launch skips NVENC and uses Intel QSV / software from
+    // the start, instead of failing at camera-on again.
+    void hwVideoEncoderUnavailable();
     // Non-fatal mic failure. Emitted when the microphone could NOT be opened
     // and the publisher fell back to a SILENT audio source so the call still
     // connects (peer hears silence) instead of dropping the whole call.
