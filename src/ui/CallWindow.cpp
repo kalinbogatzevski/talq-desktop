@@ -70,12 +70,21 @@ void CallWindow::onCallState()
         // until something else triggers a resize. windowHandle() exists now that
         // we're shown; QWindow::screenChanged fires on every monitor cross.
         // UniqueConnection keeps it idempotent across show/hide cycles.
-        if (QWindow *wh = windowHandle()) {
-            connect(wh, &QWindow::screenChanged, this, [this](QScreen *) {
-                if (m_stage) m_stage->forceRelayout();
-            }, Qt::UniqueConnection);
-        }
+        // NB: Qt::UniqueConnection requires a pointer-to-member-function slot —
+        // with a lambda it hits a Q_ASSERT and aborts debug builds (and is wrong
+        // in release too). So we route through the onScreenChanged() member.
+        if (QWindow *wh = windowHandle())
+            connect(wh, &QWindow::screenChanged, this,
+                    &CallWindow::onScreenChanged, Qt::UniqueConnection);
     }
+}
+
+void CallWindow::onScreenChanged()
+{
+    // #5 — the window crossed to a monitor with (possibly) different DPI; a
+    // resizeEvent isn't guaranteed, so force the stage to re-lay-out + flush its
+    // frame caches.
+    if (m_stage) m_stage->forceRelayout();
 }
 
 void CallWindow::toggleFullscreen()
