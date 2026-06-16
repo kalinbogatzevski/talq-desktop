@@ -54,6 +54,7 @@ private slots:
 
 private:
     void toggleFullscreen();
+    void onScreenChanged();   // #5 — re-lay-out the stage on a cross-DPI monitor move
     void pickShareTarget();
 
     CallManager *m_call;

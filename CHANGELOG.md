@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.51.10 "Bafana Bafana" -- BETA (2026-06-16)
+
+### Fixed
+
+* **Call window stability fix** (follow-up to the 0.51.9 multi-monitor video
+  fix). Corrected how the call window re-lays-out its video when moved between
+  monitors. This had no effect on normal installs, but it could crash the call
+  window in development/debug builds; the wiring is now correct everywhere.
+
 ## v0.51.9 "Bafana Bafana" -- BETA (2026-06-15)
 
 ### Fixed
