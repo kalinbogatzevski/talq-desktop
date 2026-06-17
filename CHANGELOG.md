@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.51.12 "Bafana Bafana" -- BETA (2026-06-17)
+
+### Changed
+
+* **Clicking X now minimizes TalQ to the taskbar instead of hiding it to the
+  system tray.** This keeps TalQ's taskbar button — and the unread-message count
+  badge on it — visible while TalQ keeps running in the background. You can still
+  quit from the tray icon's menu, or switch this off in Settings ("Minimize when
+  closing").
+
 ## v0.51.11 "Bafana Bafana" -- BETA (2026-06-16)
 
 ### Fixed
