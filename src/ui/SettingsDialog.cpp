@@ -1446,8 +1446,9 @@ QWidget *SettingsDialog::buildGeneralTab()
         emit closeToTrayChanged(checked);
     });
     layout->addWidget(makeSettingRow(
-        tr("Close to tray"),
-        tr("Minimize to the tray instead of quitting."),
+        tr("Minimize when closing"),
+        tr("Clicking X minimizes TalQ to the taskbar — keeping your unread "
+           "count visible there — instead of quitting."),
         m_closeToTray));
 
     layout->addSpacing(kGroupGap - kRowGap);

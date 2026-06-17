@@ -2458,7 +2458,11 @@ void MainWindow::closeEvent(QCloseEvent *event)
         // users to "normal" on restore from tray.
         m_wasFullScreen = isFullScreen();
         m_wasMaximized = !m_wasFullScreen && isMaximized();
-        hide();
+        // Minimize to the taskbar instead of hide()-to-tray. A minimized window
+        // KEEPS its taskbar button, so the unread-count overlay badge stays
+        // visible there — hide() removed the button entirely, leaving only the
+        // tray badge. The tray icon remains available for Show / Quit.
+        showMinimized();
     } else {
         event->accept();
     }
