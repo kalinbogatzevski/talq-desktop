@@ -11,6 +11,9 @@
 #include <QStandardPaths>
 #include <QSettings>
 #include <QTimer>
+#include <thread>
+#include <chrono>
+#include <cstdlib>
 #include <QDir>
 #include <QFileInfo>
 #include <QTime>
@@ -112,6 +115,7 @@ void talqTerminateHandler()
 #include "core/AppSettings.h"
 #include "core/EmojiData.h"
 #include "core/TalqLog.h"
+#include "core/ShutdownWatchdog.h"
 #include "ui/MainWindow.h"
 #include "ui/NotificationPopup.h"
 #include "ui/NotificationStack.h"
@@ -406,7 +410,11 @@ int main(int argc, char *argv[])
 
     // Single-instance guard (detection ran earlier, before any log setup, so a
     // secondary never archives/truncates the primary's live log).
-    if (!isPrimary) {
+    // TALQ_TEST_QUIT bypasses the forward-and-exit so a diag build can run a
+    // full standalone second instance (to exercise the shutdown path) without
+    // disturbing the primary — it stays non-primary, so it never truncates the
+    // shared log. TEMP diag, paired with the TALQ_TEST_QUIT hook below.
+    if (!isPrimary && !qEnvironmentVariableIsSet("TALQ_TEST_QUIT")) {
         // Another instance holds the lock. Ask it to surface its window —
         // this is the path hit when the user clicks the pinned taskbar
         // icon while TalQ is hidden in the tray (Windows launches a fresh
@@ -802,5 +810,31 @@ int main(int argc, char *argv[])
         }
     });
 
-    return app.exec();
+    // 0.51.15 TEMP shutdown diagnostics — reproduce the "process won't close on
+    // Quit / blocks auto-update" hang headlessly: TALQ_TEST_QUIT=<seconds> fires
+    // the same qApp->quit() the tray Quit does, and the [SHUTDOWN] trace brackets
+    // teardown so we see whether exec() returns and the process then hangs in a
+    // stack destructor. Remove once the hang is fixed.
+    if (qEnvironmentVariableIsSet("TALQ_TEST_QUIT")) {
+        const int s = qEnvironmentVariableIntValue("TALQ_TEST_QUIT");
+        qInfo() << "[SHUTDOWN] TALQ_TEST_QUIT set — quitting in" << s << "s";
+        QTimer::singleShot(s * 1000, qApp, []() {
+            talq::armShutdownWatchdog(6);   // arm at the TRIGGER, before quit()
+            qApp->quit();
+        });
+    }
+    // Backstop: if some quit path reaches aboutToQuit without having armed the
+    // watchdog at its trigger, arm it here so a wedged teardown still can't
+    // keep the process alive. (Idempotent — a no-op if already armed.)
+    QObject::connect(&app, &QCoreApplication::aboutToQuit, &app, []() {
+        qInfo() << "[SHUTDOWN] aboutToQuit — entering teardown";
+        talq::armShutdownWatchdog(6);
+    });
+
+    const int rc = app.exec();
+    qInfo() << "[SHUTDOWN] app.exec() returned" << rc
+            << "— running stack destructors (if the process hangs past here,"
+               " a destructor is blocking)";
+    TalqLog::syncToDisk();
+    return rc;
 }
