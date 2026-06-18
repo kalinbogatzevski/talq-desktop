@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.51.13 "Bafana Bafana" -- BETA (2026-06-18)
+
+### Fixed
+
+* **An interrupted update can no longer leave TalQ unable to start.** A previous
+  build's updater could, in rare cases, finish with a runtime file missing (for
+  example "libglib-2.0-0.dll was not found"), leaving the app dead until a manual
+  reinstall. The installer now overwrites the program files in place instead of
+  clearing them out first, so a working copy of every file is always present —
+  even if an update is interrupted or a file is briefly in use. Updating is now
+  safe to do at any time.
+
 ## v0.51.12 "Bafana Bafana" -- BETA (2026-06-17)
 
 ### Changed
