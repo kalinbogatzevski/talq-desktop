@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.51.15 "Bafana Bafana" -- BETA (2026-06-18)
+
+### Fixed
+
+* **Quitting TalQ now always closes it completely — and updates install
+  reliably.** Previously, choosing Quit could leave TalQ running in the
+  background (you'd have to end it manually in Task Manager), and because the
+  old copy was still running it could also stop an update from finishing. TalQ
+  now guarantees it shuts down when you quit, so Quit works every time and
+  updates apply cleanly.
+
+  *Note: this is the fix for the "update won't finish" problem — to get it the
+  first time you may need to fully close TalQ (end `talq.exe`) before installing
+  this version. After that, future updates install on their own.*
+
 ## v0.51.14 "Bafana Bafana" -- BETA (2026-06-18)
 
 ### Changed

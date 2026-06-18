@@ -92,6 +92,7 @@ static QString plainBodyText(const QVariantMap &msg)
 
 MainWindow::~MainWindow()
 {
+    qInfo() << "[SHUTDOWN] ~MainWindow begin";   // 0.51.15 TEMP hang diag
     // m_callWindow is a parentless top-level (so it gets its own Windows
     // taskbar button); it has no QObject parent to auto-delete it.
     delete m_callWindow;
