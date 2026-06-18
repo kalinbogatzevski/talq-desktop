@@ -2335,7 +2335,21 @@ void CallManager::onLoadTick()
         loadLevel = m_loadController.loadLevel();
         if (m_publishPipeline)
             m_publishPipeline->setLoadCaps(caps.sendLayerCeiling, caps.sendFps);
-        applyReceiveLoadCaps(caps.recvSubstreamCap, caps.recvCapFocused);
+        // RECEIVE-cap DISABLED (0.52.1). The decode-load proxy above is
+        // rxRes×fps — i.e. the very quantity the receive cap CONTROLS — so it is
+        // self-referential and OSCILLATES: receiving 1080p reads as ~full load →
+        // cap the substream to low → now receiving 180p reads as ~no load →
+        // un-cap → 1080p → high load again … The field log showed the requested
+        // substream thrashing 2↔0 every few seconds (each flip = an SFU layer
+        // switch + keyframe = a visible quality bounce), and on a capable GPU it
+        // needlessly dropped a 1:1 call to 180p. webrtcsrc hides its decoder, so a
+        // REAL decode-cost probe isn't reachable; until one is, NEVER cap receive
+        // on this proxy. Tile-size selection (pickSubstream) still picks a sensible
+        // layer per tile (small grid tiles stay low), and SEND-side shedding (real
+        // encoder pad-probe latency, unaffected) still protects weak encoders.
+        // Same shape as the 0.51.5 applySharedFramerate neuter: an actuator driven
+        // by a bad signal does more harm than good — disable it, don't tune it.
+        applyReceiveLoadCaps(2, false);
     }
 
     // Everything below is the verbose freeze/leak diagnostics, OFF by default
