@@ -1,5 +1,37 @@
 # Changelog
 
+## v0.52.0 "Bafana Bafana" -- STABLE (2026-06-18)
+
+Promotes the 0.51.x line to stable. Highlights since 0.50.11:
+
+### Screen sharing
+* **Sharing a single app window works reliably** (some graphics chips needed an
+  even-sized encode; full-screen was unaffected).
+* **Re-sharing your screen reliably reaches the other person** — a share started
+  right after stopping a previous one no longer gets lost, with no need to wait.
+* **A re-shared screen no longer flickers to black on the viewer's side**, while
+  a genuinely stuck share still recovers on its own.
+* **A received share no longer gets stuck on "Starting…"** if its first frame is
+  lost.
+
+### Calls
+* **Hanging up a one-to-one call ends it immediately for the other person**
+  instead of lingering on "Reconnecting"; a real connection drop still reconnects.
+* **A graphics-encoder failure no longer drops the call** — it falls back to a
+  working encoder (with a notice when software encoding is in use).
+* **Steadier camera quality on busy connections** and a smoother, less twitchy
+  automatic video-quality selection; a manually chosen quality sticks.
+* The "You're sharing your screen" badge is no longer clipped.
+
+### App
+* **Quit and in-app updates always complete** — TalQ can no longer be left
+  running after Quit, which previously also blocked an update.
+* Closing the window minimizes it (keeping the unread badge on the taskbar);
+  a taskbar unread badge and an unobtrusive offline indicator were added.
+* **Updating can no longer leave a missing component behind** (a rare failed
+  update could remove a library it then couldn't restore).
+* Opening a thread no longer shows every message as a reply to the topic.
+
 ## v0.51.18 "Bafana Bafana" -- BETA (2026-06-18)
 
 ### Fixed

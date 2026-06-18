@@ -149,6 +149,11 @@ private:
     // #8 manual stream-quality selector: -1=Auto (tile-size driven by
     // updateStreamQualities), 0=Low/180p, 1=Med/360p, 2=High/720p.
     int m_qualityOverride = -1;
+    // Last AUTO substream chosen per remote peer (sessionId -> 0/1/2), so
+    // updateStreamQualities() can apply drop-hysteresis (pickSubstreamHysteretic)
+    // and stop a tile parked on a size boundary from flapping the requested layer
+    // every relayout. Keyed by sessionId; stale entries are harmless.
+    QHash<QString,int> m_tileSubstream;
 
     // 0.40.15 — Status pill rect: doubles as the layout anchor for the
     // info pills (which start to its right) and as a hit rect. Always
