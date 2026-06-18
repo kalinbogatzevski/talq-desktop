@@ -941,10 +941,23 @@ void ScreenSharePipeline::onStatsReady(GstPromise *promise, gpointer userData)
     }
     gst_promise_unref(promise);
 
-    if (!found) return;
     QPointer<ScreenSharePipeline> guard(self);
-    QMetaObject::invokeMethod(self, [guard, packetsSent]() {
+    QMetaObject::invokeMethod(self, [guard, packetsSent, found]() {
         if (!guard || guard->m_mediaFlowingEmitted) return;
+        // 0.51.14 #share-reliability diag — log EVERY poll until the share is
+        // confirmed. A stalled start where outbound RTP never climbs (packets-
+        // sent stuck at 0 = the HW encoder produced NO output, the back-to-back
+        // re-share failure) is otherwise invisible until the 8 s timeout fires.
+        // This pins down whether the encoder produced bytes at all vs. a capture
+        // stall (rises once then plateaus).
+        if (!found) {
+            qInfo() << "ScreenSharePipeline: RTP confirm poll — no outbound-rtp "
+                       "stat yet (encoder not producing / transceiver not ready)";
+            return;
+        }
+        qInfo().nospace() << "ScreenSharePipeline: RTP confirm poll — packets-sent="
+                          << packetsSent << " prev=" << guard->m_lastPacketsSent
+                          << " streak=" << guard->m_packetsRisingStreak;
         // Two consecutive rises = media is genuinely climbing, not a single
         // stray packet. Then the publish is confirmed live on the wire.
         if (packetsSent > guard->m_lastPacketsSent) {

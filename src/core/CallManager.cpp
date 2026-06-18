@@ -2333,8 +2333,18 @@ void CallManager::onShareConfirmed()
 // transition settled (ScreenSharePipeline blocks on it), but the DXGI desktop-
 // duplication device can take a moment longer to actually free; rebuilding the
 // instant released() arrives still races it (SetThreadDesktop ERROR_BUSY). 300 ms
-// is grounded in Sunshine's DDAPI 200ms-x2 retry precedent, with margin.
-static constexpr int kShareDeviceSettleMs = 300;
+// was grounded in Sunshine's DDAPI 200ms-x2 retry precedent, with margin.
+//
+// 0.51.14 — bumped 300 -> 1500. The 300 ms was enough for the WGC/DXGI capture
+// DEVICE, but NOT for an AMD MediaFoundation HW H.264 encoder *session* to
+// release: a back-to-back share (stop, then re-share within ~30 s) re-acquired
+// mfh264enc while the prior session was still freeing, so the new encoder
+// produced no output and outbound RTP never confirmed — every ~10 s confirm-
+// retry re-collided, and only a long idle (~60 s) freed it (Ilko field repro
+// 2026-06-18, single AMD Radeon, both camera+screen on mfh264enc). The per-poll
+// packets-sent diag in ScreenSharePipeline confirms whether 1.5 s is enough or
+// the screen encoder needs a software (x264) fallback on repeated HW failure.
+static constexpr int kShareDeviceSettleMs = 1500;
 
 void CallManager::onShareConfirmTimeout()
 {

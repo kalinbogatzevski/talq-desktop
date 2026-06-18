@@ -15,6 +15,7 @@
 #include "SignalingClient.h"
 #include "VideoFrameProvider.h"
 #include "EncodeTier.h"
+#include "BweLayerGate.h"
 
 /**
  * Send-only GStreamer webrtcbin pipeline for MCU publishing.
@@ -324,6 +325,11 @@ private:
     int m_dynLoadCeiling     = 2;
     int m_loadFps            = 30;  // controller send-fps target (drives m_sharedCaps)
     int m_lastBweEstimateBps = 0;   // last GCC estimate, so a ceiling change re-gates
+    // Anti-flap dwell for the asymmetric BWE layer gate (drop fast, re-add only
+    // after a sustained estimate). Indexed by layer (1=m, 2=h; 0=l never gates).
+    // See BweLayerGate.h + tests/bwe_layer_gate_test.cpp.
+    talq::BweGateState m_bweGate[3];
+    QElapsedTimer      m_bweClock;  // monotonic clock for the re-add dwell
     // Active layers gate on this, NOT m_loadCapMaxLayer directly.
     int effectiveLayerCeiling() const {
         if (m_screenShareSuppress) return 0;
