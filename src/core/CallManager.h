@@ -171,7 +171,7 @@ public:
     // →1, strip→0). Deduped per peer; re-sent when the subscriber (re)
     // connects. Janus adapts DOWN on its own if the link can't sustain
     // the requested layer, so this is an upper bound, not a guarantee.
-    Q_INVOKABLE void requestPeerVideoQuality(const QString &sessionId, int substream);
+    Q_INVOKABLE void requestPeerVideoQuality(const QString &sessionId, int substream, bool manual = false);
 
     // 0.51.x dynamic load controller — receive actuator. Cap every peer's
     // received substream at `substreamCap` (min with the tile-size want), EXEMPT
@@ -237,6 +237,7 @@ signals:
     void screenShareChanged();
     void screenShareRetrying();            // share didn't confirm; auto-retrying
     void screenShareFailed(const QString &reason);  // gave up after retries
+    void softwareVideoEncoderNotice();     // camera fell back to software (x264); notify once/call
     void screenShareQualityChanged();
     void remoteScreenProviderChanged();
     void participantAdded(CallParticipant *p);
@@ -345,6 +346,10 @@ private:
     // change can be re-applied without the UI re-deciding. m_recvLoadSubstreamCap
     // (2 = no cap) + m_recvLoadCapFocused are set by the controller tick.
     QHash<QString, int> m_peerSubstreamWant;
+    // A manual receive-quality pick (UI dropdown) per peer: 0/1/2 = pinned,
+    // absent = Auto. A pin bypasses the auto load controller in
+    // effectiveSubstreamFor (fixes "selecting quality does nothing").
+    QHash<QString, int> m_peerManualSubstreamOverride;
     int  m_recvLoadSubstreamCap = 2;
     bool m_recvLoadCapFocused   = false;
     // The controller itself (pure logic) + its ~1 s tick. Owned here because
@@ -507,6 +512,7 @@ private:
     ScreenSharePipeline *m_screenSharePipeline = nullptr;
     QPointer<ShareOverlay> m_shareOverlay;   // #72 coloured monitor border (monitor shares)
     bool m_screenSharing = false;
+    bool m_softwareEncoderNotified = false;  // once-per-call guard for softwareVideoEncoderNotice
     QString m_screenShareSid;
     // Set during stopScreenShare()'s 50-iteration GLib flush. Used by
     // publisher-ICE-failed handler to suppress recovery-counter bumps

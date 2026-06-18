@@ -383,6 +383,7 @@ GstFlowReturn SubscribeWebrtcSrc::onAecPlayoutSample(GstAppSink *sink, gpointer 
 
 void SubscribeWebrtcSrc::cleanup()
 {
+    if (m_keyframeWatchdog) m_keyframeWatchdog->stop();   // no PLI on a torn-down pipeline
     if (m_busWatchId > 0) { g_source_remove(m_busWatchId); m_busWatchId = 0; }
     if (m_webrtcsrc)    g_signal_handlers_disconnect_by_data(m_webrtcsrc, this);
     if (m_webrtcbin)    g_signal_handlers_disconnect_by_data(m_webrtcbin, this);
@@ -631,7 +632,38 @@ void SubscribeWebrtcSrc::onWebrtcbinIceConnState(GstElement *webrtcbin,
     }
     QPointer<SubscribeWebrtcSrc> g(self);
     QMetaObject::invokeMethod(self, [g, state]() {
-        if (g) emit g->iceStateChanged(state);
+        if (!g) return;
+        emit g->iceStateChanged(state);
+        // Keyframe-stall watchdog (main thread). The single PLI above can be lost
+        // in the same bootstrap window as the IDR; if no frame decodes within a
+        // few seconds the tile stays frozen on "Starting a screen share…" /
+        // concealment. Re-request a keyframe every 2.5 s, up to 5×, until the
+        // first frame arrives (m_decodedAnyFrame flips on the streaming thread).
+        const bool connected = (state == QLatin1String("connected")
+                                || state == QLatin1String("completed"));
+        if (!connected || g->m_decodedAnyFrame.load(std::memory_order_relaxed))
+            return;
+        if (!g->m_keyframeWatchdog) {
+            g->m_keyframeWatchdog = new QTimer(g);
+            g->m_keyframeWatchdog->setInterval(2500);
+            QObject::connect(g->m_keyframeWatchdog, &QTimer::timeout, g, [g]() {
+                if (!g || !g->m_keyframeWatchdog) return;
+                if (g->m_decodedAnyFrame.load(std::memory_order_relaxed)
+                    || g->m_keyframePliRetriesLeft <= 0 || !g->m_pipeline) {
+                    g->m_keyframeWatchdog->stop();
+                    return;
+                }
+                --g->m_keyframePliRetriesLeft;
+                GstStructure *ks = gst_structure_new(
+                    "GstForceKeyUnit", "all-headers", G_TYPE_BOOLEAN, TRUE, nullptr);
+                gst_element_send_event(g->m_pipeline,
+                    gst_event_new_custom(GST_EVENT_CUSTOM_UPSTREAM, ks));
+                qInfo() << "SubscribeWebrtcSrc: keyframe-watchdog re-requested PLI,"
+                        << g->m_keyframePliRetriesLeft << "retries left";
+            });
+        }
+        g->m_keyframePliRetriesLeft = 5;
+        g->m_keyframeWatchdog->start();
     }, Qt::QueuedConnection);
 }
 
@@ -808,6 +840,7 @@ GstFlowReturn SubscribeWebrtcSrc::onVideoNewSample(GstAppSink *sink, gpointer ud
     auto *self = static_cast<SubscribeWebrtcSrc*>(ud);
     GstSample *sample = gst_app_sink_pull_sample(sink);
     if (!sample) return GST_FLOW_OK;
+    self->m_decodedAnyFrame.store(true, std::memory_order_relaxed);  // frame decoded -> keyframe watchdog can stop
 
     // --- RX video-rate probe (#111) — streaming thread only ---
     // Counts decoded frames actually delivered by webrtcsrc and the mean

@@ -189,6 +189,9 @@ signals:
     // every future call/launch skips NVENC and uses Intel QSV / software from
     // the start, instead of failing at camera-on again.
     void hwVideoEncoderUnavailable();
+    // The camera resolved to the SOFTWARE (x264) encoder — surfaced to the user
+    // once per call so they know why CPU is higher (no usable HW encoder).
+    void softwareVideoEncoderUsed();
     // Non-fatal mic failure. Emitted when the microphone could NOT be opened
     // and the publisher fell back to a SILENT audio source so the call still
     // connects (peer hears silence) instead of dropping the whole call.

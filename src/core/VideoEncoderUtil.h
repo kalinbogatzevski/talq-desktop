@@ -79,7 +79,8 @@ inline void setWebrtcVideoEncoderBitrate(GstElement *enc, bool h264, guint bps)
 inline GstElement *makeWebrtcVideoEncoder(bool screen, int bitrateBps,
                                           bool *outUseH264,
                                           GstElement **outParser,
-                                          QString *outDesc)
+                                          QString *outDesc,
+                                          bool *outIsSoftware = nullptr)
 {
     auto setIfExists = [](GstElement *e, const char *prop, auto value) {
         if (g_object_class_find_property(G_OBJECT_GET_CLASS(e), prop))
@@ -215,6 +216,7 @@ inline GstElement *makeWebrtcVideoEncoder(bool screen, int bitrateBps,
         if (!parse) { gst_object_unref(enc); continue; }
         *outParser = parse;
         *outUseH264 = true;
+        if (outIsSoftware) *outIsSoftware = !hw;   // x264enc is the only software H264 here
         if (outDesc)
             *outDesc = QStringLiteral("H264 · %1 · %2")
                            .arg(QString::fromUtf8(order[i]),
@@ -234,6 +236,7 @@ inline GstElement *makeWebrtcVideoEncoder(bool screen, int bitrateBps,
                      "error-resilient", 1, nullptr);
         *outUseH264 = false;
         *outParser  = nullptr;
+        if (outIsSoftware) *outIsSoftware = true;   // vp8 software fallback
         if (outDesc) *outDesc = QStringLiteral("VP8 · vp8enc · sw");
         qWarning() << "VideoEncoder: no H264 encoder available — "
                       "VP8 software fallback";

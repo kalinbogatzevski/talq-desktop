@@ -386,7 +386,15 @@ bool ScreenSharePipeline::start(const QString &stunServer, const QList<TurnServe
                  "max-size-time", (guint64)0, nullptr);
     {
         const QString capStr = QStringLiteral(
-            "video/x-raw,width=(int)[2,%1],height=(int)[2,%2],"
+            // width/height stepped by 2 (EVEN only): an app WINDOW is an
+            // arbitrary native size, and an ODD dimension is invalid H.264 4:2:0
+            // — Intel QSV rejects it (MFXVideoENCODE_Query ->
+            // MFX_WRN_INCOMPATIBLE_VIDEO_PARAM) and the REMOTE decoder can't
+            // render it (Kalin's Intel-QSV app-share showed NOTHING on Ilko's
+            // AMD receiver while full-screen worked — field 2026-06-18).
+            // videoscale negotiates to the nearest even size, so the encoder
+            // always gets a valid frame regardless of the window's real size.
+            "video/x-raw,width=(int)[2,%1,2],height=(int)[2,%2,2],"
             "pixel-aspect-ratio=1/1").arg(m_capW).arg(m_capH);
         GstCaps *cap = gst_caps_from_string(capStr.toUtf8().constData());
         g_object_set(scaleCaps, "caps", cap, nullptr);
@@ -655,7 +663,7 @@ void ScreenSharePipeline::setQualityCap(int maxW, int maxH)
     // cap for the build.
     if (m_scaleCaps && m_running && !m_shuttingDown.load()) {
         const QString capStr = QStringLiteral(
-            "video/x-raw,width=(int)[2,%1],height=(int)[2,%2],"
+            "video/x-raw,width=(int)[2,%1,2],height=(int)[2,%2,2],"   // EVEN only — see start()
             "pixel-aspect-ratio=1/1").arg(maxW).arg(maxH);
         GstCaps *cap = gst_caps_from_string(capStr.toUtf8().constData());
         g_object_set(m_scaleCaps, "caps", cap, nullptr);

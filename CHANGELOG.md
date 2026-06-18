@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.51.16 "Bafana Bafana" -- BETA (2026-06-18)
+
+### Fixed
+
+* **Sharing a single app window now works reliably.** On some Intel graphics an
+  app-window share could fail to appear for the other person (full-screen
+  sharing was unaffected). TalQ now always encodes the window at a compatible
+  size, so it shows up everywhere.
+* **A received screen share no longer gets stuck on "Starting…".** If the first
+  frame of an incoming share was lost it could hang on the placeholder; TalQ now
+  re-requests the picture until it appears.
+* **Messages inside a thread no longer each repeat the topic as a quote.**
+* **Choosing a call video quality now sticks.** Manually picking a quality used
+  to revert to Auto; your choice is kept until you switch back to Auto.
+
+### Changed
+
+* **TalQ now tells you when it's using software video encoding** (when no
+  hardware video encoder is available), so it's clear why a call may use more CPU.
+
 ## v0.51.15 "Bafana Bafana" -- BETA (2026-06-18)
 
 ### Fixed
