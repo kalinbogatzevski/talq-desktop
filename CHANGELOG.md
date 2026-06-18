@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.51.17 "Bafana Bafana" -- BETA (2026-06-18)
+
+### Fixed
+
+* **Re-sharing your screen right after stopping the previous share now works.**
+  If you stopped a screen share and started another one within a few seconds,
+  the new share could fail to appear for the other person while looking fine on
+  your side. TalQ now re-announces the share so it reliably shows up, with no
+  need to wait between shares.
+* **Hanging up a one-to-one call now ends it immediately for the other person.**
+  Previously the other side could keep showing "Reconnecting" for up to half a
+  minute after you hung up. A genuine connection drop still reconnects as before.
+* **The "You're sharing your screen" badge is no longer clipped** -- the last
+  character of the label was being cut off.
+
 ## v0.51.16 "Bafana Bafana" -- BETA (2026-06-18)
 
 ### Fixed
