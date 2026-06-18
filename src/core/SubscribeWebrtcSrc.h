@@ -11,6 +11,7 @@
 // already used for SubscribePipeline (drop-in).
 
 #include <QObject>
+#include <QTimer>
 #include <QString>
 #include <QList>
 #include <QPair>
@@ -130,6 +131,12 @@ private:
     GstElement *m_videoConvert = nullptr;
     GstElement *m_videoAppsink = nullptr;
     VideoFrameProvider *m_videoProvider = nullptr;
+    // Keyframe-stall watchdog: if no frame decodes shortly after ICE connects,
+    // the first IDR was lost and the tile sits frozen on "Starting…" — re-request
+    // a keyframe (PLI) every 2.5 s up to 5× until the first frame arrives.
+    QTimer            *m_keyframeWatchdog = nullptr;   // child of this (main thread)
+    std::atomic<bool>  m_decodedAnyFrame{false};       // set on the streaming thread
+    int                m_keyframePliRetriesLeft = 0;
     // 0.51.x AEC single-pipeline fix: external appsrc (publisher pipeline's
     // far-end mixer) that decoded audio is pushed into INSTEAD of a per-sub
     // wasapi2sink. Refed in setFarEndAppsrc, unrefed in cleanup (after the

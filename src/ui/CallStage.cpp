@@ -374,7 +374,10 @@ void CallStage::updateStreamQualities()
         if (!t.p || t.p->isSelf() || t.isScreen) continue;
         const int substream = pickSubstream(m_qualityOverride,
                                             t.rect.height(), t.isStage);
-        m_call->requestPeerVideoQuality(t.p->sessionId(), substream);
+        // m_qualityOverride >= 0 means the user manually picked a quality —
+        // pin it past the auto load controller; -1 (Auto) lets it govern.
+        m_call->requestPeerVideoQuality(t.p->sessionId(), substream,
+                                        /*manual=*/m_qualityOverride >= 0);
     }
 }
 

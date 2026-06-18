@@ -171,6 +171,14 @@ QVariant MessageListModel::data(const QModelIndex &index, int role) const
             return m.isGroupedWith(m_messages[next]);
         }
         case ReplyToTextRole:
+            // In a thread view, Talk sets every in-thread message's replyTo to
+            // the thread ROOT — so the painter would prefix EVERY message with a
+            // quote of the topic. Suppress the quote for messages replying
+            // DIRECTLY to the root; genuine replies to OTHER in-thread messages
+            // (parent != root) still show their quote.
+            if (m_threadId > 0 && !m.replyTo.isEmpty()
+                && m.replyTo.value("id").toInt() == m_threadId)
+                return QString();
             return m.replyTo.isEmpty() ? QString() : m.replyTo["message"].toString();
         case ReplyToAuthorRole:
             return m.replyTo.isEmpty() ? QString() : m.replyTo["actorDisplayName"].toString();
