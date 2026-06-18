@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.52.1 "Bafana Bafana" -- STABLE (2026-06-18)
+
+### Fixed
+
+* **Incoming video no longer keeps dropping to low quality on its own.** The
+  automatic quality control used the resolution it was *currently receiving* as
+  its measure of load — which is the very thing it adjusts — so it fed back on
+  itself and oscillated, repeatedly switching a call's video down to the lowest
+  layer and back even on machines with plenty of headroom. Automatic receive
+  downscaling on that signal is now disabled; per-tile sizing still picks an
+  appropriate quality, and send-side adaptation is unchanged.
+
 ## v0.52.0 "Bafana Bafana" -- STABLE (2026-06-18)
 
 Promotes the 0.51.x line to stable. Highlights since 0.50.11:
