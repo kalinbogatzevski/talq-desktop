@@ -54,7 +54,10 @@ CallStage::CallStage(CallManager *call, QWidget *parent)
     m_idleTimer.start();
 
     connect(m_call, &CallManager::stateChanged, this, [this]{
-        if (m_call->state() == CallManager::Idle) { m_camFrame.clear(); m_scrFrame.clear(); }
+        if (m_call->state() == CallManager::Idle) {
+            m_camFrame.clear(); m_scrFrame.clear();
+            m_tileSubstream.clear();   // fresh hysteresis seed per call; no cross-call leak
+        }
         // Keep the control bar (with the Leave/Cancel button) reachable while
         // reconnecting. Auto-hide only runs in Active, but if the chrome had
         // already faded when ICE failed, force it back so the user can always
@@ -372,11 +375,18 @@ void CallStage::updateStreamQualities()
     if (!m_call) return;
     for (const Tile &t : m_tiles) {
         if (!t.p || t.p->isSelf() || t.isScreen) continue;
-        const int substream = pickSubstream(m_qualityOverride,
-                                            t.rect.height(), t.isStage);
+        const QString sid = t.p->sessionId();
+        // Drop-hysteresis on the AUTO selection: a tile hovering on a size
+        // boundary won't flip the requested layer (and force an SFU switch +
+        // keyframe) every relayout. Manual picks bypass it (override wins inside
+        // pickSubstreamHysteretic). prev = last layer chosen for this peer.
+        const int substream = pickSubstreamHysteretic(
+            m_qualityOverride, t.rect.height(), t.isStage,
+            m_tileSubstream.value(sid, -1));
+        m_tileSubstream[sid] = substream;
         // m_qualityOverride >= 0 means the user manually picked a quality —
         // pin it past the auto load controller; -1 (Auto) lets it govern.
-        m_call->requestPeerVideoQuality(t.p->sessionId(), substream,
+        m_call->requestPeerVideoQuality(sid, substream,
                                         /*manual=*/m_qualityOverride >= 0);
     }
 }
@@ -1231,13 +1241,18 @@ void CallStage::paintInfoPills(QPainter &p, const PainterTheme &th)
     if (m_qualityOverride >= 0) {
         sub = m_qualityOverride;
     } else {
-        qreal bestH = 0; bool bestIsStage = false;
+        QString bestSid; qreal bestH = 0; bool bestIsStage = false;
         for (const Tile &t : m_tiles) {
             if (!t.p || t.p->isSelf() || t.isScreen) continue;
-            if (t.isStage) { bestIsStage = true; bestH = t.rect.height(); break; }
-            if (t.rect.height() > bestH) bestH = t.rect.height();
+            if (t.isStage) { bestIsStage = true; bestH = t.rect.height(); bestSid = t.p->sessionId(); break; }
+            if (t.rect.height() > bestH) { bestH = t.rect.height(); bestSid = t.p->sessionId(); }
         }
-        if (bestH > 0) sub = pickSubstream(-1, bestH, bestIsStage);
+        // Reflect what we ACTUALLY requested for the primary tile (the hysteretic
+        // value stored in updateStreamQualities), not a fresh non-hysteretic
+        // recompute — otherwise inside the drop-hold band the chip would read e.g.
+        // MED while we are still requesting (and the SFU forwarding) HIGH.
+        if (!bestSid.isEmpty())
+            sub = m_tileSubstream.value(bestSid, pickSubstream(-1, bestH, bestIsStage));
     }
     if (sub >= 0 && sub <= 2) {
         static const char *const kQualityLabels[] = { "LOW", "MED", "HIGH" };
