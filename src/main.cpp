@@ -663,6 +663,24 @@ int main(int argc, char *argv[])
         notifications.notify(QObject::tr("Call ended"), msg, /*alwaysSound=*/true, QString());
     });
 
+    // Screen-share reliability — surface the auto-retry + the give-up to the
+    // user instead of a silent dead share (Ilko field report: "I clicked share
+    // and nothing happened for ~30 s"). screenShareRetrying fires per bounded
+    // auto-retry (so the user sees TalQ is working on it, not frozen);
+    // screenShareFailed fires once after the retry budget is exhausted, with a
+    // ready-to-show reason. Both are non-interactive toasts (empty token).
+    QObject::connect(&callManager, &CallManager::screenShareRetrying, &notifications,
+                     [&notifications]() {
+        notifications.notify(QObject::tr("Screen sharing"),
+                             QObject::tr("Still starting your screen share…"),
+                             /*alwaysSound=*/false, QString());
+    });
+    QObject::connect(&callManager, &CallManager::screenShareFailed, &notifications,
+                     [&notifications](const QString &reason) {
+        notifications.notify(QObject::tr("Screen sharing"), reason,
+                             /*alwaysSound=*/true, QString());
+    });
+
     // A call the SERVER rejected (e.g. HTTP 5xx on POST call/{token}) must never
     // be a silent drop. CallManager intercepts it and emits callFailed with a
     // plain-language title + message; show it as a prominent, must-dismiss

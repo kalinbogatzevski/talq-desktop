@@ -2546,21 +2546,41 @@ void PublishPipeline::applyBweToLayers(int estimateBps)
     // nominal target by ~25% (RTP/RTCP overhead, FEC pacing slack).
     // Sums-of-active-layers we want to fit under: l alone ~200k,
     // l+m ~800k, l+m+h ~3 700k. Close-thresholds chosen below the next
-    // sum-up; reopen with +200k hysteresis to avoid flapping.
+    // sum-up; reopen with +200k hysteresis.
     constexpr int kCloseH      = 1'800'000;
     constexpr int kCloseM      =   600'000;
     constexpr int kHysteresis  =   200'000;
+    // 0.51.14 anti-flap: an estimate hovering near a threshold flipped a layer
+    // ACTIVE/MUTED every few seconds (each flip = keyframe + visible quality
+    // jump). The gate now DROPS fast but only RE-ADDS after the estimate stays
+    // above re-open this long. See BweLayerGate.h. (Ilko ~1.9 Mbps field repro.)
+    constexpr long long kReopenDwellMs = 4000;
 
-    auto threshold = [&](int closeT, bool currentlyActive) {
-        return currentlyActive ? closeT : (closeT + kHysteresis);
-    };
+    if (!m_bweClock.isValid()) m_bweClock.start();
+    const long long now = m_bweClock.elapsed();
 
     // Effective cap = MIN(network, encode-load): a layer sends only if BOTH the
     // BWE estimate AND the encode-load cap (m_loadCapMaxLayer) allow it, so the
     // CPU veto can't be overridden by a healthy network estimate.
     const int ceil = effectiveLayerCeiling();   // tier cap AND screen-share overlay
-    bool wantH = (ceil >= 2) && estimateBps > threshold(kCloseH, m_layers[2].active);
-    bool wantM = (ceil >= 1) && estimateBps > threshold(kCloseM, m_layers[1].active);
+    // Keep the gate's notion of 'active' in sync with the real valve state —
+    // other axes (screen-share suppression, load ceiling) also flip layers.
+    m_bweGate[2].active = m_layers[2].active;
+    m_bweGate[1].active = m_layers[1].active;
+    const bool wantH = talq::bweGateLayer(m_bweGate[2], estimateBps, kCloseH,
+                                          kHysteresis, ceil >= 2, now, kReopenDwellMs);
+    const bool wantM = talq::bweGateLayer(m_bweGate[1], estimateBps, kCloseM,
+                                          kHysteresis, ceil >= 1, now, kReopenDwellMs);
+
+    // Log the estimate exactly when a layer flips (low-noise; setLayerActive
+    // also logs the rid). Makes the next field log show the gate's behavior +
+    // confirm the dwell tamed the flap.
+    if (wantH != m_layers[2].active || wantM != m_layers[1].active) {
+        qInfo().nospace() << "PublishPipeline: BWE gate @ " << (estimateBps / 1000)
+                          << " kbps -> H=" << wantH << " M=" << wantM
+                          << " (ceil " << ceil << ", reopen-dwell "
+                          << kReopenDwellMs << "ms)";
+    }
     // 'l' always stays on — our minimum-viable channel.
     setLayerActive(2, wantH);
     setLayerActive(1, wantM);
