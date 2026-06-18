@@ -5,14 +5,14 @@
 ; replaces the old separate "Update" installer — one .exe, both modes.
 AppId={{B7E2A6F4-3D14-4F2A-9B5E-0A1C8F4E2D31}}
 AppName=TalQ
-AppVersion=0.51.12
+AppVersion=0.51.13
 AppPublisher=TalQ
 AppPublisherURL=https://github.com/kalinbogatzevski/talq-desktop
 DefaultDirName={localappdata}\Programs\TalQ
 PrivilegesRequired=lowest
 DefaultGroupName=TalQ
 OutputDir=..\dist
-OutputBaseFilename=TalQ-v0.51.12-Setup
+OutputBaseFilename=TalQ-v0.51.13-Setup
 SetupIconFile=..\resources\talq.ico
 UninstallDisplayIcon={app}\talq.exe
 WizardImageFile=..\resources\talq-wizard.bmp
@@ -40,19 +40,33 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 Name: "startmenuicon"; Description: "Create a Start Menu shortcut"; GroupDescription: "Additional shortcuts:"
 Name: "autostart"; Description: "Start TalQ when Windows starts"; GroupDescription: "System:"
 
-[InstallDelete]
-; An update MUST leave the on-disk dependency set identical to the one
-; this version ships — a stale or removed GStreamer plugin / runtime DLL
-; left behind by a prior version is a dead app for a comms client (this
-; is exactly what broke 0.29.5: a new plugin dependency missing on disk).
-; Wipe the version-specific runtime here; [Files] below recopies the
-; complete, current payload. ignoreversion alone only overwrites files
-; that still exist in the new payload — it can never remove one.
-Type: filesandordirs; Name: "{app}\gst-plugins"
-Type: files; Name: "{app}\*.dll"
+; [InstallDelete] — DELIBERATELY EMPTY. Do NOT add a blanket wipe here.
+;
+; A blanket pre-delete (e.g. Type: files; Name: "{app}\*.dll") bricks an
+; in-place auto-update: [InstallDelete] runs BEFORE [Files], so it removes
+; libglib-2.0-0.dll & co. first, and if ANYTHING then stops [Files] from
+; recopying one of them (the running TalQ still holds a GStreamer DLL lock
+; during the updater hand-off → reboot-pending replace; an AV scan; an
+; interrupted copy), the app is left with the file DELETED and not yet
+; restored → "libglib-2.0-0.dll was not found" = dead app. This is exactly
+; what hit 0.51.12 in the field (manual install was fine — no running TalQ
+; holding locks — but the auto-update path bricked it).
+;
+; [Files] with `ignoreversion` overwrites every shipped file in place and,
+; for a locked file, schedules a replace-on-reboot WHILE LEAVING THE OLD
+; WORKING COPY IN PLACE. So the worst case becomes a slightly-stale-until-
+; reboot DLL — never a MISSING one. The invariant we must preserve: never
+; delete a working file before its replacement is safely on disk.
+;
+; Stale-file cleanup (a file a NEW version no longer ships) is the only
+; thing we lose. That is benign for us (an unused extra DLL/plugin just
+; sits there). If a specific obsolete file ever genuinely must go, retire
+; it with a TARGETED named entry for that exact file — it is safe precisely
+; because [Files] won't recreate it and the new binary doesn't need it.
+; Never reintroduce a wildcard delete of files this version still ships.
 
 [Files]
-Source: "..\dist\TalQ-v0.51.12-win64\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\dist\TalQ-v0.51.13-win64\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\TalQ"; Filename: "{app}\talq.exe"; Tasks: startmenuicon
