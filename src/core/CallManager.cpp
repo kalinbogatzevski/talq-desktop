@@ -265,6 +265,11 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
     connect(m_signaling, &SignalingClient::participantLeftCall,
             this, &CallManager::onParticipantLeftCall);
 
+    // A peer's DELIBERATE hangup (not a transient drop) — end a 1:1 MCU call
+    // immediately instead of sitting in the 28s peer-grace "Reconnecting" hold.
+    connect(m_signaling, &SignalingClient::peerHungUp,
+            this, &CallManager::onPeerHungUp);
+
     // Re-request subscriber stream when remote peer enables their camera
     connect(m_signaling, &SignalingClient::participantFlagsChanged,
             this, [this](const QString &sessionId, int oldFlags, int newFlags) {
@@ -1736,7 +1741,38 @@ void CallManager::declineCall()
 void CallManager::hangUp() {
     if (m_state == Idle) return;
     qDebug() << "CallManager: hangUp from state" << m_state;
+    // Tell the peer this is a DELIBERATE hangup so a 1:1 MCU call ends on their
+    // side immediately, instead of waiting out the 28s peer-grace "Reconnecting"
+    // hold (which exists to survive a transient drop and can't distinguish the
+    // two). MCU 1:1 only — P2P and group already end promptly on the peer. Sent
+    // BEFORE teardown(): hanging up leaves the CALL but stays in the room, so the
+    // signaling socket is still open. Best-effort — if it's lost, the peer falls
+    // back to grace→timeout (no regression).
+    const bool isOneToOne = m_conversations
+        && m_conversations->conversationTypeForToken(m_callToken) == 1;
+    if (!m_useP2P && isOneToOne && !m_remoteSessionId.isEmpty()) {
+        QJsonObject data;
+        data["type"] = QString("hangup");
+        m_signaling->sendMinimalMessage(m_remoteSessionId, data);
+        qDebug() << "CallManager: sent hangup hint to" << m_remoteSessionId.left(20);
+    }
     teardown("Hung up");
+}
+
+void CallManager::onPeerHungUp(const QString &sessionId)
+{
+    // The peer told us they hung up on purpose. End a 1:1 MCU call now rather
+    // than waiting out the peer-grace hold. Match either our current peer or the
+    // session we just entered grace for (participantLeftCall may have arrived
+    // first and cleared m_remoteSessionId / set m_graceLeftSid). Ignore for
+    // P2P / group / a stranger so a stray hint can't drop the wrong call.
+    if (m_state == Idle) return;
+    const bool isOneToOne = m_conversations
+        && m_conversations->conversationTypeForToken(m_callToken) == 1;
+    if (m_useP2P || !isOneToOne) return;
+    if (sessionId != m_remoteSessionId && sessionId != m_graceLeftSid) return;
+    qInfo() << "CallManager: peer signalled hangup — ending 1:1 call immediately";
+    teardown("Call ended");
 }
 
 void CallManager::toggleMute() {
@@ -1840,6 +1876,23 @@ void CallManager::removeScreenSubscriber(const QString &sessionId)
         p->setScreenSharing(false);
     }
     updateCameraSuppression();        // a sharer vanished — recompute (don't latch LOW)
+}
+
+void CallManager::dispatchScreenSendoffer()
+{
+    // A peer can only learn about an ongoing screen share from this message —
+    // there is no screen-share participant flag to poll. Only announce while we
+    // are genuinely sharing (a queued re-assert timer may fire after the user
+    // stopped, or after a different pipeline replaced this one).
+    if (!m_screenSharing || !m_screenSharePipeline) return;
+    const auto peers = m_subscribePipelines.keys();
+    for (const QString &peerId : peers) {
+        QJsonObject data;
+        data["type"] = QString("sendoffer");
+        data["roomType"] = QString("screen");
+        m_signaling->sendMinimalMessage(peerId, data);
+        qInfo() << "CallManager: sent sendoffer screen to" << peerId.left(20);
+    }
 }
 
 void CallManager::startScreenShare(int monitorIndex, quintptr windowHandle)
@@ -1986,16 +2039,34 @@ void CallManager::buildAndStartSharePipeline(int monitorIndex, quintptr windowHa
             // only once outbound RTP is also flowing (mediaFlowing below).
             if (m_sharePolicy.onIceConnected() == ShareAction::Confirmed)
                 onShareConfirmed();
-            // Send sendoffer once — HPB creates subscriber for each peer
-            const auto peers = m_subscribePipelines.keys();
+            // Announce the share to peers (HPB creates a subscriber for each).
             qInfo() << "CallManager: screen pub connected — dispatching "
-                       "sendoffer to" << peers.size() << "peer(s)";
-            for (const QString &peerId : peers) {
-                QJsonObject data;
-                data["type"] = QString("sendoffer");
-                data["roomType"] = QString("screen");
-                m_signaling->sendMinimalMessage(peerId, data);
-                qInfo() << "CallManager: sent sendoffer screen to" << peerId.left(20);
+                       "sendoffer to" << m_subscribePipelines.size() << "peer(s)";
+            dispatchScreenSendoffer();
+
+            // Re-share discovery race: when this share started within the
+            // server's reap window of a prior unshare, the sendoffer above
+            // likely raced the still-closing publisher slot and was dropped —
+            // the peer ends up stuck on "starting share…" with a dead feed and
+            // no fallback (discovery is sendoffer-only). Re-assert a couple of
+            // times so the peer re-discovers once the reap completes. Gated on
+            // a recent unshare so NORMAL shares never resend (a resend tears
+            // down + rebuilds a healthy remote view — fine for a stuck/absent
+            // one, a needless flicker for a working one). The user's manual
+            // "wait ~10 s before re-sharing" workaround is what this automates.
+            if (m_lastUnshareTimer.isValid() && m_lastUnshareTimer.elapsed() < 15000) {
+                qInfo() << "CallManager: re-share within reap window — "
+                           "re-asserting screen sendoffer at +5s and +11s";
+                // Stamp with THIS share's sid: if the user stops and starts
+                // ANOTHER share before these fire, m_screenShareSid changes (it
+                // is set per share on localOfferReady and cleared on stop), so a
+                // stale re-assert bails instead of forcing the now-current
+                // share's healthy remote view to rebuild.
+                const QString sid = m_screenShareSid;
+                QTimer::singleShot(5000,  this, [this, sid]{
+                    if (m_screenShareSid == sid) dispatchScreenSendoffer(); });
+                QTimer::singleShot(11000, this, [this, sid]{
+                    if (m_screenShareSid == sid) dispatchScreenSendoffer(); });
             }
         }
         if (state == "failed") {
@@ -2327,6 +2398,10 @@ void CallManager::stopScreenShare()
     // Also send to own session — HPB only cleans up publisher when recipient == self
     m_signaling->sendMinimalMessage(m_signaling->sessionId(), data);
     qInfo() << "CallManager: stopped screen sharing";
+    // Mark the unshare instant: if a re-share starts within the reap window, the
+    // screen ICE-connected handler re-asserts the sendoffer so the peer doesn't
+    // get stranded on a dropped discovery message (#reshare-not-seen).
+    m_lastUnshareTimer.restart();
 
     m_screenShareTearingDown = false;
     // Terminal teardown: drive the share policy straight back to Idle. This path
@@ -3180,6 +3255,10 @@ void CallManager::teardown(const QString &reason)
     }
     m_screenSharing = false;
     m_screenShareTearingDown = false;
+    // The reap-window gate for screen re-share re-asserts is intra-call only;
+    // invalidate it so a stop-while-sharing in THIS call can't arm a spurious
+    // re-assert on the NEXT call's first share (the timer member persists).
+    m_lastUnshareTimer.invalidate();
     // A call can end while a share is Active/Confirming/Stopping. m_sharePolicy
     // is a persistent member and the deleteLater() above suppresses released(),
     // so without an explicit reset the policy survives into the NEXT call in a

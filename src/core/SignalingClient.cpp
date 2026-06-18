@@ -301,6 +301,18 @@ void SignalingClient::onTextMessage(const QString &msg)
             return;
         }
 
+        // TalQ-private deliberate-hangup hint. A 1:1 MCU call holds the peer in a
+        // 28s "Reconnecting" peer-grace on participantLeftCall (to survive a
+        // transient drop), which can't tell a real hangup from a blip. The peer
+        // sends this the instant the user hangs up so we end immediately instead
+        // of waiting out the grace. Best-effort: if it's lost, grace→timeout
+        // still ends the call (no regression). The HPB relays it untouched.
+        if (msgType == "hangup") {
+            qDebug() << "Signaling: received hangup from" << senderSessionId.left(20);
+            emit peerHungUp(senderSessionId);
+            return;
+        }
+
         // Room-scoped messages (typing indicators)
         QString senderRoom = messageObj["sender"].toObject()["roomid"].toString();
         if (!senderRoom.isEmpty() && senderRoom != m_currentRoom) {

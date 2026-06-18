@@ -2,6 +2,7 @@
 
 #include <QObject>
 #include <QTimer>
+#include <QElapsedTimer>
 #include <QHash>
 #include <QSet>
 #include <QVector>
@@ -247,6 +248,7 @@ signals:
 private slots:
     void onParticipantJoinedCall(const QString &sessionId, int flags, const QString &displayName);
     void onParticipantLeftCall(const QString &sessionId);
+    void onPeerHungUp(const QString &sessionId);
     void onOfferReceived(const QString &fromSessionId, const QString &sdp, const QString &sid);
     void onAnswerReceived(const QString &fromSessionId, const QString &sdp);
     void onAudioLevelUpdated(double level);
@@ -514,6 +516,17 @@ private:
     bool m_screenSharing = false;
     bool m_softwareEncoderNotified = false;  // once-per-call guard for softwareVideoEncoderNotice
     QString m_screenShareSid;
+    // Reset (restart()) whenever WE send an unshareScreen. A peer discovers an
+    // ongoing screen share ONLY from the publisher's one-shot sendoffer (there
+    // is no screen-share flag to poll) — so when a re-share starts within the
+    // server's reap window of a prior unshare, that single sendoffer races the
+    // still-closing publisher slot and is dropped, leaving the peer stuck on
+    // "starting share…". Used to gate a few targeted sendoffer re-asserts after
+    // a quick stop→re-share so the peer re-discovers the share once the reap
+    // completes — without the user having to wait. See dispatchScreenSendoffer().
+    QElapsedTimer m_lastUnshareTimer;
+    // (Re)announce an active screen share to every current peer via sendoffer.
+    void dispatchScreenSendoffer();
     // Set during stopScreenShare()'s 50-iteration GLib flush. Used by
     // publisher-ICE-failed handler to suppress recovery-counter bumps
     // and hangUp() while the screen pipeline teardown perturbs the

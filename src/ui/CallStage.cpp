@@ -1445,7 +1445,12 @@ void CallStage::paintSharingBadge(QPainter &p, const PainterTheme &th)
     QFont f = monoFont(12); f.setBold(true);
     p.setFont(f);
     QFontMetrics fm(f);
-    qreal pillW = fm.horizontalAdvance(text) + 40;
+    // Chrome around the text inside the pill: 30px on the left (red dot + gap,
+    // see the adjusted() draw rect below) + 10px on the right. Add slack on top
+    // of that so the inner text rect is WIDER than the glyph advance — a bold
+    // font's right-side bearing plus QRectF→device-pixel rounding was clipping
+    // the final character ("…your scree" with the n cut off).
+    qreal pillW = fm.horizontalAdvance(text) + 30 + 10 + 14;
     // Sit on a clear row BELOW the top-chrome block (status pill, info pills incl.
     // any wrapped rows, and the action buttons) so the badge can't be overlapped
     // by them on a narrow window. m_chromeRowsBottom/m_infoPillsBottom are
