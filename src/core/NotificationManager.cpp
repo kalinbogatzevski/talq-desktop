@@ -1,4 +1,5 @@
 #include "core/NotificationManager.h"
+#include "core/ShutdownWatchdog.h"
 #include <QApplication>
 #include <QWidget>
 #include <QIcon>
@@ -93,6 +94,7 @@ void NotificationManager::loadSoundForId(const QString &id)
 
 NotificationManager::~NotificationManager()
 {
+    qInfo() << "[SHUTDOWN] ~NotificationManager begin";   // 0.51.15 TEMP hang diag
     delete m_trayMenu;
 #ifdef Q_OS_WIN
     if (m_taskbar) {
@@ -151,7 +153,14 @@ void NotificationManager::setupTrayIcon()
     m_trayMenu->addSeparator();
 
     auto *quitAction = m_trayMenu->addAction("Quit");
-    connect(quitAction, &QAction::triggered, qApp, &QApplication::quit);
+    connect(quitAction, &QAction::triggered, qApp, []() {
+        // Arm the force-exit watchdog at the trigger so Quit ALWAYS terminates
+        // the process, even if a teardown step (GStreamer / GPU driver / a
+        // worker thread) wedges — a lingering talq.exe is what made Quit "do
+        // nothing" + blocked auto-update (field 2026-06-18). See ShutdownWatchdog.h.
+        talq::armShutdownWatchdog(6);
+        qApp->quit();
+    });
 
     m_trayIcon->setContextMenu(m_trayMenu);
 
