@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.51.14 "Bafana Bafana" -- BETA (2026-06-18)
+
+### Changed
+
+* **Your camera quality is steadier on a busy network.** Previously it could
+  flip up and down every few seconds when bandwidth was tight. It now still
+  drops quickly when the connection needs it to, but waits for the connection to
+  stay healthy for a few seconds before stepping back up — so the picture stops
+  oscillating.
+
+### Fixed
+
+* **Starting a screen share again right after stopping one is more reliable.**
+  On some computers, re-sharing within a few seconds could leave the share stuck
+  "starting" until it eventually recovered. TalQ now gives the graphics hardware
+  more time to release between shares.
+* **You're now notified if a screen share has trouble starting.** Instead of
+  nothing appearing to happen, TalQ tells you it's still starting your share and,
+  if it ultimately can't, says so clearly.
+
 ## v0.51.13 "Bafana Bafana" -- BETA (2026-06-18)
 
 ### Fixed
