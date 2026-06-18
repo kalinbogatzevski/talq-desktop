@@ -142,6 +142,9 @@ signals:
     void roomJoined();
     void remoteMuteChanged(const QString &sessionId, const QString &media, bool muted);
     void screenShareStopped(const QString &sessionId);
+    // Peer signalled a DELIBERATE hangup (TalQ-private) — end a 1:1 call now
+    // rather than waiting out the peer-grace hold. See CallManager::onPeerHungUp.
+    void peerHungUp(const QString &sessionId);
 
     // HPB-broadcast chat refresh hint: emitted for any room-scoped chat
     // event from the standalone signaling server (new message, read marker
