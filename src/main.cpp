@@ -688,6 +688,15 @@ int main(int argc, char *argv[])
         notifications.notify(QObject::tr("Screen sharing"), reason,
                              /*alwaysSound=*/true, QString());
     });
+    // Camera fell back to the software (x264) encoder — let the user know once
+    // why CPU may be higher (no usable hardware video encoder on this machine).
+    QObject::connect(&callManager, &CallManager::softwareVideoEncoderNotice, &notifications,
+                     [&notifications]() {
+        notifications.notify(QObject::tr("Video encoding"),
+                             QObject::tr("Using software video encoding — your graphics "
+                                         "encoder is unavailable; this may use more CPU."),
+                             /*alwaysSound=*/false, QString());
+    });
 
     // A call the SERVER rejected (e.g. HTTP 5xx on POST call/{token}) must never
     // be a silent drop. CallManager intercepts it and emits callFailed with a

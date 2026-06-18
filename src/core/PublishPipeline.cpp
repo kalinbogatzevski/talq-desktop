@@ -531,9 +531,14 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         // so all three layers pick the same factory. We pin the codec from
         // layer 0's decision and assert it on subsequent layers.
         bool layerUsesH264 = false;
+        bool layerIsSoftware = false;
         L.encoder = makeWebrtcVideoEncoder(/*screen=*/false, L.nominalBitrate,
                                             &layerUsesH264, &L.parser,
-                                            (i == 0) ? &m_encoderDesc : nullptr);
+                                            (i == 0) ? &m_encoderDesc : nullptr,
+                                            (i == 0) ? &layerIsSoftware : nullptr);
+        // Layer 0 decides the codec/encoder for all layers; if it resolved to
+        // the software (x264) encoder, tell the user once (higher CPU).
+        if (i == 0 && layerIsSoftware) emit softwareVideoEncoderUsed();
         // The branch elements are created here but only bin-added below.
         // On any early-exit before gst_bin_add_many, they're floating refs
         // the bin never adopts, so cleanup() (which only nulls pointers +

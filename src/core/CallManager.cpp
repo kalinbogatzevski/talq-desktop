@@ -1334,6 +1334,13 @@ bool CallManager::buildAndStartPublisher()
                    << "forceSoftware=" << talqForceSoftwareVideo().load();
     });
 
+    connect(m_publishPipeline, &PublishPipeline::softwareVideoEncoderUsed, this, [this]() {
+        if (m_softwareEncoderNotified) return;   // once per call (publisher can rebuild)
+        m_softwareEncoderNotified = true;
+        qInfo() << "CallManager: camera on SOFTWARE video encoder — notifying user";
+        emit softwareVideoEncoderNotice();
+    });
+
     connect(m_publishPipeline, &PublishPipeline::cameraError, this, [this](const QString &reason) {
         qWarning() << "CallManager: camera error:" << reason;
         m_cameraOn = false;
@@ -2054,18 +2061,29 @@ void CallManager::buildAndStartSharePipeline(int monitorIndex, quintptr windowHa
     }
 }
 
-void CallManager::requestPeerVideoQuality(const QString &sessionId, int substream)
+void CallManager::requestPeerVideoQuality(const QString &sessionId, int substream, bool manual)
 {
     if (substream < 0 || substream > 2) return;
     // `substream` is the tile-size-driven WANT. Remember it raw so a later
     // load-cap change (or a focus change) can be re-applied without the UI
     // re-deciding, then send the load-capped effective value.
     m_peerSubstreamWant[sessionId] = substream;
+    // A MANUAL pick (the user explicitly chose a quality) PINS this peer past
+    // the auto load controller; Auto (manual=false) clears the pin so the
+    // controller governs again. Without this the load cap silently reverted the
+    // user's choice every tick (the "selecting quality does nothing" bug).
+    if (manual) m_peerManualSubstreamOverride[sessionId] = substream;
+    else        m_peerManualSubstreamOverride.remove(sessionId);
     sendDesiredSubstream(sessionId, effectiveSubstreamFor(sessionId, substream));
 }
 
 int CallManager::effectiveSubstreamFor(const QString &sessionId, int want) const
 {
+    // A MANUAL receive-quality pick overrides the auto load controller entirely:
+    // the user chose it, so never cap it (the load cap only governs the AUTO /
+    // tile-size path). Cleared when the user returns to Auto.
+    const int manual = m_peerManualSubstreamOverride.value(sessionId, -1);
+    if (manual >= 0) return manual;
     // No receive-load cap in force → honour the tile-size want verbatim.
     if (m_recvLoadSubstreamCap >= 2) return want;
     // Focused tile = the peer the UI wants at the HIGHEST substream (largest
@@ -3179,6 +3197,7 @@ void CallManager::teardown(const QString &reason)
         sub->deleteLater();
     }
     m_screenSubscribers.clear();
+    m_softwareEncoderNotified = false;   // re-notify on the next call if still software
 
     // Synchronous local close — the UI must NEVER wait on the server
     // (mid-call network drops could otherwise leave the call window
