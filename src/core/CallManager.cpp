@@ -402,6 +402,29 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
                         << from.left(20) << "— call torn down (state" << m_state << ")";
                 return;
             }
+            // Redundant re-assert guard. The publisher re-asserts its screen
+            // sendoffer a few seconds into a re-share (the reap-race recovery
+            // added in 0.51.17). If our current subscriber for this peer is
+            // GENUINELY DECODING FRAMES right now, the re-offer is redundant —
+            // rebuilding would tear the working decode down and flap the view to
+            // black. Suppress it. Liveness is keyed on decoded-frame advancement
+            // (m_screenSubStallTicks, sampled every ~2s in updateCallStats), NOT
+            // ICE state: in MCU mode a dead feed keeps ICE "connected" (the
+            // publisher slot was reaped/replaced, or unshareScreen was lost), so an
+            // ICE-based latch would wrongly suppress the very re-assert that should
+            // rebuild it and strand the viewer on a permanent black frame. A black/
+            // never-started/stale sub has stall-ticks > 1 and falls through to
+            // rebuild on the fresh feed — so a lost unshareScreen cannot strand the
+            // viewer. Threshold is <=1 (not <=3): the sampler ticks every ~2s, so
+            // <=1 means "a frame within the last ~2-4s" = genuinely live; a feed
+            // that died when the sender stopped is many ticks stale by the time the
+            // +5s/+11s re-assert offer arrives, so it reliably rebuilds.
+            if (m_screenSubscribers.contains(from)
+                && m_screenSubStallTicks.value(from, 99) <= 1) {
+                qInfo() << "CallManager: ignoring redundant screen re-offer from"
+                        << from.left(20) << "— subscriber live (frames flowing, no flap)";
+                return;
+            }
             // A re-share (stop → share again) sends a fresh offer for a
             // session we may still hold a screen subscriber for. Feeding
             // the new offer into the OLD SubscribePipeline leaves its
@@ -410,6 +433,8 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
             // share. Same class as the camera re-attach bug: tear the
             // stale subscriber down and fall through to build a fresh one.
             if (auto *stale = m_screenSubscribers.take(from)) {
+                m_screenSubFrameMark.remove(from);    // rebuilding — drop stale
+                m_screenSubStallTicks.remove(from);   // frame-liveness state
                 qDebug() << "CallManager: screen re-offer for" << from.left(20)
                          << "— rebuilding screen subscriber (avoid frozen frame)";
                 stale->stop();
@@ -953,6 +978,30 @@ void CallManager::updateCallStats()
         qWarning() << "CallManager: subscriber" << sid.left(20)
                    << "frame-stalled -- rebuilding (publisher likely reconnected)";
         recoverSubscriber(sid, QStringLiteral("frame-stall"));
+    }
+
+    // Screen-subscriber FRAME-liveness sampler (runs here in updateCallStats, the
+    // ~2s stats tick — same poll as the #bug2 camera watchdog above). Feeds the
+    // redundant-re-assert guard in the screen offer handler: a screen re-offer is
+    // suppressed (no flap) only while the current sub is decoding frames RIGHT NOW.
+    // A black/dead screen sub (lost unshareScreen, or an MCU publisher-slot
+    // replacement — ICE stays "connected" so the #bug2 watchdog can't help and no
+    // failed edge fires) goes frame-stale here within ~2 ticks and is then rebuilt
+    // by the next re-offer, instead of being stranded forever on a frozen frame.
+    // Seed the mark at 0 (not -1) so a CONNECTED-BUT-NEVER-DECODED sub (frameCount
+    // stuck at 0) does NOT count as "advanced" — it accrues stall ticks from the
+    // first sample and so is rebuildable, instead of being treated as live.
+    for (auto it = m_screenSubscribers.constBegin();
+         it != m_screenSubscribers.constEnd(); ++it) {
+        const QString &sid = it.key();
+        SubscribePipeline *s = it.value();
+        const int fc = (s && s->videoProvider()) ? s->videoProvider()->frameCount() : 0;
+        if (fc > m_screenSubFrameMark.value(sid, 0)) {
+            m_screenSubFrameMark[sid] = fc;
+            m_screenSubStallTicks[sid] = 0;          // a new frame this tick -> live
+        } else {
+            m_screenSubStallTicks[sid] = m_screenSubStallTicks.value(sid, 0) + 1;
+        }
     }
 
     // Publisher outbound-RTP stall watchdog. The publisher webrtcbin keeps
@@ -1849,6 +1898,8 @@ void CallManager::updateCameraSuppression()
 void CallManager::removeScreenSubscriber(const QString &sessionId)
 {
     auto *sub = m_screenSubscribers.take(sessionId);
+    m_screenSubFrameMark.remove(sessionId);    // peer's screen gone — drop
+    m_screenSubStallTicks.remove(sessionId);   // frame-liveness state
     if (!sub)
         return;                       // no remote screen from this peer — nothing to do
     // If this peer's screen was the one being rendered, unbind it so the UI
@@ -3276,6 +3327,8 @@ void CallManager::teardown(const QString &reason)
         sub->deleteLater();
     }
     m_screenSubscribers.clear();
+    m_screenSubFrameMark.clear();
+    m_screenSubStallTicks.clear();
     m_softwareEncoderNotified = false;   // re-notify on the next call if still software
 
     // Synchronous local close — the UI must NEVER wait on the server
