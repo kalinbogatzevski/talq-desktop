@@ -572,6 +572,17 @@ private:
     void onSharePipelineReleased();
     VideoFrameProvider *m_remoteScreenProvider = nullptr;
     QHash<QString, SubscribePipeline*> m_screenSubscribers;
+    // Per-screen-subscriber FRAME-liveness (sampled every ~2s in updateCallStats),
+    // feeding the redundant-re-assert guard in the screen offer handler.
+    // m_screenSubFrameMark = last decoded frameCount seen; m_screenSubStallTicks =
+    // consecutive ~2s stats ticks with NO new frame (0 = decoding right now, high =
+    // black/dead). A re-assert is suppressed (no flap) ONLY while the sub is
+    // genuinely decoding; a dead one (lost unshareScreen / MCU publisher-slot
+    // replaced — its ICE stays "connected" so no failed edge ever fires) goes stale
+    // here and is then rebuilt by the next re-offer. ICE state is NOT a reliable
+    // liveness signal in MCU mode.
+    QHash<QString,int> m_screenSubFrameMark;
+    QHash<QString,int> m_screenSubStallTicks;
 
     // Offers received before ICE servers are available (P3 race guard)
     struct PendingOffer { QString fromSessionId; QString sdp; QString sid; };

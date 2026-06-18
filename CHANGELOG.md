@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.51.18 "Bafana Bafana" -- BETA (2026-06-18)
+
+### Fixed
+
+* **A re-shared screen no longer flickers to black on the viewer's side.** The
+  reliability re-announce added in the previous build could rebuild a screen
+  view that was already working, briefly dropping it to "starting share…"; it
+  now only re-announces to a viewer who hasn't connected yet, so a working
+  share stays put while a stuck one still recovers.
+
 ## v0.51.17 "Bafana Bafana" -- BETA (2026-06-18)
 
 ### Fixed
