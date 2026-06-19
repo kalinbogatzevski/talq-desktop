@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.52.2 "Bafana Bafana" -- STABLE (2026-06-19)
+
+### Fixed
+
+* **Auto-updates now install reliably and don't leave the old version running.**
+  In some cases an update would download and say it was ready, but the running
+  app didn't fully close, so the new files couldn't be put in place and TalQ kept
+  running the old version until it was quit and reopened by hand. The updater now
+  guarantees the old process exits, and the installer force-closes any leftover
+  instance before replacing files, so the update completes and TalQ restarts on
+  its own.
+
 ## v0.52.1 "Bafana Bafana" -- STABLE (2026-06-18)
 
 ### Fixed

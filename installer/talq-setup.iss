@@ -5,14 +5,14 @@
 ; replaces the old separate "Update" installer — one .exe, both modes.
 AppId={{B7E2A6F4-3D14-4F2A-9B5E-0A1C8F4E2D31}}
 AppName=TalQ
-AppVersion=0.52.1
+AppVersion=0.52.2
 AppPublisher=TalQ
 AppPublisherURL=https://github.com/kalinbogatzevski/talq-desktop
 DefaultDirName={localappdata}\Programs\TalQ
 PrivilegesRequired=lowest
 DefaultGroupName=TalQ
 OutputDir=..\dist
-OutputBaseFilename=TalQ-v0.52.1-Setup
+OutputBaseFilename=TalQ-v0.52.2-Setup
 SetupIconFile=..\resources\talq.ico
 UninstallDisplayIcon={app}\talq.exe
 WizardImageFile=..\resources\talq-wizard.bmp
@@ -66,7 +66,7 @@ Name: "autostart"; Description: "Start TalQ when Windows starts"; GroupDescripti
 ; Never reintroduce a wildcard delete of files this version still ships.
 
 [Files]
-Source: "..\dist\TalQ-v0.52.1-win64\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\dist\TalQ-v0.52.2-win64\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\TalQ"; Filename: "{app}\talq.exe"; Tasks: startmenuicon
@@ -78,3 +78,23 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueName: 
 
 [Run]
 Filename: "{app}\talq.exe"; Description: "Launch TalQ"; Flags: nowait postinstall
+
+[Code]
+// Belt-and-suspenders to /CLOSEAPPLICATIONS. An auto-update launches this
+// installer and then asks the running TalQ to quit so its files can be replaced.
+// If that quit wedges (a teardown hang) OR the window's minimize-on-close
+// swallows the Restart-Manager close, the old process keeps the program files
+// locked and the update silently never installs (field: a box left on the old
+// version with the new one already downloaded). Force-terminate any lingering
+// talq.exe here, BEFORE the file copy, so a stuck old process can never block the
+// update. The [Run] entry relaunches talq.exe afterwards; TalQ's single-instance
+// guard collapses any duplicate launch. Runs for silent (auto-update) AND manual
+// installs — closing the target app before an upgrade is expected either way.
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ResultCode: Integer;
+begin
+  Exec('taskkill.exe', '/F /IM talq.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Sleep(800);   // let the OS release the killed process's file handles
+  Result := '';  // empty string = proceed with the install
+end;
