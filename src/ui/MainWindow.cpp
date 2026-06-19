@@ -22,6 +22,7 @@
 #include "core/ApiClient.h"
 #include "core/SearchHit.h"
 #include "core/AuthManager.h"
+#include "core/ShutdownWatchdog.h"
 #include "core/NotificationManager.h"
 #include "core/PushClient.h"
 #include "core/SignalingClient.h"
@@ -3067,6 +3068,18 @@ void MainWindow::maybeLaunchPendingInstaller()
         m_updateInstallBtn->show();
         return;
     }
+    // Arm the force-exit watchdog AT THE AUTO-UPDATE TRIGGER (not just the tray-
+    // Quit one — the 0.51.15 fix covered only that path). The downloaded
+    // installer is already running with /CLOSEAPPLICATIONS; we now quit ourselves
+    // so it can replace our locked files and restart us. But if a teardown step
+    // wedges (the same swallowed-quit that 0.51.15 found) OR closeEvent's
+    // minimize-on-close (0.51.12) blocks the installer's Restart-Manager close,
+    // the old process keeps the files locked and the update silently never
+    // installs (field: a box stuck on 0.51.17 with 0.52.x already on disk). The
+    // watchdog guarantees this process is GONE within the grace window, so the
+    // installer can always complete + restart. Armed at the trigger so a quit()
+    // that never propagates can't bypass it.
+    talq::armShutdownWatchdog(6);
     QTimer::singleShot(500, qApp, &QApplication::quit);
 }
 
