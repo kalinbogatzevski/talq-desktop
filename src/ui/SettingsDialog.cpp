@@ -401,6 +401,20 @@ void SettingsDialog::selectAudioVideoTab()
     if (m_tabs) m_tabs->setCurrentIndex(0);
 }
 
+void SettingsDialog::setUpdateNowStatus(const QString &text)
+{
+    // 0.52.14 — MainWindow reports the manual "Update now" outcome here. Show it,
+    // then auto-revert to the actionable label (covers "You're up to date" /
+    // "Couldn't check"; on a real install the app restarts before this fires).
+    if (!m_updateNowBtn) return;
+    m_updateNowBtn->setText(text);
+    QTimer::singleShot(4000, this, [this]() {
+        if (!m_updateNowBtn) return;
+        m_updateNowBtn->setText(tr("Update now"));
+        m_updateNowBtn->setEnabled(true);
+    });
+}
+
 void SettingsDialog::refresh()
 {
     // Non-blocking: pop the dialog instantly from the cached device list and
@@ -1685,6 +1699,27 @@ QWidget *SettingsDialog::buildUpdatesTab()
         waitLay->addWidget(m_updatesIdleWait);
         waitLay->addStretch();
         lay->addWidget(waitRow);
+    }
+
+    // 0.52.14 — manual "Update now": check + install on demand instead of waiting
+    // for the periodic poll. Bypasses the idle wait, but the no-restart-during-a-
+    // call gate still applies (enforced in MainWindow). The button doubles as its
+    // own status line; MainWindow drives the result via setUpdateNowStatus().
+    {
+        auto *row = new QWidget(w);
+        auto *rl = new QHBoxLayout(row);
+        rl->setContentsMargins(0, 0, 0, 0);
+        rl->setSpacing(8);
+        m_updateNowBtn = new QPushButton(tr("Update now"), row);
+        m_updateNowBtn->setCursor(Qt::PointingHandCursor);
+        connect(m_updateNowBtn, &QPushButton::clicked, this, [this]() {
+            m_updateNowBtn->setEnabled(false);
+            m_updateNowBtn->setText(tr("Checking for updates…"));
+            emit updateNowRequested();
+        });
+        rl->addWidget(m_updateNowBtn);
+        rl->addStretch();
+        lay->addWidget(row);
     }
 
     lay->addSpacing(kGroupGap - kRowGap);

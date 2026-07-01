@@ -260,6 +260,11 @@ private:
     QTimer m_autoInstallTick;
     bool   m_autoInstallActive = false;
     bool   m_autoInstallCancelledForSession = false;
+    // 0.52.14 — manual "Update now" (Settings). m_userWantsImmediateInstall makes
+    // onUpdateReadyToLaunch skip the idle countdown (the call gate still applies);
+    // m_updateNowChecking gates the "You're up to date" fallback feedback.
+    bool   m_userWantsImmediateInstall = false;
+    bool   m_updateNowChecking = false;
     // 0.40.6 — ms-since-epoch when the download landed (the moment the
     // user could realistically see the countdown banner). The tick
     // clamps the effective idle time to (now - this) so a user who was

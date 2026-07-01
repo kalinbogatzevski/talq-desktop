@@ -36,6 +36,9 @@ public:
     // 0.40.15 — opens directly on the Audio & Video tab. Used by the
     // in-call BACKGROUND dropdown's "Open background settings…" entry.
     void selectAudioVideoTab();
+    // 0.52.14 — MainWindow drives the manual "Update now" button's status text
+    // (e.g. "Update found — installing…", "You're up to date"); auto-reverts.
+    void setUpdateNowStatus(const QString &text);
 
 protected:
     // Tear down the live BG preview pipeline (releases the camera so a
@@ -53,6 +56,7 @@ signals:
     void themeIdChanged(int themeId);   // PainterTheme::Theme as int
     void logoutRequested();
     void checkForUpdatesRequested();
+    void updateNowRequested();   // 0.52.14 — manual "Update now": check + install immediately
     // #20 — fires when any Talk/Backgrounds/* QSetting is changed via
     // the Backgrounds section. CallManager listens to live-apply during
     // calls instead of waiting for the next call's pipeline rebuild.
@@ -149,6 +153,7 @@ private:
     // background self-restart fires.
     QCheckBox *m_updatesAutoInstall = nullptr;
     QComboBox *m_updatesIdleWait = nullptr;
+    QPushButton *m_updateNowBtn = nullptr;   // 0.52.14 — manual "Update now" (doubles as status)
 
     // Account tab
     QLabel *m_displayNameLabel = nullptr;

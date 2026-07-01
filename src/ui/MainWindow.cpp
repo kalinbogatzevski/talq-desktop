@@ -1439,6 +1439,19 @@ void MainWindow::buildChatPage()
 
     connect(m_updateChecker, &UpdateChecker::updateAvailable,
             this, [this](const UpdateChecker::Manifest &m) {
+        // 0.52.14 — manual "Update now" in flight: cancel the up-to-date fallback,
+        // tell the Settings button an update is on the way, and FORCE the download
+        // ourselves. The auto-install acceptUpdate() below is gated on
+        // autoInstall-enabled / not-cancelled / new-version, so without this an
+        // update found via "Update now" with auto-install off (or a re-click of an
+        // already-offered version) would never download — leaving the flag stuck
+        // true and a later install skipping the idle countdown. acceptUpdate() is
+        // idempotent (no-op unless a pending update exists; re-arms the download).
+        if (m_userWantsImmediateInstall && m_updateNowChecking) {
+            m_updateNowChecking = false;
+            if (m_settingsDialog) m_settingsDialog->setUpdateNowStatus(tr("Update found — installing…"));
+            if (m_updateChecker) m_updateChecker->acceptUpdate();
+        }
         // Reset the self-heal one-shot ONLY when a genuinely new
         // version is offered. Periodic poll re-emits the same
         // manifest; without the version guard, an AV-quarantine
@@ -1503,6 +1516,14 @@ void MainWindow::buildChatPage()
         m_updateInstallBtn->show();
         m_updateLaterBtn->show();
         m_updateWhatsNewBtn->hide();
+        // 0.52.14 — a "Update now" request must not leave its flags armed if the
+        // download fails (else a later completed download would skip the idle
+        // countdown). Clear them and report back to the Settings button.
+        if (m_userWantsImmediateInstall || m_updateNowChecking) {
+            m_userWantsImmediateInstall = false;
+            m_updateNowChecking = false;
+            if (m_settingsDialog) m_settingsDialog->setUpdateNowStatus(tr("Update failed — try again"));
+        }
     });
     connect(m_updateChecker, &UpdateChecker::readyToLaunch,
             this, &MainWindow::onUpdateReadyToLaunch);
@@ -2890,6 +2911,20 @@ void MainWindow::onUpdateReadyToLaunch(const QString &installerPath)
     m_pendingInstallerPath = installerPath;
     m_updateProgress->hide();
 
+    // 0.52.14 \u2014 the user clicked "Update now": skip the idle countdown and install
+    // immediately. maybeLaunchPendingInstaller still defers if a call is active
+    // (and re-runs on callStateChanged), so this can't drop a live call.
+    if (m_userWantsImmediateInstall) {
+        m_userWantsImmediateInstall = false;
+        m_updateNowChecking = false;
+        m_updateLabel->setText(tr("Update downloaded \u2014 installing\u2026"));
+        m_updateInstallBtn->hide();
+        m_updateLaterBtn->hide();
+        m_updateWhatsNewBtn->hide();
+        maybeLaunchPendingInstaller();
+        return;
+    }
+
     // 0.41.0 \u2014 when auto-install-on-idle is enabled (default ON), stage
     // the install behind the idle gate instead of immediately quitting
     // the app. The user keeps a visible "Cancel auto-install" escape
@@ -3346,6 +3381,36 @@ void MainWindow::ensureSettingsDialog()
     connect(m_settingsDialog, &SettingsDialog::checkForUpdatesRequested,
             this, [this]() {
         if (m_updateChecker) m_updateChecker->checkNow();
+    });
+    // 0.52.14 — manual "Update now": check immediately AND install as soon as the
+    // download lands (skip the idle countdown; the no-restart-during-call gate in
+    // maybeLaunchPendingInstaller still applies). m_updateNowChecking gates the
+    // "You're up to date" fallback if no newer version turns up.
+    connect(m_settingsDialog, &SettingsDialog::updateNowRequested,
+            this, [this]() {
+        if (!m_updateChecker) {
+            if (m_settingsDialog) m_settingsDialog->setUpdateNowStatus(tr("Updates are not available in this build"));
+            return;
+        }
+        if (!m_pendingInstallerPath.isEmpty()) {
+            // A download already completed and is just waiting — install it
+            // directly (maybeLaunchPendingInstaller respects the no-restart-during-
+            // call gate). No immediate-install flag needed: there's no second
+            // readyToLaunch coming, so nothing to gate.
+            if (m_settingsDialog) m_settingsDialog->setUpdateNowStatus(tr("Installing update…"));
+            maybeLaunchPendingInstaller();
+            return;
+        }
+        m_userWantsImmediateInstall = true;
+        m_updateNowChecking = true;
+        m_updateChecker->checkNow();
+        // Fallback feedback: if no updateAvailable arrives, report up-to-date.
+        QTimer::singleShot(9000, this, [this]() {
+            if (!m_updateNowChecking) return;          // updateAvailable already handled it
+            m_updateNowChecking = false;
+            m_userWantsImmediateInstall = false;
+            if (m_settingsDialog) m_settingsDialog->setUpdateNowStatus(tr("You’re up to date"));
+        });
     });
     // #20 — live-apply Background section changes during a call.
     connect(m_settingsDialog, &SettingsDialog::backgroundSettingsChanged,

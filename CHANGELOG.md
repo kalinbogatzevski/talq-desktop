@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.52.14 "Bafana Bafana" -- STABLE (2026-06-23)
+
+### Added
+
+* **An "Update now" button in Settings → Updates.** Check for a new version and
+  install it on demand instead of waiting for the periodic background check. It
+  still never restarts the app during a call — if you're on a call, the install
+  waits until the call ends.
+
 ## v0.52.13 "Bafana Bafana" -- STABLE (2026-06-23)
 
 ### Fixed
