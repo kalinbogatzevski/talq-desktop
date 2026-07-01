@@ -1,9 +1,11 @@
 #include "CallWindow.h"
 #include "CallStage.h"
+#include "CallPipWidget.h"
 #include "SharePickerDialog.h"
 
 #include <QVBoxLayout>
 #include <QCloseEvent>
+#include <QEvent>
 #include <QKeyEvent>
 #include <QMoveEvent>
 #include <QGuiApplication>
@@ -28,11 +30,19 @@ CallWindow::CallWindow(CallManager *call, ApiClient *api, QWidget *parent)
     lay->setContentsMargins(0, 0, 0, 0);
     m_stage = new CallStage(m_call, this);
     lay->addWidget(m_stage);
+    // Minimal PiP-dock content (mute chip + hang-up + a small thumbnail) —
+    // deliberately NOT the full CallStage squeezed into a corner box. Hidden
+    // until enterPipDock() swaps it in; the hidden widget takes no layout
+    // space so this doesn't affect the normal/fullscreen sizing above.
+    m_pipWidget = new CallPipWidget(m_call, this);
+    lay->addWidget(m_pipWidget);
+    m_pipWidget->hide();
 
     connect(m_stage, &CallStage::requestToggleFullscreen, this, &CallWindow::toggleFullscreen);
     connect(m_stage, &CallStage::requestToggleShare, this, &CallWindow::pickShareTarget);
     connect(m_stage, &CallStage::requestOpenBackgroundSettings,
             this, &CallWindow::backgroundSettingsRequested);
+    connect(m_pipWidget, &CallPipWidget::restoreRequested, this, &CallWindow::exitPipDock);
     connect(m_call, &CallManager::stateChanged, this, &CallWindow::onCallState);
 
     onCallState();
@@ -41,6 +51,7 @@ CallWindow::CallWindow(CallManager *call, ApiClient *api, QWidget *parent)
 void CallWindow::setTheme(PainterTheme::Theme t)
 {
     if (m_stage) m_stage->setTheme(t);
+    if (m_pipWidget) m_pipWidget->setTheme(t);
 }
 
 void CallWindow::onCallState()
@@ -134,9 +145,14 @@ void CallWindow::moveEvent(QMoveEvent *e)
 void CallWindow::enterPipDock()
 {
     if (m_pipDocked || m_call->state() == CallManager::Idle) return;
+    // A minimize-triggered dock (see changeEvent) arrives still minimized;
+    // restore it first so the flag/geometry change below actually shows.
+    if (isMinimized()) setWindowState(windowState() & ~Qt::WindowMinimized);
     if (m_fullscreen) toggleFullscreen();
     m_normalGeom = geometry();
     m_pipDocked = true;
+    if (m_stage) m_stage->hide();
+    if (m_pipWidget) m_pipWidget->show();
     setWindowFlags(windowFlags() | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint | Qt::Tool);
     const int w = 320, h = 190, m = 24;
     QRect avail = QGuiApplication::primaryScreen()->availableGeometry();
@@ -149,6 +165,8 @@ void CallWindow::exitPipDock()
 {
     if (!m_pipDocked) return;
     m_pipDocked = false;
+    if (m_pipWidget) m_pipWidget->hide();
+    if (m_stage) m_stage->show();
     setWindowFlags(Qt::Window);
     if (m_normalGeom.isValid()) setGeometry(m_normalGeom);
     show();
@@ -172,6 +190,21 @@ void CallWindow::keyPressEvent(QKeyEvent *e)
         return;
     }
     QWidget::keyPressEvent(e);
+}
+
+void CallWindow::changeEvent(QEvent *e)
+{
+    QWidget::changeEvent(e);
+    // PiP-dock-on-drop: a minimize (title-bar button, taskbar, or dragging the
+    // title bar down and dropping it onto the taskbar — all end in the same
+    // WindowMinimized state) would otherwise silently vanish a live call to
+    // the taskbar. Dock it to the compact corner PiP instead, deferred a tick
+    // so the flag/geometry change in enterPipDock() doesn't race the OS's own
+    // in-flight minimize transition.
+    if (e->type() == QEvent::WindowStateChange && isMinimized()
+        && !m_pipDocked && m_call->state() != CallManager::Idle) {
+        QTimer::singleShot(0, this, [this] { enterPipDock(); });
+    }
 }
 
 void CallWindow::closeEvent(QCloseEvent *e)

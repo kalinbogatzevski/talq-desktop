@@ -84,8 +84,14 @@ SignalingClient::SignalingClient(ApiClient *api, QObject *parent)
             m_ws.ping();
     });
     connect(&m_ws, &QWebSocket::pong, this,
-            [](quint64 elapsed, const QByteArray &) {
+            [this](quint64 elapsed, const QByteArray &) {
         qDebug() << "Signaling: keepalive pong, RTT" << elapsed << "ms";
+        // Keep the telemetry RTT fresh for the life of the connection: the
+        // one-shot nearest-HPB probe only measures at connect time, so
+        // without this selectedSignalingRttMs() would freeze at whatever it
+        // was when the session started.
+        m_signalingRttMs = static_cast<int>(elapsed);
+        emit signalingRttChanged(m_signalingRttMs);
     });
 }
 
