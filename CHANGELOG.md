@@ -1,5 +1,52 @@
 # Changelog
 
+## v0.55.0 "July Morning" -- BETA (2026-06-26)
+
+**Codename "July Morning"** — on the night of 30 June into 1 July, people gather on
+Bulgaria's Black Sea coast (Kamen Bryag, Kavarna) to meet the first sunrise of July
+together: a 1980s counterculture tradition of renewal and a fresh start, carried by
+Uriah Heep's song of the same name. A fitting name for a fresh beta line — a clean
+dawn after a reset.
+
+A call-resilience beta, built from a real three-way field session: calls now
+recover from far more on their own instead of freezing or going silent.
+
+### Fixed
+
+* **A brief network drop no longer risks dropping you from a call.** The session
+  resumes faster after a blip (racing the server's short grace window), and if the
+  session has to be rebuilt the call re-establishes your video and audio under the
+  new session automatically — instead of leaving you connected but silently unseen
+  and unheard by everyone else.
+* **No more "Not allowed to request offer" retry storms.** When a peer reconnected
+  under a new session, TalQ could chase their old, dead session indefinitely. It now
+  drops the dead session cleanly and picks up the new one.
+* **Faulty or unsupported hardware video decoding now falls back to software
+  automatically.** On a machine whose GPU video decoder is unsupported or
+  unreliable, the remote picture used to drop frames or freeze with no way out. TalQ
+  now detects this and switches that machine to software decoding (and remembers it
+  for next time). The same automatic fallback now also covers the sending side
+  mid-call.
+* **Choppy remote video recovers on its own.** A frozen or "moving-but-not-updating"
+  remote feed now requests a fresh keyframe and recovers, and a peer whose video
+  connects but never shows a frame is rebuilt instead of sitting on "Starting…". A
+  larger receive buffer smooths jittery links.
+* **Your tile stays a proper member of a group call during a screen share.**
+  Previously you could be bumped into a small floating self-preview while someone
+  shared; you now remain a normal member tile throughout.
+* **Your own screen share shows full-size on the main stage in every call.** When you
+  share the whole screen TalQ is on, a clean "You're sharing this screen" placeholder
+  is shown instead of a hall-of-mirrors feedback loop (this replaces the earlier
+  window-only limit).
+* **Cameras are harder to wedge.** Rapidly toggling your camera on and off no longer
+  parks the device. Plugging or unplugging a camera or microphone during a call is
+  now noticed live, and a camera that drops out and comes back resumes on its own.
+* **TalQ no longer restarts to update during — or right after — a call.** An update
+  that downloaded while you were on a call could restart the app the moment the call
+  ended, interrupting back-to-back calls. Updates now wait until you've been off a
+  call for a few minutes before installing (and a new call resets the wait). Choosing
+  "Update now" still installs immediately.
+
 ## v0.53.1 "Bafana Bafana" -- BETA (2026-06-26)
 
 ### Fixed

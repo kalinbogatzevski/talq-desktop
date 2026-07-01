@@ -153,6 +153,14 @@ private:
     QTimer            *m_keyframeWatchdog = nullptr;   // child of this (main thread)
     std::atomic<bool>  m_decodedAnyFrame{false};       // set on the streaming thread
     int                m_keyframePliRetriesLeft = 0;
+    // D1 — PERSISTENT mid-call decode-liveness watchdog (the bootstrap watchdog
+    // above disarms after the first frame). Runs for the whole connection: if
+    // frames keep arriving but the decoder is CONCEALING (distinct-content fps
+    // collapses while delivered fps stays up) or the inter-frame gap blows out,
+    // re-request a keyframe to recover without waiting for the ~12s full rebuild.
+    QTimer            *m_livenessWatchdog = nullptr;
+    int                m_livenessBadTicks = 0;
+    int                m_livenessPliCooldown = 0;   // ticks remaining before another forced keyframe
     // 0.51.x AEC single-pipeline fix: external appsrc (publisher pipeline's
     // far-end mixer) that decoded audio is pushed into INSTEAD of a per-sub
     // wasapi2sink. Refed in setFarEndAppsrc, unrefed in cleanup (after the

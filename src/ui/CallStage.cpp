@@ -249,9 +249,15 @@ CallParticipant *CallStage::stageSource(bool *isScreen) const
     // gets — instead of only a small thumbnail. A peer's share still wins the stage
     // (their content is what the call is watching); ours then falls back to the PiP.
     if (m_call->isScreenSharing() && m_call->localScreenPreviewProvider()
-        && m_call->selfParticipant()
-        && m_call->screenShareIsWindow()) {   // 0.53.1 — window shares only (a monitor
-        *isScreen = true;                      // share grabs TalQ-showing-the-share → freeze)
+        && m_call->selfParticipant()) {
+        // 0.53.x — self-view on the stage for BOTH window AND monitor shares, so
+        // the local-share UI matches a peer-share / p2p call (consistent, per
+        // Kalin). The monitor-share hall-of-mirrors (sharing the screen TalQ is
+        // on → WGC captures TalQ showing the capture → feedback freeze) is solved
+        // in paintTile by drawing a static "You're sharing this screen" placeholder
+        // instead of the live recapture — NOT by hiding the self-view (the blunt
+        // 0.53.1 window-only gate this replaces).
+        *isScreen = true;
         return m_call->selfParticipant();
     }
     if (m_pinned) return m_pinned;
@@ -277,8 +283,21 @@ QVector<CallStage::Tile> CallStage::computeLayout() const
     bool isScreen = false;
     CallParticipant *src = stageSource(&isScreen);
 
+    // A group screen share must always show the GROUP interface: the screen on
+    // the stage and EVERYONE (incl. self) as member tiles in the rail — never a
+    // stray self-PiP. Decide rail-vs-PiP from the share FLAG (stable the instant
+    // sharing starts), NOT from isScreen (which is true only once the screen
+    // provider has DECODED a frame, so it flickers self out to a PiP during a
+    // share's startup/rebuild/frame-gap — the wrong-interface bug Kalin hit in a
+    // 3-way call while Pavel was sharing). isScreen still drives what the STAGE
+    // renders; shareActive drives the layout MODE.
+    bool shareActive = isScreen || m_call->isScreenSharing();
+    if (!shareActive)
+        for (CallParticipant *p : parts)
+            if (p->screenSharing()) { shareActive = true; break; }
+
     const int n = remotes.size();
-    const bool evenGallery = !isScreen && n >= 2 && n <= 4 && !m_pinned;
+    const bool evenGallery = !shareActive && n >= 2 && n <= 4 && !m_pinned;
 
     if (evenGallery) {
         // Equal warm grid of everyone (self included), speaker gets the glow.
@@ -309,7 +328,9 @@ QVector<CallStage::Tile> CallStage::computeLayout() const
         // screen content and the rail carries the participant tiles. In
         // that mode the self-camera belongs in the rail (becomes the "You"
         // tile, no floating overlay), so it doesn't obscure shared content.
-        if (p->isSelf() && !isScreen) continue;       // PiP only when no screen share
+        // Keyed on shareActive (flag) not isScreen (frame-decoded) so self
+        // stays a rail member throughout a share, never flickering to a PiP.
+        if (p->isSelf() && !shareActive) continue;    // PiP only when no screen share
         railList << p;
     }
     const bool hasRail = !railList.isEmpty();
@@ -580,11 +601,18 @@ void CallStage::paintTile(QPainter &p, const Tile &t, const PainterTheme &th, bo
     // 0.53.0 — our OWN screen on the stage (self-view) renders from the local
     // capture preview (m_selfScreenFrame), not a per-participant screen provider
     // (self has none). A peer's screen still comes from m_scrFrame.
+    // Hall-of-mirrors guard: a self MONITOR share on the stage must NOT render
+    // the live capture (WGC re-captures TalQ showing it → feedback freeze). Draw
+    // a static placeholder instead (window shares are safe — they capture a
+    // specific window, not the screen showing TalQ).
+    const bool selfMonitorShare =
+        cp->isSelf() && t.isScreen && !m_call->screenShareIsWindow();
     const QImage &frame = t.isScreen
         ? (cp->isSelf() ? m_selfScreenFrame : m_scrFrame.value(cp))
         : m_camFrame.value(cp);
     const bool showVideo = !frame.isNull()
-        && (t.isScreen || (!cp->videoMuted()));
+        && (t.isScreen || (!cp->videoMuted()))
+        && !selfMonitorShare;
     if (showVideo) {
         QSize sc = frame.size().scaled(rc.size().toSize(),
                        t.isScreen ? Qt::KeepAspectRatio : Qt::KeepAspectRatioByExpanding);
@@ -611,7 +639,11 @@ void CallStage::paintTile(QPainter &p, const Tile &t, const PainterTheme &th, bo
                          || cp->connState() == CallParticipant::Failed;
         if (!reconn) {
             QString cap;
-            if (t.isScreen) {
+            if (selfMonitorShare) {
+                // Deliberate placeholder (not "starting"): we're actively sharing
+                // this monitor but must not render the live recapture here.
+                cap = tr("You're sharing this screen");
+            } else if (t.isScreen) {
                 // Provider exists (cp->screen()) but no frame yet → the
                 // share is being negotiated. Tell the viewer instead of
                 // showing a silent avatar tile (#134 UX gap).

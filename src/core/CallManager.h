@@ -325,6 +325,13 @@ private:
     // went "failed" — both happen on a normal publisher renegotiation).
     // Tear down just that subscriber and re-subscribe; never kill the call.
     void recoverSubscriber(const QString &sessionId, const QString &reason);
+    // A3a — tear down a peer's subscriber WITHOUT re-requesting (the peer's sid
+    // is definitively dead, e.g. room/leave): drop the zombie + purge all its
+    // requestoffer bookkeeping so the retry tick stops chasing a dead sid.
+    void dropSubscriber(const QString &sessionId);
+    // D3 — apply the coalesced camera desired-state (m_cameraOn) to the live
+    // pipeline; called by m_cameraApplyTimer after toggle mashing settles.
+    void applyCameraState();
 
     // Publisher (our send leg) reconnect — the Zoom-style "never drop"
     // counterpart to recoverSubscriber. recoverPublisher() enters/keeps the
@@ -538,6 +545,9 @@ private:
     QPointer<ShareOverlay> m_shareOverlay;   // #72 coloured monitor border (monitor shares)
     bool m_screenSharing = false;
     bool m_softwareEncoderNotified = false;  // once-per-call guard for softwareVideoEncoderNotice
+    bool m_hwDecodeFallbackDone = false;     // B4 — one-shot guard for the d3d11 decode-fault fallback
+    bool m_resubscribeOnActive = false;      // A2 fix — replay subscriber re-request on the next Active
+    QHash<QString,int> m_neverDecodedRecoveries;  // D2 fix — bounded never-decoded rebuilds per sid
     QString m_videoQualityNotice;            // 0.52.5 — "" = full quality; else the sender chip text
     void setVideoQualityNotice(const QString &text);   // emits videoQualityNoticeChanged() on change
     QString m_screenShareSid;
@@ -572,6 +582,7 @@ private:
     ShareStartPolicy m_sharePolicy;
     QTimer m_shareConfirmTimer;
     bool m_shareConfirmArmed = false;
+    QTimer m_cameraApplyTimer;   // D3 — coalesce fast camera-toggle mashing
     bool m_shareRetryTeardown = false;   // a stop() in flight is a retry, not a user stop
     void buildAndStartSharePipeline(int monitorIndex, quintptr windowHandle);
     // Clamp a screen-share capture size DOWN to the GPU tier's ceiling (720p

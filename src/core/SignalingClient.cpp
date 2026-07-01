@@ -21,6 +21,19 @@ SignalingClient::SignalingClient(ApiClient *api, QObject *parent)
     connect(&m_ws, &QWebSocket::textMessageReceived, this, &SignalingClient::onTextMessage);
     connect(&m_ws, &QWebSocket::errorOccurred, this, [this](QAbstractSocket::SocketError err) {
         qWarning() << "Signaling: WebSocket error:" << err << m_ws.errorString();
+        // A1 fix — a pure CONNECT failure (host unreachable / refused — the normal
+        // case during an outage, and exactly when the 250ms fast-resume retry
+        // fires) does NOT emit `disconnected` (Qt only emits that when an already
+        // ESTABLISHED socket closes), so onDisconnected()'s reconnect driver never
+        // runs. Before this wave fetchSettings()'s REST failure always re-armed
+        // reconnect; the fast path skips that, so without this the client would be
+        // left with no socket and no pending retry -> signaling dead until restart.
+        // Drive the retry here when the socket isn't connected, and unwind the
+        // fast-resume bookkeeping (so the next attempt does a full settings fetch).
+        if (m_ws.state() != QAbstractSocket::ConnectedState) {
+            if (m_fastResumePending) { m_fastResumePending = false; m_resumeId.clear(); }
+            if (!m_reconnectTimer.isActive()) reconnect();   // guard vs onDisconnected double-arm
+        }
     });
 
     m_reconnectTimer.setSingleShot(true);
@@ -68,8 +81,24 @@ SignalingClient::SignalingClient(ApiClient *api, QObject *parent)
     });
 }
 
+// A1 — resume reconnect backoff. A held resume id means the server is keeping
+// our session alive for only a short grace (~30s on strukturag), so race to the
+// socket fast rather than the cold-start exponential backoff.
+static constexpr int kResumeReconnectMs = 250;
+
 void SignalingClient::start()
 {
+    // A1 fast resume: if we hold a resume id AND a cached signaling URL, skip the
+    // REST settings fetch (the resume hello only needs m_resumeId — the freshly
+    // fetched ticket/auth is pure waste on this path) and go straight to the
+    // WebSocket. This is what keeps the resume inside the server's grace window.
+    // Cold start, or a definitive resume rejection (which clears m_resumeId),
+    // falls through to the full settings fetch.
+    if (!m_resumeId.isEmpty() && !m_signalingUrl.isEmpty()) {
+        m_fastResumePending = true;
+        connectWebSocket();
+        return;
+    }
     fetchSettings();
 }
 
@@ -83,6 +112,8 @@ void SignalingClient::stop()
     m_sessionId.clear();
     m_resumeId.clear();        // bye released the session -- no resume after a deliberate stop
     m_resuming = false;
+    m_fastResumePending = false;
+    m_sessionEstablished = false;   // A2 — deliberate stop is a clean slate
     m_sessionToUserId.clear(); // 1.0 audit — release the session->userId map on a
                                // deliberate disconnect/logout (no grace after stop)
     m_reconnectDelay = 2000;
@@ -156,6 +187,15 @@ void SignalingClient::onDisconnected()
     bool wasAuth = m_authenticated;
     m_authenticated = false;
     m_sessionId.clear();
+    // A1 — if a fast-resume attempt couldn't even establish the socket (e.g. a
+    // stale cached signaling URL), it disconnects without ever authenticating.
+    // Drop the resume id so the next attempt does a full settings refresh
+    // (fresh URL + ticket) instead of looping on the same dead fast path.
+    if (m_fastResumePending && !wasAuth) {
+        qWarning() << "Signaling: fast-resume socket failed -> full settings refresh next";
+        m_fastResumePending = false;
+        m_resumeId.clear();
+    }
     if (wasAuth) emit connectedChanged();
     reconnect();
 }
@@ -187,9 +227,16 @@ void SignalingClient::onTextMessage(const QString &msg)
         const QString rid = helloObj["resumeid"].toString();
         if (!rid.isEmpty()) m_resumeId = rid;
         m_authenticated = true;
+        m_fastResumePending = false;   // A1 — this attempt authenticated
 
         const bool wasResume = m_resuming;
         m_resuming = false;
+        // A2 — was there a live session BEFORE this hello? A fresh (non-resumed)
+        // hello that replaces an existing in-room session is a session RESET.
+        // Capture before we mark the new one established so the very first cold
+        // hello is never treated as a reset.
+        const bool hadPriorSession = m_sessionEstablished;
+        m_sessionEstablished = true;
 
         // Server features (MCU, etc.) are only present in a FRESH hello
         // response; a resume response omits them, so keep the cached value.
@@ -215,6 +262,18 @@ void SignalingClient::onTextMessage(const QString &msg)
             // Fresh session -- re-join room if we had one.
             if (!m_currentRoom.isEmpty())
                 joinRoom(m_currentRoom);
+            // A2 — a fresh session that REPLACES a prior in-room session is a
+            // reset: the old MCU publisher is dead and the server call-record
+            // points at the dead sid. joinRoom above only re-POSTs the ROOM, so
+            // tell CallManager to rebuild the publisher, re-join the CALL, and
+            // rebuild subscribers under the new sid. (When idle, CallManager
+            // no-ops on state.) Not fired on the first cold hello (hadPrior=false)
+            // nor on a clean RESUME (handled in the wasResume branch above).
+            if (hadPriorSession && !m_currentRoom.isEmpty()) {
+                qWarning() << "Signaling: SESSION RESET (fresh hello replaced an in-room session)"
+                           << "-> new sid" << m_sessionId.left(16) + "...";
+                emit sessionReset(m_sessionId);
+            }
         }
     }
     else if (type == "error") {
@@ -236,12 +295,22 @@ void SignalingClient::onTextMessage(const QString &msg)
             emit requestOfferRejected();
         }
         if (m_resuming) {
-            // Resume rejected (e.g. no_such_session -- the ~30s grace lapsed).
-            // Drop the stale id and fall back to a full fresh hello + re-join.
+            // Resume rejected (e.g. no_such_session -- the grace lapsed).
             qWarning() << "Signaling: resume rejected -> full re-hello";
             m_resuming = false;
             m_resumeId.clear();
-            sendHello();
+            if (m_fastResumePending) {
+                // A1 — we took the fast path and skipped the settings fetch, so
+                // we have no FRESH ticket for a clean re-auth (a stale ticket can
+                // fail). Drop this socket; the reconnect path then does a full
+                // fetchSettings (fresh URL + ticket) -> fresh hello -> re-join.
+                m_fastResumePending = false;
+                m_ws.close();   // -> onDisconnected -> reconnect -> start() (resumeId now empty)
+            } else {
+                // Normal path: this round already fetched a fresh ticket, so a
+                // fresh hello on the same socket is safe.
+                sendHello();
+            }
         }
     }
     else if (type == "room") {
@@ -972,6 +1041,14 @@ void SignalingClient::requestOffer(const QString &sessionId, const QString &room
 void SignalingClient::reconnect()
 {
     if (m_api->serverUrl().isEmpty()) return;
+    // A1 — when a resume is still possible, race the socket on a short fixed
+    // delay so the resume lands inside the server's grace window. Only the cold
+    // path (no resume id) uses the exponential backoff, which protects a dead
+    // server from a reconnect storm.
+    if (!m_resumeId.isEmpty() && !m_signalingUrl.isEmpty()) {
+        m_reconnectTimer.start(kResumeReconnectMs);
+        return;
+    }
     m_reconnectTimer.start(m_reconnectDelay);
     m_reconnectDelay = qMin(m_reconnectDelay * 2, 60000);
 }

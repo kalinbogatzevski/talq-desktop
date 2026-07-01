@@ -1367,11 +1367,17 @@ void MainWindow::buildChatPage()
 
     connect(m_callManager, &CallManager::stateChanged, this, [this]() {
         m_header->setCallState(m_callManager->state());
+        // 0.53.2 — keep the call-active stamp fresh so the install gate's post-call
+        // grace measures time since the call TRULY ended, not the last transition.
+        if (m_callManager->state() != CallManager::Idle
+            || m_callManager->isScreenSharing())
+            m_lastCallActiveMs = QDateTime::currentMSecsSinceEpoch();
     });
     connect(m_callManager, &CallManager::stateChanged,
             this, &MainWindow::maybeLaunchPendingInstaller);
     connect(m_callManager, &CallManager::durationChanged, this, [this]() {
         m_header->setCallDuration(m_callManager->callDuration());
+        m_lastCallActiveMs = QDateTime::currentMSecsSinceEpoch();  // 0.53.2 — ~1s in-call heartbeat
     });
 
     // Clear any "in call" user-status automation. We listen to
@@ -1541,6 +1547,7 @@ void MainWindow::buildChatPage()
             m_updateInstallBtn->hide();
             m_updateLaterBtn->hide();
             m_updateWhatsNewBtn->hide();
+            m_explicitInstallRequested = true;   // 0.53.2 — user clicked: skip the post-call grace
             maybeLaunchPendingInstaller();
             return;
         }
@@ -2910,6 +2917,10 @@ void MainWindow::resizeEvent(QResizeEvent *e)
 void MainWindow::onUpdateReadyToLaunch(const QString &installerPath)
 {
     m_pendingInstallerPath = installerPath;
+    // 0.53.2 — a fresh download is AUTOMATIC by default; the manual branch below
+    // re-sets the explicit flag. Resetting here stops a stale flag from a prior
+    // failed/abandoned explicit install making this auto-install skip the grace.
+    m_explicitInstallRequested = false;
     m_updateProgress->hide();
 
     // 0.52.14 \u2014 the user clicked "Update now": skip the idle countdown and install
@@ -2918,6 +2929,7 @@ void MainWindow::onUpdateReadyToLaunch(const QString &installerPath)
     if (m_userWantsImmediateInstall) {
         m_userWantsImmediateInstall = false;
         m_updateNowChecking = false;
+        m_explicitInstallRequested = true;   // 0.53.2 \u2014 manual "Update now": skip the post-call grace
         m_updateLabel->setText(tr("Update downloaded \u2014 installing\u2026"));
         m_updateInstallBtn->hide();
         m_updateLaterBtn->hide();
@@ -3107,9 +3119,25 @@ void MainWindow::maybeLaunchPendingInstaller()
     if (m_callManager) {
         if (m_callManager->state() != CallManager::Idle
             || m_callManager->isScreenSharing()) {
+            m_lastCallActiveMs = QDateTime::currentMSecsSinceEpoch();
             m_updateLabel->setText(
                 tr("You\u2019re in a call \u2014 update will start when the call ends."));
             return;  // slot re-runs on callStateChanged
+        }
+        // 0.53.2 \u2014 POST-CALL GRACE: never restart the instant a call ends. A brief
+        // Idle gap between back-to-back calls (or right after hangup) must not kill
+        // an active session. Wait kPostCallInstallGraceMs of NO call before
+        // installing; a new call refreshes m_lastCallActiveMs and extends the grace.
+        // (The auto-install tick's TalQ-input idle logic still applies on top.)
+        const qint64 sinceCall =
+            QDateTime::currentMSecsSinceEpoch() - m_lastCallActiveMs;
+        if (!m_explicitInstallRequested       // an explicit Install/Update-now skips the grace
+            && m_lastCallActiveMs > 0 && sinceCall < kPostCallInstallGraceMs) {
+            m_updateLabel->setText(
+                tr("Update will start a little after your call."));
+            QTimer::singleShot(int(kPostCallInstallGraceMs - sinceCall) + 250, this,
+                               &MainWindow::maybeLaunchPendingInstaller);
+            return;
         }
     }
 
@@ -3151,6 +3179,13 @@ void MainWindow::maybeLaunchPendingInstaller()
         m_updateInstallBtn->show();
         return;
     }
+    // 0.53.2 — idempotency guard: the success path used to leave m_pendingInstallerPath
+    // SET for the ~500 ms until quit(), so a converging grace-timer / idle-tick
+    // re-entry could startDetached the silent installer a SECOND time (two
+    // /VERYSILENT installers racing the same files). Clear it now (+ the explicit
+    // flag) so any re-entry early-returns at the empty-path check up top.
+    m_pendingInstallerPath.clear();
+    m_explicitInstallRequested = false;
     // Arm the force-exit watchdog AT THE AUTO-UPDATE TRIGGER (not just the tray-
     // Quit one — the 0.51.15 fix covered only that path). The downloaded
     // installer is already running with /CLOSEAPPLICATIONS; we now quit ourselves
@@ -3406,8 +3441,9 @@ void MainWindow::ensureSettingsDialog()
         if (!m_pendingInstallerPath.isEmpty()) {
             // A download already completed and is just waiting — install it
             // directly (maybeLaunchPendingInstaller respects the no-restart-during-
-            // call gate). No immediate-install flag needed: there's no second
-            // readyToLaunch coming, so nothing to gate.
+            // call gate). 0.53.2 — flag it explicit so the post-call grace is skipped:
+            // the user just clicked Update now, they want it installed.
+            m_explicitInstallRequested = true;
             if (m_settingsDialog) m_settingsDialog->setUpdateNowStatus(tr("Installing update…"));
             maybeLaunchPendingInstaller();
             return;

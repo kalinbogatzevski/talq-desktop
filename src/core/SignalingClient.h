@@ -122,6 +122,17 @@ signals:
     void typingUserChanged();
     void peerClientInfoChanged(const QString &userId, const QString &info);
 
+    // A2 (0.53.x robustness) — our signaling session was RESET: the server
+    // rejected a resume (or we otherwise got a brand-new session id) WHILE we
+    // were already in a room/call. The old session's Janus MCU publisher is
+    // dead and every peer is now re-subscribing to a session that has no
+    // publisher behind it. CallManager must, for the new sid: rebuild+re-offer
+    // our publisher, re-join the CALL on the server (joinRoom alone only
+    // re-POSTs the room, not the call record), and rebuild all subscribers.
+    // Distinct from connectedChanged (a plain reconnect that RESUMED cleanly
+    // emits no sessionReset — the call survives untouched there).
+    void sessionReset(const QString &newSessionId);
+
     // WebRTC signaling signals
     void offerReceived(const QString &fromSessionId, const QString &sdp, const QString &sid, const QString &roomType);
     void answerReceived(const QString &fromSessionId, const QString &sdp, const QString &roomType);
@@ -204,6 +215,19 @@ private:
     // it, every transient disconnect on a long path killed the call.
     QString m_resumeId;
     bool    m_resuming = false;  // a resume hello is in flight (vs fresh auth)
+    // A1 (0.53.x robustness) — fast resume: when we hold a resume id and a
+    // cached signaling URL, reconnect goes STRAIGHT to the WebSocket (skipping
+    // the REST settings fetch) on a short backoff, so the resume lands inside
+    // the server's short ~30s session-resume grace instead of blowing it (the
+    // 2 s backoff + a full settings round-trip is what turned a 4 s blip into a
+    // session-killing full re-hello in the field). True while such an attempt
+    // is outstanding (no auth yet); cleared on auth, or on failure we fall back
+    // to a full settings refresh.
+    bool    m_fastResumePending = false;
+    // A2 — set once we have ever authenticated a session this app-run. Lets a
+    // LATER fresh (non-resumed) hello be recognised as a session RESET (vs the
+    // very first cold hello, which must not trigger publisher rebuilds).
+    bool    m_sessionEstablished = false;
     QString m_currentRoom;
     QString m_typingUser;
     QString m_typingRoom;  // room token where typing was detected

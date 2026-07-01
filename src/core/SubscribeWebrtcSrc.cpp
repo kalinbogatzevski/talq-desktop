@@ -251,6 +251,14 @@ bool SubscribeWebrtcSrc::start(const QString &stunServer,
     setStringArrayProp(m_webrtcsrc, "video-codecs",
                        { QByteArrayLiteral("H264"), QByteArrayLiteral("VP8") });
 
+    // D5 — raise the receive jitterbuffer latency (default ~200 ms) so a choppy /
+    // jittery uplink (bursty loss, big inter-packet gaps — Pavel's link) is RIDDEN
+    // OUT by buffering instead of dropping late packets and freezing the decoder.
+    // 400 ms balances more cushion against conversational lag. Guarded on property
+    // existence (gst-plugins-rs versions vary).
+    if (g_object_class_find_property(G_OBJECT_GET_CLASS(m_webrtcsrc), "latency"))
+        g_object_set(m_webrtcsrc, "latency", (guint)400, nullptr);
+
     g_signal_connect(m_webrtcsrc, "pad-added",
                      G_CALLBACK(&SubscribeWebrtcSrc::onPadAdded), this);
 
@@ -286,7 +294,13 @@ bool SubscribeWebrtcSrc::start(const QString &stunServer,
                                  << (e ? e->message : "?") << " | " << (d ? d : "");
             auto *self = static_cast<SubscribeWebrtcSrc*>(ud);
             QPointer<SubscribeWebrtcSrc> g(self);
-            QString m = e ? QString::fromUtf8(e->message) : QStringLiteral("pipeline error");
+            // B2 — prefix the SOURCE element name (e.g. "d3d11h264dec0") so the
+            // CallManager handler can classify a decoder-domain fault and fall
+            // back to software decode. The GError message alone often omits it.
+            QString m = QStringLiteral("[%1] %2")
+                            .arg(QString::fromUtf8(sn),
+                                 e ? QString::fromUtf8(e->message)
+                                   : QStringLiteral("pipeline error"));
             QMetaObject::invokeMethod(self, [g, m]() { if (g) emit g->error(m); },
                                       Qt::QueuedConnection);
             g_clear_error(&e); g_free(d);
@@ -385,6 +399,7 @@ void SubscribeWebrtcSrc::cleanup()
 {
     m_shuttingDown.store(true);   // 0.52.17 — block a late streaming-thread onPadAdded from re-pointing m_videoAppsink
     if (m_keyframeWatchdog) m_keyframeWatchdog->stop();   // no PLI on a torn-down pipeline
+    if (m_livenessWatchdog) m_livenessWatchdog->stop();   // D1 — same, persistent watchdog
     if (m_busWatchId > 0) { g_source_remove(m_busWatchId); m_busWatchId = 0; }
     if (m_webrtcsrc)    g_signal_handlers_disconnect_by_data(m_webrtcsrc, this);
     if (m_webrtcbin)    g_signal_handlers_disconnect_by_data(m_webrtcbin, this);
@@ -680,6 +695,42 @@ void SubscribeWebrtcSrc::onWebrtcbinIceConnState(GstElement *webrtcbin,
         }
         g->m_keyframePliRetriesLeft = 5;
         g->m_keyframeWatchdog->start();
+
+        // D1 — arm the PERSISTENT decode-liveness watchdog (once). Unlike the
+        // bootstrap watchdog above it never disarms on the first frame: it nudges
+        // a keyframe whenever the decoder starts CONCEALING (frames keep arriving
+        // but content is frozen → distinct-fps collapses) or the inter-frame gap
+        // blows out, recovering a mid-call freeze before the ~12 s full rebuild.
+        if (!g->m_livenessWatchdog) {
+            g->m_livenessWatchdog = new QTimer(g);
+            g->m_livenessWatchdog->setInterval(2000);
+            QObject::connect(g->m_livenessWatchdog, &QTimer::timeout, g, [g]() {
+                if (!g || !g->m_pipeline) return;
+                if (!g->m_decodedAnyFrame.load(std::memory_order_relaxed)) {
+                    g->m_livenessBadTicks = 0; return;   // bootstrap watchdog owns pre-first-frame
+                }
+                if (g->m_livenessPliCooldown > 0) --g->m_livenessPliCooldown;
+                const int fps  = g->m_rxFps.load(std::memory_order_relaxed);
+                const int dist = g->m_rxDistinctFps.load(std::memory_order_relaxed);
+                // CONCEALMENT only: frames keep arriving (fps>=3) but content is
+                // frozen (distinct<=1) — a fresh keyframe can recover that. A merely
+                // LOW framerate is NOT a receive stall a PLI fixes (and a forced
+                // keyframe only burdens an already bandwidth-starved sender), so we
+                // do NOT trigger on the inter-frame gap. A muted/idle peer sends no
+                // frames (fps<3) so it is naturally excluded.
+                const bool concealing = (fps >= 3 && dist <= 1);
+                if (!concealing) { g->m_livenessBadTicks = 0; return; }
+                if (++g->m_livenessBadTicks < 3) return;        // ~6 s of concealment before the first PLI
+                if (g->m_livenessPliCooldown > 0) return;       // rate-limit: ~12 s between forced keyframes
+                g->m_livenessBadTicks = 0;
+                g->m_livenessPliCooldown = 6;                   // 6 ticks × 2 s
+                gst_element_send_event(g->m_pipeline, gst_event_new_custom(
+                    GST_EVENT_CUSTOM_UPSTREAM,
+                    gst_structure_new("GstForceKeyUnit", "all-headers", G_TYPE_BOOLEAN, TRUE, nullptr)));
+                qInfo() << "SubscribeWebrtcSrc: liveness watchdog -> PLI (concealing feed)";
+            });
+            g->m_livenessWatchdog->start();
+        }
     }, Qt::QueuedConnection);
 }
 

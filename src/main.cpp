@@ -125,6 +125,24 @@ void talqTerminateHandler()
 #include <QFontDatabase>
 #include <QMessageBox>
 #include <gst/gst.h>
+#include <cstring>
+#include "core/VideoEncoderUtil.h"   // B1/B4 — software-decode latch + HW-decoder demotion
+
+// B4 — GStreamer log probe for the d3d11 video-device-interface failure
+// (E_NOINTERFACE 0x80004002). This surfaces ONLY as a WARNING from
+// gst_d3d11_device_get_video_device_handle and never becomes a bus error, so the
+// pipeline error path can't see it. Cheap + thread-safe: match the C function
+// name and set an atomic; CallManager::onLoadTick does the real work (demote +
+// rebuild) on the Qt thread. Must be a named function — gst_debug_add_log_function
+// is a macro that casts func to void*, which a lambda can't satisfy.
+static void talqGstDecodeFaultProbe(GstDebugCategory *, GstDebugLevel level,
+                                    const gchar *, const gchar *function, gint,
+                                    GObject *, GstDebugMessage *, gpointer)
+{
+    if (level <= GST_LEVEL_WARNING && function
+        && std::strstr(function, "get_video_device_handle"))
+        talqHwDecodeFaultDetected().store(true);
+}
 
 int main(int argc, char *argv[])
 {
@@ -331,6 +349,30 @@ int main(int argc, char *argv[])
     }
 
     gst_init(&argc, &argv);
+
+    // B1/B4 (0.53.x robustness) — software-DECODE fallback.
+    // (a) Restore a persisted "this box's HW decoder is broken" latch and demote
+    //     the HW decoder ranks BEFORE any pipeline so decodebin re-plugs software
+    //     from the very first subscriber.
+    {
+        QSettings s("TalQ", "TalQ");
+        if (s.value("Video/forceSoftwareDecode", false).toBool()) {
+            talqForceSoftwareDecode().store(true);
+            talqDemoteHwVideoDecoders();
+            qWarning() << "main: restored Video/forceSoftwareDecode latch -> software video decode";
+        }
+    }
+    // (b) Live auto-detect: the d3d11 video-device-interface failure
+    //     (E_NOINTERFACE 0x80004002) surfaces only as a GStreamer WARNING from
+    //     gst_d3d11_device_get_video_device_handle — it never becomes a bus
+    //     ERROR, so the pipeline error path can't catch it (this is exactly
+    //     Pavel's box: HW decode present but the video interface unsupported, so
+    //     it drops frames forever). Hook the GStreamer log stream and flag the
+    //     fault the instant that function warns; CallManager::onLoadTick acts on
+    //     it (demote + persist + rebuild) on the Qt thread. The callback is cheap
+    //     and thread-safe: it only matches the C function name and sets an atomic.
+    gst_debug_set_threshold_for_name("d3d11device", GST_LEVEL_WARNING);
+    gst_debug_add_log_function(talqGstDecodeFaultProbe, nullptr, nullptr);
 
     QApplication app(argc, argv);
 
