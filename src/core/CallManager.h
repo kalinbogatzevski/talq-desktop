@@ -97,7 +97,11 @@ public:
     // box with a working HW encoder stays empty (it sends full quality). Cleared
     // when full quality resumes / on teardown.
     QString videoQualityNotice() const { return m_videoQualityNotice; }
-    int callDuration() const { return m_callDuration; }
+    // 0.52.10 — derive duration from an elapsed timer started once on the first
+    // Active, NOT from a counter that the reconnect/re-Active path zeroes (which
+    // showed 00:00 mid-call after a "waiting for others" resync).
+    int callDuration() const { return m_callElapsed.isValid()
+                                      ? int(m_callElapsed.elapsed() / 1000) : 0; }
     QString remotePeerName() const { return m_remotePeerName; }
     QString remotePeerId() const { return m_remotePeerId; }
     double audioLevel() const { return m_audioLevel; }
@@ -433,7 +437,8 @@ private:
     QTimer m_speakingGrace;
     bool m_cameraFallbackTried = false;
     bool m_withVideo = false;
-    int m_callDuration = 0;
+    int m_callDuration = 0;                 // legacy counter (kept; getter now uses m_callElapsed)
+    QElapsedTimer m_callElapsed;            // 0.52.10 — call duration source of truth; survives reconnects
     double m_audioLevel = 0.0;
     QString m_callStats;
     QString m_statusDetail;

@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.52.10 "Bafana Bafana" -- STABLE (2026-06-23)
+
+### Fixed
+
+* **Incoming calls always open on your main screen** instead of occasionally
+  appearing in a small bottom-right box.
+* **The call window no longer jumps to the corner by itself** during a brief
+  reconnect while you have a conversation open.
+* **The call timer keeps counting from when the call started** -- a momentary
+  reconnect no longer resets it to 00:00.
+* **Updates download once, not repeatedly** -- the auto-updater now fetches a new
+  version a single time instead of re-pulling the same installer on every check.
+
 ## v0.52.9 "Bafana Bafana" -- STABLE (2026-06-23)
 
 ### Fixed

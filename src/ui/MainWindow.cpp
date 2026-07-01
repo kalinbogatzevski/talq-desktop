@@ -1444,7 +1444,12 @@ void MainWindow::buildChatPage()
         // manifest; without the version guard, an AV-quarantine
         // environment would silently re-download forever because
         // every re-emit cleared the flag.
-        if (m.version != m_lastOfferedVersion) {
+        // 0.52.10 — the 5-min poll re-emits the SAME manifest. Gate both the
+        // self-heal reset AND the auto-download (below) on a genuinely NEW
+        // version, or the auto-installer re-pulls the same ~46 MB installer on
+        // every poll until install/restart (the "downloads twice" Kalin saw).
+        const bool isNewVersion = (m.version != m_lastOfferedVersion);
+        if (isNewVersion) {
             m_updateRelaunchAttempted = false;
             m_lastOfferedVersion = m.version;
         }
@@ -1477,7 +1482,7 @@ void MainWindow::buildChatPage()
         // this session.
         const bool autoInstallEnabled = QSettings()
             .value(QStringLiteral("updates/autoInstall"), true).toBool();
-        if (autoInstallEnabled && !m_autoInstallCancelledForSession) {
+        if (autoInstallEnabled && !m_autoInstallCancelledForSession && isNewVersion) {
             m_updateChecker->acceptUpdate();
         }
     });
@@ -1805,19 +1810,26 @@ void MainWindow::onConversationSelected(const QString &token, const QString &nam
     if (m_chatPainter->selectionMode())
         m_chatPainter->exitSelectionMode();
 
+    // 0.52.10 — a "reconnecting" blip re-selects the ALREADY-active conversation;
+    // capture that BEFORE updating m_activeConvToken so we can tell a genuine
+    // navigation from a programmatic re-select.
+    const bool sameConvReselect = (token == m_activeConvToken);
     m_activeConvToken = token;
 
-    // A live call stays watchable while you browse chat: dock it to a
-    // compact corner PiP when you navigate into a conversation. Double-
-    // click the PiP (or end the call) to bring it back full.
-    // 0.52.7 — but do NOT yank a call the user deliberately put FULLSCREEN
-    // (typically on a second monitor) down to a 320x190 corner: that was the
-    // field bug where a fullscreen call jumped to the primary screen's
-    // bottom-right when a conversation got (re)selected — including the
-    // programmatic re-select that can fire on a "reconnecting" blip. A
-    // fullscreen call has its own screen real estate; leave it where it is.
-    if (m_callWindow && m_callManager->state() != CallManager::Idle
-        && !m_callWindow->isFullscreen())
+    // A live call stays watchable while you browse chat: dock it to a compact
+    // corner PiP when you navigate into a conversation. Double-click the PiP (or
+    // end the call) to bring it back full.
+    // 0.52.10 — three guards on when to dock:
+    //  (1) ONLY an ACTIVE call. A ringing (Incoming/Connecting) call must present
+    //      centered on the main screen, never get yanked to the corner — Pavel saw
+    //      an incoming call docked bottom-right.
+    //  (2) NOT a fullscreen call (it has its own screen real estate, typically a
+    //      2nd monitor — 0.52.7 field bug).
+    //  (3) NOT a programmatic re-select of the SAME conversation — that's the
+    //      "reconnecting" blip, and it yanked a windowed call to the corner
+    //      mid-share (Kalin↔Ilko).
+    if (m_callWindow && m_callManager->state() == CallManager::Active
+        && !m_callWindow->isFullscreen() && !sameConvReselect)
         m_callWindow->enterPipDock();
 
     // Switch from welcome to chat

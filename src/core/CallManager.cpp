@@ -1120,6 +1120,10 @@ void CallManager::setState(CallState newState)
     if (newState == Outgoing || newState == Incoming) startRingtone();
     else stopRingtone();
     if (newState == Active) {
+        // 0.52.10 — start the duration clock on the FIRST Active only. A reconnect
+        // (Reconnecting→Active, or a "waiting for others" resync) re-enters Active
+        // and must NOT restart it, which is what showed 00:00 mid-call.
+        if (!m_callElapsed.isValid()) m_callElapsed.start();
         updateCallStats();
         m_statsTimer.start();
         // Late fallback only: the camera is now enabled immediately when the
@@ -1136,8 +1140,10 @@ void CallManager::setState(CallState newState)
     } else {
         m_statsTimer.stop();
     }
-    if (newState == Idle)
+    if (newState == Idle) {
+        m_callElapsed.invalidate();   // 0.52.10 — reset duration only on a real call end
         clearParticipants();
+    }
     else if (!m_selfParticipant)
         ensureSelfParticipant();
     emit stateChanged();
