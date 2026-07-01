@@ -174,6 +174,13 @@ public:
     Q_INVOKABLE void startScreenShare(int monitorIndex = 0, quintptr windowHandle = 0);
     Q_INVOKABLE void stopScreenShare();
     bool isScreenSharing() const { return m_screenSharing; }
+    // 0.53.1 — true when the active share is a single WINDOW (not a full monitor).
+    // The Zoom-style self-view stage is shown ONLY for window shares: a MONITOR
+    // share usually contains the TalQ window, so promoting the live share to the
+    // stage makes the capture grab TalQ-showing-the-share → a frozen hall-of-mirrors
+    // (and the near-static content stalls the receiver into a rebuild). Window shares
+    // capture only that app window, so there's no feedback.
+    bool screenShareIsWindow() const { return m_ssWindowHandle != 0; }
     // Runtime screen-share quality. Levels: 0=720p 1=1080p(default)
     // 2=1440p 3=Native. Changing it while sharing does a quick managed
     // re-share at the new cap, reusing the already-picked target.

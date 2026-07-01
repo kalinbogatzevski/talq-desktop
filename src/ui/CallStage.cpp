@@ -249,8 +249,9 @@ CallParticipant *CallStage::stageSource(bool *isScreen) const
     // gets — instead of only a small thumbnail. A peer's share still wins the stage
     // (their content is what the call is watching); ours then falls back to the PiP.
     if (m_call->isScreenSharing() && m_call->localScreenPreviewProvider()
-        && m_call->selfParticipant()) {
-        *isScreen = true;
+        && m_call->selfParticipant()
+        && m_call->screenShareIsWindow()) {   // 0.53.1 — window shares only (a monitor
+        *isScreen = true;                      // share grabs TalQ-showing-the-share → freeze)
         return m_call->selfParticipant();
     }
     if (m_pinned) return m_pinned;

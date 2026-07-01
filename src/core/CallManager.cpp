@@ -503,7 +503,11 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
                 m_screenSubStallTicks.remove(from);   // frame-liveness state
                 m_screenSubBuiltMs.remove(from);      // startup-grace stamp (re-stamped on start)
                 m_screenSubIceState.remove(from);     // ICE-progress (re-set on start)
-                m_pendingScreenSubCandidates.remove(from);  // drop stale-sid early candidates before rebuild
+                // 0.53.1 — do NOT clear m_pendingScreenSubCandidates here: the
+                // bundled candidates for the NEW sid arrived just before this re-offer
+                // and the screen-offer handler must flush them into the rebuilt sub
+                // (else it starves → stuck "Starting"). The rolling buffer is capped +
+                // take()-cleared on flush; stale candidates are harmless (no valid pair).
                 qDebug() << "CallManager: screen re-offer for" << from.left(20)
                          << "— rebuilding screen subscriber (avoid frozen frame)";
                 stale->stop();
@@ -713,25 +717,29 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
         // Route by roomType: screen candidates go to screen pipelines
         // (screen share is independent of the camera P2P/MCU decision).
         if (roomType == "screen") {
+            const bool isOwnSession = (fromSessionId == m_signaling->sessionId());
             if (m_screenSubscribers.contains(fromSessionId)) {
                 m_screenSubscribers[fromSessionId]->addIceCandidate(cStr, mline, mid);
-            } else if (m_screenSharePipeline) {
+            } else if (m_screenSharePipeline && isOwnSession) {
+                // Our OWN screen publisher's remote candidates (from the MCU).
                 m_screenSharePipeline->addIceCandidate(cStr, mline, mid);
-            } else if (fromSessionId != m_signaling->sessionId()) {
-                // No screen subscriber built yet AND we're not the sharer: the MCU
-                // trickles a peer's screen-subscriber remote candidates with/just
-                // before its offer, landing ~100ms before handleScreenOffer builds
-                // the SubscribePipeline. The camera path queues these
-                // (m_pendingSubCandidates) — the screen path used to DROP them →
-                // a candidate-starved sub → ICE never leaves "new"/"checking" → the
-                // re-share frozen on "Starting" (Kalin↔Ilko 0.52.16). Queue per
-                // session; the screen-offer handler flushes once the sub exists.
-                // The fromSessionId!=self guard mirrors the camera path: a late
-                // trickle for our OWN just-stopped screen publisher (pipeline gone)
-                // must be dropped, not queued under our own session — we build no
-                // screen subscriber for ourselves, so it would never flush and would
-                // leak until teardown.
-                m_pendingScreenSubCandidates[fromSessionId].append({cStr, mline, mid});
+                return;
+            }
+            // 0.53.1 — ALSO buffer a remote peer's screen candidates in a small
+            // rolling window, EVEN while a subscriber is live. The MCU trickles a
+            // subscriber's candidates bundled with/just before its offer; the
+            // publisher's +5/+11s reap re-assert can then REBUILD this sub a beat
+            // AFTER those candidates land — routed only to the (about-to-die) old
+            // sub they're lost, and the rebuilt sub STARVES → stuck "Starting your
+            // share" (Ilko 0.53.0, sid 8389…/10:41:57: "flushing 0 queued candidates"
+            // → no remote candidates → no ICE). handleScreenOffer flushes this buffer
+            // into the (re)built sub, covering BOTH the initial-build (0.52.16) and
+            // rebuild starvation. !isOwnSession mirrors the camera path: never buffer
+            // our own session (we build no screen subscriber for ourselves → leak).
+            if (!isOwnSession) {
+                auto &buf = m_pendingScreenSubCandidates[fromSessionId];
+                buf.append({cStr, mline, mid});
+                while (buf.size() > 16) buf.removeFirst();   // ~1-2 offers' worth
             }
             return;
         }

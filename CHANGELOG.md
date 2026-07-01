@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.53.1 "Bafana Bafana" -- BETA (2026-06-26)
+
+### Fixed
+
+* **Sharing a whole screen that has TalQ on it no longer freezes the picture.** The
+  full-size preview of your own share was being shown on the call and then captured
+  again by the screen share — over and over, a "hall of mirrors" — leaving the other
+  side on a frozen image. The full-size self-view now appears only when you share a
+  single window (where there's no feedback); sharing a whole screen keeps just the
+  small corner preview.
+* **Re-sharing a screen is more reliable still.** Closed the last case where a
+  quickly re-shared screen could leave the viewer stuck on "Starting…" — the viewer
+  now keeps the connection details it needs even when it rebuilds the connection.
+* **Window titles always show in the share picker.** Each window's name now appears
+  under its thumbnail at all times, not only when you hover over it.
+
 ## v0.53.0 "Bafana Bafana" -- BETA (2026-06-25)
 
 **Codename "Bafana Bafana"** (continued) — South Africa's national football team,
