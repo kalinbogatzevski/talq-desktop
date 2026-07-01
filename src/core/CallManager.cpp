@@ -369,6 +369,25 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
         removeScreenSubscriber(sessionId);
     });
 
+    // 0.52.7 — a requestoffer was rejected "not_allowed". The HPB error carries no
+    // sid, so attribute it to EVERY sid we currently have a requestoffer
+    // outstanding for (in the field this is one peer whose camera publisher slot
+    // is settling/reaped around a screen-share renegotiation — the app-window-share
+    // call-drop repro). The retry tick escalates a sid that keeps getting rejected
+    // to a full recoverSubscriber rebuild instead of resending requestoffer forever.
+    // KNOWN LIMITATION (bounded, non-fatal): with >1 pending peer, a rejection
+    // aimed at peer A also ticks a merely-SLOW-but-unrejected peer B, so B may be
+    // escalated to recoverSubscriber early. B is NOT dropped and the call is NOT
+    // torn down (recoverSubscriber is bounded at kMaxSubRecoveries and never hangs
+    // up); it only spends B's recovery budget sooner. The field case is 1:1 (exact
+    // attribution); a precise per-sid fix would need a request-id the HPB doesn't
+    // echo — which we deliberately do NOT add (inventing signaling fields has
+    // broken calls twice).
+    connect(m_signaling, &SignalingClient::requestOfferRejected, this, [this]() {
+        for (const QString &sid : m_pendingRequestOffers)
+            ++m_requestOfferRejections[sid];
+    });
+
     // Keep the self participant mirrored to our own media state.
     for (auto sig : { &CallManager::muteChanged, &CallManager::cameraChanged,
                       &CallManager::screenShareChanged,
@@ -687,6 +706,7 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
         if (m_state != Connecting && m_state != Active) {
             m_pendingRequestOffers.clear();
             m_requestOfferAttempts.clear();
+            m_requestOfferRejections.clear();
             m_requestOfferRetry.stop();
             return;
         }
@@ -695,6 +715,29 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
             if (m_subscribePipelines.contains(sid)) {
                 m_pendingRequestOffers.remove(sid);
                 m_requestOfferAttempts.remove(sid);
+                m_requestOfferRejections.remove(sid);
+                continue;
+            }
+            // 0.52.7 — persistent "not_allowed": the MCU is ACTIVELY rejecting our
+            // requestoffer (not just silent), so this peer's publisher slot is
+            // stale/un-offerable and a bare resend can NEVER escape it (the fresh
+            // offer would be dropped by the one-shot feedOfferToSignaller). Escalate
+            // to a full recoverSubscriber rebuild — it tears the stale subscriber
+            // down + re-requests on a clean, 8-bounded budget, by which time the
+            // slot has usually settled. This is the app-window-share call-drop fix.
+            // Threshold 3 (~24s) means a peer whose publish is merely SLOW but
+            // SILENT (no rejection) keeps its rejection count at 0 and still rides
+            // the full plain-resend budget below — no regression to that case. The
+            // remove() BEFORE recoverSubscriber is LOAD-BEARING: it satisfies that
+            // function's "already recovering" early-return guard so the rebuild runs.
+            if (m_requestOfferRejections.value(sid) >= 3) {
+                qWarning() << "CallManager: requestoffer for" << sid.left(20)
+                           << "rejected 'not_allowed'" << m_requestOfferRejections.value(sid)
+                           << "times — escalating to subscriber rebuild";
+                m_pendingRequestOffers.remove(sid);
+                m_requestOfferAttempts.remove(sid);
+                m_requestOfferRejections.remove(sid);
+                recoverSubscriber(sid, QStringLiteral("requestoffer-not-allowed"));
                 continue;
             }
             int &n = m_requestOfferAttempts[sid];
@@ -711,6 +754,7 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
                            << "after" << n << "attempts";
                 m_pendingRequestOffers.remove(sid);
                 m_requestOfferAttempts.remove(sid);
+                m_requestOfferRejections.remove(sid);
                 continue;
             }
             ++n;
@@ -801,6 +845,13 @@ void CallManager::detectGpuClass()
     m_gpuClass = talq::gpuClassFromSignals(hwEnc, talq::gpuAdapterNames(), ov);
     qInfo().noquote() << "CallManager: GPU class:" << talq::gpuClassName(m_gpuClass)
                       << "(hwEncode=" << hwEnc << " override=" << int(ov) << ")";
+}
+
+void CallManager::setVideoQualityNotice(const QString &text)
+{
+    if (text == m_videoQualityNotice) return;
+    m_videoQualityNotice = text;
+    emit videoQualityNoticeChanged();
 }
 
 QString CallManager::activeVideoCodec() const
@@ -1246,6 +1297,7 @@ void CallManager::recoverSubscriber(const QString &sessionId, const QString &rea
     m_subStall.remove(sessionId);   // #bug2 -- fresh baseline for the rebuilt feed
     m_pendingRequestOffers.remove(sessionId);
     m_requestOfferAttempts.remove(sessionId);
+    m_requestOfferRejections.remove(sessionId);   // 0.52.7 — fresh rejection budget
 
     // Unbind the now-dangling provider so the UI stops painting a dead
     // feed; a fresh SubscribeWebrtcSrc + provider is built on the re-offer.
@@ -1389,10 +1441,23 @@ bool CallManager::buildAndStartPublisher()
     });
 
     connect(m_publishPipeline, &PublishPipeline::softwareVideoEncoderUsed, this, [this]() {
-        if (m_softwareEncoderNotified) return;   // once per call (publisher can rebuild)
+        // 0.52.5 — persistent sender-visible chip (no working HW encoder → 480p).
+        setVideoQualityNotice(tr("Software encoding — video limited to 480p"));
+        if (m_softwareEncoderNotified) return;   // toast: once per call (publisher can rebuild)
         m_softwareEncoderNotified = true;
         qInfo() << "CallManager: camera on SOFTWARE video encoder — notifying user";
         emit softwareVideoEncoderNotice();
+    });
+
+    // 0.52.5 — the publisher pinned the send at the capability floor under load
+    // (only a non-Capable/software box can trip this; a Capable HW box floors at
+    // full quality). Show/clear the persistent "limited to 480p" chip on our own
+    // screen so the sender is never silently stuck low without knowing why.
+    connect(m_publishPipeline, &PublishPipeline::sendQualityFloored, this, [this](bool atFloor) {
+        if (atFloor)
+            setVideoQualityNotice(tr("Limited to 480p — this device can't keep up at higher quality"));
+        else if (m_videoQualityNotice.startsWith(tr("Limited to 480p")))
+            setVideoQualityNotice(QString());   // clear only the floor reason; a software notice persists
     });
 
     connect(m_publishPipeline, &PublishPipeline::cameraError, this, [this](const QString &reason) {
@@ -3296,6 +3361,7 @@ void CallManager::teardown(const QString &reason)
     m_pendingOffers.clear();
     m_pendingRequestOffers.clear();
     m_requestOfferAttempts.clear();
+    m_requestOfferRejections.clear();   // 0.52.7
     m_requestOfferRetry.stop();
 
     // Clean up screen sharing. Set the teardown flag for symmetry with
@@ -3344,6 +3410,7 @@ void CallManager::teardown(const QString &reason)
     m_screenSubFrameMark.clear();
     m_screenSubStallTicks.clear();
     m_softwareEncoderNotified = false;   // re-notify on the next call if still software
+    setVideoQualityNotice(QString());    // 0.52.5 — reset the sender quality chip for the next call
 
     // Synchronous local close — the UI must NEVER wait on the server
     // (mid-call network drops could otherwise leave the call window
@@ -3563,6 +3630,7 @@ void CallManager::onParticipantLeftCall(const QString &sessionId)
 
     m_pendingRequestOffers.remove(sessionId);
     m_requestOfferAttempts.remove(sessionId);
+    m_requestOfferRejections.remove(sessionId);   // 0.52.7 — offer landed; clear rejection budget
 
     // Remove subscriber pipeline for this peer
     if (m_subscribePipelines.contains(sessionId)) {
@@ -3698,6 +3766,7 @@ void CallManager::onOfferReceived(const QString &fromSessionId, const QString &s
 
     m_pendingRequestOffers.remove(fromSessionId);
     m_requestOfferAttempts.remove(fromSessionId);
+    m_requestOfferRejections.remove(fromSessionId);   // 0.52.7 — real offer landed; clear rejection budget
 
     // Track the MCU's sid — signals use the hash so re-offers update seamlessly
     m_subscriberSids[fromSessionId] = sid;

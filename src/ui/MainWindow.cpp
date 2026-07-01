@@ -1297,9 +1297,25 @@ void MainWindow::buildChatPage()
         m_chatPainter->pinToBottom();
     });
 
+    // 0.52.7 — coalesced per-topic-unread refresh (see m_topicUnreadDebounce).
+    m_topicUnreadDebounce.setSingleShot(true);
+    m_topicUnreadDebounce.setInterval(400);
+    connect(&m_topicUnreadDebounce, &QTimer::timeout, this, [this]() {
+        if (m_threads && m_showTopics)
+            m_threads->refresh();
+    });
     connect(m_messages, &MessageListModel::newMessagesAtEnd, this, [this]() {
         if (m_chatPainter->atBottom())
             m_chatPainter->scrollToBottom();
+        // 0.52.7 — a live message just landed in the open conversation; recompute
+        // the per-topic unread so the topic bar's counter updates (it previously
+        // only refreshed on conversation-open / window activation, so a reply in
+        // another topic while you watched showed no count). Debounced + gated on
+        // m_showTopics so a 1:1 room never fetches and rapid batches / your own
+        // sends collapse into one trailing fetch (the currently-open topic is also
+        // pinned to 0 in fetchThreads, so this can't flicker the topic you're in).
+        if (m_showTopics)
+            m_topicUnreadDebounce.start();
     });
     connect(m_messages, &MessageListModel::errorOccurred, this, [this](const QString &error) {
         QMessageBox::warning(this, "Error", error);
@@ -1794,7 +1810,14 @@ void MainWindow::onConversationSelected(const QString &token, const QString &nam
     // A live call stays watchable while you browse chat: dock it to a
     // compact corner PiP when you navigate into a conversation. Double-
     // click the PiP (or end the call) to bring it back full.
-    if (m_callWindow && m_callManager->state() != CallManager::Idle)
+    // 0.52.7 — but do NOT yank a call the user deliberately put FULLSCREEN
+    // (typically on a second monitor) down to a 320x190 corner: that was the
+    // field bug where a fullscreen call jumped to the primary screen's
+    // bottom-right when a conversation got (re)selected — including the
+    // programmatic re-select that can fire on a "reconnecting" blip. A
+    // fullscreen call has its own screen real estate; leave it where it is.
+    if (m_callWindow && m_callManager->state() != CallManager::Idle
+        && !m_callWindow->isFullscreen())
         m_callWindow->enterPipDock();
 
     // Switch from welcome to chat
@@ -2520,6 +2543,12 @@ void MainWindow::changeEvent(QEvent *event)
             // is already in flight.
             if (m_conversations)
                 m_conversations->refresh();
+            // 0.52.7 — refresh the OPEN conversation's TOPIC list too, so the
+            // per-topic unread counters on the topic bar are current when the user
+            // returns (they only recomputed on conversation-open before). Debounced
+            // (shared with the live-message path) + gated on m_showTopics.
+            if (m_showTopics)
+                m_topicUnreadDebounce.start();
             // Avatars only ever lived in each painter's in-memory cache and
             // were never invalidated, so a group/user avatar changed elsewhere
             // stayed stale until restart. Mark them stale on focus; the next

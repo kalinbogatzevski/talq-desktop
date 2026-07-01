@@ -1,5 +1,69 @@
 # Changelog
 
+## v0.52.7 "Bafana Bafana" -- STABLE (2026-06-19)
+
+### Fixed
+
+* **Calls no longer drop after a screen share.** When a peer switched what they
+  were sharing (for example from a full screen to a single app window), the call
+  could fall into "Reconnecting" and then drop, because the app kept asking the
+  server for the peer's camera feed and the server kept refusing while the share
+  was reconfiguring. The app now detects that refusal and rebuilds the feed once
+  instead of asking forever, so the call recovers on its own.
+* **A full-screen call window no longer jumps to a tiny corner.** Opening a
+  conversation during a call (or a brief "reconnecting") used to shrink a call you
+  had put full-screen on another monitor down to a small box in the corner of your
+  main screen. A full-screen call is now left where you put it.
+* **The per-topic unread counter on the topic bar updates live** — a reply landing
+  in another topic now bumps that topic's count immediately, instead of only after
+  you reopened the conversation.
+
+## v0.52.6 "Bafana Bafana" -- STABLE (2026-06-19)
+
+### Fixed
+
+* **Video no longer drops to the lowest quality (or cuts out) when bandwidth
+  feedback is missing.** If the connection hadn't yet reported how much bandwidth
+  was available, the app mistook "no reading yet" for "no bandwidth" and muted the
+  higher-quality video layers — so you could be sending a tiny picture on a
+  perfectly good connection. A missing reading is now treated as a healthy
+  connection; a genuine low reading still adapts quality down as before.
+
+## v0.52.5 "Bafana Bafana" -- STABLE (2026-06-19)
+
+### Fixed
+
+* **Capable computers stay at full video quality.** On machines with a working
+  hardware video encoder, the call picture could drop to the lowest quality a few
+  seconds in and stay there — even on a fast, uncongested connection — because the
+  automatic load manager was pulling the quality down too aggressively. It no
+  longer reduces quality on a capable machine; only a genuinely poor connection
+  does.
+
+### Changed
+
+* **Video never silently drops to the lowest setting, and you're told why.** When
+  a computer can't keep up at full quality (for example, no hardware video
+  encoder), the camera now holds at 480p instead of collapsing to a tiny picture,
+  and a small on-screen note explains that quality is limited.
+
+## v0.52.4 "Bafana Bafana" -- STABLE (2026-06-19)
+
+### Fixed
+
+* **You can hear the other person again.** In some calls the incoming audio
+  stopped reaching your speakers (the level meter still moved, but there was no
+  sound) because all playback was routed through the echo-cancellation stage and
+  a single hiccup there silenced the whole call. Incoming audio now plays
+  directly, so it can never be held up by that stage.
+* **Video climbs back to full quality after a brief network hiccup.** A momentary
+  dip could leave the picture stuck at the lowest quality for the rest of the call
+  on an otherwise fast connection; it now recovers within about a second once the
+  connection is healthy again (while still holding steady on a genuinely
+  congested link).
+* **The receive-quality dropdown works again** — it could be unclickable once the
+  call controls had faded; the click now always registers.
+
 ## v0.52.2 "Bafana Bafana" -- STABLE (2026-06-19)
 
 ### Fixed

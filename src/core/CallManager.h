@@ -91,6 +91,12 @@ public:
     // runs (video + receive intact); the surface shows a "microphone
     // unavailable" banner instead of pretending the mic is live.
     bool isMicUnavailable() const { return m_micUnavailable; }
+    // 0.52.5 — non-empty while our OWN camera SEND quality is degraded for a
+    // reason the user should see (software encoding, or shed to the 480p floor
+    // under load). Drives a persistent amber chip on the call surface. A Capable
+    // box with a working HW encoder stays empty (it sends full quality). Cleared
+    // when full quality resumes / on teardown.
+    QString videoQualityNotice() const { return m_videoQualityNotice; }
     int callDuration() const { return m_callDuration; }
     QString remotePeerName() const { return m_remotePeerName; }
     QString remotePeerId() const { return m_remotePeerId; }
@@ -239,6 +245,7 @@ signals:
     void screenShareRetrying();            // share didn't confirm; auto-retrying
     void screenShareFailed(const QString &reason);  // gave up after retries
     void softwareVideoEncoderNotice();     // camera fell back to software (x264); notify once/call
+    void videoQualityNoticeChanged();      // 0.52.5 — persistent degraded-send chip text changed
     void screenShareQualityChanged();
     void remoteScreenProviderChanged();
     void participantAdded(CallParticipant *p);
@@ -515,6 +522,8 @@ private:
     QPointer<ShareOverlay> m_shareOverlay;   // #72 coloured monitor border (monitor shares)
     bool m_screenSharing = false;
     bool m_softwareEncoderNotified = false;  // once-per-call guard for softwareVideoEncoderNotice
+    QString m_videoQualityNotice;            // 0.52.5 — "" = full quality; else the sender chip text
+    void setVideoQualityNotice(const QString &text);   // emits videoQualityNoticeChanged() on change
     QString m_screenShareSid;
     // Reset (restart()) whenever WE send an unshareScreen. A peer discovers an
     // ongoing screen share ONLY from the publisher's one-shot sendoffer (there
@@ -600,5 +609,11 @@ private:
     // requestoffer retry (upstream resends ~every 8s until the offer lands)
     QSet<QString> m_pendingRequestOffers;
     QHash<QString, int> m_requestOfferAttempts;
+    // 0.52.7 — per-sid count of consecutive "not_allowed" requestoffer rejections.
+    // A persistently-rejected sid is escalated from blind requestoffer resends to a
+    // full recoverSubscriber rebuild (the bare resend can never escape a stale/
+    // un-offerable publisher slot). Cleared whenever a real offer lands / a rebuild
+    // starts / the call tears down — in lockstep with m_requestOfferAttempts.
+    QHash<QString, int> m_requestOfferRejections;
     QTimer m_requestOfferRetry;
 };

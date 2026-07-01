@@ -315,6 +315,11 @@ private:
 
     QSettings m_settings;
     QTimer m_saveGeometryTimer;
+    // 0.52.7 — coalesces per-topic-unread refreshes: live message batches + window
+    // activation can fire rapidly, and ThreadListModel::refresh() is an un-coalesced
+    // full-room fetch. A single trailing 400 ms refresh avoids overlapping fetches /
+    // model-reset churn and a redundant fetch on every message you send.
+    QTimer m_topicUnreadDebounce;
     CallWindow *m_callWindow = nullptr;
     SettingsDialog *m_settingsDialog = nullptr;
     QPointer<ImageViewerDialog> m_imageViewer;

@@ -127,6 +127,10 @@ signals:
     void answerReceived(const QString &fromSessionId, const QString &sdp, const QString &roomType);
     void candidateReceived(const QString &fromSessionId, const QJsonObject &candidate, const QString &roomType);
     void endOfCandidatesReceived(const QString &fromSessionId);
+    // 0.52.7 — the MCU rejected a requestoffer ("not_allowed: Not allowed to
+    // request offer."). Carries NO sid (the HPB error has none); CallManager
+    // correlates it to the peers it currently has a requestoffer outstanding for.
+    void requestOfferRejected();
     // 0.41.x-beta — TalQ-private P2P overlay (bypasses the MCU for 1:1).
     void p2pSignalReceived(const QString &fromSessionId, const QString &subtype,
                            const QJsonObject &payload);

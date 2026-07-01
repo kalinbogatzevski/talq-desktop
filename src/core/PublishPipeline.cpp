@@ -103,6 +103,18 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         }
         if (tier.shedHighLayer)
             m_loadCapMaxLayer = 1;   // no HW encode -> send l+m only
+        // 0.52.5 capability send-floor (field repro: two capable HW boxes both
+        // collapsed to 180p under the load controller on a healthy 9 Mbps link).
+        // A Capable GPU with a WORKING hardware encoder must NEVER be load-shed
+        // below full quality — only real BWE congestion may reduce it (floor 2).
+        // Everything else floors at 'm' (l+m, the "480p" tier), never the 320x180
+        // bottom rung, and surfaces the on-screen notice chip. talqForceSoftwareVideo
+        // is the runtime HW-encoder-failed latch (a flaky HW encoder that fell back
+        // to x264 mid-call rebuilds the publisher → re-runs start() → floor drops to 1).
+        const bool softwareEncode = tier.shedHighLayer
+                                  || talqForceSoftwareVideo().load();
+        m_layerFloor = (m_gpuClass == talq::GpuClass::Capable && !softwareEncode) ? 2 : 1;
+        m_sendFlooredLatch = false;
         const int w = (h * 16) / 9 & ~1;   // 16:9, even width
         m_layers[2].targetW = w;
         m_layers[2].targetH = h;
@@ -123,8 +135,7 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         // BWE auto-cap (onGccBitrate) can both clamp aggressively AND
         // restore to the original when the link recovers.
         m_originalMaxBitrate = m_maxBitrate;
-        m_autoCapActive      = false;
-        m_lowBweTimer.invalidate();
+        m_bweAutoCap.reset();
     }
 
     // Audio-source resilience (0.48.x): a microphone that won't OPEN must
@@ -2546,6 +2557,19 @@ void PublishPipeline::setLayerActive(int i, bool on)
 
 void PublishPipeline::applyBweToLayers(int estimateBps)
 {
+    // 0.52.6 — a 0 / non-positive estimate means GCC has NO estimate yet (RTCP
+    // feedback hasn't flowed, or the receiver isn't reporting transport-cc for our
+    // send) — it does NOT mean "0 bandwidth". onGccBitrate already early-returns on
+    // est==0, so a 0 here only ever arrives from setLoadCaps()/setScreenShareSuppression()
+    // re-gating with the last-known estimate that was NEVER set. Treat it as FULL
+    // bandwidth so the BWE gate doesn't MUTE every upper layer down to 180p on a
+    // perfectly healthy link that merely hasn't fed back (field 0.52.5: Kalin's GCC
+    // read 0 the whole call → setLoadCaps→applyBweToLayers(0) muted h+m even with the
+    // load-floor holding ceil 2, so he sent 180p; then both ends collapsed). The
+    // effectiveLayerCeiling (tier/load-floor/screen-share) still caps above this and
+    // m_maxBitrate still caps the encoder bytes; a REAL >0 estimate gates normally.
+    if (estimateBps <= 0)
+        estimateBps = m_originalMaxBitrate > 0 ? m_originalMaxBitrate : 9'000'000;
     m_lastBweEstimateBps = estimateBps;   // remembered so a load-ceiling change re-gates
     // Threshold rationale: each layer's effective wire cost exceeds its
     // nominal target by ~25% (RTP/RTCP overhead, FEC pacing slack).
@@ -2557,12 +2581,15 @@ void PublishPipeline::applyBweToLayers(int estimateBps)
     constexpr int kHysteresis  =   200'000;
     // 0.51.14 anti-flap: an estimate hovering near a threshold flipped a layer
     // ACTIVE/MUTED every few seconds (each flip = keyframe + visible quality
-    // jump). The gate now DROPS fast but only RE-ADDS after the estimate stays
-    // above re-open this long. See BweLayerGate.h. (Ilko ~1.9 Mbps field repro.)
-    constexpr long long kReopenDwellMs = 4000;
-
+    // jump). The gate DROPS fast but only RE-ADDS after the estimate stays above
+    // re-open this long. See BweLayerGate.h. (Ilko ~1.9 Mbps field repro.)
+    // 0.52.4: the dwell is now HEADROOM-SCALED (bweReopenDwellMs) — a flat 4 s
+    // latched the high layer off for seconds after a single dip on a healthy LAN
+    // ("stuck at 180p, won't climb back"); near a threshold it stays the full 4 s.
     if (!m_bweClock.isValid()) m_bweClock.start();
-    const long long now = m_bweClock.elapsed();
+    const long long now    = m_bweClock.elapsed();
+    const long long dwellH = talq::bweReopenDwellMs(estimateBps, kCloseH);
+    const long long dwellM = talq::bweReopenDwellMs(estimateBps, kCloseM);
 
     // Effective cap = MIN(network, encode-load): a layer sends only if BOTH the
     // BWE estimate AND the encode-load cap (m_loadCapMaxLayer) allow it, so the
@@ -2573,9 +2600,9 @@ void PublishPipeline::applyBweToLayers(int estimateBps)
     m_bweGate[2].active = m_layers[2].active;
     m_bweGate[1].active = m_layers[1].active;
     const bool wantH = talq::bweGateLayer(m_bweGate[2], estimateBps, kCloseH,
-                                          kHysteresis, ceil >= 2, now, kReopenDwellMs);
+                                          kHysteresis, ceil >= 2, now, dwellH);
     const bool wantM = talq::bweGateLayer(m_bweGate[1], estimateBps, kCloseM,
-                                          kHysteresis, ceil >= 1, now, kReopenDwellMs);
+                                          kHysteresis, ceil >= 1, now, dwellM);
 
     // Log the estimate exactly when a layer flips (low-noise; setLayerActive
     // also logs the rid). Makes the next field log show the gate's behavior +
@@ -2583,12 +2610,23 @@ void PublishPipeline::applyBweToLayers(int estimateBps)
     if (wantH != m_layers[2].active || wantM != m_layers[1].active) {
         qInfo().nospace() << "PublishPipeline: BWE gate @ " << (estimateBps / 1000)
                           << " kbps -> H=" << wantH << " M=" << wantM
-                          << " (ceil " << ceil << ", reopen-dwell "
-                          << kReopenDwellMs << "ms)";
+                          << " (ceil " << ceil << ", reopen-dwell H="
+                          << dwellH << " M=" << dwellM << "ms)";
     }
     // 'l' always stays on — our minimum-viable channel.
     setLayerActive(2, wantH);
     setLayerActive(1, wantM);
+
+    // 0.52.5 — sender-visible floor signal. Edge-triggered: are we pinned at the
+    // capability floor because load/BWE wanted us LOWER than it? Only meaningful
+    // when the floor is an actual cap (m_layerFloor < 2 → a non-Capable/software
+    // box); a Capable HW box floors at 2 and never trips this.
+    const bool atFloor = (m_layerFloor < 2) && !m_screenShareSuppress
+                       && (qMin(m_loadCapMaxLayer, m_dynLoadCeiling) < m_layerFloor);
+    if (atFloor != m_sendFlooredLatch) {
+        m_sendFlooredLatch = atFloor;
+        emit sendQualityFloored(atFloor);
+    }
 }
 
 void PublishPipeline::setLoadCaps(int layerCeiling, int fps)
@@ -2756,8 +2794,24 @@ GstElement *PublishPipeline::addFarEndPeer(const QString &peerId)
     if (!src) return nullptr;
     GstCaps *c = gst_caps_from_string(
         "audio/x-raw,rate=48000,format=S16LE,channels=1,layout=interleaved");
+    // CRITICAL (0.52.3 — "no remote audio" fix). This appsrc feeds pub-far-mix
+    // (audiomixer), whose tail ends in a REAL wasapi2sink that reports a positive
+    // min-latency (~21 ms). A live appsrc with max-latency UNSET advertises
+    // max-latency = 0 in the latency query, so the live aggregator computes
+    // max(0) < min(21 ms) → "Impossible to configure latency" / "min > max" →
+    // the mixer never sets its running time and STOPS producing. Since (post the
+    // single-clock-AEC rework) remote playout flows ONLY through this mixer → the
+    // shared sink, that wedge means the user hears NOTHING while the VU meter —
+    // tapped on the subscriber chain BEFORE this appsrc — still moves. Give the
+    // source a finite, generous latency window (>= the sink min) so the
+    // aggregator can always reconcile. leaky+bounded so a stalled reference can
+    // never back-pressure the decoder. (do-timestamp keeps real-time alignment;
+    // max-latency only bounds the negotiation, it does not add real delay.)
     g_object_set(src, "is-live", TRUE, "format", GST_FORMAT_TIME,
-                 "do-timestamp", TRUE, "caps", c, nullptr);
+                 "do-timestamp", TRUE, "caps", c,
+                 "min-latency", (gint64)0, "max-latency", (gint64)100 * GST_MSECOND,
+                 "max-bytes", (guint64)(64 * 1024), "leaky-type", 2 /*downstream*/,
+                 nullptr);
     gst_caps_unref(c);
     gst_bin_add(GST_BIN(m_pipeline), src);
     GstPad *sp = gst_element_get_static_pad(src, "src");
@@ -2817,12 +2871,12 @@ void PublishPipeline::onGccBitrate(GObject *gcc, GParamSpec *, gpointer userData
     guint est = 0;
     g_object_get(gcc, "estimated-bitrate", &est, nullptr);
     if (est == 0) return;
-    if (est > (guint)self->m_maxBitrate) est = (guint)self->m_maxBitrate;
 
-    // Test hook (#132 TALQ_TEST_SIMULCAST_DROP): when this env var is
-    // present, the value replaces the real estimate so the harness can
-    // deterministically step through BWE thresholds and watch the
-    // layer-gate close h then m. Production has it unset.
+    // Test hook (#132 / BWE auto-cap test): when this env var is present, the
+    // value replaces the real estimate so the harness can deterministically step
+    // through BWE thresholds and watch the layer-gate close h then m AND drive the
+    // auto-cap latch/restore. Applied BEFORE the clamp + raw capture so it drives
+    // the auto-cap's decision (which evaluates the RAW estimate). Production unset.
     {
         QByteArray ov = qgetenv("TALQ_TEST_BWE_OVERRIDE_KBPS");
         if (!ov.isEmpty()) {
@@ -2832,8 +2886,16 @@ void PublishPipeline::onGccBitrate(GObject *gcc, GParamSpec *, gpointer userData
         }
     }
 
+    // RAW (un-clamped) link estimate — the sustained-low auto-cap MUST evaluate
+    // this, NOT the clamped value. Once the cap latches m_maxBitrate low, clamping
+    // est to m_maxBitrate would pin every future sample below the restore
+    // threshold so the cap could never lift → video stuck low for the whole call
+    // even after the link recovered (field: 1080p → low → stayed low, Kalin↔Ivan/SA).
+    const int rawBps = (int)est;
+    if (est > (guint)self->m_maxBitrate) est = (guint)self->m_maxBitrate;  // encoder-bitrate path only
+
     QPointer<PublishPipeline> guard(self);
-    QMetaObject::invokeMethod(self, [guard, estBps = (int)est]() {
+    QMetaObject::invokeMethod(self, [guard, estBps = (int)est, rawBps]() {
         if (!guard) return;
 
         // 0.41.6-beta — sustained-low BWE auto-cap. If the estimate
@@ -2843,34 +2905,26 @@ void PublishPipeline::onGccBitrate(GObject *gcc, GParamSpec *, gpointer userData
         // recovers above 70 % of the original we restore. Protects
         // against the mid-call freeze where GCC keeps probing a
         // saturated uplink, packet loss climbs, both ends stall.
-        constexpr int kAutoCapLowMs        = 15000;
+        // Sustained-low BWE auto-cap — pure logic in BweAutoCap.h (unit-tested,
+        // tests/bwe_auto_cap_test.cpp). It evaluates the RAW (un-clamped) estimate
+        // so the cap can actually RESTORE when the link recovers; the prior inline
+        // version clamped est first, so once capped the estimate could never reach
+        // the restore threshold → stuck low for the whole call (field: 1080p→low to
+        // a distant peer). A restore dwell inside the helper prevents flap.
         if (guard->m_originalMaxBitrate > 0) {
-            const int loThreshold = guard->m_originalMaxBitrate / 2;
-            const int hiThreshold = guard->m_originalMaxBitrate * 7 / 10;
-            if (estBps < loThreshold) {
-                if (!guard->m_lowBweTimer.isValid()) guard->m_lowBweTimer.start();
-                if (!guard->m_autoCapActive
-                    && guard->m_lowBweTimer.elapsed() > kAutoCapLowMs) {
-                    guard->m_autoCapActive = true;
-                    guard->m_maxBitrate    = estBps * 6 / 5;
-                    qWarning().nospace()
-                        << "PublishPipeline: BWE sustained low ("
-                        << (estBps / 1000) << " kbps) — auto-capping max to "
-                        << (guard->m_maxBitrate / 1000) << " kbps. "
-                        << "Will restore on BWE recovery above "
-                        << (hiThreshold / 1000) << " kbps.";
-                }
-            } else {
-                guard->m_lowBweTimer.invalidate();
-                if (guard->m_autoCapActive && estBps > hiThreshold) {
-                    guard->m_maxBitrate    = guard->m_originalMaxBitrate;
-                    guard->m_autoCapActive = false;
-                    qInfo().nospace()
-                        << "PublishPipeline: BWE recovered ("
-                        << (estBps / 1000) << " kbps) — restored max to "
-                        << (guard->m_maxBitrate / 1000) << " kbps.";
-                }
-            }
+            if (!guard->m_bweClock.isValid()) guard->m_bweClock.start();
+            const bool wasCapped = guard->m_bweAutoCap.active();
+            guard->m_maxBitrate  = guard->m_bweAutoCap.onTick(
+                rawBps, guard->m_originalMaxBitrate, guard->m_bweClock.elapsed());
+            const bool nowCapped = guard->m_bweAutoCap.active();
+            if (nowCapped && !wasCapped)
+                qWarning().nospace()
+                    << "PublishPipeline: BWE sustained low (" << (rawBps / 1000)
+                    << " kbps) — auto-capping max to " << (guard->m_maxBitrate / 1000) << " kbps.";
+            else if (!nowCapped && wasCapped)
+                qInfo().nospace()
+                    << "PublishPipeline: BWE recovered (" << (rawBps / 1000)
+                    << " kbps sustained) — restored max to " << (guard->m_maxBitrate / 1000) << " kbps.";
         }
 
         // Single-stream (stable) build: GCC drives the lone encoder's

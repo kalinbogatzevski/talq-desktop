@@ -14,6 +14,7 @@
 #include <gst/webrtc/webrtc.h>
 #include "SignalingClient.h"
 #include "VideoFrameProvider.h"
+#include "BweAutoCap.h"
 #include "EncodeTier.h"
 #include "BweLayerGate.h"
 
@@ -192,6 +193,11 @@ signals:
     // The camera resolved to the SOFTWARE (x264) encoder — surfaced to the user
     // once per call so they know why CPU is higher (no usable HW encoder).
     void softwareVideoEncoderUsed();
+    // 0.52.5 — the send is pinned at the capability floor under load/BWE pressure
+    // (true) or has recovered above it (false). Only ever true on a NON-Capable /
+    // software box (a Capable HW box floors at full quality, so it never fires).
+    // Drives a persistent "limited to 480p" chip on the sender's own screen.
+    void sendQualityFloored(bool atFloor);
     // Non-fatal mic failure. Emitted when the microphone could NOT be opened
     // and the publisher fell back to a SILENT audio source so the call still
     // connects (peer hears silence) instead of dropping the whole call.
@@ -282,9 +288,12 @@ private:
     // respect the clamped m_maxBitrate, so this protects against runaway
     // probing on a sustainedly-saturated uplink (the mid-call freeze
     // class of bugs).
-    int            m_originalMaxBitrate = 0;
-    QElapsedTimer  m_lowBweTimer;
-    bool           m_autoCapActive      = false;
+    // 0.52.3 — the latch/restore decision lives in talq::BweAutoCap (pure,
+    // unit-tested). It evaluates the RAW (un-clamped) GCC estimate so a recovered
+    // link is visible (the old inline version clamped first → cap latched low for
+    // the whole call), with a restore dwell to prevent flap.
+    int             m_originalMaxBitrate = 0;
+    talq::BweAutoCap m_bweAutoCap;
     GstElement *m_gccbwe = nullptr;  // rtpgccbwe, owned by webrtcbin once returned
     // Set before the pipeline goes to NULL in cleanup(). webrtcbin can fire
     // request-aux-sender / notify::estimated-bitrate on a streaming thread
@@ -328,6 +337,19 @@ private:
     int m_dynLoadCeiling     = 2;
     int m_loadFps            = 30;  // controller send-fps target (drives m_sharedCaps)
     int m_lastBweEstimateBps = 0;   // last GCC estimate, so a ceiling change re-gates
+    // 0.52.5 capability send-floor: the LOWEST layer ceiling the dynamic load
+    // controller may pull us down to. Set in start() from the GPU class + the
+    // runtime software-fallback latch. A Capable box with a WORKING hardware
+    // encoder gets 2 (the load controller can NEVER shed its send — field repro:
+    // two capable HW boxes on a healthy 9 Mbps link both collapsed to 180p because
+    // the load controller dropped the ceiling to 0; only real BWE congestion may
+    // reduce a capable box now). A non-HW / software box gets 1 (floors at 'm' =
+    // the "480p" tier, never the 320x180 bottom rung) and shows the notice chip.
+    // NOTE: only floors the LOAD axis (clamped after the dyn-ceiling min, before
+    // the BWE gate decides per-layer on the real estimate); screen-share
+    // suppression still wins via the early return.
+    int m_layerFloor         = 1;
+    bool m_sendFlooredLatch  = false;  // edge-trigger for sendQualityFloored()
     // Anti-flap dwell for the asymmetric BWE layer gate (drop fast, re-add only
     // after a sustained estimate). Indexed by layer (1=m, 2=h; 0=l never gates).
     // See BweLayerGate.h + tests/bwe_layer_gate_test.cpp.
@@ -335,9 +357,10 @@ private:
     QElapsedTimer      m_bweClock;  // monotonic clock for the re-add dwell
     // Active layers gate on this, NOT m_loadCapMaxLayer directly.
     int effectiveLayerCeiling() const {
-        if (m_screenShareSuppress) return 0;
+        if (m_screenShareSuppress) return 0;          // share suppression wins (unchanged)
         int c = m_loadCapMaxLayer;
         if (m_dynLoadCeiling < c) c = m_dynLoadCeiling;
+        if (c < m_layerFloor)    c = m_layerFloor;    // capability floor (never below)
         return c;
     }
     bool m_cameraEnabled = false;

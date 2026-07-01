@@ -221,6 +221,20 @@ void SignalingClient::onTextMessage(const QString &msg)
         QJsonObject errObj = obj["error"].toObject();
         const QString code = errObj["code"].toString();
         qWarning() << "Signaling: error:" << code << errObj["message"].toString();
+        // 0.52.7 — "Not allowed to request offer." is produced ONLY in reply to a
+        // requestoffer (no other message yields that text). The HPB error carries
+        // NO sessionid / request-id, and the outgoing requestoffer carries none
+        // either, so we cannot say WHICH peer it is for — emit a typed,
+        // sid-agnostic signal and let CallManager apply it to the peers it
+        // currently has a requestoffer outstanding for. Deliberately do NOT add a
+        // request-id to the outgoing message: the strukturag server won't echo a
+        // field it doesn't implement, and inventing signaling fields has broken
+        // calls before. Type-correlation is the only safe correlation here.
+        if (code == QLatin1String("not_allowed")
+            && errObj["message"].toString().contains(QLatin1String("request offer"),
+                                                     Qt::CaseInsensitive)) {
+            emit requestOfferRejected();
+        }
         if (m_resuming) {
             // Resume rejected (e.g. no_such_session -- the ~30s grace lapsed).
             // Drop the stale id and fall back to a full fresh hello + re-join.

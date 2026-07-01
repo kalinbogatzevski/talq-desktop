@@ -69,6 +69,7 @@ CallStage::CallStage(CallManager *call, QWidget *parent)
         relayout(); update();
     });
     connect(m_call, &CallManager::durationChanged, this, [this]{ update(); });
+    connect(m_call, &CallManager::videoQualityNoticeChanged, this, [this]{ update(); });  // 0.52.5 chip
     connect(m_call, &CallManager::callStatsChanged, this, [this]{
         // Sample the outbound bitrate into a ring buffer (~1 s cadence, the
         // callStats tick) so the telemetry panel can draw a live sparkline.
@@ -471,6 +472,7 @@ void CallStage::paintEvent(QPaintEvent *)
         // below so it stays put the whole time the problem is live.
         paintCameraBanner(p, th);
         paintMicBanner(p, th);
+        paintQualityNotice(p, th);   // sender-visible degraded-send chip (not chrome-faded)
         if (m_telemetryOpen) paintTelemetry(p, th);
         // Top info/action chrome + bottom control bar fade together.
         // When fully hidden we skip painting (and skip appending hit
@@ -1139,6 +1141,37 @@ void CallStage::paintMicBanner(QPainter &p, const PainterTheme &th)
 //
 //   ACTION pills (top-right): Quality override + Background mode. Click
 //   opens a dropdown; hover surfaces a native tooltip.
+void CallStage::paintQualityNotice(QPainter &p, const PainterTheme &th)
+{
+    // 0.52.5 — persistent sender-visible chip: our OWN camera SEND quality is
+    // reduced (software encoding, or shed to the 480p floor under load). The
+    // sender must SEE why their video is limited — the field bug was a silent
+    // collapse to 180p with no cue. Compact amber pill at top-center; stacks
+    // below the camera/mic failure banners on the rare both-at-once case.
+    if (!m_call || m_call->videoQualityNotice().isEmpty()) return;
+    const QString text = m_call->videoQualityNotice();
+
+    QFont f = th.systemFont(); f.setBold(true);
+    p.setFont(f);
+    QFontMetrics fm(f);
+    const qreal padH = 14.0, dot = 8.0, gap = 8.0, h = 30.0;
+    const qreal w = padH + dot + gap + fm.horizontalAdvance(text) + padH;
+    qreal y = 52.0;                                   // top slot, like the banners
+    if (m_call->isCameraUnavailable()) y += 78.0;     // stack below a camera banner
+    if (m_call->isMicUnavailable())    y += 78.0;     // and/or a mic banner
+    const QRectF pill((width() - w) / 2.0, y, w, h);
+
+    QColor face = th.bgSurface; face.setAlphaF(0.96);
+    QColor edge = th.amber;     edge.setAlphaF(0.85);
+    p.setBrush(face); p.setPen(QPen(edge, 1.4));
+    p.drawRoundedRect(pill, 15, 15);
+    p.setBrush(th.amber); p.setPen(Qt::NoPen);
+    p.drawEllipse(QRectF(pill.left() + padH, pill.center().y() - dot / 2.0, dot, dot));
+    p.setPen(th.textPrimary);
+    p.drawText(pill.adjusted(padH + dot + gap, 0, -padH, 0),
+               Qt::AlignVCenter | Qt::AlignLeft, text);
+}
+
 void CallStage::paintInfoPills(QPainter &p, const PainterTheme &th)
 {
     // 0.40.15 — Mission Control telemetry tile vocabulary, laid out on
@@ -1286,16 +1319,15 @@ QString CallStage::highQualityLabel() const
     return tr("High (180p)");
 }
 
-void CallStage::paintActionPills(QPainter &p, const PainterTheme &th)
+void CallStage::computeActionPillGeometry()
 {
-    // 0.40.15 — action BUTTONS (not pills): rectangular, button-like
-    // affordances in the top-right. Click opens a QMenu listing the
-    // available options; right-click on BG opens the full picker.
-    // The button shows the CURRENT value + ▼ caret so it reads "this
-    // is a control with a dropdown" at a glance. Hover lifts subtly
-    // (1.05x scale + accent border) and shows a native tooltip.
-    // High-layer label reflects the REMOTE peer's actual top layer (peak
-    // decoded height), not our own send setting — see highQualityLabel().
+    // GEOMETRY ONLY (no painting) for the top-right action buttons
+    // (QUALITY / BACKGROUND / SHARE), so the click hit-rects are valid even when
+    // the chrome is faded out (paintActionPills is skipped at alpha~0). Without
+    // this, the quality-dropdown click hit a NULL rect and the menu never opened
+    // (field: "the dropdown did nothing"). paintActionPills calls this then draws
+    // into the SAME member rects, so the drawn buttons and the hit-rects can't
+    // drift. Keep the constants/labels in lockstep with paintActionPills.
     const QString highLabel = highQualityLabel();
     const QString kLowLabel = QStringLiteral("Low (180p)");
     const QString kMedLabel = QStringLiteral("Medium (360p)");
@@ -1304,7 +1336,6 @@ void CallStage::paintActionPills(QPainter &p, const PainterTheme &th)
         : (m_qualityOverride == 0 ? kLowLabel
            : m_qualityOverride == 1 ? kMedLabel
            : highLabel).toUpper();
-    const bool qActive = (m_qualityOverride >= 0);
 
     QSettings bgSet("TalQ", "TalQ");
     bgSet.beginGroup("Talk/Backgrounds");
@@ -1315,24 +1346,13 @@ void CallStage::paintActionPills(QPainter &p, const PainterTheme &th)
         ? tr("OFF")
         : (bgType == QLatin1String("image") ? tr("IMAGE") : tr("BLUR"));
 
-    // 0.40.15 — buttons share the info-tile card vocab (bg-surface +
-    // divider border at rest), with two readable distinctions: a
-    // slightly thicker border (1.3px → 1.6px on hover) and a ▼ caret.
-    // KEY in textTime, VAL in textPrimary.
-    // 0.41.5-beta — bumped to the new 26h scale + 9/11 mono fonts.
     QFont keyF = monoFont(9);  keyF.setBold(true);
     keyF.setLetterSpacing(QFont::AbsoluteSpacing, 1.2);
     QFont valF = monoFont(11); valF.setBold(true);
     QFontMetrics keyFm(keyF), valFm(valF);
 
-    const qreal padL     = 11.0;
-    const qreal padR     = 10.0;
-    const qreal keyValGap = 10.0;
-    const qreal caretW   = 9.0;
-    const qreal caretGap = 7.0;
-    const qreal btnH     = 26.0;
-    const qreal gap      = 8.0;
-    const qreal radius   = 11.0;
+    const qreal padL = 11.0, padR = 10.0, keyValGap = 10.0;
+    const qreal caretW = 9.0, caretGap = 7.0, btnH = 26.0, gap = 8.0;
 
     const QString qKey  = QStringLiteral("QUALITY");
     const QString bgKey = QStringLiteral("BACKGROUND");
@@ -1343,12 +1363,6 @@ void CallStage::paintActionPills(QPainter &p, const PainterTheme &th)
              + valFm.horizontalAdvance(val) + caretGap + caretW + padR;
     };
 
-    // 0.41.1-beta — SHARE quality dropdown only paints + accepts input
-    // while a screen share is live. Value mirrors CallManager's current
-    // screenShareQuality(): 0=720p / 1=1080p / 2=1440p / 3=Native. The
-    // logic itself was already there (right-click on the bottom share
-    // button), but it was invisible to users who don't know to try the
-    // right button; now it lives in the standard action-button row.
     const bool showShare = m_call->isScreenSharing();
     static const char *const kShLabels[] = { "720P", "1080P", "1440P", "NATIVE" };
     QString shVal;
@@ -1368,10 +1382,9 @@ void CallStage::paintActionPills(QPainter &p, const PainterTheme &th)
     if (showShare) shBtn = QRectF(qBtn.left() - gap - shW, rowTop, shW, btnH);
 
     // Narrow-window guard: if the right-anchored button block would overlap the
-    // left-anchored status pill, there isn't room for both on one row — drop the
-    // WHOLE block to its own row directly under the status pill so they never
-    // collide. (paintStatusPill ran earlier this frame → m_statusPillRect is
-    // current.)
+    // left-anchored status pill, drop the WHOLE block to its own row under the
+    // status pill (m_statusPillRect is current within a paint frame; in relayout/
+    // click it's last-frame's, fine for hit-testing).
     const qreal blockLeft0  = showShare ? shBtn.left() : qBtn.left();
     const qreal statusRight = m_statusPillRect.isValid() ? m_statusPillRect.right() : 0.0;
     bool actionsDropped = false;
@@ -1384,6 +1397,66 @@ void CallStage::paintActionPills(QPainter &p, const PainterTheme &th)
         if (showShare) shBtn.translate(0, dy);
         actionsDropped = true;
     }
+
+    m_actionPillsLeft = actionsDropped ? width()
+                                       : (showShare ? shBtn.left() : qBtn.left());
+    const qreal statusBottom = m_statusPillRect.isValid() ? m_statusPillRect.bottom() : 40.0;
+    const qreal actionBottom = (showShare ? shBtn.bottom() : bgBtn.bottom());
+    m_chromeRowsBottom = qMax(statusBottom, actionBottom);
+
+    m_qualityPillRect = qBtn;
+    m_bgPillRect      = bgBtn;
+    m_sharePillRect   = showShare ? shBtn : QRectF();
+}
+
+void CallStage::paintActionPills(QPainter &p, const PainterTheme &th)
+{
+    // 0.40.15 — action BUTTONS in the top-right; click opens a QMenu. The hit-
+    // rects come from computeActionPillGeometry() (also called from mousePressEvent
+    // so the dropdown works while chrome is faded); here we just DRAW into them.
+    computeActionPillGeometry();
+
+    // Display values — deterministic from the same state computeActionPillGeometry
+    // used, so positions never drift from the drawn content.
+    const QString highLabel = highQualityLabel();
+    const QString kLowLabel = QStringLiteral("Low (180p)");
+    const QString kMedLabel = QStringLiteral("Medium (360p)");
+    const QString qVal = (m_qualityOverride < 0)
+        ? tr("AUTO")
+        : (m_qualityOverride == 0 ? kLowLabel
+           : m_qualityOverride == 1 ? kMedLabel
+           : highLabel).toUpper();
+    const bool qActive = (m_qualityOverride >= 0);
+
+    QSettings bgSet("TalQ", "TalQ");
+    bgSet.beginGroup("Talk/Backgrounds");
+    const bool    bgOn   = bgSet.value("virtualBackgroundEnabled", false).toBool();
+    const QString bgType = bgSet.value("virtualBackgroundType", "blur").toString();
+    bgSet.endGroup();
+    const QString bgVal = !bgOn
+        ? tr("OFF")
+        : (bgType == QLatin1String("image") ? tr("IMAGE") : tr("BLUR"));
+
+    const bool showShare = m_call->isScreenSharing();
+    static const char *const kShLabels[] = { "720P", "1080P", "1440P", "NATIVE" };
+    QString shVal;
+    if (showShare)
+        shVal = QString::fromLatin1(kShLabels[qBound(0, m_call->screenShareQuality(), 3)]);
+
+    QFont keyF = monoFont(9);  keyF.setBold(true);
+    keyF.setLetterSpacing(QFont::AbsoluteSpacing, 1.2);
+    QFont valF = monoFont(11); valF.setBold(true);
+    QFontMetrics keyFm(keyF), valFm(valF);
+
+    const qreal padL     = 11.0;
+    const qreal padR     = 10.0;
+    const qreal keyValGap = 10.0;
+    const qreal caretW   = 9.0;
+    const qreal radius   = 11.0;
+
+    const QString qKey  = QStringLiteral("QUALITY");
+    const QString bgKey = QStringLiteral("BACKGROUND");
+    const QString shKey = QStringLiteral("SHARE");
 
     auto drawButton = [&](const QRectF &rect, const QString &key,
                           const QString &val, bool active, bool hovered) {
@@ -1422,30 +1495,17 @@ void CallStage::paintActionPills(QPainter &p, const PainterTheme &th)
         p.drawPath(caret);
     };
 
-    drawButton(qBtn,  qKey,  qVal,  qActive, m_hoverPill == QStringLiteral("quality"));
-    drawButton(bgBtn, bgKey, bgVal, bgOn,    m_hoverPill == QStringLiteral("bg"));
+    // Draw into the hit-rects computeActionPillGeometry() just set (m_actionPillsLeft
+    // and m_chromeRowsBottom were published there too).
+    drawButton(m_qualityPillRect, qKey,  qVal,  qActive, m_hoverPill == QStringLiteral("quality"));
+    drawButton(m_bgPillRect,      bgKey, bgVal, bgOn,    m_hoverPill == QStringLiteral("bg"));
     if (showShare) {
-        drawButton(shBtn, shKey, shVal, true,
+        drawButton(m_sharePillRect, shKey, shVal, true,
                    m_hoverPill == QStringLiteral("share"));
     }
-
-    // Publish the layout boundaries paintInfoPills needs:
-    //  - m_actionPillsLeft: where row-0 info tiles must stop. If we dropped the
-    //    block to its own row, row 0 is clear of buttons → info gets full width.
-    //  - m_chromeRowsBottom: the bottom of the anchor row(s); wrapped info rows
-    //    start below it so they clear the (possibly dropped) button block.
-    m_actionPillsLeft = actionsDropped ? width()
-                                       : (showShare ? shBtn.left() : qBtn.left());
-    const qreal statusBottom = m_statusPillRect.isValid() ? m_statusPillRect.bottom() : 40.0;
-    const qreal actionBottom = (showShare ? shBtn.bottom() : bgBtn.bottom());
-    m_chromeRowsBottom = qMax(statusBottom, actionBottom);
-
-    m_qualityPillRect = qBtn;
-    m_bgPillRect      = bgBtn;
-    m_sharePillRect   = showShare ? shBtn : QRectF();
-    m_topChromeRects.append(qBtn);
-    m_topChromeRects.append(bgBtn);
-    if (showShare) m_topChromeRects.append(shBtn);
+    m_topChromeRects.append(m_qualityPillRect);
+    m_topChromeRects.append(m_bgPillRect);
+    if (showShare) m_topChromeRects.append(m_sharePillRect);
 }
 
 void CallStage::paintSharingBadge(QPainter &p, const PainterTheme &th)
@@ -1706,6 +1766,21 @@ void CallStage::mouseMoveEvent(QMouseEvent *e)
 void CallStage::mousePressEvent(QMouseEvent *e)
 {
     pokeControls();
+    // Refresh the top-right action-pill hit-rects synchronously so a click lands
+    // even when the chrome had faded out (paintActionPills was skipped → the rects
+    // were NULL → the quality dropdown was swallowed; field: "the dropdown did
+    // nothing"). GATED on the SAME media-phase predicate paintEvent uses to draw
+    // those buttons — otherwise a top-right click on a ringing/idle screen (no
+    // buttons drawn) would open a phantom Quality/Background menu.
+    {
+        const auto st = m_call->state();
+        int remotes = 0;
+        for (auto *q : m_call->participants()) if (!q->isSelf()) ++remotes;
+        const bool mediaPhase =
+            (st == CallManager::Active || st == CallManager::Connecting)
+            && remotes > 0 && !m_tiles.isEmpty();
+        if (mediaPhase) computeActionPillGeometry();
+    }
     const QString id = hitButton(e->position());
 
     // Right-click on the share segment while sharing → quality menu

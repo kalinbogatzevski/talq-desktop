@@ -744,51 +744,19 @@ void SubscribeWebrtcSrc::onPadAdded(GstElement *, GstPad *pad, gpointer ud)
     } else if (isAudio) {
         // Plain read: set on the Qt thread before start() (published by the PLAYING
         // transition); a rebuild re-point only happens later, mid-call.
-        if (self->m_farAppsrcExt) {
-            // 0.51.x AEC single-pipeline fix: playback runs through the publisher
-            // pipeline's ONE shared probed sink (probe + webrtcdsp share a clock),
-            // NOT a per-subscriber wasapi2sink. Decoded pad → audioconvert →
-            // audioresample → caps(48k/S16LE/mono) → level(VU) → appsink, whose
-            // new-sample pushes into m_farAppsrcExt (the publisher far-end mixer).
-            GstElement *aconv = gst_element_factory_make("audioconvert", nullptr);
-            GstElement *ares  = gst_element_factory_make("audioresample", nullptr);
-            GstElement *acaps = gst_element_factory_make("capsfilter", nullptr);
-            GstElement *alvl  = gst_element_factory_make("level", nullptr);
-            GstElement *asink = gst_element_factory_make("appsink", nullptr);
-            if (!aconv || !ares || !acaps || !alvl || !asink) {
-                for (GstElement *e : { aconv, ares, acaps, alvl, asink }) if (e) gst_object_unref(e);
-                qWarning() << "SubscribeWebrtcSrc: AEC playout chain element missing — "
-                              "falling back to direct playback (no echo cancellation for this peer)";
-                goto legacyPlayback;   // H2: never leave the peer silent
-            }
-            GstCaps *fc = gst_caps_from_string(
-                "audio/x-raw,rate=48000,format=S16LE,channels=1,layout=interleaved");
-            g_object_set(acaps, "caps", fc, nullptr);
-            g_object_set(asink, "emit-signals", TRUE, "sync", FALSE,
-                         "drop", TRUE, "max-buffers", 8, "caps", fc, nullptr);
-            gst_caps_unref(fc);
-            g_object_set(alvl, "post-messages", TRUE, "interval", (guint64)100000000, nullptr); // VU
-            g_signal_connect(asink, "new-sample",
-                             G_CALLBACK(&SubscribeWebrtcSrc::onAecPlayoutSample), self);
-            self->m_aecPlayoutSink = asink;
-            gst_bin_add_many(GST_BIN(self->m_pipeline), aconv, ares, acaps, alvl, asink, nullptr);
-            if (!gst_element_link_many(aconv, ares, acaps, alvl, asink, nullptr)) {
-                qWarning() << "SubscribeWebrtcSrc: AEC playout chain link failed — "
-                              "falling back to direct playback (no echo cancellation for this peer)";
-                self->m_aecPlayoutSink = nullptr;
-                g_signal_handlers_disconnect_by_data(asink, self);
-                gst_bin_remove_many(GST_BIN(self->m_pipeline), aconv, ares, acaps, alvl, asink, nullptr);
-                goto legacyPlayback;   // H2: never leave the peer silent
-            }
-            for (GstElement *e : { aconv, ares, acaps, alvl, asink })
-                gst_element_sync_state_with_parent(e);
-            GstPad *cs = gst_element_get_static_pad(aconv, "sink");
-            gst_pad_link(pad, cs);
-            gst_object_unref(cs);
-            qInfo() << "SubscribeWebrtcSrc: audio → shared AEC playout sink (no per-sub wasapi2sink)";
-            return;
-        }
-    legacyPlayback: ;   // H2 fall-through: AEC chain failed → build the proven per-sub sink
+        // 0.52.4 — audio playout ALWAYS uses a per-subscriber wasapi2sink (built
+        // below). The 0.51.x "single-clock AEC" design sent ALL remote playout
+        // THROUGH the publisher's shared far-end mixer + one wasapi2sink, so any
+        // hiccup in that mixer (latency wedge, NOT_NEGOTIATED, sink stall) silenced
+        // the WHOLE call while the VU meter — tapped upstream — still moved. That
+        // shipped twice as "no audio at all" (0.52.2; and 0.52.3 even after the
+        // appsrc-latency fix cleared the wedge — the mixer reconciled yet stayed
+        // silent). Audibility must NEVER be hostage to the AEC tail. So play out
+        // directly per-subscriber and leave echo cancellation non-load-bearing:
+        // the publisher's far-end tail still exists but is fed only its silent
+        // keepalive, so AEC at the speaker is effectively off for now (use
+        // headphones to avoid echo) until a SAFE reference TAP is re-added off this
+        // per-sub chain. m_aecPlayoutSink / onAecPlayoutSample are now unused.
         GstElement *conv = gst_element_factory_make("audioconvert", nullptr);
         GstElement *res  = gst_element_factory_make("audioresample", nullptr);
         GstElement *sink = gst_element_factory_make("wasapi2sink", nullptr);
