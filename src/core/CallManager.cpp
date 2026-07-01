@@ -1946,6 +1946,16 @@ void CallManager::toggleCamera() {
     updateCallFlags();
 }
 
+void CallManager::cameraFrameConfirmed()
+{
+    // A real self-camera frame is proof the device recovered after an earlier
+    // cameraError. Clear the "camera unavailable" notice (idempotent).
+    if (!m_cameraUnavailable) return;
+    m_cameraUnavailable = false;
+    qDebug() << "CallManager: self-camera frame seen — clearing 'camera unavailable' notice";
+    emit cameraChanged();
+}
+
 void CallManager::updateCameraSuppression()
 {
     // Any screen share in the room — ours OR a remote peer's — reduces every

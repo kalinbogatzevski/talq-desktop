@@ -216,6 +216,13 @@ void CallStage::onFrame(CallParticipant *p, bool screen, const QImage &img)
                  << (screen ? "screen" : "camera") << img.size()
                  << "frame#" << n << "part=" << (void*)p;
     if (img.isNull() || img.width() <= 32) return;       // skip MCU 16x16 dummy
+    // 0.52.12 — a real SELF CAMERA frame proves the camera recovered. Clear any
+    // stale "Your camera isn't available" notice: it was raised on an earlier
+    // cameraError and is otherwise only cleared on a fresh call or a manual
+    // re-toggle, so after an internal retry succeeded it lingered on screen (and
+    // over a screen share). Idempotent — only fires while the flag is still set.
+    if (p && p->isSelf() && !screen && m_call && m_call->isCameraUnavailable())
+        m_call->cameraFrameConfirmed();
     // Pre-scale to the widget bound so paint is a plain blit (perf guardrail).
     QImage f = img;
     const QSize cap = size().isValid() ? size() : QSize(1280, 720);

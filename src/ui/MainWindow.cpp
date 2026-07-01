@@ -2965,9 +2965,15 @@ void MainWindow::onUpdateAutoInstallTick()
 
     if (blocked) {
         // User is mid-something \u2014 fully hide the banner; the next tick
-        // will re-evaluate. Active state can't reach idleWaitMs anyway
-        // (input events keep resetting GetLastInputInfo), so the install
-        // can't fire while we're hidden here.
+        // will re-evaluate.
+        // 0.52.12 \u2014 and RESET the idle anchor while blocked (above all, during
+        // an active CALL / screen-share). A call generates no TalQ INPUT events,
+        // so the idle counter would otherwise climb past idleWaitMs while you talk;
+        // then the instant the call dropped to Idle the gate unblocked and the
+        // install fired IMMEDIATELY, restarting the app out from under the user and
+        // killing the call (Kalin, live). Resetting here forces the update to wait
+        // the full idle window AFTER the call/activity ends, never the moment it drops.
+        m_lastTalqInputMs = QDateTime::currentMSecsSinceEpoch();
         if (m_updateBanner) m_updateBanner->hide();
         return;
     }

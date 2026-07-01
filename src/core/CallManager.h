@@ -85,6 +85,10 @@ public:
     // "camera off" (a deliberate user toggle): the call surface uses this to
     // show a "Camera unavailable" notice instead of a silent black tile.
     bool isCameraUnavailable() const { return m_cameraUnavailable; }
+    // 0.52.12 — the call UI calls this when a real self-camera frame arrives, so a
+    // stale "camera unavailable" notice clears the moment the device recovers
+    // (it was otherwise only cleared on a fresh call or a manual re-toggle).
+    void cameraFrameConfirmed();
     // True when the microphone could not be opened during this call (missing,
     // in use by another app, OS-blocked, or a device id wasapi2 couldn't
     // resolve) and the publisher fell back to a SILENT source. The call still

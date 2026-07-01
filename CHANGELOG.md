@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.52.12 "Bafana Bafana" -- STABLE (2026-06-23)
+
+### Fixed
+
+* **An update no longer restarts the app at the end of a call.** The auto-updater
+  now waits for the app to be genuinely idle *after* a call finishes, instead of
+  installing the instant a call ends -- which previously dropped the call for both
+  sides.
+* **The "Your camera isn't available" notice clears as soon as the camera
+  recovers.** It no longer lingers on screen (or over a screen share) once the
+  camera starts working again.
+
 ## v0.52.11 "Bafana Bafana" -- STABLE (2026-06-23)
 
 ### Changed
