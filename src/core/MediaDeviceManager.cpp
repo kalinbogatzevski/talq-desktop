@@ -165,9 +165,65 @@ QVector<CameraMode> parseCameraModes(GstDevice *dev)
 MediaDeviceManager::MediaDeviceManager(QObject *parent)
     : QObject(parent)
 {
+    // D7 — debounce a burst of hotplug events (a dock/hub enumerates several
+    // devices at once) into a single rescan.
+    m_hotplugDebounce.setSingleShot(true);
+    m_hotplugDebounce.setInterval(500);
+    connect(&m_hotplugDebounce, &QTimer::timeout, this, [this]() {
+        qInfo() << "MediaDeviceManager: device hotplug — rescanning";
+        refreshAsync();   // emits devicesChanged when the scan lands
+    });
+    startHotplugMonitor();
 }
 
-MediaDeviceManager::~MediaDeviceManager() = default;
+MediaDeviceManager::~MediaDeviceManager()
+{
+    if (m_liveMonitor) {
+        gst_device_monitor_stop(m_liveMonitor);
+        gst_object_unref(m_liveMonitor);
+        m_liveMonitor = nullptr;
+    }
+}
+
+// D7 — bus sync handler. Runs on a GStreamer device-provider thread the instant a
+// device is added/removed (no GLib main loop needed, so it works on Windows where
+// gst_bus_add_watch would not fire). Keep it cheap + thread-safe: just marshal an
+// arm-the-debounce call to the Qt thread. GST_BUS_PASS leaves the message intact.
+GstBusSyncReply MediaDeviceManager::onMonitorBusSync(GstBus *, GstMessage *msg, gpointer ud)
+{
+    switch (GST_MESSAGE_TYPE(msg)) {
+    case GST_MESSAGE_DEVICE_ADDED:
+    case GST_MESSAGE_DEVICE_REMOVED: {
+        auto *self = static_cast<MediaDeviceManager *>(ud);
+        QPointer<MediaDeviceManager> g(self);
+        QMetaObject::invokeMethod(self, [g]() {
+            if (g) g->m_hotplugDebounce.start();   // single-shot restart coalesces the burst
+        }, Qt::QueuedConnection);
+        break;
+    }
+    default: break;
+    }
+    return GST_BUS_PASS;
+}
+
+void MediaDeviceManager::startHotplugMonitor()
+{
+    if (m_liveMonitor) return;
+    m_liveMonitor = gst_device_monitor_new();
+    gst_device_monitor_add_filter(m_liveMonitor, "Audio/Source", nullptr);
+    gst_device_monitor_add_filter(m_liveMonitor, "Audio/Sink",   nullptr);
+    gst_device_monitor_add_filter(m_liveMonitor, "Video/Source", nullptr);
+    GstBus *bus = gst_device_monitor_get_bus(m_liveMonitor);
+    gst_bus_set_sync_handler(bus, &MediaDeviceManager::onMonitorBusSync, this, nullptr);
+    gst_object_unref(bus);
+    if (!gst_device_monitor_start(m_liveMonitor)) {
+        qWarning() << "MediaDeviceManager: live hotplug monitor failed to start (no live rescan)";
+        gst_object_unref(m_liveMonitor);
+        m_liveMonitor = nullptr;
+        return;
+    }
+    qInfo() << "MediaDeviceManager: live device hotplug monitor started";
+}
 
 // Pure enumeration into the three lists via a fresh one-shot GstDeviceMonitor.
 // No member access; the free helpers (parseCameraModes/mergeCameraModes) and the

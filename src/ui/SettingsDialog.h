@@ -36,6 +36,13 @@ public:
     // 0.40.15 — opens directly on the Audio & Video tab. Used by the
     // in-call BACKGROUND dropdown's "Open background settings…" entry.
     void selectAudioVideoTab();
+    // 0.52.14 — MainWindow drives the manual "Update now" button's status text
+    // (e.g. "Update found — installing…", "You're up to date"); auto-reverts.
+    void setUpdateNowStatus(const QString &text);
+    // 0.52.17 — MainWindow pushes call-active state (from CallManager) so the live
+    // background preview never opens the camera during a call (the publisher holds
+    // the exclusive device — opening a 2nd consumer wedges the in-call video).
+    void setCallActive(bool active);
 
 protected:
     // Tear down the live BG preview pipeline (releases the camera so a
@@ -43,6 +50,14 @@ protected:
     // preview restarts naturally if the dialog re-opens.
     void hideEvent(QHideEvent *event) override;
     void showEvent(QShowEvent *event) override;
+    // Fires the deferred mic-test / preview device opens from the FIRST content
+    // paint, so the blocking wasapi2src/mfvideosrc init never starves the paint
+    // (doing it in showEvent left the dialog blank-white until the device opened).
+    void paintEvent(QPaintEvent *event) override;
+    bool m_deferredDeviceStart = false;
+    // Opens the mic-test / preview devices exactly once, after the dialog is on
+    // screen. Called from paintEvent (primary) and a showEvent fallback timer.
+    void startDeferredDevices();
     // Swallows wheel events on the BG mode combo (avoids the
     // wheel-while-hovering trap that desynced the visible mode from
     // the saved one).
@@ -53,6 +68,7 @@ signals:
     void themeIdChanged(int themeId);   // PainterTheme::Theme as int
     void logoutRequested();
     void checkForUpdatesRequested();
+    void updateNowRequested();   // 0.52.14 — manual "Update now": check + install immediately
     // #20 — fires when any Talk/Backgrounds/* QSetting is changed via
     // the Backgrounds section. CallManager listens to live-apply during
     // calls instead of waiting for the next call's pipeline rebuild.
@@ -119,6 +135,11 @@ private:
     QLabel                  *m_bgPreviewLabel   = nullptr;
     class BgPreviewSource   *m_bgPreviewSource  = nullptr;
     class BackgroundEngine  *m_bgPreviewEngine  = nullptr;
+    // True while a call is active (pushed by MainWindow from CallManager state).
+    // The publisher holds the exclusive (Windows MF) camera during a call, so
+    // syncBgPreview() must NOT open the device for the preview while this is set
+    // — doing so steals the camera and wedges the in-call video (Ilko, 0.52.16).
+    bool                     m_callActive       = false;
     // Debouncer: dragging the slider used to fire 20 QSettings writes +
     // 20 backgroundSettingsChanged emits in a fraction of a second; the
     // signal handler on the CallManager side reconfigured the publisher
@@ -149,6 +170,7 @@ private:
     // background self-restart fires.
     QCheckBox *m_updatesAutoInstall = nullptr;
     QComboBox *m_updatesIdleWait = nullptr;
+    QPushButton *m_updateNowBtn = nullptr;   // 0.52.14 — manual "Update now" (doubles as status)
 
     // Account tab
     QLabel *m_displayNameLabel = nullptr;

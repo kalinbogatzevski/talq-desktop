@@ -251,6 +251,14 @@ bool SubscribeWebrtcSrc::start(const QString &stunServer,
     setStringArrayProp(m_webrtcsrc, "video-codecs",
                        { QByteArrayLiteral("H264"), QByteArrayLiteral("VP8") });
 
+    // D5 — raise the receive jitterbuffer latency (default ~200 ms) so a choppy /
+    // jittery uplink (bursty loss, big inter-packet gaps — Pavel's link) is RIDDEN
+    // OUT by buffering instead of dropping late packets and freezing the decoder.
+    // 400 ms balances more cushion against conversational lag. Guarded on property
+    // existence (gst-plugins-rs versions vary).
+    if (g_object_class_find_property(G_OBJECT_GET_CLASS(m_webrtcsrc), "latency"))
+        g_object_set(m_webrtcsrc, "latency", (guint)400, nullptr);
+
     g_signal_connect(m_webrtcsrc, "pad-added",
                      G_CALLBACK(&SubscribeWebrtcSrc::onPadAdded), this);
 
@@ -286,7 +294,13 @@ bool SubscribeWebrtcSrc::start(const QString &stunServer,
                                  << (e ? e->message : "?") << " | " << (d ? d : "");
             auto *self = static_cast<SubscribeWebrtcSrc*>(ud);
             QPointer<SubscribeWebrtcSrc> g(self);
-            QString m = e ? QString::fromUtf8(e->message) : QStringLiteral("pipeline error");
+            // B2 — prefix the SOURCE element name (e.g. "d3d11h264dec0") so the
+            // CallManager handler can classify a decoder-domain fault and fall
+            // back to software decode. The GError message alone often omits it.
+            QString m = QStringLiteral("[%1] %2")
+                            .arg(QString::fromUtf8(sn),
+                                 e ? QString::fromUtf8(e->message)
+                                   : QStringLiteral("pipeline error"));
             QMetaObject::invokeMethod(self, [g, m]() { if (g) emit g->error(m); },
                                       Qt::QueuedConnection);
             g_clear_error(&e); g_free(d);
@@ -383,28 +397,45 @@ GstFlowReturn SubscribeWebrtcSrc::onAecPlayoutSample(GstAppSink *sink, gpointer 
 
 void SubscribeWebrtcSrc::cleanup()
 {
+    m_shuttingDown.store(true);   // 0.52.17 — block a late streaming-thread onPadAdded from re-pointing m_videoAppsink
     if (m_keyframeWatchdog) m_keyframeWatchdog->stop();   // no PLI on a torn-down pipeline
+    if (m_livenessWatchdog) m_livenessWatchdog->stop();   // D1 — same, persistent watchdog
     if (m_busWatchId > 0) { g_source_remove(m_busWatchId); m_busWatchId = 0; }
     if (m_webrtcsrc)    g_signal_handlers_disconnect_by_data(m_webrtcsrc, this);
     if (m_webrtcbin)    g_signal_handlers_disconnect_by_data(m_webrtcbin, this);
-    if (m_videoAppsink) g_signal_handlers_disconnect_by_data(m_videoAppsink, this);
+    // 0.52.17 — snapshot the appsink AND the pipeline together under m_videoSinkMutex,
+    // then do the (slow) disconnect / unref / worker-spawn OUTSIDE the lock. onPadAdded
+    // attaches conv+sink to m_pipeline AND ref-stores m_videoAppsink under the SAME lock
+    // while re-checking m_shuttingDown, so the two are SERIALIZED against teardown:
+    // cleanup either sees onPadAdded's appsink+pipeline here (and tears them down) or
+    // onPadAdded runs after and bails on m_shuttingDown / null m_pipeline. This closes
+    // BOTH (a) the hangup UAF — g_signal_handlers_disconnect_by_data on a FREED appsink,
+    // the exact 0.52.16 crash (the deleteLater() fix was downstream of here) — via OUR
+    // ref (taken in onPadAdded) keeping the appsink alive across the disconnect, AND
+    // (b) the teardown race where onPadAdded could gst_bin_add_many(GST_BIN(null)) →
+    // crash, or orphan its appsink ref → leak.
+    GstElement *vsink = nullptr, *pipe = nullptr;
+    {
+        std::lock_guard<std::mutex> lk(m_videoSinkMutex);
+        vsink = m_videoAppsink; m_videoAppsink = nullptr;
+        pipe  = m_pipeline;     m_pipeline     = nullptr;
+    }
+    if (vsink) {
+        g_signal_handlers_disconnect_by_data(vsink, this);
+        gst_object_unref(vsink);   // drop the ref taken in onPadAdded
+    }
     if (m_aecPlayoutSink) g_signal_handlers_disconnect_by_data(m_aecPlayoutSink, this); // AEC single-pipeline
     if (m_signaller)    g_signal_handlers_disconnect_by_data(m_signaller, this);
     m_webrtcbin = nullptr;  // webrtcsrc-owned; not unref'd
-    if (m_pipeline) {
-        // 0.43.0 — detach the NULL transition to a worker thread (same fix as
-        // PeerPipeline/PublishPipeline): the synchronous set_state(NULL) of a
-        // webrtcsrc + decodebin3 + HW decoder can block the Qt main thread on a
-        // pad stream lock / GPU teardown when a peer leaves, freezing the app.
-        // Null the pointer first so re-entrant callers see no pipeline.
-        GstElement *pipe = m_pipeline;
-        // 0.51.x AEC fix: hand our ref on the publisher's far-end appsrc to the
-        // worker so it's unrefed AFTER this pipeline's NULL — by then the AEC
-        // appsink + its streaming thread are stopped, so no push can race the
-        // unref (the handler was already disconnected above).
+    if (pipe) {
+        // 0.43.0 — detach the NULL transition to a worker thread: the synchronous
+        // set_state(NULL) of a webrtcsrc + decodebin3 + HW decoder can block the Qt
+        // main thread on a pad stream lock / GPU teardown when a peer leaves.
+        // 0.51.x AEC fix: hand our ref on the publisher's far-end appsrc to the worker
+        // so it's unrefed AFTER this pipeline's NULL — by then the AEC appsink + its
+        // streaming thread are stopped, so no push can race the unref.
         GstElement *farAppsrc;
         { std::lock_guard<std::mutex> lk(m_farAppsrcMutex); farAppsrc = m_farAppsrcExt; m_farAppsrcExt = nullptr; }
-        m_pipeline = nullptr;
         std::thread([pipe, farAppsrc]() {
             gst_element_set_state(pipe, GST_STATE_NULL);
             gst_object_unref(pipe);
@@ -414,7 +445,7 @@ void SubscribeWebrtcSrc::cleanup()
     if (m_signaller) { g_object_unref(m_signaller); m_signaller = nullptr; }
     m_webrtcsrc = nullptr;
     m_videoConvert = nullptr;
-    m_videoAppsink = nullptr;
+    // m_videoAppsink already nulled+unref'd under m_videoSinkMutex above
     m_aecPlayoutSink = nullptr; // owned by the pipeline (freed with it)
     // AEC fix: if there was no pipeline, the worker block above didn't run — drop
     // our appsrc ref here (null if the worker already took it).
@@ -664,6 +695,42 @@ void SubscribeWebrtcSrc::onWebrtcbinIceConnState(GstElement *webrtcbin,
         }
         g->m_keyframePliRetriesLeft = 5;
         g->m_keyframeWatchdog->start();
+
+        // D1 — arm the PERSISTENT decode-liveness watchdog (once). Unlike the
+        // bootstrap watchdog above it never disarms on the first frame: it nudges
+        // a keyframe whenever the decoder starts CONCEALING (frames keep arriving
+        // but content is frozen → distinct-fps collapses) or the inter-frame gap
+        // blows out, recovering a mid-call freeze before the ~12 s full rebuild.
+        if (!g->m_livenessWatchdog) {
+            g->m_livenessWatchdog = new QTimer(g);
+            g->m_livenessWatchdog->setInterval(2000);
+            QObject::connect(g->m_livenessWatchdog, &QTimer::timeout, g, [g]() {
+                if (!g || !g->m_pipeline) return;
+                if (!g->m_decodedAnyFrame.load(std::memory_order_relaxed)) {
+                    g->m_livenessBadTicks = 0; return;   // bootstrap watchdog owns pre-first-frame
+                }
+                if (g->m_livenessPliCooldown > 0) --g->m_livenessPliCooldown;
+                const int fps  = g->m_rxFps.load(std::memory_order_relaxed);
+                const int dist = g->m_rxDistinctFps.load(std::memory_order_relaxed);
+                // CONCEALMENT only: frames keep arriving (fps>=3) but content is
+                // frozen (distinct<=1) — a fresh keyframe can recover that. A merely
+                // LOW framerate is NOT a receive stall a PLI fixes (and a forced
+                // keyframe only burdens an already bandwidth-starved sender), so we
+                // do NOT trigger on the inter-frame gap. A muted/idle peer sends no
+                // frames (fps<3) so it is naturally excluded.
+                const bool concealing = (fps >= 3 && dist <= 1);
+                if (!concealing) { g->m_livenessBadTicks = 0; return; }
+                if (++g->m_livenessBadTicks < 3) return;        // ~6 s of concealment before the first PLI
+                if (g->m_livenessPliCooldown > 0) return;       // rate-limit: ~12 s between forced keyframes
+                g->m_livenessBadTicks = 0;
+                g->m_livenessPliCooldown = 6;                   // 6 ticks × 2 s
+                gst_element_send_event(g->m_pipeline, gst_event_new_custom(
+                    GST_EVENT_CUSTOM_UPSTREAM,
+                    gst_structure_new("GstForceKeyUnit", "all-headers", G_TYPE_BOOLEAN, TRUE, nullptr)));
+                qInfo() << "SubscribeWebrtcSrc: liveness watchdog -> PLI (concealing feed)";
+            });
+            g->m_livenessWatchdog->start();
+        }
     }, Qt::QueuedConnection);
 }
 
@@ -712,6 +779,10 @@ gboolean SubscribeWebrtcSrc::sigSendIce(GObject *, const gchar *,
 void SubscribeWebrtcSrc::onPadAdded(GstElement *, GstPad *pad, gpointer ud)
 {
     auto *self = static_cast<SubscribeWebrtcSrc*>(ud);
+    // 0.52.17 — the Qt main thread is tearing this subscriber down; do NOT build or
+    // attach a new appsink into a pipeline that cleanup() is already NULLing (m_pipeline
+    // is about to go null on a worker), and do not re-point m_videoAppsink mid-teardown.
+    if (self->m_shuttingDown.load()) return;
     GstCaps *caps = gst_pad_get_current_caps(pad);
     if (!caps) caps = gst_pad_query_caps(pad, nullptr);
     if (!caps) return;
@@ -731,9 +802,30 @@ void SubscribeWebrtcSrc::onPadAdded(GstElement *, GstPad *pad, gpointer ud)
         gst_caps_unref(sc);
         g_signal_connect(sink, "new-sample",
                          G_CALLBACK(&SubscribeWebrtcSrc::onVideoNewSample), self);
-        self->m_videoAppsink = sink;
-        self->m_videoConvert = conv;
-        gst_bin_add_many(GST_BIN(self->m_pipeline), conv, sink, nullptr);
+        // 0.52.17 — attach into the pipeline AND publish our own appsink ref ATOMICALLY
+        // under the lock, re-checking m_shuttingDown + snapshotting m_pipeline. cleanup()
+        // (Qt main thread) sets the flag and nulls m_pipeline + snapshots m_videoAppsink
+        // under the SAME lock, so this either runs fully first (cleanup then frees what
+        // we attached + drops our ref) or it sees teardown and bails — closing BOTH the
+        // gst_bin_add_many(GST_BIN(null)) crash AND the orphaned-appsink-ref leak. Our
+        // ref (mirrors m_farAppsrcExt) keeps the appsink alive across cleanup's
+        // disconnect (the 0.52.16 hangup UAF). gst_bin_add_many sinks the floating ref,
+        // so gst_object_ref is a genuine SECOND reference.
+        bool attached = false;
+        {
+            std::lock_guard<std::mutex> lk(self->m_videoSinkMutex);
+            if (!self->m_shuttingDown.load() && self->m_pipeline) {
+                self->m_videoConvert = conv;
+                gst_bin_add_many(GST_BIN(self->m_pipeline), conv, sink, nullptr);
+                self->m_videoAppsink = static_cast<GstElement*>(gst_object_ref(sink));
+                attached = true;
+            }
+        }
+        if (!attached) {   // teardown won the race — never attached; free what we made
+            gst_object_unref(conv);
+            gst_object_unref(sink);
+            return;
+        }
         gst_element_link(conv, sink);
         gst_element_sync_state_with_parent(conv);
         gst_element_sync_state_with_parent(sink);
@@ -744,51 +836,19 @@ void SubscribeWebrtcSrc::onPadAdded(GstElement *, GstPad *pad, gpointer ud)
     } else if (isAudio) {
         // Plain read: set on the Qt thread before start() (published by the PLAYING
         // transition); a rebuild re-point only happens later, mid-call.
-        if (self->m_farAppsrcExt) {
-            // 0.51.x AEC single-pipeline fix: playback runs through the publisher
-            // pipeline's ONE shared probed sink (probe + webrtcdsp share a clock),
-            // NOT a per-subscriber wasapi2sink. Decoded pad → audioconvert →
-            // audioresample → caps(48k/S16LE/mono) → level(VU) → appsink, whose
-            // new-sample pushes into m_farAppsrcExt (the publisher far-end mixer).
-            GstElement *aconv = gst_element_factory_make("audioconvert", nullptr);
-            GstElement *ares  = gst_element_factory_make("audioresample", nullptr);
-            GstElement *acaps = gst_element_factory_make("capsfilter", nullptr);
-            GstElement *alvl  = gst_element_factory_make("level", nullptr);
-            GstElement *asink = gst_element_factory_make("appsink", nullptr);
-            if (!aconv || !ares || !acaps || !alvl || !asink) {
-                for (GstElement *e : { aconv, ares, acaps, alvl, asink }) if (e) gst_object_unref(e);
-                qWarning() << "SubscribeWebrtcSrc: AEC playout chain element missing — "
-                              "falling back to direct playback (no echo cancellation for this peer)";
-                goto legacyPlayback;   // H2: never leave the peer silent
-            }
-            GstCaps *fc = gst_caps_from_string(
-                "audio/x-raw,rate=48000,format=S16LE,channels=1,layout=interleaved");
-            g_object_set(acaps, "caps", fc, nullptr);
-            g_object_set(asink, "emit-signals", TRUE, "sync", FALSE,
-                         "drop", TRUE, "max-buffers", 8, "caps", fc, nullptr);
-            gst_caps_unref(fc);
-            g_object_set(alvl, "post-messages", TRUE, "interval", (guint64)100000000, nullptr); // VU
-            g_signal_connect(asink, "new-sample",
-                             G_CALLBACK(&SubscribeWebrtcSrc::onAecPlayoutSample), self);
-            self->m_aecPlayoutSink = asink;
-            gst_bin_add_many(GST_BIN(self->m_pipeline), aconv, ares, acaps, alvl, asink, nullptr);
-            if (!gst_element_link_many(aconv, ares, acaps, alvl, asink, nullptr)) {
-                qWarning() << "SubscribeWebrtcSrc: AEC playout chain link failed — "
-                              "falling back to direct playback (no echo cancellation for this peer)";
-                self->m_aecPlayoutSink = nullptr;
-                g_signal_handlers_disconnect_by_data(asink, self);
-                gst_bin_remove_many(GST_BIN(self->m_pipeline), aconv, ares, acaps, alvl, asink, nullptr);
-                goto legacyPlayback;   // H2: never leave the peer silent
-            }
-            for (GstElement *e : { aconv, ares, acaps, alvl, asink })
-                gst_element_sync_state_with_parent(e);
-            GstPad *cs = gst_element_get_static_pad(aconv, "sink");
-            gst_pad_link(pad, cs);
-            gst_object_unref(cs);
-            qInfo() << "SubscribeWebrtcSrc: audio → shared AEC playout sink (no per-sub wasapi2sink)";
-            return;
-        }
-    legacyPlayback: ;   // H2 fall-through: AEC chain failed → build the proven per-sub sink
+        // 0.52.4 — audio playout ALWAYS uses a per-subscriber wasapi2sink (built
+        // below). The 0.51.x "single-clock AEC" design sent ALL remote playout
+        // THROUGH the publisher's shared far-end mixer + one wasapi2sink, so any
+        // hiccup in that mixer (latency wedge, NOT_NEGOTIATED, sink stall) silenced
+        // the WHOLE call while the VU meter — tapped upstream — still moved. That
+        // shipped twice as "no audio at all" (0.52.2; and 0.52.3 even after the
+        // appsrc-latency fix cleared the wedge — the mixer reconciled yet stayed
+        // silent). Audibility must NEVER be hostage to the AEC tail. So play out
+        // directly per-subscriber and leave echo cancellation non-load-bearing:
+        // the publisher's far-end tail still exists but is fed only its silent
+        // keepalive, so AEC at the speaker is effectively off for now (use
+        // headphones to avoid echo) until a SAFE reference TAP is re-added off this
+        // per-sub chain. m_aecPlayoutSink / onAecPlayoutSample are now unused.
         GstElement *conv = gst_element_factory_make("audioconvert", nullptr);
         GstElement *res  = gst_element_factory_make("audioresample", nullptr);
         GstElement *sink = gst_element_factory_make("wasapi2sink", nullptr);
@@ -809,16 +869,34 @@ void SubscribeWebrtcSrc::onPadAdded(GstElement *, GstPad *pad, gpointer ud)
         // If the element can't be created we fall back to the original direct
         // chain (meter stays still, but playback is never affected).
         GstElement *lvl = gst_element_factory_make("level", nullptr);
-        if (lvl) {
+        if (lvl)
             g_object_set(lvl, "post-messages", TRUE,
                          "interval", (guint64)100000000, nullptr);
-            gst_bin_add_many(GST_BIN(self->m_pipeline), conv, res, lvl, sink, nullptr);
-            gst_element_link_many(conv, res, lvl, sink, nullptr);
-            gst_element_sync_state_with_parent(lvl);
-        } else {
-            gst_bin_add_many(GST_BIN(self->m_pipeline), conv, res, sink, nullptr);
-            gst_element_link_many(conv, res, sink, nullptr);
+        // 0.52.17 — attach into the pipeline under the lock, re-checking m_shuttingDown
+        // + snapshotting m_pipeline so a concurrent hangup teardown (cleanup nulls
+        // m_pipeline under the SAME lock) can't make gst_bin_add_many see a null bin
+        // (crash). Same guard as the video pad above; the audio chain stores no ref'd
+        // member, so on a lost race we just free the elements we created.
+        bool attached = false;
+        {
+            std::lock_guard<std::mutex> lk(self->m_videoSinkMutex);
+            if (!self->m_shuttingDown.load() && self->m_pipeline) {
+                if (lvl) {
+                    gst_bin_add_many(GST_BIN(self->m_pipeline), conv, res, lvl, sink, nullptr);
+                    gst_element_link_many(conv, res, lvl, sink, nullptr);
+                } else {
+                    gst_bin_add_many(GST_BIN(self->m_pipeline), conv, res, sink, nullptr);
+                    gst_element_link_many(conv, res, sink, nullptr);
+                }
+                attached = true;
+            }
         }
+        if (!attached) {   // teardown won the race — free the elements we made
+            gst_object_unref(conv); gst_object_unref(res); gst_object_unref(sink);
+            if (lvl) gst_object_unref(lvl);
+            return;
+        }
+        if (lvl) gst_element_sync_state_with_parent(lvl);
         gst_element_sync_state_with_parent(conv);
         gst_element_sync_state_with_parent(res);
         gst_element_sync_state_with_parent(sink);

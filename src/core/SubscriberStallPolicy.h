@@ -32,7 +32,15 @@ public:
     //   reofferPending : a re-subscribe for this feed is already in flight
     // Returns true exactly once when the feed has been frozen for stallTicks
     // ticks; then resets itself so a later stall is detected fresh.
-    bool onTick(int frameCount, bool videoMuted, bool reofferPending)
+    // recoverNeverSeenAfter (D2): when > 0, a feed that is CONNECTED + video-ON
+    // (not muted, ticking) but has NEVER decoded a frame fires ONE recovery after
+    // that many no-frame ticks — the "connected but permanent black / Starting…
+    // tile" case nothing else recovers (the peer's publisher came up but our
+    // subscribe never produced a frame). Default 0 keeps the classic behaviour
+    // ("never advanced = not a stall", the camera-off heuristic + unit-test
+    // contract): callers that know the peer is video-on opt in with a window.
+    bool onTick(int frameCount, bool videoMuted, bool reofferPending,
+                int recoverNeverSeenAfter = 0)
     {
         if (videoMuted || reofferPending) {
             // Pause detection, but do NOT forget that this feed HAS delivered
@@ -41,17 +49,23 @@ public:
             // permanently suppress the recovery this watchdog exists to provide.
             m_prev  = -1;   // re-baseline cleanly on resume
             m_ticks = 0;
+            m_neverTicks = 0;
             return false;
         }
         if (m_prev < 0) { m_prev = frameCount; return false; }   // first observation: baseline only
-        if (frameCount > m_prev) { m_prev = frameCount; m_seen = true; m_ticks = 0; return false; }
+        if (frameCount > m_prev) { m_prev = frameCount; m_seen = true; m_ticks = 0; m_neverTicks = 0; return false; }
         m_prev = frameCount;                 // no advance this tick
-        if (!m_seen) return false;           // never delivered a frame -> not a stall (camera-off etc.)
+        if (!m_seen) {                        // never delivered a frame
+            if (recoverNeverSeenAfter > 0 && ++m_neverTicks >= recoverNeverSeenAfter) {
+                reset(); return true;         // D2 — connected but never-decoded -> rebuild
+            }
+            return false;                     // default: not a stall (camera-off etc.)
+        }
         if (++m_ticks >= m_stallTicks) { reset(); return true; }
         return false;
     }
 
-    void reset() { m_prev = -1; m_seen = false; m_ticks = 0; }
+    void reset() { m_prev = -1; m_seen = false; m_ticks = 0; m_neverTicks = 0; }
     int stalledTicks() const { return m_ticks; }       // for tests / telemetry
     bool hasSeenFrames() const { return m_seen; }
 
@@ -60,4 +74,5 @@ private:
     int  m_prev = -1;     // last observed frame count; -1 = no baseline yet
     bool m_seen = false;  // have we ever seen the count advance after baseline?
     int  m_ticks = 0;     // consecutive ticks with no advance (after first frame)
+    int  m_neverTicks = 0;// D2 — consecutive no-frame ticks before ANY frame seen
 };

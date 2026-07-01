@@ -59,9 +59,11 @@ signals:
     void logChanged();
     void memoryAlert(qint64 currentMB, qint64 deltaMB);  // fired when growth > 100MB in one tick
 
+public:
+    static qint64 readProcessMemoryMB();   // process working set (MB) — no instance needed
+
 private:
     void tick();
-    qint64 readProcessMemoryMB();
 
     QTimer m_timer;
     QElapsedTimer m_uptime;

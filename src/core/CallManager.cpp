@@ -6,6 +6,7 @@
 #include "core/Diagnostics.h"
 #include "core/TalqLog.h"
 #include "core/WasapiDucking.h"
+#include "core/DebugMonitor.h"   // readProcessMemoryMB() for the host-protection watchdog
 #include "ui/ShareOverlay.h"
 #include "models/ConversationListModel.h"
 #include <QJsonObject>
@@ -17,6 +18,14 @@
 #include <QFileInfo>
 #include <QRegularExpression>
 #include <QElapsedTimer>
+#include <QUdpSocket>
+#include <QHostInfo>
+#include <QRandomGenerator>
+#include <QTimer>
+#include <QSet>
+#include <limits>
+#include <memory>
+#include <vector>
 #include <QCoreApplication>
 #include <QEventLoop>
 #include <memory>
@@ -225,19 +234,44 @@ void CallManager::stopRingtone() {
 
 // --- CallManager ---
 
+// Forward decl: the call-flags helper is a file-local static defined further
+// down, but the A2 session-reset handler in the ctor needs it.
+static int callFlags(bool withVideo, bool withAudio);
+
 CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDeviceManager *deviceMgr, QObject *parent)
     : QObject(parent)
     , m_api(api)
     , m_signaling(signaling)
     , m_deviceManager(deviceMgr)
 {
-    // Restore the "NVENC is unusable on this machine" latch (set the first time
-    // an NVENC session failed to open — e.g. an iGPU-pinned 2-GPU/Optimus
-    // laptop). With it set, the encoder ladder skips NVENC and uses Intel QSV /
-    // software from the very first call, so the machine never repeats the
-    // mid-call encoder failure that used to drop the call.
+    // Restore the "NVENC / HW H264 is unusable on this machine" latches (set the
+    // first time a HW encoder session failed to open — e.g. an iGPU-pinned
+    // 2-GPU/Optimus laptop). With them set, the encoder ladder skips the failing
+    // HW path from the very first call, so the machine never repeats the mid-call
+    // encoder failure that used to drop the call.
+    //
+    // But these latches must NOT be permanent: the GPU can change between sessions
+    // (a docked eGPU, a swapped card, a driver update) and a toolchain/GStreamer
+    // upgrade can change what works — a stale latch otherwise pins a now-capable
+    // box to 3×software-x264 (CPU-melting; field: Ivan's NVIDIA box wrongly stuck
+    // on software after the 0.57 toolchain upgrade, nvh264enc available + GPU
+    // Capable yet forced to x264). So key the latches on an ENVIRONMENT
+    // FINGERPRINT — app version + GPU adapter names. When it changes, clear the
+    // latches so the next call re-probes hardware; it re-latches if HW still
+    // genuinely fails.
     {
         QSettings vs("TalQ", "TalQ");
+        QStringList gpuFp = talq::gpuAdapterNames();
+        gpuFp.sort();   // stable regardless of DXGI adapter enumeration order
+        const QString envFp = QStringLiteral(TALQ_VERSION) + QLatin1Char('|')
+                              + gpuFp.join(QLatin1Char(','));
+        if (vs.value("Video/encoderLatchEnv").toString() != envFp) {
+            vs.remove("Video/avoidNvenc");
+            vs.remove("Video/forceSoftwareVideo");
+            vs.setValue("Video/encoderLatchEnv", envFp);
+            qInfo().noquote() << "CallManager: encoder environment changed -> "
+                                 "re-probing HW video encoder (cleared latches); env =" << envFp;
+        }
         talqAvoidNvenc().store(vs.value("Video/avoidNvenc", false).toBool());
         talqForceSoftwareVideo().store(
             vs.value("Video/forceSoftwareVideo", false).toBool());
@@ -258,6 +292,29 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
     m_shareConfirmTimer.setInterval(8000);
     connect(&m_shareConfirmTimer, &QTimer::timeout,
             this, &CallManager::onShareConfirmTimeout);
+
+    // D3 — camera-toggle coalescer (see toggleCamera). Single-shot; each toggle
+    // restarts it so only the FINAL desired state is applied to the MF device.
+    m_cameraApplyTimer.setSingleShot(true);
+    m_cameraApplyTimer.setInterval(250);
+    connect(&m_cameraApplyTimer, &QTimer::timeout, this, &CallManager::applyCameraState);
+
+    // D7 — device hotplug auto-resume. When a camera/mic is plugged or unplugged
+    // mid-call and our camera was INTENDED but had failed (unavailable), retry it
+    // now that the device set changed — a camera that comes back auto-resumes
+    // instead of staying dark. We deliberately do NOT auto-SWITCH the active
+    // device on a new plug (Zoom/Teams behaviour: make it available, don't yank).
+    if (m_deviceManager) {
+        connect(m_deviceManager, &MediaDeviceManager::devicesChanged, this, [this]() {
+            if ((m_state == Active || m_state == Connecting)
+                && m_cameraOn && m_cameraUnavailable) {
+                qInfo() << "CallManager: devices changed — retrying camera after device loss";
+                m_cameraUnavailable = false;
+                emit cameraChanged();
+                m_cameraApplyTimer.start();   // coalesced re-apply
+            }
+        });
+    }
 
     // HPB participant events
     connect(m_signaling, &SignalingClient::participantJoinedCall,
@@ -338,12 +395,74 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
         // layer for the rest of the call (the exact latch fix B targets). This is a
         // safe no-op when there is no sub, so run it before the call-state guard.
         removeScreenSubscriber(sessionId);
-        if (m_state != Connecting && m_state != Active) return;
-        if (m_subscribePipelines.contains(sessionId)) {
+        // A3a — a room/leave means THIS sid is DEAD (HPB session ids are
+        // per-WebSocket-session; a reconnect mints a NEW sid that arrives via
+        // roomPeerJoined and resubscribes fresh). The old code recoverSubscriber'd
+        // the dead sid, which re-requested an offer the MCU rejects forever
+        // ("Not allowed to request offer." every ~8s = the not_allowed STORM Pavel
+        // triggered when his session churned 46PWZPP8->EVJJ0EE7). Instead DROP the
+        // zombie + purge its requestoffer bookkeeping so we stop chasing it. Purge
+        // unconditionally (even when not Active) so a churn during our own
+        // Reconnecting can't leave dead-sid state armed.
+        const bool hadPending = m_pendingRequestOffers.contains(sessionId)
+                                || m_subscribePipelines.contains(sessionId);
+        dropSubscriber(sessionId);
+        if (hadPending)
             qInfo() << "CallManager: peer" << sessionId.left(20)
-                    << "left room -- rebuilding its subscriber (#bug2)";
-            recoverSubscriber(sessionId, QStringLiteral("room-leave"));
+                    << "left room -- dropped its dead-sid subscriber (A3a; new sid resubscribes)";
+        if (m_pendingRequestOffers.isEmpty())
+            m_requestOfferRetry.stop();
+    });
+
+    // A2 (0.53.x robustness) — our signaling session was RESET (resume rejected /
+    // fresh session id minted mid-call). The old session's Janus MCU publisher
+    // AND subscriber handles are detached server-side, so without this we keep
+    // RTP-blasting a dead publisher handle (black-holed: packets-sent may keep
+    // rising so the publisher-stall watchdog never trips) while every peer
+    // re-subscribes to a session with nothing behind it — the room-wide outage
+    // Pavel's session-flip caused. Recover deterministically under the new sid.
+    connect(m_signaling, &SignalingClient::sessionReset, this,
+            [this](const QString &newSid) {
+        if (m_state != Connecting && m_state != Active && m_state != Reconnecting)
+            return;   // not in a call -> nothing to recover
+        qWarning() << "CallManager: SIGNALING SESSION RESET -> new sid"
+                   << newSid.left(16) + "..."
+                   << "— re-registering call, rebuilding publisher + subscribers";
+        setState(Reconnecting);
+
+        // (1) Re-register our NEW session in the server CALL record. The
+        // SignalingClient already re-POSTed the ROOM (participants/active), but
+        // call membership (inCall flags) was bound to the dead session, so peers
+        // would see us in the room yet not in the call. A targeted silent POST
+        // re-adds us without the heavyweight initial-join orchestration
+        // (joinCallOnServer also re-fetches STUN/TURN + rebuilds — not wanted here).
+        if (!m_callToken.isEmpty()) {
+            QJsonObject body;
+            body["flags"] = callFlags(m_cameraOn, !m_muted);
+            body["silent"] = true;            // already mid-call — never re-ring
+            body["recordingConsent"] = false;
+            m_api->post("apps/spreed/api/v4/call/" + m_callToken, body,
+                [](bool ok, const QJsonObject &, int sc) {
+                    if (!ok) qWarning() << "CallManager: session-reset call re-register failed, status=" << sc;
+                });
         }
+
+        // (2) Rebuild + re-offer our publisher under the new sid. buildAndStartPublisher
+        // reads the live sessionId(), so the rebuilt offer carries the new session.
+        m_pubRetryAttempts = 0;
+        recoverPublisher("signaling-session-reset");
+
+        // (3) Our subscriber handles were under the dead session too. Drop each
+        // now (briefly blanks remote tiles) but DEFER the re-subscribe until the
+        // publisher recovery returns us to Active: a requestoffer issued while
+        // Reconnecting gets rejected (our new publish isn't registered yet) AND the
+        // m_requestOfferRetry net itself self-cancels in Reconnecting, so
+        // re-requesting now would abandon peers. m_resubscribeOnActive replays the
+        // re-request on the Active transition (setState), where the MCU accepts it.
+        const auto peers = m_subscribePipelines.keys();
+        for (const QString &sid : peers)
+            dropSubscriber(sid);
+        m_resubscribeOnActive = true;
     });
 
     // Remote mute/unmute tracking
@@ -367,6 +486,25 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
         // old code nulled the single render pointer unconditionally, wrongly
         // restoring our full simulcast while another peer's share was still up.
         removeScreenSubscriber(sessionId);
+    });
+
+    // 0.52.7 — a requestoffer was rejected "not_allowed". The HPB error carries no
+    // sid, so attribute it to EVERY sid we currently have a requestoffer
+    // outstanding for (in the field this is one peer whose camera publisher slot
+    // is settling/reaped around a screen-share renegotiation — the app-window-share
+    // call-drop repro). The retry tick escalates a sid that keeps getting rejected
+    // to a full recoverSubscriber rebuild instead of resending requestoffer forever.
+    // KNOWN LIMITATION (bounded, non-fatal): with >1 pending peer, a rejection
+    // aimed at peer A also ticks a merely-SLOW-but-unrejected peer B, so B may be
+    // escalated to recoverSubscriber early. B is NOT dropped and the call is NOT
+    // torn down (recoverSubscriber is bounded at kMaxSubRecoveries and never hangs
+    // up); it only spends B's recovery budget sooner. The field case is 1:1 (exact
+    // attribution); a precise per-sid fix would need a request-id the HPB doesn't
+    // echo — which we deliberately do NOT add (inventing signaling fields has
+    // broken calls twice).
+    connect(m_signaling, &SignalingClient::requestOfferRejected, this, [this]() {
+        for (const QString &sid : m_pendingRequestOffers)
+            ++m_requestOfferRejections[sid];
     });
 
     // Keep the self participant mirrored to our own media state.
@@ -425,6 +563,53 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
                         << from.left(20) << "— subscriber live (frames flowing, no flap)";
                 return;
             }
+            // 0.52.15 — STARTUP GRACE (anti-thrash). The live-guard above only
+            // suppresses a sub decoding RIGHT NOW. A sub that has NEVER decoded a
+            // frame (frameMark==0) is still negotiating ICE/DTLS + waiting for its
+            // first keyframe (the MCU auto-PLIs new subscribers; we PLI at
+            // build+0.5/1.5/3s) — ~2-5s on a re-share. The publisher's +5/+11s
+            // reap-race re-assert must NOT rebuild it, or the fresh sub is killed
+            // before its first I-frame decodes → it never reaches "live" → the
+            // infinite ~6s rebuild loop that stranded a re-shared screen on
+            // "Starting" (Kalin↔Ilko 0.52.14). So while young AND never-decoded:
+            // re-PLI to hurry the keyframe and IGNORE the re-offer. A GENUINE
+            // re-share (sub WAS live → frameMark>0) skips this and falls through to
+            // rebuild (drops the frozen frame). Can't strand a dead build: once
+            // older than the grace it falls through and rebuilds once. ageMs>=0
+            // fails open (missing stamp → huge age → rebuild, never suppress).
+            if (m_screenSubscribers.contains(from)
+                && m_screenSubFrameMark.value(from, 0) == 0) {
+                const qint64 ageMs = QDateTime::currentMSecsSinceEpoch()
+                                   - m_screenSubBuiltMs.value(from, 0);
+                // Hold (re-PLI + ignore) while the sub is still coming up — by EITHER
+                // signal: (a) it is actively PROGRESSING ICE (checking/connected/
+                // completed but no frame yet), or (b) it is still within the young-
+                // build wall-clock grace. (a) is the load-bearing one: the reap-race
+                // re-assert lands at +5s AND +11s, but kScreenSubStartupGraceMs is
+                // shorter than +11s, so a sub that reaches "checking" early and stays
+                // there (Ilko 0.52.16) would age out and be torn down by the +11s
+                // rebuild mid-pairing. A sub pairing ICE must never be killed by a
+                // redundant re-offer; the only re-offers are the 2 reap re-asserts, so
+                // "hold while progressing" can't strand it (no further offer follows,
+                // and a real stop→reshare clears this state via removeScreenSubscriber).
+                const QString ice = m_screenSubIceState.value(from);
+                // CAP the iceProgressing hold by a wall-clock bound (> the +11s reap
+                // horizon, measured from the last ICE-progress re-stamp): a sub WEDGED
+                // in "checking" (lost unshareScreen, no removeScreenSubscriber) must
+                // eventually fall through to rebuild on a later offer, not be held until
+                // ICE reports "failed". Within the cap it still protects a legitimately
+                // pairing sub from the +11s mid-pairing teardown.
+                const bool iceProgressing =
+                    (ice == "checking" || ice == "connected" || ice == "completed")
+                    && ageMs >= 0 && ageMs < kScreenSubIceProgressGraceMs;
+                if (iceProgressing || (ageMs >= 0 && ageMs < kScreenSubStartupGraceMs)) {
+                    qInfo() << "CallManager: screen re-offer from" << from.left(20)
+                            << "— sub still coming up (ice=" << ice << "age=" << ageMs
+                            << "ms, no frame yet) — re-PLI + ignore (anti-thrash)";
+                    if (auto *s = m_screenSubscribers.value(from)) s->requestKeyframe();
+                    return;
+                }
+            }
             // A re-share (stop → share again) sends a fresh offer for a
             // session we may still hold a screen subscriber for. Feeding
             // the new offer into the OLD SubscribePipeline leaves its
@@ -435,6 +620,13 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
             if (auto *stale = m_screenSubscribers.take(from)) {
                 m_screenSubFrameMark.remove(from);    // rebuilding — drop stale
                 m_screenSubStallTicks.remove(from);   // frame-liveness state
+                m_screenSubBuiltMs.remove(from);      // startup-grace stamp (re-stamped on start)
+                m_screenSubIceState.remove(from);     // ICE-progress (re-set on start)
+                // 0.53.1 — do NOT clear m_pendingScreenSubCandidates here: the
+                // bundled candidates for the NEW sid arrived just before this re-offer
+                // and the screen-offer handler must flush them into the rebuilt sub
+                // (else it starves → stuck "Starting"). The rolling buffer is capped +
+                // take()-cleared on flush; stale candidates are harmless (no valid pair).
                 qDebug() << "CallManager: screen re-offer for" << from.left(20)
                          << "— rebuilding screen subscriber (avoid frozen frame)";
                 stale->stop();
@@ -451,6 +643,18 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
                     emit remoteScreenProviderChanged();
                 }
                 if (auto *p = m_participants.value(from)) p->setScreen(nullptr);
+                // 0.53.0 — drain the OLD screen sub's libnice agent + TURN deallocate
+                // + UDP socket close BEFORE building the new one. cleanup()'s
+                // set_state(NULL) is synchronous on the GStreamer graph, but the
+                // libnice teardown (agent close, TURN dealloc, socket release) is
+                // async; building the new webrtcbin in the SAME event-loop turn
+                // collides the two agents on the same TURN 5-tuple → the new ICE
+                // sticks at "checking" (field: 8-of-18 on a re-share). A bounded,
+                // NON-blocking GLib drain lets the old agent's teardown run first —
+                // the exact pattern stopScreenShare() + full-call teardown use.
+                // FALSE = non-blocking: returns the instant the queue empties (~0 ms
+                // when nothing is pending), so it never stalls the UI.
+                for (int i = 0; i < 50; ++i) g_main_context_iteration(nullptr, FALSE);
             }
             auto *sub = new SubscribePipeline(from, this);
             connect(sub, &SubscribePipeline::localAnswerReady,
@@ -466,8 +670,35 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
                 m_signaling->sendCandidate(from, c, sid, "screen");
             });
             connect(sub, &SubscribePipeline::iceStateChanged,
-                    this, [this](const QString &state) {
+                    this, [this, from, sub](const QString &state) {
+                // 0.52.17 — drop a queued ICE event from a SUPERSEDED sub. On a rebuild
+                // the old sub is deleteLater'd, but its Qt connection stays live until
+                // the deferred-delete runs, so a late event it already posted could
+                // write the NEW sub's m_screenSubIceState/m_screenSubBuiltMs under the
+                // same 'from' key (now load-bearing for rebuild-protection). Compare the
+                // captured sub identity (pointer only — never dereferenced) to current.
+                if (m_screenSubscribers.value(from) != sub) return;
                 qDebug() << "CallManager: screen subscriber ICE:" << state;
+                m_screenSubIceState[from] = state;  // 0.52.17 — drives rebuild-protection in the offer handler
+                // 0.52.16/0.52.17 — re-anchor the startup grace to negotiation
+                // PROGRESS, not build time. kScreenSubStartupGraceMs is stamped at
+                // build; a slow re-share can burn all of it while ICE is still
+                // "checking", so the publisher's +5/+11s reap-race re-assert rebuilds
+                // a sub that was about to connect → the churn. 0.52.16 re-stamped on
+                // connected/completed ONLY — but Ilko's 0.52.16 receiver log showed
+                // the sub reaching "checking" (remote candidates in, pairs forming)
+                // and the +11s rebuild killing it RIGHT THERE, landing on a fresh sid
+                // whose candidates were mis-delivered to the dying sub → it never
+                // even reached "checking" → screen stuck on "Starting your share".
+                // So "checking" is ALSO forward progress and MUST re-stamp: a sub
+                // actively pairing ICE is never torn down by a redundant re-offer. A
+                // genuinely stuck sub stamps "checking" once and still ages out of the
+                // grace ~8s later (the edge fires once, so no live re-stamp loop).
+                // Once a frame decodes (frameMark>0) this branch no longer applies.
+                if ((state == "checking" || state == "connected" || state == "completed")
+                    && m_screenSubscribers.contains(from)
+                    && m_screenSubFrameMark.value(from, 0) == 0)
+                    m_screenSubBuiltMs[from] = QDateTime::currentMSecsSinceEpoch();
             });
             connect(sub, &SubscribePipeline::iceGatheringComplete,
                     this, [this, from, sid]() {
@@ -475,10 +706,19 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
             });
             m_screenSubscribers[from] = sub;
             qDebug() << "CallManager: starting screen subscriber, STUN:" << m_stunServer;
-            if (!sub->start(m_stunServer, m_turnServers)) {
+            if (!sub->start(m_stunServer, effectiveTurnServers())) {
                 qWarning() << "CallManager: failed to start screen subscriber pipeline";
                 m_screenSubscribers.remove(from);
                 sub->deleteLater();
+                // Clear ALL per-session screen state in lockstep (matches
+                // removeScreenSubscriber): a failed start must not leak this 'from's
+                // queued early candidates / grace stamp / ICE state, or a later
+                // re-share's flush would replay stale (wrong-sid) candidates.
+                m_screenSubFrameMark.remove(from);
+                m_screenSubStallTicks.remove(from);
+                m_screenSubBuiltMs.remove(from);
+                m_screenSubIceState.remove(from);
+                m_pendingScreenSubCandidates.remove(from);
                 // A re-offer's stale subscriber was already torn down above; if the
                 // rebuild fails, leaving the participant flagged screen-sharing with
                 // a null screen would be inconsistent. Clear it + recompute so we
@@ -491,6 +731,7 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
                 return;
             }
             qDebug() << "CallManager: screen subscriber started, setting offer...";
+            m_screenSubBuiltMs[from] = QDateTime::currentMSecsSinceEpoch();  // 0.52.15 startup-grace baseline
             m_remoteScreenProvider = sub->videoProvider();
             emit remoteScreenProviderChanged();
             if (auto *p = ensureParticipant(from, {})) {
@@ -514,6 +755,18 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
             // offer is the reliable hook that was missing.
             if (m_state != Idle && m_state != Ending)
                 requestPeerStream(from);
+            // Flush any screen candidates the MCU trickled BEFORE this sub existed
+            // (queued in m_pendingScreenSubCandidates above). addIceCandidate queues
+            // them inside the pipeline; the setRemoteOffer below flushes the queue
+            // into webrtcbin — identical contract to the camera subscriber path.
+            // Without this a fresh sub could start with ZERO remote candidates → ICE
+            // stuck → "Starting your share" forever (0.52.16 receiver log).
+            const auto pendingScreen = m_pendingScreenSubCandidates.take(from);
+            for (const auto &pc : pendingScreen)
+                sub->addIceCandidate(pc.candidate, pc.mline, pc.mid);
+            if (!pendingScreen.isEmpty())
+                qInfo() << "CallManager: flushed" << pendingScreen.size()
+                        << "early screen candidate(s) into new sub for" << from.left(20);
             sub->setRemoteOffer(sdp);
             qDebug() << "CallManager: screen subscriber offer set";
             return;
@@ -583,10 +836,29 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
         // Route by roomType: screen candidates go to screen pipelines
         // (screen share is independent of the camera P2P/MCU decision).
         if (roomType == "screen") {
+            const bool isOwnSession = (fromSessionId == m_signaling->sessionId());
             if (m_screenSubscribers.contains(fromSessionId)) {
                 m_screenSubscribers[fromSessionId]->addIceCandidate(cStr, mline, mid);
-            } else if (m_screenSharePipeline) {
+            } else if (m_screenSharePipeline && isOwnSession) {
+                // Our OWN screen publisher's remote candidates (from the MCU).
                 m_screenSharePipeline->addIceCandidate(cStr, mline, mid);
+                return;
+            }
+            // 0.53.1 — ALSO buffer a remote peer's screen candidates in a small
+            // rolling window, EVEN while a subscriber is live. The MCU trickles a
+            // subscriber's candidates bundled with/just before its offer; the
+            // publisher's +5/+11s reap re-assert can then REBUILD this sub a beat
+            // AFTER those candidates land — routed only to the (about-to-die) old
+            // sub they're lost, and the rebuilt sub STARVES → stuck "Starting your
+            // share" (Ilko 0.53.0, sid 8389…/10:41:57: "flushing 0 queued candidates"
+            // → no remote candidates → no ICE). handleScreenOffer flushes this buffer
+            // into the (re)built sub, covering BOTH the initial-build (0.52.16) and
+            // rebuild starvation. !isOwnSession mirrors the camera path: never buffer
+            // our own session (we build no screen subscriber for ourselves → leak).
+            if (!isOwnSession) {
+                auto &buf = m_pendingScreenSubCandidates[fromSessionId];
+                buf.append({cStr, mline, mid});
+                while (buf.size() > 16) buf.removeFirst();   // ~1-2 offers' worth
             }
             return;
         }
@@ -687,6 +959,7 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
         if (m_state != Connecting && m_state != Active) {
             m_pendingRequestOffers.clear();
             m_requestOfferAttempts.clear();
+            m_requestOfferRejections.clear();
             m_requestOfferRetry.stop();
             return;
         }
@@ -695,6 +968,29 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
             if (m_subscribePipelines.contains(sid)) {
                 m_pendingRequestOffers.remove(sid);
                 m_requestOfferAttempts.remove(sid);
+                m_requestOfferRejections.remove(sid);
+                continue;
+            }
+            // 0.52.7 — persistent "not_allowed": the MCU is ACTIVELY rejecting our
+            // requestoffer (not just silent), so this peer's publisher slot is
+            // stale/un-offerable and a bare resend can NEVER escape it (the fresh
+            // offer would be dropped by the one-shot feedOfferToSignaller). Escalate
+            // to a full recoverSubscriber rebuild — it tears the stale subscriber
+            // down + re-requests on a clean, 8-bounded budget, by which time the
+            // slot has usually settled. This is the app-window-share call-drop fix.
+            // Threshold 3 (~24s) means a peer whose publish is merely SLOW but
+            // SILENT (no rejection) keeps its rejection count at 0 and still rides
+            // the full plain-resend budget below — no regression to that case. The
+            // remove() BEFORE recoverSubscriber is LOAD-BEARING: it satisfies that
+            // function's "already recovering" early-return guard so the rebuild runs.
+            if (m_requestOfferRejections.value(sid) >= 3) {
+                qWarning() << "CallManager: requestoffer for" << sid.left(20)
+                           << "rejected 'not_allowed'" << m_requestOfferRejections.value(sid)
+                           << "times — escalating to subscriber rebuild";
+                m_pendingRequestOffers.remove(sid);
+                m_requestOfferAttempts.remove(sid);
+                m_requestOfferRejections.remove(sid);
+                recoverSubscriber(sid, QStringLiteral("requestoffer-not-allowed"));
                 continue;
             }
             int &n = m_requestOfferAttempts[sid];
@@ -711,6 +1007,7 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
                            << "after" << n << "attempts";
                 m_pendingRequestOffers.remove(sid);
                 m_requestOfferAttempts.remove(sid);
+                m_requestOfferRejections.remove(sid);
                 continue;
             }
             ++n;
@@ -801,6 +1098,13 @@ void CallManager::detectGpuClass()
     m_gpuClass = talq::gpuClassFromSignals(hwEnc, talq::gpuAdapterNames(), ov);
     qInfo().noquote() << "CallManager: GPU class:" << talq::gpuClassName(m_gpuClass)
                       << "(hwEncode=" << hwEnc << " override=" << int(ov) << ")";
+}
+
+void CallManager::setVideoQualityNotice(const QString &text)
+{
+    if (text == m_videoQualityNotice) return;
+    m_videoQualityNotice = text;
+    emit videoQualityNoticeChanged();
 }
 
 QString CallManager::activeVideoCodec() const
@@ -971,8 +1275,27 @@ void CallManager::updateCallStats()
         CallParticipant *p = m_participants.value(sid);
         const bool muted   = (p && p->videoMuted());
         const bool pending = m_pendingRequestOffers.contains(sid);
-        if (m_subStall[sid].onTick(fc, muted, pending))
+        if (fc > 0) m_neverDecodedRecoveries.remove(sid);   // D2 fix — real frame clears the budget
+        // D2 — also rebuild a CONNECTED but never-decoded feed (permanent
+        // "Starting…"/black tile) after ~12 s of a video-ON peer never producing
+        // a frame. 6 ticks × 2 s = 12 s: generous enough for a slow first keyframe.
+        constexpr int kNeverDecodedTicks = 6;
+        if (m_subStall[sid].onTick(fc, muted, pending, kNeverDecodedTicks)) {
+            // D2 fix — a NEVER-decoded fire (fc still 0) must be BOUNDED by its own
+            // counter. recoverSubscriber's normal budget resets on every ICE-connect,
+            // which a never-decoding feed (camera-off-not-flagged / broken codec)
+            // keeps re-hitting → it would rebuild forever every ~12 s. Cap at 3,
+            // cleared only by a real decoded frame (above). Frame-STALL fires (a
+            // feed that DID decode then froze) stay on the normal budget.
+            if (fc == 0) {
+                if (m_neverDecodedRecoveries.value(sid) >= 3) {
+                    if (p) p->setConnState(CallParticipant::Failed);
+                    continue;   // give up on this feed's video; the call continues
+                }
+                ++m_neverDecodedRecoveries[sid];
+            }
             stalledSubs << sid;
+        }
     }
     for (const QString &sid : stalledSubs) {
         qWarning() << "CallManager: subscriber" << sid.left(20)
@@ -1069,6 +1392,10 @@ void CallManager::setState(CallState newState)
     if (newState == Outgoing || newState == Incoming) startRingtone();
     else stopRingtone();
     if (newState == Active) {
+        // 0.52.10 — start the duration clock on the FIRST Active only. A reconnect
+        // (Reconnecting→Active, or a "waiting for others" resync) re-enters Active
+        // and must NOT restart it, which is what showed 00:00 mid-call.
+        if (!m_callElapsed.isValid()) m_callElapsed.start();
         updateCallStats();
         m_statsTimer.start();
         // Late fallback only: the camera is now enabled immediately when the
@@ -1082,11 +1409,23 @@ void CallManager::setState(CallState newState)
         // Broadcast initial media state so remote peers show correct mute/video status
         broadcastMediaState("audio", !m_muted);
         broadcastMediaState("video", m_cameraOn);
+        // A2 fix — a signaling session reset dropped all subscribers while
+        // Reconnecting and deferred the re-subscribe to here (publisher is now
+        // re-registered + Active, so the MCU will accept requestoffers). Re-request
+        // every in-call peer; requestPeerStream self-dedupes on already-subscribed.
+        if (m_resubscribeOnActive) {
+            m_resubscribeOnActive = false;
+            for (auto *p : m_participants)
+                if (p && !p->isSelf() && !m_subscribePipelines.contains(p->sessionId()))
+                    requestPeerStream(p->sessionId());
+        }
     } else {
         m_statsTimer.stop();
     }
-    if (newState == Idle)
+    if (newState == Idle) {
+        m_callElapsed.invalidate();   // 0.52.10 — reset duration only on a real call end
         clearParticipants();
+    }
     else if (!m_selfParticipant)
         ensureSelfParticipant();
     emit stateChanged();
@@ -1246,6 +1585,7 @@ void CallManager::recoverSubscriber(const QString &sessionId, const QString &rea
     m_subStall.remove(sessionId);   // #bug2 -- fresh baseline for the rebuilt feed
     m_pendingRequestOffers.remove(sessionId);
     m_requestOfferAttempts.remove(sessionId);
+    m_requestOfferRejections.remove(sessionId);   // 0.52.7 — fresh rejection budget
 
     // Unbind the now-dangling provider so the UI stops painting a dead
     // feed; a fresh SubscribeWebrtcSrc + provider is built on the re-offer.
@@ -1273,6 +1613,37 @@ void CallManager::recoverSubscriber(const QString &sessionId, const QString &rea
             << "(" << reason << ") attempt" << n << "— re-subscribing";
     setStatusDetail("Reconnecting peer video…");
     requestPeerStream(sessionId);
+}
+
+// A3a — tear down a peer's subscriber WITHOUT re-requesting an offer (unlike
+// recoverSubscriber, which rebuilds). For when the peer's signaling session is
+// definitively dead (room/leave): its sid will never be offerable again, so we
+// drop the zombie + purge all its requestoffer bookkeeping so the retry tick
+// stops hammering the MCU with requestoffers it rejects forever. The peer's NEW
+// session resubscribes fresh via roomPeerJoined.
+void CallManager::dropSubscriber(const QString &sessionId)
+{
+    VideoFrameProvider *deadProv = nullptr;
+    if (auto *dead = m_subscribePipelines.take(sessionId)) {
+        deadProv = dead->videoProvider();
+        dead->stop();
+        dead->deleteLater();   // may be inside this sub's own queued signal
+    }
+    m_subscriberSids.remove(sessionId);
+    m_subStall.remove(sessionId);
+    m_pendingRequestOffers.remove(sessionId);
+    m_requestOfferAttempts.remove(sessionId);
+    m_requestOfferRejections.remove(sessionId);
+    m_subscriberRecoveries.remove(sessionId);
+    m_neverDecodedRecoveries.remove(sessionId);   // D2 fix
+    if (m_remoteVideoProvider && m_remoteVideoProvider == deadProv) {
+        m_remoteVideoProvider = nullptr;
+        emit remoteVideoProviderChanged();
+    }
+    if (auto *p = m_participants.value(sessionId)) {
+        p->setCamera(nullptr);
+        p->setConnState(CallParticipant::Reconnecting);
+    }
 }
 
 bool CallManager::buildAndStartPublisher()
@@ -1374,7 +1745,7 @@ bool CallManager::buildAndStartPublisher()
         teardown(msg);
     });
 
-    connect(m_publishPipeline, &PublishPipeline::hwVideoEncoderUnavailable, this, []() {
+    connect(m_publishPipeline, &PublishPipeline::hwVideoEncoderUnavailable, this, [this]() {
         // NVENC can't open on this machine (e.g. an iGPU-pinned 2-GPU/Optimus
         // laptop). The publisher already latched talqAvoidNvenc() in-process;
         // persist it so EVERY future call + launch skips NVENC and uses Intel
@@ -1386,13 +1757,37 @@ bool CallManager::buildAndStartPublisher()
         qWarning() << "CallManager: persisted video-encoder latch — avoidNvenc="
                    << talqAvoidNvenc().load()
                    << "forceSoftware=" << talqForceSoftwareVideo().load();
+        // B3 — the HW encoder gave out MID-CALL. The latch now forces software,
+        // but the LIVE publisher still holds the dead HW encoders and a camera
+        // re-toggle reuses them; only a fresh start() picks up the latch. So
+        // rebuild the publisher in-call (recoverPublisher -> buildAndStartPublisher
+        // -> software x264) instead of leaving video dead "until the next call".
+        if (m_cameraOn && (m_state == Active || m_state == Connecting)) {
+            qWarning() << "CallManager: rebuilding publisher on SOFTWARE encoder (in-call fallback)";
+            setState(Reconnecting);
+            m_pubRetryAttempts = 0;
+            recoverPublisher("encoder-fallback-software");
+        }
     });
 
     connect(m_publishPipeline, &PublishPipeline::softwareVideoEncoderUsed, this, [this]() {
-        if (m_softwareEncoderNotified) return;   // once per call (publisher can rebuild)
+        // 0.52.5 — persistent sender-visible chip (no working HW encoder → 480p).
+        setVideoQualityNotice(tr("Software encoding — video limited to 480p"));
+        if (m_softwareEncoderNotified) return;   // toast: once per call (publisher can rebuild)
         m_softwareEncoderNotified = true;
         qInfo() << "CallManager: camera on SOFTWARE video encoder — notifying user";
         emit softwareVideoEncoderNotice();
+    });
+
+    // 0.52.5 — the publisher pinned the send at the capability floor under load
+    // (only a non-Capable/software box can trip this; a Capable HW box floors at
+    // full quality). Show/clear the persistent "limited to 480p" chip on our own
+    // screen so the sender is never silently stuck low without knowing why.
+    connect(m_publishPipeline, &PublishPipeline::sendQualityFloored, this, [this](bool atFloor) {
+        if (atFloor)
+            setVideoQualityNotice(tr("Limited to 480p — this device can't keep up at higher quality"));
+        else if (m_videoQualityNotice.startsWith(tr("Limited to 480p")))
+            setVideoQualityNotice(QString());   // clear only the floor reason; a software notice persists
     });
 
     connect(m_publishPipeline, &PublishPipeline::cameraError, this, [this](const QString &reason) {
@@ -1465,7 +1860,7 @@ bool CallManager::buildAndStartPublisher()
     // remote peer's), keep the camera simulcast suppressed on the fresh
     // pipeline too. Runs before start() so its build-time layer gate applies.
     updateCameraSuppression();
-    if (!m_publishPipeline->start(m_stunServer, m_turnServers,
+    if (!m_publishPipeline->start(m_stunServer, effectiveTurnServers(),
         m_deviceManager ? m_deviceManager->selectedInputDeviceId() : QString(),
         m_withVideo, videoDeviceIndex(), preferHd1080())) {
         qWarning() << "CallManager: failed to start publish pipeline";
@@ -1853,8 +2248,23 @@ void CallManager::toggleCamera() {
     // so the banner/caption disappear. If the device fails again, the
     // PublishPipeline::cameraError path re-raises the flag.
     if (m_cameraOn) m_cameraUnavailable = false;
+    emit cameraChanged();   // UI button reflects the intent immediately
 
-    // Do the actual swap BEFORE emitting signals
+    // D3 — COALESCE the actual device enable/disable. Fast mute-mashing (Pavel
+    // toggled the camera ~10× in one call) otherwise fires a burst of
+    // enable/disable on the exclusive MF source, where an async NULL can overtake
+    // a later sync PLAYING and park the device mid-transition (camera wedged off
+    // while the UI shows it on). Apply only the FINAL desired state ~250 ms after
+    // the last click; the single-shot timer restart collapses the burst.
+    m_cameraApplyTimer.start();
+}
+
+// D3 — apply the coalesced camera desired-state to the live pipeline. Idempotent:
+// enableCamera/disableCamera early-return if already in that state.
+void CallManager::applyCameraState() {
+    // A stray fire (timer scheduled then the call ended) must never touch a fresh
+    // call's media — teardown stops the timer, this is belt-and-suspenders.
+    if (m_state != Active && m_state != Connecting && m_state != Reconnecting) return;
     if (m_useP2P && m_peerPipeline) {
         m_cameraOn ? m_peerPipeline->enableCamera(videoDeviceIndex(), preferHd1080())
                    : m_peerPipeline->disableCamera();
@@ -1868,11 +2278,20 @@ void CallManager::toggleCamera() {
         }
         emit localVideoProviderChanged();
     }
-    emit cameraChanged();
-
-    // Broadcast video state + update call flags on server
+    // Broadcast video state + update call flags on server (coalesced with the
+    // media apply so peers see only the final state, not every intermediate flip).
     broadcastMediaState("video", m_cameraOn);
     updateCallFlags();
+}
+
+void CallManager::cameraFrameConfirmed()
+{
+    // A real self-camera frame is proof the device recovered after an earlier
+    // cameraError. Clear the "camera unavailable" notice (idempotent).
+    if (!m_cameraUnavailable) return;
+    m_cameraUnavailable = false;
+    qDebug() << "CallManager: self-camera frame seen — clearing 'camera unavailable' notice";
+    emit cameraChanged();
 }
 
 void CallManager::updateCameraSuppression()
@@ -1900,6 +2319,9 @@ void CallManager::removeScreenSubscriber(const QString &sessionId)
     auto *sub = m_screenSubscribers.take(sessionId);
     m_screenSubFrameMark.remove(sessionId);    // peer's screen gone — drop
     m_screenSubStallTicks.remove(sessionId);   // frame-liveness state
+    m_screenSubBuiltMs.remove(sessionId);      // startup-grace stamp
+    m_screenSubIceState.remove(sessionId);     // ICE-progress state
+    m_pendingScreenSubCandidates.remove(sessionId);  // queued early candidates
     if (!sub)
         return;                       // no remote screen from this peer — nothing to do
     // If this peer's screen was the one being rendered, unbind it so the UI
@@ -2145,7 +2567,7 @@ void CallManager::buildAndStartSharePipeline(int monitorIndex, quintptr windowHa
 
     connect(&m_glibTimer, &QTimer::timeout, m_screenSharePipeline, &ScreenSharePipeline::pollBus);
 
-    if (!m_screenSharePipeline->start(m_stunServer, m_turnServers, monitorIndex, windowHandle)) {
+    if (!m_screenSharePipeline->start(m_stunServer, effectiveTurnServers(), monitorIndex, windowHandle)) {
         qWarning() << "CallManager: failed to start screen share pipeline";
         m_screenSharing = false;
         // start() can emit error() synchronously (DirectConnection ->
@@ -2251,6 +2673,184 @@ void CallManager::applyReceiveLoadCaps(int substreamCap, bool capFocused)
         sendDesiredSubstream(it.key(), effectiveSubstreamFor(it.key(), it.value()));
 }
 
+// Parse host+port out of a TURN/STUN url. Accepts "turn:host:port?transport=udp",
+// "turns://user@host:port", "stun:host:port" — with or without scheme //, user@, or query.
+static bool parseTurnHostPort(const QString &url, QString &host, quint16 &port)
+{
+    QString s = url.trimmed();
+    for (const char *scheme : {"turns://","turn://","stuns://","stun://","turns:","turn:","stuns:","stun:"})
+        if (s.startsWith(QLatin1String(scheme))) { s = s.mid(int(qstrlen(scheme))); break; }
+    const int at = s.indexOf(QLatin1Char('@')); if (at >= 0) s = s.mid(at + 1);
+    const int q  = s.indexOf(QLatin1Char('?')); if (q  >= 0) s = s.left(q);
+    const int sl = s.indexOf(QLatin1Char('/')); if (sl >= 0) s = s.left(sl);
+    port = 3478;
+    if (s.startsWith(QLatin1Char('['))) {                    // bracketed IPv6
+        const int rb = s.indexOf(QLatin1Char(']')); if (rb < 0) return false;
+        host = s.mid(1, rb - 1);
+        const int c = s.indexOf(QLatin1Char(':'), rb);
+        if (c >= 0) port = quint16(s.mid(c + 1).toUInt());
+    } else {
+        const int c = s.lastIndexOf(QLatin1Char(':'));
+        if (c >= 0) { host = s.left(c); port = quint16(s.mid(c + 1).toUInt()); }
+        else host = s;
+    }
+    if (port == 0) port = 3478;
+    return !host.isEmpty();
+}
+
+// Build a 20-byte STUN Binding Request (RFC 5389): type 0x0001, length 0,
+// magic cookie 0x2112A442, and a random 96-bit transaction id (returned in txid
+// so the response can be matched). Every STUN/TURN server answers this on
+// UDP:3478 unauthenticated, so the request→response round-trip is the true RTT.
+static QByteArray makeStunBindingRequest(QByteArray &txid)
+{
+    QByteArray req(20, char(0));
+    req[0] = char(0x00); req[1] = char(0x01);                                   // Binding Request
+    req[2] = char(0x00); req[3] = char(0x00);                                   // message length = 0
+    req[4] = char(0x21); req[5] = char(0x12); req[6] = char(0xA4); req[7] = char(0x42);  // magic cookie
+    txid.resize(12);
+    for (int i = 0; i < 12; ++i) txid[i] = char(QRandomGenerator::global()->bounded(256));
+    req.replace(8, 12, txid);
+    return req;
+}
+
+// UDP-STUN-probe every offered TURN host and keep only the nearest, so a TURN
+// relay (when ICE needs one) is always local instead of cross-continent.
+// Why STUN-over-UDP and not a TCP connect to :3478: coturn commonly filters TCP
+// :3478 (→ the old probe got no answer and reported "best RTT -1", then fell
+// back to ALL relays — the far-relay detour that shredded Ivan's send), and a
+// TCP-connect time folds in the 3-way handshake + DNS. A STUN Binding round-trip
+// on UDP:3478 is answered by every TURN server and measures the real RTT. DNS is
+// resolved first and excluded from the timing. Async + non-blocking on the main
+// thread; runs when the TURN list arrives on room-join. effectiveTurnServers()
+// returns the full list until this resolves.
+void CallManager::probeNearestTurnAsync()
+{
+    m_turnProbed = false;
+    m_nearestTurnServers.clear();
+    const int gen = ++m_turnProbeGen;
+    if (m_turnServers.size() <= 1) { m_nearestTurnServers = m_turnServers; m_turnProbed = true; return; }
+
+    // Probe state lives in a shared_ptr owned by the timer functor below. If THIS
+    // CallManager is destroyed within the window, Qt destroys the (context=this)
+    // functor, which releases the shared_ptr and frees the vector — no leak. The
+    // sockets are parented to `this`, so ~QObject cleans them up on that same path,
+    // and the readyRead / lookupHost lambdas are context=this so they never fire
+    // after destruction.
+    struct Probe { QString host; quint16 port; QUdpSocket *sock = nullptr; QByteArray txid; QElapsedTimer t; bool sent = false; int rtt = -1; };
+    auto probes = std::make_shared<std::vector<Probe>>();
+    QSet<QString> seen;
+    for (const TurnServer &ts : m_turnServers)
+        for (const QString &url : ts.urls) {
+            QString h; quint16 p;
+            if (!parseTurnHostPort(url, h, p) || seen.contains(h)) continue;
+            seen.insert(h);
+            Probe pr; pr.host = h; pr.port = p;
+            probes->push_back(pr);
+        }
+    if (probes->empty()) { m_nearestTurnServers = m_turnServers; m_turnProbed = true; return; }
+
+    for (Probe &pr : *probes) {                          // vector is fully built -> &pr is stable
+        pr.sock = new QUdpSocket(this);
+        Probe *prp = &pr;
+        QObject::connect(prp->sock, &QUdpSocket::readyRead, this, [this, prp, gen]() {
+            if (gen != m_turnProbeGen) return;
+            while (prp->sock && prp->sock->hasPendingDatagrams()) {
+                QByteArray buf(int(prp->sock->pendingDatagramSize()), char(0));
+                prp->sock->readDatagram(buf.data(), buf.size());
+                // Any STUN response echoing our 96-bit transaction id (bytes 8..19).
+                if (prp->sent && prp->rtt < 0 && buf.size() >= 20 && buf.mid(8, 12) == prp->txid)
+                    prp->rtt = int(prp->t.elapsed());
+            }
+        });
+        // Resolve host → IP first (NOT counted in the RTT), then fire the STUN probe.
+        QHostInfo::lookupHost(pr.host, this, [this, prp, gen](const QHostInfo &info) {
+            if (gen != m_turnProbeGen || !prp->sock || info.addresses().isEmpty()) return;
+            const QByteArray req = makeStunBindingRequest(prp->txid);
+            prp->t.start();
+            prp->sent = true;
+            prp->sock->writeDatagram(req, info.addresses().first(), prp->port);
+        });
+    }
+
+    QTimer::singleShot(1000, this, [this, gen, probes]() {
+        auto cleanup = [&] {
+            for (Probe &pr : *probes) if (pr.sock) { pr.sock->disconnect(); pr.sock->close(); pr.sock->deleteLater(); }
+        };
+        if (gen != m_turnProbeGen) { cleanup(); return; }   // a newer probe superseded this one
+        int best = std::numeric_limits<int>::max();
+        QHash<QString,int> rttByHost;
+        for (Probe &pr : *probes) {
+            rttByHost[pr.host] = pr.rtt;
+            if (pr.rtt >= 0 && pr.rtt < best) best = pr.rtt;
+        }
+        // Narrow the TURN list to the nearest region only when a genuinely local
+        // relay answered (best < 120 ms). UDP-STUN RTT is accurate (unlike the old
+        // TCP-connect probe), so a same-region relay reads ~5-40 ms and a
+        // cross-continent one ~150+ ms — the split is clean. When nothing answers
+        // (best -1) or every relay is far, keep the FULL list: redundancy beats a
+        // possibly-wrong "nearest".
+        if (best != std::numeric_limits<int>::max() && best < 120) {
+            const int margin = 40;   // same-region hosts stay; a far one (+100ms) is dropped
+            QList<TurnServer> nearby;   // NOTE: 'near' is a legacy Windows macro — do not use it
+            for (const TurnServer &ts : m_turnServers) {
+                bool isNear = false;
+                for (const QString &url : ts.urls) {
+                    QString h; quint16 p;
+                    if (parseTurnHostPort(url, h, p) && rttByHost.value(h, -1) >= 0
+                        && rttByHost.value(h) <= best + margin) { isNear = true; break; }
+                }
+                if (isNear) nearby.append(ts);
+            }
+            if (!nearby.isEmpty()) m_nearestTurnServers = nearby;
+        }
+        if (m_nearestTurnServers.isEmpty()) m_nearestTurnServers = m_turnServers;  // nothing answered -> keep all
+        m_turnProbed = true;
+        m_turnBestRttMs = (best == std::numeric_limits<int>::max()) ? -1 : best;
+        qInfo().nospace() << "CallManager: nearest-TURN probe (UDP STUN) done — best RTT "
+            << (best == std::numeric_limits<int>::max() ? -1 : best) << " ms; using "
+            << m_nearestTurnServers.size() << "/" << m_turnServers.size() << " TURN server(s): "
+            << selectedTurnLabel();
+        cleanup();
+    });
+}
+
+QList<TurnServer> CallManager::effectiveTurnServers() const
+{
+    return (m_turnProbed && !m_nearestTurnServers.isEmpty()) ? m_nearestTurnServers : m_turnServers;
+}
+
+// Telemetry: the TURN relay host(s) actually in use (post nearest-selection).
+QString CallManager::selectedTurnLabel() const
+{
+    QStringList hosts;
+    for (const TurnServer &ts : effectiveTurnServers())
+        for (const QString &url : ts.urls) {
+            QString h; quint16 p;
+            if (parseTurnHostPort(url, h, p) && !hosts.contains(h)) hosts << h;
+        }
+    return hosts.join(QStringLiteral(", "));
+}
+
+// Telemetry: the signaling/HPB server this client is connected to (host only).
+QString CallManager::selectedSignalingLabel() const
+{
+    if (!m_signaling) return QString();
+    QString u = m_signaling->signalingUrl().trimmed();
+    const int s = u.indexOf(QStringLiteral("://")); if (s >= 0) u = u.mid(s + 3);
+    const int at = u.indexOf(QLatin1Char('@'));     if (at >= 0) u = u.mid(at + 1);
+    const int sl = u.indexOf(QLatin1Char('/'));     if (sl >= 0) u = u.left(sl);
+    const int c  = u.lastIndexOf(QLatin1Char(':')); if (c  >= 0) u = u.left(c);
+    return u;
+}
+
+// Telemetry: measured RTT (ms) to the selected TURN relay / HPB, -1 if unknown.
+int CallManager::selectedTurnRttMs() const { return m_turnBestRttMs; }
+int CallManager::selectedSignalingRttMs() const
+{
+    return m_signaling ? m_signaling->signalingRttMs() : -1;
+}
+
 void CallManager::startLoadController()
 {
     // Kill-switch: TALQ_DISABLE_LOAD_CONTROLLER=1 disables load SHEDDING (falls
@@ -2301,6 +2901,88 @@ void CallManager::stopLoadController()
 
 void CallManager::onLoadTick()
 {
+    // B4 — the GStreamer log probe (main.cpp) flagged the d3d11 video-device
+    // interface warning (E_NOINTERFACE 0x80004002) on a streaming thread. That
+    // warning ALONE can be benign, so we do NOT act on it blindly — that would
+    // risk permanently forcing a healthy box onto software decode. CORROBORATE:
+    // only fall back when a live subscriber is ACTUALLY decoding badly right now
+    // (frames arriving but content frozen = concealment). And do NOT persist —
+    // this is a heuristic for THIS session; only a hard decoder BUS ERROR (the B2
+    // path) is trustworthy enough to remember across launches. The HW-decoder
+    // demote is process-global, so once done this process stays on software.
+    if (talqHwDecodeFaultDetected().load() && !m_hwDecodeFallbackDone
+        && !talqForceSoftwareDecode().load()) {
+        bool decodingBadly = false;
+        for (auto it = m_subscribePipelines.constBegin();
+             it != m_subscribePipelines.constEnd(); ++it) {
+            SubscribeWebrtcSrc *s = it.value();
+            if (!s || !s->isRunning()) continue;
+            // Frames are OUTPUT by the decoder but the content is frozen (<=1
+            // distinct) = the HW decoder is stuck. Catch it even at a LOW output
+            // fps: a hybrid-GPU d3d11 stall delivers ~2 fps / 1 distinct (field:
+            // Ilko receiving Ivan's 1080p), which the old >=3 fps gate missed, so
+            // the demote never fired and the peer stayed frozen. Gated by the
+            // d3d11-fault flag above, so a healthy box never reaches here.
+            if (s->rxVideoFps() >= 1 && s->rxDistinctVideoFps() <= 1) { decodingBadly = true; break; }
+        }
+        if (decodingBadly) {
+            m_hwDecodeFallbackDone = true;
+            qWarning() << "CallManager: d3d11 fault + live concealment -> SOFTWARE decode this session (demote + rebuild)";
+            talqForceSoftwareDecode().store(true);
+            talqDemoteHwVideoDecoders();
+            const auto peers = m_subscribePipelines.keys();
+            for (const QString &sid : peers)
+                recoverSubscriber(sid, QStringLiteral("hw-decode-fault"));
+        }
+    }
+
+    // ── HOST-PROTECTION memory watchdog (Kalin 2026-06-30) ───────────────────
+    // The receive/decode path can balloon and melt the host — field: Ivan's box
+    // hit ~2 GB while a hybrid-GPU d3d11 decoder was stalled, with chopped audio.
+    // Process memory is an INDEPENDENT signal (the decode-load proxy was disabled
+    // in 0.52.1 for oscillating), so use it with hysteresis: when the working set
+    // crosses the high mark, SHED hard — cap EVERY peer including the focused tile
+    // to the 180p layer (i.e. stop the 1080p streams) — and restore each peer's
+    // wanted quality once memory eases back under the low mark.
+    const qint64 memMb = DebugMonitor::readProcessMemoryMB();
+    if (!m_memShedActive && memMb > kMemShedHighMb) {
+        m_memShedActive = true;
+        qWarning().nospace() << "CallManager: HOST OVERLOAD — working set " << memMb
+                             << " MB (> " << kMemShedHighMb << ") — shedding ALL peers to 180p";
+        applyReceiveLoadCaps(/*substreamCap=*/0, /*capFocused=*/true);
+        setVideoQualityNotice(tr("High load — receiving video at reduced quality"));
+    } else if (m_memShedActive && memMb < kMemShedLowMb) {
+        m_memShedActive = false;
+        qInfo().nospace() << "CallManager: host load eased (" << memMb
+                          << " MB) — restoring receive quality";
+        applyReceiveLoadCaps(/*substreamCap=*/2, /*capFocused=*/false);
+        if (m_videoQualityNotice.startsWith(tr("High load")))
+            setVideoQualityNotice(QString());
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // GROUP-CALL subscribe RECONCILIATION backstop: subscribe ANY in-call peer
+    // that has media but no live subscriber. The onParticipantJoinedCall fix
+    // covers peers that join AFTER us, but a peer ALREADY in the call when WE
+    // joined had its join event fire while we were still Idle/Incoming (before the
+    // subscribe could run) — so a LATE joiner never saw an already-present peer
+    // until that peer toggled their camera (field: Ivan joined last and never saw
+    // Ilko). This periodic sweep closes that gap; requestPeerStream self-dedupes.
+    if (!m_useP2P && (m_state == Connecting || m_state == Active)) {
+        for (auto it = m_participants.constBegin(); it != m_participants.constEnd(); ++it) {
+            CallParticipant *p = it.value();
+            if (!p || p->isSelf()) continue;
+            const QString &sid = it.key();
+            if ((!p->audioMuted() || !p->videoMuted())
+                && !m_subscribePipelines.contains(sid)
+                && !m_pendingRequestOffers.contains(sid)) {
+                qInfo() << "CallManager: subscribe-reconcile — in-call peer without a"
+                           " subscriber:" << sid.left(20);
+                requestPeerStream(sid);
+            }
+        }
+    }
+
     // Measure SEND/RECEIVE load every tick REGARDLESS of the controller, so the
     // [MEDIA] freeze heartbeat below is logged even with the controller killed
     // (TALQ_DISABLE_LOAD_CONTROLLER=1). Only the load-SHEDDING work is gated.
@@ -2823,6 +3505,9 @@ void CallManager::joinCallOnServer(bool withVideo)
                     }
                     qDebug() << "CallManager: found" << turnServers.size() << "TURN servers";
                     m_turnServers = turnServers;
+                    // RTT-probe the offered TURN hosts now (on room-join) so that by
+                    // the time a call starts we relay only through the NEAREST one.
+                    probeNearestTurnAsync();
 
                     // Process any offers that arrived before ICE servers were available
                     processPendingOffers();
@@ -3214,7 +3899,24 @@ void CallManager::stopAllPipelines()
     }
     for (auto *sub : m_subscribePipelines) {
         sub->stop();   // stops the subscriber pipeline + releases its far-end appsrc
-        delete sub;
+        // 1.0 audit / 0.52.16 crash fix — NEVER synchronously `delete` a
+        // SubscribeWebrtcSrc here: teardown() runs on the Qt main thread but the
+        // webrtcsrc (gst-plugins-rs / libgstrswebrtc) streaming + bus-watch threads
+        // are still live (cleanup() detaches the GST_STATE_NULL transition to a
+        // worker thread that has NOT joined), and several of its callbacks post
+        // QMetaObject::invokeMethod(self, …, Qt::QueuedConnection) events back to
+        // THIS object. A synchronous delete runs ~QObject inline while such a
+        // QMetaCallEvent is already queued (or being posted the instant after the
+        // g_signal_handlers_disconnect in cleanup()), so Qt delivers a metacall to
+        // a freed QObject → Qt6Core dereferences freed d_ptr/vtable → 0xC0000005
+        // (the hangup→teardown→Idle crash; faulting RIP Qt6Core!QObject metacall,
+        // crash thread dominated by libgstrswebrtc). A QPointer in the lambda does
+        // NOT help: it guards the lambda BODY, not the event-delivery dispatch that
+        // touches the QObject before the lambda runs. deleteLater() defers the free
+        // to a clean event-loop turn after the posted metacalls drain — exactly why
+        // EVERY other subscriber-destroy site (lines ~1353, ~3863, ~4003, the
+        // m_screenSubscribers loop below) already uses it. Match that here.
+        sub->deleteLater();
     }
     m_subscribePipelines.clear();
     m_subscriberSids.clear();
@@ -3266,6 +3968,9 @@ void CallManager::teardown(const QString &reason)
     stopLoadController();          // 0.51.x: disarm the tick + reset caps to full
     m_ringTimeout.stop();
     m_durationTimer.stop();
+    m_cameraApplyTimer.stop();          // D3 fix — no stray coalesced toggle into the next call
+    m_neverDecodedRecoveries.clear();   // D2 fix
+    m_resubscribeOnActive = false;      // A2 fix
     stopIncomingCameraPreview();   // #13: release the camera (safe no-op if not running)
     // Snapshot the call identity BEFORE the local-state cleanup below
     // clears it — the server-leave DELETE at the end needs the token and
@@ -3296,6 +4001,7 @@ void CallManager::teardown(const QString &reason)
     m_pendingOffers.clear();
     m_pendingRequestOffers.clear();
     m_requestOfferAttempts.clear();
+    m_requestOfferRejections.clear();   // 0.52.7
     m_requestOfferRetry.stop();
 
     // Clean up screen sharing. Set the teardown flag for symmetry with
@@ -3343,7 +4049,11 @@ void CallManager::teardown(const QString &reason)
     m_screenSubscribers.clear();
     m_screenSubFrameMark.clear();
     m_screenSubStallTicks.clear();
+    m_screenSubBuiltMs.clear();
+    m_screenSubIceState.clear();
+    m_pendingScreenSubCandidates.clear();
     m_softwareEncoderNotified = false;   // re-notify on the next call if still software
+    setVideoQualityNotice(QString());    // 0.52.5 — reset the sender quality chip for the next call
 
     // Synchronous local close — the UI must NEVER wait on the server
     // (mid-call network drops could otherwise leave the call window
@@ -3554,6 +4264,23 @@ void CallManager::onParticipantJoinedCall(const QString &sessionId, int flags, c
             p->setAudioMuted(!(flags & CALL_FLAG_WITH_AUDIO));
             p->setVideoMuted(!(flags & CALL_FLAG_WITH_VIDEO));
         }
+        // GROUP/MCU call — subscribe to EVERY in-call peer that publishes media,
+        // not just the first. The 1:1 block above only subscribes m_remoteSessionId
+        // (the first joiner); every ADDITIONAL conference peer fell through to here
+        // with NO subscriber, so their video never arrived until THEY toggled their
+        // camera (the participantFlagsChanged off->on edge — exactly the field bug
+        // "we had to stop/start cameras; Ivan saw Kalin but not Ilko"). requestPeerStream
+        // self-dedupes on m_subscribePipelines / m_pendingRequestOffers, so this is a
+        // no-op for the already-subscribed first peer and on repeated participant-updates.
+        if (!m_useP2P
+            && (m_state == Connecting || m_state == Active)
+            && (flags & (CALL_FLAG_WITH_AUDIO | CALL_FLAG_WITH_VIDEO))
+            && !m_subscribePipelines.contains(sessionId)
+            && !m_pendingRequestOffers.contains(sessionId)) {
+            qInfo() << "CallManager: group call — subscribing additional in-call peer"
+                    << sessionId.left(20);
+            requestPeerStream(sessionId);
+        }
     }
 }
 
@@ -3563,6 +4290,7 @@ void CallManager::onParticipantLeftCall(const QString &sessionId)
 
     m_pendingRequestOffers.remove(sessionId);
     m_requestOfferAttempts.remove(sessionId);
+    m_requestOfferRejections.remove(sessionId);   // 0.52.7 — offer landed; clear rejection budget
 
     // Remove subscriber pipeline for this peer
     if (m_subscribePipelines.contains(sessionId)) {
@@ -3698,6 +4426,7 @@ void CallManager::onOfferReceived(const QString &fromSessionId, const QString &s
 
     m_pendingRequestOffers.remove(fromSessionId);
     m_requestOfferAttempts.remove(fromSessionId);
+    m_requestOfferRejections.remove(fromSessionId);   // 0.52.7 — real offer landed; clear rejection budget
 
     // Track the MCU's sid — signals use the hash so re-offers update seamlessly
     m_subscriberSids[fromSessionId] = sid;
@@ -3812,14 +4541,19 @@ void CallManager::onOfferReceived(const QString &fromSessionId, const QString &s
         else if (type == "stoppedSpeaking") { if (p) p->setSpeaking(false); }
     });
 
-    // Decoded remote-mic level → this peer's VU meter. Routes to the CORRECT
-    // remote participant (fromSessionId), unlike onAudioLevelUpdated which is
-    // hardwired to the self participant. (Speaking state stays peer-reported
-    // via the data channel above; this only drives the meter's movement.)
+    // Decoded remote-mic level → this peer's VU meter AND active-speaker frame.
+    // Routes to the CORRECT remote participant (fromSessionId), unlike
+    // onAudioLevelUpdated which is hardwired to the self participant. The data
+    // channel's speaking/stoppedSpeaking (above) gives a fast trigger, but many
+    // clients send it unreliably — so we ALSO derive 'speaking' from the actual
+    // decoded level here (noteAudioLevelForVad), which makes the speaker frame
+    // appear from real audio for every peer.
     connect(sub, &SubscribeWebrtcSrc::audioLevelUpdated,
             this, [this, fromSessionId](double level) {
-        if (auto *p = m_participants.value(fromSessionId))
+        if (auto *p = m_participants.value(fromSessionId)) {
             p->setAudioLevel(level);
+            p->noteAudioLevelForVad(level);
+        }
     });
 
     connect(sub, &SubscribeWebrtcSrc::peerClientInfo,
@@ -3847,6 +4581,27 @@ void CallManager::onOfferReceived(const QString &fromSessionId, const QString &s
 
     connect(sub, &SubscribeWebrtcSrc::error, this, [this, fromSessionId](const QString &msg) {
         qWarning() << "CallManager: subscriber pipeline error for" << fromSessionId.left(20) << ":" << msg;
+        // B2/B1 — a DECODER-domain error (broken HW decoder: d3d11 0x80004002,
+        // not-negotiated from a *dec element, a HW h264/vp8 decoder erroring out)
+        // means this feed will never decode on the hardware path. Latch software
+        // decode, demote the HW decoder ranks so decodebin re-plugs avdec_h264,
+        // persist for next launch, and rebuild this subscriber on software. Was:
+        // logged and IGNORED -> permanent black tile. Plain transport errors are
+        // deliberately left to the ICE-failed / sessionEnded paths (no new churn).
+        const QString m = msg.toLower();
+        const bool decoderFault =
+            m.contains("0x80004002") || m.contains("not supported")
+            || m.contains("not-negotiated") || m.contains("d3d11")
+            || m.contains("h264dec") || m.contains("vp8dec") || m.contains("vp9dec")
+            || m.contains("decode");
+        if (!decoderFault) return;
+        if (!talqForceSoftwareDecode().load()) {
+            qWarning() << "CallManager: decoder fault -> forcing SOFTWARE video decode (demote HW, persist)";
+            talqForceSoftwareDecode().store(true);
+            talqDemoteHwVideoDecoders();
+            QSettings("TalQ", "TalQ").setValue("Video/forceSoftwareDecode", true);
+        }
+        recoverSubscriber(fromSessionId, QStringLiteral("decoder-fault"));
     });
 
     connect(sub, &SubscribeWebrtcSrc::sessionEnded, this, [this, fromSessionId]() {
@@ -3856,7 +4611,7 @@ void CallManager::onOfferReceived(const QString &fromSessionId, const QString &s
     });
 
     m_subscribePipelines[fromSessionId] = sub;
-    if (!sub->start(m_stunServer, m_turnServers, m_deviceManager ? m_deviceManager->selectedOutputDeviceId() : QString())) {
+    if (!sub->start(m_stunServer, effectiveTurnServers(), m_deviceManager ? m_deviceManager->selectedOutputDeviceId() : QString())) {
         qWarning() << "CallManager: failed to start subscriber pipeline for" << fromSessionId.left(20);
         m_subscribePipelines.remove(fromSessionId);
         m_subscriberSids.remove(fromSessionId);

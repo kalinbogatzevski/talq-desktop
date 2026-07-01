@@ -96,6 +96,19 @@ TfliteSegmenter::TfliteSegmenter(QObject *parent)
     f.close();
 
     try {
+        // Pin ORT to the highest C-API version the bundled onnxruntime.dll actually
+        // supports, BEFORE creating any Ort object. The headers request
+        // ORT_API_VERSION (e.g. 20); if the shipped DLL is older (1.17.x → max API
+        // 17), the header's static GetApi(ORT_API_VERSION) returned nullptr and the
+        // first Ort:: call would dereference it and take the app down. Re-negotiate
+        // down once so a version-skewed DLL just runs at its own API level. All of
+        // our calls (Env/SessionOptions/Session/Run/CreateTensor/MemoryInfo) are
+        // API-1 surface, so a lower struct is ABI-safe here.
+        if (Ort::Global<void>::api_ == nullptr) {
+            const OrtApiBase *base = OrtGetApiBase();
+            for (uint32_t v = ORT_API_VERSION; v >= 1; --v)
+                if (const OrtApi *a = base->GetApi(v)) { Ort::Global<void>::api_ = a; break; }
+        }
         // ORT_LOGGING_LEVEL_WARNING — quiet on the happy path, but if
         // the GPU/CPU EP needs to fall back, we surface the warning.
         m_env = std::make_unique<Ort::Env>(ORT_LOGGING_LEVEL_WARNING, "talq-bg");

@@ -260,6 +260,18 @@ private:
     QTimer m_autoInstallTick;
     bool   m_autoInstallActive = false;
     bool   m_autoInstallCancelledForSession = false;
+    // 0.52.14 — manual "Update now" (Settings). m_userWantsImmediateInstall makes
+    // onUpdateReadyToLaunch skip the idle countdown (the call gate still applies);
+    // m_updateNowChecking gates the "You're up to date" fallback feedback.
+    bool   m_userWantsImmediateInstall = false;
+    bool   m_updateNowChecking = false;
+    // 0.53.2 — set by EVERY explicit user-initiated install (banner "Install now",
+    // Settings "Update now"); persists through the in-call deferral + the call-end
+    // retry, and makes maybeLaunchPendingInstaller SKIP the post-call grace — the
+    // user asked to install, so only FULLY-AUTOMATIC installs wait out the grace.
+    // Cleared on a successful launch. (m_userWantsImmediateInstall can't carry this:
+    // it's cleared before the gate runs at every call site.)
+    bool   m_explicitInstallRequested = false;
     // 0.40.6 — ms-since-epoch when the download landed (the moment the
     // user could realistically see the countdown banner). The tick
     // clamps the effective idle time to (now - this) so a user who was
@@ -275,6 +287,15 @@ private:
     // ctor to "now" so a fresh launch doesn't immediately count as
     // idle for the past 49 days.
     qint64 m_lastTalqInputMs = 0;
+    // 0.53.2 — ms-since-epoch of the last moment a CALL was active (refreshed every
+    // ~1 s during a call via durationChanged, and on every call-state change). The
+    // install gate (maybeLaunchPendingInstaller) defers until kPostCallInstallGraceMs
+    // of NO call has elapsed, so an update that landed mid-session NEVER restarts TalQ
+    // the instant a call ends — back-to-back test calls keep refreshing this and hold
+    // the install off. Replaces the old immediate stateChanged→install fire that
+    // restarted out from under an active session (Kalin, live 0.53.x testing).
+    qint64 m_lastCallActiveMs = 0;
+    static constexpr qint64 kPostCallInstallGraceMs = 180000;  // 3 min of no call
     // 0.40.16 — fire the system-tray "1 min to install" notification
     // exactly once per auto-install cycle. Cleared whenever the cycle
     // resets (cancelled, install fired, gate-blocked, etc).
@@ -315,6 +336,11 @@ private:
 
     QSettings m_settings;
     QTimer m_saveGeometryTimer;
+    // 0.52.7 — coalesces per-topic-unread refreshes: live message batches + window
+    // activation can fire rapidly, and ThreadListModel::refresh() is an un-coalesced
+    // full-room fetch. A single trailing 400 ms refresh avoids overlapping fetches /
+    // model-reset churn and a redundant fetch on every message you send.
+    QTimer m_topicUnreadDebounce;
     CallWindow *m_callWindow = nullptr;
     SettingsDialog *m_settingsDialog = nullptr;
     QPointer<ImageViewerDialog> m_imageViewer;

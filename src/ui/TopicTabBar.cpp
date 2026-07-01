@@ -173,9 +173,16 @@ QPushButton *TopicTabBar::makeChip(const QString &label, int threadId,
                                    int unreadCount, bool active)
 {
     auto *b = new QPushButton(m_row);
+    const bool hasUnread = unreadCount > 0;
     QString text = label;
-    if (unreadCount > 0)
-        text += QStringLiteral("   \u00B7 %1").arg(unreadCount);
+    // #11 \u2014 per-topic unread BADGE. The count rides a filled accent pill
+    // (\u25CFN) appended to the chip, and an UNREAD inactive chip takes an
+    // accent-tinted "has unread" treatment so the topic visibly stands out at a
+    // glance (the old faint "\u00B7 N" was easy to miss). The active chip already
+    // pops, so it keeps the plain count.
+    if (hasUnread)
+        text += active ? QStringLiteral("   \u00B7 %1").arg(unreadCount)
+                       : QStringLiteral("   \u25CF %1").arg(unreadCount);
     b->setText(text);
     b->setCursor(Qt::PointingHandCursor);
     b->setFixedHeight(32);
@@ -186,6 +193,15 @@ QPushButton *TopicTabBar::makeChip(const QString &label, int threadId,
             // Calm selected style: a soft accent TINT fill + accent-coloured
             // text + a 1px accent border. Clearly "active" without the loud
             // solid-accent fill that read as too aggressive.
+            "QPushButton { background: %1; color: %2; border: 1px solid %2;"
+            "  border-radius: 16px; padding: 6px 16px; font-size: 13px;"
+            "  font-weight: 600; letter-spacing: 0.1px; }"
+            "QPushButton:hover { background: %1; }"
+          ).arg(c.accentSoft, c.accent)
+        : hasUnread
+        ? QStringLiteral(
+            // #11 \u2014 UNREAD inactive chip: accent-tinted fill + accent text +
+            // accent border + bolder weight, so an unread topic reads as a badge.
             "QPushButton { background: %1; color: %2; border: 1px solid %2;"
             "  border-radius: 16px; padding: 6px 16px; font-size: 13px;"
             "  font-weight: 600; letter-spacing: 0.1px; }"

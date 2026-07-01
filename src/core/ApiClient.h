@@ -194,6 +194,12 @@ public:
     void setRoomDescription(const QString &token, const QString &description,
                             QObject *context,
                             std::function<void(bool ok, const QString &error)> callback);
+    // #25 — set a conversation's (group's) avatar from an image file. Multipart
+    // POST to the Talk room-avatar API. Moderator-only server-side. On success the
+    // caller should invalidate any cached "room/<token>" avatar + reload.
+    void setRoomAvatar(const QString &token, const QString &imagePath,
+                       QObject *context,
+                       std::function<void(bool ok, const QString &error)> callback);
     void deleteRoom(const QString &token, QObject *context,
                     std::function<void(bool ok, const QString &error)> callback);
     void leaveRoom(const QString &token, QObject *context,

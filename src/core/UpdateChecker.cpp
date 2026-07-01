@@ -248,9 +248,20 @@ void UpdateChecker::onManifestFetched(QNetworkReply *reply)
     // can tell at a glance what they're about to install.
     m.prerelease = m_betaAttempt
                 || root.value(QStringLiteral("prerelease")).toBool();
+    // #31 — forced-downgrade pin (ncloud-manifest only; GitHub has no such field).
+    m.pin = root.value(QStringLiteral("pin")).toBool();
 
     const QString currentVersion = QStringLiteral(TALQ_VERSION);
-    if (versionNewer(m.version, currentVersion)) {
+    // Offer the install when the channel is NEWER, OR when it explicitly PINS a
+    // different version (a controlled rollback off a mis-published too-high build).
+    // The pin path still requires version != current so a pinned channel doesn't
+    // re-offer the version you already run.
+    const bool isNewer  = versionNewer(m.version, currentVersion);
+    const bool isPinned = m.pin && (m.version != currentVersion);
+    if (isNewer || isPinned) {
+        if (isPinned && !isNewer)
+            qWarning() << "UpdateChecker: channel PINS v" << m.version
+                       << "— rolling back from v" << currentVersion;
         m_lastManifest = m;
         m_hasPendingUpdate = true;
         emit updateAvailable(m);
