@@ -5,7 +5,9 @@
 
 #include <QAction>
 #include <QActionGroup>
+#include <QApplication>
 #include <QFontMetrics>
+#include <QScreen>
 #include <QKeyEvent>
 #include <QMenu>
 #include <QMouseEvent>
@@ -605,8 +607,23 @@ void CallStage::paintTile(QPainter &p, const Tile &t, const PainterTheme &th, bo
     // the live capture (WGC re-captures TalQ showing it → feedback freeze). Draw
     // a static placeholder instead (window shares are safe — they capture a
     // specific window, not the screen showing TalQ).
-    const bool selfMonitorShare =
+    // Hall-of-mirrors guard — but ONLY when the call window sits on the very
+    // monitor we're sharing (WGC re-captures TalQ showing the share → feedback
+    // freeze). If the window has been dragged to a DIFFERENT display, the live
+    // self-share is safe AND wanted, so render it. Re-checked every repaint (the
+    // capture keeps delivering frames), so moving the window across displays
+    // flips it live. Unknown / out-of-range share index → keep the placeholder.
+    bool selfMonitorShare =
         cp->isSelf() && t.isScreen && !m_call->screenShareIsWindow();
+    if (selfMonitorShare) {
+        const QList<QScreen *> scrs = QApplication::screens();
+        const int shareIdx = m_call->shareMonitorIndex();
+        QWidget *topWin = window();
+        QScreen *winScreen = topWin ? topWin->screen() : nullptr;
+        if (winScreen && shareIdx >= 0 && shareIdx < scrs.size()
+            && scrs[shareIdx] != winScreen)
+            selfMonitorShare = false;   // sharing a DIFFERENT monitor → show live
+    }
     const QImage &frame = t.isScreen
         ? (cp->isSelf() ? m_selfScreenFrame : m_scrFrame.value(cp))
         : m_camFrame.value(cp);

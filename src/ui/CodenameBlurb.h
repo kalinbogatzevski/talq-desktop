@@ -9,6 +9,15 @@
 inline QString codenameBlurb(const QString &verName)
 {
     if (verName.isEmpty()) return QString();
+    if (verName == QStringLiteral("July Morning"))
+        return QObject::tr("Codename \"%1\" — the Bulgarian tradition of driving "
+            "east to the Black Sea cliffs on the night of 30 June and staying "
+            "awake to greet the first sunrise of 1 July together; a 1980s-"
+            "counterculture ritual carried by Uriah Heep's 1971 song, sung at the "
+            "clifftop of Kamen Bryag. A name about renewal and a fresh start at "
+            "first light — for the release that made calls finally feel clean "
+            "(echo cancellation on speakers, and a wave of call-reliability "
+            "fixes).").arg(verName);
     if (verName == QStringLiteral("Enyov Day"))
         return QObject::tr("Codename \"%1\" — Enyovden (Еньовден), the "
             "Bulgarian Midsummer, 24 June: the summer solstice, when the sun is at "

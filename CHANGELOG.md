@@ -1,5 +1,47 @@
 # Changelog
 
+## v0.56.1 "July Morning" -- STABLE (2026-06-29)
+
+### Fixed
+* **Sharing a monitor while the call window is on another display** now shows
+  your shared screen on the call stage, instead of the "You're sharing this
+  screen" placeholder. (The placeholder is only needed when the window is on the
+  very monitor you're sharing — otherwise it's safe to show the live view.)
+* Removed a stray **"PRE-RELEASE"** tag that was showing in the window title on
+  this stable build.
+* Restored the **codename description** in its hover tooltip.
+
+## v0.56.0 "July Morning" -- STABLE (2026-06-29)
+
+The "July Morning" stable. Named for the Bulgarian tradition of driving to the
+Black Sea cliffs on the night of 30 June to greet the first sunrise of 1 July
+together — a fresh start at first light. This release is about making **calls
+feel clean and dependable**, gathering everything proven across the 0.53–0.55
+betas into one stable.
+
+### Calls
+* **Echo cancellation now works with speakers.** If you use speakers instead of
+  headphones, the people you talk to no longer hear their own voice echoed back.
+  TalQ cancels against the exact audio your speakers actually play, so it holds
+  even at high volume.
+* **Calls stay up through trouble.** Signalling reconnects and resumes instead of
+  dropping; a brief network blip no longer ends the call; a peer leaving no
+  longer disturbs the rest.
+* **Video adapts instead of failing.** A machine whose GPU video decoder is
+  unusable automatically falls back to software decoding (now robust for any
+  video, not just the simplest kind); a choppy link lowers quality rather than
+  freezing.
+* **Cameras and screen sharing are forgiving.** Plug in a camera mid-call and
+  TalQ picks it up; rapid camera on/off no longer stalls; screen-share layout
+  stays consistent, including your own share on the main stage.
+
+### Conversations
+* **Set a group conversation's picture** (as a moderator).
+* **Unread topics stand out** in the topic bar at a glance.
+
+### Quality
+* **Reliable startup** on every machine, and a hardened install / auto-update path.
+
 ## v0.55.3 "July Morning" -- BETA (2026-06-29)
 
 ### Fixed / improved

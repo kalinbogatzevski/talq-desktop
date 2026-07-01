@@ -181,6 +181,12 @@ public:
     // (and the near-static content stalls the receiver into a rebuild). Window shares
     // capture only that app window, so there's no feedback.
     bool screenShareIsWindow() const { return m_ssWindowHandle != 0; }
+    // Index into QApplication::screens() of the monitor being shared (the share
+    // picker assigns it from that same list). Only meaningful for a MONITOR
+    // share (screenShareIsWindow()==false) — lets the stage tell whether the
+    // call window sits on the very monitor we're sharing (hall-of-mirrors) or a
+    // different display (safe to show the live self-share).
+    int shareMonitorIndex() const { return m_ssMonitorIndex; }
     // Runtime screen-share quality. Levels: 0=720p 1=1080p(default)
     // 2=1440p 3=Native. Changing it while sharing does a quick managed
     // re-share at the new cap, reusing the already-picked target.
