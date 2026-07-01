@@ -4,6 +4,7 @@
 #include <gst/app/app.h>
 #include <cstring>      // memcpy (WGC frame copy)
 #include <thread>
+#include <chrono>
 #include <QPointer>
 #include <QApplication>
 #include <QDebug>
@@ -330,6 +331,9 @@ bool ScreenSharePipeline::start(const QString &stunServer, const QList<TurnServe
         cleanup();
         return false;
     }
+    // Remember the capture source so cleanup() can halt it before releasing the
+    // webrtcbin request pad (borrowed pointer — the pipeline owns it).
+    m_screenSrc = screenSrc;
 
     // Chain: screenSrc -> queue(leaky) -> videoconvert -> videoscale ->
     //        scaleCaps(<= m_capW x m_capH) -> encoder -> [h264parse] ->
@@ -532,9 +536,13 @@ bool ScreenSharePipeline::start(const QString &stunServer, const QList<TurnServe
         }
     }
 
-    // Link to webrtcbin
+    // Link to webrtcbin. KEEP the request pad in m_ssrcSinkPad and release it
+    // properly in cleanup() (gst_element_release_request_pad) — a bare unref
+    // here leaks it and pins the encoder's MF/AMF session open (AMD re-share
+    // bug). The local `sinkPad` is just an alias used below.
     GstPad *ssrcSrcPad = gst_element_get_static_pad(ssrcFilter, "src");
     GstPad *sinkPad = gst_element_request_pad_simple(m_webrtcbin, "sink_%u");
+    m_ssrcSinkPad = sinkPad;
     gst_pad_link(ssrcSrcPad, sinkPad);
 
     // Set transceiver sendonly, codec matching the chosen encoder
@@ -561,7 +569,8 @@ bool ScreenSharePipeline::start(const QString &stunServer, const QList<TurnServe
         gst_object_unref(vt);
     }
     gst_object_unref(ssrcSrcPad);
-    gst_object_unref(sinkPad);
+    // NOTE: do NOT unref sinkPad here — m_ssrcSinkPad owns this ref now and
+    // cleanup() releases it via gst_element_release_request_pad().
 
     // Data channel — Janus requires at least one for publisher registration
     {
@@ -712,6 +721,34 @@ void ScreenSharePipeline::cleanup()
     // goes to NULL so a streaming-thread sample can't race the teardown.
     if (m_previewAppsink)
         g_signal_handlers_disconnect_by_data(m_previewAppsink, this);
+    // 0.52.8 — release the webrtcbin REQUEST pad BEFORE the pipeline goes to
+    // NULL, while m_webrtcbin is still valid. A bare unref at link time leaked
+    // it; the leaked pad pinned the transceiver/codec-bin → the mfh264enc
+    // element → its IMFTransform/AMF session, so on AMD the session lingered
+    // ~60s and a quick re-share failed ("couldn't start"). Releasing it here
+    // frees the session on THIS teardown.
+    //
+    // Mirror PeerPipeline::cleanup() so the release is race-free: (1) HALT the
+    // capture source first — WGC is already drained above, but the DXGI
+    // d3d11screencapturesrc fallback's streaming thread is still live and would
+    // otherwise push a buffer into the pad we're releasing; (2) UNLINK the
+    // upstream src pad before releasing, so no buffer is mid-push when the pad
+    // goes away.
+    if (m_screenSrc) {
+        gst_element_set_state(m_screenSrc, GST_STATE_NULL);
+        m_screenSrc = nullptr;  // borrowed (pipeline-owned); don't unref
+    }
+    if (m_ssrcSinkPad) {
+        GstPad *peer = gst_pad_get_peer(m_ssrcSinkPad);  // ssrcFilter src pad
+        if (peer) {
+            gst_pad_unlink(peer, m_ssrcSinkPad);
+            gst_object_unref(peer);
+        }
+        if (m_webrtcbin)
+            gst_element_release_request_pad(m_webrtcbin, m_ssrcSinkPad);
+        gst_object_unref(m_ssrcSinkPad);
+        m_ssrcSinkPad = nullptr;
+    }
     if (m_pipeline) {
         // 0.43.0 — detach the NULL transition (same fix as PeerPipeline/
         // PublishPipeline). A HW-encoder screen pipeline's synchronous
@@ -729,19 +766,30 @@ void ScreenSharePipeline::cleanup()
         m_pipeline = nullptr;
         QPointer<ScreenSharePipeline> guard(this);
         std::thread([pipe, guard]() {
-            gst_element_set_state(pipe, GST_STATE_NULL);
-            // released() must mean the capture DEVICE is actually free, not just
-            // that NULL was requested. set_state(NULL) can return
-            // GST_STATE_CHANGE_ASYNC, so BLOCK (bounded) until the NULL
-            // transition has really settled before dropping our ref + signalling
-            // released(). Without this, a mid-call quality change / confirm-retry
-            // rebuilds and re-acquires the DXGI desktop-duplication device while
-            // the old one is still releasing -> SetThreadDesktop ERROR_BUSY ->
-            // the new capture stalls after one frame and outbound RTP never
-            // confirms. This runs on a detached worker (never the Qt main
-            // thread) and is capped at 3 s so a wedged element can't hang us.
-            GstState st = GST_STATE_NULL;
-            gst_element_get_state(pipe, &st, nullptr, 3 * GST_SECOND);
+            auto t0 = std::chrono::steady_clock::now();
+            GstStateChangeReturn setRet = gst_element_set_state(pipe, GST_STATE_NULL);
+            // released() must mean the encoder's MF/AMF session (and any capture
+            // device) is actually FREED, not just that NULL was requested.
+            // set_state(NULL) on the AMD mfh264enc returns GST_STATE_CHANGE_ASYNC
+            // — the async MFT shuts the AMF session down on a COM-MTA worker that
+            // can take several seconds. The OLD 3 s cap aborted that mid-shutdown
+            // and unreffed while the AMF session was still alive, so a quick
+            // re-share collided with the dying session and "couldn't start" until
+            // it eventually freed (~60 s). BLOCK (bounded 10 s) until the NULL
+            // transition genuinely settles. Bounded so a wedged element can't
+            // hang us (cf. the 0.51.15 Quit-hang work). Runs on a detached worker,
+            // never the Qt main thread. Instrumented so the AMD box reveals the
+            // real teardown time (the decisive measurement).
+            GstState st = GST_STATE_VOID_PENDING;
+            GstStateChangeReturn getRet =
+                gst_element_get_state(pipe, &st, nullptr, 10 * GST_SECOND);
+            auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          std::chrono::steady_clock::now() - t0).count();
+            qInfo().nospace() << "ScreenSharePipeline: NULL teardown set="
+                              << gst_element_state_change_return_get_name(setRet)
+                              << " get=" << gst_element_state_change_return_get_name(getRet)
+                              << " final=" << gst_element_state_get_name(st)
+                              << " in " << ms << "ms";
             gst_object_unref(pipe);
             QMetaObject::invokeMethod(qApp, [guard]() {
                 if (guard) emit guard->released();

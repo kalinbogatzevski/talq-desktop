@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.52.8 "Bafana Bafana" -- STABLE (2026-06-23)
+
+### Fixed
+
+* **Starting a new screen share right after stopping one now works.** Stopping a
+  share and immediately starting another could fail with "couldn't start a
+  screen-share" for up to a minute on some graphics hardware -- the previous
+  share's hardware video encoder was being released only slowly on stop. The app
+  now releases it the moment a share ends, so you can re-share right away.
+
+### Changed
+
+* All bundled program components are now digitally signed, for smoother
+  installation alongside managed antivirus software.
+
 ## v0.52.7 "Bafana Bafana" -- STABLE (2026-06-19)
 
 ### Fixed
