@@ -1,6 +1,9 @@
 #include "core/ApiClient.h"
 #include <QBuffer>
 #include <QCoreApplication>
+#include <QFile>
+#include <QHttpMultiPart>
+#include <QHttpPart>
 #include <QImage>
 #include <QNetworkCookieJar>
 #include <QNetworkRequest>
@@ -1135,6 +1138,53 @@ void ApiClient::setRoomName(const QString &token, const QString &name,
         const int s = meta.value(QStringLiteral("statuscode")).toInt();
         if (s >= 200 && s < 300) { callback(true, QString()); return; }
         callback(false, meta.value(QStringLiteral("message")).toString());
+    });
+}
+
+void ApiClient::setRoomAvatar(const QString &token, const QString &imagePath,
+                              QObject *context,
+                              std::function<void(bool, const QString &)> callback)
+{
+    auto *file = new QFile(imagePath);
+    if (!file->open(QIODevice::ReadOnly)) {
+        delete file;
+        if (callback) callback(false, QStringLiteral("Couldn't open the selected image."));
+        return;
+    }
+    // Multipart POST; do NOT use makeRequest() (it forces JSON content-type).
+    QUrl url(m_serverUrl + QStringLiteral("/ocs/v2.php/apps/spreed/api/v1/room/")
+             + token + QStringLiteral("/avatar"));
+    QNetworkRequest req(url);
+    req.setRawHeader("OCS-APIRequest", "true");
+    req.setRawHeader("Accept", "application/json");
+    applyBasicAuth(req);
+
+    auto *multiPart = new QHttpMultiPart(QHttpMultiPart::FormDataType);
+    QHttpPart imagePart;
+    const QString mime = imagePath.endsWith(QStringLiteral(".png"), Qt::CaseInsensitive)
+                             ? QStringLiteral("image/png") : QStringLiteral("image/jpeg");
+    imagePart.setHeader(QNetworkRequest::ContentTypeHeader, mime);
+    imagePart.setHeader(QNetworkRequest::ContentDispositionHeader,
+                        QStringLiteral("form-data; name=\"file\"; filename=\"avatar\""));
+    file->setParent(multiPart);          // file freed with the multipart
+    imagePart.setBodyDevice(file);
+    multiPart->append(imagePart);
+
+    QNetworkReply *reply = m_nam.post(req, multiPart);
+    multiPart->setParent(reply);         // multipart (+ file) freed with the reply
+    trackReply(reply);
+    // Free the reply (+ multipart + the OPEN QFile) even if `context` (the dialog)
+    // is destroyed mid-upload — bind cleanup to `this`, NOT the caller, so the file
+    // descriptor never leaks on a close-during-upload.
+    connect(reply, &QNetworkReply::finished, this, [reply]() { reply->deleteLater(); });
+    connect(reply, &QNetworkReply::finished, context ? context : this,
+            [reply, callback]() {
+        QJsonObject meta = QJsonDocument::fromJson(reply->readAll()).object()
+                               .value(QStringLiteral("ocs")).toObject()
+                               .value(QStringLiteral("meta")).toObject();
+        const int s = meta.value(QStringLiteral("statuscode")).toInt();
+        if (s >= 200 && s < 300) { if (callback) callback(true, QString()); return; }
+        if (callback) callback(false, meta.value(QStringLiteral("message")).toString());
     });
 }
 

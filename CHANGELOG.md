@@ -1,5 +1,35 @@
 # Changelog
 
+## v0.55.2 "July Morning" -- BETA (2026-06-29)
+
+**Codename "July Morning."** On the night of 30 June into 1 July, Bulgarians drive
+east to the Black Sea coast, light fires on the cliffs, and stay awake to greet the
+first sunrise of the month together — a ritual that grew out of the 1980s
+counterculture as a quiet act of freedom and is now a beloved summer fixture. It
+takes its name from Uriah Heep's 1971 song "July Morning," which caught on in
+Bulgaria a decade late and became the unofficial anthem of the vigil; for years the
+band's later singer John Lawton returned to the clifftop at Kamen Bryag, near
+Kavarna, to sing it to the rising sun (a monument to him was unveiled there on
+1 July 2022). The easternmost headland catches the light first — a fitting name for
+a release that meets its own new beginning at first light.
+
+### Added
+* **Set a group conversation's picture.** Open a group's info and, as a moderator,
+  choose "Change picture" to upload an image as the conversation's avatar.
+* **Unread topics now stand out.** A topic with unread messages is highlighted in
+  the topic bar (instead of a faint count) so it's easy to spot at a glance.
+
+### Fixed / improved
+* **Reliable startup.** Resolves a crash on launch that affected an earlier
+  pre-release build of this line; the app now starts cleanly on every machine.
+* **Software video decoding is now robust for any video.** Building on the automatic
+  hardware→software fallback, TalQ now bundles a full software H.264 decoder, so a
+  machine whose GPU decoder is unusable can decode every kind of incoming video, not
+  just the simplest profile.
+* **Groundwork for smoother video on bad links** (an automatic frame-rate step-down
+  under congestion) ships in this build, switched off by default while it's
+  validated in the field.
+
 ## v0.55.0 "July Morning" -- BETA (2026-06-26)
 
 **Codename "July Morning"** — on the night of 30 June into 1 July, people gather on

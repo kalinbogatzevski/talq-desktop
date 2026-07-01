@@ -20,6 +20,24 @@
 #include "core/CaptureDsp.h"
 #include "core/EncodeTier.h"
 
+// C2/#29 — send-FPS adaptation. OFF by default; set TALQ_FPS_ADAPT=1 to enable.
+// When ON, the framerate caps below are a permissive RANGE (so the shared
+// videorate's max-rate can DROP the send framerate under network load — degrade,
+// don't stop) instead of a fixed 30/1. Default-off because relaxing 4 framerate
+// capsfilters to ranges needs a live congested-call soak to rule out a
+// renegotiation wedge (the historic NOT_NEGOTIATED-4); shipping it dormant lets
+// it be field-validated (TALQ_FPS_ADAPT=1) before it becomes default-on.
+static bool talqFpsAdaptOn()
+{
+    static const bool on = qEnvironmentVariableIntValue("TALQ_FPS_ADAPT") == 1;
+    return on;
+}
+// "framerate=..." fragment for the publish caps — a range when adapting, else fixed.
+static const char *talqFramerateCapsFrag()
+{
+    return talqFpsAdaptOn() ? "framerate=(fraction)[1/1,30/1]" : "framerate=30/1";
+}
+
 PublishPipeline::PublishPipeline(QObject *parent)
     : QObject(parent)
 {
@@ -509,6 +527,13 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
     m_sharedScale = gst_element_factory_make("videoscale", "pub-shared-scale");
     m_sharedCaps  = gst_element_factory_make("capsfilter", "pub-shared-caps");
     GstElement *sharedRate = gst_element_factory_make("videorate", "pub-shared-rate");
+    m_sharedRate = sharedRate;   // C2/#29 — keep a handle for the live max-rate knob
+    // drop-only is ONLY meaningful in the ON path (range caps + live max-rate).
+    // With the OFF-path fixed 30/1 caps, drop-only=TRUE makes videorate refuse to
+    // negotiate a sub-30fps source (NOT_NEGOTIATED → no video for slow/low-light
+    // webcams). Gate it so OFF stays the exact prior no-op (duplicate-up to 30).
+    if (sharedRate && talqFpsAdaptOn())
+        g_object_set(sharedRate, "drop-only", TRUE, nullptr);
     m_outputTee   = gst_element_factory_make("tee", "pub-output-tee");
     if (!sharedConvert || !m_sharedScale || !m_sharedCaps || !sharedRate || !m_outputTee) {
         emit error("Failed to create shared chain / outputTee"); cleanup(); return false;
@@ -520,8 +545,8 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         const int sw = m_layers[2].targetW;
         const int sh = m_layers[2].targetH;
         const QString sc = QStringLiteral(
-            "video/x-raw,width=%1,height=%2,pixel-aspect-ratio=1/1,framerate=30/1")
-            .arg(sw).arg(sh);
+            "video/x-raw,width=%1,height=%2,pixel-aspect-ratio=1/1,%3")
+            .arg(sw).arg(sh).arg(QString::fromLatin1(talqFramerateCapsFrag()));
         GstCaps *caps = gst_caps_from_string(sc.toUtf8().constData());
         g_object_set(m_sharedCaps, "caps", caps, nullptr);
         gst_caps_unref(caps);
@@ -625,8 +650,9 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         // Per-layer raw caps (after scale, before encoder)
         {
             GstCaps *sc = gst_caps_from_string(
-                QString("video/x-raw,width=%1,height=%2,framerate=30/1")
-                    .arg(L.targetW).arg(L.targetH).toUtf8().constData());
+                QString("video/x-raw,width=%1,height=%2,%3")
+                    .arg(L.targetW).arg(L.targetH)
+                    .arg(QString::fromLatin1(talqFramerateCapsFrag())).toUtf8().constData());
             g_object_set(L.caps, "caps", sc, nullptr);
             gst_caps_unref(sc);
         }
@@ -1145,6 +1171,7 @@ void PublishPipeline::cleanup()
     m_webrtcbin = nullptr;
     m_funnel = nullptr;
     m_sharedScale = nullptr;
+    m_sharedRate = nullptr;   // C2/#29
     m_sharedCaps = nullptr;
     m_gccbwe = nullptr;
     m_outputTee = nullptr;
@@ -2722,7 +2749,17 @@ void PublishPipeline::applySharedFramerate(int fps)
     // (setLayerActive → valve drop, which renegotiates nothing). A real fps knob
     // would use videorate's `max-rate` property against a non-fixed-framerate
     // capsfilter (no caps renegotiation); deferred until it can be live-tested.
-    Q_UNUSED(fps);
+    //
+    // C2/#29 — that knob, implemented. With TALQ_FPS_ADAPT=1 the framerate caps
+    // were built as a RANGE [1,30], so setting the shared videorate's max-rate
+    // drops frames within the range — NO caps renegotiation, no NOT_NEGOTIATED.
+    // Default-OFF (caps stay fixed 30/1) so this ships dormant for field
+    // validation before becoming default-on; when off we no-op (layer-shed only).
+    // max-rate=0 disables the cap (full ~30 fps).
+    if (!talqFpsAdaptOn() || !m_sharedRate) { Q_UNUSED(fps); return; }
+    const int maxRate = (fps > 0 && fps < 30) ? fps : 0;
+    g_object_set(m_sharedRate, "max-rate", maxRate, nullptr);
+    qInfo() << "PublishPipeline: send-FPS adapt -> videorate max-rate" << maxRate;
 }
 
 GstPadProbeReturn PublishPipeline::onEncodeProbe(GstPad *, GstPadProbeInfo *info,

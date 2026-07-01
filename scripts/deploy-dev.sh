@@ -80,6 +80,17 @@ for p in "${GST_PLUGINS[@]}"; do
     [ -f "$src" ] && cp "$src" "$BUILD_DIR/gst-plugins/"
 done
 
+# #32 — gst-libav (avdec_h264) + minimal decode-only FFmpeg for the software H264
+# decode fallback (vendored under third_party/ffmpeg-min/). Lockstep with build-release.sh.
+FFMIN="$(cd "$(dirname "$0")/.." && pwd)/third_party/ffmpeg-min"
+if [ -f "$FFMIN/libgstlibav.dll" ]; then
+    cp "$FFMIN/libgstlibav.dll" "$BUILD_DIR/gst-plugins/"
+    for d in avcodec-62 avutil-60 avformat-62 avfilter-11 swscale-9 swresample-6; do
+        cp "$FFMIN/$d.dll" "$BUILD_DIR/"
+    done
+    echo "  gst-libav avdec_h264 + minimal FFmpeg deployed"
+fi
+
 # Out-of-process plugin scanner next to talq.exe (main.cpp points
 # GST_PLUGIN_SCANNER at it) — without it GStreamer scans every plugin in-process,
 # ballooning the process ~450 MB per launch. Lockstep with build-release.sh.

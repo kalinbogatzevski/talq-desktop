@@ -232,7 +232,11 @@ private:
     // funnel → sharedConvert → sharedScale → sharedCaps → outputTee → N x simulcast branches → webrtcbin
     // Three branches (l/m/h) fan out from outputTee. Per-branch state in m_layers.
     GstElement *m_funnel = nullptr;
-    GstElement *m_sharedScale = nullptr;  // funnel→...→sharedScale→sharedCaps→outputTee
+    GstElement *m_sharedScale = nullptr;  // funnel→...→sharedScale→sharedRate→sharedCaps→outputTee
+    GstElement *m_sharedRate = nullptr;   // C2/#29 — shared videorate; its max-rate is the
+                                          // live send-FPS degrade knob (active only when
+                                          // TALQ_FPS_ADAPT=1, which also relaxes the framerate
+                                          // caps below to a range so the cap can take effect)
     GstElement *m_sharedCaps = nullptr;   // pins a CONSTANT 1280x720@30 input so the
                                           // encoders never reconfigure on the
                                           // 16x16-dummy↔camera source switch

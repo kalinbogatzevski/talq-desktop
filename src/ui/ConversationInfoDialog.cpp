@@ -8,6 +8,7 @@
 #include <QEvent>
 #include <QPalette>
 #include <QHBoxLayout>
+#include <QFileDialog>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
@@ -127,6 +128,36 @@ ConversationInfoDialog::ConversationInfoDialog(ApiClient *api,
     title->setObjectName("headline");
     outer->addWidget(title);
     outer->addSpacing(20);
+
+    // #25 — group picture (groups only; 1:1 avatars are the other user's). A
+    // placeholder disc with the conversation's initial; moderators get a
+    // "Change picture" button that uploads to the Talk room-avatar API.
+    if (roomType != 1) {
+        auto *avRow = new QHBoxLayout();
+        m_avatar = new QLabel(this);
+        m_avatar->setFixedSize(56, 56);
+        m_avatar->setAlignment(Qt::AlignCenter);
+        m_avatar->setScaledContents(true);
+        const QString initial = currentName.trimmed().isEmpty()
+            ? QStringLiteral("#") : currentName.trimmed().left(1).toUpper();
+        m_avatar->setText(initial);
+        m_avatar->setStyleSheet(QStringLiteral(
+            "QLabel { background:#3a6ea5; color:white; border-radius:28px;"
+            "         font-size:24px; font-weight:600; }"));
+        avRow->addWidget(m_avatar);
+        avRow->addSpacing(14);
+        if (m_amOwnerOrMod) {
+            m_changeAvatarBtn = new QPushButton(tr("Change picture…"), this);
+            m_changeAvatarBtn->setProperty("variant", "ghost");
+            m_changeAvatarBtn->setCursor(Qt::PointingHandCursor);
+            connect(m_changeAvatarBtn, &QPushButton::clicked,
+                    this, &ConversationInfoDialog::onChangeAvatar);
+            avRow->addWidget(m_changeAvatarBtn);
+        }
+        avRow->addStretch();
+        outer->addLayout(avRow);
+        outer->addSpacing(18);
+    }
 
     // Name
     auto *nameEyebrow = new QLabel(tr("NAME"), this);
@@ -331,6 +362,35 @@ void ConversationInfoDialog::changeEvent(QEvent *e)
     if (e->type() == QEvent::ApplicationPaletteChange
         || e->type() == QEvent::ThemeChange)
         applyChrome();
+}
+
+void ConversationInfoDialog::onChangeAvatar()
+{
+    const QString path = QFileDialog::getOpenFileName(
+        this, tr("Choose a group picture"), QString(),
+        tr("Images (*.png *.jpg *.jpeg)"));
+    if (path.isEmpty()) return;
+    if (m_status) m_status->setText(tr("Uploading picture…"));
+    if (m_changeAvatarBtn) m_changeAvatarBtn->setEnabled(false);
+    m_api->setRoomAvatar(m_token, path, this, [this, path](bool ok, const QString &err) {
+        if (m_changeAvatarBtn) m_changeAvatarBtn->setEnabled(true);
+        if (!ok) {
+            if (m_status) m_status->setText(tr("Couldn't update the picture: %1").arg(err));
+            return;
+        }
+        if (m_status) m_status->setText(tr("Group picture updated."));
+        // Show the new picture immediately in the preview disc.
+        if (m_avatar) {
+            QPixmap pm(path);
+            if (!pm.isNull()) {
+                m_avatar->setStyleSheet(QStringLiteral("QLabel { border-radius:28px; }"));
+                m_avatar->setText(QString());
+                m_avatar->setPixmap(pm.scaled(56, 56, Qt::KeepAspectRatioByExpanding,
+                                              Qt::SmoothTransformation));
+            }
+        }
+        emit roomChanged();   // parent refreshes its avatar cache for this room
+    });
 }
 
 void ConversationInfoDialog::saveName()

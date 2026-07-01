@@ -52,6 +52,7 @@ private slots:
     void onDeleteClicked();
     void onClearHistoryClicked();
     void onAddBotClicked();
+    void onChangeAvatar();   // #25 — pick + upload a group picture
 
 private:
     void applyChrome();   // dialog typography/inputs, palette-driven
@@ -68,6 +69,8 @@ private:
     int          m_myType   = 0;
     bool         m_amOwnerOrMod = false;
 
+    QLabel      *m_avatar = nullptr;            // #25 — group picture
+    QPushButton *m_changeAvatarBtn = nullptr;   // #25
     QLineEdit   *m_nameEdit = nullptr;
     QLineEdit   *m_descEdit = nullptr;
     QLabel      *m_memberCount = nullptr;

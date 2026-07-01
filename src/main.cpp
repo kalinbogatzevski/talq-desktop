@@ -414,7 +414,7 @@ int main(int argc, char *argv[])
             { "microphone capture",   {"wasapi2src","wasapisrc"} },
             { "speaker output",       {"wasapi2sink","wasapisink","autoaudiosink"} },
             { "H.264 encoder",        {"nvh264enc","qsvh264enc","mfh264enc","x264enc","openh264enc"} },
-            { "H.264 decoder",        {"nvh264dec","qsvh264dec","d3d11h264dec","openh264dec"} },
+            { "H.264 decoder",        {"avdec_h264","nvh264dec","qsvh264dec","d3d11h264dec","openh264dec"} },
             { "VP8/VP9 decoder",      {"vp8dec","vp9dec"} },
         };
         QStringList missing;
