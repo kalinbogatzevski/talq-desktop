@@ -1031,7 +1031,8 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
                 if (audiosrc && src == GST_OBJECT(audiosrc)) {
                     audioCulprit = true;
                 } else if (gchar *sn = gst_object_get_name(src)) {
-                    if (g_strcmp0(sn, "pub-far-sink") == 0)  farSinkCulprit = true; // AEC playout sink
+                    if (g_strcmp0(sn, "pub-far-sink") == 0 ||
+                        g_strcmp0(sn, "pub-aec-ref")  == 0)  farSinkCulprit = true; // AEC reference tail / loopback src
                     else audioCulprit = (g_strcmp0(sn, "pub-audiosrc") == 0);
                     g_free(sn);
                 }
@@ -1180,7 +1181,7 @@ void PublishPipeline::cleanup()
     // a half-cleared map or a dangling mixer handle.
     {
         QMutexLocker farLk(&m_farPeerMutex);
-        m_farMixer = m_farProbe = m_farSink = nullptr;
+        m_farMixer = m_farProbe = m_farSink = m_farSrc = nullptr;
         m_farPeerAppsrcs.clear();
     }
     for (auto &L : m_layers) {
@@ -1828,24 +1829,48 @@ void PublishPipeline::pollBus()
             const GstStructure *s = gst_message_get_structure(msg);
             const gchar *name = gst_structure_get_name(s);
             if (g_strcmp0(name, "level") == 0) {
-                if (++m_lvlDbg <= 2) {
-                    gchar *str = gst_structure_to_string(s);
-                    qDebug() << "PublishPipeline: level raw:" << QString::fromUtf8(str).left(300);
-                    g_free(str);
+                // Two level meters post on this bus: "pub-level" (post-webrtcdsp
+                // send leg → mic VU + AEC residual) and "pub-far-ref-level" (the
+                // 0.55.3 loopback reference → what the speaker actually plays).
+                // Disambiguate by element name; only the send leg drives the UI.
+                GstObject *lsrc = GST_MESSAGE_SRC(msg);
+                gchar *lname = lsrc ? gst_object_get_name(lsrc) : nullptr;
+                const bool isFarRef = lname && g_strcmp0(lname, "pub-far-ref-level") == 0;
+                if (lname) g_free(lname);
+                GValueArray *rmsArr = nullptr;
+                gst_structure_get(s, "rms", G_TYPE_VALUE_ARRAY, &rmsArr, nullptr);
+                const double rmsDb = (rmsArr && rmsArr->n_values > 0)
+                                         ? g_value_get_double(rmsArr->values) : -100.0;
+                if (rmsArr) g_value_array_free(rmsArr);
+                if (isFarRef) {
+                    m_aecFarRefRms = rmsDb;   // reference level only — no UI meter
+                } else {
+                    m_aecSendRms = rmsDb;
+                    if (++m_lvlDbg <= 2) {
+                        gchar *str = gst_structure_to_string(s);
+                        qDebug() << "PublishPipeline: level raw:" << QString::fromUtf8(str).left(300);
+                        g_free(str);
+                    }
+                    // Extract peak level from GValueArray
+                    // Range: -100dB (silence) to 0dB (max) → map to 0.0-1.0
+                    GValueArray *arr = nullptr;
+                    gst_structure_get(s, "peak", G_TYPE_VALUE_ARRAY, &arr, nullptr);
+                    if (arr && arr->n_values > 0) {
+                        gdouble db = g_value_get_double(arr->values);
+                        // Use wider range: -100 to 0
+                        double lvl = qBound(0.0, (db + 100.0) / 100.0, 1.0);
+                        // Apply curve for better visual response
+                        lvl = lvl * lvl;  // square for more dynamic range visibility
+                        emit audioLevelUpdated(lvl);
+                    }
+                    if (arr) g_value_array_free(arr);
+                    // ERLE proxy: during a remote-talking / local-silent window a
+                    // working canceller keeps the send RMS well below the loopback
+                    // reference RMS; if they track, echo is leaking. ~1/sec.
+                    if (m_aecEnabled && (++m_aecErleDbg % 5 == 0))
+                        qInfo().nospace() << "AEC erle-proxy: farRefRMS=" << m_aecFarRefRms
+                                          << "dB postAecSendRMS=" << m_aecSendRms << "dB";
                 }
-                // Extract peak level from GValueArray
-                // Range: -100dB (silence) to 0dB (max) → map to 0.0-1.0
-                GValueArray *arr = nullptr;
-                gst_structure_get(s, "peak", G_TYPE_VALUE_ARRAY, &arr, nullptr);
-                if (arr && arr->n_values > 0) {
-                    gdouble db = g_value_get_double(arr->values);
-                    // Use wider range: -100 to 0
-                    double lvl = qBound(0.0, (db + 100.0) / 100.0, 1.0);
-                    // Apply curve for better visual response
-                    lvl = lvl * lvl;  // square for more dynamic range visibility
-                    emit audioLevelUpdated(lvl);
-                }
-                if (arr) g_value_array_free(arr);
             }
         } else if (GST_MESSAGE_TYPE(msg) == GST_MESSAGE_ERROR) {
             GError *err = nullptr; gchar *dbg = nullptr;
@@ -2802,82 +2827,76 @@ double PublishPipeline::encodeUsage()
 
 bool PublishPipeline::buildFarEndTail()
 {
-    // 0.51.x AEC fix. Mirrors the proven SharedFarEndBus element setup (silent
-    // keepalive so the mixer always produces, even with zero peers; 48k/S16LE/
-    // mono everywhere) but lives in THIS pipeline and ends in a REAL wasapi2sink
-    // — so the probe and webrtcdsp share one clock and the probe records exactly
-    // what hits the speaker, at its real latency.
+    // 0.55.3 AEC — the far-end REFERENCE for webrtcdsp is a WASAPI render
+    // LOOPBACK capture of the actual output endpoint (wasapi2src loopback=true on
+    // the SAME device the remote audio plays to). Loopback records exactly what
+    // the speakers emit — AFTER Windows' master/per-app volume and device APOs —
+    // on the render device's own clock. THAT is the signal the microphone
+    // re-captures, so AEC3 can model and subtract it. This replaces two broken
+    // references: the pre-sink decoded copy (wrong gain — failed at loud volume)
+    // and, since 0.52.4, a silent keepalive (no reference at all → AEC did
+    // nothing, which is why "use headphones" was the only workaround). Remote
+    // audio still plays out the per-subscriber wasapi2sink (SubscribeWebrtcSrc) —
+    // that stays the load-bearing audible path; this loopback branch is
+    // REFERENCE-ONLY and ends in a fakesink, so any hiccup here degrades AEC,
+    // never audio. Built in THIS pipeline (one clock with the mic→webrtcdsp leg)
+    // BEFORE webrtcdsp configures, so the probe (talq-aec-probe) exists for the
+    // dsp's name lookup; a build failure degrades to AEC-off (never a call drop).
     if (!m_pipeline) return false;
-    GstElement *ka     = gst_element_factory_make("audiotestsrc", "pub-far-keepalive");
-    GstElement *kaCaps = gst_element_factory_make("capsfilter",   "pub-far-ka-caps");
-    m_farMixer         = gst_element_factory_make("audiomixer",   "pub-far-mix");
-    GstElement *caps   = gst_element_factory_make("capsfilter",   "pub-far-caps");
-    m_farProbe         = gst_element_factory_make("webrtcechoprobe", "talq-aec-probe");
-    GstElement *q      = gst_element_factory_make("queue",        "pub-far-q");
-    // The probe records mono/S16LE/48k (the AEC reference format webrtcdsp wants),
-    // but the REAL wasapi2sink is a Windows render endpoint that negotiates the
-    // device mix format (shared-mode is typically 48k float STEREO) and does NOT
-    // convert internally. Without conv+res in front of it the sink returns
-    // NOT_NEGOTIATED, which propagates back up through probe→mixer→keepalive
-    // ("streaming stopped, reason not-negotiated (-4)") and collapses the whole
-    // tail → AEC silently off AND the bus error churns the publisher into
-    // Reconnecting. (The retired SharedFarEndBus ended in a fakesink, which
-    // accepts anything, so this never surfaced until the real sink in 0.51.2.)
-    // Mirror the PROVEN subscriber playout chain (SubscribeWebrtcSrc legacy path):
-    // conv → res → wasapi2sink. Probe stays upstream so it still sees mono.
-    GstElement *farConv = gst_element_factory_make("audioconvert",  "pub-far-conv");
-    GstElement *farRes  = gst_element_factory_make("audioresample", "pub-far-res");
-    m_farSink          = gst_element_factory_make("wasapi2sink",  "pub-far-sink");
-    if (!ka || !kaCaps || !m_farMixer || !caps || !m_farProbe || !q || !farConv || !farRes || !m_farSink) {
-        qWarning() << "PublishPipeline: AEC playout tail element unavailable — AEC off";
-        for (GstElement *e : { ka, kaCaps, m_farMixer, caps, m_farProbe, q, farConv, farRes, m_farSink })
+    m_farMixer = nullptr;   // no mixer in the loopback design (addFarEndPeer no-ops)
+    m_farSrc           = gst_element_factory_make("wasapi2src",     "pub-aec-ref");
+    GstElement *conv   = gst_element_factory_make("audioconvert",   "pub-far-conv");
+    GstElement *res    = gst_element_factory_make("audioresample",  "pub-far-res");
+    GstElement *caps   = gst_element_factory_make("capsfilter",     "pub-far-caps");
+    m_farProbe         = gst_element_factory_make("webrtcechoprobe","talq-aec-probe");
+    GstElement *lvl    = gst_element_factory_make("level",          "pub-far-ref-level");
+    m_farSink          = gst_element_factory_make("fakesink",       "pub-far-sink");
+    if (!m_farSrc || !conv || !res || !caps || !m_farProbe || !m_farSink) {
+        qWarning() << "PublishPipeline: AEC loopback-reference element unavailable — AEC off";
+        for (GstElement *e : { m_farSrc, conv, res, caps, m_farProbe, lvl, m_farSink })
             if (e) gst_object_unref(e);
-        m_farMixer = m_farProbe = m_farSink = nullptr;
+        m_farSrc = m_farProbe = m_farSink = nullptr;
         return false;
     }
-
+    // Loopback capture of the SAME render endpoint the remote audio plays to
+    // (m_farOutputDeviceId == the user's selected output device, the one the
+    // per-sub sinks use; empty = default endpoint). low-latency keeps the
+    // reference close to real time; silence-on-device-mute keeps the timeline
+    // continuous if muted; do-timestamp stamps on the shared publisher clock so
+    // the probe's running-time aligns with the mic leg's webrtcdsp.
+    g_object_set(m_farSrc, "loopback", TRUE, "low-latency", TRUE,
+                 "loopback-silence-on-device-mute", TRUE, "do-timestamp", TRUE, nullptr);
+    if (!m_farOutputDeviceId.isEmpty())
+        g_object_set(m_farSrc, "device", m_farOutputDeviceId.toUtf8().constData(), nullptr);
     GstCaps *c = gst_caps_from_string(
         "audio/x-raw,rate=48000,format=S16LE,channels=1,layout=interleaved");
-    g_object_set(caps,   "caps", c, nullptr);
-    g_object_set(kaCaps, "caps", c, nullptr);
+    g_object_set(caps, "caps", c, nullptr);
     gst_caps_unref(c);
-    gst_util_set_object_arg(G_OBJECT(ka), "wave", "silence");
-    g_object_set(ka, "is-live", TRUE, nullptr);
-    // Keep the probe→speaker buffering small and stable: a default queue can grow
-    // to 1s under jitter, which inflates the (delay-agnostic) AEC's far-end→mic
-    // alignment and lets echo leak. Bound to ~100ms, leak old data downstream.
-    g_object_set(q, "max-size-time", (guint64)100000000, "max-size-buffers", (guint)0,
-                 "max-size-bytes", (guint)0, "leaky", 2 /*GST_QUEUE_LEAK_DOWNSTREAM*/, nullptr);
-    // Don't let the playout sink gate the publisher's PLAYING transition with its
-    // own async preroll (the live keepalive keeps it producing anyway), and don't
-    // retain the last sample — mirrors the retired SharedFarEndBus fakesink intent.
-    g_object_set(m_farSink, "async", FALSE, "enable-last-sample", FALSE, nullptr);
-    if (!m_farOutputDeviceId.isEmpty())
-        g_object_set(m_farSink, "device", m_farOutputDeviceId.toUtf8().constData(), nullptr);
+    if (lvl)   // ERLE-proxy meter on the reference (post-probe); see pollBus
+        g_object_set(lvl, "post-messages", TRUE, "interval", (guint64)200000000, nullptr);
+    // Reference-only sink: consume as the live loopback delivers (sync=FALSE —
+    // the source is already device-paced), never gate PLAYING (async=FALSE),
+    // retain nothing. A fakesink accepts any caps, so the NOT_NEGOTIATED collapse
+    // the real 0.51.x sink hit can't happen here.
+    g_object_set(m_farSink, "sync", FALSE, "async", FALSE,
+                 "enable-last-sample", FALSE, "silent", TRUE, nullptr);
 
-    gst_bin_add_many(GST_BIN(m_pipeline),
-                     ka, kaCaps, m_farMixer, caps, m_farProbe, q, farConv, farRes, m_farSink, nullptr);
+    GstElement *chain[] = { m_farSrc, conv, res, caps, m_farProbe, lvl, m_farSink };
+    for (GstElement *e : chain) if (e) gst_bin_add(GST_BIN(m_pipeline), e);
 
-    bool ok = gst_element_link(ka, kaCaps);
-    if (ok) {   // keepalive → a mixer request pad
-        GstPad *src = gst_element_get_static_pad(kaCaps, "src");
-        GstPad *mp  = gst_element_request_pad_simple(m_farMixer, "sink_%u");
-        ok = src && mp && (gst_pad_link(src, mp) == GST_PAD_LINK_OK);
-        if (src) gst_object_unref(src);
-        if (mp)  gst_object_unref(mp);
-    }
-    if (ok)     // mixer → caps(mono) → probe → queue → conv → res → real speaker
-        ok = gst_element_link_many(m_farMixer, caps, m_farProbe, q, farConv, farRes, m_farSink, nullptr);
-
+    bool ok = lvl
+        ? gst_element_link_many(m_farSrc, conv, res, caps, m_farProbe, lvl, m_farSink, nullptr)
+        : gst_element_link_many(m_farSrc, conv, res, caps, m_farProbe, m_farSink, nullptr);
     if (!ok) {
-        qWarning() << "PublishPipeline: AEC playout tail link failed — AEC off";
-        gst_bin_remove_many(GST_BIN(m_pipeline),
-                            ka, kaCaps, m_farMixer, caps, m_farProbe, q, farConv, farRes, m_farSink, nullptr);
-        m_farMixer = m_farProbe = m_farSink = nullptr;
+        qWarning() << "PublishPipeline: AEC loopback-reference link failed — AEC off";
+        for (GstElement *e : chain) if (e) gst_bin_remove(GST_BIN(m_pipeline), e);
+        m_farSrc = m_farProbe = m_farSink = nullptr;
         return false;
     }
-    qInfo() << "PublishPipeline: AEC playout tail built in publisher pipeline "
-               "(probe inline + shared wasapi2sink) — single-clock AEC";
+    qInfo().nospace() << "PublishPipeline: AEC loopback reference built "
+                         "(wasapi2src loopback → webrtcechoprobe talq-aec-probe → fakesink), device="
+                      << (m_farOutputDeviceId.isEmpty() ? QStringLiteral("<default>")
+                                                        : m_farOutputDeviceId);
     return true;
 }
 
@@ -2928,9 +2947,12 @@ GstElement *PublishPipeline::addFarEndPeer(const QString &peerId)
 
 void PublishPipeline::setFarEndOutputDevice(const QString &deviceId)
 {
+    // The loopback reference must capture the SAME endpoint the remote audio
+    // plays to. Stored here and applied when buildFarEndTail() creates the
+    // loopback wasapi2src (the device can't be changed on a live source). A
+    // live output-device change rebuilds the publisher (CallManager), which
+    // rebuilds the tail against the new endpoint.
     m_farOutputDeviceId = deviceId;
-    if (m_farSink && !deviceId.isEmpty())
-        g_object_set(m_farSink, "device", deviceId.toUtf8().constData(), nullptr);
 }
 
 void PublishPipeline::removeFarEndPeer(const QString &peerId)

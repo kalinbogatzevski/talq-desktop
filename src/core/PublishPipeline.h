@@ -98,7 +98,7 @@ public:
     // so per-peer churn doesn't leak pads/elements. Idempotent; safe if AEC off.
     void        removeFarEndPeer(const QString &peerId);
     void        setFarEndOutputDevice(const QString &deviceId);
-    bool        aecPlayoutActive() const { return m_farMixer != nullptr; }
+    bool        aecPlayoutActive() const { return m_farProbe != nullptr; }
     // Has the camera delivered at least one real frame since the last enable?
     // Diagnostics: "camera on (intent) but firstFrame=0" after a few seconds is
     // the silent mfvideosrc-failure signature (the "her camera stopped" symptom).
@@ -376,10 +376,19 @@ private:
     // webrtcdsp). m_farMixer != null means the tail is up. Built before the
     // webrtcdsp config in start() so the probe exists for the dsp's lookup and a
     // tail-build failure degrades to AEC-off (never a call drop).
-    GstElement *m_farMixer = nullptr;
+    GstElement *m_farMixer = nullptr;   // legacy (unused in the loopback design)
     GstElement *m_farProbe = nullptr;
-    GstElement *m_farSink  = nullptr;
+    GstElement *m_farSink  = nullptr;   // now a fakesink (reference-only tail)
+    GstElement *m_farSrc   = nullptr;   // 0.55.3 AEC: WASAPI render-loopback reference source
     QString     m_farOutputDeviceId;
+    // 0.55.3 AEC ERLE proxy: last RMS (dB) seen on the loopback reference
+    // (pub-far-ref-level) vs the post-webrtcdsp send leg (pub-level). In a
+    // remote-talking / local-silent window, a working canceller keeps the send
+    // RMS well below the reference RMS; if they track, echo is leaking. Logged
+    // from pollBus so a live speaker test yields a number, not just "sounds off".
+    double      m_aecFarRefRms = -100.0;
+    double      m_aecSendRms   = -100.0;
+    int         m_aecErleDbg   = 0;
     QHash<QString, GstElement*> m_farPeerAppsrcs;
     // Serialises far-end peer add/remove and tail teardown against each other:
     // the hash mutations PLUS the structural pipeline edits (audiomixer

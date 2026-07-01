@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.55.3 "July Morning" -- BETA (2026-06-29)
+
+### Fixed / improved
+* **Echo cancellation now works with speakers.** If you use speakers instead of
+  headphones, the people you talk to no longer hear their own voice echoed back.
+  TalQ now cancels the echo against the exact audio your speakers actually play
+  (captured from the audio output itself), so it stays clean even when you turn
+  the volume up.
+
 ## v0.55.2 "July Morning" -- BETA (2026-06-29)
 
 **Codename "July Morning."** On the night of 30 June into 1 July, Bulgarians drive
