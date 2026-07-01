@@ -444,6 +444,32 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
                         << from.left(20) << "— subscriber live (frames flowing, no flap)";
                 return;
             }
+            // 0.52.15 — STARTUP GRACE (anti-thrash). The live-guard above only
+            // suppresses a sub decoding RIGHT NOW. A sub that has NEVER decoded a
+            // frame (frameMark==0) is still negotiating ICE/DTLS + waiting for its
+            // first keyframe (the MCU auto-PLIs new subscribers; we PLI at
+            // build+0.5/1.5/3s) — ~2-5s on a re-share. The publisher's +5/+11s
+            // reap-race re-assert must NOT rebuild it, or the fresh sub is killed
+            // before its first I-frame decodes → it never reaches "live" → the
+            // infinite ~6s rebuild loop that stranded a re-shared screen on
+            // "Starting" (Kalin↔Ilko 0.52.14). So while young AND never-decoded:
+            // re-PLI to hurry the keyframe and IGNORE the re-offer. A GENUINE
+            // re-share (sub WAS live → frameMark>0) skips this and falls through to
+            // rebuild (drops the frozen frame). Can't strand a dead build: once
+            // older than the grace it falls through and rebuilds once. ageMs>=0
+            // fails open (missing stamp → huge age → rebuild, never suppress).
+            if (m_screenSubscribers.contains(from)
+                && m_screenSubFrameMark.value(from, 0) == 0) {
+                const qint64 ageMs = QDateTime::currentMSecsSinceEpoch()
+                                   - m_screenSubBuiltMs.value(from, 0);
+                if (ageMs >= 0 && ageMs < kScreenSubStartupGraceMs) {
+                    qInfo() << "CallManager: screen re-offer from" << from.left(20)
+                            << "— sub in startup grace (" << ageMs
+                            << "ms, no frame yet) — re-PLI + ignore (anti-thrash)";
+                    if (auto *s = m_screenSubscribers.value(from)) s->requestKeyframe();
+                    return;
+                }
+            }
             // A re-share (stop → share again) sends a fresh offer for a
             // session we may still hold a screen subscriber for. Feeding
             // the new offer into the OLD SubscribePipeline leaves its
@@ -454,6 +480,7 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
             if (auto *stale = m_screenSubscribers.take(from)) {
                 m_screenSubFrameMark.remove(from);    // rebuilding — drop stale
                 m_screenSubStallTicks.remove(from);   // frame-liveness state
+                m_screenSubBuiltMs.remove(from);      // startup-grace stamp (re-stamped on start)
                 qDebug() << "CallManager: screen re-offer for" << from.left(20)
                          << "— rebuilding screen subscriber (avoid frozen frame)";
                 stale->stop();
@@ -510,6 +537,7 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
                 return;
             }
             qDebug() << "CallManager: screen subscriber started, setting offer...";
+            m_screenSubBuiltMs[from] = QDateTime::currentMSecsSinceEpoch();  // 0.52.15 startup-grace baseline
             m_remoteScreenProvider = sub->videoProvider();
             emit remoteScreenProviderChanged();
             if (auto *p = ensureParticipant(from, {})) {
@@ -1981,6 +2009,7 @@ void CallManager::removeScreenSubscriber(const QString &sessionId)
     auto *sub = m_screenSubscribers.take(sessionId);
     m_screenSubFrameMark.remove(sessionId);    // peer's screen gone — drop
     m_screenSubStallTicks.remove(sessionId);   // frame-liveness state
+    m_screenSubBuiltMs.remove(sessionId);      // startup-grace stamp
     if (!sub)
         return;                       // no remote screen from this peer — nothing to do
     // If this peer's screen was the one being rendered, unbind it so the UI
@@ -3425,6 +3454,7 @@ void CallManager::teardown(const QString &reason)
     m_screenSubscribers.clear();
     m_screenSubFrameMark.clear();
     m_screenSubStallTicks.clear();
+    m_screenSubBuiltMs.clear();
     m_softwareEncoderNotified = false;   // re-notify on the next call if still software
     setVideoQualityNotice(QString());    // 0.52.5 — reset the sender quality chip for the next call
 

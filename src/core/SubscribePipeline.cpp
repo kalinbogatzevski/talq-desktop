@@ -545,6 +545,24 @@ void SubscribePipeline::createVideoChain(GstPad *pad, const gchar *encoding)
     }, Qt::QueuedConnection);
 }
 
+void SubscribePipeline::requestKeyframe()
+{
+    // 0.52.15 — on-demand RTCP PLI. The CallManager screen-sub startup-grace branch
+    // calls this to hurry the first keyframe on a re-offer WITHOUT a rebuild (the
+    // rebuild-thrash that left a re-shared screen stuck on "Starting"). Same
+    // mechanism as the build-time sendPLI cascade above: a GstForceKeyUnit UPSTREAM
+    // event via gst_element_send_event() on the PIPELINE (NOT gst_pad_send_event on
+    // a sink pad — that hits the wrong-direction gate and is destroyed; see sendPLI).
+    if (!m_pipeline) return;
+    const gboolean ok = gst_element_send_event(m_pipeline,
+        gst_event_new_custom(GST_EVENT_CUSTOM_UPSTREAM,
+            gst_structure_new("GstForceKeyUnit",
+                "all-headers", G_TYPE_BOOLEAN, TRUE, nullptr)));
+    qInfo().nospace() << "SubscribePipeline: screen PLI (on-demand) -> "
+                      << (ok ? "ACCEPTED (RTCP keyframe requested)"
+                             : "REJECTED (no element handled it)");
+}
+
 void SubscribePipeline::onDecodebinPad(GstElement *, GstPad *pad, gpointer userData)
 {
     auto *self = static_cast<SubscribePipeline *>(userData);

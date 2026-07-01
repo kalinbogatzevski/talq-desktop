@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.52.15 "Bafana Bafana" -- STABLE (2026-06-24)
+
+### Fixed
+
+* **A re-shared screen now appears for viewers.** When someone stopped a screen
+  share and immediately started a new one, the viewer could get stuck on
+  "Starting remote screen share" and never see the new share. The viewer now
+  gives a just-started screen a moment to come up — and re-requests its first
+  frame — instead of repeatedly restarting it, so the re-shared screen shows
+  within a few seconds.
+
 ## v0.52.14 "Bafana Bafana" -- STABLE (2026-06-23)
 
 ### Added

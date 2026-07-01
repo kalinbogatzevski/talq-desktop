@@ -601,6 +601,16 @@ private:
     // liveness signal in MCU mode.
     QHash<QString,int> m_screenSubFrameMark;
     QHash<QString,int> m_screenSubStallTicks;
+    // 0.52.15 — anti-thrash startup grace. Wall-clock (ms since epoch) when each
+    // screen sub was (re)built. A sub that has NEVER decoded (m_screenSubFrameMark
+    // == 0) and is younger than kScreenSubStartupGraceMs is still negotiating /
+    // pulling its first keyframe (~2-5s on a re-share). The publisher's reap-race
+    // re-assert (+5/+11s) must NOT tear it down or it can never reach "live" → the
+    // infinite ~6s rebuild loop that stranded a re-shared screen on "Starting"
+    // (Kalin↔Ilko 0.52.14). Kept in lockstep with the two maps above (cleared
+    // everywhere they are; re-stamped only after a successful start()).
+    QHash<QString,qint64> m_screenSubBuiltMs;
+    static constexpr qint64 kScreenSubStartupGraceMs = 8000;
 
     // Offers received before ICE servers are available (P3 race guard)
     struct PendingOffer { QString fromSessionId; QString sdp; QString sid; };
