@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.52.11 "Bafana Bafana" -- STABLE (2026-06-23)
+
+### Changed
+
+* **The hang-up button is now a clear red "leave call" button** with a
+  recognizable phone-handset icon, so it reads unmistakably at a glance (it was
+  a warm orange with a less obvious symbol).
+
 ## v0.52.10 "Bafana Bafana" -- STABLE (2026-06-23)
 
 ### Fixed

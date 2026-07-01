@@ -918,7 +918,11 @@ void CallStage::paintControlBar(QPainter &p, const PainterTheme &th)
     // ── detached hang-up pill ──
     if (endBtn) {
         const bool hv = (endBtn->id == m_hoverBtn);
-        QColor f = hv ? th.danger.lighter(112) : th.danger;
+        // 0.52.11 — the hang-up pill gets its OWN clear red, not th.danger (which
+        // is the palette "clay" and reads orange). A universal end-call red so the
+        // button is unmistakable as "leave the call".
+        const QColor hangupRed(0xE2, 0x3B, 0x33);
+        QColor f = hv ? hangupRed.lighter(112) : hangupRed;
         p.setBrush(f); p.setPen(Qt::NoPen);
         p.drawRoundedRect(endBtn->rect, endBtn->rect.height()/2.0,
                           endBtn->rect.height()/2.0);
