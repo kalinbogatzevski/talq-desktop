@@ -507,15 +507,28 @@ void SubscribePipeline::createVideoChain(GstPad *pad, const gchar *encoding)
     // across the GStreamer/Qt thread boundary); m_videoDecode is a
     // pipeline-owned element pointer like m_videoConvert.
     auto sendPLI = [this]() {
-        if (!m_videoDecode || !m_pipeline) return;
-        GstPad *p = gst_element_get_static_pad(m_videoDecode, "sink");
-        if (!p) return;
-        gst_pad_send_event(p,
+        if (!m_pipeline) return;
+        // 0.52.9 — the keyframe request (GstForceKeyUnit, an UPSTREAM event) MUST
+        // travel sink→src to reach webrtcbin's rtpsession, which is what actually
+        // emits the RTCP PLI on the wire. The OLD code sent it via
+        // gst_pad_send_event() on decodebin's SINK pad — but gstpad.c gates events
+        // by direction: a SINK pad + UPSTREAM event hits the "wrong_direction"
+        // path → g_warning("…sending custom-upstream event in wrong direction") +
+        // gst_event_unref + return FALSE. The event was DESTROYED at the pad
+        // boundary, so NO PLI ever reached the wire: the 5s PLI loop was a pure
+        // no-op and the receiver froze on a stale frame, "recovering" only when a
+        // periodic GOP IDR (~every 4s, gop=120) happened to roll around — the
+        // ~20s-to-one-frame freeze seen on rapid screen-share switches.
+        // gst_element_send_event() on the PIPELINE routes the upstream event to
+        // the sink elements and walks it up to webrtcbin — exactly what the camera
+        // subscriber (SubscribeWebrtcSrc) and PublishPipeline already do.
+        const gboolean ok = gst_element_send_event(m_pipeline,
             gst_event_new_custom(GST_EVENT_CUSTOM_UPSTREAM,
                 gst_structure_new("GstForceKeyUnit",
                     "all-headers", G_TYPE_BOOLEAN, TRUE, nullptr)));
-        gst_object_unref(p);
-        qDebug() << "SubscribePipeline: sent PLI for keyframe";
+        qInfo().nospace() << "SubscribePipeline: screen PLI -> "
+                          << (ok ? "ACCEPTED (RTCP keyframe requested)"
+                                 : "REJECTED (no element handled it)");
     };
     sendPLI();
     QPointer<SubscribePipeline> guard(this);

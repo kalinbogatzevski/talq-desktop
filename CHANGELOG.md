@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.52.9 "Bafana Bafana" -- STABLE (2026-06-23)
+
+### Fixed
+
+* **Screen shares no longer freeze when the presenter switches what they share in
+  quick succession.** Rapidly switching between screens/windows could leave the
+  viewer stuck on a frozen frame, because the request for a fresh keyframe was
+  being discarded before it went out. The keyframe request is now delivered
+  correctly, so the view recovers within a moment.
+
 ## v0.52.8 "Bafana Bafana" -- STABLE (2026-06-23)
 
 ### Fixed
