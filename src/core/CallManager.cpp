@@ -310,6 +310,7 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
                 && m_cameraOn && m_cameraUnavailable) {
                 qInfo() << "CallManager: devices changed — retrying camera after device loss";
                 m_cameraUnavailable = false;
+                m_cameraGraceRetries = 0;   // fresh device event: fresh grace-retry budget
                 emit cameraChanged();
                 m_cameraApplyTimer.start();   // coalesced re-apply
             }
@@ -1216,6 +1217,20 @@ QString CallManager::streamBandwidthLabel() const
 
 void CallManager::updateCallStats()
 {
+    // Keep the TURN RTT telemetry (ROUTING panel) fresh for the life of the
+    // call: probeNearestTurnAsync() is otherwise a one-shot fired once on
+    // room-join, so selectedTurnRttMs() would freeze at whatever it measured
+    // then. Re-running the full UDP-STUN probe on every 2s stats tick would
+    // spam every offered TURN host far more than a telemetry number needs, so
+    // gate it to every 4th tick (~8s) -- frequent enough to look "live" next
+    // to the signaling RTT (~25s cadence), rare enough to stay polite to the
+    // network. Reuses probeNearestTurnAsync() as-is (same nearest-selection
+    // logic it already does on join); the brief mid-probe window where
+    // effectiveTurnServers() reverts to the full list is the same accepted
+    // fallback it already uses when nothing has answered yet.
+    if ((++m_turnRttTick % 4) == 0)
+        probeNearestTurnAsync();
+
     QStringList lines;
 
     // Signaling
@@ -1443,6 +1458,7 @@ void CallManager::startCall(const QString &token, bool withVideo)
     m_withVideo = withVideo;
     m_cameraOn = withVideo;
     m_cameraUnavailable = false;   // fresh call: clear any prior failure
+    m_cameraGraceRetries = 0;      // fresh call: fresh grace-retry budget
     m_micUnavailable = false;      // fresh call: clear any prior mic failure
     emit cameraChanged();
     m_muted = false;
@@ -1646,6 +1662,21 @@ void CallManager::dropSubscriber(const QString &sessionId)
     }
 }
 
+// Camera grace-period auto-retry (backlog: MF 0xc00d36e6 first-enable
+// failure). On Windows, mfvideosrc can occasionally fail to open a camera
+// the very FIRST time this call tries -- the device is still settling after
+// a previous process/session released it, or the request races Windows'
+// camera-privacy handshake -- and then opens fine a moment later. Retrying
+// blindly forever would mask a genuinely broken/missing camera (busy in
+// another app, disabled by policy, unplugged), so this is bounded: at most
+// kCameraGraceMaxRetries attempts, short delay between them, and ONLY while
+// no frame has ever been decoded for this enable attempt (see
+// PublishPipeline::cameraFirstFrameSeen()) -- a camera that WAS streaming
+// and then failed is a real mid-call failure and must surface immediately
+// (the existing device-hotplug path already resumes it if it comes back).
+static constexpr int kCameraGraceMaxRetries   = 2;
+static constexpr int kCameraGraceRetryDelayMs = 700;
+
 bool CallManager::buildAndStartPublisher()
 {
     // Publisher SID (matches NC Talk: Date.now().toString()). A FRESH sid on
@@ -1792,12 +1823,49 @@ bool CallManager::buildAndStartPublisher()
 
     connect(m_publishPipeline, &PublishPipeline::cameraError, this, [this](const QString &reason) {
         qWarning() << "CallManager: camera error:" << reason;
+
+        // Grace-period auto-retry: only for a FIRST-ENABLE failure (no self
+        // camera frame has ever been decoded this attempt) and only while
+        // the user still wants the camera on. Bounded — see the constants'
+        // comment above buildAndStartPublisher().
+        const bool neverStreamed = m_publishPipeline
+            && !m_publishPipeline->cameraFirstFrameSeen();
+        if (neverStreamed && m_cameraOn
+            && m_cameraGraceRetries < kCameraGraceMaxRetries) {
+            ++m_cameraGraceRetries;
+            const int deviceIndex = videoDeviceIndex();
+            const bool hd1080 = preferHd1080();
+            qInfo() << "CallManager: camera first-enable failed (" << reason
+                     << ") — grace retry" << m_cameraGraceRetries << "of"
+                     << kCameraGraceMaxRetries;
+            // Deferred: cameraError can fire from inside
+            // PublishPipeline::pollBus() while it iterates the GStreamer
+            // bus, so touching the camera inline could re-enter the bus
+            // we're popping. disableCamera() releases the MF device handle;
+            // the retry re-opens it after a short settle delay.
+            QTimer::singleShot(0, this, [this]() {
+                if (m_publishPipeline) m_publishPipeline->disableCamera();
+            });
+            QTimer::singleShot(kCameraGraceRetryDelayMs, this,
+                    [this, deviceIndex, hd1080]() {
+                // The call may have ended, or the user may have toggled the
+                // camera off, while the retry was pending -- both must be
+                // respected rather than clobbered by a stale retry.
+                if (!m_publishPipeline || !m_cameraOn) return;
+                if (m_state == Idle || m_state == Ending) return;
+                if (m_publishPipeline->isCameraOn()) return;   // already back up
+                qInfo() << "CallManager: camera grace-retry — re-attempting enableCamera";
+                m_publishPipeline->enableCamera(deviceIndex, hd1080);
+            });
+            return;   // don't surface the hard error yet -- give it a chance
+        }
+
         m_cameraOn = false;
         // Idiot-proofing: do NOT stay silent. Flag the device as unavailable
         // so the call surface shows a loud "Camera unavailable" notice with
         // recovery steps, instead of sitting on "Starting camera..." forever.
         m_cameraUnavailable = true;
-        m_cameraFallbackTried = false;
+        m_cameraGraceRetries = 0;   // next manual toggle-on gets a fresh grace budget
         emit cameraChanged();
         // Tell the other side our video is off so their tile reads
         // "Camera off" rather than waiting forever for frames that the
@@ -2134,6 +2202,7 @@ void CallManager::acceptCall(bool withVideo) {
     m_callJoinAttempts = 0;
     m_peerGraceActive = false; m_peerGraceTimer.stop();   // #bug3 -- fresh call, no stale grace
     m_cameraUnavailable = false;   // fresh call: clear any prior failure
+    m_cameraGraceRetries = 0;      // fresh call: fresh grace-retry budget
     m_micUnavailable = false;      // fresh call: clear any prior mic failure
     emit cameraChanged();
     m_ringTimeout.stop();
@@ -2246,8 +2315,9 @@ void CallManager::toggleCamera() {
     m_cameraOn = !m_cameraOn;
     // Turning the camera back on is a retry: clear the "unavailable" notice
     // so the banner/caption disappear. If the device fails again, the
-    // PublishPipeline::cameraError path re-raises the flag.
-    if (m_cameraOn) m_cameraUnavailable = false;
+    // PublishPipeline::cameraError path re-raises the flag. Also give it a
+    // fresh grace-retry budget, same as a brand-new call.
+    if (m_cameraOn) { m_cameraUnavailable = false; m_cameraGraceRetries = 0; }
     emit cameraChanged();   // UI button reflects the intent immediately
 
     // D3 — COALESCE the actual device enable/disable. Fast mute-mashing (Pavel

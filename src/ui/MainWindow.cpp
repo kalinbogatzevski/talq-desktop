@@ -632,6 +632,12 @@ void MainWindow::buildChatPage()
             &MainWindow::refreshWelcomeStatus, Qt::UniqueConnection);
     connect(m_push, &PushClient::connectedChanged, this,
             &MainWindow::refreshWelcomeStatus, Qt::UniqueConnection);
+    // The SIGNALING tile's RTT otherwise only ever painted once (at connect);
+    // signalingRttChanged fires on every ~25s keepalive pong so it stays live.
+    // Qt::UniqueConnection requires a pointer-to-member-function slot (a lambda
+    // trips a debug-build assert and aborts) -- connect straight to the member.
+    connect(m_signaling, &SignalingClient::signalingRttChanged, this,
+            &MainWindow::refreshWelcomeStatus, Qt::UniqueConnection);
     buildWelcomeContent();
 
     // Give MessageListModel access to ConversationListModel so it can snapshot

@@ -7,6 +7,7 @@
 
 class ApiClient;
 class CallStage;
+class CallPipWidget;
 class QScreen;
 class QMoveEvent;
 
@@ -53,6 +54,12 @@ protected:
     // the next debug log can be correlated against frame flow + the fullscreen
     // toggle (2026-06-04).
     void moveEvent(QMoveEvent *) override;
+    // PiP-dock-on-drop: minimizing a live call (title-bar minimize, or the
+    // classic Windows drag-the-titlebar-onto-the-taskbar "drop" gesture)
+    // would otherwise vanish the call to the taskbar with no visual trace.
+    // Catch the minimize transition and dock to the compact corner PiP
+    // instead, same contract as the conversation-switch dock.
+    void changeEvent(QEvent *) override;
 
 private slots:
     void onCallState();
@@ -65,6 +72,7 @@ private:
     CallManager *m_call;
     ApiClient *m_api;
     CallStage *m_stage = nullptr;
+    CallPipWidget *m_pipWidget = nullptr;
     bool m_fullscreen = false;
     bool m_pipDocked = false;
     QRect m_normalGeom;
