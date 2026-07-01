@@ -123,12 +123,17 @@ SharePickerDialog::SharePickerDialog(QWidget *parent)
     auto styleList = [](QListWidget *lw) {
         lw->setViewMode(QListView::IconMode);
         lw->setIconSize(QSize(kThumbW, kThumbH));
-        lw->setGridSize(QSize(kThumbW + 28, kThumbH + 52));
+        // 0.53.0 — give the title generous room UNDER the thumbnail so the full
+        // window/app title is ALWAYS visible, not truncated-to-a-hover-tooltip:
+        // ~4 wrapped lines (kThumbH + 76). If a title is still too long, elide in
+        // the MIDDLE so the trailing app name (e.g. "… — TalQ") stays readable.
+        lw->setGridSize(QSize(kThumbW + 28, kThumbH + 76));
         lw->setResizeMode(QListView::Adjust);
         lw->setMovement(QListView::Static);
         lw->setSelectionMode(QAbstractItemView::SingleSelection);
         lw->setUniformItemSizes(true);
         lw->setWordWrap(true);
+        lw->setTextElideMode(Qt::ElideMiddle);
         lw->setSpacing(10);
     };
 

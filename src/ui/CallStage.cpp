@@ -175,8 +175,12 @@ void CallStage::rebindProviders()
     if (auto *sp = m_call->localScreenPreviewProvider()) {
         m_conns << connect(sp, &VideoFrameProvider::imageReady, this,
             [this](const QImage &img) {
-                m_selfScreenFrame = img.scaledToHeight(360,
-                    Qt::SmoothTransformation);
+                // 0.53.0 — scale to 720 (was 360): the self-share can now be the
+                // full STAGE tile (self-view), not just a thumbnail, so it needs the
+                // extra resolution to read crisply. Never upscale a smaller capture.
+                m_selfScreenFrame = img.height() > 720
+                    ? img.scaledToHeight(720, Qt::SmoothTransformation)
+                    : img;
                 update();
             });
     } else {
@@ -239,6 +243,16 @@ CallParticipant *CallStage::stageSource(bool *isScreen) const
     const auto parts = m_call->participants();
     for (CallParticipant *p : parts)
         if (p->screenSharing() && p->screen()) { *isScreen = true; return p; }
+    // 0.53.0 — Zoom-style self-view: when WE are sharing and no PEER is, put OUR
+    // OWN share on the stage (rendered from the local capture preview tap), so the
+    // presenter sees what they're broadcasting full-size — the same view the remote
+    // gets — instead of only a small thumbnail. A peer's share still wins the stage
+    // (their content is what the call is watching); ours then falls back to the PiP.
+    if (m_call->isScreenSharing() && m_call->localScreenPreviewProvider()
+        && m_call->selfParticipant()) {
+        *isScreen = true;
+        return m_call->selfParticipant();
+    }
     if (m_pinned) return m_pinned;
     CallParticipant *speaker = nullptr, *firstRemote = nullptr;
     for (CallParticipant *p : parts) {
@@ -358,7 +372,15 @@ void CallStage::relayout()
     // user can SEE what they're broadcasting (Zoom/Teams/Meet/Telegram
     // consensus: never hide the camera PiP for the share — both stay).
     // Anchor to the corner opposite the camera PiP so they don't stack.
-    if (m_call->isScreenSharing() && m_call->localScreenPreviewProvider()) {
+    // 0.53.0 — when OUR share is the STAGE (self-view; no peer is sharing) the big
+    // stage tile already shows it, so the small self-share PiP is redundant — drop
+    // it. It still appears when a PEER's share holds the stage and we're ALSO sharing
+    // (so we can watch theirs while keeping an eye on our own outgoing share).
+    bool selfShareOnStage = false;
+    for (const Tile &t : m_tiles)
+        if (t.isStage && t.isScreen && t.p && t.p->isSelf()) selfShareOnStage = true;
+    if (m_call->isScreenSharing() && m_call->localScreenPreviewProvider()
+        && !selfShareOnStage) {
         const qreal w = qBound(140.0, width() * 0.16, 220.0);
         const qreal h = w * 9.0 / 16.0;
         const qreal m = 18;
@@ -554,7 +576,12 @@ void CallStage::paintTile(QPainter &p, const Tile &t, const PainterTheme &th, bo
     p.setClipPath(clip);
     p.fillRect(rc, th.bgSidebar);   // warm ground, never black
 
-    const QImage &frame = t.isScreen ? m_scrFrame.value(cp) : m_camFrame.value(cp);
+    // 0.53.0 — our OWN screen on the stage (self-view) renders from the local
+    // capture preview (m_selfScreenFrame), not a per-participant screen provider
+    // (self has none). A peer's screen still comes from m_scrFrame.
+    const QImage &frame = t.isScreen
+        ? (cp->isSelf() ? m_selfScreenFrame : m_scrFrame.value(cp))
+        : m_camFrame.value(cp);
     const bool showVideo = !frame.isNull()
         && (t.isScreen || (!cp->videoMuted()));
     if (showVideo) {

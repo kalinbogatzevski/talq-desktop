@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.53.0 "Bafana Bafana" -- BETA (2026-06-25)
+
+**Codename "Bafana Bafana"** (continued) — South Africa's national football team,
+through to a World Cup knockout round for the first time in their history (24 June
+2026). This beta opens the 0.53.x line on top of the 0.52.17 stable fixes.
+
+### Added
+
+* **See your own screen share full-size.** While you're sharing your screen, the
+  call now shows your shared screen as the main view — the same way the people
+  you're sharing with see it — instead of only a small corner preview. Your camera
+  stays visible alongside it. If someone else starts sharing too, their share takes
+  the main view and yours returns to a corner preview.
+* **Full window titles in the share picker.** When picking a window to share, each
+  window's full title is now shown under its thumbnail, instead of being cut off and
+  readable only on hover.
+
 ## v0.52.17 "Bafana Bafana" -- STABLE (2026-06-25)
 
 **Codename "Bafana Bafana"** — "the boys", the nickname of South Africa's national
