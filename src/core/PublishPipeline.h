@@ -219,6 +219,7 @@ public slots:
 private:
     void cleanup();
     bool buildCameraChain(int deviceIndex, bool hd1080);
+    void reArmCameraSource();   // 0.52.13 — stall recovery: NULL→PLAYING the MF source
 
     GstElement *m_pipeline = nullptr;
     GstElement *m_webrtcbin = nullptr;
@@ -391,6 +392,17 @@ private:
     bool m_camForcedCapsActive = false;
     std::atomic<bool> m_camFirstFrameSeen{false};
     QTimer m_camStartWatchdog;
+    // 0.52.13 — STALL-AWARE self-heal. The MF source reader can leak ONE frame
+    // then stall (Intel MF/D3D concurrency, esp. while a screen-share is using
+    // the encoder), which the old "no first frame" watchdog couldn't recover
+    // (the one frame cancelled it) and it never armed on Auto at all. Track frame
+    // PROGRESS and re-negotiate at permissive ≤720p on a stall.
+    std::atomic<quint64> m_camFrameCount{0};   // bumped per preview frame (streaming thread)
+    quint64 m_camLastSeenCount = 0;            // last value the watchdog observed (main thread)
+    int     m_camStallTicks = 0;               // consecutive no-progress ticks (debounce)
+    int     m_camHealthyTicks = 0;             // consecutive progress ticks (resets attempts)
+    int     m_camRecoveryAttempts = 0;         // capped auto-rebuilds before giving up
+    bool    m_camRebuildInFlight = false;      // a re-arm is settling — don't stack another
     bool m_useH264 = false;
     QString m_encoderDesc;   // human codec/encoder/hw-sw, for telemetry/pill
     int m_lvlDbg = 0;

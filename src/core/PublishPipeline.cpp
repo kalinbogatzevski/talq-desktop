@@ -25,26 +25,48 @@ PublishPipeline::PublishPipeline(QObject *parent)
 {
     m_localVideoProvider = new VideoFrameProvider(this);
 
-    // No-frames watchdog for self-healing forced camera picks: if Settings
-    // pinned an exact caps that the actually-opened mfvideosrc instance
-    // can't deliver, no preview frames arrive — fire 3 s after enable to
-    // reset the pick to Auto and signal CallManager to re-arm.
-    m_camStartWatchdog.setSingleShot(true);
-    m_camStartWatchdog.setInterval(3000);
+    // 0.52.13 — STALL-AWARE camera self-heal (replaces the single-shot "no first
+    // frame" watchdog). A repeating tick watches frame PROGRESS; if frames stop
+    // advancing — which covers zero-frame AND the one-frame-then-stall that the
+    // Intel MF/D3D concurrency race produces (esp. while a screen-share is on the
+    // encoder) — it re-negotiates the camera at permissive ≤720p caps, i.e.
+    // automates the manual off/on that recovers it. Armed for EVERY enable (forced
+    // OR Auto — the old one never armed on Auto). Debounced past mfvideosrc's ~1 s
+    // COM init, capped at 2 rebuilds, reset after sustained healthy frames.
+    m_camStartWatchdog.setSingleShot(false);
+    m_camStartWatchdog.setInterval(2000);
     connect(&m_camStartWatchdog, &QTimer::timeout, this, [this]() {
-        if (m_camFirstFrameSeen.load(std::memory_order_relaxed)) return;
-        if (!m_camForcedCapsActive) return;
-        qWarning() << "PublishPipeline: forced camera mode produced no "
-                      "frames within 3 s — falling back to Auto / permissive";
-        {
-            QSettings s("TalQ", "TalQ");
-            s.beginGroup("Video");
-            s.setValue("cameraQuality", QStringLiteral("auto"));
-            s.setValue("cameraSrcCaps", QString());
-            s.endGroup();
+        if (!m_cameraEnabled) { m_camStartWatchdog.stop(); return; }
+        if (m_camRebuildInFlight) return;             // a re-arm is settling — wait it out
+        const quint64 cur = m_camFrameCount.load(std::memory_order_relaxed);
+        if (cur != m_camLastSeenCount) {              // frames advancing → healthy
+            m_camLastSeenCount = cur;
+            m_camStallTicks = 0;
+            if (++m_camHealthyTicks >= 3) m_camRecoveryAttempts = 0;  // sustained → re-allow recovery
+            return;
         }
-        m_camForcedCapsActive = false;
-        emit cameraNegotiationFailed();
+        m_camHealthyTicks = 0;
+        if (++m_camStallTicks < 2) return;            // ~4 s of no new frames (debounce COM init)
+        m_camStallTicks = 0;
+        if (m_camRecoveryAttempts >= 2) {             // gave it 2 goes → surface the failure
+            qWarning() << "PublishPipeline: camera stalled after 2 recovery attempts — giving up";
+            // If a forced Settings pick could be the culprit (not just the
+            // concurrency race), drop it to Auto so the NEXT enable negotiates
+            // permissive ≤720p — the old watchdog's behaviour, kept as a fallback.
+            if (m_camForcedCapsActive) {
+                m_camForcedCapsActive = false;
+                QSettings s("TalQ", "TalQ"); s.beginGroup("Video");
+                s.setValue("cameraQuality", QStringLiteral("auto"));
+                s.setValue("cameraSrcCaps", QString()); s.endGroup();
+                emit cameraNegotiationFailed();
+            }
+            emit cameraError(QStringLiteral("Camera stopped delivering frames"));
+            return;   // cameraError → CallManager stops the watchdog via disableCamera
+        }
+        ++m_camRecoveryAttempts;
+        qWarning() << "PublishPipeline: camera frames STALLED ~4s — re-arming the MF source "
+                      "(attempt" << m_camRecoveryAttempts << "of 2)";
+        reArmCameraSource();
     });
 
     // Upstream Talk's BlackVideoEnforcer paints the canvas for 5 s after
@@ -1631,10 +1653,15 @@ void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)
 
     m_cameraEnabled = true;
     m_camFirstFrameSeen.store(false, std::memory_order_relaxed);
-    if (m_camForcedCapsActive) {
-        qDebug() << "PublishPipeline: arming camera-start watchdog (3 s)";
-        m_camStartWatchdog.start();
-    }
+    // 0.52.13 — reset the stall tracker + recovery budget and arm the watchdog for
+    // EVERY enable (was gated on m_camForcedCapsActive, so Auto never self-healed).
+    m_camFrameCount.store(0, std::memory_order_relaxed);
+    m_camLastSeenCount = 0;
+    m_camStallTicks = 0;
+    m_camHealthyTicks = 0;
+    m_camRecoveryAttempts = 0;
+    qDebug() << "PublishPipeline: arming stall-aware camera watchdog";
+    m_camStartWatchdog.start();
 
     // Force an immediate I-frame so the receiver gets a clean baseline
     // of real camera content. Without this, the encoder continues
@@ -1669,6 +1696,41 @@ void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)
     }
     qDebug() << "PublishPipeline: camera enabled (valve flip, no relink, "
                 "encoders re-seeded, GCC re-armed)";
+}
+
+void PublishPipeline::reArmCameraSource()
+{
+    // 0.52.13 — stall recovery (driven by the stall-aware watchdog): the MF
+    // reader leaked a frame then wedged (Intel MF/D3D concurrency under
+    // screen-share load). Re-arm the source — NULL→PLAYING at the SAME caps, the
+    // automated equivalent of the manual camera off/on that fixes it. We do NOT
+    // swap caps on the still-linked PLAYING capsfilter (that renegotiates a live
+    // pad, and per the root-cause the mode is a red herring — the cause is the
+    // race). A genuinely-bad forced pick is handled separately on give-up.
+    if (!m_cameraEnabled || !m_cameraSrc) return;
+    if (m_camRebuildInFlight) return;             // don't stack re-arms
+    m_camRebuildInFlight = true;
+    // Re-arm on GStreamer's element-pool thread: the parky mfvideosrc NULL must
+    // NOT run on the Qt main thread (mirrors disableCamera). No-capture lambda
+    // (converts to the C function pointer) that touches ONLY `src` — which
+    // gst_element_call_async refs for the call — and never `this`, so a
+    // concurrent teardown can't UAF.
+    gst_element_call_async(m_cameraSrc,
+        [](GstElement *src, gpointer) {
+            gst_element_set_state(src, GST_STATE_NULL);     // parks until the stream lock frees
+            gst_element_set_state(src, GST_STATE_PLAYING);  // re-arm the MF reader
+        },
+        nullptr, nullptr);
+    // Clear the in-flight guard + open a fresh stall window after the re-arm has
+    // had time to complete. QTimer bound to `this` → auto-cancelled on
+    // destruction (never touches a dead object); the callback above never touches
+    // `this`. If still wedged afterwards, the watchdog re-arms again (2-cap).
+    QTimer::singleShot(3000, this, [this]() {
+        m_camFrameCount.store(0, std::memory_order_relaxed);
+        m_camLastSeenCount = 0;
+        m_camStallTicks = 0;
+        m_camRebuildInFlight = false;
+    });
 }
 
 void PublishPipeline::disableCamera()
@@ -2259,15 +2321,12 @@ GstFlowReturn PublishPipeline::onPreviewSample(GstAppSink *sink, gpointer userDa
     GstSample *sample = gst_app_sink_pull_sample(sink);
     if (!sample) return GST_FLOW_OK;
 
-    // First preview frame after enableCamera ⇒ the forced caps (if any)
-    // negotiated successfully. Cancel the self-heal watchdog from the
-    // Qt thread (QTimer.stop is not safe from this streaming thread).
-    if (!self->m_camFirstFrameSeen.exchange(true, std::memory_order_relaxed)) {
-        QPointer<PublishPipeline> gd(self);
-        QMetaObject::invokeMethod(self, [gd]() {
-            if (gd) gd->m_camStartWatchdog.stop();
-        }, Qt::QueuedConnection);
-    }
+    // 0.52.13 — bump the frame-PROGRESS counter the stall-aware watchdog reads.
+    // Do NOT stop the watchdog here: it now self-manages via progress, so a single
+    // leaked frame can no longer cancel recovery of a subsequent stall (the exact
+    // signature of the Intel MF/D3D-during-share freeze). Atomic; cheap.
+    self->m_camFrameCount.fetch_add(1, std::memory_order_relaxed);
+    self->m_camFirstFrameSeen.store(true, std::memory_order_relaxed);
 
     // #20 Phase 3.3b — the BG engine now runs UPSTREAM of m_tee (in
     // onBgSample), so by the time pixels reach the preview branch they

@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.52.13 "Bafana Bafana" -- STABLE (2026-06-23)
+
+### Fixed
+
+* **The camera now recovers on its own if it freezes when started during a screen
+  share.** On some hardware, turning the camera on while already sharing your
+  screen could leave the local preview frozen until you manually switched the
+  camera off and back on. The app now detects the stall and re-arms the camera
+  automatically, so it comes back without any manual step.
+
 ## v0.52.12 "Bafana Bafana" -- STABLE (2026-06-23)
 
 ### Fixed
