@@ -611,6 +611,21 @@ private:
     // everywhere they are; re-stamped only after a successful start()).
     QHash<QString,qint64> m_screenSubBuiltMs;
     static constexpr qint64 kScreenSubStartupGraceMs = 8000;
+    // 0.52.17 — last ICE state each screen sub reported. The wall-clock grace above
+    // is SHORTER than the publisher's +11s reap-race re-assert, so a sub that reaches
+    // ICE "checking" early (FIX 2's candidate queue makes that sooner) and STAYS there
+    // — exactly Ilko's 0.52.16 failure — would age out of the grace and be torn down
+    // mid-pairing by the +11s rebuild. A sub actively PROGRESSING ICE (checking/
+    // connected/completed, frameMark==0) must be protected from a redundant-re-offer
+    // rebuild regardless of wall-clock; this map drives that check. Lockstep with the
+    // maps above (cleared everywhere they are).
+    QHash<QString,QString> m_screenSubIceState;
+    // Upper bound on the iceProgressing rebuild-protection (must exceed the publisher's
+    // +11s reap-race horizon, measured from the last ICE-progress re-stamp). A sub
+    // genuinely WEDGED in "checking" (e.g. a lost unshareScreen with no
+    // removeScreenSubscriber) falls through to rebuild after this instead of being held
+    // until ICE reports "failed". 20s > 11s + margin.
+    static constexpr qint64 kScreenSubIceProgressGraceMs = 20000;
 
     // Offers received before ICE servers are available (P3 race guard)
     struct PendingOffer { QString fromSessionId; QString sdp; QString sid; };
@@ -624,6 +639,17 @@ private:
     // never leaves "new" ("waiting for video"). The official client queues.
     struct PendingIceCandidate { QString candidate; int mline; QString mid; };
     QHash<QString, QVector<PendingIceCandidate>> m_pendingSubCandidates;
+    // Screen-share equivalent of m_pendingSubCandidates. The SCREEN candidate
+    // router (handleScreenOffer's sibling in candidateReceived) had NO queue,
+    // unlike the camera path above: a screen subscriber's remote candidates that
+    // the MCU trickles with/just before its offer were DROPPED if they landed
+    // before the screen-offer handler built the SubscribePipeline, so the fresh
+    // sub started candidate-starved -> ICE never left "new"/"checking" -> the
+    // re-share stuck on "Starting your share" (Kalin<->Ilko 0.52.16, frame-by-
+    // frame in the receiver log). Queue per remote session; the screen-offer
+    // handler flushes into the sub right before setRemoteOffer (same contract as
+    // the camera path). Cleared in lockstep with m_screenSubscribers.
+    QHash<QString, QVector<PendingIceCandidate>> m_pendingScreenSubCandidates;
 
     // requestoffer retry (upstream resends ~every 8s until the offer lands)
     QSet<QString> m_pendingRequestOffers;

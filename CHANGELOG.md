@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.52.17 "Bafana Bafana" -- STABLE (2026-06-25)
+
+**Codename "Bafana Bafana"** — "the boys", the nickname of South Africa's national
+football team. On 24 June 2026 they won 1–0 to finish their group and reach a World
+Cup knockout round for the first time in their history — through to the last 32 in
+their fourth finals, having never before made it out of the group. A nod home: the
+team and the company that builds TalQ both come from South Africa.
+
+### Fixed
+
+* **Fixed another rare crash when ending a call.** A separate teardown path could
+  still crash the app on hang-up while it released the incoming video connections —
+  most likely after an unstable call. Ending a call now releases those connections
+  safely.
+* **Re-sharing a screen is more reliable still.** Stopping a screen share and
+  starting a new one could leave the viewer stuck on "Starting remote screen share."
+  The viewer now holds onto a share that is actively connecting instead of restarting
+  it, and no longer drops the connection details it needs to come up — so a re-shared
+  screen appears within a few seconds.
+* **Opening Settings during a call no longer interrupts your camera.** With a
+  background blur or image enabled, opening Settings mid-call could take over the
+  camera and leave your video stuck off for the rest of the call. The live background
+  preview now pauses during a call (your chosen background still applies to the call),
+  so the call keeps the camera.
+
 ## v0.52.16 "Enyov Day" -- STABLE (2026-06-24)
 
 **Codename "Enyov Day"** — Enyovden (Еньовден), the Bulgarian Midsummer, on

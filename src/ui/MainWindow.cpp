@@ -1,6 +1,7 @@
 #include "MainWindow.h"
 #include "CallWindow.h"
 #include "SettingsDialog.h"
+#include "CodenameBlurb.h"
 #ifndef TALQ_VERSION_NAME
 #define TALQ_VERSION_NAME ""   // per-release codename (set in CMake)
 #endif
@@ -2125,7 +2126,7 @@ void MainWindow::buildWelcomeContent()
     const QString verName = QStringLiteral(TALQ_VERSION_NAME);
     if (!verName.isEmpty()) {
         auto *codename = new QLabel(QStringLiteral("✦ ") + verName.toUpper(), root);
-        codename->setToolTip(tr("Release codename"));
+        codename->setToolTip(codenameBlurb(verName));   // the real story, not a generic label
         codename->setStyleSheet(QString(
             "color:%1;font-family:%2;font-size:10px;font-weight:bold;"
             "letter-spacing:1px;border:1px solid %1;border-radius:6px;padding:4px 8px;")
@@ -3372,6 +3373,16 @@ void MainWindow::ensureSettingsDialog()
     if (m_settingsDialog) return;
     m_settingsDialog = new SettingsDialog(
         m_deviceManager, m_notifications, m_appSettings, m_auth, this);
+    // The Settings live background preview opens a SECOND camera consumer. During
+    // a call the publisher already holds the (exclusive, Windows MF) camera, so
+    // the preview must not open the device or it steals it and wedges the in-call
+    // video (Ilko, 0.52.16). Seed the dialog's call-active flag for the current
+    // state and keep it live — a call can start/end while Settings is open.
+    m_settingsDialog->setCallActive(m_callManager->state() != CallManager::Idle);
+    connect(m_callManager, &CallManager::stateChanged, m_settingsDialog, [this]() {
+        if (m_settingsDialog)
+            m_settingsDialog->setCallActive(m_callManager->state() != CallManager::Idle);
+    });
     connect(m_settingsDialog, &SettingsDialog::closeToTrayChanged,
             this, [this](bool enabled) { m_closeToTray = enabled; });
     connect(m_settingsDialog, &SettingsDialog::themeIdChanged,

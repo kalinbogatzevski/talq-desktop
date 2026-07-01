@@ -43,51 +43,7 @@
 #include <QStandardPaths>
 #include <QTimer>
 
-// 0.53.0 — per-codename one-line explanation, shown as the About-tab credit AND
-// the version-line tooltip ("hover the codename to see what it means"). Keyed on
-// TALQ_VERSION_NAME so the story always matches the build; unknown/future names
-// fall back to a neutral label rather than a wrong story.
-static QString codenameBlurb(const QString &verName)
-{
-    if (verName.isEmpty()) return QString();
-    if (verName == QStringLiteral("Enyov Day"))
-        return QObject::tr("Codename \"%1\" — Enyovden (Еньовден), the "
-            "Bulgarian Midsummer, 24 June: the summer solstice, when the sun is at "
-            "its peak and begins its turn toward winter, and the feast of St John "
-            "the Baptist. Above all the herbalists' day — healing herbs gathered "
-            "at dawn are at their most potent (the legendary \"77 and a half\": 77 "
-            "for 77 ailments, and a half for the one only a few healers know). "
-            "Fitting for a release about healing what was broken.").arg(verName);
-    if (verName == QStringLiteral("Bafana Bafana"))
-        return QObject::tr("Codename \"%1\" — \"the boys\", the nickname of South "
-            "Africa's national football team (a nod home for a South African "
-            "build).").arg(verName);
-    if (verName == QStringLiteral("Deep Thought"))
-        return QObject::tr("Codename \"%1\" — the supercomputer from The "
-            "Hitchhiker's Guide to the Galaxy that computed 42, the Answer to "
-            "Life, the Universe and Everything (a nod to version 0.42).").arg(verName);
-    if (verName == QStringLiteral("Magrathea"))
-        return QObject::tr("Codename \"%1\" — the legendary planet-building world "
-            "from The Hitchhiker's Guide to the Galaxy, where bespoke luxury "
-            "planets are made to order.").arg(verName);
-    if (verName == QStringLiteral("Slartibartfast"))
-        return QObject::tr("Codename \"%1\" — the Hitchhiker's Guide planetary "
-            "coastline designer who won an award for the fjords of Norway and "
-            "liked to sign his name in the crinkly bits; a maker who sweats the "
-            "fine detail.").arg(verName);
-    if (verName == QStringLiteral("Botev"))
-        return QObject::tr("Codename \"%1\" — Hristo Botev, the poet-revolutionary "
-            "honoured on Bulgaria's Heroes' Day (2 June).").arg(verName);
-    if (verName == QStringLiteral("Margaritka"))
-        return QObject::tr("Codename \"%1\" — the daisy (margaritka), for "
-            "Bulgaria's Children's Day (1 June).").arg(verName);
-    if (verName == QStringLiteral("Aprilsko Vastanie")
-        || verName == QStringLiteral("Panagyurishte")
-        || verName == QStringLiteral("Koprivshtitsa"))
-        return QObject::tr("Codename \"%1\" — Bulgaria's April Uprising of 1876, "
-            "150th anniversary (2026).").arg(verName);
-    return QObject::tr("Codename \"%1\".").arg(verName);
-}
+#include "CodenameBlurb.h"   // codenameBlurb() — shared with MainWindow's codename pill
 
 // A small horizontal mic-test level meter: a calm track with a fill that
 // tracks the live capture level (green, warming to amber then red near the
@@ -1240,6 +1196,33 @@ void SettingsDialog::showEvent(QShowEvent *event)
         m_micTester->start(m_deviceManager->selectedInputDeviceId());
 }
 
+void SettingsDialog::setCallActive(bool active)
+{
+    if (m_callActive == active)
+        return;
+    m_callActive = active;
+    if (!isVisible())
+        return;                              // hidden: hideEvent() already stopped the source
+    if (active) {
+        // A call just STARTED while open — release the preview's camera hold NOW so
+        // the publisher can claim the (exclusive Windows-MF) device immediately.
+        syncBgPreview();
+        return;
+    }
+    // A call just ENDED. Do NOT restart the preview synchronously: hangup's teardown
+    // releases the publisher's camera ASYNCHRONOUSLY (mfvideosrc→NULL on a GStreamer
+    // worker / a detached unref thread, which can park for a beat), and this slot
+    // runs INSIDE the same CallManager::stateChanged→teardown stack. Restarting the
+    // preview inline would race the still-held device — the preview's mfvideosrc
+    // loses and (BgPreviewSource has no bus watch) sticks on "Starting camera
+    // preview…" forever. Defer past the async release; re-check state on fire (the
+    // user may have closed the dialog or a new call may have started in the gap).
+    QTimer::singleShot(1000, this, [this]() {
+        if (!m_callActive && isVisible())
+            syncBgPreview();
+    });
+}
+
 void SettingsDialog::syncBgPreview()
 {
     if (!m_bgPreviewLabel) return;
@@ -1280,6 +1263,24 @@ void SettingsDialog::syncBgPreview()
     } else {
         m_bgPreviewEngine->setBlurStrength(strength);
         m_bgPreviewEngine->setMode(BackgroundEngine::Mode::Blur);
+    }
+
+    // A live call already holds the (exclusive, on Windows MediaFoundation)
+    // camera via the publisher pipeline. Opening a SECOND camera consumer here
+    // would STEAL the device from the call — the in-call camera then errors out
+    // and can't re-acquire until the call is rebuilt (Ilko, 0.52.16: opened
+    // Settings mid-call → camera dead for the rest of the call). So while a call
+    // is active we do NOT open the camera for the preview. The chosen background
+    // still applies live to the call via backgroundSettingsChanged(); only this
+    // settings-side preview pauses.
+    if (m_callActive) {
+        if (m_bgPreviewSource)
+            m_bgPreviewSource->stop();
+        m_bgPreviewLabel->setText(
+            tr("Live preview pauses during a call — your camera is in use.\n"
+               "Your background still applies to the call."));
+        m_bgPreviewLabel->show();
+        return;
     }
 
     if (!m_bgPreviewSource) {

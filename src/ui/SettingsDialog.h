@@ -39,6 +39,10 @@ public:
     // 0.52.14 — MainWindow drives the manual "Update now" button's status text
     // (e.g. "Update found — installing…", "You're up to date"); auto-reverts.
     void setUpdateNowStatus(const QString &text);
+    // 0.52.17 — MainWindow pushes call-active state (from CallManager) so the live
+    // background preview never opens the camera during a call (the publisher holds
+    // the exclusive device — opening a 2nd consumer wedges the in-call video).
+    void setCallActive(bool active);
 
 protected:
     // Tear down the live BG preview pipeline (releases the camera so a
@@ -123,6 +127,11 @@ private:
     QLabel                  *m_bgPreviewLabel   = nullptr;
     class BgPreviewSource   *m_bgPreviewSource  = nullptr;
     class BackgroundEngine  *m_bgPreviewEngine  = nullptr;
+    // True while a call is active (pushed by MainWindow from CallManager state).
+    // The publisher holds the exclusive (Windows MF) camera during a call, so
+    // syncBgPreview() must NOT open the device for the preview while this is set
+    // — doing so steals the camera and wedges the in-call video (Ilko, 0.52.16).
+    bool                     m_callActive       = false;
     // Debouncer: dragging the slider used to fire 20 QSettings writes +
     // 20 backgroundSettingsChanged emits in a fraction of a second; the
     // signal handler on the CallManager side reconfigured the publisher

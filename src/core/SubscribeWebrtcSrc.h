@@ -129,7 +129,23 @@ private:
     GstElement *m_webrtcbin = nullptr;  // weak: webrtcsrc-owned, via webrtcbin-ready
     GObject *m_signaller = nullptr;
     GstElement *m_videoConvert = nullptr;
+    // The decoded-video appsink. Created + stored on the GStreamer STREAMING thread
+    // in onPadAdded; its "new-sample" handler is disconnected from the Qt MAIN thread
+    // in cleanup(). 0.52.17: we now hold OUR OWN ref on it (taken in onPadAdded under
+    // m_videoSinkMutex, dropped in cleanup after the disconnect) so the pipeline's
+    // detached NULL/unref worker can't free it under cleanup's signal-disconnect —
+    // that borrowed-pointer UAF faulted in libgobject on hangup (the 0.52.16
+    // deleteLater() fix was downstream of this and didn't cover it).
     GstElement *m_videoAppsink = nullptr;
+    // Serializes onPadAdded's pad-attach (the gst_bin_add_many into m_pipeline + the
+    // m_videoAppsink ref-store, video AND audio) against cleanup's snapshot+null of
+    // m_videoAppsink and m_pipeline. Held by both sides so a streaming-thread pad-add
+    // can't attach into / ref past a pipeline the main thread is tearing down.
+    std::mutex  m_videoSinkMutex;
+    // Set true at the very top of cleanup(); onPadAdded bails immediately if set, so a
+    // late streaming-thread pad event can't build/attach a new appsink into a pipeline
+    // the main thread is already tearing down. Mirrors PublishPipeline::m_shuttingDown.
+    std::atomic<bool> m_shuttingDown{false};
     VideoFrameProvider *m_videoProvider = nullptr;
     // Keyframe-stall watchdog: if no frame decodes shortly after ICE connects,
     // the first IDR was lost and the tile sits frozen on "Starting…" — re-request
