@@ -80,14 +80,19 @@ inline void draw(QPainter &p, const QString &id, const QRectF &box,
         p.drawPolyline(QPolygonF({{4.0,20.0-L},{4.0,20.0},{4.0+L,20.0}}));
         p.drawPolyline(QPolygonF({{20.0-L,20.0},{20.0,20.0},{20.0,20.0-L}}));
     } else if (id == "end") {
-        // Hang-up: a solid handset tilted down (reads as "end call").
+        // Hang-up: a telephone handset — two ear/mouth cups on a CURVED grip —
+        // tilted down onto the hook (the universal "end call"). The concave grip
+        // (not a straight bar) is what makes it read as a receiver, not a dumbbell.
         p.translate(12, 12); p.rotate(135); p.translate(-12, -12);
-        QPainterPath h;
-        h.addRoundedRect(QRectF(3, 10, 18, 4), 2, 2);
-        h.addEllipse(QRectF(2, 8.5, 6, 6));
-        h.addEllipse(QRectF(16, 8.5, 6, 6));
+        QPen hp(stroke, 4.2); hp.setCapStyle(Qt::RoundCap);
+        p.setPen(hp); p.setBrush(Qt::NoBrush);
+        QPainterPath grip;
+        grip.moveTo(6.5, 10.0);
+        grip.cubicTo(9, 13.8, 15, 13.8, 17.5, 10.0);
+        p.drawPath(grip);
         p.setPen(Qt::NoPen); p.setBrush(stroke);
-        p.drawPath(h.simplified());
+        p.drawEllipse(QPointF(6.5, 9.0), 4.0, 4.0);
+        p.drawEllipse(QPointF(17.5, 9.0), 4.0, 4.0);
     } else if (id == "send") {
         // Paper-plane.
         QPainterPath t;

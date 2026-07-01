@@ -63,4 +63,18 @@ inline bool bweGateLayer(BweGateState &s, int estimateBps, int closeBps,
     return s.active;
 }
 
+// 0.52.4 — headroom-scaled re-open dwell. The flat 4 s dwell was tuned for a
+// congested ~1.9 Mbps link to stop a near-threshold layer from flapping. On a
+// healthy link (estimate well above the close threshold) that same 4 s latched a
+// layer OFF for seconds after one momentary dip — the "stuck at 180p, quality
+// won't climb back" field report on a fast LAN. So scale the dwell by headroom:
+// a SHORT dwell when the estimate sits comfortably (> 2x close), the FULL
+// anti-flap dwell only when it's hovering near the threshold where flap risk is
+// real. closeBps is the layer's own drop threshold so the headroom is per-layer.
+inline long long bweReopenDwellMs(int estimateBps, int closeBps,
+                                  long long nearMs = 4000, long long farMs = 1000)
+{
+    return (estimateBps > closeBps * 2) ? farMs : nearMs;
+}
+
 } // namespace talq

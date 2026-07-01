@@ -51,6 +51,14 @@ public:
     // WebRTC call signaling
     QString sessionId() const { return m_sessionId; }
     QString currentRoom() const { return m_currentRoom; }
+    // The signaling/HPB server URL this client is connected to (for telemetry).
+    QString signalingUrl() const { return m_signalingUrl; }
+    // Measured RTT (ms) to the selected HPB from the nearest-server probe, or -1
+    // if unknown (single candidate / manual pin / probe found nothing). Telemetry.
+    int signalingRttMs() const { return m_signalingRttMs; }
+    // Per-instance signaling-server override (highest precedence). Used by
+    // talq-call-test to pin each bot to a specific HPB for a cross-server call.
+    void setServerOverride(const QString &url) { m_serverOverride = url; }
     // Our own Nextcloud user id (for same-user multi-device checks, e.g.
     // suppressing the incoming-call ring on the caller's other device).
     QString userId() const { return m_userId; }
@@ -122,11 +130,26 @@ signals:
     void typingUserChanged();
     void peerClientInfoChanged(const QString &userId, const QString &info);
 
+    // A2 (0.53.x robustness) — our signaling session was RESET: the server
+    // rejected a resume (or we otherwise got a brand-new session id) WHILE we
+    // were already in a room/call. The old session's Janus MCU publisher is
+    // dead and every peer is now re-subscribing to a session that has no
+    // publisher behind it. CallManager must, for the new sid: rebuild+re-offer
+    // our publisher, re-join the CALL on the server (joinRoom alone only
+    // re-POSTs the room, not the call record), and rebuild all subscribers.
+    // Distinct from connectedChanged (a plain reconnect that RESUMED cleanly
+    // emits no sessionReset — the call survives untouched there).
+    void sessionReset(const QString &newSessionId);
+
     // WebRTC signaling signals
     void offerReceived(const QString &fromSessionId, const QString &sdp, const QString &sid, const QString &roomType);
     void answerReceived(const QString &fromSessionId, const QString &sdp, const QString &roomType);
     void candidateReceived(const QString &fromSessionId, const QJsonObject &candidate, const QString &roomType);
     void endOfCandidatesReceived(const QString &fromSessionId);
+    // 0.52.7 — the MCU rejected a requestoffer ("not_allowed: Not allowed to
+    // request offer."). Carries NO sid (the HPB error has none); CallManager
+    // correlates it to the peers it currently has a requestoffer outstanding for.
+    void requestOfferRejected();
     // 0.41.x-beta — TalQ-private P2P overlay (bypasses the MCU for 1:1).
     void p2pSignalReceived(const QString &fromSessionId, const QString &subtype,
                            const QJsonObject &payload);
@@ -157,6 +180,9 @@ signals:
 private:
     void fetchSettings();
     void connectWebSocket();
+    // Probe the candidate HPB pool (Nextcloud server + branded 123NET pool) and
+    // connect to the nearest reachable one; fail-safe to the Nextcloud default.
+    void selectNearestHpbAndConnect();
     void onConnected();
     void onDisconnected();
     void onTextMessage(const QString &msg);
@@ -188,6 +214,8 @@ private:
     QTimer m_keepAliveTimer;
 
     QString m_signalingUrl;
+    QString m_serverOverride;   // per-instance HPB pin (talq-call-test cross-server)
+    int     m_signalingRttMs = -1;   // measured RTT to the selected HPB (nearest-server probe)
     QString m_userId;
     QString m_ticket;
     QString m_helloV2Token;   // signed JWT for hello v2.0 (preferred when present)
@@ -200,6 +228,19 @@ private:
     // it, every transient disconnect on a long path killed the call.
     QString m_resumeId;
     bool    m_resuming = false;  // a resume hello is in flight (vs fresh auth)
+    // A1 (0.53.x robustness) — fast resume: when we hold a resume id and a
+    // cached signaling URL, reconnect goes STRAIGHT to the WebSocket (skipping
+    // the REST settings fetch) on a short backoff, so the resume lands inside
+    // the server's short ~30s session-resume grace instead of blowing it (the
+    // 2 s backoff + a full settings round-trip is what turned a 4 s blip into a
+    // session-killing full re-hello in the field). True while such an attempt
+    // is outstanding (no auth yet); cleared on auth, or on failure we fall back
+    // to a full settings refresh.
+    bool    m_fastResumePending = false;
+    // A2 — set once we have ever authenticated a session this app-run. Lets a
+    // LATER fresh (non-resumed) hello be recognised as a session RESET (vs the
+    // very first cold hello, which must not trigger publisher rebuilds).
+    bool    m_sessionEstablished = false;
     QString m_currentRoom;
     QString m_typingUser;
     QString m_typingRoom;  // room token where typing was detected

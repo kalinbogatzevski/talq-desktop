@@ -85,13 +85,27 @@ public:
     // "camera off" (a deliberate user toggle): the call surface uses this to
     // show a "Camera unavailable" notice instead of a silent black tile.
     bool isCameraUnavailable() const { return m_cameraUnavailable; }
+    // 0.52.12 — the call UI calls this when a real self-camera frame arrives, so a
+    // stale "camera unavailable" notice clears the moment the device recovers
+    // (it was otherwise only cleared on a fresh call or a manual re-toggle).
+    void cameraFrameConfirmed();
     // True when the microphone could not be opened during this call (missing,
     // in use by another app, OS-blocked, or a device id wasapi2 couldn't
     // resolve) and the publisher fell back to a SILENT source. The call still
     // runs (video + receive intact); the surface shows a "microphone
     // unavailable" banner instead of pretending the mic is live.
     bool isMicUnavailable() const { return m_micUnavailable; }
-    int callDuration() const { return m_callDuration; }
+    // 0.52.5 — non-empty while our OWN camera SEND quality is degraded for a
+    // reason the user should see (software encoding, or shed to the 480p floor
+    // under load). Drives a persistent amber chip on the call surface. A Capable
+    // box with a working HW encoder stays empty (it sends full quality). Cleared
+    // when full quality resumes / on teardown.
+    QString videoQualityNotice() const { return m_videoQualityNotice; }
+    // 0.52.10 — derive duration from an elapsed timer started once on the first
+    // Active, NOT from a counter that the reconnect/re-Active path zeroes (which
+    // showed 00:00 mid-call after a "waiting for others" resync).
+    int callDuration() const { return m_callElapsed.isValid()
+                                      ? int(m_callElapsed.elapsed() / 1000) : 0; }
     QString remotePeerName() const { return m_remotePeerName; }
     QString remotePeerId() const { return m_remotePeerId; }
     double audioLevel() const { return m_audioLevel; }
@@ -131,6 +145,14 @@ public:
     QString streamBandwidthLabel() const;
     // Numeric outbound bitrate (Mbps) for the telemetry bandwidth gauge.
     double txBitrateMbps() const;
+    // Telemetry: the routing this call actually selected — the TURN relay host(s)
+    // in use (after nearest-selection) and the signaling/HPB server host.
+    QString selectedTurnLabel() const;
+    QString selectedSignalingLabel() const;
+    // Measured RTT (ms) to the selected TURN relay / HPB from the nearest-server
+    // probes, or -1 if unknown. For the telemetry ROUTING readout.
+    int selectedTurnRttMs() const;
+    int selectedSignalingRttMs() const;
 
     Q_INVOKABLE void startCall(const QString &token, bool withVideo);
     Q_INVOKABLE void setRemotePeerInfo(const QString &name, const QString &peerId);
@@ -160,6 +182,19 @@ public:
     Q_INVOKABLE void startScreenShare(int monitorIndex = 0, quintptr windowHandle = 0);
     Q_INVOKABLE void stopScreenShare();
     bool isScreenSharing() const { return m_screenSharing; }
+    // 0.53.1 — true when the active share is a single WINDOW (not a full monitor).
+    // The Zoom-style self-view stage is shown ONLY for window shares: a MONITOR
+    // share usually contains the TalQ window, so promoting the live share to the
+    // stage makes the capture grab TalQ-showing-the-share → a frozen hall-of-mirrors
+    // (and the near-static content stalls the receiver into a rebuild). Window shares
+    // capture only that app window, so there's no feedback.
+    bool screenShareIsWindow() const { return m_ssWindowHandle != 0; }
+    // Index into QApplication::screens() of the monitor being shared (the share
+    // picker assigns it from that same list). Only meaningful for a MONITOR
+    // share (screenShareIsWindow()==false) — lets the stage tell whether the
+    // call window sits on the very monitor we're sharing (hall-of-mirrors) or a
+    // different display (safe to show the live self-share).
+    int shareMonitorIndex() const { return m_ssMonitorIndex; }
     // Runtime screen-share quality. Levels: 0=720p 1=1080p(default)
     // 2=1440p 3=Native. Changing it while sharing does a quick managed
     // re-share at the new cap, reusing the already-picked target.
@@ -239,6 +274,7 @@ signals:
     void screenShareRetrying();            // share didn't confirm; auto-retrying
     void screenShareFailed(const QString &reason);  // gave up after retries
     void softwareVideoEncoderNotice();     // camera fell back to software (x264); notify once/call
+    void videoQualityNoticeChanged();      // 0.52.5 — persistent degraded-send chip text changed
     void screenShareQualityChanged();
     void remoteScreenProviderChanged();
     void participantAdded(CallParticipant *p);
@@ -303,6 +339,13 @@ private:
     // went "failed" — both happen on a normal publisher renegotiation).
     // Tear down just that subscriber and re-subscribe; never kill the call.
     void recoverSubscriber(const QString &sessionId, const QString &reason);
+    // A3a — tear down a peer's subscriber WITHOUT re-requesting (the peer's sid
+    // is definitively dead, e.g. room/leave): drop the zombie + purge all its
+    // requestoffer bookkeeping so the retry tick stops chasing a dead sid.
+    void dropSubscriber(const QString &sessionId);
+    // D3 — apply the coalesced camera desired-state (m_cameraOn) to the live
+    // pipeline; called by m_cameraApplyTimer after toggle mashing settles.
+    void applyCameraState();
 
     // Publisher (our send leg) reconnect — the Zoom-style "never drop"
     // counterpart to recoverSubscriber. recoverPublisher() enters/keeps the
@@ -354,6 +397,12 @@ private:
     QHash<QString, int> m_peerManualSubstreamOverride;
     int  m_recvLoadSubstreamCap = 2;
     bool m_recvLoadCapFocused   = false;
+    // Host-protection memory watchdog (onLoadTick): hard-shed every peer to the
+    // 180p layer when the process working set balloons (field: Ivan ~2 GB on a
+    // stalled hybrid-GPU decode), restore when it eases. Hysteresis = high/low.
+    bool m_memShedActive = false;
+    static constexpr qint64 kMemShedHighMb = 1500;
+    static constexpr qint64 kMemShedLowMb  = 900;
     // The controller itself (pure logic) + its ~1 s tick. Owned here because
     // load is a property of THIS machine, not of any one peer. The synthetic
     // fields feed it on the dev box (NVENC won't overload) until the encode/
@@ -409,6 +458,19 @@ private:
     QString m_callToken;
     QString m_stunServer;
     QList<TurnServer> m_turnServers;
+    // Nearest-TURN preference (0.57.6): a client offered TURN servers in several
+    // regions can get its publish media relayed cross-continent (field: Ivan in ZA
+    // relayed via the BG TURN -> SA->BG->SA detour -> shredded outbound audio+video,
+    // while his ping/speedtest/receive were all fine). probeNearestTurnAsync()
+    // RTT-probes each offered TURN host on room-join; effectiveTurnServers() then
+    // hands the call pipelines only the nearest host(s), so a relay (when ICE needs
+    // one) is always local. Falls back to the full list until probed / if none answer.
+    QList<TurnServer> m_nearestTurnServers;
+    bool m_turnProbed = false;
+    int  m_turnBestRttMs = -1;   // best measured TURN RTT (ms) from the probe; telemetry
+    int  m_turnProbeGen = 0;   // bumped per probe so a stale timer can't clobber a newer one
+    void probeNearestTurnAsync();
+    QList<TurnServer> effectiveTurnServers() const;
     QString m_remoteSessionId;
     QString m_remotePeerName;
     QString m_remotePeerId;
@@ -426,7 +488,8 @@ private:
     QTimer m_speakingGrace;
     bool m_cameraFallbackTried = false;
     bool m_withVideo = false;
-    int m_callDuration = 0;
+    int m_callDuration = 0;                 // legacy counter (kept; getter now uses m_callElapsed)
+    QElapsedTimer m_callElapsed;            // 0.52.10 — call duration source of truth; survives reconnects
     double m_audioLevel = 0.0;
     QString m_callStats;
     QString m_statusDetail;
@@ -515,6 +578,11 @@ private:
     QPointer<ShareOverlay> m_shareOverlay;   // #72 coloured monitor border (monitor shares)
     bool m_screenSharing = false;
     bool m_softwareEncoderNotified = false;  // once-per-call guard for softwareVideoEncoderNotice
+    bool m_hwDecodeFallbackDone = false;     // B4 — one-shot guard for the d3d11 decode-fault fallback
+    bool m_resubscribeOnActive = false;      // A2 fix — replay subscriber re-request on the next Active
+    QHash<QString,int> m_neverDecodedRecoveries;  // D2 fix — bounded never-decoded rebuilds per sid
+    QString m_videoQualityNotice;            // 0.52.5 — "" = full quality; else the sender chip text
+    void setVideoQualityNotice(const QString &text);   // emits videoQualityNoticeChanged() on change
     QString m_screenShareSid;
     // Reset (restart()) whenever WE send an unshareScreen. A peer discovers an
     // ongoing screen share ONLY from the publisher's one-shot sendoffer (there
@@ -547,6 +615,7 @@ private:
     ShareStartPolicy m_sharePolicy;
     QTimer m_shareConfirmTimer;
     bool m_shareConfirmArmed = false;
+    QTimer m_cameraApplyTimer;   // D3 — coalesce fast camera-toggle mashing
     bool m_shareRetryTeardown = false;   // a stop() in flight is a retry, not a user stop
     void buildAndStartSharePipeline(int monitorIndex, quintptr windowHandle);
     // Clamp a screen-share capture size DOWN to the GPU tier's ceiling (720p
@@ -583,6 +652,31 @@ private:
     // liveness signal in MCU mode.
     QHash<QString,int> m_screenSubFrameMark;
     QHash<QString,int> m_screenSubStallTicks;
+    // 0.52.15 — anti-thrash startup grace. Wall-clock (ms since epoch) when each
+    // screen sub was (re)built. A sub that has NEVER decoded (m_screenSubFrameMark
+    // == 0) and is younger than kScreenSubStartupGraceMs is still negotiating /
+    // pulling its first keyframe (~2-5s on a re-share). The publisher's reap-race
+    // re-assert (+5/+11s) must NOT tear it down or it can never reach "live" → the
+    // infinite ~6s rebuild loop that stranded a re-shared screen on "Starting"
+    // (Kalin↔Ilko 0.52.14). Kept in lockstep with the two maps above (cleared
+    // everywhere they are; re-stamped only after a successful start()).
+    QHash<QString,qint64> m_screenSubBuiltMs;
+    static constexpr qint64 kScreenSubStartupGraceMs = 8000;
+    // 0.52.17 — last ICE state each screen sub reported. The wall-clock grace above
+    // is SHORTER than the publisher's +11s reap-race re-assert, so a sub that reaches
+    // ICE "checking" early (FIX 2's candidate queue makes that sooner) and STAYS there
+    // — exactly Ilko's 0.52.16 failure — would age out of the grace and be torn down
+    // mid-pairing by the +11s rebuild. A sub actively PROGRESSING ICE (checking/
+    // connected/completed, frameMark==0) must be protected from a redundant-re-offer
+    // rebuild regardless of wall-clock; this map drives that check. Lockstep with the
+    // maps above (cleared everywhere they are).
+    QHash<QString,QString> m_screenSubIceState;
+    // Upper bound on the iceProgressing rebuild-protection (must exceed the publisher's
+    // +11s reap-race horizon, measured from the last ICE-progress re-stamp). A sub
+    // genuinely WEDGED in "checking" (e.g. a lost unshareScreen with no
+    // removeScreenSubscriber) falls through to rebuild after this instead of being held
+    // until ICE reports "failed". 20s > 11s + margin.
+    static constexpr qint64 kScreenSubIceProgressGraceMs = 20000;
 
     // Offers received before ICE servers are available (P3 race guard)
     struct PendingOffer { QString fromSessionId; QString sdp; QString sid; };
@@ -596,9 +690,26 @@ private:
     // never leaves "new" ("waiting for video"). The official client queues.
     struct PendingIceCandidate { QString candidate; int mline; QString mid; };
     QHash<QString, QVector<PendingIceCandidate>> m_pendingSubCandidates;
+    // Screen-share equivalent of m_pendingSubCandidates. The SCREEN candidate
+    // router (handleScreenOffer's sibling in candidateReceived) had NO queue,
+    // unlike the camera path above: a screen subscriber's remote candidates that
+    // the MCU trickles with/just before its offer were DROPPED if they landed
+    // before the screen-offer handler built the SubscribePipeline, so the fresh
+    // sub started candidate-starved -> ICE never left "new"/"checking" -> the
+    // re-share stuck on "Starting your share" (Kalin<->Ilko 0.52.16, frame-by-
+    // frame in the receiver log). Queue per remote session; the screen-offer
+    // handler flushes into the sub right before setRemoteOffer (same contract as
+    // the camera path). Cleared in lockstep with m_screenSubscribers.
+    QHash<QString, QVector<PendingIceCandidate>> m_pendingScreenSubCandidates;
 
     // requestoffer retry (upstream resends ~every 8s until the offer lands)
     QSet<QString> m_pendingRequestOffers;
     QHash<QString, int> m_requestOfferAttempts;
+    // 0.52.7 — per-sid count of consecutive "not_allowed" requestoffer rejections.
+    // A persistently-rejected sid is escalated from blind requestoffer resends to a
+    // full recoverSubscriber rebuild (the bare resend can never escape a stale/
+    // un-offerable publisher slot). Cleared whenever a real offer lands / a rebuild
+    // starts / the call tears down — in lockstep with m_requestOfferAttempts.
+    QHash<QString, int> m_requestOfferRejections;
     QTimer m_requestOfferRetry;
 };

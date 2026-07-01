@@ -1,5 +1,502 @@
 # Changelog
 
+## v0.57.10 "July Morning" -- BETA (2026-07-01)
+
+### Fixed
+* **Automatic nearest-server selection now actually connects.** The 0.57.9 picker
+  correctly found the closest server, but a URL-formatting bug sent it to a dead
+  path so it silently fell back to the far one. It now connects to the nearest.
+
+## v0.57.9 "July Morning" -- BETA (2026-07-01)
+
+### Added
+* **Calls connect through the nearest regional server automatically.** TalQ now
+  measures which signaling server is closest and connects there, so your call
+  takes the shortest, most stable path instead of a long international one — the
+  main cause of mid-call disconnects on distant links. If that server stops
+  responding, TalQ moves to the next-nearest on the next reconnect.
+* **In-call telemetry shows server latency.** Press **T** during a call: the
+  ROUTING panel lists the signaling and relay servers in use, each with its
+  measured round-trip time.
+
+### Fixed
+* **The Settings window opens instantly.** It no longer flashes blank-white or
+  stalls for a moment while the microphone and camera start up — the window
+  paints first and the devices come alive behind it.
+
+## v0.57.8 "July Morning" -- BETA (2026-07-01)
+
+### Fixed
+* **Calls now pick the nearest relay accurately.** The check that measures which
+  relay server is closest now uses a fast, reliable probe. TalQ can once again
+  confidently route your outgoing audio and video through the relay in your own
+  region instead of falling back to keeping all of them. A participant on one
+  continent and a relay on another no longer get paired — outbound media stays
+  local, which keeps it smooth for everyone on the call.
+* **Virtual background is more robust.** On builds where the background library and
+  its runtime were out of step, switching on a background could take the app down;
+  it now degrades gracefully instead.
+
+### Added
+* **Telemetry now shows the call's routing.** The in-call telemetry panel (press
+  **T**) lists the signaling server and the relay server this call actually
+  selected, so it's clear which region is handling your media.
+
+## v0.57.7 "July Morning" -- BETA (2026-07-01)
+
+### Fixed
+* **The active-speaker frame no longer flickers on background noise.** It now needs
+  clearer, sustained speech before highlighting someone, so a quiet room or low mic
+  hiss won't keep the frame lit.
+
+### Changed
+* Steadier relay-server handling on slow or uneven connections — TalQ keeps all
+  relays available rather than guessing a "nearest" from an unreliable measurement
+  (a more accurate probe is coming).
+
+## v0.57.6 "July Morning" -- BETA (2026-06-30)
+
+### Fixed
+* **Calls now relay through the nearest server.** When relay servers are offered in
+  more than one region, TalQ measures which is closest and uses only that one.
+  Previously a participant's outgoing audio/video could be routed through a relay on
+  another continent — a perfect ping, but a long detour that made their stream choppy
+  and their audio break up for everyone else, even on a fast connection. Outbound
+  media now stays on the local relay.
+* **Group calls reliably show every participant.** If you joined a call others were
+  already in, you could miss seeing one of them until they toggled their camera.
+  TalQ now keeps every in-call participant subscribed, so each tile shows its own
+  live video.
+
+### Changed
+* **720p is now the recommended send quality** — it fits most connections smoothly.
+  1080p is available as an **Ultra** option for strong upload connections.
+
+## v0.57.5 "July Morning" -- BETA (2026-06-30)
+
+### Fixed
+* **Group calls now show everyone.** In a call with 3+ people you could end up
+  seeing only the first person who joined — others stayed invisible until they
+  turned their camera off and back on. TalQ now connects to every participant
+  automatically.
+* **Smoother incoming video on laptops with switchable graphics.** On machines
+  with both Intel and NVIDIA graphics, incoming HD video could freeze at a couple
+  of frames per second; TalQ now detects this and falls back to software decoding
+  faster so the picture stays smooth.
+* **Click a spotlighted speaker to return to the gallery.** Tapping a tile to make
+  someone the main view had no way back to multi-view — click their video again.
+* **Your own preview now fits the row** in group calls instead of floating, the
+  wrong size, in the corner.
+
+### Added
+* **Host-overload protection.** If a call ever makes TalQ's memory balloon (e.g. a
+  stalled decoder), it now automatically drops incoming video to a lighter quality
+  to protect your machine, and restores full quality once it recovers.
+
+## v0.57.4 "July Morning" -- BETA (2026-06-30)
+
+### Added
+* **Active-speaker frame.** A clear, gently-pulsing accent border now highlights
+  whoever is talking in a call, so it's easy to see who has the floor at a glance.
+  It's driven by each person's live audio (with a short hold so it doesn't flicker
+  between words), so it works for everyone regardless of their app.
+
+## v0.57.3 "July Morning" -- BETA (2026-06-30)
+
+### Fixed
+* **Setting a group picture now works.** Choosing a group picture silently failed
+  for most photos because the server only accepts square images — TalQ now
+  automatically crops your photo to a centered square, so any picture works. The
+  Conversation Info dialog also shows the current picture when you open it, gives
+  clear, visible feedback (and a progress bar) while it uploads, and the new
+  picture appears immediately in the header and conversation list.
+* **Hardware video encoding now recovers after a GPU or version change.** A machine
+  that once fell back to software H264 encoding stayed on software permanently —
+  even after a graphics-driver update, a GPU change, or an app upgrade that fixed
+  the cause — which pinned otherwise-capable machines to CPU-heavy software encoding.
+  The hardware encoder is now re-checked whenever the graphics setup or app version
+  changes, so it picks the hardware encoder back up automatically.
+
+## v0.57.1 "July Morning" -- BETA (2026-06-30)
+
+### Under the hood
+* **Hardened the release build.** The packaging pipeline now verifies the full
+  runtime dependency closure of every shipped binary (so a missing library can
+  never slip into a release), fails loudly if any required file is absent rather
+  than shipping a partial bundle, and trims a few unused libraries from the
+  installer. No app behaviour changes from 0.57.0 — same modernized foundation.
+
+## v0.57.0 "July Morning" -- BETA (2026-06-29)
+
+### Under the hood
+* **Modernized the app's foundation.** TalQ is now built on an up-to-date
+  compiler and refreshed runtime libraries (a new C++ toolchain and a newer Qt),
+  bringing the desktop client in step with current components for better
+  long-term maintainability and security. No change in features — this beta is
+  about proving the new foundation is solid in real calls before it becomes the
+  default.
+
+## v0.56.1 "July Morning" -- STABLE (2026-06-29)
+
+### Fixed
+* **Sharing a monitor while the call window is on another display** now shows
+  your shared screen on the call stage, instead of the "You're sharing this
+  screen" placeholder. (The placeholder is only needed when the window is on the
+  very monitor you're sharing — otherwise it's safe to show the live view.)
+* Removed a stray **"PRE-RELEASE"** tag that was showing in the window title on
+  this stable build.
+* Restored the **codename description** in its hover tooltip.
+
+## v0.56.0 "July Morning" -- STABLE (2026-06-29)
+
+The "July Morning" stable. Named for the Bulgarian tradition of driving to the
+Black Sea cliffs on the night of 30 June to greet the first sunrise of 1 July
+together — a fresh start at first light. This release is about making **calls
+feel clean and dependable**, gathering everything proven across the 0.53–0.55
+betas into one stable.
+
+### Calls
+* **Echo cancellation now works with speakers.** If you use speakers instead of
+  headphones, the people you talk to no longer hear their own voice echoed back.
+  TalQ cancels against the exact audio your speakers actually play, so it holds
+  even at high volume.
+* **Calls stay up through trouble.** Signalling reconnects and resumes instead of
+  dropping; a brief network blip no longer ends the call; a peer leaving no
+  longer disturbs the rest.
+* **Video adapts instead of failing.** A machine whose GPU video decoder is
+  unusable automatically falls back to software decoding (now robust for any
+  video, not just the simplest kind); a choppy link lowers quality rather than
+  freezing.
+* **Cameras and screen sharing are forgiving.** Plug in a camera mid-call and
+  TalQ picks it up; rapid camera on/off no longer stalls; screen-share layout
+  stays consistent, including your own share on the main stage.
+
+### Conversations
+* **Set a group conversation's picture** (as a moderator).
+* **Unread topics stand out** in the topic bar at a glance.
+
+### Quality
+* **Reliable startup** on every machine, and a hardened install / auto-update path.
+
+## v0.55.3 "July Morning" -- BETA (2026-06-29)
+
+### Fixed / improved
+* **Echo cancellation now works with speakers.** If you use speakers instead of
+  headphones, the people you talk to no longer hear their own voice echoed back.
+  TalQ now cancels the echo against the exact audio your speakers actually play
+  (captured from the audio output itself), so it stays clean even when you turn
+  the volume up.
+
+## v0.55.2 "July Morning" -- BETA (2026-06-29)
+
+**Codename "July Morning."** On the night of 30 June into 1 July, Bulgarians drive
+east to the Black Sea coast, light fires on the cliffs, and stay awake to greet the
+first sunrise of the month together — a ritual that grew out of the 1980s
+counterculture as a quiet act of freedom and is now a beloved summer fixture. It
+takes its name from Uriah Heep's 1971 song "July Morning," which caught on in
+Bulgaria a decade late and became the unofficial anthem of the vigil; for years the
+band's later singer John Lawton returned to the clifftop at Kamen Bryag, near
+Kavarna, to sing it to the rising sun (a monument to him was unveiled there on
+1 July 2022). The easternmost headland catches the light first — a fitting name for
+a release that meets its own new beginning at first light.
+
+### Added
+* **Set a group conversation's picture.** Open a group's info and, as a moderator,
+  choose "Change picture" to upload an image as the conversation's avatar.
+* **Unread topics now stand out.** A topic with unread messages is highlighted in
+  the topic bar (instead of a faint count) so it's easy to spot at a glance.
+
+### Fixed / improved
+* **Reliable startup.** Resolves a crash on launch that affected an earlier
+  pre-release build of this line; the app now starts cleanly on every machine.
+* **Software video decoding is now robust for any video.** Building on the automatic
+  hardware→software fallback, TalQ now bundles a full software H.264 decoder, so a
+  machine whose GPU decoder is unusable can decode every kind of incoming video, not
+  just the simplest profile.
+* **Groundwork for smoother video on bad links** (an automatic frame-rate step-down
+  under congestion) ships in this build, switched off by default while it's
+  validated in the field.
+
+## v0.55.0 "July Morning" -- BETA (2026-06-26)
+
+**Codename "July Morning"** — on the night of 30 June into 1 July, people gather on
+Bulgaria's Black Sea coast (Kamen Bryag, Kavarna) to meet the first sunrise of July
+together: a 1980s counterculture tradition of renewal and a fresh start, carried by
+Uriah Heep's song of the same name. A fitting name for a fresh beta line — a clean
+dawn after a reset.
+
+A call-resilience beta, built from a real three-way field session: calls now
+recover from far more on their own instead of freezing or going silent.
+
+### Fixed
+
+* **A brief network drop no longer risks dropping you from a call.** The session
+  resumes faster after a blip (racing the server's short grace window), and if the
+  session has to be rebuilt the call re-establishes your video and audio under the
+  new session automatically — instead of leaving you connected but silently unseen
+  and unheard by everyone else.
+* **No more "Not allowed to request offer" retry storms.** When a peer reconnected
+  under a new session, TalQ could chase their old, dead session indefinitely. It now
+  drops the dead session cleanly and picks up the new one.
+* **Faulty or unsupported hardware video decoding now falls back to software
+  automatically.** On a machine whose GPU video decoder is unsupported or
+  unreliable, the remote picture used to drop frames or freeze with no way out. TalQ
+  now detects this and switches that machine to software decoding (and remembers it
+  for next time). The same automatic fallback now also covers the sending side
+  mid-call.
+* **Choppy remote video recovers on its own.** A frozen or "moving-but-not-updating"
+  remote feed now requests a fresh keyframe and recovers, and a peer whose video
+  connects but never shows a frame is rebuilt instead of sitting on "Starting…". A
+  larger receive buffer smooths jittery links.
+* **Your tile stays a proper member of a group call during a screen share.**
+  Previously you could be bumped into a small floating self-preview while someone
+  shared; you now remain a normal member tile throughout.
+* **Your own screen share shows full-size on the main stage in every call.** When you
+  share the whole screen TalQ is on, a clean "You're sharing this screen" placeholder
+  is shown instead of a hall-of-mirrors feedback loop (this replaces the earlier
+  window-only limit).
+* **Cameras are harder to wedge.** Rapidly toggling your camera on and off no longer
+  parks the device. Plugging or unplugging a camera or microphone during a call is
+  now noticed live, and a camera that drops out and comes back resumes on its own.
+* **TalQ no longer restarts to update during — or right after — a call.** An update
+  that downloaded while you were on a call could restart the app the moment the call
+  ended, interrupting back-to-back calls. Updates now wait until you've been off a
+  call for a few minutes before installing (and a new call resets the wait). Choosing
+  "Update now" still installs immediately.
+
+## v0.53.1 "Bafana Bafana" -- BETA (2026-06-26)
+
+### Fixed
+
+* **Sharing a whole screen that has TalQ on it no longer freezes the picture.** The
+  full-size preview of your own share was being shown on the call and then captured
+  again by the screen share — over and over, a "hall of mirrors" — leaving the other
+  side on a frozen image. The full-size self-view now appears only when you share a
+  single window (where there's no feedback); sharing a whole screen keeps just the
+  small corner preview.
+* **Re-sharing a screen is more reliable still.** Closed the last case where a
+  quickly re-shared screen could leave the viewer stuck on "Starting…" — the viewer
+  now keeps the connection details it needs even when it rebuilds the connection.
+* **Window titles always show in the share picker.** Each window's name now appears
+  under its thumbnail at all times, not only when you hover over it.
+
+## v0.53.0 "Bafana Bafana" -- BETA (2026-06-25)
+
+**Codename "Bafana Bafana"** (continued) — South Africa's national football team,
+through to a World Cup knockout round for the first time in their history (24 June
+2026). This beta opens the 0.53.x line on top of the 0.52.17 stable fixes.
+
+### Added
+
+* **See your own screen share full-size.** While you're sharing your screen, the
+  call now shows your shared screen as the main view — the same way the people
+  you're sharing with see it — instead of only a small corner preview. Your camera
+  stays visible alongside it. If someone else starts sharing too, their share takes
+  the main view and yours returns to a corner preview.
+* **Full window titles in the share picker.** When picking a window to share, each
+  window's full title is now shown under its thumbnail, instead of being cut off and
+  readable only on hover.
+
+## v0.52.17 "Bafana Bafana" -- STABLE (2026-06-25)
+
+**Codename "Bafana Bafana"** — "the boys", the nickname of South Africa's national
+football team. On 24 June 2026 they won 1–0 to finish their group and reach a World
+Cup knockout round for the first time in their history — through to the last 32 in
+their fourth finals, having never before made it out of the group. A nod home: the
+team and the company that builds TalQ both come from South Africa.
+
+### Fixed
+
+* **Fixed another rare crash when ending a call.** A separate teardown path could
+  still crash the app on hang-up while it released the incoming video connections —
+  most likely after an unstable call. Ending a call now releases those connections
+  safely.
+* **Re-sharing a screen is more reliable still.** Stopping a screen share and
+  starting a new one could leave the viewer stuck on "Starting remote screen share."
+  The viewer now holds onto a share that is actively connecting instead of restarting
+  it, and no longer drops the connection details it needs to come up — so a re-shared
+  screen appears within a few seconds.
+* **Opening Settings during a call no longer interrupts your camera.** With a
+  background blur or image enabled, opening Settings mid-call could take over the
+  camera and leave your video stuck off for the rest of the call. The live background
+  preview now pauses during a call (your chosen background still applies to the call),
+  so the call keeps the camera.
+
+## v0.52.16 "Enyov Day" -- STABLE (2026-06-24)
+
+**Codename "Enyov Day"** — Enyovden (Еньовден), the Bulgarian Midsummer, on
+24 June (the day this release was cut). It marks the summer solstice — when the
+sun reaches its peak and begins its long turn back toward winter — and the feast
+of St John the Baptist. Above all it is the herbalists' day: healing herbs
+gathered at dawn are believed to hold their greatest power, the legendary "77 and
+a half" (77 for 77 ailments, and a half for the one known only to a few healers).
+A fitting name for a release about healing what was broken.
+
+### Fixed
+
+* **Fixed a rare crash when ending a call.** Hanging up during a call could, in
+  rare cases, crash the app while it tore down the connection. Teardown now
+  releases everything safely.
+* **Re-sharing a screen is now reliable.** Stopping a screen share and starting a
+  new one — especially full-screen — could leave the viewer stuck on "Starting
+  remote screen share," churning for many seconds before it settled (or not
+  settling at all). The viewer now gives a reconnecting share the time it needs to
+  come up instead of repeatedly restarting it, and fully releases the previous
+  connection before opening the new one — so a re-shared screen appears within a
+  few seconds, which also keeps the sharer's video bitrate from collapsing.
+
+## v0.52.15 "Bafana Bafana" -- STABLE (2026-06-24)
+
+### Fixed
+
+* **A re-shared screen now appears for viewers.** When someone stopped a screen
+  share and immediately started a new one, the viewer could get stuck on
+  "Starting remote screen share" and never see the new share. The viewer now
+  gives a just-started screen a moment to come up — and re-requests its first
+  frame — instead of repeatedly restarting it, so the re-shared screen shows
+  within a few seconds.
+
+## v0.52.14 "Bafana Bafana" -- STABLE (2026-06-23)
+
+### Added
+
+* **An "Update now" button in Settings → Updates.** Check for a new version and
+  install it on demand instead of waiting for the periodic background check. It
+  still never restarts the app during a call — if you're on a call, the install
+  waits until the call ends.
+
+## v0.52.13 "Bafana Bafana" -- STABLE (2026-06-23)
+
+### Fixed
+
+* **The camera now recovers on its own if it freezes when started during a screen
+  share.** On some hardware, turning the camera on while already sharing your
+  screen could leave the local preview frozen until you manually switched the
+  camera off and back on. The app now detects the stall and re-arms the camera
+  automatically, so it comes back without any manual step.
+
+## v0.52.12 "Bafana Bafana" -- STABLE (2026-06-23)
+
+### Fixed
+
+* **An update no longer restarts the app at the end of a call.** The auto-updater
+  now waits for the app to be genuinely idle *after* a call finishes, instead of
+  installing the instant a call ends -- which previously dropped the call for both
+  sides.
+* **The "Your camera isn't available" notice clears as soon as the camera
+  recovers.** It no longer lingers on screen (or over a screen share) once the
+  camera starts working again.
+
+## v0.52.11 "Bafana Bafana" -- STABLE (2026-06-23)
+
+### Changed
+
+* **The hang-up button is now a clear red "leave call" button** with a
+  recognizable phone-handset icon, so it reads unmistakably at a glance (it was
+  a warm orange with a less obvious symbol).
+
+## v0.52.10 "Bafana Bafana" -- STABLE (2026-06-23)
+
+### Fixed
+
+* **Incoming calls always open on your main screen** instead of occasionally
+  appearing in a small bottom-right box.
+* **The call window no longer jumps to the corner by itself** during a brief
+  reconnect while you have a conversation open.
+* **The call timer keeps counting from when the call started** -- a momentary
+  reconnect no longer resets it to 00:00.
+* **Updates download once, not repeatedly** -- the auto-updater now fetches a new
+  version a single time instead of re-pulling the same installer on every check.
+
+## v0.52.9 "Bafana Bafana" -- STABLE (2026-06-23)
+
+### Fixed
+
+* **Screen shares no longer freeze when the presenter switches what they share in
+  quick succession.** Rapidly switching between screens/windows could leave the
+  viewer stuck on a frozen frame, because the request for a fresh keyframe was
+  being discarded before it went out. The keyframe request is now delivered
+  correctly, so the view recovers within a moment.
+
+## v0.52.8 "Bafana Bafana" -- STABLE (2026-06-23)
+
+### Fixed
+
+* **Starting a new screen share right after stopping one now works.** Stopping a
+  share and immediately starting another could fail with "couldn't start a
+  screen-share" for up to a minute on some graphics hardware -- the previous
+  share's hardware video encoder was being released only slowly on stop. The app
+  now releases it the moment a share ends, so you can re-share right away.
+
+### Changed
+
+* All bundled program components are now digitally signed, for smoother
+  installation alongside managed antivirus software.
+
+## v0.52.7 "Bafana Bafana" -- STABLE (2026-06-19)
+
+### Fixed
+
+* **Calls no longer drop after a screen share.** When a peer switched what they
+  were sharing (for example from a full screen to a single app window), the call
+  could fall into "Reconnecting" and then drop, because the app kept asking the
+  server for the peer's camera feed and the server kept refusing while the share
+  was reconfiguring. The app now detects that refusal and rebuilds the feed once
+  instead of asking forever, so the call recovers on its own.
+* **A full-screen call window no longer jumps to a tiny corner.** Opening a
+  conversation during a call (or a brief "reconnecting") used to shrink a call you
+  had put full-screen on another monitor down to a small box in the corner of your
+  main screen. A full-screen call is now left where you put it.
+* **The per-topic unread counter on the topic bar updates live** — a reply landing
+  in another topic now bumps that topic's count immediately, instead of only after
+  you reopened the conversation.
+
+## v0.52.6 "Bafana Bafana" -- STABLE (2026-06-19)
+
+### Fixed
+
+* **Video no longer drops to the lowest quality (or cuts out) when bandwidth
+  feedback is missing.** If the connection hadn't yet reported how much bandwidth
+  was available, the app mistook "no reading yet" for "no bandwidth" and muted the
+  higher-quality video layers — so you could be sending a tiny picture on a
+  perfectly good connection. A missing reading is now treated as a healthy
+  connection; a genuine low reading still adapts quality down as before.
+
+## v0.52.5 "Bafana Bafana" -- STABLE (2026-06-19)
+
+### Fixed
+
+* **Capable computers stay at full video quality.** On machines with a working
+  hardware video encoder, the call picture could drop to the lowest quality a few
+  seconds in and stay there — even on a fast, uncongested connection — because the
+  automatic load manager was pulling the quality down too aggressively. It no
+  longer reduces quality on a capable machine; only a genuinely poor connection
+  does.
+
+### Changed
+
+* **Video never silently drops to the lowest setting, and you're told why.** When
+  a computer can't keep up at full quality (for example, no hardware video
+  encoder), the camera now holds at 480p instead of collapsing to a tiny picture,
+  and a small on-screen note explains that quality is limited.
+
+## v0.52.4 "Bafana Bafana" -- STABLE (2026-06-19)
+
+### Fixed
+
+* **You can hear the other person again.** In some calls the incoming audio
+  stopped reaching your speakers (the level meter still moved, but there was no
+  sound) because all playback was routed through the echo-cancellation stage and
+  a single hiccup there silenced the whole call. Incoming audio now plays
+  directly, so it can never be held up by that stage.
+* **Video climbs back to full quality after a brief network hiccup.** A momentary
+  dip could leave the picture stuck at the lowest quality for the rest of the call
+  on an otherwise fast connection; it now recovers within about a second once the
+  connection is healthy again (while still holding steady on a genuinely
+  congested link).
+* **The receive-quality dropdown works again** — it could be unclickable once the
+  call controls had faded; the click now always registers.
+
 ## v0.52.2 "Bafana Bafana" -- STABLE (2026-06-19)
 
 ### Fixed

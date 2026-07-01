@@ -14,6 +14,7 @@
 #include <gst/webrtc/webrtc.h>
 #include "SignalingClient.h"
 #include "VideoFrameProvider.h"
+#include "BweAutoCap.h"
 #include "EncodeTier.h"
 #include "BweLayerGate.h"
 
@@ -97,7 +98,7 @@ public:
     // so per-peer churn doesn't leak pads/elements. Idempotent; safe if AEC off.
     void        removeFarEndPeer(const QString &peerId);
     void        setFarEndOutputDevice(const QString &deviceId);
-    bool        aecPlayoutActive() const { return m_farMixer != nullptr; }
+    bool        aecPlayoutActive() const { return m_farProbe != nullptr; }
     // Has the camera delivered at least one real frame since the last enable?
     // Diagnostics: "camera on (intent) but firstFrame=0" after a few seconds is
     // the silent mfvideosrc-failure signature (the "her camera stopped" symptom).
@@ -192,6 +193,11 @@ signals:
     // The camera resolved to the SOFTWARE (x264) encoder — surfaced to the user
     // once per call so they know why CPU is higher (no usable HW encoder).
     void softwareVideoEncoderUsed();
+    // 0.52.5 — the send is pinned at the capability floor under load/BWE pressure
+    // (true) or has recovered above it (false). Only ever true on a NON-Capable /
+    // software box (a Capable HW box floors at full quality, so it never fires).
+    // Drives a persistent "limited to 480p" chip on the sender's own screen.
+    void sendQualityFloored(bool atFloor);
     // Non-fatal mic failure. Emitted when the microphone could NOT be opened
     // and the publisher fell back to a SILENT audio source so the call still
     // connects (peer hears silence) instead of dropping the whole call.
@@ -213,6 +219,7 @@ public slots:
 private:
     void cleanup();
     bool buildCameraChain(int deviceIndex, bool hd1080);
+    void reArmCameraSource();   // 0.52.13 — stall recovery: NULL→PLAYING the MF source
 
     GstElement *m_pipeline = nullptr;
     GstElement *m_webrtcbin = nullptr;
@@ -225,7 +232,11 @@ private:
     // funnel → sharedConvert → sharedScale → sharedCaps → outputTee → N x simulcast branches → webrtcbin
     // Three branches (l/m/h) fan out from outputTee. Per-branch state in m_layers.
     GstElement *m_funnel = nullptr;
-    GstElement *m_sharedScale = nullptr;  // funnel→...→sharedScale→sharedCaps→outputTee
+    GstElement *m_sharedScale = nullptr;  // funnel→...→sharedScale→sharedRate→sharedCaps→outputTee
+    GstElement *m_sharedRate = nullptr;   // C2/#29 — shared videorate; its max-rate is the
+                                          // live send-FPS degrade knob (active only when
+                                          // TALQ_FPS_ADAPT=1, which also relaxes the framerate
+                                          // caps below to a range so the cap can take effect)
     GstElement *m_sharedCaps = nullptr;   // pins a CONSTANT 1280x720@30 input so the
                                           // encoders never reconfigure on the
                                           // 16x16-dummy↔camera source switch
@@ -282,9 +293,12 @@ private:
     // respect the clamped m_maxBitrate, so this protects against runaway
     // probing on a sustainedly-saturated uplink (the mid-call freeze
     // class of bugs).
-    int            m_originalMaxBitrate = 0;
-    QElapsedTimer  m_lowBweTimer;
-    bool           m_autoCapActive      = false;
+    // 0.52.3 — the latch/restore decision lives in talq::BweAutoCap (pure,
+    // unit-tested). It evaluates the RAW (un-clamped) GCC estimate so a recovered
+    // link is visible (the old inline version clamped first → cap latched low for
+    // the whole call), with a restore dwell to prevent flap.
+    int             m_originalMaxBitrate = 0;
+    talq::BweAutoCap m_bweAutoCap;
     GstElement *m_gccbwe = nullptr;  // rtpgccbwe, owned by webrtcbin once returned
     // Set before the pipeline goes to NULL in cleanup(). webrtcbin can fire
     // request-aux-sender / notify::estimated-bitrate on a streaming thread
@@ -328,6 +342,19 @@ private:
     int m_dynLoadCeiling     = 2;
     int m_loadFps            = 30;  // controller send-fps target (drives m_sharedCaps)
     int m_lastBweEstimateBps = 0;   // last GCC estimate, so a ceiling change re-gates
+    // 0.52.5 capability send-floor: the LOWEST layer ceiling the dynamic load
+    // controller may pull us down to. Set in start() from the GPU class + the
+    // runtime software-fallback latch. A Capable box with a WORKING hardware
+    // encoder gets 2 (the load controller can NEVER shed its send — field repro:
+    // two capable HW boxes on a healthy 9 Mbps link both collapsed to 180p because
+    // the load controller dropped the ceiling to 0; only real BWE congestion may
+    // reduce a capable box now). A non-HW / software box gets 1 (floors at 'm' =
+    // the "480p" tier, never the 320x180 bottom rung) and shows the notice chip.
+    // NOTE: only floors the LOAD axis (clamped after the dyn-ceiling min, before
+    // the BWE gate decides per-layer on the real estimate); screen-share
+    // suppression still wins via the early return.
+    int m_layerFloor         = 1;
+    bool m_sendFlooredLatch  = false;  // edge-trigger for sendQualityFloored()
     // Anti-flap dwell for the asymmetric BWE layer gate (drop fast, re-add only
     // after a sustained estimate). Indexed by layer (1=m, 2=h; 0=l never gates).
     // See BweLayerGate.h + tests/bwe_layer_gate_test.cpp.
@@ -335,9 +362,10 @@ private:
     QElapsedTimer      m_bweClock;  // monotonic clock for the re-add dwell
     // Active layers gate on this, NOT m_loadCapMaxLayer directly.
     int effectiveLayerCeiling() const {
-        if (m_screenShareSuppress) return 0;
+        if (m_screenShareSuppress) return 0;          // share suppression wins (unchanged)
         int c = m_loadCapMaxLayer;
         if (m_dynLoadCeiling < c) c = m_dynLoadCeiling;
+        if (c < m_layerFloor)    c = m_layerFloor;    // capability floor (never below)
         return c;
     }
     bool m_cameraEnabled = false;
@@ -348,10 +376,19 @@ private:
     // webrtcdsp). m_farMixer != null means the tail is up. Built before the
     // webrtcdsp config in start() so the probe exists for the dsp's lookup and a
     // tail-build failure degrades to AEC-off (never a call drop).
-    GstElement *m_farMixer = nullptr;
+    GstElement *m_farMixer = nullptr;   // legacy (unused in the loopback design)
     GstElement *m_farProbe = nullptr;
-    GstElement *m_farSink  = nullptr;
+    GstElement *m_farSink  = nullptr;   // now a fakesink (reference-only tail)
+    GstElement *m_farSrc   = nullptr;   // 0.55.3 AEC: WASAPI render-loopback reference source
     QString     m_farOutputDeviceId;
+    // 0.55.3 AEC ERLE proxy: last RMS (dB) seen on the loopback reference
+    // (pub-far-ref-level) vs the post-webrtcdsp send leg (pub-level). In a
+    // remote-talking / local-silent window, a working canceller keeps the send
+    // RMS well below the reference RMS; if they track, echo is leaking. Logged
+    // from pollBus so a live speaker test yields a number, not just "sounds off".
+    double      m_aecFarRefRms = -100.0;
+    double      m_aecSendRms   = -100.0;
+    int         m_aecErleDbg   = 0;
     QHash<QString, GstElement*> m_farPeerAppsrcs;
     // Serialises far-end peer add/remove and tail teardown against each other:
     // the hash mutations PLUS the structural pipeline edits (audiomixer
@@ -368,6 +405,17 @@ private:
     bool m_camForcedCapsActive = false;
     std::atomic<bool> m_camFirstFrameSeen{false};
     QTimer m_camStartWatchdog;
+    // 0.52.13 — STALL-AWARE self-heal. The MF source reader can leak ONE frame
+    // then stall (Intel MF/D3D concurrency, esp. while a screen-share is using
+    // the encoder), which the old "no first frame" watchdog couldn't recover
+    // (the one frame cancelled it) and it never armed on Auto at all. Track frame
+    // PROGRESS and re-negotiate at permissive ≤720p on a stall.
+    std::atomic<quint64> m_camFrameCount{0};   // bumped per preview frame (streaming thread)
+    quint64 m_camLastSeenCount = 0;            // last value the watchdog observed (main thread)
+    int     m_camStallTicks = 0;               // consecutive no-progress ticks (debounce)
+    int     m_camHealthyTicks = 0;             // consecutive progress ticks (resets attempts)
+    int     m_camRecoveryAttempts = 0;         // capped auto-rebuilds before giving up
+    bool    m_camRebuildInFlight = false;      // a re-arm is settling — don't stack another
     bool m_useH264 = false;
     QString m_encoderDesc;   // human codec/encoder/hw-sw, for telemetry/pill
     int m_lvlDbg = 0;

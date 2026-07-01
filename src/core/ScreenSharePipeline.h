@@ -79,6 +79,19 @@ private:
 
     GstElement *m_pipeline = nullptr;
     GstElement *m_webrtcbin = nullptr;
+    // webrtcbin sink_%u REQUEST pad. MUST be released with
+    // gst_element_release_request_pad() in cleanup() — a bare unref leaks the
+    // pad, which pins webrtcbin's transceiver/codec-bin alive, which holds the
+    // mfh264enc element + its IMFTransform/AMF session open. On AMD that leaked
+    // session blocks a quick re-share for ~60s (the "couldn't start" field bug)
+    // until teardown eventually collapses the dangling pad. See PeerPipeline's
+    // m_videoSinkPad for the correct pattern.
+    GstPad *m_ssrcSinkPad = nullptr;
+    // Capture source (WGC appsrc or d3d11screencapturesrc), BORROWED — owned by
+    // the pipeline (don't unref). Driven to NULL in cleanup() BEFORE releasing
+    // the request pad, to halt buffer production so no in-flight frame races the
+    // pad release (the DXGI fallback's streaming thread is otherwise still live).
+    GstElement *m_screenSrc = nullptr;
     GstElement *m_videoEncoder = nullptr;  // kept for proper adaptive (todo)
     GstElement *m_scaleCaps = nullptr;     // downscale capsfilter; re-set LIVE by setQualityCap() for mid-share quality changes
     GstElement *m_videoParser = nullptr;   // h264parse, present iff H264

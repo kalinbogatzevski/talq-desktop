@@ -1,9 +1,17 @@
 #include "core/SignalingClient.h"
 #include "core/TalqLog.h"
 #include "core/ChatSyncLogic.h"
+#include "core/HpbPool.h"
 #include <QJsonDocument>
 #include <QSettings>
 #include <QDateTime>
+#include <QTcpSocket>
+#include <QElapsedTimer>
+#include <QSet>
+#include <QUrl>
+#include <memory>
+#include <vector>
+#include <limits>
 
 // bug 3 — a cached peer TalQ version is only trusted as "current" if observed
 // within this window; older entries render as no chip rather than a wrong
@@ -21,6 +29,19 @@ SignalingClient::SignalingClient(ApiClient *api, QObject *parent)
     connect(&m_ws, &QWebSocket::textMessageReceived, this, &SignalingClient::onTextMessage);
     connect(&m_ws, &QWebSocket::errorOccurred, this, [this](QAbstractSocket::SocketError err) {
         qWarning() << "Signaling: WebSocket error:" << err << m_ws.errorString();
+        // A1 fix — a pure CONNECT failure (host unreachable / refused — the normal
+        // case during an outage, and exactly when the 250ms fast-resume retry
+        // fires) does NOT emit `disconnected` (Qt only emits that when an already
+        // ESTABLISHED socket closes), so onDisconnected()'s reconnect driver never
+        // runs. Before this wave fetchSettings()'s REST failure always re-armed
+        // reconnect; the fast path skips that, so without this the client would be
+        // left with no socket and no pending retry -> signaling dead until restart.
+        // Drive the retry here when the socket isn't connected, and unwind the
+        // fast-resume bookkeeping (so the next attempt does a full settings fetch).
+        if (m_ws.state() != QAbstractSocket::ConnectedState) {
+            if (m_fastResumePending) { m_fastResumePending = false; m_resumeId.clear(); }
+            if (!m_reconnectTimer.isActive()) reconnect();   // guard vs onDisconnected double-arm
+        }
     });
 
     m_reconnectTimer.setSingleShot(true);
@@ -68,8 +89,24 @@ SignalingClient::SignalingClient(ApiClient *api, QObject *parent)
     });
 }
 
+// A1 — resume reconnect backoff. A held resume id means the server is keeping
+// our session alive for only a short grace (~30s on strukturag), so race to the
+// socket fast rather than the cold-start exponential backoff.
+static constexpr int kResumeReconnectMs = 250;
+
 void SignalingClient::start()
 {
+    // A1 fast resume: if we hold a resume id AND a cached signaling URL, skip the
+    // REST settings fetch (the resume hello only needs m_resumeId — the freshly
+    // fetched ticket/auth is pure waste on this path) and go straight to the
+    // WebSocket. This is what keeps the resume inside the server's grace window.
+    // Cold start, or a definitive resume rejection (which clears m_resumeId),
+    // falls through to the full settings fetch.
+    if (!m_resumeId.isEmpty() && !m_signalingUrl.isEmpty()) {
+        m_fastResumePending = true;
+        connectWebSocket();
+        return;
+    }
     fetchSettings();
 }
 
@@ -83,6 +120,8 @@ void SignalingClient::stop()
     m_sessionId.clear();
     m_resumeId.clear();        // bye released the session -- no resume after a deliberate stop
     m_resuming = false;
+    m_fastResumePending = false;
+    m_sessionEstablished = false;   // A2 — deliberate stop is a clean slate
     m_sessionToUserId.clear(); // 1.0 audit — release the session->userId map on a
                                // deliberate disconnect/logout (no grace after stop)
     m_reconnectDelay = 2000;
@@ -103,6 +142,26 @@ void SignalingClient::fetchSettings()
             }
 
             m_signalingUrl = data["server"].toString().trimmed();
+            // Manual signaling-server override (hidden, for A/B stability testing —
+            // QSettings key Signaling/overrideServer). Pins a specific regional HPB
+            // (e.g. storm/BG) instead of the per-conversation server the backend
+            // assigns; the Nextcloud-issued ticket still validates because a clustered
+            // HPB shares the same backend + secret. Empty string = normal behaviour.
+            {
+                const QString ov = QSettings(QStringLiteral("TalQ"), QStringLiteral("TalQ"))
+                                       .value(QStringLiteral("Signaling/overrideServer")).toString().trimmed();
+                if (!ov.isEmpty()) {
+                    qInfo() << "Signaling: MANUAL override ->" << ov << "(backend gave" << m_signalingUrl << ")";
+                    m_signalingUrl = ov;
+                }
+            }
+            // Per-instance override (highest precedence). talq-call-test drives each
+            // bot to a SPECIFIC HPB to exercise a cross-server clustered call — the
+            // process-global QSettings override can't do that (one key, both bots).
+            if (!m_serverOverride.isEmpty()) {
+                qInfo() << "Signaling: per-instance override ->" << m_serverOverride;
+                m_signalingUrl = m_serverOverride;
+            }
             if (m_signalingUrl.isEmpty()) {
                 qDebug() << "Signaling: no standalone server configured";
                 return;
@@ -126,8 +185,94 @@ void SignalingClient::fetchSettings()
             }
 
             qDebug() << "Signaling: server at" << m_signalingUrl;
-            connectWebSocket();
+            // Automatic nearest-HPB selection: unless a server is pinned manually,
+            // probe the candidate pool (Nextcloud-assigned server + the branded
+            // 123NET regional pool) and connect to the NEAREST reachable one — a
+            // short, stable WebSocket path is what prevents the long-haul
+            // socket-death disconnects. Runs on every (re)connect, so a dead HPB
+            // (fails the probe) is naturally skipped on reconnect = failover.
+            const bool manualPin = !m_serverOverride.isEmpty()
+                || !QSettings(QStringLiteral("TalQ"), QStringLiteral("TalQ"))
+                        .value(QStringLiteral("Signaling/overrideServer")).toString().trimmed().isEmpty();
+            if (manualPin)
+                connectWebSocket();
+            else
+                selectNearestHpbAndConnect();
         });
+}
+
+// Parse the host from a signaling URL (wss://host/path, https://host/path).
+static QString hpbHostOf(const QString &url)
+{
+    const QUrl u(url.trimmed());
+    if (!u.host().isEmpty()) return u.host();
+    QString s = url.trimmed();
+    const int i  = s.indexOf(QStringLiteral("://")); if (i  >= 0) s = s.mid(i + 3);
+    const int sl = s.indexOf(QLatin1Char('/'));      if (sl >= 0) s = s.left(sl);
+    const int c  = s.lastIndexOf(QLatin1Char(':'));  if (c  >= 0) s = s.left(c);
+    return s;
+}
+
+// Probe TCP:443 RTT to each candidate HPB and connect to the nearest reachable
+// one. :443 is the web front (Caddy/Apache) of every HPB and is always open, so
+// unlike the TURN :3478 probe the connect time is a reliable network RTT. The
+// Nextcloud-assigned server is always a candidate AND the fail-safe fallback: if
+// nothing answers we keep it and connect anyway (never serverless). Probe state
+// lives in a shared_ptr owned by the timer functor; the sockets are parented to
+// `this`, so a destroyed SignalingClient cleans them up on that same path.
+void SignalingClient::selectNearestHpbAndConnect()
+{
+    QStringList urls;
+    urls << m_signalingUrl;                               // Nextcloud baseline
+    for (const char *const *p = TalQHpb::kPool; *p; ++p)  // branded pool (empty on generic)
+        urls << QString::fromLatin1(*p);
+
+    QStringList cands; QSet<QString> seen;
+    for (const QString &u : urls) {
+        const QString h = hpbHostOf(u);
+        if (h.isEmpty() || seen.contains(h)) continue;
+        seen.insert(h); cands << u;
+    }
+    if (cands.size() <= 1) { connectWebSocket(); return; } // nothing to choose
+
+    struct Probe { QString url, host; QElapsedTimer t; int rtt = -1; QTcpSocket *sock = nullptr; };
+    auto probes = std::make_shared<std::vector<Probe>>();
+    for (const QString &u : cands) { Probe p; p.url = u; p.host = hpbHostOf(u); probes->push_back(p); }
+    for (Probe &pr : *probes) {                            // vector fixed -> &pr stable
+        pr.sock = new QTcpSocket(this);
+        pr.t.start();
+        Probe *prp = &pr;
+        QObject::connect(prp->sock, &QTcpSocket::connected, this, [prp]() {
+            if (prp->rtt < 0) prp->rtt = int(prp->t.elapsed());
+            prp->sock->abort();
+        });
+        pr.sock->connectToHost(pr.host, 443);
+    }
+    QTimer::singleShot(1200, this, [this, probes]() {
+        int best = std::numeric_limits<int>::max();
+        QString bestUrl; int bestRtt = -1;
+        for (Probe &pr : *probes) {
+            if (pr.rtt >= 0 && pr.rtt < best) { best = pr.rtt; bestUrl = pr.url; bestRtt = pr.rtt; }
+            if (pr.sock) { pr.sock->disconnect(); pr.sock->abort(); pr.sock->deleteLater(); }
+        }
+        if (!bestUrl.isEmpty()) {
+            // Normalise to the BASE url (no trailing "/spreed"): connectWebSocket()
+            // appends "/spreed" itself, so a pool url that already carries it would
+            // double up to /standalone-signaling/spreed/spreed → 404 and the client
+            // would fall back to the far Nextcloud server (field: storm 404 loop).
+            QString base = bestUrl.trimmed();
+            if (base.endsWith(QLatin1Char('/')))         base.chop(1);
+            if (base.endsWith(QLatin1String("/spreed"))) base.chop(7);
+            m_signalingUrl   = base;
+            m_signalingRttMs = bestRtt;
+            qInfo().nospace() << "Signaling: nearest HPB " << hpbHostOf(bestUrl)
+                              << " (" << bestRtt << " ms) of " << int(probes->size()) << " candidate(s)";
+        } else {
+            qInfo() << "Signaling: no HPB answered probe — using backend default"
+                    << hpbHostOf(m_signalingUrl);
+        }
+        connectWebSocket();
+    });
 }
 
 void SignalingClient::connectWebSocket()
@@ -156,6 +301,15 @@ void SignalingClient::onDisconnected()
     bool wasAuth = m_authenticated;
     m_authenticated = false;
     m_sessionId.clear();
+    // A1 — if a fast-resume attempt couldn't even establish the socket (e.g. a
+    // stale cached signaling URL), it disconnects without ever authenticating.
+    // Drop the resume id so the next attempt does a full settings refresh
+    // (fresh URL + ticket) instead of looping on the same dead fast path.
+    if (m_fastResumePending && !wasAuth) {
+        qWarning() << "Signaling: fast-resume socket failed -> full settings refresh next";
+        m_fastResumePending = false;
+        m_resumeId.clear();
+    }
     if (wasAuth) emit connectedChanged();
     reconnect();
 }
@@ -187,9 +341,16 @@ void SignalingClient::onTextMessage(const QString &msg)
         const QString rid = helloObj["resumeid"].toString();
         if (!rid.isEmpty()) m_resumeId = rid;
         m_authenticated = true;
+        m_fastResumePending = false;   // A1 — this attempt authenticated
 
         const bool wasResume = m_resuming;
         m_resuming = false;
+        // A2 — was there a live session BEFORE this hello? A fresh (non-resumed)
+        // hello that replaces an existing in-room session is a session RESET.
+        // Capture before we mark the new one established so the very first cold
+        // hello is never treated as a reset.
+        const bool hadPriorSession = m_sessionEstablished;
+        m_sessionEstablished = true;
 
         // Server features (MCU, etc.) are only present in a FRESH hello
         // response; a resume response omits them, so keep the cached value.
@@ -215,19 +376,55 @@ void SignalingClient::onTextMessage(const QString &msg)
             // Fresh session -- re-join room if we had one.
             if (!m_currentRoom.isEmpty())
                 joinRoom(m_currentRoom);
+            // A2 — a fresh session that REPLACES a prior in-room session is a
+            // reset: the old MCU publisher is dead and the server call-record
+            // points at the dead sid. joinRoom above only re-POSTs the ROOM, so
+            // tell CallManager to rebuild the publisher, re-join the CALL, and
+            // rebuild subscribers under the new sid. (When idle, CallManager
+            // no-ops on state.) Not fired on the first cold hello (hadPrior=false)
+            // nor on a clean RESUME (handled in the wasResume branch above).
+            if (hadPriorSession && !m_currentRoom.isEmpty()) {
+                qWarning() << "Signaling: SESSION RESET (fresh hello replaced an in-room session)"
+                           << "-> new sid" << m_sessionId.left(16) + "...";
+                emit sessionReset(m_sessionId);
+            }
         }
     }
     else if (type == "error") {
         QJsonObject errObj = obj["error"].toObject();
         const QString code = errObj["code"].toString();
         qWarning() << "Signaling: error:" << code << errObj["message"].toString();
+        // 0.52.7 — "Not allowed to request offer." is produced ONLY in reply to a
+        // requestoffer (no other message yields that text). The HPB error carries
+        // NO sessionid / request-id, and the outgoing requestoffer carries none
+        // either, so we cannot say WHICH peer it is for — emit a typed,
+        // sid-agnostic signal and let CallManager apply it to the peers it
+        // currently has a requestoffer outstanding for. Deliberately do NOT add a
+        // request-id to the outgoing message: the strukturag server won't echo a
+        // field it doesn't implement, and inventing signaling fields has broken
+        // calls before. Type-correlation is the only safe correlation here.
+        if (code == QLatin1String("not_allowed")
+            && errObj["message"].toString().contains(QLatin1String("request offer"),
+                                                     Qt::CaseInsensitive)) {
+            emit requestOfferRejected();
+        }
         if (m_resuming) {
-            // Resume rejected (e.g. no_such_session -- the ~30s grace lapsed).
-            // Drop the stale id and fall back to a full fresh hello + re-join.
+            // Resume rejected (e.g. no_such_session -- the grace lapsed).
             qWarning() << "Signaling: resume rejected -> full re-hello";
             m_resuming = false;
             m_resumeId.clear();
-            sendHello();
+            if (m_fastResumePending) {
+                // A1 — we took the fast path and skipped the settings fetch, so
+                // we have no FRESH ticket for a clean re-auth (a stale ticket can
+                // fail). Drop this socket; the reconnect path then does a full
+                // fetchSettings (fresh URL + ticket) -> fresh hello -> re-join.
+                m_fastResumePending = false;
+                m_ws.close();   // -> onDisconnected -> reconnect -> start() (resumeId now empty)
+            } else {
+                // Normal path: this round already fetched a fresh ticket, so a
+                // fresh hello on the same socket is safe.
+                sendHello();
+            }
         }
     }
     else if (type == "room") {
@@ -958,6 +1155,14 @@ void SignalingClient::requestOffer(const QString &sessionId, const QString &room
 void SignalingClient::reconnect()
 {
     if (m_api->serverUrl().isEmpty()) return;
+    // A1 — when a resume is still possible, race the socket on a short fixed
+    // delay so the resume lands inside the server's grace window. Only the cold
+    // path (no resume id) uses the exponential backoff, which protects a dead
+    // server from a reconnect storm.
+    if (!m_resumeId.isEmpty() && !m_signalingUrl.isEmpty()) {
+        m_reconnectTimer.start(kResumeReconnectMs);
+        return;
+    }
     m_reconnectTimer.start(m_reconnectDelay);
     m_reconnectDelay = qMin(m_reconnectDelay * 2, 60000);
 }

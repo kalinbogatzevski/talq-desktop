@@ -31,6 +31,11 @@ public:
     void enterPipDock();
     void exitPipDock();
     bool isPipDocked() const { return m_pipDocked; }
+    // Live window state, NOT the cached m_fullscreen latch: an OS-driven exit
+    // (Win+D / minimize / a system fullscreen-off) leaves m_fullscreen stale,
+    // which would wrongly suppress the PiP dock. QWidget::isFullScreen() reflects
+    // the real state. (m_fullscreen stays as the internal toggle latch only.)
+    bool isFullscreen() const { return isFullScreen(); }
 
 signals:
     // 0.40.15 — "Open background settings…" entry in the BACKGROUND

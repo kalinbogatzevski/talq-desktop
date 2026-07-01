@@ -20,31 +20,71 @@
 #include "core/CaptureDsp.h"
 #include "core/EncodeTier.h"
 
+// C2/#29 — send-FPS adaptation. OFF by default; set TALQ_FPS_ADAPT=1 to enable.
+// When ON, the framerate caps below are a permissive RANGE (so the shared
+// videorate's max-rate can DROP the send framerate under network load — degrade,
+// don't stop) instead of a fixed 30/1. Default-off because relaxing 4 framerate
+// capsfilters to ranges needs a live congested-call soak to rule out a
+// renegotiation wedge (the historic NOT_NEGOTIATED-4); shipping it dormant lets
+// it be field-validated (TALQ_FPS_ADAPT=1) before it becomes default-on.
+static bool talqFpsAdaptOn()
+{
+    static const bool on = qEnvironmentVariableIntValue("TALQ_FPS_ADAPT") == 1;
+    return on;
+}
+// "framerate=..." fragment for the publish caps — a range when adapting, else fixed.
+static const char *talqFramerateCapsFrag()
+{
+    return talqFpsAdaptOn() ? "framerate=(fraction)[1/1,30/1]" : "framerate=30/1";
+}
+
 PublishPipeline::PublishPipeline(QObject *parent)
     : QObject(parent)
 {
     m_localVideoProvider = new VideoFrameProvider(this);
 
-    // No-frames watchdog for self-healing forced camera picks: if Settings
-    // pinned an exact caps that the actually-opened mfvideosrc instance
-    // can't deliver, no preview frames arrive — fire 3 s after enable to
-    // reset the pick to Auto and signal CallManager to re-arm.
-    m_camStartWatchdog.setSingleShot(true);
-    m_camStartWatchdog.setInterval(3000);
+    // 0.52.13 — STALL-AWARE camera self-heal (replaces the single-shot "no first
+    // frame" watchdog). A repeating tick watches frame PROGRESS; if frames stop
+    // advancing — which covers zero-frame AND the one-frame-then-stall that the
+    // Intel MF/D3D concurrency race produces (esp. while a screen-share is on the
+    // encoder) — it re-negotiates the camera at permissive ≤720p caps, i.e.
+    // automates the manual off/on that recovers it. Armed for EVERY enable (forced
+    // OR Auto — the old one never armed on Auto). Debounced past mfvideosrc's ~1 s
+    // COM init, capped at 2 rebuilds, reset after sustained healthy frames.
+    m_camStartWatchdog.setSingleShot(false);
+    m_camStartWatchdog.setInterval(2000);
     connect(&m_camStartWatchdog, &QTimer::timeout, this, [this]() {
-        if (m_camFirstFrameSeen.load(std::memory_order_relaxed)) return;
-        if (!m_camForcedCapsActive) return;
-        qWarning() << "PublishPipeline: forced camera mode produced no "
-                      "frames within 3 s — falling back to Auto / permissive";
-        {
-            QSettings s("TalQ", "TalQ");
-            s.beginGroup("Video");
-            s.setValue("cameraQuality", QStringLiteral("auto"));
-            s.setValue("cameraSrcCaps", QString());
-            s.endGroup();
+        if (!m_cameraEnabled) { m_camStartWatchdog.stop(); return; }
+        if (m_camRebuildInFlight) return;             // a re-arm is settling — wait it out
+        const quint64 cur = m_camFrameCount.load(std::memory_order_relaxed);
+        if (cur != m_camLastSeenCount) {              // frames advancing → healthy
+            m_camLastSeenCount = cur;
+            m_camStallTicks = 0;
+            if (++m_camHealthyTicks >= 3) m_camRecoveryAttempts = 0;  // sustained → re-allow recovery
+            return;
         }
-        m_camForcedCapsActive = false;
-        emit cameraNegotiationFailed();
+        m_camHealthyTicks = 0;
+        if (++m_camStallTicks < 2) return;            // ~4 s of no new frames (debounce COM init)
+        m_camStallTicks = 0;
+        if (m_camRecoveryAttempts >= 2) {             // gave it 2 goes → surface the failure
+            qWarning() << "PublishPipeline: camera stalled after 2 recovery attempts — giving up";
+            // If a forced Settings pick could be the culprit (not just the
+            // concurrency race), drop it to Auto so the NEXT enable negotiates
+            // permissive ≤720p — the old watchdog's behaviour, kept as a fallback.
+            if (m_camForcedCapsActive) {
+                m_camForcedCapsActive = false;
+                QSettings s("TalQ", "TalQ"); s.beginGroup("Video");
+                s.setValue("cameraQuality", QStringLiteral("auto"));
+                s.setValue("cameraSrcCaps", QString()); s.endGroup();
+                emit cameraNegotiationFailed();
+            }
+            emit cameraError(QStringLiteral("Camera stopped delivering frames"));
+            return;   // cameraError → CallManager stops the watchdog via disableCamera
+        }
+        ++m_camRecoveryAttempts;
+        qWarning() << "PublishPipeline: camera frames STALLED ~4s — re-arming the MF source "
+                      "(attempt" << m_camRecoveryAttempts << "of 2)";
+        reArmCameraSource();
     });
 
     // Upstream Talk's BlackVideoEnforcer paints the canvas for 5 s after
@@ -103,6 +143,18 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         }
         if (tier.shedHighLayer)
             m_loadCapMaxLayer = 1;   // no HW encode -> send l+m only
+        // 0.52.5 capability send-floor (field repro: two capable HW boxes both
+        // collapsed to 180p under the load controller on a healthy 9 Mbps link).
+        // A Capable GPU with a WORKING hardware encoder must NEVER be load-shed
+        // below full quality — only real BWE congestion may reduce it (floor 2).
+        // Everything else floors at 'm' (l+m, the "480p" tier), never the 320x180
+        // bottom rung, and surfaces the on-screen notice chip. talqForceSoftwareVideo
+        // is the runtime HW-encoder-failed latch (a flaky HW encoder that fell back
+        // to x264 mid-call rebuilds the publisher → re-runs start() → floor drops to 1).
+        const bool softwareEncode = tier.shedHighLayer
+                                  || talqForceSoftwareVideo().load();
+        m_layerFloor = (m_gpuClass == talq::GpuClass::Capable && !softwareEncode) ? 2 : 1;
+        m_sendFlooredLatch = false;
         const int w = (h * 16) / 9 & ~1;   // 16:9, even width
         m_layers[2].targetW = w;
         m_layers[2].targetH = h;
@@ -123,8 +175,7 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         // BWE auto-cap (onGccBitrate) can both clamp aggressively AND
         // restore to the original when the link recovers.
         m_originalMaxBitrate = m_maxBitrate;
-        m_autoCapActive      = false;
-        m_lowBweTimer.invalidate();
+        m_bweAutoCap.reset();
     }
 
     // Audio-source resilience (0.48.x): a microphone that won't OPEN must
@@ -476,6 +527,13 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
     m_sharedScale = gst_element_factory_make("videoscale", "pub-shared-scale");
     m_sharedCaps  = gst_element_factory_make("capsfilter", "pub-shared-caps");
     GstElement *sharedRate = gst_element_factory_make("videorate", "pub-shared-rate");
+    m_sharedRate = sharedRate;   // C2/#29 — keep a handle for the live max-rate knob
+    // drop-only is ONLY meaningful in the ON path (range caps + live max-rate).
+    // With the OFF-path fixed 30/1 caps, drop-only=TRUE makes videorate refuse to
+    // negotiate a sub-30fps source (NOT_NEGOTIATED → no video for slow/low-light
+    // webcams). Gate it so OFF stays the exact prior no-op (duplicate-up to 30).
+    if (sharedRate && talqFpsAdaptOn())
+        g_object_set(sharedRate, "drop-only", TRUE, nullptr);
     m_outputTee   = gst_element_factory_make("tee", "pub-output-tee");
     if (!sharedConvert || !m_sharedScale || !m_sharedCaps || !sharedRate || !m_outputTee) {
         emit error("Failed to create shared chain / outputTee"); cleanup(); return false;
@@ -487,8 +545,8 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         const int sw = m_layers[2].targetW;
         const int sh = m_layers[2].targetH;
         const QString sc = QStringLiteral(
-            "video/x-raw,width=%1,height=%2,pixel-aspect-ratio=1/1,framerate=30/1")
-            .arg(sw).arg(sh);
+            "video/x-raw,width=%1,height=%2,pixel-aspect-ratio=1/1,%3")
+            .arg(sw).arg(sh).arg(QString::fromLatin1(talqFramerateCapsFrag()));
         GstCaps *caps = gst_caps_from_string(sc.toUtf8().constData());
         g_object_set(m_sharedCaps, "caps", caps, nullptr);
         gst_caps_unref(caps);
@@ -592,8 +650,9 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         // Per-layer raw caps (after scale, before encoder)
         {
             GstCaps *sc = gst_caps_from_string(
-                QString("video/x-raw,width=%1,height=%2,framerate=30/1")
-                    .arg(L.targetW).arg(L.targetH).toUtf8().constData());
+                QString("video/x-raw,width=%1,height=%2,%3")
+                    .arg(L.targetW).arg(L.targetH)
+                    .arg(QString::fromLatin1(talqFramerateCapsFrag())).toUtf8().constData());
             g_object_set(L.caps, "caps", sc, nullptr);
             gst_caps_unref(sc);
         }
@@ -972,7 +1031,8 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
                 if (audiosrc && src == GST_OBJECT(audiosrc)) {
                     audioCulprit = true;
                 } else if (gchar *sn = gst_object_get_name(src)) {
-                    if (g_strcmp0(sn, "pub-far-sink") == 0)  farSinkCulprit = true; // AEC playout sink
+                    if (g_strcmp0(sn, "pub-far-sink") == 0 ||
+                        g_strcmp0(sn, "pub-aec-ref")  == 0)  farSinkCulprit = true; // AEC reference tail / loopback src
                     else audioCulprit = (g_strcmp0(sn, "pub-audiosrc") == 0);
                     g_free(sn);
                 }
@@ -1112,6 +1172,7 @@ void PublishPipeline::cleanup()
     m_webrtcbin = nullptr;
     m_funnel = nullptr;
     m_sharedScale = nullptr;
+    m_sharedRate = nullptr;   // C2/#29
     m_sharedCaps = nullptr;
     m_gccbwe = nullptr;
     m_outputTee = nullptr;
@@ -1120,7 +1181,7 @@ void PublishPipeline::cleanup()
     // a half-cleared map or a dangling mixer handle.
     {
         QMutexLocker farLk(&m_farPeerMutex);
-        m_farMixer = m_farProbe = m_farSink = nullptr;
+        m_farMixer = m_farProbe = m_farSink = m_farSrc = nullptr;
         m_farPeerAppsrcs.clear();
     }
     for (auto &L : m_layers) {
@@ -1620,10 +1681,15 @@ void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)
 
     m_cameraEnabled = true;
     m_camFirstFrameSeen.store(false, std::memory_order_relaxed);
-    if (m_camForcedCapsActive) {
-        qDebug() << "PublishPipeline: arming camera-start watchdog (3 s)";
-        m_camStartWatchdog.start();
-    }
+    // 0.52.13 — reset the stall tracker + recovery budget and arm the watchdog for
+    // EVERY enable (was gated on m_camForcedCapsActive, so Auto never self-healed).
+    m_camFrameCount.store(0, std::memory_order_relaxed);
+    m_camLastSeenCount = 0;
+    m_camStallTicks = 0;
+    m_camHealthyTicks = 0;
+    m_camRecoveryAttempts = 0;
+    qDebug() << "PublishPipeline: arming stall-aware camera watchdog";
+    m_camStartWatchdog.start();
 
     // Force an immediate I-frame so the receiver gets a clean baseline
     // of real camera content. Without this, the encoder continues
@@ -1658,6 +1724,41 @@ void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)
     }
     qDebug() << "PublishPipeline: camera enabled (valve flip, no relink, "
                 "encoders re-seeded, GCC re-armed)";
+}
+
+void PublishPipeline::reArmCameraSource()
+{
+    // 0.52.13 — stall recovery (driven by the stall-aware watchdog): the MF
+    // reader leaked a frame then wedged (Intel MF/D3D concurrency under
+    // screen-share load). Re-arm the source — NULL→PLAYING at the SAME caps, the
+    // automated equivalent of the manual camera off/on that fixes it. We do NOT
+    // swap caps on the still-linked PLAYING capsfilter (that renegotiates a live
+    // pad, and per the root-cause the mode is a red herring — the cause is the
+    // race). A genuinely-bad forced pick is handled separately on give-up.
+    if (!m_cameraEnabled || !m_cameraSrc) return;
+    if (m_camRebuildInFlight) return;             // don't stack re-arms
+    m_camRebuildInFlight = true;
+    // Re-arm on GStreamer's element-pool thread: the parky mfvideosrc NULL must
+    // NOT run on the Qt main thread (mirrors disableCamera). No-capture lambda
+    // (converts to the C function pointer) that touches ONLY `src` — which
+    // gst_element_call_async refs for the call — and never `this`, so a
+    // concurrent teardown can't UAF.
+    gst_element_call_async(m_cameraSrc,
+        [](GstElement *src, gpointer) {
+            gst_element_set_state(src, GST_STATE_NULL);     // parks until the stream lock frees
+            gst_element_set_state(src, GST_STATE_PLAYING);  // re-arm the MF reader
+        },
+        nullptr, nullptr);
+    // Clear the in-flight guard + open a fresh stall window after the re-arm has
+    // had time to complete. QTimer bound to `this` → auto-cancelled on
+    // destruction (never touches a dead object); the callback above never touches
+    // `this`. If still wedged afterwards, the watchdog re-arms again (2-cap).
+    QTimer::singleShot(3000, this, [this]() {
+        m_camFrameCount.store(0, std::memory_order_relaxed);
+        m_camLastSeenCount = 0;
+        m_camStallTicks = 0;
+        m_camRebuildInFlight = false;
+    });
 }
 
 void PublishPipeline::disableCamera()
@@ -1728,24 +1829,48 @@ void PublishPipeline::pollBus()
             const GstStructure *s = gst_message_get_structure(msg);
             const gchar *name = gst_structure_get_name(s);
             if (g_strcmp0(name, "level") == 0) {
-                if (++m_lvlDbg <= 2) {
-                    gchar *str = gst_structure_to_string(s);
-                    qDebug() << "PublishPipeline: level raw:" << QString::fromUtf8(str).left(300);
-                    g_free(str);
+                // Two level meters post on this bus: "pub-level" (post-webrtcdsp
+                // send leg → mic VU + AEC residual) and "pub-far-ref-level" (the
+                // 0.55.3 loopback reference → what the speaker actually plays).
+                // Disambiguate by element name; only the send leg drives the UI.
+                GstObject *lsrc = GST_MESSAGE_SRC(msg);
+                gchar *lname = lsrc ? gst_object_get_name(lsrc) : nullptr;
+                const bool isFarRef = lname && g_strcmp0(lname, "pub-far-ref-level") == 0;
+                if (lname) g_free(lname);
+                GValueArray *rmsArr = nullptr;
+                gst_structure_get(s, "rms", G_TYPE_VALUE_ARRAY, &rmsArr, nullptr);
+                const double rmsDb = (rmsArr && rmsArr->n_values > 0)
+                                         ? g_value_get_double(rmsArr->values) : -100.0;
+                if (rmsArr) g_value_array_free(rmsArr);
+                if (isFarRef) {
+                    m_aecFarRefRms = rmsDb;   // reference level only — no UI meter
+                } else {
+                    m_aecSendRms = rmsDb;
+                    if (++m_lvlDbg <= 2) {
+                        gchar *str = gst_structure_to_string(s);
+                        qDebug() << "PublishPipeline: level raw:" << QString::fromUtf8(str).left(300);
+                        g_free(str);
+                    }
+                    // Extract peak level from GValueArray
+                    // Range: -100dB (silence) to 0dB (max) → map to 0.0-1.0
+                    GValueArray *arr = nullptr;
+                    gst_structure_get(s, "peak", G_TYPE_VALUE_ARRAY, &arr, nullptr);
+                    if (arr && arr->n_values > 0) {
+                        gdouble db = g_value_get_double(arr->values);
+                        // Use wider range: -100 to 0
+                        double lvl = qBound(0.0, (db + 100.0) / 100.0, 1.0);
+                        // Apply curve for better visual response
+                        lvl = lvl * lvl;  // square for more dynamic range visibility
+                        emit audioLevelUpdated(lvl);
+                    }
+                    if (arr) g_value_array_free(arr);
+                    // ERLE proxy: during a remote-talking / local-silent window a
+                    // working canceller keeps the send RMS well below the loopback
+                    // reference RMS; if they track, echo is leaking. ~1/sec.
+                    if (m_aecEnabled && (++m_aecErleDbg % 5 == 0))
+                        qInfo().nospace() << "AEC erle-proxy: farRefRMS=" << m_aecFarRefRms
+                                          << "dB postAecSendRMS=" << m_aecSendRms << "dB";
                 }
-                // Extract peak level from GValueArray
-                // Range: -100dB (silence) to 0dB (max) → map to 0.0-1.0
-                GValueArray *arr = nullptr;
-                gst_structure_get(s, "peak", G_TYPE_VALUE_ARRAY, &arr, nullptr);
-                if (arr && arr->n_values > 0) {
-                    gdouble db = g_value_get_double(arr->values);
-                    // Use wider range: -100 to 0
-                    double lvl = qBound(0.0, (db + 100.0) / 100.0, 1.0);
-                    // Apply curve for better visual response
-                    lvl = lvl * lvl;  // square for more dynamic range visibility
-                    emit audioLevelUpdated(lvl);
-                }
-                if (arr) g_value_array_free(arr);
             }
         } else if (GST_MESSAGE_TYPE(msg) == GST_MESSAGE_ERROR) {
             GError *err = nullptr; gchar *dbg = nullptr;
@@ -2248,15 +2373,12 @@ GstFlowReturn PublishPipeline::onPreviewSample(GstAppSink *sink, gpointer userDa
     GstSample *sample = gst_app_sink_pull_sample(sink);
     if (!sample) return GST_FLOW_OK;
 
-    // First preview frame after enableCamera ⇒ the forced caps (if any)
-    // negotiated successfully. Cancel the self-heal watchdog from the
-    // Qt thread (QTimer.stop is not safe from this streaming thread).
-    if (!self->m_camFirstFrameSeen.exchange(true, std::memory_order_relaxed)) {
-        QPointer<PublishPipeline> gd(self);
-        QMetaObject::invokeMethod(self, [gd]() {
-            if (gd) gd->m_camStartWatchdog.stop();
-        }, Qt::QueuedConnection);
-    }
+    // 0.52.13 — bump the frame-PROGRESS counter the stall-aware watchdog reads.
+    // Do NOT stop the watchdog here: it now self-manages via progress, so a single
+    // leaked frame can no longer cancel recovery of a subsequent stall (the exact
+    // signature of the Intel MF/D3D-during-share freeze). Atomic; cheap.
+    self->m_camFrameCount.fetch_add(1, std::memory_order_relaxed);
+    self->m_camFirstFrameSeen.store(true, std::memory_order_relaxed);
 
     // #20 Phase 3.3b — the BG engine now runs UPSTREAM of m_tee (in
     // onBgSample), so by the time pixels reach the preview branch they
@@ -2546,6 +2668,19 @@ void PublishPipeline::setLayerActive(int i, bool on)
 
 void PublishPipeline::applyBweToLayers(int estimateBps)
 {
+    // 0.52.6 — a 0 / non-positive estimate means GCC has NO estimate yet (RTCP
+    // feedback hasn't flowed, or the receiver isn't reporting transport-cc for our
+    // send) — it does NOT mean "0 bandwidth". onGccBitrate already early-returns on
+    // est==0, so a 0 here only ever arrives from setLoadCaps()/setScreenShareSuppression()
+    // re-gating with the last-known estimate that was NEVER set. Treat it as FULL
+    // bandwidth so the BWE gate doesn't MUTE every upper layer down to 180p on a
+    // perfectly healthy link that merely hasn't fed back (field 0.52.5: Kalin's GCC
+    // read 0 the whole call → setLoadCaps→applyBweToLayers(0) muted h+m even with the
+    // load-floor holding ceil 2, so he sent 180p; then both ends collapsed). The
+    // effectiveLayerCeiling (tier/load-floor/screen-share) still caps above this and
+    // m_maxBitrate still caps the encoder bytes; a REAL >0 estimate gates normally.
+    if (estimateBps <= 0)
+        estimateBps = m_originalMaxBitrate > 0 ? m_originalMaxBitrate : 9'000'000;
     m_lastBweEstimateBps = estimateBps;   // remembered so a load-ceiling change re-gates
     // Threshold rationale: each layer's effective wire cost exceeds its
     // nominal target by ~25% (RTP/RTCP overhead, FEC pacing slack).
@@ -2557,12 +2692,15 @@ void PublishPipeline::applyBweToLayers(int estimateBps)
     constexpr int kHysteresis  =   200'000;
     // 0.51.14 anti-flap: an estimate hovering near a threshold flipped a layer
     // ACTIVE/MUTED every few seconds (each flip = keyframe + visible quality
-    // jump). The gate now DROPS fast but only RE-ADDS after the estimate stays
-    // above re-open this long. See BweLayerGate.h. (Ilko ~1.9 Mbps field repro.)
-    constexpr long long kReopenDwellMs = 4000;
-
+    // jump). The gate DROPS fast but only RE-ADDS after the estimate stays above
+    // re-open this long. See BweLayerGate.h. (Ilko ~1.9 Mbps field repro.)
+    // 0.52.4: the dwell is now HEADROOM-SCALED (bweReopenDwellMs) — a flat 4 s
+    // latched the high layer off for seconds after a single dip on a healthy LAN
+    // ("stuck at 180p, won't climb back"); near a threshold it stays the full 4 s.
     if (!m_bweClock.isValid()) m_bweClock.start();
-    const long long now = m_bweClock.elapsed();
+    const long long now    = m_bweClock.elapsed();
+    const long long dwellH = talq::bweReopenDwellMs(estimateBps, kCloseH);
+    const long long dwellM = talq::bweReopenDwellMs(estimateBps, kCloseM);
 
     // Effective cap = MIN(network, encode-load): a layer sends only if BOTH the
     // BWE estimate AND the encode-load cap (m_loadCapMaxLayer) allow it, so the
@@ -2573,9 +2711,9 @@ void PublishPipeline::applyBweToLayers(int estimateBps)
     m_bweGate[2].active = m_layers[2].active;
     m_bweGate[1].active = m_layers[1].active;
     const bool wantH = talq::bweGateLayer(m_bweGate[2], estimateBps, kCloseH,
-                                          kHysteresis, ceil >= 2, now, kReopenDwellMs);
+                                          kHysteresis, ceil >= 2, now, dwellH);
     const bool wantM = talq::bweGateLayer(m_bweGate[1], estimateBps, kCloseM,
-                                          kHysteresis, ceil >= 1, now, kReopenDwellMs);
+                                          kHysteresis, ceil >= 1, now, dwellM);
 
     // Log the estimate exactly when a layer flips (low-noise; setLayerActive
     // also logs the rid). Makes the next field log show the gate's behavior +
@@ -2583,12 +2721,23 @@ void PublishPipeline::applyBweToLayers(int estimateBps)
     if (wantH != m_layers[2].active || wantM != m_layers[1].active) {
         qInfo().nospace() << "PublishPipeline: BWE gate @ " << (estimateBps / 1000)
                           << " kbps -> H=" << wantH << " M=" << wantM
-                          << " (ceil " << ceil << ", reopen-dwell "
-                          << kReopenDwellMs << "ms)";
+                          << " (ceil " << ceil << ", reopen-dwell H="
+                          << dwellH << " M=" << dwellM << "ms)";
     }
     // 'l' always stays on — our minimum-viable channel.
     setLayerActive(2, wantH);
     setLayerActive(1, wantM);
+
+    // 0.52.5 — sender-visible floor signal. Edge-triggered: are we pinned at the
+    // capability floor because load/BWE wanted us LOWER than it? Only meaningful
+    // when the floor is an actual cap (m_layerFloor < 2 → a non-Capable/software
+    // box); a Capable HW box floors at 2 and never trips this.
+    const bool atFloor = (m_layerFloor < 2) && !m_screenShareSuppress
+                       && (qMin(m_loadCapMaxLayer, m_dynLoadCeiling) < m_layerFloor);
+    if (atFloor != m_sendFlooredLatch) {
+        m_sendFlooredLatch = atFloor;
+        emit sendQualityFloored(atFloor);
+    }
 }
 
 void PublishPipeline::setLoadCaps(int layerCeiling, int fps)
@@ -2625,7 +2774,17 @@ void PublishPipeline::applySharedFramerate(int fps)
     // (setLayerActive → valve drop, which renegotiates nothing). A real fps knob
     // would use videorate's `max-rate` property against a non-fixed-framerate
     // capsfilter (no caps renegotiation); deferred until it can be live-tested.
-    Q_UNUSED(fps);
+    //
+    // C2/#29 — that knob, implemented. With TALQ_FPS_ADAPT=1 the framerate caps
+    // were built as a RANGE [1,30], so setting the shared videorate's max-rate
+    // drops frames within the range — NO caps renegotiation, no NOT_NEGOTIATED.
+    // Default-OFF (caps stay fixed 30/1) so this ships dormant for field
+    // validation before becoming default-on; when off we no-op (layer-shed only).
+    // max-rate=0 disables the cap (full ~30 fps).
+    if (!talqFpsAdaptOn() || !m_sharedRate) { Q_UNUSED(fps); return; }
+    const int maxRate = (fps > 0 && fps < 30) ? fps : 0;
+    g_object_set(m_sharedRate, "max-rate", maxRate, nullptr);
+    qInfo() << "PublishPipeline: send-FPS adapt -> videorate max-rate" << maxRate;
 }
 
 GstPadProbeReturn PublishPipeline::onEncodeProbe(GstPad *, GstPadProbeInfo *info,
@@ -2668,82 +2827,76 @@ double PublishPipeline::encodeUsage()
 
 bool PublishPipeline::buildFarEndTail()
 {
-    // 0.51.x AEC fix. Mirrors the proven SharedFarEndBus element setup (silent
-    // keepalive so the mixer always produces, even with zero peers; 48k/S16LE/
-    // mono everywhere) but lives in THIS pipeline and ends in a REAL wasapi2sink
-    // — so the probe and webrtcdsp share one clock and the probe records exactly
-    // what hits the speaker, at its real latency.
+    // 0.55.3 AEC — the far-end REFERENCE for webrtcdsp is a WASAPI render
+    // LOOPBACK capture of the actual output endpoint (wasapi2src loopback=true on
+    // the SAME device the remote audio plays to). Loopback records exactly what
+    // the speakers emit — AFTER Windows' master/per-app volume and device APOs —
+    // on the render device's own clock. THAT is the signal the microphone
+    // re-captures, so AEC3 can model and subtract it. This replaces two broken
+    // references: the pre-sink decoded copy (wrong gain — failed at loud volume)
+    // and, since 0.52.4, a silent keepalive (no reference at all → AEC did
+    // nothing, which is why "use headphones" was the only workaround). Remote
+    // audio still plays out the per-subscriber wasapi2sink (SubscribeWebrtcSrc) —
+    // that stays the load-bearing audible path; this loopback branch is
+    // REFERENCE-ONLY and ends in a fakesink, so any hiccup here degrades AEC,
+    // never audio. Built in THIS pipeline (one clock with the mic→webrtcdsp leg)
+    // BEFORE webrtcdsp configures, so the probe (talq-aec-probe) exists for the
+    // dsp's name lookup; a build failure degrades to AEC-off (never a call drop).
     if (!m_pipeline) return false;
-    GstElement *ka     = gst_element_factory_make("audiotestsrc", "pub-far-keepalive");
-    GstElement *kaCaps = gst_element_factory_make("capsfilter",   "pub-far-ka-caps");
-    m_farMixer         = gst_element_factory_make("audiomixer",   "pub-far-mix");
-    GstElement *caps   = gst_element_factory_make("capsfilter",   "pub-far-caps");
-    m_farProbe         = gst_element_factory_make("webrtcechoprobe", "talq-aec-probe");
-    GstElement *q      = gst_element_factory_make("queue",        "pub-far-q");
-    // The probe records mono/S16LE/48k (the AEC reference format webrtcdsp wants),
-    // but the REAL wasapi2sink is a Windows render endpoint that negotiates the
-    // device mix format (shared-mode is typically 48k float STEREO) and does NOT
-    // convert internally. Without conv+res in front of it the sink returns
-    // NOT_NEGOTIATED, which propagates back up through probe→mixer→keepalive
-    // ("streaming stopped, reason not-negotiated (-4)") and collapses the whole
-    // tail → AEC silently off AND the bus error churns the publisher into
-    // Reconnecting. (The retired SharedFarEndBus ended in a fakesink, which
-    // accepts anything, so this never surfaced until the real sink in 0.51.2.)
-    // Mirror the PROVEN subscriber playout chain (SubscribeWebrtcSrc legacy path):
-    // conv → res → wasapi2sink. Probe stays upstream so it still sees mono.
-    GstElement *farConv = gst_element_factory_make("audioconvert",  "pub-far-conv");
-    GstElement *farRes  = gst_element_factory_make("audioresample", "pub-far-res");
-    m_farSink          = gst_element_factory_make("wasapi2sink",  "pub-far-sink");
-    if (!ka || !kaCaps || !m_farMixer || !caps || !m_farProbe || !q || !farConv || !farRes || !m_farSink) {
-        qWarning() << "PublishPipeline: AEC playout tail element unavailable — AEC off";
-        for (GstElement *e : { ka, kaCaps, m_farMixer, caps, m_farProbe, q, farConv, farRes, m_farSink })
+    m_farMixer = nullptr;   // no mixer in the loopback design (addFarEndPeer no-ops)
+    m_farSrc           = gst_element_factory_make("wasapi2src",     "pub-aec-ref");
+    GstElement *conv   = gst_element_factory_make("audioconvert",   "pub-far-conv");
+    GstElement *res    = gst_element_factory_make("audioresample",  "pub-far-res");
+    GstElement *caps   = gst_element_factory_make("capsfilter",     "pub-far-caps");
+    m_farProbe         = gst_element_factory_make("webrtcechoprobe","talq-aec-probe");
+    GstElement *lvl    = gst_element_factory_make("level",          "pub-far-ref-level");
+    m_farSink          = gst_element_factory_make("fakesink",       "pub-far-sink");
+    if (!m_farSrc || !conv || !res || !caps || !m_farProbe || !m_farSink) {
+        qWarning() << "PublishPipeline: AEC loopback-reference element unavailable — AEC off";
+        for (GstElement *e : { m_farSrc, conv, res, caps, m_farProbe, lvl, m_farSink })
             if (e) gst_object_unref(e);
-        m_farMixer = m_farProbe = m_farSink = nullptr;
+        m_farSrc = m_farProbe = m_farSink = nullptr;
         return false;
     }
-
+    // Loopback capture of the SAME render endpoint the remote audio plays to
+    // (m_farOutputDeviceId == the user's selected output device, the one the
+    // per-sub sinks use; empty = default endpoint). low-latency keeps the
+    // reference close to real time; silence-on-device-mute keeps the timeline
+    // continuous if muted; do-timestamp stamps on the shared publisher clock so
+    // the probe's running-time aligns with the mic leg's webrtcdsp.
+    g_object_set(m_farSrc, "loopback", TRUE, "low-latency", TRUE,
+                 "loopback-silence-on-device-mute", TRUE, "do-timestamp", TRUE, nullptr);
+    if (!m_farOutputDeviceId.isEmpty())
+        g_object_set(m_farSrc, "device", m_farOutputDeviceId.toUtf8().constData(), nullptr);
     GstCaps *c = gst_caps_from_string(
         "audio/x-raw,rate=48000,format=S16LE,channels=1,layout=interleaved");
-    g_object_set(caps,   "caps", c, nullptr);
-    g_object_set(kaCaps, "caps", c, nullptr);
+    g_object_set(caps, "caps", c, nullptr);
     gst_caps_unref(c);
-    gst_util_set_object_arg(G_OBJECT(ka), "wave", "silence");
-    g_object_set(ka, "is-live", TRUE, nullptr);
-    // Keep the probe→speaker buffering small and stable: a default queue can grow
-    // to 1s under jitter, which inflates the (delay-agnostic) AEC's far-end→mic
-    // alignment and lets echo leak. Bound to ~100ms, leak old data downstream.
-    g_object_set(q, "max-size-time", (guint64)100000000, "max-size-buffers", (guint)0,
-                 "max-size-bytes", (guint)0, "leaky", 2 /*GST_QUEUE_LEAK_DOWNSTREAM*/, nullptr);
-    // Don't let the playout sink gate the publisher's PLAYING transition with its
-    // own async preroll (the live keepalive keeps it producing anyway), and don't
-    // retain the last sample — mirrors the retired SharedFarEndBus fakesink intent.
-    g_object_set(m_farSink, "async", FALSE, "enable-last-sample", FALSE, nullptr);
-    if (!m_farOutputDeviceId.isEmpty())
-        g_object_set(m_farSink, "device", m_farOutputDeviceId.toUtf8().constData(), nullptr);
+    if (lvl)   // ERLE-proxy meter on the reference (post-probe); see pollBus
+        g_object_set(lvl, "post-messages", TRUE, "interval", (guint64)200000000, nullptr);
+    // Reference-only sink: consume as the live loopback delivers (sync=FALSE —
+    // the source is already device-paced), never gate PLAYING (async=FALSE),
+    // retain nothing. A fakesink accepts any caps, so the NOT_NEGOTIATED collapse
+    // the real 0.51.x sink hit can't happen here.
+    g_object_set(m_farSink, "sync", FALSE, "async", FALSE,
+                 "enable-last-sample", FALSE, "silent", TRUE, nullptr);
 
-    gst_bin_add_many(GST_BIN(m_pipeline),
-                     ka, kaCaps, m_farMixer, caps, m_farProbe, q, farConv, farRes, m_farSink, nullptr);
+    GstElement *chain[] = { m_farSrc, conv, res, caps, m_farProbe, lvl, m_farSink };
+    for (GstElement *e : chain) if (e) gst_bin_add(GST_BIN(m_pipeline), e);
 
-    bool ok = gst_element_link(ka, kaCaps);
-    if (ok) {   // keepalive → a mixer request pad
-        GstPad *src = gst_element_get_static_pad(kaCaps, "src");
-        GstPad *mp  = gst_element_request_pad_simple(m_farMixer, "sink_%u");
-        ok = src && mp && (gst_pad_link(src, mp) == GST_PAD_LINK_OK);
-        if (src) gst_object_unref(src);
-        if (mp)  gst_object_unref(mp);
-    }
-    if (ok)     // mixer → caps(mono) → probe → queue → conv → res → real speaker
-        ok = gst_element_link_many(m_farMixer, caps, m_farProbe, q, farConv, farRes, m_farSink, nullptr);
-
+    bool ok = lvl
+        ? gst_element_link_many(m_farSrc, conv, res, caps, m_farProbe, lvl, m_farSink, nullptr)
+        : gst_element_link_many(m_farSrc, conv, res, caps, m_farProbe, m_farSink, nullptr);
     if (!ok) {
-        qWarning() << "PublishPipeline: AEC playout tail link failed — AEC off";
-        gst_bin_remove_many(GST_BIN(m_pipeline),
-                            ka, kaCaps, m_farMixer, caps, m_farProbe, q, farConv, farRes, m_farSink, nullptr);
-        m_farMixer = m_farProbe = m_farSink = nullptr;
+        qWarning() << "PublishPipeline: AEC loopback-reference link failed — AEC off";
+        for (GstElement *e : chain) if (e) gst_bin_remove(GST_BIN(m_pipeline), e);
+        m_farSrc = m_farProbe = m_farSink = nullptr;
         return false;
     }
-    qInfo() << "PublishPipeline: AEC playout tail built in publisher pipeline "
-               "(probe inline + shared wasapi2sink) — single-clock AEC";
+    qInfo().nospace() << "PublishPipeline: AEC loopback reference built "
+                         "(wasapi2src loopback → webrtcechoprobe talq-aec-probe → fakesink), device="
+                      << (m_farOutputDeviceId.isEmpty() ? QStringLiteral("<default>")
+                                                        : m_farOutputDeviceId);
     return true;
 }
 
@@ -2756,8 +2909,24 @@ GstElement *PublishPipeline::addFarEndPeer(const QString &peerId)
     if (!src) return nullptr;
     GstCaps *c = gst_caps_from_string(
         "audio/x-raw,rate=48000,format=S16LE,channels=1,layout=interleaved");
+    // CRITICAL (0.52.3 — "no remote audio" fix). This appsrc feeds pub-far-mix
+    // (audiomixer), whose tail ends in a REAL wasapi2sink that reports a positive
+    // min-latency (~21 ms). A live appsrc with max-latency UNSET advertises
+    // max-latency = 0 in the latency query, so the live aggregator computes
+    // max(0) < min(21 ms) → "Impossible to configure latency" / "min > max" →
+    // the mixer never sets its running time and STOPS producing. Since (post the
+    // single-clock-AEC rework) remote playout flows ONLY through this mixer → the
+    // shared sink, that wedge means the user hears NOTHING while the VU meter —
+    // tapped on the subscriber chain BEFORE this appsrc — still moves. Give the
+    // source a finite, generous latency window (>= the sink min) so the
+    // aggregator can always reconcile. leaky+bounded so a stalled reference can
+    // never back-pressure the decoder. (do-timestamp keeps real-time alignment;
+    // max-latency only bounds the negotiation, it does not add real delay.)
     g_object_set(src, "is-live", TRUE, "format", GST_FORMAT_TIME,
-                 "do-timestamp", TRUE, "caps", c, nullptr);
+                 "do-timestamp", TRUE, "caps", c,
+                 "min-latency", (gint64)0, "max-latency", (gint64)100 * GST_MSECOND,
+                 "max-bytes", (guint64)(64 * 1024), "leaky-type", 2 /*downstream*/,
+                 nullptr);
     gst_caps_unref(c);
     gst_bin_add(GST_BIN(m_pipeline), src);
     GstPad *sp = gst_element_get_static_pad(src, "src");
@@ -2778,9 +2947,12 @@ GstElement *PublishPipeline::addFarEndPeer(const QString &peerId)
 
 void PublishPipeline::setFarEndOutputDevice(const QString &deviceId)
 {
+    // The loopback reference must capture the SAME endpoint the remote audio
+    // plays to. Stored here and applied when buildFarEndTail() creates the
+    // loopback wasapi2src (the device can't be changed on a live source). A
+    // live output-device change rebuilds the publisher (CallManager), which
+    // rebuilds the tail against the new endpoint.
     m_farOutputDeviceId = deviceId;
-    if (m_farSink && !deviceId.isEmpty())
-        g_object_set(m_farSink, "device", deviceId.toUtf8().constData(), nullptr);
 }
 
 void PublishPipeline::removeFarEndPeer(const QString &peerId)
@@ -2817,12 +2989,12 @@ void PublishPipeline::onGccBitrate(GObject *gcc, GParamSpec *, gpointer userData
     guint est = 0;
     g_object_get(gcc, "estimated-bitrate", &est, nullptr);
     if (est == 0) return;
-    if (est > (guint)self->m_maxBitrate) est = (guint)self->m_maxBitrate;
 
-    // Test hook (#132 TALQ_TEST_SIMULCAST_DROP): when this env var is
-    // present, the value replaces the real estimate so the harness can
-    // deterministically step through BWE thresholds and watch the
-    // layer-gate close h then m. Production has it unset.
+    // Test hook (#132 / BWE auto-cap test): when this env var is present, the
+    // value replaces the real estimate so the harness can deterministically step
+    // through BWE thresholds and watch the layer-gate close h then m AND drive the
+    // auto-cap latch/restore. Applied BEFORE the clamp + raw capture so it drives
+    // the auto-cap's decision (which evaluates the RAW estimate). Production unset.
     {
         QByteArray ov = qgetenv("TALQ_TEST_BWE_OVERRIDE_KBPS");
         if (!ov.isEmpty()) {
@@ -2832,8 +3004,16 @@ void PublishPipeline::onGccBitrate(GObject *gcc, GParamSpec *, gpointer userData
         }
     }
 
+    // RAW (un-clamped) link estimate — the sustained-low auto-cap MUST evaluate
+    // this, NOT the clamped value. Once the cap latches m_maxBitrate low, clamping
+    // est to m_maxBitrate would pin every future sample below the restore
+    // threshold so the cap could never lift → video stuck low for the whole call
+    // even after the link recovered (field: 1080p → low → stayed low, Kalin↔Ivan/SA).
+    const int rawBps = (int)est;
+    if (est > (guint)self->m_maxBitrate) est = (guint)self->m_maxBitrate;  // encoder-bitrate path only
+
     QPointer<PublishPipeline> guard(self);
-    QMetaObject::invokeMethod(self, [guard, estBps = (int)est]() {
+    QMetaObject::invokeMethod(self, [guard, estBps = (int)est, rawBps]() {
         if (!guard) return;
 
         // 0.41.6-beta — sustained-low BWE auto-cap. If the estimate
@@ -2843,34 +3023,26 @@ void PublishPipeline::onGccBitrate(GObject *gcc, GParamSpec *, gpointer userData
         // recovers above 70 % of the original we restore. Protects
         // against the mid-call freeze where GCC keeps probing a
         // saturated uplink, packet loss climbs, both ends stall.
-        constexpr int kAutoCapLowMs        = 15000;
+        // Sustained-low BWE auto-cap — pure logic in BweAutoCap.h (unit-tested,
+        // tests/bwe_auto_cap_test.cpp). It evaluates the RAW (un-clamped) estimate
+        // so the cap can actually RESTORE when the link recovers; the prior inline
+        // version clamped est first, so once capped the estimate could never reach
+        // the restore threshold → stuck low for the whole call (field: 1080p→low to
+        // a distant peer). A restore dwell inside the helper prevents flap.
         if (guard->m_originalMaxBitrate > 0) {
-            const int loThreshold = guard->m_originalMaxBitrate / 2;
-            const int hiThreshold = guard->m_originalMaxBitrate * 7 / 10;
-            if (estBps < loThreshold) {
-                if (!guard->m_lowBweTimer.isValid()) guard->m_lowBweTimer.start();
-                if (!guard->m_autoCapActive
-                    && guard->m_lowBweTimer.elapsed() > kAutoCapLowMs) {
-                    guard->m_autoCapActive = true;
-                    guard->m_maxBitrate    = estBps * 6 / 5;
-                    qWarning().nospace()
-                        << "PublishPipeline: BWE sustained low ("
-                        << (estBps / 1000) << " kbps) — auto-capping max to "
-                        << (guard->m_maxBitrate / 1000) << " kbps. "
-                        << "Will restore on BWE recovery above "
-                        << (hiThreshold / 1000) << " kbps.";
-                }
-            } else {
-                guard->m_lowBweTimer.invalidate();
-                if (guard->m_autoCapActive && estBps > hiThreshold) {
-                    guard->m_maxBitrate    = guard->m_originalMaxBitrate;
-                    guard->m_autoCapActive = false;
-                    qInfo().nospace()
-                        << "PublishPipeline: BWE recovered ("
-                        << (estBps / 1000) << " kbps) — restored max to "
-                        << (guard->m_maxBitrate / 1000) << " kbps.";
-                }
-            }
+            if (!guard->m_bweClock.isValid()) guard->m_bweClock.start();
+            const bool wasCapped = guard->m_bweAutoCap.active();
+            guard->m_maxBitrate  = guard->m_bweAutoCap.onTick(
+                rawBps, guard->m_originalMaxBitrate, guard->m_bweClock.elapsed());
+            const bool nowCapped = guard->m_bweAutoCap.active();
+            if (nowCapped && !wasCapped)
+                qWarning().nospace()
+                    << "PublishPipeline: BWE sustained low (" << (rawBps / 1000)
+                    << " kbps) — auto-capping max to " << (guard->m_maxBitrate / 1000) << " kbps.";
+            else if (!nowCapped && wasCapped)
+                qInfo().nospace()
+                    << "PublishPipeline: BWE recovered (" << (rawBps / 1000)
+                    << " kbps sustained) — restored max to " << (guard->m_maxBitrate / 1000) << " kbps.";
         }
 
         // Single-stream (stable) build: GCC drives the lone encoder's

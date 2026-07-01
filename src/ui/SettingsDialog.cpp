@@ -42,6 +42,10 @@
 #include <QSlider>
 #include <QStandardPaths>
 #include <QTimer>
+#include <QElapsedTimer>
+#include <QPaintEvent>
+
+#include "CodenameBlurb.h"   // codenameBlurb() — shared with MainWindow's codename pill
 
 // A small horizontal mic-test level meter: a calm track with a fill that
 // tracks the live capture level (green, warming to amber then red near the
@@ -339,7 +343,14 @@ SettingsDialog::SettingsDialog(
         + QStringLiteral(" · ") + QString::fromLatin1(TALQ_BUILD_TS)
 #endif
         ;
-    mcLayout->addWidget(monoLabel(verLine, 11, "settingDesc"));
+    {
+        auto *verLbl = monoLabel(verLine, 11, "settingDesc");
+        // 0.53.0 — hover the codename to read what it means (also shown in full as
+        // the About-tab credit). Same source so the two never drift.
+        const QString cb = codenameBlurb(QString::fromLatin1(TALQ_VERSION_NAME));
+        if (!cb.isEmpty()) verLbl->setToolTip(cb);
+        mcLayout->addWidget(verLbl);
+    }
 
     // Channel chip — beta vs stable, matches the call-stage codec pill idiom.
 #ifdef TALQ_PRERELEASE
@@ -399,6 +410,20 @@ SettingsDialog::SettingsDialog(
 void SettingsDialog::selectAudioVideoTab()
 {
     if (m_tabs) m_tabs->setCurrentIndex(0);
+}
+
+void SettingsDialog::setUpdateNowStatus(const QString &text)
+{
+    // 0.52.14 — MainWindow reports the manual "Update now" outcome here. Show it,
+    // then auto-revert to the actionable label (covers "You're up to date" /
+    // "Couldn't check"; on a real install the app restarts before this fires).
+    if (!m_updateNowBtn) return;
+    m_updateNowBtn->setText(text);
+    QTimer::singleShot(4000, this, [this]() {
+        if (!m_updateNowBtn) return;
+        m_updateNowBtn->setText(tr("Update now"));
+        m_updateNowBtn->setEnabled(true);
+    });
 }
 
 void SettingsDialog::refresh()
@@ -572,8 +597,8 @@ QWidget *SettingsDialog::buildAudioVideoTab()
     auto repopulateRes = [resCombo](bool presentationMode, int currentSaved) {
         resCombo->blockSignals(true);
         resCombo->clear();
-        resCombo->addItem(tr("720p HD (compatible, default)"),  720);
-        resCombo->addItem(tr("1080p Full HD"),                  1080);
+        resCombo->addItem(tr("720p HD — recommended (fits most connections)"),  720);
+        resCombo->addItem(tr("1080p Full HD — Ultra (needs a strong upload)"),  1080);
         if (presentationMode) {
             resCombo->addItem(tr("1440p 2K (presentation only)"),    1440);
             resCombo->addItem(tr("2160p 4K (presentation only)"),    2160);
@@ -1164,13 +1189,73 @@ void SettingsDialog::hideEvent(QHideEvent *event)
 void SettingsDialog::showEvent(QShowEvent *event)
 {
     QDialog::showEvent(event);
-    // Mirror the persisted state into the preview on every open. If
-    // the user left the dialog with Blur active and reopens, they see
-    // the preview without having to re-pick the mode.
-    syncBgPreview();
-    // Start the live mic test on the currently-selected input device.
-    if (m_micTester)
-        m_micTester->start(m_deviceManager->selectedInputDeviceId());
+    // The mic-test capture pipeline and (with a virtual background on) the camera
+    // preview each open a hardware device — wasapi2src/mfvideosrc init blocks the
+    // calling thread for ~100-200 ms. showEvent() runs BEFORE the dialog's first
+    // paint, and a singleShot(0) posted here still runs before Qt's deferred
+    // paint — either way the paint is starved and the window shows blank-white
+    // until the device opens. Instead flag it and let paintEvent() open the
+    // devices once the content is actually on screen. The 200 ms fallback timer
+    // covers the (unlikely) case where the parent paintEvent is fully occluded by
+    // an opaque child and never fires — content is up by then regardless.
+    m_deferredDeviceStart = true;
+    QTimer::singleShot(200, this, [this]() { startDeferredDevices(); });
+}
+
+void SettingsDialog::paintEvent(QPaintEvent *event)
+{
+    QDialog::paintEvent(event);
+    startDeferredDevices();          // fires once; no-op after the first paint
+}
+
+void SettingsDialog::startDeferredDevices()
+{
+    if (!m_deferredDeviceStart)
+        return;
+    m_deferredDeviceStart = false;
+    // The dialog content is on screen now. Open the devices on the NEXT event-loop
+    // turn (singleShot(0) so we never block inside a paint handler), so the
+    // ~100-200 ms wasapi2src/mfvideosrc init happens with the window already fully
+    // drawn instead of behind a blank-white surface.
+    QTimer::singleShot(0, this, [this]() {
+        if (!isVisible()) return;                  // closed again before we ran
+        QElapsedTimer t; t.start();
+        // Mirror the persisted state into the preview (re-shows Blur/Image if the
+        // user left it active). Only opens the camera when a background is on.
+        syncBgPreview();
+        // Start the live mic test on the currently-selected input device.
+        if (m_micTester)
+            m_micTester->start(m_deviceManager->selectedInputDeviceId());
+        if (t.elapsed() > 120)
+            qInfo() << "SettingsDialog: deferred device open took" << t.elapsed() << "ms";
+    });
+}
+
+void SettingsDialog::setCallActive(bool active)
+{
+    if (m_callActive == active)
+        return;
+    m_callActive = active;
+    if (!isVisible())
+        return;                              // hidden: hideEvent() already stopped the source
+    if (active) {
+        // A call just STARTED while open — release the preview's camera hold NOW so
+        // the publisher can claim the (exclusive Windows-MF) device immediately.
+        syncBgPreview();
+        return;
+    }
+    // A call just ENDED. Do NOT restart the preview synchronously: hangup's teardown
+    // releases the publisher's camera ASYNCHRONOUSLY (mfvideosrc→NULL on a GStreamer
+    // worker / a detached unref thread, which can park for a beat), and this slot
+    // runs INSIDE the same CallManager::stateChanged→teardown stack. Restarting the
+    // preview inline would race the still-held device — the preview's mfvideosrc
+    // loses and (BgPreviewSource has no bus watch) sticks on "Starting camera
+    // preview…" forever. Defer past the async release; re-check state on fire (the
+    // user may have closed the dialog or a new call may have started in the gap).
+    QTimer::singleShot(1000, this, [this]() {
+        if (!m_callActive && isVisible())
+            syncBgPreview();
+    });
 }
 
 void SettingsDialog::syncBgPreview()
@@ -1213,6 +1298,24 @@ void SettingsDialog::syncBgPreview()
     } else {
         m_bgPreviewEngine->setBlurStrength(strength);
         m_bgPreviewEngine->setMode(BackgroundEngine::Mode::Blur);
+    }
+
+    // A live call already holds the (exclusive, on Windows MediaFoundation)
+    // camera via the publisher pipeline. Opening a SECOND camera consumer here
+    // would STEAL the device from the call — the in-call camera then errors out
+    // and can't re-acquire until the call is rebuilt (Ilko, 0.52.16: opened
+    // Settings mid-call → camera dead for the rest of the call). So while a call
+    // is active we do NOT open the camera for the preview. The chosen background
+    // still applies live to the call via backgroundSettingsChanged(); only this
+    // settings-side preview pauses.
+    if (m_callActive) {
+        if (m_bgPreviewSource)
+            m_bgPreviewSource->stop();
+        m_bgPreviewLabel->setText(
+            tr("Live preview pauses during a call — your camera is in use.\n"
+               "Your background still applies to the call."));
+        m_bgPreviewLabel->show();
+        return;
     }
 
     if (!m_bgPreviewSource) {
@@ -1687,6 +1790,27 @@ QWidget *SettingsDialog::buildUpdatesTab()
         lay->addWidget(waitRow);
     }
 
+    // 0.52.14 — manual "Update now": check + install on demand instead of waiting
+    // for the periodic poll. Bypasses the idle wait, but the no-restart-during-a-
+    // call gate still applies (enforced in MainWindow). The button doubles as its
+    // own status line; MainWindow drives the result via setUpdateNowStatus().
+    {
+        auto *row = new QWidget(w);
+        auto *rl = new QHBoxLayout(row);
+        rl->setContentsMargins(0, 0, 0, 0);
+        rl->setSpacing(8);
+        m_updateNowBtn = new QPushButton(tr("Update now"), row);
+        m_updateNowBtn->setCursor(Qt::PointingHandCursor);
+        connect(m_updateNowBtn, &QPushButton::clicked, this, [this]() {
+            m_updateNowBtn->setEnabled(false);
+            m_updateNowBtn->setText(tr("Checking for updates…"));
+            emit updateNowRequested();
+        });
+        rl->addWidget(m_updateNowBtn);
+        rl->addStretch();
+        lay->addWidget(row);
+    }
+
     lay->addSpacing(kGroupGap - kRowGap);
 
     auto *checkBtn = new QPushButton(tr("Check for updates now"), w);
@@ -1820,39 +1944,7 @@ QWidget *SettingsDialog::buildAccountTab()
         // Slartibartfast) and the Bulgarian-holiday names (Botev = Heroes'
         // Day, Margaritka = Children's Day). Unknown/future codenames now
         // fall back to a neutral label rather than a wrong story.
-        QString creditText;
-        if (verName == QStringLiteral("Deep Thought")) {
-            creditText = tr("Codename \"%1\" — the supercomputer from The "
-                            "Hitchhiker's Guide to the Galaxy that computed 42, "
-                            "the Answer to Life, the Universe and Everything "
-                            "(a nod to version 0.42).").arg(verName);
-        } else if (verName == QStringLiteral("Magrathea")) {
-            creditText = tr("Codename \"%1\" — the legendary planet-building "
-                            "world from The Hitchhiker's Guide to the Galaxy, "
-                            "where bespoke luxury planets are made to order.")
-                            .arg(verName);
-        } else if (verName == QStringLiteral("Slartibartfast")) {
-            creditText = tr("Codename \"%1\" — the Hitchhiker's Guide planetary "
-                            "coastline designer who won an award for the fjords "
-                            "of Norway and liked to sign his name in the crinkly "
-                            "bits; a maker who sweats the fine detail.")
-                            .arg(verName);
-        } else if (verName == QStringLiteral("Botev")) {
-            creditText = tr("Codename \"%1\" — Hristo Botev, the poet-"
-                            "revolutionary honoured on Bulgaria's Heroes' Day "
-                            "(2 June).").arg(verName);
-        } else if (verName == QStringLiteral("Margaritka")) {
-            creditText = tr("Codename \"%1\" — the daisy (margaritka), for "
-                            "Bulgaria's Children's Day (1 June).").arg(verName);
-        } else if (verName == QStringLiteral("Aprilsko Vastanie")
-                   || verName == QStringLiteral("Panagyurishte")
-                   || verName == QStringLiteral("Koprivshtitsa")) {
-            creditText = tr("Codename \"%1\" — Bulgaria's April Uprising of 1876, "
-                            "150th anniversary (2026).").arg(verName);
-        } else {
-            // Unknown/future codename: a neutral credit, never a wrong story.
-            creditText = tr("Codename \"%1\".").arg(verName);
-        }
+        const QString creditText = codenameBlurb(verName);
         auto *credit = new QLabel(creditText);
         credit->setFont(infoFont);
         credit->setProperty("role", "secondary");

@@ -1,6 +1,7 @@
 #include "MainWindow.h"
 #include "CallWindow.h"
 #include "SettingsDialog.h"
+#include "CodenameBlurb.h"
 #ifndef TALQ_VERSION_NAME
 #define TALQ_VERSION_NAME ""   // per-release codename (set in CMake)
 #endif
@@ -42,6 +43,7 @@
 #include "models/ThreadListModel.h"
 
 #include <QApplication>
+#include <QElapsedTimer>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGridLayout>
@@ -1297,9 +1299,25 @@ void MainWindow::buildChatPage()
         m_chatPainter->pinToBottom();
     });
 
+    // 0.52.7 — coalesced per-topic-unread refresh (see m_topicUnreadDebounce).
+    m_topicUnreadDebounce.setSingleShot(true);
+    m_topicUnreadDebounce.setInterval(400);
+    connect(&m_topicUnreadDebounce, &QTimer::timeout, this, [this]() {
+        if (m_threads && m_showTopics)
+            m_threads->refresh();
+    });
     connect(m_messages, &MessageListModel::newMessagesAtEnd, this, [this]() {
         if (m_chatPainter->atBottom())
             m_chatPainter->scrollToBottom();
+        // 0.52.7 — a live message just landed in the open conversation; recompute
+        // the per-topic unread so the topic bar's counter updates (it previously
+        // only refreshed on conversation-open / window activation, so a reply in
+        // another topic while you watched showed no count). Debounced + gated on
+        // m_showTopics so a 1:1 room never fetches and rapid batches / your own
+        // sends collapse into one trailing fetch (the currently-open topic is also
+        // pinned to 0 in fetchThreads, so this can't flicker the topic you're in).
+        if (m_showTopics)
+            m_topicUnreadDebounce.start();
     });
     connect(m_messages, &MessageListModel::errorOccurred, this, [this](const QString &error) {
         QMessageBox::warning(this, "Error", error);
@@ -1350,11 +1368,17 @@ void MainWindow::buildChatPage()
 
     connect(m_callManager, &CallManager::stateChanged, this, [this]() {
         m_header->setCallState(m_callManager->state());
+        // 0.53.2 — keep the call-active stamp fresh so the install gate's post-call
+        // grace measures time since the call TRULY ended, not the last transition.
+        if (m_callManager->state() != CallManager::Idle
+            || m_callManager->isScreenSharing())
+            m_lastCallActiveMs = QDateTime::currentMSecsSinceEpoch();
     });
     connect(m_callManager, &CallManager::stateChanged,
             this, &MainWindow::maybeLaunchPendingInstaller);
     connect(m_callManager, &CallManager::durationChanged, this, [this]() {
         m_header->setCallDuration(m_callManager->callDuration());
+        m_lastCallActiveMs = QDateTime::currentMSecsSinceEpoch();  // 0.53.2 — ~1s in-call heartbeat
     });
 
     // Clear any "in call" user-status automation. We listen to
@@ -1423,12 +1447,30 @@ void MainWindow::buildChatPage()
 
     connect(m_updateChecker, &UpdateChecker::updateAvailable,
             this, [this](const UpdateChecker::Manifest &m) {
+        // 0.52.14 — manual "Update now" in flight: cancel the up-to-date fallback,
+        // tell the Settings button an update is on the way, and FORCE the download
+        // ourselves. The auto-install acceptUpdate() below is gated on
+        // autoInstall-enabled / not-cancelled / new-version, so without this an
+        // update found via "Update now" with auto-install off (or a re-click of an
+        // already-offered version) would never download — leaving the flag stuck
+        // true and a later install skipping the idle countdown. acceptUpdate() is
+        // idempotent (no-op unless a pending update exists; re-arms the download).
+        if (m_userWantsImmediateInstall && m_updateNowChecking) {
+            m_updateNowChecking = false;
+            if (m_settingsDialog) m_settingsDialog->setUpdateNowStatus(tr("Update found — installing…"));
+            if (m_updateChecker) m_updateChecker->acceptUpdate();
+        }
         // Reset the self-heal one-shot ONLY when a genuinely new
         // version is offered. Periodic poll re-emits the same
         // manifest; without the version guard, an AV-quarantine
         // environment would silently re-download forever because
         // every re-emit cleared the flag.
-        if (m.version != m_lastOfferedVersion) {
+        // 0.52.10 — the 5-min poll re-emits the SAME manifest. Gate both the
+        // self-heal reset AND the auto-download (below) on a genuinely NEW
+        // version, or the auto-installer re-pulls the same ~46 MB installer on
+        // every poll until install/restart (the "downloads twice" Kalin saw).
+        const bool isNewVersion = (m.version != m_lastOfferedVersion);
+        if (isNewVersion) {
             m_updateRelaunchAttempted = false;
             m_lastOfferedVersion = m.version;
         }
@@ -1461,7 +1503,7 @@ void MainWindow::buildChatPage()
         // this session.
         const bool autoInstallEnabled = QSettings()
             .value(QStringLiteral("updates/autoInstall"), true).toBool();
-        if (autoInstallEnabled && !m_autoInstallCancelledForSession) {
+        if (autoInstallEnabled && !m_autoInstallCancelledForSession && isNewVersion) {
             m_updateChecker->acceptUpdate();
         }
     });
@@ -1482,6 +1524,14 @@ void MainWindow::buildChatPage()
         m_updateInstallBtn->show();
         m_updateLaterBtn->show();
         m_updateWhatsNewBtn->hide();
+        // 0.52.14 — a "Update now" request must not leave its flags armed if the
+        // download fails (else a later completed download would skip the idle
+        // countdown). Clear them and report back to the Settings button.
+        if (m_userWantsImmediateInstall || m_updateNowChecking) {
+            m_userWantsImmediateInstall = false;
+            m_updateNowChecking = false;
+            if (m_settingsDialog) m_settingsDialog->setUpdateNowStatus(tr("Update failed — try again"));
+        }
     });
     connect(m_updateChecker, &UpdateChecker::readyToLaunch,
             this, &MainWindow::onUpdateReadyToLaunch);
@@ -1498,6 +1548,7 @@ void MainWindow::buildChatPage()
             m_updateInstallBtn->hide();
             m_updateLaterBtn->hide();
             m_updateWhatsNewBtn->hide();
+            m_explicitInstallRequested = true;   // 0.53.2 — user clicked: skip the post-call grace
             maybeLaunchPendingInstaller();
             return;
         }
@@ -1789,12 +1840,26 @@ void MainWindow::onConversationSelected(const QString &token, const QString &nam
     if (m_chatPainter->selectionMode())
         m_chatPainter->exitSelectionMode();
 
+    // 0.52.10 — a "reconnecting" blip re-selects the ALREADY-active conversation;
+    // capture that BEFORE updating m_activeConvToken so we can tell a genuine
+    // navigation from a programmatic re-select.
+    const bool sameConvReselect = (token == m_activeConvToken);
     m_activeConvToken = token;
 
-    // A live call stays watchable while you browse chat: dock it to a
-    // compact corner PiP when you navigate into a conversation. Double-
-    // click the PiP (or end the call) to bring it back full.
-    if (m_callWindow && m_callManager->state() != CallManager::Idle)
+    // A live call stays watchable while you browse chat: dock it to a compact
+    // corner PiP when you navigate into a conversation. Double-click the PiP (or
+    // end the call) to bring it back full.
+    // 0.52.10 — three guards on when to dock:
+    //  (1) ONLY an ACTIVE call. A ringing (Incoming/Connecting) call must present
+    //      centered on the main screen, never get yanked to the corner — Pavel saw
+    //      an incoming call docked bottom-right.
+    //  (2) NOT a fullscreen call (it has its own screen real estate, typically a
+    //      2nd monitor — 0.52.7 field bug).
+    //  (3) NOT a programmatic re-select of the SAME conversation — that's the
+    //      "reconnecting" blip, and it yanked a windowed call to the corner
+    //      mid-share (Kalin↔Ilko).
+    if (m_callWindow && m_callManager->state() == CallManager::Active
+        && !m_callWindow->isFullscreen() && !sameConvReselect)
         m_callWindow->enterPipDock();
 
     // Switch from welcome to chat
@@ -1954,10 +2019,20 @@ void MainWindow::refreshWelcomeStatus()
                                   QStringLiteral("core api")));
     m_welcomeTalkLabel->setText(val(m_auth ? m_auth->talkVersion() : QStringLiteral("?"),
                                     QStringLiteral("capabilities")));
+    // Subtitle shows the ACTUALLY-selected HPB (the nearest-server probe may have
+    // moved us off the Nextcloud-assigned one) + its measured RTT, so the home
+    // screen reflects where realtime traffic is really going. Falls back to a
+    // plain label if the host/RTT aren't known yet.
+    QString sigSub = QStringLiteral("offline");
+    if (sigOn) {
+        const QString hpb = m_callManager ? m_callManager->selectedSignalingLabel() : QString();
+        const int rtt     = m_callManager ? m_callManager->selectedSignalingRttMs() : -1;
+        sigSub = hpb.isEmpty() ? QStringLiteral("HPB realtime")
+               : (rtt >= 0 ? QStringLiteral("%1 · %2 ms").arg(hpb).arg(rtt) : hpb);
+    }
     m_welcomeSignalingLabel->setText(val(sigOn ? QStringLiteral("Connected")
                                                 : QStringLiteral("Disconnected"),
-                                         sigOn ? QStringLiteral("HPB realtime")
-                                               : QStringLiteral("offline")));
+                                         sigSub));
     m_welcomePushLabel->setText(val(pushOn ? QStringLiteral("Real-time")
                                            : QStringLiteral("Polling"),
                                     pushOn ? QStringLiteral("websocket up")
@@ -2069,7 +2144,7 @@ void MainWindow::buildWelcomeContent()
     const QString verName = QStringLiteral(TALQ_VERSION_NAME);
     if (!verName.isEmpty()) {
         auto *codename = new QLabel(QStringLiteral("✦ ") + verName.toUpper(), root);
-        codename->setToolTip(tr("Release codename"));
+        codename->setToolTip(codenameBlurb(verName));   // the real story, not a generic label
         codename->setStyleSheet(QString(
             "color:%1;font-family:%2;font-size:10px;font-weight:bold;"
             "letter-spacing:1px;border:1px solid %1;border-radius:6px;padding:4px 8px;")
@@ -2520,6 +2595,12 @@ void MainWindow::changeEvent(QEvent *event)
             // is already in flight.
             if (m_conversations)
                 m_conversations->refresh();
+            // 0.52.7 — refresh the OPEN conversation's TOPIC list too, so the
+            // per-topic unread counters on the topic bar are current when the user
+            // returns (they only recomputed on conversation-open before). Debounced
+            // (shared with the live-message path) + gated on m_showTopics.
+            if (m_showTopics)
+                m_topicUnreadDebounce.start();
             // Avatars only ever lived in each painter's in-memory cache and
             // were never invalidated, so a group/user avatar changed elsewhere
             // stayed stale until restart. Mark them stale on focus; the next
@@ -2847,7 +2928,26 @@ void MainWindow::resizeEvent(QResizeEvent *e)
 void MainWindow::onUpdateReadyToLaunch(const QString &installerPath)
 {
     m_pendingInstallerPath = installerPath;
+    // 0.53.2 — a fresh download is AUTOMATIC by default; the manual branch below
+    // re-sets the explicit flag. Resetting here stops a stale flag from a prior
+    // failed/abandoned explicit install making this auto-install skip the grace.
+    m_explicitInstallRequested = false;
     m_updateProgress->hide();
+
+    // 0.52.14 \u2014 the user clicked "Update now": skip the idle countdown and install
+    // immediately. maybeLaunchPendingInstaller still defers if a call is active
+    // (and re-runs on callStateChanged), so this can't drop a live call.
+    if (m_userWantsImmediateInstall) {
+        m_userWantsImmediateInstall = false;
+        m_updateNowChecking = false;
+        m_explicitInstallRequested = true;   // 0.53.2 \u2014 manual "Update now": skip the post-call grace
+        m_updateLabel->setText(tr("Update downloaded \u2014 installing\u2026"));
+        m_updateInstallBtn->hide();
+        m_updateLaterBtn->hide();
+        m_updateWhatsNewBtn->hide();
+        maybeLaunchPendingInstaller();
+        return;
+    }
 
     // 0.41.0 \u2014 when auto-install-on-idle is enabled (default ON), stage
     // the install behind the idle gate instead of immediately quitting
@@ -2924,9 +3024,15 @@ void MainWindow::onUpdateAutoInstallTick()
 
     if (blocked) {
         // User is mid-something \u2014 fully hide the banner; the next tick
-        // will re-evaluate. Active state can't reach idleWaitMs anyway
-        // (input events keep resetting GetLastInputInfo), so the install
-        // can't fire while we're hidden here.
+        // will re-evaluate.
+        // 0.52.12 \u2014 and RESET the idle anchor while blocked (above all, during
+        // an active CALL / screen-share). A call generates no TalQ INPUT events,
+        // so the idle counter would otherwise climb past idleWaitMs while you talk;
+        // then the instant the call dropped to Idle the gate unblocked and the
+        // install fired IMMEDIATELY, restarting the app out from under the user and
+        // killing the call (Kalin, live). Resetting here forces the update to wait
+        // the full idle window AFTER the call/activity ends, never the moment it drops.
+        m_lastTalqInputMs = QDateTime::currentMSecsSinceEpoch();
         if (m_updateBanner) m_updateBanner->hide();
         return;
     }
@@ -3024,9 +3130,25 @@ void MainWindow::maybeLaunchPendingInstaller()
     if (m_callManager) {
         if (m_callManager->state() != CallManager::Idle
             || m_callManager->isScreenSharing()) {
+            m_lastCallActiveMs = QDateTime::currentMSecsSinceEpoch();
             m_updateLabel->setText(
                 tr("You\u2019re in a call \u2014 update will start when the call ends."));
             return;  // slot re-runs on callStateChanged
+        }
+        // 0.53.2 \u2014 POST-CALL GRACE: never restart the instant a call ends. A brief
+        // Idle gap between back-to-back calls (or right after hangup) must not kill
+        // an active session. Wait kPostCallInstallGraceMs of NO call before
+        // installing; a new call refreshes m_lastCallActiveMs and extends the grace.
+        // (The auto-install tick's TalQ-input idle logic still applies on top.)
+        const qint64 sinceCall =
+            QDateTime::currentMSecsSinceEpoch() - m_lastCallActiveMs;
+        if (!m_explicitInstallRequested       // an explicit Install/Update-now skips the grace
+            && m_lastCallActiveMs > 0 && sinceCall < kPostCallInstallGraceMs) {
+            m_updateLabel->setText(
+                tr("Update will start a little after your call."));
+            QTimer::singleShot(int(kPostCallInstallGraceMs - sinceCall) + 250, this,
+                               &MainWindow::maybeLaunchPendingInstaller);
+            return;
         }
     }
 
@@ -3068,6 +3190,13 @@ void MainWindow::maybeLaunchPendingInstaller()
         m_updateInstallBtn->show();
         return;
     }
+    // 0.53.2 — idempotency guard: the success path used to leave m_pendingInstallerPath
+    // SET for the ~500 ms until quit(), so a converging grace-timer / idle-tick
+    // re-entry could startDetached the silent installer a SECOND time (two
+    // /VERYSILENT installers racing the same files). Clear it now (+ the explicit
+    // flag) so any re-entry early-returns at the empty-path check up top.
+    m_pendingInstallerPath.clear();
+    m_explicitInstallRequested = false;
     // Arm the force-exit watchdog AT THE AUTO-UPDATE TRIGGER (not just the tray-
     // Quit one — the 0.51.15 fix covered only that path). The downloaded
     // installer is already running with /CLOSEAPPLICATIONS; we now quit ourselves
@@ -3276,6 +3405,14 @@ void MainWindow::openConversationInfo()
     dlg->setAttribute(Qt::WA_DeleteOnClose);
     connect(dlg, &ConversationInfoDialog::roomChanged, this, [this]() {
         m_conversations->refresh();
+        // A name/picture change from the info dialog must drop the cached
+        // avatars so a NEW group picture shows immediately. Otherwise the
+        // painters' 15-min avatar TTL keeps the old picture until the next
+        // window-focus refresh (the focus handler does this same trio). No
+        // HTTP cache exists, so the background re-fetch returns the fresh image.
+        if (m_sidebar)     m_sidebar->invalidateAvatars();
+        if (m_header)      m_header->invalidateAvatars();
+        if (m_chatPainter) m_chatPainter->invalidateAvatars();
     });
     connect(dlg, &ConversationInfoDialog::roomDeleted, this, [this]() {
         m_conversations->refresh();
@@ -3288,8 +3425,24 @@ void MainWindow::openConversationInfo()
 void MainWindow::ensureSettingsDialog()
 {
     if (m_settingsDialog) return;
+    // First-open only (the dialog is cached hereafter). Time the tab construction
+    // so a >1s "Settings is slow to appear" can be attributed to build vs the
+    // show-path device opens (which are deferred past the paint in showEvent).
+    QElapsedTimer _ctor; _ctor.start();
     m_settingsDialog = new SettingsDialog(
         m_deviceManager, m_notifications, m_appSettings, m_auth, this);
+    if (_ctor.elapsed() > 120)
+        qInfo() << "SettingsDialog: first-open construction took" << _ctor.elapsed() << "ms";
+    // The Settings live background preview opens a SECOND camera consumer. During
+    // a call the publisher already holds the (exclusive, Windows MF) camera, so
+    // the preview must not open the device or it steals it and wedges the in-call
+    // video (Ilko, 0.52.16). Seed the dialog's call-active flag for the current
+    // state and keep it live — a call can start/end while Settings is open.
+    m_settingsDialog->setCallActive(m_callManager->state() != CallManager::Idle);
+    connect(m_callManager, &CallManager::stateChanged, m_settingsDialog, [this]() {
+        if (m_settingsDialog)
+            m_settingsDialog->setCallActive(m_callManager->state() != CallManager::Idle);
+    });
     connect(m_settingsDialog, &SettingsDialog::closeToTrayChanged,
             this, [this](bool enabled) { m_closeToTray = enabled; });
     connect(m_settingsDialog, &SettingsDialog::themeIdChanged,
@@ -3299,6 +3452,37 @@ void MainWindow::ensureSettingsDialog()
     connect(m_settingsDialog, &SettingsDialog::checkForUpdatesRequested,
             this, [this]() {
         if (m_updateChecker) m_updateChecker->checkNow();
+    });
+    // 0.52.14 — manual "Update now": check immediately AND install as soon as the
+    // download lands (skip the idle countdown; the no-restart-during-call gate in
+    // maybeLaunchPendingInstaller still applies). m_updateNowChecking gates the
+    // "You're up to date" fallback if no newer version turns up.
+    connect(m_settingsDialog, &SettingsDialog::updateNowRequested,
+            this, [this]() {
+        if (!m_updateChecker) {
+            if (m_settingsDialog) m_settingsDialog->setUpdateNowStatus(tr("Updates are not available in this build"));
+            return;
+        }
+        if (!m_pendingInstallerPath.isEmpty()) {
+            // A download already completed and is just waiting — install it
+            // directly (maybeLaunchPendingInstaller respects the no-restart-during-
+            // call gate). 0.53.2 — flag it explicit so the post-call grace is skipped:
+            // the user just clicked Update now, they want it installed.
+            m_explicitInstallRequested = true;
+            if (m_settingsDialog) m_settingsDialog->setUpdateNowStatus(tr("Installing update…"));
+            maybeLaunchPendingInstaller();
+            return;
+        }
+        m_userWantsImmediateInstall = true;
+        m_updateNowChecking = true;
+        m_updateChecker->checkNow();
+        // Fallback feedback: if no updateAvailable arrives, report up-to-date.
+        QTimer::singleShot(9000, this, [this]() {
+            if (!m_updateNowChecking) return;          // updateAvailable already handled it
+            m_updateNowChecking = false;
+            m_userWantsImmediateInstall = false;
+            if (m_settingsDialog) m_settingsDialog->setUpdateNowStatus(tr("You’re up to date"));
+        });
     });
     // #20 — live-apply Background section changes during a call.
     connect(m_settingsDialog, &SettingsDialog::backgroundSettingsChanged,

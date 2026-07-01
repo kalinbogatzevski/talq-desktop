@@ -759,8 +759,13 @@ void HeaderPainter::requestAvatar(const QString &userId)
     if (m_conversationType == 1 && !userId.isEmpty()) {
         url = QStringLiteral("/index.php/avatar/") + userId + QStringLiteral("/64");
     } else {
+        // Cache-buster: a hardcoded ?v=1 never changes, so any HTTP cache in the
+        // path (reverse proxy / Nextcloud) keeps serving the OLD room avatar even
+        // after it's changed. Stamp a fresh value so each fetch bypasses caches and
+        // returns the CURRENT avatar (paired with invalidateAvatars() on roomChanged).
         url = QStringLiteral("/ocs/v2.php/apps/spreed/api/v1/room/") +
-              m_conversationToken + QStringLiteral("/avatar?v=1");
+              m_conversationToken + QStringLiteral("/avatar?v=")
+              + QString::number(QDateTime::currentSecsSinceEpoch());
     }
 
     QNetworkReply *reply = m_api->getAbsoluteUrl(url);
@@ -783,6 +788,8 @@ void HeaderPainter::requestAvatar(const QString &userId)
         }
 
         m_avatarCache[userId] = PainterTheme::cropToCircle(img, AvatarSize);
+        qInfo().nospace() << "HeaderPainter: avatar fetched id=" << userId
+                          << " bytes=" << data.size();
         update();
     });
 }

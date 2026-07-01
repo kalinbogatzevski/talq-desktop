@@ -423,7 +423,16 @@ void ThreadListModel::fetchThreads()
             info.lastAuthor = acc.latestAuthor;
             info.lastActivity = acc.latestTimestamp;
             info.replyCount = acc.count;
-            info.unreadCount = acc.unread;
+            // 0.52.7 — the topic the user is CURRENTLY viewing is read by
+            // definition; never recompute it as unread. Without this, opening a
+            // topic clears its count optimistically (markTopicRead) but the next
+            // fetchThreads recomputes from the room read marker, which lags a
+            // round-trip behind the just-performed read — so the count would flash
+            // back on the open topic the instant any message arrived. (0.52.7 made
+            // fetchThreads fire on every inbound batch, which would have made that
+            // flicker constant.)
+            info.unreadCount = (acc.threadRootId == m_selectedThreadId
+                                && m_selectedThreadId > 0) ? 0 : acc.unread;
 
             // Deterministic color from title hash
             uint hash = qHash(info.title);

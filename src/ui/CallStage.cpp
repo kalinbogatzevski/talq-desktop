@@ -5,7 +5,10 @@
 
 #include <QAction>
 #include <QActionGroup>
+#include <QApplication>
 #include <QFontMetrics>
+#include <QScreen>
+#include <QWindow>
 #include <QKeyEvent>
 #include <QMenu>
 #include <QMouseEvent>
@@ -69,6 +72,7 @@ CallStage::CallStage(CallManager *call, QWidget *parent)
         relayout(); update();
     });
     connect(m_call, &CallManager::durationChanged, this, [this]{ update(); });
+    connect(m_call, &CallManager::videoQualityNoticeChanged, this, [this]{ update(); });  // 0.52.5 chip
     connect(m_call, &CallManager::callStatsChanged, this, [this]{
         // Sample the outbound bitrate into a ring buffer (~1 s cadence, the
         // callStats tick) so the telemetry panel can draw a live sparkline.
@@ -174,8 +178,12 @@ void CallStage::rebindProviders()
     if (auto *sp = m_call->localScreenPreviewProvider()) {
         m_conns << connect(sp, &VideoFrameProvider::imageReady, this,
             [this](const QImage &img) {
-                m_selfScreenFrame = img.scaledToHeight(360,
-                    Qt::SmoothTransformation);
+                // 0.53.0 — scale to 720 (was 360): the self-share can now be the
+                // full STAGE tile (self-view), not just a thumbnail, so it needs the
+                // extra resolution to read crisply. Never upscale a smaller capture.
+                m_selfScreenFrame = img.height() > 720
+                    ? img.scaledToHeight(720, Qt::SmoothTransformation)
+                    : img;
                 update();
             });
     } else {
@@ -215,6 +223,13 @@ void CallStage::onFrame(CallParticipant *p, bool screen, const QImage &img)
                  << (screen ? "screen" : "camera") << img.size()
                  << "frame#" << n << "part=" << (void*)p;
     if (img.isNull() || img.width() <= 32) return;       // skip MCU 16x16 dummy
+    // 0.52.12 — a real SELF CAMERA frame proves the camera recovered. Clear any
+    // stale "Your camera isn't available" notice: it was raised on an earlier
+    // cameraError and is otherwise only cleared on a fresh call or a manual
+    // re-toggle, so after an internal retry succeeded it lingered on screen (and
+    // over a screen share). Idempotent — only fires while the flag is still set.
+    if (p && p->isSelf() && !screen && m_call && m_call->isCameraUnavailable())
+        m_call->cameraFrameConfirmed();
     // Pre-scale to the widget bound so paint is a plain blit (perf guardrail).
     QImage f = img;
     const QSize cap = size().isValid() ? size() : QSize(1280, 720);
@@ -231,6 +246,23 @@ CallParticipant *CallStage::stageSource(bool *isScreen) const
     const auto parts = m_call->participants();
     for (CallParticipant *p : parts)
         if (p->screenSharing() && p->screen()) { *isScreen = true; return p; }
+    // 0.53.0 — Zoom-style self-view: when WE are sharing and no PEER is, put OUR
+    // OWN share on the stage (rendered from the local capture preview tap), so the
+    // presenter sees what they're broadcasting full-size — the same view the remote
+    // gets — instead of only a small thumbnail. A peer's share still wins the stage
+    // (their content is what the call is watching); ours then falls back to the PiP.
+    if (m_call->isScreenSharing() && m_call->localScreenPreviewProvider()
+        && m_call->selfParticipant()) {
+        // 0.53.x — self-view on the stage for BOTH window AND monitor shares, so
+        // the local-share UI matches a peer-share / p2p call (consistent, per
+        // Kalin). The monitor-share hall-of-mirrors (sharing the screen TalQ is
+        // on → WGC captures TalQ showing the capture → feedback freeze) is solved
+        // in paintTile by drawing a static "You're sharing this screen" placeholder
+        // instead of the live recapture — NOT by hiding the self-view (the blunt
+        // 0.53.1 window-only gate this replaces).
+        *isScreen = true;
+        return m_call->selfParticipant();
+    }
     if (m_pinned) return m_pinned;
     CallParticipant *speaker = nullptr, *firstRemote = nullptr;
     for (CallParticipant *p : parts) {
@@ -254,8 +286,21 @@ QVector<CallStage::Tile> CallStage::computeLayout() const
     bool isScreen = false;
     CallParticipant *src = stageSource(&isScreen);
 
+    // A group screen share must always show the GROUP interface: the screen on
+    // the stage and EVERYONE (incl. self) as member tiles in the rail — never a
+    // stray self-PiP. Decide rail-vs-PiP from the share FLAG (stable the instant
+    // sharing starts), NOT from isScreen (which is true only once the screen
+    // provider has DECODED a frame, so it flickers self out to a PiP during a
+    // share's startup/rebuild/frame-gap — the wrong-interface bug Kalin hit in a
+    // 3-way call while Pavel was sharing). isScreen still drives what the STAGE
+    // renders; shareActive drives the layout MODE.
+    bool shareActive = isScreen || m_call->isScreenSharing();
+    if (!shareActive)
+        for (CallParticipant *p : parts)
+            if (p->screenSharing()) { shareActive = true; break; }
+
     const int n = remotes.size();
-    const bool evenGallery = !isScreen && n >= 2 && n <= 4 && !m_pinned;
+    const bool evenGallery = !shareActive && n >= 2 && n <= 4 && !m_pinned;
 
     if (evenGallery) {
         // Equal warm grid of everyone (self included), speaker gets the glow.
@@ -286,7 +331,14 @@ QVector<CallStage::Tile> CallStage::computeLayout() const
         // screen content and the rail carries the participant tiles. In
         // that mode the self-camera belongs in the rail (becomes the "You"
         // tile, no floating overlay), so it doesn't obscure shared content.
-        if (p->isSelf() && !isScreen) continue;       // PiP only when no screen share
+        // Keyed on shareActive (flag) not isScreen (frame-decoded) so self
+        // stays a rail member throughout a share, never flickering to a PiP.
+        // Self floats as a corner PiP ONLY in a 1:1 stage (n==1). In any GROUP
+        // stage+rail layout (a pinned speaker, or 5+ peers) self joins the rail as
+        // the "You" tile so it matches the other member tiles instead of floating
+        // mis-sized over the rail in the bottom-right corner (field bug). During a
+        // screen share self is already a rail member (shareActive handled above).
+        if (p->isSelf() && !shareActive && n < 2) continue;   // floating self-PiP only in 1:1
         railList << p;
     }
     const bool hasRail = !railList.isEmpty();
@@ -350,7 +402,15 @@ void CallStage::relayout()
     // user can SEE what they're broadcasting (Zoom/Teams/Meet/Telegram
     // consensus: never hide the camera PiP for the share — both stay).
     // Anchor to the corner opposite the camera PiP so they don't stack.
-    if (m_call->isScreenSharing() && m_call->localScreenPreviewProvider()) {
+    // 0.53.0 — when OUR share is the STAGE (self-view; no peer is sharing) the big
+    // stage tile already shows it, so the small self-share PiP is redundant — drop
+    // it. It still appears when a PEER's share holds the stage and we're ALSO sharing
+    // (so we can watch theirs while keeping an eye on our own outgoing share).
+    bool selfShareOnStage = false;
+    for (const Tile &t : m_tiles)
+        if (t.isStage && t.isScreen && t.p && t.p->isSelf()) selfShareOnStage = true;
+    if (m_call->isScreenSharing() && m_call->localScreenPreviewProvider()
+        && !selfShareOnStage) {
         const qreal w = qBound(140.0, width() * 0.16, 220.0);
         const qreal h = w * 9.0 / 16.0;
         const qreal m = 18;
@@ -394,6 +454,19 @@ void CallStage::updateStreamQualities()
 // ── painting ────────────────────────────────────────────────────────────
 void CallStage::paintEvent(QPaintEvent *)
 {
+    // One-time hook (the window handle exists once we're painting): force a
+    // repaint when the call window moves to another display, so a self MONITOR
+    // share flips placeholder<->live even for a perfectly static shared screen
+    // that delivers no new capture frames. Harmless when not sharing (the
+    // re-eval is a no-op). update() re-runs paintTile → re-checks window()->screen().
+    if (!m_winScreenHooked) {
+        if (QWidget *w = window()) {
+            if (QWindow *wh = w->windowHandle()) {
+                connect(wh, &QWindow::screenChanged, this, [this]{ update(); });
+                m_winScreenHooked = true;
+            }
+        }
+    }
     PainterTheme th(m_themeId, 1.0);
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing);
@@ -471,6 +544,7 @@ void CallStage::paintEvent(QPaintEvent *)
         // below so it stays put the whole time the problem is live.
         paintCameraBanner(p, th);
         paintMicBanner(p, th);
+        paintQualityNotice(p, th);   // sender-visible degraded-send chip (not chrome-faded)
         if (m_telemetryOpen) paintTelemetry(p, th);
         // Top info/action chrome + bottom control bar fade together.
         // When fully hidden we skip painting (and skip appending hit
@@ -531,11 +605,14 @@ void CallStage::paintTile(QPainter &p, const Tile &t, const PainterTheme &th, bo
     CallParticipant *cp = t.p;
     const bool speaking = cp->speaking() && !cp->audioMuted();
 
-    // Speaking halo: the one sanctioned state glow (skip if reduced motion).
+    // Active-speaker frame: a clear accent-coloured border around whoever is
+    // speaking (was a faint glow that was easy to miss). It breathes gently; on
+    // reduced-motion it's a steady solid frame. Drawn just outside the tile so it
+    // reads as a frame, not an inner ring.
     if (speaking) {
-        qreal pulse = reducedMotion() ? 0.5 : (0.5 + 0.5*qSin(m_glowPhase));
-        QColor g = th.glow; g.setAlphaF(0.35 + 0.35*pulse);
-        p.setPen(QPen(g, 3));
+        qreal pulse = reducedMotion() ? 1.0 : (0.78 + 0.22*qSin(m_glowPhase));
+        QColor fr = th.accent; fr.setAlphaF(qBound(0.0, 0.9 * pulse, 1.0));
+        p.setPen(QPen(fr, 3.0));
         p.setBrush(Qt::NoBrush);
         p.drawRoundedRect(rc.adjusted(-1.5,-1.5,1.5,1.5), r+2, r+2);
     }
@@ -545,9 +622,36 @@ void CallStage::paintTile(QPainter &p, const Tile &t, const PainterTheme &th, bo
     p.setClipPath(clip);
     p.fillRect(rc, th.bgSidebar);   // warm ground, never black
 
-    const QImage &frame = t.isScreen ? m_scrFrame.value(cp) : m_camFrame.value(cp);
+    // 0.53.0 — our OWN screen on the stage (self-view) renders from the local
+    // capture preview (m_selfScreenFrame), not a per-participant screen provider
+    // (self has none). A peer's screen still comes from m_scrFrame.
+    // Hall-of-mirrors guard: a self MONITOR share on the stage must NOT render
+    // the live capture (WGC re-captures TalQ showing it → feedback freeze). Draw
+    // a static placeholder instead (window shares are safe — they capture a
+    // specific window, not the screen showing TalQ).
+    // Hall-of-mirrors guard — but ONLY when the call window sits on the very
+    // monitor we're sharing (WGC re-captures TalQ showing the share → feedback
+    // freeze). If the window has been dragged to a DIFFERENT display, the live
+    // self-share is safe AND wanted, so render it. Re-checked every repaint (the
+    // capture keeps delivering frames), so moving the window across displays
+    // flips it live. Unknown / out-of-range share index → keep the placeholder.
+    bool selfMonitorShare =
+        cp->isSelf() && t.isScreen && !m_call->screenShareIsWindow();
+    if (selfMonitorShare) {
+        const QList<QScreen *> scrs = QApplication::screens();
+        const int shareIdx = m_call->shareMonitorIndex();
+        QWidget *topWin = window();
+        QScreen *winScreen = topWin ? topWin->screen() : nullptr;
+        if (winScreen && shareIdx >= 0 && shareIdx < scrs.size()
+            && scrs[shareIdx] != winScreen)
+            selfMonitorShare = false;   // sharing a DIFFERENT monitor → show live
+    }
+    const QImage &frame = t.isScreen
+        ? (cp->isSelf() ? m_selfScreenFrame : m_scrFrame.value(cp))
+        : m_camFrame.value(cp);
     const bool showVideo = !frame.isNull()
-        && (t.isScreen || (!cp->videoMuted()));
+        && (t.isScreen || (!cp->videoMuted()))
+        && !selfMonitorShare;
     if (showVideo) {
         QSize sc = frame.size().scaled(rc.size().toSize(),
                        t.isScreen ? Qt::KeepAspectRatio : Qt::KeepAspectRatioByExpanding);
@@ -574,7 +678,11 @@ void CallStage::paintTile(QPainter &p, const Tile &t, const PainterTheme &th, bo
                          || cp->connState() == CallParticipant::Failed;
         if (!reconn) {
             QString cap;
-            if (t.isScreen) {
+            if (selfMonitorShare) {
+                // Deliberate placeholder (not "starting"): we're actively sharing
+                // this monitor but must not render the live recapture here.
+                cap = tr("You're sharing this screen");
+            } else if (t.isScreen) {
                 // Provider exists (cp->screen()) but no frame yet → the
                 // share is being negotiated. Tell the viewer instead of
                 // showing a silent avatar tile (#134 UX gap).
@@ -916,7 +1024,11 @@ void CallStage::paintControlBar(QPainter &p, const PainterTheme &th)
     // ── detached hang-up pill ──
     if (endBtn) {
         const bool hv = (endBtn->id == m_hoverBtn);
-        QColor f = hv ? th.danger.lighter(112) : th.danger;
+        // 0.52.11 — the hang-up pill gets its OWN clear red, not th.danger (which
+        // is the palette "clay" and reads orange). A universal end-call red so the
+        // button is unmistakable as "leave the call".
+        const QColor hangupRed(0xE2, 0x3B, 0x33);
+        QColor f = hv ? hangupRed.lighter(112) : hangupRed;
         p.setBrush(f); p.setPen(Qt::NoPen);
         p.drawRoundedRect(endBtn->rect, endBtn->rect.height()/2.0,
                           endBtn->rect.height()/2.0);
@@ -1139,6 +1251,37 @@ void CallStage::paintMicBanner(QPainter &p, const PainterTheme &th)
 //
 //   ACTION pills (top-right): Quality override + Background mode. Click
 //   opens a dropdown; hover surfaces a native tooltip.
+void CallStage::paintQualityNotice(QPainter &p, const PainterTheme &th)
+{
+    // 0.52.5 — persistent sender-visible chip: our OWN camera SEND quality is
+    // reduced (software encoding, or shed to the 480p floor under load). The
+    // sender must SEE why their video is limited — the field bug was a silent
+    // collapse to 180p with no cue. Compact amber pill at top-center; stacks
+    // below the camera/mic failure banners on the rare both-at-once case.
+    if (!m_call || m_call->videoQualityNotice().isEmpty()) return;
+    const QString text = m_call->videoQualityNotice();
+
+    QFont f = th.systemFont(); f.setBold(true);
+    p.setFont(f);
+    QFontMetrics fm(f);
+    const qreal padH = 14.0, dot = 8.0, gap = 8.0, h = 30.0;
+    const qreal w = padH + dot + gap + fm.horizontalAdvance(text) + padH;
+    qreal y = 52.0;                                   // top slot, like the banners
+    if (m_call->isCameraUnavailable()) y += 78.0;     // stack below a camera banner
+    if (m_call->isMicUnavailable())    y += 78.0;     // and/or a mic banner
+    const QRectF pill((width() - w) / 2.0, y, w, h);
+
+    QColor face = th.bgSurface; face.setAlphaF(0.96);
+    QColor edge = th.amber;     edge.setAlphaF(0.85);
+    p.setBrush(face); p.setPen(QPen(edge, 1.4));
+    p.drawRoundedRect(pill, 15, 15);
+    p.setBrush(th.amber); p.setPen(Qt::NoPen);
+    p.drawEllipse(QRectF(pill.left() + padH, pill.center().y() - dot / 2.0, dot, dot));
+    p.setPen(th.textPrimary);
+    p.drawText(pill.adjusted(padH + dot + gap, 0, -padH, 0),
+               Qt::AlignVCenter | Qt::AlignLeft, text);
+}
+
 void CallStage::paintInfoPills(QPainter &p, const PainterTheme &th)
 {
     // 0.40.15 — Mission Control telemetry tile vocabulary, laid out on
@@ -1286,16 +1429,15 @@ QString CallStage::highQualityLabel() const
     return tr("High (180p)");
 }
 
-void CallStage::paintActionPills(QPainter &p, const PainterTheme &th)
+void CallStage::computeActionPillGeometry()
 {
-    // 0.40.15 — action BUTTONS (not pills): rectangular, button-like
-    // affordances in the top-right. Click opens a QMenu listing the
-    // available options; right-click on BG opens the full picker.
-    // The button shows the CURRENT value + ▼ caret so it reads "this
-    // is a control with a dropdown" at a glance. Hover lifts subtly
-    // (1.05x scale + accent border) and shows a native tooltip.
-    // High-layer label reflects the REMOTE peer's actual top layer (peak
-    // decoded height), not our own send setting — see highQualityLabel().
+    // GEOMETRY ONLY (no painting) for the top-right action buttons
+    // (QUALITY / BACKGROUND / SHARE), so the click hit-rects are valid even when
+    // the chrome is faded out (paintActionPills is skipped at alpha~0). Without
+    // this, the quality-dropdown click hit a NULL rect and the menu never opened
+    // (field: "the dropdown did nothing"). paintActionPills calls this then draws
+    // into the SAME member rects, so the drawn buttons and the hit-rects can't
+    // drift. Keep the constants/labels in lockstep with paintActionPills.
     const QString highLabel = highQualityLabel();
     const QString kLowLabel = QStringLiteral("Low (180p)");
     const QString kMedLabel = QStringLiteral("Medium (360p)");
@@ -1304,7 +1446,6 @@ void CallStage::paintActionPills(QPainter &p, const PainterTheme &th)
         : (m_qualityOverride == 0 ? kLowLabel
            : m_qualityOverride == 1 ? kMedLabel
            : highLabel).toUpper();
-    const bool qActive = (m_qualityOverride >= 0);
 
     QSettings bgSet("TalQ", "TalQ");
     bgSet.beginGroup("Talk/Backgrounds");
@@ -1315,24 +1456,13 @@ void CallStage::paintActionPills(QPainter &p, const PainterTheme &th)
         ? tr("OFF")
         : (bgType == QLatin1String("image") ? tr("IMAGE") : tr("BLUR"));
 
-    // 0.40.15 — buttons share the info-tile card vocab (bg-surface +
-    // divider border at rest), with two readable distinctions: a
-    // slightly thicker border (1.3px → 1.6px on hover) and a ▼ caret.
-    // KEY in textTime, VAL in textPrimary.
-    // 0.41.5-beta — bumped to the new 26h scale + 9/11 mono fonts.
     QFont keyF = monoFont(9);  keyF.setBold(true);
     keyF.setLetterSpacing(QFont::AbsoluteSpacing, 1.2);
     QFont valF = monoFont(11); valF.setBold(true);
     QFontMetrics keyFm(keyF), valFm(valF);
 
-    const qreal padL     = 11.0;
-    const qreal padR     = 10.0;
-    const qreal keyValGap = 10.0;
-    const qreal caretW   = 9.0;
-    const qreal caretGap = 7.0;
-    const qreal btnH     = 26.0;
-    const qreal gap      = 8.0;
-    const qreal radius   = 11.0;
+    const qreal padL = 11.0, padR = 10.0, keyValGap = 10.0;
+    const qreal caretW = 9.0, caretGap = 7.0, btnH = 26.0, gap = 8.0;
 
     const QString qKey  = QStringLiteral("QUALITY");
     const QString bgKey = QStringLiteral("BACKGROUND");
@@ -1343,12 +1473,6 @@ void CallStage::paintActionPills(QPainter &p, const PainterTheme &th)
              + valFm.horizontalAdvance(val) + caretGap + caretW + padR;
     };
 
-    // 0.41.1-beta — SHARE quality dropdown only paints + accepts input
-    // while a screen share is live. Value mirrors CallManager's current
-    // screenShareQuality(): 0=720p / 1=1080p / 2=1440p / 3=Native. The
-    // logic itself was already there (right-click on the bottom share
-    // button), but it was invisible to users who don't know to try the
-    // right button; now it lives in the standard action-button row.
     const bool showShare = m_call->isScreenSharing();
     static const char *const kShLabels[] = { "720P", "1080P", "1440P", "NATIVE" };
     QString shVal;
@@ -1368,10 +1492,9 @@ void CallStage::paintActionPills(QPainter &p, const PainterTheme &th)
     if (showShare) shBtn = QRectF(qBtn.left() - gap - shW, rowTop, shW, btnH);
 
     // Narrow-window guard: if the right-anchored button block would overlap the
-    // left-anchored status pill, there isn't room for both on one row — drop the
-    // WHOLE block to its own row directly under the status pill so they never
-    // collide. (paintStatusPill ran earlier this frame → m_statusPillRect is
-    // current.)
+    // left-anchored status pill, drop the WHOLE block to its own row under the
+    // status pill (m_statusPillRect is current within a paint frame; in relayout/
+    // click it's last-frame's, fine for hit-testing).
     const qreal blockLeft0  = showShare ? shBtn.left() : qBtn.left();
     const qreal statusRight = m_statusPillRect.isValid() ? m_statusPillRect.right() : 0.0;
     bool actionsDropped = false;
@@ -1384,6 +1507,66 @@ void CallStage::paintActionPills(QPainter &p, const PainterTheme &th)
         if (showShare) shBtn.translate(0, dy);
         actionsDropped = true;
     }
+
+    m_actionPillsLeft = actionsDropped ? width()
+                                       : (showShare ? shBtn.left() : qBtn.left());
+    const qreal statusBottom = m_statusPillRect.isValid() ? m_statusPillRect.bottom() : 40.0;
+    const qreal actionBottom = (showShare ? shBtn.bottom() : bgBtn.bottom());
+    m_chromeRowsBottom = qMax(statusBottom, actionBottom);
+
+    m_qualityPillRect = qBtn;
+    m_bgPillRect      = bgBtn;
+    m_sharePillRect   = showShare ? shBtn : QRectF();
+}
+
+void CallStage::paintActionPills(QPainter &p, const PainterTheme &th)
+{
+    // 0.40.15 — action BUTTONS in the top-right; click opens a QMenu. The hit-
+    // rects come from computeActionPillGeometry() (also called from mousePressEvent
+    // so the dropdown works while chrome is faded); here we just DRAW into them.
+    computeActionPillGeometry();
+
+    // Display values — deterministic from the same state computeActionPillGeometry
+    // used, so positions never drift from the drawn content.
+    const QString highLabel = highQualityLabel();
+    const QString kLowLabel = QStringLiteral("Low (180p)");
+    const QString kMedLabel = QStringLiteral("Medium (360p)");
+    const QString qVal = (m_qualityOverride < 0)
+        ? tr("AUTO")
+        : (m_qualityOverride == 0 ? kLowLabel
+           : m_qualityOverride == 1 ? kMedLabel
+           : highLabel).toUpper();
+    const bool qActive = (m_qualityOverride >= 0);
+
+    QSettings bgSet("TalQ", "TalQ");
+    bgSet.beginGroup("Talk/Backgrounds");
+    const bool    bgOn   = bgSet.value("virtualBackgroundEnabled", false).toBool();
+    const QString bgType = bgSet.value("virtualBackgroundType", "blur").toString();
+    bgSet.endGroup();
+    const QString bgVal = !bgOn
+        ? tr("OFF")
+        : (bgType == QLatin1String("image") ? tr("IMAGE") : tr("BLUR"));
+
+    const bool showShare = m_call->isScreenSharing();
+    static const char *const kShLabels[] = { "720P", "1080P", "1440P", "NATIVE" };
+    QString shVal;
+    if (showShare)
+        shVal = QString::fromLatin1(kShLabels[qBound(0, m_call->screenShareQuality(), 3)]);
+
+    QFont keyF = monoFont(9);  keyF.setBold(true);
+    keyF.setLetterSpacing(QFont::AbsoluteSpacing, 1.2);
+    QFont valF = monoFont(11); valF.setBold(true);
+    QFontMetrics keyFm(keyF), valFm(valF);
+
+    const qreal padL     = 11.0;
+    const qreal padR     = 10.0;
+    const qreal keyValGap = 10.0;
+    const qreal caretW   = 9.0;
+    const qreal radius   = 11.0;
+
+    const QString qKey  = QStringLiteral("QUALITY");
+    const QString bgKey = QStringLiteral("BACKGROUND");
+    const QString shKey = QStringLiteral("SHARE");
 
     auto drawButton = [&](const QRectF &rect, const QString &key,
                           const QString &val, bool active, bool hovered) {
@@ -1422,30 +1605,17 @@ void CallStage::paintActionPills(QPainter &p, const PainterTheme &th)
         p.drawPath(caret);
     };
 
-    drawButton(qBtn,  qKey,  qVal,  qActive, m_hoverPill == QStringLiteral("quality"));
-    drawButton(bgBtn, bgKey, bgVal, bgOn,    m_hoverPill == QStringLiteral("bg"));
+    // Draw into the hit-rects computeActionPillGeometry() just set (m_actionPillsLeft
+    // and m_chromeRowsBottom were published there too).
+    drawButton(m_qualityPillRect, qKey,  qVal,  qActive, m_hoverPill == QStringLiteral("quality"));
+    drawButton(m_bgPillRect,      bgKey, bgVal, bgOn,    m_hoverPill == QStringLiteral("bg"));
     if (showShare) {
-        drawButton(shBtn, shKey, shVal, true,
+        drawButton(m_sharePillRect, shKey, shVal, true,
                    m_hoverPill == QStringLiteral("share"));
     }
-
-    // Publish the layout boundaries paintInfoPills needs:
-    //  - m_actionPillsLeft: where row-0 info tiles must stop. If we dropped the
-    //    block to its own row, row 0 is clear of buttons → info gets full width.
-    //  - m_chromeRowsBottom: the bottom of the anchor row(s); wrapped info rows
-    //    start below it so they clear the (possibly dropped) button block.
-    m_actionPillsLeft = actionsDropped ? width()
-                                       : (showShare ? shBtn.left() : qBtn.left());
-    const qreal statusBottom = m_statusPillRect.isValid() ? m_statusPillRect.bottom() : 40.0;
-    const qreal actionBottom = (showShare ? shBtn.bottom() : bgBtn.bottom());
-    m_chromeRowsBottom = qMax(statusBottom, actionBottom);
-
-    m_qualityPillRect = qBtn;
-    m_bgPillRect      = bgBtn;
-    m_sharePillRect   = showShare ? shBtn : QRectF();
-    m_topChromeRects.append(qBtn);
-    m_topChromeRects.append(bgBtn);
-    if (showShare) m_topChromeRects.append(shBtn);
+    m_topChromeRects.append(m_qualityPillRect);
+    m_topChromeRects.append(m_bgPillRect);
+    if (showShare) m_topChromeRects.append(m_sharePillRect);
 }
 
 void CallStage::paintSharingBadge(QPainter &p, const PainterTheme &th)
@@ -1595,6 +1765,28 @@ void CallStage::paintTelemetry(QPainter &p, const PainterTheme &th)
         y += cardH + 16;
     }
 
+    // ── Routing: the HPB (signaling) + TURN relay this call actually selected ──
+    {
+        p.setPen(th.textSecondary); p.setFont(monoFont(10));
+        p.drawText(QPointF(x0, y), QStringLiteral("ROUTING")); y += 18;
+        auto row = [&](const QString &k, const QString &v) {
+            p.setPen(th.textTime); p.setFont(monoFont(10));
+            p.drawText(QPointF(x0, y), k);
+            const QString vv = v.isEmpty() ? QStringLiteral("—") : v;
+            p.setPen(v.isEmpty() ? th.textSecondary : th.textPrimary); p.setFont(monoFont(10));
+            p.drawText(QRectF(x0 + 46, y - 12, innerW - 46, 16), Qt::AlignLeft | Qt::AlignVCenter,
+                       p.fontMetrics().elidedText(vv, Qt::ElideMiddle, int(innerW) - 50));
+            y += 18;
+        };
+        auto withRtt = [](const QString &host, int rtt) -> QString {
+            if (host.isEmpty()) return QString();
+            return rtt >= 0 ? QStringLiteral("%1  ·  %2 ms").arg(host).arg(rtt) : host;
+        };
+        row(QStringLiteral("HPB"),  withRtt(m_call->selectedSignalingLabel(), m_call->selectedSignalingRttMs()));
+        row(QStringLiteral("TURN"), withRtt(m_call->selectedTurnLabel(),      m_call->selectedTurnRttMs()));
+        y += 8;
+    }
+
     // ── Subsystems: per-participant connection chips ──
     p.setPen(th.textSecondary); p.setFont(monoFont(10));
     p.drawText(QPointF(x0, y), QStringLiteral("SUBSYSTEMS")); y += 20;
@@ -1706,6 +1898,21 @@ void CallStage::mouseMoveEvent(QMouseEvent *e)
 void CallStage::mousePressEvent(QMouseEvent *e)
 {
     pokeControls();
+    // Refresh the top-right action-pill hit-rects synchronously so a click lands
+    // even when the chrome had faded out (paintActionPills was skipped → the rects
+    // were NULL → the quality dropdown was swallowed; field: "the dropdown did
+    // nothing"). GATED on the SAME media-phase predicate paintEvent uses to draw
+    // those buttons — otherwise a top-right click on a ringing/idle screen (no
+    // buttons drawn) would open a phantom Quality/Background menu.
+    {
+        const auto st = m_call->state();
+        int remotes = 0;
+        for (auto *q : m_call->participants()) if (!q->isSelf()) ++remotes;
+        const bool mediaPhase =
+            (st == CallManager::Active || st == CallManager::Connecting)
+            && remotes > 0 && !m_tiles.isEmpty();
+        if (mediaPhase) computeActionPillGeometry();
+    }
     const QString id = hitButton(e->position());
 
     // Right-click on the share segment while sharing → quality menu
@@ -1869,13 +2076,22 @@ void CallStage::mouseReleaseEvent(QMouseEvent *e)
         relayout(); update();
         return;
     }
-    // click a rail tile → pin / unpin to stage
+    // Click a tile: a RAIL tile pins it to the stage; clicking the PINNED stage
+    // (a camera, not a screen share) UNPINS back to the gallery. Without this a
+    // pinned speaker has no rail tile left to click, so there was no way back to
+    // multi-view (field bug: "no way to return to multi-view").
     for (const Tile &t : m_tiles) {
-        if (t.p && !t.isStage && t.rect.contains(e->position())) {
-            m_pinned = (m_pinned == t.p) ? nullptr : t.p;
-            relayout(); update();
-            return;
+        if (!t.p || !t.rect.contains(e->position())) continue;
+        if (t.isStage) {
+            if (m_pinned && t.p == m_pinned && !t.isScreen) {
+                m_pinned = nullptr;            // unpin → back to gallery
+                relayout(); update();
+            }
+            return;   // a non-pinned / screen-share stage: leave for double-click-fullscreen
         }
+        m_pinned = (m_pinned == t.p) ? nullptr : t.p;   // rail tile → pin/unpin
+        relayout(); update();
+        return;
     }
 }
 

@@ -7,8 +7,11 @@
 set -euo pipefail
 
 BUILD_DIR="/c/build/talq"
-QT_DIR="/c/Qt/6.8.2/mingw_64"
-MINGW_DIR="/c/Qt/Tools/mingw1310_64"
+# Toolchain (0.57.x): unified on the MSYS2 mingw64 stack (gcc-15 / Qt 6.10.1) —
+# keep in lockstep with scripts/build-release.sh. (Was Qt 6.8.2 + mingw1310,
+# which can no longer be mixed with the updated MSYS2 libs — see the 0.55.1 RCA.)
+QT_DIR="/c/msys64/mingw64"
+MINGW_DIR="/c/msys64/mingw64"
 MSYS2_DIR="/c/msys64/mingw64"
 
 NO_RUN=false
@@ -30,7 +33,7 @@ export PATH="$MINGW_DIR/bin:$QT_DIR/bin:$MSYS2_DIR/bin:$PATH"
 # Step 1: windeployqt (Qt DLLs)
 if [ "$CLEAN" = true ] || [ ! -f "$BUILD_DIR/Qt6Core.dll" ]; then
     echo "[1/4] Running windeployqt..."
-    # No --no-qml-import-scan: Qt 6.8 windeployqt rejects it and deploys nothing.
+    # No --no-qml-import-scan: Qt 6.10 windeployqt rejects it and deploys nothing.
     windeployqt6.exe --release --no-translations "$BUILD_DIR/talq.exe" > /dev/null 2>&1
 else
     echo "[1/4] Qt DLLs already deployed (use --clean to redo)"
@@ -80,6 +83,17 @@ for p in "${GST_PLUGINS[@]}"; do
     [ -f "$src" ] && cp "$src" "$BUILD_DIR/gst-plugins/"
 done
 
+# #32 — gst-libav (avdec_h264) + minimal decode-only FFmpeg for the software H264
+# decode fallback (vendored under third_party/ffmpeg-min/). Lockstep with build-release.sh.
+FFMIN="$(cd "$(dirname "$0")/.." && pwd)/third_party/ffmpeg-min"
+if [ -f "$FFMIN/libgstlibav.dll" ]; then
+    cp "$FFMIN/libgstlibav.dll" "$BUILD_DIR/gst-plugins/"
+    for d in avcodec-62 avutil-60 avformat-62 avfilter-11 swscale-9 swresample-6; do
+        cp "$FFMIN/$d.dll" "$BUILD_DIR/"
+    done
+    echo "  gst-libav avdec_h264 + minimal FFmpeg deployed"
+fi
+
 # Out-of-process plugin scanner next to talq.exe (main.cpp points
 # GST_PLUGIN_SCANNER at it) — without it GStreamer scans every plugin in-process,
 # ballooning the process ~450 MB per launch. Lockstep with build-release.sh.
@@ -102,8 +116,22 @@ for dll in liborc-0.4-0.dll zlib1.dll \
     libidn2-0.dll libnettle-8.dll libp11-kit-0.dll \
     libtasn1-6.dll libunistring-5.dll libzstd.dll \
     libbrotlicommon.dll libbrotlidec.dll libbrotlienc.dll \
-    libwebrtc-audio-processing-1-3.dll; do
+    libwebrtc-audio-processing-1-3.dll \
+    libb2-1.dll libbz2-1.dll libdouble-conversion.dll libfreetype-6.dll \
+    libgraphite2.dll libharfbuzz-0.dll libmd4c.dll libpcre2-16-0.dll \
+    libpng16-16.dll libsqlite3-0.dll; do
     cp "$MSYS2_DIR/bin/$dll" "$BUILD_DIR/" 2>/dev/null || true
+done
+# Qt 6.10.1 links ICU (uc/in/dt) — required or the app won't even start.
+# Lockstep with build-release.sh; glob the soname (it bumps).
+cp "$MSYS2_DIR"/bin/libicuuc*.dll "$MSYS2_DIR"/bin/libicuin*.dll \
+   "$MSYS2_DIR"/bin/libicudt*.dll "$BUILD_DIR/" 2>/dev/null || true
+# onnxruntime (load-time import of talq.exe) + its MSVC runtime — same as the
+# release deploy; without them the dev build fails at the loader before main.
+ORT_DLL="$(cd "$(dirname "$0")/.." && pwd)/third_party/onnxruntime/bin/onnxruntime.dll"
+[ -f "$ORT_DLL" ] && cp "$ORT_DLL" "$BUILD_DIR/"
+for vc in msvcp140.dll msvcp140_1.dll vcruntime140.dll vcruntime140_1.dll; do
+    [ -f "/c/Windows/System32/$vc" ] && cp "/c/Windows/System32/$vc" "$BUILD_DIR/"
 done
 
 # Step 5: WGC single-window capture helper DLL (MSVC-built, self-contained
