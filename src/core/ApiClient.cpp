@@ -1,6 +1,9 @@
 #include "core/ApiClient.h"
 #include <QBuffer>
 #include <QCoreApplication>
+#include <QFile>
+#include <QHttpMultiPart>
+#include <QHttpPart>
 #include <QImage>
 #include <QNetworkCookieJar>
 #include <QNetworkRequest>
@@ -1135,6 +1138,85 @@ void ApiClient::setRoomName(const QString &token, const QString &name,
         const int s = meta.value(QStringLiteral("statuscode")).toInt();
         if (s >= 200 && s < 300) { callback(true, QString()); return; }
         callback(false, meta.value(QStringLiteral("message")).toString());
+    });
+}
+
+void ApiClient::setRoomAvatar(const QString &token, const QString &imagePath,
+                              QObject *context,
+                              std::function<void(bool, const QString &)> callback)
+{
+    // Nextcloud's avatar service REQUIRES a SQUARE image and rejects anything
+    // else with HTTP 400 ("image is not square"). Users pick arbitrary photos,
+    // so do what every Talk/Nextcloud client does: center-crop to the largest
+    // centered square and scale to a sane size, then upload the result.
+    QImage img(imagePath);
+    if (img.isNull()) {
+        if (callback) callback(false, QStringLiteral("Couldn't read the selected image."));
+        return;
+    }
+    const int side = qMin(img.width(), img.height());
+    QImage square = img.copy((img.width() - side) / 2, (img.height() - side) / 2, side, side);
+    if (square.width() > 512)
+        square = square.scaled(512, 512, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    const bool png = imagePath.endsWith(QStringLiteral(".png"), Qt::CaseInsensitive);
+    QByteArray imgBytes;
+    QBuffer imgBuf(&imgBytes);
+    imgBuf.open(QIODevice::WriteOnly);
+    if (!square.save(&imgBuf, png ? "PNG" : "JPEG", png ? -1 : 90) || imgBytes.isEmpty()) {
+        if (callback) callback(false, QStringLiteral("Couldn't process the selected image."));
+        return;
+    }
+    imgBuf.close();
+    qInfo().nospace() << "ApiClient: setRoomAvatar uploading center-cropped "
+                      << square.width() << "x" << square.height() << " square ("
+                      << imgBytes.size() << " bytes, " << (png ? "PNG" : "JPEG")
+                      << ") to room " << token;
+
+    // Multipart POST; do NOT use makeRequest() (it forces JSON content-type).
+    QUrl url(m_serverUrl + QStringLiteral("/ocs/v2.php/apps/spreed/api/v1/room/")
+             + token + QStringLiteral("/avatar"));
+    QNetworkRequest req(url);
+    req.setRawHeader("OCS-APIRequest", "true");
+    req.setRawHeader("Accept", "application/json");
+    applyBasicAuth(req);
+
+    auto *multiPart = new QHttpMultiPart(QHttpMultiPart::FormDataType);
+    QHttpPart imagePart;
+    imagePart.setHeader(QNetworkRequest::ContentTypeHeader,
+                        png ? QStringLiteral("image/png") : QStringLiteral("image/jpeg"));
+    imagePart.setHeader(QNetworkRequest::ContentDispositionHeader,
+                        QStringLiteral("form-data; name=\"file\"; filename=\"avatar.%1\"")
+                            .arg(png ? QStringLiteral("png") : QStringLiteral("jpg")));
+    imagePart.setBody(imgBytes);
+    multiPart->append(imagePart);
+
+    QNetworkReply *reply = m_nam.post(req, multiPart);
+    multiPart->setParent(reply);         // multipart (+ file) freed with the reply
+    trackReply(reply);
+    // Free the reply (+ multipart + the OPEN QFile) even if `context` (the dialog)
+    // is destroyed mid-upload — bind cleanup to `this`, NOT the caller, so the file
+    // descriptor never leaks on a close-during-upload.
+    connect(reply, &QNetworkReply::finished, this, [reply]() { reply->deleteLater(); });
+    connect(reply, &QNetworkReply::finished, context ? context : this,
+            [reply, callback]() {
+        const QByteArray body = reply->readAll();
+        const int http = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const QJsonObject ocs = QJsonDocument::fromJson(body).object()
+                                    .value(QStringLiteral("ocs")).toObject();
+        const QJsonObject meta = ocs.value(QStringLiteral("meta")).toObject();
+        const int s = meta.value(QStringLiteral("statuscode")).toInt();
+        // The spreed avatar controller returns the real failure reason in
+        // ocs.data.message (NOT ocs.meta.message, which it leaves empty), so read
+        // both and surface whichever is populated to the user.
+        const QString metaMsg = meta.value(QStringLiteral("message")).toString();
+        const QString dataMsg = ocs.value(QStringLiteral("data")).toObject()
+                                    .value(QStringLiteral("message")).toString();
+        qInfo().nospace() << "ApiClient: setRoomAvatar HTTP " << http << " ocs " << s
+                          << " metaMsg=\"" << metaMsg << "\" dataMsg=\"" << dataMsg
+                          << "\" body=" << QString::fromUtf8(body.left(400));
+        const QString err = !dataMsg.isEmpty() ? dataMsg : metaMsg;
+        if (s >= 200 && s < 300) { if (callback) callback(true, QString()); return; }
+        if (callback) callback(false, err);
     });
 }
 

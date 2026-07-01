@@ -21,6 +21,12 @@ public:
         QString assetSha256;    // may be empty (GitHub provides no digest)
         bool prerelease = false;  // true when the manifest came from the
                                   // beta channel (so the banner can say so)
+        // #31 forced-downgrade: when the channel manifest sets "pin": true, the
+        // updater installs this EXACT version even if it is LOWER than the one
+        // installed (a controlled rollback) — the escape hatch for a mis-publish
+        // that auto-shipped a too-high version. Without the flag a lower version
+        // is never offered. true only via the explicit manifest flag.
+        bool pin = false;
     };
 
     explicit UpdateChecker(QNetworkAccessManager *nam, QObject *parent = nullptr);

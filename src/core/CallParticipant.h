@@ -2,6 +2,7 @@
 
 #include <QObject>
 #include <QString>
+#include <QDateTime>
 
 class VideoFrameProvider;
 
@@ -57,6 +58,24 @@ public:
         emit changed();
     }
 
+    // Active-speaker detection from the LIVE audio level, so the speaking frame
+    // works from ACTUAL audio rather than only a peer's self-reported
+    // speaking/stoppedSpeaking signal (sent unreliably by some clients). A short
+    // hold keeps the frame steady between words instead of flickering on/off.
+    void noteAudioLevelForVad(double level) {
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        if (level > kSpeakOnLevel) {                 // above the noise floor → possibly talking
+            m_lastLoudMs = now;
+            if (m_loudSinceMs < 0) m_loudSinceMs = now;
+            // Require SUSTAINED loudness before flagging speech, so low-level mic
+            // noise or a brief click can't strobe the speaking frame on non-stop.
+            if (!m_speaking && now - m_loudSinceMs >= kSpeakOnsetMs) setSpeaking(true);
+        } else {
+            m_loudSinceMs = -1;                      // dropped below → restart the onset window
+            if (m_speaking && now - m_lastLoudMs > kSpeakHoldMs) setSpeaking(false);  // quiet → stopped
+        }
+    }
+
     void setCamera(VideoFrameProvider *p) {
         if (m_camera == p) return;
         m_camera = p;
@@ -88,4 +107,9 @@ private:
     ConnState m_connState = Connecting;
     bool m_speaking = false;
     double m_audioLevel = 0.0;
+    qint64 m_lastLoudMs = 0;                  // VAD: last time level crossed kSpeakOnLevel
+    qint64 m_loudSinceMs = -1;                // VAD: when level first crossed on (onset debounce)
+    static constexpr double kSpeakOnLevel = 0.20;  // 0..1 — clearly above the mic noise floor (was 0.08: noise strobed the frame)
+    static constexpr qint64 kSpeakOnsetMs = 150;   // must stay above kSpeakOnLevel this long to count as speech
+    static constexpr qint64 kSpeakHoldMs  = 500;   // keep the frame this long after quiet
 };

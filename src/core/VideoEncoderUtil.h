@@ -45,6 +45,64 @@ inline std::atomic<bool> &talqForceSoftwareVideo()
     return v;
 }
 
+// B1/B4 (0.53.x robustness) — force software video DECODE on this machine. The
+// receive-side mirror of talqForceSoftwareVideo(): some GPUs expose a HW H264
+// decoder (d3d11/nvdec/qsv) whose video-device interface is broken
+// (E_NOINTERFACE 0x80004002, "Interface not supported") — it builds and even
+// emits frames but drops them constantly, with NO fallback (unlike the encode
+// ladder). When detected we set this latch, demote the HW decoder factory ranks
+// so decodebin/decodebin3 re-plug the software decoder, and persist to QSettings
+// Video/forceSoftwareDecode (restored at startup). Process-global + sticky by
+// design ("detect once, demote, persist"). Atomic: set from a GStreamer thread.
+inline std::atomic<bool> &talqForceSoftwareDecode()
+{
+    static std::atomic<bool> v{false};
+    return v;
+}
+
+// B4 — armed by the GStreamer log probe (main.cpp) the instant the d3d11
+// video-device-interface failure is seen. The actual demote + persist + subscriber
+// rebuild is done on the Qt thread (CallManager::onLoadTick) since registry
+// mutation and pipeline rebuilds must not run on a streaming thread.
+inline std::atomic<bool> &talqHwDecodeFaultDetected()
+{
+    static std::atomic<bool> v{false};
+    return v;
+}
+
+// Demote every hardware H264/VP8/VP9 decoder factory to GST_RANK_NONE so
+// autoplugging (decodebin / webrtcsrc's internal decodebin3) selects the
+// software decoder (avdec_h264 / openh264dec / vp8dec). Idempotent; call AFTER
+// gst_init (needs the registry loaded). Process-global and sticky by design.
+inline void talqDemoteHwVideoDecoders()
+{
+    // SAFETY: only demote if a SOFTWARE decoder exists to take over — otherwise
+    // decodebin would be left with no H264 decoder at all (worse than a flaky HW
+    // one). Bump the software decoder to PRIMARY+ so autoplug definitely picks it.
+    GstElementFactory *sw = gst_element_factory_find("avdec_h264");
+    if (!sw) sw = gst_element_factory_find("openh264dec");
+    if (!sw) {
+        qWarning() << "VideoDecoder: HW decode faulty but NO software H264 decoder present — keeping HW";
+        return;
+    }
+    gst_plugin_feature_set_rank(GST_PLUGIN_FEATURE(sw), GST_RANK_PRIMARY + 1);
+    gst_object_unref(sw);
+
+    static const char *hwDecoders[] = {
+        "d3d11h264dec", "d3d11vp8dec", "d3d11vp9dec",
+        "nvh264dec", "nvh264sldec", "nvvp8dec", "nvvp9dec",
+        "qsvh264dec", "qsvvp8dec", "qsvvp9dec",
+        "msdkh264dec", nullptr
+    };
+    for (int i = 0; hwDecoders[i]; ++i) {
+        if (GstElementFactory *f = gst_element_factory_find(hwDecoders[i])) {
+            gst_plugin_feature_set_rank(GST_PLUGIN_FEATURE(f), GST_RANK_NONE);
+            gst_object_unref(f);
+        }
+    }
+    qWarning() << "VideoDecoder: demoted hardware H264/VP8 decoders -> software";
+}
+
 // Transport-Wide Congestion Control. webrtcbin builds the offer's
 // a=extmap lines from the transceiver codec-preferences caps, so the
 // SAME id must be (a) put in those caps as `extmap-<id>` and (b) set on

@@ -13,6 +13,7 @@ class QListWidgetItem;
 class QPushButton;
 class QWidget;
 class QVBoxLayout;
+class QProgressBar;
 
 /**
  * Manage an existing Nextcloud Talk room: rename, edit description,
@@ -52,6 +53,7 @@ private slots:
     void onDeleteClicked();
     void onClearHistoryClicked();
     void onAddBotClicked();
+    void onChangeAvatar();   // #25 — pick + upload a group picture
 
 private:
     void applyChrome();   // dialog typography/inputs, palette-driven
@@ -61,6 +63,11 @@ private:
     void refreshBots();
     void populateBotRow(const BotInfo &bot);
     void refreshSharedFiles();
+    // #25 — prominent picture-change feedback shown right next to the avatar
+    // (the shared bottom status label is too easy to miss). error=true styles it red.
+    void setAvatarStatus(const QString &text, bool error);
+    void applyAvatarPixmap(const QImage &img);   // #25 — center-crop to the disc (no stretch)
+    void fetchRoomAvatar();                       // #25 — load the CURRENT room avatar on open
 
     ApiClient   *m_api = nullptr;
     QString      m_token;
@@ -68,6 +75,10 @@ private:
     int          m_myType   = 0;
     bool         m_amOwnerOrMod = false;
 
+    QLabel      *m_avatar = nullptr;            // #25 — group picture
+    QPushButton *m_changeAvatarBtn = nullptr;   // #25
+    QLabel       *m_avatarStatus   = nullptr;   // #25 — prominent status by the avatar
+    QProgressBar *m_avatarProgress = nullptr;   // #25 — busy bar during upload
     QLineEdit   *m_nameEdit = nullptr;
     QLineEdit   *m_descEdit = nullptr;
     QLabel      *m_memberCount = nullptr;

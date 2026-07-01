@@ -81,11 +81,19 @@ private:
     // Twin of paintCameraBanner for a microphone that won't open: the call
     // continues on silent audio, but the user is told nobody can hear them.
     void paintMicBanner(QPainter &p, const PainterTheme &th);
+    // 0.52.5 — persistent amber chip when our OWN camera send quality is reduced
+    // (software encoding / shed to the 480p floor under load), so the sender is
+    // never silently stuck low. Reads CallManager::videoQualityNotice().
+    void paintQualityNotice(QPainter &p, const PainterTheme &th);
     // 0.40.15 — split top chrome: paintInfoPills draws read-only telemetry
     // (codec/quality stat/RX) on the left; paintActionPills draws the
     // interactive QUALITY + BACKGROUND dropdown buttons on the right.
     void paintInfoPills(QPainter &p, const PainterTheme &th);
     void paintActionPills(QPainter &p, const PainterTheme &th);
+    // Compute the top-right action-pill hit-rects (m_qualityPillRect/m_bgPillRect/
+    // m_sharePillRect) WITHOUT painting, so the dropdown click registers even when
+    // the call chrome is faded out (paintActionPills is skipped at alpha~0).
+    void computeActionPillGeometry();
     void paintSharingBadge(QPainter &p, const PainterTheme &th);
     // Label for the receive-quality dropdown's HIGH entry, bucketed from the
     // PEER's peak decoded height (CallManager::peerPeakRxHeight) — the remote's
@@ -106,6 +114,10 @@ private:
 
     CallManager *m_call;
     PainterTheme::Theme m_themeId = PainterTheme::Theme::Vivid;
+    // 0.56.1 — connected once (lazily, from paintEvent) to the call window's
+    // QWindow::screenChanged so a self monitor-share re-evaluates placeholder<->
+    // live when the window is dragged between displays, even for a static share.
+    bool m_winScreenHooked = false;
 
     // Per-participant scaled frame cache (pre-scaled in onFrame, cheap paint)
     QHash<CallParticipant*, QImage> m_camFrame;

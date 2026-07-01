@@ -7,6 +7,10 @@
 #include <QComboBox>
 #include <QHBoxLayout>
 #include <QSettings>
+#include <QStyledItemDelegate>
+#include <QPainter>
+#include <QTextOption>
+#include <QStyle>
 
 #ifdef Q_OS_WIN
 #include <windows.h>
@@ -99,6 +103,58 @@ void addEmptyPlaceholder(QListWidget *lw, const QString &text)
     item->setTextAlignment(Qt::AlignCenter);
 }
 
+// 0.53.1 — paint each picker tile ourselves so the window/app TITLE is ALWAYS
+// visible, not only on hover. The app-wide stylesheet styles QListWidget::item,
+// which makes Qt's QStyleSheetStyle take over item rendering and DROP the
+// icon-mode text label (the tooltip survived, the on-tile label didn't). This
+// delegate draws the thumbnail + the wrapped display text directly, bypassing the
+// stylesheet's item rendering.
+class ShareTileDelegate : public QStyledItemDelegate {
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+    QSize sizeHint(const QStyleOptionViewItem &, const QModelIndex &) const override {
+        return QSize(kThumbW + 28, kThumbH + 76);
+    }
+    void paint(QPainter *p, const QStyleOptionViewItem &opt,
+               const QModelIndex &idx) const override {
+        p->save();
+        p->setRenderHint(QPainter::Antialiasing, true);
+        const QRectF cell = QRectF(opt.rect).adjusted(3, 3, -3, -3);
+        if (opt.state & QStyle::State_Selected) {
+            p->setPen(Qt::NoPen);
+            p->setBrush(opt.palette.color(QPalette::Highlight));
+            p->drawRoundedRect(cell, 7, 7);
+        } else if (opt.state & QStyle::State_MouseOver) {
+            p->setPen(Qt::NoPen);
+            p->setBrush(opt.palette.color(QPalette::AlternateBase));
+            p->drawRoundedRect(cell, 7, 7);
+        }
+        const QIcon ic = idx.data(Qt::DecorationRole).value<QIcon>();
+        const bool hasIcon = !ic.isNull();
+        qreal textTop = cell.top() + 6;
+        if (hasIcon) {
+            const QPixmap pm = ic.pixmap(QSize(kThumbW, kThumbH));
+            p->drawPixmap(QPointF(cell.center().x() - pm.width() / 2.0,
+                                  cell.top() + 6), pm);
+            textTop = cell.top() + 6 + kThumbH + 4;
+        }
+        const QString text = idx.data(Qt::DisplayRole).toString();
+        if (!text.isEmpty()) {
+            const bool sel = opt.state & QStyle::State_Selected;
+            p->setPen(opt.palette.color(sel ? QPalette::HighlightedText
+                                            : QPalette::Text));
+            const QRectF tr(cell.left() + 4, textTop, cell.width() - 8,
+                            cell.bottom() - textTop);
+            QTextOption to(Qt::AlignHCenter | (hasIcon ? Qt::AlignTop
+                                                       : Qt::AlignVCenter));
+            to.setWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
+            p->setClipRect(tr);
+            p->drawText(tr, text, to);
+        }
+        p->restore();
+    }
+};
+
 } // namespace
 
 SharePickerDialog::SharePickerDialog(QWidget *parent)
@@ -123,12 +179,15 @@ SharePickerDialog::SharePickerDialog(QWidget *parent)
     auto styleList = [](QListWidget *lw) {
         lw->setViewMode(QListView::IconMode);
         lw->setIconSize(QSize(kThumbW, kThumbH));
-        lw->setGridSize(QSize(kThumbW + 28, kThumbH + 52));
+        // 0.53.1 — generous cell so the title has ~4 wrapped lines UNDER the
+        // thumbnail. The title is painted by ShareTileDelegate (the app stylesheet
+        // suppresses icon-mode item text, so we can't rely on the built-in label).
+        lw->setGridSize(QSize(kThumbW + 28, kThumbH + 76));
+        lw->setItemDelegate(new ShareTileDelegate(lw));
         lw->setResizeMode(QListView::Adjust);
         lw->setMovement(QListView::Static);
         lw->setSelectionMode(QAbstractItemView::SingleSelection);
         lw->setUniformItemSizes(true);
-        lw->setWordWrap(true);
         lw->setSpacing(10);
     };
 

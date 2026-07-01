@@ -32,6 +32,7 @@ public:
     VideoFrameProvider *videoProvider() const { return m_videoProvider; }
     QString videoCodec() const { return m_videoCodec; }
     QString videoDecoder() const { return m_videoDecoder; }
+    void requestKeyframe();   // 0.52.15 — on-demand RTCP PLI (screen-sub startup-grace re-PLI)
 
 signals:
     void localAnswerReady(const QString &sdp);

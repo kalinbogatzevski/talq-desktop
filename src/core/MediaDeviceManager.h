@@ -4,6 +4,7 @@
 #include <QSettings>
 #include <QStringList>
 #include <QVector>
+#include <QTimer>
 #include <gst/gst.h>
 
 // One discrete capture mode a camera advertises (one gst_device_get_caps
@@ -127,4 +128,16 @@ private:
     QSettings m_settings;
     bool m_restoring = false;  // suppress saveDevices() during restoreDevices()
     bool m_refreshing = false; // a worker-thread refreshAsync() scan is in flight
+
+    // D7 (0.53.x) — LIVE device hotplug. A persistent GstDeviceMonitor whose bus
+    // sync-handler (fires on a GStreamer thread, no GLib main loop needed — works
+    // on Windows) marshals DEVICE_ADDED/REMOVED to the Qt thread and arms a
+    // debounce; on settle we refreshAsync() (-> devicesChanged). So plugging /
+    // unplugging a camera or mic mid-call is noticed, the picker stays current,
+    // and CallManager can auto-resume a camera that comes back. NOT auto-switching
+    // the active device — just making the change available (Zoom/Teams behaviour).
+    void startHotplugMonitor();
+    static GstBusSyncReply onMonitorBusSync(GstBus *, GstMessage *, gpointer);
+    GstDeviceMonitor *m_liveMonitor = nullptr;
+    QTimer m_hotplugDebounce;
 };

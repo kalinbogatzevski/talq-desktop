@@ -8,6 +8,7 @@
 #include <QEvent>
 #include <QPalette>
 #include <QHBoxLayout>
+#include <QFileDialog>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
@@ -16,7 +17,11 @@
 #include <QMessageBox>
 #include <QPainter>
 #include <QPixmap>
+#include <QImage>
+#include <QNetworkReply>
+#include <QDateTime>
 #include <QPushButton>
+#include <QProgressBar>
 #include <QVBoxLayout>
 #include <QTimer>
 #include <QJsonObject>
@@ -127,6 +132,53 @@ ConversationInfoDialog::ConversationInfoDialog(ApiClient *api,
     title->setObjectName("headline");
     outer->addWidget(title);
     outer->addSpacing(20);
+
+    // #25 — group picture (groups only; 1:1 avatars are the other user's). A
+    // placeholder disc with the conversation's initial; moderators get a
+    // "Change picture" button that uploads to the Talk room-avatar API.
+    if (roomType != 1) {
+        auto *avRow = new QHBoxLayout();
+        m_avatar = new QLabel(this);
+        m_avatar->setFixedSize(56, 56);
+        m_avatar->setAlignment(Qt::AlignCenter);
+        m_avatar->setScaledContents(true);
+        const QString initial = currentName.trimmed().isEmpty()
+            ? QStringLiteral("#") : currentName.trimmed().left(1).toUpper();
+        m_avatar->setText(initial);
+        m_avatar->setStyleSheet(QStringLiteral(
+            "QLabel { background:#3a6ea5; color:white; border-radius:28px;"
+            "         font-size:24px; font-weight:600; }"));
+        avRow->addWidget(m_avatar);
+        avRow->addSpacing(14);
+        if (m_amOwnerOrMod) {
+            auto *avCol = new QVBoxLayout();
+            avCol->setSpacing(5);
+            m_changeAvatarBtn = new QPushButton(tr("Change picture…"), this);
+            m_changeAvatarBtn->setProperty("variant", "ghost");
+            m_changeAvatarBtn->setCursor(Qt::PointingHandCursor);
+            connect(m_changeAvatarBtn, &QPushButton::clicked,
+                    this, &ConversationInfoDialog::onChangeAvatar);
+            avCol->addWidget(m_changeAvatarBtn);
+            // Prominent feedback right next to the avatar (not the easy-to-miss
+            // shared status at the very bottom). Hidden until a change is attempted.
+            m_avatarStatus = new QLabel(QString(), this);
+            m_avatarStatus->setWordWrap(true);
+            m_avatarStatus->setVisible(false);
+            avCol->addWidget(m_avatarStatus);
+            // Slim indeterminate "busy" bar, shown only while the upload is in flight.
+            m_avatarProgress = new QProgressBar(this);
+            m_avatarProgress->setRange(0, 0);          // indeterminate
+            m_avatarProgress->setTextVisible(false);
+            m_avatarProgress->setFixedHeight(4);
+            m_avatarProgress->setVisible(false);
+            avCol->addWidget(m_avatarProgress);
+            avRow->addLayout(avCol);
+        }
+        avRow->addStretch();
+        outer->addLayout(avRow);
+        outer->addSpacing(18);
+        fetchRoomAvatar();   // #25 — show the CURRENT picture, not just the letter
+    }
 
     // Name
     auto *nameEyebrow = new QLabel(tr("NAME"), this);
@@ -331,6 +383,75 @@ void ConversationInfoDialog::changeEvent(QEvent *e)
     if (e->type() == QEvent::ApplicationPaletteChange
         || e->type() == QEvent::ThemeChange)
         applyChrome();
+}
+
+void ConversationInfoDialog::applyAvatarPixmap(const QImage &img)
+{
+    // Center-crop to a square and scale to the 56px disc, so the preview is
+    // never stretched (the old setScaledContents path squished wide photos) and
+    // matches EXACTLY what setRoomAvatar uploads (center-cropped square).
+    if (!m_avatar || img.isNull()) return;
+    const int side = qMin(img.width(), img.height());
+    const QImage sq = img.copy((img.width() - side) / 2, (img.height() - side) / 2, side, side)
+                         .scaled(56, 56, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+    m_avatar->setText(QString());
+    m_avatar->setStyleSheet(QStringLiteral("QLabel { border-radius:28px; }"));
+    m_avatar->setPixmap(QPixmap::fromImage(sq));
+}
+
+void ConversationInfoDialog::fetchRoomAvatar()
+{
+    // The dialog used to only draw the letter placeholder, so re-opening it never
+    // showed the actual group picture. Fetch the current room avatar and display it.
+    if (!m_api || m_token.isEmpty()) return;
+    QNetworkReply *reply = m_api->getAbsoluteUrl(
+        QStringLiteral("/ocs/v2.php/apps/spreed/api/v1/room/") + m_token
+        + QStringLiteral("/avatar?v=") + QString::number(QDateTime::currentSecsSinceEpoch()));
+    if (!reply) return;
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError) return;
+        QImage img;
+        if (img.loadFromData(reply->readAll()))
+            applyAvatarPixmap(img);
+    });
+}
+
+void ConversationInfoDialog::setAvatarStatus(const QString &text, bool error)
+{
+    if (!m_avatarStatus) return;
+    m_avatarStatus->setText(text);
+    // Explicit, prominent styling (the shared bottom status is too subtle): a
+    // clear red for failure, a confident green for success — readable in all themes.
+    m_avatarStatus->setStyleSheet(error
+        ? QStringLiteral("QLabel { color:#e23b3b; font-weight:600; }")
+        : QStringLiteral("QLabel { color:#2a9d5b; font-weight:600; }"));
+    m_avatarStatus->setVisible(!text.isEmpty());
+}
+
+void ConversationInfoDialog::onChangeAvatar()
+{
+    const QString path = QFileDialog::getOpenFileName(
+        this, tr("Choose a group picture"), QString(),
+        tr("Images (*.png *.jpg *.jpeg)"));
+    if (path.isEmpty()) return;
+    setAvatarStatus(tr("Uploading picture…"), false);
+    if (m_avatarProgress) m_avatarProgress->setVisible(true);
+    if (m_changeAvatarBtn) m_changeAvatarBtn->setEnabled(false);
+    m_api->setRoomAvatar(m_token, path, this, [this, path](bool ok, const QString &err) {
+        if (m_avatarProgress) m_avatarProgress->setVisible(false);
+        if (m_changeAvatarBtn) m_changeAvatarBtn->setEnabled(true);
+        if (!ok) {
+            setAvatarStatus(err.isEmpty() ? tr("Couldn't update the picture.")
+                                          : tr("Couldn't update: %1").arg(err), true);
+            return;
+        }
+        setAvatarStatus(tr("Picture updated ✓"), false);
+        // Show the new picture immediately, center-cropped EXACTLY like the upload
+        // (no stretch) so the preview matches the result in the header/list.
+        applyAvatarPixmap(QImage(path));
+        emit roomChanged();   // parent refreshes its avatar cache for this room
+    });
 }
 
 void ConversationInfoDialog::saveName()
