@@ -46,14 +46,17 @@ signals:
 private:
     void rebuild();
     void applyBarChrome();   // bar bg/border + thin scrollbar, palette-driven
-    QPushButton *makeChip(const QString &label, int threadId,
-                          int unreadCount, bool active);
+    // Returns the chip's top-level widget: either the QPushButton itself (no
+    // unread), or a small container wrapping the button + a real unread-badge
+    // pill (see #11) beside it.
+    QWidget *makeChip(const QString &label, int threadId,
+                      int unreadCount, bool active);
 
     ThreadListModel *m_model = nullptr;
     QScrollArea     *m_scroll = nullptr;
     QWidget         *m_row = nullptr;
     QHBoxLayout     *m_rowLayout = nullptr;
-    QPointer<QPushButton> m_selectedChip;  // for auto-scroll-into-view on rebuild
+    QPointer<QWidget> m_selectedChip;  // for auto-scroll-into-view on rebuild
     int              m_selectedThreadId = 0;   // 0 = "All messages"
     PainterTheme::Theme m_themeId = PainterTheme::Theme::Vivid;  // bug 10
 };

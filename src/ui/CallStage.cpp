@@ -283,6 +283,67 @@ QVector<CallStage::Tile> CallStage::computeLayout() const
     for (CallParticipant *p : parts) if (!p->isSelf()) remotes << p;
 
     const QRectF area = rect().adjusted(0, 0, 0, 0);
+
+    // Multi-peer GROUP screen-share receive: 2+ remote peers sharing their
+    // screen CONCURRENTLY. The subscribe layer already keeps one independent
+    // SubscribePipeline + VideoFrameProvider per remote sharer regardless of
+    // count (CallManager::m_screenSubscribers, keyed by sessionId — the same
+    // machinery an ordinary 3+-way camera group call already relies on), so
+    // every concurrent share is already being received and decoded. The
+    // single-stage-source design below (stageSource()) only ever surfaces
+    // ONE of them (first match) and silently drops the rest from view. This
+    // branch is a purely ADDITIVE generalization: give every concurrently-
+    // sharing peer its own tile in a grid across the stage area instead of
+    // discarding all but one. It only engages for 2+ simultaneous shares —
+    // the 0-or-1-sharer path (the heavily field-hardened common case) below
+    // is completely untouched. Deliberately NOT gated on m_pinned: stageSource()
+    // already lets any single active share win over a manual pin unconditionally
+    // (the sharing-participant loop runs before the pin check) — a pin only ever
+    // governs stage selection while nobody is sharing. Matching that precedent,
+    // 2+ concurrent shares also win over a stale pin; it resumes governing the
+    // stage once every share ends.
+    QList<CallParticipant*> sharers;
+    for (CallParticipant *p : remotes)
+        if (p->screenSharing() && p->screen()) sharers << p;
+    if (sharers.size() >= 2) {
+        const qreal m = 14, gap = 10, railW = 196;
+        QRectF stageR(area.left()+m, area.top()+m,
+                      area.width()-2*m - (railW+gap),
+                      area.height()-2*m);
+        const int cnt = sharers.size();
+        const int cols = qCeil(qSqrt(double(cnt)));
+        const int rows = qCeil(double(cnt) / cols);
+        const qreal cw = (stageR.width() - (cols-1)*gap) / cols;
+        const qreal ch = (stageR.height() - (rows-1)*gap) / rows;
+        for (int i = 0; i < cnt; ++i) {
+            int r = i / cols, c = i % cols;
+            Tile t; t.p = sharers[i]; t.isStage = true; t.isScreen = true;
+            t.rect = QRectF(stageR.left() + c*(cw+gap), stageR.top() + r*(ch+gap), cw, ch);
+            tiles << t;
+        }
+        // Rail: EVERYONE (self included) as a small camera tile — same "group
+        // interface, never a stray self-PiP" rule the single-share rail below
+        // follows. Identical sizing/overflow math to that rail so the two
+        // paths look consistent to the eye.
+        qreal x = stageR.right()+gap;
+        qreal railTh = 132, ty = area.top()+m;
+        int maxVisible = qMax(1, int((area.height()-2*m+gap) / (railTh+gap)));
+        int shown = qMin(parts.size(), maxVisible);
+        bool overflow = parts.size() > maxVisible;
+        int real = overflow ? shown-1 : shown;
+        for (int i = 0; i < real; ++i) {
+            Tile t; t.p = parts[i];
+            t.rect = QRectF(x, ty + i*(railTh+gap), railW, railTh);
+            tiles << t;
+        }
+        if (overflow) {
+            Tile t; t.p = nullptr;   // sentinel: +N tile
+            t.rect = QRectF(x, ty + real*(railTh+gap), railW, railTh);
+            tiles << t;
+        }
+        return tiles;
+    }
+
     bool isScreen = false;
     CallParticipant *src = stageSource(&isScreen);
 
@@ -389,13 +450,33 @@ void CallStage::relayout()
     bool selfIsTile = false;
     if (mediaPhase)
         for (const Tile &t : m_tiles) if (t.p && t.p->isSelf()) selfIsTile = true;
-    if (!selfIsTile && m_call->selfParticipant()) {
-        qreal w = qBound(140.0, width()*0.18, 240.0), h = w*9.0/16.0, m = 18;
-        qreal x = (m_pipCorner % 2 == 0) ? m : width()-w-m;
-        qreal y = (m_pipCorner < 2)      ? m : height()-h-m-72; // clear control bar
-        m_pipRect = QRectF(x, y, w, h);
-    } else {
-        m_pipRect = QRectF();
+    // Mixed-DPI drag-smash guard (backlog item): relayout() can also be
+    // triggered mid-gesture by resizeEvent() / forceRelayout() — the latter
+    // fires unconditionally from CallWindow::onScreenChanged() whenever the
+    // call window crosses to a different-DPI monitor. If that recomputes
+    // m_pipRect from the NEW width()/height() while the user is mid-drag on
+    // the self PiP, the tile jumps: the next mouseMoveEvent then applies
+    // m_dragOff (captured at mouse-press against the OLD logical-pixel grid)
+    // on top of the freshly-snapped rect. Leave m_pipRect alone while
+    // dragging — mouseReleaseEvent's corner-snap + relayout() already
+    // re-places it correctly once the gesture ends. Only defensively clamp
+    // it on-widget in case a shrink-on-DPI-change happened mid-drag.
+    if (!m_draggingPip) {
+        if (!selfIsTile && m_call->selfParticipant()) {
+            qreal w = qBound(140.0, width()*0.18, 240.0), h = w*9.0/16.0, m = 18;
+            qreal x = (m_pipCorner % 2 == 0) ? m : width()-w-m;
+            qreal y = (m_pipCorner < 2)      ? m : height()-h-m-72; // clear control bar
+            m_pipRect = QRectF(x, y, w, h);
+        } else {
+            m_pipRect = QRectF();
+        }
+    } else if (!m_pipRect.isNull()) {
+        const qreal maxX = qMax(0.0, width()  - m_pipRect.width());
+        const qreal maxY = qMax(0.0, height() - m_pipRect.height());
+        QPointF tl = m_pipRect.topLeft();
+        tl.setX(qBound(0.0, tl.x(), maxX));
+        tl.setY(qBound(0.0, tl.y(), maxY));
+        m_pipRect.moveTopLeft(tl);
     }
 
     // 0.41.1-beta — second small PiP for the local screen share so the
@@ -406,20 +487,26 @@ void CallStage::relayout()
     // stage tile already shows it, so the small self-share PiP is redundant — drop
     // it. It still appears when a PEER's share holds the stage and we're ALSO sharing
     // (so we can watch theirs while keeping an eye on our own outgoing share).
-    bool selfShareOnStage = false;
-    for (const Tile &t : m_tiles)
-        if (t.isStage && t.isScreen && t.p && t.p->isSelf()) selfShareOnStage = true;
-    if (m_call->isScreenSharing() && m_call->localScreenPreviewProvider()
-        && !selfShareOnStage) {
-        const qreal w = qBound(140.0, width() * 0.16, 220.0);
-        const qreal h = w * 9.0 / 16.0;
-        const qreal m = 18;
-        const int   oppCorner = m_pipCorner ^ 1;          // flip horizontal
-        qreal x = (oppCorner % 2 == 0) ? m : width()  - w - m;
-        qreal y = (oppCorner <  2)    ? m : height() - h - m - 72;
-        m_selfSharePipRect = QRectF(x, y, w, h);
-    } else {
-        m_selfSharePipRect = QRectF();
+    // Same mid-drag guard as the self-PiP above: only the camera PiP
+    // (m_pipRect) is directly dragged, but its corner/size drive this one
+    // too (opposite corner), so freeze it in lockstep to avoid the pair
+    // visibly popping to inconsistent positions mid-gesture.
+    if (!m_draggingPip) {
+        bool selfShareOnStage = false;
+        for (const Tile &t : m_tiles)
+            if (t.isStage && t.isScreen && t.p && t.p->isSelf()) selfShareOnStage = true;
+        if (m_call->isScreenSharing() && m_call->localScreenPreviewProvider()
+            && !selfShareOnStage) {
+            const qreal w = qBound(140.0, width() * 0.16, 220.0);
+            const qreal h = w * 9.0 / 16.0;
+            const qreal m = 18;
+            const int   oppCorner = m_pipCorner ^ 1;          // flip horizontal
+            qreal x = (oppCorner % 2 == 0) ? m : width()  - w - m;
+            qreal y = (oppCorner <  2)    ? m : height() - h - m - 72;
+            m_selfSharePipRect = QRectF(x, y, w, h);
+        } else {
+            m_selfSharePipRect = QRectF();
+        }
     }
 
     updateStreamQualities();
@@ -595,7 +682,14 @@ void CallStage::paintTile(QPainter &p, const Tile &t, const PainterTheme &th, bo
         int hidden = 0;
         const auto parts = m_call->participants();
         for (auto *q : parts) if (!q->isSelf()) hidden++;
-        hidden = qMax(0, hidden - (m_tiles.size() - 2));
+        // Non-rail tiles = every stage tile (normally 1; a multi-peer
+        // screen-share grid can put several sharers on "stage" at once) plus
+        // this sentinel itself. Counting it explicitly (rather than the old
+        // hardcoded "-2", which silently assumed exactly one stage tile)
+        // keeps the "+N more" count correct in both layouts.
+        int stageTiles = 0;
+        for (const Tile &tt : m_tiles) if (tt.isStage) ++stageTiles;
+        hidden = qMax(0, hidden - (m_tiles.size() - stageTiles - 1));
         p.setBrush(th.bgSurface); p.setPen(Qt::NoPen);
         p.drawRoundedRect(rc, r, r);
         p.setPen(th.textSecondary); p.setFont(th.nameFont());

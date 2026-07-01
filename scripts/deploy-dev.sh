@@ -38,6 +38,23 @@ if [ "$CLEAN" = true ] || [ ! -f "$BUILD_DIR/Qt6Core.dll" ]; then
 else
     echo "[1/4] Qt DLLs already deployed (use --clean to redo)"
 fi
+# Qt6Gui's D3D11/D3D12 RHI backend LoadLibrary()s D3Dcompiler_47.dll at RUNTIME
+# to compile HLSL shaders, so it's invisible to any import-table check and
+# windeployqt only bundles it as an undocumented side effect of whatever D3D
+# compiler redistributable the Windows SDK exposes on this machine. Lockstep
+# with scripts/build-release.sh: keep windeployqt's copy if present, else fall
+# back to System32, else FATAL (a dev build without it renders blank/crashes
+# on first D3D11/D3D12 RHI use — this is Pavel's missing-DLL report).
+if [ -f "$BUILD_DIR/D3Dcompiler_47.dll" ]; then
+    : # windeployqt already deployed it
+elif [ -f "/c/Windows/System32/D3Dcompiler_47.dll" ]; then
+    cp "/c/Windows/System32/D3Dcompiler_47.dll" "$BUILD_DIR/D3Dcompiler_47.dll"
+else
+    echo "FATAL: D3Dcompiler_47.dll missing — windeployqt didn't bundle it and"
+    echo "       System32 has none; Qt6Gui's D3D11/D3D12 RHI backend LoadLibrary()s"
+    echo "       it at runtime, so the app will render blank/crash without it."
+    exit 1
+fi
 
 # Step 2: Copy all GStreamer runtime DLLs into build dir
 # These are needed because talq links against GStreamer directly.

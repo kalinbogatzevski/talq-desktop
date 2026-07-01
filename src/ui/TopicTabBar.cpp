@@ -4,7 +4,10 @@
 
 #include <QAbstractItemModel>
 #include <QEvent>
+#include <QFont>
+#include <QFontMetrics>
 #include <QHBoxLayout>
+#include <QLabel>
 #include <QMenu>
 #include <QMessageBox>
 #include <QPushButton>
@@ -16,7 +19,7 @@
 
 namespace {
 struct Pal {
-    QString accent, onAccent, barBg, chipBg, border, ink, inkDim, hoverBg, accentSoft;
+    QString accent, onAccent, barBg, chipBg, border, ink, inkDim, hoverBg, accentSoft, unreadBadge;
 };
 // bug 10 — source chip colors DIRECTLY from PainterTheme tokens (the single
 // source of truth every other chrome widget uses), NOT from the QApplication
@@ -43,7 +46,8 @@ Pal pal(PainterTheme::Theme t)
              n(th.textPrimary),    // hover text
              n(th.textSecondary),  // unselected chip TEXT — was black in light theme
              n(th.bgHover),        // hover background
-             n(blend(th.accent, th.bgSecondary, 0.18)) };  // accentSoft — calm selected tint
+             n(blend(th.accent, th.bgSecondary, 0.18)),  // accentSoft — calm selected tint
+             n(th.unreadBadge) };  // unread-badge fill, same token as SidebarPainter
 }
 
 // QMessageBox button styling now lives once in the global app sheet
@@ -169,21 +173,17 @@ void TopicTabBar::setTheme(PainterTheme::Theme t)
     rebuild();
 }
 
-QPushButton *TopicTabBar::makeChip(const QString &label, int threadId,
-                                   int unreadCount, bool active)
+QWidget *TopicTabBar::makeChip(const QString &label, int threadId,
+                               int unreadCount, bool active)
 {
     auto *b = new QPushButton(m_row);
     const bool hasUnread = unreadCount > 0;
-    QString text = label;
-    // #11 \u2014 per-topic unread BADGE. The count rides a filled accent pill
-    // (\u25CFN) appended to the chip, and an UNREAD inactive chip takes an
-    // accent-tinted "has unread" treatment so the topic visibly stands out at a
-    // glance (the old faint "\u00B7 N" was easy to miss). The active chip already
-    // pops, so it keeps the plain count.
-    if (hasUnread)
-        text += active ? QStringLiteral("   \u00B7 %1").arg(unreadCount)
-                       : QStringLiteral("   \u25CF %1").arg(unreadCount);
-    b->setText(text);
+    // #11 \u2014 per-topic unread count now rides a real badge widget (see below),
+    // matching SidebarPainter::paintUnreadBadge's pill \u2014 not text stuffed into
+    // the chip label. An UNREAD inactive chip still takes an accent-tinted
+    // "has unread" treatment so the topic visibly stands out at a glance; the
+    // active chip already pops, so it keeps the plain style.
+    b->setText(label);
     b->setCursor(Qt::PointingHandCursor);
     b->setFixedHeight(32);
     b->setFocusPolicy(Qt::NoFocus);
@@ -257,7 +257,42 @@ QPushButton *TopicTabBar::makeChip(const QString &label, int threadId,
                 m_model->unhideAllTopics();
         }
     });
-    return b;
+
+    if (!hasUnread)
+        return b;
+
+    // #11 — real unread badge: a filled stadium pill sized/colored exactly
+    // like SidebarPainter::paintUnreadBadge (BadgeHeight=18, 10px demibold
+    // count text, unreadBadge fill + controlInk text), placed beside the chip
+    // instead of stuffed into the button's own label text.
+    static constexpr int kBadgeHeight = 18;
+    static constexpr int kBadgeFontPx = 10;
+    const QString countStr = unreadCount > 99 ? QStringLiteral("99+")
+                                               : QString::number(unreadCount);
+    QFont badgeFont;
+    badgeFont.setPixelSize(kBadgeFontPx);
+    badgeFont.setWeight(QFont::DemiBold);
+    const QFontMetrics bfm(badgeFont);
+    const int textW = bfm.horizontalAdvance(countStr);
+    const int badgeW = qMax(kBadgeHeight, textW + 10);
+
+    auto *badge = new QLabel(countStr, m_row);
+    badge->setFont(badgeFont);
+    badge->setAlignment(Qt::AlignCenter);
+    badge->setFixedSize(badgeW, kBadgeHeight);
+    badge->setStyleSheet(QStringLiteral(
+        "QLabel { background: %1; color: %2; border-radius: %3px; }"
+    ).arg(c.unreadBadge, c.onAccent)
+     .arg(kBadgeHeight / 2));
+
+    auto *wrap = new QWidget(m_row);
+    auto *wrapLayout = new QHBoxLayout(wrap);
+    wrapLayout->setContentsMargins(0, 0, 0, 0);
+    wrapLayout->setSpacing(6);
+    wrapLayout->setAlignment(Qt::AlignVCenter);
+    wrapLayout->addWidget(b);
+    wrapLayout->addWidget(badge, 0, Qt::AlignVCenter);
+    return wrap;
 }
 
 void TopicTabBar::rebuild()

@@ -469,6 +469,9 @@ private:
     bool m_turnProbed = false;
     int  m_turnBestRttMs = -1;   // best measured TURN RTT (ms) from the probe; telemetry
     int  m_turnProbeGen = 0;   // bumped per probe so a stale timer can't clobber a newer one
+    // updateCallStats() tick counter (2s/tick) gating the periodic TURN RTT
+    // re-probe below -- see the comment at its use site for the interval choice.
+    int  m_turnRttTick = 0;
     void probeNearestTurnAsync();
     QList<TurnServer> effectiveTurnServers() const;
     QString m_remoteSessionId;
@@ -486,7 +489,21 @@ private:
     bool m_micUnavailable = false;
     bool m_speaking = false;
     QTimer m_speakingGrace;
-    bool m_cameraFallbackTried = false;
+    // Camera grace-period auto-retry (backlog: MF 0xc00d36e6 first-enable
+    // failure). mfvideosrc can throw a transient error the FIRST time a
+    // device is opened for this call (still settling after a previous
+    // session freed it / racing the Windows camera-privacy handshake) even
+    // though the device is otherwise fine. Counts retries attempted for the
+    // CURRENT enable attempt so we can bound them (see kCameraGraceMaxRetries
+    // in CallManager.cpp) instead of either masking a genuinely broken
+    // camera (unbounded retry) or flashing "unavailable" on a one-off
+    // transient (zero retry). Reset at the start of every call, on a manual
+    // toggle-on retry, and on a device-hotplug auto-resume — each is a fresh
+    // attempt that deserves its own budget. Not reset on a successful grace
+    // retry itself: cameraFirstFrameSeen() already gates that correctly (once
+    // a frame has flowed, a LATER failure is never eligible for grace-retry
+    // regardless of this counter's value).
+    int m_cameraGraceRetries = 0;
     bool m_withVideo = false;
     int m_callDuration = 0;                 // legacy counter (kept; getter now uses m_callElapsed)
     QElapsedTimer m_callElapsed;            // 0.52.10 — call duration source of truth; survives reconnects

@@ -129,6 +129,10 @@ signals:
     void connectedChanged();
     void typingUserChanged();
     void peerClientInfoChanged(const QString &userId, const QString &info);
+    // Emitted whenever the keepalive pong refreshes signalingRttMs() (~every
+    // 25s while connected), so listeners (the home-screen SIGNALING tile) can
+    // repaint without a periodic timer of their own.
+    void signalingRttChanged(int rttMs);
 
     // A2 (0.53.x robustness) — our signaling session was RESET: the server
     // rejected a resume (or we otherwise got a brand-new session id) WHILE we

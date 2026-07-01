@@ -1,5 +1,35 @@
 # Changelog
 
+## v0.57.11 "July Morning" -- BETA (2026-07-02)
+
+### Added
+* **Server latency telemetry now updates live**, instead of only at connect
+  time — the home-screen signaling status and the in-call ROUTING panel
+  (press **T**) both refresh continuously while connected.
+* **Per-topic unread badge.** Unread counts on topic tabs now show as a real
+  badge pill, matching the conversation-list badges, instead of small inline
+  text.
+* **Picture-in-picture on minimize.** Minimizing (or dragging the title bar
+  down onto the taskbar) during a live call now docks it to a small
+  always-on-top corner window instead of vanishing it to the taskbar.
+  Double-click to restore, or drag the dock itself to reposition it.
+* **Group calls now show every concurrent screen share.** Previously only one
+  participant's share was shown on stage at a time even if several people
+  were sharing at once; everyone else's share silently dropped to a plain
+  camera tile. All concurrent shares now get their own stage tile.
+
+### Fixed
+* **Camera errors on the very first enable of a call now get a short,
+  bounded retry** before showing "Camera unavailable" — some hardware needs
+  a moment to settle after a previous session releases it. A camera that's
+  genuinely unavailable still reports quickly; this only smooths over a
+  one-off transient on first connect.
+* **Dragging the self-view tile across monitors with different display
+  scaling** no longer glitches the tile's position mid-drag.
+* Installers now explicitly bundle the D3D shader compiler runtime instead of
+  relying on it being deployed implicitly, closing a possible source of a
+  missing-runtime-component failure on some machines.
+
 ## v0.57.10 "July Morning" -- BETA (2026-07-01)
 
 ### Fixed
