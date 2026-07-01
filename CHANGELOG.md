@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.52.16 "Enyov Day" -- STABLE (2026-06-24)
+
+**Codename "Enyov Day"** — Enyovden (Еньовден), the Bulgarian Midsummer, on
+24 June (the day this release was cut). It marks the summer solstice — when the
+sun reaches its peak and begins its long turn back toward winter — and the feast
+of St John the Baptist. Above all it is the herbalists' day: healing herbs
+gathered at dawn are believed to hold their greatest power, the legendary "77 and
+a half" (77 for 77 ailments, and a half for the one known only to a few healers).
+A fitting name for a release about healing what was broken.
+
+### Fixed
+
+* **Fixed a rare crash when ending a call.** Hanging up during a call could, in
+  rare cases, crash the app while it tore down the connection. Teardown now
+  releases everything safely.
+* **Re-sharing a screen is now reliable.** Stopping a screen share and starting a
+  new one — especially full-screen — could leave the viewer stuck on "Starting
+  remote screen share," churning for many seconds before it settled (or not
+  settling at all). The viewer now gives a reconnecting share the time it needs to
+  come up instead of repeatedly restarting it, and fully releases the previous
+  connection before opening the new one — so a re-shared screen appears within a
+  few seconds, which also keeps the sharer's video bitrate from collapsing.
+
 ## v0.52.15 "Bafana Bafana" -- STABLE (2026-06-24)
 
 ### Fixed

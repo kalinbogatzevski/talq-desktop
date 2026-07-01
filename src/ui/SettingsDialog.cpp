@@ -43,6 +43,52 @@
 #include <QStandardPaths>
 #include <QTimer>
 
+// 0.53.0 — per-codename one-line explanation, shown as the About-tab credit AND
+// the version-line tooltip ("hover the codename to see what it means"). Keyed on
+// TALQ_VERSION_NAME so the story always matches the build; unknown/future names
+// fall back to a neutral label rather than a wrong story.
+static QString codenameBlurb(const QString &verName)
+{
+    if (verName.isEmpty()) return QString();
+    if (verName == QStringLiteral("Enyov Day"))
+        return QObject::tr("Codename \"%1\" — Enyovden (Еньовден), the "
+            "Bulgarian Midsummer, 24 June: the summer solstice, when the sun is at "
+            "its peak and begins its turn toward winter, and the feast of St John "
+            "the Baptist. Above all the herbalists' day — healing herbs gathered "
+            "at dawn are at their most potent (the legendary \"77 and a half\": 77 "
+            "for 77 ailments, and a half for the one only a few healers know). "
+            "Fitting for a release about healing what was broken.").arg(verName);
+    if (verName == QStringLiteral("Bafana Bafana"))
+        return QObject::tr("Codename \"%1\" — \"the boys\", the nickname of South "
+            "Africa's national football team (a nod home for a South African "
+            "build).").arg(verName);
+    if (verName == QStringLiteral("Deep Thought"))
+        return QObject::tr("Codename \"%1\" — the supercomputer from The "
+            "Hitchhiker's Guide to the Galaxy that computed 42, the Answer to "
+            "Life, the Universe and Everything (a nod to version 0.42).").arg(verName);
+    if (verName == QStringLiteral("Magrathea"))
+        return QObject::tr("Codename \"%1\" — the legendary planet-building world "
+            "from The Hitchhiker's Guide to the Galaxy, where bespoke luxury "
+            "planets are made to order.").arg(verName);
+    if (verName == QStringLiteral("Slartibartfast"))
+        return QObject::tr("Codename \"%1\" — the Hitchhiker's Guide planetary "
+            "coastline designer who won an award for the fjords of Norway and "
+            "liked to sign his name in the crinkly bits; a maker who sweats the "
+            "fine detail.").arg(verName);
+    if (verName == QStringLiteral("Botev"))
+        return QObject::tr("Codename \"%1\" — Hristo Botev, the poet-revolutionary "
+            "honoured on Bulgaria's Heroes' Day (2 June).").arg(verName);
+    if (verName == QStringLiteral("Margaritka"))
+        return QObject::tr("Codename \"%1\" — the daisy (margaritka), for "
+            "Bulgaria's Children's Day (1 June).").arg(verName);
+    if (verName == QStringLiteral("Aprilsko Vastanie")
+        || verName == QStringLiteral("Panagyurishte")
+        || verName == QStringLiteral("Koprivshtitsa"))
+        return QObject::tr("Codename \"%1\" — Bulgaria's April Uprising of 1876, "
+            "150th anniversary (2026).").arg(verName);
+    return QObject::tr("Codename \"%1\".").arg(verName);
+}
+
 // A small horizontal mic-test level meter: a calm track with a fill that
 // tracks the live capture level (green, warming to amber then red near the
 // top) plus a slowly-decaying peak tick. No Q_OBJECT — pure paint, driven by
@@ -339,7 +385,14 @@ SettingsDialog::SettingsDialog(
         + QStringLiteral(" · ") + QString::fromLatin1(TALQ_BUILD_TS)
 #endif
         ;
-    mcLayout->addWidget(monoLabel(verLine, 11, "settingDesc"));
+    {
+        auto *verLbl = monoLabel(verLine, 11, "settingDesc");
+        // 0.53.0 — hover the codename to read what it means (also shown in full as
+        // the About-tab credit). Same source so the two never drift.
+        const QString cb = codenameBlurb(QString::fromLatin1(TALQ_VERSION_NAME));
+        if (!cb.isEmpty()) verLbl->setToolTip(cb);
+        mcLayout->addWidget(verLbl);
+    }
 
     // Channel chip — beta vs stable, matches the call-stage codec pill idiom.
 #ifdef TALQ_PRERELEASE
@@ -1855,39 +1908,7 @@ QWidget *SettingsDialog::buildAccountTab()
         // Slartibartfast) and the Bulgarian-holiday names (Botev = Heroes'
         // Day, Margaritka = Children's Day). Unknown/future codenames now
         // fall back to a neutral label rather than a wrong story.
-        QString creditText;
-        if (verName == QStringLiteral("Deep Thought")) {
-            creditText = tr("Codename \"%1\" — the supercomputer from The "
-                            "Hitchhiker's Guide to the Galaxy that computed 42, "
-                            "the Answer to Life, the Universe and Everything "
-                            "(a nod to version 0.42).").arg(verName);
-        } else if (verName == QStringLiteral("Magrathea")) {
-            creditText = tr("Codename \"%1\" — the legendary planet-building "
-                            "world from The Hitchhiker's Guide to the Galaxy, "
-                            "where bespoke luxury planets are made to order.")
-                            .arg(verName);
-        } else if (verName == QStringLiteral("Slartibartfast")) {
-            creditText = tr("Codename \"%1\" — the Hitchhiker's Guide planetary "
-                            "coastline designer who won an award for the fjords "
-                            "of Norway and liked to sign his name in the crinkly "
-                            "bits; a maker who sweats the fine detail.")
-                            .arg(verName);
-        } else if (verName == QStringLiteral("Botev")) {
-            creditText = tr("Codename \"%1\" — Hristo Botev, the poet-"
-                            "revolutionary honoured on Bulgaria's Heroes' Day "
-                            "(2 June).").arg(verName);
-        } else if (verName == QStringLiteral("Margaritka")) {
-            creditText = tr("Codename \"%1\" — the daisy (margaritka), for "
-                            "Bulgaria's Children's Day (1 June).").arg(verName);
-        } else if (verName == QStringLiteral("Aprilsko Vastanie")
-                   || verName == QStringLiteral("Panagyurishte")
-                   || verName == QStringLiteral("Koprivshtitsa")) {
-            creditText = tr("Codename \"%1\" — Bulgaria's April Uprising of 1876, "
-                            "150th anniversary (2026).").arg(verName);
-        } else {
-            // Unknown/future codename: a neutral credit, never a wrong story.
-            creditText = tr("Codename \"%1\".").arg(verName);
-        }
+        const QString creditText = codenameBlurb(verName);
         auto *credit = new QLabel(creditText);
         credit->setFont(infoFont);
         credit->setProperty("role", "secondary");

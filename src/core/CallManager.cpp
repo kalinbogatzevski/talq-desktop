@@ -497,6 +497,18 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
                     emit remoteScreenProviderChanged();
                 }
                 if (auto *p = m_participants.value(from)) p->setScreen(nullptr);
+                // 0.53.0 — drain the OLD screen sub's libnice agent + TURN deallocate
+                // + UDP socket close BEFORE building the new one. cleanup()'s
+                // set_state(NULL) is synchronous on the GStreamer graph, but the
+                // libnice teardown (agent close, TURN dealloc, socket release) is
+                // async; building the new webrtcbin in the SAME event-loop turn
+                // collides the two agents on the same TURN 5-tuple → the new ICE
+                // sticks at "checking" (field: 8-of-18 on a re-share). A bounded,
+                // NON-blocking GLib drain lets the old agent's teardown run first —
+                // the exact pattern stopScreenShare() + full-call teardown use.
+                // FALSE = non-blocking: returns the instant the queue empties (~0 ms
+                // when nothing is pending), so it never stalls the UI.
+                for (int i = 0; i < 50; ++i) g_main_context_iteration(nullptr, FALSE);
             }
             auto *sub = new SubscribePipeline(from, this);
             connect(sub, &SubscribePipeline::localAnswerReady,
@@ -512,8 +524,21 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
                 m_signaling->sendCandidate(from, c, sid, "screen");
             });
             connect(sub, &SubscribePipeline::iceStateChanged,
-                    this, [this](const QString &state) {
+                    this, [this, from](const QString &state) {
                 qDebug() << "CallManager: screen subscriber ICE:" << state;
+                // 0.53.0 — re-anchor the startup grace to negotiation PROGRESS, not
+                // build time. kScreenSubStartupGraceMs is stamped at build; a slow
+                // re-share can burn all of it while ICE is still "checking", so the
+                // publisher's +5/+11s reap-race re-assert rebuilds a sub that was
+                // about to connect → the churn. Re-stamping on ICE-connected makes
+                // the grace mean "Ns of no FORWARD progress", giving the first
+                // keyframe/frame the full window AFTER the transport is up. Once a
+                // frame decodes (frameMark>0) the grace branch no longer applies, so
+                // this only ever extends the window for a not-yet-decoded sub.
+                if ((state == "connected" || state == "completed")
+                    && m_screenSubscribers.contains(from)
+                    && m_screenSubFrameMark.value(from, 0) == 0)
+                    m_screenSubBuiltMs[from] = QDateTime::currentMSecsSinceEpoch();
             });
             connect(sub, &SubscribePipeline::iceGatheringComplete,
                     this, [this, from, sid]() {
@@ -3324,7 +3349,24 @@ void CallManager::stopAllPipelines()
     }
     for (auto *sub : m_subscribePipelines) {
         sub->stop();   // stops the subscriber pipeline + releases its far-end appsrc
-        delete sub;
+        // 1.0 audit / 0.52.16 crash fix — NEVER synchronously `delete` a
+        // SubscribeWebrtcSrc here: teardown() runs on the Qt main thread but the
+        // webrtcsrc (gst-plugins-rs / libgstrswebrtc) streaming + bus-watch threads
+        // are still live (cleanup() detaches the GST_STATE_NULL transition to a
+        // worker thread that has NOT joined), and several of its callbacks post
+        // QMetaObject::invokeMethod(self, …, Qt::QueuedConnection) events back to
+        // THIS object. A synchronous delete runs ~QObject inline while such a
+        // QMetaCallEvent is already queued (or being posted the instant after the
+        // g_signal_handlers_disconnect in cleanup()), so Qt delivers a metacall to
+        // a freed QObject → Qt6Core dereferences freed d_ptr/vtable → 0xC0000005
+        // (the hangup→teardown→Idle crash; faulting RIP Qt6Core!QObject metacall,
+        // crash thread dominated by libgstrswebrtc). A QPointer in the lambda does
+        // NOT help: it guards the lambda BODY, not the event-delivery dispatch that
+        // touches the QObject before the lambda runs. deleteLater() defers the free
+        // to a clean event-loop turn after the posted metacalls drain — exactly why
+        // EVERY other subscriber-destroy site (lines ~1353, ~3863, ~4003, the
+        // m_screenSubscribers loop below) already uses it. Match that here.
+        sub->deleteLater();
     }
     m_subscribePipelines.clear();
     m_subscriberSids.clear();
