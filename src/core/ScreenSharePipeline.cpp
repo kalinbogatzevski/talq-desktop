@@ -369,13 +369,25 @@ bool ScreenSharePipeline::start(const QString &stunServer, const QList<TurnServe
     GstElement *pay = venc ? gst_element_factory_make(
                                  useH264 ? "rtph264pay" : "rtpvp8pay", nullptr)
                            : nullptr;
+    // H264: pin the encoder output to Constrained Baseline, same as the camera
+    // path (PublishPipeline) and for the same reason — the HW encoders
+    // (qsv/nv/mf) default to High/Main, which a strict receiver can't decode.
+    // ScreenSharePipeline never did this (unlike the camera path), so a
+    // screen-share to a strict receiver risks a black/undecodable stream.
+    GstElement *profileCaps = (venc && useH264) ? gst_element_factory_make(
+                                 "capsfilter", nullptr) : nullptr;
+    if (profileCaps) {
+        GstCaps *pc = gst_caps_from_string("video/x-h264,profile=constrained-baseline");
+        g_object_set(profileCaps, "caps", pc, nullptr);
+        gst_caps_unref(pc);
+    }
 
     if (!videoConvert || !venc || !pay || !ssrcFilter
-        || !capQueue || !vscale || !scaleCaps) {
+        || !capQueue || !vscale || !scaleCaps || (useH264 && !profileCaps)) {
         emit error("Failed to create screen share encoding elements");
         // Not bin-added yet → drop floating refs (cleanup() only nulls).
         for (GstElement *e : { capQueue, vscale, scaleCaps, videoConvert,
-                               venc, m_videoParser, pay, ssrcFilter })
+                               venc, m_videoParser, profileCaps, pay, ssrcFilter })
             if (e) gst_object_unref(e);
         m_videoParser = nullptr;
         cleanup();
@@ -469,6 +481,8 @@ bool ScreenSharePipeline::start(const QString &stunServer, const QList<TurnServe
                          vscale, scaleCaps, venc, pay, ssrcFilter, m_webrtcbin,
                          nullptr);
     }
+    if (profileCaps)
+        gst_bin_add(GST_BIN(m_pipeline), profileCaps);
     if (m_videoParser)
         gst_bin_add(GST_BIN(m_pipeline), m_videoParser);
 
@@ -509,11 +523,15 @@ bool ScreenSharePipeline::start(const QString &stunServer, const QList<TurnServe
         linked = gst_element_link_many(screenSrc, capQueue, videoConvert,
                                        vscale, scaleCaps, venc, nullptr);
     }
+    // encoder -> [profileCaps=constrained-baseline] -> parser -> payloader
+    GstElement *afterEncoder = profileCaps ? profileCaps : venc;
+    if (profileCaps)
+        linked = linked && gst_element_link(venc, profileCaps);
     if (m_videoParser)
-        linked = linked && gst_element_link_many(venc, m_videoParser, pay,
+        linked = linked && gst_element_link_many(afterEncoder, m_videoParser, pay,
                                                  ssrcFilter, nullptr);
     else
-        linked = linked && gst_element_link_many(venc, pay,
+        linked = linked && gst_element_link_many(afterEncoder, pay,
                                                  ssrcFilter, nullptr);
     if (!linked) {
         emit error("Failed to link screen share chain");
