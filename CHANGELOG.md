@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.57.14 "July Morning" -- BETA (2026-07-02)
+
+### Fixed
+* **A screen share that failed to connect to a remote viewer no longer gets
+  stuck permanently** ("Starting…" or a black tile forever). The app now
+  automatically asks for a fresh connection a few times before giving up,
+  instead of requiring the sharer to manually stop and re-share.
+* Further server-side reliability work on the regional signaling
+  infrastructure specifically for cross-region screen sharing.
+
 ## v0.57.13 "July Morning" -- BETA (2026-07-02)
 
 ### Fixed
