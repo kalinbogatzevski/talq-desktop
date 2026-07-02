@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.57.15 "July Morning" -- BETA (2026-07-02)
+
+### Improved
+* Faster, more reliable connection setup: when supported by the server, the
+  app can now automatically pick the best available connection point instead
+  of always using a single fixed one. No effect on servers that don't support
+  this yet — the app falls back to exactly its previous behaviour.
+
 ## v0.57.14 "July Morning" -- BETA (2026-07-02)
 
 ### Fixed
@@ -7,8 +15,7 @@
   stuck permanently** ("Starting…" or a black tile forever). The app now
   automatically asks for a fresh connection a few times before giving up,
   instead of requiring the sharer to manually stop and re-share.
-* Further server-side reliability work on the regional signaling
-  infrastructure specifically for cross-region screen sharing.
+* Further server-side reliability work on screen sharing.
 
 ## v0.57.13 "July Morning" -- BETA (2026-07-02)
 
