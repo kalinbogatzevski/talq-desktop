@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.57.12 "July Morning" -- BETA (2026-07-02)
+
+### Added
+* **Per-participant signal-quality indicator.** Each remote participant's
+  call tile now shows a small signal-strength bars glyph, backed by real
+  packet-loss and jitter measurements for that person's stream — a quick,
+  glanceable read on whose connection is struggling, not just a generic
+  "connected" state.
+
 ## v0.57.11 "July Morning" -- BETA (2026-07-02)
 
 ### Added

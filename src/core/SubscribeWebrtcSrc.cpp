@@ -6,6 +6,7 @@
 #include <QRegularExpression>
 #include <QSettings>
 #include <QUrl>
+#include <cstdlib>
 #include <cstring>
 #include <thread>
 #include <gst/app/gstappsink.h>
@@ -393,6 +394,140 @@ GstFlowReturn SubscribeWebrtcSrc::onAecPlayoutSample(GstAppSink *sink, gpointer 
     }
     gst_sample_unref(sample);
     return GST_FLOW_OK;
+}
+
+namespace {
+// Heap context for the subscriber get-stats promise: ONLY a copy of the
+// shared-ptr inbound-stats cell — no `self` pointer. The async reply
+// callback writes the cell and never touches SubscribeWebrtcSrc, so a late
+// reply that races this subscriber's teardown/rebuild is harmless (the cell
+// outlives the object). Freed by the promise's GDestroyNotify. Mirrors
+// PublishPipeline's PubStatsCtx exactly (see PublishPipeline.cpp).
+struct SubStatsCtx {
+    std::shared_ptr<SubscribeWebrtcSrc::InboundStatsCell> cell;
+};
+void subStatsCtxFree(gpointer p) { delete static_cast<SubStatsCtx *>(p); }
+
+// The exact GValue type GstWebRTCStats fields use for a given stat was NOT
+// verified anywhere in this repo before this feature (no prior inbound-rtp
+// stats consumer existed) — only the GstWebRTCStatsType enum is declared in
+// the local gstreamer-1.0 headers, not field shapes. Try the plausible
+// integer representations defensively instead of hard-coding one; if NONE
+// match, the caller warns once (loud, not a silently-inert glyph).
+bool getStatCounter(const GstStructure *s, const char *field, quint64 &out)
+{
+    guint64 u64 = 0;
+    if (gst_structure_get_uint64(s, field, &u64)) { out = u64; return true; }
+    gint64 i64 = 0;
+    if (gst_structure_get_int64(s, field, &i64)) { out = i64 < 0 ? 0 : quint64(i64); return true; }
+    guint u32 = 0;
+    if (gst_structure_get_uint(s, field, &u32)) { out = u32; return true; }
+    gint i32 = 0;
+    if (gst_structure_get_int(s, field, &i32)) { out = i32 < 0 ? 0 : quint64(i32); return true; }
+    return false;
+}
+
+// "jitter" per W3C/GstWebRTC convention is a gdouble in SECONDS; fall back to
+// an integer representation defensively (same reasoning as above).
+bool getStatSeconds(const GstStructure *s, const char *field, double &outSeconds)
+{
+    gdouble d = 0.0;
+    if (gst_structure_get_double(s, field, &d)) { outSeconds = d; return true; }
+    guint64 u64 = 0;
+    if (gst_structure_get_uint64(s, field, &u64)) { outSeconds = double(u64); return true; }
+    return false;
+}
+} // namespace
+
+void SubscribeWebrtcSrc::pollInboundRtp()
+{
+    if (!m_webrtcbin || m_shuttingDown.load()) return;
+    // webrtcbin "get-stats" is async: it replies via a GstPromise carrying a
+    // GstStructure of all RTC stats. onInboundStatsReady parses it on a
+    // GStreamer thread and writes the shared cell that CallManager's
+    // SignalQualityPolicy reads on the next 2 s tick. Exactly mirrors
+    // PublishPipeline::pollOutboundRtp() (see the safety comment there).
+    auto *ctx = new SubStatsCtx{ m_inboundStats };
+    GstPromise *promise =
+        gst_promise_new_with_change_func(onInboundStatsReady, ctx, subStatsCtxFree);
+    g_signal_emit_by_name(m_webrtcbin, "get-stats", nullptr, promise);
+}
+
+void SubscribeWebrtcSrc::onInboundStatsReady(GstPromise *promise, gpointer userData)
+{
+    // Runs on a GStreamer thread. Touches ONLY the shared cell (which
+    // outlives this object) — never `this` — so a late reply during
+    // subscriber teardown/rebuild is safe (mirrors PublishPipeline's
+    // onStatsReady).
+    auto *ctx = static_cast<SubStatsCtx *>(userData);
+    std::shared_ptr<InboundStatsCell> cell = ctx->cell;
+
+    const GstStructure *reply = gst_promise_get_reply(promise);
+    quint64 sumLost = 0, sumRecv = 0;
+    double maxJitterSec = 0.0;
+    bool foundLost = false, foundRecv = false;
+    bool sawInboundRtp = false;
+    if (reply) {
+        // Gated RCA logging — TALQ_DEBUG_STATS=1. Risk #2 from the design
+        // review: the field names/units below are standard GstWebRTC/W3C
+        // convention but were never verified against THIS installed
+        // gst-plugins-bad/gst-plugins-rs build before this feature, so a
+        // one-time dump of the raw reply makes a stat-shape mismatch loud
+        // instead of a silently-inert glyph.
+        if (const char *dbg = std::getenv("TALQ_DEBUG_STATS"); dbg && *dbg == '1') {
+            static std::atomic<bool> dumped{false};
+            if (!dumped.exchange(true)) {
+                gchar *s = gst_structure_to_string(reply);
+                qDebug() << "SubscribeWebrtcSrc: inbound-rtp get-stats reply =" << s;
+                g_free(s);
+            }
+        }
+        // Flat structure whose fields are themselves GstStructures, one per
+        // stat object (same technique as PublishPipeline::onStatsReady).
+        // SUM packets-lost/packets-received across every inbound-rtp entry
+        // (audio + video/simulcast legs) — matches how packets-sent is
+        // summed on the publish side. Jitter is NOT summable across legs, so
+        // take the MAX (the worst leg) as the tie-break signal instead.
+        const int n = gst_structure_n_fields(reply);
+        for (int i = 0; i < n; ++i) {
+            const gchar *name = gst_structure_nth_field_name(reply, i);
+            const GValue *val = gst_structure_get_value(reply, name);
+            if (!val || !GST_VALUE_HOLDS_STRUCTURE(val)) continue;
+            const GstStructure *s = static_cast<const GstStructure *>(
+                g_value_get_boxed(val));
+            if (!s) continue;
+            GstWebRTCStatsType type;
+            if (!(gst_structure_get(s, "type", GST_TYPE_WEBRTC_STATS_TYPE, &type, nullptr)
+                  && type == GST_WEBRTC_STATS_INBOUND_RTP))
+                continue;
+            sawInboundRtp = true;
+            quint64 lost = 0, recv = 0;
+            if (getStatCounter(s, "packets-lost", lost)) { sumLost += lost; foundLost = true; }
+            if (getStatCounter(s, "packets-received", recv)) { sumRecv += recv; foundRecv = true; }
+            double jitterSec = 0.0;
+            if (getStatSeconds(s, "jitter", jitterSec) && jitterSec > maxJitterSec)
+                maxJitterSec = jitterSec;
+        }
+    }
+    gst_promise_unref(promise);
+
+    if (foundLost && foundRecv) {
+        cell->packetsLost.store(sumLost, std::memory_order_relaxed);
+        cell->packetsReceived.store(sumRecv, std::memory_order_relaxed);
+        cell->jitterUs.store(quint64(qMax(0.0, maxJitterSec) * 1e6), std::memory_order_relaxed);
+        cell->valid.store(true, std::memory_order_relaxed);
+    } else if (sawInboundRtp) {
+        // An inbound-rtp object exists but its packets-lost/packets-received
+        // could not be read: a stat-shape mismatch on this libgstwebrtc would
+        // leave the signal-quality glyph silently INERT (never sees valid
+        // data -> never buckets -> stays on its optimistic default forever).
+        // Surface once, loudly, so it is caught rather than a silent no-op.
+        static std::atomic<bool> warned{false};
+        if (!warned.exchange(true))
+            qWarning() << "SubscribeWebrtcSrc: inbound-rtp stat has no readable "
+                          "packets-lost/packets-received — signal-quality glyph "
+                          "is INERT (libgstwebrtc stat-shape mismatch)";
+    }
 }
 
 void SubscribeWebrtcSrc::cleanup()

@@ -40,6 +40,13 @@ public:
     ConnState connState() const { return m_connState; }
     bool speaking() const { return m_speaking; }
     double audioLevel() const { return m_audioLevel; }
+    // Per-tile signal-quality bars glyph (loss+jitter, Zoom/Teams-style).
+    // -1 = unknown (no stats tick has classified this peer's receive stream
+    // yet — CallStage draws nothing); 0..3 = SignalQualityPolicy's
+    // Lost/Poor/Fair/Good, committed by CallManager::updateCallStats() each
+    // 2 s tick from SubscribeWebrtcSrc's inbound-RTP stats. Meaningless for
+    // the self participant (no inbound receive stream), which never sets it.
+    int signalQuality() const { return m_signalQuality; }
 
     void setDisplayName(const QString &v) { if (v.isEmpty() || m_displayName == v) return; m_displayName = v; emit changed(); }
     void setPeerId(const QString &v)      { if (m_peerId == v) return; m_peerId = v; emit changed(); }
@@ -49,6 +56,7 @@ public:
     void setScreenSharing(bool v)         { if (m_screenSharing == v) return; m_screenSharing = v; emit changed(); }
     void setConnState(ConnState v)        { if (m_connState == v) return; m_connState = v; emit changed(); }
     void setSpeaking(bool v)              { if (m_speaking == v) return; m_speaking = v; emit changed(); }
+    void setSignalQuality(int v)          { if (m_signalQuality == v) return; m_signalQuality = v; emit changed(); }
 
     void setAudioLevel(double v) {
         // Coarse: the surface only needs level for a ring; avoid a repaint
@@ -107,6 +115,7 @@ private:
     ConnState m_connState = Connecting;
     bool m_speaking = false;
     double m_audioLevel = 0.0;
+    int m_signalQuality = -1;   // -1 = unknown/no data yet (see getter comment)
     qint64 m_lastLoudMs = 0;                  // VAD: last time level crossed kSpeakOnLevel
     qint64 m_loudSinceMs = -1;                // VAD: when level first crossed on (onset debounce)
     static constexpr double kSpeakOnLevel = 0.20;  // 0..1 — clearly above the mic noise floor (was 0.08: noise strobed the frame)
