@@ -148,6 +148,14 @@ void SignalingClient::fetchSettings()
             }
 
             m_signalingUrl = data["server"].toString().trimmed();
+            // Server-provided HPB discovery (optional "servers" field -- see
+            // m_discoveredHpbPool in the header). Absent on stock Nextcloud;
+            // present when apps/spreed carries the additive 123NET patch.
+            m_discoveredHpbPool.clear();
+            for (const auto &v : data["servers"].toArray()) {
+                const QString u = v.toObject()["server"].toString().trimmed();
+                if (!u.isEmpty()) m_discoveredHpbPool << u;
+            }
             // Manual signaling-server override (hidden, for A/B stability testing —
             // QSettings key Signaling/overrideServer). Pins a specific regional HPB
             // (e.g. storm/BG) instead of the per-conversation server the backend
@@ -230,7 +238,8 @@ void SignalingClient::selectNearestHpbAndConnect()
 {
     QStringList urls;
     urls << m_signalingUrl;                               // Nextcloud baseline
-    for (const char *const *p = TalQHpb::kPool; *p; ++p)  // branded pool (empty on generic)
+    urls << m_discoveredHpbPool;                          // server-discovered pool (both builds)
+    for (const char *const *p = TalQHpb::kPool; *p; ++p)  // branded static pool (empty on generic)
         urls << QString::fromLatin1(*p);
 
     QStringList cands; QSet<QString> seen;

@@ -220,6 +220,14 @@ private:
     QString m_signalingUrl;
     QString m_serverOverride;   // per-instance HPB pin (talq-call-test cross-server)
     int     m_signalingRttMs = -1;   // measured RTT to the selected HPB (nearest-server probe)
+    // Server-provided HPB discovery: the OPTIONAL "servers" field a patched
+    // Nextcloud (apps/spreed) may include in the signaling-settings response
+    // alongside the single "server" it already picked. Unpatched/stock
+    // Nextcloud omits it entirely, so this is just empty -- selectNearestHpbAndConnect()
+    // falls back to exactly today's behaviour. Populated for BOTH generic and
+    // branded builds (the source is the user's own Nextcloud, not 123NET infra),
+    // unlike TalQHpb::kPool which is branded-only.
+    QStringList m_discoveredHpbPool;
     QString m_userId;
     QString m_ticket;
     QString m_helloV2Token;   // signed JWT for hello v2.0 (preferred when present)
