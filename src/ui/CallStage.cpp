@@ -244,8 +244,15 @@ CallParticipant *CallStage::stageSource(bool *isScreen) const
 {
     *isScreen = false;
     const auto parts = m_call->participants();
+    // Skip self here — self is always index 0 (CallManager prepends it), so an
+    // unguarded scan would match OUR OWN active share before ever reaching a
+    // remote peer's, permanently winning the stage even after a peer starts
+    // sharing too (backlog bug: a peer's incoming share never displayed while
+    // we were already sharing our own screen). The self-share fallback below
+    // already implements the correct "peer's share wins the stage" precedent
+    // this loop must respect.
     for (CallParticipant *p : parts)
-        if (p->screenSharing() && p->screen()) { *isScreen = true; return p; }
+        if (!p->isSelf() && p->screenSharing() && p->screen()) { *isScreen = true; return p; }
     // 0.53.0 — Zoom-style self-view: when WE are sharing and no PEER is, put OUR
     // OWN share on the stage (rendered from the local capture preview tap), so the
     // presenter sees what they're broadcasting full-size — the same view the remote

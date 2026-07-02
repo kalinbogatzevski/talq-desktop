@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.57.13 "July Morning" -- BETA (2026-07-02)
+
+### Fixed
+* **A peer's incoming screen share could fail to display if you were already
+  sharing your own screen.** The call stage always kept showing your own
+  share in that case instead of switching to theirs.
+* **Screen-share video now uses the same compatibility-safe H.264 profile as
+  camera video**, closing a gap where a strict receiver could fail to decode
+  a shared screen (camera video was already covered).
+* Server-side reliability work on the regional signaling infrastructure to
+  make cross-region screen sharing hold up consistently.
+
 ## v0.57.12 "July Morning" -- BETA (2026-07-02)
 
 ### Added
