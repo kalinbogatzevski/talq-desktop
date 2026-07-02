@@ -17,6 +17,7 @@
 #include <QPair>
 #include <QMutex>
 #include <atomic>
+#include <memory>
 #include <mutex>
 #include <gst/gst.h>
 #include <gst/webrtc/webrtc.h>
@@ -67,6 +68,43 @@ public:
     // forwarding (changes live when the active simulcast layer switches).
     int rxWidth()  const { return m_rxWidth.load(std::memory_order_relaxed); }
     int rxHeight() const { return m_rxHeight.load(std::memory_order_relaxed); }
+
+    // Per-tile signal-quality glyph support. Mirrors PublishPipeline's
+    // outbound-RTP stats pattern exactly (see pollOutboundRtp/onStatsReady
+    // there): pollInboundRtp() fires an async webrtcbin "get-stats" each 2 s
+    // CallManager stats tick; the reply is parsed on a GStreamer thread and
+    // written into m_inboundStats (a shared_ptr cell that outlives this
+    // object, never touching `this`), then read back HERE on the Qt main
+    // thread one tick later. CallManager buckets the delta through
+    // SignalQualityPolicy and publishes the result onto CallParticipant.
+    // Public (not just the getters below) so the .cpp's file-scope get-stats
+    // context struct can hold a shared_ptr to it without befriending.
+    struct InboundStatsCell {
+        std::atomic<quint64> packetsLost{0};
+        std::atomic<quint64> packetsReceived{0};
+        std::atomic<quint64> jitterUs{0};   // latest jitter sample, microseconds
+        std::atomic<bool>    valid{false};  // true once a reply has been parsed
+    };
+    void pollInboundRtp();
+    quint64 rxPacketsLost() const {
+        return m_inboundStats->packetsLost.load(std::memory_order_relaxed);
+    }
+    quint64 rxPacketsReceived() const {
+        return m_inboundStats->packetsReceived.load(std::memory_order_relaxed);
+    }
+    // Latest "jitter" sample (ms) across this peer's inbound-rtp entries
+    // (max — the worst of audio/video/simulcast legs — since jitter isn't
+    // meaningfully summable the way packet counts are).
+    double rxJitterMs() const {
+        return m_inboundStats->jitterUs.load(std::memory_order_relaxed) / 1000.0;
+    }
+    // True once at least one get-stats reply has been successfully parsed
+    // (packets-lost + packets-received both readable) since this object was
+    // constructed. False means "no data yet" — SignalQualityPolicy holds
+    // rather than guesses while this is false.
+    bool rxStatsValid() const {
+        return m_inboundStats->valid.load(std::memory_order_relaxed);
+    }
 
 signals:
     void localAnswerReady(const QString &sdp);
@@ -121,6 +159,11 @@ private:
     // m_farAppsrcExt (the publisher pipeline's far-end mixer) — this IS the
     // playout path now (no per-subscriber wasapi2sink). Streaming thread.
     static GstFlowReturn onAecPlayoutSample(GstAppSink *sink, gpointer self);
+    // Async get-stats reply for pollInboundRtp() — runs on a GStreamer thread.
+    // Touches ONLY the shared cell passed via the promise's userData (never
+    // `this`), exactly like PublishPipeline::onStatsReady, so a late reply
+    // racing this subscriber's teardown/rebuild can't UAF.
+    static void onInboundStatsReady(GstPromise *promise, gpointer userData);
 
     QString m_remoteSessionId;
     QString m_sessionId = QStringLiteral("talq");  // our id within the signaller
@@ -189,6 +232,13 @@ private:
     std::atomic<int> m_rxDistinctFps{0}; // distinct-content fps, published to UI thread
     std::atomic<int> m_rxWidth{0};       // decoded frame width (active substream)
     std::atomic<int> m_rxHeight{0};      // decoded frame height (active substream)
+    // Inbound-RTP stats cell for the per-tile signal-quality glyph (struct
+    // defined in the public section above). A SHARED-PTR cell (not raw
+    // members) so pollInboundRtp's async reply callback NEVER dereferences
+    // `this` — it writes only the cell, which outlives this object if a late
+    // reply races teardown. Same discipline as PublishPipeline's
+    // m_outboundPacketsSent cell.
+    std::shared_ptr<InboundStatsCell> m_inboundStats{std::make_shared<InboundStatsCell>()};
     QString m_videoCodec;
     QString m_audioOutputDeviceId;
     bool m_running = false;

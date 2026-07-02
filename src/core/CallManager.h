@@ -24,6 +24,7 @@
 #include "core/EncodeTier.h"
 #include "core/SubscriberStallPolicy.h"
 #include "core/PublisherStallPolicy.h"
+#include "core/SignalQualityPolicy.h"
 #include "core/CallParticipant.h"
 #include "core/MediaLoadController.h"   // 0.51.x dynamic encode/decode load controller
 
@@ -424,6 +425,12 @@ private:
     // then froze (its publisher reconnected under new SSRCs, with no ICE-failed
     // to trip recovery) fires recoverSubscriber. Pruned on recover/re-offer/left.
     QHash<QString, SubscriberStallPolicy> m_subStall;
+    // Per-tile signal-quality glyph. updateCallStats() ticks each subscriber's
+    // SignalQualityPolicy every 2 s alongside m_subStall, from
+    // SubscribeWebrtcSrc::pollInboundRtp()'s windowed loss/jitter, and
+    // publishes the committed level onto the matching CallParticipant. Pruned
+    // in lockstep with m_subStall (same sites — recover/re-offer/left/teardown).
+    QHash<QString, SignalQualityPolicy> m_signalQuality;
     // Publisher outbound-RTP stall watchdog. updateCallStats() ticks it every
     // 2 s with the summed packets-sent; when the local publisher stops sending
     // while it should be (consent revoked but publisher ICE stuck "completed",

@@ -1285,11 +1285,31 @@ void CallManager::updateCallStats()
          it != m_subscribePipelines.constEnd(); ++it) {
         const QString &sid = it.key();
         SubscribeWebrtcSrc *s = it.value();
-        if (!s || !s->isRunning()) { m_subStall.remove(sid); continue; }
+        if (!s || !s->isRunning()) {
+            m_subStall.remove(sid);
+            m_signalQuality.remove(sid);
+            continue;
+        }
         const int fc = s->videoProvider() ? s->videoProvider()->frameCount() : 0;
         CallParticipant *p = m_participants.value(sid);
         const bool muted   = (p && p->videoMuted());
         const bool pending = m_pendingRequestOffers.contains(sid);
+
+        // Per-tile signal-quality glyph (loss+jitter bars, Zoom/Teams-style).
+        // Read back this subscriber's LAST completed inbound-rtp get-stats
+        // reply (one-tick-stale — pollInboundRtp() below refreshes it for
+        // the NEXT tick, exactly like the publisher stall watchdog reads
+        // outboundPacketsSent() one tick after pollOutboundRtp()), bucket +
+        // hysteresis it through SignalQualityPolicy, and publish the
+        // committed level onto the participant so CallStage repaints via its
+        // existing changed() signal — no new signal plumbing needed.
+        const bool connectedNow = p && p->connState() == CallParticipant::Connected;
+        const int sigLevel = m_signalQuality[sid].onTick(
+            connectedNow, s->rxStatsValid(),
+            s->rxPacketsLost(), s->rxPacketsReceived(), s->rxJitterMs());
+        if (p) p->setSignalQuality(sigLevel);
+        s->pollInboundRtp();   // async refresh for the next tick
+
         if (fc > 0) m_neverDecodedRecoveries.remove(sid);   // D2 fix — real frame clears the budget
         // D2 — also rebuild a CONNECTED but never-decoded feed (permanent
         // "Starting…"/black tile) after ~12 s of a video-ON peer never producing
@@ -1599,6 +1619,7 @@ void CallManager::recoverSubscriber(const QString &sessionId, const QString &rea
     }
     m_subscriberSids.remove(sessionId);
     m_subStall.remove(sessionId);   // #bug2 -- fresh baseline for the rebuilt feed
+    m_signalQuality.remove(sessionId);
     m_pendingRequestOffers.remove(sessionId);
     m_requestOfferAttempts.remove(sessionId);
     m_requestOfferRejections.remove(sessionId);   // 0.52.7 — fresh rejection budget
@@ -1647,6 +1668,7 @@ void CallManager::dropSubscriber(const QString &sessionId)
     }
     m_subscriberSids.remove(sessionId);
     m_subStall.remove(sessionId);
+    m_signalQuality.remove(sessionId);
     m_pendingRequestOffers.remove(sessionId);
     m_requestOfferAttempts.remove(sessionId);
     m_requestOfferRejections.remove(sessionId);
@@ -4000,6 +4022,7 @@ void CallManager::stopAllPipelines()
     // touching them, so each call leaked one-or-more entries keyed by an ephemeral
     // session id. Reset them with the rest of the per-call subscriber state.
     m_subStall.clear();
+    m_signalQuality.clear();   // per-tile signal-quality glyph — same lifecycle as m_subStall
     m_pubStall.reset();
     m_pendingSubCandidates.clear();
     m_pubRetryTimer.stop();
@@ -4373,6 +4396,7 @@ void CallManager::onParticipantLeftCall(const QString &sessionId)
         if (m_publishPipeline) m_publishPipeline->removeFarEndPeer(sessionId);
         m_subscriberSids.remove(sessionId);
         m_subStall.remove(sessionId);   // #bug2
+        m_signalQuality.remove(sessionId);
         m_desiredSubstream.remove(sessionId);      // 1.0 audit — were leaking a
         m_peerSubstreamWant.remove(sessionId);     // 0.51.x receive-load raw want
         m_subscriberRecoveries.remove(sessionId);  // stale entry per peer-leave
@@ -4522,6 +4546,7 @@ void CallManager::onOfferReceived(const QString &fromSessionId, const QString &s
             old->deleteLater();
         }
         m_subStall.remove(fromSessionId);   // #bug2 -- re-baseline the fresh subscriber
+        m_signalQuality.remove(fromSessionId);
     }
 
     // New subscriber

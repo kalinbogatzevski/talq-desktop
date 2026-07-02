@@ -837,12 +837,44 @@ void CallStage::paintTile(QPainter &p, const Tile &t, const PainterTheme &th, bo
     // Hidden when muted (the ✕ already says "no audio").
     const bool showMeter = !cp->audioMuted();
     const qreal meterW = showMeter ? 46.0 : 0.0;
+    // Per-participant signal-quality bars (Zoom/Teams-style). Remote peers
+    // only -- self has no inbound receive stream to measure -- and only once
+    // a stats tick has actually classified this peer (signalQuality() < 0
+    // means "no data yet", e.g. before the subscriber's first poll lands).
+    const bool showBars = !cp->isSelf() && cp->signalQuality() >= 0;
+    constexpr qreal kBarW = 3.0, kBarGap = 2.0;
+    constexpr qreal kBarsW = 3*kBarW + 2*kBarGap;      // 13
+    const qreal barsSlot = showBars ? kBarsW + 6.0 : 0.0;   // + trailing gap to the LED
     QRectF plate(rc.left()+10, rc.bottom()-30,
-                 qMin<qreal>(tw+52+meterW, rc.width()-20), 22);
+                 qMin<qreal>(tw+52+meterW+barsSlot, rc.width()-20), 22);
     QColor pb = th.bgPrimary; pb.setAlphaF(0.5);
     p.setBrush(pb); p.setPen(Qt::NoPen);
     p.drawRoundedRect(plate, 7, 7);
     qreal tx = plate.left()+10;
+    if (showBars) {
+        // 3 bars in an ascending ladder (like a phone signal-strength icon),
+        // filled left-to-right proportional to SignalQualityPolicy's
+        // committed level (0=Lost..3=Good). Lost draws all 3 bars dim/grey
+        // rather than a loud red spike -- it reads as "no signal", matching
+        // the greyed-out Reconnecting/Failed scrim semantics elsewhere in
+        // this function, not an alarming error state.
+        const int lvl = cp->signalQuality();
+        const QColor barColor = lvl >= 3 ? th.success
+                               : lvl == 2 ? th.amber
+                               : lvl == 1 ? th.danger
+                               : th.textSecondary;
+        const qreal baseY = plate.center().y() + 5.0;
+        p.setPen(Qt::NoPen);
+        for (int b = 0; b < 3; ++b) {
+            const qreal h = 4.0 + b*3.0;   // 4 / 7 / 10 px tall ascending ladder
+            QRectF bar(tx + b*(kBarW+kBarGap), baseY - h, kBarW, h);
+            QColor c = barColor;
+            if (b >= lvl) c.setAlphaF(lvl == 0 ? 0.30 : 0.22);  // unfilled bar
+            p.setBrush(c);
+            p.drawRoundedRect(bar, 1, 1);
+        }
+        tx += kBarsW + 6.0;
+    }
     // LED
     QColor led = cp->connState()==CallParticipant::Connected ? th.online
                : cp->connState()==CallParticipant::Failed    ? th.danger
