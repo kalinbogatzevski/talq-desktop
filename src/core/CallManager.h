@@ -701,6 +701,16 @@ private:
     // removeScreenSubscriber) falls through to rebuild after this instead of being held
     // until ICE reports "failed". 20s > 11s + margin.
     static constexpr qint64 kScreenSubIceProgressGraceMs = 20000;
+    // Screen-subscriber ICE-failed auto-retry (backlog): a cross-region screen
+    // share whose subscriber ICE reaches "failed" previously just sat there —
+    // nothing proactively asked for a fresh offer, since the publisher's own
+    // reap-race re-assert only fires during an actual re-share. The underlying
+    // transport race is proven probabilistic (a fresh attempt often succeeds),
+    // so request a new offer ourselves, bounded by this count per session —
+    // reset once a frame actually decodes (see updateCallStats()) so a LATER
+    // failure after a genuinely healthy period gets its own fresh budget.
+    QHash<QString,int> m_screenSubFailRetries;
+    static constexpr int kScreenSubFailMaxRetries = 4;
 
     // Offers received before ICE servers are available (P3 race guard)
     struct PendingOffer { QString fromSessionId; QString sdp; QString sid; };
