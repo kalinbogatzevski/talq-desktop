@@ -700,6 +700,38 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
                     && m_screenSubscribers.contains(from)
                     && m_screenSubFrameMark.value(from, 0) == 0)
                     m_screenSubBuiltMs[from] = QDateTime::currentMSecsSinceEpoch();
+                // Screen-subscriber ICE/DTLS-failure auto-retry (backlog: a
+                // cross-region screen share landing on "failed" — or a peer's
+                // share never appearing at all — previously just sat there
+                // forever: nothing here ever proactively asked for a fresh
+                // offer, and the publisher's own reap-race re-assert only fires
+                // during an ACTUAL re-share, not a first-attempt failure. The
+                // underlying transport race (server-side, cross-region) is
+                // proven probabilistic — a fresh attempt often succeeds — so
+                // request a new offer ourselves, bounded, instead of leaving
+                // the viewer stuck on "Starting…"/black indefinitely.
+                if (state == "failed") {
+                    const int attempts = ++m_screenSubFailRetries[from];
+                    if (attempts > kScreenSubFailMaxRetries) {
+                        qWarning() << "CallManager: screen subscriber for" << from.left(20)
+                                   << "failed ICE" << attempts << "times — giving up";
+                        return;
+                    }
+                    qWarning() << "CallManager: screen subscriber ICE failed for"
+                               << from.left(20) << "— requesting a fresh offer (attempt"
+                               << attempts << "of" << kScreenSubFailMaxRetries << ")";
+                    if (auto *dead = m_screenSubscribers.take(from)) {
+                        dead->deleteLater();
+                        m_screenSubFrameMark.remove(from);
+                        m_screenSubStallTicks.remove(from);
+                        m_screenSubBuiltMs.remove(from);
+                        m_screenSubIceState.remove(from);
+                    }
+                    QTimer::singleShot(1500, this, [this, from]() {
+                        if (m_state != Active && m_state != Connecting) return;
+                        m_signaling->requestOffer(from, QStringLiteral("screen"));
+                    });
+                }
             });
             connect(sub, &SubscribePipeline::iceGatheringComplete,
                     this, [this, from, sid]() {
@@ -1355,6 +1387,11 @@ void CallManager::updateCallStats()
         SubscribePipeline *s = it.value();
         const int fc = (s && s->videoProvider()) ? s->videoProvider()->frameCount() : 0;
         if (fc > m_screenSubFrameMark.value(sid, 0)) {
+            // First real frame after zero — the connection is genuinely
+            // healthy now; give a LATER failure its own fresh ICE-failed
+            // retry budget instead of inheriting today's exhausted count.
+            if (m_screenSubFrameMark.value(sid, 0) == 0)
+                m_screenSubFailRetries.remove(sid);
             m_screenSubFrameMark[sid] = fc;
             m_screenSubStallTicks[sid] = 0;          // a new frame this tick -> live
         } else {
@@ -2413,6 +2450,7 @@ void CallManager::removeScreenSubscriber(const QString &sessionId)
     m_screenSubStallTicks.remove(sessionId);   // frame-liveness state
     m_screenSubBuiltMs.remove(sessionId);      // startup-grace stamp
     m_screenSubIceState.remove(sessionId);     // ICE-progress state
+    m_screenSubFailRetries.remove(sessionId);  // ICE-failed retry budget
     m_pendingScreenSubCandidates.remove(sessionId);  // queued early candidates
     if (!sub)
         return;                       // no remote screen from this peer — nothing to do
@@ -4144,6 +4182,7 @@ void CallManager::teardown(const QString &reason)
     m_screenSubStallTicks.clear();
     m_screenSubBuiltMs.clear();
     m_screenSubIceState.clear();
+    m_screenSubFailRetries.clear();
     m_pendingScreenSubCandidates.clear();
     m_softwareEncoderNotified = false;   // re-notify on the next call if still software
     setVideoQualityNotice(QString());    // 0.52.5 — reset the sender quality chip for the next call
