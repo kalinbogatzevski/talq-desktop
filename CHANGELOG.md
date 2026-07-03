@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.57.16 "July Morning" -- BETA (2026-07-02)
+
+### Improved
+* More reliable call connection setup, especially over longer/slower network
+  paths: the app no longer wastes time offering a class of connection
+  candidate the server was always going to reject anyway.
+
 ## v0.57.15 "July Morning" -- BETA (2026-07-02)
 
 ### Improved

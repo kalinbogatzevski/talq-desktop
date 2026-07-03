@@ -5,14 +5,14 @@
 ; replaces the old separate "Update" installer — one .exe, both modes.
 AppId={{B7E2A6F4-3D14-4F2A-9B5E-0A1C8F4E2D31}}
 AppName=TalQ
-AppVersion=0.57.15
+AppVersion=0.57.16
 AppPublisher=TalQ
 AppPublisherURL=https://github.com/kalinbogatzevski/talq-desktop
 DefaultDirName={localappdata}\Programs\TalQ
 PrivilegesRequired=lowest
 DefaultGroupName=TalQ
 OutputDir=..\dist
-OutputBaseFilename=TalQ-v0.57.15-Setup
+OutputBaseFilename=TalQ-v0.57.16-Setup
 SetupIconFile=..\resources\talq.ico
 UninstallDisplayIcon={app}\talq.exe
 WizardImageFile=..\resources\talq-wizard.bmp
@@ -66,7 +66,7 @@ Name: "autostart"; Description: "Start TalQ when Windows starts"; GroupDescripti
 ; Never reintroduce a wildcard delete of files this version still ships.
 
 [Files]
-Source: "..\dist\TalQ-v0.57.15-win64\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\dist\TalQ-v0.57.16-win64\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\TalQ"; Filename: "{app}\talq.exe"; Tasks: startmenuicon
