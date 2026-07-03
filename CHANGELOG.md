@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.57.17 "July Morning" -- BETA (2026-07-03)
+
+### Fixed
+* The update downloader now verifies the downloaded installer is intact
+  before running it, on every update channel. Previously a download that
+  got silently corrupted or truncated partway through (a network hiccup,
+  for example) could produce an installer that failed partway through
+  setup instead of being caught and safely discarded.
+
 ## v0.57.16 "July Morning" -- BETA (2026-07-02)
 
 ### Improved
