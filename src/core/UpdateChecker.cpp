@@ -14,6 +14,7 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QProcess>
+#include <QRegularExpression>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QUrl>
@@ -200,6 +201,7 @@ void UpdateChecker::onManifestFetched(QNetworkReply *reply)
     }
 
     Manifest m;
+    QString checksumUrl;   // GitHub only; set below if a companion asset exists
     if (TalQUpdates::kUseGithub) {
         // GitHub Releases API response shape.
         QString tag = root.value(QStringLiteral("tag_name")).toString();
@@ -221,7 +223,17 @@ void UpdateChecker::onManifestFetched(QNetworkReply *reply)
                 break;
             }
         }
-        m.assetSha256.clear();   // GitHub exposes no per-asset digest
+        m.assetSha256.clear();   // GitHub exposes no per-asset digest field
+        if (!m.assetFilename.isEmpty()) {
+            const QString checksumName = m.assetFilename + QStringLiteral(".sha256");
+            for (const QJsonValue &av : assets) {
+                const QJsonObject a = av.toObject();
+                if (a.value(QStringLiteral("name")).toString() == checksumName) {
+                    checksumUrl = a.value(QStringLiteral("browser_download_url")).toString();
+                    break;
+                }
+            }
+        }
     } else {
         m.version     = root.value(QStringLiteral("version")).toString();
         m.releaseDate = root.value(QStringLiteral("releaseDate")).toString();
@@ -251,6 +263,41 @@ void UpdateChecker::onManifestFetched(QNetworkReply *reply)
     // #31 — forced-downgrade pin (ncloud-manifest only; GitHub has no such field).
     m.pin = root.value(QStringLiteral("pin")).toBool();
 
+    if (!checksumUrl.isEmpty())
+        fetchChecksumThenFinalize(m, checksumUrl);
+    else
+        finalizeManifest(m);
+}
+
+void UpdateChecker::fetchChecksumThenFinalize(Manifest m, const QString &checksumUrl)
+{
+    QNetworkRequest req{QUrl(checksumUrl)};
+    req.setRawHeader("User-Agent", "TalQ-UpdateChecker");
+    req.setTransferTimeout(15 * 1000);
+    QNetworkReply *reply = m_nam->get(req);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, m]() mutable {
+        reply->deleteLater();
+        if (reply->error() == QNetworkReply::NoError) {
+            const QString hex = QString::fromLatin1(reply->readAll().trimmed()).toLower();
+            // 64 lowercase hex chars, nothing else — a malformed/unexpected
+            // asset body must not silently pass as a valid digest.
+            static const QRegularExpression sha256Re(QStringLiteral("^[0-9a-f]{64}$"));
+            if (sha256Re.match(hex).hasMatch())
+                m.assetSha256 = hex;
+            else
+                qWarning() << "UpdateChecker: checksum asset content not a sha256 hex digest";
+        } else {
+            qWarning() << "UpdateChecker: checksum asset fetch failed:" << reply->errorString();
+        }
+        // Proceed either way -- a missing/bad checksum asset degrades to
+        // today's behaviour (HTTPS-transport-only trust), it never blocks
+        // an otherwise-valid update from being offered.
+        finalizeManifest(m);
+    });
+}
+
+void UpdateChecker::finalizeManifest(Manifest m)
+{
     const QString currentVersion = QStringLiteral(TALQ_VERSION);
     // Offer the install when the channel is NEWER, OR when it explicitly PINS a
     // different version (a controlled rollback off a mis-published too-high build).
@@ -267,6 +314,7 @@ void UpdateChecker::onManifestFetched(QNetworkReply *reply)
         emit updateAvailable(m);
     }
 }
+
 void UpdateChecker::startDownload()
 {
     // Abort any still-in-flight download from a prior call. Today this
