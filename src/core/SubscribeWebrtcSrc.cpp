@@ -718,6 +718,20 @@ void SubscribeWebrtcSrc::onWebrtcbinReady(GObject *, const gchar *peerId,
     self->m_webrtcbin = webrtcbin;  // webrtcsrc-owned; do not unref
     qDebug() << "SubscribeWebrtcSrc: webrtcbin-ready peer"
              << (peerId ? peerId : "?") << "→ driving ICE on webrtcbin";
+    // Disable ICE-TCP gathering, matching PublishPipeline. webrtcsrc doesn't
+    // expose ice-tcp on itself -- it lives on the nested ice-agent
+    // (GstWebRTCNice) that only becomes reachable once webrtcbin exists, i.e.
+    // right here. See PublishPipeline.cpp's ice-agent block for the full
+    // rationale (Janus runs ICE-TCP disabled cluster-wide; libnice
+    // unconditionally rejects TCP-transport remote candidates either way).
+    {
+        GObject *iceAgent = nullptr;
+        g_object_get(webrtcbin, "ice-agent", &iceAgent, nullptr);
+        if (iceAgent) {
+            g_object_set(iceAgent, "ice-tcp", FALSE, nullptr);
+            g_object_unref(iceAgent);
+        }
+    }
     g_signal_connect(webrtcbin, "on-ice-candidate",
                      G_CALLBACK(&SubscribeWebrtcSrc::onWebrtcbinLocalIce), self);
     // Propagate the REAL ICE connection state. Without this iceStateChanged

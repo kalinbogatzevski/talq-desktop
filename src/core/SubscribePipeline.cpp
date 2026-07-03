@@ -48,6 +48,19 @@ bool SubscribePipeline::start(const QString &stunServer, const QList<TurnServer>
     g_object_set(m_webrtcbin, "bundle-policy",
                  GST_WEBRTC_BUNDLE_POLICY_MAX_BUNDLE, nullptr);
 
+    // Disable ICE-TCP gathering -- see PublishPipeline.cpp's ice-agent block
+    // for the full rationale (Janus runs ICE-TCP disabled cluster-wide;
+    // libnice unconditionally rejects TCP-transport remote candidates either
+    // way, so gathering them here is guaranteed-useless dead weight).
+    {
+        GObject *iceAgent = nullptr;
+        g_object_get(m_webrtcbin, "ice-agent", &iceAgent, nullptr);
+        if (iceAgent) {
+            g_object_set(iceAgent, "ice-tcp", FALSE, nullptr);
+            g_object_unref(iceAgent);
+        }
+    }
+
     for (const auto &turn : turnServers) {
         for (const auto &url : turn.urls) {
             QString gstUrl = url;
