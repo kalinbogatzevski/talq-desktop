@@ -5,6 +5,7 @@
 #include <QJsonDocument>
 #include <QSettings>
 #include <QDateTime>
+#include <QHostInfo>
 #include <QTcpSocket>
 #include <QElapsedTimer>
 #include <QSet>
@@ -254,14 +255,25 @@ void SignalingClient::selectNearestHpbAndConnect()
     auto probes = std::make_shared<std::vector<Probe>>();
     for (const QString &u : cands) { Probe p; p.url = u; p.host = hpbHostOf(u); probes->push_back(p); }
     for (Probe &pr : *probes) {                            // vector fixed -> &pr stable
-        pr.sock = new QTcpSocket(this);
-        pr.t.start();
         Probe *prp = &pr;
-        QObject::connect(prp->sock, &QTcpSocket::connected, this, [prp]() {
-            if (prp->rtt < 0) prp->rtt = int(prp->t.elapsed());
-            prp->sock->abort();
+        // Resolve DNS BEFORE starting the timer. connectToHost(QString) would
+        // do the lookup itself and fold its latency into the measured "RTT" --
+        // a cold/slow resolver hit for one candidate can then dwarf the true
+        // network gap and make a genuinely nearer HPB lose the race purely on
+        // DNS noise (field: ping showed one candidate ~30ms and another
+        // ~90ms, but the DNS-inclusive probe picked the FARTHER one at
+        // "302ms"). Timing only the connectToHost(QHostAddress) call isolates
+        // the actual TCP handshake RTT this probe is supposed to measure.
+        QHostInfo::lookupHost(prp->host, this, [this, prp](const QHostInfo &info) {
+            if (info.error() != QHostInfo::NoError || info.addresses().isEmpty()) return;
+            prp->sock = new QTcpSocket(this);
+            prp->t.start();
+            QObject::connect(prp->sock, &QTcpSocket::connected, this, [prp]() {
+                if (prp->rtt < 0) prp->rtt = int(prp->t.elapsed());
+                prp->sock->abort();
+            });
+            prp->sock->connectToHost(info.addresses().first(), 443);
         });
-        pr.sock->connectToHost(pr.host, 443);
     }
     QTimer::singleShot(1200, this, [this, probes]() {
         int best = std::numeric_limits<int>::max();

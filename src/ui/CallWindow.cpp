@@ -155,7 +155,15 @@ void CallWindow::enterPipDock()
     if (m_pipWidget) m_pipWidget->show();
     setWindowFlags(windowFlags() | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint | Qt::Tool);
     const int w = 320, h = 190, m = 24;
-    QRect avail = QGuiApplication::primaryScreen()->availableGeometry();
+    // Dock relative to whichever screen the window is CURRENTLY on, not
+    // unconditionally the primary one -- on a multi-monitor setup, docking
+    // against primaryScreen() snaps the window across to a different
+    // monitor than the one the user was actually looking at, which reads
+    // as "the call window randomly jumped/moved" (field: a 4-monitor
+    // layout with gaps between displays made this especially jarring).
+    QScreen *scr = this->screen();
+    if (!scr) scr = QGuiApplication::primaryScreen();
+    QRect avail = scr->availableGeometry();
     setGeometry(avail.right()-w-m, avail.bottom()-h-m, w, h);
     show();
     raise();
