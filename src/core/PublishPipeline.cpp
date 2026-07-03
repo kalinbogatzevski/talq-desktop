@@ -216,6 +216,25 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
     g_object_set(m_webrtcbin, "bundle-policy",
                  GST_WEBRTC_BUNDLE_POLICY_MAX_BUNDLE, nullptr);
 
+    // Disable ICE-TCP candidate gathering. GStreamer's ice-agent (GstWebRTCNice)
+    // defaults ice-tcp to TRUE, but Janus runs with ICE-TCP disabled cluster-wide
+    // (it needs ICE-Lite pairing too, which this deployment doesn't run) --
+    // libnice unconditionally rejects any TCP-transport candidate on the far end
+    // (agent.c's priv_add_remote_candidate), so every TCP host candidate we
+    // gather and trickle is guaranteed-useless dead weight. Usually harmless
+    // (a UDP candidate still gets through), but on a cross-region pairing it eats
+    // into Janus's fixed ICE/DTLS give-up budget when it's the only batch that
+    // arrives -- root-caused via the "Failed to add some remote candidates
+    // (added 0, expected N)" Janus log line, 2026-07-02.
+    {
+        GObject *iceAgent = nullptr;
+        g_object_get(m_webrtcbin, "ice-agent", &iceAgent, nullptr);
+        if (iceAgent) {
+            g_object_set(iceAgent, "ice-tcp", FALSE, nullptr);
+            g_object_unref(iceAgent);
+        }
+    }
+
     for (const auto &turn : turnServers) {
         for (const auto &url : turn.urls) {
             QString gstUrl = url;
