@@ -2488,8 +2488,20 @@ void CallManager::dispatchScreenSendoffer()
     // are genuinely sharing (a queued re-assert timer may fire after the user
     // stopped, or after a different pipeline replaced this one).
     if (!m_screenSharing || !m_screenSharePipeline) return;
-    const auto peers = m_subscribePipelines.keys();
-    for (const QString &peerId : peers) {
+    // Notify every known call participant, not just peers we currently have
+    // a PRIMARY subscribe pipeline for. Restricting to m_subscribePipelines
+    // makes this announcement fragile to exactly the kind of transient
+    // subscribe-bookkeeping gap a signaling-layer hiccup (a stale room
+    // reference, a slow reconnect) can cause -- if OUR OWN subscribe to a
+    // peer isn't tracked yet at the moment we start sharing, that peer would
+    // silently never be told a screen offer is available at all (field:
+    // Kalin -> Ilko share never arriving despite the primary call otherwise
+    // working). m_participants is the full room roster and doesn't depend
+    // on our own subscribe state being in sync.
+    QSet<QString> peers(m_subscribePipelines.keyBegin(), m_subscribePipelines.keyEnd());
+    for (auto it = m_participants.constBegin(); it != m_participants.constEnd(); ++it)
+        peers.insert(it.key());
+    for (const QString &peerId : std::as_const(peers)) {
         QJsonObject data;
         data["type"] = QString("sendoffer");
         data["roomType"] = QString("screen");

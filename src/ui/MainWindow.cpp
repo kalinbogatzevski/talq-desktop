@@ -1846,27 +1846,17 @@ void MainWindow::onConversationSelected(const QString &token, const QString &nam
     if (m_chatPainter->selectionMode())
         m_chatPainter->exitSelectionMode();
 
-    // 0.52.10 — a "reconnecting" blip re-selects the ALREADY-active conversation;
-    // capture that BEFORE updating m_activeConvToken so we can tell a genuine
-    // navigation from a programmatic re-select.
-    const bool sameConvReselect = (token == m_activeConvToken);
     m_activeConvToken = token;
 
-    // A live call stays watchable while you browse chat: dock it to a compact
-    // corner PiP when you navigate into a conversation. Double-click the PiP (or
-    // end the call) to bring it back full.
-    // 0.52.10 — three guards on when to dock:
-    //  (1) ONLY an ACTIVE call. A ringing (Incoming/Connecting) call must present
-    //      centered on the main screen, never get yanked to the corner — Pavel saw
-    //      an incoming call docked bottom-right.
-    //  (2) NOT a fullscreen call (it has its own screen real estate, typically a
-    //      2nd monitor — 0.52.7 field bug).
-    //  (3) NOT a programmatic re-select of the SAME conversation — that's the
-    //      "reconnecting" blip, and it yanked a windowed call to the corner
-    //      mid-share (Kalin↔Ilko).
-    if (m_callWindow && m_callManager->state() == CallManager::Active
-        && !m_callWindow->isFullscreen() && !sameConvReselect)
-        m_callWindow->enterPipDock();
+    // The call window and the main (chat/roster) window are independent —
+    // navigating conversations here must NEVER move, dock, or otherwise
+    // touch a live call window. (Previously this auto-docked an active call
+    // to a corner PiP on every conversation navigation, including a
+    // "reconnecting" blip re-selecting the SAME conversation, which yanked a
+    // windowed call to the corner unexpectedly — e.g. mid-screen-share. The
+    // call window still docks to PiP on its own via an explicit user
+    // minimize, see CallWindow::changeEvent; that's a distinct,
+    // user-initiated action and is unaffected by this.)
 
     // Switch from welcome to chat
     m_welcomeWidget->hide();

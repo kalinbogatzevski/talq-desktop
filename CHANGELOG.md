@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.57.19 "July Morning" -- BETA (2026-07-03)
+
+### Fixed
+* Fixed a regression where a peer could stop appearing to properly join a
+  call — a race in the signaling backend meant that switching between
+  conversations quickly could leave a call session referencing the wrong
+  conversation.
+* Screen sharing announcements are now sent to everyone on the call, not
+  only to peers already tracked as receiving your camera/mic — a peer
+  could previously miss the notice that a screen share had started.
+* The call window no longer moves or docks itself just because you
+  navigated to a chat in the main window — the two windows are fully
+  independent now. Previously, browsing conversations while on a call
+  could unexpectedly yank the call window into a corner, and on a
+  multi-monitor setup could even jump it to the wrong screen.
+
 ## v0.57.17 "July Morning" -- BETA (2026-07-03)
 
 ### Fixed
