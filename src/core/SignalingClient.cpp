@@ -400,9 +400,11 @@ void SignalingClient::onTextMessage(const QString &msg)
                      << "room" << m_currentRoom;
         } else {
             qDebug() << "Signaling: authenticated, session:" << m_sessionId.left(20) + "...";
-            // Fresh session -- re-join room if we had one.
+            // Fresh session -- re-join room if we had one. force=true: this is
+            // the ONE legitimate same-room re-join (the same-room guard in
+            // joinRoom would otherwise no-op it and we'd never re-enter).
             if (!m_currentRoom.isEmpty())
-                joinRoom(m_currentRoom);
+                joinRoom(m_currentRoom, /*force*/ true);
             // A2 — a fresh session that REPLACES a prior in-room session is a
             // reset: the old MCU publisher is dead and the server call-record
             // points at the dead sid. joinRoom above only re-POSTs the ROOM, so
@@ -801,8 +803,27 @@ void SignalingClient::sendBye()
     qDebug() << "Signaling: WS >> bye";
 }
 
-void SignalingClient::joinRoom(const QString &token)
+void SignalingClient::joinRoom(const QString &token, bool force)
 {
+    // Same-room re-join guard. A redundant joinRoom for the room we are
+    // ALREADY in is never harmless: the participants/active POST below mints
+    // a FRESH Nextcloud session, and Nextcloud retires the old one — which is
+    // the session carrying our in-call flag if a call is running. Field
+    // (2026-07-03, Kalin↔Ilko): clicking around the main window re-selected
+    // the call's conversation, the re-join replaced the in-call session, and
+    // both sides collapsed to "Reconnecting". The reconnect path is the one
+    // legitimate same-room re-join (fresh hello genuinely must re-enter the
+    // room) — it passes force=true.
+    if (!force && token == m_currentRoom && m_authenticated && m_sessionEstablished) {
+        qInfo() << "Signaling: already in room" << token
+                << "— skipping redundant re-join (keeps the in-call session alive)";
+        // Waiters (CallManager's call-start flow blocks on roomJoined with a
+        // 15s timeout) must still be told the room is ready — being already
+        // in it IS the success case, not silence.
+        emit roomJoined();
+        return;
+    }
+
     // 1.0 audit — m_sessionToUserId is otherwise INSERT-ONLY for the whole client
     // life (one entry per session/reconnect, never pruned), so bound it by
     // clearing on a real ROOM SWITCH. NOT on a same-room re-join (a signaling

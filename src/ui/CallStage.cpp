@@ -706,13 +706,16 @@ void CallStage::paintTile(QPainter &p, const Tile &t, const PainterTheme &th, bo
     CallParticipant *cp = t.p;
     const bool speaking = cp->speaking() && !cp->audioMuted();
 
-    // Active-speaker frame: a clear accent-coloured border around whoever is
-    // speaking (was a faint glow that was easy to miss). It breathes gently; on
-    // reduced-motion it's a steady solid frame. Drawn just outside the tile so it
-    // reads as a frame, not an inner ring.
+    // Active-speaker frame: a clear border around whoever is speaking (was a
+    // faint glow that was easy to miss). It breathes gently; on reduced-motion
+    // it's a steady solid frame. Drawn just outside the tile so it reads as a
+    // frame, not an inner ring. AMBER, not the teal accent: the accent reads
+    // too close to the green screen-share border (ShareOverlay's #2EA043), and
+    // users couldn't tell "speaking" from "sharing" at a glance. Amber is
+    // themed per-palette, warm ("voice"), and unambiguous against both.
     if (speaking) {
         qreal pulse = reducedMotion() ? 1.0 : (0.78 + 0.22*qSin(m_glowPhase));
-        QColor fr = th.accent; fr.setAlphaF(qBound(0.0, 0.9 * pulse, 1.0));
+        QColor fr = th.amber; fr.setAlphaF(qBound(0.0, 0.9 * pulse, 1.0));
         p.setPen(QPen(fr, 3.0));
         p.setBrush(Qt::NoBrush);
         p.drawRoundedRect(rc.adjusted(-1.5,-1.5,1.5,1.5), r+2, r+2);
@@ -915,7 +918,9 @@ void CallStage::paintTile(QPainter &p, const Tile &t, const PainterTheme &th, bo
         if (s > 0.02) {
             QRectF fillR(track.left(), track.top(),
                          track.width() * qBound(0.0, s, 1.0), track.height());
-            QColor fc = cp->speaking() ? th.accent : th.online;
+            // Amber while speaking — matches the active-speaker frame (the
+            // teal accent was too close to the green share border).
+            QColor fc = cp->speaking() ? th.amber : th.online;
             p.setBrush(fc);
             p.drawRoundedRect(fillR, 2.5, 2.5);
         }
