@@ -1379,6 +1379,21 @@ void MainWindow::buildChatPage()
         if (m_callManager->state() != CallManager::Idle
             || m_callManager->isScreenSharing())
             m_lastCallActiveMs = QDateTime::currentMSecsSinceEpoch();
+        // Call over — the signaling session is free to leave the call's room.
+        // Join the conversation the user navigated to DURING the call (its
+        // signaling join was deferred by the call guard in
+        // onConversationSelected), restoring live push hints for it.
+        if (m_callManager->state() == CallManager::Idle
+            && !m_signalingRoomDeferredByCall.isEmpty()) {
+            const QString deferred = m_signalingRoomDeferredByCall;
+            m_signalingRoomDeferredByCall.clear();
+            // Only if the user is STILL viewing that conversation — they may
+            // have navigated back to the call's own conversation since.
+            if (deferred == m_activeConvToken) {
+                qInfo() << "MainWindow: call ended — joining deferred signaling room" << deferred;
+                m_signaling->joinRoom(deferred);
+            }
+        }
     });
     connect(m_callManager, &CallManager::stateChanged,
             this, &MainWindow::maybeLaunchPendingInstaller);
@@ -1884,8 +1899,28 @@ void MainWindow::onConversationSelected(const QString &token, const QString &nam
     m_isInTopicMode = false;
 
     m_conversations->clearUnreadForToken(token);
-    // joinRoom handles both REST (/participants/active) and signaling WebSocket
-    m_signaling->joinRoom(token);
+    // joinRoom handles both REST (/participants/active) and signaling WebSocket.
+    //
+    // CALL GUARD (field 2026-07-03, Kalin↔Ilko "total regression"): the
+    // signaling session can only be in ONE room, and a live call is BOUND to
+    // its room + the Nextcloud session that joined it. Re-pointing the
+    // signaling session at a different room here (or even re-joining the
+    // SAME room, which mints a fresh Nextcloud session and retires the
+    // in-call one) walks the user out of their own call — both sides
+    // collapse to "Reconnecting" within seconds. So while a call is in
+    // progress, chat navigation must NOT touch the signaling room at all:
+    // chat history still loads via REST; only this room's live push hints
+    // (typing, instant refresh) are deferred. The deferred room is joined
+    // when the call ends (see the stateChanged handler in the constructor).
+    if (m_callManager->state() != CallManager::Idle
+        && token != m_callManager->callToken()) {
+        m_signalingRoomDeferredByCall = token;
+        qInfo() << "MainWindow: call in progress — deferring signaling room switch to"
+                << token << "(signaling stays in" << m_callManager->callToken() << ")";
+    } else {
+        m_signalingRoomDeferredByCall.clear();
+        m_signaling->joinRoom(token);
+    }
     m_threads->setConversationType(convType);
     m_threads->setConversationToken(token);
     m_threadsPainter->setGroupName(name);

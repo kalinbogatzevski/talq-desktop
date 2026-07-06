@@ -44,7 +44,12 @@ public:
     QString typingUser() const { return m_typingUser; }
     QString typingRoom() const { return m_typingRoom; }
 
-    Q_INVOKABLE void joinRoom(const QString &token);
+    // force=true bypasses the same-room re-join guard — ONLY for the
+    // reconnect path (a fresh hello genuinely must re-enter the room).
+    // Everyone else must leave it false: a redundant same-room re-join mints
+    // a fresh Nextcloud session and retires the one carrying the in-call
+    // flag, collapsing a live call (see joinRoom in the .cpp).
+    Q_INVOKABLE void joinRoom(const QString &token, bool force = false);
     Q_INVOKABLE void sendStartedTyping();
     Q_INVOKABLE void sendStoppedTyping();
 

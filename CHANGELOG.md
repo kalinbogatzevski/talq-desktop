@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.57.20 "July Morning" -- BETA (2026-07-03)
+
+### Fixed
+* **Browsing chats during a call no longer breaks the call.** Clicking other
+  conversations (or re-opening the call's own conversation) while on a call
+  could freeze both sides' video within seconds and drop the call to
+  "Reconnecting" — the app was silently walking itself out of the call's
+  room behind the scenes. Calls now stay fully independent of whatever you
+  do in the main chat window. Live message hints for a conversation you
+  browse *during* a call resume as soon as the call ends.
+
+### Improved
+* The active-speaker highlight is now amber instead of teal — it was too
+  easy to confuse with the green screen-sharing border at a glance.
+
 ## v0.57.19 "July Morning" -- BETA (2026-07-03)
 
 ### Fixed
