@@ -79,6 +79,10 @@ public:
     explicit CallManager(ApiClient *api, SignalingClient *signaling, MediaDeviceManager *deviceMgr, QObject *parent = nullptr);
 
     CallState state() const { return m_state; }
+    // The conversation token of the current (or last) call. Valid whenever
+    // state() != Idle; used by MainWindow to keep the signaling session
+    // pinned to the call's room while a call is in progress.
+    QString callToken() const { return m_callToken; }
     bool isMuted() const { return m_muted; }
     bool isCameraOn() const { return m_cameraOn; }
     // True when the camera device failed to open during this call (missing,
