@@ -340,6 +340,10 @@ private:
     // #bug3 -- if `sessionId` is the 1:1 peer returning from a grace hold (same
     // NC userId), re-adopt + re-subscribe and cancel grace. Returns true if so.
     bool tryAdoptReturningPeer(const QString &sessionId);
+    // #bug4 — 1:1 multi-session peer helpers.
+    bool isOneToOneCall() const;                          // room type == 1
+    bool isPeerUserSession(const QString &sessionId) const;
+    QString pickPeerSiblingSid() const;
     // A subscriber feed died mid-call (SFU end-session / its webrtcbin ICE
     // went "failed" — both happen on a normal publisher renegotiation).
     // Tear down just that subscriber and re-subscribe; never kill the call.
@@ -564,6 +568,19 @@ private:
     bool    m_peerGraceActive = false;   // true while waiting for the peer to return
     QString m_remotePeerUserId;          // NC userId of the 1:1 peer (correlation key)
     QString m_graceLeftSid;              // the (now dead) session id the peer left under
+    // #bug4 — multi-session 1:1 peer: the SAME user can hold several live
+    // signaling sessions at once (desktop + phone + browser + a VPN half of a
+    // reconnect). The 1:1 call is keyed on the peer USER; m_remoteSessionId is
+    // merely the sibling we currently subscribe. Every in-call session id of
+    // that user lives here so ONE device dropping does not end the call.
+    QSet<QString> m_peerInCallSids;      // in-call sessions of m_remotePeerUserId
+    // #bug4 — outgoing ring-out late-answer window: a multi-device callee often
+    // answers seconds AFTER our 60s ring gave up (devices ring staggered). A
+    // peer JOIN on this token inside the window re-joins our call as the answer
+    // instead of ringing us as a fresh incoming call.
+    QString   m_lastRingoutToken;
+    QDateTime m_lastRingoutTime;
+    bool      m_lastRingoutWithVideo = false;
     // 0.40.15 — sticky flag: publisher ICE has been seen at "connected"
     // or "completed" at some point. The iceStateChanged handler only
     // promotes Connecting→Active when the event fires WHILE m_state is

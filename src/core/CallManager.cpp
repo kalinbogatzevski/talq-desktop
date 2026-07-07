@@ -991,7 +991,15 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
     connect(&m_ringTimeout, &QTimer::timeout, this, [this]() {
         // Bypass userActionReady — timeout is the safety net for when UI never shows
         if (m_state == Incoming) teardown("Ring timeout");
-        else if (m_state == Outgoing) teardown("No answer");
+        else if (m_state == Outgoing) {
+            // #bug4 -- arm the late-answer window BEFORE teardown clears the
+            // token (field 2026-07-06: the callee joined 2s after this fired
+            // and was treated as a brand-new incoming call).
+            m_lastRingoutToken     = m_callToken;
+            m_lastRingoutTime      = QDateTime::currentDateTime();
+            m_lastRingoutWithVideo = m_withVideo;
+            teardown("No answer");
+        }
     });
 
     // Stats timer — update call info every 2 seconds
@@ -1565,6 +1573,7 @@ void CallManager::startCall(const QString &token, bool withVideo)
               << "sigSession=" << m_signaling->sessionId().left(20));
     m_callToken = token;
     m_callJoinAttempts = 0;
+    m_lastRingoutToken.clear();   // #bug4 -- a manual (re)dial supersedes any pending late-answer window
     m_peerGraceActive = false; m_peerGraceTimer.stop();   // #bug3 -- fresh call, no stale grace
     m_withVideo = withVideo;
     m_cameraOn = withVideo;
@@ -1633,6 +1642,37 @@ void CallManager::ensureSignalingRoomJoined(std::function<void()> next)
     // joinRoom() POSTs participants/active (yielding the NC sessionId) and
     // then sends the WS `room` message.
     m_signaling->joinRoom(m_callToken);
+}
+
+bool CallManager::isOneToOneCall() const
+{
+    return m_conversations
+        && m_conversations->conversationTypeForToken(m_callToken) == 1;
+}
+
+bool CallManager::isPeerUserSession(const QString &sessionId) const
+{
+    if (m_remotePeerUserId.isEmpty()) return false;
+    const QString uid = m_signaling->userIdForSession(sessionId);
+    return !uid.isEmpty() && uid == m_remotePeerUserId;
+}
+
+// #bug4 — choose the best still-in-call sibling session of the 1:1 peer: prefer
+// one we already hold a live subscriber for, then one whose last-known call
+// flags claim media, then any. Empty when none remain.
+QString CallManager::pickPeerSiblingSid() const
+{
+    QString withFlags, any;
+    for (const QString &sid : m_peerInCallSids) {
+        if (sid == m_remoteSessionId) continue;
+        if (m_subscribePipelines.contains(sid)) return sid;
+        if (m_signaling->callFlagsForSession(sid)
+            & (CALL_FLAG_WITH_AUDIO | CALL_FLAG_WITH_VIDEO))
+            withFlags = sid;
+        else
+            any = sid;
+    }
+    return !withFlags.isEmpty() ? withFlags : any;
 }
 
 bool CallManager::tryAdoptReturningPeer(const QString &sessionId)
@@ -2404,13 +2444,17 @@ void CallManager::hangUp() {
     // BEFORE teardown(): hanging up leaves the CALL but stays in the room, so the
     // signaling socket is still open. Best-effort — if it's lost, the peer falls
     // back to grace→timeout (no regression).
-    const bool isOneToOne = m_conversations
-        && m_conversations->conversationTypeForToken(m_callToken) == 1;
-    if (!m_useP2P && isOneToOne && !m_remoteSessionId.isEmpty()) {
+    if (!m_useP2P && isOneToOneCall() && !m_remoteSessionId.isEmpty()) {
         QJsonObject data;
         data["type"] = QString("hangup");
-        m_signaling->sendMinimalMessage(m_remoteSessionId, data);
-        qDebug() << "CallManager: sent hangup hint to" << m_remoteSessionId.left(20);
+        // #bug4 -- the peer user may hold several sessions; the adopted sid is
+        // not necessarily the device they are looking at. Hint them all
+        // (best-effort, TalQ-private; non-TalQ siblings ignore it).
+        QSet<QString> targets = m_peerInCallSids;
+        targets.insert(m_remoteSessionId);
+        for (const QString &sid : targets)
+            m_signaling->sendMinimalMessage(sid, data);
+        qDebug() << "CallManager: sent hangup hint to" << targets.size() << "peer session(s)";
     }
     teardown("Hung up");
 }
@@ -2423,10 +2467,11 @@ void CallManager::onPeerHungUp(const QString &sessionId)
     // first and cleared m_remoteSessionId / set m_graceLeftSid). Ignore for
     // P2P / group / a stranger so a stray hint can't drop the wrong call.
     if (m_state == Idle) return;
-    const bool isOneToOne = m_conversations
-        && m_conversations->conversationTypeForToken(m_callToken) == 1;
-    if (m_useP2P || !isOneToOne) return;
-    if (sessionId != m_remoteSessionId && sessionId != m_graceLeftSid) return;
+    if (m_useP2P || !isOneToOneCall()) return;
+    // #bug4 -- any device of the 1:1 peer: the hint may arrive from a sibling
+    // session that isn't the one we currently subscribe.
+    if (sessionId != m_remoteSessionId && sessionId != m_graceLeftSid
+        && !isPeerUserSession(sessionId)) return;
     qInfo() << "CallManager: peer signalled hangup — ending 1:1 call immediately";
     teardown("Call ended");
 }
@@ -4184,6 +4229,7 @@ void CallManager::stopAllPipelines()
     m_peerGraceActive = false;
     m_remotePeerUserId.clear();
     m_graceLeftSid.clear();
+    m_peerInCallSids.clear();   // #bug4 -- no peer sessions across a fresh call
 
     // Flush stale GLib sources from destroyed pipelines (libnice agents,
     // DTLS timers, etc.). Without this, creating a new webrtcbin on the
@@ -4432,6 +4478,13 @@ void CallManager::onParticipantJoinedCall(const QString &sessionId, int flags, c
 
     if ((m_state == Outgoing || m_state == Connecting) && m_remoteSessionId.isEmpty()) {
         m_remoteSessionId = sessionId;
+        // #bug4 — stamp the peer USER at adopt time (not only at grace-entry):
+        // sibling adopt / leave / hangup-hint below are keyed on the user,
+        // because the same person holds several sessions at once. 1:1 only — in
+        // a group m_remoteSessionId is merely the first joiner, not "the peer".
+        // Empty for guests: the sid-keyed behaviour then stands.
+        if (isOneToOneCall())
+            m_remotePeerUserId = m_signaling->userIdForSession(sessionId);
         if (!displayName.isEmpty()) m_remotePeerName = displayName;
         qDebug() << "CallManager: remote peer joined:" << sessionId.left(20) << "name=" << m_remotePeerName;
         m_ringTimeout.stop();
@@ -4466,6 +4519,27 @@ void CallManager::onParticipantJoinedCall(const QString &sessionId, int flags, c
                         "waiting for audio/video before requesting subscriber";
         }
     }
+    // #bug4 -- a SIBLING session of the 1:1 peer joined WITH media while the
+    // session we locked onto never delivered a subscriber (an idle device of
+    // the same user: the phone in the room, the VPN half of a reconnect,
+    // whose inCall flags CLAIM media it never publishes — its requestoffer
+    // loop churns data-only offers / not_allowed forever). Re-point the 1:1
+    // to the sibling that actually publishes; the group fallthrough below
+    // already subscribes it, this moves the call's IDENTITY onto it so leave
+    // handling and the hangup hint follow the right device.
+    else if (!m_useP2P
+             && (m_state == Connecting || m_state == Active || m_state == Reconnecting)
+             && !m_remoteSessionId.isEmpty()
+             && isOneToOneCall() && isPeerUserSession(sessionId)
+             && (flags & (CALL_FLAG_WITH_AUDIO | CALL_FLAG_WITH_VIDEO))
+             && !m_subscribePipelines.contains(m_remoteSessionId)) {
+        qInfo() << "CallManager: 1:1 peer sibling with media joined ("
+                << sessionId.left(20) << ") — re-adopting from idle sibling"
+                << m_remoteSessionId.left(20) << "(#bug4)";
+        m_remoteSessionId = sessionId;
+        emit callInfoChanged();
+        requestPeerStream(sessionId);   // self-dedupes with the group path
+    }
     else if (m_state == Idle) {
         // Suppress self-ring: if the joining participant is OUR OWN user
         // on another device (same Nextcloud userId, different session),
@@ -4480,12 +4554,38 @@ void CallManager::onParticipantJoinedCall(const QString &sessionId, int flags, c
             qInfo() << "CallManager: ignoring call-join from our own user on "
                        "another device (" << sessionId.left(20)
                     << ") — not ringing self";
+        } else if (m_signaling->currentRoom() == m_lastRingoutToken
+                   && m_lastRingoutTime.isValid()
+                   && m_lastRingoutTime.msecsTo(QDateTime::currentDateTime()) < 15000) {
+            // #bug4 -- late answer: the peer joined the call we were placing
+            // seconds after our ring-out teardown. To the user this IS our
+            // call being answered, not a new incoming one — re-join it.
+            // Gated on an actual participant JOIN edge (not the conversation-
+            // list poll, which could re-fire on stale room state) and single-
+            // use, so a participant-flag flap can at worst re-place the call
+            // once. startCall's forceCallParticipantResync re-emits the join
+            // so the normal adopt path runs against a clean slate.
+            const QString token   = m_lastRingoutToken;
+            const bool withVideo  = m_lastRingoutWithVideo;
+            m_lastRingoutToken.clear();
+            m_lastRingoutTime = QDateTime();
+            qInfo() << "CallManager: peer" << joinerUser << "answered" << token
+                    << "within the ring-out window — re-joining our call (#bug4)";
+            startCall(token, withVideo);
         } else {
             // Incoming call detected via signaling — route through the same
             // path as conversation-list detection so cooldown applies.
-            m_remoteSessionId = sessionId;
-            QString token = m_signaling->currentRoom();
+            const QString token = m_signaling->currentRoom();
             onIncomingCallDetected(displayName, token, flags);
+            // Latch the sid only if we actually started ringing — a cooldown-
+            // suppressed detection must not leave a stale m_remoteSessionId
+            // behind while Idle (startCall never clears it; only teardown
+            // does), which would jam the next call's adopt gate.
+            if (m_state == Incoming) {
+                m_remoteSessionId = sessionId;
+                if (isOneToOneCall())
+                    m_remotePeerUserId = m_signaling->userIdForSession(sessionId);
+            }
         }
     }
 
@@ -4522,6 +4622,10 @@ void CallManager::onParticipantJoinedCall(const QString &sessionId, int flags, c
                     << sessionId.left(20);
             requestPeerStream(sessionId);
         }
+        // #bug4 -- track every in-call session of the 1:1 peer USER so leave
+        // handling can tell "one device dropped" from "the peer is gone".
+        if (isOneToOneCall() && isPeerUserSession(sessionId))
+            m_peerInCallSids.insert(sessionId);
     }
 }
 
@@ -4559,6 +4663,8 @@ void CallManager::onParticipantLeftCall(const QString &sessionId)
 
     removeParticipant(sessionId);
 
+    m_peerInCallSids.remove(sessionId);   // #bug4 -- prune FIRST; decisions key on what remains
+
     if (sessionId == m_remoteSessionId) {
         // #bug3 -- peer-grace (do-NOT-end + auto-recover) applies ONLY to an MCU
         // 1:1 call with a KNOWN-userId peer. P2P media rides m_peerPipeline (the
@@ -4566,8 +4672,7 @@ void CallManager::onParticipantLeftCall(const QString &sessionId)
         // is merely the first-joiner, not a sole peer, so a grace hold would wrongly
         // freeze a multi-party call; a guest's userId is unknown so a new-session
         // rejoin can't be correlated. In all those cases keep the clean immediate end.
-        const bool isOneToOne = m_conversations
-            && m_conversations->conversationTypeForToken(m_callToken) == 1;
+        const bool isOneToOne = isOneToOneCall();
         const QString peerUserId = m_signaling->userIdForSession(sessionId);
         if (m_useP2P || !isOneToOne || peerUserId.isEmpty()) {
             qDebug() << "CallManager: remote peer left call ("
@@ -4576,7 +4681,23 @@ void CallManager::onParticipantLeftCall(const QString &sessionId)
             teardown("Call ended");
             return;
         }
-        // MCU 1:1, known peer: a transient WiFi-reconnect blip is indistinguishable
+        // #bug4 -- the peer USER may still be in the call on ANOTHER session:
+        // this was one device/VPN-half dropping, not the peer leaving. Fail
+        // over to a live sibling instead of the 28s grace hold — grace can
+        // only be exited by a JOIN edge, which an already-joined sibling never
+        // produces, so the old code expired grace and killed a healthy call.
+        const QString sibling = pickPeerSiblingSid();
+        if (!sibling.isEmpty()) {
+            qInfo() << "CallManager: 1:1 peer session" << sessionId.left(20)
+                    << "left but sibling" << sibling.left(20)
+                    << "is still in-call — failing over, NOT ending (#bug4)";
+            m_remoteSessionId = sibling;
+            emit callInfoChanged();
+            requestPeerStream(sibling);        // no-op if already subscribed
+            return;
+        }
+        // MCU 1:1, known peer, NO sibling remains: a transient WiFi-reconnect
+        // blip is indistinguishable
         // here (the peer is often still in the room and returns seconds later under
         // a NEW NC session id; m_sessionToUserId is NOT pruned on leave so the userId
         // above resolves). Enter a peer-grace Reconnecting hold and auto-re-subscribe
@@ -4587,6 +4708,28 @@ void CallManager::onParticipantLeftCall(const QString &sessionId)
         m_graceLeftSid     = sessionId;
         m_peerGraceActive  = true;
         m_remoteSessionId.clear();        // reopen the empty-guarded adopt paths
+        emit callInfoChanged();
+        if (m_state == Active || m_state == Connecting)
+            setState(Reconnecting);
+        setStatusDetail(tr("Reconnecting, waiting for peer..."));
+        if (!m_peerGraceTimer.isActive())
+            m_peerGraceTimer.start();
+    }
+    // #bug4 -- the REAL (subscribed) sibling left while a zombie sibling is
+    // still adopted: without this, only the subscriber was dropped and the
+    // 1:1 end/grace logic never ran — a ghost call that never ends. Treat it
+    // as the peer-user leaving that device; if it was the LAST media-bearing
+    // one and none remain, fall into the same grace the adopted-sid path uses.
+    else if (isOneToOneCall() && !m_useP2P && isPeerUserSession(sessionId)
+             && m_peerInCallSids.isEmpty() && !m_remoteSessionId.isEmpty()
+             && !m_subscribePipelines.contains(m_remoteSessionId)) {
+        qInfo() << "CallManager: 1:1 peer's last live session" << sessionId.left(20)
+                << "left; adopted sid" << m_remoteSessionId.left(20)
+                << "has no media — entering grace (#bug4)";
+        m_remotePeerUserId = m_signaling->userIdForSession(sessionId);
+        m_graceLeftSid     = sessionId;
+        m_peerGraceActive  = true;
+        m_remoteSessionId.clear();
         emit callInfoChanged();
         if (m_state == Active || m_state == Connecting)
             setState(Reconnecting);

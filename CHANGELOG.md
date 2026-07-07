@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.57.24 "July Morning" -- BETA (2026-07-07)
+
+### Fixed
+* **Calling someone who is signed in on several devices now connects
+  reliably.** When the person you called was logged in on more than one
+  device at the same time (say a laptop and a phone, or a second window),
+  the call could latch onto a device that was not actually the one
+  answering — so you sat on "Connecting" with nothing coming through, or
+  they were left looking at "Waiting for others to join." The call now
+  follows the device that actually joins with audio and video, and moves
+  to another of their devices automatically if the first one drops.
+* **One device dropping no longer ends a healthy call.** If the other
+  person was on several devices and one of them briefly lost its
+  connection, the call could wrongly wind down even though a working
+  device of theirs was still in the call. It now keeps going as long as
+  any of their devices is connected.
+* **A late answer is treated as an answer, not a new call.** When you
+  called someone whose devices took a few seconds longer to ring, their
+  answer arriving just after the call gave up could show up as a brand-new
+  incoming call. Answering within a short window now simply reconnects the
+  call you were placing.
+* **Hanging up reaches the right device.** The "call ended" signal is now
+  sent to every device the other person has in the call, so the call
+  clears promptly on their side no matter which one they were looking at.
+
 ## v0.57.23 "July Morning" -- BETA (2026-07-07)
 
 ### Fixed
