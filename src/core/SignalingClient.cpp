@@ -251,65 +251,140 @@ void SignalingClient::selectNearestHpbAndConnect()
     }
     if (cands.size() <= 1) { connectWebSocket(); return; } // nothing to choose
 
-    struct Probe { QString url, host; QElapsedTimer t; int rtt = -1; QTcpSocket *sock = nullptr; };
+    // --- Nearest-HPB selection tunables ---------------------------------
+    // A SINGLE TCP:443 sample per candidate is far too noisy to choose between
+    // POPs whose true RTTs are close (field: turn-bg ~15ms, turn-ru ~150ms,
+    // turn-za ~200ms — but DNS/TLS/loss jitter on one 1200ms window let a FAR
+    // POP win, stranding a BG user on turn-za / turn-ru). Fix: take several
+    // samples per candidate and use the MIN (the true network floor; jitter
+    // only ever ADDS latency, so min is the robust estimator), then only SWITCH
+    // AWAY from the incumbent (the server we're already on, or the Nextcloud
+    // baseline on a cold start) if a challenger is faster by a real MARGIN.
+    // This kills jitter-driven flapping while still following a genuinely
+    // nearer POP.
+    constexpr int kProbeSamples    = 4;    // TCP:443 connects per candidate
+    constexpr int kSampleSpacingMs = 120;  // stagger between a candidate's samples
+    constexpr int kSelectAfterMs   = 900;  // when to decide (covers 4 staggered samples + RTT)
+    constexpr int kSwitchMarginMs  = 30;   // challenger must beat incumbent by this to win
+
+    // The incumbent = the HPB we last successfully connected to (sticky across
+    // reconnects), else the Nextcloud-assigned baseline on a cold start. We only
+    // leave it for a clearly-closer POP (see kSwitchMarginMs). This is what stops
+    // a jitter-driven reconnect from stranding us on a far POP.
+    const QString incumbentHost = hpbHostOf(m_lastConnectedHpbHost.isEmpty()
+                                            ? m_signalingUrl : m_lastConnectedHpbHost);
+
+    struct Probe {
+        QString url, host;
+        int minRtt = -1;                 // best (lowest) sample seen so far
+        int samplesDone = 0;             // landed RTT samples: a LIVE incumbent is only
+                                         // displaced by a challenger with >= 2 samples,
+                                         // so one lucky late sample can't flap us.
+        bool isIncumbent = false;
+        std::vector<QTcpSocket *> socks;  // outstanding sample sockets, cleaned in the sweep
+    };
     auto probes = std::make_shared<std::vector<Probe>>();
-    for (const QString &u : cands) { Probe p; p.url = u; p.host = hpbHostOf(u); probes->push_back(p); }
-    // Shared "selection已fired" latch. DNS lookups are async and can complete
-    // AFTER the 1200 ms selection singleShot has already run and swept the
-    // probes — a late callback must not then create a socket on a probe the
-    // sweep already finalized (it would leak, and pre-fix it dereferenced a
-    // freed vector: use-after-free crash on a slow/cold resolver, the exact
-    // condition this DNS-first change targets). The callbacks capture the
-    // `probes` shared_ptr (keeps the vector alive as long as any lookup is
-    // outstanding) AND this latch (so they no-op once selection is done).
+    for (const QString &u : cands) {
+        Probe p; p.url = u; p.host = hpbHostOf(u);
+        p.isIncumbent = (!incumbentHost.isEmpty() && p.host == incumbentHost);
+        probes->push_back(std::move(p));
+    }
+    // Shared "selection fired" latch. DNS lookups + sample timers are async and
+    // can complete AFTER the selection singleShot has swept the probes — a late
+    // callback must not then create a socket on a finalized probe (leak + the
+    // old use-after-free on a freed vector). Callbacks capture the `probes`
+    // shared_ptr (keeps the vector alive) AND this latch (no-op once done).
     auto selectionDone = std::make_shared<bool>(false);
+
+    // Fire kProbeSamples staggered TCP:443 connects for one candidate, tracking
+    // the running MIN. DNS is resolved once up front (connectToHost(QString)
+    // would fold resolver latency into the measured RTT — a cold resolver hit
+    // could dwarf the true network gap; timing connectToHost(QHostAddress)
+    // isolates the TCP handshake RTT).
     for (size_t i = 0; i < probes->size(); ++i) {
-        // Resolve DNS BEFORE starting the timer. connectToHost(QString) would
-        // do the lookup itself and fold its latency into the measured "RTT" --
-        // a cold/slow resolver hit for one candidate can then dwarf the true
-        // network gap and make a genuinely nearer HPB lose the race purely on
-        // DNS noise (field: ping showed one candidate ~30ms and another
-        // ~90ms, but the DNS-inclusive probe picked the FARTHER one at
-        // "302ms"). Timing only the connectToHost(QHostAddress) call isolates
-        // the actual TCP handshake RTT this probe is supposed to measure.
         const QString host = (*probes)[i].host;
         QHostInfo::lookupHost(host, this, [this, probes, selectionDone, i](const QHostInfo &info) {
-            if (*selectionDone) return;   // sweep already ran — do not touch probes
+            if (*selectionDone) return;
             if (info.error() != QHostInfo::NoError || info.addresses().isEmpty()) return;
-            Probe &pr = (*probes)[i];     // vector kept alive by the captured shared_ptr
-            pr.sock = new QTcpSocket(this);
-            pr.t.start();
-            Probe *prp = &pr;
-            QObject::connect(prp->sock, &QTcpSocket::connected, this, [prp]() {
-                if (prp->rtt < 0) prp->rtt = int(prp->t.elapsed());
-                prp->sock->abort();
-            });
-            pr.sock->connectToHost(info.addresses().first(), 443);
+            const QHostAddress addr = info.addresses().first();
+            for (int s = 0; s < kProbeSamples; ++s) {
+                QTimer::singleShot(s * kSampleSpacingMs, this, [this, probes, selectionDone, i, addr]() {
+                    if (*selectionDone) return;
+                    Probe &pr = (*probes)[i];
+                    auto *sock = new QTcpSocket(this);
+                    auto t = std::make_shared<QElapsedTimer>();
+                    t->start();
+                    pr.socks.push_back(sock);
+                    // Capture probes+latch by value so a late 'connected' after the
+                    // sweep is a safe no-op (vector kept alive; latch gates it).
+                    QObject::connect(sock, &QTcpSocket::connected, this,
+                                     [probes, selectionDone, i, t, sock]() {
+                        if (*selectionDone) { sock->abort(); return; }
+                        const int rtt = int(t->elapsed());
+                        Probe &pr = (*probes)[i];
+                        ++pr.samplesDone;
+                        if (pr.minRtt < 0 || rtt < pr.minRtt) pr.minRtt = rtt;
+                        sock->abort();
+                    });
+                    sock->connectToHost(addr, 443);
+                });
+            }
         });
     }
-    QTimer::singleShot(1200, this, [this, probes, selectionDone]() {
-        *selectionDone = true;   // any still-pending DNS callback now no-ops
-        int best = std::numeric_limits<int>::max();
-        QString bestUrl; int bestRtt = -1;
+
+    QTimer::singleShot(kSelectAfterMs, this, [this, probes, selectionDone]() {
+        *selectionDone = true;   // any still-pending callback now no-ops
+        // Incumbent RTT (if it answered), the best challenger with >= 2 samples
+        // (allowed to DISPLACE a live incumbent), and the best challenger with
+        // any sample (only used when the incumbent was silent — something beats
+        // nothing). Requiring 2 samples to displace stops a single lucky late
+        // sample from re-introducing the jitter this whole rewrite kills.
+        QString incumbentUrl; int incumbentRtt = -1;
+        QString bestUrl;      int bestRtt = -1;   // >= 2 samples
+        QString anyUrl;       int anyRtt  = -1;   // >= 1 sample
         for (Probe &pr : *probes) {
-            if (pr.rtt >= 0 && pr.rtt < best) { best = pr.rtt; bestUrl = pr.url; bestRtt = pr.rtt; }
-            if (pr.sock) { pr.sock->disconnect(); pr.sock->abort(); pr.sock->deleteLater(); }
+            if (pr.isIncumbent) {
+                incumbentUrl = pr.url;
+                if (pr.minRtt >= 0) incumbentRtt = pr.minRtt;
+            } else if (pr.minRtt >= 0) {
+                if (anyRtt < 0 || pr.minRtt < anyRtt) { anyRtt = pr.minRtt; anyUrl = pr.url; }
+                if (pr.samplesDone >= 2 && (bestRtt < 0 || pr.minRtt < bestRtt)) {
+                    bestRtt = pr.minRtt; bestUrl = pr.url;
+                }
+            }
+            for (QTcpSocket *s : pr.socks) { s->disconnect(); s->abort(); s->deleteLater(); }
+            pr.socks.clear();
         }
-        if (!bestUrl.isEmpty()) {
+
+        // Keep the incumbent unless a >=2-sample challenger beats it by the
+        // margin. If the incumbent was silent, take any answering challenger.
+        QString chosenUrl; int chosenRtt = -1; const char *why = "no candidate answered";
+        if (incumbentRtt >= 0 && bestRtt >= 0 && bestRtt <= incumbentRtt - kSwitchMarginMs) {
+            chosenUrl = bestUrl; chosenRtt = bestRtt;
+            why = "switched (beat incumbent by margin, >=2 samples)";
+        } else if (incumbentRtt >= 0) {
+            chosenUrl = incumbentUrl; chosenRtt = incumbentRtt;   // sticky — set URL EXPLICITLY
+            why = "sticky (within margin)";
+        } else if (anyRtt >= 0) {
+            chosenUrl = anyUrl; chosenRtt = anyRtt;
+            why = "incumbent silent";
+        }
+
+        qInfo().nospace() << "Signaling: HPB select — " << why
+                          << " chosen=" << hpbHostOf(chosenUrl.isEmpty() ? m_signalingUrl : chosenUrl)
+                          << " rtt=" << chosenRtt << " (min of " << kProbeSamples << ")"
+                          << " incumbentRtt=" << incumbentRtt
+                          << " bestChallengerRtt=" << bestRtt << " anyChallengerRtt=" << anyRtt;
+
+        if (!chosenUrl.isEmpty()) {
             // Normalise to the BASE url (no trailing "/spreed"): connectWebSocket()
             // appends "/spreed" itself, so a pool url that already carries it would
-            // double up to /standalone-signaling/spreed/spreed → 404 and the client
-            // would fall back to the far Nextcloud server (field: storm 404 loop).
-            QString base = bestUrl.trimmed();
+            // double up to /standalone-signaling/spreed/spreed → 404.
+            QString base = chosenUrl.trimmed();
             if (base.endsWith(QLatin1Char('/')))         base.chop(1);
             if (base.endsWith(QLatin1String("/spreed"))) base.chop(7);
             m_signalingUrl   = base;
-            m_signalingRttMs = bestRtt;
-            qInfo().nospace() << "Signaling: nearest HPB " << hpbHostOf(bestUrl)
-                              << " (" << bestRtt << " ms) of " << int(probes->size()) << " candidate(s)";
-        } else {
-            qInfo() << "Signaling: no HPB answered probe — using backend default"
-                    << hpbHostOf(m_signalingUrl);
+            m_signalingRttMs = chosenRtt;
         }
         connectWebSocket();
     });
@@ -331,6 +406,10 @@ void SignalingClient::onConnected()
 {
     qDebug() << "Signaling: WebSocket connected, waiting for welcome";
     m_reconnectDelay = 2000;
+    // Remember the HPB we actually connected to — the nearest-HPB probe stays
+    // sticky to this on the next reconnect unless a challenger wins by margin,
+    // so a one-off jittery probe can't strand us on a far POP.
+    m_lastConnectedHpbHost = hpbHostOf(m_signalingUrl);
     m_keepAliveTimer.start();   // keep the HPB session alive (see m_keepAliveTimer)
 }
 

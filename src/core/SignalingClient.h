@@ -230,6 +230,9 @@ private:
     QString m_signalingUrl;
     QString m_serverOverride;   // per-instance HPB pin (talq-call-test cross-server)
     int     m_signalingRttMs = -1;   // measured RTT to the selected HPB (nearest-server probe)
+    QString m_lastConnectedHpbHost;  // HPB host of the last SUCCESSFUL WS connect —
+                                     // the "incumbent" the nearest-HPB probe stays
+                                     // sticky to unless a challenger wins by margin.
     // Server-provided HPB discovery: the OPTIONAL "servers" field a patched
     // Nextcloud (apps/spreed) may include in the signaling-settings response
     // alongside the single "server" it already picked. Unpatched/stock

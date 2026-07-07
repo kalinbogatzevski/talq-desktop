@@ -580,35 +580,66 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
             // fails open (missing stamp → huge age → rebuild, never suppress).
             if (m_screenSubscribers.contains(from)
                 && m_screenSubFrameMark.value(from, 0) == 0) {
-                const qint64 ageMs = QDateTime::currentMSecsSinceEpoch()
-                                   - m_screenSubBuiltMs.value(from, 0);
-                // Hold (re-PLI + ignore) while the sub is still coming up — by EITHER
-                // signal: (a) it is actively PROGRESSING ICE (checking/connected/
-                // completed but no frame yet), or (b) it is still within the young-
-                // build wall-clock grace. (a) is the load-bearing one: the reap-race
-                // re-assert lands at +5s AND +11s, but kScreenSubStartupGraceMs is
-                // shorter than +11s, so a sub that reaches "checking" early and stays
-                // there (Ilko 0.52.16) would age out and be torn down by the +11s
-                // rebuild mid-pairing. A sub pairing ICE must never be killed by a
-                // redundant re-offer; the only re-offers are the 2 reap re-asserts, so
-                // "hold while progressing" can't strand it (no further offer follows,
-                // and a real stop→reshare clears this state via removeScreenSubscriber).
+                const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+                const qint64 ageMs = nowMs - m_screenSubBuiltMs.value(from, 0);
                 const QString ice = m_screenSubIceState.value(from);
-                // CAP the iceProgressing hold by a wall-clock bound (> the +11s reap
-                // horizon, measured from the last ICE-progress re-stamp): a sub WEDGED
-                // in "checking" (lost unshareScreen, no removeScreenSubscriber) must
-                // eventually fall through to rebuild on a later offer, not be held until
-                // ICE reports "failed". Within the cap it still protects a legitimately
-                // pairing sub from the +11s mid-pairing teardown.
-                const bool iceProgressing =
-                    (ice == "checking" || ice == "connected" || ice == "completed")
-                    && ageMs >= 0 && ageMs < kScreenSubIceProgressGraceMs;
-                if (iceProgressing || (ageMs >= 0 && ageMs < kScreenSubStartupGraceMs)) {
+                // 0.57.22 — ICE COMPLETED is not "still coming up". Once completed
+                // with frameMark==0 the sub is past pairing; the only thing
+                // outstanding is its first keyframe (~1-2s normally). Protect it for
+                // a SHORT keyframe budget only (re-PLI + ignore — a keyframe in
+                // flight must not be torn down), then FALL THROUGH to the
+                // rebuild-stale path: past the budget it is keyframe-STARVED and the
+                // reap-race re-assert is the fix, not a threat. Holding it for the
+                // full ICE-progress grace stranded a re-share (field 14:57: completed
+                // at +2s, no frame, the +9s re-assert ignored, sharer gave up).
+                // Rebuilding here is 0.52.14-safe: ICE is DONE, not mid-pairing.
+                // Missing stamp despite ice=="completed" can't strand: completedMs==0
+                // routes to the pairing branch, where "completed" no longer holds.
+                const qint64 completedMs = m_screenSubCompletedMs.value(from, 0);
+                if (completedMs > 0) {
+                    const qint64 sinceCompletedMs = nowMs - completedMs;
+                    if (sinceCompletedMs >= 0
+                        && sinceCompletedMs < kScreenSubKeyframeBudgetMs) {
+                        qInfo() << "CallManager: screen re-offer from" << from.left(20)
+                                << "— ICE completed" << sinceCompletedMs
+                                << "ms ago, first keyframe still due — re-PLI + ignore";
+                        if (auto *s = m_screenSubscribers.value(from)) s->requestKeyframe();
+                        return;
+                    }
                     qInfo() << "CallManager: screen re-offer from" << from.left(20)
-                            << "— sub still coming up (ice=" << ice << "age=" << ageMs
-                            << "ms, no frame yet) — re-PLI + ignore (anti-thrash)";
-                    if (auto *s = m_screenSubscribers.value(from)) s->requestKeyframe();
-                    return;
+                            << "— ICE completed" << sinceCompletedMs
+                            << "ms ago with NO frame — keyframe-starved, rebuilding";
+                    // fall through to the rebuild-stale path below
+                } else {
+                    // Hold (re-PLI + ignore) while the sub is still coming up — by
+                    // EITHER signal: (a) it is actively PAIRING ICE (checking/
+                    // connected, no frame yet), or (b) it is still within the young-
+                    // build wall-clock grace. (a) is the load-bearing one: the
+                    // reap-race re-assert lands at +5s AND +11s, but
+                    // kScreenSubStartupGraceMs is shorter than +11s, so a sub that
+                    // reaches "checking" early and stays there (Ilko 0.52.16) would
+                    // age out and be torn down by the +11s rebuild mid-pairing. A sub
+                    // pairing ICE must never be killed by a redundant re-offer; the
+                    // only re-offers are the 2 reap re-asserts, so "hold while
+                    // pairing" can't strand it (no further offer follows, and a real
+                    // stop→reshare clears this state via removeScreenSubscriber).
+                    // CAP the icePairing hold by a wall-clock bound (> the +11s reap
+                    // horizon, measured from the last ICE-progress re-stamp): a sub
+                    // WEDGED in "checking" (lost unshareScreen, no
+                    // removeScreenSubscriber) must eventually fall through to rebuild
+                    // on a later offer, not be held until ICE reports "failed".
+                    // Within the cap it still protects a legitimately pairing sub
+                    // from the +11s mid-pairing teardown.
+                    const bool icePairing =
+                        (ice == "checking" || ice == "connected")
+                        && ageMs >= 0 && ageMs < kScreenSubIceProgressGraceMs;
+                    if (icePairing || (ageMs >= 0 && ageMs < kScreenSubStartupGraceMs)) {
+                        qInfo() << "CallManager: screen re-offer from" << from.left(20)
+                                << "— sub still coming up (ice=" << ice << "age=" << ageMs
+                                << "ms, no frame yet) — re-PLI + ignore (anti-thrash)";
+                        if (auto *s = m_screenSubscribers.value(from)) s->requestKeyframe();
+                        return;
+                    }
                 }
             }
             // A re-share (stop → share again) sends a fresh offer for a
@@ -623,6 +654,7 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
                 m_screenSubStallTicks.remove(from);   // frame-liveness state
                 m_screenSubBuiltMs.remove(from);      // startup-grace stamp (re-stamped on start)
                 m_screenSubIceState.remove(from);     // ICE-progress (re-set on start)
+                m_screenSubCompletedMs.remove(from);  // keyframe-budget stamp (re-set on completed)
                 // 0.53.1 — do NOT clear m_pendingScreenSubCandidates here: the
                 // bundled candidates for the NEW sid arrived just before this re-offer
                 // and the screen-offer handler must flush them into the rebuilt sub
@@ -696,10 +728,29 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
                 // genuinely stuck sub stamps "checking" once and still ages out of the
                 // grace ~8s later (the edge fires once, so no live re-stamp loop).
                 // Once a frame decodes (frameMark>0) this branch no longer applies.
-                if ((state == "checking" || state == "connected" || state == "completed")
+                // 0.57.22 — "completed" NO LONGER re-stamps: completion is the END of
+                // pairing, not progress toward it. Re-stamping there restarted the
+                // 20s grace at the exact moment the sub became either live or
+                // keyframe-starved — shielding the starved case from the +5/+11s
+                // re-asserts that would rebuild it (field 14:57: completed at +2s, no
+                // frame ever, re-offer at +7.5s-since-completion ignored → stranded).
+                if ((state == "checking" || state == "connected")
                     && m_screenSubscribers.contains(from)
                     && m_screenSubFrameMark.value(from, 0) == 0)
                     m_screenSubBuiltMs[from] = QDateTime::currentMSecsSinceEpoch();
+                // 0.57.22 — stamp ICE completion ONCE per sub build: switches the
+                // offer-handler guard from the generous pairing hold to the short
+                // kScreenSubKeyframeBudgetMs keyframe budget. Lockstep-cleared with
+                // the other per-sub maps (rebuild/failed-start/remove/leave). Also
+                // re-PLI right here: the transport is provably up NOW, while the
+                // build-time PLIs (+0.5/1.5/3s) may have fired pre-DTLS and been lost.
+                if (state == "completed"
+                    && m_screenSubscribers.contains(from)
+                    && !m_screenSubCompletedMs.contains(from)) {
+                    m_screenSubCompletedMs[from] = QDateTime::currentMSecsSinceEpoch();
+                    if (m_screenSubFrameMark.value(from, 0) == 0)
+                        sub->requestKeyframe();
+                }
                 // Screen-subscriber ICE/DTLS-failure auto-retry (backlog: a
                 // cross-region screen share landing on "failed" — or a peer's
                 // share never appearing at all — previously just sat there
@@ -726,6 +777,7 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
                         m_screenSubStallTicks.remove(from);
                         m_screenSubBuiltMs.remove(from);
                         m_screenSubIceState.remove(from);
+                        m_screenSubCompletedMs.remove(from);
                     }
                     QTimer::singleShot(1500, this, [this, from]() {
                         if (m_state != Active && m_state != Connecting) return;
@@ -751,6 +803,7 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
                 m_screenSubStallTicks.remove(from);
                 m_screenSubBuiltMs.remove(from);
                 m_screenSubIceState.remove(from);
+                m_screenSubCompletedMs.remove(from);
                 m_pendingScreenSubCandidates.remove(from);
                 // A re-offer's stale subscriber was already torn down above; if the
                 // rebuild fails, leaving the participant flagged screen-sharing with
@@ -765,6 +818,7 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
             }
             qDebug() << "CallManager: screen subscriber started, setting offer...";
             m_screenSubBuiltMs[from] = QDateTime::currentMSecsSinceEpoch();  // 0.52.15 startup-grace baseline
+            m_screenSubCompletedMs.remove(from);  // 0.57.22 — fresh build: keyframe budget re-arms on ITS completed edge
             m_remoteScreenProvider = sub->videoProvider();
             emit remoteScreenProviderChanged();
             if (auto *p = ensureParticipant(from, {})) {
@@ -2117,6 +2171,19 @@ void CallManager::onIncomingCallDetected(const QString &callerName, const QStrin
         return;
     }
 
+    // Cooldown: a call we just HUNG UP from. Leaving the call churns the room's
+    // participant list; the peer's inCall flag can transiently flip back to 7
+    // (0->7 edge) mid-teardown, which reads as "a peer joined the call" and
+    // rings us on the token we just left. Suppress for a short window (the flap
+    // settles in <1s; use 5s for margin). Field: phantom incoming from the peer
+    // ~2s after we hung up.
+    if (token == m_lastHangupToken
+        && m_lastHangupTime.isValid()
+        && m_lastHangupTime.msecsTo(QDateTime::currentDateTime()) < 5000) {
+        qDebug() << "CallManager: ignoring phantom incoming re-ring right after hangUp" << token;
+        return;
+    }
+
     qDebug() << "CallManager: incoming call detected:" << callerName << "token=" << token;
     m_callToken = token;
     m_remotePeerName = callerName;
@@ -2321,6 +2388,15 @@ void CallManager::declineCall()
 void CallManager::hangUp() {
     if (m_state == Idle) return;
     qDebug() << "CallManager: hangUp from state" << m_state;
+    // Stamp the token we're leaving so a teardown-flap can't immediately re-ring
+    // us as a phantom incoming call. When we hang up, the room's participant list
+    // churns: the peer's inCall flag can flip 7->0->7->0 within ~150ms as both
+    // sides leave, and the transient 0->7 edge looks exactly like "a peer just
+    // joined the call = incoming ring". Suppress re-detection on this token for a
+    // short window (see onIncomingCallDetected). Field: Kalin↔Ilko, a phantom
+    // incoming call from Ilko fired ~2s after Kalin hung up.
+    m_lastHangupToken = m_callToken;
+    m_lastHangupTime  = QDateTime::currentDateTime();
     // Tell the peer this is a DELIBERATE hangup so a 1:1 MCU call ends on their
     // side immediately, instead of waiting out the 28s peer-grace "Reconnecting"
     // hold (which exists to survive a transient drop and can't distinguish the
@@ -2458,6 +2534,7 @@ void CallManager::removeScreenSubscriber(const QString &sessionId)
     m_screenSubStallTicks.remove(sessionId);   // frame-liveness state
     m_screenSubBuiltMs.remove(sessionId);      // startup-grace stamp
     m_screenSubIceState.remove(sessionId);     // ICE-progress state
+    m_screenSubCompletedMs.remove(sessionId);  // keyframe-budget stamp
     m_screenSubFailRetries.remove(sessionId);  // ICE-failed retry budget
     m_pendingScreenSubCandidates.remove(sessionId);  // queued early candidates
     if (!sub)
@@ -4213,6 +4290,7 @@ void CallManager::teardown(const QString &reason)
     m_screenSubStallTicks.clear();
     m_screenSubBuiltMs.clear();
     m_screenSubIceState.clear();
+    m_screenSubCompletedMs.clear();
     m_screenSubFailRetries.clear();
     m_pendingScreenSubCandidates.clear();
     m_softwareEncoderNotified = false;   // re-notify on the next call if still software
