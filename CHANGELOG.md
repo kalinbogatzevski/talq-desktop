@@ -1,5 +1,40 @@
 # Changelog
 
+## v0.57.22 "July Morning" -- BETA (2026-07-07)
+
+### Fixed
+* **More reliable call connections when several regional relay servers are
+  available.** With the full regional server set configured, the client could
+  silently drop the closest relay from its connection list, occasionally
+  causing a call to fail to connect. The client now always keeps the nearest
+  relays, so calls connect more dependably — especially across regions.
+
+## v0.57.21 "July Morning" -- BETA (2026-07-07)
+
+### Fixed
+* **Muting your microphone now fully cuts your audio on every audio device.**
+  On some setups the mute button changed the on-screen indicator but the
+  microphone kept transmitting — peers could still hear you. Mute is now
+  enforced locally at the audio source, so nothing audible leaves your
+  machine.
+* Hardened the call-vs-chat window independence from the previous release:
+  fixed several edge cases (a reconnect blip mid-call, answering a call from
+  a different conversation, a quick call-hang-up-then-redial) that could
+  still disrupt a call or leave a conversation's live updates stalled.
+* Fixed a potential crash during signaling connect/reconnect when a DNS
+  lookup for a server was unusually slow.
+* Update download integrity checks are more robust against a background
+  update check landing mid-download.
+
+### Changed
+* The active-speaker highlight now uses a distinct amber frame, so it is no
+  longer easy to confuse with the green border that marks a shared screen.
+* The microphone level meter stays green while you speak (it briefly turned
+  amber before) — the "who's talking" cue now lives only on the speaker
+  frame, and the meter simply shows your level.
+* A picture-in-picture call window now docks to the display it is already on
+  instead of jumping to the primary monitor.
+
 ## v0.57.20 "July Morning" -- BETA (2026-07-03)
 
 ### Fixed

@@ -86,6 +86,18 @@ private:
     Manifest m_lastManifest;
     bool m_hasPendingUpdate = false;
     QString m_downloadPath;
+    // Digest snapshotted at startDownload() time, verified against in
+    // onDownloadFinished. A ~75 MB install download takes minutes on a field
+    // link; a periodic re-check landing mid-download can overwrite
+    // m_lastManifest with a NEWER release's digest, which would then fail the
+    // OLD (perfectly good) download's verification. Verify against what we
+    // actually started downloading, not the live manifest.
+    QString m_downloadExpectedSha256;
+    // Monotonic id of the current check cycle. Bumped on every checkNow(); the
+    // async companion-checksum continuation captures the id at fetch time and
+    // no-ops if a newer cycle has since started, so a slow checksum reply
+    // can't resurrect a stale/yanked release over a fresher one.
+    quint64 m_checkGen = 0;
     // True while the in-flight fetch is the beta-channel attempt; cleared
     // before a stable fallback fetch so a missing/!valid beta manifest
     // transparently degrades to the stable channel (no infinite retry).

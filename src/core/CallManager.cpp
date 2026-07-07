@@ -1545,9 +1545,17 @@ void CallManager::startCall(const QString &token, bool withVideo)
 
 void CallManager::ensureSignalingRoomJoined(std::function<void()> next)
 {
-    // Already in the right signaling room and authenticated → proceed.
+    // Already CONFIRMED in the right signaling room → proceed. Gate on
+    // roomJoinAcked(), not currentRoom()==token: currentRoom is set
+    // optimistically the instant joinRoom is called (e.g. MainWindow's
+    // deferred-room rejoin at call end), so a fast path keyed on it would fire
+    // joinCallOnServer while the participants/active POST + WS "room" ack are
+    // still in flight — the call would then join with no HPB room membership
+    // and receive no participant/offer events (silent call). roomJoinAcked()
+    // is true only after the "room" response actually landed.
     if (m_signaling->isConnected()
         && m_signaling->currentRoom() == m_callToken
+        && m_signaling->roomJoinAcked()
         && !m_signaling->sessionId().isEmpty()) {
         next();
         return;
@@ -2499,8 +2507,19 @@ void CallManager::dispatchScreenSendoffer()
     // working). m_participants is the full room roster and doesn't depend
     // on our own subscribe state being in sync.
     QSet<QString> peers(m_subscribePipelines.keyBegin(), m_subscribePipelines.keyEnd());
-    for (auto it = m_participants.constBegin(); it != m_participants.constEnd(); ++it)
+    for (auto it = m_participants.constBegin(); it != m_participants.constEnd(); ++it) {
+        // Skip a participant we already know is dead: onParticipantLeftCall
+        // normally prunes m_participants, but if that leave event was lost in
+        // the same signaling hiccup this widening exists to survive, a stale
+        // (Failed) session can linger. A participant with a LIVE subscribe
+        // pipeline is in-call by construction and always included above; the
+        // roster additions here are the peers we haven't subscribed yet, so
+        // only exclude the clearly-dead ones rather than re-target a ghost.
+        if (const auto *p = it.value(); p && p->connState() == CallParticipant::Failed
+            && !m_subscribePipelines.contains(it.key()))
+            continue;
         peers.insert(it.key());
+    }
     for (const QString &peerId : std::as_const(peers)) {
         QJsonObject data;
         data["type"] = QString("sendoffer");

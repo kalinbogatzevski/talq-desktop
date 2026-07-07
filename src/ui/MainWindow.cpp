@@ -1379,20 +1379,22 @@ void MainWindow::buildChatPage()
         if (m_callManager->state() != CallManager::Idle
             || m_callManager->isScreenSharing())
             m_lastCallActiveMs = QDateTime::currentMSecsSinceEpoch();
-        // Call over — the signaling session is free to leave the call's room.
-        // Join the conversation the user navigated to DURING the call (its
-        // signaling join was deferred by the call guard in
-        // onConversationSelected), restoring live push hints for it.
+        // Call over — the signaling session was pinned to the call's room for
+        // the call's duration. Re-point it at whatever conversation the user
+        // is actually viewing now, restoring its live push hints (typing,
+        // instant refresh, active-viewer marker). Keying on m_activeConvToken
+        // vs the signaling room covers BOTH ways the two can diverge: the user
+        // navigated to another conversation DURING the call (guard in
+        // onConversationSelected skipped the join), AND answering/placing a
+        // call while viewing a different conversation (which moved signaling to
+        // the call room with no navigation to defer). Idempotent no-op when
+        // they already match (e.g. the user is viewing the call's own room).
         if (m_callManager->state() == CallManager::Idle
-            && !m_signalingRoomDeferredByCall.isEmpty()) {
-            const QString deferred = m_signalingRoomDeferredByCall;
-            m_signalingRoomDeferredByCall.clear();
-            // Only if the user is STILL viewing that conversation — they may
-            // have navigated back to the call's own conversation since.
-            if (deferred == m_activeConvToken) {
-                qInfo() << "MainWindow: call ended — joining deferred signaling room" << deferred;
-                m_signaling->joinRoom(deferred);
-            }
+            && !m_activeConvToken.isEmpty()
+            && m_activeConvToken != m_signaling->currentRoom()) {
+            qInfo() << "MainWindow: call ended — restoring signaling room to viewed conversation"
+                    << m_activeConvToken;
+            m_signaling->joinRoom(m_activeConvToken);
         }
     });
     connect(m_callManager, &CallManager::stateChanged,
@@ -1912,13 +1914,18 @@ void MainWindow::onConversationSelected(const QString &token, const QString &nam
     // chat history still loads via REST; only this room's live push hints
     // (typing, instant refresh) are deferred. The deferred room is joined
     // when the call ends (see the stateChanged handler in the constructor).
-    if (m_callManager->state() != CallManager::Idle
-        && token != m_callManager->callToken()) {
-        m_signalingRoomDeferredByCall = token;
-        qInfo() << "MainWindow: call in progress — deferring signaling room switch to"
-                << token << "(signaling stays in" << m_callManager->callToken() << ")";
+    if (m_callManager->state() != CallManager::Idle) {
+        // A call is active — the signaling session stays pinned to the call
+        // room, PERIOD. Never joinRoom here, not even for the call's OWN
+        // conversation: we are already in that room, and a re-join mints a
+        // fresh Nextcloud session that retires the in-call one (reachable even
+        // for the call's own room during a WS reconnect blip, when the
+        // client-side same-room guard is bypassed because m_authenticated is
+        // momentarily false). Nothing to remember: the call-end handler
+        // re-points signaling at whatever m_activeConvToken is then.
+        qInfo() << "MainWindow: call in progress — signaling stays pinned to"
+                << m_callManager->callToken() << "(viewing" << token << ")";
     } else {
-        m_signalingRoomDeferredByCall.clear();
         m_signaling->joinRoom(token);
     }
     m_threads->setConversationType(convType);

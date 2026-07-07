@@ -224,6 +224,7 @@ private:
     GstElement *m_pipeline = nullptr;
     GstElement *m_webrtcbin = nullptr;
     bool m_running = false;
+    bool m_muted = false;   // sender mute state; applied to pub-volume on (re)build
     bool m_remoteDescSet = false;
     QList<QPair<int, QString>> m_pendingCandidates;
     guint m_busWatchId = 0;

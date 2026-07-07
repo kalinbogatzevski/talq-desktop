@@ -918,10 +918,11 @@ void CallStage::paintTile(QPainter &p, const Tile &t, const PainterTheme &th, bo
         if (s > 0.02) {
             QRectF fillR(track.left(), track.top(),
                          track.width() * qBound(0.0, s, 1.0), track.height());
-            // Amber while speaking — matches the active-speaker frame (the
-            // teal accent was too close to the green share border).
-            QColor fc = cp->speaking() ? th.amber : th.online;
-            p.setBrush(fc);
+            // Mic level stays GREEN (a VU meter reads as "audio present/healthy").
+            // The "who is speaking" cue lives on the active-speaker FRAME (amber),
+            // not the meter — colouring the meter amber too was redundant and
+            // read as a warning. Frame = identity, meter = level.
+            p.setBrush(th.online);
             p.drawRoundedRect(fillR, 2.5, 2.5);
         }
     }
