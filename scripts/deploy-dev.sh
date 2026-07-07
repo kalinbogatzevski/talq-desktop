@@ -88,7 +88,7 @@ GST_PLUGINS=(
     coreelements typefindfunctions playback
     audioconvert audioresample audiomixer audioparsers opusparse autodetect audiotestsrc videotestsrc
     dtls nice opus rtp rtpmanager srtp
-    wasapi wasapi2 webrtc webrtcdsp app level
+    wasapi wasapi2 webrtc webrtcdsp app level volume
     vpx openh264 videoconvertscale videorate sctp jpeg
     winks mediafoundation winscreencap
     d3d11 nvcodec qsv x264

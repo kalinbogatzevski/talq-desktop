@@ -325,11 +325,6 @@ private:
     bool m_wasFullScreen = false;  // remembered separately because isMaximized() is false in fullscreen
     bool m_geometrySaveEnabled = false;
     QString m_activeConvToken;
-    // Conversation whose signaling-room join was deferred because a call was
-    // in progress at navigation time (the signaling session must stay pinned
-    // to the call's room — see the call guard in onConversationSelected).
-    // Joined when the call returns to Idle; cleared once consumed.
-    QString m_signalingRoomDeferredByCall;
     int m_activeThreadId = 0;
     QString m_activeThreadTitle;
     int m_activeThreadColor = 0;

@@ -58,8 +58,13 @@ bool PeerPipeline::start(const QString &stunServer, const QList<TurnServer> &tur
         }
     }
 
+    // libnice caps TURN servers at 8 per component (silently dropping extras).
+    // A 3-POP turn:/turns: pool exceeds that; cap to keep the nearest 8.
+    constexpr int kMaxTurnServers = 8;
+    int turnAdded = 0;
     for (const auto &turn : turnServers) {
         for (const auto &url : turn.urls) {
+            if (turnAdded >= kMaxTurnServers) break;
             QString gstUrl = url;
             gstUrl.remove(QRegularExpression("\\?transport=.*$"));
             if (gstUrl.startsWith("turn:") && !gstUrl.startsWith("turn://"))
@@ -75,7 +80,9 @@ bool PeerPipeline::start(const QString &stunServer, const QList<TurnServer> &tur
             qDebug() << "PeerPipeline: adding TURN server" << logUrl;
             gboolean ret = FALSE;
             g_signal_emit_by_name(m_webrtcbin, "add-turn-server", gstUrl.toUtf8().constData(), &ret);
+            ++turnAdded;
         }
+        if (turnAdded >= kMaxTurnServers) break;
     }
 
     // Audio capture — use audiotestsrc in test mode, else wasapisrc
@@ -111,15 +118,20 @@ bool PeerPipeline::start(const QString &stunServer, const QList<TurnServer> &tur
     GstElement *audioconvert = gst_element_factory_make("audioconvert", nullptr);
     GstElement *audioresample = gst_element_factory_make("audioresample", nullptr);
     GstElement *capsfilter = gst_element_factory_make("capsfilter", nullptr);
+    // Dedicated mute stage (same rationale as PublishPipeline's pub-volume):
+    // the raw source's "mute" is honoured only by wasapi2src, so mute must be
+    // enforced by a `volume` element to actually cut the mic on every backend.
+    GstElement *volume = gst_element_factory_make("volume", "peer-volume");
     GstElement *level = gst_element_factory_make("level", "peer-level");
     GstElement *opusenc = gst_element_factory_make("opusenc", nullptr);
     GstElement *rtpopuspay = gst_element_factory_make("rtpopuspay", "peer-rtpopuspay");
 
-    if (!audiosrc || !audioconvert || !audioresample || !capsfilter || !level || !opusenc || !rtpopuspay) {
+    if (!audiosrc || !audioconvert || !audioresample || !capsfilter || !volume || !level || !opusenc || !rtpopuspay) {
         emit error("Failed to create audio capture elements");
         cleanup();
         return false;
     }
+    g_object_set(volume, "mute", m_muted ? TRUE : FALSE, nullptr);
 
     // Force S16LE right after capture — prevents format negotiation failures
     GstCaps *srcCaps = gst_caps_from_string("audio/x-raw,format=S16LE");
@@ -180,18 +192,18 @@ bool PeerPipeline::start(const QString &stunServer, const QList<TurnServer> &tur
 
     if (webrtcdsp) {
         gst_bin_add_many(GST_BIN(m_pipeline), audiosrc, capsfilter, audioconvert, audioresample,
-                         webrtcdsp, level, opusenc, rtpopuspay, m_audioSsrcFilter, m_webrtcbin, nullptr);
+                         volume, webrtcdsp, level, opusenc, rtpopuspay, m_audioSsrcFilter, m_webrtcbin, nullptr);
         if (!gst_element_link_many(audiosrc, capsfilter, audioconvert, audioresample,
-                                   webrtcdsp, level, opusenc, rtpopuspay, m_audioSsrcFilter, nullptr)) {
+                                   volume, webrtcdsp, level, opusenc, rtpopuspay, m_audioSsrcFilter, nullptr)) {
             emit error("Failed to link audio capture chain");
             cleanup();
             return false;
         }
     } else {
         gst_bin_add_many(GST_BIN(m_pipeline), audiosrc, capsfilter, audioconvert, audioresample,
-                         level, opusenc, rtpopuspay, m_audioSsrcFilter, m_webrtcbin, nullptr);
+                         volume, level, opusenc, rtpopuspay, m_audioSsrcFilter, m_webrtcbin, nullptr);
         if (!gst_element_link_many(audiosrc, capsfilter, audioconvert, audioresample,
-                                   level, opusenc, rtpopuspay, m_audioSsrcFilter, nullptr)) {
+                                   volume, level, opusenc, rtpopuspay, m_audioSsrcFilter, nullptr)) {
             emit error("Failed to link audio capture chain");
             cleanup();
             return false;
@@ -356,14 +368,20 @@ void PeerPipeline::addIceCandidate(const QString &candidate, int sdpMLineIndex, 
 
 void PeerPipeline::setMuted(bool muted)
 {
+    m_muted = muted;   // preserved across a mid-call pipeline rebuild
     if (!m_pipeline) return;
-    GstElement *src = gst_bin_get_by_name(GST_BIN(m_pipeline), "peer-audiosrc");
-    if (!src) return;
-    if (g_object_class_find_property(G_OBJECT_GET_CLASS(src), "mute"))
-        g_object_set(src, "mute", muted, nullptr);
-    else
-        qDebug() << "PeerPipeline: audio source does not support mute property";
-    gst_object_unref(src);
+    // Mute at the dedicated peer-volume stage (always honours mute), plus the
+    // source when it supports it. See PublishPipeline::setMuted for why the
+    // raw-source mute alone was insufficient (wasapisrc/autoaudiosrc ignore it).
+    if (GstElement *vol = gst_bin_get_by_name(GST_BIN(m_pipeline), "peer-volume")) {
+        g_object_set(vol, "mute", muted ? TRUE : FALSE, nullptr);
+        gst_object_unref(vol);
+    }
+    if (GstElement *src = gst_bin_get_by_name(GST_BIN(m_pipeline), "peer-audiosrc")) {
+        if (g_object_class_find_property(G_OBJECT_GET_CLASS(src), "mute"))
+            g_object_set(src, "mute", muted ? TRUE : FALSE, nullptr);
+        gst_object_unref(src);
+    }
 }
 
 void PeerPipeline::enableCamera(int deviceIndex, bool hd1080,

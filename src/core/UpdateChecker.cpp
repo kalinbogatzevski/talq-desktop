@@ -75,6 +75,7 @@ void UpdateChecker::setBetaChannelEnabled(bool on)
 void UpdateChecker::checkNow()
 {
     if (!TalQUpdates::kEnabled) return;   // OSS build: no 123NET update endpoint
+    ++m_checkGen;   // supersede any in-flight async checksum continuation
     m_betaAttempt = betaChannelEnabled();
     fetchManifest();
 }
@@ -271,12 +272,22 @@ void UpdateChecker::onManifestFetched(QNetworkReply *reply)
 
 void UpdateChecker::fetchChecksumThenFinalize(Manifest m, const QString &checksumUrl)
 {
+    const quint64 gen = m_checkGen;   // snapshot: a newer checkNow() supersedes us
     QNetworkRequest req{QUrl(checksumUrl)};
     req.setRawHeader("User-Agent", "TalQ-UpdateChecker");
     req.setTransferTimeout(15 * 1000);
     QNetworkReply *reply = m_nam->get(req);
-    connect(reply, &QNetworkReply::finished, this, [this, reply, m]() mutable {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, m, gen]() mutable {
         reply->deleteLater();
+        if (gen != m_checkGen) {
+            // A newer check cycle started while this checksum fetch was in
+            // flight — its result is authoritative. Dropping this stale
+            // continuation prevents it from re-emitting updateAvailable and
+            // reverting m_lastManifest to an older (possibly yanked) release.
+            qInfo() << "UpdateChecker: stale checksum reply (gen" << gen
+                    << "vs" << m_checkGen << ") — ignoring";
+            return;
+        }
         if (reply->error() == QNetworkReply::NoError) {
             const QString hex = QString::fromLatin1(reply->readAll().trimmed()).toLower();
             // 64 lowercase hex chars, nothing else — a malformed/unexpected
@@ -348,6 +359,10 @@ void UpdateChecker::startDownload()
     if (assetName.isEmpty())
         assetName = QStringLiteral("TalQ-Setup.exe");
     m_downloadPath = tmp + QStringLiteral("/") + assetName;
+    // Snapshot the digest we're downloading AGAINST now: a poll landing
+    // mid-download can overwrite m_lastManifest with a newer release's sha256,
+    // and verifying this download against that would reject a good file.
+    m_downloadExpectedSha256 = m_lastManifest.assetSha256;
 
     // Clean any stale TalQ installers in temp from prior interrupted
     // downloads. Without this, an aborted run could leave a half-written
@@ -436,8 +451,11 @@ void UpdateChecker::onDownloadFinished(QNetworkReply *reply, QFile *out)
         return;
     }
 
-    if (!m_lastManifest.assetSha256.isEmpty()) {
-        if (!verifySha256(path, m_lastManifest.assetSha256)) {
+    // Verify against the digest snapshotted at download START, not the live
+    // m_lastManifest (a mid-download re-check can have replaced it with a
+    // different release's sha256 — see m_downloadExpectedSha256).
+    if (!m_downloadExpectedSha256.isEmpty()) {
+        if (!verifySha256(path, m_downloadExpectedSha256)) {
             QFile::remove(path);
             emit downloadFailed(QStringLiteral("Checksum verification failed"));
             return;

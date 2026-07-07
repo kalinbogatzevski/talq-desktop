@@ -56,6 +56,11 @@ public:
     // WebRTC call signaling
     QString sessionId() const { return m_sessionId; }
     QString currentRoom() const { return m_currentRoom; }
+    // True only when the HPB has confirmed membership of currentRoom() (the WS
+    // "room" ack arrived). Prefer this over `currentRoom() == token` when
+    // deciding whether it is safe to proceed as if joined — currentRoom() is
+    // set optimistically before the join handshake completes.
+    bool roomJoinAcked() const { return m_roomJoinAcked; }
     // The signaling/HPB server URL this client is connected to (for telemetry).
     QString signalingUrl() const { return m_signalingUrl; }
     // Measured RTT (ms) to the selected HPB from the nearest-server probe, or -1
@@ -259,6 +264,14 @@ private:
     // very first cold hello, which must not trigger publisher rebuilds).
     bool    m_sessionEstablished = false;
     QString m_currentRoom;
+    // True only once the HPB has ACKed the current room (the WS "room" response
+    // arrived), false while a join is in flight or after a disconnect.
+    // m_currentRoom alone is set optimistically BEFORE the async
+    // participants/active POST + WS ack, so it must NOT be used to decide "we
+    // are safely in this room" — a transient REST failure or a mid-flight join
+    // would otherwise read as joined (dead live-push, a call that proceeds
+    // before HPB room membership exists). This is the authoritative flag.
+    bool    m_roomJoinAcked = false;
     QString m_typingUser;
     QString m_typingRoom;  // room token where typing was detected
     bool m_authenticated = false;
