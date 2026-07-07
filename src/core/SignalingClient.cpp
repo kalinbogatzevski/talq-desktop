@@ -254,8 +254,16 @@ void SignalingClient::selectNearestHpbAndConnect()
     struct Probe { QString url, host; QElapsedTimer t; int rtt = -1; QTcpSocket *sock = nullptr; };
     auto probes = std::make_shared<std::vector<Probe>>();
     for (const QString &u : cands) { Probe p; p.url = u; p.host = hpbHostOf(u); probes->push_back(p); }
-    for (Probe &pr : *probes) {                            // vector fixed -> &pr stable
-        Probe *prp = &pr;
+    // Shared "selection已fired" latch. DNS lookups are async and can complete
+    // AFTER the 1200 ms selection singleShot has already run and swept the
+    // probes — a late callback must not then create a socket on a probe the
+    // sweep already finalized (it would leak, and pre-fix it dereferenced a
+    // freed vector: use-after-free crash on a slow/cold resolver, the exact
+    // condition this DNS-first change targets). The callbacks capture the
+    // `probes` shared_ptr (keeps the vector alive as long as any lookup is
+    // outstanding) AND this latch (so they no-op once selection is done).
+    auto selectionDone = std::make_shared<bool>(false);
+    for (size_t i = 0; i < probes->size(); ++i) {
         // Resolve DNS BEFORE starting the timer. connectToHost(QString) would
         // do the lookup itself and fold its latency into the measured "RTT" --
         // a cold/slow resolver hit for one candidate can then dwarf the true
@@ -264,18 +272,23 @@ void SignalingClient::selectNearestHpbAndConnect()
         // ~90ms, but the DNS-inclusive probe picked the FARTHER one at
         // "302ms"). Timing only the connectToHost(QHostAddress) call isolates
         // the actual TCP handshake RTT this probe is supposed to measure.
-        QHostInfo::lookupHost(prp->host, this, [this, prp](const QHostInfo &info) {
+        const QString host = (*probes)[i].host;
+        QHostInfo::lookupHost(host, this, [this, probes, selectionDone, i](const QHostInfo &info) {
+            if (*selectionDone) return;   // sweep already ran — do not touch probes
             if (info.error() != QHostInfo::NoError || info.addresses().isEmpty()) return;
-            prp->sock = new QTcpSocket(this);
-            prp->t.start();
+            Probe &pr = (*probes)[i];     // vector kept alive by the captured shared_ptr
+            pr.sock = new QTcpSocket(this);
+            pr.t.start();
+            Probe *prp = &pr;
             QObject::connect(prp->sock, &QTcpSocket::connected, this, [prp]() {
                 if (prp->rtt < 0) prp->rtt = int(prp->t.elapsed());
                 prp->sock->abort();
             });
-            prp->sock->connectToHost(info.addresses().first(), 443);
+            pr.sock->connectToHost(info.addresses().first(), 443);
         });
     }
-    QTimer::singleShot(1200, this, [this, probes]() {
+    QTimer::singleShot(1200, this, [this, probes, selectionDone]() {
+        *selectionDone = true;   // any still-pending DNS callback now no-ops
         int best = std::numeric_limits<int>::max();
         QString bestUrl; int bestRtt = -1;
         for (Probe &pr : *probes) {
@@ -327,6 +340,7 @@ void SignalingClient::onDisconnected()
     m_keepAliveTimer.stop();
     bool wasAuth = m_authenticated;
     m_authenticated = false;
+    m_roomJoinAcked = false;   // room membership is void until re-acked post-reconnect
     m_sessionId.clear();
     // A1 — if a fast-resume attempt couldn't even establish the socket (e.g. a
     // stale cached signaling URL), it disconnects without ever authenticating.
@@ -458,6 +472,7 @@ void SignalingClient::onTextMessage(const QString &msg)
     }
     else if (type == "room") {
         qInfo() << "Signaling: joined room";
+        m_roomJoinAcked = true;   // authoritative: HPB confirmed room membership
         emit roomJoined();
     }
     else if (type == "message") {
@@ -814,12 +829,20 @@ void SignalingClient::joinRoom(const QString &token, bool force)
     // both sides collapsed to "Reconnecting". The reconnect path is the one
     // legitimate same-room re-join (fresh hello genuinely must re-enter the
     // room) — it passes force=true.
-    if (!force && token == m_currentRoom && m_authenticated && m_sessionEstablished) {
+    // Gate on m_roomJoinAcked, NOT m_currentRoom: the latter is set
+    // optimistically below (before the async POST + WS ack), so keying the
+    // no-op on it would latch a FAILED or still-in-flight join as "already
+    // joined" — a transient REST hiccup would then leave live-push dead with
+    // no retry, and a call could proceed before HPB room membership exists.
+    // m_roomJoinAcked is true only once the "room" WS response actually
+    // arrived (and false again after any disconnect), so this no-op fires
+    // strictly when we are genuinely, confirmed-in the room.
+    if (!force && token == m_currentRoom && m_authenticated && m_roomJoinAcked) {
         qInfo() << "Signaling: already in room" << token
                 << "— skipping redundant re-join (keeps the in-call session alive)";
         // Waiters (CallManager's call-start flow blocks on roomJoined with a
         // 15s timeout) must still be told the room is ready — being already
-        // in it IS the success case, not silence.
+        // confirmed-in it IS the success case, not silence.
         emit roomJoined();
         return;
     }
@@ -832,6 +855,7 @@ void SignalingClient::joinRoom(const QString &token, bool force)
     // must survive a reconnect, so only wipe it when the room actually changes.
     const bool roomChanged = (token != m_currentRoom);
     m_currentRoom = token;
+    m_roomJoinAcked = false;   // a join is now in flight; not acked until WS "room"
 
     // Clear state from previous room
     if (!m_typingUser.isEmpty()) {

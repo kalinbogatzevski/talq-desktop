@@ -188,8 +188,13 @@ bool ScreenSharePipeline::start(const QString &stunServer, const QList<TurnServe
         }
     }
 
+    // libnice caps TURN servers at 8 per component (silently dropping extras).
+    // A 3-POP turn:/turns: pool exceeds that; cap to keep the nearest 8.
+    constexpr int kMaxTurnServers = 8;
+    int turnAdded = 0;
     for (const auto &turn : turnServers) {
         for (const auto &url : turn.urls) {
+            if (turnAdded >= kMaxTurnServers) break;
             QString gstUrl = url;
             gstUrl.remove(QRegularExpression("\\?transport=.*$"));
             if (gstUrl.startsWith("turn:") && !gstUrl.startsWith("turn://"))
@@ -201,7 +206,9 @@ bool ScreenSharePipeline::start(const QString &stunServer, const QList<TurnServe
             gstUrl.replace("://", QString("://%1:%2@").arg(escapedUser, escapedCred));
             gboolean ret = FALSE;
             g_signal_emit_by_name(m_webrtcbin, "add-turn-server", gstUrl.toUtf8().constData(), &ret);
+            ++turnAdded;
         }
+        if (turnAdded >= kMaxTurnServers) break;
     }
 
     // Screen capture source. Two real Windows bugs the previous wiring hit:

@@ -235,8 +235,18 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         }
     }
 
+    // libnice caps TURN servers at 8 PER COMPONENT and silently drops any beyond
+    // that ("cannot have more than 8 turn servers per component"), which can leave
+    // the pipeline with a broken/partial relay set and ICE failing. With a 3-POP
+    // pool each offering turn:+turns: that's 6+ urls, and the ordering the backend
+    // sends isn't guaranteed nearest-first, so an over-8 list can drop the CLOSEST
+    // relay. Cap at 8 and keep the first 8 (the backend already sorts by proximity;
+    // the nearest-TURN probe further front-loads the closest POP).
+    constexpr int kMaxTurnServers = 8;
+    int turnAdded = 0;
     for (const auto &turn : turnServers) {
         for (const auto &url : turn.urls) {
+            if (turnAdded >= kMaxTurnServers) break;
             QString gstUrl = url;
             gstUrl.remove(QRegularExpression("\\?transport=.*$"));
             if (gstUrl.startsWith("turn:") && !gstUrl.startsWith("turn://"))
@@ -252,8 +262,13 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
             qDebug() << "PublishPipeline: adding TURN server" << logUrl;
             gboolean ret = FALSE;
             g_signal_emit_by_name(m_webrtcbin, "add-turn-server", gstUrl.toUtf8().constData(), &ret);
+            ++turnAdded;
         }
+        if (turnAdded >= kMaxTurnServers) break;
     }
+    if (turnAdded >= kMaxTurnServers)
+        qDebug() << "PublishPipeline: TURN list capped at" << kMaxTurnServers
+                 << "(libnice per-component limit)";
 
     // Audio capture — wasapi2src (best), wasapisrc (fallback), autoaudiosrc (last resort)
     // DEBUG: set TALQ_TEST_AUDIO=1 env var to use audiotestsrc (440Hz tone) for testing
@@ -310,6 +325,14 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
 
     GstElement *audioconvert = gst_element_factory_make("audioconvert", nullptr);
     GstElement *audioresample = gst_element_factory_make("audioresample", nullptr);
+    // Dedicated mute stage. setMuted() used to toggle the SOURCE's "mute"
+    // property, but only wasapi2src exposes one — the wasapisrc and
+    // autoaudiosrc fallbacks silently ignored it, so on those boxes the mic
+    // kept transmitting while the UI showed muted (field 2026-07-06, Kalin↔Ilko:
+    // "mic didn't mute though I saw him muted"). A `volume` element ALWAYS
+    // supports "mute" and sits after audioconvert (uniform format), so mute is
+    // enforced regardless of which source backend was selected.
+    GstElement *volume = gst_element_factory_make("volume", "pub-volume");
     GstElement *level = gst_element_factory_make("level", "pub-level");
     GstElement *opusenc = gst_element_factory_make("opusenc", nullptr);
     GstElement *rtpopuspay = gst_element_factory_make("rtpopuspay", "pub-rtpopuspay");
@@ -332,11 +355,14 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         gst_util_set_object_arg(G_OBJECT(opusenc), "bitrate-type", "cbr");
     }
 
-    if (!audiosrc || !audioconvert || !audioresample || !level || !opusenc || !rtpopuspay) {
+    if (!audiosrc || !audioconvert || !audioresample || !volume || !level || !opusenc || !rtpopuspay) {
         emit error("Failed to create audio capture elements");
         cleanup();
         return false;
     }
+    // Apply the current mute state at build time (a rebuild mid-call — e.g.
+    // device switch — must not silently un-mute).
+    g_object_set(volume, "mute", m_muted ? TRUE : FALSE, nullptr);
 
     // Configure level element: report every 100ms
     g_object_set(level, "post-messages", TRUE, "interval", (guint64)100000000, nullptr);
@@ -405,29 +431,31 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         }
     }
 
+    // pub-volume sits right after audioconvert in every variant so mute is
+    // enforced at the local source regardless of DSP/AEC configuration.
     if (webrtcdsp && aecCaps) {
-        // AEC chain: …audioresample → aecCaps(48k/S16LE/mono) → webrtcdsp → level…
-        gst_bin_add_many(GST_BIN(m_pipeline), audiosrc, audioconvert, audioresample,
+        // AEC chain: …audioconvert → volume → audioresample → aecCaps → webrtcdsp → level…
+        gst_bin_add_many(GST_BIN(m_pipeline), audiosrc, audioconvert, volume, audioresample,
                          aecCaps, webrtcdsp, level, opusenc, rtpopuspay, m_webrtcbin, nullptr);
-        if (!gst_element_link_many(audiosrc, audioconvert, audioresample,
+        if (!gst_element_link_many(audiosrc, audioconvert, volume, audioresample,
                                    aecCaps, webrtcdsp, level, opusenc, rtpopuspay, nullptr)) {
             emit error("Failed to link audio capture chain");
             cleanup();
             return false;
         }
     } else if (webrtcdsp) {
-        gst_bin_add_many(GST_BIN(m_pipeline), audiosrc, audioconvert, audioresample,
+        gst_bin_add_many(GST_BIN(m_pipeline), audiosrc, audioconvert, volume, audioresample,
                          webrtcdsp, level, opusenc, rtpopuspay, m_webrtcbin, nullptr);
-        if (!gst_element_link_many(audiosrc, audioconvert, audioresample,
+        if (!gst_element_link_many(audiosrc, audioconvert, volume, audioresample,
                                    webrtcdsp, level, opusenc, rtpopuspay, nullptr)) {
             emit error("Failed to link audio capture chain");
             cleanup();
             return false;
         }
     } else {
-        gst_bin_add_many(GST_BIN(m_pipeline), audiosrc, audioconvert, audioresample,
+        gst_bin_add_many(GST_BIN(m_pipeline), audiosrc, audioconvert, volume, audioresample,
                          level, opusenc, rtpopuspay, m_webrtcbin, nullptr);
-        if (!gst_element_link_many(audiosrc, audioconvert, audioresample,
+        if (!gst_element_link_many(audiosrc, audioconvert, volume, audioresample,
                                    level, opusenc, rtpopuspay, nullptr)) {
             emit error("Failed to link audio capture chain");
             cleanup();
@@ -1278,14 +1306,26 @@ void PublishPipeline::addIceCandidate(const QString &candidate, int sdpMLineInde
 
 void PublishPipeline::setMuted(bool muted)
 {
+    m_muted = muted;   // remembered so a mid-call pipeline rebuild preserves it
     if (!m_pipeline) return;
-    GstElement *src = gst_bin_get_by_name(GST_BIN(m_pipeline), "pub-audiosrc");
-    if (!src) return;
-    if (g_object_class_find_property(G_OBJECT_GET_CLASS(src), "mute"))
-        g_object_set(src, "mute", muted, nullptr);
-    else
-        qDebug() << "PublishPipeline: audio source does not support mute property";
-    gst_object_unref(src);
+    // Mute at the dedicated pub-volume stage (see the audio chain build): a
+    // `volume` element always honours "mute", unlike the raw source whose
+    // wasapisrc/autoaudiosrc fallbacks silently ignore it and kept the mic
+    // live. Muting here outputs digital silence into the encoder, so peers
+    // receive no audible audio at all — the mic is cut locally, at the source.
+    GstElement *vol = gst_bin_get_by_name(GST_BIN(m_pipeline), "pub-volume");
+    if (vol) {
+        g_object_set(vol, "mute", muted ? TRUE : FALSE, nullptr);
+        gst_object_unref(vol);
+    }
+    // Belt-and-suspenders: also mute the source itself when it supports it
+    // (wasapi2src does) so capture stops at the device too, not just the
+    // graph. Harmless no-op on sources without the property.
+    if (GstElement *src = gst_bin_get_by_name(GST_BIN(m_pipeline), "pub-audiosrc")) {
+        if (g_object_class_find_property(G_OBJECT_GET_CLASS(src), "mute"))
+            g_object_set(src, "mute", muted ? TRUE : FALSE, nullptr);
+        gst_object_unref(src);
+    }
 }
 
 bool PublishPipeline::buildCameraChain(int deviceIndex, bool hd1080)
