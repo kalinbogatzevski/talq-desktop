@@ -592,6 +592,11 @@ private:
     // our own failed outgoing into. See joinCallOnServer / onIncomingCallDetected.
     QString m_lastOutgoingToken;
     QDateTime m_lastOutgoingTime;
+    // The token of a call we just HUNG UP from. Suppresses the phantom incoming
+    // re-ring caused by the peer's inCall flag flapping back to 7 during the
+    // room-participant churn of teardown. See hangUp / onIncomingCallDetected.
+    QString m_lastHangupToken;
+    QDateTime m_lastHangupTime;
     int m_callJoinAttempts = 0;
     static constexpr int kMaxCallJoinAttempts = 2;   // 2 quick retries, then inform
     QDateTime m_incomingTime;  // when incoming call was detected
@@ -699,12 +704,25 @@ private:
     // rebuild regardless of wall-clock; this map drives that check. Lockstep with the
     // maps above (cleared everywhere they are).
     QHash<QString,QString> m_screenSubIceState;
-    // Upper bound on the iceProgressing rebuild-protection (must exceed the publisher's
+    // Upper bound on the icePairing rebuild-protection (must exceed the publisher's
     // +11s reap-race horizon, measured from the last ICE-progress re-stamp). A sub
     // genuinely WEDGED in "checking" (e.g. a lost unshareScreen with no
     // removeScreenSubscriber) falls through to rebuild after this instead of being held
     // until ICE reports "failed". 20s > 11s + margin.
     static constexpr qint64 kScreenSubIceProgressGraceMs = 20000;
+    // 0.57.22 — post-ICE keyframe budget. Wall-clock (ms since epoch) when each
+    // screen sub FIRST reached ICE "completed" (stamped once in the iceStateChanged
+    // handler; lockstep-cleared with the maps above). "Completed" is the END of
+    // pairing, not progress toward it: from that moment the ONLY thing outstanding
+    // is the first keyframe (~1-2s normally — MCU auto-PLI + our build PLIs). A sub
+    // still frameMark==0 past this budget is keyframe-STARVED (reaped MCU slot /
+    // lost PLI), and the publisher's +5/+11s reap-race re-assert must be allowed to
+    // REBUILD it — holding it for the full ICE-progress grace ignored the very
+    // re-offers that would have fixed it (field: completed at +2s, no frame ever,
+    // +9s re-offer ignored, sharer gave up → viewer stranded). Within the budget we
+    // still re-PLI + ignore, so a keyframe merely in flight is never torn down.
+    QHash<QString,qint64> m_screenSubCompletedMs;
+    static constexpr qint64 kScreenSubKeyframeBudgetMs = 3500;
     // Screen-subscriber ICE-failed auto-retry (backlog): a cross-region screen
     // share whose subscriber ICE reaches "failed" previously just sat there —
     // nothing proactively asked for a fresh offer, since the publisher's own

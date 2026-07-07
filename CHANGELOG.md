@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.57.23 "July Morning" -- BETA (2026-07-07)
+
+### Fixed
+* **Sharing a window again after stopping now reliably shows up for the other
+  side.** A re-started screen share could occasionally get stuck never
+  appearing for the viewer (the receiver connected but the first frame never
+  arrived, and the recovery attempt was being suppressed). The viewer now
+  rebuilds a stalled share promptly instead of waiting it out.
+* **No more phantom incoming call right after you hang up.** Ending a call
+  could briefly make it look like the other person was starting a new call,
+  ringing you on the call you had just left. That momentary flicker is now
+  ignored.
+* **Steadier choice of the nearest server.** The app picks its signaling
+  server by measuring which regional server is closest; a single noisy
+  measurement could send you to a far-away region. It now averages several
+  measurements and only moves off your current server when another is clearly
+  closer — so you stay on the nearest one instead of hopping around.
+
 ## v0.57.22 "July Morning" -- BETA (2026-07-07)
 
 ### Fixed
