@@ -74,6 +74,10 @@ public:
     QString userId() const { return m_userId; }
     // Nextcloud user id behind a given HPB session id, "" if not yet known.
     QString userIdForSession(const QString &sid) const { return m_sessionToUserId.value(sid); }
+    // #bug4 — last-known call flags of a session (CALL_FLAG_WITH_AUDIO|VIDEO...).
+    // Entries persist while a session is inCall>0 and are pruned on its leave
+    // edge, so this is a safe "does this sibling claim media" probe.
+    int callFlagsForSession(const QString &sid) const { return m_participantCallFlags.value(sid, 0); }
     // 0.41.9-beta — mcuCodecHints: when true (default) the offer carries
     // audiocodec/videocodec fields that the HPB uses to provision a Janus
     // MCU publisher (the production path). For TRUE peer-to-peer relay we
