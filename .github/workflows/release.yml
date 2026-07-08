@@ -136,8 +136,29 @@ jobs:
           name: talq-setup
           path: dist/*Setup.exe
 
-      - name: Attach to release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/*Setup.exe
+      # ── Attach to the GitHub release — DISABLED (do not re-enable naively) ──
+      # This CI installer must NOT become the public release asset. It is
+      # UNSIGNED (SignPath is not live — see the commented block above) AND it
+      # is missing the GLib/GStreamer CORE runtime DLLs: this job only runs
+      # windeployqt6 (Qt) and copies plugins into gst-plugins/, it never copies
+      # libglib-2.0-0.dll / libgstreamer-1.0-0.dll / libgobject-2.0-0.dll etc.
+      # next to talq.exe, so the installed app fails to launch.
+      #
+      # The PUBLIC generic download is the SIGNED, complete ~75 MB installer
+      # built locally by scripts/build-release.sh and attached by hand
+      # (`gh release upload`). While this step was enabled, softprops/action-gh-
+      # release OVERWROTE that signed 75 MB asset with this broken ~55 MB build
+      # ~13 min after every release (tag push → this job) — so each beta shipped
+      # a broken generic installer to testers (v0.57.20/.22/.23/.24). Confirmed
+      # 2026-07-08.
+      #
+      # The `upload-artifact` step above still runs, so the workflow stays green
+      # (proves the public source builds) and the artifact is available for
+      # SignPath build-provenance. RE-ENABLE ONLY once (a) the SignPath signing
+      # step is active and (b) this job deploys the FULL runtime (mirror
+      # scripts/deploy-dev.sh), so the attached asset is signed AND complete.
+      # - name: Attach to release
+      #   if: startsWith(github.ref, 'refs/tags/')
+      #   uses: softprops/action-gh-release@v2
+      #   with:
+      #     files: dist/*Setup.exe
