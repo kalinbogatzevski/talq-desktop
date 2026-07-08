@@ -1,5 +1,6 @@
-# Build (and, once SignPath is set up, sign) the GENERIC TalQ Windows installer
-# from the PUBLIC source, so SignPath Foundation can verify build provenance.
+# Build the GENERIC TalQ Windows installer from the PUBLIC source. This job
+# exists purely to prove the public source still compiles end-to-end; its
+# output is NOT the published download (see the disabled attach step below).
 #
 # ⚠️ DRAFT-1 — expect a few iterations on real runs. The hard part is the
 # Qt + MinGW + GStreamer toolchain match; this uses ONE toolchain (MSYS2's
@@ -9,8 +10,9 @@
 # Scope: GENERIC build only (no 123NET config, no native/wgc — those are kept
 # out of the public repo). Window-share falls back to full-monitor without WGC.
 #
-# SignPath signing is the LAST step (commented until the Foundation account +
-# org/project slugs exist) — see CODE_SIGNING.md.
+# The published installer is built AND Authenticode-signed locally by
+# scripts/build-release.sh and attached to the release by hand; this CI job
+# never signs.
 
 name: release
 
@@ -116,19 +118,6 @@ jobs:
           # and you get "C:\Program Files(x86)" (no space) → ISCC.exe not found.
           & "${Env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" installer\talq-setup.iss
 
-      # ── SignPath signing (enable after the Foundation account is approved) ──
-      # - name: Sign with SignPath
-      #   uses: signpath/github-action-submit-signing-request@v1
-      #   with:
-      #     api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
-      #     organization-id: ${{ vars.SIGNPATH_ORG_ID }}
-      #     project-slug: talq-desktop
-      #     signing-policy-slug: release-signing
-      #     artifact-configuration-slug: installer
-      #     github-artifact-id: ${{ steps.upload.outputs.artifact-id }}
-      #     wait-for-completion: true
-      #     output-artifact-directory: signed/
-
       - name: Upload installer artifact
         id: upload
         uses: actions/upload-artifact@v4
@@ -138,7 +127,7 @@ jobs:
 
       # ── Attach to the GitHub release — DISABLED (do not re-enable naively) ──
       # This CI installer must NOT become the public release asset. It is
-      # UNSIGNED (SignPath is not live — see the commented block above) AND it
+      # UNSIGNED (this CI job does not sign) AND it
       # is missing the GLib/GStreamer CORE runtime DLLs: this job only runs
       # windeployqt6 (Qt) and copies plugins into gst-plugins/, it never copies
       # libglib-2.0-0.dll / libgstreamer-1.0-0.dll / libgobject-2.0-0.dll etc.
@@ -153,10 +142,10 @@ jobs:
       # 2026-07-08.
       #
       # The `upload-artifact` step above still runs, so the workflow stays green
-      # (proves the public source builds) and the artifact is available for
-      # SignPath build-provenance. RE-ENABLE ONLY once (a) the SignPath signing
-      # step is active and (b) this job deploys the FULL runtime (mirror
-      # scripts/deploy-dev.sh), so the attached asset is signed AND complete.
+      # (proves the public source builds). RE-ENABLE this attach step ONLY once
+      # (a) this job signs the artifact and (b) it deploys the FULL runtime
+      # (mirror scripts/deploy-dev.sh), so the attached asset is signed AND
+      # complete.
       # - name: Attach to release
       #   if: startsWith(github.ref, 'refs/tags/')
       #   uses: softprops/action-gh-release@v2

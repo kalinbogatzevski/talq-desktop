@@ -92,17 +92,14 @@ upgrades (it reuses your existing install location and shortcuts).
 
 ### Code signing
 
-The generic TalQ Windows builds (`TalQ-…-Setup.exe` and `talq.exe`) are
-code-signed through **SignPath Foundation**'s free code-signing program for
-open-source projects. Each signed binary is built — and its provenance
-verified against this public repository — by the
-[release CI workflow](.github/workflows/release.yml).
+The Windows builds (`TalQ-…-Setup.exe` and the `talq.exe` inside) are
+Authenticode-signed with 123 NET CPT (PTY) LTD's code-signing certificate.
 
-> This project uses free code signing provided by
-> [SignPath.io](https://signpath.io/) and a free code-signing certificate by
-> the [SignPath Foundation](https://signpath.org/).
-
-See [CODE_SIGNING.md](CODE_SIGNING.md) for the full signing policy.
+Every release is a brand-new binary, so Microsoft Defender's cloud reputation
+may still flag a fresh build on a standalone PC until it has been seen enough
+times. If that happens, allow it once (restore it from quarantine, or add a
+per-machine Defender exclusion for the install folder) — the signature confirms
+the publisher.
 
 ## Requirements
 
