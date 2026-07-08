@@ -1,5 +1,45 @@
 # Changelog
 
+## v0.58.0 "Blue Fiesta" (2026-07-08)
+
+First stable release since 0.56.1, rolling up the call-reliability work from
+the 0.57.x series. The headline is that calls now connect dependably in the
+situations that used to strand them.
+
+### Fixed
+* **Calls connect reliably in the situations that used to strand them.**
+    * Calling someone signed in on **several devices at once** (a laptop and a
+      phone, a second window, a VPN session) now follows the device that
+      actually answers, fails over to another of their devices if one drops,
+      treats a slightly late answer as an answer rather than a new call, and
+      hangs up cleanly no matter which device they were on — instead of leaving
+      you on "Connecting" or them on "Waiting for others to join."
+    * Calling someone who is **already in a call, or who answers late**, now
+      connects promptly instead of ringing out — the app actively finds who is
+      in the call rather than waiting on an event that may never arrive.
+* **Calls work across regions, and settle on the closest server.** A call
+  between people on different regional servers establishes video and audio
+  reliably, and each person now lands on the nearest server (chosen over
+  several measurements, so a single noisy reading can't send you far away) —
+  with the full server list discovered from your Nextcloud, so it works on
+  every build.
+* **Screen sharing is solid now, including re-sharing.**
+    * Stopping a share and starting a new one comes up quickly on the hardware
+      encoder at full resolution, instead of failing, showing a green picture,
+      or needing a long wait.
+    * The shared picture is sharper — text stays readable and the "interlaced /
+      missing detail" look is gone.
+    * A re-shared screen appears for the other side in a second or two, rather
+      than after a long delay.
+* **No phantom incoming call right after you hang up.**
+* **Muting fully cuts your audio,** and the room stays put when you navigate
+  between chats during a call.
+
+### Notes
+* Windows installers are code-signed. On a standalone PC, Microsoft Defender
+  may still flag a brand-new build until its reputation builds up; a one-time
+  per-machine exclusion clears it.
+
 ## v0.57.24 "July Morning" -- BETA (2026-07-07)
 
 ### Fixed

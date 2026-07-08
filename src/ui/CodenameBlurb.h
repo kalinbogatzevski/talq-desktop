@@ -58,5 +58,13 @@ inline QString codenameBlurb(const QString &verName)
         || verName == QStringLiteral("Koprivshtitsa"))
         return QObject::tr("Codename \"%1\" — Bulgaria's April Uprising of 1876, "
             "150th anniversary (2026).").arg(verName);
+    if (verName == QStringLiteral("Blue Fiesta"))
+        return QObject::tr("Codename \"%1\" — for PFC Levski Sofia, \"Sinite\" (the "
+            "Blues), the maintainer's club, and the blue celebration of its fans as "
+            "Levski opens a new UEFA Champions League qualifying campaign. In 2006–07 "
+            "Levski became the first Bulgarian club ever to reach the Champions "
+            "League group stage, drawn with Barcelona, Chelsea and Werder Bremen. A "
+            "fitting flag over the release that hardened calls and screen "
+            "sharing.").arg(verName);
     return QObject::tr("Codename \"%1\".").arg(verName);
 }

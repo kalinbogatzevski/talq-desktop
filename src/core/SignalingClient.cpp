@@ -739,8 +739,26 @@ void SignalingClient::onTextMessage(const QString &msg)
             QJsonArray joins = event["join"].toArray();
             bool anyNonSelf = false;
             for (const auto &j : joins) {
-                QString sid = j.toObject()["sessionid"].toString();
-                if (!sid.isEmpty() && sid != m_sessionId) {
+                const QJsonObject jo = j.toObject();
+                QString sid = jo["sessionid"].toString();
+                if (sid.isEmpty()) continue;
+                // #bug5 — record the join-event id mappings for EVERY entry.
+                // roomsessionid is the NEXTCLOUD session id — the id space the
+                // REST call/{token} participant list reports — so this is the
+                // exact bridge CallManager's REST poll needs to reach a peer
+                // the HPB never emitted a JOINED edge for (a peer ESTABLISHED
+                // in the call before we joined/redialed). userid additionally
+                // feeds the #bug4 user-keyed adoption (userIdForSession) even
+                // when no participants update ever arrives. The server sends
+                // these join events as the initial in-the-room list on OUR
+                // join too, so the maps are warm before the first poll tick.
+                const QString uid   = jo["userid"].toString();
+                const QString ncSid = jo["roomsessionid"].toString();
+                if (!uid.isEmpty())   m_sessionToUserId[sid] = uid;
+                if (!ncSid.isEmpty()) m_ncSessionToHpbSid[ncSid] = sid;
+                TLOG_SIG("room join sid=" << sid.left(20) << "user=" << uid
+                         << "ncSid=" << ncSid.left(20));
+                if (sid != m_sessionId) {
                     qDebug() << "Signaling: room peer joined:" << sid.left(20);
                     emit roomPeerJoined(sid);
                     anyNonSelf = true;
@@ -769,6 +787,13 @@ void SignalingClient::onTextMessage(const QString &msg)
                     continue;
                 qDebug() << "Signaling: room peer left:" << sid.left(20);
                 m_participantCallFlags.remove(sid);
+                // #bug5 — prune this session's NC→HPB mapping so a later REST
+                // poll can't resolve a departed session (its user re-appears
+                // under a fresh pair of ids on rejoin).
+                for (auto it = m_ncSessionToHpbSid.begin(); it != m_ncSessionToHpbSid.end(); ) {
+                    if (it.value() == sid) it = m_ncSessionToHpbSid.erase(it);
+                    else ++it;
+                }
                 emit roomPeerLeft(sid);
             }
         }
@@ -798,6 +823,12 @@ void SignalingClient::onTextMessage(const QString &msg)
                     m_participantNames[userId] = displayName;
                 if (!userId.isEmpty())
                     m_sessionToUserId[sid] = userId;
+                // #bug5 — some servers include the Nextcloud session id here
+                // too; harvest it for the REST-poll NC→HPB bridge (the room
+                // join events are the primary source).
+                const QString ncSid = user["nextcloudSessionId"].toString();
+                if (!ncSid.isEmpty())
+                    m_ncSessionToHpbSid[ncSid] = sid;
                 // Some servers/participant events omit displayName (only
                 // actorId). Emitting an empty name is the "incoming call
                 // shows 'Call' instead of the caller" bug. Resolve from
@@ -944,8 +975,10 @@ void SignalingClient::joinRoom(const QString &token, bool force)
     }
     m_participantCallFlags.clear();
     m_participantNames.clear();
-    if (roomChanged)
+    if (roomChanged) {
         m_sessionToUserId.clear();
+        m_ncSessionToHpbSid.clear();   // #bug5 — room-scoped, same policy
+    }
 
     // Join as active participant — the response contains the sessionId
     // which the signaling server needs to verify room access

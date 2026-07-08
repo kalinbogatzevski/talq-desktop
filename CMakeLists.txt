@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(talq VERSION 0.57.24 LANGUAGES CXX)
+project(talq VERSION 0.58.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -179,7 +179,7 @@ set_source_files_properties(
     src/ui/SettingsDialog.cpp
     src/ui/MainWindow.cpp
     PROPERTIES COMPILE_DEFINITIONS
-      "TALQ_VERSION=\"${PROJECT_VERSION}\";TALQ_VERSION_NAME=\"July Morning\";TALQ_BUILD_TS=\"${TALQ_BUILD_TS}\""
+      "TALQ_VERSION=\"${PROJECT_VERSION}\";TALQ_VERSION_NAME=\"Blue Fiesta\";TALQ_BUILD_TS=\"${TALQ_BUILD_TS}\""
 )
 
 # Pre-release flag: when build-release.sh is invoked with --beta it
