@@ -9,8 +9,11 @@
 // GOP for mostly-static screen content. For H264 it also creates the
 // h264parse the RTP payloader needs (SPS/PPS repeated for late SFU
 // subscribers). `bitrateBps` is the start bitrate; rtpgccbwe drives the
-// live rate at runtime. Returns the encoder (floating ref; caller adds
-// to the bin) or nullptr on total failure.
+// live rate at runtime. `forceSoftware` skips the hardware ladder for
+// THIS encoder only (screen re-share HW-session-collision fallback)
+// without touching the process-global sticky latches below. Returns the
+// encoder (floating ref; caller adds to the bin) or nullptr on total
+// failure.
 
 #include <QString>
 #include <QDebug>
@@ -138,7 +141,8 @@ inline GstElement *makeWebrtcVideoEncoder(bool screen, int bitrateBps,
                                           bool *outUseH264,
                                           GstElement **outParser,
                                           QString *outDesc,
-                                          bool *outIsSoftware = nullptr)
+                                          bool *outIsSoftware = nullptr,
+                                          bool forceSoftware = false)
 {
     auto setIfExists = [](GstElement *e, const char *prop, auto value) {
         if (g_object_class_find_property(G_OBJECT_GET_CLASS(e), prop))
@@ -176,8 +180,11 @@ inline GstElement *makeWebrtcVideoEncoder(bool screen, int bitrateBps,
     // #android-static A/B (2026-06-02): force the software x264enc -- the
     // documented known-good encoder for browser/libwebrtc H264 interop -- to test
     // whether the HW (qsv) bitstream is what strict decoders snow on.
+    // `forceSoftware` is the per-pipeline caller request (screen re-share
+    // HW-session-collision fallback) — one build only, never persisted.
     const bool forceX264 = qEnvironmentVariableIsSet("TALQ_TEST_X264")
-                           || talqForceSoftwareVideo().load();
+                           || talqForceSoftwareVideo().load()
+                           || forceSoftware;
     for (int i = 0; order[i]; ++i) {
         if (forceX264 && g_strcmp0(order[i], "x264enc") != 0) continue;
         // Skip NVENC entirely once it has been shown to be unusable on this
@@ -207,7 +214,12 @@ inline GstElement *makeWebrtcVideoEncoder(bool screen, int bitrateBps,
             setIfExists(enc, "max-bitrate", peakKbps);
             setIfExists(enc, "gop-size", gop);
             setIfExists(enc, "b-frames", 0u);
-            setIfExists(enc, "target-usage", 4u);       /* balanced */
+            // Screen = TU1 (best quality): fine text/UI detail is what a share
+            // is FOR, the content is mostly static (low effective fps) so QSV
+            // has ample headroom — TU4 "balanced" visibly mushed small fonts at
+            // a native-res share with a healthy 8-11 Mbps rate (Kalin field
+            // 2026-07-08). Camera stays TU4: continuous 30 fps + simulcast.
+            setIfExists(enc, "target-usage", screen ? 1u : 4u);
         } else if (!g_strcmp0(order[i], "mfh264enc")) {
             setArg(enc, "rc-mode", rc);
             setIfExists(enc, "low-latency", TRUE);
@@ -268,7 +280,15 @@ inline GstElement *makeWebrtcVideoEncoder(bool screen, int bitrateBps,
             setIfExists(enc, "qp-min", screen ? 14u : 18u);
             setIfExists(enc, "qp-max", 42u);
             setIfExists(enc, "vbv-buf-capacity", 1000u);   // ms
-            if (screen) setIfExists(enc, "intra-refresh", TRUE);
+            // NO intra-refresh. It emits a rolling intra-refresh band INSTEAD
+            // of IDR keyframes — but every SFU (Janus) subscriber that joins
+            // mid-stream (each screen re-share makes a fresh subscriber) needs
+            // a real IDR to begin decoding, and the SFU asks for one via PLI.
+            // With intra-refresh the new subscriber decoded nothing but GREEN
+            // until (if ever) the band swept the frame — the "green garbage"
+            // on a SOFTWARE screen re-share (Kalin dev-build 2026-07-08). The
+            // HW encoders (qsv/mf) never set it, so hardware shares were clean.
+            // key-int-max (above) + PLI-forced IDRs give decodable keyframes.
         }
         GstElement *parse = gst_element_factory_make("h264parse", nullptr);
         if (!parse) { gst_object_unref(enc); continue; }

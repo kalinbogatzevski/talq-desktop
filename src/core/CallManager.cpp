@@ -1590,9 +1590,15 @@ void CallManager::startCall(const QString &token, bool withVideo)
     // Joining an ALREADY-ACTIVE call (the remote kept the room/call open):
     // peers already in the call produced no inCall 0->N transition (we cached
     // their flags while idle), so no participantJoinedCall fires and we ring to
-    // "no answer". Drop the cached flags so the next participants update (the
-    // HPB pushes one when we join) re-emits a JOINED for everyone in the call,
-    // which onParticipantJoinedCall then subscribes + connects to.
+    // "no answer". Drop the cached flags so any next participants update
+    // re-emits a JOINED for everyone in the call. #bug5 — this is BEST-EFFORT
+    // only: when we are ALREADY in the signaling room (caller idling in the
+    // chat) no room join happens and the HPB pushes NOTHING on our call join
+    // (edge-based protocol, no fetch request exists), so the resync alone left
+    // the caller ringing out 60s against an in-call peer (field 2026-07-08).
+    // The guaranteed discovery is joinCallOnServer's REST participant poll
+    // (prompt 1.2s one-shot + 3s backup), which replays the missed edge into
+    // onParticipantJoinedCall with the properly mapped HPB sid.
     m_signaling->forceCallParticipantResync();
 
     // Join call — but only once the signaling room is actually joined.
@@ -2673,6 +2679,13 @@ void CallManager::startScreenShare(int monitorIndex, quintptr windowHandle)
     if (act != ShareAction::StartNow)
         return;
 
+    // Fresh user-initiated share: optimistic — probe hardware again. The HW-
+    // release-window check in buildAndStartSharePipeline() (or a later
+    // confirm-timeout retry) re-forces software when a collision is likely.
+    // Deliberately AFTER the policy gate: a StartQueued fired from a retry
+    // teardown keeps the retry's software decision.
+    m_ssForceSwEncoder = false;
+
     m_screenSharing = true;
     buildAndStartSharePipeline(monitorIndex, windowHandle);
     if (!m_screenSharePipeline)
@@ -2725,6 +2738,24 @@ void CallManager::buildAndStartSharePipeline(int monitorIndex, quintptr windowHa
                       .value("Video/screenShareQuality", 2).toInt();
 
     m_screenSharePipeline = new ScreenSharePipeline(this);
+
+    // #reshare-hw-collision — force the SOFTWARE encoder ONLY as a genuine
+    // last-resort backstop: a confirm-timeout Retry (m_ssForceSwEncoder) proved
+    // the HW attempt sent no RTP. The old PROACTIVE "re-share within 60 s →
+    // software" window was a MISDIAGNOSIS — it forced x264/1080p on shares whose
+    // HW encoder actually worked. The real failure was our own outbound-RTP
+    // confirm FALSE-NEGATIVE (bursty static-screen RTP never made the old
+    // "2 consecutive rises" streak; fixed in ScreenSharePipeline::pollOutboundRtp
+    // with a cumulative-delta test): it tore down a LIVE HW share, and only the
+    // retry that followed actually collided the encoder session. With the
+    // confirm fixed, HW re-shares confirm on the first attempt at native res;
+    // software appears only if a real HW attempt genuinely produces no RTP.
+    const bool forceSwEncoder = m_ssForceSwEncoder;
+    if (forceSwEncoder) {
+        qInfo() << "CallManager: forcing SOFTWARE screen encoder — confirm-timeout "
+                   "retry (HW produced no RTP)";
+        m_screenSharePipeline->setForceSoftwareEncoder(true);
+    }
     {
         // Level -> pre-encode downscale cap (set before start(), which the
         // pipeline reads once). The cap is a CEILING: a smaller monitor frame
@@ -2758,12 +2789,33 @@ void CallManager::buildAndStartSharePipeline(int monitorIndex, quintptr windowHa
         cw = qMin(cw, 3840);
         ch = qMin(ch, 2160);
         clampScreenToGpuTier(cw, ch);   // weak/iGPU encoder: cap to 720p/540p
+        // Software-fallback shares cap at 1080p: realtime x264 above that
+        // (1440p / native-res window shares up to 4K) costs more CPU than a
+        // laptop can hide mid-call. 1080p keeps slides/code readable, and it
+        // applies only to THIS share — the next hardware share restores the
+        // user's cap.
+        if (forceSwEncoder && ch > 1080) {
+            cw = ((cw * 1080) / ch) & ~1;
+            ch = 1080;
+            qInfo().nospace() << "CallManager: software screen encode — capping "
+                                 "capture to " << cw << "x" << ch;
+        }
         m_screenSharePipeline->setQualityCap(cw, ch);
     }
 
     connect(m_screenSharePipeline, &ScreenSharePipeline::localOfferReady,
             this, [this](const QString &sdp) {
-        m_screenShareSid = QString::number(qHash(sdp)).left(10);
+        // Keep the sid STABLE across a confirm-timeout retry. The retry does
+        // NOT unshare, so the server-side screen publisher SURVIVES — and the
+        // signaling server pins it to the FIRST sid it saw, rejecting ICE
+        // candidates for any other ("candidate message sid (X) does not match
+        // publisher sid (Y)", hub.go:3019, storm log 2026-07-08) — a retry
+        // under a fresh sid could never converge no matter what the encoder
+        // did. A re-offer with the MATCHING sid takes the server's update()
+        // path instead. stopScreenShare() clears the sid, so a genuinely new
+        // share still gets a fresh signaling identity.
+        if (m_screenShareSid.isEmpty())
+            m_screenShareSid = QString::number(qHash(sdp)).left(10);
         // Screen publisher offer carries broadcaster = own session id
         // (upstream Peer.send) so Janus can associate the screen stream.
         m_signaling->sendOffer(m_signaling->sessionId(), sdp, m_screenShareSid,
@@ -3479,6 +3531,13 @@ void CallManager::onShareConfirmTimeout()
         qWarning() << "CallManager: screen share not confirmed in time — "
                       "retrying with a fresh pipeline";
         emit screenShareRetrying();
+        // On HW-encoder boxes the dominant no-confirm cause is a hardware
+        // session collision (the encoder opens but produces nothing —
+        // packets-sent pinned in the RTP confirm poll). Retrying on the SAME
+        // hardware re-collides every 8 s until retries exhaust (Ilko
+        // 2026-06-18 mf, Kalin 2026-07-08 qsv), so the rebuild goes software
+        // (x264) — it cannot collide. Cleared on the next fresh user start.
+        m_ssForceSwEncoder = true;
         // Tear the current pipeline down but KEEP the object alive so its async
         // cleanup can emit released(); onSharePipelineReleased() then deletes it
         // and rebuilds with the saved target. m_shareRetryTeardown distinguishes
@@ -4026,43 +4085,93 @@ void CallManager::joinCallOnServer(bool withVideo)
                                 TLOG_CALL("polling call participants for" << m_callToken);
                                 m_api->getArray("apps/spreed/api/v4/call/" + m_callToken,
                                     [this](bool ok, const QJsonArray &data, int) {
-                                        if (!ok || m_state == Idle) return;
+                                        if (!ok || m_state == Idle || !m_remoteSessionId.isEmpty())
+                                            return;
                                         for (const auto &val : data) {
-                                            QJsonObject p = val.toObject();
-                                            QString sid = p["sessionId"].toString();
+                                            const QJsonObject p = val.toObject();
+                                            const QString ncSid = p["sessionId"].toString();
+                                            if (ncSid.isEmpty()) continue;
+                                            // #bug5 — GET call/{token} returns ONLY the sessions
+                                            // CONNECTED to the call, and (live-verified against
+                                            // this NC 33: raw row = actorType/actorId/displayName/
+                                            // token/lastPing/sessionId) carries NO inCall field at
+                                            // all. The old `inCall == 0 → skip` gate therefore
+                                            // dropped EVERY row — the poll could never adopt
+                                            // anyone, which is why the caller sat in Outgoing
+                                            // ("Calling…") until the 60s ring-out. Presence in
+                                            // the list IS "in the call"; use the flags when a
+                                            // server variant does send them, else assume audio
+                                            // (Janus forwards the peer's whole feed for a single
+                                            // subscription; the real flags follow with the next
+                                            // HPB participants update).
                                             int inCall = p["inCall"].toInt();
-                                            if (sid.isEmpty() || sid == m_signaling->sessionId() || inCall == 0)
+                                            if (inCall == 0)
+                                                inCall = CALL_FLAG_IN_CALL | CALL_FLAG_WITH_AUDIO;
+                                            // #bug5 — the REST sessionId is the NEXTCLOUD
+                                            // session id, a DIFFERENT id space from the HPB
+                                            // signaling sid that requestoffer/subscribers
+                                            // route on. The old code compared it to the HPB
+                                            // sid for the self-skip (never matched — it could
+                                            // adopt OUR OWN row) and fed it straight to
+                                            // requestPeerStream (the HPB has no such recipient
+                                            // → no offer, ever — and the poisoned
+                                            // m_remoteSessionId then blocked the real
+                                            // JOINED-edge adopt for the rest of the ring, so
+                                            // the caller rang out 60s against a peer whose
+                                            // inCall was already 7). Skip self by USER id and
+                                            // translate NC→HPB via the room-join event
+                                            // mappings instead.
+                                            const QString uid = p["actorId"].toString();
+                                            if (p["actorType"].toString() == QLatin1String("users")
+                                                && !uid.isEmpty() && uid == m_signaling->userId())
+                                                continue;   // our own user (any device) — never adoptable
+                                            QString sid = m_signaling->hpbSessionForNcSession(ncSid);
+                                            if (sid.isEmpty() && !uid.isEmpty())
+                                                sid = m_signaling->sessionsForUser(uid).value(0);
+                                            if (sid.isEmpty() || sid == m_signaling->sessionId()) {
+                                                TLOG_CALL("REST peer" << ncSid.left(20)
+                                                          << "has no known signaling sid yet — waiting"
+                                                             " for its room join event");
                                                 continue;
-                                            if (m_remoteSessionId.isEmpty()) {
-                                                m_remoteSessionId = sid;
-                                                TLOG_CALL("discovered remote peer via REST:" << sid.left(20));
-                                                setState(Connecting);
-                                                emit callInfoChanged();
                                             }
-                                            if (!m_subscribePipelines.contains(sid)) {
-                                                requestPeerStream(sid);
-                                                TLOG_CALL("sent requestOffer for discovered peer" << sid.left(20));
-                                            }
+                                            TLOG_CALL("discovered in-call peer via REST:"
+                                                      << sid.left(20) << "flags=" << inCall);
+                                            // Route through the SAME handler the HPB JOINED
+                                            // edge uses so every adopt side-effect applies
+                                            // once, consistently: ring-timer stop, Connecting,
+                                            // #bug4 peer-user stamping + m_peerInCallSids,
+                                            // media-state broadcast, subscribe gating (incl.
+                                            // the group fallthrough for additional peers). The
+                                            // poll is then exactly a replay of the missed
+                                            // edge, not a second adoption code path.
+                                            onParticipantJoinedCall(sid, inCall,
+                                                                    p["displayName"].toString());
                                     }
                                 });
                             };
-                            // Compliance with upstream Talk web client
-                            // (v23.0.4, MCU mode): the upstream waits for
-                            // the signaling layer's usersInCallChanged
-                            // event before calling requestOffer; it does
-                            // NOT poll the REST endpoint eagerly. An eager
-                            // immediate poll can land on the MCU before
-                            // the peer's publish is fully registered, so
-                            // the resulting subscriber binds to an
-                            // incomplete publish state — exactly the
-                            // caller-sees-callee-choppy pattern. We
-                            // remove the immediate poll() invocation and
-                            // keep the 3-s timer purely as a backup for
-                            // the documented mobile/internal-signaling
-                            // path where HPB participant events may not
-                            // fire. The HPB roomPeerJoined /
-                            // participantJoinedCall handlers will normally
-                            // trigger requestPeerStream within ms.
+                            // Upstream Talk (v23.0.4, MCU mode) waits for the
+                            // signaling layer's usersInCallChanged event and
+                            // never polls eagerly — but that only covers peers
+                            // whose call-join produces an EDGE. A peer ALREADY
+                            // ESTABLISHED in the call (the remote kept the call
+                            // open; we join/redial) produces no edge, and the
+                            // HPB protocol has no request to fetch the current
+                            // in-call list (doc-checked: push-only), so this
+                            // REST poll is the ONLY discovery for that peer.
+                            // Fire it once ~1.2s after our publisher starts:
+                            // late enough that the old immediate-poll concern
+                            // (subscribing a JUST-joining peer before its
+                            // publish registers → choppy) cannot apply to the
+                            // target case — an established peer's publish has
+                            // been registered for seconds — and a just-joining
+                            // peer is instead adopted by its own JOINED edge
+                            // (the poll self-disables once m_remoteSessionId is
+                            // set). A rare still-early requestoffer is absorbed
+                            // by the 8s requestoffer retry net + the 0.52.7
+                            // not_allowed→recoverSubscriber escalation. The 3s
+                            // timer stays as the backup for the documented
+                            // mobile/internal-signaling path where HPB
+                            // participant events may not fire.
                             // 1.0 audit — owned by m_callPollTimer and killed in
                             // stopAllPipelines (which runs on teardown AND on a
                             // fresh call start), so a re-entered setup can't leak
@@ -4077,6 +4186,7 @@ void CallManager::joinCallOnServer(bool withVideo)
                             m_callPollTimer->setInterval(3000);
                             connect(m_callPollTimer, &QTimer::timeout, this, pollParticipants);
                             m_callPollTimer->start();
+                            QTimer::singleShot(1200, this, pollParticipants);
                         }
 
                         // Video is now included in the initial pipeline (no delayed renegotiation)
@@ -4311,6 +4421,11 @@ void CallManager::teardown(const QString &reason)
     }
     m_screenSharing = false;
     m_screenShareTearingDown = false;
+    // The per-share sid persists in this member and localOfferReady only
+    // assigns when it's EMPTY (retry sid stability) — clear it here so the
+    // NEXT call's first share can't inherit this call's identity (this path
+    // bypasses stopScreenShare(), which normally clears it).
+    m_screenShareSid.clear();
     // The reap-window gate for screen re-share re-asserts is intra-call only;
     // invalidate it so a stop-while-sharing in THIS call can't arm a spurious
     // re-assert on the NEXT call's first share (the timer member persists).

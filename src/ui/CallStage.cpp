@@ -231,10 +231,25 @@ void CallStage::onFrame(CallParticipant *p, bool screen, const QImage &img)
     if (p && p->isSelf() && !screen && m_call && m_call->isCameraUnavailable())
         m_call->cameraFrameConfirmed();
     // Pre-scale to the widget bound so paint is a plain blit (perf guardrail).
+    // SCREEN frames take the QUALITY path: FastTransformation is nearest-
+    // neighbour, which DROPS pixel rows outright — on downscaled screen text
+    // that reads exactly as "interlaced / detail missing vertically / fonts
+    // unreadable" (Kalin→Ilko field 2026-07-08; worse the BIGGER the source,
+    // so "even native res looked bad"). And the cap was in LOGICAL pixels: on
+    // a hi-DPI viewer the tile then re-upscaled the decimated image by the
+    // device-pixel-ratio (decimate-then-blur). So for screens: cap in PHYSICAL
+    // pixels + SmoothTransformation. Shares are mostly static (few frames/s),
+    // so the smooth filter's extra ms never hits the hot path — the 30 fps
+    // camera tiles keep the cheap Fast blit (motion masks it).
     QImage f = img;
-    const QSize cap = size().isValid() ? size() : QSize(1280, 720);
+    QSize cap = size().isValid() ? size() : QSize(1280, 720);
+    if (screen) {
+        const qreal dpr = devicePixelRatioF();
+        cap = QSize(qRound(cap.width() * dpr), qRound(cap.height() * dpr));
+    }
     if (img.width() > cap.width() || img.height() > cap.height())
-        f = img.scaled(cap, Qt::KeepAspectRatio, Qt::FastTransformation);
+        f = img.scaled(cap, Qt::KeepAspectRatio,
+                       screen ? Qt::SmoothTransformation : Qt::FastTransformation);
     (screen ? m_scrFrame : m_camFrame)[p] = f;
     // tick timer coalesces the actual repaint
 }
