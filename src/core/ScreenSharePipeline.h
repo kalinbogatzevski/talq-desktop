@@ -53,6 +53,14 @@ public:
     // the old stop()->start() re-share, which re-offered on the same session and
     // the MCU's stale screen handle never confirmed the new publish (churn/drop).
     void setQualityCap(int maxW, int maxH);
+    // #reshare-hw-collision — build the NEXT start() with the SOFTWARE H264
+    // encoder (x264enc) instead of probing hardware. Set by CallManager when a
+    // HW-encoder-session collision is likely (re-share inside the HW release
+    // window of a recent unshare, or a confirm-timeout retry): a still-freeing
+    // qsvh264enc/mfh264enc session accepts frames but encodes NOTHING, so the
+    // share's outbound RTP never confirms. Software cannot collide. One-shot
+    // per pipeline object; must be called before start().
+    void setForceSoftwareEncoder(bool force) { m_forceSwEncoder = force; }
 
 signals:
     void localOfferReady(const QString &sdp);
@@ -96,6 +104,7 @@ private:
     GstElement *m_scaleCaps = nullptr;     // downscale capsfilter; re-set LIVE by setQualityCap() for mid-share quality changes
     GstElement *m_videoParser = nullptr;   // h264parse, present iff H264
     bool m_useH264 = false;
+    bool m_forceSwEncoder = false;  // build with x264enc (HW-collision avoidance)
     bool m_running = false;
     bool m_remoteDescSet = false;
     QList<QPair<int, QString>> m_pendingCandidates;
@@ -137,7 +146,7 @@ private:
     // counter; two consecutive positive deltas → emit mediaFlowing() once.
     QTimer m_statsTimer;
     guint64 m_lastPacketsSent = 0;
-    int m_packetsRisingStreak = 0;
+    guint64 m_firstPacketsSent = 0;   // first non-zero packets-sent — cumulative-delta confirm baseline
     bool m_mediaFlowingEmitted = false;
     void pollOutboundRtp();
     static void onStatsReady(GstPromise *promise, gpointer userData);

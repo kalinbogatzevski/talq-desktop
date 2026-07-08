@@ -656,6 +656,15 @@ private:
     int m_ssMonitorIndex = 0;
     quintptr m_ssWindowHandle = 0;
     int m_ssQuality = 1;   // 0=720p 1=1080p 2=1440p 3=Native (persisted)
+    // #reshare-hw-collision — build the NEXT share pipeline with the software
+    // x264 encoder. Set by the confirm-timeout Retry (the attempt produced no
+    // outbound RTP; on HW boxes the dominant cause is a collision with the
+    // prior share's still-freeing qsv/mf encoder session); cleared on each
+    // fresh user start. buildAndStartSharePipeline() additionally forces
+    // software on its own when starting inside the HW-encoder release window
+    // of a recent unshare, so the FIRST attempt succeeds — no retry, no
+    // per-retry sid churn for the server to reject.
+    bool m_ssForceSwEncoder = false;
     // #share-reliability — start/confirm/retry. A share is "confirmed" only
     // once ICE is connected AND outbound RTP is flowing (the SDP answer is not
     // proof); if that doesn't arrive within m_shareConfirmTimer the policy tears

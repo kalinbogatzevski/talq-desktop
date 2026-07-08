@@ -383,9 +383,16 @@ bool ScreenSharePipeline::start(const QString &stunServer, const QList<TurnServe
     GstElement *previewConvert = gst_element_factory_make("videoconvert", nullptr);
     m_previewAppsink           = gst_element_factory_make("appsink",      "share-preview-sink");
     bool useH264 = false;
+    // m_forceSwEncoder (set by CallManager pre-start) skips the HW ladder for
+    // THIS share: a re-share inside the HW-session release window / a confirm-
+    // timeout retry must not re-open the still-freeing qsv/mf session — it
+    // accepts frames but encodes nothing (packets-sent pinned in the RTP
+    // confirm poll below). m_encoderDesc then reads "… x264enc · sw" so the
+    // field log shows the fallback fired.
     GstElement *venc = makeWebrtcVideoEncoder(/*screen=*/true, m_initBitrate,
                                               &useH264, &m_videoParser,
-                                              &m_encoderDesc);
+                                              &m_encoderDesc, nullptr,
+                                              /*forceSoftware=*/m_forceSwEncoder);
     GstElement *pay = venc ? gst_element_factory_make(
                                  useH264 ? "rtph264pay" : "rtpvp8pay", nullptr)
                            : nullptr;
@@ -420,6 +427,14 @@ bool ScreenSharePipeline::start(const QString &stunServer, const QList<TurnServe
     g_object_set(capQueue, "leaky", 2 /* downstream */,
                  "max-size-buffers", 3, "max-size-bytes", (guint)0,
                  "max-size-time", (guint64)0, nullptr);
+    // Screen TEXT survives a downscale only with a proper multi-tap filter:
+    // videoscale's default bilinear (2-tap) decimator effectively drops /
+    // pair-averages rows, which field-reads as "interlaced" / vertical detail
+    // missing / unreadable fonts whenever a hi-DPI monitor share is scaled to
+    // the quality cap (Kalin→Ilko 2026-07-08). Lanczos is the community-proven
+    // quality scaler for screen content; a frame already within the cap
+    // (native share) passes through untouched either way.
+    gst_util_set_object_arg(G_OBJECT(vscale), "method", "lanczos");
     {
         const QString capStr = QStringLiteral(
             // width/height stepped by 2 (EVEN only): an app WINDOW is an
@@ -430,8 +445,14 @@ bool ScreenSharePipeline::start(const QString &stunServer, const QList<TurnServe
             // AMD receiver while full-screen worked — field 2026-06-18).
             // videoscale negotiates to the nearest even size, so the encoder
             // always gets a valid frame regardless of the window's real size.
+            // interlace-mode pinned progressive: capture frames ARE progressive
+            // (WGC/DXGI), but making it contractual on the encoder input means
+            // the H264 stream can never be flagged interlaced downstream — a
+            // deinterlacing receiver would halve vertical detail (the exact
+            // "interlace-look" failure class).
             "video/x-raw,width=(int)[2,%1,2],height=(int)[2,%2,2],"
-            "pixel-aspect-ratio=1/1").arg(m_capW).arg(m_capH);
+            "pixel-aspect-ratio=1/1,interlace-mode=(string)progressive")
+            .arg(m_capW).arg(m_capH);
         GstCaps *cap = gst_caps_from_string(capStr.toUtf8().constData());
         g_object_set(scaleCaps, "caps", cap, nullptr);
         gst_caps_unref(cap);
@@ -443,6 +464,14 @@ bool ScreenSharePipeline::start(const QString &stunServer, const QList<TurnServe
     qDebug().nospace() << "ScreenSharePipeline: encoder = " << m_encoderDesc;
     m_videoEncoder = venc;     // for rtpgccbwe live bitrate
     m_useH264 = useH264;
+    // Lift the encoder's peak ceiling to the server screen cap (m_maxBitrate,
+    // ~12 Mbps). The factory sets max-bitrate = the START bitrate (8 Mbps),
+    // but onGccBitrate() drives `bitrate` up to m_maxBitrate — a VBR target
+    // ABOVE the configured max is an invalid encoder state (Intel VPL rejects
+    // the reconfigure), so the live raise could silently fail to stick.
+    // Guarded: x264enc has no max-bitrate property (its VBV handles bursts).
+    if (g_object_class_find_property(G_OBJECT_GET_CLASS(venc), "max-bitrate"))
+        g_object_set(venc, "max-bitrate", (guint)(m_maxBitrate / 1000), nullptr);
 
     if (useH264) {
         // Repeat SPS/PPS before every IDR so subscribers that join the SFU
@@ -685,7 +714,7 @@ bool ScreenSharePipeline::start(const QString &stunServer, const QList<TurnServe
     m_iceReachedConnected = false;
     m_firstFrameSeen.store(false);
     m_lastPacketsSent = 0;
-    m_packetsRisingStreak = 0;
+    m_firstPacketsSent = 0;
     m_mediaFlowingEmitted = false;
     m_startWatchdog.start();
     m_frameWatchdog.start();
@@ -711,7 +740,8 @@ void ScreenSharePipeline::setQualityCap(int maxW, int maxH)
     if (m_scaleCaps && m_running && !m_shuttingDown.load()) {
         const QString capStr = QStringLiteral(
             "video/x-raw,width=(int)[2,%1,2],height=(int)[2,%2,2],"   // EVEN only — see start()
-            "pixel-aspect-ratio=1/1").arg(maxW).arg(maxH);
+            "pixel-aspect-ratio=1/1,interlace-mode=(string)progressive"  // lockstep with start()
+            ).arg(maxW).arg(maxH);
         GstCaps *cap = gst_caps_from_string(capStr.toUtf8().constData());
         g_object_set(m_scaleCaps, "caps", cap, nullptr);
         gst_caps_unref(cap);
@@ -1051,19 +1081,29 @@ void ScreenSharePipeline::onStatsReady(GstPromise *promise, gpointer userData)
         }
         qInfo().nospace() << "ScreenSharePipeline: RTP confirm poll — packets-sent="
                           << packetsSent << " prev=" << guard->m_lastPacketsSent
-                          << " streak=" << guard->m_packetsRisingStreak;
-        // Two consecutive rises = media is genuinely climbing, not a single
-        // stray packet. Then the publish is confirmed live on the wire.
-        if (packetsSent > guard->m_lastPacketsSent) {
-            if (++guard->m_packetsRisingStreak >= 2) {
-                guard->m_mediaFlowingEmitted = true;
-                guard->m_statsTimer.stop();
-                qInfo() << "ScreenSharePipeline: outbound RTP confirmed flowing "
-                           "(packets-sent=" << packetsSent << ") — share is live";
-                emit guard->mediaFlowing();
-            }
-        } else {
-            guard->m_packetsRisingStreak = 0;
+                          << " first=" << guard->m_firstPacketsSent;
+        // Confirm on CUMULATIVE progress, not two CONSECUTIVE rises. Screen RTP
+        // is BURSTY — WGC capture is damage-driven and static content emits ~1 Hz
+        // packet bursts with flat gaps — so the old "streak >= 2 consecutive
+        // 500 ms rises" rule oscillated 1→0→1→0 and NEVER confirmed a perfectly
+        // live static share: packets-sent climbed 105→767 (the SFU ACKing them
+        // via TWCC, GCC rising to 11 Mbps) yet the 8 s timeout fired "not
+        // confirmed", tearing down a WORKING hardware share — and the destructive
+        // retry is what actually collided the encoder session (field 2026-07-08).
+        // Media is genuinely on the wire once the counter has climbed a clear
+        // margin past its first non-zero reading; a real HW-session collision
+        // stays pinned (1→1, delta 0) and correctly still fails into the retry.
+        if (packetsSent > 0 && guard->m_firstPacketsSent == 0)
+            guard->m_firstPacketsSent = packetsSent;
+        const guint64 delta = guard->m_firstPacketsSent
+                                  ? packetsSent - guard->m_firstPacketsSent : 0;
+        if (guard->m_firstPacketsSent != 0 && delta >= 30) {
+            guard->m_mediaFlowingEmitted = true;
+            guard->m_statsTimer.stop();
+            qInfo() << "ScreenSharePipeline: outbound RTP confirmed flowing "
+                       "(packets-sent=" << packetsSent << " delta=" << delta
+                    << ") — share is live";
+            emit guard->mediaFlowing();
         }
         guard->m_lastPacketsSent = packetsSent;
     }, Qt::QueuedConnection);

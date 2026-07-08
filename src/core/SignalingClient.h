@@ -74,6 +74,27 @@ public:
     QString userId() const { return m_userId; }
     // Nextcloud user id behind a given HPB session id, "" if not yet known.
     QString userIdForSession(const QString &sid) const { return m_sessionToUserId.value(sid); }
+    // #bug5 — translate a NEXTCLOUD session id (the id space REST
+    // call/{token} reports) into the HPB signaling sid that requestoffer /
+    // MCU subscribes actually route on. Populated from the room "join"
+    // events (each entry carries sessionid + userid + roomsessionid,
+    // including the initial in-the-room list the server sends when WE join)
+    // and from participants updates that carry nextcloudSessionId — so the
+    // mapping exists even when no participants update ever fires for an
+    // ESTABLISHED in-call peer (the caller-rings-out-against-an-active-call
+    // field bug, 2026-07-08). "" if not (yet) known.
+    QString hpbSessionForNcSession(const QString &ncSessionId) const
+    { return m_ncSessionToHpbSid.value(ncSessionId); }
+    // #bug5 — every known HPB session of a Nextcloud user (multi-device
+    // peers hold several at once). Fallback mapping for the REST poll when
+    // roomsessionid was absent. Order is arbitrary.
+    QStringList sessionsForUser(const QString &userId) const
+    {
+        QStringList out;
+        for (auto it = m_sessionToUserId.constBegin(); it != m_sessionToUserId.constEnd(); ++it)
+            if (it.value() == userId) out.append(it.key());
+        return out;
+    }
     // #bug4 — last-known call flags of a session (CALL_FLAG_WITH_AUDIO|VIDEO...).
     // Entries persist while a session is inCall>0 and are pruned on its leave
     // edge, so this is a safe "does this sibling claim media" probe.
@@ -298,6 +319,10 @@ private:
     // unknown so a long-stale version is never displayed as if current.
     QHash<QString, qint64>  m_peerClientSeen;
     QHash<QString, QString> m_sessionToUserId;  // sessionId → userId (for DC-only fallback)
+    // #bug5 — Nextcloud (room) session id → HPB signaling sid, from room join
+    // events + participants updates. Room-scoped: cleared on a room SWITCH
+    // (same policy as m_sessionToUserId) and pruned on room leave events.
+    QHash<QString, QString> m_ncSessionToHpbSid;
 
     void sendTalqClientHello();
 
