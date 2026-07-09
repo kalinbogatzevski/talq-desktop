@@ -693,6 +693,19 @@ int main(int argc, char *argv[])
         callManager.onIncomingCallDetected(name, token, callFlag);
     });
 
+    // #77 -- a second call arriving while we're already in a call used to be
+    // silently dropped. Now CallManager fires these: a "called while you were
+    // busy" desktop toast for us, and a request to auto-reply "on another call"
+    // to the caller (1:1 only) so they get a busy signal Talk otherwise lacks.
+    QObject::connect(&callManager, &CallManager::busyIncomingCall, &notifications,
+                     [&notifications](const QString &name, const QString &token) {
+        notifications.notify(name, QObject::tr("Called while you were on another call"), true, token);
+    });
+    QObject::connect(&callManager, &CallManager::busyAutoReply, &api,
+                     [&api, &callManager](const QString &token, const QString &text) {
+        api.sendChatMessage(token, text, &callManager, [](bool, int, const QString &) {});
+    });
+
     // "Call ended" desktop notification. callEnded fires once per terminal
     // teardown. Skip the user's OWN hang-up (they just clicked it); notify when
     // the call ends for another reason — peer left, connection lost after the
