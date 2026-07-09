@@ -1396,10 +1396,16 @@ void ApiClient::demoteModerator(const QString &token, qint64 attendeeId,
 void ApiClient::sendChatMessage(const QString &token, const QString &text,
                                 QObject *context,
                                 std::function<void(bool, int, const QString &)> callback,
-                                const QString &threadTitle)
+                                const QString &threadTitle,
+                                const QString &referenceId)
 {
     QJsonObject body;
     body["message"] = text;
+    // #80 -- a locale-independent marker so a TalQ recipient can recognise a
+    // machine-sent message (e.g. the "on another call" busy reply) regardless
+    // of the sender's UI language. Talk echoes referenceId back on the message.
+    if (!referenceId.isEmpty())
+        body["referenceId"] = referenceId;
     // Talk's send-message takes `threadTitle` as a top-level form/JSON field
     // on the original POST. When non-empty (and replyTo == 0), the server's
     // ChatController creates a brand-new thread rooted at this message in

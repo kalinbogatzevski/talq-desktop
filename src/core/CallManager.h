@@ -138,6 +138,12 @@ public:
     // Decoded resolution of the incoming stream (active simulcast layer),
     // e.g. "1280×720"; empty until the first frame decodes.
     QString activeRxResolution() const;
+    // #76 -- a remote peer is sharing their screen TO us; remoteScreenTierLabel()
+    // buckets the received share height to a quality tier (720p/1080p/1440p/
+    // Native) so the stage can show the SHARE quality during a share instead of
+    // the sharer's camera substream (pinned to LOW while they share).
+    bool hasRemoteScreen() const;
+    QString remoteScreenTierLabel() const;
     // Peak decoded height observed from the remote this call (across substream
     // switches) — the honest basis for the receive-quality dropdown's HIGH
     // label, instead of guessing from our OWN send setting. 0 until a frame
@@ -177,6 +183,11 @@ public:
     bool callHasVideo() const { return m_withVideo; }
     Q_INVOKABLE void setUserActionReady();
     Q_INVOKABLE void hangUp();
+    // #80 -- the peer we're ringing auto-replied "busy" (they're on another
+    // call). Called by the app layer when a chat message with the busy marker
+    // arrives in the conversation we're placing a call to. Plays the busy tone
+    // + surfaces peerBusy() for a popup. No-op unless we're still ringing out.
+    void onPeerBusy(const QString &peerName);
     // Best-effort: free the server-side call participant on a clean exit
     // (window close / quit / logout) WITHOUT tearing pipelines, then
     // briefly flush the DELETE so it lands before the process exits.
@@ -233,6 +244,7 @@ public:
     // we're already in a call: notify us + auto-reply "busy" to the caller
     // (once per call token) instead of silently dropping it.
     void maybeReplyBusy(const QString &callerName, const QString &token);
+    void playBusyTone();   // #80 -- one-shot :/sounds/busy_soft.wav
 
     // Multi-party model. Stable order: self first, then join order. The
     // legacy 1:1 getters above keep working (P2P = self + one remote).
@@ -264,6 +276,9 @@ signals:
     // reply to the caller (their busy signal — Talk has no native one).
     void busyIncomingCall(const QString &callerName, const QString &token);
     void busyAutoReply(const QString &token, const QString &text);
+    // #80 -- the peer we were ringing is on another call (their TalQ told us via
+    // the busy marker). App layer shows a "<peer> is on another call" popup.
+    void peerBusy(const QString &peerName);
     void callEnded(const QString &reason);
     // A call we tried to place was rejected by the SERVER (e.g. HTTP 5xx on
     // POST call/{token}) and could not be established. Distinct from callEnded

@@ -232,6 +232,31 @@ void CallManager::stopRingtone() {
 #endif
 }
 
+void CallManager::playBusyTone()
+{
+#ifdef Q_OS_WIN
+    // #80 -- one-shot busy tone (no loop). Static buffer stays alive for the
+    // async playback; UI-thread-only. PlaySoundA is single-channel so this
+    // naturally replaces any outgoing ringback that was playing.
+    static QByteArray buf;
+    QFile f(QStringLiteral(":/sounds/busy_soft.wav"));
+    if (!f.open(QIODevice::ReadOnly)) return;
+    buf = f.readAll();
+    PlaySoundA(buf.constData(), nullptr, SND_MEMORY | SND_ASYNC);
+#endif
+}
+
+void CallManager::onPeerBusy(const QString &peerName)
+{
+    // #80 -- the peer we're ringing is on another call; their TalQ auto-replied
+    // with the busy marker. Only act while we're still placing/ringing out.
+    if (m_state != Outgoing && m_state != Connecting) return;
+    const QString who = peerName.isEmpty() ? m_remotePeerName : peerName;
+    qInfo() << "CallManager: peer" << who << "is on another call (busy) — busy tone + popup";
+    playBusyTone();
+    emit peerBusy(who);
+}
+
 // --- CallManager ---
 
 // Forward decl: the call-flags helper is a file-local static defined further
@@ -1289,6 +1314,31 @@ QString CallManager::activeRxResolution() const
             if (h > m_peerPeakRxHeight) m_peerPeakRxHeight = h;  // honest HIGH-label basis
             return QStringLiteral("%1×%2").arg(w).arg(h);
         }
+    }
+    return {};
+}
+
+bool CallManager::hasRemoteScreen() const
+{
+    for (auto *sub : m_screenSubscribers)
+        if (sub && sub->isRunning()) return true;
+    return false;
+}
+
+QString CallManager::remoteScreenTierLabel() const
+{
+    // #76 -- bucket the received share height to a quality tier. First running
+    // screen subscriber with a known frame size wins. The screen SubscribePipeline
+    // exposes its decoded size via its VideoFrameProvider (unlike the camera
+    // SubscribeWebrtcSrc which has rxWidth/rxHeight directly).
+    for (auto *sub : m_screenSubscribers) {
+        if (!sub || !sub->isRunning() || !sub->videoProvider()) continue;
+        const int h = sub->videoProvider()->lastFrameSize().height();
+        if (h <= 0) continue;
+        if (h <= 720)  return QStringLiteral("720p");
+        if (h <= 1080) return QStringLiteral("1080p");
+        if (h <= 1440) return QStringLiteral("1440p");
+        return QStringLiteral("Native");
     }
     return {};
 }

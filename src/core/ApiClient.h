@@ -238,7 +238,8 @@ public:
                          QObject *context,
                          std::function<void(bool ok, int messageId,
                                             const QString &error)> callback,
-                         const QString &threadTitle = QString());
+                         const QString &threadTitle = QString(),
+                         const QString &referenceId = QString());
 
     // Long-poll (custom timeout). The headers map lets callers send hints like
     // X-Chat-Last-Common-Read so the server can break the long-poll early when
