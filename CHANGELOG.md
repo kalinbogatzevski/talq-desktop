@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.58.1 "Blue Fiesta" (2026-07-09)
+
+A quick follow-up to 0.58.0 with three call-handling fixes.
+
+### Fixed
+* **The minimized call window now stays fully on screen.** Shrinking a call to
+  the little floating window could leave it half off the edge of the monitor —
+  or in the gap between monitors on a multi-display setup. It now docks as a
+  small tile fully within the current screen.
+* **No more phantom re-ring right after you hang up.** Ending a call could make
+  it look, for a second, like the same person was calling you straight back. The
+  app now recognises that flicker as part of hanging up and ignores it — a
+  genuine call-back a few seconds later still rings.
+* **A call that arrives while you're already on a call is no longer silently
+  dropped.** You now get a "called while you were on another call" notification,
+  and — in a one-to-one conversation — the caller automatically gets a short
+  "on another call right now, I'll get back to you" reply, so they know why you
+  didn't pick up.
+
 ## v0.58.0 "Blue Fiesta" (2026-07-08)
 
 First stable release since 0.56.1, rolling up the call-reliability work from

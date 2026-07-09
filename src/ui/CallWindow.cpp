@@ -14,6 +14,23 @@
 #include <QTimer>
 #include <QDebug>
 
+// Clamp an entire rect inside one screen's available work area so no pixel can
+// land in a multi-monitor gap or off an edge. The screen is resolved from the
+// rect's centre (robust to gaps between displays), then the rect is shrunk to
+// fit if larger than the work area and shifted fully inside it.
+static QRect clampToWorkArea(QRect target)
+{
+    QScreen *s = QGuiApplication::screenAt(target.center());
+    if (!s) s = QGuiApplication::primaryScreen();
+    if (!s) return target;
+    const QRect a = s->availableGeometry();
+    target.setSize(target.size().boundedTo(a.size()));
+    const int x = qBound(a.left(), target.left(), a.right()  - target.width()  + 1);
+    const int y = qBound(a.top(),  target.top(),  a.bottom() - target.height() + 1);
+    target.moveTopLeft(QPoint(x, y));
+    return target;
+}
+
 CallWindow::CallWindow(CallManager *call, ApiClient *api, QWidget *parent)
     : QWidget(parent, Qt::Window)
     , m_call(call)
@@ -155,6 +172,14 @@ void CallWindow::enterPipDock()
     if (m_pipWidget) m_pipWidget->show();
     setWindowFlags(windowFlags() | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint | Qt::Tool);
     const int w = 320, h = 190, m = 24;
+    // The normal call window floors at 640x480 (setMinimumSize in the ctor, so
+    // the video stage can't be smashed). That floor also silently CLAMPS this
+    // dock's setGeometry(...,320,190) back UP to 640x480 while the top-left
+    // stays computed for a 320x190 box -> the dock overflowed its monitor by
+    // (640-320)=320px right and (480-190)=290px bottom, landing half off-screen
+    // (field 2026-07-09: docked into a multi-monitor gap). Drop the floor to the
+    // dock size here; exitPipDock() restores 640x480.
+    setMinimumSize(w, h);
     // Dock relative to whichever screen the window is CURRENTLY on, not
     // unconditionally the primary one -- on a multi-monitor setup, docking
     // against primaryScreen() snaps the window across to a different
@@ -163,8 +188,9 @@ void CallWindow::enterPipDock()
     // layout with gaps between displays made this especially jarring).
     QScreen *scr = this->screen();
     if (!scr) scr = QGuiApplication::primaryScreen();
-    QRect avail = scr->availableGeometry();
-    setGeometry(avail.right()-w-m, avail.bottom()-h-m, w, h);
+    const QRect avail = scr->availableGeometry();
+    // Clamp the whole rect into the work area so no pixel lands in a gap/edge.
+    setGeometry(clampToWorkArea(QRect(avail.right()-w-m, avail.bottom()-h-m, w, h)));
     show();
     raise();
 }
@@ -175,8 +201,9 @@ void CallWindow::exitPipDock()
     m_pipDocked = false;
     if (m_pipWidget) m_pipWidget->hide();
     if (m_stage) m_stage->show();
+    setMinimumSize(640, 480);   // restore the normal-window floor dropped in enterPipDock()
     setWindowFlags(Qt::Window);
-    if (m_normalGeom.isValid()) setGeometry(m_normalGeom);
+    if (m_normalGeom.isValid()) setGeometry(clampToWorkArea(m_normalGeom));
     show();
     raise();
     activateWindow();

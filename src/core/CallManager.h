@@ -229,6 +229,10 @@ public:
     static void auditionRingtone(const QString &id);
     VideoFrameProvider *remoteScreenProvider() const { return m_remoteScreenProvider; }
     void onIncomingCallDetected(const QString &callerName, const QString &token, int callFlag);
+    // #77 -- called from onIncomingCallDetected when a second call arrives while
+    // we're already in a call: notify us + auto-reply "busy" to the caller
+    // (once per call token) instead of silently dropping it.
+    void maybeReplyBusy(const QString &callerName, const QString &token);
 
     // Multi-party model. Stable order: self first, then join order. The
     // legacy 1:1 getters above keep working (P2P = self + one remote).
@@ -254,6 +258,12 @@ signals:
     void durationChanged();
     void callInfoChanged();
     void incomingCall(const QString &callerName, const QString &token, bool withVideo);
+    // #77 -- a second call arrived while we're already in a call. busyIncomingCall
+    // drives a "called while you were busy" desktop notification for us;
+    // busyAutoReply asks the app layer to post a one-line "on another call" chat
+    // reply to the caller (their busy signal — Talk has no native one).
+    void busyIncomingCall(const QString &callerName, const QString &token);
+    void busyAutoReply(const QString &token, const QString &text);
     void callEnded(const QString &reason);
     // A call we tried to place was rejected by the SERVER (e.g. HTTP 5xx on
     // POST call/{token}) and could not be established. Distinct from callEnded
@@ -614,6 +624,15 @@ private:
     // room-participant churn of teardown. See hangUp / onIncomingCallDetected.
     QString m_lastHangupToken;
     QDateTime m_lastHangupTime;
+    // #79 -- the peer session(s) we were in a call with at hangup. A teardown
+    // flap of any of these re-rings us AFTER we rejoin the viewed room, so it
+    // arrives under a DIFFERENT room token than m_lastHangupToken and the
+    // token-keyed cooldown above can't catch it. Guarded by session id instead.
+    QSet<QString> m_lastHangupSids;
+    // #77 -- last conversation we auto-replied "busy" to + when, so a caller who
+    // keeps their call ringing doesn't get spammed with repeated replies.
+    QString   m_lastBusyReplyToken;
+    QDateTime m_lastBusyReplyTime;
     int m_callJoinAttempts = 0;
     static constexpr int kMaxCallJoinAttempts = 2;   // 2 quick retries, then inform
     QDateTime m_incomingTime;  // when incoming call was detected
