@@ -694,6 +694,13 @@ private:
     QTimer m_shareConfirmTimer;
     bool m_shareConfirmArmed = false;
     QTimer m_cameraApplyTimer;   // D3 — coalesce fast camera-toggle mashing
+    // #81 -- intent watchdog. Armed when the user turns the camera ON; if no
+    // self-frame arrives before it fires, the enable silently no-op'd (e.g.
+    // enableCamera() early-returned on a stale m_cameraEnabled with the source
+    // already dead) so nothing is watching. Forces one real disable->enable to
+    // clear the stale state + re-arm PublishPipeline's own frame watchdog, which
+    // then drives the existing cameraError -> "Camera unavailable" notice.
+    QTimer m_cameraIntentTimer;
     bool m_shareRetryTeardown = false;   // a stop() in flight is a retry, not a user stop
     void buildAndStartSharePipeline(int monitorIndex, quintptr windowHandle);
     // Clamp a screen-share capture size DOWN to the GPU tier's ceiling (720p
