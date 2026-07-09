@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.58.3 "Blue Fiesta" (2026-07-09)
+
+### Added
+* **A busy signal when you call someone who's on another call.** If they're a
+  TalQ user, your app now plays a short busy tone and shows a "…is on another
+  call" popup while you're ringing — on top of the automatic "on another call"
+  reply they were already sending. Other clients still just get the message.
+* **A clear "expand" button on the minimized call.** The little docked call
+  window now has a button to restore it to full size, instead of only
+  responding to a double-click.
+
+### Changed
+* **The on-screen quality readout now reflects the screen share.** While a peer
+  is sharing their screen, their camera is intentionally dropped to the lowest
+  quality — so the quality readout used to show a misleading "LOW". It now shows
+  the **share's** resolution (720p / 1080p / 1440p / Native), which is what
+  you're actually watching.
+
 ## v0.58.2 "Blue Fiesta" (2026-07-09)
 
 ### Fixed

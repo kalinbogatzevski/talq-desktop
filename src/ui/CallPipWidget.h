@@ -65,9 +65,11 @@ private:
     QImage m_thumb;                 // last camera frame from m_shown, unscaled
 
     QRectF m_hangupRect;            // hit rect, recomputed each paint
+    QRectF m_expandRect;            // explicit "expand back to full" control
 
     // Whole-window drag state (dragging THIS widget drags window()).
     bool m_pressOnHangup = false;
+    bool m_pressOnExpand = false;
     bool m_dragging = false;
     bool m_dragMoved = false;
     QPoint m_dragStartGlobalPos;

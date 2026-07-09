@@ -13,5 +13,6 @@
         <file alias="ring_uk.wav">sounds/ring_uk.wav</file>
         <file alias="ring_oldphone.wav">sounds/ring_oldphone.wav</file>
         <file alias="ring_trill.wav">sounds/ring_trill.wav</file>
+        <file alias="busy_soft.wav">sounds/busy_soft.wav</file>
     </qresource>
 </RCC>

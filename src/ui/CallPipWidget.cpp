@@ -137,6 +137,15 @@ void CallPipWidget::paintEvent(QPaintEvent *)
     VectorIcons::draw(p, QStringLiteral("end"), m_hangupRect.adjusted(6, 6, -6, -6),
                        Qt::white, false, hangupRed);
 
+    // Explicit "expand back to full call" control, just left of hang-up.
+    // Restore was previously only a double-click, which wasn't discoverable.
+    m_expandRect = QRectF(m_hangupRect.left() - 8 - 28, bar.top() + (barH - 28) / 2.0, 28, 28);
+    const QColor expandBg(255, 255, 255, 30);
+    p.setBrush(expandBg); p.setPen(Qt::NoPen);
+    p.drawEllipse(m_expandRect);
+    VectorIcons::draw(p, QStringLiteral("full"), m_expandRect.adjusted(7, 7, -7, -7),
+                       Qt::white, false, expandBg);
+
     // Faint border so the frameless dock reads as a distinct floating chip
     // against whatever desktop content sits behind it.
     p.setBrush(Qt::NoBrush);
@@ -148,7 +157,8 @@ void CallPipWidget::mousePressEvent(QMouseEvent *e)
 {
     if (e->button() != Qt::LeftButton) { QWidget::mousePressEvent(e); return; }
     m_pressOnHangup = m_hangupRect.contains(e->position());
-    if (!m_pressOnHangup) {
+    m_pressOnExpand = m_expandRect.contains(e->position());
+    if (!m_pressOnHangup && !m_pressOnExpand) {
         m_dragging = true;
         m_dragMoved = false;
         m_dragStartGlobalPos = e->globalPosition().toPoint();
@@ -169,11 +179,14 @@ void CallPipWidget::mouseReleaseEvent(QMouseEvent *e)
     if (e->button() != Qt::LeftButton) { QWidget::mouseReleaseEvent(e); return; }
     const bool wasDraggedAndMoved = m_dragging && m_dragMoved;
     const bool clickedHangup = m_pressOnHangup && !m_dragMoved && m_hangupRect.contains(e->position());
+    const bool clickedExpand = m_pressOnExpand && !m_dragMoved && m_expandRect.contains(e->position());
     m_dragging = false;
     m_dragMoved = false;
     m_pressOnHangup = false;
+    m_pressOnExpand = false;
 
     if (clickedHangup) { m_call->hangUp(); return; }
+    if (clickedExpand) { emit restoreRequested(); return; }
     // "Drop" the dragged dock: snap it home to the nearest corner instead of
     // leaving it wherever the mouse happened to release.
     if (wasDraggedAndMoved) snapToNearestCorner();
