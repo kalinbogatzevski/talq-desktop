@@ -55,6 +55,7 @@ public:
         FileIdRole,
         LastEditTimestampRole,
         SilentRole,             // sender suppressed notifications for this message
+        ReferenceIdRole,        // #80 -- client referenceId (machine marker, e.g. "talq/busy")
     };
 
     explicit MessageListModel(ApiClient *api, MessageCache *cache, QObject *parent = nullptr);

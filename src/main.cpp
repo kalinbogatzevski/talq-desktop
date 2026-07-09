@@ -660,10 +660,19 @@ int main(int argc, char *argv[])
     });
 
     // Notify on new polled messages in active conversation
-    QObject::connect(&messages, &MessageListModel::newMessagesAtEnd, &notifications, [&messages, &notifications, &auth]() {
+    QObject::connect(&messages, &MessageListModel::newMessagesAtEnd, &notifications, [&messages, &notifications, &auth, &callManager]() {
         int count = messages.rowCount();
         if (count == 0) return;
         auto idx = messages.index(0);  // model is newest-first, index 0 = latest message
+        // #80 -- TalQ-exclusive busy signal: the peer we're ringing auto-replied
+        // with the "talq/busy" marker. If we're still ringing THIS conversation,
+        // play the busy tone + popup; swallow it so it isn't also toasted.
+        if (messages.data(idx, MessageListModel::ReferenceIdRole).toString() == QStringLiteral("talq/busy")) {
+            if (callManager.state() == CallManager::Outgoing
+                && callManager.callToken() == messages.conversationToken())
+                callManager.onPeerBusy(messages.data(idx, MessageListModel::ActorNameRole).toString());
+            return;
+        }
         QString actorId = messages.data(idx, MessageListModel::ActorIdRole).toString();
         if (actorId == auth.userId()) return;
         // Honor the sender's "Send silently" choice — same wire flag the
@@ -703,7 +712,16 @@ int main(int argc, char *argv[])
     });
     QObject::connect(&callManager, &CallManager::busyAutoReply, &api,
                      [&api, &callManager](const QString &token, const QString &text) {
-        api.sendChatMessage(token, text, &callManager, [](bool, int, const QString &) {});
+        // #80 -- tag the busy reply with the "talq/busy" marker so a TalQ caller
+        // still ringing us recognises it (locale-independent) and plays the busy
+        // tone; non-TalQ callers just see the text.
+        api.sendChatMessage(token, text, &callManager, [](bool, int, const QString &) {},
+                            QString() /*threadTitle*/, QStringLiteral("talq/busy"));
+    });
+    // #80 -- caller-side popup when the peer we're ringing is on another call.
+    QObject::connect(&callManager, &CallManager::peerBusy, &notifications,
+                     [&notifications](const QString &peerName) {
+        notifications.notify(peerName, QObject::tr("is on another call"), true);
     });
 
     // "Call ended" desktop notification. callEnded fires once per terminal

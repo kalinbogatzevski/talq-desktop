@@ -1551,7 +1551,15 @@ void CallStage::paintInfoPills(QPainter &p, const PainterTheme &th)
         if (!bestSid.isEmpty())
             sub = m_tileSubstream.value(bestSid, pickSubstream(-1, bestH, bestIsStage));
     }
-    if (sub >= 0 && sub <= 2) {
+    // #76 -- during a remote screen share the sharer pins their camera to the
+    // LOW simulcast layer, so the camera-substream QUALITY pill would read a
+    // misleading "LOW". Show the SHARE's received quality tier instead — that's
+    // the content the viewer is actually watching.
+    const QString shareTier = m_call->hasRemoteScreen() ? m_call->remoteScreenTierLabel()
+                                                        : QString();
+    if (!shareTier.isEmpty()) {
+        drawTile(QStringLiteral("SHARE Q"), shareTier, th.success);
+    } else if (sub >= 0 && sub <= 2) {
         static const char *const kQualityLabels[] = { "LOW", "MED", "HIGH" };
         const QColor qLed = (sub == 2) ? th.success
                            : (sub == 1) ? th.amber : th.danger;

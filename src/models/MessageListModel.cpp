@@ -234,6 +234,8 @@ QVariant MessageListModel::data(const QModelIndex &index, int role) const
             return m.lastEditTimestamp;
         case SilentRole:
             return m.silent;
+        case ReferenceIdRole:
+            return m.referenceId;
         default:
             return {};
     }
