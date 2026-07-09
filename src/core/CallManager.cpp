@@ -2194,9 +2194,37 @@ void CallManager::rebuildPublisherAndReoffer()
     }
 }
 
+void CallManager::maybeReplyBusy(const QString &callerName, const QString &token)
+{
+    // A second call rang while we're already in a call. Instead of silently
+    // dropping it (old behaviour), let both sides know (#77): a desktop
+    // notification for us, and an auto "on another call" chat reply to the
+    // caller so they aren't left staring at an unanswered ring. Nextcloud Talk
+    // has no native busy signal, so the chat line IS the busy signal (and it
+    // works for every client). Guarded so a caller who keeps ringing can't be
+    // spammed with repeat replies.
+    if (token.isEmpty() || token == m_callToken) return;   // never our own call room
+    const QDateTime now = QDateTime::currentDateTime();
+    if (token == m_lastBusyReplyToken && m_lastBusyReplyTime.isValid()
+        && m_lastBusyReplyTime.msecsTo(now) < 60000)
+        return;                                             // once per call, per minute
+    m_lastBusyReplyToken = token;
+    m_lastBusyReplyTime  = now;
+    qInfo() << "CallManager: busy — second incoming call from" << callerName
+            << "in" << token << "— notifying self + auto-replying";
+    emit busyIncomingCall(callerName, token);
+    // Auto chat reply only for 1:1 conversations — an "I'm on another call" line
+    // dropped into a busy group room is noise.
+    if (m_conversations && m_conversations->conversationTypeForToken(token) == 1)
+        emit busyAutoReply(token, tr("\xF0\x9F\x93\x9E On another call right now — I'll get back to you."));
+}
+
 void CallManager::onIncomingCallDetected(const QString &callerName, const QString &token, int callFlag)
 {
-    if (m_state != Idle) return;
+    if (m_state != Idle) {
+        maybeReplyBusy(callerName, token);
+        return;
+    }
 
     // Cooldown: don't re-detect the same call we just declined
     if (token == m_lastDeclinedToken
@@ -2443,6 +2471,12 @@ void CallManager::hangUp() {
     // incoming call from Ilko fired ~2s after Kalin hung up.
     m_lastHangupToken = m_callToken;
     m_lastHangupTime  = QDateTime::currentDateTime();
+    // #79 -- also stash the peer session(s) we were in a call with, BEFORE
+    // teardown() clears them. A post-hangup inCall flap from any of these is a
+    // teardown phantom even when observed under a different room token (after we
+    // rejoin the viewed room), which the token-keyed cooldown would miss.
+    m_lastHangupSids = m_peerInCallSids;
+    if (!m_remoteSessionId.isEmpty()) m_lastHangupSids.insert(m_remoteSessionId);
     // Tell the peer this is a DELIBERATE hangup so a 1:1 MCU call ends on their
     // side immediately, instead of waiting out the 28s peer-grace "Reconnecting"
     // hold (which exists to survive a transient drop and can't distinguish the
@@ -4687,6 +4721,18 @@ void CallManager::onParticipantJoinedCall(const QString &sessionId, int flags, c
             qInfo() << "CallManager: peer" << joinerUser << "answered" << token
                     << "within the ring-out window — re-joining our call (#bug4)";
             startCall(token, withVideo);
+        } else if (m_lastHangupTime.isValid()
+                   && m_lastHangupTime.msecsTo(QDateTime::currentDateTime()) < 6000
+                   && m_lastHangupSids.contains(sessionId)) {
+            // #79 -- a session we JUST hung up on, flapping its inCall flag
+            // during teardown. It reaches us here (Idle) only after we rejoined
+            // the viewed room, so currentRoom() differs from m_lastHangupToken
+            // and the token-keyed cooldown in onIncomingCallDetected can't catch
+            // it. Guard by the hung-up SESSION id instead: this is teardown
+            // noise, not a real call-back. A genuine re-dial from the same
+            // person still rings once this 6s window lapses.
+            TLOG_CALL("ignoring post-hangup inCall flap from just-hung-up session "
+                      << sessionId.left(20));
         } else {
             // Incoming call detected via signaling — route through the same
             // path as conversation-list detection so cooldown applies.
