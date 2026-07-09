@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.58.2 "Blue Fiesta" (2026-07-09)
+
+### Fixed
+* **Your camera no longer gets stuck off.** After turning the camera off and
+  back on, it could stay dark — with no error — because the retry silently did
+  nothing. The app now watches for this: if the camera doesn't start within a
+  few seconds it forces a real restart, and if the device is genuinely
+  unavailable (in use by another app, or blocked by a privacy setting) it now
+  tells you with a "Camera unavailable" notice and continues in audio, instead
+  of failing silently.
+
 ## v0.58.1 "Blue Fiesta" (2026-07-09)
 
 A quick follow-up to 0.58.0 with three call-handling fixes.

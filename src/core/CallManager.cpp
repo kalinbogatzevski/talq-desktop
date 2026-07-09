@@ -299,6 +299,38 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
     m_cameraApplyTimer.setInterval(250);
     connect(&m_cameraApplyTimer, &QTimer::timeout, this, &CallManager::applyCameraState);
 
+    // #81 -- camera intent watchdog. If the user turns the camera on but no
+    // self-frame has arrived a few seconds later, the enable silently failed
+    // with nothing watching it (enableCamera early-returns on a stale
+    // m_cameraEnabled, arming no frame watchdog). Force one real disable->enable
+    // to clear the stale state; that re-arms PublishPipeline's own watchdog, so
+    // a genuinely unavailable device then flows into the existing cameraError
+    // path (grace-retry -> "Camera unavailable" notice + revert to audio-only).
+    m_cameraIntentTimer.setSingleShot(true);
+    m_cameraIntentTimer.setInterval(3000);
+    connect(&m_cameraIntentTimer, &QTimer::timeout, this, [this]() {
+        if (!m_cameraOn || m_useP2P || !m_publishPipeline) return;
+        if (m_state != Active && m_state != Connecting && m_state != Reconnecting) return;
+        if (m_publishPipeline->cameraFirstFrameSeen()) return;   // camera came up fine
+        if (m_publishPipeline->isCameraOn() && m_cameraGraceRetries > 0) return; // grace-retry already in flight
+        qWarning() << "CallManager: camera intended ON but no self-frame after grace "
+                      "— forcing a disable->enable to recover a wedged/stale camera (#81)";
+        const int deviceIndex = videoDeviceIndex();
+        const bool hd1080 = preferHd1080();
+        // disable then delayed enable — mirror the grace-retry ordering so an
+        // async NULL can't overtake the sync PLAYING and park the device.
+        QTimer::singleShot(0, this, [this]() {
+            if (m_publishPipeline) m_publishPipeline->disableCamera();
+        });
+        QTimer::singleShot(300, this, [this, deviceIndex, hd1080]() {
+            if (!m_publishPipeline || !m_cameraOn) return;
+            if (m_state == Idle || m_state == Ending) return;
+            if (m_publishPipeline->isCameraOn()) return;   // already back up
+            qInfo() << "CallManager: camera intent-watchdog — re-attempting enableCamera (#81)";
+            m_publishPipeline->enableCamera(deviceIndex, hd1080);
+        });
+    });
+
     // D7 — device hotplug auto-resume. When a camera/mic is plugged or unplugged
     // mid-call and our camera was INTENDED but had failed (unavailable), retry it
     // now that the device set changed — a camera that comes back auto-resumes
@@ -2570,9 +2602,11 @@ void CallManager::applyCameraState() {
         if (m_cameraOn) {
             m_publishPipeline->enableCamera(videoDeviceIndex(), preferHd1080());
             m_localVideoProvider = m_publishPipeline->localVideoProvider();
+            m_cameraIntentTimer.start();   // #81 -- watch for a silent no-frame enable
         } else {
             m_publishPipeline->disableCamera();
             m_localVideoProvider = nullptr;
+            m_cameraIntentTimer.stop();
         }
         emit localVideoProviderChanged();
     }
