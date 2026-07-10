@@ -181,6 +181,18 @@ public:
                     std::function<void(bool ok,
                                        const QString &token,
                                        const QString &error)> callback);
+    // #78 (add-to-call) -- fetch a room's participants; callback receives the raw
+    // participant objects (used to resolve a userId -> attendeeId before ringing).
+    // Adding a user reuses the existing addRoomParticipant below (group rooms
+    // only; NC rejects it for one-to-one rooms).
+    void fetchParticipants(const QString &token, QObject *context,
+                           std::function<void(bool ok, const QJsonArray &participants,
+                                              const QString &error)> callback);
+    // #78 -- ring an existing room attendee into the ongoing call (spreed
+    // POST /call/{token}/ring/{attendeeId} -> sendCallNotificationForAttendee).
+    void ringAttendee(const QString &token, int attendeeId,
+                      QObject *context,
+                      std::function<void(bool ok, const QString &error)> callback);
 
     // Add a user to an existing room.
     void addRoomParticipant(const QString &token, const QString &userId,

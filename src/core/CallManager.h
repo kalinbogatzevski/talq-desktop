@@ -16,7 +16,6 @@
 #include <gst/app/gstappsink.h>   // GstAppSink (for the #13 preview new-sample callback)
 #include "core/SubscribePipeline.h"
 #include "core/SubscribeWebrtcSrc.h"
-#include "core/PeerPipeline.h"
 #include "core/MediaDeviceManager.h"
 #include "core/VideoFrameProvider.h"
 #include "core/ScreenSharePipeline.h"
@@ -138,12 +137,13 @@ public:
     // Decoded resolution of the incoming stream (active simulcast layer),
     // e.g. "1280×720"; empty until the first frame decodes.
     QString activeRxResolution() const;
-    // #76 -- a remote peer is sharing their screen TO us; remoteScreenTierLabel()
-    // buckets the received share height to a quality tier (720p/1080p/1440p/
-    // Native) so the stage can show the SHARE quality during a share instead of
-    // the sharer's camera substream (pinned to LOW while they share).
+    // #76 -- a remote peer is sharing their screen TO us; remoteScreenResolutionLabel()
+    // returns the EXACT received share resolution ("W×H") so the stage can show the
+    // SHARE size during a share instead of the sharer's camera substream (pinned to
+    // LOW while they share). Exact size, not a bucketed tier: a shared window / 16:10
+    // display height doesn't map to a display standard.
     bool hasRemoteScreen() const;
-    QString remoteScreenTierLabel() const;
+    QString remoteScreenResolutionLabel() const;
     // Peak decoded height observed from the remote this call (across substream
     // switches) — the honest basis for the receive-quality dropdown's HIGH
     // label, instead of guessing from our OWN send setting. 0 until a frame
@@ -166,17 +166,17 @@ public:
     int selectedSignalingRttMs() const;
 
     Q_INVOKABLE void startCall(const QString &token, bool withVideo);
+    // #78 (add-to-call) -- pull the peer who is calling us (from their 1:1
+    // conversation callerToken) into our ACTIVE call. Group active call: add
+    // them + ring them in. 1:1 active call: promote to a new group with self +
+    // current peer + caller (NC won't add a 3rd to a one-to-one room), then
+    // join that group call and ring both. Async; reports via addToCallResult.
+    Q_INVOKABLE void addPeerToActiveCall(const QString &callerToken, const QString &callerName);
     Q_INVOKABLE void setRemotePeerInfo(const QString &name, const QString &peerId);
     Q_INVOKABLE void acceptCall(bool withVideo);
-    // 0.41.5-beta — inject the conversation list so the call mode
-    // decision (m_useP2P) can read the room type and force P2P for
-    // 1:1 calls even when the HPB advertises an MCU. Group calls
-    // (type != 1) still use the MCU.
+    // Inject the conversation list so call logic can read the room type
+    // (1 = one-to-one) via isOneToOneCall().
     void setConversations(ConversationListModel *c) { m_conversations = c; }
-    // 0.41.5-beta — telemetry-pill readout. True = direct WebRTC P2P,
-    // false = MCU/SFU forward. Decided once per call in setState→
-    // ensureSignalingRoomJoined; stable for the call's lifetime.
-    bool isUsingP2P() const { return m_useP2P; }
     Q_INVOKABLE void declineCall();
     // True when the current incoming/active call was offered with video, so
     // the incoming UI can offer an "answer with video" choice.
@@ -245,6 +245,9 @@ public:
     // (once per call token) instead of silently dropping it.
     void maybeReplyBusy(const QString &callerName, const QString &token);
     void playBusyTone();   // #80 -- one-shot :/sounds/busy_soft.wav
+    // #78 add-to-call helpers (async):
+    void addAndRingIntoCall(const QString &token, const QString &userId, const QString &name);
+    void promoteOneToOneToGroup(const QString &callerUserId, const QString &callerName, bool withVideo);
 
     // Multi-party model. Stable order: self first, then join order. The
     // legacy 1:1 getters above keep working (P2P = self + one remote).
@@ -279,6 +282,8 @@ signals:
     // #80 -- the peer we were ringing is on another call (their TalQ told us via
     // the busy marker). App layer shows a "<peer> is on another call" popup.
     void peerBusy(const QString &peerName);
+    // #78 -- add-to-call outcome for the UI (ok + a human-readable message).
+    void addToCallResult(bool ok, const QString &message);
     void callEnded(const QString &reason);
     // A call we tried to place was rejected by the SERVER (e.g. HTTP 5xx on
     // POST call/{token}) and could not be established. Distinct from callEnded
@@ -484,13 +489,8 @@ private:
     void startIncomingCameraPreview();
     void stopIncomingCameraPreview();
     static GstFlowReturn onPreviewSample(GstAppSink *sink, gpointer userData);
-    // P2P single pipeline
-    PeerPipeline *m_peerPipeline = nullptr;
-    bool m_useP2P = false;
-    // 0.41.5-beta — set by MainWindow at construction. Used at the
-    // m_useP2P decision point to look up the current call's room type
-    // (1 = one-to-one). When the user prefers P2P for 1:1, we force
-    // P2P even on instances where the HPB advertises an MCU.
+    // Set by MainWindow at construction; used to look up the current call's
+    // room type (1 = one-to-one) via isOneToOneCall().
     ConversationListModel *m_conversations = nullptr;
     QTimer m_glibTimer;  // shared GLib main context pump
 
@@ -617,12 +617,6 @@ private:
     // transitions INTO Connecting and promotes immediately if it's
     // already been "connected". Reset on every fresh call attempt.
     bool m_pubIceConnectedSeen = false;
-    // #66 — P2P twin of the above. A 1:1 direct call's ICE can reach
-    // "connected" before participant discovery flips us to Connecting; remember
-    // it so setState(Connecting) promotes straight to Active instead of waiting
-    // on the 12 s MCU-fallback timer. Reset on every fresh call attempt.
-    bool m_p2pIceConnectedSeen = false;
-
     bool m_joinedCall = false;
     bool m_userActionReady = false;
 

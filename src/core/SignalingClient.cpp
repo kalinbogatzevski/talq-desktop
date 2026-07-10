@@ -597,17 +597,6 @@ void SignalingClient::onTextMessage(const QString &msg)
             emit endOfCandidatesReceived(senderSessionId);
             return;
         }
-        // 0.41.x-beta — TalQ-private P2P overlay. Custom session-targeted
-        // type the HPB relays untouched (Janus never sees it), so 1:1 SDP
-        // + ICE travels peer-to-peer and the media goes direct.
-        if (msgType.startsWith(QStringLiteral("talq.p2p."))) {
-            const QString subtype = msgType.mid(9);
-            qInfo() << "Signaling: received talq.p2p." << subtype
-                    << "from" << senderSessionId.left(20);
-            emit p2pSignalReceived(senderSessionId, subtype,
-                                   msgData["payload"].toObject());
-            return;
-        }
         if (msgType == "mute" || msgType == "unmute") {
             QString media = msgData["payload"].toObject()["name"].toString();
             bool muted = (msgType == "mute");
@@ -1278,19 +1267,6 @@ void SignalingClient::sendBroadcastMessage(const QJsonObject &data)
 
     m_ws.sendTextMessage(QJsonDocument(msg).toJson(QJsonDocument::Compact));
     qDebug() << "Signaling: sent broadcast message" << data["type"].toString();
-}
-
-void SignalingClient::sendP2pSignal(const QString &toSessionId, const QString &subtype,
-                                    const QJsonObject &payload)
-{
-    // Custom type → the HPB relays it session-to-session verbatim (NOT
-    // intercepted as an MCU op), so the SDP/ICE rides peer-to-peer and the
-    // media goes direct WebRTC, bypassing Janus. See header comment.
-    QJsonObject data;
-    data["type"]    = QStringLiteral("talq.p2p.") + subtype;
-    data["payload"] = payload;
-    sendMinimalMessage(toSessionId, data);
-    qDebug() << "Signaling: sent talq.p2p." << subtype << "to" << toSessionId.left(20);
 }
 
 void SignalingClient::sendMinimalMessage(const QString &toSessionId, const QJsonObject &data)

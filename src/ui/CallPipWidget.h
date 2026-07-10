@@ -39,6 +39,9 @@ signals:
     // Double-click anywhere except the hang-up button restores the full
     // call window (CallWindow::exitPipDock).
     void restoreRequested();
+    // The dock "minimize" button -> CallWindow::minimizeDock: native minimize to
+    // the dock's own taskbar button (call stays live); one click there restores it.
+    void minimizeRequested();
 
 protected:
     void paintEvent(QPaintEvent *) override;
@@ -64,12 +67,16 @@ private:
     QPointer<CallParticipant> m_shown;
     QImage m_thumb;                 // last camera frame from m_shown, unscaled
 
+    QRectF m_micRect;               // mute-toggle chip (left of the strip)
     QRectF m_hangupRect;            // hit rect, recomputed each paint
     QRectF m_expandRect;            // explicit "expand back to full" control
+    QRectF m_minimizeRect;          // "minimize dock off-screen to tray" control
 
     // Whole-window drag state (dragging THIS widget drags window()).
     bool m_pressOnHangup = false;
     bool m_pressOnExpand = false;
+    bool m_pressOnMinimize = false;
+    bool m_pressOnMic = false;
     bool m_dragging = false;
     bool m_dragMoved = false;
     QPoint m_dragStartGlobalPos;
