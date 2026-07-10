@@ -1521,13 +1521,8 @@ void CallStage::paintInfoPills(QPainter &p, const PainterTheme &th)
                                        : QStringLiteral(" · SW"));
     drawTile(QStringLiteral("CODEC"), val1, hw ? th.success : th.amber);
 
-    // 0.41.5-beta — call MODE pill: P2P (direct WebRTC) or MCU (SFU
-    // forwarding). Green for P2P (preferred low-latency for 1:1),
-    // amber for MCU. Decided per-call at signaling-room join time.
-    const bool p2p = m_call->isUsingP2P();
-    drawTile(QStringLiteral("MODE"),
-             p2p ? QStringLiteral("P2P") : QStringLiteral("MCU"),
-             p2p ? th.success : th.amber);
+    // Call MODE pill: media is forwarded through the MCU (SFU).
+    drawTile(QStringLiteral("MODE"), QStringLiteral("MCU"), th.amber);
 
     // QUALITY chip: live readout of the substream the primary remote is
     // forwarding. Distinct from the QUALITY DROPDOWN — the dropdown is
@@ -1553,12 +1548,12 @@ void CallStage::paintInfoPills(QPainter &p, const PainterTheme &th)
     }
     // #76 -- during a remote screen share the sharer pins their camera to the
     // LOW simulcast layer, so the camera-substream QUALITY pill would read a
-    // misleading "LOW". Show the SHARE's received quality tier instead — that's
-    // the content the viewer is actually watching.
-    const QString shareTier = m_call->hasRemoteScreen() ? m_call->remoteScreenTierLabel()
-                                                        : QString();
-    if (!shareTier.isEmpty()) {
-        drawTile(QStringLiteral("SHARE Q"), shareTier, th.success);
+    // misleading "LOW". Show the SHARE's exact received resolution instead —
+    // that's the content the viewer is actually watching.
+    const QString shareRes = m_call->hasRemoteScreen() ? m_call->remoteScreenResolutionLabel()
+                                                       : QString();
+    if (!shareRes.isEmpty()) {
+        drawTile(QStringLiteral("SHARE Q"), shareRes, th.success);
     } else if (sub >= 0 && sub <= 2) {
         static const char *const kQualityLabels[] = { "LOW", "MED", "HIGH" };
         const QColor qLed = (sub == 2) ? th.success

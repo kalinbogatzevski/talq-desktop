@@ -123,11 +123,13 @@ void CallPipWidget::paintEvent(QPaintEvent *)
     p.fillRect(bar, QColor(0, 0, 0, 140));
 
     const bool muted = m_call->isMuted();
-    const QRectF micChip(10, bar.top() + (barH - 22) / 2.0, 22, 22);
+    // Stored as a member (not a local) so mousePress/Release can hit-test it:
+    // clicking the chip toggles mute, same as the mic button on the full stage.
+    m_micRect = QRectF(10, bar.top() + (barH - 22) / 2.0, 22, 22);
     const QColor micBg = muted ? QColor(0xE2, 0x3B, 0x33, 220) : QColor(255, 255, 255, 30);
     p.setBrush(micBg); p.setPen(Qt::NoPen);
-    p.drawEllipse(micChip);
-    VectorIcons::draw(p, QStringLiteral("mic"), micChip.adjusted(4, 4, -4, -4),
+    p.drawEllipse(m_micRect);
+    VectorIcons::draw(p, QStringLiteral("mic"), m_micRect.adjusted(4, 4, -4, -4),
                        Qt::white, muted, micBg);
 
     m_hangupRect = QRectF(rc.width() - 10 - 28, bar.top() + (barH - 28) / 2.0, 28, 28);
@@ -146,6 +148,17 @@ void CallPipWidget::paintEvent(QPaintEvent *)
     VectorIcons::draw(p, QStringLiteral("full"), m_expandRect.adjusted(7, 7, -7, -7),
                        Qt::white, false, expandBg);
 
+    // "Minimize the dock entirely" control, just left of the expand button:
+    // takes the dock off-screen (call stays live), returns when TalQ is reopened.
+    m_minimizeRect = QRectF(m_expandRect.left() - 8 - 28, bar.top() + (barH - 28) / 2.0, 28, 28);
+    const QColor minBg(255, 255, 255, 30);
+    p.setBrush(minBg); p.setPen(Qt::NoPen);
+    p.drawEllipse(m_minimizeRect);
+    // Simple minimize glyph: a short horizontal bar (drawn directly, no icon dep).
+    p.setPen(QPen(Qt::white, 2, Qt::SolidLine, Qt::RoundCap));
+    const QPointF mc = m_minimizeRect.center();
+    p.drawLine(QPointF(mc.x() - 6, mc.y() + 3), QPointF(mc.x() + 6, mc.y() + 3));
+
     // Faint border so the frameless dock reads as a distinct floating chip
     // against whatever desktop content sits behind it.
     p.setBrush(Qt::NoBrush);
@@ -158,7 +171,9 @@ void CallPipWidget::mousePressEvent(QMouseEvent *e)
     if (e->button() != Qt::LeftButton) { QWidget::mousePressEvent(e); return; }
     m_pressOnHangup = m_hangupRect.contains(e->position());
     m_pressOnExpand = m_expandRect.contains(e->position());
-    if (!m_pressOnHangup && !m_pressOnExpand) {
+    m_pressOnMinimize = m_minimizeRect.contains(e->position());
+    m_pressOnMic = m_micRect.contains(e->position());
+    if (!m_pressOnHangup && !m_pressOnExpand && !m_pressOnMinimize && !m_pressOnMic) {
         m_dragging = true;
         m_dragMoved = false;
         m_dragStartGlobalPos = e->globalPosition().toPoint();
@@ -180,13 +195,19 @@ void CallPipWidget::mouseReleaseEvent(QMouseEvent *e)
     const bool wasDraggedAndMoved = m_dragging && m_dragMoved;
     const bool clickedHangup = m_pressOnHangup && !m_dragMoved && m_hangupRect.contains(e->position());
     const bool clickedExpand = m_pressOnExpand && !m_dragMoved && m_expandRect.contains(e->position());
+    const bool clickedMinimize = m_pressOnMinimize && !m_dragMoved && m_minimizeRect.contains(e->position());
+    const bool clickedMic = m_pressOnMic && !m_dragMoved && m_micRect.contains(e->position());
     m_dragging = false;
     m_dragMoved = false;
     m_pressOnHangup = false;
     m_pressOnExpand = false;
+    m_pressOnMinimize = false;
+    m_pressOnMic = false;
 
     if (clickedHangup) { m_call->hangUp(); return; }
     if (clickedExpand) { emit restoreRequested(); return; }
+    if (clickedMinimize) { emit minimizeRequested(); return; }
+    if (clickedMic) { m_call->toggleMute(); return; }
     // "Drop" the dragged dock: snap it home to the nearest corner instead of
     // leaving it wherever the mouse happened to release.
     if (wasDraggedAndMoved) snapToNearestCorner();
@@ -194,7 +215,9 @@ void CallPipWidget::mouseReleaseEvent(QMouseEvent *e)
 
 void CallPipWidget::mouseDoubleClickEvent(QMouseEvent *e)
 {
-    if (m_hangupRect.contains(e->position())) return;  // never restore via the hang-up button
+    if (m_hangupRect.contains(e->position())) return;    // never restore via the hang-up button
+    if (m_minimizeRect.contains(e->position())) return;  // nor via the minimize button
+    if (m_micRect.contains(e->position())) return;       // nor via the mute chip
     emit restoreRequested();
 }
 

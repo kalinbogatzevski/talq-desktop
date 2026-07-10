@@ -19,6 +19,7 @@
 #include <QDebug>
 #include <atomic>
 #include <gst/gst.h>
+#include "HwEncoderProbe.h"   // #74 — cached out-of-process HW-encoder probe
 
 // Runtime latch: "NVENC can't open a session on THIS machine." Some 2-GPU
 // (Optimus) laptops register nvh264enc, but the process — pinned to the Intel
@@ -195,6 +196,19 @@ inline GstElement *makeWebrtcVideoEncoder(bool screen, int bitrateBps,
         // restored from QSettings on startup.
         if (!g_strcmp0(order[i], "nvh264enc") && talqAvoidNvenc().load())
             continue;
+        // #74 — out-of-process HW-encoder probe cache. If a prior probe run
+        // POSITIVELY determined this hardware encoder does NOT work on THIS GPU
+        // (reached factory-make but never PLAYING), skip it so the live path
+        // never eats its 30-60s init hang / rapid-reshare collision. Fail-open:
+        // returns false (attempt it, exactly as before) for a missing / stale /
+        // disabled / unfinished cache or any non-probed factory — and x264enc
+        // (software) is never a probe candidate, so the ultimate fallback below
+        // is never removed.
+        if (talqHwEncoderProbeExcludes(order[i])) {
+            qInfo() << "VideoEncoder: skipping" << order[i]
+                    << "— HW-probe cache marks it non-working on this GPU";
+            continue;
+        }
         GstElement *enc = gst_element_factory_make(order[i], nullptr);
         if (!enc) continue;
         const bool hw = g_strcmp0(order[i], "x264enc") != 0;

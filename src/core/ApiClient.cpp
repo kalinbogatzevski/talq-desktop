@@ -1097,6 +1097,45 @@ void ApiClient::createRoom(int roomType, const QString &roomName, const QString 
     });
 }
 
+void ApiClient::fetchParticipants(const QString &token, QObject *context,
+                                  std::function<void(bool, const QJsonArray &, const QString &)> callback)
+{
+    auto req = makeRequest(QStringLiteral("apps/spreed/api/v4/room/") + token + "/participants");
+    QNetworkReply *reply = m_nam.get(req);
+    trackReply(reply);
+    connect(reply, &QNetworkReply::finished, context ? context : this, [reply, callback]() {
+        reply->deleteLater();
+        const QJsonObject ocs = QJsonDocument::fromJson(reply->readAll()).object()
+                                    .value(QStringLiteral("ocs")).toObject();
+        const int s = ocs.value(QStringLiteral("meta")).toObject()
+                         .value(QStringLiteral("statuscode")).toInt();
+        if (s >= 200 && s < 300)
+            callback(true, ocs.value(QStringLiteral("data")).toArray(), QString());
+        else
+            callback(false, {}, ocs.value(QStringLiteral("meta")).toObject()
+                                    .value(QStringLiteral("message")).toString());
+    });
+}
+
+void ApiClient::ringAttendee(const QString &token, int attendeeId, QObject *context,
+                             std::function<void(bool, const QString &)> callback)
+{
+    auto req = makeRequest(QStringLiteral("apps/spreed/api/v4/call/") + token
+                           + QStringLiteral("/ring/") + QString::number(attendeeId));
+    QNetworkReply *reply = m_nam.post(req, QByteArray());
+    trackReply(reply);
+    connect(reply, &QNetworkReply::finished, context ? context : this, [reply, callback]() {
+        reply->deleteLater();
+        const QJsonObject ocs = QJsonDocument::fromJson(reply->readAll()).object()
+                                    .value(QStringLiteral("ocs")).toObject();
+        const int s = ocs.value(QStringLiteral("meta")).toObject()
+                         .value(QStringLiteral("statuscode")).toInt();
+        if (s >= 200 && s < 300) callback(true, QString());
+        else callback(false, ocs.value(QStringLiteral("meta")).toObject()
+                                 .value(QStringLiteral("message")).toString());
+    });
+}
+
 void ApiClient::addRoomParticipant(const QString &token, const QString &userId,
                                    QObject *context,
                                    std::function<void(bool, const QString &)> callback)

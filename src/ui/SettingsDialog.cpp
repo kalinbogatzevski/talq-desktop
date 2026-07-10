@@ -691,39 +691,6 @@ QWidget *SettingsDialog::buildAudioVideoTab()
            "“Always full quality” to lift the caps (takes effect next call)."),
         gpuPerfCombo));
 
-    // 0.41.x — "Direct P2P for 1:1 calls" toggle, RE-ENABLED. The 0.41.5
-    // version was removed because a client could not force P2P under a Janus
-    // MCU (the HPB hijacked the reserved offer/answer/candidate types). The
-    // talq.p2p.* signaling OVERLAY (a custom session-targeted type the HPB
-    // relays untouched) bypasses that, so 1:1 SDP + ICE can now travel
-    // peer-to-peer even on an MCU server. Experimental + opt-in (default
-    // OFF) while the direct media path is field-validated; non-TalQ peers
-    // and any P2P failure fall back to the MCU automatically.
-    auto *p2pCheck = new QCheckBox();   // label comes from makeSettingRow name
-    p2pCheck->setToolTip(
-        tr("Connect one-to-one calls directly to the other person instead of "
-           "routing media through the server — lower latency and bandwidth "
-           "when you are both near each other. Group calls always use the "
-           "server. Falls back to the server automatically if direct fails."));
-    {
-        QSettings vs("TalQ", "TalQ");
-        vs.beginGroup("Video");
-        p2pCheck->setChecked(vs.value("p2pForOneToOne", false).toBool());
-        vs.endGroup();
-    }
-    connect(p2pCheck, &QCheckBox::toggled, this, [](bool checked) {
-        QSettings vs("TalQ", "TalQ");
-        vs.beginGroup("Video");
-        vs.setValue("p2pForOneToOne", checked);
-        vs.endGroup();
-    });
-    layout->addWidget(makeSettingRow(
-        tr("Direct P2P for 1:1 calls"),
-        tr("Experimental. Connects one-to-one calls directly (lower latency) "
-           "instead of via the server; falls back to the server if needed. "
-           "Takes effect on the next call."),
-        p2pCheck));
-
     // Verbose call diagnostics — gates the per-second [MEDIA]/[LEAK] heartbeats
     // CallManager logs during a call (call-health trajectory + cross-thread
     // frame-flow gauges) for tracking down freezes / memory growth in the

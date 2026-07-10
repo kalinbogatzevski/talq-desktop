@@ -134,17 +134,6 @@ public:
     void sendMinimalMessage(const QString &toSessionId, const QJsonObject &data);
     bool hasMcu() const { return m_hasMcu; }
 
-    // 0.41.x-beta — TalQ-private P2P signaling overlay (Zoom-style: direct
-    // P2P for 1:1, MCU for 3+). The HPB hijacks the reserved offer/answer/
-    // candidate types as MCU operations, but transparently RELAYS custom
-    // session-targeted message types (same path as the talq.client
-    // broadcast). So we ride SDP + ICE on a custom "talq.p2p.<subtype>"
-    // type, which Janus never sees — the media goes direct. subtype is
-    // "offer" | "answer" | "candidate" | "end". payload carries sdp /
-    // candidate. Routed session-to-session; emits p2pSignalReceived.
-    void sendP2pSignal(const QString &toSessionId, const QString &subtype,
-                       const QJsonObject &payload);
-
     // TalQ peer client info: userId -> "TalQ/X.Y.Z". Populated from HPB
     // talq.client broadcasts and (bug 3) refreshed from the in-call data
     // channel. Returns empty for non-TalQ peers, unknown peers, OR a value not
@@ -189,9 +178,6 @@ signals:
     // request offer."). Carries NO sid (the HPB error has none); CallManager
     // correlates it to the peers it currently has a requestoffer outstanding for.
     void requestOfferRejected();
-    // 0.41.x-beta — TalQ-private P2P overlay (bypasses the MCU for 1:1).
-    void p2pSignalReceived(const QString &fromSessionId, const QString &subtype,
-                           const QJsonObject &payload);
     void participantJoinedCall(const QString &sessionId, int flags, const QString &displayName);
     void participantLeftCall(const QString &sessionId);
     void participantFlagsChanged(const QString &sessionId, int oldFlags, int newFlags);
