@@ -127,6 +127,7 @@ void talqTerminateHandler()
 #include <gst/gst.h>
 #include <cstring>
 #include "core/VideoEncoderUtil.h"   // B1/B4 — software-decode latch + HW-decoder demotion
+#include "core/HwEncoderProbe.h"     // #74 — cached out-of-process HW-encoder probe
 
 // B4 — GStreamer log probe for the d3d11 video-device-interface failure
 // (E_NOINTERFACE 0x80004002). This surfaces ONLY as a WARNING from
@@ -146,6 +147,18 @@ static void talqGstDecodeFaultProbe(GstDebugCategory *, GstDebugLevel level,
 
 int main(int argc, char *argv[])
 {
+    // #74 — hidden hardware-encoder probe entry point. When launched with
+    // --probe-hwcodec this process is a short-lived CHILD spawned by a running
+    // TalQ: it instantiates each hardware H.264 encoder in a real 720p pipeline,
+    // records which reach PLAYING, caches the verdict by GPU signature, and exits.
+    // It MUST run before all normal startup (single-instance guard, log archive/
+    // truncate, splash, GUI): it is not a UI process and must never disturb the
+    // primary instance's live log or single-instance lock.
+    for (int i = 1; i < argc; ++i) {
+        if (QByteArray(argv[i]) == "--probe-hwcodec")
+            return talqRunHwEncoderProbe(argc, argv);
+    }
+
     // Scan argv manually (before QApplication/gst_init) so verbose logging
     // is active during startup, including gst_init plugin-scan output.
     bool debugRequested = false;
@@ -521,6 +534,15 @@ int main(int argc, char *argv[])
         }
     }
 
+    // #74 — kick off the background hardware-encoder probe (async, detached).
+    // It narrows the live encoder ladder to what actually works on this GPU so the
+    // hot path never eats a hardware encoder's 30-60s init hang / rapid-reshare
+    // collision. Fail-open: until it completes (or if it never does) encoder
+    // selection uses the full nv → qsv → mf → x264 ladder exactly as before, and
+    // it is a no-op when a fresh cache already exists for this GPU. Primary
+    // instance only (a secondary already returned above).
+    talqMaybeLaunchHwEncoderProbe();
+
     // Bundled body font — Inter (SIL OFL). Registered once for the whole
     // app so every widget inherits a consistent, screen-optimised type.
     {
@@ -642,8 +664,19 @@ int main(int argc, char *argv[])
     NotificationStack notifStack;
     QObject::connect(&notifications, &NotificationManager::desktopPopupRequested,
                      &notifStack, &NotificationStack::notify);
-    QObject::connect(&notifStack, &NotificationStack::clicked,
-                     &window, [&window](const QString &token) {
+    // #78 (add-to-call) -- when a 2nd call arrives during an active call (#77),
+    // its toast is clickable to ADD that caller into your call instead of
+    // navigating to their conversation. Tracked here across the two handlers.
+    QString pendingAddCallerToken, pendingAddCallerName;
+    QObject::connect(&notifStack, &NotificationStack::clicked, &window,
+                     [&window, &callManager, &pendingAddCallerToken, &pendingAddCallerName](const QString &token) {
+        if (!token.isEmpty() && token == pendingAddCallerToken
+            && (callManager.state() == CallManager::Active
+                || callManager.state() == CallManager::Connecting)) {
+            callManager.addPeerToActiveCall(token, pendingAddCallerName);
+            pendingAddCallerToken.clear();
+            return;
+        }
         window.openConversation(token);
     });
 
@@ -707,8 +740,17 @@ int main(int argc, char *argv[])
     // busy" desktop toast for us, and a request to auto-reply "on another call"
     // to the caller (1:1 only) so they get a busy signal Talk otherwise lacks.
     QObject::connect(&callManager, &CallManager::busyIncomingCall, &notifications,
-                     [&notifications](const QString &name, const QString &token) {
-        notifications.notify(name, QObject::tr("Called while you were on another call"), true, token);
+                     [&notifications, &pendingAddCallerToken, &pendingAddCallerName](const QString &name, const QString &token) {
+        // #78 -- remember this caller so clicking the toast adds them to the call.
+        pendingAddCallerToken = token;
+        pendingAddCallerName = name;
+        notifications.notify(name, QObject::tr("is calling — click to add them to your call"), true, token);
+    });
+    // #78 -- add-to-call outcome feedback.
+    QObject::connect(&callManager, &CallManager::addToCallResult, &notifications,
+                     [&notifications](bool ok, const QString &message) {
+        notifications.notify(ok ? QObject::tr("Add to call") : QObject::tr("Add to call — failed"),
+                             message, false);
     });
     QObject::connect(&callManager, &CallManager::busyAutoReply, &api,
                      [&api, &callManager](const QString &token, const QString &text) {

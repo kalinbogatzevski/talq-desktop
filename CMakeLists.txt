@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(talq VERSION 0.58.3 LANGUAGES CXX)
+project(talq VERSION 0.60.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -71,8 +71,9 @@ qt_add_executable(talq
     src/core/UserStatusManager.cpp
     src/core/CallManager.cpp
     src/core/CallParticipant.cpp
-    src/core/PeerPipeline.cpp
     src/core/ScreenSharePipeline.cpp
+    src/core/HwEncoderProbe.h
+    src/core/HwEncoderProbe.cpp
     src/core/CallSignaling.cpp
     src/core/DebugMonitor.cpp
     src/core/AppSettings.cpp
@@ -271,7 +272,8 @@ if(WIN32)
     if(CMAKE_BUILD_TYPE STREQUAL "Release")
         set_target_properties(talq PROPERTIES WIN32_EXECUTABLE TRUE)
     endif()
-    target_link_libraries(talq PRIVATE dwmapi winmm ole32 uuid dbghelp)
+    # dxgi: #74 hardware-encoder probe GPU signature (adapter LUID + driver ver).
+    target_link_libraries(talq PRIVATE dwmapi winmm ole32 uuid dbghelp dxgi)
 endif()
 
 install(TARGETS talq RUNTIME DESTINATION bin)

@@ -63,6 +63,7 @@ protected:
 
 private slots:
     void onCallState();
+    void minimizeDock();   // dock "minimize" button -> native minimize to its own taskbar button
 
 private:
     void toggleFullscreen();

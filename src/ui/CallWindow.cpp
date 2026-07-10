@@ -60,6 +60,7 @@ CallWindow::CallWindow(CallManager *call, ApiClient *api, QWidget *parent)
     connect(m_stage, &CallStage::requestOpenBackgroundSettings,
             this, &CallWindow::backgroundSettingsRequested);
     connect(m_pipWidget, &CallPipWidget::restoreRequested, this, &CallWindow::exitPipDock);
+    connect(m_pipWidget, &CallPipWidget::minimizeRequested, this, &CallWindow::minimizeDock);
     connect(m_call, &CallManager::stateChanged, this, &CallWindow::onCallState);
 
     onCallState();
@@ -170,7 +171,12 @@ void CallWindow::enterPipDock()
     m_pipDocked = true;
     if (m_stage) m_stage->hide();
     if (m_pipWidget) m_pipWidget->show();
-    setWindowFlags(windowFlags() | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint | Qt::Tool);
+    // Frameless + always-on-top, but a NORMAL taskbar window (NOT Qt::Tool): the
+    // dock keeps its own taskbar button so it can be minimized to / restored from
+    // the taskbar on its own, one click, independent of the main window. (Qt::Tool
+    // is precisely what suppresses the taskbar button, which made a minimized dock
+    // unrestorable except via the main window -- Kalin 2026-07-10.)
+    setWindowFlags(windowFlags() | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint);
     const int w = 320, h = 190, m = 24;
     // The normal call window floors at 640x480 (setMinimumSize in the ctor, so
     // the video stage can't be smashed). That floor also silently CLAMPS this
@@ -207,6 +213,20 @@ void CallWindow::exitPipDock()
     show();
     raise();
     activateWindow();
+}
+
+void CallWindow::minimizeDock()
+{
+    // "Minimize the dock entirely." The docked window is a NORMAL taskbar window
+    // (enterPipDock deliberately does NOT set Qt::Tool), so a native minimize sends
+    // it to its OWN taskbar button -- one click there restores just the dock,
+    // independent of the main TalQ window (Kalin 2026-07-10: the tray-hide approach
+    // forced an awkward main-window-toggle dance). changeEvent's minimize->dock
+    // interceptor is guarded on !m_pipDocked, so it stays inert here and this is a
+    // real minimize rather than a re-dock. Restore is native (click the taskbar
+    // button); nothing else to wire.
+    if (!m_pipDocked || m_call->state() == CallManager::Idle) return;
+    showMinimized();
 }
 
 void CallWindow::mouseDoubleClickEvent(QMouseEvent *)
@@ -257,6 +277,14 @@ void CallWindow::pickShareTarget()
         return;
     }
     SharePickerDialog picker(this);
+    // If the call ends (either side hangs up) while the source picker is still
+    // open, dismiss it -- otherwise the chooser lingers on screen after the call
+    // is gone (field 2026-07-10). callEnded fires synchronously from
+    // CallManager::teardown() for BOTH local hangUp() and peer onPeerHungUp(), and
+    // is still delivered inside picker.exec()'s nested loop; reject() unwinds it.
+    // The connection auto-disconnects when the stack-local picker is destroyed, so
+    // repeated shares never stack handlers.
+    connect(m_call, &CallManager::callEnded, &picker, &QDialog::reject);
     if (picker.exec() != QDialog::Accepted) return;
     const auto target = picker.selectedTarget();
     if (target.type == ShareTarget::Window)

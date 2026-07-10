@@ -1,5 +1,97 @@
 # Changelog
 
+## v0.60.0 "Blue Fiesta" (2026-07-10)
+
+Promotes the 0.59.x beta line to stable — everything below was field-tested on
+the beta channel first.
+
+### Added
+* **Bring a second caller into your call.** When someone rings while you're
+  already on a call, you can pull them into it instead of turning them away — a
+  one-to-one call is upgraded to a group and both sides are re-invited
+  automatically.
+* **Per-GPU hardware video-encoder check.** On first run TalQ verifies, in a
+  separate throwaway process, which of your graphics card's built-in H.264
+  encoders actually work, and remembers the result per GPU — so calls skip any
+  hardware encoder proven broken on your machine and fall through to one that
+  works. It fails safe: if the check is missing or unfinished, every encoder is
+  tried as before.
+* **Minimize the call dock to the taskbar.** The compact corner dock has a
+  minimize button that sends it to its own taskbar button; one click there
+  brings it straight back, independent of the main window.
+
+### Changed
+* **Simpler, more reliable one-to-one calling.** Removed an old experimental
+  direct-connection mode for 1:1 calls that was never used in the field; every
+  call — one-to-one and group alike — now uses the same, well-tested
+  server-routed media path.
+* **The on-screen share-quality readout shows the share's exact size** (e.g.
+  1920×1200) instead of a rounded tier that could misreport a 16:10 monitor or a
+  shared app window.
+
+### Fixed
+* **The mute button on the minimized call dock now works** — it was previously
+  only a mute-state indicator.
+* **The "choose what to share" window now closes when the call ends** instead of
+  lingering on screen.
+
+## v0.59.2 "Blue Fiesta" — BETA (2026-07-10)
+
+### Fixed
+* **The mute button on the minimized call dock now works.** The mic chip on the
+  compact dock only showed your mute state — clicking it did nothing. It now
+  toggles mute, the same as the mic button on the full call window.
+
+### Changed
+* **The minimized call dock now lives on the taskbar.** Minimizing the compact
+  dock sends it to its own taskbar button, so a single click there brings it
+  straight back — independent of the main window. (While docked, the call now
+  also shows its own "Call" button on the taskbar.)
+
+## v0.59.1 "Blue Fiesta" — BETA (2026-07-10)
+
+### Added
+* **Minimize the call dock out of the way entirely.** The compact corner dock
+  now has a minimize button (just left of the expand button) that hides it
+  completely — the call keeps running in the background. Reopen TalQ (its tray
+  icon, "Show TalQ", or restoring the window) to bring the dock back.
+
+### Fixed
+* **The "choose what to share" window now closes when the call ends.** If a call
+  ended while the screen-share source picker was still open, it used to linger on
+  screen after the call was gone. It now dismisses automatically.
+
+## v0.59.0 "Blue Fiesta" — BETA (2026-07-10)
+
+*Beta channel. Bigger, higher-blast-radius changes land here first for
+field-testing before they're promoted to the stable line.*
+
+### Added
+* **Bring a second caller into your call.** When someone rings you while you're
+  already on a call, you can now pull them into the active call instead of
+  turning them away — a one-to-one call is upgraded to a group and both sides
+  are re-invited automatically.
+* **Per-GPU hardware video-encoder check.** On first run TalQ now verifies, in a
+  separate throwaway process, which of your graphics card's built-in H.264
+  encoders actually work, and remembers the result per GPU. Calls then skip any
+  hardware encoder proven broken on your machine and fall straight through to
+  one that works — no more black or frozen video from a flaky vendor encoder.
+  It fails safe: if the check is missing or hasn't finished, every encoder is
+  tried exactly as before.
+
+### Changed
+* **Simpler, more reliable one-to-one calling.** Removed an old experimental
+  direct-connection mode for 1:1 calls that was never switched on in the field
+  and had gone stale. Every call — one-to-one and group alike — now uses the
+  same, well-tested server-routed media path.
+
+### Fixed
+* **The screen-share quality readout now shows the share's real size.** It used
+  to round the received height up to the nearest display standard, so a 16:10
+  monitor or a shared app window could report a size it never had (a
+  1200-pixel-tall window showing as "1080p"). It now shows the exact received
+  dimensions instead — e.g. "1920×1200".
+
 ## v0.58.3 "Blue Fiesta" (2026-07-09)
 
 ### Added
