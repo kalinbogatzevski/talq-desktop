@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <atomic>
 #include <chrono>
+#include <thread>
 #ifdef Q_OS_WIN
 #include <io.h>
 #endif
@@ -65,24 +66,45 @@ namespace TalqLog {
 #endif
     }
 
-    // Rate-limited variant for the message handler, which can fire from any
-    // thread and could (now or in future) emit a high-frequency qWarning burst —
-    // without a limit that would become a per-line FlushFileBuffers storm. Skips
-    // the costly sync if one happened within the last 250ms; the periodic 2s
-    // cadence covers steady-state durability, so coalescing loses nothing. A
-    // QtFatalMsg should bypass this and call syncToDisk() directly (last line
-    // before abort).
-    inline void syncToDiskThrottled() {
-        using namespace std::chrono;
-        static std::atomic<long long> lastMs{0};
-        const long long now = duration_cast<milliseconds>(
-            steady_clock::now().time_since_epoch()).count();
-        long long prev = lastMs.load(std::memory_order_relaxed);
-        if (now - prev < 250) return;
-        if (!lastMs.compare_exchange_strong(prev, now, std::memory_order_relaxed))
-            return;   // another thread just synced
-        syncToDisk();
+    // ── Background disk flusher ────────────────────────────────────────────
+    // syncToDisk() calls FlushFileBuffers, which BLOCKS until the volume's write
+    // cache is on physical disk — and on a busy disk (e.g. Windows Defender
+    // scanning the cold DLLs that a first Settings-open pulls in) that wait is
+    // SECONDS. Doing it on the GUI thread (DebugMonitor's 2s tick + the message
+    // handler's per-warning throttled sync) froze the UI: the whole
+    // g_mainBeat-keeps-ticking-but-the-dialog-heartbeat-stalls mystery was that
+    // g_mainBeat does no logging while the heartbeat's qInfo path could reach a
+    // sync. FIX: NEVER FlushFileBuffers on a caller thread. A dedicated flusher
+    // thread performs every sync; callers only requestSync() (set an atomic).
+    inline std::atomic<bool> g_syncRequested{false};
+    inline std::atomic<bool> g_flusherStarted{false};
+
+    // Ask the background thread to flush soon — cheap, non-blocking, thread-safe.
+    inline void requestSync() { g_syncRequested.store(true, std::memory_order_relaxed); }
+
+    inline void startBackgroundFlusher() {
+        if (g_flusherStarted.exchange(true)) return;
+        std::thread([]() {
+            int sinceForcedMs = 0;
+            for (;;) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(400));
+                sinceForcedMs += 400;
+                const bool requested =
+                    g_syncRequested.exchange(false, std::memory_order_relaxed);
+                // Flush on request (≤400ms latency for a warning) OR on the ~2s
+                // steady-state cadence — whichever comes first. Coalesced: one
+                // FlushFileBuffers per wake covers everything since.
+                if (requested || sinceForcedMs >= 2000) {
+                    sinceForcedMs = 0;
+                    syncToDisk();   // the ONLY place FlushFileBuffers runs steady-state
+                }
+            }
+        }).detach();
     }
+
+    // Back-compat shim: callers that used to synchronously throttle-sync now just
+    // hand the work to the background flusher (never blocks the caller thread).
+    inline void syncToDiskThrottled() { requestSync(); }
 }
 
 #define TLOG(msg)       do { if (TalqLog::g_verbose) qDebug().noquote() << "[TalQ]" << msg; } while (0)

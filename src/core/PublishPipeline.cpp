@@ -1494,8 +1494,20 @@ bool PublishPipeline::buildCameraChain(int deviceIndex, bool hd1080)
             "sync",  FALSE,    // streaming-thread already paced by the camera
             "async", FALSE,    // 0.40.13 — RCA: see preview-appsink below
             nullptr);
+        // NO static "caps" on the appsrc. Every sample is pushed with
+        // push_sample carrying the camera's full caps (BGRx + concrete
+        // width/height/framerate), which appsrc emits as the caps event
+        // ahead of the first buffer. Setting a static dimension-less
+        // "video/x-raw,format=BGRx" here (as shipped through 0.60.0) made
+        // GstBaseSrc negotiate those caps at task start — BEFORE the
+        // first sample — so preview-convert received caps with no
+        // width/height, failed setcaps ("invalid caps", garbage fixation
+        // like 1x70@0/1 + gst_util_fraction CRITICALs) and had to rely on
+        // sticky-event retry to recover when the real caps arrived.
+        // Field logs 2026-07-10 (Kalin Iris Xe + Petia UHD 620) showed
+        // this fired on every camera enable. With no static caps, appsrc
+        // negotiates nothing until the first real sample.
         g_object_set(m_bgAppsrc,
-            "caps",   bgrxCaps,
             "is-live", TRUE,
             "format", GST_FORMAT_TIME,
             "block",   FALSE,

@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.60.1 "Blue Fiesta" (2026-07-11)
+
+A stability and polish patch on top of 0.60.0.
+
+### Fixed
+* **Settings now open instantly, every time.** Opening Settings used to re-scan
+  your camera and microphone on every open — that scan re-opened the camera and
+  could freeze the window for several seconds each time. Devices are now detected
+  once at startup and kept up to date live, so Settings opens immediately. Use
+  the "Refresh devices" button to force a fresh scan when you plug something in.
+* **Faster, cleaner startup.** Camera, microphone and secure-connection setup now
+  complete behind the splash screen, so the main window appears ready to use.
+* **Mic test opens faster.** The Settings microphone level meter reuses its audio
+  pipeline instead of rebuilding it on every open.
+* Enabling your camera no longer briefly starts from an invalid video format in
+  the background pipeline.
+* Log-to-disk flushing now runs off the interface thread, so heavy disk activity
+  can no longer stall the UI.
+
+### Changed
+* **Screen-share bandwidth in the call stats.** While you're sharing your screen,
+  the live bandwidth read-out now also includes the screen-share stream's actual
+  bitrate.
+* **Exact shared-screen resolution.** The incoming-share badge shows the precise
+  width × height of the shared screen instead of a rounded label.
+
 ## v0.60.0 "Blue Fiesta" (2026-07-10)
 
 Promotes the 0.59.x beta line to stable — everything below was field-tested on

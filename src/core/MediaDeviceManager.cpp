@@ -368,6 +368,7 @@ void MediaDeviceManager::refresh()
     // into the live lists, then re-apply the saved selection + persist camera caps.
     m_audioInputs.clear(); m_audioOutputs.clear(); m_videoInputs.clear();
     enumerateDevicesImpl(m_audioInputs, m_audioOutputs, m_videoInputs);
+    m_hasEnumerated = true;
     emit devicesChanged();
     restoreDevices();
     resolveAndPersistCameraSrcCaps();
@@ -397,6 +398,7 @@ void MediaDeviceManager::refreshAsync()
             guard->m_audioOutputs = std::move(*b);
             guard->m_videoInputs  = std::move(*v);
             guard->m_refreshing   = false;
+            guard->m_hasEnumerated = true;
             emit guard->devicesChanged();
             guard->restoreDevices();
             guard->resolveAndPersistCameraSrcCaps();
