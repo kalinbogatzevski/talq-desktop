@@ -1,6 +1,10 @@
 #include "core/MicTester.h"
 
 #include <QDebug>
+#include <QCoreApplication>
+#include <QElapsedTimer>
+#include <QPointer>
+#include <QtConcurrent>
 
 MicTester::MicTester(QObject *parent)
     : QObject(parent)
@@ -14,69 +18,139 @@ MicTester::MicTester(QObject *parent)
 
 MicTester::~MicTester()
 {
-    cleanup();
+    teardownPipeline();
 }
 
 bool MicTester::start(const QString &deviceId)
 {
-    cleanup();   // restart cleanly if already running
+    // FAST PATH — reuse the resident pipeline. gst_element_factory_make(
+    // "wasapi2src") does a WinRT audio-endpoint enumeration that takes 4-6 s
+    // EVERY call and marshals to the main COM STA, freezing the Settings dialog
+    // on every open. set_state(PLAYING) on an already-built pipeline is ~7 ms.
+    // So if we already built a pipeline for THIS device, just re-open the device
+    // and restart the meter — no factory_make.
+    if (m_pipeline && m_pipelineReady && m_pipelineDevice == deviceId) {
+        m_startGen.fetch_add(1, std::memory_order_relaxed);
+        gst_element_set_state(m_pipeline, GST_STATE_PLAYING);
+        m_busTimer.start();
+        return true;
+    }
+
+    // First build, or the selected device changed — drop any resident pipeline
+    // and build a fresh one OFF the UI thread (the 4-6 s factory_make must never
+    // block the GUI). This full build happens at most once per device.
+    teardownPipeline();   // bumps m_startGen
+    m_pipelineDevice = deviceId;
+
+    // Capture the post-teardown generation. If another start()/stop()/teardown
+    // happens before this open finishes, the token will no longer match and
+    // the worker's result is discarded (see the completion below).
+    const quint64 gen = m_startGen.load(std::memory_order_relaxed);
+    QPointer<MicTester> guard(this);
+    const QString dev = deviceId;
+
+    // Open the device OFF the UI thread. Cold wasapi2src init (WASAPI open +
+    // first-time, Defender-scanned plugin-DLL load) blocks set_state(PLAYING)
+    // for seconds; doing it here on the UI thread froze the Settings dialog on
+    // open (measured ~4.5 s). The worker builds + PLAYs the pipeline; only the
+    // finished pipeline is handed back to the UI thread to adopt.
+    m_startFuture = QtConcurrent::run([guard, gen, dev]() {
+        GstElement *pipeline = buildAndOpen(dev);   // heavy: build + set_state(PLAYING)
+
+        // Hand the result to the GUI thread. qApp is the context object (always
+        // alive while the app runs) so the functor is delivered even if the
+        // MicTester was destroyed meanwhile; the QPointer + generation check
+        // inside decide adopt-vs-discard. The worker itself never touches any
+        // MicTester member, so it is safe to outlive `this`.
+        QMetaObject::invokeMethod(qApp, [guard, gen, pipeline]() {
+            MicTester *self = guard.data();
+            if (!self || self->m_startGen.load(std::memory_order_relaxed) != gen) {
+                // Superseded (stopped / restarted / destroyed before we
+                // finished): release the device we opened so nothing leaks and
+                // no stray mic handle survives.
+                if (pipeline) {
+                    gst_element_set_state(pipeline, GST_STATE_NULL);
+                    gst_object_unref(pipeline);
+                }
+                return;
+            }
+            if (!pipeline)
+                return;   // open failed on both the selected device and default
+            // Adopt on the GUI thread and start the (GUI-thread) bus poll so
+            // the level meter begins moving. Mark ready so the next open reuses
+            // this pipeline (set_state PLAYING) instead of rebuilding it.
+            self->m_pipeline = pipeline;
+            self->m_pipelineReady = true;
+            self->m_busTimer.start();
+        }, Qt::QueuedConnection);
+    });
+
+    return true;
+}
+
+GstElement *MicTester::buildAndOpen(const QString &deviceId)
+{
+    // Build src -> audioconvert -> audioresample -> level -> fakesink. Runs on a
+    // worker thread — the first wasapi2src creation + WASAPI device open can take
+    // a moment and must never block the GUI. The built pipeline is reused across
+    // Settings opens (see start()), so this only runs once per device.
+    auto tryOpen = [](const QString &dev) -> GstElement * {
+        GstElement *src      = gst_element_factory_make("wasapi2src", "src");
+        GstElement *conv     = gst_element_factory_make("audioconvert", nullptr);
+        GstElement *resample = gst_element_factory_make("audioresample", nullptr);
+        GstElement *level    = gst_element_factory_make("level", "lvl");
+        GstElement *sink     = gst_element_factory_make("fakesink", nullptr);
+        if (!src || !conv || !resample || !level || !sink) {
+            qWarning() << "MicTester: failed to create capture chain elements";
+            auto freeIf = [](GstElement *e) { if (e) gst_object_unref(e); };
+            freeIf(src); freeIf(conv); freeIf(resample); freeIf(level); freeIf(sink);
+            return nullptr;
+        }
+        g_object_set(level, "post-messages", TRUE,
+                     "interval", (guint64)50000000, nullptr);
+        g_object_set(sink, "sync", FALSE, nullptr);
+        if (!dev.isEmpty())
+            g_object_set(src, "device", dev.toUtf8().constData(), nullptr);
+
+        GstElement *pipeline = gst_pipeline_new("mic-test");
+        gst_bin_add_many(GST_BIN(pipeline), src, conv, resample, level, sink, nullptr);
+        if (!gst_element_link_many(src, conv, resample, level, sink, nullptr)) {
+            qWarning() << "MicTester: failed to link capture chain";
+            gst_object_unref(pipeline);
+            return nullptr;
+        }
+
+        GstStateChangeReturn r = gst_element_set_state(pipeline, GST_STATE_PLAYING);
+        if (r == GST_STATE_CHANGE_FAILURE) {
+            qWarning() << "MicTester: device" << dev << "failed to open";
+            gst_element_set_state(pipeline, GST_STATE_NULL);
+            gst_object_unref(pipeline);
+            return nullptr;
+        }
+        return pipeline;
+    };
 
     // Try the selected device; if it won't open, fall back to the SYSTEM
     // DEFAULT (no device set) so the meter still works — mirrors the call
-    // publisher's tiered fallback. (With the device.id fix in
-    // MediaDeviceManager the selected device should open directly; this is the
-    // belt-and-suspenders for a busy / OS-blocked / unresolvable id.)
-    if (tryStart(deviceId))
-        return true;
-    if (!deviceId.isEmpty()) {
+    // publisher's tiered fallback.
+    GstElement *pipeline = tryOpen(deviceId);
+    if (!pipeline && !deviceId.isEmpty()) {
         qWarning() << "MicTester: selected device failed to open — falling back "
                       "to the system default";
-        if (tryStart(QString()))
-            return true;
+        pipeline = tryOpen(QString());
     }
-    return false;
-}
-
-bool MicTester::tryStart(const QString &deviceId)
-{
-    // Build src -> audioconvert -> audioresample -> level -> fakesink. The
-    // device id (a wasapi2 {GUID}) can contain characters that gst_parse_launch
-    // would choke on, so parse the fixed chain by element NAME and set the
-    // device property programmatically.
-    GError *err = nullptr;
-    m_pipeline = gst_parse_launch(
-        "wasapi2src name=src ! audioconvert ! audioresample ! "
-        "level name=lvl post-messages=true interval=50000000 ! "
-        "fakesink sync=false",
-        &err);
-    if (!m_pipeline) {
-        qWarning() << "MicTester: failed to build pipeline:"
-                   << (err ? err->message : "unknown");
-        if (err) g_error_free(err);
-        return false;
-    }
-    if (err) { g_error_free(err); err = nullptr; }
-
-    if (!deviceId.isEmpty()) {
-        if (GstElement *src = gst_bin_get_by_name(GST_BIN(m_pipeline), "src")) {
-            g_object_set(src, "device", deviceId.toUtf8().constData(), nullptr);
-            gst_object_unref(src);
-        }
-    }
-
-    if (gst_element_set_state(m_pipeline, GST_STATE_PLAYING)
-            == GST_STATE_CHANGE_FAILURE) {
-        qWarning() << "MicTester: device" << deviceId << "failed to open";
-        cleanup();
-        return false;
-    }
-    m_busTimer.start();
-    return true;
+    return pipeline;
 }
 
 void MicTester::stop()
 {
-    cleanup();
+    // Keep the built pipeline RESIDENT — just invalidate any in-flight build,
+    // stop the meter, and close the device (NULL). The next start() re-opens it
+    // with a ~7 ms set_state(PLAYING) instead of a 4-6 s factory_make rebuild.
+    m_startGen.fetch_add(1, std::memory_order_relaxed);
+    m_busTimer.stop();
+    if (m_pipeline)
+        gst_element_set_state(m_pipeline, GST_STATE_NULL);  // close device, keep object
     emit level(0.0);   // drop the meter to silence when the test ends
 }
 
@@ -108,12 +182,21 @@ void MicTester::pollBus()
     gst_object_unref(bus);
 }
 
-void MicTester::cleanup()
+void MicTester::teardownPipeline()
 {
+    // Fully destroy the pipeline (device change / destruction). Invalidate any
+    // async open still in flight: its completion will see the bumped token,
+    // discard the pipeline it built, and never adopt it. This makes
+    // start-then-immediately-close and rapid device-changes safe — the worker
+    // never races this teardown because it only touches the pipeline it owns
+    // locally, never m_pipeline.
+    m_startGen.fetch_add(1, std::memory_order_relaxed);
     m_busTimer.stop();
     if (m_pipeline) {
         gst_element_set_state(m_pipeline, GST_STATE_NULL);
         gst_object_unref(m_pipeline);
         m_pipeline = nullptr;
     }
+    m_pipelineReady = false;
+    m_pipelineDevice.clear();
 }

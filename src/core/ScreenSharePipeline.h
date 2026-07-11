@@ -34,6 +34,17 @@ public:
     void setRemoteAnswer(const QString &sdp);
     void addIceCandidate(const QString &candidate, int sdpMLineIndex, const QString &sdpMid);
     bool isRunning() const { return m_running; }
+    // Live GCC-applied screen-share video bitrate, in bits/sec — the value
+    // congestion control last pushed to the encoder (the number behind the
+    // "ScreenSharePipeline: GCC -> encoder N kbps" log). GCC updates it
+    // continuously as it ramps (~2.8 → 12 Mbps) and drops under congestion,
+    // so read it FRESH each call (mirrors PublishPipeline::currentVideoBitrate)
+    // for the outbound-bandwidth telemetry. Returns 0 before the first GCC
+    // update lands; callers substitute an indicative default so the gauge is
+    // never blank at share start.
+    double currentVideoBitrate() const {
+        return m_lastAppliedBitrate > 0 ? double(m_lastAppliedBitrate) : 0.0;
+    }
     // e.g. "H264 · nvh264enc · hw" — for the call codec/quality telemetry.
     QString encoderDescription() const { return m_encoderDesc; }
     // 0.41.1-beta — local self-preview of the screen being shared. Fed by

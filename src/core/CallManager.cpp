@@ -1409,8 +1409,13 @@ double CallManager::txBitrateMbps() const
     // Numeric counterpart of streamBandwidthLabel (outbound rate we
     // control/measure) for the telemetry bandwidth gauge/sparkline.
     double bps = 0.0;
-    if (m_screenSharing && m_screenSharePipeline)
-        bps += 2.5e6;
+    if (m_screenSharing && m_screenSharePipeline) {
+        // Live GCC-applied screen encoder bitrate (ramps ~2.8 → 12 Mbps and
+        // drops under congestion); fall back to an indicative 2.5 Mbps only
+        // until the first GCC update lands so the gauge is never blank.
+        const double screen = m_screenSharePipeline->currentVideoBitrate();
+        bps += screen > 0.0 ? screen : 2.5e6;
+    }
     if (m_publishPipeline && m_publishPipeline->isRunning()) {
         if (m_publishPipeline->isCameraOn())
             bps += m_publishPipeline->currentVideoBitrate();
@@ -1426,8 +1431,13 @@ QString CallManager::streamBandwidthLabel() const
     // fixed Opus rate (~40 kbps). RX has no per-stream accessor on the MCU
     // subscribers, so we don't fabricate one.
     double bps = 0.0;
-    if (m_screenSharing && m_screenSharePipeline)
-        bps += 2.5e6;  // screen-share target (no live accessor); indicative
+    if (m_screenSharing && m_screenSharePipeline) {
+        // Live GCC-applied screen encoder bitrate (real, congestion-controlled),
+        // read fresh so the label tracks the ramp; indicative 2.5 Mbps only
+        // until the first GCC update lands.
+        const double screen = m_screenSharePipeline->currentVideoBitrate();
+        bps += screen > 0.0 ? screen : 2.5e6;
+    }
     if (m_publishPipeline && m_publishPipeline->isRunning()) {
         if (m_publishPipeline->isCameraOn())
             bps += m_publishPipeline->currentVideoBitrate();

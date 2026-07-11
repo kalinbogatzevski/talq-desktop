@@ -62,11 +62,11 @@ void DebugMonitor::tick()
         summaryLog();
     }
 
-    // Force the log to physical disk on every 2s tick so that, after a HARD
-    // freeze + power-reset, the on-disk log retains everything up to the last
-    // ~2s before the freeze (fflush alone only reaches the lost OS cache). This
-    // is what finally lets a frozen session be diagnosed from its archived log.
-    TalqLog::syncToDisk();
+    // Request a physical-disk flush (performed on the background flusher thread,
+    // NOT here on the GUI thread — FlushFileBuffers can block for seconds on a
+    // busy disk, e.g. Defender scanning cold DLLs during a first Settings-open,
+    // which froze the UI). The flusher's ~2s cadence still bounds durability.
+    TalqLog::requestSync();
 }
 
 void DebugMonitor::summaryLog()

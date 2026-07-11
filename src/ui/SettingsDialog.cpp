@@ -43,6 +43,7 @@
 #include <QStandardPaths>
 #include <QTimer>
 #include <QElapsedTimer>
+#include <memory>
 #include <QPaintEvent>
 
 #include "CodenameBlurb.h"   // codenameBlurb() — shared with MainWindow's codename pill
@@ -428,12 +429,16 @@ void SettingsDialog::setUpdateNowStatus(const QString &text)
 
 void SettingsDialog::refresh()
 {
-    // Non-blocking: pop the dialog instantly from the cached device list and
-    // kick the slow GstDeviceMonitor camera-capability probe onto a worker
-    // thread. When it lands it emits devicesChanged() -> populateDeviceCombos()
-    // and the combos refresh in place. (Synchronous refresh() here used to
-    // stall the whole dialog open by ~hundreds of ms while cameras were probed.)
-    m_deviceManager->refreshAsync();
+    // Re-scan devices ONLY if we have never enumerated. The GstDeviceMonitor
+    // scan OPENS the camera to read its caps, which cold-loads the MediaFoundation
+    // Frame-Server + camera driver DLLs (they unload after each scan) and holds
+    // the Windows loader lock for ~5 s — that was THE Settings-open freeze, on
+    // EVERY open (the scan ran every time). The live hotplug monitor already
+    // keeps the device lists current between opens, so a per-open re-scan is
+    // pure cost. First population happens at startup (behind the splash) and on
+    // real device hotplug — never on the UI-blocking Settings-open path.
+    if (!m_deviceManager->hasEnumerated())
+        m_deviceManager->refreshAsync();
     populateDeviceCombos();
     loadNotificationSettings();
     loadGeneralSettings();
@@ -1189,12 +1194,22 @@ void SettingsDialog::startDeferredDevices()
         QElapsedTimer t; t.start();
         // Mirror the persisted state into the preview (re-shows Blur/Image if the
         // user left it active). Only opens the camera when a background is on.
+        // NOTE: frame processing for the preview runs on the GStreamer
+        // streaming thread (BgPreviewSource::onNewSample), NOT here — so this
+        // must stay cheap. Split timing below so a residual UI-thread stall can
+        // be attributed to the preview-open vs the mic-test-open.
         syncBgPreview();
+        const qint64 bgMs = t.elapsed();
         // Start the live mic test on the currently-selected input device.
         if (m_micTester)
             m_micTester->start(m_deviceManager->selectedInputDeviceId());
-        if (t.elapsed() > 120)
-            qInfo() << "SettingsDialog: deferred device open took" << t.elapsed() << "ms";
+        const qint64 totalMs = t.elapsed();
+        // Always log (one line per Settings-open, negligible) so the
+        // Off-path revert can be positively confirmed as fast in the field,
+        // not just inferred from the absence of a slow-path warning.
+        qInfo() << "SettingsDialog: deferred device open took" << totalMs
+                << "ms (syncBgPreview" << bgMs << "ms, micTest"
+                << (totalMs - bgMs) << "ms)";
     });
 }
 
@@ -1242,12 +1257,17 @@ void SettingsDialog::syncBgPreview()
     if (m_bgImageSection)
         m_bgImageSection->setVisible(enabled && type == QLatin1String("image"));
 
-    // Off mode (or feature disabled) - tear down the preview to release
-    // the camera handle. The label drops back to its placeholder text.
+    // Off mode (or feature disabled) — tear down the preview and show the
+    // placeholder text. CRITICAL for a snappy dialog: do NOT construct the
+    // BackgroundEngine or the BgPreviewSource here, and do NOT open any
+    // camera pipeline. Off is the common case, and spinning up the engine +
+    // camera preview on the UI thread stalls the Settings-open for seconds
+    // (measured 5.7 s on an Intel iGPU box). This early-return is 0.60.0's
+    // behaviour; a proper fully-async raw-camera preview for Off is a
+    // separate follow-up (see TODO), deliberately out of scope here.
     if (!enabled || type == QLatin1String("off")) {
-        if (m_bgPreviewSource) {
+        if (m_bgPreviewSource)
             m_bgPreviewSource->stop();
-        }
         m_bgPreviewLabel->setPixmap(QPixmap());
         m_bgPreviewLabel->setText(
             tr("Preview will appear when Blur or Image is selected"));
@@ -1255,7 +1275,7 @@ void SettingsDialog::syncBgPreview()
         return;
     }
 
-    // On-mode - lazy-construct engine + source on first use.
+    // On-mode (Blur / Image) — lazy-construct engine + source on first use.
     if (!m_bgPreviewEngine) {
         m_bgPreviewEngine = new BackgroundEngine(this);
     }
