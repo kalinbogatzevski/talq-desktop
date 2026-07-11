@@ -98,6 +98,12 @@ public:
     const QVector<MediaDevice> &audioInputs() const { return m_audioInputs; }
     const QVector<MediaDevice> &audioOutputs() const { return m_audioOutputs; }
     const QVector<MediaDevice> &videoInputs() const { return m_videoInputs; }
+    // True once a full device scan has completed. The Settings dialog uses this
+    // to AVOID re-running the (expensive, camera-opening) scan on every open —
+    // the live hotplug monitor already keeps the lists current, so a re-scan per
+    // open only re-loads the MediaFoundation Frame-Server/camera DLLs cold and
+    // freezes the UI on the loader lock.
+    bool hasEnumerated() const { return m_hasEnumerated; }
 
     // --- Camera capability / quality selection ---
     // Curated, deduped, best-first mode list for a video device.
@@ -128,6 +134,7 @@ private:
     QSettings m_settings;
     bool m_restoring = false;  // suppress saveDevices() during restoreDevices()
     bool m_refreshing = false; // a worker-thread refreshAsync() scan is in flight
+    bool m_hasEnumerated = false; // a full device scan has completed at least once
 
     // D7 (0.53.x) — LIVE device hotplug. A persistent GstDeviceMonitor whose bus
     // sync-handler (fires on a GStreamer thread, no GLib main loop needed — works

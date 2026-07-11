@@ -11,12 +11,21 @@
 #include <QStandardPaths>
 #include <QSettings>
 #include <QTimer>
+#include <QThread>
+#include <QEventLoop>
+#include <QSslSocket>
+#include <QSslConfiguration>
 #include <thread>
 #include <chrono>
+#include <atomic>
+#include <cstdarg>
 #include <cstdlib>
 #include <QDir>
+#include <QDirIterator>
 #include <QFileInfo>
 #include <QTime>
+#include <QtConcurrent>
+#include <QElapsedTimer>
 #include <csignal>
 #include <cstdlib>
 #include <exception>
@@ -24,6 +33,7 @@
 #ifdef Q_OS_WIN
 #include <windows.h>
 #include <psapi.h>
+#include <tlhelp32.h>
 #include <dwmapi.h>
 #include <dbghelp.h>
 #pragma comment(lib, "dwmapi.lib")
@@ -123,6 +133,8 @@ void talqTerminateHandler()
 #include "painter/SidebarPainter.h"
 #include "painter/PainterTheme.h"
 #include <QFontDatabase>
+#include <QFontMetrics>
+#include <QFont>
 #include <QMessageBox>
 #include <gst/gst.h>
 #include <cstring>
@@ -144,6 +156,7 @@ static void talqGstDecodeFaultProbe(GstDebugCategory *, GstDebugLevel level,
         && std::strstr(function, "get_video_device_handle"))
         talqHwDecodeFaultDetected().store(true);
 }
+
 
 int main(int argc, char *argv[])
 {
@@ -315,6 +328,10 @@ int main(int argc, char *argv[])
             // to actually _commit (they no-op until this is set, so a logless
             // primary / secondary never flushes a closed handle).
             TalqLog::g_diskLogActive = true;
+            // Physical-disk flushing runs on a dedicated background thread so a
+            // slow FlushFileBuffers never stalls the GUI thread (the Settings-
+            // open freeze). Callers only requestSync(); this thread performs it.
+            TalqLog::startBackgroundFlusher();
 #ifdef Q_OS_WIN
             // Crash backstop — ALWAYS armed (release included): a native
             // fault / abort / Rust panic now leaves a minidump next to the
@@ -463,6 +480,7 @@ int main(int argc, char *argv[])
                 << "media checks OK";
     }
 
+
     // Single-instance guard (detection ran earlier, before any log setup, so a
     // secondary never archives/truncates the primary's live log).
     // TALQ_TEST_QUIT bypasses the forward-and-exit so a diag build can run a
@@ -564,7 +582,11 @@ int main(int argc, char *argv[])
     app.setApplicationVersion(TALQ_VERSION);
 #endif
 
-    // Splash screen — dark themed, centered logo, smooth rendering
+    // Splash screen — dark themed, centered logo, smooth rendering.
+    // Kept alive past this block (pointer hoisted to main's scope) so the warm-
+    // up phase can post progress on it and it is dismissed only when the main
+    // window is ready — not on a fixed timer.
+    QSplashScreen *splashKeep = nullptr;
     {
 #ifdef TALQ_BRAND_123NET
         QPixmap logoPix(":/123net-logo.png");
@@ -603,12 +625,65 @@ int main(int argc, char *argv[])
 
         static QSplashScreen splash(splashCanvas);
         splash.show();
-        app.processEvents();
+        splashKeep = &splash;
+        app.processEvents();   // paint the splash before we block the GUI thread
 
-        // Splash stays at least 1.5s for branding visibility
-        QTimer::singleShot(1500, &splash, [&splash]() {
-            splash.close();
-        });
+        // ── Warm Qt's DirectWrite font-fallback DB (GUI thread, behind splash) ──
+        // The FIRST text-shaping that needs a fallback glyph (a glyph the app
+        // font lacks) makes Qt enumerate + load installed font families via
+        // DirectWrite (QWindowsDirectWriteFontDatabase::fallbacksForFamily →
+        // populateFamily) — a one-time, multi-second cost on Windows. Left lazy
+        // it lands on the first Settings-dialog layout and freezes the UI for
+        // ~3–5 s (captured stack: QPushButton::sizeHint → QFontMetrics →
+        // QTextEngine::shapeText → …DWrite enumeration — NOT the mic/camera,
+        // which were red herrings). Qt caches this per
+        // (family, QFont::Style, StyleHint, ExtendedScript) — note the key is
+        // STYLE (italic) and SCRIPT, NOT weight — so a warm must cover every
+        // SCRIPT the UI can shape into a fallback, or the first un-warmed script
+        // re-freezes. We force the whole set HERE, behind the already-painted
+        // splash, by shaping one probe that spans every script/symbol range the
+        // UI can touch (Latin+diacritics, Cyrillic, Greek, CJK/Kana/Hangul,
+        // Arabic/Hebrew/Thai/Devanagari, arrows/checks/bullets/dropdown/math/
+        // currency symbols, and emoji) in both upright and italic styles. After
+        // this every later layout — Settings included — hits the cache and is
+        // instant.
+        {
+            const QString probe = QStringLiteral(
+                "Ag éŁ Дт Ω "          // Latin+ext, Cyrillic, Greek
+                "中 あア 한 "                     // Han, Kana, Hangul
+                "ع א ก क ա ა "      // Arabic,Hebrew,Thai,Deva,Armn,Geor
+                "→←↑↓ ✓✔✗ "    // arrows, checks
+                "⚙★☆•▾▸● "     // gear,stars,bullet,triangles,disc
+                "■◆…‹›«» "     // square,diamond,ellipsis,guillemets
+                "—–×÷±∞ "           // dashes, math signs
+                "€£¥₽ 、！ "          // currency, CJK punct
+                "\U0001F389\U0001F600\U0001F514"                 // emoji: party, grin, bell
+                "\U0001F4F7\U0001F3A4\U0001F527\U0001F6A8");     // camera, mic, wrench, siren
+            // Warm the fallback DB for EVERY font family the UI shapes with —
+            // the cache is per-family, so one missed family re-freezes on first
+            // use. That is exactly the Settings-dialog bug: it renders its
+            // diagnostics rows in "Cascadia Mono"/"Consolas" (not the Inter app
+            // font), so an Inter-only warm left those cold. These three are the
+            // ONLY explicit families in the whole UI (grep-verified); the app
+            // font (Inter) covers every other widget.
+            QList<QFont> warmFonts = {
+                QApplication::font(),          // Inter — every normal widget
+                QFont(QStringLiteral("Cascadia Mono")),  // diagnostics rows
+                QFont(QStringLiteral("Consolas")),       // its fallback
+            };
+            for (QFont warmFont : warmFonts) {
+                for (QFont::Style st : {QFont::StyleNormal, QFont::StyleItalic}) {
+                    warmFont.setStyle(st);
+                    QFontMetricsF fm(warmFont);
+                    (void)fm.size(0, probe);   // shapeText → fallback query (warms DB)
+                }
+            }
+        }
+
+        // NOTE: the splash is intentionally NOT closed on a timer here — it is
+        // dismissed via splashKeep->finish(&window) once the warm-up phase and
+        // the main window are ready (see below), so the user never reaches an
+        // interactive UI that then freezes on a cold device/DLL open.
     }
 
     // Core services
@@ -633,11 +708,59 @@ int main(int argc, char *argv[])
     DebugMonitor debug;
     AppSettings appSettings;
 
+    // ── Warm-up phase (behind the splash) ──────────────────────────────────
+    // Kalin's request: pay the cold, one-time device cost HERE, with the splash
+    // showing progress, and reveal the main window only when it is done — so the
+    // first Settings-open (and first call) never freezes on a cold camera/audio
+    // device open. That open drags in the MediaFoundation Frame-Server + camera-
+    // driver DLLs (ControlLib / MFSENSORGROUP / FrameServerClient / Intel igd*)
+    // and powers on the sensor — ~4–5 s cold — and it was happening on the first
+    // Settings open, freezing the UI. We run the REAL device enumeration (which
+    // opens + probes the camera, warming exactly that path) on a worker thread
+    // while the GUI thread pumps the splash, so progress stays live and there is
+    // no loader-lock contention (main-window construction hasn't started yet).
+    if (splashKeep) {
+        splashKeep->showMessage(
+            QStringLiteral("Detecting camera and microphone…"),
+            Qt::AlignBottom | Qt::AlignHCenter, QColor("#8a8680"));
+        app.processEvents();
+        std::atomic<bool> warmDone{false};
+        QThread *warm = QThread::create([&deviceManager, &warmDone]() {
+            deviceManager.refresh();   // sync enumerate: opens/probes camera + warms DLLs
+            // TLS/cert warm — the first HTTPS request (the update check fires
+            // ~3 s after startup, right when Settings is first opened) makes Qt
+            // load the schannel backend and enumerate the Windows CA certificate
+            // store SYNCHRONOUSLY on the calling thread — a multi-second cold
+            // cost (the schannel/cryptnet/ncrypt/crypt32 DLL cluster) that was
+            // freezing the first Settings-open. Do it HERE, off the main thread,
+            // behind the splash, so the real check finds the cert cache warm.
+            if (QSslSocket::supportsSsl())
+                (void)QSslConfiguration::systemCaCertificates();
+            warmDone.store(true, std::memory_order_relaxed);
+        });
+        warm->start();
+        QElapsedTimer to; to.start();
+        while (!warmDone.load(std::memory_order_relaxed) && to.elapsed() < 20000) {
+            app.processEvents(QEventLoop::AllEvents, 40);
+            QThread::msleep(30);
+        }
+        warm->wait();
+        delete warm;
+        splashKeep->showMessage(
+            QStringLiteral("Starting TalQ…"),
+            Qt::AlignBottom | Qt::AlignHCenter, QColor("#8a8680"));
+        app.processEvents();
+    }
+
     MainWindow window(
         &api, &auth, &conversations, &messages, &threads,
         &notifications, &push, &signaling, &deviceManager,
         &callManager, &userStatus, &debug, &appSettings
     );
+
+    // Dismiss the splash now that the window exists and all cold device/DLL/font
+    // costs are paid — finish() ties the close to the window's first show.
+    if (splashKeep) splashKeep->finish(&window);
 
     // Single-instance IPC: a second launch (notably clicking the pinned
     // taskbar icon while we're hidden in the tray) connects here; we then

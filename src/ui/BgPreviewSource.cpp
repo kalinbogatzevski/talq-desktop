@@ -179,23 +179,38 @@ GstFlowReturn BgPreviewSource::onNewSample(GstElement *appsink, gpointer userDat
     gst_sample_unref(sample);
     if (snapshot.isNull()) return GST_FLOW_OK;
 
-    // Hop to the Qt thread to run the engine. The engine's GL context
-    // lives wherever the engine's parent thread runs (always Qt main
-    // in our usage), so we must not call processFrame from this
-    // streaming thread directly.
+    // Run the engine ON THIS STREAMING THREAD, not the UI thread.
+    // BackgroundEngine::processFrame is thread-safe: it internally routes
+    // the heavy GL + ORT segmentation work to the BackgroundWorker thread
+    // (which owns the GL context) via a blocking hop and hands back the
+    // composited frame. The in-call publish path
+    // (PublishPipeline::onBgSample) already calls it exactly this way from
+    // its own GStreamer streaming thread.
+    //
+    // This used to hop to the Qt/UI thread FIRST and call processFrame
+    // there — but processFrame then BLOCKS on the worker (its internal
+    // Qt::BlockingQueuedConnection), so the UI thread stalled for the whole
+    // first-frame ONNX-Runtime session build (~6 s cold) and every heavy
+    // inference after it (~1.3 s first, tens of ms warm). That is what
+    // froze the Settings dialog on open whenever a Blur/Image background
+    // was active. Doing the work here keeps the UI thread free; only the
+    // finished QImage is marshalled to the UI for display. The appsink is
+    // max-buffers=1 + drop=true, so a slow frame is dropped, never queued.
+    //
+    // Engine lifetime: the dialog constructs the engine BEFORE this source,
+    // so Qt tears the source down first — stop() sets the pipeline to NULL
+    // and joins this streaming thread before the engine is destroyed, so
+    // the engine is always alive for the duration of this callback.
+    QImage processed = snapshot;
+    if (BackgroundEngine *e = self->m_engine.data();
+        e && e->mode() != BackgroundEngine::Mode::None) {
+        processed = e->processFrame(snapshot);
+    }
+
+    // Marshal only the finished frame to the UI thread for display.
     QPointer<BgPreviewSource> guard(self);
-    QMetaObject::invokeMethod(self, [guard, snapshot]() {
-        if (!guard) return;
-        QImage processed = snapshot;
-        // QPointer null-checks at lambda dispatch time so we don't
-        // dereference an engine destroyed before this source. Qt
-        // destroys parent's children in unspecified order; the dialog
-        // owns both the engine and this source.
-        if (BackgroundEngine *e = guard->m_engine.data();
-            e && e->mode() != BackgroundEngine::Mode::None) {
-            processed = e->processFrame(snapshot);
-        }
-        emit guard->imageReady(processed);
+    QMetaObject::invokeMethod(self, [guard, processed]() {
+        if (guard) emit guard->imageReady(processed);
     }, Qt::QueuedConnection);
 
     return GST_FLOW_OK;

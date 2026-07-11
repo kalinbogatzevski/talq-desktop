@@ -3,7 +3,10 @@
 #include <QObject>
 #include <QString>
 #include <QTimer>
+#include <QFuture>
 #include <gst/gst.h>
+
+#include <atomic>
 
 /**
  * MicTester — a tiny, self-contained capture pipeline used by the Settings
@@ -27,8 +30,11 @@ public:
     ~MicTester() override;
 
     // Begin capturing `deviceId` (empty = system default). Restarts cleanly if
-    // already running. Returns false if the capture pipeline couldn't start
-    // (which is itself a useful signal: the meter will stay at zero).
+    // already running. NON-BLOCKING: the wasapi2src device open runs on a
+    // worker thread (cold WASAPI init + first-time plugin-DLL load blocks
+    // set_state ~seconds and must never freeze the UI); the meter starts
+    // moving a moment later once the device is open. Always returns true (the
+    // async open reports failure by simply leaving the meter at rest).
     bool start(const QString &deviceId);
     void stop();
     bool isRunning() const { return m_pipeline != nullptr; }
@@ -41,9 +47,26 @@ private slots:
     void pollBus();
 
 private:
-    void cleanup();
-    bool tryStart(const QString &deviceId);   // one attempt on a specific device
+    // Worker-thread helper: build the capture chain and open the device
+    // (the slow, blocking part). Tries `deviceId`, falling back to the
+    // system default. Returns a PLAYING pipeline, or nullptr on failure.
+    // Touches no member state — safe to run detached from any thread.
+    static GstElement *buildAndOpen(const QString &deviceId);
+
+    // Fully tear the pipeline down (device change / destruction). stop() keeps
+    // the built pipeline resident and only closes the device, so a re-open
+    // avoids the multi-second gst_element_factory_make("wasapi2src").
+    void teardownPipeline();
 
     GstElement *m_pipeline = nullptr;
+    QString     m_pipelineDevice;      // device the resident pipeline was built for
+    bool        m_pipelineReady = false;  // m_pipeline exists and reached PLAYING once
     QTimer      m_busTimer;
+
+    // Generation token: bumped by every cleanup()/start()/stop() so an
+    // async open still in flight knows it has been superseded and must
+    // discard the pipeline it built instead of adopting it. Guards against
+    // start-then-close and rapid device-change races.
+    std::atomic<quint64> m_startGen{0};
+    QFuture<void>        m_startFuture;   // last async open (detached; not joined)
 };
