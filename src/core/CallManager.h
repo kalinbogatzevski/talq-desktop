@@ -26,6 +26,8 @@
 #include "core/SignalQualityPolicy.h"
 #include "core/CallParticipant.h"
 #include "core/MediaLoadController.h"   // 0.51.x dynamic encode/decode load controller
+#include "core/MemShedPolicy.h"         // host-protection memory-shed decision (onLoadTick)
+#include "core/ShareCapPolicy.h"        // screen-share quality level -> encode cap
 
 class BackgroundEngine;   // #20 — owned by CallManager; lives across calls.
 class ConversationListModel;
@@ -449,44 +451,11 @@ private:
     int  m_recvLoadSubstreamCap = 2;
     bool m_recvLoadCapFocused   = false;
     // Host-protection memory watchdog (onLoadTick): hard-shed every peer to the
-    // 180p layer when memory genuinely overloads the host (original field case:
-    // Ivan ~2 GB and climbing on a stalled hybrid-GPU decode, chopped audio),
-    // restore when it eases. Hysteresis on every mark so it cannot oscillate.
-    //
-    // 0.60.2 REWORK (2026-07-13 field RCA): the original trip wire was an
-    // ABSOLUTE 1500 MB working set. A peer on an RTX 2060 desktop with plenty
-    // of free RAM sat at 1542 MB — largely the virtual-background engine
-    // (measured +145 MB) plus the GPU driver/ICD that the first
-    // QOpenGLContext::create() maps into the process (not our allocation, not
-    // reclaimable) — tripped it, and EVERYONE's receive quality was shed to
-    // 180p. 1500 MB is not "host overload" on a modern machine; it was an
-    // arbitrary number. New policy (see onLoadTick):
-    //   shed    = runaway backstop OR (system pressure AND we contribute)
-    //   restore = runaway eased AND (system eased OR we no longer contribute)
-    bool m_memShedActive = false;
-    // Absolute RUNAWAY backstop — a genuine safety bound, not a routine
-    // trigger. Nothing legitimate in TalQ needs >3.5 GB; the runaway this
-    // watchdog was written for (a stalled decoder ballooning the working set)
-    // grows unboundedly, so it still trips this on its way up. Restore below
-    // 3 GB (512 MB hysteresis gap).
-    static constexpr qint64 kMemShedRunawayHighMb = 3584;
-    static constexpr qint64 kMemShedRunawayLowMb  = 3072;
-    // SYSTEM-pressure trip: physical memory ≥90% committed or <1 GB available
-    // (GlobalMemoryStatusEx) — the region where Windows starts hard-paging and
-    // audio/video chop regardless of who owns the RAM. Eased = ≤80% AND
-    // ≥1.5 GB available (the gap is the hysteresis).
-    static constexpr int    kMemShedSysLoadHighPct = 90;
-    static constexpr int    kMemShedSysLoadLowPct  = 80;
-    static constexpr qint64 kMemShedSysAvailLowMb  = 1024;
-    static constexpr qint64 kMemShedSysAvailOkMb   = 1536;
-    // "We are a significant contributor" floor: below ~1 GB of working set,
-    // shedding OUR receive quality cannot meaningfully relieve system
-    // pressure (some other process is eating the RAM) — degrading the call
-    // would punish the user for someone else's leak. The low mark (768 MB)
-    // is the restore side of this axis, so a working set flapping around
-    // the floor under sustained system pressure can't oscillate the shed.
-    static constexpr qint64 kMemShedContributorMb    = 1024;
-    static constexpr qint64 kMemShedContributorLowMb = 768;
+    // 180p layer when memory genuinely overloads the host, restore when it
+    // eases. Decision + thresholds + the 2026-07-13 false-trip field rationale
+    // live in core/MemShedPolicy.h; the side effects (applyReceiveLoadCaps +
+    // the quality notice) stay in onLoadTick.
+    talq::MemShedPolicy m_memShed;
     // The controller itself (pure logic) + its ~1 s tick. Owned here because
     // load is a property of THIS machine, not of any one peer. The synthetic
     // fields feed it on the dev box (NVENC won't overload) until the encode/
@@ -779,9 +748,11 @@ private:
     QTimer m_cameraIntentTimer;
     bool m_shareRetryTeardown = false;   // a stop() in flight is a retry, not a user stop
     void buildAndStartSharePipeline(int monitorIndex, quintptr windowHandle);
-    // Clamp a screen-share capture size DOWN to the GPU tier's ceiling (720p
-    // iGPU / 540p software; no clamp on a discrete GPU), preserving aspect.
-    void clampScreenToGpuTier(int &cw, int &ch) const;
+    // Resolve the screen-share encode cap for a quality level via
+    // talq::screenShareCap (core/ShareCapPolicy.h) and log whichever clamps
+    // bit (GPU tier / software encoder). Shared by the share build AND the
+    // LIVE re-cap so the two can never diverge again.
+    talq::ShareCap screenShareCapForLevel(int level, bool forceSwEncoder) const;
     // Drop OUR camera to a single LOW layer whenever ANY screen share is active
     // in the call — ours OR a remote peer's. While the room is focused on a
     // shared screen the cameras are just small PIPs, so this frees encode load

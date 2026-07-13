@@ -292,96 +292,75 @@ void CallStage::onFrame(CallParticipant *p, bool screen, const QImage &img)
 
 // ── layout ──────────────────────────────────────────────────────────────
 
+// Qt → policy mapping. The stage DECISION — the pick() precedence (pin > remote
+// share > own share > speaker > first remote), pin death and surrender-to-new-
+// share — lives in talq::stage::StageSourcePolicy (StagePolicy.h, pure and
+// unit-tested in tests/stage_policy_test.cpp, incl. the 0.60.1 field-bug
+// sequence). The adapters below only translate live call state to plain values
+// and the policy's answer back to a CallParticipant*.
+
+// Session key for the policy: our own share has no remote sessionId, so self
+// maps to kSelfSessionKey ("@self").
+static std::string stageKey(CallParticipant *p)
+{
+    return p->isSelf() ? std::string(talq::stage::kSelfSessionKey)
+                       : p->sessionId().toStdString();
+}
+
+// INDEX-ALIGNED with m_call->participants() (self is always index 0 —
+// CallManager prepends it), so a policy pick maps back to a participant by
+// position. screenLive means a decodable stream RIGHT NOW — flag AND provider:
+// for a peer, screenSharing() alone is true during startup/rebuild frame gaps
+// while screen() is still null; for self, the 0.53.0 Zoom-style self-view
+// stage needs the local capture preview tap to actually exist.
+std::vector<talq::stage::StageCandidate> CallStage::stageCandidates() const
+{
+    const auto parts = m_call->participants();
+    std::vector<talq::stage::StageCandidate> cand;
+    cand.reserve(std::size_t(parts.size()));
+    for (CallParticipant *p : parts) {
+        talq::stage::StageCandidate c;
+        c.sessionId  = stageKey(p);
+        c.isSelf     = p->isSelf();
+        c.screenLive = p->isSelf()
+            ? (m_call->isScreenSharing() && m_call->localScreenPreviewProvider())
+            : (p->screenSharing() && p->screen());
+        c.speaking   = !p->isSelf() && p->speaking();
+        cand.push_back(std::move(c));
+    }
+    return cand;
+}
+
+// Lifetime is the one thing the pure policy cannot see: a destroyed
+// CallParticipant nulls the QPointer, so a dead pointer maps to "no pin" and
+// validatePin()'s clear-back writes it out of m_pin for good.
+talq::stage::StagePin CallStage::pinValue() const
+{
+    if (m_pin.p.isNull()) return {};
+    return {stageKey(m_pin.p), m_pin.isScreen};
+}
+
 void CallStage::validatePin()
 {
-    // Who is sharing RIGHT NOW ("@self" stands in for our own share, which has no
-    // remote sessionId).
-    QSet<QString> sharers;
-    if (m_call->isScreenSharing() && m_call->localScreenPreviewProvider())
-        sharers << QStringLiteral("@self");
-    for (CallParticipant *p : m_call->participants())
-        if (!p->isSelf() && p->screenSharing() && p->screen())
-            sharers << p->sessionId();
-
-    // A NEWLY started share always claims the stage, surrendering any manual pin.
-    // This is the one deliberate exception to "the pin wins": a stale pin quietly
-    // hiding content a peer just started presenting is far worse than losing a pin.
-    for (const QString &s : sharers) {
-        if (!m_knownSharers.contains(s)) { m_pin.clear(); break; }
-    }
-    m_knownSharers = sharers;
-
-    if (m_pin.p.isNull()) { m_pin.clear(); return; }   // pinned peer left the call
-    if (m_pin.isScreen) {
-        // A pinned SHARE that has stopped must release the stage, or we reproduce the
-        // 0.60.1 bug in a new place: a dead pin holding a stage that has nothing to show.
-        const bool live = m_pin.p->isSelf()
-            ? (m_call->isScreenSharing() && m_call->localScreenPreviewProvider())
-            : (m_pin.p->screenSharing() && m_pin.p->screen());
-        if (!live) m_pin.clear();
-    }
+    // The policy either keeps the pin or clears it — it never redirects a pin
+    // to a different stream — so the only thing to map back is the clear.
+    if (!m_stagePolicy.validatePin(pinValue(), stageCandidates()).set())
+        m_pin.clear();
 }
 
 CallParticipant *CallStage::stageSource(bool *isScreen) const
 {
     *isScreen = false;
-    const auto parts = m_call->participants();
-
-    // PRECEDENCE 1 — the manual pin (click-to-promote). A pin names a STREAM, so it
-    // can be a camera OR a screen, ours or a peer's. This deliberately OUTRANKS an
-    // active share, reversing the old order: clicking a peer's camera while they are
-    // presenting must actually put that camera on the stage, and their share drops to
-    // the rail (still a tile, so it can be clicked back). It is safe to let a pin beat
-    // a share ONLY because validatePin() runs first on every relayout: it drops a pin
-    // whose source died, and surrenders the pin to any NEWLY started share — so a pin
-    // can never hide content somebody just began sharing.
-    if (m_pin.p) { *isScreen = m_pin.isScreen; return m_pin.p; }
-
-    // PRECEDENCE 2 — a remote peer's share.
-    // Skip self here — self is always index 0 (CallManager prepends it), so an
-    // unguarded scan would match OUR OWN active share before ever reaching a
-    // remote peer's, permanently winning the stage even after a peer starts
-    // sharing too (backlog bug: a peer's incoming share never displayed while
-    // we were already sharing our own screen). The self-share fallback below
-    // already implements the correct "peer's share wins the stage" precedent
-    // this loop must respect.
-    for (CallParticipant *p : parts)
-        if (!p->isSelf() && p->screenSharing() && p->screen()) { *isScreen = true; return p; }
-    // 0.53.0 — Zoom-style self-view: when WE are sharing and no PEER is, put OUR
-    // OWN share on the stage (rendered from the local capture preview tap), so the
-    // presenter sees what they're broadcasting full-size — the same view the remote
-    // gets — instead of only a small thumbnail. A peer's share still wins the stage
-    // (their content is what the call is watching); ours then falls back to the PiP.
-    if (m_call->isScreenSharing() && m_call->localScreenPreviewProvider()
-        && m_call->selfParticipant()) {
-        // 0.53.x — self-view on the stage for BOTH window AND monitor shares, so
-        // the local-share UI matches a peer-share / p2p call (consistent, per
-        // Kalin). The monitor-share hall-of-mirrors (sharing the screen TalQ is
-        // on → WGC captures TalQ showing the capture → feedback freeze) is solved
-        // in paintTile by drawing a static "You're sharing this screen" placeholder
-        // instead of the live recapture — NOT by hiding the self-view (the blunt
-        // 0.53.1 window-only gate this replaces).
-        *isScreen = true;
-        return m_call->selfParticipant();
-    }
-    // PRECEDENCE 4 — nobody is sharing and nothing is pinned: the active speaker,
-    // else the first remote. (The pin check used to live HERE, below both share
-    // branches — see PRECEDENCE 1.)
-    CallParticipant *speaker = nullptr, *firstRemote = nullptr;
-    for (CallParticipant *p : parts) {
-        if (p->isSelf()) continue;
-        if (!firstRemote) firstRemote = p;
-        if (p->speaking() && !speaker) speaker = p;
-    }
-    if (speaker) return speaker;
-    if (firstRemote) return firstRemote;
-    // Self (always index 0 — CallManager prepends it) is only ever reached when we
-    // are ALONE in the call: the firstRemote return above fires whenever any remote
-    // exists. Showing our own camera to an empty room is correct, so this is NOT
-    // the "big self-camera" path from the 0.60.1 field report — that one came from
-    // a stray self-pin (see mouseReleaseEvent). Do not "harden" this to nullptr; it
-    // would blank the solo/waiting-for-others stage.
-    return parts.isEmpty() ? nullptr : parts.first();
+    const auto parts  = m_call->participants();
+    const auto cand   = stageCandidates();   // index-aligned with parts
+    const auto chosen = talq::stage::StageSourcePolicy::pick(cand, pinValue());
+    if (chosen.sessionId.empty()) return nullptr;   // empty call: blank stage
+    *isScreen = chosen.isScreen;
+    for (qsizetype i = 0; i < parts.size(); ++i)
+        if (cand[std::size_t(i)].sessionId == chosen.sessionId) return parts[i];
+    // Unreachable while cand mirrors parts (validatePin() already dropped any
+    // pin whose participant left). Fail blank rather than stale.
+    return nullptr;
 }
 
 QVector<CallStage::Tile> CallStage::computeLayout() const
@@ -2633,13 +2612,17 @@ void CallStage::mouseReleaseEvent(QMouseEvent *e)
             }
             return;   // an unpinned stage: leave the click for double-click-fullscreen
         }
-        // Never pin our own CAMERA: a self camera-pin puts our own face full-screen,
-        // which is the 0.60.1 "stuck showing myself" symptom itself and is never what
-        // clicking your own thumbnail means. Our own SHARE is pinnable — that is a
-        // legitimate "show me what I'm presenting, big".
-        if (t.p->isSelf() && !t.isScreen) return;
-        const PinRef want{t.p, t.isScreen};
-        m_pin = (m_pin == want) ? PinRef{} : want;   // rail tile → pin / unpin
+        // Pin / unpin through the policy: requestPin() owns both the toggle and
+        // the never-pin-our-own-CAMERA guard (a self camera-pin puts our own
+        // face full-screen — the 0.60.1 "stuck showing myself" symptom itself —
+        // and is never what clicking your own thumbnail means; our own SHARE is
+        // pinnable, a legitimate "show me what I'm presenting, big"). A rejected
+        // click returns the current pin unchanged, so nothing relayouts.
+        const auto cur  = pinValue();
+        const auto next = talq::stage::StageSourcePolicy::requestPin(
+            cur, stageKey(t.p), t.p->isSelf(), t.isScreen);
+        if (next == cur) return;                     // guard rejected / no-op
+        m_pin = next.set() ? PinRef{t.p, t.isScreen} : PinRef{};
         relayout(); update();
         return;
     }

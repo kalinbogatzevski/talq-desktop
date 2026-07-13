@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(talq VERSION 0.60.3 LANGUAGES CXX)
+project(talq VERSION 0.60.4 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -154,8 +154,18 @@ qt_add_executable(talq
     resources/changelog.qrc
     resources/sounds.qrc
     resources/backgrounds.qrc
-    resources/talq.rc
+    ${CMAKE_CURRENT_BINARY_DIR}/talq.rc
 )
+
+# Windows version resource. Generated so FILEVERSION/ProductVersion track the
+# release version above instead of being hand-typed: the literal had drifted to
+# 0.8.3 while we shipped 0.60.3, and nothing in the build compared the two, so
+# every Explorer Properties dialog and signed binary carried the wrong version.
+#
+# Do NOT write the project(...) declaration verbatim in a comment anywhere in this
+# file: scripts/build-release.sh greps for that exact text to read the version, and
+# a second match silently corrupts it (it did — this comment used to do it).
+configure_file(resources/talq.rc.in ${CMAKE_CURRENT_BINARY_DIR}/talq.rc @ONLY)
 
 # Build timestamp
 string(TIMESTAMP TALQ_BUILD_TS "%m%d-%H%M")

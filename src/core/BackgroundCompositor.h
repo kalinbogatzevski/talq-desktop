@@ -24,6 +24,8 @@
 #include <QObject>
 #include <QSize>
 
+#include <atomic>
+
 class QOpenGLContext;
 class QOffscreenSurface;
 class QOpenGLFramebufferObject;
@@ -55,6 +57,15 @@ public:
     // Whether ensureInitialised() succeeded at least once.
     bool isReady() const { return m_ready; }
 
+    // Process-wide live-instance count (ctor increments, dtor decrements
+    // AFTER releaseAll, so 0 means the GL resources are already gone).
+    // Readable from any thread. The 0.60.2 "setMode(None) releases the
+    // engine" fix (~112 MB retained pre-fix) is only falsifiable by
+    // watching the real worker-owned object die — background_engine_test
+    // polls this cross-thread, so a reintroduced applyMode early-return
+    // fails the test instead of silently re-pinning the memory.
+    static int liveInstanceCount();
+
     // Talk's three render modes, kept as separate calls so the engine
     // can pick at frame time without ferrying enums through the GL layer.
 
@@ -81,6 +92,8 @@ signals:
     void initFailed(const QString &reason);
 
 private:
+    static std::atomic<int> s_liveInstances;   // see liveInstanceCount()
+
     bool m_ready = false;
     // 0.60.2 (2026-07-13 field RCA) — latched by ensureInitialised() on the
     // first failure so subsequent composite calls return immediately instead
