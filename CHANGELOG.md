@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.60.4 "Blue Fiesta" (2026-07-14)
+
+A correctness patch on top of 0.60.3.
+
+### Fixed
+* **Changing the quality of a screen share mid-call no longer makes the computer
+  work far harder than it should.** When a share falls back to software encoding,
+  TalQ caps the picture at 1080p, because encoding anything larger in software
+  costs more processing power than a laptop can hide during a call. That cap was
+  applied when the share *started* — but not when you changed the quality while
+  it was already running. Picking a higher quality mid-share therefore lifted the
+  cap and could make the machine stutter. The cap now holds in both cases.
+* **TalQ reports its real version to Windows.** The version shown in the file's
+  Properties dialog had been stuck at an old number for a long time, because it
+  was written down in a second place that nothing kept in step with the actual
+  release. It is now generated from the release version, so it cannot drift again.
+
+### Internal
+* The screen-share quality limits, the stage layout rules and the high-load
+  protection are now covered by tests that fail if the behaviour regresses. Two
+  of this release's fixes were found by writing those tests, not by hitting the
+  bugs in a call.
+
 ## v0.60.3 "Blue Fiesta" (2026-07-13)
 
 A memory patch on top of 0.60.2, focused on the virtual background.

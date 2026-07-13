@@ -2911,15 +2911,18 @@ void CallManager::startScreenShare(int monitorIndex, quintptr windowHandle)
     emit screenShareChanged();
 }
 
-void CallManager::clampScreenToGpuTier(int &cw, int &ch) const
+talq::ShareCap CallManager::screenShareCapForLevel(int level, bool forceSwEncoder) const
 {
-    const int maxH = talq::screenTierMaxHeight(m_gpuClass);
-    if (maxH <= 0 || ch <= maxH) return;   // Capable GPU (native) or already within cap
-    cw = ((cw * maxH) / ch) & ~1;          // preserve aspect, even width
-    ch = maxH;
-    qInfo().nospace() << "CallManager: GPU class " << talq::gpuClassName(m_gpuClass)
-                      << " -- capping screen share to " << cw << "x" << ch
-                      << " (weak/iGPU encoder)";
+    const talq::ShareCap cap = talq::screenShareCap(
+        level, talq::screenTierMaxHeight(m_gpuClass), forceSwEncoder);
+    if (cap.tierClamped)
+        qInfo().nospace() << "CallManager: GPU class " << talq::gpuClassName(m_gpuClass)
+                          << " -- capping screen share to " << cap.w << "x" << cap.h
+                          << " (weak/iGPU encoder)";
+    if (cap.swClamped)
+        qInfo().nospace() << "CallManager: software screen encode — capping "
+                             "capture to " << cap.w << "x" << cap.h;
+    return cap;
 }
 
 // Build, wire and start a fresh screen-share pipeline. Used for the initial
@@ -2966,49 +2969,11 @@ void CallManager::buildAndStartSharePipeline(int monitorIndex, quintptr windowHa
     }
     {
         // Level -> pre-encode downscale cap (set before start(), which the
-        // pipeline reads once). The cap is a CEILING: a smaller monitor frame
-        // passes through untouched, a larger one is downscaled to fit.
-        int cw = 1920, ch = 1080;
-        switch (m_ssQuality) {
-            case 0: cw = 1280; ch = 720;  break;
-            case 1: cw = 1920; ch = 1080; break;
-            case 2: cw = 2560; ch = 1440; break;
-            case 3: cw = 3840; ch = 2160; break;   // "High" = up to 4K
-            default: break;
-        }
-        // The level applies to WINDOW shares as well as MONITOR shares, and the
-        // ceiling semantics above already give a window its native resolution for
-        // free: a window smaller than the cap negotiates through videoscale
-        // untouched (Kalin 2026-06-04: "window app shares must be in native
-        // resolutions and only after that downscale the stream itself"). We used
-        // to force windowHandle != 0 to 3840x2160 here, which collapsed all four
-        // levels onto a ceiling no real window ever reaches — so the quality
-        // picker was a silent no-op for window shares while the pill, the
-        // persisted setting and the log all reported success (0.60.1 field
-        // report). Now only a window LARGER than the chosen cap is downscaled,
-        // which is exactly what lowering the quality asks for; level 3 ("Native")
-        // remains the effectively-uncapped choice.
-        // Hard 4K ceiling. The hardware H264 encoder (Intel QSV / qsvh264enc)
-        // tops out around 4K (4096x2304); a native 8K monitor frame produced
-        // ZERO encoded output, so the share's outbound RTP never confirmed and
-        // it silently failed + wedged the subsystem (field report 2026-06-01).
-        // Clamp every tier so a big/8K monitor downscales instead of feeding the
-        // encoder a resolution it cannot handle.
-        cw = qMin(cw, 3840);
-        ch = qMin(ch, 2160);
-        clampScreenToGpuTier(cw, ch);   // weak/iGPU encoder: cap to 720p/540p
-        // Software-fallback shares cap at 1080p: realtime x264 above that
-        // (1440p / native-res window shares up to 4K) costs more CPU than a
-        // laptop can hide mid-call. 1080p keeps slides/code readable, and it
-        // applies only to THIS share — the next hardware share restores the
-        // user's cap.
-        if (forceSwEncoder && ch > 1080) {
-            cw = ((cw * 1080) / ch) & ~1;
-            ch = 1080;
-            qInfo().nospace() << "CallManager: software screen encode — capping "
-                                 "capture to " << cw << "x" << ch;
-        }
-        m_screenSharePipeline->setQualityCap(cw, ch);
+        // pipeline reads once). Full decision chain (base cap -> 4K hard
+        // ceiling -> GPU-tier clamp -> software-fallback 1080p clamp) + the
+        // field rationale: core/ShareCapPolicy.h.
+        const talq::ShareCap cap = screenShareCapForLevel(m_ssQuality, forceSwEncoder);
+        m_screenSharePipeline->setQualityCap(cap.w, cap.h);
     }
 
     connect(m_screenSharePipeline, &ScreenSharePipeline::localOfferReady,
@@ -3503,50 +3468,30 @@ void CallManager::onLoadTick()
     // in 0.52.1 for oscillating), so use it with hysteresis: on trip, SHED hard —
     // cap EVERY peer including the focused tile to the 180p layer (i.e. stop the
     // 1080p streams) — and restore each peer's wanted quality once it eases.
-    //
-    // 0.60.2 REWORK (2026-07-13 field RCA): the trip used to be an absolute
-    // 1500 MB working set, which a HEALTHY box exceeds just by using the
-    // virtual background (+145 MB engine) on top of the GPU driver/ICD mapping
-    // — a peer with plenty of free RAM tripped it at 1542 MB and degraded the
-    // call for everyone. "Host overload" is now judged against the ACTUAL
-    // system: shed only when the machine is genuinely out of physical memory
-    // AND our process is a significant contributor, with a much higher
-    // absolute backstop for the true runaway (which grows unboundedly, so it
-    // still trips the backstop on its way up — no regression of the original
-    // stalled-decoder case). Constants + rationale: CallManager.h.
-    const qint64 memMb = DebugMonitor::readProcessMemoryMB();
+    // Decision + thresholds + the 2026-07-13 false-trip field rationale:
+    // core/MemShedPolicy.h. Only the side effects + logging live here.
+    talq::HostLoad host;
+    host.procMb = DebugMonitor::readProcessMemoryMB();
     qint64 sysTotalMb = 0, sysAvailMb = 0;
     int    sysLoadPct = -1;
-    const bool haveSys =
+    host.haveSys =
         DebugMonitor::readSystemMemoryMB(sysTotalMb, sysAvailMb, sysLoadPct);
-    // If GlobalMemoryStatusEx fails (or non-Windows), we can't judge system
-    // pressure — fall back to the runaway backstop only. Treat "unknown" as
-    // "not pressured" for the trip, and as "eased" for the restore, so a
-    // probe failure can neither strand us shed nor shed us spuriously.
-    const bool sysPressureHigh = haveSys
-        && (sysLoadPct >= kMemShedSysLoadHighPct
-            || sysAvailMb < kMemShedSysAvailLowMb);
-    const bool sysPressureEased = !haveSys
-        || (sysLoadPct <= kMemShedSysLoadLowPct
-            && sysAvailMb >= kMemShedSysAvailOkMb);
+    host.sysTotalMb = sysTotalMb;
+    host.sysAvailMb = sysAvailMb;
+    host.sysLoadPct = sysLoadPct;
 
-    const bool shedTrip = (memMb > kMemShedRunawayHighMb)
-        || (sysPressureHigh && memMb >= kMemShedContributorMb);
-    const bool shedRestore = (memMb < kMemShedRunawayLowMb)
-        && (sysPressureEased || memMb < kMemShedContributorLowMb);
-
-    if (!m_memShedActive && shedTrip) {
-        m_memShedActive = true;
+    switch (m_memShed.update(host)) {
+    case talq::MemShedPolicy::Shed:
         // Log the SYSTEM figures alongside the process figure so the next
         // person can tell a real overload from a false one (the 2026-07-13
         // false trip was only diagnosable because the peer's box specs were
         // known out-of-band).
         qWarning().nospace()
-            << "CallManager: HOST OVERLOAD — working set " << memMb << " MB"
-            << (memMb > kMemShedRunawayHighMb
+            << "CallManager: HOST OVERLOAD — working set " << host.procMb << " MB"
+            << (host.procMb > talq::kMemShedRunawayHighMb
                 ? " [runaway backstop]" : " [system memory pressure]")
-            << "; system: total " << sysTotalMb << " MB, avail " << sysAvailMb
-            << " MB, load " << sysLoadPct << "%"
+            << "; system: total " << host.sysTotalMb << " MB, avail " << host.sysAvailMb
+            << " MB, load " << host.sysLoadPct << "%"
             << " — shedding ALL peers to 180p";
         // NOTE (0.60.2): do NOT demote to software decode from here. An earlier version
         // of this patch did exactly that when the "d3d11 fault" flag was latched — but
@@ -3556,14 +3501,17 @@ void CallManager::onLoadTick()
         // rebuilding the decode path on a guess is not.
         applyReceiveLoadCaps(/*substreamCap=*/0, /*capFocused=*/true);
         setVideoQualityNotice(tr("High load — receiving video at reduced quality"));
-    } else if (m_memShedActive && shedRestore) {
-        m_memShedActive = false;
-        qInfo().nospace() << "CallManager: host load eased (working set " << memMb
-                          << " MB; system avail " << sysAvailMb << " MB, load "
-                          << sysLoadPct << "%) — restoring receive quality";
+        break;
+    case talq::MemShedPolicy::Restore:
+        qInfo().nospace() << "CallManager: host load eased (working set " << host.procMb
+                          << " MB; system avail " << host.sysAvailMb << " MB, load "
+                          << host.sysLoadPct << "%) — restoring receive quality";
         applyReceiveLoadCaps(/*substreamCap=*/2, /*capFocused=*/false);
         if (m_videoQualityNotice.startsWith(tr("High load")))
             setVideoQualityNotice(QString());
+        break;
+    case talq::MemShedPolicy::NoChange:
+        break;
     }
     // ─────────────────────────────────────────────────────────────────────────
 
@@ -3881,23 +3829,12 @@ void CallManager::setScreenShareQuality(int level)
     emit screenShareQualityChanged();
     if (!m_screenSharing) return;   // applied on next share
 
-    // Map the quality level to the downscale cap (kept in lockstep with
-    // buildAndStartSharePipeline). Hard 4K ceiling: the qsv encoder tops out
-    // ~4K and a larger frame yields zero encoded output.
-    int cw = 1920, ch = 1080;
-    switch (level) {
-        case 0: cw = 1280; ch = 720;  break;
-        case 1: cw = 1920; ch = 1080; break;
-        case 2: cw = 2560; ch = 1440; break;
-        case 3: cw = 3840; ch = 2160; break;
-        default: break;
-    }
-    // Applies to window AND monitor shares alike — a window smaller than the cap
-    // still goes out at native resolution (ceiling caps), so there is no reason
-    // to special-case it. See buildAndStartSharePipeline.
-    cw = qMin(cw, 3840);
-    ch = qMin(ch, 2160);
-    clampScreenToGpuTier(cw, ch);   // weak/iGPU encoder: cap to 720p/540p
+    // Map the quality level to the downscale cap — the SAME policy chain as
+    // buildAndStartSharePipeline (core/ShareCapPolicy.h), including the
+    // software-fallback 1080p clamp: a share that fell back to x264 keeps its
+    // 1080p ceiling across a live quality change too (realtime x264 above
+    // 1080p costs more CPU than a laptop can hide mid-call).
+    const talq::ShareCap cap = screenShareCapForLevel(level, m_ssForceSwEncoder);
 
     // LIVE quality change -- reconfigure the RUNNING pipeline's downscale cap in
     // place (ScreenSharePipeline::setQualityCap re-sets the scale capsfilter).
@@ -3909,8 +3846,8 @@ void CallManager::setScreenShareQuality(int level)
     // no teardown, no border flicker, no drop.
     if (m_screenSharePipeline) {
         qInfo() << "CallManager: screen-share quality ->" << level
-                << "-- LIVE in-place re-cap" << cw << "x" << ch;
-        m_screenSharePipeline->setQualityCap(cw, ch);
+                << "-- LIVE in-place re-cap" << cap.w << "x" << cap.h;
+        m_screenSharePipeline->setQualityCap(cap.w, cap.h);
         return;
     }
 

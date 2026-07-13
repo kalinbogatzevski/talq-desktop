@@ -5,12 +5,19 @@
 #include <string>
 #include <vector>
 
-// StagePolicy — the active-speaker LATCH for the Zoom-style speaker stage.
-// Pure logic, no Qt, no GStreamer (plain std::string session ids, injected
-// monotonic clock), so tests/stage_policy_test.cpp can drive it through
-// simulated minutes of conversation in microseconds.
+// StagePolicy — the PURE stage decisions for the in-call surface. No Qt, no
+// GStreamer (plain std::string session ids, injected monotonic clock), so
+// tests/stage_policy_test.cpp can drive them through simulated minutes of a
+// call in microseconds. Two units live here:
 //
-// The problem: CallParticipant::speaking() is driven by a GStreamer `level`
+//   - StageSpeakerLatch  — the active-speaker LATCH for the Zoom-style
+//     speaker stage (directly below);
+//   - StageSourcePolicy  — WHO OWNS THE MAIN STAGE: the pick() precedence and
+//     the manual-pin lifecycle (end of file), extracted from CallStage after
+//     the 0.60.1 "stuck in share mode" field bug so the decision can be
+//     pinned by tests.
+//
+// The problem the LATCH solves: CallParticipant::speaking() is driven by a GStreamer `level`
 // element at ~10 Hz and is far too jittery to drive a layout directly — raw
 // flags flip on every syllable gap, and a stage wired straight to them would
 // strobe. This latch turns those jittery per-peer flags into a STABLE,
@@ -280,6 +287,190 @@ private:
     std::vector<std::int64_t> m_promotedAtMs;  // parallel: promotion timestamps
     bool                      m_haveMutation   = false;
     std::int64_t              m_lastMutationMs = 0;
+};
+
+// ---- The stage-source decision ---------------------------------------------
+//
+// WHO OWNS THE MAIN STAGE, extracted from CallStage::stageSource() /
+// validatePin() after the 0.60.1 field bug: two peers were both screen-
+// sharing; a release-click that fell through a missing chrome guard onto rail
+// tile 0 (the "You" tile) had silently pinned SELF's camera. The pin was
+// invisible while a share held the stage and detonated the instant the last
+// share stopped — own camera parked on the full stage, indistinguishable from
+// "stuck in share mode". CallStage maps its live Qt state (CallParticipant*,
+// QPointer pins) to the plain structs below, calls the policy, and maps the
+// answer back; every pointer-lifetime and painting concern stays on the Qt
+// side. Only the DECISION lives here, where tests can pin it.
+
+// Our own share has no remote sessionId, so this key stands in for self
+// wherever a session key is needed (candidates, pins, the known-sharer set).
+inline constexpr char kSelfSessionKey[] = "@self";
+
+// Everything the stage decision needs to know about one participant.
+// Candidates arrive in PARTICIPANT ORDER — self is always index 0 (CallManager
+// prepends it) — and order breaks ties: the first sharing remote wins the
+// stage, the first remote is the no-speaker fallback.
+struct StageCandidate {
+    std::string sessionId;     // remote sessionId; kSelfSessionKey for self
+    bool isSelf     = false;
+    bool screenLive = false;   // decodable screen stream RIGHT NOW (flag AND provider)
+    bool speaking   = false;   // raw VAD flag; only consulted for remotes
+};
+
+// A manual pin (click-to-promote). A pin names a STREAM, not just a
+// participant: the old participant-only pin could only ever mean "that peer's
+// CAMERA", which is why a stray self-pin put our own camera on the full stage
+// the moment the last share ended (the 0.60.1 field bug) and why a screen
+// share could not be pinned at all. Carrying the kind is what makes
+// click-to-promote work for shares as well as cameras.
+struct StagePin {
+    std::string sessionId;     // empty = no pin
+    bool isScreen = false;
+    bool set() const { return !sessionId.empty(); }
+    void clear() { sessionId.clear(); isScreen = false; }
+    bool operator==(const StagePin &o) const
+    { return sessionId == o.sessionId && isScreen == o.isScreen; }
+    bool operator!=(const StagePin &o) const { return !(*this == o); }
+};
+
+// What the stage should show. An empty sessionId means there is NOTHING to
+// stage (no participants at all) — never "show self by accident".
+struct StagePick {
+    std::string sessionId;
+    bool isScreen = false;
+};
+
+class StageSourcePolicy {
+public:
+    // Which source owns the stage right now. Precedence, highest first:
+    //   1. manual pin (camera or screen, self or remote)   — click-to-promote
+    //   2. a remote peer's screen share
+    //   3. our own screen share
+    //   4. the active speaker, then the first remote
+    // The pin used to be consulted LAST (after both share branches), which made
+    // it invisible during a share and let it detonate when the share stopped.
+    static StagePick pick(const std::vector<StageCandidate> &now, const StagePin &pin)
+    {
+        // PRECEDENCE 1 — the manual pin. A pin names a STREAM, so it can be a
+        // camera OR a screen, ours or a peer's. This deliberately OUTRANKS an
+        // active share, reversing the old order: clicking a peer's camera
+        // while they are presenting must actually put that camera on the
+        // stage, and their share drops to the rail (still a tile, so it can be
+        // clicked back). It is safe to let a pin beat a share ONLY because
+        // validatePin() runs first on every relayout: it drops a pin whose
+        // source died, and surrenders the pin to any NEWLY started share — so
+        // a pin can never hide content somebody just began sharing.
+        if (pin.set()) return {pin.sessionId, pin.isScreen};
+
+        // PRECEDENCE 2 — a remote peer's share. Skip self — self is always
+        // index 0, so an unguarded scan would match OUR OWN active share
+        // before ever reaching a remote peer's, permanently winning the stage
+        // even after a peer starts sharing too (backlog bug: a peer's incoming
+        // share never displayed while we were already sharing our own screen).
+        for (const StageCandidate &c : now)
+            if (!c.isSelf && c.screenLive) return {c.sessionId, true};
+
+        // PRECEDENCE 3 — 0.53.0 Zoom-style self-view: when WE are sharing and
+        // no PEER is, our OWN share takes the stage (rendered from the local
+        // capture preview tap), so the presenter sees what they're
+        // broadcasting full-size — the same view the remote gets — instead of
+        // only a small thumbnail. A peer's share still wins the stage above:
+        // their content is what the call is watching. Applies to BOTH window
+        // AND monitor shares (consistent local-share UI, per Kalin — replaces
+        // the blunt 0.53.1 window-only gate); the monitor-share hall-of-
+        // mirrors is handled at paint time (CallStage::paintTile placeholder),
+        // not by demoting the source here.
+        for (const StageCandidate &c : now)
+            if (c.isSelf && c.screenLive) return {c.sessionId, true};
+
+        // PRECEDENCE 4 — nobody is sharing and nothing is pinned: the active
+        // speaker, else the first remote.
+        const StageCandidate *speaker = nullptr, *firstRemote = nullptr;
+        for (const StageCandidate &c : now) {
+            if (c.isSelf) continue;
+            if (!firstRemote) firstRemote = &c;
+            if (c.speaking && !speaker) speaker = &c;
+        }
+        if (speaker)     return {speaker->sessionId, false};
+        if (firstRemote) return {firstRemote->sessionId, false};
+
+        // Self (index 0) is only ever reached when we are ALONE in the call:
+        // the firstRemote return above fires whenever any remote exists.
+        // Showing our own camera to an empty room is correct, so this is NOT
+        // the "big self-camera" path from the 0.60.1 field report — that one
+        // came from a stray self-pin (see requestPin's guard). Do not "harden"
+        // this to empty; it would blank the solo/waiting-for-others stage.
+        return now.empty() ? StagePick{} : StagePick{now.front().sessionId, false};
+    }
+
+    // Drop a pin that no longer names a live source, and surrender the pin to
+    // any NEWLY started share (diffed against the known-sharer set held here).
+    // Must run before every pick() — load-bearing, not hardening: now that a
+    // pin outranks an active share, a stale pin is MORE visible than it used
+    // to be. Returns the surviving pin: either the input unchanged or cleared;
+    // validatePin never redirects a pin to a different stream.
+    StagePin validatePin(StagePin pin, const std::vector<StageCandidate> &now)
+    {
+        // Who is sharing RIGHT NOW.
+        std::vector<std::string> sharers;
+        for (const StageCandidate &c : now)
+            if (c.screenLive) sharers.push_back(c.sessionId);
+
+        // A NEWLY started share always claims the stage, surrendering any
+        // manual pin. This is the one deliberate exception to "the pin wins":
+        // a stale pin quietly hiding content a peer just started presenting is
+        // far worse than losing a pin. An ALREADY-KNOWN sharer never re-steals
+        // the pin — otherwise no pin could be held at all while a share runs.
+        for (const std::string &s : sharers) {
+            if (std::find(m_knownSharers.begin(), m_knownSharers.end(), s)
+                == m_knownSharers.end()) { pin.clear(); break; }
+        }
+        m_knownSharers = std::move(sharers);
+
+        if (!pin.set()) return pin;
+
+        // The pinned participant left the call: a dead pin is cleared so the
+        // stage falls back down the precedence instead of showing nothing.
+        const StageCandidate *c = nullptr;
+        for (const StageCandidate &k : now)
+            if (k.sessionId == pin.sessionId) { c = &k; break; }
+        if (!c) { pin.clear(); return pin; }
+
+        // A pinned SHARE that has stopped must release the stage, or we
+        // reproduce the 0.60.1 bug in a new place: a dead pin holding a stage
+        // that has nothing to show.
+        if (pin.isScreen && !c->screenLive) pin.clear();
+        return pin;
+    }
+
+    // Never pin our own CAMERA: a self camera-pin puts our own face
+    // full-screen, which is the 0.60.1 "stuck showing myself" symptom itself
+    // and is never what clicking your own thumbnail means. Our own SHARE is
+    // pinnable — that is a legitimate "show me what I'm presenting, big".
+    // This is the direct guard against the field bug: with it, the
+    // self-camera-pin state is UNREACHABLE through any click path.
+    static bool pinnable(bool isSelf, bool isScreen) { return isScreen || !isSelf; }
+
+    // Rail-tile click semantics: pin the clicked stream; clicking the stream
+    // that is already pinned unpins (back to automatic). A click the guard
+    // rejects returns `current` UNCHANGED, so the caller can compare and skip
+    // the relayout when nothing actually happened.
+    static StagePin requestPin(const StagePin &current, const std::string &sessionId,
+                               bool isSelf, bool isScreen)
+    {
+        if (!pinnable(isSelf, isScreen)) return current;
+        const StagePin want{sessionId, isScreen};
+        return (current == want) ? StagePin{} : want;
+    }
+
+    void reset() { m_knownSharers.clear(); }
+
+private:
+    // Sharers seen on the previous validatePin() (session keys; kSelfSessionKey
+    // stands in for our own share). The surrender rule above diffs the current
+    // sharers against this, so only a share that STARTED since the last layout
+    // steals the pin — one that merely keeps running does not.
+    std::vector<std::string> m_knownSharers;
 };
 
 } // namespace talq::stage

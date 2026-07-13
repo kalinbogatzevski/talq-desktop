@@ -70,9 +70,17 @@ QImage fallbackGradientMask(const QSize &size)
 
 } // namespace
 
+std::atomic<int> TfliteSegmenter::s_liveInstances{0};
+
+int TfliteSegmenter::liveInstanceCount()
+{
+    return s_liveInstances.load(std::memory_order_acquire);
+}
+
 TfliteSegmenter::TfliteSegmenter(QObject *parent)
     : QObject(parent)
 {
+    s_liveInstances.fetch_add(1, std::memory_order_acq_rel);
 #ifdef TALQ_BG_ORT
     // Load the bundled .onnx from qrc into a QByteArray we own for the
     // session lifetime. ORT's session can also load from a file path,
@@ -168,7 +176,13 @@ TfliteSegmenter::TfliteSegmenter(QObject *parent)
 #endif
 }
 
-TfliteSegmenter::~TfliteSegmenter() = default;
+TfliteSegmenter::~TfliteSegmenter()
+{
+    // The ORT members (unique_ptrs) are destroyed right after this body on
+    // the same thread — an observer reading 0 may race that by microseconds
+    // but the destruction is already unconditional at that point.
+    s_liveInstances.fetch_sub(1, std::memory_order_acq_rel);
+}
 
 bool TfliteSegmenter::isReady() const
 {
