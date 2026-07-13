@@ -68,6 +68,12 @@ inline void draw(QPainter &p, const QString &id, const QRectF &box,
         QPainterPath sh2; sh2.moveTo(16, 18.5);
         sh2.cubicTo(16, 14, 21.5, 13.8, 21.5, 18.5);
         p.drawPath(sh2);
+    } else if (id == "layout") {
+        // Speaker view: one big stage cell with a stack of small rail cells beside
+        // it — the layout it produces, drawn literally.
+        p.drawRoundedRect(QRectF(3.5, 6, 11, 12), 1.5, 1.5);
+        p.drawRoundedRect(QRectF(16.5, 6, 4, 5), 1, 1);
+        p.drawRoundedRect(QRectF(16.5, 13, 4, 5), 1, 1);
     } else if (id == "telemetry") {
         p.drawLine(QPointF(6, 18), QPointF(6, 13));
         p.drawLine(QPointF(12, 18), QPointF(12, 8));

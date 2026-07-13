@@ -74,10 +74,64 @@ inline std::atomic<bool> &talqHwDecodeFaultDetected()
     return v;
 }
 
+// How far the decode fallback has escalated this process:
+//   0 = untouched (d3d11 preferred, GStreamer's default)
+//   1 = d3d11 demoted, NVDEC (nvcodec) preferred — STILL HARDWARE
+//   2 = every hardware decoder demoted, software (avdec_h264)
+inline std::atomic<int> &talqDecodeFallbackStage()
+{
+    static std::atomic<int> v{0};
+    return v;
+}
+
+// STAGE 1 — d3d11 is broken, but NVDEC may be perfectly healthy: demote ONLY the
+// d3d11 decoders and promote nvcodec's.
+//
+// This exists because of a real field failure (2026-07-13, Kalin's RTX 3070 laptop
+// and Ivan's RTX 2060 desktop — BOTH Intel iGPU + NVIDIA hybrids). GStreamer's
+// d3d11 decoder could not obtain a video device on either box:
+//     gst_d3d11_device_get_video_device_handle: D3D11 call failed:
+//         0x80004002, No such interface supported        (E_NOINTERFACE)
+// followed by an endless "Invalid frame num, maybe frame drop" flood. The old
+// fallback then demoted d3d11 AND nvcodec together and dropped all the way to
+// SOFTWARE decode — throwing away a working GPU decoder. Both machines
+// hardware-ENCODE fine on nvh264enc, i.e. the NVIDIA path is alive and well; only
+// the d3d11 path is broken. Software-decoding the peer's 1080p stream then burned
+// enough CPU that the receive-load governor crushed quality to lyr0/fps15.
+//
+// Returns true if NVDEC was promoted (caller should rebuild subscribers and STAY on
+// hardware). Returns false when there is no nvcodec decoder to fall back to, in
+// which case the caller must escalate to talqDemoteHwVideoDecoders().
+inline bool talqPreferNvdecOverD3d11()
+{
+    GstElementFactory *nv = gst_element_factory_find("nvh264dec");
+    if (!nv) nv = gst_element_factory_find("nvh264sldec");
+    if (!nv) return false;                    // no NVDEC on this box — nothing to try
+    gst_plugin_feature_set_rank(GST_PLUGIN_FEATURE(nv), GST_RANK_PRIMARY + 1);
+    gst_object_unref(nv);
+
+    // Kill ONLY the d3d11 decoders. Leave nvcodec alone — that is the whole point.
+    static const char *d3d11Decoders[] = {
+        "d3d11h264dec", "d3d11vp8dec", "d3d11vp9dec", nullptr
+    };
+    for (int i = 0; d3d11Decoders[i]; ++i) {
+        if (GstElementFactory *f = gst_element_factory_find(d3d11Decoders[i])) {
+            gst_plugin_feature_set_rank(GST_PLUGIN_FEATURE(f), GST_RANK_NONE);
+            gst_object_unref(f);
+        }
+    }
+    talqDecodeFallbackStage().store(1);
+    qWarning() << "VideoDecoder: d3d11 decode faulty -> demoted d3d11, promoted NVDEC "
+                  "(still HARDWARE decode)";
+    return true;
+}
+
 // Demote every hardware H264/VP8/VP9 decoder factory to GST_RANK_NONE so
 // autoplugging (decodebin / webrtcsrc's internal decodebin3) selects the
 // software decoder (avdec_h264 / openh264dec / vp8dec). Idempotent; call AFTER
 // gst_init (needs the registry loaded). Process-global and sticky by design.
+// STAGE 2 — the last resort. Prefer talqPreferNvdecOverD3d11() first: on a hybrid
+// Intel+NVIDIA box, d3d11 being broken does NOT mean NVDEC is.
 inline void talqDemoteHwVideoDecoders()
 {
     // SAFETY: only demote if a SOFTWARE decoder exists to take over — otherwise

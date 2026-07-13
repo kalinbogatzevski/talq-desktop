@@ -141,21 +141,40 @@ void talqTerminateHandler()
 #include "core/VideoEncoderUtil.h"   // B1/B4 — software-decode latch + HW-decoder demotion
 #include "core/HwEncoderProbe.h"     // #74 — cached out-of-process HW-encoder probe
 
-// B4 — GStreamer log probe for the d3d11 video-device-interface failure
-// (E_NOINTERFACE 0x80004002). This surfaces ONLY as a WARNING from
-// gst_d3d11_device_get_video_device_handle and never becomes a bus error, so the
-// pipeline error path can't see it. Cheap + thread-safe: match the C function
-// name and set an atomic; CallManager::onLoadTick does the real work (demote +
-// rebuild) on the Qt thread. Must be a named function — gst_debug_add_log_function
-// is a macro that casts func to void*, which a lambda can't satisfy.
-static void talqGstDecodeFaultProbe(GstDebugCategory *, GstDebugLevel level,
-                                    const gchar *, const gchar *function, gint,
-                                    GObject *, GstDebugMessage *, gpointer)
-{
-    if (level <= GST_LEVEL_WARNING && function
-        && std::strstr(function, "get_video_device_handle"))
-        talqHwDecodeFaultDetected().store(true);
-}
+// B4 (0.60.2 — REMOVED, it was a FALSE POSITIVE that crippled hardware decode).
+//
+// This used to latch talqHwDecodeFaultDetected() whenever GStreamer logged a WARNING
+// from gst_d3d11_device_get_video_device_handle ("D3D11 call failed: 0x80004002, No
+// such interface supported" = E_NOINTERFACE). That was wrong, and it was actively
+// harmful. Proven by experiment on 2026-07-13 (Kalin's RTX 3070 + Intel UHD laptop,
+// GStreamer 1.28.1, real gst-launch pipelines):
+//
+//   * The d3d11 plugin ENUMERATES EVERY ADAPTER at plugin_init and registers a decoder
+//     per adapter, GATED on this very QueryInterface succeeding. A WARP / "Microsoft
+//     Basic Display" / virtual-display adapter has no ID3D11VideoDevice, so the QI
+//     returns E_NOINTERFACE, GStreamer logs this warning ONCE, skips that adapter, and
+//     binds the decoder to a real GPU. Microsoft documents E_NOINTERFACE as the
+//     EXPECTED result for WARP/Basic-Display adapters. The warning is a normal probe
+//     result on almost any Windows box — NOT a decode failure.
+//   * Measured: with the warning present, d3d11h264dec still decoded 120/120 frames
+//     (exit 0), bound to adapter=0, vendor-id=4318 (NVIDIA), "GeForce RTX 3070".
+//     The Intel adapter's decoder (d3d11h264device1dec) decoded 120/120 too.
+//   * The "Invalid frame num N, maybe frame drop" flood that accompanied it is NOT a
+//     decoder fault either — it is upstream FRAME LOSS. Injecting 20% packet loss
+//     reproduced the flood identically on d3d11 AND on NVDEC (33 warnings each), and
+//     BOTH kept decoding to EOS. Only software avdec_h264 hides it, because libav does
+//     its own concealment.
+//
+// Net effect of the old probe: a benign warning + ordinary packet loss ("concealment")
+// made CallManager demote the whole session to SOFTWARE decode. Software-decoding a
+// peer's 1080p stream then burned enough CPU that the receive-load governor collapsed
+// receive quality to lyr0/fps15 — i.e. TalQ crippled itself on a false positive.
+// Field 2026-07-13: it fired on BOTH endpoints of a 2-party call and is the likely
+// cause of the long-standing "TalQ is bad on Intel-only boxes" reports.
+//
+// A GENUINE hardware-decoder failure still demotes: it arrives as a hard decoder BUS
+// ERROR, which CallManager already handles (that path is trustworthy enough to persist
+// across launches). We no longer guess from log warnings.
 
 
 int main(int argc, char *argv[])
@@ -392,17 +411,18 @@ int main(int argc, char *argv[])
             qWarning() << "main: restored Video/forceSoftwareDecode latch -> software video decode";
         }
     }
-    // (b) Live auto-detect: the d3d11 video-device-interface failure
-    //     (E_NOINTERFACE 0x80004002) surfaces only as a GStreamer WARNING from
-    //     gst_d3d11_device_get_video_device_handle — it never becomes a bus
-    //     ERROR, so the pipeline error path can't catch it (this is exactly
-    //     Pavel's box: HW decode present but the video interface unsupported, so
-    //     it drops frames forever). Hook the GStreamer log stream and flag the
-    //     fault the instant that function warns; CallManager::onLoadTick acts on
-    //     it (demote + persist + rebuild) on the Qt thread. The callback is cheap
-    //     and thread-safe: it only matches the C function name and sets an atomic.
-    gst_debug_set_threshold_for_name("d3d11device", GST_LEVEL_WARNING);
-    gst_debug_add_log_function(talqGstDecodeFaultProbe, nullptr, nullptr);
+    // (b) 0.60.2 — the live "d3d11 fault" auto-detect is GONE. It hooked the GStreamer
+    //     log stream and treated a WARNING from gst_d3d11_device_get_video_device_handle
+    //     (E_NOINTERFACE) as proof that hardware decode was broken. That warning is a
+    //     NORMAL adapter-probe result — GStreamer registers a decoder per adapter and
+    //     gates each on that QueryInterface, so a WARP / Basic-Display / virtual adapter
+    //     warns once and is skipped while a real GPU decoder binds and works. Measured
+    //     on the field hardware: the warning fires AND d3d11h264dec decodes 120/120 on
+    //     the RTX 3070. Latching a permanent fault off it forced SOFTWARE decode, which
+    //     burned CPU and made the receive-load governor collapse call quality — the app
+    //     was crippling itself. See the long note above talqGstDecodeFaultProbe's old
+    //     home for the full experiment. A REAL decoder failure still arrives as a hard
+    //     bus ERROR and is handled on the pipeline error path.
 
     QApplication app(argc, argv);
 

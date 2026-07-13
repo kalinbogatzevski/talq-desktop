@@ -213,8 +213,10 @@ SharePickerDialog::SharePickerDialog(QWidget *parent)
     qCombo->addItem(tr("1440p"), 2);
     qCombo->addItem(tr("Native"), 3);
     {
+        // Default 1440p (level 2) — must match CallManager's fallback, or the
+        // picker shows a level the pipeline is not actually building at.
         int cur = QSettings("TalQ", "TalQ")
-                      .value("Video/screenShareQuality", 1).toInt();
+                      .value("Video/screenShareQuality", 2).toInt();
         int idx = qCombo->findData(cur);
         qCombo->setCurrentIndex(idx < 0 ? 1 : idx);
     }
