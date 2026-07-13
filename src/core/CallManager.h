@@ -260,6 +260,10 @@ public:
     // PublishPipeline wire-up + the Settings live-apply path.
     BackgroundEngine *backgroundEngine() const { return m_backgroundEngine; }
 
+    // Published by CallStage on every relayout: the peers rendered on the STAGE (the
+    // big tile(s)). The receive-load cap exempts exactly these and nothing else.
+    void setStagePeers(const QSet<QString> &peers);
+
 public slots:
     // #20 — re-read Talk/Backgrounds/* from QSettings and push to the
     // BackgroundEngine. Hooked to SettingsDialog::backgroundSettingsChanged
@@ -329,7 +333,11 @@ private:
 
     // 0.51.x load controller internals.
     int     effectiveSubstreamFor(const QString &sessionId, int want) const; // apply recv cap + focus exemption
-    QString focusedPeer() const;                       // peer with the highest tile-size want
+    // Peers currently ON THE STAGE (the big tile(s)). Published by CallStage on every
+    // relayout; the receive-load cap exempts exactly these. Replaces the old single
+    // focusedPeer(), which could only ever exempt ONE peer — wrong once the
+    // active-speaker layout can put two cameras side by side.
+    bool isFocusedPeer(const QString &sessionId) const;
     void    sendDesiredSubstream(const QString &sessionId, int substream);   // dedupe + selectStream
     void    startLoadController();   // arm the ~1 s tick for a live call (kill-switch aware)
     void    stopLoadController();    // disarm + reset caps to full on call end
@@ -430,6 +438,10 @@ private:
     // change can be re-applied without the UI re-deciding. m_recvLoadSubstreamCap
     // (2 = no cap) + m_recvLoadCapFocused are set by the controller tick.
     QHash<QString, int> m_peerSubstreamWant;
+    // Peers CallStage is currently rendering on the stage (the big tile(s)). The only
+    // peers the receive-load cap exempts. Empty in the even gallery — which is correct:
+    // no tile is privileged there, so the cap must bite everyone.
+    QSet<QString> m_stagePeers;
     // A manual receive-quality pick (UI dropdown) per peer: 0/1/2 = pinned,
     // absent = Auto. A pin bypasses the auto load controller in
     // effectiveSubstreamFor (fixes "selecting quality does nothing").
@@ -585,6 +597,26 @@ private:
     QTimer *m_callPollTimer = nullptr;
     int    m_pubRetryAttempts   = 0;     // resets to 0 on ICE connected/completed
     bool   m_pubRebuildInFlight = false; // serialize rebuilds (one at a time)
+    // 2026-07-13 field incident — REST-evidence backstop (full RCA at the
+    // noteRestPeerEvidence definition). An outgoing call's ONLY exit from
+    // Outgoing was the HPB participants-update rising edge (inCall 0→N →
+    // participantJoinedCall → adopt). On 3 consecutive field attempts the HPB
+    // delivered updates containing ONLY OUR OWN session — the ANSWERED
+    // callee never appeared in any signaling event — and the REST poll was
+    // blind too (its NC→HPB translation maps are themselves HPB-fed), so the
+    // caller rang out 60s → "No answer" against a callee stuck on
+    // "connecting". The poll now hands unmapped in-call rows to
+    // noteRestPeerEvidence(), which promotes Outgoing→Connecting on REST
+    // evidence ALONE and defers the HPB sid until it finally resolves.
+    // m_remoteSessionId stays HPB-only — the NC session id is a DIFFERENT id
+    // space and must never be stored in it (everything downstream routes on
+    // HPB sids); the pending NC sid lives here instead.
+    void noteRestPeerEvidence(const QString &ncSid, const QString &displayName);
+    QString m_pendingRestPeerNcSid;       // NC session id of the REST-proven peer (no HPB sid yet)
+    qint64  m_restPeerEvidenceMs = 0;     // first REST proof of an in-call peer (ms epoch; 0 = none)
+    qint64  m_restPeerLastSeenMs = 0;     // last poll tick that still saw a non-self in-call row
+    bool    m_restPromoted = false;       // backstop promoted us out of Outgoing on REST alone
+    bool    m_restBackstopWarned = false; // loud delivery-failure warning fired (once per call)
     // #bug3 -- peer-grace: a transient remote-1:1-peer inCall=0 (WiFi blip) or a
     // full session drop+rejoin under a NEW NC session id must NOT end the call.
     // Separate from m_pubRetryTimer -- both drive Reconnecting and can be live at
@@ -683,7 +715,9 @@ private:
     // screen/window without re-prompting.
     int m_ssMonitorIndex = 0;
     quintptr m_ssWindowHandle = 0;
-    int m_ssQuality = 1;   // 0=720p 1=1080p 2=1440p 3=Native (persisted)
+    int m_ssQuality = 2;   // 0=720p 1=1080p 2=1440p 3=Native (persisted; default 1440p —
+                           // kept in lockstep with the QSettings fallbacks in
+                           // buildAndStartSharePipeline and SharePickerDialog)
     // #reshare-hw-collision — build the NEXT share pipeline with the software
     // x264 encoder. Set by the confirm-timeout Retry (the attempt produced no
     // outbound RTP; on HW boxes the dominant cause is a collision with the

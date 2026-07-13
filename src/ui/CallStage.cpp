@@ -121,12 +121,48 @@ CallStage::CallStage(CallManager *call, QWidget *parent)
                 ? qMin(target, m_chromeAlpha + step)
                 : qMax(target, m_chromeAlpha - step);
         }
+        // Active-speaker latch, then tile motion. Both run on THIS timer, not on the
+        // ~10 Hz VAD signal storm and not on the video clock: a peer who is muted or
+        // whose stream has frozen must still animate correctly. The tick interval
+        // stays 33 ms deliberately — the glow and chrome fades above are FRAME-counted
+        // (0.06/tick, 0.13/tick), so speeding the timer up would silently make the
+        // speaking-glow breathe faster and the chrome snap, which would look like a
+        // rendering fault and be miserable to attribute.
+        tickSpeakerLatch();
+        if (animating()) advanceAnimations(m_motionClock.elapsed());
         update();
     });
     m_tick->start();
+    m_motionClock.start();
+
+    m_layoutMode = QSettings("TalQ", "TalQ")
+                       .value("Call/layoutMode").toString() == QLatin1String("speaker")
+                   ? LayoutMode::ActiveSpeaker : LayoutMode::Auto;
 
     rebindProviders();
     relayout();
+}
+
+void CallStage::tickSpeakerLatch()
+{
+    if (m_layoutMode != LayoutMode::ActiveSpeaker || !m_call) return;
+    // Feed EVERY present remote. Self is deliberately never a stage speaker: its VAD
+    // uses a different, far more sensitive rule than the remotes' (level > 0.05 with a
+    // 500ms grace, vs 0.20 / 150ms), so self would read as "speaking" several times
+    // more readily and hog the stage on keyboard noise.
+    std::vector<talq::stage::StageSpeakerLatch::Speaker> now;
+    for (CallParticipant *p : m_call->participants()) {
+        if (p->isSelf()) continue;
+        now.push_back({ p->sessionId().toStdString(),
+                        p->audioLevel(),
+                        p->speaking() && !p->audioMuted() });
+    }
+    // relayout ONLY when the LATCHED set changed. The raw speaking() flags already
+    // drive a relayout ~10-20x/s (CallParticipant::changed -> participantsChanged),
+    // so reacting to them directly would just double an existing storm; the latch is
+    // what turns that churn into a handful of real layout changes.
+    if (m_speakerLatch.update(now, m_motionClock.elapsed()))
+        relayout();
 }
 
 CallStage::~CallStage() = default;
@@ -255,10 +291,53 @@ void CallStage::onFrame(CallParticipant *p, bool screen, const QImage &img)
 }
 
 // ── layout ──────────────────────────────────────────────────────────────
+
+void CallStage::validatePin()
+{
+    // Who is sharing RIGHT NOW ("@self" stands in for our own share, which has no
+    // remote sessionId).
+    QSet<QString> sharers;
+    if (m_call->isScreenSharing() && m_call->localScreenPreviewProvider())
+        sharers << QStringLiteral("@self");
+    for (CallParticipant *p : m_call->participants())
+        if (!p->isSelf() && p->screenSharing() && p->screen())
+            sharers << p->sessionId();
+
+    // A NEWLY started share always claims the stage, surrendering any manual pin.
+    // This is the one deliberate exception to "the pin wins": a stale pin quietly
+    // hiding content a peer just started presenting is far worse than losing a pin.
+    for (const QString &s : sharers) {
+        if (!m_knownSharers.contains(s)) { m_pin.clear(); break; }
+    }
+    m_knownSharers = sharers;
+
+    if (m_pin.p.isNull()) { m_pin.clear(); return; }   // pinned peer left the call
+    if (m_pin.isScreen) {
+        // A pinned SHARE that has stopped must release the stage, or we reproduce the
+        // 0.60.1 bug in a new place: a dead pin holding a stage that has nothing to show.
+        const bool live = m_pin.p->isSelf()
+            ? (m_call->isScreenSharing() && m_call->localScreenPreviewProvider())
+            : (m_pin.p->screenSharing() && m_pin.p->screen());
+        if (!live) m_pin.clear();
+    }
+}
+
 CallParticipant *CallStage::stageSource(bool *isScreen) const
 {
     *isScreen = false;
     const auto parts = m_call->participants();
+
+    // PRECEDENCE 1 — the manual pin (click-to-promote). A pin names a STREAM, so it
+    // can be a camera OR a screen, ours or a peer's. This deliberately OUTRANKS an
+    // active share, reversing the old order: clicking a peer's camera while they are
+    // presenting must actually put that camera on the stage, and their share drops to
+    // the rail (still a tile, so it can be clicked back). It is safe to let a pin beat
+    // a share ONLY because validatePin() runs first on every relayout: it drops a pin
+    // whose source died, and surrenders the pin to any NEWLY started share — so a pin
+    // can never hide content somebody just began sharing.
+    if (m_pin.p) { *isScreen = m_pin.isScreen; return m_pin.p; }
+
+    // PRECEDENCE 2 — a remote peer's share.
     // Skip self here — self is always index 0 (CallManager prepends it), so an
     // unguarded scan would match OUR OWN active share before ever reaching a
     // remote peer's, permanently winning the stage even after a peer starts
@@ -285,7 +364,9 @@ CallParticipant *CallStage::stageSource(bool *isScreen) const
         *isScreen = true;
         return m_call->selfParticipant();
     }
-    if (m_pinned) return m_pinned;
+    // PRECEDENCE 4 — nobody is sharing and nothing is pinned: the active speaker,
+    // else the first remote. (The pin check used to live HERE, below both share
+    // branches — see PRECEDENCE 1.)
     CallParticipant *speaker = nullptr, *firstRemote = nullptr;
     for (CallParticipant *p : parts) {
         if (p->isSelf()) continue;
@@ -294,6 +375,12 @@ CallParticipant *CallStage::stageSource(bool *isScreen) const
     }
     if (speaker) return speaker;
     if (firstRemote) return firstRemote;
+    // Self (always index 0 — CallManager prepends it) is only ever reached when we
+    // are ALONE in the call: the firstRemote return above fires whenever any remote
+    // exists. Showing our own camera to an empty room is correct, so this is NOT
+    // the "big self-camera" path from the 0.60.1 field report — that one came from
+    // a stray self-pin (see mouseReleaseEvent). Do not "harden" this to nullptr; it
+    // would blank the solo/waiting-for-others stage.
     return parts.isEmpty() ? nullptr : parts.first();
 }
 
@@ -318,16 +405,19 @@ QVector<CallStage::Tile> CallStage::computeLayout() const
     // sharing peer its own tile in a grid across the stage area instead of
     // discarding all but one. It only engages for 2+ simultaneous shares —
     // the 0-or-1-sharer path (the heavily field-hardened common case) below
-    // is completely untouched. Deliberately NOT gated on m_pinned: stageSource()
-    // already lets any single active share win over a manual pin unconditionally
-    // (the sharing-participant loop runs before the pin check) — a pin only ever
-    // governs stage selection while nobody is sharing. Matching that precedent,
-    // 2+ concurrent shares also win over a stale pin; it resumes governing the
-    // stage once every share ends.
+    // is completely untouched. GATED on the pin: a manual pin now outranks a share
+    // (see stageSource PRECEDENCE 1), and this grid is the ONLY way to choose which
+    // of two concurrent shares is the big one — so when the user has explicitly
+    // pinned something, the grid must stand aside and let the stage+rail path below
+    // honour that pin. (This comment used to say the opposite: that a share always
+    // beats a pin, deliberately. That precedent was reversed in 0.60.2 to make
+    // click-to-promote work on shares. validatePin() surrenders the pin to any NEWLY
+    // started share, so the "a pin hides a share someone just started" hazard the old
+    // rule guarded against is handled there instead.)
     QList<CallParticipant*> sharers;
     for (CallParticipant *p : remotes)
         if (p->screenSharing() && p->screen()) sharers << p;
-    if (sharers.size() >= 2) {
+    if (sharers.size() >= 2 && m_pin.p.isNull()) {
         const qreal m = 14, gap = 10, railW = 196;
         QRectF stageR(area.left()+m, area.top()+m,
                       area.width()-2*m - (railW+gap),
@@ -383,7 +473,63 @@ QVector<CallStage::Tile> CallStage::computeLayout() const
             if (p->screenSharing()) { shareActive = true; break; }
 
     const int n = remotes.size();
-    const bool evenGallery = !shareActive && n >= 2 && n <= 4 && !m_pinned;
+
+    // ACTIVE-SPEAKER STAGE (opt-in). The current speaker(s) hold the main surface
+    // side by side; everyone else sits in the rail. Only when NOTHING is being shared
+    // (a share always outranks it) and nothing is manually pinned (an explicit pick
+    // always outranks an automatic one). The latched set is insertion-ordered and
+    // never empties on silence, so the layout does not flip every time the room pauses.
+    if (m_layoutMode == LayoutMode::ActiveSpeaker && !shareActive && m_pin.p.isNull()
+        && n >= 2 && !m_speakerLatch.promoted().empty()) {
+        QList<CallParticipant*> speakers;
+        for (const std::string &sid : m_speakerLatch.promoted()) {
+            const QString q = QString::fromStdString(sid);
+            for (CallParticipant *p : remotes)
+                if (p->sessionId() == q) { speakers << p; break; }
+        }
+        if (!speakers.isEmpty()) {
+            const qreal m = 14, gap = 10, railW = 196;
+            QRectF stageR(area.left()+m, area.top()+m,
+                          area.width()-2*m - (railW+gap), area.height()-2*m);
+            // 16:9 cells, centred — NOT an even split of the stage rect. Cameras paint
+            // with KeepAspectRatioByExpanding (crop-to-fill), so a tall/portrait half-
+            // cell would crop a 16:9 face down the middle and cut off both ears.
+            const auto cells = talq::motion::stageCells(
+                speakers.size(),
+                talq::motion::MRect{stageR.left(), stageR.top(), stageR.width(), stageR.height()},
+                gap);
+            for (int i = 0; i < speakers.size() && i < int(cells.size()); ++i) {
+                Tile t; t.p = speakers[i]; t.isStage = true;
+                t.rect = QRectF(cells[i].x, cells[i].y, cells[i].w, cells[i].h);
+                tiles << t;
+            }
+            // Rail: everyone NOT on the stage (self included, as the "You" tile).
+            QList<CallParticipant*> railList;
+            for (CallParticipant *p : parts)
+                if (!speakers.contains(p)) railList << p;
+            if (!railList.isEmpty()) {
+                qreal x = stageR.right()+gap;
+                qreal th = 132, ty = area.top()+m;
+                int maxVisible = qMax(1, int((area.height()-2*m+gap) / (th+gap)));
+                int shown = qMin(railList.size(), maxVisible);
+                bool overflow = railList.size() > maxVisible;
+                int real = overflow ? shown-1 : shown;
+                for (int i = 0; i < real; ++i) {
+                    Tile t; t.p = railList[i];
+                    t.rect = QRectF(x, ty + i*(th+gap), railW, th);
+                    tiles << t;
+                }
+                if (overflow) {
+                    Tile t; t.p = nullptr;   // sentinel: +N tile
+                    t.rect = QRectF(x, ty + real*(th+gap), railW, th);
+                    tiles << t;
+                }
+            }
+            return tiles;
+        }
+    }
+
+    const bool evenGallery = !shareActive && n >= 2 && n <= 4 && m_pin.p.isNull();
 
     if (evenGallery) {
         // Equal warm grid of everyone (self included), speaker gets the glow.
@@ -406,9 +552,27 @@ QVector<CallStage::Tile> CallStage::computeLayout() const
 
     // Stage + rail (1:1, medium, large, or any screen share).
     if (!src) return tiles;
-    QList<CallParticipant*> railList;
+
+    // SOURCE LIST — every live STREAM is a tile, not merely every participant. A
+    // sharing peer contributes two sources: their screen AND their camera. The stage
+    // takes one; the rail carries the rest. This is what makes a screen share
+    // clickable, and therefore what makes promotion REVERSIBLE — pin a peer's camera
+    // while they are presenting and their share drops into the rail, from where it
+    // can be clicked straight back onto the stage. Without it, promoting a camera
+    // over a share would leave that share unreachable.
+    struct Src { CallParticipant *p; bool screen; };
+    QList<Src> srcs;
     for (CallParticipant *p : parts) {
-        if (p == src && !isScreen) continue;          // src is the stage
+        const bool sharing = p->isSelf()
+            ? (m_call->isScreenSharing() && m_call->localScreenPreviewProvider())
+            : (p->screenSharing() && p->screen());
+        if (sharing) srcs << Src{p, true};    // a peer's screen sorts before their camera
+        srcs << Src{p, false};
+    }
+
+    QList<Src> railList;
+    for (const Src &s : srcs) {
+        if (s.p == src && s.screen == isScreen) continue;   // this source IS the stage
         // Self is a floating PiP overlay normally, BUT when a screen share
         // is active anywhere in the call (self or peer) the stage is the
         // screen content and the rail carries the participant tiles. In
@@ -421,8 +585,8 @@ QVector<CallStage::Tile> CallStage::computeLayout() const
         // the "You" tile so it matches the other member tiles instead of floating
         // mis-sized over the rail in the bottom-right corner (field bug). During a
         // screen share self is already a rail member (shareActive handled above).
-        if (p->isSelf() && !shareActive && n < 2) continue;   // floating self-PiP only in 1:1
-        railList << p;
+        if (s.p->isSelf() && !s.screen && !shareActive && n < 2) continue;   // floating self-PiP only in 1:1
+        railList << s;
     }
     const bool hasRail = !railList.isEmpty();
     qreal m = 14, gap = 10;
@@ -442,7 +606,7 @@ QVector<CallStage::Tile> CallStage::computeLayout() const
         bool overflow = railList.size() > maxVisible;
         int real = overflow ? shown-1 : shown;
         for (int i = 0; i < real; ++i) {
-            Tile t; t.p = railList[i];
+            Tile t; t.p = railList[i].p; t.isScreen = railList[i].screen;
             t.rect = QRectF(x, ty + i*(th+gap), railW, th);
             tiles << t;
         }
@@ -455,9 +619,97 @@ QVector<CallStage::Tile> CallStage::computeLayout() const
     return tiles;
 }
 
-void CallStage::relayout()
+QString CallStage::animKey(const QString &sessionId, bool screen)
 {
+    return screen ? sessionId + QStringLiteral("|s") : sessionId;
+}
+
+bool CallStage::animating() const
+{
+    for (auto it = m_anim.constBegin(); it != m_anim.constEnd(); ++it)
+        if (it->durMs > 0) return true;
+    return false;
+}
+
+void CallStage::advanceAnimations(qint64 nowMs)
+{
+    using namespace talq::motion;
+    for (Tile &t : m_tiles) {
+        if (!t.p) continue;                       // the "+N" sentinel never moves
+        auto it = m_anim.find(animKey(t.p->sessionId(), t.isScreen));
+        if (it == m_anim.end() || it->durMs <= 0) continue;
+        const double raw = double(nowMs - it->startMs) / double(it->durMs);
+        const double u   = raw <= 0.0 ? 0.0 : (raw >= 1.0 ? 1.0 : raw);
+        it->cur = lerpRect(it->from, it->to, ease(it->ease, u));
+        if (raw >= 1.0) { it->cur = it->to; it->durMs = 0; }   // settled
+        t.rect = QRectF(it->cur.x, it->cur.y, it->cur.w, it->cur.h);
+    }
+}
+
+void CallStage::relayout(bool animate)
+{
+    using namespace talq::motion;
+    // MUST run before computeLayout(): the pin now outranks an active share, so a
+    // dead or superseded pin would otherwise hold the stage hostage.
+    validatePin();
     m_tiles = computeLayout();
+
+    // RETARGET (never queue). Every layout change — promotion, demotion, a tile
+    // making room, the rail closing a gap — goes through this one path: if a tile's
+    // TARGET rect moved, restart its animation FROM WHEREVER IT CURRENTLY IS, even
+    // mid-flight. That single rule gives reversal for free: a tile 40% into a
+    // dissolve whose owner starts talking again simply flies back from the 40%
+    // position instead of snapping or queueing. retargetDurationMs scales the
+    // duration by the REMAINING distance, so that reversal is quick rather than
+    // crawling through a full 340ms to travel 40% of the way.
+    const qint64 now = m_motionClock.isValid() ? m_motionClock.elapsed() : 0;
+    const double fullDist = double(width() + height());   // reference travel
+    QSet<QString> live;
+
+    for (Tile &t : m_tiles) {
+        if (!t.p) continue;
+        const QString key = animKey(t.p->sessionId(), t.isScreen);
+        live << key;
+        const MRect target{t.rect.x(), t.rect.y(), t.rect.width(), t.rect.height()};
+
+        auto it = m_anim.find(key);
+        if (it == m_anim.end()) {                 // first sight of this tile: no fly-in
+            TileAnim a; a.from = a.cur = a.to = target; a.durMs = 0;
+            m_anim.insert(key, a);
+            continue;
+        }
+        if (!animate || reducedMotion()
+            || m_call->gpuClass() == talq::GpuClass::Software) {
+            it->from = it->cur = it->to = target;   // instant: resize/DPI, or weak box
+            it->durMs = 0;
+            continue;
+        }
+        const bool moved = qAbs(it->to.x - target.x) > 0.5 || qAbs(it->to.y - target.y) > 0.5
+                        || qAbs(it->to.w - target.w) > 0.5 || qAbs(it->to.h - target.h) > 0.5;
+        if (!moved) { t.rect = QRectF(it->cur.x, it->cur.y, it->cur.w, it->cur.h); continue; }
+
+        // Growing = a promotion (fast, decisive). Shrinking = the dissolve back to
+        // the rail (slower — it should SETTLE, not get yanked).
+        const bool growing = target.w * target.h >= it->cur.w * it->cur.h;
+        const double travel = qAbs(it->cur.x - target.x) + qAbs(it->cur.y - target.y)
+                            + qAbs(it->cur.w - target.w) + qAbs(it->cur.h - target.h);
+        it->from    = it->cur;
+        it->to      = target;
+        it->startMs = now;
+        it->ease    = growing ? Ease::OutCubic : Ease::InOutCubic;
+        it->durMs   = retargetDurationMs(travel, fullDist,
+                                         growing ? kPromoteMs : kDemoteMs);
+        // Paint from the CURRENT position this frame, not the target — otherwise the
+        // tile pops to its destination for one frame before animating from it.
+        t.rect = QRectF(it->cur.x, it->cur.y, it->cur.w, it->cur.h);
+    }
+    // Forget tiles that no longer exist (peer left, share stopped). Keyed by
+    // sessionId, so a recycled CallParticipant* address cannot resurrect one.
+    for (auto it = m_anim.begin(); it != m_anim.end();) {
+        if (live.contains(it.key())) ++it;
+        else                         it = m_anim.erase(it);
+    }
+
     buildButtons();
     // self-PiP rect. Self counts as "already a tile" (→ no PiP) ONLY in
     // mediaPhase, since that's the only phase tiles are painted. During the
@@ -514,11 +766,17 @@ void CallStage::relayout()
     // too (opposite corner), so freeze it in lockstep to avoid the pair
     // visibly popping to inconsistent positions mid-gesture.
     if (!m_draggingPip) {
-        bool selfShareOnStage = false;
+        // Our own share now has a TILE of its own — on the stage, or (since 0.60.2's
+        // source list) in the RAIL when a peer's share or a pin holds the stage. The
+        // floating PiP must yield to it wherever it appears, or the outgoing share is
+        // drawn twice. This is the one visible change click-to-promote brings: while a
+        // peer presents, your own share is a rail tile rather than a corner PiP — which
+        // is precisely what makes it clickable back onto the stage.
+        bool selfShareHasTile = false;
         for (const Tile &t : m_tiles)
-            if (t.isStage && t.isScreen && t.p && t.p->isSelf()) selfShareOnStage = true;
+            if (t.isScreen && t.p && t.p->isSelf()) selfShareHasTile = true;
         if (m_call->isScreenSharing() && m_call->localScreenPreviewProvider()
-            && !selfShareOnStage) {
+            && !selfShareHasTile) {
             const qreal w = qBound(140.0, width() * 0.16, 220.0);
             const qreal h = w * 9.0 / 16.0;
             const qreal m = 18;
@@ -542,21 +800,55 @@ void CallStage::updateStreamQualities()
     // dedupes, so calling on every relayout is cheap. Screen-share is
     // single-layer and skipped.
     if (!m_call) return;
+    // "isStage" forces HIGH unconditionally (SubstreamPolicy: `if (isStage) return 2`),
+    // which is right for ONE big tile but wrong for a side-by-side active-speaker
+    // stage: two half-width cells would BOTH demand 720p, doubling receive+decode load
+    // for no visual gain — on exactly the weak-iGPU boxes that already struggle. When
+    // the stage holds more than one camera, let the height thresholds govern instead
+    // (a ~291px half-cell lands on 360p, which is what it actually renders at).
+    int stageCams = 0;
+    QSet<QString> stagePeers;
+    for (const Tile &t : m_tiles) {
+        if (!t.isStage || !t.p || t.isScreen || t.p->isSelf()) continue;
+        ++stageCams;
+        stagePeers << t.p->sessionId();
+    }
+    // Tell the receive-load controller which peers are actually on the stage; those
+    // are the only ones it exempts from the load cap. Anything derived from "who wants
+    // the highest layer" is ambiguous — in the even gallery every remote wants the same
+    // thing, so a tie-based rule would exempt them ALL and quietly disarm the cap.
+    m_call->setStagePeers(stagePeers);
+
+    QSet<QString> onScreen;
     for (const Tile &t : m_tiles) {
         if (!t.p || t.p->isSelf() || t.isScreen) continue;
         const QString sid = t.p->sessionId();
+        onScreen << sid;
         // Drop-hysteresis on the AUTO selection: a tile hovering on a size
         // boundary won't flip the requested layer (and force an SFU switch +
         // keyframe) every relayout. Manual picks bypass it (override wins inside
         // pickSubstreamHysteretic). prev = last layer chosen for this peer.
         const int substream = pickSubstreamHysteretic(
-            m_qualityOverride, t.rect.height(), t.isStage,
+            m_qualityOverride, t.rect.height(), t.isStage && stageCams <= 1,
             m_tileSubstream.value(sid, -1));
         m_tileSubstream[sid] = substream;
         // m_qualityOverride >= 0 means the user manually picked a quality —
         // pin it past the auto load controller; -1 (Auto) lets it govern.
         m_call->requestPeerVideoQuality(sid, substream,
                                         /*manual=*/m_qualityOverride >= 0);
+    }
+    // Peers with NO camera tile at all — collapsed into the "+N" overflow — must be
+    // dropped to the lowest layer. Screen shares now take rail slots of their own
+    // (0.60.2 source list), so the rail overflows sooner and this became reachable:
+    // without it a collapsed peer keeps a stale 720p subscription we never render.
+    // requestPeerVideoQuality dedupes, so the sweep is free when nothing changed.
+    for (CallParticipant *p : m_call->participants()) {
+        if (p->isSelf()) continue;
+        const QString sid = p->sessionId();
+        if (onScreen.contains(sid)) continue;
+        if (m_tileSubstream.value(sid, -1) == 0) continue;   // already low
+        m_tileSubstream[sid] = 0;
+        m_call->requestPeerVideoQuality(sid, 0, /*manual=*/false);
     }
 }
 
@@ -586,6 +878,9 @@ void CallStage::paintEvent(QPaintEvent *)
     // paint helper that draws into the top row. Anything not drawn this
     // frame correctly falls out of double-click-guard hit testing.
     m_topChromeRects.clear();
+    // Re-published by paintTile only while a pin is held; clearing here stops a stale
+    // rect from swallowing clicks after the pin is released.
+    m_pinBadgeRect = QRectF();
     // No action buttons until paintActionPills runs this frame → info pills may
     // use the full width; paintActionPills lowers this to the button block's left.
     m_actionPillsLeft = width();
@@ -607,8 +902,21 @@ void CallStage::paintEvent(QPaintEvent *)
         || (!mediaPhase && state != CallManager::Idle)) {
         paintCentered(p, th);
     } else if (mediaPhase) {
+        // Two passes: SETTLED tiles first, tiles still in flight last. A tile
+        // travelling between the rail and the stage overlaps the static ones, and in
+        // a single ordered pass it would slide UNDER the tile it is about to sit
+        // beside — which reads instantly as a rendering bug. Painting movers on top
+        // makes the promotion pass visibly over the rail. (The "+N" sentinel has no
+        // participant and never animates, so it stays in pass 1.)
+        const auto inFlight = [this](const Tile &t) {
+            if (!t.p) return false;
+            const auto it = m_anim.constFind(animKey(t.p->sessionId(), t.isScreen));
+            return it != m_anim.constEnd() && it->durMs > 0;
+        };
         for (const Tile &t : m_tiles)
-            paintTile(p, t, th, t.isStage || m_tiles.size() <= 4);
+            if (!inFlight(t)) paintTile(p, t, th, t.isStage || m_tiles.size() <= 4);
+        for (const Tile &t : m_tiles)
+            if (inFlight(t))  paintTile(p, t, th, t.isStage || m_tiles.size() <= 4);
         // self picture-in-picture
         if (!m_pipRect.isNull() && m_call->selfParticipant()) {
             Tile s; s.p = m_call->selfParticipant(); s.rect = m_pipRect;
@@ -947,6 +1255,36 @@ void CallStage::paintTile(QPainter &p, const Tile &t, const PainterTheme &th, bo
         p.drawText(rc.adjusted(12, 8, -12, 0), Qt::AlignTop|Qt::AlignLeft,
                    tr("%1 is sharing").arg(cp->isSelf() ? tr("You") : cp->displayName()));
     }
+
+    // Pin badge on the pinned stage tile. A pin now OUTRANKS an active share, so it
+    // must never be invisible: an unreadable pin is exactly how the 0.60.1 field bug
+    // hid itself until the last share stopped. Click it (or the stage, or Esc) to
+    // release. Drawn only on the stage — a rail tile is too small to hold it.
+    if (t.isStage && !m_pin.isNull() && m_pin.p == cp && m_pin.isScreen == t.isScreen) {
+        p.setFont(th.timeFont());
+        const QString label = tr("PINNED  ✕");
+        const QFontMetricsF fm(th.timeFont());
+        const qreal bw = fm.horizontalAdvance(label) + 20;
+        const qreal bh = fm.height() + 10;
+        // BOTTOM-LEFT, and clamped to sit ABOVE the control bar. It must not land in
+        // the top-right action-pill band: the badge is hit-tested before the chrome
+        // guard, so an overlap would make a click on the QUALITY dropdown silently
+        // unpin — the exact "a chrome click mutates stage state" bug this release is
+        // fixing. Top-left is taken by the status pill and the "N is sharing" caption;
+        // bottom-right is the draggable self-PiP. Bottom-left is the only clear corner.
+        const qreal ctlTop = height() - 50 - 26;    // keep in step with buildButtons()
+        const qreal by = qMin(rc.bottom() - bh - 12, ctlTop - bh - 10);
+        m_pinBadgeRect = QRectF(rc.left() + 12, by, bw, bh);
+        QColor bg = th.bgPrimary; bg.setAlphaF(0.72);
+        p.setBrush(bg); p.setPen(QPen(th.accent, 1));
+        p.drawRoundedRect(m_pinBadgeRect, bh/2.0, bh/2.0);
+        p.setPen(th.accent);
+        p.drawText(m_pinBadgeRect, Qt::AlignCenter, label);
+        // Chrome, so a double-click on the badge does not also toggle fullscreen.
+        // mouseReleaseEvent hit-tests the badge BEFORE its chrome guard, so being in
+        // this list does not stop the badge from being clickable.
+        m_topChromeRects.append(m_pinBadgeRect);
+    }
 }
 
 void CallStage::paintCentered(QPainter &p, const PainterTheme &th)
@@ -1068,7 +1406,7 @@ void CallStage::buildButtons()
 
     QStringList ctl = {"mic", "cam"};
     if (active)          ctl << "share" << "telemetry";
-    if (active && group) ctl << "roster";
+    if (active && group) ctl << "roster" << "layout";
     ctl << "full";
 
     // Don't strand an open panel for a control we just hid (e.g. a group
@@ -1098,6 +1436,9 @@ void CallStage::buildButtons()
                                 b.tip = b.on ? tr("Hide telemetry") : tr("Telemetry"); }
         else if (id=="roster"){ b.on = m_rosterOpen;
                                 b.tip = b.on ? tr("Hide participants") : tr("Participants"); }
+        else if (id=="layout"){ b.on = m_layoutMode == LayoutMode::ActiveSpeaker;
+                                b.tip = b.on ? tr("Speaker view: on — the current speakers hold the main screen")
+                                             : tr("Speaker view: off — everyone shares the grid"); }
         else if (id=="full")  { b.tip = tr("Fullscreen"); }
         else if (id=="end")   { b.danger = true; b.tip = tr("Leave call"); }
         m_buttons << b;
@@ -1141,7 +1482,7 @@ void CallStage::paintControlBar(QPainter &p, const PainterTheme &th)
         if (b.danger) continue;
         const bool hover = (b.id == m_hoverBtn);
         const bool off   = (b.id=="mic"||b.id=="cam") && !b.on;
-        const bool act   = (b.id=="share"||b.id=="telemetry"||b.id=="roster") && b.on;
+        const bool act   = (b.id=="share"||b.id=="telemetry"||b.id=="roster"||b.id=="layout") && b.on;
 
         QColor chip; QColor ink = th.textPrimary; QColor slashBack = pillSolid;
         if (off)      { chip = clayChip; ink = clayInk; slashBack = clayChip; }
@@ -1160,7 +1501,7 @@ void CallStage::paintControlBar(QPainter &p, const PainterTheme &th)
             // subtle separator between two plain cells
             const Btn &prev = m_buttons[idx-1];
             const bool prevPlain = !((prev.id=="mic"||prev.id=="cam")&&!prev.on)
-                                && !((prev.id=="share"||prev.id=="telemetry"||prev.id=="roster")&&prev.on)
+                                && !((prev.id=="share"||prev.id=="telemetry"||prev.id=="roster"||prev.id=="layout")&&prev.on)
                                 && prev.id != m_hoverBtn;
             if (prevPlain) {
                 QColor d = th.divider; d.setAlphaF(0.6);
@@ -2209,6 +2550,17 @@ void CallStage::mousePressEvent(QMouseEvent *e)
         else if (id=="share") emit /*window picks target*/ requestToggleShare();
         else if (id=="telemetry") { m_telemetryOpen=!m_telemetryOpen; update(); }
         else if (id=="roster")    { m_rosterOpen=!m_rosterOpen; update(); }
+        else if (id=="layout")    {
+            m_layoutMode = (m_layoutMode == LayoutMode::ActiveSpeaker)
+                           ? LayoutMode::Auto : LayoutMode::ActiveSpeaker;
+            QSettings("TalQ", "TalQ").setValue("Call/layoutMode",
+                m_layoutMode == LayoutMode::ActiveSpeaker ? "speaker" : "auto");
+            // A manual pin outranks the speaker stage (PRECEDENCE 1), so a stale pin
+            // would make the mode the user just switched on look broken. Clear it.
+            m_pin.clear();
+            m_speakerLatch.reset();
+            relayout(); update();
+        }
         else if (id=="full")  emit requestToggleFullscreen();
         else if (id=="end")   m_call->hangUp();
         else if (id=="accept-video") m_call->acceptCall(true);
@@ -2233,20 +2585,61 @@ void CallStage::mouseReleaseEvent(QMouseEvent *e)
         relayout(); update();
         return;
     }
-    // Click a tile: a RAIL tile pins it to the stage; clicking the PINNED stage
-    // (a camera, not a screen share) UNPINS back to the gallery. Without this a
-    // pinned speaker has no rail tile left to click, so there was no way back to
-    // multi-view (field bug: "no way to return to multi-view").
+    // The pin badge releases the pin. Hit-tested BEFORE the chrome guard below,
+    // because the badge is registered as chrome (to suppress double-click-fullscreen)
+    // and the guard would otherwise swallow its own click.
+    if (!m_pin.isNull() && !m_pinBadgeRect.isNull()
+        && m_pinBadgeRect.contains(e->position())) {
+        m_pin.clear();
+        relayout(); update();
+        return;
+    }
+
+    // Chrome guard. Every button and action pill is actioned in mousePressEvent
+    // (the pills even run a blocking menu.exec() there), so the matching RELEASE
+    // arrives here with nothing left to do — and used to fall straight through to
+    // the tile loop below. The action pills sit ENTIRELY INSIDE rail tile 0, which
+    // is our own "You" tile whenever a share is up, so releasing over a pill
+    // silently pinned SELF. That pin is invisible while a share holds the stage
+    // (stageSource consulted the pin only AFTER both share branches), so it lay
+    // dormant and then detonated the instant the last share stopped: own camera on
+    // the full stage, rail still present — indistinguishable from "stuck in share
+    // mode" (0.60.1 field report; the trigger was clicking the SHARE-quality pill).
+    // mouseDoubleClickEvent has always guarded this; the release path never did.
+    // Check the pill rects DIRECTLY as well as m_topChromeRects: the latter is
+    // rebuilt during paint, so it is stale/empty once the chrome has faded, while
+    // mousePressEvent refreshes the pill rects synchronously.
+    const auto pos = e->position();
+    if (!hitButton(pos).isEmpty())                                   return;
+    if (!m_pipRect.isNull()         && m_pipRect.contains(pos))      return;
+    if (!m_qualityPillRect.isNull() && m_qualityPillRect.contains(pos)) return;
+    if (!m_bgPillRect.isNull()      && m_bgPillRect.contains(pos))   return;
+    if (!m_sharePillRect.isNull()   && m_sharePillRect.contains(pos)) return;
+    for (const QRectF &r : m_topChromeRects)
+        if (r.contains(pos)) return;
+
+    // Click-to-promote: clicking any RAIL tile — a camera OR a screen share — pins
+    // that stream to the stage. Clicking the PINNED stage again unpins, back to
+    // automatic. Without an unpin-by-clicking-the-stage path a pinned source has no
+    // rail tile left to click, so there is no way back to multi-view (field bug:
+    // "no way to return to multi-view"); the pin badge is the other way out.
     for (const Tile &t : m_tiles) {
-        if (!t.p || !t.rect.contains(e->position())) continue;
+        if (!t.p || !t.rect.contains(pos)) continue;
         if (t.isStage) {
-            if (m_pinned && t.p == m_pinned && !t.isScreen) {
-                m_pinned = nullptr;            // unpin → back to gallery
+            const PinRef self{t.p, t.isScreen};
+            if (!m_pin.isNull() && m_pin == self) {
+                m_pin.clear();                 // unpin → back to automatic
                 relayout(); update();
             }
-            return;   // a non-pinned / screen-share stage: leave for double-click-fullscreen
+            return;   // an unpinned stage: leave the click for double-click-fullscreen
         }
-        m_pinned = (m_pinned == t.p) ? nullptr : t.p;   // rail tile → pin/unpin
+        // Never pin our own CAMERA: a self camera-pin puts our own face full-screen,
+        // which is the 0.60.1 "stuck showing myself" symptom itself and is never what
+        // clicking your own thumbnail means. Our own SHARE is pinnable — that is a
+        // legitimate "show me what I'm presenting, big".
+        if (t.p->isSelf() && !t.isScreen) return;
+        const PinRef want{t.p, t.isScreen};
+        m_pin = (m_pin == want) ? PinRef{} : want;   // rail tile → pin / unpin
         relayout(); update();
         return;
     }
@@ -2319,6 +2712,15 @@ void CallStage::keyPressEvent(QKeyEvent *e)
     case Qt::Key_S: emit requestToggleShare(); break;
     case Qt::Key_F: emit requestToggleFullscreen(); break;
     case Qt::Key_T: m_telemetryOpen = !m_telemetryOpen; update(); break;
+    case Qt::Key_Escape:
+        // Escape releases a manual pin — but ONLY when one is held and we are not
+        // fullscreen. Otherwise fall through to CallWindow, which uses Escape to
+        // leave fullscreen / the PiP dock; swallowing it unconditionally would trap
+        // the user in fullscreen.
+        if (m_pin.isNull() || window()->isFullScreen()) { QWidget::keyPressEvent(e); return; }
+        m_pin.clear();
+        relayout(); update();
+        break;
     default: QWidget::keyPressEvent(e); return;
     }
     pokeControls();
@@ -2326,7 +2728,10 @@ void CallStage::keyPressEvent(QKeyEvent *e)
 
 void CallStage::resizeEvent(QResizeEvent *)
 {
-    relayout();
+    // NOT animated: a resize is geometry the user is dragging directly, and
+    // interpolating toward a target that moves every mouse-move makes every tile
+    // rubber-band continuously under the cursor.
+    relayout(/*animate=*/false);
 }
 
 void CallStage::forceRelayout()
@@ -2338,6 +2743,6 @@ void CallStage::forceRelayout()
     // recompute the layout for the current geometry.
     m_camFrame.clear();
     m_scrFrame.clear();
-    relayout();
+    relayout(/*animate=*/false);   // a DPI/monitor cross is not a promotion — snap
     update();
 }

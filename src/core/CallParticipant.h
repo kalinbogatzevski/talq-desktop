@@ -1,8 +1,14 @@
 #pragma once
 
 #include <QObject>
+#include <QPointer>
 #include <QString>
 #include <QDateTime>
+// Full definition, not a forward declaration: m_screen is a QPointer, which needs
+// a COMPLETE QObject-derived type to static_cast through. Costs nothing here —
+// CallParticipant.h is included only by CallManager.h and CallParticipant.cpp,
+// and both already pull the GStreamer/pipeline headers.
+#include "VideoFrameProvider.h"
 
 class VideoFrameProvider;
 
@@ -111,7 +117,12 @@ private:
     bool m_videoMuted = true;
     bool m_screenSharing = false;
     VideoFrameProvider *m_camera = nullptr;
-    VideoFrameProvider *m_screen = nullptr;
+    // QPointer, not a raw pointer: the screen provider is owned by the screen
+    // SUBSCRIBER and dies with it (deleteLater), while stageSource() gates the
+    // whole stage on `screenSharing() && screen()`. A missed clear therefore used
+    // to leave a dangling pointer that the stage repainted every frame. The flag
+    // clear in removeScreenSubscriber() is the fix; this auto-nulls as a backstop.
+    QPointer<VideoFrameProvider> m_screen;
     ConnState m_connState = Connecting;
     bool m_speaking = false;
     double m_audioLevel = 0.0;
