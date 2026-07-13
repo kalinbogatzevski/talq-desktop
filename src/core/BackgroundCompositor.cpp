@@ -63,13 +63,25 @@ QOpenGLShaderProgram *buildProgram(const QByteArray &vertSrc,
 
 } // namespace
 
+std::atomic<int> BackgroundCompositor::s_liveInstances{0};
+
+int BackgroundCompositor::liveInstanceCount()
+{
+    return s_liveInstances.load(std::memory_order_acquire);
+}
+
 BackgroundCompositor::BackgroundCompositor(QObject *parent)
     : QObject(parent)
-{}
+{
+    s_liveInstances.fetch_add(1, std::memory_order_acq_rel);
+}
 
 BackgroundCompositor::~BackgroundCompositor()
 {
     releaseAll();
+    // Decrement AFTER releaseAll so an observer that reads 0 knows the GL
+    // resources are freed, not merely doomed.
+    s_liveInstances.fetch_sub(1, std::memory_order_acq_rel);
 }
 
 void BackgroundCompositor::setExternalSurface(QOffscreenSurface *surface)

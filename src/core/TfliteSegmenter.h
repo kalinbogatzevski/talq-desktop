@@ -56,6 +56,15 @@ public:
     // centred-gradient stub.
     bool isReady() const;
 
+    // Process-wide live-instance count (ctor increments, dtor decrements);
+    // readable from any thread. Companion to
+    // BackgroundCompositor::liveInstanceCount() — lets
+    // background_engine_test prove setMode(None) really destroys the ORT
+    // session holder, and that one enable builds exactly ONE session (the
+    // 0.60.2 Settings RCA found the mode-combo slot building two engines
+    // in the same slot invocation).
+    static int liveInstanceCount();
+
     // Compute a per-pixel person mask the same size as `rgba`. Returns
     // an 8-bit Grayscale8 QImage: 255 = full person, 0 = full background.
     QImage segment(const QImage &rgba);
@@ -69,6 +78,8 @@ signals:
     void unavailable(const QString &reason);
 
 private:
+    static std::atomic<int> s_liveInstances;   // see liveInstanceCount()
+
     bool m_ready = false;
     // One-shot guard: the per-frame Run failure path qWarning's once
     // then stays quiet. At 30 fps a persistent fault (GPU device lost,

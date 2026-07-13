@@ -88,7 +88,9 @@ private:
     // Drop a pin that no longer names a live source, and surrender the pin to any
     // NEWLY started share. Runs at the top of relayout() (computeLayout() is const,
     // so it cannot live there). Load-bearing, not hardening: now that a pin outranks
-    // an active share, a stale pin is MORE visible than it used to be.
+    // an active share, a stale pin is MORE visible than it used to be. Thin adapter:
+    // the rules live in talq::stage::StageSourcePolicy::validatePin (m_stagePolicy),
+    // unit-tested in tests/stage_policy_test.cpp.
     void validatePin();
     void updateStreamQualities();  // #132: per-tile-size simulcast substream request
     QVector<Tile> computeLayout() const;
@@ -99,7 +101,15 @@ private:
     //   4. the active speaker, then the first remote
     // The pin used to be consulted LAST (after both share branches), which made it
     // invisible during a share and let it detonate when the share stopped.
+    // Thin adapter over talq::stage::StageSourcePolicy::pick — the decision is
+    // pure and unit-tested; only CallParticipant* <-> session-key mapping here.
     CallParticipant *stageSource(bool *isScreen) const;
+    // Qt → policy adapters. stageCandidates() is INDEX-ALIGNED with
+    // m_call->participants() so a policy answer maps back to a participant by
+    // position; pinValue() maps a dead QPointer to "no pin" (lifetime is the
+    // one thing the pure policy cannot see).
+    std::vector<talq::stage::StageCandidate> stageCandidates() const;
+    talq::stage::StagePin pinValue() const;
     void paintTile(QPainter &p, const Tile &t, const PainterTheme &th, bool large);
     void paintControlBar(QPainter &p, const PainterTheme &th);
     void paintStatusPill(QPainter &p, const PainterTheme &th);
@@ -181,11 +191,13 @@ private:
         bool operator!=(const PinRef &o) const { return !(*this == o); }
     };
     PinRef m_pin;
-    // Sharers seen on the previous relayout (remote sessionIds, plus "@self" when we
-    // are sharing). validatePin() diffs against this so a NEWLY started share always
-    // clears the pin and claims the stage — a stale pin hiding content someone just
-    // started sharing is the worst thing this feature could ship.
-    QSet<QString> m_knownSharers;
+    // The pure stage decision (pick precedence + the pin lifecycle) and its
+    // known-sharer state (remote sessionIds, plus "@self" when we are sharing).
+    // validatePin() diffs the current sharers against the policy's previous set
+    // so a NEWLY started share always clears the pin and claims the stage — a
+    // stale pin hiding content someone just started sharing is the worst thing
+    // this feature could ship.
+    talq::stage::StageSourcePolicy m_stagePolicy;
     // Hit rect for the "Pinned" badge drawn on the pinned stage tile. paintTile
     // never used to read the pin at all, which is exactly why a stray pin was
     // invisible until it detonated; the badge makes the state legible and gives
