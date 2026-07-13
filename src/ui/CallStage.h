@@ -2,11 +2,14 @@
 
 #include <QWidget>
 #include <QHash>
+#include <QSet>
 #include <QImage>
 #include <QPointer>
 #include <QElapsedTimer>
 #include "core/CallManager.h"
 #include "painter/PainterTheme.h"
+#include "StagePolicy.h"   // active-speaker latch (pure, unit-tested)
+#include "StageMotion.h"   // tile promote/demote rect interpolation (pure, unit-tested)
 
 class CallParticipant;
 
@@ -66,9 +69,36 @@ private:
     void rebindProviders();
     void purgeStaleFrames();      // drop cached frames for departed peers
     void onFrame(CallParticipant *p, bool screen, const QImage &img);
-    void relayout();
+    // animate=false for geometry changes the user is DIRECTLY driving (a window
+    // resize, a DPI/monitor cross): interpolating those makes every tile rubber-band
+    // continuously under the cursor. Everything else (promote, demote, reflow) wants
+    // the motion.
+    void relayout(bool animate = true);
+    // Advance in-flight tile rects on the wall clock and write them into m_tiles.
+    // Called from the 33ms tick — NOT from relayout(), and never from the video
+    // clock: a muted or frozen peer's tile must still animate.
+    void advanceAnimations(qint64 nowMs);
+    bool animating() const;
+    // Feed the raw per-peer VAD into the latch; relayout only when the LATCHED set
+    // actually changes (the raw flags churn ~10 Hz and already cause relayouts).
+    void tickSpeakerLatch();
+    // Stable identity for a tile's animation record: a peer's screen and camera are
+    // two different tiles, so the kind is part of the key.
+    static QString animKey(const QString &sessionId, bool screen);
+    // Drop a pin that no longer names a live source, and surrender the pin to any
+    // NEWLY started share. Runs at the top of relayout() (computeLayout() is const,
+    // so it cannot live there). Load-bearing, not hardening: now that a pin outranks
+    // an active share, a stale pin is MORE visible than it used to be.
+    void validatePin();
     void updateStreamQualities();  // #132: per-tile-size simulcast substream request
     QVector<Tile> computeLayout() const;
+    // Which source owns the stage right now. Precedence, highest first:
+    //   1. manual pin (camera or screen, self or remote)   — click-to-promote
+    //   2. a remote peer's screen share
+    //   3. our own screen share
+    //   4. the active speaker, then the first remote
+    // The pin used to be consulted LAST (after both share branches), which made it
+    // invisible during a share and let it detonate when the share stopped.
     CallParticipant *stageSource(bool *isScreen) const;
     void paintTile(QPainter &p, const Tile &t, const PainterTheme &th, bool large);
     void paintControlBar(QPainter &p, const PainterTheme &th);
@@ -134,7 +164,64 @@ private:
 
     QVector<Tile> m_tiles;
     QVector<Btn> m_buttons;
-    QPointer<CallParticipant> m_pinned;       // manual stage override
+
+    // Manual stage override. A pin names a STREAM, not just a participant: the old
+    // QPointer<CallParticipant> m_pinned could only ever mean "that peer's CAMERA"
+    // (stageSource returned it with isScreen=false), which is why a stray self-pin
+    // put our own camera on the full stage the moment the last share ended (the
+    // 0.60.1 "stuck in share mode" field bug) and why a screen share could not be
+    // pinned at all. Carrying the kind is what makes click-to-promote work for
+    // shares as well as cameras.
+    struct PinRef {
+        QPointer<CallParticipant> p;
+        bool isScreen = false;
+        bool isNull() const { return p.isNull(); }
+        void clear() { p = nullptr; isScreen = false; }
+        bool operator==(const PinRef &o) const { return p == o.p && isScreen == o.isScreen; }
+        bool operator!=(const PinRef &o) const { return !(*this == o); }
+    };
+    PinRef m_pin;
+    // Sharers seen on the previous relayout (remote sessionIds, plus "@self" when we
+    // are sharing). validatePin() diffs against this so a NEWLY started share always
+    // clears the pin and claims the stage — a stale pin hiding content someone just
+    // started sharing is the worst thing this feature could ship.
+    QSet<QString> m_knownSharers;
+    // Hit rect for the "Pinned" badge drawn on the pinned stage tile. paintTile
+    // never used to read the pin at all, which is exactly why a stray pin was
+    // invisible until it detonated; the badge makes the state legible and gives
+    // an explicit way out.
+    QRectF m_pinBadgeRect;
+
+    // ── Active-speaker stage (opt-in) ────────────────────────────────────────
+    // Auto = today's behaviour (share / pin / even gallery / single speaker).
+    // ActiveSpeaker = the current speaker(s) hold the main surface, side by side,
+    // and dissolve back into the rail a few seconds after they stop talking.
+    // A screen share always outranks it (see stageSource PRECEDENCE 2/3), so the
+    // mode is simply not consulted while anything is being shared.
+    enum class LayoutMode { Auto, ActiveSpeaker };
+    LayoutMode m_layoutMode = LayoutMode::Auto;   // persisted at Call/layoutMode
+    // Turns the jittery ~10 Hz per-peer VAD into a STABLE, insertion-ordered set.
+    // Feeding raw speaking() flags to the layout would strobe the stage; the whole
+    // point of this latch is the hysteresis (promote/hold/dwell/cooldown + the
+    // sticky-empty-set rule that stops a silent room collapsing the layout).
+    talq::stage::StageSpeakerLatch m_speakerLatch;
+
+    // ── Tile motion ──────────────────────────────────────────────────────────
+    // CallStage is immediate-mode: a tile is a value struct holding a QRectF, and
+    // the whole surface already full-repaints on the 33ms tick. So "animating" a
+    // tile is nothing more than writing different numbers into Tile::rect before
+    // the next paint — it costs no extra invalidation and no allocation. Keyed by
+    // sessionId (+ screen flag), never by CallParticipant*, whose address can be
+    // recycled for a different peer.
+    struct TileAnim {
+        talq::motion::MRect from, cur, to;
+        qint64 startMs = 0;
+        int    durMs   = 0;          // 0 = settled
+        talq::motion::Ease ease = talq::motion::Ease::OutCubic;
+    };
+    QHash<QString, TileAnim> m_anim;
+    QElapsedTimer m_motionClock;     // MONOTONIC — never wall time (clock-skew history)
+
     bool m_controlsVisible = true;
     QElapsedTimer m_idleTimer;
     QTimer *m_tick = nullptr;                  // ~30fps repaint + idle/glow

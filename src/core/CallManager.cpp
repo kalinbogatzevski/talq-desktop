@@ -1736,9 +1736,15 @@ void CallManager::startCall(const QString &token, bool withVideo)
     // chat) no room join happens and the HPB pushes NOTHING on our call join
     // (edge-based protocol, no fetch request exists), so the resync alone left
     // the caller ringing out 60s against an in-call peer (field 2026-07-08).
-    // The guaranteed discovery is joinCallOnServer's REST participant poll
+    // The primary discovery is joinCallOnServer's REST participant poll
     // (prompt 1.2s one-shot + 3s backup), which replays the missed edge into
-    // onParticipantJoinedCall with the properly mapped HPB sid.
+    // onParticipantJoinedCall with the properly mapped HPB sid. That poll was
+    // long documented here as "the guaranteed discovery" — it is NOT (field
+    // 2026-07-13): its NC→HPB translation is itself fed ONLY by HPB events,
+    // so an HPB that never names the answered callee in ANY event leaves the
+    // poll blind too (it silently skipped every row for the whole 60s ring).
+    // noteRestPeerEvidence() is the backstop for exactly that gap — it
+    // promotes out of Outgoing on REST evidence alone.
     m_signaling->forceCallParticipantResync();
 
     // Join call — but only once the signaling room is actually joined.
@@ -2760,6 +2766,17 @@ void CallManager::removeScreenSubscriber(const QString &sessionId)
     m_screenSubCompletedMs.remove(sessionId);  // keyframe-budget stamp
     m_screenSubFailRetries.remove(sessionId);  // ICE-failed retry budget
     m_pendingScreenSubCandidates.remove(sessionId);  // queued early candidates
+    // Clear the peer's share flags BEFORE the no-subscriber early-return below.
+    // These used to be cleared only at the END of this function, so a call that
+    // found no subscriber (already torn down by the stall-watchdog rebuild, or a
+    // duplicate/late unshareScreen) returned with screenSharing() still true and
+    // a DANGLING screen() provider. CallStage::stageSource() matches a sharer on
+    // exactly `p->screenSharing() && p->screen()`, so the stage stayed wedged in
+    // share mode forever — repainting freed memory every frame.
+    if (auto *p = m_participants.value(sessionId)) {
+        p->setScreen(nullptr);
+        p->setScreenSharing(false);
+    }
     if (!sub)
         return;                       // no remote screen from this peer — nothing to do
     // If this peer's screen was the one being rendered, unbind it so the UI
@@ -2782,10 +2799,6 @@ void CallManager::removeScreenSubscriber(const QString &sessionId)
     }
     sub->stop();
     sub->deleteLater();
-    if (auto *p = m_participants.value(sessionId)) {
-        p->setScreen(nullptr);
-        p->setScreenSharing(false);
-    }
     updateCameraSuppression();        // a sharer vanished — recompute (don't latch LOW)
 }
 
@@ -2940,18 +2953,18 @@ void CallManager::buildAndStartSharePipeline(int monitorIndex, quintptr windowHa
             case 3: cw = 3840; ch = 2160; break;   // "High" = up to 4K
             default: break;
         }
-        // A WINDOW app share captures at NATIVE resolution regardless of the
-        // quality level — downscaling a single window (especially one on a
-        // high-DPI / large screen) just softens its text; the encoder's
-        // adaptive bitrate (GCC) handles bandwidth instead of dropping pixels.
-        // MONITOR shares keep the user's quality choice, since downscaling a
-        // whole 4K desktop to 1440p saves real bandwidth with little loss.
-        // (Kalin 2026-06-04: "window app shares must be in native resolutions
-        // and only after that downscale the stream itself.") Still 4K-clamped
-        // below for the encoder.
-        if (windowHandle != 0) {
-            cw = 3840; ch = 2160;
-        }
+        // The level applies to WINDOW shares as well as MONITOR shares, and the
+        // ceiling semantics above already give a window its native resolution for
+        // free: a window smaller than the cap negotiates through videoscale
+        // untouched (Kalin 2026-06-04: "window app shares must be in native
+        // resolutions and only after that downscale the stream itself"). We used
+        // to force windowHandle != 0 to 3840x2160 here, which collapsed all four
+        // levels onto a ceiling no real window ever reaches — so the quality
+        // picker was a silent no-op for window shares while the pill, the
+        // persisted setting and the log all reported success (0.60.1 field
+        // report). Now only a window LARGER than the chosen cap is downscaled,
+        // which is exactly what lowering the quality asks for; level 3 ("Native")
+        // remains the effectively-uncapped choice.
         // Hard 4K ceiling. The hardware H264 encoder (Intel QSV / qsvh264enc)
         // tops out around 4K (4096x2304); a native 8K monitor frame produced
         // ZERO encoded output, so the share's outbound RTP never confirmed and
@@ -3141,16 +3154,33 @@ int CallManager::effectiveSubstreamFor(const QString &sessionId, int want) const
     // tile / stage). Keyed off tile size, NOT the peer-reported speaking flag
     // (unreliable on the webrtcsrc path). Exempt it unless the controller has
     // escalated to capping the focused tile too (top rungs only).
-    if (!m_recvLoadCapFocused && sessionId == focusedPeer()) return want;
+    if (!m_recvLoadCapFocused && isFocusedPeer(sessionId)) return want;
     return want < m_recvLoadSubstreamCap ? want : m_recvLoadSubstreamCap;
 }
 
-QString CallManager::focusedPeer() const
+bool CallManager::isFocusedPeer(const QString &sessionId) const
 {
-    QString best; int bestWant = -1;
-    for (auto it = m_peerSubstreamWant.constBegin(); it != m_peerSubstreamWant.constEnd(); ++it)
-        if (it.value() > bestWant) { bestWant = it.value(); best = it.key(); }
-    return best;
+    // "Focused" means ON THE STAGE — the big tile(s) the user is actually looking at.
+    // CallStage publishes that set on every relayout (setStagePeers).
+    //
+    // This used to be focusedPeer(): the single peer with the highest tile-size want,
+    // ties broken by arbitrary QHash order. That was fine while exactly one tile could
+    // be on the stage, but the active-speaker layout puts TWO cameras side by side,
+    // both wanting HIGH — so one got exempted from the receive-load cap and the other
+    // was silently de-ressed, non-deterministically.
+    //
+    // Deriving "focused" from a tie at the max want instead would be WORSE, not better:
+    // in the even gallery every remote asks for the same substream, so they would ALL
+    // tie, ALL be exempt, and the sub-focused rung of the load controller would shed
+    // exactly nothing — disarming it on precisely the weak/iGPU receivers it exists to
+    // protect. An explicit stage set has none of that ambiguity: an even gallery has no
+    // stage, so nothing is exempt and the cap bites, which is the intent.
+    return m_stagePeers.contains(sessionId);
+}
+
+void CallManager::setStagePeers(const QSet<QString> &peers)
+{
+    m_stagePeers = peers;
 }
 
 void CallManager::sendDesiredSubstream(const QString &sessionId, int substream)
@@ -3174,7 +3204,7 @@ void CallManager::applyReceiveLoadCaps(int substreamCap, bool capFocused)
         return;  // idempotent — no change
     m_recvLoadSubstreamCap = substreamCap;
     m_recvLoadCapFocused   = capFocused;
-    // Re-apply to every peer we have a remembered want for (focusedPeer() is
+    // Re-apply to every peer we have a remembered want for (isFocusedPeer() is
     // stable across this loop — m_peerSubstreamWant isn't mutated here).
     for (auto it = m_peerSubstreamWant.constBegin(); it != m_peerSubstreamWant.constEnd(); ++it)
         sendDesiredSubstream(it.key(), effectiveSubstreamFor(it.key(), it.value()));
@@ -3456,6 +3486,12 @@ void CallManager::onLoadTick()
         m_memShedActive = true;
         qWarning().nospace() << "CallManager: HOST OVERLOAD — working set " << memMb
                              << " MB (> " << kMemShedHighMb << ") — shedding ALL peers to 180p";
+        // NOTE (0.60.2): do NOT demote to software decode from here. An earlier version
+        // of this patch did exactly that when the "d3d11 fault" flag was latched — but
+        // that flag was a false positive (a benign adapter-probe warning), and forcing
+        // software decode is what CAUSED the CPU spiral in the first place. Shedding
+        // receive quality is the correct, conservative response to a memory overload;
+        // rebuilding the decode path on a guess is not.
         applyReceiveLoadCaps(/*substreamCap=*/0, /*capFocused=*/true);
         setVideoQualityNotice(tr("High load — receiving video at reduced quality"));
     } else if (m_memShedActive && memMb < kMemShedLowMb) {
@@ -3793,12 +3829,9 @@ void CallManager::setScreenShareQuality(int level)
         case 3: cw = 3840; ch = 2160; break;
         default: break;
     }
-    // A window share stays at native resolution regardless of the quality
-    // level (the dropdown only re-scales MONITOR shares) — see
-    // buildAndStartSharePipeline.
-    if (m_ssWindowHandle != 0) {
-        cw = 3840; ch = 2160;
-    }
+    // Applies to window AND monitor shares alike — a window smaller than the cap
+    // still goes out at native resolution (ceiling caps), so there is no reason
+    // to special-case it. See buildAndStartSharePipeline.
     cw = qMin(cw, 3840);
     ch = qMin(ch, 2160);
     clampScreenToGpuTier(cw, ch);   // weak/iGPU encoder: cap to 720p/540p
@@ -4091,6 +4124,14 @@ void CallManager::joinCallOnServer(bool withVideo)
                                             if (p["actorType"].toString() == QLatin1String("users")
                                                 && !uid.isEmpty() && uid == m_signaling->userId())
                                                 continue;   // our own user (any device) — never adoptable
+                                            // 2026-07-13 backstop — freshness stamp for the
+                                            // promoted-without-sid window: ANY non-self row still
+                                            // in the call list means "the answered peer is still
+                                            // there", mapped or not (a mapped row can be
+                                            // temporarily unadoptable, e.g. mid-Reconnecting, and
+                                            // must not trip the vanished-peer check below).
+                                            if (m_restPromoted && m_remoteSessionId.isEmpty())
+                                                m_restPeerLastSeenMs = QDateTime::currentMSecsSinceEpoch();
                                             QString sid = m_signaling->hpbSessionForNcSession(ncSid);
                                             if (sid.isEmpty() && !uid.isEmpty())
                                                 sid = m_signaling->sessionsForUser(uid).value(0);
@@ -4098,6 +4139,22 @@ void CallManager::joinCallOnServer(bool withVideo)
                                                 TLOG_CALL("REST peer" << ncSid.left(20)
                                                           << "has no known signaling sid yet — waiting"
                                                              " for its room join event");
+                                                // 2026-07-13 field incident — waiting is NOT
+                                                // enough. The HPB stayed silent about an ANSWERED
+                                                // callee for 3 whole ring-outs (its participants
+                                                // updates carried only our own session; the callee
+                                                // never appeared in ANY signaling event), and both
+                                                // NC→HPB maps are HPB-fed — so this branch is
+                                                // exactly where the "guaranteed" REST fallback went
+                                                // blind, silently skipping the answered peer every
+                                                // 3s for the whole 60s ring. Hand the row to the
+                                                // backstop: it promotes out of Outgoing on REST
+                                                // evidence alone, keeps resolving on later ticks,
+                                                // and surfaces the delivery failure LOUDLY instead
+                                                // of ringing into the void. (A row that maps to our
+                                                // OWN session is not peer evidence — skip those.)
+                                                if (sid.isEmpty())
+                                                    noteRestPeerEvidence(ncSid, p["displayName"].toString());
                                                 continue;
                                             }
                                             TLOG_CALL("discovered in-call peer via REST:"
@@ -4113,6 +4170,26 @@ void CallManager::joinCallOnServer(bool withVideo)
                                             onParticipantJoinedCall(sid, inCall,
                                                                     p["displayName"].toString());
                                     }
+                                        // 2026-07-13 backstop — the promotion stopped the 60s
+                                        // ring timeout (correctly: the call WAS answered), so a
+                                        // callee who answers, waits on "connecting", and gives up
+                                        // before their HPB sid ever resolves would otherwise park
+                                        // us in Connecting/Active FOREVER — their hang-up is
+                                        // invisible to us (participantLeftCall is HPB-fed too).
+                                        // Their REST row disappearing for ~3 poll ticks is the
+                                        // one signal we do have; end the call truthfully instead
+                                        // of trading the old forever-ring for a forever-connect.
+                                        if (m_restPromoted && m_remoteSessionId.isEmpty()
+                                            && m_restPeerLastSeenMs > 0
+                                            && QDateTime::currentMSecsSinceEpoch()
+                                                   - m_restPeerLastSeenMs > 10000) {
+                                            qWarning() << "CallManager: REST-proven peer vanished"
+                                                          " from the call before their HPB session"
+                                                          " ever resolved — they answered, then gave"
+                                                          " up while signaling never delivered their"
+                                                          " session (field 2026-07-13). Ending call.";
+                                            teardown("Call ended before media could be established");
+                                        }
                                 });
                             };
                             // Upstream Talk (v23.0.4, MCU mode) waits for the
@@ -4159,6 +4236,97 @@ void CallManager::joinCallOnServer(bool withVideo)
                         // Camera preview starts immediately when pipeline starts
                 });
         });
+}
+
+// 2026-07-13 field incident — CLIENT-SIDE BACKSTOP for an HPB that never
+// tells us the callee joined. The ONLY promotion out of Outgoing used to be
+// SignalingClient's participants-update rising edge (inCall 0→N →
+// participantJoinedCall → the adopt branch in onParticipantJoinedCall); our
+// own publisher cannot promote (its ICE-connected handler only sets the
+// sticky m_pubIceConnectedSeen and is gated on m_state == Connecting — a
+// no-op while Outgoing). In the field, on 3 consecutive outgoing attempts,
+// the HPB delivered participants updates containing ONLY OUR OWN session:
+// the callee's HPB session never appeared in ANY signaling event (no room
+// join, no participants update) even though the callee HAD ANSWERED — their
+// row was in every REST call/{token} response. The REST poll, documented as
+// "the guaranteed discovery", was blind too: to act it must translate the
+// peer's NEXTCLOUD session id into an HPB sid via hpbSessionForNcSession()/
+// sessionsForUser(), and BOTH maps are populated only from HPB events. So it
+// silently skipped the answered peer every 3s while we rang 60s into the
+// void, hit the ring timeout, and reported "No answer" against a callee
+// stuck on "connecting" — which sent the investigation down the wrong path
+// for hours. This is the poll's unmapped-row hand-off. On REST evidence
+// ALONE it (a) stops the ring timeout and promotes Outgoing→Connecting so
+// the 60s abort can no longer kill an answered call, (b) leaves
+// m_remoteSessionId EMPTY (it is an HPB sid — the NC id is a different id
+// space) so the poll keeps ticking and the adopt gate in
+// onParticipantJoinedCall — extended to accept Active-while-m_restPromoted —
+// runs the normal adopt/subscribe exactly once whenever the sid finally
+// resolves, and (c) after ~9s of "in call per REST, unknown to the HPB"
+// logs a LOUD warning naming the real failure: signaling delivery, NOT a
+// no-answer. NOTE on re-asking the server: the HPB protocol has NO request
+// to re-fetch room/participant state (doc-checked, push-only), and a forced
+// same-room joinRoom() re-join mints a fresh NC session that collapses the
+// live call (see SignalingClient::joinRoom) — so the one safe local lever is
+// forceCallParticipantResync(), pulled once at promotion so any cached >0
+// flags re-emit their JOINED edge on the next update the HPB does deliver.
+void CallManager::noteRestPeerEvidence(const QString &ncSid, const QString &displayName)
+{
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (m_restPeerEvidenceMs == 0)
+        m_restPeerEvidenceMs = now;
+    if (m_pendingRestPeerNcSid.isEmpty())
+        m_pendingRestPeerNcSid = ncSid;
+
+    // Promote on the FIRST evidence, from Outgoing ONLY: an outgoing call we
+    // placed, not yet adopted. Never from Incoming/acceptCall (that path sets
+    // m_remoteSessionId before the poll can even start), never from
+    // Ending/teardown, and never twice (m_restPromoted). The normal HPB adopt
+    // path remains the sole owner of m_remoteSessionId.
+    if (m_state == Outgoing && !m_restPromoted && m_remoteSessionId.isEmpty()) {
+        m_restPromoted = true;
+        m_restPeerLastSeenMs = now;
+        qInfo() << "CallManager: REST poll proves a peer is in the call ("
+                << ncSid.left(20) << "name=" << displayName
+                << ") but the HPB has not delivered their session — promoting"
+                   " to Connecting on REST evidence alone (2026-07-13 backstop)";
+        if (!displayName.isEmpty()) m_remotePeerName = displayName;
+        // The callee answered — a later "No answer" ring-out would be a lie.
+        m_ringTimeout.stop();
+        // Best-effort local lever (there is no HPB state-fetch request):
+        // clear the cached inCall flags so the next participants update the
+        // HPB DOES deliver re-emits a JOINED edge for everyone in the call.
+        m_signaling->forceCallParticipantResync();
+        setStatusDetail("Answered — waiting for signaling");
+        // setState's m_pubIceConnectedSeen catch-up may carry this straight
+        // to Active (publisher ICE typically connected long ago) — same
+        // trajectory the HPB edge produces, just without a subscriber yet.
+        setState(Connecting);
+        emit callInfoChanged();
+        return;   // the delivery-failure warning window starts on later ticks
+    }
+
+    // Loud failure surfacing: our media leg is up (publisher ICE connected),
+    // REST keeps proving the peer is in the call, and the HPB STILL has not
+    // named their session after ~9s (~3 poll ticks). That is a SIGNALING
+    // DELIVERY failure and must be unmissable in the field log — the
+    // 2026-07-13 logs contained no hint of it and hours were burned
+    // investigating the wrong layer.
+    if (!m_restBackstopWarned && m_restPromoted && m_pubIceConnectedSeen
+        && m_remoteSessionId.isEmpty()
+        && now - m_restPeerEvidenceMs >= 9000) {
+        m_restBackstopWarned = true;
+        qWarning() << "CallManager: SIGNALING DELIVERY FAILURE — peer"
+                   << m_pendingRestPeerNcSid.left(20) << "(" << displayName
+                   << ") has been IN CALL per REST for"
+                   << (now - m_restPeerEvidenceMs) / 1000
+                   << "s, our publisher ICE is connected, but the HPB never"
+                      " delivered their session (no room join, no participants"
+                      " update): cannot map NC→HPB sid, cannot subscribe"
+                      " (rxPeers=0). This is NOT a no-answer — the callee"
+                      " answered and is waiting on 'connecting'. The REST poll"
+                      " keeps retrying the mapping every 3s. (field 2026-07-13)";
+    }
 }
 
 void CallManager::leaveCallOnServer(const QString &token, bool wasJoined,
@@ -4281,6 +4449,15 @@ void CallManager::stopAllPipelines()
     m_pubRetryAttempts   = 0;
     m_pubRebuildInFlight = false;
     m_pubIceConnectedSeen = false;
+    // 2026-07-13 — REST-evidence backstop state is strictly per-call; reset
+    // it at this single cleanup point (stopAllPipelines runs on teardown AND
+    // on every fresh call start) alongside the other per-call flags, so a
+    // stale promotion/warning can never leak into the next call.
+    m_pendingRestPeerNcSid.clear();
+    m_restPeerEvidenceMs   = 0;
+    m_restPeerLastSeenMs   = 0;
+    m_restPromoted         = false;
+    m_restBackstopWarned   = false;
     // #bug3 -- clear peer-grace here (the single cleanup point): stopAllPipelines
     // runs first in teardown (before m_remoteSessionId.clear) AND on every fresh
     // call start, so an in-flight grace timer can't re-enter teardown and a stale
@@ -4541,7 +4718,20 @@ void CallManager::onParticipantJoinedCall(const QString &sessionId, int flags, c
         return;
     }
 
-    if ((m_state == Outgoing || m_state == Connecting) && m_remoteSessionId.isEmpty()) {
+    if ((m_state == Outgoing || m_state == Connecting
+         // 2026-07-13 — REST-evidence backstop follow-through: when the HPB
+         // never announced the answered callee, noteRestPeerEvidence()
+         // promoted us to Connecting on the REST poll's evidence alone, and
+         // setState's m_pubIceConnectedSeen catch-up may have carried that
+         // straight to Active. The peer's HPB sid can therefore first arrive
+         // (a late HPB event, or a later poll tick finally resolving the
+         // NC→HPB map) while we are ALREADY Active — the adopt below must
+         // still run once, or the peer would never be subscribed (rxPeers=0
+         // for the rest of the call). m_restPromoted is set ONLY by the
+         // backstop, so on the happy path (HPB edge first) this condition
+         // evaluates exactly as it always did.
+         || (m_restPromoted && m_state == Active))
+        && m_remoteSessionId.isEmpty()) {
         m_remoteSessionId = sessionId;
         // #bug4 — stamp the peer USER at adopt time (not only at grace-entry):
         // sibling adopt / leave / hangup-hint below are keyed on the user,
@@ -4552,8 +4742,31 @@ void CallManager::onParticipantJoinedCall(const QString &sessionId, int flags, c
             m_remotePeerUserId = m_signaling->userIdForSession(sessionId);
         if (!displayName.isEmpty()) m_remotePeerName = displayName;
         qDebug() << "CallManager: remote peer joined:" << sessionId.left(20) << "name=" << m_remotePeerName;
+        // 2026-07-13 — stand the REST-evidence backstop down, if it was
+        // armed: the peer's HPB sid is now known, so the pending
+        // "promoted without a sid" state (and its delivery-failure warning
+        // window) is resolved. Clearing m_restPromoted also makes the
+        // Active-state clause in the condition above single-shot — together
+        // with the m_remoteSessionId guard this adopt can never run twice.
+        // All of this is a set of no-op assignments on the happy path.
+        if (m_restPromoted)
+            qInfo() << "CallManager: HPB sid for the REST-proven peer finally resolved ("
+                    << sessionId.left(20) << "<- NC" << m_pendingRestPeerNcSid.left(20)
+                    << ") — adopting via the normal path (2026-07-13 backstop)";
+        m_restPromoted = false;
+        m_pendingRestPeerNcSid.clear();
+        m_restPeerEvidenceMs = 0;
+        m_restPeerLastSeenMs = 0;
+        // stop() on an already-stopped timer (the backstop stopped it at
+        // promotion time) is a QTimer no-op — no double side effect.
         m_ringTimeout.stop();
-        setState(Connecting);
+        // Never DEMOTE an already-Active call (backstop promotion + ICE
+        // catch-up) back to Connecting — setState would bounce it
+        // Connecting→Active within one call stack for nothing. On the normal
+        // path the state here is Outgoing/Connecting, so this is
+        // byte-for-byte the old unconditional setState(Connecting).
+        if (m_state != Active)
+            setState(Connecting);
         emit callInfoChanged();
 
         // Broadcast media state now that remote peer can receive it

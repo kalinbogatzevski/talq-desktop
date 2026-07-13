@@ -1,5 +1,62 @@
 # Changelog
 
+## v0.60.2 "Blue Fiesta" (2026-07-13)
+
+Call-stage rework: you can now choose what fills the main screen, and the stage
+never gets stuck on the wrong thing again.
+
+### Added
+* **Click any tile to put it on the main screen.** Click a camera or a screen
+  share in the side rail and it takes over the stage; a small **PINNED** badge
+  shows it is your pick. Click the badge, click the stage again, or press `Esc`
+  to go back to automatic. Your pick now outranks an active screen share, so you
+  can watch someone's face while they present — their share drops to the rail,
+  where a single click brings it back. If someone *starts* sharing, the new share
+  always claims the stage.
+* **Speaker view.** A new layout button in the call controls: whoever is talking
+  fills the main screen, and when two people are talking their cameras sit side
+  by side. When someone stops talking their camera eases back down into the side
+  rail after a moment, rather than snapping away. Off by default; a screen share
+  always takes priority over it.
+
+### Fixed
+* **An answered call can no longer ring on forever.** If the person you called
+  picked up but the server failed to tell your app they had joined, TalQ kept
+  ringing for a full minute and then reported "No answer" — while they sat
+  looking at "Connecting". TalQ now recognises that they have answered, stops the
+  ringing, says **"Answered — waiting for signaling"**, and keeps trying to reach
+  their media instead of giving up.
+* **Screen-share quality now works for single-window shares.** Choosing 720p /
+  1080p / 1440p / Native had no effect when sharing an application window — the
+  setting was accepted, displayed and saved, but the picture never changed. Note
+  that a window smaller than the chosen limit is still sent at its own native
+  resolution, so only windows larger than the limit will visibly change.
+* **The stage no longer gets stuck showing your own camera.** After everyone
+  stopped sharing their screen, the call could stay in presentation mode with
+  your own camera filling the main screen instead of the other person. Clicks on
+  the top-right controls could also silently "pin" your own tile without any
+  visible sign, which is what caused it.
+* **A peer whose screen share ended could leave the stage wedged** in presentation
+  mode indefinitely, repainting a stream that no longer existed.
+* **Incoming video no longer collapses to a blurry, low-frame-rate picture on a
+  lossy connection.** TalQ was mistakenly concluding that your graphics card could
+  not decode video — based on a harmless start-up message that almost every Windows
+  machine produces — and switching itself to slow software decoding. Once it did
+  that, the extra processor load made it reduce the incoming picture quality even
+  further, so a brief patch of packet loss could leave the call soft and juddery for
+  the rest of its duration. TalQ now keeps using your graphics card for video, and
+  only falls back to software decoding on a genuine decoder failure. Machines without
+  a dedicated graphics card benefit the most.
+* Screen-share quality settings disagreed between the share picker and the
+  pipeline, so the picker could show a different level than was actually used.
+
+### Changed
+* The receive-quality limiter now protects only the tile you are actually
+  watching, so the rest of a busy call is throttled correctly on slower machines.
+* While a peer's share fills the stage, your own outgoing share now appears as a
+  tile in the side rail instead of a floating thumbnail — that is what makes it
+  clickable back onto the main screen.
+
 ## v0.60.1 "Blue Fiesta" (2026-07-11)
 
 A stability and polish patch on top of 0.60.0.
