@@ -449,11 +449,44 @@ private:
     int  m_recvLoadSubstreamCap = 2;
     bool m_recvLoadCapFocused   = false;
     // Host-protection memory watchdog (onLoadTick): hard-shed every peer to the
-    // 180p layer when the process working set balloons (field: Ivan ~2 GB on a
-    // stalled hybrid-GPU decode), restore when it eases. Hysteresis = high/low.
+    // 180p layer when memory genuinely overloads the host (original field case:
+    // Ivan ~2 GB and climbing on a stalled hybrid-GPU decode, chopped audio),
+    // restore when it eases. Hysteresis on every mark so it cannot oscillate.
+    //
+    // 0.60.2 REWORK (2026-07-13 field RCA): the original trip wire was an
+    // ABSOLUTE 1500 MB working set. A peer on an RTX 2060 desktop with plenty
+    // of free RAM sat at 1542 MB — largely the virtual-background engine
+    // (measured +145 MB) plus the GPU driver/ICD that the first
+    // QOpenGLContext::create() maps into the process (not our allocation, not
+    // reclaimable) — tripped it, and EVERYONE's receive quality was shed to
+    // 180p. 1500 MB is not "host overload" on a modern machine; it was an
+    // arbitrary number. New policy (see onLoadTick):
+    //   shed    = runaway backstop OR (system pressure AND we contribute)
+    //   restore = runaway eased AND (system eased OR we no longer contribute)
     bool m_memShedActive = false;
-    static constexpr qint64 kMemShedHighMb = 1500;
-    static constexpr qint64 kMemShedLowMb  = 900;
+    // Absolute RUNAWAY backstop — a genuine safety bound, not a routine
+    // trigger. Nothing legitimate in TalQ needs >3.5 GB; the runaway this
+    // watchdog was written for (a stalled decoder ballooning the working set)
+    // grows unboundedly, so it still trips this on its way up. Restore below
+    // 3 GB (512 MB hysteresis gap).
+    static constexpr qint64 kMemShedRunawayHighMb = 3584;
+    static constexpr qint64 kMemShedRunawayLowMb  = 3072;
+    // SYSTEM-pressure trip: physical memory ≥90% committed or <1 GB available
+    // (GlobalMemoryStatusEx) — the region where Windows starts hard-paging and
+    // audio/video chop regardless of who owns the RAM. Eased = ≤80% AND
+    // ≥1.5 GB available (the gap is the hysteresis).
+    static constexpr int    kMemShedSysLoadHighPct = 90;
+    static constexpr int    kMemShedSysLoadLowPct  = 80;
+    static constexpr qint64 kMemShedSysAvailLowMb  = 1024;
+    static constexpr qint64 kMemShedSysAvailOkMb   = 1536;
+    // "We are a significant contributor" floor: below ~1 GB of working set,
+    // shedding OUR receive quality cannot meaningfully relieve system
+    // pressure (some other process is eating the RAM) — degrading the call
+    // would punish the user for someone else's leak. The low mark (768 MB)
+    // is the restore side of this axis, so a working set flapping around
+    // the floor under sustained system pressure can't oscillate the shed.
+    static constexpr qint64 kMemShedContributorMb    = 1024;
+    static constexpr qint64 kMemShedContributorLowMb = 768;
     // The controller itself (pure logic) + its ~1 s tick. Owned here because
     // load is a property of THIS machine, not of any one peer. The synthetic
     // fields feed it on the dev box (NVENC won't overload) until the encode/

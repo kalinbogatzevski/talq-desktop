@@ -60,6 +60,10 @@ public:
     // they update an atomic snapshot read by processFrame and forward an
     // applyMode/invalidate kick to the worker via a queued connection.
     // Direct calls from Qt main are the common case.
+    // 0.60.2 (2026-07-13 field RCA): setMode(Mode::None) RELEASES the
+    // worker's GL + ORT resources (~112 MB measured retained before this);
+    // setting a non-None mode again rebuilds them lazily (cold init, frames
+    // pass through raw until ready — same as the very first enable).
     void setMode(Mode m);
     Mode mode() const { return m_modeAtomic.load(std::memory_order_relaxed); }
 

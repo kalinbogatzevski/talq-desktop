@@ -55,9 +55,14 @@ public slots:
     QImage process(const QImage &rgba, int modeInt,
                    int blurStrength, const QString &imagePath);
 
-    // Called when setMode flips OFF→ON; lazy-constructs compositor +
-    // segmenter on the worker thread so their GL/ORT resources are
-    // born with the worker affinity.
+    // Called on EVERY engine setMode(). OFF→ON lazy-constructs compositor +
+    // segmenter on the worker thread so their GL/ORT resources are born
+    // with the worker affinity. ON→OFF (Mode::None) RELEASES them again
+    // (0.60.2, 2026-07-13 field RCA): the old code early-returned on None,
+    // so the ORT session + GL context + FBOs/textures lived until process
+    // exit — measured ~112 MB retained after the user turned the
+    // background off (256 MB steady → 401 MB with the engine up, only
+    // 29 MB returned on OFF).
     void applyMode(int modeInt);
 
     // Drop the image cache when the user picks a different path (so a
@@ -66,6 +71,7 @@ public slots:
 
     // Release GL + ORT resources on the worker thread, called from the
     // engine destructor via BlockingQueuedConnection before quitting.
+    // Same teardown applyMode(None) performs (releaseEngineResources).
     void shutdown();
 
 public:
@@ -86,13 +92,26 @@ signals:
     void backgroundImageFailed(const QString &path);
 
 private:
+    // Free the compositor (GL context, FBOs, textures, shaders) + the
+    // segmenter (ORT session) + the image cache ON THE WORKER THREAD.
+    // Called by applyMode(Mode::None) and shutdown(). Idempotent. The
+    // engine-owned QOffscreenSurface is deliberately left alive — see the
+    // body for the threading rationale.
+    void releaseEngineResources();
+
     QOffscreenSurface     *m_surface     = nullptr;   // not owned (engine)
     BackgroundCompositor  *m_compositor  = nullptr;   // owned (parent=this)
     TfliteSegmenter       *m_segmenter   = nullptr;   // owned (parent=this)
 
     // Image-mode cache. Lives here because only the worker reads/writes
     // it — the engine never touches QImage state directly anymore.
-    QImage  m_cachedBgRaw;
+    // 0.60.2 (2026-07-13 field RCA): only the camera-resolution SCALED
+    // plate is cached. The full-resolution decode (bundled JPEGs are
+    // 3200×1800 → ~23 MB as 32-bit pixels) used to be retained here
+    // (m_cachedBgRaw) for the whole session even though it was only ever
+    // read to produce the scaled copy; we now re-decode from disk on the
+    // rare invalidation events (new image picked / camera resolution
+    // change) instead of carrying 23 MB.
     QString m_cachedBgPath;
     QImage  m_cachedBgScaled;
     QSize   m_cachedBgScaledSize;
