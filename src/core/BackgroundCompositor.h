@@ -82,6 +82,13 @@ signals:
 
 private:
     bool m_ready = false;
+    // 0.60.2 (2026-07-13 field RCA) — latched by ensureInitialised() on the
+    // first failure so subsequent composite calls return immediately instead
+    // of rebuilding a QOpenGLContext (and, pre-fix, leaking a fresh
+    // QOffscreenSurface — see releaseAll()) on EVERY FRAME at 15-30 fps.
+    // GL 3.3 availability doesn't change mid-session; a fresh compositor
+    // instance (background toggled Off→On) naturally resets the latch.
+    bool m_initFailedPermanently = false;
     // True when m_surface was supplied via setExternalSurface() and must
     // therefore NOT be deleted in releaseAll() — the engine retains
     // ownership in that case.

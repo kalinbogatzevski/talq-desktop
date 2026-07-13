@@ -3471,6 +3471,13 @@ void MainWindow::ensureSettingsDialog()
         m_deviceManager, m_notifications, m_appSettings, m_auth, this);
     if (_ctor.elapsed() > 120)
         qInfo() << "SettingsDialog: first-open construction took" << _ctor.elapsed() << "ms";
+    // 0.60.2 (2026-07-13 field RCA) — ONE BackgroundEngine process-wide: the
+    // dialog's live preview reuses CallManager's engine instead of building a
+    // second (second ONNX session + GL stack, ~10-20 MB; the field log showed
+    // both "ONNX Runtime session ready" lines 1 ms apart from one click).
+    // Must run before the dialog is first shown so syncBgPreview() never hits
+    // its construct-a-private-engine fallback.
+    m_settingsDialog->setSharedBackgroundEngine(m_callManager->backgroundEngine());
     // The Settings live background preview opens a SECOND camera consumer. During
     // a call the publisher already holds the (exclusive, Windows MF) camera, so
     // the preview must not open the device or it steals it and wedges the in-call

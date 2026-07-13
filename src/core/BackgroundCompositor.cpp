@@ -111,10 +111,22 @@ void BackgroundCompositor::releaseAll()
     // the worker-thread refactor the engine owns the surface (created on
     // Qt main, then moved to the worker thread) and outlives the
     // compositor across mode toggles.
+    //
+    // 0.60.2 (2026-07-13 field RCA) — and only NULL it in that case too.
+    // The old code nulled m_surface unconditionally, so after a failed GL
+    // init with an external surface the next composite's createContext()
+    // saw m_surface == nullptr and new'd a FRESH QOffscreenSurface on the
+    // worker thread (QOffscreenSurface must not be created/destroyed off
+    // the GUI thread on Windows — see BackgroundEngine's ctor comment)…
+    // and then leaked it on the following releaseAll(), because
+    // m_surfaceExternal was still true so the delete was skipped. Net:
+    // one leaked surface + one context rebuild PER FRAME while init kept
+    // failing. Keeping the pointer means a retry (now latched anyway, see
+    // ensureInitialised) reuses the engine's GUI-thread-created surface.
     if (!m_surfaceExternal) {
         delete m_surface;
+        m_surface = nullptr;
     }
-    m_surface = nullptr;
     m_ready = false;
     m_lastSize = QSize();
 }
@@ -256,16 +268,30 @@ bool BackgroundCompositor::ensureFbos(const QSize &size)
 bool BackgroundCompositor::ensureInitialised()
 {
     if (m_ready) return true;
-    if (!createContext())   { releaseAll(); return false; }
+    // 0.60.2 (2026-07-13 field RCA) — fail ONCE, then stay failed. Without
+    // this latch every composite call (15-30 per second) re-attempted the
+    // whole context/shader init, re-emitted initFailed each time, and (with
+    // the external-surface bug in releaseAll, fixed alongside) leaked a
+    // QOffscreenSurface per frame. GL 3.3 capability doesn't appear
+    // mid-session; the user toggling the background Off→On constructs a
+    // fresh compositor, which is the natural retry point.
+    if (m_initFailedPermanently) return false;
+    if (!createContext()) {          // createContext emits initFailed itself
+        m_initFailedPermanently = true;
+        releaseAll();
+        return false;
+    }
     if (!compilePrograms()) {
         emit initFailed(QStringLiteral(
             "Background processing — a shader program failed to compile or link."));
+        m_initFailedPermanently = true;
         releaseAll();
         return false;
     }
     if (!createGeometry()) {
         emit initFailed(QStringLiteral(
             "Background processing — couldn't allocate the full-screen quad."));
+        m_initFailedPermanently = true;
         releaseAll();
         return false;
     }
