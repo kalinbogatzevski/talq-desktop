@@ -1213,6 +1213,17 @@ void SettingsDialog::startDeferredDevices()
     });
 }
 
+void SettingsDialog::setSharedBackgroundEngine(BackgroundEngine *engine)
+{
+    // 0.60.2 (FIX 2) — see the header comment. Injected by MainWindow right
+    // after construction, i.e. before the first syncBgPreview() can run
+    // (showEvent → deferred device start), so the lazy fallback in
+    // syncBgPreview never fires in production. Ignore null so a broken
+    // caller can't downgrade an already-injected engine.
+    if (engine)
+        m_bgPreviewEngine = engine;
+}
+
 void SettingsDialog::setCallActive(bool active)
 {
     if (m_callActive == active)
@@ -1275,8 +1286,22 @@ void SettingsDialog::syncBgPreview()
         return;
     }
 
-    // On-mode (Blur / Image) — lazy-construct engine + source on first use.
+    // On-mode (Blur / Image). 0.60.2 (2026-07-13 field RCA): the engine is
+    // CallManager's, injected via setSharedBackgroundEngine() — ONE engine,
+    // ONE ONNX session process-wide. The dialog used to lazy-construct its
+    // OWN BackgroundEngine here, so a single mode-combo click built TWO ORT
+    // sessions ~1 ms apart (the immediate backgroundSettingsChanged emit at
+    // the combo handler kicked CallManager's engine, then this very slot
+    // constructed + kicked the preview's). Sharing is safe: processFrame()
+    // serialises all callers on the engine's worker thread, the preview
+    // never runs during a call (m_callActive gate below), and both sides
+    // apply the same persisted Talk/Backgrounds values so the shared mode/
+    // strength/path state cannot diverge. The fallback construction below
+    // is defensive only (a dialog used standalone, e.g. in a harness) —
+    // production always injects before the first syncBgPreview().
     if (!m_bgPreviewEngine) {
+        qWarning() << "SettingsDialog: no shared BackgroundEngine injected —"
+                      " constructing a private preview engine (fallback)";
         m_bgPreviewEngine = new BackgroundEngine(this);
     }
     if (type == QLatin1String("image")) {

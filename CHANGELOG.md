@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.60.3 "Blue Fiesta" (2026-07-13)
+
+A memory patch on top of 0.60.2, focused on the virtual background.
+
+### Fixed
+* **Calls no longer drop everyone to low quality on a machine with plenty of
+  memory free.** TalQ watched only its *own* memory use and, past a fixed limit,
+  reduced the incoming video quality for **every** participant — even on a
+  powerful computer with gigabytes of RAM to spare. It now looks at how much
+  memory the *system* actually has left, so it only steps in when the machine is
+  genuinely under pressure.
+* **Turning the virtual background off now actually releases it.** Switching the
+  background off left the whole background engine loaded for the rest of the
+  session — around 110 MB held for a feature you had already turned off. It is
+  now released properly, and re-enabling it works as before.
+* **The virtual background no longer starts up twice.** Opening the background
+  settings could build a second, redundant copy of the background engine — once
+  more if you did it during a call.
+* **Background images are no longer held in memory at full size.** A large
+  background photo was kept at its original resolution for the whole session even
+  though only a screen-sized copy was ever used.
+* **A failing virtual background no longer fails silently.** If the background
+  could not start — or an image could not be loaded — TalQ said nothing at all,
+  to you or to its log. It now reports the problem instead of quietly showing you
+  no background.
+
 ## v0.60.2 "Blue Fiesta" (2026-07-13)
 
 Call-stage rework: you can now choose what fills the main screen, and the stage

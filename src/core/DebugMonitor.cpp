@@ -124,3 +124,23 @@ qint64 DebugMonitor::readProcessMemoryMB()
 #endif
     return 0;
 }
+
+bool DebugMonitor::readSystemMemoryMB(qint64 &totalMb, qint64 &availMb, int &loadPct)
+{
+#ifdef Q_OS_WIN
+    MEMORYSTATUSEX ms;
+    ms.dwLength = sizeof(ms);
+    if (GlobalMemoryStatusEx(&ms)) {
+        totalMb = static_cast<qint64>(ms.ullTotalPhys / (1024ull * 1024ull));
+        availMb = static_cast<qint64>(ms.ullAvailPhys / (1024ull * 1024ull));
+        loadPct = static_cast<int>(ms.dwMemoryLoad);
+        return true;
+    }
+#endif
+    // Probe failed / unsupported platform — hand back sentinels the caller
+    // can't mistake for a healthy reading.
+    totalMb = 0;
+    availMb = 0;
+    loadPct = -1;
+    return false;
+}

@@ -6,6 +6,7 @@
 #include <QCheckBox>
 #include <QRadioButton>
 #include <QLabel>
+#include <QPointer>
 #include <QPushButton>
 #include <QSettings>
 
@@ -43,6 +44,15 @@ public:
     // background preview never opens the camera during a call (the publisher holds
     // the exclusive device — opening a 2nd consumer wedges the in-call video).
     void setCallActive(bool active);
+    // 0.60.2 (2026-07-13 field RCA) — MainWindow injects CallManager's
+    // long-lived BackgroundEngine so the Settings live preview reuses it
+    // instead of lazily constructing a SECOND one. Two engines meant two
+    // ONNX sessions (the field log showed both "ONNX Runtime session ready"
+    // lines 1 ms apart from a single mode-combo click: the immediate
+    // backgroundSettingsChanged emit kicked CallManager's engine, then the
+    // same slot's syncBgPreview() constructed + kicked the preview's) plus a
+    // duplicate GL stack — ~10-20 MB carried for the session. NOT owned.
+    void setSharedBackgroundEngine(class BackgroundEngine *engine);
 
 protected:
     // Tear down the live BG preview pipeline (releases the camera so a
@@ -128,13 +138,18 @@ private:
     // browse row). Shown only when mode == Image; hidden in Off/Blur.
     QWidget     *m_bgImageSection       = nullptr;
     // Live camera preview that runs the user's selected BG mode end-to-
-    // end without joining a call. Lazy-created the first time the user
-    // picks Blur/Image, torn down on dialog close. Owns its own
-    // BackgroundEngine so it doesn't fight a call-active engine for the
-    // GL context.
+    // end without joining a call. The preview SOURCE is lazy-created the
+    // first time the user picks Blur/Image and torn down on dialog close.
+    // 0.60.2: the ENGINE is CallManager's, injected via
+    // setSharedBackgroundEngine() — the dialog used to own a second one
+    // ("so it doesn't fight a call-active engine for the GL context", but
+    // sharing is safe: BackgroundEngine::processFrame serialises all
+    // callers on its worker thread, and the preview never runs during a
+    // call anyway — see m_callActive). QPointer because the engine's owner
+    // (CallManager) may be destroyed before this dialog at app teardown.
     QLabel                  *m_bgPreviewLabel   = nullptr;
     class BgPreviewSource   *m_bgPreviewSource  = nullptr;
-    class BackgroundEngine  *m_bgPreviewEngine  = nullptr;
+    QPointer<class BackgroundEngine> m_bgPreviewEngine;   // shared, NOT owned
     // True while a call is active (pushed by MainWindow from CallManager state).
     // The publisher holds the exclusive (Windows MF) camera during a call, so
     // syncBgPreview() must NOT open the device for the preview while this is set

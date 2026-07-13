@@ -392,6 +392,29 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
     // feature is Off so the publisher can ask for it later without a
     // null check; the engine itself is the gate (Mode::None → no-op).
     m_backgroundEngine = new BackgroundEngine(this);
+
+    // 0.60.2 (2026-07-13 field RCA) — engineDisabled / backgroundImageFailed
+    // had ZERO connects anywhere in the codebase, so a background failure
+    // (no GL 3.3 context, ORT init fault, missing/corrupt image file) was
+    // 100% silent: the user picked Blur and got raw camera, with not one
+    // log line saying why. Loud qWarning so field logs finally show it, +
+    // the EXISTING video-quality notice channel (the in-call chip — no new
+    // UI surface invented; outside a call the notice is simply not shown,
+    // and it resets on call teardown like every other quality notice).
+    connect(m_backgroundEngine, &BackgroundEngine::engineDisabled,
+            this, [this](const QString &reason) {
+        qWarning() << "CallManager: BACKGROUND ENGINE DISABLED —" << reason
+                   << "— the user's Blur/Image choice is NOT being applied;"
+                      " frames pass through unprocessed";
+        setVideoQualityNotice(tr("Background effect unavailable — sending normal video"));
+    });
+    connect(m_backgroundEngine, &BackgroundEngine::backgroundImageFailed,
+            this, [this](const QString &path) {
+        qWarning() << "CallManager: background image failed to load:" << path
+                   << "— sending normal video (user must pick a different"
+                      " image in Settings to retry)";
+        setVideoQualityNotice(tr("Background image couldn't be loaded — sending normal video"));
+    });
     applyBackgroundSettings();
 
     // #share-reliability: bound how long we wait for proof a screen share is
@@ -3473,19 +3496,58 @@ void CallManager::onLoadTick()
         }
     }
 
-    // ── HOST-PROTECTION memory watchdog (Kalin 2026-06-30) ───────────────────
+    // ── HOST-PROTECTION memory watchdog (Kalin 2026-06-30; reworked 2026-07-13) ──
     // The receive/decode path can balloon and melt the host — field: Ivan's box
     // hit ~2 GB while a hybrid-GPU d3d11 decoder was stalled, with chopped audio.
     // Process memory is an INDEPENDENT signal (the decode-load proxy was disabled
-    // in 0.52.1 for oscillating), so use it with hysteresis: when the working set
-    // crosses the high mark, SHED hard — cap EVERY peer including the focused tile
-    // to the 180p layer (i.e. stop the 1080p streams) — and restore each peer's
-    // wanted quality once memory eases back under the low mark.
+    // in 0.52.1 for oscillating), so use it with hysteresis: on trip, SHED hard —
+    // cap EVERY peer including the focused tile to the 180p layer (i.e. stop the
+    // 1080p streams) — and restore each peer's wanted quality once it eases.
+    //
+    // 0.60.2 REWORK (2026-07-13 field RCA): the trip used to be an absolute
+    // 1500 MB working set, which a HEALTHY box exceeds just by using the
+    // virtual background (+145 MB engine) on top of the GPU driver/ICD mapping
+    // — a peer with plenty of free RAM tripped it at 1542 MB and degraded the
+    // call for everyone. "Host overload" is now judged against the ACTUAL
+    // system: shed only when the machine is genuinely out of physical memory
+    // AND our process is a significant contributor, with a much higher
+    // absolute backstop for the true runaway (which grows unboundedly, so it
+    // still trips the backstop on its way up — no regression of the original
+    // stalled-decoder case). Constants + rationale: CallManager.h.
     const qint64 memMb = DebugMonitor::readProcessMemoryMB();
-    if (!m_memShedActive && memMb > kMemShedHighMb) {
+    qint64 sysTotalMb = 0, sysAvailMb = 0;
+    int    sysLoadPct = -1;
+    const bool haveSys =
+        DebugMonitor::readSystemMemoryMB(sysTotalMb, sysAvailMb, sysLoadPct);
+    // If GlobalMemoryStatusEx fails (or non-Windows), we can't judge system
+    // pressure — fall back to the runaway backstop only. Treat "unknown" as
+    // "not pressured" for the trip, and as "eased" for the restore, so a
+    // probe failure can neither strand us shed nor shed us spuriously.
+    const bool sysPressureHigh = haveSys
+        && (sysLoadPct >= kMemShedSysLoadHighPct
+            || sysAvailMb < kMemShedSysAvailLowMb);
+    const bool sysPressureEased = !haveSys
+        || (sysLoadPct <= kMemShedSysLoadLowPct
+            && sysAvailMb >= kMemShedSysAvailOkMb);
+
+    const bool shedTrip = (memMb > kMemShedRunawayHighMb)
+        || (sysPressureHigh && memMb >= kMemShedContributorMb);
+    const bool shedRestore = (memMb < kMemShedRunawayLowMb)
+        && (sysPressureEased || memMb < kMemShedContributorLowMb);
+
+    if (!m_memShedActive && shedTrip) {
         m_memShedActive = true;
-        qWarning().nospace() << "CallManager: HOST OVERLOAD — working set " << memMb
-                             << " MB (> " << kMemShedHighMb << ") — shedding ALL peers to 180p";
+        // Log the SYSTEM figures alongside the process figure so the next
+        // person can tell a real overload from a false one (the 2026-07-13
+        // false trip was only diagnosable because the peer's box specs were
+        // known out-of-band).
+        qWarning().nospace()
+            << "CallManager: HOST OVERLOAD — working set " << memMb << " MB"
+            << (memMb > kMemShedRunawayHighMb
+                ? " [runaway backstop]" : " [system memory pressure]")
+            << "; system: total " << sysTotalMb << " MB, avail " << sysAvailMb
+            << " MB, load " << sysLoadPct << "%"
+            << " — shedding ALL peers to 180p";
         // NOTE (0.60.2): do NOT demote to software decode from here. An earlier version
         // of this patch did exactly that when the "d3d11 fault" flag was latched — but
         // that flag was a false positive (a benign adapter-probe warning), and forcing
@@ -3494,10 +3556,11 @@ void CallManager::onLoadTick()
         // rebuilding the decode path on a guess is not.
         applyReceiveLoadCaps(/*substreamCap=*/0, /*capFocused=*/true);
         setVideoQualityNotice(tr("High load — receiving video at reduced quality"));
-    } else if (m_memShedActive && memMb < kMemShedLowMb) {
+    } else if (m_memShedActive && shedRestore) {
         m_memShedActive = false;
-        qInfo().nospace() << "CallManager: host load eased (" << memMb
-                          << " MB) — restoring receive quality";
+        qInfo().nospace() << "CallManager: host load eased (working set " << memMb
+                          << " MB; system avail " << sysAvailMb << " MB, load "
+                          << sysLoadPct << "%) — restoring receive quality";
         applyReceiveLoadCaps(/*substreamCap=*/2, /*capFocused=*/false);
         if (m_videoQualityNotice.startsWith(tr("High load")))
             setVideoQualityNotice(QString());

@@ -62,6 +62,16 @@ signals:
 public:
     static qint64 readProcessMemoryMB();   // process working set (MB) — no instance needed
 
+    // 0.60.2 (2026-07-13 field RCA) — system-wide physical memory via
+    // GlobalMemoryStatusEx: total/available physical MB + dwMemoryLoad %.
+    // Returns false when the probe fails (or off-Windows); callers must
+    // treat that as "unknown", not "fine". Added so CallManager's
+    // host-protection watchdog judges "overload" against ACTUAL system
+    // pressure instead of an absolute process working-set number (a healthy
+    // RTX 2060 box with free RAM tripped the old 1500 MB wire at 1542 MB
+    // and shed everyone's video to 180p).
+    static bool readSystemMemoryMB(qint64 &totalMb, qint64 &availMb, int &loadPct);
+
 private:
     void tick();
 
