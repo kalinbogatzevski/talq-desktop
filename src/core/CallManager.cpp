@@ -403,10 +403,21 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
     // and it resets on call teardown like every other quality notice).
     connect(m_backgroundEngine, &BackgroundEngine::engineDisabled,
             this, [this](const QString &reason) {
+        // 0.60.5: the engine now FAILS CLOSED. When segmentation dies we no
+        // longer pass the camera through — we obscure the whole frame — so
+        // this notice must NOT say "sending normal video". It used to, and it
+        // was a privacy lie in both directions: pre-0.60.5 a failed segmenter
+        // silently substituted a generic centred-ellipse mask, which left the
+        // user's actual room SHARP inside the ellipse while the UI reassured
+        // them the effect was simply "unavailable". The user is the only one
+        // who can consent to being seen, so tell them exactly what is on the
+        // wire and how to change it.
         qWarning() << "CallManager: BACKGROUND ENGINE DISABLED —" << reason
-                   << "— the user's Blur/Image choice is NOT being applied;"
-                      " frames pass through unprocessed";
-        setVideoQualityNotice(tr("Background effect unavailable — sending normal video"));
+                   << "— the user's Blur/Image choice cannot be applied; video is"
+                      " being OBSCURED (fail-closed), NOT passed through";
+        setVideoQualityNotice(tr("Background effect failed — your video is hidden "
+                                 "until it recovers. Turn the background off in "
+                                 "Settings to send normal video."));
     });
     connect(m_backgroundEngine, &BackgroundEngine::backgroundImageFailed,
             this, [this](const QString &path) {

@@ -2,6 +2,7 @@
 #include "core/BackgroundEngine.h"
 #include "core/LeakStats.h"
 #include <QDebug>
+#include <QElapsedTimer>
 #include <QPointer>
 #include <QRegularExpression>
 #include <QSettings>
@@ -1251,6 +1252,27 @@ void PublishPipeline::cleanup()
     m_videoCapsFilter = nullptr;
     m_bgAppsink = nullptr;     // #20 Phase 3.3b — must null with the rest
     m_bgAppsrc  = nullptr;     // or a second start() dereferences garbage
+
+    // 0.60.5 — one unconditional timing line per call teardown, NOT gated on
+    // TALQ_DEBUG_BG. A user reporting "the app froze during a call with blur
+    // on" should not have to reproduce it a second time with an env var set
+    // for us to learn what the camera thread was actually doing.
+    talq::bg::Stats::logSummary("at call teardown");
+    // 2026-07-14 — the engine OUTLIVES this pipeline (CallManager keeps one
+    // across calls), so the mailbox must not: without this reset the output
+    // slot still held THIS call's final composite when the next call's first
+    // frame arrived, and it was emitted to the new call's peers ("age 1" by
+    // the old submission-counted staleness). See BackgroundEngine.h.
+    if (m_backgroundEngine) m_backgroundEngine->resetMailbox();
+    if (m_backgroundEngine) {
+        qInfo().nospace()
+            << "BG bridge: processed " << m_bgBridgeFramesProcessed.load(std::memory_order_relaxed)
+            << ", pass-through " << m_bgBridgeFramesPassThrough.load(std::memory_order_relaxed)
+            << ", bridge-dropped " << m_bgBridgeFramesDropped.load(std::memory_order_relaxed)
+            << " (raw-frame leaks refused), engine composites "
+            << m_backgroundEngine->framesComposited()
+            << ", engine drop-oldest " << m_backgroundEngine->framesDropped();
+    }
     m_tee = nullptr;
     m_encQueue = nullptr;
     m_cameraValve = nullptr;
@@ -1694,6 +1716,29 @@ void PublishPipeline::enableCamera(int deviceIndex, bool hd1080)
     // set_state(pipeline, PLAYING) here forces the cascade through
     // the just-added camera chain. Cheap when already PLAYING.
     gst_element_set_state(m_pipeline, GST_STATE_PLAYING);
+
+    // 0.60.5 — build the GL compositor + ORT session NOW, in parallel with
+    // the camera's ~1 s COM init, instead of on the first frame that arrives.
+    // Cold init is 200 ms - 1.07 s (bench) and 0.60.2 frees the engine when
+    // the background is turned OFF, so EVERY re-enable pays it again. Frames
+    // that arrive before it completes are covered by the engine's mosaic
+    // fallback (never the raw camera — see BackgroundEngine.h), so this is
+    // purely about how long the user spends as a smudge, not about safety.
+    // Idempotent and queued; costs nothing when the engine is already up or
+    // the mode is None.
+    //
+    // 2026-07-14 — and invalidate the frame mailbox FIRST: enableCamera is
+    // the camera-continuity boundary (call start, video unmute), and the
+    // output slot may still hold a composite from before the gap — from the
+    // previous call, or from before the mute. Those pixels were captured for
+    // a different moment/audience; the wall-clock staleness bound would
+    // reject most of them, but the boundary is known HERE, so make it
+    // explicit rather than statistical.
+    if (m_backgroundEngine) {
+        m_backgroundEngine->resetMailbox();
+        m_backgroundEngine->prewarm();
+    }
+
     // Start camera source LAST and async — mfvideosrc COM init blocks ~1s
     gst_element_set_state(m_cameraSrc, GST_STATE_PLAYING);
 
@@ -2543,10 +2588,24 @@ GstFlowReturn PublishPipeline::onBgSample(GstAppSink *sink, gpointer userData)
     }
 
     // ---------- On-mode: GL compositor round-trip ----------
-    // Snapshot caps + map BGRx pixels into a detached QImage. We do
-    // this on the streaming thread (cheap memcpy, ~70 MB/s at 720p30
-    // — the videoConvert upstream does an equal-cost convert anyway,
-    // so the bridge adds one extra copy per frame).
+    // 0.60.5 — time the WHOLE on-mode section. This is the true cost of the
+    // BG bridge to the camera's streaming thread (map + copy + engine + push),
+    // and therefore the true duration of the GST_PAD_STREAM_LOCK hold. It is
+    // the number that decides whether this path can freeze the app, and until
+    // 0.60.5 nothing anywhere in the background path was timed at all — which
+    // is precisely why the freeze survived three releases as a theory.
+    QElapsedTimer bridgeTimer;
+    bridgeTimer.start();
+    struct BridgeTimerScope {
+        QElapsedTimer &t;
+        ~BridgeTimerScope() {
+            talq::bg::Stats::record(talq::bg::Stats::BridgeTotal,
+                                    t.nsecsElapsed() / 1000);
+        }
+    } bridgeScope{bridgeTimer};   // records on EVERY return path below
+
+    // Snapshot caps + wrap the BGRx pixels into a QImage for the engine
+    // (zero-copy since 0.60.6 — see the BgFrameHold note below).
     GstCaps *caps = gst_sample_get_caps(sample);
     GstStructure *s = caps ? gst_caps_get_structure(caps, 0) : nullptr;
     int width = 0, height = 0;
@@ -2570,6 +2629,19 @@ GstFlowReturn PublishPipeline::onBgSample(GstAppSink *sink, gpointer userData)
     GstClockTime dts = GST_BUFFER_DTS(inBuf);
     GstClockTime dur = GST_BUFFER_DURATION(inBuf);
 
+    // 0.60.6 — ZERO-COPY into the engine. This used to `wrap.copy()` every
+    // frame (3.7 MB at 720p, 30×/s) purely so the buffer could be unmapped
+    // before returning. Instead the QImage now OWNS the mapped sample via a
+    // cleanup function: unmap + unref run when the last QImage ref drops
+    // (worker thread after compose, or this thread when the mailbox
+    // overwrites a dropped frame — GstBuffer/GstSample are unref-safe from
+    // any thread). At most two camera buffers are held at once (mailbox
+    // input slot + the worker's in-flight frame), for one worker period;
+    // the mailbox slots are cleared at every reset/release, so no buffer
+    // outlives a producer boundary. The const-data QImage ctor keeps the
+    // image read-only — any write attempt detaches a copy first, so the
+    // engine can never scribble on a live GStreamer buffer.
+    struct BgFrameHold { GstSample *sample; GstBuffer *buf; GstMapInfo map; };
     QImage rgbaSnapshot;
     {
         GstMapInfo map;
@@ -2585,23 +2657,36 @@ GstFlowReturn PublishPipeline::onBgSample(GstAppSink *sink, gpointer userData)
             gst_sample_unref(sample);
             return fr;
         }
-        QImage wrap(map.data, width, height, width * 4, QImage::Format_RGB32);
-        rgbaSnapshot = wrap.copy();  // detach before unmap
-        gst_buffer_unmap(inBuf, &map);
+        auto *hold = new BgFrameHold{sample, inBuf, map};
+        rgbaSnapshot = QImage(
+            static_cast<const uchar *>(map.data), width, height, width * 4,
+            QImage::Format_RGB32,
+            [](void *p) {
+                auto *h = static_cast<BgFrameHold *>(p);
+                gst_buffer_unmap(h->buf, &h->map);
+                gst_sample_unref(h->sample);
+                delete h;
+            },
+            hold);
     }
-    // Keep `caps` borrowed from sample around until after we build outSample.
-    // gst_sample_get_caps returns a borrowed pointer that's valid only while
-    // the sample is alive, so we must not unref `sample` until we've ref'd
-    // `caps` for the new outSample below.
+    // Keep `caps` valid until after we build outSample: gst_sample_get_caps
+    // returns a borrowed pointer, so take our own ref. The sample itself now
+    // belongs to rgbaSnapshot's cleanup (no unref here — see above).
     GstCaps *outCaps = gst_caps_ref(caps);
-    gst_sample_unref(sample);
 
-    // 0.40.1 — BackgroundEngine::processFrame is now thread-safe and
-    // routes the work to its own internal worker thread. We can call it
-    // directly from this GStreamer streaming thread without any Qt-main
-    // hop. The 0.40.0 stable used Qt::BlockingQueuedConnection to Qt
-    // main here, which deadlocked the UI whenever Qt main needed the
-    // GST stream lock during call setup. See task #32.
+    // 0.40.1 — BackgroundEngine::processFrame is thread-safe and routes the
+    // work to its own worker thread, so we call it directly from this
+    // GStreamer streaming thread with no Qt-main hop. The 0.40.0 stable used
+    // Qt::BlockingQueuedConnection to Qt main here, which deadlocked the UI
+    // whenever Qt main needed the GST stream lock during call setup (task #32).
+    //
+    // 0.60.5 — and it no longer blocks on the WORKER either. We are inside a
+    // GstAppSink callback holding the camera pad's GST_PAD_STREAM_LOCK; until
+    // 0.60.4 this call parked here for the whole segment()+composite round
+    // trip (measured p50 58 ms / max 579 ms per frame at 720p on an idle Iris
+    // Xe), pinning that lock and transitively wedging every Qt-main
+    // gst_element_set_state() on the camera. processFrame now submits and
+    // returns whatever composite is ready. See BackgroundEngine.h.
     QImage processed;
     if (BackgroundEngine *engine = self->m_backgroundEngine) {
         processed = engine->processFrame(rgbaSnapshot);
@@ -2610,20 +2695,59 @@ GstFlowReturn PublishPipeline::onBgSample(GstAppSink *sink, gpointer userData)
     }
 
     if (processed.isNull() || processed.width() != width || processed.height() != height) {
-        // Engine returned garbage — push the unprocessed snapshot so the
-        // receiver still sees a valid frame.
-        processed = rgbaSnapshot;
+        // The engine could not produce a usable frame. We reached this branch
+        // only because a background is ON (engineOn, above), so we must NOT
+        // fall back to `rgbaSnapshot` — that is the user's real, sharp,
+        // fully-decodable room, and pushing it here sends it through the tee
+        // to the encoder and out to every peer and every recorder. That is
+        // what this code did through 0.60.4.
+        //
+        // DROP the frame instead. The receiver holds its last picture for
+        // 33 ms; the engine's own mosaic fallback covers every case it can
+        // see, so landing here at all means something is badly wrong (a
+        // resolution change mid-flight is the benign one). Latency is
+        // cosmetic; a leaked frame is unrecoverable.
+        if (!self->m_bgLeakGuardWarned.exchange(true, std::memory_order_relaxed)) {
+            qWarning() << "PublishPipeline: BG engine returned an unusable frame while a "
+                          "background is ON (got"
+                       << (processed.isNull() ? QSize() : processed.size())
+                       << "want" << QSize(width, height)
+                       << ") — DROPPING the frame rather than sending the raw camera";
+        }
+        self->m_bgBridgeFramesDropped.fetch_add(1, std::memory_order_relaxed);
+        gst_caps_unref(outCaps);
+        return GST_FLOW_OK;
     }
     if (processed.format() != QImage::Format_RGB32) {
         // Engine should already return BGRx-aliased RGB32, but be safe.
         processed.convertTo(QImage::Format_RGB32);
     }
 
-    // Build a fresh GstBuffer wrapping a copy of the processed pixels.
+    // 0.60.6 — ZERO-COPY out. The composite's pixels are wrapped, not
+    // copied: a heap QImage (shallow, refcount +1) keeps them alive until
+    // the last downstream element unrefs the buffer, however long the
+    // encoder queue holds it. GST_MEMORY_FLAG_READONLY is load-bearing —
+    // the mailbox re-serves the SAME QImage while the worker is behind
+    // (that is the designed all-skip-P-frame behaviour), so an in-place
+    // writer downstream would corrupt a frame other consumers still hold;
+    // READONLY forces any such element through gst_buffer_make_writable's
+    // copy instead. The pre-0.60.6 line-by-line memcpy survives as the
+    // fallback for a padded-stride QImage, which none of the three
+    // producers (compositor readback, mosaic, 32-bit QImage ctors — all
+    // width*4) actually emit.
     const gsize bytes = gsize(width) * height * 4;
-    GstBuffer *outBuf = gst_buffer_new_allocate(nullptr, bytes, nullptr);
-    if (!outBuf) { gst_caps_unref(outCaps); return GST_FLOW_ERROR; }  // 1.0 audit: was leaking outCaps
-    {
+    GstBuffer *outBuf = nullptr;
+    if (processed.bytesPerLine() == qsizetype(width) * 4) {
+        auto *ref = new QImage(processed);
+        outBuf = gst_buffer_new_wrapped_full(
+            GST_MEMORY_FLAG_READONLY,
+            const_cast<uchar *>(ref->constBits()), bytes, 0, bytes,
+            ref, [](gpointer p) { delete static_cast<QImage *>(p); });
+        if (!outBuf) delete ref;
+    }
+    if (!outBuf) {
+        outBuf = gst_buffer_new_allocate(nullptr, bytes, nullptr);
+        if (!outBuf) { gst_caps_unref(outCaps); return GST_FLOW_ERROR; }  // 1.0 audit: was leaking outCaps
         GstMapInfo om;
         if (!gst_buffer_map(outBuf, &om, GST_MAP_WRITE)) {
             gst_buffer_unref(outBuf);

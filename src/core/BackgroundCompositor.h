@@ -26,6 +26,8 @@
 
 #include <atomic>
 
+#include <qopengl.h>   // GLuint for the readback PBO pair
+
 class QOpenGLContext;
 class QOffscreenSurface;
 class QOpenGLFramebufferObject;
@@ -51,7 +53,8 @@ public:
 
     // Lazy GL initialisation — called on first compositeBlur() /
     // compositeImage(). Returns false if no GL3.3+ context can be created
-    // (caller falls back to pass-through and surfaces the error).
+    // (the composite calls then return null and the engine fails closed to
+    // its content-free mosaic; initFailed surfaces the reason once).
     bool ensureInitialised();
 
     // Whether ensureInitialised() succeeded at least once.
@@ -68,16 +71,35 @@ public:
 
     // Talk's three render modes, kept as separate calls so the engine
     // can pick at frame time without ferrying enums through the GL layer.
+    //
+    // 0.60.6 PIPELINED READBACK — both composite calls return the NEWEST
+    // AVAILABLE composite, which in steady state is the PREVIOUS call's
+    // frame, not this one's. The old readbackFbo() did fbo->toImage() ==
+    // glReadPixels straight into client memory, a full CPU↔GPU sync that
+    // parked the worker for the whole 4-pass GPU render every frame
+    // (measured 18.8 ms of the 44 ms worker total at 720p — the single
+    // biggest item behind Kalin's 2026-07-13 "talq eats much more CPU on
+    // my zenbook" report). Now the render is read into a pixel-pack
+    // buffer asynchronously and MAPPED one call later, when the GPU has
+    // long finished, so the CPU never waits. The first call after
+    // init / resolution change / discardPendingReadback() maps its own
+    // readback synchronously (no previous frame exists), so single-shot
+    // callers (tests, cold start) still get the frame they submitted.
+    // The one-frame lag is invisible to the engine's mailbox, which
+    // already re-serves "the newest completed composite" by design.
 
     // Blur mode: mask-aware separable Gaussian blur of the frame itself,
     // then composite the (sharp) foreground over the blurred copy using
     // the segmentation mask.
-    //   rgba   — input camera frame, premultiplied RGBA
-    //   mask   — single-channel 0..255 segmentation mask, same size or
-    //            upscaled by the compositor
+    //   rgba   — input camera frame (any 32-bit QImage format; RGB32 ==
+    //            the BGRx the GStreamer bridge delivers is the fast path)
+    //   mask   — single-channel 0..255 segmentation mask, any size (the
+    //            GPU samples it by normalised UV; 256×256 in production)
     //   radius — blur radius in source-resolution pixels; Talk's default
     //            blurValue=10 maps to radius = 10 * width / 720.
-    // Returns the composited RGBA. Empty QImage on failure.
+    // Returns the composite as Format_RGB32 (BGRx-aliased — what the
+    // encoder path wants, so no per-frame format conversion downstream).
+    // Empty QImage on failure.
     QImage compositeBlur(const QImage &rgba, const QImage &mask, float radius);
 
     // Image-replace mode. `bg` is the chosen background image, scaled
@@ -85,6 +107,16 @@ public:
     // the scaled texture across frames as long as bg.cacheKey is stable).
     QImage compositeImage(const QImage &rgba, const QImage &mask,
                           const QImage &bg);
+
+    // Drop the not-yet-returned async readback (see the pipelining note
+    // above). MUST be called on the compositor's own (worker) thread at
+    // every producer-continuity boundary — BackgroundWorker calls it on a
+    // mailbox-epoch change and after a >1 s submission gap. The parked
+    // pixels belong to BEFORE the boundary; returning them after it would
+    // resurrect pre-boundary content under a fresh timestamp, the exact
+    // class of leak the 2026-07-14 epoch/staleness gates exist to stop.
+    // Cost of a discard: the next composite pays one synchronous readback.
+    void discardPendingReadback();
 
 signals:
     // Fires once if ensureInitialised() fails permanently (no GL 3.3
@@ -109,13 +141,24 @@ private:
 
     // GL handles — owned, created in ensureInitialised(), torn down in
     // the destructor. Forward-declared so the header stays light.
+    // (m_fboInput, "raw camera", was removed 0.60.6: it was allocated per
+    // resolution but never rendered to — the camera arrives as m_texFg.)
     QOpenGLContext             *m_glCtx     = nullptr;
     QOffscreenSurface          *m_surface   = nullptr;
-    QOpenGLFramebufferObject   *m_fboInput  = nullptr;   // raw camera
     QOpenGLFramebufferObject   *m_fboMask   = nullptr;   // refined mask alpha
     QOpenGLFramebufferObject   *m_fboBlurH  = nullptr;   // horizontal blur pass
     QOpenGLFramebufferObject   *m_fboBlurV  = nullptr;   // vertical blur pass
     QOpenGLFramebufferObject   *m_fboOutput = nullptr;   // final composite
+
+    // Double-buffered pixel-pack buffers for the pipelined readback (see
+    // the public pipelining note). glReadPixels lands frame N in
+    // m_pbo[m_pboNext] without stalling; the returned image is mapped
+    // from the OTHER buffer, filled by frame N-1, whose GPU work is done.
+    // m_pboFilled tracks which buffers hold an unreturned composite —
+    // both false after init / resize / discardPendingReadback().
+    GLuint m_pbo[2]       = {0, 0};
+    bool   m_pboFilled[2] = {false, false};
+    int    m_pboNext      = 0;
 
     // Shader programs — one per fragment stage, all sharing the
     // passthrough.vert. Names mirror the shader filenames.
@@ -151,7 +194,10 @@ private:
     // setting uniforms after release() to glUseProgram(0) would no-op
     // on some drivers (review B1).
     void runPass(QOpenGLShaderProgram *prog, QOpenGLFramebufferObject *target);
-    QImage readbackFbo(QOpenGLFramebufferObject *fbo);
+    // Kick this frame's readback into a PBO and return the newest COMPLETED
+    // one (usually last frame's; this frame's, synchronously, right after a
+    // flush). Format_RGB32 via a GL_BGRA read — no CPU format conversion.
+    QImage takeReadback(QOpenGLFramebufferObject *fbo);
     void releaseAll();
 
     // Identifies the currently-uploaded image-mode background texture so
