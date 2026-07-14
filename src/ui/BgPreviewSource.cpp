@@ -136,6 +136,7 @@ bool BgPreviewSource::start()
 
 void BgPreviewSource::stop()
 {
+    const bool wasRunning = m_running;
     if (m_pipeline) {
         gst_element_set_state(m_pipeline, GST_STATE_NULL);
         gst_object_unref(m_pipeline);
@@ -144,6 +145,15 @@ void BgPreviewSource::stop()
     m_source  = nullptr;   // owned by the pipeline
     m_appsink = nullptr;
     m_running = false;
+    // 2026-07-14 — the engine is SHARED with the call path (SettingsDialog
+    // hands CallManager's engine to this preview), so a preview composite
+    // left in the mailbox would otherwise be the first thing the next
+    // producer reads. Only when we actually produced frames: stop() is also
+    // called defensively while a call may be publishing, and wiping a live
+    // call's slot would cost it a needless mosaic frame.
+    if (wasRunning) {
+        if (BackgroundEngine *e = m_engine.data()) e->resetMailbox();
+    }
 }
 
 GstFlowReturn BgPreviewSource::onNewSample(GstElement *appsink, gpointer userData)

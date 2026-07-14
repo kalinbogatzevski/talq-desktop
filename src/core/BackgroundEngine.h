@@ -12,28 +12,143 @@
 // on whatever thread constructed it (typically Qt main). All actual GL
 // + ORT work runs on a dedicated worker QThread owned by the engine —
 // the worker is BackgroundWorker, a separate QObject with affinity to
-// that thread. processFrame() routes work to the worker via
-// Qt::BlockingQueuedConnection so any caller (Qt main from the Settings
-// preview, the GStreamer streaming thread from PublishPipeline) blocks
-// briefly on the worker thread and NEVER on Qt main. Settings are
-// snapshotted atomically on the caller side so the worker doesn't have
-// to look back at the engine.
+// that thread.
 //
 // The 0.40.0 stable shipped with this work on Qt main; under Blur/Image
 // mode the streaming thread parked on Qt main while the GL compositor
 // cold-started, and any Qt-main code path that touched the GST stream
 // lock deadlocked the UI. See task #32.
+//
+// 0.60.5 THREADING FIX — the freeze Kalin hit on 0.60.4 with blur on
+// both ends (video started late, high CPU, app froze intermittently).
+// 0.40.1 moved the work off Qt main but kept processFrame() BLOCKING on
+// the worker (Qt::BlockingQueuedConnection). The caller is a GstAppSink
+// callback running on the camera's streaming thread WHILE HOLDING that
+// pad's GST_PAD_STREAM_LOCK — so the stream lock stayed pinned for the
+// full segment()+composite round trip. Measured on Kalin's Iris Xe at
+// the production cap of 720p30 (bench, 240 frames, machine IDLE):
+//
+//     camera-thread hold   p50 58.1 ms   p95 84.9 ms   max 578.9 ms
+//     (frame budget at 30 fps: 33.3 ms)
+//
+// A stream lock held for 58 ms every frame transitively parks Qt main:
+// every gst_element_set_state() on the camera (enableCamera, mute /
+// unmute, the stall watchdog's re-arm, BgPreviewSource::stop()'s
+// set_state(NULL) on the UI thread) blocks on GST_STATE_LOCK, which the
+// state-change waits on the stream lock to acquire. That is the same
+// lock-pin the 0.40.7 report named and the 0.40.9 isReady() gate only
+// papered over for the COLD-INIT case — nothing guarded steady-state
+// slowness, and steady state was never fast.
+//
+// processFrame() is now NON-BLOCKING and waits for nothing:
+//   * submit the frame into a one-slot, DROP-OLDEST input mailbox,
+//   * take whatever composite is already sitting in the output slot,
+//   * return immediately.
+// The camera thread's cost collapses to two mutex swaps (~ms), and the
+// stream lock is released long before ORT is touched. If the worker
+// falls behind, the output slot simply doesn't advance and we re-push
+// the last composited pixels with the CURRENT buffer's PTS: an identical
+// frame costs the encoder an all-skip P-frame (near-zero bitrate) and
+// keeps the output frame rate constant, which rtpgccbwe and the
+// receiver's jitter buffer both prefer to a sagging one. Content goes
+// stale under load; it is never revealed. Cost: one frame (33 ms) of
+// added video latency, invisible on a webcam.
+//
+// PRIVACY (the reason the fallback is what it is): while a background is
+// ON, this class must NEVER hand back the real camera frame. Through
+// 0.60.4 it did — BackgroundEngine.cpp's cold-init gate, the
+// invokeMethod-failed path, and four paths in BackgroundWorker/
+// PublishPipeline all "passed the frame through unmodified" on failure.
+// That frame does not stop at the local PiP: it goes through the tee to
+// the encoder and out to every peer and every recorder. The cold-init
+// window alone was measured at 200 ms - 1.07 s, and since 0.60.2 frees
+// the engine on OFF, every re-enable paid it again. Every one of those
+// paths now falls back to a CONTENT-FREE mosaic of the frame instead.
+// A privacy feature must never fail toward "reveals the thing".
+//
+// The 2026-07-14 adversarial review found two more ways this contract was
+// being broken, both fixed with it:
+//   1. FAIL-OPEN SEGMENTATION — TfliteSegmenter substituted a centred-
+//      gradient "person" guess on every ORT failure, so the compositor kept
+//      the middle of the REAL ROOM sharp while claiming success (composites
+//      counted, fail-closed counters read 0). segment() now returns a null
+//      mask on every failure and the ladder covers the frame. See the
+//      fail-closed note in TfliteSegmenter.h.
+//   2. CROSS-BOUNDARY REPLAY — the output mailbox aged in SUBMISSIONS, not
+//      wall-clock, and was never invalidated at producer boundaries, so the
+//      final composite of one call was emitted at the start of the NEXT
+//      call ("age 1", hours later). Staleness is now wall-clock-bounded and
+//      resetMailbox() invalidates the mailbox at every continuity break.
+//      See BgFrameMailbox in BackgroundWorker.h.
 
 #include <QImage>
 #include <QObject>
+#include <QSize>
 #include <QString>
 #include <QMutex>
 
 #include <atomic>
+#include <memory>
 
 class BackgroundWorker;
 class QOffscreenSurface;
 class QThread;
+struct BgFrameMailbox;
+
+namespace talq::bg {
+
+// 0.60.5 — per-frame cost instrumentation for the background path.
+//
+// Why this exists: through 0.60.4 there was NOT ONE timer anywhere between
+// the camera appsink and the encoder, so "background blur makes calls
+// freeze" was argued from theory for three releases. The bench
+// (tests/bg_bench.cpp) finally measured it on Kalin's Iris Xe box at the
+// production cap of 1280x720@30 (33.3 ms budget): the camera streaming
+// thread was blocking p50 58 ms / p95 85 ms / max 579 ms per frame — 1.7x
+// the budget on an IDLE machine — and it did so while holding the camera
+// pad's GST_PAD_STREAM_LOCK. This class makes that number visible in the
+// field, so the NEXT report has data in it instead of a hypothesis.
+//
+// The metric that proves the 0.60.5 fix works is CameraHold: it must sit
+// at ~1-2 ms. If it is ever tens of ms again, the blocking hop is back.
+//
+// Cost: two stores + a mutex per frame at 30 Hz. Percentiles are computed
+// only when a summary is emitted, never per frame.
+class Stats
+{
+public:
+    enum Metric {
+        CameraHold,    // BackgroundEngine::processFrame — the camera thread's hold (THE number)
+        BridgeTotal,   // PublishPipeline::onBgSample end-to-end (map + copy + hold + push)
+        Segment,       // TfliteSegmenter::segment — worker thread
+        Composite,     // BackgroundCompositor::composite* — worker thread
+        WorkerTotal,   // Segment + Composite: the ceiling on the BACKGROUND frame rate
+        MetricCount
+    };
+
+    // TALQ_DEBUG_BG=1 turns on the periodic (~5 s) summary. The end-of-call
+    // summary and the over-budget warning fire regardless — a shipped build
+    // that freezes must leave evidence in the log without the user first
+    // knowing to set an env var.
+    static bool verbose();
+
+    static void record(Metric m, qint64 microseconds);
+    static void noteDropped();      // input slot overwritten before the worker took it
+    static void noteFailClosed();   // frame served by the content-free fallback
+    static void noteRateCapped();   // frame skipped by the composite-rate cap
+                                    // (deliberate; the producer re-serves the
+                                    // parked composite — NOT a worker-behind drop)
+
+    static quint64 dropped();
+    static quint64 failClosed();
+    static quint64 rateCapped();
+
+    static void maybeLog();                    // rate-limited; safe to call per frame
+    static void logSummary(const char *why);   // one line, unconditional
+    static void reset();
+};
+
+} // namespace talq::bg
 
 class BackgroundEngine : public QObject
 {
@@ -78,16 +193,59 @@ public:
     void setImagePath(const QString &absolutePath);
     QString imagePath() const;
 
-    // Per-frame entry point. Thread-safe: callable from Qt main (Settings
-    // preview path) OR from a GStreamer streaming thread (PublishPipeline
-    // BG bridge) without any QMetaObject hop on the caller side. Internally
-    // blocks until the worker thread finishes the composite.
+    // Per-frame entry point. Thread-safe and NON-BLOCKING (0.60.5): callable
+    // from Qt main (Settings preview) or from a GStreamer streaming thread
+    // (PublishPipeline's BG bridge, holding the camera pad's stream lock).
+    // Submits `rgba` to the worker and returns the most recently COMPLETED
+    // composite — it never waits for the worker, for GL, or for ORT. See the
+    // threading + privacy note at the top of this header.
+    //
+    // Return contract while mode != None: NEVER the input frame. Either a
+    // real composite or the content-free mosaic fallback.
     QImage processFrame(const QImage &rgba);
+
+    // Build the compositor + ORT session + the ENTIRE GL chain NOW rather
+    // than on the first frame. The cold init is 200 ms - 1.07 s (bench);
+    // paying it while the pipeline is still negotiating means the user is
+    // not a mosaic for the first second of the call. Idempotent, queued,
+    // never blocks the caller.
+    // 0.60.5 — "the entire chain" now includes the GL context, the shader
+    // compile, the frame-sized FBOs/PBOs (at the 1280×720 production cap;
+    // the camera menu negotiates ≤720p) and one throwaway compose, so the
+    // first real frame finds everything hot. See
+    // BackgroundWorker::prewarmResources.
+    void prewarm();
+
+    // 2026-07-14 — invalidate the frame mailbox: clear both slots and bump
+    // the epoch so an in-flight compose cannot republish pre-boundary pixels.
+    // MUST be called at every producer continuity break, because the output
+    // slot otherwise survives the gap and its content is re-emitted on the
+    // next submit: CallManager keeps ONE engine across calls, and before
+    // this existed the final composite of call 1 (sharp face + everything
+    // the mask classed as person) went out as the first frames of call 2.
+    // Call sites: setMode / setImagePath (internal), PublishPipeline::
+    // cleanup() (call teardown), PublishPipeline::enableCamera() (camera
+    // (re)start, incl. unmute), BgPreviewSource::stop() (Settings preview
+    // handoff). Cheap (two mutexes, no waits) and safe from any thread; the
+    // wall-clock staleness bound in processFrame is the backstop for any
+    // boundary a future caller forgets.
+    void resetMailbox();
 
     // True when the engine's worker thread is running. The first real
     // composite still cold-starts GL + ORT on the worker, but never on
     // Qt main.
     bool isReady() const;
+
+    // 0.60.5 diagnostics, readable from any thread.
+    // framesComposited — real composites the worker has published.
+    // framesDropped    — frames overwritten in the input slot because the
+    //                    worker was still busy (the drop-oldest backpressure
+    //                    that this path never had before; the appsink's
+    //                    drop=TRUE/max-buffers=2 could never drop anything,
+    //                    because we pull synchronously on the producing
+    //                    thread and the queue never reaches its bound).
+    quint64 framesComposited() const;
+    quint64 framesDropped() const;
 
 signals:
     // Fires when the engine permanently disables itself for this session
@@ -102,8 +260,15 @@ signals:
     void backgroundImageFailed(const QString &path);
 
 private:
+    // The content-free fallback. Downscale by 16 and smooth-scale back up:
+    // a CPU mosaic blur, ~1 ms at 720p, no GL, no ORT, and it works on the
+    // streaming thread on the very first frame — which is exactly what the
+    // cold-init window needs. The user is an unresolved smudge for a moment
+    // at call start instead of a crisp person in front of a crisp real room.
+    static QImage mosaicFallback(const QImage &rgba);
+
     // Atomic snapshot read by streaming-thread callers without touching
-    // the worker. The worker reads the same values via process() args.
+    // the worker. The worker reads the same values from the mailbox.
     std::atomic<Mode> m_modeAtomic{Mode::None};
     std::atomic<int>  m_blurStrengthAtomic{10};
 
@@ -112,6 +277,14 @@ private:
     // call.
     mutable QMutex m_pathMutex;
     QString        m_imagePath;
+
+    // 0.60.5 — the drop-oldest frame mailbox shared with the worker. Held by
+    // shared_ptr, NOT by value: if the worker thread fails to exit inside the
+    // dtor's 5 s wait we deliberately leak the worker rather than risk a UAF
+    // (see ~BackgroundEngine), and a leaked worker that outlives this engine
+    // must still find its mailbox alive.
+    std::shared_ptr<BgFrameMailbox> m_box;
+    quint64 m_submitSeq = 0;                  // guarded by m_box->inMutex
 
     // Worker thread owns the GL + ORT objects. Both fields are set in
     // the constructor and cleared in the destructor; they are never

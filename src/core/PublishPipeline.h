@@ -156,6 +156,17 @@ public:
     quint64 bgBridgeFramesProcessed() const {
         return m_bgBridgeFramesProcessed.load(std::memory_order_relaxed);
     }
+    // 0.60.5 — frames the BG bridge DROPPED rather than push. Non-zero means
+    // the engine handed back something unusable while a background was ON and
+    // we refused to substitute the raw camera frame (a privacy leak) for it.
+    // Should be 0 in the field; a resolution change mid-call can tick it once.
+    // Distinct from BackgroundEngine::framesDropped(), which counts frames the
+    // engine's drop-oldest input slot discarded because the worker was busy —
+    // that one is healthy backpressure and is EXPECTED to be non-zero on a
+    // loaded box.
+    quint64 bgBridgeFramesDropped() const {
+        return m_bgBridgeFramesDropped.load(std::memory_order_relaxed);
+    }
 
     void sendStatusMessage(const QByteArray &json);
 
@@ -473,6 +484,8 @@ private:
     // #20 Phase 5 — bridge counters, see public getters above.
     std::atomic<quint64> m_bgBridgeFramesPassThrough{0};
     std::atomic<quint64> m_bgBridgeFramesProcessed{0};
+    std::atomic<quint64> m_bgBridgeFramesDropped{0};      // 0.60.5 — see bgBridgeFramesDropped()
+    std::atomic<bool>    m_bgLeakGuardWarned{false};      // one-shot warn on the drop path
 
     static void onNegotiationNeeded(GstElement *webrtc, gpointer userData);
     static void onIceCandidate(GstElement *webrtc, guint mlineIndex, gchar *candidate, gpointer userData);

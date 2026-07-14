@@ -1,5 +1,38 @@
 # Changelog
 
+## v0.60.5 "Blue Fiesta" (2026-07-14)
+
+The virtual background release. If you use blur or a background image in calls,
+this one is for you.
+
+### Fixed
+* **The app no longer freezes during calls when a background is on.** TalQ was
+  doing the background work on the same thread that feeds the camera, and holding
+  the camera open while it did so. On a normal laptop that work took longer than
+  the time between two camera frames, so the camera could never catch up: video
+  started late, the picture stuttered, and the app would stop responding for
+  moments at a time. The background is now processed out of the way of the camera,
+  and the camera is never made to wait for it.
+* **The camera light now goes out when you hang up.** For the same reason, TalQ
+  could not actually close the camera when a call ended — the camera stayed open
+  and its light stayed on until you quit the app entirely. It now shuts down
+  properly.
+* **Calls with a background use far less processing power.** On a moving picture
+  the background used to consume roughly a whole processor core; it now uses about
+  a third of one. Part of that was pure waste — the background was keeping the
+  processor busy even while it had nothing to do.
+* **The background appears almost immediately when a call starts.** It used to
+  take up to a second to warm up, during which your picture was hidden.
+
+### Security & privacy
+* **A failed background no longer reveals your room.** If the background could not
+  start — most likely on an older or busier computer, which is exactly where people
+  rely on it — TalQ quietly fell back to a generic oval shape instead of a real
+  outline of you. That left parts of your actual room clearly visible, while the app
+  told you the effect was simply "unavailable". TalQ now hides your picture entirely
+  if the background cannot be applied, and tells you plainly what is happening and
+  how to change it. **Your background is never shown by accident.**
+
 ## v0.60.4 "Blue Fiesta" (2026-07-14)
 
 A correctness patch on top of 0.60.3.
