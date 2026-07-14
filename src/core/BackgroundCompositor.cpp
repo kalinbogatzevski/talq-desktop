@@ -7,6 +7,7 @@
 #include <QOpenGLFramebufferObjectFormat>
 #include <QOpenGLFunctions>
 #include <QOpenGLFunctions_3_3_Core>
+#include <QOpenGLPixelTransferOptions>
 #include <QOpenGLShaderProgram>
 #include <QOpenGLTexture>
 #include <QOpenGLVertexArrayObject>
@@ -17,6 +18,8 @@
 #include <QDebug>
 #include <QImage>
 #include <QVector2D>
+
+#include <cstring>
 
 namespace {
 
@@ -108,11 +111,17 @@ void BackgroundCompositor::releaseAll()
     delete m_progBlurV;      m_progBlurV      = nullptr;
     delete m_progCompose;    m_progCompose    = nullptr;
 
-    delete m_fboInput;  m_fboInput  = nullptr;
     delete m_fboMask;   m_fboMask   = nullptr;
     delete m_fboBlurH;  m_fboBlurH  = nullptr;
     delete m_fboBlurV;  m_fboBlurV  = nullptr;
     delete m_fboOutput; m_fboOutput = nullptr;
+
+    if (m_glCtx && m_pbo[0]) {
+        m_glCtx->extraFunctions()->glDeleteBuffers(2, m_pbo);
+        m_pbo[0] = m_pbo[1] = 0;
+    }
+    m_pboFilled[0] = m_pboFilled[1] = false;
+    m_pboNext = 0;
 
     if (m_glCtx) {
         m_glCtx->doneCurrent();
@@ -246,10 +255,9 @@ bool BackgroundCompositor::createGeometry()
 
 bool BackgroundCompositor::ensureFbos(const QSize &size)
 {
-    if (size == m_lastSize && m_fboInput) return true;
+    if (size == m_lastSize && m_fboOutput) return true;
 
     // Tear down old FBOs if the size changed.
-    delete m_fboInput;  m_fboInput  = nullptr;
     delete m_fboMask;   m_fboMask   = nullptr;
     delete m_fboBlurH;  m_fboBlurH  = nullptr;
     delete m_fboBlurV;  m_fboBlurV  = nullptr;
@@ -260,19 +268,36 @@ bool BackgroundCompositor::ensureFbos(const QSize &size)
     fmt.setAttachment(QOpenGLFramebufferObject::NoAttachment);
     fmt.setSamples(0);
 
-    m_fboInput  = new QOpenGLFramebufferObject(size, fmt);
     m_fboMask   = new QOpenGLFramebufferObject(size, fmt);
     m_fboBlurH  = new QOpenGLFramebufferObject(size, fmt);
     m_fboBlurV  = new QOpenGLFramebufferObject(size, fmt);
     m_fboOutput = new QOpenGLFramebufferObject(size, fmt);
 
-    if (!m_fboInput->isValid() || !m_fboMask->isValid()
+    if (!m_fboMask->isValid()
         || !m_fboBlurH->isValid() || !m_fboBlurV->isValid()
         || !m_fboOutput->isValid()) {
         qWarning() << "BackgroundCompositor: FBO allocation failed for"
                    << size;
         return false;
     }
+
+    // Size the readback PBO pair to match. A pending readback (if any) is
+    // for the OLD size — its flags are cleared with the reallocation, so
+    // the next composite takes the synchronous path once. A resolution
+    // change mid-call is also a producer boundary, so dropping the parked
+    // frame is the correct behaviour, not just a convenience.
+    auto *f = m_glCtx->extraFunctions();
+    if (!m_pbo[0])
+        f->glGenBuffers(2, m_pbo);
+    const qsizetype bytes = qsizetype(size.width()) * size.height() * 4;
+    for (int i = 0; i < 2; ++i) {
+        f->glBindBuffer(GL_PIXEL_PACK_BUFFER, m_pbo[i]);
+        f->glBufferData(GL_PIXEL_PACK_BUFFER, bytes, nullptr, GL_STREAM_READ);
+        m_pboFilled[i] = false;
+    }
+    f->glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+    m_pboNext = 0;
+
     m_lastSize = size;
     return true;
 }
@@ -336,28 +361,58 @@ void BackgroundCompositor::uploadTexture(QOpenGLTexture *&tex,
         tex->allocateStorage();
     }
 
-    // Vertical mirror on upload so the GL texture is stored bottom-up
-    // (GL convention: UV (0,0) at bottom-left). With identity UV in
-    // passthrough.vert, intermediate FBOs all stay in GL-native
-    // orientation, and the final readbackFbo() / fbo->toImage() does
-    // one Y-flip back to QImage's top-left convention. Was previously
-    // handled by a `v_uv.y = 1.0 - a_uv.y` in the vertex shader, but
-    // that broke once the pipeline grew an intermediate FBO (bilateral
-    // refine) because every FBO read would re-flip.
+    // ORIENTATION (0.60.6): textures are uploaded TOP-DOWN, verbatim from
+    // the QImage — the mirrored() copy that used to live here is gone. It
+    // existed to keep every FBO in GL-native bottom-up orientation so that
+    // the final fbo->toImage() could do the one flip back; but both the
+    // mirror and the toImage flip were full-frame CPU copies, ~2×/frame at
+    // 30 fps. The flips CANCEL instead: with top-down uploads, the quad's
+    // UV(0,0)-at-bottom-left convention puts the image's TOP row in FBO
+    // row 0, every intermediate pass is a 1:1 quad with symmetric kernels
+    // (orientation-preserving), and the final raw glReadPixels — which
+    // returns FBO row 0 first — hands the rows back in QImage top-down
+    // order with no flip at all. background_engine_test (G2) pins this
+    // with an asymmetric frame; if a pass is ever added whose kernel is
+    // vertically asymmetric, its offsets must be negated to match.
+    //
+    // The old path also paid a convertToFormat(RGBA8888) on every camera
+    // frame (the bridge delivers BGRx-aliased RGB32). Desktop GL 3.3
+    // uploads GL_BGRA natively, so the 32-bit formats go up as-is; only
+    // exotic formats (none on the production path) pay a conversion.
+    QOpenGLPixelTransferOptions opts;
     if (singleChannel) {
-        QImage gray = img.format() == QImage::Format_Grayscale8
+        const QImage gray = img.format() == QImage::Format_Grayscale8
             ? img : img.convertToFormat(QImage::Format_Grayscale8);
-        gray = gray.mirrored(false, true);
+        opts.setAlignment(1);
+        opts.setRowLength(int(gray.bytesPerLine()));   // 1 byte/px ⇒ pixels == bytes
         tex->setData(QOpenGLTexture::Red, QOpenGLTexture::UInt8,
-                     gray.constBits(),
-                     /*pixel-transfer-options*/ nullptr);
+                     gray.constBits(), &opts);
     } else {
-        QImage rgba = img.format() == QImage::Format_RGBA8888
-            ? img : img.convertToFormat(QImage::Format_RGBA8888);
-        rgba = rgba.mirrored(false, true);
-        tex->setData(QOpenGLTexture::RGBA, QOpenGLTexture::UInt8,
-                     rgba.constBits(),
-                     nullptr);
+        QImage rgba;   // keeps a converted copy alive through setData
+        QOpenGLTexture::PixelFormat pixFmt = QOpenGLTexture::BGRA;
+        const uchar *bits = img.constBits();
+        qsizetype bpl = img.bytesPerLine();
+        switch (img.format()) {
+        case QImage::Format_RGB32:
+        case QImage::Format_ARGB32:
+        case QImage::Format_ARGB32_Premultiplied:
+            pixFmt = QOpenGLTexture::BGRA;   // 0xAARRGGBB LE = B,G,R,A bytes
+            break;
+        case QImage::Format_RGBA8888:
+        case QImage::Format_RGBA8888_Premultiplied:
+        case QImage::Format_RGBX8888:
+            pixFmt = QOpenGLTexture::RGBA;
+            break;
+        default:
+            rgba   = img.convertToFormat(QImage::Format_RGBA8888);
+            pixFmt = QOpenGLTexture::RGBA;
+            bits   = rgba.constBits();
+            bpl    = rgba.bytesPerLine();
+            break;
+        }
+        opts.setAlignment(4);                 // 32-bit rows are always 4-aligned
+        opts.setRowLength(int(bpl / 4));
+        tex->setData(pixFmt, QOpenGLTexture::UInt8, bits, &opts);
     }
 }
 
@@ -378,12 +433,70 @@ void BackgroundCompositor::runPass(QOpenGLShaderProgram *prog,
     target->release();
 }
 
-QImage BackgroundCompositor::readbackFbo(QOpenGLFramebufferObject *fbo)
+QImage BackgroundCompositor::takeReadback(QOpenGLFramebufferObject *fbo)
 {
-    // QOpenGLFramebufferObject::toImage flips Y for us. Returns ARGB32_Premultiplied;
-    // the caller converts back to RGBA8888 if it wants to compare per-channel.
-    QImage img = fbo->toImage();
-    return img.convertToFormat(QImage::Format_RGBA8888);
+    // Pipelined GPU→CPU readback (see the class-comment note). The old
+    // fbo->toImage() was a synchronous glReadPixels: the CPU sat parked
+    // until the GPU finished all four passes, every frame — 18.8 ms of
+    // the 44 ms worker total at 720p on an Iris Xe. With a pixel-pack
+    // buffer bound, glReadPixels returns immediately; we map the buffer
+    // the GPU filled during the PREVIOUS composite, whose work completed
+    // ~a frame period ago, so the map does not wait either.
+    auto *f = m_glCtx->extraFunctions();
+    const int w = fbo->width(), h = fbo->height();
+    const qsizetype bytes = qsizetype(w) * h * 4;
+
+    f->glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo->handle());
+    f->glBindBuffer(GL_PIXEL_PACK_BUFFER, m_pbo[m_pboNext]);
+    // GL_BGRA byte order == QImage::Format_RGB32 on little-endian — the
+    // BGRx the GStreamer bridge wants back, so no conversion follows.
+    // Desktop GL 3.3 core allows BGRA for ReadPixels; this codepath never
+    // runs on GLES (the context is created Core 3.3 or init fails).
+    f->glReadPixels(0, 0, w, h, GL_BGRA, GL_UNSIGNED_BYTE, nullptr);
+    // Flush NOW. An offscreen context never swaps, so nothing else ever
+    // submits the command batch — without this the driver is free to sit
+    // on the whole frame's render + readback until the NEXT map forces a
+    // mega-flush (measured on Iris Xe: ~0.5 s stalls on >5 % of frames,
+    // exactly the pathology the PBO exists to avoid). glFlush is a submit,
+    // not a wait — by the time we map this buffer a frame later, the GPU
+    // has had a full frame period to finish it.
+    f->glFlush();
+    m_pboFilled[m_pboNext] = true;
+
+    const int prev = 1 - m_pboNext;
+    // First composite after init / resize / discardPendingReadback():
+    // there is no previous frame parked, so map THIS frame's buffer — a
+    // one-off synchronous read that keeps single-shot callers correct.
+    // Its flag stays set, so the next call returns this same composite
+    // once more (one frame late) and the pipeline is primed from then on.
+    const int take = m_pboFilled[prev] ? prev : m_pboNext;
+
+    QImage out(w, h, QImage::Format_RGB32);
+    f->glBindBuffer(GL_PIXEL_PACK_BUFFER, m_pbo[take]);
+    if (void *p = f->glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, bytes,
+                                      GL_MAP_READ_BIT)) {
+        std::memcpy(out.bits(), p, size_t(bytes));
+        f->glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+    } else {
+        qWarning() << "BackgroundCompositor: PBO map failed — dropping composite";
+        out = QImage();
+    }
+    if (take == prev)
+        m_pboFilled[prev] = false;   // consumed; this frame's stays parked
+    m_pboNext = prev;
+
+    f->glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+    f->glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    return out;
+}
+
+void BackgroundCompositor::discardPendingReadback()
+{
+    // Flag-only: the stale bytes may stay in GPU memory, they just become
+    // unreachable — the next takeReadback finds no filled buffer and maps
+    // its own frame synchronously. Worker-thread only (same as the
+    // composite calls); no GL work, so it is safe even before init.
+    m_pboFilled[0] = m_pboFilled[1] = false;
 }
 
 // Talk's smoothstep cutoff for the mask edge. The "feather" / "person
@@ -413,19 +526,24 @@ QImage BackgroundCompositor::compositeBlur(const QImage &rgba,
                                             const QImage &mask,
                                             float radius)
 {
-    if (!ensureInitialised()) return rgba;
+    // Failure paths return a NULL image, per this class's documented
+    // contract ("Empty QImage on failure"). Until 2026-07-14 they returned
+    // `rgba` — the raw camera frame — and relied on every caller noticing
+    // via cacheKey that nothing had been composited. In a privacy feature
+    // "reveal the input" must not be a return value any caller can miss.
+    if (!ensureInitialised()) return {};
     if (rgba.isNull() || mask.isNull()) {
         qWarning() << "BackgroundCompositor::compositeBlur — null input";
-        return rgba;
+        return {};
     }
     if (!m_glCtx->makeCurrent(m_surface)) {
         qWarning() << "BackgroundCompositor::compositeBlur — makeCurrent failed";
-        return rgba;
+        return {};
     }
     if (!ensureFbos(rgba.size())) {
         qWarning() << "BackgroundCompositor::compositeBlur — FBO alloc failed for"
                    << rgba.size();
-        return rgba;
+        return {};
     }
 
     uploadTexture(m_texFg,   rgba, /*singleChannel*/ false);
@@ -498,26 +616,27 @@ QImage BackgroundCompositor::compositeBlur(const QImage &rgba,
     m_progCompose->setUniformValue("u_mode", 1);   // blur mode
     runPass(m_progCompose, m_fboOutput);
 
-    return readbackFbo(m_fboOutput);
+    return takeReadback(m_fboOutput);
 }
 
 QImage BackgroundCompositor::compositeImage(const QImage &rgba,
                                              const QImage &mask,
                                              const QImage &bg)
 {
-    if (!ensureInitialised()) return rgba;
+    // Same fail-closed contract as compositeBlur — null, never `rgba`.
+    if (!ensureInitialised()) return {};
     if (rgba.isNull() || mask.isNull() || bg.isNull()) {
         qWarning() << "BackgroundCompositor::compositeImage — null input";
-        return rgba;
+        return {};
     }
     if (!m_glCtx->makeCurrent(m_surface)) {
         qWarning() << "BackgroundCompositor::compositeImage — makeCurrent failed";
-        return rgba;
+        return {};
     }
     if (!ensureFbos(rgba.size())) {
         qWarning() << "BackgroundCompositor::compositeImage — FBO alloc failed for"
                    << rgba.size();
-        return rgba;
+        return {};
     }
 
     uploadTexture(m_texFg,   rgba, false);
@@ -571,5 +690,5 @@ QImage BackgroundCompositor::compositeImage(const QImage &rgba,
     m_progCompose->setUniformValue("u_mode", 0);   // image mode
     runPass(m_progCompose, m_fboOutput);
 
-    return readbackFbo(m_fboOutput);
+    return takeReadback(m_fboOutput);
 }
