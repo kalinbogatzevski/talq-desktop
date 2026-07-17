@@ -426,6 +426,18 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
                       " image in Settings to retry)";
         setVideoQualityNotice(tr("Background image couldn't be loaded — sending normal video"));
     });
+    connect(m_backgroundEngine, &BackgroundEngine::backgroundPassthroughNoImage,
+            this, [this]() {
+        // 0.60.6 (Petia's foggy-window RCA): Image mode with no image chosen is a
+        // MISCONFIGURATION, not a hide-my-room request, so the engine sends real
+        // video (there is no concealment intent to betray). But it must not be
+        // SILENT — Petia sat through a whole call not knowing why her camera
+        // looked wrong. Tell the user their real video is going out and why.
+        qInfo() << "CallManager: background is Image mode with NO image selected —"
+                   " sending normal video (pick an image in Settings)";
+        setVideoQualityNotice(tr("No background image selected — sending normal video. "
+                                 "Pick one in Settings."));
+    });
     applyBackgroundSettings();
 
     // #share-reliability: bound how long we wait for proof a screen share is
@@ -3898,9 +3910,16 @@ void CallManager::applyBackgroundSettings()
         else                                  mode = BackgroundEngine::Mode::Blur;
     }
 
-    m_backgroundEngine->setMode(mode);
-    m_backgroundEngine->setBlurStrength(strength);
+    // ORDER MATTERS (2026-07-15 review): set the image path and strength BEFORE
+    // the mode. processFrame decides the Image+no-image raw pass-through by
+    // reading mode then path-empty; setMode publishes with a release-store, so
+    // the path-empty flag set here is visible the instant the mode is observed
+    // as Image. Flipping the mode first opened a window where a user with a REAL
+    // image, applied mid-call, was momentarily seen as Image+empty and sent RAW
+    // camera — a concealment leak.
     m_backgroundEngine->setImagePath(url);
+    m_backgroundEngine->setBlurStrength(strength);
+    m_backgroundEngine->setMode(mode);
     qInfo() << "CallManager: background mode applied —"
             << (mode == BackgroundEngine::Mode::None  ? "Off"
               : mode == BackgroundEngine::Mode::Blur  ? "Blur"

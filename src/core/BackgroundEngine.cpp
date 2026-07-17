@@ -301,7 +301,15 @@ bool BackgroundEngine::isReady() const
 
 void BackgroundEngine::setMode(Mode m)
 {
-    const Mode prev = m_modeAtomic.exchange(m, std::memory_order_relaxed);
+    // RELEASE (2026-07-15 review): processFrame on the streaming thread reads
+    // m_modeAtomic then m_imagePathEmpty to decide the Image+no-image raw
+    // pass-through. Callers set the path BEFORE the mode (see
+    // CallManager::applyBackgroundSettings), so this release-store publishes the
+    // path-empty flag that preceded it. Without the release/acquire pair, a user
+    // with a REAL image applied mid-call could, in the window between the two
+    // relaxed stores, be seen as Image+empty and have RAW camera sent — a
+    // concealment leak. Pairs with the acquire loads in processFrame.
+    const Mode prev = m_modeAtomic.exchange(m, std::memory_order_acq_rel);
     if (prev != m) {
         // Drop the completed composite. It was made under the OLD mode, and
         // the output slot is what processFrame hands to the encoder: without
@@ -312,6 +320,9 @@ void BackgroundEngine::setMode(Mode m)
         // already in flight under the old mode is discarded at publish.
         resetMailbox();
     }
+    // 0.60.6 — a mode change may enter or leave the Image+no-image
+    // pass-through state; recompute the one-shot notice.
+    refreshNoImageNotice();
     if (!m_worker) return;
     // Kick the worker so the compositor + segmenter exist before the
     // first frame arrives. Queued so the caller (Qt main) never blocks
@@ -344,6 +355,43 @@ quint64 BackgroundEngine::framesDropped() const
     return m_box ? m_box->dropped.load(std::memory_order_relaxed) : 0;
 }
 
+quint64 BackgroundEngine::framesMosaicked() const
+{
+    return m_box ? m_box->mosaicked.load(std::memory_order_relaxed) : 0;
+}
+
+BgFailReason BackgroundEngine::lastFailReason() const
+{
+    return m_box
+        ? static_cast<BgFailReason>(
+              m_box->lastFailReason.load(std::memory_order_relaxed))
+        : BgFailReason::None;
+}
+
+bool BackgroundEngine::composeLatched() const
+{
+    return m_box && m_box->composeLatched.load(std::memory_order_relaxed);
+}
+
+void BackgroundEngine::refreshNoImageNotice()
+{
+    // 0.60.6 (Petia's 0.60.5 foggy-window RCA) — Image mode with NO image
+    // chosen is a misconfiguration, not a hide-my-room request, so processFrame
+    // sends real video. Surface that ONCE per entry into the state (a one-shot
+    // latch, reset on leaving), so the user is told "no image selected —
+    // sending normal video" instead of silently seeing their room. Called from
+    // setMode / setImagePath after the mode/path snapshot is updated.
+    const bool unconfigured =
+        m_modeAtomic.load(std::memory_order_relaxed) == Mode::Image
+        && m_imagePathEmpty.load(std::memory_order_relaxed);
+    if (unconfigured) {
+        if (!m_noImageNoticeActive.exchange(true))
+            emit backgroundPassthroughNoImage();
+    } else {
+        m_noImageNoticeActive.store(false);
+    }
+}
+
 void BackgroundEngine::setBlurStrength(int s)
 {
     m_blurStrengthAtomic.store(qBound(1, s, 20), std::memory_order_relaxed);
@@ -356,6 +404,11 @@ void BackgroundEngine::setImagePath(const QString &p)
         if (p == m_imagePath) return;
         m_imagePath = p;
     }
+    // 0.60.6 — keep the lock-free "path is empty" snapshot (read by
+    // processFrame on the streaming thread) in sync, then recompute the
+    // Image+no-image notice.
+    m_imagePathEmpty.store(p.isEmpty(), std::memory_order_release);
+    refreshNoImageNotice();
     // Same reason as setMode: the composite sitting in the output slot was
     // made against the PREVIOUS plate, and it would be pushed once more
     // before the first composite against the new one lands.
@@ -408,12 +461,35 @@ QImage BackgroundEngine::processFrame(const QImage &rgba)
     // no background effect, so the real frame IS the correct output.
     // PublishPipeline short-circuits this case before calling us; the
     // Settings preview (BgPreviewSource) still arrives here.
-    const Mode m = m_modeAtomic.load(std::memory_order_relaxed);
+    // ACQUIRE: pairs with the release-stores in setMode / setImagePath so that
+    // observing Mode::Image here guarantees we also see the path-empty flag that
+    // was set before it — closing the mid-call raw-camera leak window (see
+    // setMode).
+    const Mode m = m_modeAtomic.load(std::memory_order_acquire);
     if (m == Mode::None || rgba.isNull()) return rgba;
 
-    // From here on the mode is ON, which means: whatever happens below, we do
-    // not return `rgba`. Not on cold init, not on a dead worker, not on an
-    // engine that never came up. See the privacy note in BackgroundEngine.h.
+    // 0.60.6 (Petia's 0.60.5 foggy-window RCA) — the ONE non-None state where
+    // the real frame is the correct output: Image mode with NO image chosen.
+    // Her QSettings were exactly this (type="image", url="") and the engine
+    // obscured every frame of the whole call with the mosaic. An Image
+    // background with no image is a MISCONFIGURATION, not a hide-my-room
+    // request — there is no concealment intent to betray — so send real video
+    // (Kalin's product decision, 2026-07-15). The notice was surfaced at config
+    // time (refreshNoImageNotice → backgroundPassthroughNoImage). This is
+    // guarded to EXACTLY Image + empty path: Blur and Image-with-a-chosen-plate
+    // (even one that fails to decode) still fall closed below.
+    if (m == Mode::Image && m_imagePathEmpty.load(std::memory_order_acquire)) {
+        if (m_box)
+            m_box->lastFailReason.store(int(BgFailReason::EmptyImagePath),
+                                        std::memory_order_relaxed);
+        return rgba;
+    }
+
+    // From here on the mode is ON with a concealment intent, which means:
+    // whatever happens below, we do not return `rgba`. Not on cold init, not on
+    // a dead worker, not on an engine that never came up. The lone exception is
+    // the Image+no-image pass-through handled immediately above. See the
+    // privacy note in BackgroundEngine.h.
     QElapsedTimer hold;
     hold.start();
 

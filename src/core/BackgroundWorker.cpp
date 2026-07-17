@@ -10,6 +10,9 @@
 #include <QMutexLocker>
 #include <QOffscreenSurface>
 
+#include <cstdlib>   // std::getenv for the compose-fail seam
+#include <cstring>   // std::strcmp for the compose-fail seam
+
 namespace {
 
 // 0.60.5 COMPOSITE-RATE CAP — the background output is deliberately capped
@@ -30,6 +33,60 @@ namespace {
 // epoch boundary or a failing compose always composes/attempts immediately.
 constexpr qint64 kBgCompositeMinIntervalMs = 50;   // = 20 fps target
 
+// 0.60.6 (Petia's 0.60.5 foggy-window RCA) — consecutive STRUCTURAL compose
+// nulls before the effect latches off. Mirrors TfliteSegmenter's
+// kRunFailureLatch (60): compose is attempted on every submit while nothing is
+// parked (the rate cap never skips a starved slot), so at the worker's
+// ~20-30 Hz this is ~2-3 s — far above a transient blip, far below "the whole
+// call was a mosaic and nobody said why".
+constexpr int kComposeFailLatch = 60;
+
+// TALQ_BG_FORCE_COMPOSE_FAIL test seam (see BackgroundWorker.h). Parsed per
+// compose call so one process can exercise every rung; ~20 Hz getenv, the same
+// cost the segmenter's seam already pays. `transient` fails this many composes
+// then recovers — chosen well below kComposeFailLatch so it proves rung-1
+// fail-closed + recovery does NOT trip the rung-3 latch.
+constexpr int kInjectTransientFailures = 10;
+
+enum class ComposeFailInject { None, Transient, Persistent };
+ComposeFailInject composeFailInject()
+{
+    const char *e = std::getenv("TALQ_BG_FORCE_COMPOSE_FAIL");
+    if (!e || !*e) return ComposeFailInject::None;
+    if (std::strcmp(e, "transient")  == 0) return ComposeFailInject::Transient;
+    if (std::strcmp(e, "persistent") == 0) return ComposeFailInject::Persistent;
+    return ComposeFailInject::None;
+}
+
+// A structural reason means the failure will not fix itself this session (a
+// dead GL context, a missing/corrupt image plate) — it is what the rung-3
+// latch is for. SegmenterNull is deliberately EXCLUDED: a segmentation blip is
+// transient (rung 1, bounded fail-closed → mosaic), and a PERSISTENT one is
+// already latched by TfliteSegmenter's own kRunFailureLatch. EmptyImagePath is
+// excluded too — it is handled as pass-through upstream in the engine, never a
+// failure to obscure.
+bool isStructuralFail(BgFailReason r)
+{
+    return r == BgFailReason::CompositorNull
+        || r == BgFailReason::NotReady
+        || r == BgFailReason::ImageDecodeFailed
+        || r == BgFailReason::CachedImageFailed;
+}
+
+const char *reasonName(BgFailReason r)
+{
+    switch (r) {
+    case BgFailReason::None:              return "none";
+    case BgFailReason::EmptyImagePath:    return "empty-image-path";
+    case BgFailReason::ImageDecodeFailed: return "image-decode-failed";
+    case BgFailReason::CachedImageFailed: return "image-unreadable";
+    case BgFailReason::SegmenterNull:     return "segmenter-null";
+    case BgFailReason::CompositorNull:    return "compositor-null";
+    case BgFailReason::NotReady:          return "not-ready";
+    }
+    return "?";
+}
+
 } // namespace
 
 BackgroundWorker::BackgroundWorker(QOffscreenSurface *surface,
@@ -38,7 +95,14 @@ BackgroundWorker::BackgroundWorker(QOffscreenSurface *surface,
     : QObject(parent)
     , m_box(std::move(box))
     , m_surface(surface)
-{}
+{
+    // Arm the compose-fail seam once — the env is fixed for the process, so
+    // `transient` gets a fixed budget of forced failures here (below the
+    // rung-3 latch threshold) and recovers afterwards. Constructed on the
+    // caller's thread before moveToThread; getenv here is fine.
+    if (composeFailInject() == ComposeFailInject::Transient)
+        m_injectFailRemaining = kInjectTransientFailures;
+}
 
 BackgroundWorker::~BackgroundWorker() = default;
 // m_compositor + m_segmenter: parented to this; Qt destroys them in the
@@ -198,6 +262,18 @@ void BackgroundWorker::processMailbox()
             m_nextComposeDueMs = 0;   // a boundary never waits on the rate cap
         }
     }
+    // 0.60.6 — an EPOCH change is a real config change (mode / image / camera
+    // (re)start), so clear the persistent-failure latch: the effect gets a
+    // fresh attempt. A genuinely dead compositor re-latches within
+    // ~kComposeFailLatch frames; a config fault (a since-fixed image) may now
+    // work. A mere submission GAP (mute) is NOT a config change and does not
+    // clear it. Runs regardless of m_compositor so a re-enable is always clean.
+    if (epoch != m_lastSeenEpoch) {
+        m_structuralFailStreak = 0;
+        m_composeLatchedOff    = false;
+        m_latchedReason        = int(BgFailReason::None);
+        m_box->composeLatched.store(false, std::memory_order_relaxed);
+    }
     m_lastSeenEpoch = epoch;
     m_sinceLastCompose.restart();
 
@@ -235,6 +311,45 @@ void BackgroundWorker::processMailbox()
     // has to come from. maybeLog is rate-limited internally.
     talq::bg::Stats::maybeLog();
 
+    // 0.60.6 P0-d (Petia's 0.60.5 foggy-window RCA) — once compose has LATCHED
+    // OFF (a structurally-dead compositor this session) it returns null in ~µs
+    // without touching ORT or GL. Publish a WORKER-computed content-free mosaic
+    // into the output slot so the camera thread re-serves it with a cheap mutex
+    // swap, instead of recomputing the mosaic INLINE every frame — that inline
+    // cost was Petia's UHD 620 cameraHold p50 ~10 ms, which tripped the false
+    // "FREEZE signature" warning for her whole call (ground-truth #7). This is
+    // NOT a composite: `completed` stays flat so the zero-composite detector
+    // keeps reading structural failure; `mosaicked` counts it instead. The
+    // frame is content-free — the room is never revealed. The mailbox's rate
+    // cap then re-serves this parked cover for the frames in between, so the
+    // worker re-mosaics at ~20 Hz, not per frame.
+    if (out.isNull() && m_composeLatchedOff) {
+        const QImage safe = BackgroundEngine::mosaicFallback(rgba);
+        if (!safe.isNull()) {
+            QMutexLocker lk(&m_box->outMutex);
+            // Same epoch gate as a real publish: a resetMailbox() between our
+            // take and here means this cover belongs to the previous producer
+            // session; discard rather than emit pre-boundary pixels.
+            if (m_box->epoch.load(std::memory_order_acquire) != epoch)
+                return;
+            m_box->outFrame   = safe;
+            m_box->outSeq     = seq;
+            m_box->outEpoch   = epoch;
+            m_box->outStampMs = m_box->clock.elapsed();
+            m_box->mosaicked.fetch_add(1, std::memory_order_relaxed);
+        }
+        // Re-anchor the rate-cap accumulator to wall-clock. Through the
+        // pre-latch window the output slot is never covered, so every frame
+        // composed and `m_nextComposeDueMs` raced far ahead of now (+50 per
+        // compose while frames arrive every ~15 ms). Left alone it would block
+        // the NEXT re-mosaic until wall-clock caught up — long enough for this
+        // parked cover to age past the 1 s staleness bound, dropping the camera
+        // thread back onto the inline mosaic (the exact p50 cost P0-d removes).
+        // Re-anchoring keeps the cover fresh at the ~20 Hz cap.
+        m_nextComposeDueMs = m_box->clock.elapsed() + kBgCompositeMinIntervalMs;
+        return;
+    }
+
     // FAIL-CLOSED. Two ways a raw camera frame could still escape into the
     // output slot, and hence to the encoder and every peer:
     //   1. compose() failed — it returns a NULL image, never the input.
@@ -265,11 +380,79 @@ void BackgroundWorker::processMailbox()
     m_box->completed.fetch_add(1, std::memory_order_relaxed);
 }
 
+QImage BackgroundWorker::failCompose(BgFailReason reason)
+{
+    // Every compose failure records its reason here so the ladder's detector
+    // (CallManager::onLoadTick / lastFailReason()) can tell the six paths
+    // apart, then returns a NULL QImage — never the input frame.
+    m_box->lastFailReason.store(int(reason), std::memory_order_relaxed);
+
+    // Only STRUCTURAL failures drive the rung-3 latch. A transient
+    // SegmenterNull is rung 1 (bounded fail-closed → mosaic) and a persistent
+    // one is already latched by TfliteSegmenter itself; EmptyImagePath is
+    // pass-through upstream. Neither should ever latch the compositor off.
+    if (!isStructuralFail(reason) || m_composeLatchedOff)
+        return QImage();
+
+    if (++m_structuralFailStreak < kComposeFailLatch)
+        return QImage();
+
+    // Persistent structural failure — the compositor will not recover this
+    // session (Petia's old-UHD-620 case: GL compose returns null every frame).
+    // Latch the effect OFF so compose() stops the doomed ORT inference + GL
+    // passes, record it for the detector, and surface it ONCE through the
+    // engine→CallManager notice. The frame stays obscured by the content-free
+    // mosaic; nothing of the real room is ever revealed.
+    m_composeLatchedOff = true;
+    m_latchedReason     = int(reason);
+    m_box->composeLatched.store(true, std::memory_order_relaxed);
+    qWarning().nospace()
+        << "BackgroundWorker: compose produced NO frame " << kComposeFailLatch
+        << " times in a row (reason=" << reasonName(reason)
+        << ") — the GL compositor is non-functional this session; latching the "
+           "effect OFF (ORT inference + GL passes stopped). Frames stay "
+           "obscured by the mosaic until the background is toggled off/on.";
+    emit engineDisabled(QStringLiteral(
+        "Background compositor failed repeatedly (%1) — effect stopped, video "
+        "is obscured").arg(QLatin1String(reasonName(reason))));
+    return QImage();
+}
+
 QImage BackgroundWorker::compose(const QImage &rgba, int modeInt,
                                   int blurStrength, const QString &imagePath)
 {
     const auto m = static_cast<BackgroundEngine::Mode>(modeInt);
     if (m == BackgroundEngine::Mode::None || rgba.isNull()) return QImage();
+
+    // 0.60.6 (Petia's 0.60.5 foggy-window RCA) — once the effect has latched
+    // off (a structurally-dead compositor this session), do the doomed ORT
+    // inference + GL passes NO more: return null immediately. The engine keeps
+    // serving the content-free mosaic (fail-closed) and engineDisabled has
+    // already told the user. The latch clears at an epoch boundary
+    // (processMailbox), so a fresh attempt is always reachable.
+    if (m_composeLatchedOff) {
+        m_box->lastFailReason.store(m_latchedReason, std::memory_order_relaxed);
+        return QImage();
+    }
+
+    // Fault-injection seam (TALQ_BG_FORCE_COMPOSE_FAIL). This dev box
+    // composites fine, so Petia's structural GL failure cannot be reproduced
+    // organically; the seam forces compose() to return null so every ladder
+    // rung is reachable here. `persistent` never recovers (→ rung-3 latch);
+    // `transient` fails a fixed budget then recovers (→ rung-1 fail-closed +
+    // recovery, WITHOUT tripping the latch).
+    switch (composeFailInject()) {
+    case ComposeFailInject::Persistent:
+        return failCompose(BgFailReason::CompositorNull);
+    case ComposeFailInject::Transient:
+        if (m_injectFailRemaining > 0) {
+            --m_injectFailRemaining;
+            return failCompose(BgFailReason::CompositorNull);
+        }
+        break;   // budget exhausted → fall through to a real (recovered) compose
+    case ComposeFailInject::None:
+        break;
+    }
 
     // WorkerTotal is the WHOLE per-frame cost (0.60.6: no longer seg+comp —
     // decimation makes those two alternate, so their sum overstates a reused
@@ -287,7 +470,7 @@ QImage BackgroundWorker::compose(const QImage &rgba, int modeInt,
         //
         // 0.60.5 — returns NULL, not `rgba`. This used to pass the raw camera
         // frame back to the caller, which pushed it to the encoder.
-        return QImage();
+        return failCompose(BgFailReason::NotReady);
     }
 
     // 0.60.6 — MASK DECIMATION + STATIC-SCENE GATE. Inference (input
@@ -385,7 +568,11 @@ QImage BackgroundWorker::compose(const QImage &rgba, int modeInt,
         // resulting composite kept a sharp disc of the user's REAL ROOM in
         // the middle of the outgoing video on every ORT failure — precisely
         // on the weak machines the feature exists for.
-        return QImage();
+        //
+        // 0.60.6 — SegmenterNull is a rung-1 (transient) reason: it does NOT
+        // drive the compositor's rung-3 latch (a persistent inference fault is
+        // latched by TfliteSegmenter itself). failCompose records the reason.
+        return failCompose(BgFailReason::SegmenterNull);
     }
 
     QElapsedTimer c;
@@ -403,8 +590,13 @@ QImage BackgroundWorker::compose(const QImage &rgba, int modeInt,
         // 0.60.5 — every `return rgba` in this block became `return QImage()`.
         // An Image-mode background with a missing plate must NOT resolve to
         // "show the real room"; it resolves to the mosaic, upstream.
-        if (imagePath.isEmpty()) return QImage();
-        if (m_cachedBgFailed && m_cachedBgPath == imagePath) return QImage();
+        // 0.60.6 — an EMPTY path never reaches the worker on the normal path
+        // (the engine routes Image+no-image to pass-through). This stays as a
+        // defence-in-depth backstop and is a NON-structural reason (no latch):
+        // if it is ever hit, the frame is covered, not the room revealed.
+        if (imagePath.isEmpty()) return failCompose(BgFailReason::EmptyImagePath);
+        if (m_cachedBgFailed && m_cachedBgPath == imagePath)
+            return failCompose(BgFailReason::CachedImageFailed);
 
         // 0.60.2 (2026-07-13 field RCA) — cache ONLY the camera-resolution
         // scaled plate, never the full decode. The bundled JPEGs are
@@ -429,7 +621,11 @@ QImage BackgroundWorker::compose(const QImage &rgba, int modeInt,
                 m_cachedBgScaled = QImage();
                 m_cachedBgScaledSize = QSize();
                 emit backgroundImageFailed(imagePath);
-                return QImage();
+                // A chosen plate that will not decode = concealment intent
+                // present but no working plate. Structural (it will not fix
+                // itself): counts toward the latch so the doomed segment()
+                // work per frame eventually stops. The frame stays obscured.
+                return failCompose(BgFailReason::ImageDecodeFailed);
             }
             m_cachedBgScaled = loaded.scaled(
                 rgba.size(),
@@ -454,10 +650,26 @@ QImage BackgroundWorker::compose(const QImage &rgba, int modeInt,
         return QImage();
     }
 
+    // 0.60.6 (Petia's 0.60.5 foggy-window RCA) — THE fix for her actual case.
+    // The GL compositor returns a NULL image when makeCurrent / FBO alloc /
+    // readback fails on an old driver (her UHD 620, Build 31.0.101.2130). This
+    // used to fall straight through: a null `out` was recorded as a composite
+    // and returned, the engine served the mosaic, and — with nothing detecting
+    // "0 composites all call" — it obscured EVERY frame until she quit. Now a
+    // null compositor result is the STRUCTURAL rung: it counts toward the latch
+    // so a compositor that is dead this session stops the doomed work and the
+    // user is told, instead of a silent foggy window for the whole call.
+    if (out.isNull())
+        return failCompose(BgFailReason::CompositorNull);
+
     talq::bg::Stats::record(talq::bg::Stats::Composite,
                             c.nsecsElapsed() / 1000);
     talq::bg::Stats::record(talq::bg::Stats::WorkerTotal,
                             whole.nsecsElapsed() / 1000);
+    // A real composite landed — the fault (if any) was transient. Reset the
+    // structural streak and clear the reason so the detector reads healthy.
+    m_structuralFailStreak = 0;
+    m_box->lastFailReason.store(int(BgFailReason::None), std::memory_order_relaxed);
     return out;
 }
 
@@ -492,6 +704,12 @@ void BackgroundWorker::releaseEngineResources()
     m_nextComposeDueMs = 0;                        // a re-enable composes immediately
     m_prewarmedSize = QSize();                     // and re-warms its GL sizing
 
+    // 0.60.6 — OFF clears the persistent-failure latch too: a re-enable
+    // rebuilds a fresh compositor, so it deserves a fresh attempt.
+    m_structuralFailStreak = 0;
+    m_composeLatchedOff    = false;
+    m_latchedReason        = int(BgFailReason::None);
+
     // 0.60.5 — and drop both mailbox slots. Each holds a full camera frame
     // (3.7 MB at 720p), and in the spirit of the 0.60.2 retention RCA, OFF
     // means OFF. It also guarantees no composite made before the release can
@@ -504,6 +722,8 @@ void BackgroundWorker::releaseEngineResources()
             m_box->outSeq     = 0;
             m_box->outStampMs = -1;
         }
+        m_box->composeLatched.store(false, std::memory_order_relaxed);
+        m_box->lastFailReason.store(int(BgFailReason::None), std::memory_order_relaxed);
     }
 
     talq::bg::Stats::logSummary("at background-engine release");

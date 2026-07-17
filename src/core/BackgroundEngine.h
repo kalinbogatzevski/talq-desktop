@@ -95,6 +95,26 @@ class QOffscreenSurface;
 class QThread;
 struct BgFrameMailbox;
 
+// 0.60.6 (Petia's 0.60.5 foggy-window field RCA) — a compose() that cannot
+// produce a frame used to collapse to a bare null QImage on all six of its
+// return paths, indistinguishable from each other. The engine then served the
+// content-free mosaic FOREVER with no way to tell "no image was ever chosen"
+// (a misconfiguration) from "the GL compositor is structurally dead on this
+// driver" (the old-UHD-620 case) from "one transient inference throw". The
+// reason code makes the six paths distinguishable so the persistent-failure
+// ladder can pick the right rung (config → pass-through vs structural →
+// keep-obscuring-and-stop-the-doomed-work). Stored as an int on the shared
+// mailbox (worker writes, engine/CallManager read); one relaxed atomic.
+enum class BgFailReason : int {
+    None = 0,           // last compose succeeded
+    EmptyImagePath,     // Image mode, no image chosen — no concealment intent
+    ImageDecodeFailed,  // Image mode, chosen plate won't decode
+    CachedImageFailed,  // Image mode, plate previously latched as unreadable
+    SegmenterNull,      // segmentation returned no mask (transient — rung 1)
+    CompositorNull,     // GL compose produced no frame (structural — rung 3)
+    NotReady,           // worker has no compositor/segmenter while mode is ON
+};
+
 namespace talq::bg {
 
 // 0.60.5 — per-frame cost instrumentation for the background path.
@@ -200,8 +220,12 @@ public:
     // composite — it never waits for the worker, for GL, or for ORT. See the
     // threading + privacy note at the top of this header.
     //
-    // Return contract while mode != None: NEVER the input frame. Either a
-    // real composite or the content-free mosaic fallback.
+    // Return contract while mode != None: NEVER the input frame — either a
+    // real composite or the content-free mosaic fallback. The ONE exception
+    // (0.60.6, Petia's foggy-window RCA): Image mode with NO image chosen is a
+    // misconfiguration, not a concealment intent, so it passes the real frame
+    // through and surfaces backgroundPassthroughNoImage. Blur and
+    // Image-with-a-chosen-plate never pass through.
     QImage processFrame(const QImage &rgba);
 
     // Build the compositor + ORT session + the ENTIRE GL chain NOW rather
@@ -247,6 +271,40 @@ public:
     quint64 framesComposited() const;
     quint64 framesDropped() const;
 
+    // 0.60.6 P0-d (Petia's 0.60.5 foggy-window RCA) — content-free mosaics the
+    // WORKER published into the output slot while the effect was latched off (a
+    // structurally-dead compositor this session). Distinct from framesComposited
+    // — a mosaic is NOT a composite, so the zero-composite detector still reads
+    // structural failure — but it proves the worker, not the camera thread, is
+    // now producing the cover (the camera thread's inline mosaicFallback stops,
+    // collapsing its per-frame hold to a mutex swap; ground-truth #7). Readable
+    // from any thread.
+    quint64 framesMosaicked() const;
+
+    // 0.60.6 P0-d — the content-free fallback, promoted to a public static so
+    // the worker can publish the SAME cover the engine computes inline. Downscale
+    // by 16 and smooth-scale back up: a CPU mosaic blur, ~1 ms at 720p, no GL, no
+    // ORT, safe on the streaming thread on the very first frame. Everything that
+    // identifies a room — faces, screens, text, the whiteboard behind you — is
+    // gone at 1/16 linear resolution. It is the ONE fallback that is always
+    // available, so no failure anywhere in the engine ever has an excuse to
+    // reveal the real background.
+    static QImage mosaicFallback(const QImage &rgba);
+
+    // 0.60.6 (Petia's 0.60.5 foggy-window RCA) — the reason the LAST compose
+    // failed (BgFailReason::None if it succeeded, or while passing through an
+    // unconfigured Image mode). Readable from any thread. Drives the
+    // persistent-failure ladder's rung selection in CallManager::onLoadTick.
+    BgFailReason lastFailReason() const;
+
+    // True once the worker has latched compose OFF after a run of consecutive
+    // STRUCTURAL failures (a GL compositor that is non-functional this
+    // session). In that state the doomed ORT inference + GL work stop, the
+    // engine keeps serving the content-free mosaic, and engineDisabled has
+    // fired once. Cleared by a producer boundary (mode/image change) or an
+    // Off→On release, which give the effect a fresh attempt.
+    bool composeLatched() const;
+
 signals:
     // Fires when the engine permanently disables itself for this session
     // (e.g. inference fails repeatedly). The UI should toast the reason
@@ -259,14 +317,16 @@ signals:
     // "never hide errors silently" — surface once, then go quiet.
     void backgroundImageFailed(const QString &path);
 
-private:
-    // The content-free fallback. Downscale by 16 and smooth-scale back up:
-    // a CPU mosaic blur, ~1 ms at 720p, no GL, no ORT, and it works on the
-    // streaming thread on the very first frame — which is exactly what the
-    // cold-init window needs. The user is an unresolved smudge for a moment
-    // at call start instead of a crisp person in front of a crisp real room.
-    static QImage mosaicFallback(const QImage &rgba);
+    // 0.60.6 (Petia's 0.60.5 foggy-window RCA) — fires when the engine is in
+    // Image mode with NO image chosen. That is a misconfiguration, not a
+    // hide-my-room request: there is no concealment intent to honour, so the
+    // engine sends REAL video (the one non-None state that passes through) and
+    // this tells the UI to say so. Distinct from backgroundImageFailed (a
+    // chosen plate that won't decode — that keeps obscuring). CallManager
+    // notice: "No background image selected — sending normal video."
+    void backgroundPassthroughNoImage();
 
+private:
     // Atomic snapshot read by streaming-thread callers without touching
     // the worker. The worker reads the same values from the mailbox.
     std::atomic<Mode> m_modeAtomic{Mode::None};
@@ -277,6 +337,19 @@ private:
     // call.
     mutable QMutex m_pathMutex;
     QString        m_imagePath;
+
+    // 0.60.6 (Petia's 0.60.5 foggy-window RCA) — lock-free snapshot of "the
+    // Image-mode path is empty", read on the streaming thread by processFrame
+    // to route the Image+no-image state to pass-through without touching
+    // m_pathMutex. Kept in sync by setImagePath/setMode. Starts true
+    // (default path is empty). m_noImageNoticeActive is a one-shot so the
+    // "no image selected" notice surfaces once per ENTRY into that state.
+    std::atomic<bool> m_imagePathEmpty{true};
+    std::atomic<bool> m_noImageNoticeActive{false};
+
+    // Recompute the Image+empty condition after a mode or path change and,
+    // on entering it, emit backgroundPassthroughNoImage() exactly once.
+    void refreshNoImageNotice();
 
     // 0.60.5 — the drop-oldest frame mailbox shared with the worker. Held by
     // shared_ptr, NOT by value: if the worker thread fails to exit inside the
