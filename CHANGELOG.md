@@ -1,6 +1,31 @@
 # Changelog
 
-## v0.60.5 "Blue Fiesta" (2026-07-14)
+## v0.60.6 "Blue Fiesta" (2026-07-15)
+
+A fix for a background problem that could make your camera look wrong for a whole
+call, and could not recover on its own.
+
+### Fixed
+* **The camera no longer turns into a "foggy window" when the background can't be
+  applied.** If a background was switched on but could not actually run — most
+  often when an image background was selected without an image, or on an older
+  graphics driver — TalQ hid every frame behind a blur-like cover for the entire
+  call, with no way back short of quitting. It now tells the difference between a
+  brief hiccup (still hidden, then recovers) and a background that simply cannot
+  run on this computer. In that case it stops trying, tells you what happened, and
+  either sends your normal video (if you'd selected an image but not chosen one) or
+  keeps your video hidden with a clear message — never silently.
+* **A background set to "image" with no image chosen now sends your normal video
+  and says so**, instead of covering your camera. If you meant to hide your
+  background, pick an image (or use Blur) in Settings.
+* **Less wasted processing when a background can't run.** TalQ used to keep doing
+  the (doomed) background work every frame; it now stops once it detects the
+  background can't run, freeing up your computer.
+
+### Security & privacy
+* Closed a brief window where, if an image background was applied during a call,
+  your real camera could be sent for a fraction of a second before the image took
+  effect. Your video is now hidden from the first frame.
 
 The virtual background release. If you use blur or a background image in calls,
 this one is for you.

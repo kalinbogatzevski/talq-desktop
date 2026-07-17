@@ -43,6 +43,12 @@ class BackgroundCompositor;
 class TfliteSegmenter;
 class QOffscreenSurface;
 
+// Defined in BackgroundEngine.h (the facade). Forward-declared with its fixed
+// underlying type so this header — included before BackgroundEngine.h in
+// BackgroundWorker.cpp — can name it in the failCompose() signature without a
+// full include. BgFrameMailbox stores it as a plain int to stay independent.
+enum class BgFailReason : int;
+
 // 0.60.5 — the frame mailbox shared between the camera streaming thread
 // (producer, via BackgroundEngine::processFrame) and the worker thread
 // (consumer). Two independent one-slot buffers, each with its own mutex,
@@ -110,6 +116,22 @@ struct BgFrameMailbox
 
     std::atomic<quint64> completed{0};
     std::atomic<quint64> dropped{0};
+
+    // 0.60.6 P0-d (Petia's 0.60.5 foggy-window RCA) — content-free mosaics the
+    // WORKER published into the output slot while composeLatched (see below).
+    // NOT counted in `completed`: a mosaic is a cover, not a composite, so the
+    // zero-composite detector still reads structural failure. Proves the camera
+    // thread stopped recomputing the inline mosaic (ground-truth #7).
+    std::atomic<quint64> mosaicked{0};
+
+    // 0.60.6 (Petia's 0.60.5 foggy-window RCA) — the persistent-failure
+    // ladder's shared state. lastFailReason holds the BgFailReason (as int)
+    // of the most recent compose() outcome; composeLatched flips true once the
+    // worker has given up after a run of consecutive STRUCTURAL failures.
+    // Worker writes, engine + CallManager read; relaxed atomics, off the
+    // camera hot path (the camera thread only swaps the in/out slots).
+    std::atomic<int>  lastFailReason{0};   // BgFailReason::None
+    std::atomic<bool> composeLatched{false};
 };
 
 class BackgroundWorker : public QObject
@@ -211,6 +233,13 @@ private:
     QImage compose(const QImage &rgba, int modeInt,
                    int blurStrength, const QString &imagePath);
 
+    // 0.60.6 — record a compose failure and return a NULL QImage (so a call
+    // site can `return failCompose(reason)`): stash the reason on the mailbox
+    // for the ladder's detector, advance the structural-failure streak, and at
+    // kComposeFailLatch latch the effect off (stop the doomed ORT+GL work and
+    // emit engineDisabled once). Worker thread only.
+    QImage failCompose(BgFailReason reason);
+
     std::shared_ptr<BgFrameMailbox> m_box;            // shared with the engine
     QOffscreenSurface     *m_surface     = nullptr;   // not owned (engine)
     BackgroundCompositor  *m_compositor  = nullptr;   // owned (parent=this)
@@ -270,6 +299,32 @@ private:
     // for. Invalid until the first warm; reset on release so a re-enable
     // re-warms. Worker thread only.
     QSize m_prewarmedSize;
+
+    // 0.60.6 (Petia's 0.60.5 foggy-window RCA) — persistent-compose-failure
+    // latch, modelled on TfliteSegmenter's m_runFailStreak. A compositor that
+    // is structurally dead on this driver (old UHD 620 GL, a wedged context)
+    // returns null from EVERY compose; through 0.60.5 the engine then served
+    // the obscuring mosaic for the whole call while ORT inference + the doomed
+    // GL passes kept burning CPU. m_structuralFailStreak counts CONSECUTIVE
+    // structural nulls (CompositorNull/NotReady/Image-plate faults — NOT a
+    // transient SegmenterNull, which rung 1 already covers); at
+    // kComposeFailLatch it sets m_composeLatchedOff, which short-circuits
+    // compose() before segment()/GL so the doomed work stops, and emits
+    // engineDisabled once. A real success or a producer-boundary/epoch change
+    // resets both (the effect gets a fresh attempt). Worker thread only.
+    int  m_structuralFailStreak = 0;
+    bool m_composeLatchedOff    = false;
+    int  m_latchedReason        = 0;   // BgFailReason of the latch
+
+    // Fault-injection seam (TALQ_BG_FORCE_COMPOSE_FAIL, worker-thread getenv,
+    // same idiom as TfliteSegmenter's TALQ_BG_SEG_FAIL). This dev box
+    // composites fine, so Petia's structural GL failure cannot be reproduced
+    // organically — the seam forces compose() to return null so every ladder
+    // rung is reachable here. `transient` fails the first N composes then
+    // recovers (exercises rung 1 + recovery WITHOUT latching); `persistent`
+    // never recovers (exercises the rung-3 latch). Counter is the remaining
+    // transient failures. Worker thread only.
+    int m_injectFailRemaining = 0;
 
     std::atomic<bool> m_ready{false};   // see isReady()
 };
