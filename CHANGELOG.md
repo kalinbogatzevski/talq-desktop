@@ -1,5 +1,34 @@
 # Changelog
 
+## v0.61.0 "Blue Fiesta Week 2" (2026-07-19)
+
+Smoother video on older and lower-powered computers, plus two call-screen
+refinements. This is a beta.
+
+### Added
+* **Older and low-power computers now send a single, steady video stream.** On
+  machines without hardware video acceleration, with older integrated graphics,
+  or with few processor cores, TalQ used to send several video streams at once,
+  which could overwhelm the computer — high CPU use and choppy calls. It now
+  sends just one stream at a sensible resolution: up to 360p by default, or up to
+  480p if you turn on **"Send HD (480p) on this device"** in Settings → Video.
+  Capable computers are unaffected and keep full quality.
+* **Video frame rate now starts low and climbs only when the computer can keep
+  up.** On those lower-powered devices the camera begins at 10 frames per second
+  and rises toward 30 only while there is spare capacity, so a call never hits the
+  machine with a heavy encode the moment it starts. While you share your screen,
+  the camera is held to a light frame rate so the two never compete.
+* **A live frame-rate readout on your own video tile**, so you can see the current
+  send frame rate at a glance.
+
+### Fixed
+* **In-call notices no longer overlap.** When two messages appeared at once — for
+  example the reduced-video notice and the "You're sharing your screen" banner —
+  they used to draw on top of each other. They now stack neatly.
+* **The reduced-video notice now appears on every affected computer**, including
+  those with working hardware video acceleration, not only ones that fall back to
+  software encoding.
+
 ## v0.60.6 "Blue Fiesta" (2026-07-15)
 
 A fix for a background problem that could make your camera look wrong for a whole

@@ -1,6 +1,7 @@
 #include "CallStage.h"
 #include "core/VideoFrameProvider.h"
 #include "painter/VectorIcons.h"
+#include "ui/NoticeStack.h"
 #include "ui/SubstreamPolicy.h"
 
 #include <QAction>
@@ -936,11 +937,6 @@ void CallStage::paintEvent(QPaintEvent *)
             p.drawText(lbl, Qt::AlignCenter, label);
         }
         paintStatusPill(p, th);
-        // Camera-unavailable banner: painted OUTSIDE the fading chrome block
-        // below so it stays put the whole time the problem is live.
-        paintCameraBanner(p, th);
-        paintMicBanner(p, th);
-        paintQualityNotice(p, th);   // sender-visible degraded-send chip (not chrome-faded)
         if (m_telemetryOpen) paintTelemetry(p, th);
         // Top info/action chrome + bottom control bar fade together.
         // When fully hidden we skip painting (and skip appending hit
@@ -957,13 +953,18 @@ void CallStage::paintEvent(QPaintEvent *)
             paintControlBar(p, th);
             p.restore();
         }
-        // Persistent "you're sharing your screen" badge — painted LAST, at full
-        // opacity, on its OWN row BELOW the top-chrome block (status + info +
-        // action rows). Previously it shared the top row and the info/action
-        // pills (drawn after it) painted ON TOP, so on a narrow window it sat
-        // "under" them. Now it always has a clear row and stays visible while
-        // the chrome fades.
-        paintSharingBadge(p, th);
+        // Unified top-center notice stack: camera-unavailable banner, mic-
+        // unavailable banner, the sender degraded-quality pill, and the
+        // "you're sharing your screen" badge all compete for the same
+        // top-center real estate and must NEVER land in the same band (the
+        // field bug: the quality notice and the sharing badge both painted at
+        // y~48-82, and the badge — painted last, full opacity — silently won).
+        // Painted OUTSIDE the fading chrome block above (at full opacity, not
+        // gated by m_chromeAlpha) so these stay visible/put the whole time
+        // their condition is live, same as before. Must run AFTER
+        // paintActionPills/paintInfoPills: they publish m_chromeRowsBottom/
+        // m_infoPillsBottom, which this pass's start-y depends on.
+        paintTopCenterNotices(p, th);
     }
 }
 
@@ -1263,6 +1264,34 @@ void CallStage::paintTile(QPainter &p, const Tile &t, const PainterTheme &th, bo
         // mouseReleaseEvent hit-tests the badge BEFORE its chrome guard, so being in
         // this list does not stop the badge from being clickable.
         m_topChromeRects.append(m_pinBadgeRect);
+    }
+
+    // Send-fps badge (Task 10, weak-tier fps-ramp work) — the MEASURED (not
+    // commanded) encode fps, so it's honest even when fps-adapt is off and the
+    // commanded target has diverged from reality. Self camera tile only (a
+    // screen share has no "encode fps" the user needs to watch ramp). Reads
+    // ONLY the cached CallManager::sendFps() getter -- the mutating
+    // PublishPipeline drain runs once per ~2s stats tick in updateCallStats(),
+    // never here (this paints at ~30 fps and would corrupt the measurement).
+    // Bottom-right, TILE-relative -- mirrors the name-plate's bottom anchor
+    // above. A top anchor collided with the widget-level status pill (top-
+    // left) and action/QUALITY/SHARE pills (top-right), which are drawn AFTER
+    // all tiles at a fixed canvas y and win the z-order in every layout where
+    // the self tile sits in the top region (gallery, rails, top-PiP). The
+    // tile's bottom edge is never near that chrome, so bottom is safe in
+    // every layout the same way the name plate already is.
+    if (cp->isSelf() && !t.isScreen && m_call->isCameraOn() && m_call->sendFps() > 0) {
+        const QString fpsLabel = QString::number(m_call->sendFps()) + tr(" fps");
+        p.setFont(nf);   // same font as the name plate
+        const QFontMetricsF fpsFm(nf);
+        const qreal fw = fpsFm.horizontalAdvance(fpsLabel) + 20;
+        const qreal fh = fpsFm.height() + 10;
+        const QRectF fpsPill(rc.right() - fw - 12, rc.bottom() - fh - 8, fw, fh);
+        QColor fbg = th.bgPrimary; fbg.setAlphaF(0.5);   // same treatment as the name plate
+        p.setBrush(fbg); p.setPen(Qt::NoPen);
+        p.drawRoundedRect(fpsPill, 7, 7);                // same radius as the name plate
+        p.setPen(th.textPrimary);
+        p.drawText(fpsPill, Qt::AlignCenter, fpsLabel);
     }
 }
 
@@ -1610,13 +1639,92 @@ void CallStage::paintStatusPill(QPainter &p, const PainterTheme &th)
     m_topChromeRects.append(pill);
 }
 
-void CallStage::paintCameraBanner(QPainter &p, const PainterTheme &th)
+void CallStage::paintTopCenterNotices(QPainter &p, const PainterTheme &th)
+{
+    // Unified stacking pass for every top-center in-call notice: camera-
+    // unavailable banner, mic-unavailable banner, the sender degraded-quality
+    // pill, and the "you're sharing your screen" badge. Each used to compute
+    // its own independent y-anchor (52.0, 52.0+bh+10, 52.0+78-per-banner,
+    // qMax(m_chromeRowsBottom, m_infoPillsBottom)+8) with no shared notion of
+    // "what's already occupying this band" — the field bug this fixes is the
+    // quality notice and the sharing badge both landing at y~48-82 and the
+    // badge (drawn last, full opacity) silently painting over the notice.
+    // Collect the currently-ACTIVE notices in priority order (highest first)
+    // and lay them out with NoticeStack.h so they can never overlap.
+    enum class Kind { Camera, Mic, Quality, Sharing };
+    std::vector<Kind> kinds;
+    std::vector<double> heights;
+    kinds.reserve(4);
+    heights.reserve(4);
+
+    if (m_call && m_call->isCameraUnavailable()) {
+        kinds.push_back(Kind::Camera);
+        heights.push_back(cameraBannerHeight(th));
+    }
+    if (m_call && m_call->isMicUnavailable()) {
+        kinds.push_back(Kind::Mic);
+        heights.push_back(micBannerHeight(th));
+    }
+    if (m_call && !m_call->videoQualityNotice().isEmpty()) {
+        kinds.push_back(Kind::Quality);
+        heights.push_back(30.0);
+    }
+    if (m_call && m_call->isScreenSharing()) {
+        kinds.push_back(Kind::Sharing);
+        heights.push_back(28.0);
+    }
+    if (kinds.empty()) return;
+
+    // m_chromeRowsBottom/m_infoPillsBottom were published moments ago by
+    // paintActionPills/paintInfoPills (called just before this in paint()) —
+    // qMax(...) + 8 keeps the stack clear of the top chrome (incl. a wrapped
+    // info-pill row on a narrow window, the case the old sharing-badge anchor
+    // guarded against), and the outer qMax(52.0, ...) preserves the banners'
+    // old fixed top slot for the common case where the chrome block is short.
+    const qreal startY = qMax(52.0, qMax(m_chromeRowsBottom, m_infoPillsBottom) + 8.0);
+    const std::vector<double> ys = talq::noticeStackYs(startY, 8.0, heights);
+
+    for (size_t i = 0; i < kinds.size(); ++i) {
+        switch (kinds[i]) {
+        case Kind::Camera:  paintCameraBanner(p, th, ys[i]);  break;
+        case Kind::Mic:     paintMicBanner(p, th, ys[i]);     break;
+        case Kind::Quality: paintQualityNotice(p, th, ys[i]); break;
+        case Kind::Sharing: paintSharingBadge(p, th, ys[i]);  break;
+        }
+    }
+}
+
+qreal CallStage::cameraBannerHeight(const PainterTheme &th) const
+{
+    // Pure height calc for the camera-unavailable banner, kept in lockstep
+    // with paintCameraBanner's own bh below (same formula) — needed by the
+    // paintTopCenterNotices() stacking pre-pass BEFORE anything is drawn,
+    // since the banner's height never depends on where it ends up on screen.
+    if (!m_call || !m_call->isCameraUnavailable()) return 0.0;
+    const QString hint = tr("Others can't see you. Close any app that might "
+                            "be using the camera, or allow camera access in "
+                            "Windows Settings > Privacy > Camera, then turn "
+                            "your camera off and on again.");
+    QFont tf = th.systemFont(); tf.setBold(true);
+    QFont hf = th.systemFont();
+    QFontMetrics tfm(tf), hfm(hf);
+    const qreal pad   = 14.0;
+    const qreal bw    = qMin<qreal>(width() - 40.0, 560.0);
+    const qreal textW = bw - (pad + 6.0) - pad;
+    const QRect hintR = hfm.boundingRect(QRect(0, 0, int(textW), 1000),
+                                         Qt::TextWordWrap, hint);
+    return pad + tfm.height() + 4.0 + hintR.height() + pad;
+}
+
+void CallStage::paintCameraBanner(QPainter &p, const PainterTheme &th, qreal by)
 {
     // Idiot-proofing: when our own camera can't be opened we must NOT fail
     // silently. A persistent, plain-language banner near the top tells the
     // user their camera isn't being sent and exactly how to fix it. No
     // jargon -- the people running TalQ may not know what a "capture device"
     // is. Drawn every frame this state is live (not gated by chrome fade).
+    // `by` is this banner's assigned slot in the top-center notice stack
+    // (paintTopCenterNotices), always this stack's first/topmost slot.
     if (!m_call || !m_call->isCameraUnavailable()) return;
 
     const QString title = tr("Your camera isn't available");
@@ -1637,7 +1745,6 @@ void CallStage::paintCameraBanner(QPainter &p, const PainterTheme &th)
                                          Qt::TextWordWrap, hint);
     const qreal bh = pad + tfm.height() + 4.0 + hintR.height() + pad;
     const qreal bx = (width() - bw) / 2.0;
-    const qreal by = 52.0;                   // below the top status/info pills
     const QRectF banner(bx, by, bw, bh);
 
     QColor face = th.bgSurface; face.setAlphaF(0.96);
@@ -1663,13 +1770,36 @@ void CallStage::paintCameraBanner(QPainter &p, const PainterTheme &th)
                Qt::TextWordWrap, hint);
 }
 
-void CallStage::paintMicBanner(QPainter &p, const PainterTheme &th)
+qreal CallStage::micBannerHeight(const PainterTheme &th) const
+{
+    // Twin of cameraBannerHeight() — see its comment. Independent of whether
+    // the camera banner is also live; paintTopCenterNotices decides stacking
+    // order, this only answers "how tall would my own banner be".
+    if (!m_call || !m_call->isMicUnavailable()) return 0.0;
+    const QString hint = tr("Others can't hear you. Close any app that might "
+                            "be using the microphone, or allow microphone "
+                            "access in Windows Settings > Privacy > "
+                            "Microphone, then end and rejoin the call.");
+    QFont tf = th.systemFont(); tf.setBold(true);
+    QFont hf = th.systemFont();
+    QFontMetrics tfm(tf), hfm(hf);
+    const qreal pad   = 14.0;
+    const qreal bw    = qMin<qreal>(width() - 40.0, 560.0);
+    const qreal textW = bw - (pad + 6.0) - pad;
+    const QRect hintR = hfm.boundingRect(QRect(0, 0, int(textW), 1000),
+                                         Qt::TextWordWrap, hint);
+    return pad + tfm.height() + 4.0 + hintR.height() + pad;
+}
+
+void CallStage::paintMicBanner(QPainter &p, const PainterTheme &th, qreal by)
 {
     // Idiot-proofing twin of paintCameraBanner: when our microphone can't be
     // opened the publisher falls back to silent audio so the call survives —
     // but the user must be TOLD, in plain language, that nobody can hear them
-    // and how to fix it. If the camera banner is also up, this stacks beneath
-    // it instead of overlapping.
+    // and how to fix it. `by` is this banner's assigned slot in the
+    // top-center notice stack (paintTopCenterNotices) — it lands below the
+    // camera banner when both failures are live, since camera outranks mic
+    // in that stack's priority order.
     if (!m_call || !m_call->isMicUnavailable()) return;
 
     const QString title = tr("Your microphone isn't available");
@@ -1690,10 +1820,6 @@ void CallStage::paintMicBanner(QPainter &p, const PainterTheme &th)
                                          Qt::TextWordWrap, hint);
     const qreal bh = pad + tfm.height() + 4.0 + hintR.height() + pad;
     const qreal bx = (width() - bw) / 2.0;
-    // Sit below the camera banner when both failures are live (rare but real
-    // on a machine with neither device available); otherwise take the same
-    // top slot the camera banner uses.
-    const qreal by = m_call->isCameraUnavailable() ? 52.0 + bh + 10.0 : 52.0;
     const QRectF banner(bx, by, bw, bh);
 
     QColor face = th.bgSurface; face.setAlphaF(0.96);
@@ -1725,13 +1851,15 @@ void CallStage::paintMicBanner(QPainter &p, const PainterTheme &th)
 //
 //   ACTION pills (top-right): Quality override + Background mode. Click
 //   opens a dropdown; hover surfaces a native tooltip.
-void CallStage::paintQualityNotice(QPainter &p, const PainterTheme &th)
+void CallStage::paintQualityNotice(QPainter &p, const PainterTheme &th, qreal by)
 {
     // 0.52.5 — persistent sender-visible chip: our OWN camera SEND quality is
     // reduced (software encoding, or shed to the 480p floor under load). The
     // sender must SEE why their video is limited — the field bug was a silent
-    // collapse to 180p with no cue. Compact amber pill at top-center; stacks
-    // below the camera/mic failure banners on the rare both-at-once case.
+    // collapse to 180p with no cue. Compact amber pill at top-center; `by` is
+    // this pill's assigned slot in the top-center notice stack
+    // (paintTopCenterNotices), which stacks it below any live camera/mic
+    // failure banners per that stack's priority order.
     if (!m_call || m_call->videoQualityNotice().isEmpty()) return;
     const QString text = m_call->videoQualityNotice();
 
@@ -1740,10 +1868,7 @@ void CallStage::paintQualityNotice(QPainter &p, const PainterTheme &th)
     QFontMetrics fm(f);
     const qreal padH = 14.0, dot = 8.0, gap = 8.0, h = 30.0;
     const qreal w = padH + dot + gap + fm.horizontalAdvance(text) + padH;
-    qreal y = 52.0;                                   // top slot, like the banners
-    if (m_call->isCameraUnavailable()) y += 78.0;     // stack below a camera banner
-    if (m_call->isMicUnavailable())    y += 78.0;     // and/or a mic banner
-    const QRectF pill((width() - w) / 2.0, y, w, h);
+    const QRectF pill((width() - w) / 2.0, by, w, h);
 
     QColor face = th.bgSurface; face.setAlphaF(0.96);
     QColor edge = th.amber;     edge.setAlphaF(0.85);
@@ -2095,12 +2220,16 @@ void CallStage::paintActionPills(QPainter &p, const PainterTheme &th)
     if (showShare) m_topChromeRects.append(m_sharePillRect);
 }
 
-void CallStage::paintSharingBadge(QPainter &p, const PainterTheme &th)
+void CallStage::paintSharingBadge(QPainter &p, const PainterTheme &th, qreal by)
 {
     // Persistent top-center indicator while WE are sharing our screen, so
     // the publisher always knows the share is live (#3 — previously there
     // was no local cue). Pulsing red dot + label; click-to-stop is the
-    // existing "share" control-bar toggle.
+    // existing "share" control-bar toggle. `by` is this badge's assigned slot
+    // in the top-center notice stack (paintTopCenterNotices) — lowest
+    // priority, so it lands below any live banner/quality-notice, and always
+    // clear of the top chrome block since that stack's start-y accounts for
+    // m_chromeRowsBottom/m_infoPillsBottom.
     if (!m_call->isScreenSharing()) return;
 
     const QString text = tr("You're sharing your screen");
@@ -2113,12 +2242,7 @@ void CallStage::paintSharingBadge(QPainter &p, const PainterTheme &th)
     // font's right-side bearing plus QRectF→device-pixel rounding was clipping
     // the final character ("…your scree" with the n cut off).
     qreal pillW = fm.horizontalAdvance(text) + 30 + 10 + 14;
-    // Sit on a clear row BELOW the top-chrome block (status pill, info pills incl.
-    // any wrapped rows, and the action buttons) so the badge can't be overlapped
-    // by them on a narrow window. m_chromeRowsBottom/m_infoPillsBottom are
-    // published earlier this frame by paintActionPills/paintInfoPills.
-    const qreal badgeY = qMax(m_chromeRowsBottom, m_infoPillsBottom) + 8.0;
-    QRectF pill((width() - pillW) / 2.0, badgeY, pillW, 28);
+    QRectF pill((width() - pillW) / 2.0, by, pillW, 28);
 
     QColor bg = th.bgSecondary; bg.setAlphaF(0.92);
     QColor border = th.danger;  border.setAlphaF(0.65);
