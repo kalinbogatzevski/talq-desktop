@@ -2,6 +2,7 @@
 #include "core/BackgroundEngine.h"
 #include "core/LeakStats.h"
 #include "core/VideoEncoderUtil.h"   // talqAvoidNvenc() latch
+#include "core/HwEncoderProbe.h"   // talqHwEncoderProbeExcludes() — #74 probe exclusions
 #include "core/EncodeTier.h"
 #include "core/Diagnostics.h"
 #include "core/TalqLog.h"
@@ -22,6 +23,7 @@
 #include <QHostInfo>
 #include <QRandomGenerator>
 #include <QTimer>
+#include <QThread>
 #include <QSet>
 #include <limits>
 #include <memory>
@@ -1325,14 +1327,27 @@ void CallManager::checkGStreamerPlugins()
 // AMD Radeon) as weak and throttled them to 480p/720p.
 void CallManager::detectGpuClass()
 {
+    // A hardware H.264 encoder counts only if it EXISTS, was not marked
+    // non-working by the #74 out-of-process probe on THIS GPU, and the runtime
+    // "HW encoder failed, fell back to x264" latch is not set. This catches the
+    // Pavel class: a box whose HW encoder is present but actually running on
+    // software — the old bare-factory check mislabelled it Capable/WeakIgpu.
     bool hwEnc = false;
     for (const char *e : { "nvh264enc", "qsvh264enc", "mfh264enc" }) {
-        if (GstElementFactory *f = gst_element_factory_find(e)) {
-            gst_object_unref(f);
-            hwEnc = true;
-            break;
-        }
+        GstElementFactory *f = gst_element_factory_find(e);
+        if (!f) continue;
+        gst_object_unref(f);
+        if (talqHwEncoderProbeExcludes(e)) continue;   // #74: probed non-working here
+        hwEnc = true;
+        break;
     }
+    if (talqForceSoftwareVideo().load()) hwEnc = false; // runtime HW->x264 fallback latch
+
+    // Low logical-core CPUs demote one tier (even a working encoder shares the
+    // box with capture/convert/decode on few threads).
+    const int cores = QThread::idealThreadCount();
+    const bool lowCpu = (cores > 0 && cores <= 4);
+
     talq::GpuClassOverride ov = talq::GpuClassOverride::Auto;
     {
         QSettings s("TalQ", "TalQ");
@@ -1340,9 +1355,18 @@ void CallManager::detectGpuClass()
         ov = static_cast<talq::GpuClassOverride>(s.value("gpuClassOverride", 0).toInt());
         s.endGroup();
     }
-    m_gpuClass = talq::gpuClassFromSignals(hwEnc, talq::gpuAdapterNames(), ov);
+    m_gpuClass = talq::gpuClassFromSignals(hwEnc, talq::gpuAdapterNames(), ov, lowCpu);
+
+    // Persist for the Settings "Send HD on this device" checkbox (greyed on Capable).
+    {
+        QSettings s("TalQ", "TalQ");
+        s.beginGroup("Video");
+        s.setValue("lastGpuClass", int(m_gpuClass));
+        s.endGroup();
+    }
     qInfo().noquote() << "CallManager: GPU class:" << talq::gpuClassName(m_gpuClass)
-                      << "(hwEncode=" << hwEnc << " override=" << int(ov) << ")";
+                      << "(hwEncode=" << hwEnc << " cores=" << cores
+                      << " lowCpu=" << lowCpu << " override=" << int(ov) << ")";
 }
 
 void CallManager::setVideoQualityNotice(const QString &text)
@@ -1684,6 +1708,12 @@ void CallManager::updateCallStats()
     lines << "Transport: DTLS-SRTP";
 
     m_callStats = lines.join("\n");
+
+    // Send-fps badge: DRAIN PublishPipeline::sendFps() exactly once per tick
+    // and cache it. paintTile() must only ever read the cached m_sendFps via
+    // the sendFps() getter -- never call the mutating drain itself.
+    m_sendFps = m_publishPipeline ? m_publishPipeline->sendFps() : 0;
+
     emit callStatsChanged();
 }
 
@@ -2162,7 +2192,7 @@ bool CallManager::buildAndStartPublisher()
 
     connect(m_publishPipeline, &PublishPipeline::softwareVideoEncoderUsed, this, [this]() {
         // 0.52.5 — persistent sender-visible chip (no working HW encoder → 480p).
-        setVideoQualityNotice(tr("Software encoding — video limited to 480p"));
+        setVideoQualityNotice(tr("Sending a single lower-resolution video stream to keep this device responsive."));
         if (m_softwareEncoderNotified) return;   // toast: once per call (publisher can rebuild)
         m_softwareEncoderNotified = true;
         qInfo() << "CallManager: camera on SOFTWARE video encoder — notifying user";
@@ -2293,6 +2323,16 @@ bool CallManager::buildAndStartPublisher()
         qWarning() << "CallManager: failed to start publish pipeline";
         return false;
     }
+    // Weak-device single-stream notice: fires for ANY weak tier (Software OR
+    // WeakIgpu OR a low-core Auto demotion), not just the software-encoder
+    // case above (softwareVideoEncoderUsed) which only covers layer-0 x264.
+    // isSingleStream() reflects m_singleStream, set inside start(), so it's
+    // valid now that start() has returned successfully. Purely additive —
+    // no else-clear here (this notice string is shared with other conditions,
+    // e.g. the receive-side "High load" notice; existing teardown clears
+    // handle removal).
+    if (m_publishPipeline && m_publishPipeline->isSingleStream())
+        setVideoQualityNotice(tr("Sending a single lower-resolution video stream to keep this device responsive."));
     m_glibTimer.start(20);
 
     // Camera comes up immediately for a video call (mfvideosrc starts async, so
@@ -3437,6 +3477,7 @@ void CallManager::startLoadController()
     m_synthDecodeUsage = okD ? d : 0.0;
 
     m_loadController = talq::MediaLoadController();   // fresh state per call
+    m_fpsRamp.reset();   // weak-tier solo fps ramp restarts at 10 fps each call
     if (!m_loadTimer.isActive()) m_loadTimer.start(1000);
 }
 
@@ -3592,8 +3633,19 @@ void CallManager::onLoadTick()
         s.dropBurst   = false;
         caps = m_loadController.onTick(s);
         loadLevel = m_loadController.loadLevel();
-        if (m_publishPipeline)
-            m_publishPipeline->setLoadCaps(caps.sendLayerCeiling, caps.sendFps);
+        if (m_publishPipeline) {
+            int fps = caps.sendFps;
+            if (m_publishPipeline->isSingleStream()) {
+                // Weak-tier solo: start at 10 fps and ramp UP into headroom (the
+                // MediaLoadController only sheds from full, min 15 — too high a
+                // start for a weak box). Never run two full encoders at once, so
+                // throttle the camera hard while screen-sharing.
+                const int ramp = m_fpsRamp.onTick(s.encodeUsage);
+                fps = qMin(fps, ramp);
+                if (m_screenSharing) fps = qMin(fps, 10);
+            }
+            m_publishPipeline->setLoadCaps(caps.sendLayerCeiling, fps);
+        }
         // RECEIVE-cap DISABLED (0.52.1). The decode-load proxy above is
         // rxRes×fps — i.e. the very quantity the receive cap CONTROLS — so it is
         // self-referential and OSCILLATES: receiving 1080p reads as ~full load →

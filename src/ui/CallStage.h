@@ -113,18 +113,32 @@ private:
     void paintTile(QPainter &p, const Tile &t, const PainterTheme &th, bool large);
     void paintControlBar(QPainter &p, const PainterTheme &th);
     void paintStatusPill(QPainter &p, const PainterTheme &th);
+    // Unified stacking pass for every top-center in-call notice (camera/mic
+    // banners, quality notice, sharing badge) — see NoticeStack.h. Replaces
+    // the old per-drawer independent anchor math that let two notices land
+    // in the same band and silently overlap. Must run AFTER paintActionPills/
+    // paintInfoPills (it depends on m_chromeRowsBottom/m_infoPillsBottom).
+    void paintTopCenterNotices(QPainter &p, const PainterTheme &th);
     // Idiot-proofing: a loud, plain-language banner shown when the local
     // camera can't be opened (missing / in use by another app / blocked by
     // OS privacy). Drawn outside the fading chrome so a non-technical user
-    // is never left silently wondering why nobody can see them.
-    void paintCameraBanner(QPainter &p, const PainterTheme &th);
+    // is never left silently wondering why nobody can see them. `by` is the
+    // y assigned by paintTopCenterNotices' notice stack.
+    void paintCameraBanner(QPainter &p, const PainterTheme &th, qreal by);
+    // Pure height companion to paintCameraBanner (same formula, kept in
+    // lockstep — see the .cpp), used by the paintTopCenterNotices pre-pass to
+    // learn the banner's height BEFORE any drawing happens, since the height
+    // never depends on where the banner ends up on screen.
+    qreal cameraBannerHeight(const PainterTheme &th) const;
     // Twin of paintCameraBanner for a microphone that won't open: the call
     // continues on silent audio, but the user is told nobody can hear them.
-    void paintMicBanner(QPainter &p, const PainterTheme &th);
+    void paintMicBanner(QPainter &p, const PainterTheme &th, qreal by);
+    // Height companion to paintMicBanner — see cameraBannerHeight().
+    qreal micBannerHeight(const PainterTheme &th) const;
     // 0.52.5 — persistent amber chip when our OWN camera send quality is reduced
     // (software encoding / shed to the 480p floor under load), so the sender is
     // never silently stuck low. Reads CallManager::videoQualityNotice().
-    void paintQualityNotice(QPainter &p, const PainterTheme &th);
+    void paintQualityNotice(QPainter &p, const PainterTheme &th, qreal by);
     // 0.40.15 — split top chrome: paintInfoPills draws read-only telemetry
     // (codec/quality stat/RX) on the left; paintActionPills draws the
     // interactive QUALITY + BACKGROUND dropdown buttons on the right.
@@ -134,7 +148,7 @@ private:
     // m_sharePillRect) WITHOUT painting, so the dropdown click registers even when
     // the call chrome is faded out (paintActionPills is skipped at alpha~0).
     void computeActionPillGeometry();
-    void paintSharingBadge(QPainter &p, const PainterTheme &th);
+    void paintSharingBadge(QPainter &p, const PainterTheme &th, qreal by);
     // Label for the receive-quality dropdown's HIGH entry, bucketed from the
     // PEER's peak decoded height (CallManager::peerPeakRxHeight) — the remote's
     // real top layer, not our own send setting. "High" alone until observed.

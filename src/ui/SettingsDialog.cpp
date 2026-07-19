@@ -8,6 +8,7 @@
 #include "core/AppSettings.h"
 #include "core/AuthManager.h"
 #include "core/BackgroundEngine.h"
+#include "core/EncodeTier.h"
 #include "core/MicTester.h"
 #include "BgPreviewSource.h"
 #include <QPainter>
@@ -662,6 +663,36 @@ QWidget *SettingsDialog::buildAudioVideoTab()
         tr("Takes effect on the next call. Higher resolutions need both a "
            "capable camera and a healthy link — TalQ adapts down to fit."),
         resCombo));
+
+    // 0.61.0 — weak-tier HD opt-in. Only affects machines classified below
+    // Capable (they send ONE stream: 360p normally, 480p when this is on).
+    // Greyed on a Capable machine (its resolution is governed by the combo above).
+    auto *weakHdCheck = new QCheckBox(this);
+    {
+        QSettings vs("TalQ", "TalQ");
+        vs.beginGroup("Video");
+        weakHdCheck->setChecked(vs.value("weakHdEnable", false).toBool());
+        const int lastCls = vs.value("lastGpuClass", int(talq::GpuClass::Capable)).toInt();
+        vs.endGroup();
+        const bool isCapable = (lastCls == int(talq::GpuClass::Capable));
+        weakHdCheck->setEnabled(!isCapable);
+        weakHdCheck->setToolTip(isCapable
+            ? tr("This device sends full-quality video; the HD option applies only to "
+                 "low-power devices that fall back to a single stream.")
+            : tr("Send 480p instead of 360p as this device's single video stream. "
+                 "Uses more CPU."));
+    }
+    connect(weakHdCheck, &QCheckBox::toggled, this, [](bool on) {
+        QSettings vs("TalQ", "TalQ");
+        vs.beginGroup("Video");
+        vs.setValue("weakHdEnable", on);
+        vs.endGroup();
+    });
+    layout->addWidget(makeSettingRow(
+        tr("Send HD (480p) on this device"),
+        tr("Weak devices normally send 360p as their single video stream; this "
+           "switches them to 480p. Has no effect on capable machines."),
+        weakHdCheck));
 
     // GPU performance override. The device-capability caps (camera 480p + capped
     // screen share on weak iGPUs, to stop the screen-share overload freeze)

@@ -26,6 +26,7 @@
 #include "core/SignalQualityPolicy.h"
 #include "core/CallParticipant.h"
 #include "core/MediaLoadController.h"   // 0.51.x dynamic encode/decode load controller
+#include "core/FpsRampPolicy.h"         // 0.61.0 weak-tier solo slow-start fps ramp
 #include "core/MemShedPolicy.h"         // host-protection memory-shed decision (onLoadTick)
 #include "core/ShareCapPolicy.h"        // screen-share quality level -> encode cap
 
@@ -158,6 +159,11 @@ public:
     QString streamBandwidthLabel() const;
     // Numeric outbound bitrate (Mbps) for the telemetry bandwidth gauge.
     double txBitrateMbps() const;
+    // Measured (not commanded) send fps for the self-tile badge — cached ONCE
+    // per ~2s stats tick in updateCallStats(); NEVER call the mutating
+    // PublishPipeline::sendFps() drain from paint code (repaints at ~30 fps
+    // would corrupt the measurement).
+    int sendFps() const { return m_sendFps; }
     // Telemetry: the routing this call actually selected — the TURN relay host(s)
     // in use (after nearest-selection) and the signaling/HPB server host.
     QString selectedTurnLabel() const;
@@ -461,6 +467,7 @@ private:
     // fields feed it on the dev box (NVENC won't overload) until the encode/
     // decode latency probes land; TALQ_DISABLE_LOAD_CONTROLLER is the kill-switch.
     talq::MediaLoadController m_loadController;
+    talq::FpsRampPolicy m_fpsRamp;   // 0.61.0 weak-tier solo slow-start fps ramp
     QTimer m_loadTimer;
     bool   m_loadControllerEnabled = true;
     // Verbose [MEDIA]/[LEAK] call-diagnostic heartbeats — OFF by default. The
@@ -573,6 +580,10 @@ private:
     // Peak remote decoded height this call (see peerPeakRxHeight()). mutable:
     // accumulated lazily inside the const activeRxResolution() read path.
     mutable int m_peerPeakRxHeight = 0;
+    // Cached measured send fps for the self-tile badge — written exactly once
+    // per stats tick in updateCallStats() from the mutating
+    // PublishPipeline::sendFps() drain; sendFps() getter above only reads this.
+    int m_sendFps = 0;
     void checkGStreamerPlugins();
     void detectGpuClass();   // (re)classify encode capability; re-run per call
     void updateCallStats();

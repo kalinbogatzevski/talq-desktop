@@ -17,6 +17,7 @@
 #include "BweAutoCap.h"
 #include "EncodeTier.h"
 #include "BweLayerGate.h"
+#include "SoloStreamPolicy.h"
 
 /**
  * Send-only GStreamer webrtcbin pipeline for MCU publishing.
@@ -62,6 +63,7 @@ public:
     void addIceCandidate(const QString &candidate, int sdpMLineIndex, const QString &sdpMid);
     void setMuted(bool muted);
     bool isRunning() const { return m_running; }
+    bool isSingleStream() const { return m_singleStream; }
     bool isCameraOn() const { return m_cameraEnabled; }
     bool usesH264() const { return m_useH264; }
     // e.g. "H264 · nvh264enc · hw" — for the call codec/quality telemetry.
@@ -187,6 +189,12 @@ public:
     // intended "total encode demand" signal.
     double encodeUsage();
 
+    // 0.61.0 send-fps badge: DRAINS the layer-0 encoded-frame counter against
+    // wall time since the previous call and returns the measured (not
+    // commanded) integer send fps. Mutating — call exactly ONCE per stats tick
+    // (CallManager::updateCallStats caches the result); never from paint code.
+    int sendFps();
+
 signals:
     void localOfferReady(const QString &sdp);
     void iceCandidateReady(const QString &candidate, int sdpMLineIndex, const QString &sdpMid);
@@ -231,6 +239,7 @@ private:
     void cleanup();
     bool buildCameraChain(int deviceIndex, bool hd1080);
     void reArmCameraSource();   // 0.52.13 — stall recovery: NULL→PLAYING the MF source
+    QByteArray framerateCapsFrag() const;   // range when m_fpsAdaptActive, else fixed 30/1
 
     GstElement *m_pipeline = nullptr;
     GstElement *m_webrtcbin = nullptr;
@@ -289,6 +298,11 @@ private:
     // single-stream 720p while subscriber substream selection is still
     // being proven in beta. Set in start() from the TALQ_PRERELEASE define.
     bool m_simulcast = true;
+    // 0.61.0 — weak-tier single-stream mode (one non-simulcast branch, decided in
+    // start() from the GPU tier). When true, m_simulcast is forced false and the
+    // fps-adapt path is active regardless of TALQ_FPS_ADAPT.
+    bool m_singleStream   = false;
+    bool m_fpsAdaptActive = false;
     // Start bitrate (bits/s) handed to the encoder; rtpgccbwe drives the
     // live rate up to the server ceiling once TWCC feedback flows.
     int m_initBitrate = 3500000;
@@ -330,9 +344,11 @@ private:
     struct EncodeLoadCell {
         std::atomic<long long> busyNs{0};                  // accumulated encode busy time (ns)
         std::array<std::atomic<long long>, 3> sinkNs{};    // per-layer last sink-entry time (ns)
+        std::atomic<long long> framesEncoded{0};           // layer-0 encoded-frame count (send-fps badge)
     };
     std::shared_ptr<EncodeLoadCell> m_encodeLoad{std::make_shared<EncodeLoadCell>()};
     long long m_encodeLoadLastReadNs = 0;   // wall time of the last encodeUsage() read
+    long long m_sendFpsLastReadNs = 0;      // wall time of the last sendFps() read
     struct EncProbeCtx { std::shared_ptr<EncodeLoadCell> cell; int layer; bool isSrc; };
     // GPU encode-capability class from CallManager (set before start()); drives
     // the encode-load cap in start().
