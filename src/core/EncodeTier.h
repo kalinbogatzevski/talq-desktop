@@ -39,29 +39,39 @@ enum class GpuClassOverride { Auto = 0, AlwaysFull = 1, AlwaysProtected = 2 };
 // GPU adapter model name(s) (talq::gpuAdapterNames()), and the user override.
 inline GpuClass gpuClassFromSignals(bool hwH264Encoder,
                                     const QStringList &adapterNames,
-                                    GpuClassOverride override)
+                                    GpuClassOverride override,
+                                    bool lowCpu = false)
 {
     if (override == GpuClassOverride::AlwaysFull)      return GpuClass::Capable;
     if (override == GpuClassOverride::AlwaysProtected) return GpuClass::WeakIgpu;
 
-    if (!hwH264Encoder)
-        return GpuClass::Software;   // x264/openh264 only -- protect hardest
-
-    // HW encode present: capable vs weak by GPU model. A Capable match on ANY
-    // enumerated adapter wins (hybrid iGPU + dGPU laptops use the better one; the
-    // manual override corrects the rare mismatch). An unrecognised HW-encode GPU
-    // stays WeakIgpu -- conservative "when in doubt, protect" (override to lift).
-    static const char *kCapable[] = {
-        "iris", "arc", "radeon", "rx ", "vega",
-        "geforce", "rtx", "gtx", "quadro", "titan",
-    };
-    for (const QString &raw : adapterNames) {
-        const QString n = raw.toLower();
-        for (const char *p : kCapable)
-            if (n.contains(QLatin1String(p)))
-                return GpuClass::Capable;
+    GpuClass base;
+    if (!hwH264Encoder) {
+        base = GpuClass::Software;   // x264/openh264 only -- protect hardest
+    } else {
+        // HW encode present: capable vs weak by GPU model. A Capable match on ANY
+        // enumerated adapter wins; an unrecognised HW-encode GPU stays WeakIgpu.
+        static const char *kCapable[] = {
+            "iris", "arc", "radeon", "rx ", "vega",
+            "geforce", "rtx", "gtx", "quadro", "titan",
+        };
+        base = GpuClass::WeakIgpu;
+        for (const QString &raw : adapterNames) {
+            const QString n = raw.toLower();
+            for (const char *p : kCapable)
+                if (n.contains(QLatin1String(p))) { base = GpuClass::Capable; break; }
+            if (base == GpuClass::Capable) break;
+        }
     }
-    return GpuClass::WeakIgpu;
+
+    // 0.61.0 — a low logical-core CPU demotes one step: even a nominally-working
+    // encoder shares the box with capture/convert/decode on few threads. The
+    // manual override (handled above) still lifts it.
+    if (lowCpu) {
+        if (base == GpuClass::Capable)  return GpuClass::WeakIgpu;
+        if (base == GpuClass::WeakIgpu) return GpuClass::Software;
+    }
+    return base;
 }
 
 inline QString gpuClassName(GpuClass cls)
@@ -75,8 +85,9 @@ inline QString gpuClassName(GpuClass cls)
 }
 
 struct EncodeTierCap {
-    int     maxSendHeight = 0;     // 0 = no cap (Capable); else 480
-    bool    shedHighLayer = false; // true = send l+m only (no HW encode)
+    int     maxSendHeight = 0;     // 0 = no cap (Capable); else 480 (HD-on solo cap)
+    bool    shedHighLayer = false; // legacy: send l+m only (simulcast tiers)
+    bool    singleStream  = false; // 0.61.0: publish ONE non-simulcast stream
     QString homeText;              // short Home-screen note ("" = no restriction)
 };
 
@@ -84,17 +95,17 @@ inline EncodeTierCap encodeTierCap(GpuClass cls)
 {
     switch (cls) {
     case GpuClass::Capable:
-        return { 0, false, QString() };   // full quality, no note
+        return { 0, false, false, QString() };   // full quality, no note
     case GpuClass::WeakIgpu:
-        return { 480, false,
-            QStringLiteral("Camera video is sent at up to 480p — this device uses "
-                           "integrated graphics.") };
+        return { 480, false, true,
+            QStringLiteral("Camera video is sent as a single stream at up to 480p — "
+                           "this device uses integrated graphics.") };
     case GpuClass::Software:
         break;
     }
-    return { 480, true,
-        QStringLiteral("Camera video is sent at up to 480p — no hardware video "
-                       "acceleration was detected on this device.") };
+    return { 480, true, true,
+        QStringLiteral("Camera video is sent as a single stream at up to 480p — no "
+                       "hardware video acceleration was detected on this device.") };
 }
 
 // Screen-share capture height ceiling by class. 0 = no clamp (native).

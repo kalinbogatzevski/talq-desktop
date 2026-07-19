@@ -20,6 +20,7 @@
 #include "core/VideoEncoderUtil.h"
 #include "core/CaptureDsp.h"
 #include "core/EncodeTier.h"
+#include "core/FpsMeter.h"
 
 // C2/#29 — send-FPS adaptation. OFF by default; set TALQ_FPS_ADAPT=1 to enable.
 // When ON, the framerate caps below are a permissive RANGE (so the shared
@@ -33,12 +34,6 @@ static bool talqFpsAdaptOn()
     static const bool on = qEnvironmentVariableIntValue("TALQ_FPS_ADAPT") == 1;
     return on;
 }
-// "framerate=..." fragment for the publish caps — a range when adapting, else fixed.
-static const char *talqFramerateCapsFrag()
-{
-    return talqFpsAdaptOn() ? "framerate=(fraction)[1/1,30/1]" : "framerate=30/1";
-}
-
 PublishPipeline::PublishPipeline(QObject *parent)
     : QObject(parent)
 {
@@ -109,6 +104,12 @@ PublishPipeline::~PublishPipeline()
     stop();
 }
 
+QByteArray PublishPipeline::framerateCapsFrag() const
+{
+    return m_fpsAdaptActive ? QByteArrayLiteral("framerate=(fraction)[1/1,30/1]")
+                            : QByteArrayLiteral("framerate=30/1");
+}
+
 bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &turnServers,
                            const QString &audioDeviceId, bool withVideo,
                            int videoDeviceIndex, bool hd1080)
@@ -126,56 +127,66 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         int h = s.value("maxSendHeight", 720).toInt();
         s.endGroup();
         if (h != 720 && h != 1080 && h != 1440 && h != 2160) h = 720;
-        // Encode-load mitigation (field freeze 2026-06-05): cap the camera SEND
-        // by GPU tier so a publisher can't saturate a weak/iGPU/software encoder
-        // (it also has to decode the peer). Single source of truth = EncodeTier.h
-        // (the Home screen shows the SAME cap). "When in doubt" (unknown tier) is
-        // treated as the WEAKEST — if we can't confirm HW accel, assume none. The
-        // res cap only bites users who chose >cap (Petia's log shows 1080p);
-        // default-720 users are unchanged. The full CPU-load controller (later)
-        // lifts this dynamically when headroom exists.
+        // Encode-load mitigation. Single source of truth = EncodeTier.h.
         const talq::EncodeTierCap tier = talq::encodeTierCap(m_gpuClass);
-        if (tier.maxSendHeight > 0 && h > tier.maxSendHeight) {
-            qInfo().nospace() << "PublishPipeline: GPU class "
-                << talq::gpuClassName(m_gpuClass)
-                << " -- capping camera send resolution " << h << "p -> "
-                << tier.maxSendHeight << "p";
-            h = tier.maxSendHeight;
-        }
-        if (tier.shedHighLayer)
-            m_loadCapMaxLayer = 1;   // no HW encode -> send l+m only
-        // 0.52.5 capability send-floor (field repro: two capable HW boxes both
-        // collapsed to 180p under the load controller on a healthy 9 Mbps link).
-        // A Capable GPU with a WORKING hardware encoder must NEVER be load-shed
-        // below full quality — only real BWE congestion may reduce it (floor 2).
-        // Everything else floors at 'm' (l+m, the "480p" tier), never the 320x180
-        // bottom rung, and surfaces the on-screen notice chip. talqForceSoftwareVideo
-        // is the runtime HW-encoder-failed latch (a flaky HW encoder that fell back
-        // to x264 mid-call rebuilds the publisher → re-runs start() → floor drops to 1).
-        const bool softwareEncode = tier.shedHighLayer
-                                  || talqForceSoftwareVideo().load();
-        m_layerFloor = (m_gpuClass == talq::GpuClass::Capable && !softwareEncode) ? 2 : 1;
+
+        // 0.61.0 "Blue Fiesta Week 2" — a weak encode tier publishes ONE
+        // non-simulcast stream at 360p (480p if the user opted into HD on this
+        // device) instead of three layers, so it never runs multiple encoders.
+        // TALQ_TEST_FORCE_SIMULCAST re-enables simulcast for A/B testing.
+        m_singleStream   = tier.singleStream
+                         && !qEnvironmentVariableIsSet("TALQ_TEST_FORCE_SIMULCAST");
+        m_fpsAdaptActive = talqFpsAdaptOn() || m_singleStream;
         m_sendFlooredLatch = false;
-        const int w = (h * 16) / 9 & ~1;   // 16:9, even width
-        m_layers[2].targetW = w;
-        m_layers[2].targetH = h;
-        // Encoder bits-per-pixel-per-frame ≈ 0.10 at 30 fps for camera
-        // content is the "Telegram-class HQ" rule of thumb; we round to
-        // documented buckets so the bitrate set is predictable.
-        switch (h) {
-            case 480:  m_layers[2].nominalBitrate = 1'200'000; m_initBitrate = 1'200'000; m_maxBitrate =  2'000'000; break;
-            case 720:  m_layers[2].nominalBitrate = 3'500'000; m_initBitrate = 3'500'000; m_maxBitrate =  6'000'000; break;
-            case 1080: m_layers[2].nominalBitrate = 6'000'000; m_initBitrate = 6'000'000; m_maxBitrate =  9'000'000; break;
-            case 1440: m_layers[2].nominalBitrate = 12'000'000; m_initBitrate = 12'000'000; m_maxBitrate = 18'000'000; break;
-            case 2160: m_layers[2].nominalBitrate = 22'000'000; m_initBitrate = 22'000'000; m_maxBitrate = 30'000'000; break;
+
+        if (m_singleStream) {
+            QSettings hs("TalQ", "TalQ");
+            hs.beginGroup("Video");
+            const bool hd = hs.value("weakHdEnable", false).toBool();
+            hs.endGroup();
+            const talq::SoloVideoTarget solo = talq::soloVideoTarget(hd);
+            m_layers[0].targetW        = solo.w;      // branch 0 is the single stream
+            m_layers[0].targetH        = solo.h;
+            m_layers[0].nominalBitrate = solo.nominalBitrate;
+            m_initBitrate              = solo.initBitrate;
+            m_maxBitrate               = solo.maxBitrate;
+            m_originalMaxBitrate       = solo.maxBitrate;
+            m_loadFps                  = solo.startFps;   // first frames at 10 fps
+            m_layerFloor               = 0;               // one branch; floor is layer 0
+            m_loadCapMaxLayer          = 0;
+            qInfo().nospace() << "PublishPipeline: weak tier -> SINGLE stream "
+                << solo.w << "x" << solo.h << " @" << solo.startFps << "->"
+                << solo.maxFps << " fps, nominal=" << (solo.nominalBitrate/1000)
+                << " kbps, GCC ceiling=" << (solo.maxBitrate/1000) << " kbps"
+                << (hd ? " (HD)" : "");
+        } else {
+            if (tier.maxSendHeight > 0 && h > tier.maxSendHeight) {
+                qInfo().nospace() << "PublishPipeline: GPU class "
+                    << talq::gpuClassName(m_gpuClass)
+                    << " -- capping camera send resolution " << h << "p -> "
+                    << tier.maxSendHeight << "p";
+                h = tier.maxSendHeight;
+            }
+            if (tier.shedHighLayer)
+                m_loadCapMaxLayer = 1;   // no HW encode -> send l+m only
+            const bool softwareEncode = tier.shedHighLayer
+                                      || talqForceSoftwareVideo().load();
+            m_layerFloor = (m_gpuClass == talq::GpuClass::Capable && !softwareEncode) ? 2 : 1;
+            const int w = (h * 16) / 9 & ~1;   // 16:9, even width
+            m_layers[2].targetW = w;
+            m_layers[2].targetH = h;
+            switch (h) {
+                case 480:  m_layers[2].nominalBitrate = 1'200'000; m_initBitrate = 1'200'000; m_maxBitrate =  2'000'000; break;
+                case 720:  m_layers[2].nominalBitrate = 3'500'000; m_initBitrate = 3'500'000; m_maxBitrate =  6'000'000; break;
+                case 1080: m_layers[2].nominalBitrate = 6'000'000; m_initBitrate = 6'000'000; m_maxBitrate =  9'000'000; break;
+                case 1440: m_layers[2].nominalBitrate = 12'000'000; m_initBitrate = 12'000'000; m_maxBitrate = 18'000'000; break;
+                case 2160: m_layers[2].nominalBitrate = 22'000'000; m_initBitrate = 22'000'000; m_maxBitrate = 30'000'000; break;
+            }
+            qInfo().nospace() << "PublishPipeline: max send resolution "
+                << w << "x" << h << ", HIGH nominal=" << (m_layers[2].nominalBitrate/1000)
+                << " kbps, GCC ceiling=" << (m_maxBitrate/1000) << " kbps";
+            m_originalMaxBitrate = m_maxBitrate;
         }
-        qInfo().nospace() << "PublishPipeline: max send resolution "
-            << w << "x" << h << ", HIGH nominal=" << (m_layers[2].nominalBitrate/1000)
-            << " kbps, GCC ceiling=" << (m_maxBitrate/1000) << " kbps";
-        // 0.41.6-beta — capture the chosen ceiling so the sustained-low
-        // BWE auto-cap (onGccBitrate) can both clamp aggressively AND
-        // restore to the original when the link recovers.
-        m_originalMaxBitrate = m_maxBitrate;
         m_bweAutoCap.reset();
     }
 
@@ -580,7 +591,7 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
     // With the OFF-path fixed 30/1 caps, drop-only=TRUE makes videorate refuse to
     // negotiate a sub-30fps source (NOT_NEGOTIATED → no video for slow/low-light
     // webcams). Gate it so OFF stays the exact prior no-op (duplicate-up to 30).
-    if (sharedRate && talqFpsAdaptOn())
+    if (sharedRate && m_fpsAdaptActive)
         g_object_set(sharedRate, "drop-only", TRUE, nullptr);
     m_outputTee   = gst_element_factory_make("tee", "pub-output-tee");
     if (!sharedConvert || !m_sharedScale || !m_sharedCaps || !sharedRate || !m_outputTee) {
@@ -590,11 +601,11 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         // 0.41.0-beta — sharedCaps tracks the HIGH layer resolution so
         // the source's full pixel count survives into the encoder branch
         // instead of being downscaled to 720 unconditionally.
-        const int sw = m_layers[2].targetW;
-        const int sh = m_layers[2].targetH;
+        const int sw = m_singleStream ? m_layers[0].targetW : m_layers[2].targetW;
+        const int sh = m_singleStream ? m_layers[0].targetH : m_layers[2].targetH;
         const QString sc = QStringLiteral(
             "video/x-raw,width=%1,height=%2,pixel-aspect-ratio=1/1,%3")
-            .arg(sw).arg(sh).arg(QString::fromLatin1(talqFramerateCapsFrag()));
+            .arg(sw).arg(sh).arg(QString::fromLatin1(framerateCapsFrag()));
         GstCaps *caps = gst_caps_from_string(sc.toUtf8().constData());
         g_object_set(m_sharedCaps, "caps", caps, nullptr);
         gst_caps_unref(caps);
@@ -608,6 +619,10 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         emit error("Failed to link shared chain"); cleanup(); return false;
     }
 
+    // Weak-tier solo: pin the initial send framerate to the low start (10 fps);
+    // CallManager's tick ramps it up into headroom. No-op when fps-adapt inactive.
+    if (m_singleStream) applySharedFramerate(m_loadFps);
+
     // Simulcast in BOTH stable and beta as of 0.38.0 — the SIM-group SDP
     // munge (#9) is now harness-verified end-to-end across all three
     // substream levels (180p / 360p / 720p), the rid header extension is
@@ -619,7 +634,7 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
     // simulcast, no SIM ssrc-group, no per-layer keyframe routing) to isolate
     // whether the simulcast layering is what a strict receiver (official NC
     // Talk Android/web) chokes on -> "old TV" static. #android-static 2026-06-02.
-    m_simulcast = !qEnvironmentVariableIsSet("TALQ_TEST_SINGLE_STREAM");
+    m_simulcast = !qEnvironmentVariableIsSet("TALQ_TEST_SINGLE_STREAM") && !m_singleStream;
     const size_t nBranches = m_simulcast ? m_layers.size() : 1;
 
     // --- Encoder branches: each tees off m_outputTee (3 for simulcast, 1 otherwise) ---
@@ -700,7 +715,7 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
             GstCaps *sc = gst_caps_from_string(
                 QString("video/x-raw,width=%1,height=%2,%3")
                     .arg(L.targetW).arg(L.targetH)
-                    .arg(QString::fromLatin1(talqFramerateCapsFrag())).toUtf8().constData());
+                    .arg(QString::fromLatin1(framerateCapsFrag())).toUtf8().constData());
             g_object_set(L.caps, "caps", sc, nullptr);
             gst_caps_unref(sc);
         }
@@ -2976,7 +2991,7 @@ void PublishPipeline::applySharedFramerate(int fps)
     // Default-OFF (caps stay fixed 30/1) so this ships dormant for field
     // validation before becoming default-on; when off we no-op (layer-shed only).
     // max-rate=0 disables the cap (full ~30 fps).
-    if (!talqFpsAdaptOn() || !m_sharedRate) { Q_UNUSED(fps); return; }
+    if (!m_fpsAdaptActive || !m_sharedRate) { Q_UNUSED(fps); return; }
     const int maxRate = (fps > 0 && fps < 30) ? fps : 0;
     g_object_set(m_sharedRate, "max-rate", maxRate, nullptr);
     qInfo() << "PublishPipeline: send-FPS adapt -> videorate max-rate" << maxRate;
@@ -3005,6 +3020,10 @@ GstPadProbeReturn PublishPipeline::onEncodeProbe(GstPad *, GstPadProbeInfo *info
             if (d > 0 && d < 500000000LL)
                 c->cell->busyNs.fetch_add(d, std::memory_order_relaxed);
         }
+        // Send-fps badge: layer 0 is always active (the only branch in solo
+        // mode), so it alone counts encoded frames for the measured send fps.
+        if (c->layer == 0)
+            c->cell->framesEncoded.fetch_add(1, std::memory_order_relaxed);
     }
     return GST_PAD_PROBE_OK;
 }
@@ -3018,6 +3037,17 @@ double PublishPipeline::encodeUsage()
     if (wall <= 0) return 0.0;
     const double u = double(busy) / double(wall);
     return u < 0.0 ? 0.0 : u;
+}
+
+int PublishPipeline::sendFps()
+{
+    // Same monotonic clock as encodeUsage() (g_get_monotonic_time(), µs -> ns).
+    // DRAINS the layer-0 frame counter — call exactly once per stats tick.
+    const long long now    = (long long)g_get_monotonic_time() * 1000;
+    const long long frames = m_encodeLoad->framesEncoded.exchange(0, std::memory_order_relaxed);
+    const long long elapsed = (m_sendFpsLastReadNs > 0) ? (now - m_sendFpsLastReadNs) : 0;
+    m_sendFpsLastReadNs = now;
+    return talq::fpsFromCount(frames, elapsed);
 }
 
 bool PublishPipeline::buildFarEndTail()
