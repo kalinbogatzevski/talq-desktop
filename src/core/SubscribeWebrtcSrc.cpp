@@ -1169,10 +1169,32 @@ GstFlowReturn SubscribeWebrtcSrc::onVideoNewSample(GstAppSink *sink, gpointer ud
         }
     }
 
+    // Bounded hand-off — see FrameHandoff.h. Posting every decoded frame with a
+    // bare QueuedConnection has no backpressure, and a main thread that falls
+    // behind then accumulates one full GstSample per frame (~3 MB at 1080p)
+    // until the process dies. That killed a WeakIgpu box mid-call: software
+    // decode of an incoming 1080p screen share, RSS 55 MB -> 2 GB, GLib OOM
+    // abort. Dropping a stale frame is the correct trade — the newest frame is
+    // the only one worth painting.
+    if (!self->m_videoHandoff.tryAcquire()) {
+        gst_sample_unref(sample);
+        const long long d = self->m_videoHandoff.dropped();
+        if (talq::FrameHandoffGate::isLogWorthy(d))
+            qWarning().nospace() << "SubscribeWebrtcSrc["
+                                 << self->m_remoteSessionId.left(8)
+                                 << "]: main thread behind — dropped " << d
+                                 << " remote frame(s) to bound memory";
+        return GST_FLOW_OK;
+    }
     QPointer<SubscribeWebrtcSrc> g(self);
     talq::leak::subPosted.fetch_add(1, std::memory_order_relaxed);
     QMetaObject::invokeMethod(self, [g, sample]() {
-        if (g && g->m_videoProvider) g->m_videoProvider->feedFrame(sample);
+        if (g) {
+            if (g->m_videoProvider) g->m_videoProvider->feedFrame(sample);
+            // Release only while the object is alive; if it was destroyed the
+            // gate died with it and there is nothing to unblock.
+            g->m_videoHandoff.release();
+        }
         gst_sample_unref(sample);
         talq::leak::subDelivered.fetch_add(1, std::memory_order_relaxed);
     }, Qt::QueuedConnection);

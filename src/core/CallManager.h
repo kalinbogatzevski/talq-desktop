@@ -27,6 +27,7 @@
 #include "core/CallParticipant.h"
 #include "core/MediaLoadController.h"   // 0.51.x dynamic encode/decode load controller
 #include "core/FpsRampPolicy.h"         // 0.61.0 weak-tier solo slow-start fps ramp
+#include "core/FrameHandoff.h"          // bounded frame hand-off to the Qt main thread
 #include "core/MemShedPolicy.h"         // host-protection memory-shed decision (onLoadTick)
 #include "core/ShareCapPolicy.h"        // screen-share quality level -> encode cap
 
@@ -468,6 +469,11 @@ private:
     // decode latency probes land; TALQ_DISABLE_LOAD_CONTROLLER is the kill-switch.
     talq::MediaLoadController m_loadController;
     talq::FpsRampPolicy m_fpsRamp;   // 0.61.0 weak-tier solo slow-start fps ramp
+    // Bounds the screen-share PREVIEW hand-off to the main thread. This path
+    // had no bound and no leak counter at all, yet it runs at the shared
+    // monitor's resolution — on a weak box previewing its own 720p share while
+    // decoding an incoming 1080p one, it is a full third of the pile-up.
+    talq::FrameHandoffGate m_sharePreviewHandoff;
     QTimer m_loadTimer;
     bool   m_loadControllerEnabled = true;
     // Verbose [MEDIA]/[LEAK] call-diagnostic heartbeats — OFF by default. The

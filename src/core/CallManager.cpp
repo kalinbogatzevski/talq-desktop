@@ -1315,6 +1315,42 @@ void CallManager::checkGStreamerPlugins()
     if (dxvaVp8 && !nvvp8) gst_object_unref(dxvaVp8);
     if (dxvaH264 && !nvvp8 && !dxvaVp8) gst_object_unref(dxvaH264);
     qDebug() << "CallManager: GPU accel:" << m_gpuAccelStatus;
+
+    // H.264 DECODER inventory, rank-ordered — diagnostic only, changes nothing.
+    //
+    // The status above is derived from three hard-coded factory names, so it
+    // reports "Software only" for any box whose hardware decoder is registered
+    // under a different name (e.g. qsvh264dec) — and it says nothing at all
+    // about which decoder decodebin will actually CHOOSE, which is decided by
+    // rank. A field machine (Intel UHD 620) decoded 264 frames through
+    // avdec_h264 while its QSV *encoder* worked fine, i.e. the QSV plugin
+    // loaded — so "no hardware decoder" and "hardware decoder present but
+    // out-ranked" were indistinguishable from the log. They need different
+    // fixes, so print the actual candidate list: name, rank, and whether
+    // GStreamer classes it as Hardware. decodebin picks the top entry.
+    if (GstCaps *h264 = gst_caps_new_empty_simple("video/x-h264")) {
+        GList *all = gst_element_factory_list_get_elements(
+            GST_ELEMENT_FACTORY_TYPE_DECODER | GST_ELEMENT_FACTORY_TYPE_MEDIA_VIDEO,
+            GST_RANK_NONE);
+        GList *cand = gst_element_factory_list_filter(all, h264, GST_PAD_SINK, FALSE);
+        cand = g_list_sort(cand, gst_plugin_feature_rank_compare_func);
+        QStringList entries;
+        for (GList *l = cand; l; l = l->next) {
+            auto *f = GST_ELEMENT_FACTORY(l->data);
+            const char *klass = gst_element_factory_get_metadata(f, GST_ELEMENT_METADATA_KLASS);
+            const bool hw = klass && strstr(klass, "Hardware") != nullptr;
+            entries << QStringLiteral("%1(rank=%2%3)")
+                          .arg(QString::fromUtf8(GST_OBJECT_NAME(f)))
+                          .arg(gst_plugin_feature_get_rank(GST_PLUGIN_FEATURE(f)))
+                          .arg(hw ? QStringLiteral(",HW") : QStringLiteral(",sw"));
+        }
+        qInfo().noquote() << "CallManager: H264 decoders (decodebin picks the first):"
+                          << (entries.isEmpty() ? QStringLiteral("NONE") : entries.join(QStringLiteral(" ")));
+        gst_plugin_feature_list_free(cand);
+        gst_plugin_feature_list_free(all);
+        gst_caps_unref(h264);
+    }
+
     detectGpuClass();
 }
 
@@ -2605,10 +2641,25 @@ GstFlowReturn CallManager::onPreviewSample(GstAppSink *sink, gpointer userData)
     auto *self = static_cast<CallManager *>(userData);
     GstSample *sample = gst_app_sink_pull_sample(sink);
     if (!sample) return GST_FLOW_OK;
+    // Bounded hand-off — see FrameHandoff.h. The share preview runs at the
+    // captured monitor's resolution, so an unbounded queue here is expensive
+    // per frame; combined with the remote-video and camera-preview paths it is
+    // what drove a weak box to a 2 GB OOM abort during a two-share call.
+    if (!self->m_sharePreviewHandoff.tryAcquire()) {
+        gst_sample_unref(sample);
+        const long long d = self->m_sharePreviewHandoff.dropped();
+        if (talq::FrameHandoffGate::isLogWorthy(d))
+            qWarning() << "CallManager: share preview behind — dropped" << d
+                       << "frame(s) to bound memory";
+        return GST_FLOW_OK;
+    }
     QPointer<CallManager> guard(self);
     QMetaObject::invokeMethod(self, [guard, sample]() {
-        if (guard && guard->m_previewProvider)
-            guard->m_previewProvider->feedFrame(sample);
+        if (guard) {
+            if (guard->m_previewProvider)
+                guard->m_previewProvider->feedFrame(sample);
+            guard->m_sharePreviewHandoff.release();
+        }
         gst_sample_unref(sample);
     }, Qt::QueuedConnection);
     return GST_FLOW_OK;

@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.62.1 "Blue Fiesta Week 2" (2026-07-27)
+
+A stability fix for calls involving screen sharing on lower-powered computers.
+
+### Fixed
+* **TalQ no longer runs out of memory and closes itself during a screen-sharing
+  call.** On a lower-powered computer — one without hardware video decoding —
+  receiving a high-resolution shared screen could make video frames pile up
+  faster than they could be drawn, until memory ran out and the app shut down
+  mid-call. Frames that can no longer be drawn in time are now discarded rather
+  than queued, so a struggling computer shows a lower frame rate instead of
+  closing. Each participant's video is limited separately, so one slow stream
+  cannot affect the others.
+
+### Changed
+* **The debug log now records which video decoder is actually in use**, and
+  whether it is a hardware or software one. When a computer struggles with
+  incoming video, this distinguishes "this machine has no hardware decoder" from
+  "it has one but something else was chosen" — two problems that looked
+  identical before and need different fixes.
+
 ## v0.62.0 "Blue Fiesta Week 2" (2026-07-27)
 
 Smoother video on older and lower-powered computers, two call-screen
