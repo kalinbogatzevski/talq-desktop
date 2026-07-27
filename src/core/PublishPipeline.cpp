@@ -2517,11 +2517,25 @@ GstFlowReturn PublishPipeline::onPreviewSample(GstAppSink *sink, gpointer userDa
     // is therefore a straight feedFrame of whatever came off the tee:
     // identical to the legacy pre-3.3a path, no per-frame map / Qt-hop
     // / QImage conversion required.
+    // Bounded hand-off — see FrameHandoff.h. Self-preview frames are posted at
+    // camera rate; unbounded they pile up alongside the remote-video and
+    // share-preview paths on a main thread that has stopped keeping up.
+    if (!self->m_previewHandoff.tryAcquire()) {
+        gst_sample_unref(sample);
+        const long long d = self->m_previewHandoff.dropped();
+        if (talq::FrameHandoffGate::isLogWorthy(d))
+            qWarning() << "PublishPipeline: self-preview behind — dropped" << d
+                       << "frame(s) to bound memory";
+        return GST_FLOW_OK;
+    }
     QPointer<PublishPipeline> guard(self);
     talq::leak::previewPosted.fetch_add(1, std::memory_order_relaxed);
     QMetaObject::invokeMethod(self, [guard, sample]() {
-        if (guard && guard->m_localVideoProvider)
-            guard->m_localVideoProvider->feedFrame(sample);
+        if (guard) {
+            if (guard->m_localVideoProvider)
+                guard->m_localVideoProvider->feedFrame(sample);
+            guard->m_previewHandoff.release();
+        }
         gst_sample_unref(sample);
         talq::leak::previewDelivered.fetch_add(1, std::memory_order_relaxed);
     }, Qt::QueuedConnection);

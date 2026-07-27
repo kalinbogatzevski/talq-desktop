@@ -22,6 +22,7 @@
 #include <gst/gst.h>
 #include <gst/webrtc/webrtc.h>
 #include <gst/app/gstappsink.h>
+#include "core/FrameHandoff.h"
 #include "SignalingClient.h"
 
 class VideoFrameProvider;
@@ -243,6 +244,11 @@ private:
     qint64 m_rxAudWinStartUs = 0;      // bus-watch thread only
     int    m_rxAudMsgs       = 0;      // bus-watch thread only
     double m_rxAudPeakDb     = -120.0; // bus-watch thread only — window maximum
+    // Bounds the decoded-frame hand-off to the Qt main thread. Without it a
+    // main thread that cannot keep up (weak box software-decoding a 1080p
+    // screen share) accumulates one full GstSample per frame until the process
+    // is OOM-killed. Per-subscriber so a struggling peer can't starve others.
+    talq::FrameHandoffGate m_videoHandoff;
     // Inbound-RTP stats cell for the per-tile signal-quality glyph (struct
     // defined in the public section above). A SHARED-PTR cell (not raw
     // members) so pollInboundRtp's async reply callback NEVER dereferences

@@ -18,6 +18,7 @@
 #include "EncodeTier.h"
 #include "BweLayerGate.h"
 #include "SoloStreamPolicy.h"
+#include "FrameHandoff.h"
 
 /**
  * Send-only GStreamer webrtcbin pipeline for MCU publishing.
@@ -303,6 +304,10 @@ private:
     // fps-adapt path is active regardless of TALQ_FPS_ADAPT.
     bool m_singleStream   = false;
     bool m_fpsAdaptActive = false;
+    // Bounds the self-preview hand-off to the Qt main thread (see
+    // FrameHandoff.h). Unbounded, this is the third contributor to the
+    // frame pile-up that OOM-killed a weak box during a two-share call.
+    talq::FrameHandoffGate m_previewHandoff;
     // Start bitrate (bits/s) handed to the encoder; rtpgccbwe drives the
     // live rate up to the server ceiling once TWCC feedback flows.
     int m_initBitrate = 3500000;
