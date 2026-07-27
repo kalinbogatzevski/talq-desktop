@@ -323,6 +323,34 @@ bool SubscribeWebrtcSrc::start(const QString &stunServer,
                     QMetaObject::invokeMethod(self, [g, lvl]() {
                         if (g) emit g->audioLevelUpdated(lvl);
                     }, Qt::QueuedConnection);
+
+                    // RX audio diagnostics — one line per ~5 s window carrying the
+                    // PEAK dB actually played out for this peer and how many level
+                    // messages backed it. Peak pinned at the floor while messages
+                    // keep arriving ⇒ the stream is live but SILENT (a sender-side
+                    // capture problem, NOT loss); no line at all ⇒ no remote audio
+                    // reached us. The receive path had an fps probe for video but
+                    // nothing equivalent for audio, so "I couldn't hear them" was
+                    // undiagnosable from a log. 5 s (not the video probe's 1 s)
+                    // keeps the always-on log lean.
+                    const qint64 aNowUs = (qint64)g_get_monotonic_time();
+                    if (self->m_rxAudWinStartUs == 0) self->m_rxAudWinStartUs = aNowUs;
+                    ++self->m_rxAudMsgs;
+                    if (db > self->m_rxAudPeakDb) self->m_rxAudPeakDb = db;
+                    const qint64 aElapsedUs = aNowUs - self->m_rxAudWinStartUs;
+                    if (aElapsedUs >= 5000000) {
+                        qInfo().nospace()
+                            << "SubscribeWebrtcSrc[" << self->m_remoteSessionId.left(8)
+                            << "]: RX audio peak "
+                            << (qRound(self->m_rxAudPeakDb * 10.0) / 10.0) << " dB"
+                            << (self->m_rxAudPeakDb <= -60.0
+                                    ? " (SILENT — stream live, no sound)" : "")
+                            << ", " << self->m_rxAudMsgs << " level msgs / "
+                            << (aElapsedUs / 1000) << " ms";
+                        self->m_rxAudWinStartUs = aNowUs;
+                        self->m_rxAudMsgs       = 0;
+                        self->m_rxAudPeakDb     = -120.0;
+                    }
                 }
                 if (arr) g_value_array_free(arr);
             }

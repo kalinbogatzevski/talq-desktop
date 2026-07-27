@@ -356,6 +356,15 @@ static void enumerateDevicesImpl(QVector<MediaDevice> &aIn,
     gst_device_monitor_stop(monitor);
     gst_object_unref(monitor);
 
+    // List the microphones WITH their index. The pick is persisted (and logged)
+    // as a bare index, so without this a field log can't answer the first
+    // question of any "they couldn't hear me" report: which capture device was
+    // actually in use — a real microphone, or a virtual/mixer endpoint that
+    // opens cleanly and carries no audio. Speakers are already identifiable
+    // above from the loopback-source skips.
+    for (int i = 0; i < aIn.size(); ++i)
+        qDebug().nospace().noquote() << "MediaDeviceManager: mic[" << i << "] \""
+                                     << aIn[i].name << "\"";
     qDebug() << "MediaDeviceManager: enumerated"
              << aIn.size() << "mic(s),"
              << aOut.size() << "speaker(s),"
@@ -604,6 +613,18 @@ void MediaDeviceManager::restoreDevices()
 
     m_settings.endGroup();
     m_restoring = false;
-    qDebug() << "MediaDeviceManager: restored devices — mic:" << m_selectedInput
-             << "speaker:" << m_selectedOutput << "camera:" << m_selectedVideo;
+    // Log the resolved device NAMES alongside the indices. An index alone can't
+    // distinguish a real microphone from a virtual/mixer endpoint, which is the
+    // first thing a "they couldn't hear me" field log has to answer.
+    auto devName = [](const QVector<MediaDevice> &list, int idx) -> QString {
+        if (idx < 0)            return QStringLiteral("(system default)");
+        if (idx >= list.size()) return QStringLiteral("(unresolved)");
+        return list[idx].name;
+    };
+    qDebug().nospace().noquote() << "MediaDeviceManager: restored devices — mic: "
+                       << m_selectedInput  << " \"" << devName(m_audioInputs,  m_selectedInput)  << "\""
+                       << ", speaker: "
+                       << m_selectedOutput << " \"" << devName(m_audioOutputs, m_selectedOutput) << "\""
+                       << ", camera: "
+                       << m_selectedVideo  << " \"" << devName(m_videoInputs,  m_selectedVideo)  << "\"";
 }

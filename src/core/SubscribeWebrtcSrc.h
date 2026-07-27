@@ -232,6 +232,17 @@ private:
     std::atomic<int> m_rxDistinctFps{0}; // distinct-content fps, published to UI thread
     std::atomic<int> m_rxWidth{0};       // decoded frame width (active substream)
     std::atomic<int> m_rxHeight{0};      // decoded frame height (active substream)
+    // RX audio-level probe: accumulates the playback `level` element's peak dB
+    // over a ~5 s window and logs one line. Distinguishes remote audio that is
+    // FLOWING BUT SILENT (peak stuck at the floor — a sender publishing nothing,
+    // e.g. a virtual mixer endpoint that opens cleanly and carries no voice)
+    // from audio that never arrived at all (no line logged). Those two cases
+    // look identical in a "their audio arrived, I heard nothing" report, and
+    // neither was answerable from the log before. Bus-watch thread only
+    // (gst_bus_add_watch dispatches on the main context) — no atomics needed.
+    qint64 m_rxAudWinStartUs = 0;      // bus-watch thread only
+    int    m_rxAudMsgs       = 0;      // bus-watch thread only
+    double m_rxAudPeakDb     = -120.0; // bus-watch thread only — window maximum
     // Inbound-RTP stats cell for the per-tile signal-quality glyph (struct
     // defined in the public section above). A SHARED-PTR cell (not raw
     // members) so pollInboundRtp's async reply callback NEVER dereferences
