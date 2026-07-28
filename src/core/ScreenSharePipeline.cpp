@@ -1,5 +1,6 @@
 #include "core/ScreenSharePipeline.h"
 #include "core/VideoEncoderUtil.h"
+#include "core/KeyframePolicy.h"
 #include <gst/rtp/rtp.h>
 #include <gst/app/app.h>
 #include <cstring>      // memcpy (WGC frame copy)
@@ -473,6 +474,39 @@ bool ScreenSharePipeline::start(const QString &stunServer, const QList<TurnServe
     if (g_object_class_find_property(G_OBJECT_GET_CLASS(venc), "max-bitrate"))
         g_object_set(venc, "max-bitrate", (guint)(m_maxBitrate / 1000), nullptr);
 
+    // Periodic IDR backstop (see KeyframePolicy.h). A shared screen that lost a
+    // packet stayed corrupted indefinitely while the screen was STATIC: the
+    // picture is only resent when it changes, so nothing ever repaired the
+    // damaged reference. The receiver already asks — SubscribePipeline sends a
+    // PLI at 0.5/1.5/3 s then every 5 s — but there is NO GstForceKeyUnit
+    // handler anywhere in this pipeline, so an inbound request has no path to
+    // this encoder. The sender must therefore guarantee the repair itself.
+    //
+    // The GOP property name is NOT portable: x264enc exposes `key-int-max`,
+    // nvh264enc and qsvh264enc expose `gop-size`. A blind g_object_set would
+    // silently no-op on whichever encoder we cannot test locally — i.e.
+    // reproduce this very bug on someone else's machine — so probe for each
+    // name and log which one bound.
+    {
+        const int gop = talq::keyframeIntervalFrames(m_shareFps, 3);
+        if (gop > 0) {
+            GObjectClass *k = G_OBJECT_GET_CLASS(venc);
+            const char *prop = nullptr;
+            if (g_object_class_find_property(k, "key-int-max"))   prop = "key-int-max";
+            else if (g_object_class_find_property(k, "gop-size")) prop = "gop-size";
+            if (prop) {
+                g_object_set(venc, prop, (gint)gop, nullptr);
+                qInfo().nospace() << "ScreenSharePipeline: periodic IDR every "
+                                  << gop << " frames (~3 s at " << m_shareFps
+                                  << " fps) via " << prop;
+            } else {
+                qWarning() << "ScreenSharePipeline: encoder exposes neither "
+                              "key-int-max nor gop-size — NO periodic IDR backstop; "
+                              "a corrupted static share cannot self-repair";
+            }
+        }
+    }
+
     if (useH264) {
         // Repeat SPS/PPS before every IDR so subscribers that join the SFU
         // after the first keyframe still decode; zero-latency aggregation.
@@ -906,7 +940,7 @@ void ScreenSharePipeline::onWgcFrame(void *user, const unsigned char *bgra,
             "format",    G_TYPE_STRING,     "BGRA",
             "width",     G_TYPE_INT,        width,
             "height",    G_TYPE_INT,        height,
-            "framerate", GST_TYPE_FRACTION, 30, 1,
+            "framerate", GST_TYPE_FRACTION, self->m_shareFps, 1,
             nullptr);
         gst_app_src_set_caps(GST_APP_SRC(src), caps);
         gst_caps_unref(caps);

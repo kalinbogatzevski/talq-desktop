@@ -2873,8 +2873,26 @@ void CallManager::cameraFrameConfirmed()
     emit cameraChanged();
 }
 
+void CallManager::updatePowerInhibit()
+{
+    // A call must not be interrupted by the screensaver or by the machine
+    // sleeping. The display is only held on when there is something to LOOK at
+    // — camera on, we are sharing, or a peer is sharing to us — so an
+    // audio-only call still lets the screen turn off.
+    const bool inCall = m_state != Idle;
+    const bool needsDisplay = inCall && (m_cameraOn || m_screenSharing
+                                         || !m_screenSubscribers.isEmpty());
+    m_powerInhibit.update(inCall, needsDisplay);
+}
+
 void CallManager::updateCameraSuppression()
 {
+    // Piggy-backs on every trigger that already recomputes share state (local
+    // share start/stop, remote-screen change, publisher rebuild), and sits
+    // BEFORE the m_publishPipeline guard below so it still runs when there is
+    // no publisher — e.g. an audio-only call.
+    updatePowerInhibit();
+
     // Any screen share in the room — ours OR a remote peer's — reduces every
     // camera to a small PIP, so drop our camera to a single LOW simulcast layer
     // for its duration. This cuts encode load on every sender AND, just as
@@ -2979,7 +2997,7 @@ void CallManager::dispatchScreenSendoffer()
     }
 }
 
-void CallManager::startScreenShare(int monitorIndex, quintptr windowHandle)
+void CallManager::startScreenShare(int monitorIndex, quintptr windowHandle, bool presentation)
 {
     if (m_state != Active && m_state != Connecting) return;
 
@@ -2987,6 +3005,11 @@ void CallManager::startScreenShare(int monitorIndex, quintptr windowHandle)
     // start rebuilds the SAME screen/window without re-prompting.
     m_ssMonitorIndex = monitorIndex;
     m_ssWindowHandle = windowHandle;
+    // Per-share, remembered for the same reason: a confirm-timeout retry must
+    // rebuild at the SAME quality the user asked for. Never written back to
+    // Video/screenShareQuality — the toggle lifts the clamp, it is not a
+    // preference change.
+    m_ssPresentation = presentation;
 
     // #share-reliability — gate the start through the policy. StartQueued means
     // a previous share is still releasing its capture device; the released()
@@ -3054,13 +3077,20 @@ void CallManager::buildAndStartSharePipeline(int monitorIndex, quintptr windowHa
         return;
     }
 
-    // Default 1440p (level 2): a single shared window/app is cheap bandwidth-
-    // wise, and 1080p downscales hi-DPI / 2K windows enough to soften text
-    // (field report 2026-06-04). The cap is a CEILING + 4K hard-clamp + GCC
-    // adaptive bitrate still protect a full-4K-monitor share. Existing users
-    // keep their saved choice.
+    // Default 1080p (level 1). This was 1440p (level 2) while the CAMERA
+    // defaulted to 720p; that asymmetry starved a full-screen 2K scroll of bits
+    // at the ~12 Mbps ceiling and showed up as smearing (field 2026-07-28) —
+    // the artifacts were bit starvation, not latency. Halving the framerate to
+    // 15 alongside this roughly doubles the bits per frame, which is what a
+    // scroll actually needs; text is sharper for it. Presentation mode restores
+    // the user's full level at 30 fps for slides and video.
+    //
+    // The 2026-06-04 argument for 1440p (hi-DPI window shares soften at 1080p)
+    // still holds for WINDOW shares, which is exactly what Presentation mode is
+    // for — it is now a per-share choice instead of a default everyone pays.
+    // Existing users keep their saved choice; only the default moves.
     m_ssQuality = QSettings("TalQ", "TalQ")
-                      .value("Video/screenShareQuality", 2).toInt();
+                      .value("Video/screenShareQuality", 1).toInt();
 
     m_screenSharePipeline = new ScreenSharePipeline(this);
 
@@ -3086,8 +3116,15 @@ void CallManager::buildAndStartSharePipeline(int monitorIndex, quintptr windowHa
         // pipeline reads once). Full decision chain (base cap -> 4K hard
         // ceiling -> GPU-tier clamp -> software-fallback 1080p clamp) + the
         // field rationale: core/ShareCapPolicy.h.
-        const talq::ShareCap cap = screenShareCapForLevel(m_ssQuality, forceSwEncoder);
+        const talq::ShareQuality sq = talq::shareQualityFor(m_ssQuality, m_ssPresentation);
+        const talq::ShareCap cap = screenShareCapForLevel(sq.level, forceSwEncoder);
         m_screenSharePipeline->setQualityCap(cap.w, cap.h);
+        // Framerate must be set before start() — it is baked into the appsrc caps.
+        m_screenSharePipeline->setShareFps(sq.fps);
+        qInfo().nospace() << "CallManager: share quality level " << sq.level
+                          << " @ " << sq.fps << " fps (presentation="
+                          << (m_ssPresentation ? "on" : "off")
+                          << ", stored level " << m_ssQuality << ")";
     }
 
     connect(m_screenSharePipeline, &ScreenSharePipeline::localOfferReady,
@@ -3960,7 +3997,12 @@ void CallManager::setScreenShareQuality(int level)
     // software-fallback 1080p clamp: a share that fell back to x264 keeps its
     // 1080p ceiling across a live quality change too (realtime x264 above
     // 1080p costs more CPU than a laptop can hide mid-call).
-    const talq::ShareCap cap = screenShareCapForLevel(level, m_ssForceSwEncoder);
+    // Same clamp as the build path, so a live quality change cannot exceed what
+    // this share was started with. Framerate is deliberately NOT changed here:
+    // it is baked into the appsrc caps at start() and altering it would force a
+    // renegotiation this in-place re-cap does not perform.
+    const talq::ShareQuality sq = talq::shareQualityFor(level, m_ssPresentation);
+    const talq::ShareCap cap = screenShareCapForLevel(sq.level, m_ssForceSwEncoder);
 
     // LIVE quality change -- reconfigure the RUNNING pipeline's downscale cap in
     // place (ScreenSharePipeline::setQualityCap re-sets the scale capsfilter).
@@ -4722,6 +4764,9 @@ void CallManager::teardown(const QString &reason)
     // pinned "in call" until Qt's transport timeout, a minute+ later).
     m_joinedCall = false;
     setState(Idle);
+    // Release the wake lock now the call is over — must run on teardown, not
+    // only from updateCameraSuppression, which is not called on this path.
+    updatePowerInhibit();
     emit callEnded(reason);
 
     // Server-side leave is fire-and-forget; whatever consumer needs to
