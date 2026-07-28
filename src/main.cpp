@@ -399,6 +399,38 @@ int main(int argc, char *argv[])
 
     gst_init(&argc, &argv);
 
+    // 0.62.3 — ONE-TIME video quality-defaults migration.
+    //
+    // 0.62.2 lowered the screen-share default to 1080p and confirmed the camera
+    // default at 720p. But a QSettings default only reaches users who never
+    // stored a value, and anyone who had ever touched the quality dropdown had
+    // one — so the people who reported the problem were exactly the people the
+    // fix could not reach. The maintainer's own machine still held
+    // screenShareQuality=3 (Native/4K) and maxSendHeight=1080, which is precisely
+    // why a 2K share smeared while scrolling and an HD call wobbled.
+    //
+    // Reset both ONCE, then never again: the flag means a user who deliberately
+    // re-picks a high value keeps it forever after. Nothing is taken away — the
+    // per-share Presentation toggle covers the high-quality case, and both
+    // settings remain editable.
+    {
+        QSettings s("TalQ", "TalQ");
+        s.beginGroup("Video");
+        if (!s.value("qualityDefaultsMigrated", false).toBool()) {
+            const int oldShare = s.value("screenShareQuality", 1).toInt();
+            const int oldCam   = s.value("maxSendHeight", 720).toInt();
+            s.setValue("screenShareQuality", 1);   // 1=1080p
+            s.setValue("maxSendHeight", 720);
+            s.setValue("qualityDefaultsMigrated", true);
+            if (oldShare != 1 || oldCam != 720)
+                qInfo().nospace() << "main: one-time quality-defaults migration — share level "
+                                  << oldShare << " -> 1 (1080p), camera " << oldCam
+                                  << " -> 720. Change either in Settings or the share picker; "
+                                     "this runs once and never overrides you again.";
+        }
+        s.endGroup();
+    }
+
     // B1/B4 (0.53.x robustness) — software-DECODE fallback.
     // (a) Restore a persisted "this box's HW decoder is broken" latch and demote
     //     the HW decoder ranks BEFORE any pipeline so decodebin re-plugs software
