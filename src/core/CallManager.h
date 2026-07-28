@@ -28,6 +28,7 @@
 #include "core/MediaLoadController.h"   // 0.51.x dynamic encode/decode load controller
 #include "core/FpsRampPolicy.h"         // 0.61.0 weak-tier solo slow-start fps ramp
 #include "core/FrameHandoff.h"          // bounded frame hand-off to the Qt main thread
+#include "core/PowerStateInhibitor.h"   // keep the machine awake during a call
 #include "core/MemShedPolicy.h"         // host-protection memory-shed decision (onLoadTick)
 #include "core/ShareCapPolicy.h"        // screen-share quality level -> encode cap
 
@@ -204,7 +205,11 @@ public:
     void leaveCallBeacon();
     Q_INVOKABLE void toggleMute();
     Q_INVOKABLE void toggleCamera();
-    Q_INVOKABLE void startScreenShare(int monitorIndex = 0, quintptr windowHandle = 0);
+    // presentation=true lifts THIS share's cap to the user's stored level (up
+    // to 4K) at 30 fps; false clamps it to 1080p at 15 fps. Per-share only — it
+    // never rewrites Video/screenShareQuality.
+    Q_INVOKABLE void startScreenShare(int monitorIndex = 0, quintptr windowHandle = 0,
+                                      bool presentation = false);
     Q_INVOKABLE void stopScreenShare();
     bool isScreenSharing() const { return m_screenSharing; }
     // 0.53.1 — true when the active share is a single WINDOW (not a full monitor).
@@ -474,6 +479,8 @@ private:
     // monitor's resolution — on a weak box previewing its own 720p share while
     // decoding an incoming 1080p one, it is a full third of the pile-up.
     talq::FrameHandoffGate m_sharePreviewHandoff;
+    // Main-thread only (SetThreadExecutionState is thread-scoped).
+    talq::PowerStateInhibitor m_powerInhibit;
     QTimer m_loadTimer;
     bool   m_loadControllerEnabled = true;
     // Verbose [MEDIA]/[LEAK] call-diagnostic heartbeats — OFF by default. The
@@ -734,9 +741,13 @@ private:
     // screen/window without re-prompting.
     int m_ssMonitorIndex = 0;
     quintptr m_ssWindowHandle = 0;
-    int m_ssQuality = 2;   // 0=720p 1=1080p 2=1440p 3=Native (persisted; default 1440p —
+    int m_ssQuality = 1;   // 0=720p 1=1080p 2=1440p 3=Native (persisted; default 1080p —
                            // kept in lockstep with the QSettings fallbacks in
                            // buildAndStartSharePipeline and SharePickerDialog)
+    // Presentation mode for the ACTIVE share only: lifts the 1080p/15 clamp back
+    // to the user's stored level at 30 fps. Never persisted — ticking it does
+    // not change Video/screenShareQuality. See talq::shareQualityFor.
+    bool m_ssPresentation = false;
     // #reshare-hw-collision — build the NEXT share pipeline with the software
     // x264 encoder. Set by the confirm-timeout Retry (the attempt produced no
     // outbound RTP; on HW boxes the dominant cause is a collision with the
@@ -780,6 +791,9 @@ private:
     // start/stop, remote add via the screen-offer handler, remote remove via
     // removeScreenSubscriber, publisher rebuild).
     void updateCameraSuppression();
+    // Keep the machine awake while a call is up, and the screen on while the
+    // camera or a share is in use. Call wherever call/camera/share state moves.
+    void updatePowerInhibit();
     // Tear down the screen subscriber for `sessionId` (no-op if none): stop +
     // delete its pipeline, drop it from m_screenSubscribers, unbind the rendered
     // screen provider if it was this peer's, and re-evaluate camera suppression

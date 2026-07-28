@@ -90,4 +90,32 @@ inline ShareCap screenShareCap(int level, int tierMaxHeight, bool forceSwEncoder
     return cap;
 }
 
+// Effective share quality for ONE share, from the user's stored quality level
+// and whether Presentation mode was ticked for this share.
+//
+// Default (presentation=false) deliberately clamps to 1080p/15. The share
+// default used to be level 2 (1440p) at 30 fps while the CAMERA defaulted to
+// 720p. That asymmetry starved a full-screen 2K scroll of bits at the ~12 Mbps
+// ceiling and showed up as smearing (field 2026-07-28) — the artifacts were bit
+// starvation, not latency. Static content (slides, code, documents) is
+// indistinguishable at 15 fps and gets roughly twice the bits per frame, which
+// is exactly what a scroll needs.
+//
+// The stored level is NEVER rewritten by the toggle: Presentation lifts the
+// clamp for this share only, so the user's preference survives it.
+struct ShareQuality {
+    int level;   // effective level to feed screenShareCap()
+    int fps;     // capture + encode framerate
+};
+
+inline ShareQuality shareQualityFor(int storedLevel, bool presentation)
+{
+    int lvl = storedLevel;
+    if (lvl < 0) lvl = 0;
+    if (lvl > 3) lvl = 3;
+    if (presentation)
+        return ShareQuality{ lvl, 30 };
+    return ShareQuality{ lvl < 1 ? lvl : 1, 15 };
+}
+
 } // namespace talq

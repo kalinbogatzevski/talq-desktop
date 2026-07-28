@@ -1,5 +1,35 @@
 # Changelog
 
+## v0.62.2 "Blue Fiesta Week 2" (2026-07-28)
+
+Clearer screen sharing, smoother video on busy connections, and two fixes for
+things that interrupted calls.
+
+### Fixed
+* **A shared screen no longer stays broken once it glitches.** If part of a
+  shared screen became corrupted, it could stay that way indefinitely while the
+  screen was still — the picture is only resent when it changes, so nothing ever
+  repaired it. The sender now refreshes the whole picture every few seconds, so
+  any damage clears on its own.
+* **Closing the call window no longer ends the call.** It now shrinks the call
+  to a small floating panel with your video, a mute button and a hang-up button.
+  Calls end only when you choose to end them.
+* **The screensaver no longer interrupts a call.** Your computer stays awake for
+  the whole call, and the screen stays on while your camera or a shared screen is
+  in use. Audio-only calls still let the screen turn off on its own.
+
+### Changed
+* **Screen sharing now starts at 1080p and 15 frames per second.** Sharing used
+  to default to a much higher resolution than the camera, which left too few
+  bits for the picture while scrolling and showed up as smearing. Slides,
+  documents and code look sharper this way. Tick **Presentation mode** in the
+  share picker to use your full quality setting at 30 frames per second — best
+  for video or detailed slides. It applies to that share only and doesn't change
+  your saved preference.
+* **Video frame rate now adapts to your connection on every computer.** It stays
+  fully smooth while the connection is healthy and eases back when it is
+  congested, instead of breaking up.
+
 ## v0.62.1 "Blue Fiesta Week 2" (2026-07-27)
 
 A stability fix for calls involving screen sharing on lower-powered computers.

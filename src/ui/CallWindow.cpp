@@ -264,9 +264,19 @@ void CallWindow::changeEvent(QEvent *e)
 
 void CallWindow::closeEvent(QCloseEvent *e)
 {
-    // Closing the window ends the call (don't leave an orphan call running).
-    if (m_call->state() != CallManager::Idle)
-        m_call->hangUp();
+    // X must NEVER end the call. It used to call hangUp(), so one stray click
+    // dropped every participant (field 2026-07-28).
+    //
+    // The original reasoning was sound — a hidden window must not leave a call
+    // running invisibly with a live microphone — but the answer is the PiP
+    // dock, not hanging up: it keeps a thumbnail, a mute chip and a hang-up
+    // button on screen, so the call cannot run unnoticed and ending it stays
+    // one click away. Hang-up is now explicit-only.
+    if (m_call->state() != CallManager::Idle) {
+        e->ignore();          // we are docking, not closing — keep the window alive
+        if (!m_pipDocked) enterPipDock();
+        return;
+    }
     e->accept();
 }
 
@@ -287,8 +297,11 @@ void CallWindow::pickShareTarget()
     connect(m_call, &CallManager::callEnded, &picker, &QDialog::reject);
     if (picker.exec() != QDialog::Accepted) return;
     const auto target = picker.selectedTarget();
+    // Both call sites must carry the presentation flag — missing either leaves
+    // one share type silently ignoring the toggle.
+    const bool presentation = picker.presentationMode();
     if (target.type == ShareTarget::Window)
-        m_call->startScreenShare(0, target.windowHandle);
+        m_call->startScreenShare(0, target.windowHandle, presentation);
     else
-        m_call->startScreenShare(target.monitorIndex);
+        m_call->startScreenShare(target.monitorIndex, 0, presentation);
 }

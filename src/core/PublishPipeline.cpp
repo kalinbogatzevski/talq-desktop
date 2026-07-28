@@ -29,9 +29,19 @@
 // capsfilters to ranges needs a live congested-call soak to rule out a
 // renegotiation wedge (the historic NOT_NEGOTIATED-4); shipping it dormant lets
 // it be field-validated (TALQ_FPS_ADAPT=1) before it becomes default-on.
+// 0.62.2 — now default-ON for every tier; TALQ_FPS_ADAPT=0 is the kill switch.
+// The comment above describes why it shipped dormant: relaxing the framerate
+// capsfilters to ranges risked the historic NOT_NEGOTIATED-4 wedge. That risk
+// is now MEASURED rather than assumed — the same path ran live on a weak-tier
+// field machine on 2026-07-27 and moved max-rate five times (10->15->20->15->10)
+// across one call with zero NOT_NEGOTIATED. Adaptive beats a static low cap: a
+// fixed 20 fps would pay the cost of a bad link on every call, including the
+// healthy majority, whereas this holds 30 while the link is fine and sheds only
+// when it is not.
 static bool talqFpsAdaptOn()
 {
-    static const bool on = qEnvironmentVariableIntValue("TALQ_FPS_ADAPT") == 1;
+    static const bool on = qEnvironmentVariableIntValue("TALQ_FPS_ADAPT") != 0
+                           || !qEnvironmentVariableIsSet("TALQ_FPS_ADAPT");
     return on;
 }
 PublishPipeline::PublishPipeline(QObject *parent)
