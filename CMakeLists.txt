@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(talq VERSION 0.62.1 LANGUAGES CXX)
+project(talq VERSION 0.62.2 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -74,6 +74,8 @@ qt_add_executable(talq
     src/core/ScreenSharePipeline.cpp
     src/core/HwEncoderProbe.h
     src/core/HwEncoderProbe.cpp
+    src/core/PowerStateInhibitor.h
+    src/core/PowerStateInhibitor.cpp
     src/core/CallSignaling.cpp
     src/core/DebugMonitor.cpp
     src/core/AppSettings.cpp

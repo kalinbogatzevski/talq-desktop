@@ -64,6 +64,11 @@ public:
     // the old stop()->start() re-share, which re-offered on the same session and
     // the MCU's stale screen handle never confirmed the new publish (churn/drop).
     void setQualityCap(int maxW, int maxH);
+    // Capture/encode framerate for THIS share. 15 by default, 30 in
+    // Presentation mode (talq::shareQualityFor). Must be set BEFORE start() —
+    // it is baked into the appsrc caps and changing it later would force a
+    // renegotiation this pipeline does not perform.
+    void setShareFps(int fps) { if (fps > 0 && fps <= 60) m_shareFps = fps; }
     // #reshare-hw-collision — build the NEXT start() with the SOFTWARE H264
     // encoder (x264enc) instead of probing hardware. Set by CallManager when a
     // HW-encoder-session collision is likely (re-share inside the HW release
@@ -126,6 +131,7 @@ private:
     // Server screen ceiling (HPB signaling [mcu] maxscreenbitrate). GCC is
     // clamped here; it drives the VBR average up/down with the content.
     int m_maxBitrate = 12000000;
+    int m_shareFps = 15; // capture/encode fps; 30 only in Presentation mode
     int m_capW = 1920;   // screen-capture downscale cap (default 1080p,
     int m_capH = 1080;   // ~4.7x less per-frame RAM than native 4K)
     GstElement *m_gccbwe = nullptr;  // rtpgccbwe, owned by webrtcbin once returned

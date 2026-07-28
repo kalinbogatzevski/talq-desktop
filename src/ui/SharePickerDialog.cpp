@@ -213,10 +213,10 @@ SharePickerDialog::SharePickerDialog(QWidget *parent)
     qCombo->addItem(tr("1440p"), 2);
     qCombo->addItem(tr("Native"), 3);
     {
-        // Default 1440p (level 2) — must match CallManager's fallback, or the
+        // Default 1080p (level 1) — must match CallManager's fallback, or the
         // picker shows a level the pipeline is not actually building at.
         int cur = QSettings("TalQ", "TalQ")
-                      .value("Video/screenShareQuality", 2).toInt();
+                      .value("Video/screenShareQuality", 1).toInt();
         int idx = qCombo->findData(cur);
         qCombo->setCurrentIndex(idx < 0 ? 1 : idx);
     }
@@ -227,6 +227,16 @@ SharePickerDialog::SharePickerDialog(QWidget *parent)
     });
     bottom->addWidget(qLbl);
     bottom->addWidget(qCombo);
+    // Per-share quality lift. Off by default: a normal share runs at 1080p/15,
+    // which keeps text crisp and leaves bits for scrolling. Presentation
+    // restores the full level above at 30 fps, for slides and video.
+    m_presentation = new QCheckBox(tr("Presentation mode"), this);
+    m_presentation->setToolTip(
+        tr("Uses the quality above at 30 frames per second.\n"
+           "Best for video or detailed slides. Needs more bandwidth.\n"
+           "Applies to this share only."));
+    m_presentation->setChecked(false);
+    bottom->addWidget(m_presentation);
     bottom->addStretch();
 
     m_shareBtn = new QPushButton(tr("Share"), this);

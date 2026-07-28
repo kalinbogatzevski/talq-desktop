@@ -6,6 +6,7 @@
 #include <QPushButton>
 #include <QLabel>
 #include <QTabWidget>
+#include <QCheckBox>
 #include <QTimer>
 
 struct ShareTarget {
@@ -25,12 +26,18 @@ public:
 
     ShareTarget selectedTarget() const { return m_selected; }
 
+    // Ticked = this share may use the full quality level shown in the picker at
+    // 30 fps. Unticked (default) = clamped to 1080p at 15 fps. Per-share only:
+    // it never rewrites Video/screenShareQuality.
+    bool presentationMode() const { return m_presentation && m_presentation->isChecked(); }
+
 private:
     void populateMonitors();
     void populateWindows();
     void refreshThumbnails();   // live preview, ~1.5s while the picker is open
 
     QTabWidget *m_tabs = nullptr;
+    QCheckBox *m_presentation = nullptr;
     QListWidget *m_monitorList = nullptr;
     QListWidget *m_windowList = nullptr;
     QPushButton *m_shareBtn = nullptr;
