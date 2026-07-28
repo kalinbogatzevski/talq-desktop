@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.62.3 "Blue Fiesta Week 2" (2026-07-28)
+
+Makes the new video quality defaults actually reach everyone, and shows the
+right release codename in the app.
+
+### Fixed
+* **The new screen-sharing and camera defaults now apply to existing installs.**
+  0.62.2 lowered them, but a new default only reaches someone who had never
+  chosen a value — so anyone who had ever touched the quality dropdown kept the
+  old, heavier setting and never received the fix. Both are now reset once, on
+  first run of this version, and never touched again: pick anything you like
+  afterwards and it sticks.
+* **The app now shows the correct release codename and its story.** The window
+  and Settings displayed the previous line's name.
+
 ## v0.62.2 "Blue Fiesta Week 2" (2026-07-28)
 
 Clearer screen sharing, smoother video on busy connections, and two fixes for
