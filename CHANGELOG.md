@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.62.4 "Blue Fiesta Week 2" (2026-08-08)
+
+Completes the memory fix from 0.62.1 for calls involving screen sharing.
+
+### Fixed
+* **TalQ no longer runs out of memory and closes itself while receiving a
+  shared screen.** 0.62.1 stopped this happening for camera video, but the
+  shared screen itself — the largest picture on the call, and the one most
+  likely to arrive faster than a slower computer can draw it — was still able
+  to pile up until memory ran out and the app shut down mid-call. Incoming
+  shared screens, and the preview of a screen you are sharing yourself, now
+  discard frames that can no longer be drawn in time instead of queueing them.
+  A computer that cannot keep up shows a lower frame rate and stays in the
+  call. Each participant's video is still limited separately, so one slow
+  stream cannot affect the others.
+
 ## v0.62.3 "Blue Fiesta Week 2" (2026-07-28)
 
 Makes the new video quality defaults actually reach everyone, and shows the
