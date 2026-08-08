@@ -10,6 +10,7 @@
 #include <gst/webrtc/webrtc.h>
 #include "SignalingClient.h"
 #include "VideoFrameProvider.h"
+#include "FrameHandoff.h"
 typedef struct _GstAppSink GstAppSink;
 
 /**
@@ -181,6 +182,9 @@ private:
     static GstFlowReturn onPreviewSample(GstAppSink *sink, gpointer userData);
 
     VideoFrameProvider *m_previewProvider = nullptr;
+    // 0.62.4 — bounded hand-off for the OWN-SHARE PREVIEW, the second producer
+    // named in the 2026-07-27 OOM report and missed by 0.62.1. See FrameHandoff.h.
+    talq::FrameHandoffGate m_previewHandoff;
     GstElement         *m_previewAppsink  = nullptr;
 
     // --- Single-WINDOW capture via Windows Graphics Capture (WGC) ---
