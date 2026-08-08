@@ -6,6 +6,7 @@
 #include <gst/webrtc/webrtc.h>
 #include "SignalingClient.h"
 #include "VideoFrameProvider.h"
+#include "FrameHandoff.h"
 
 /**
  * Receive-only GStreamer webrtcbin pipeline for MCU subscription.
@@ -58,6 +59,10 @@ private:
     guint m_busWatchId = 0;
 
     VideoFrameProvider *m_videoProvider = nullptr;
+    // 0.62.4 — bounded hand-off for the INCOMING SCREEN SHARE. 0.62.1 gated the
+    // camera paths but missed this one, which is the heaviest producer of all:
+    // a 1080p share software-decoded on a weak box. See FrameHandoff.h.
+    talq::FrameHandoffGate m_videoHandoff;
     GstElement *m_videoAppsink = nullptr;
     GstElement *m_videoConvert = nullptr;  // decodebin pad-added links here
     GstElement *m_videoDecode = nullptr;   // decodebin; PLI on its sink pad

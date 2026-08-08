@@ -971,13 +971,31 @@ GstFlowReturn ScreenSharePipeline::onPreviewSample(GstAppSink *sink, gpointer us
     auto *self = static_cast<ScreenSharePipeline *>(userData);
     GstSample *sample = gst_app_sink_pull_sample(sink);
     if (!sample) return GST_FLOW_OK;
-    // Hand the sample to VideoFrameProvider on the Qt thread — same
-    // pattern as PublishPipeline::onPreviewSample. feedFrame owns the
-    // unref via the queued lambda's capture.
+    // Bounded hand-off — see FrameHandoff.h. Same pattern as
+    // PublishPipeline::onPreviewSample, which this comment used to claim before
+    // that path acquired a gate in 0.62.1 and this one did not. Previewing our
+    // own share is the second producer named in the 2026-07-27 OOM report, so
+    // it needs the same bound: a main thread that falls behind must drop stale
+    // frames rather than queue one full GstSample per frame until the process
+    // dies.
+    if (!self->m_previewHandoff.tryAcquire()) {
+        gst_sample_unref(sample);
+        const long long d = self->m_previewHandoff.dropped();
+        if (talq::FrameHandoffGate::isLogWorthy(d))
+            qWarning().nospace() << "ScreenSharePipeline: main thread behind — "
+                                 << "dropped " << d
+                                 << " share-preview frame(s) to bound memory";
+        return GST_FLOW_OK;
+    }
     QPointer<ScreenSharePipeline> guard(self);
     QMetaObject::invokeMethod(self, [guard, sample]() {
-        if (guard && guard->m_previewProvider)
-            guard->m_previewProvider->feedFrame(sample);
+        if (guard) {
+            if (guard->m_previewProvider)
+                guard->m_previewProvider->feedFrame(sample);
+            // Release only while the object is alive; if it was destroyed the
+            // gate died with it and there is nothing to unblock.
+            guard->m_previewHandoff.release();
+        }
         gst_sample_unref(sample);
     }, Qt::QueuedConnection);
     return GST_FLOW_OK;

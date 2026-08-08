@@ -608,10 +608,34 @@ GstFlowReturn SubscribePipeline::onNewVideoSample(GstAppSink *sink, gpointer use
     GstSample *sample = gst_app_sink_pull_sample(sink);
     if (!sample) return GST_FLOW_OK;
 
+    // Bounded hand-off — see FrameHandoff.h. A bare QueuedConnection has no
+    // backpressure: a main thread that falls behind accumulates one full
+    // GstSample per frame (~3 MB at 1080p) until the process dies on a GLib
+    // OOM abort. This is the INCOMING SCREEN SHARE — the stream that actually
+    // killed the WeakIgpu box in the 2026-07-27 field report (software
+    // avdec_h264 of a 1080p share, RSS 55 MB -> 2 GB). 0.62.1 gated the camera
+    // paths and missed this one. Dropping a stale frame is the correct trade:
+    // only the newest frame is worth painting.
+    if (!self->m_videoHandoff.tryAcquire()) {
+        gst_sample_unref(sample);
+        const long long d = self->m_videoHandoff.dropped();
+        if (talq::FrameHandoffGate::isLogWorthy(d))
+            qWarning().nospace() << "SubscribePipeline["
+                                 << self->m_remoteSessionId.left(8)
+                                 << "]: main thread behind — dropped " << d
+                                 << " screen frame(s) to bound memory";
+        return GST_FLOW_OK;
+    }
+
     QPointer<SubscribePipeline> guard(self);
     QMetaObject::invokeMethod(self, [guard, sample]() {
-        if (guard && guard->m_videoProvider)
-            guard->m_videoProvider->feedFrame(sample);
+        if (guard) {
+            if (guard->m_videoProvider)
+                guard->m_videoProvider->feedFrame(sample);
+            // Release only while the object is alive; if it was destroyed the
+            // gate died with it and there is nothing to unblock.
+            guard->m_videoHandoff.release();
+        }
         gst_sample_unref(sample);
     }, Qt::QueuedConnection);
 
