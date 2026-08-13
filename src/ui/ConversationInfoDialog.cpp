@@ -83,8 +83,10 @@ QString primaryButtonStyle(const QString &extra = QString())
     const PainterTheme th = activeTheme();
     auto n = [](const QColor &c){ return c.name(QColor::HexRgb); };
     return QStringLiteral(
+        // font-weight converged onto AppStyle's variant="primary" (600, not
+        // 700) -- radius/padding/font-size/hover already matched exactly.
         "QPushButton { background: %1; color: %2;"
-        "  font-weight: 700; font-size: 12px; border: none;"
+        "  font-weight: 600; font-size: 12px; border: none;"
         "  border-radius: 8px; padding: 8px 18px; %5 }"
         "QPushButton:hover   { background: %3; }"
         "QPushButton:pressed { background: %4; }")
@@ -145,9 +147,16 @@ ConversationInfoDialog::ConversationInfoDialog(ApiClient *api,
         const QString initial = currentName.trimmed().isEmpty()
             ? QStringLiteral("#") : currentName.trimmed().left(1).toUpper();
         m_avatar->setText(initial);
+        // Palette-derived placeholder (no-gray convention): authorColor keyed
+        // on the conversation name for the fill, ink scored per-fill via
+        // inkOn() — controlInk alone fails AA against several author-palette
+        // hues on Paper. Same pairing SidebarPainter's avatar-fallback uses.
+        const PainterTheme th = activeTheme();
+        const QColor avatarBg = PainterTheme::authorColor(currentName);
         m_avatar->setStyleSheet(QStringLiteral(
-            "QLabel { background:#3a6ea5; color:white; border-radius:28px;"
-            "         font-size:24px; font-weight:600; }"));
+            "QLabel { background:%1; color:%2; border-radius:28px;"
+            "         font-size:24px; font-weight:600; }")
+            .arg(avatarBg.name(QColor::HexRgb), th.inkOn(avatarBg).name(QColor::HexRgb)));
         avRow->addWidget(m_avatar);
         avRow->addSpacing(14);
         if (m_amOwnerOrMod) {
@@ -163,6 +172,15 @@ ConversationInfoDialog::ConversationInfoDialog(ApiClient *api,
             // shared status at the very bottom). Hidden until a change is attempted.
             m_avatarStatus = new QLabel(QString(), this);
             m_avatarStatus->setWordWrap(true);
+            // Colour-free weight rule, set ONCE here (not in setAvatarStatus,
+            // which only ever touches the "role" property for colour). This
+            // keeps the label visually distinct from the plainer m_status
+            // below — the "Prominent feedback" this comment promises — while
+            // still letting AppStyle.cpp's role selectors own the colour.
+            // Verified empirically that a widget-local stylesheet survives
+            // AppStyle's RepolishFilter (unpolish+polish on a role change,
+            // including a live role SWAP): see task-10-report.md fix-round-1.
+            m_avatarStatus->setStyleSheet(QStringLiteral("QLabel { font-weight: 600; }"));
             m_avatarStatus->setVisible(false);
             avCol->addWidget(m_avatarStatus);
             // Slim indeterminate "busy" bar, shown only while the upload is in flight.
@@ -261,9 +279,10 @@ ConversationInfoDialog::ConversationInfoDialog(ApiClient *api,
     m_botsContainer->setObjectName(QStringLiteral("botsCard"));
     m_botsContainer->setStyleSheet(QStringLiteral(
         "QWidget#botsCard { background: %1; border: 1px solid %2;"
-        " border-radius: 12px; }")
+        " border-radius: %3px; }")
         .arg(palette().color(QPalette::Base).name(),
-             palette().color(QPalette::Mid).name()));
+             palette().color(QPalette::Mid).name())
+        .arg(PainterTheme::radiusCard));
     m_botsLayout = new QVBoxLayout(m_botsContainer);
     m_botsLayout->setContentsMargins(4, 4, 4, 4);
     m_botsLayout->setSpacing(2);
@@ -361,8 +380,10 @@ void ConversationInfoDialog::applyChrome()
     const QPalette p = palette();
     auto n = [&](QPalette::ColorRole r){ return p.color(r).name(); };
     setStyleSheet(QString(
-        "QLabel#eyebrow { color: %1; font-size: 10px; letter-spacing: 2px;"
-        "  text-transform: uppercase; font-weight: 700; }"
+        // Converged onto AppStyle's role="eyebrow" values (11px/600/inkMuted)
+        // -- %1 already resolves to PlaceholderText=theme.textMuted, the same
+        // token as AppStyle's inkMuted, so only size/weight/tracking changed.
+        "QLabel#eyebrow { color: %1; font-size: 11px; font-weight: 600; }"
         "QLabel#headline { color: %2; font-size: 22px; font-weight: 600;"
         "  letter-spacing: -0.2px; }"
         "QLineEdit { background: transparent; border: none;"
@@ -421,11 +442,12 @@ void ConversationInfoDialog::setAvatarStatus(const QString &text, bool error)
 {
     if (!m_avatarStatus) return;
     m_avatarStatus->setText(text);
-    // Explicit, prominent styling (the shared bottom status is too subtle): a
-    // clear red for failure, a confident green for success — readable in all themes.
-    m_avatarStatus->setStyleSheet(error
-        ? QStringLiteral("QLabel { color:#e23b3b; font-weight:600; }")
-        : QStringLiteral("QLabel { color:#2a9d5b; font-weight:600; }"));
+    // Shared danger/success roles (AppStyle.cpp), not a one-off hardcoded
+    // red/green — same tokens every other status label in this dialog uses
+    // (m_status below), so failure/success read consistently across themes.
+    // The app-wide RepolishFilter re-runs the QSS selector on this dynamic
+    // property change even though the label is already shown.
+    m_avatarStatus->setProperty("role", error ? "danger" : "success");
     m_avatarStatus->setVisible(!text.isEmpty());
 }
 
@@ -510,6 +532,11 @@ void ConversationInfoDialog::populateParticipants(const QVector<RoomParticipant>
         const QString label = QStringLiteral("\U0001F464  %1  \u00B7  %2  \u00B7  %3%4")
                                   .arg(name, id, role, canRemove);
         auto *item = new QListWidgetItem(label, m_memberList);
+        // A long name/id/role combo elides in the list's fixed width with no
+        // way to see the rest -- the other elided text sites in the app all
+        // resolve this via a tooltip; QListWidgetItem never gets one unless
+        // set explicitly.
+        item->setToolTip(label);
         item->setData(kAttendeeIdRole, p.attendeeId);
         item->setData(kActorIdRole, p.userId);
         item->setData(kParticipantTypeRole, p.participantType);

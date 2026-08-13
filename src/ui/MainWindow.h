@@ -306,6 +306,12 @@ private:
     class QLineEdit *m_searchInput = nullptr;
     class QListWidget *m_searchResults = nullptr;
     class QTimer *m_searchDebounce = nullptr;
+    // Watches MessageListModel::historyUntilSettled for the current search-hit
+    // jump (loadHistoryUntil chases a single model-level target id, so only
+    // one jump can ever be in flight). A value member, not a heap allocation:
+    // arming a new jump disconnects whatever the previous one left behind
+    // first, so a same-room second click can never strand a connection.
+    QMetaObject::Connection m_searchJumpConn;
 
     // State
     bool m_chatMode = false;

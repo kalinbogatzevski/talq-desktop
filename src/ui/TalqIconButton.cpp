@@ -57,6 +57,7 @@ void TalqIconButton::paintEvent(QPaintEvent *)
     const QColor onAccent = pal.color(QPalette::HighlightedText);
     const QColor ink     = pal.color(QPalette::WindowText);
     const QColor dim     = pal.color(QPalette::PlaceholderText);
+    const QColor dangerTok = pal.color(QPalette::BrightText);  // theme.danger, see applyDarkPalette()
 
     const bool toggle   = isCheckable();
     const bool on       = isChecked();
@@ -69,7 +70,12 @@ void TalqIconButton::paintEvent(QPaintEvent *)
 
     if (m_danger) {
         // Solid danger chip (hang-up idiom); ink stays high-contrast.
-        const QColor danger = mix(surface, QColor(0xd0, 0x55, 0x44), 0.85);
+        // Was a standalone 0xd05544 literal -- a THIRD ad-hoc red alongside
+        // theme.danger and the universal end-call red, with no consumer ever
+        // wiring setDanger(true) to notice. Route through the real danger
+        // token instead so this (currently unused, but real) API tracks all
+        // four themes the moment it is used, like every other colour here.
+        const QColor danger = mix(surface, dangerTok, 0.85);
         chip  = m_hover ? danger.lighter(112) : danger;
         glyph = onAccent;
     } else if (toggle && on) {

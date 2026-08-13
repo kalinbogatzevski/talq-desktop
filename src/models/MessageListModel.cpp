@@ -306,6 +306,20 @@ void MessageListModel::setConversationToken(const QString &token)
         oldReply->abort();
         oldReply->deleteLater();
     }
+
+    // A search jump that is still paging when the user switches rooms must
+    // not follow them. Aborting m_historyReply means the settle never fires,
+    // which (a) stranded the heap QMetaObject::Connection MainWindow created
+    // for it and (b) left these two members set, so the NEXT room's first
+    // loadHistory chased the OLD room's message id for up to five more pages
+    // and then showed a spurious "Message not found in recent history".
+    if (m_historyUntilTargetId > 0) {
+        const auto abandoned = m_historyUntilTargetId;
+        m_historyUntilTargetId = 0;
+        m_historyUntilRemainingPages = 0;
+        emit historyUntilSettled(abandoned, false);   // lets MainWindow clean up
+    }
+
     if (m_refreshReply) {
         auto *oldReply = m_refreshReply;
         m_refreshReply = nullptr;

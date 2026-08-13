@@ -1,5 +1,99 @@
 # Changelog
 
+## v0.64.0 "Blue Fiesta Week 4" — STABLE (2026-08-13)
+
+The stable release of the Blue Fiesta line. Most of the work behind it was
+measurement rather than new features: a long investigation into echo, which ended
+by confirming that TalQ's echo cancellation does its job — and by closing the ways
+it could quietly stop doing it.
+
+### Fixed
+* **Echo cancellation can no longer be switched off by accident.** Turning it off
+  now asks first, because the person who turns it off is not the one who suffers:
+  everyone *they* call starts hearing their own voice echoed back, and there is
+  nothing those people can do about it from their side. The warning says so
+  plainly.
+* **TalQ now says when echo cancellation is not running.** Previously a call could
+  run from start to finish with it switched off and nothing anywhere mentioned it —
+  you had to notice that a line was missing. If it is off, or if the audio device
+  refuses to give us what it needs, that is now stated outright.
+
+### Notes
+* Echo cancellation was measured end to end during this cycle. With it on, the
+  sound of your speakers is removed from your microphone well below the level of
+  the room's own background noise, and your voice is *not* quietened while the
+  other person is speaking. Leaving it on costs nothing.
+* If someone still hears an echo of themselves while talking to you, the setting
+  to check is on **their** machine, not yours — and if you are both in one room
+  with speakers on, no software can fix that. Headphones can.
+
+## v0.63.1 "Blue Fiesta Week 3" — BETA (2026-08-09)
+
+The clean-up pass behind 0.63.0, finished. Memory is tighter still, colours and
+text now follow the same rules everywhere, and the groundwork is in for
+translating TalQ into other languages. This is a beta.
+
+### Fixed
+* **A few more things that quietly held on to memory.** A video resource was
+  still kept on three rarer paths when a call failed to start; a network
+  request that never answered could hang on indefinitely; picture previews in
+  chat could be requested twice over, and previews that could never load left
+  a permanent trace behind. Jumping between two search results in the same
+  conversation also left something running in the background.
+* **Text on coloured circles is now readable in every theme.** The initials on
+  a person's coloured avatar, and the small badges beside conversation topics,
+  used one fixed ink colour that was nearly invisible against several of the
+  palette colours on the light theme. The right ink is now chosen for each
+  colour, and a test keeps it that way.
+* **One look, everywhere.** Menus, buttons, section headings, badges and corner
+  rounding had drifted into several near-identical variants over time; they now
+  share one definition. Small type is more consistent, the mute button on the
+  floating call panel is easier to hit, and shortened names show the full text
+  when you hover them.
+
+### Changed
+* **Ready for other languages.** Text that was previously stitched together in
+  English word order — "*someone* is typing…", message counts — is now written
+  so a translator can put the words in the right order for their language,
+  with proper handling of singular and plural. Nothing looks different in
+  English; this is groundwork.
+
+## v0.63.0 "Blue Fiesta Week 3" — BETA (2026-08-09)
+
+A wide cleanup pass: memory now holds steady over long calls and long
+sessions, reactions are clickable everywhere they're shown, colours and
+corners render correctly in every theme, and three places that used to go
+blank now tell you what's going on. This is a beta.
+
+### Fixed
+* **TalQ no longer gets heavier the longer a call runs.** A video resource
+  wasn't released when a peer's stream was torn down, and a couple of
+  internal counters grew without bound across calls in the same session
+  instead of resetting between them. Both are now cleaned up as soon as a
+  call ends, so back-to-back calls over a long working session no longer add
+  up.
+* **TalQ no longer gets heavier the longer the app stays open.** A network
+  request could be left dangling if the code waiting on it was gone before
+  it finished, and jumping to an old message in search results then
+  switching conversations could leave that search still paging in the
+  background. Both now clean up immediately instead of lingering for the
+  rest of the session.
+* **Reactions are now clickable everywhere they're shown.** On a message
+  with several reactions, or a wide multi-character one, the clickable area
+  could drift away from what was actually drawn, so clicking a visible
+  reaction sometimes did nothing. Painting and click detection now agree on
+  the same shape.
+* **Colours and rounded corners now render correctly in every theme.** A
+  handful of places — an avatar in the conversation info panel, a status
+  label, a couple of popups — used a hardcoded colour or corner size instead
+  of following the current theme, so they looked slightly (or very) wrong in
+  at least one of the four themes. They now match everywhere.
+* **Three places that used to go blank now say what's happening.** Filtering
+  or searching the sidebar with no matches, searching the emoji picker with
+  no results, and running a conversation search with no hits all used to
+  show nothing at all — was it broken, or just empty? Each now shows a short
+  message instead.
+
 ## v0.62.4 "Blue Fiesta Week 2" (2026-08-08)
 
 Completes the memory fix from 0.62.1 for calls involving screen sharing.

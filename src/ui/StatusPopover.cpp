@@ -1,5 +1,6 @@
 #include "ui/StatusPopover.h"
 #include "ui/EmojiPickerWidget.h"
+#include "painter/PainterTheme.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -102,7 +103,7 @@ void StatusPopover::applyChrome()
     auto n = [&](QPalette::ColorRole r){ return p.color(r).name(); };
     setStyleSheet(QString(
         "QDialog#statusPopover { background:%1; border:1px solid %2;"
-        "  border-radius:12px; }"
+        "  border-radius:%9px; }"
         "QLabel { color:%3; background:transparent; }"
         "QLabel#stTitle { color:%4; font-size:11px; letter-spacing:1px; }"
         "QPushButton { color:%3; background:transparent; border:none;"
@@ -124,7 +125,8 @@ void StatusPopover::applyChrome()
         .arg(n(QPalette::Window), n(QPalette::Mid), n(QPalette::WindowText),
              n(QPalette::PlaceholderText), n(QPalette::Base),
              n(QPalette::AlternateBase), n(QPalette::Highlight),
-             n(QPalette::HighlightedText)));
+             n(QPalette::HighlightedText))
+        .arg(PainterTheme::radiusCard));
 }
 
 void StatusPopover::changeEvent(QEvent *e)

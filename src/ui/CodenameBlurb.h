@@ -58,6 +58,21 @@ inline QString codenameBlurb(const QString &verName)
         || verName == QStringLiteral("Koprivshtitsa"))
         return QObject::tr("Codename \"%1\" — Bulgaria's April Uprising of 1876, "
             "150th anniversary (2026).").arg(verName);
+    if (verName == QStringLiteral("Blue Fiesta Week 3"))
+        return QObject::tr("Codename \"%1\" — week three of the blue celebration "
+            "for PFC Levski Sofia, \"Sinite\" (the Blues), the maintainer's club: "
+            "the THIRD qualifying round of the 2026–27 UEFA Champions League, and a "
+            "1–0 win over Kazakh champions Kairat at a packed Georgi Asparuhov on "
+            "4 August — Serginho settling it in the second minute of stoppage time, "
+            "a low shot deflected past Anarbekov with the game all but gone. The "
+            "return is played not in Almaty but in Turkistan, 830 km west, after "
+            "UEFA allowed Kairat to move it when their Central Stadium was given "
+            "over to a concert. Twenty years earlier, in 2006–07, Levski became the "
+            "first Bulgarian club ever to reach the Champions League group stage, "
+            "drawn with Barcelona, Chelsea and Werder Bremen. A name over the "
+            "release that went looking for what leaks: every video hand-off now "
+            "bounded, what teardown forgot now freed, and the places the interface "
+            "rendered wrong put right.").arg(verName);
     if (verName == QStringLiteral("Blue Fiesta Week 2"))
         return QObject::tr("Codename \"%1\" — week two of the blue celebration for "
             "PFC Levski Sofia, \"Sinite\" (the Blues), the maintainer's club: the "

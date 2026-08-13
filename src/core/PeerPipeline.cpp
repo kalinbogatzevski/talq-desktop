@@ -91,8 +91,24 @@ bool PeerPipeline::start(const QString &stunServer, const QList<TurnServer> &tur
     if (testAudio) {
         audiosrc = gst_element_factory_make("audiotestsrc", "peer-audiosrc");
         if (audiosrc) {
-            g_object_set(audiosrc, "wave", 0 /* sine */, "freq", 440.0, "is-live", TRUE, nullptr);
-            qDebug() << "PeerPipeline: using audiotestsrc (test mode)";
+            // TALQ_TEST_AUDIO_VOL belongs HERE, not only in PublishPipeline.
+            //
+            // In the AEC scenario the FAR END is a peer, i.e. this class — peer A uses
+            // its real microphone. The volume knob was read only in PublishPipeline
+            // (~line 352) and only when TALQ_TEST_AUDIO is set, which the AEC scenario
+            // unsets for peer A. So the matrix runner's `floor` cell, which mutes the
+            // far end to measure the rig's noise floor, was a STRUCTURAL NO-OP: it
+            // reported "MUTE DID NOT TAKE" on 4 of 4 attempts with farRef at
+            // -27.6..-31.0 dB, because nothing was ever going to turn this source down.
+            //
+            // Default 0.8 matches audiotestsrc's own default, so unmuted behaviour is
+            // unchanged for every other scenario.
+            double testVol = 0.8;
+            if (qEnvironmentVariableIsSet("TALQ_TEST_AUDIO_VOL"))
+                testVol = qEnvironmentVariable("TALQ_TEST_AUDIO_VOL").toDouble();
+            g_object_set(audiosrc, "wave", 0 /* sine */, "freq", 440.0, "is-live", TRUE,
+                         "volume", testVol, nullptr);
+            qDebug() << "PeerPipeline: using audiotestsrc (test mode) vol=" << testVol;
         }
     }
     if (!audiosrc) {

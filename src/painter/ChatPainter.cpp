@@ -27,6 +27,7 @@
 #include "core/ApiClient.h"
 #include "core/EmojiData.h"
 #include "core/SignalingClient.h"
+#include "painter/ReactionLayout.h"
 #include <QTextBlock>
 #include <QTextLayout>
 #include <QTextLine>
@@ -147,6 +148,13 @@ void ChatPainter::setModel(MessageListModel *mdl)
     m_previewCache.clear();
     m_previewPending.clear();
     m_previewAspect.clear();
+    // This clear() is a no-op in practice: setModel() has exactly one call
+    // site (MainWindow's one-time constructor), so it runs once on empty
+    // maps and never again. The real bound on m_previewAttempts is in
+    // requestFilePreview()'s finished handler below — every terminal state
+    // (success, give-up, decode-failure) removes the fileId's entry there,
+    // so nothing grows unbounded regardless of room switches.
+    m_previewAttempts.clear();
     m_layoutCache.clear();
 
     // Connect new model
@@ -1273,24 +1281,64 @@ QString ChatPainter::hitTestLink(const MessageLayout &ml, const QPointF &canvasP
     return ml.bodyDoc->documentLayout()->anchorAt(bodyLocal);
 }
 
+// Reaction pill geometry inputs — single source for BOTH paintReactions and
+// hitTestReaction. Sharing layoutReactionPills() alone was not enough: the
+// two call sites still each named padX/emojiCountGap/pillGap and rebuilt the
+// two QFonts as separate literals, so the geometry could still fork if one
+// site's numbers were edited without the other's. These two helpers are the
+// only place those numbers and font specs are allowed to exist.
+talq::ReactionLayoutParams ChatPainter::reactionLayoutParams(const QRectF &barRect) const
+{
+    talq::ReactionLayoutParams lp;
+    lp.barLeft  = barRect.left();
+    lp.barRight = barRect.right();
+    lp.padX = 6;
+    lp.emojiCountGap = 3;
+    lp.pillGap = 4;
+    return lp;
+}
+
+ChatPainter::ReactionFonts ChatPainter::reactionFonts() const
+{
+    ReactionFonts f;
+    f.emoji = m_theme.bodyFont();
+    f.emoji.setPixelSize(13);
+    f.count = m_theme.timeFont();
+    f.count.setPixelSize(11);
+    return f;
+}
+
 QString ChatPainter::hitTestReaction(const MessageLayout &ml, const QPointF &canvasPos) const
 {
     if (!ml.reactBarRect.contains(canvasPos)) return {};
 
     QStringList tokens = ml.reactions.split(QStringLiteral("  "), Qt::SkipEmptyParts);
-    QFontMetrics fm(m_theme.timeFont());
-    qreal x = ml.reactBarRect.left();
-    qreal y = ml.reactBarRect.top();
-    qreal pillH = 22;
 
-    for (const auto &token : tokens) {
-        int pillW = fm.horizontalAdvance(token) + 14;
-        QRectF pillRect(x, y, pillW, pillH);
-        if (pillRect.contains(canvasPos)) {
-            int sp = token.indexOf(' ');
-            return sp > 0 ? token.left(sp) : token;
-        }
-        x += pillW + 4;
+    // Must match paintReactions exactly — same fonts, same padding, same
+    // overflow rule. That is why both the arithmetic (ReactionLayout.h) and
+    // its inputs (reactionLayoutParams/reactionFonts, above) are shared.
+    const ReactionFonts fonts = reactionFonts();
+    QFontMetrics fmEmoji(fonts.emoji);
+    QFontMetrics fmCount(fonts.count);
+
+    QStringList emojis;
+    std::vector<talq::ReactionMetrics> metrics;
+    for (const QString &token : tokens) {
+        int lastSpace = token.lastIndexOf(' ');
+        if (lastSpace <= 0) continue;
+        const QString emoji = token.left(lastSpace);
+        emojis << emoji;
+        metrics.push_back({ fmEmoji.horizontalAdvance(emoji),
+                            fmCount.horizontalAdvance(token.mid(lastSpace + 1)) });
+    }
+
+    const auto rects = talq::layoutReactionPills(metrics, reactionLayoutParams(ml.reactBarRect));
+
+    for (int i = 0; i < emojis.size(); ++i) {
+        if (!rects[i].visible) continue;
+        const QRectF pill(rects[i].x, ml.reactBarRect.top(),
+                          rects[i].width, ml.reactBarRect.height());
+        if (pill.contains(canvasPos)) return emojis[i];
     }
     return {};
 }
@@ -1736,7 +1784,7 @@ void ChatPainter::paintOtherMessage(QPainter *p, const MessageLayout &ml, qreal 
             letterFont.setPixelSize(14);
             letterFont.setWeight(QFont::DemiBold);
             p->setFont(letterFont);
-            p->setPen(m_theme.controlInk);   // No-Gray: ink on author color
+            p->setPen(m_theme.inkOn(avatarColor));   // No-Gray: ink scored against the actual fill
             QString letter = ml.actorName.isEmpty()
                 ? QStringLiteral("?")
                 : ml.actorName.left(1).toUpper();
@@ -2041,38 +2089,51 @@ void ChatPainter::paintReactions(QPainter *p, const MessageLayout &ml, qreal off
     // Parse: "emoji1 count1  emoji2 count2" (double-space separated tokens)
     QStringList tokens = ml.reactions.split(QStringLiteral("  "), Qt::SkipEmptyParts);
 
-    QFont emojiFont = m_theme.bodyFont();
-    emojiFont.setPixelSize(13);
-    QFont countFont = m_theme.timeFont();
-    countFont.setPixelSize(11);
+    // Must match hitTestReaction exactly — same fonts, same padding, same
+    // overflow rule. That is why both the arithmetic (ReactionLayout.h) and
+    // its inputs (reactionLayoutParams/reactionFonts, defined once beside
+    // hitTestReaction) are shared rather than re-literaled here.
+    const ReactionFonts fonts = reactionFonts();
+    QFont emojiFont = fonts.emoji;
+    QFont countFont = fonts.count;
 
     QFontMetrics fmEmoji(emojiFont);
     QFontMetrics fmCount(countFont);
 
-    qreal x = bar.left();
     const qreal pillH = bar.height();
-    const qreal pillGap = 4;
-    const qreal pillPadX = 6;
 
     QColor pillBg = m_theme.textPrimary;         // warm-tinted, No-Gray
     pillBg.setAlpha(16);
     QColor countColor = m_theme.textSecondary;
 
+    // Measure every pill first, then lay them out through the shared
+    // geometry so hit-testing sees exactly these rects.
+    struct TokenParts { QString emoji, count; };
+    QList<TokenParts> parts;
+    std::vector<talq::ReactionMetrics> metrics;
     for (const QString &token : tokens) {
         // Each token is "emoji count" (single space)
         int lastSpace = token.lastIndexOf(' ');
         if (lastSpace <= 0) continue;
+        TokenParts tp{ token.left(lastSpace), token.mid(lastSpace + 1) };
+        parts << tp;
+        metrics.push_back({ fmEmoji.horizontalAdvance(tp.emoji),
+                            fmCount.horizontalAdvance(tp.count) });
+    }
 
-        QString emoji = token.left(lastSpace);
-        QString count = token.mid(lastSpace + 1);
+    const talq::ReactionLayoutParams lp = reactionLayoutParams(bar);
+    const qreal pillPadX = lp.padX;
+    const auto rects = talq::layoutReactionPills(metrics, lp);
 
-        int emojiW = fmEmoji.horizontalAdvance(emoji);
-        int countW = fmCount.horizontalAdvance(count);
-        qreal pillW = pillPadX + emojiW + 3 + countW + pillPadX;
+    for (int i = 0; i < parts.size(); ++i) {
+        if (!rects[i].visible) break;
 
-        // Don't overflow the bar
-        if (x + pillW > bar.right())
-            break;
+        const QString &emoji = parts[i].emoji;
+        const QString &count = parts[i].count;
+        const int emojiW = metrics[i].emojiWidth;
+        const int countW = metrics[i].countWidth;
+        const qreal x = rects[i].x;
+        const qreal pillW = rects[i].width;
 
         QRectF pill(x, bar.top(), pillW, pillH);
 
@@ -2097,10 +2158,8 @@ void ChatPainter::paintReactions(QPainter *p, const MessageLayout &ml, qreal off
         // Count
         p->setPen(countColor);
         p->setFont(countFont);
-        p->drawText(QRectF(x + pillPadX + emojiW + 3, bar.top(), countW, pillH),
+        p->drawText(QRectF(x + pillPadX + emojiW + lp.emojiCountGap, bar.top(), countW, pillH),
                      Qt::AlignCenter, count);
-
-        x += pillW + pillGap;
     }
 }
 
@@ -2285,6 +2344,15 @@ void ChatPainter::requestAvatar(const QString &userId)
 
 // ─── File preview image loading ─────────────────────
 
+// Node-count cap, independent of the byte budget in evictPreviewCache(). A
+// permanently-broken fileId leaves a 0-byte QImage() "tombstone" entry in
+// m_previewCache (see the give-up and decode-failure branches below) so that
+// fetchFilePreview() stops re-requesting it. Tombstones contribute nothing to
+// the byte total, so the byte-budget eviction alone can never reclaim them —
+// this cap is what actually bounds how many entries (live previews +
+// tombstones combined) m_previewCache can hold.
+static constexpr int kPreviewCacheMaxEntries = 1000;
+
 QImage ChatPainter::fetchFilePreview(int fileId)
 {
     auto it = m_previewCache.find(fileId);
@@ -2296,14 +2364,21 @@ QImage ChatPainter::fetchFilePreview(int fileId)
     return QImage(); // empty = show placeholder
 }
 
-void ChatPainter::requestFilePreview(int fileId)
+void ChatPainter::requestFilePreview(int fileId, bool isRetry)
 {
-    if (m_previewPending.contains(fileId))
+    if (!isRetry) {
+        if (m_previewPending.contains(fileId))
+            return;
+        if (!m_model || !m_model->api())
+            return;
+        m_previewPending.insert(fileId);
+    } else if (!m_model || !m_model->api()) {
+        // Model was torn down mid-retry-cycle. Release the pending mark so
+        // this fileId doesn't stay "in flight" forever.
+        m_previewPending.remove(fileId);
+        m_previewAttempts.remove(fileId);
         return;
-    if (!m_model || !m_model->api())
-        return;
-
-    m_previewPending.insert(fileId);
+    }
 
     ApiClient *api = m_model->api();
     QString path = QString("/index.php/core/preview?fileId=%1&x=800&y=600&a=1")
@@ -2312,7 +2387,6 @@ void ChatPainter::requestFilePreview(int fileId)
 
     connect(reply, &QNetworkReply::finished, this, [this, reply, fileId]() {
         reply->deleteLater();
-        m_previewPending.remove(fileId);
 
         if (reply->error() != QNetworkReply::NoError) {
             // Don't cache on failure — NC's preview service often 404s the
@@ -2323,11 +2397,23 @@ void ChatPainter::requestFilePreview(int fileId)
             m_previewAttempts[fileId] = attempts;
             if (attempts <= 4) {
                 const int delayMs = qMin(30000, 1500 * (1 << (attempts - 1)));
+                // fileId stays in m_previewPending across the backoff wait —
+                // it is only released on a terminal state (below) or on
+                // success. If it were cleared here, a repaint landing during
+                // the wait could call fetchFilePreview() -> requestFilePreview()
+                // and start a second, parallel request chain for the same file.
                 QTimer::singleShot(delayMs, this, [this, fileId]() {
-                    requestFilePreview(fileId);
+                    requestFilePreview(fileId, /*isRetry=*/true);
                 });
             } else {
+                // Terminal state: the tombstone below makes fetchFilePreview()
+                // short-circuit for this fileId forever (never calls us again),
+                // so the retry counter has nothing left to count — drop it, same
+                // as the success path does, or it outlives its only purpose.
                 m_previewCache[fileId] = QImage();
+                m_previewAttempts.remove(fileId);
+                m_previewPending.remove(fileId);
+                evictPreviewCache();
             }
             return;
         }
@@ -2335,10 +2421,17 @@ void ChatPainter::requestFilePreview(int fileId)
         QByteArray data = reply->readAll();
         QImage img;
         if (!img.loadFromData(data)) {
+            // Also terminal (permanent decode failure, e.g. a corrupt/non-image
+            // response) — same reasoning as the give-up branch above: this
+            // tombstone is as permanent as that one, so it needs the same cleanup.
             m_previewCache[fileId] = QImage();
+            m_previewAttempts.remove(fileId);
+            m_previewPending.remove(fileId);
+            evictPreviewCache();
             return;
         }
         m_previewAttempts.remove(fileId);
+        m_previewPending.remove(fileId);
 
         m_previewCache[fileId] = img;
         qreal aspect = img.width() > 0 ? (qreal)img.height() / img.width() : 0.5;
@@ -2346,27 +2439,67 @@ void ChatPainter::requestFilePreview(int fileId)
         bool aspectChanged = qAbs(oldAspect - aspect) > 0.01;
         m_previewAspect[fileId] = aspect;
 
-        // Evict oldest if over 50 MB
-        qint64 totalBytes = 0;
-        for (auto it = m_previewCache.begin(); it != m_previewCache.end(); ++it)
-            totalBytes += it.value().sizeInBytes();
-        while (totalBytes > 50 * 1024 * 1024 && m_previewCache.size() > 1) {
-            auto oldest = m_previewCache.begin();
-            const int evictedId = oldest.key();
-            totalBytes -= oldest.value().sizeInBytes();
-            m_previewCache.erase(oldest);
-            // Keep the aspect cache coherent: if we drop the pixels, drop the
-            // remembered aspect too, so the next layout falls back to the
-            // compact placeholder (imageBubble=false) and re-requests, instead
-            // of an over-sized flush-image placeholder on a stale aspect.
-            m_previewAspect.remove(evictedId);
-        }
+        evictPreviewCache();
 
         if (aspectChanged)
             rebuildAllLayouts();  // aspect ratio now known — recalculate heights
         else
             update();  // just repaint with the loaded preview
     });
+}
+
+void ChatPainter::evictPreviewCache()
+{
+    // Called from every terminal state (success, give-up, decode-failure),
+    // not just success, so a run of permanently-broken previews gets capped
+    // too. Two independent triggers, deliberately handled with DIFFERENT
+    // victim-selection strategies — see each phase below for why.
+
+    // 1) COUNT trigger (kPreviewCacheMaxEntries): bounds 0-byte tombstone
+    //    pileup, which the byte trigger below can't see at all. Tombstone
+    //    pileup is exactly the scenario this cap exists for, so prefer
+    //    evicting a tombstone (isNull()) first — it costs nothing (0 bytes)
+    //    and keeps genuinely useful, byte-costly live previews in cache
+    //    instead of evicting THEM to make room while tombstones sit idle.
+    //    Falls back to the arbitrary bucket-order pick only if no tombstone
+    //    remains (can only happen if the cache is somehow all-live at 1000+
+    //    entries; in practice a full-size 800x600 preview is roughly 1-2 MB,
+    //    so ~30-40 live entries already trip the 50 MB byte trigger below
+    //    long before the count reaches kPreviewCacheMaxEntries).
+    while (m_previewCache.size() > kPreviewCacheMaxEntries && m_previewCache.size() > 1) {
+        auto victim = m_previewCache.begin();
+        for (auto it = m_previewCache.begin(); it != m_previewCache.end(); ++it) {
+            if (it.value().isNull()) {
+                victim = it;
+                break;
+            }
+        }
+        const int evictedId = victim.key();
+        m_previewCache.erase(victim);
+        m_previewAspect.remove(evictedId);
+    }
+
+    // 2) BYTE trigger (50 MB budget): bounds live-preview memory. Tombstones
+    //    contribute 0 bytes, so preferring them here would be pointless work
+    //    that never reduces totalBytes — keep the original arbitrary
+    //    bucket-order eviction. NOTE: despite the shape of this loop,
+    //    m_previewCache.begin() is QHash bucket order, not insertion/age
+    //    order — this evicts an arbitrary entry each pass, not literally the
+    //    oldest one.
+    qint64 totalBytes = 0;
+    for (auto it = m_previewCache.begin(); it != m_previewCache.end(); ++it)
+        totalBytes += it.value().sizeInBytes();
+    while (totalBytes > 50 * 1024 * 1024 && m_previewCache.size() > 1) {
+        auto victim = m_previewCache.begin();
+        const int evictedId = victim.key();
+        totalBytes -= victim.value().sizeInBytes();
+        m_previewCache.erase(victim);
+        // Keep the aspect cache coherent: if we drop the pixels, drop the
+        // remembered aspect too, so the next layout falls back to the
+        // compact placeholder (imageBubble=false) and re-requests, instead
+        // of an over-sized flush-image placeholder on a stale aspect.
+        m_previewAspect.remove(evictedId);
+    }
 }
 
 // ─── Twemoji overlay ────────────────────────────────

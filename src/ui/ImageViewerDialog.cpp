@@ -328,6 +328,12 @@ void ImageViewerDialog::mouseMoveEvent(QMouseEvent *event)
 void ImageViewerDialog::closeEvent(QCloseEvent *event)
 {
     QSettings().setValue(QStringLiteral("imageViewer/geometry"), geometry());
+    // Closing only hid the dialog, so the last full-resolution image (capped
+    // to the largest screen edge — tens of MB on a 4K display) and the scene
+    // pixmap stayed resident until the next image replaced them.
+    m_scene->clear();
+    m_item = nullptr;
+    m_currentImage = QImage();
     QWidget::closeEvent(event);
 }
 

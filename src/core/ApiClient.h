@@ -301,6 +301,17 @@ private:
                           std::function<QNetworkReply*()> resend = {}, int attempt = 0);
     void trackReply(QNetworkReply *reply);
 
+    // Lifetime wiring shared by every context-taking endpoint.
+    //
+    // The per-endpoint `finished` handler is deliberately bound to the
+    // CALLER's context so it cannot touch a destroyed dialog. But that
+    // gating also means Qt severs it when the context dies — and the only
+    // reply->deleteLater() lived inside it. The reply, parented to the
+    // long-lived m_nam and absent from m_pendingReplies, then completed,
+    // buffered its whole body, and survived to app exit. Closing a dialog
+    // over a slow link was enough.
+    static void bindReplyLifetime(QNetworkReply *reply, QObject *context);
+
     // Update reachability from a finished reply (called once per reply).
     // Ignores deliberately-cancelled requests so logout/teardown can't be
     // mistaken for an outage.

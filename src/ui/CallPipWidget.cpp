@@ -77,10 +77,11 @@ QImage CallPipWidget::avatarDisc(const QString &id, const QString &name, int siz
     img.fill(Qt::transparent);
     QPainter g(&img);
     g.setRenderHint(QPainter::Antialiasing);
-    g.setBrush(PainterTheme::authorColor(id)); g.setPen(Qt::NoPen);
+    const QColor fill = PainterTheme::authorColor(id);
+    g.setBrush(fill); g.setPen(Qt::NoPen);
     g.drawEllipse(QRectF(0.5, 0.5, size - 1.0, size - 1.0));
     QFont f = th.nameFont(); f.setPixelSize(int(size * 0.36)); f.setWeight(QFont::DemiBold);
-    g.setFont(f); g.setPen(th.controlInk);
+    g.setFont(f); g.setPen(th.inkOn(fill));
     g.drawText(QRectF(0, 0, size, size), Qt::AlignCenter, pipInitials(name));
     return img;
 }
@@ -125,7 +126,11 @@ void CallPipWidget::paintEvent(QPaintEvent *)
     const bool muted = m_call->isMuted();
     // Stored as a member (not a local) so mousePress/Release can hit-test it:
     // clicking the chip toggles mute, same as the mic button on the full stage.
-    m_micRect = QRectF(10, bar.top() + (barH - 22) / 2.0, 22, 22);
+    // Was 22x22 -- under the 24px minimum tap target on the dock's most-used
+    // control. Bumped to 24x24 (hit-rect and visual chip together, simplest
+    // fix; still smaller than the 28px hang-up/expand buttons so the visual
+    // hierarchy is unchanged) -- still comfortably inside the 34px strip.
+    m_micRect = QRectF(10, bar.top() + (barH - 24) / 2.0, 24, 24);
     const QColor micBg = muted ? QColor(0xE2, 0x3B, 0x33, 220) : QColor(255, 255, 255, 30);
     p.setBrush(micBg); p.setPen(Qt::NoPen);
     p.drawEllipse(m_micRect);

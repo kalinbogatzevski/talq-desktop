@@ -287,10 +287,10 @@ void SharePickerDialog::populateMonitors()
         t.type = ShareTarget::Monitor;
         t.monitorIndex = i;
         QRect geo = screens[i]->geometry();
-        t.name = QString("Screen %1  (%2 × %3)")
+        t.name = tr("Screen %1  (%2 × %3)")
                      .arg(i + 1).arg(geo.width()).arg(geo.height());
         if (screens[i] == QApplication::primaryScreen())
-            t.name += "  · Primary";
+            t.name += tr("  · Primary");
         m_monitors.append(t);
 
         auto *item = new QListWidgetItem(QIcon(placeholderThumb()),

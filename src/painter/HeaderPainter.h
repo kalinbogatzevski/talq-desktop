@@ -120,6 +120,13 @@ private:
     QRectF m_searchBtnRect;
     QRectF m_remindersBtnRect;
     QRectF m_infoBtnRect;
+    // Title-label geometry as last painted (set in the same place as the
+    // elide, read back in HoverMove below the buttonAtPos check) so a long
+    // conversation title elided to fit the header gets a tooltip the same
+    // way SidebarPainter/ThreadsPainter's row titles do.
+    QRectF m_titleRect;
+    QString m_titleFullText;
+    bool m_titleElided = false;
     int m_hoveredButton = -1;   // 0=expand, 1=back, 2=audio, 3=video, 4=search, 5=reminders, 6=info
     int m_pressedButton = -1;   // armed button between press and release (same ids)
 

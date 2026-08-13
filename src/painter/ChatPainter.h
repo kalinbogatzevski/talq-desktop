@@ -6,8 +6,10 @@
 #include <QImage>
 #include <QPixmap>
 #include <QSet>
+#include <QFont>
 #include "MessageLayout.h"
 #include "PainterTheme.h"
+#include "painter/ReactionLayout.h"
 
 /**
  * Character-level text selection state, spanning one or more messages.
@@ -168,6 +170,12 @@ private:
     QString hitTestLink(const MessageLayout &ml, const QPointF &localPos) const;
     QString hitTestReaction(const MessageLayout &ml, const QPointF &localPos) const;
     int hitTestBodyCursor(const MessageLayout &ml, const QPointF &canvasPos) const;
+
+    // ── Reaction pill geometry (single source for paintReactions AND
+    // hitTestReaction — see ReactionLayout.h for why this must not fork) ──
+    talq::ReactionLayoutParams reactionLayoutParams(const QRectF &barRect) const;
+    struct ReactionFonts { QFont emoji, count; };
+    ReactionFonts reactionFonts() const;
     bool isOnBodyText(const QPointF &canvasPos, int layoutIdx) const;
     void copySelectedText();
     QVariantMap variantMapFromLayout(const MessageLayout &ml) const;
@@ -196,7 +204,16 @@ private:
     QImage fetchAvatar(const QString &userId);
     QImage fetchFilePreview(int fileId);
     void requestAvatar(const QString &userId);
-    void requestFilePreview(int fileId);
+    // isRetry=true is ONLY for requestFilePreview's own backoff-timer
+    // continuation (see the QTimer::singleShot call in the .cpp). It bypasses
+    // BOTH the m_previewPending "already in flight" guard and the initial
+    // model/api null-check, so that the retry can re-enter without tripping
+    // the guard meant for external callers. A new call site passing true
+    // would silently reintroduce the duplicate-request race this parameter
+    // exists to close — external callers (fetchFilePreview) must always use
+    // the default isRetry=false.
+    void requestFilePreview(int fileId, bool isRetry = false);
+    void evictPreviewCache();
 
     // ── State ──
     MessageListModel *m_model = nullptr;
