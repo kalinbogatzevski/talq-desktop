@@ -78,8 +78,10 @@ QString sheet(const PainterTheme &t)
         { "hoverWash",   hx(hoverWash)       },
         { "inputBg",     hx(inputBg)         },
         { "handle",      hx(handleCol)       },
-        { "rN", QString::number(PainterTheme::radiusNormal) },
-        { "rS", QString::number(PainterTheme::radiusSmall)  },
+        { "rN", QString::number(PainterTheme::radiusNormal)  },
+        { "rS", QString::number(PainterTheme::radiusSmall)   },
+        { "rC", QString::number(PainterTheme::radiusControl) },
+        { "rCard", QString::number(PainterTheme::radiusCard) },
     };
 
     // @{token} template — generic chrome only (never bare QWidget: QPainter
@@ -111,7 +113,7 @@ QFrame[role="hint"] {
 }
 QFrame[role="card"] {
     background:@{bgSurface}; border:1px solid @{divider};
-    border-radius:@{rN}px;
+    border-radius:@{rCard}px;
 }
 
 QToolTip {
@@ -128,7 +130,7 @@ QToolTip {
  * real text call-to-actions (never to tiny icon buttons). */
 QPushButton {
     background:transparent; color:@{ink};
-    border:none; border-radius:@{rS}px;
+    border:none; border-radius:@{rC}px;
 }
 QPushButton:hover    { background:@{hoverWash}; }
 QPushButton:pressed  { background:@{bgSelected}; }
@@ -160,7 +162,7 @@ QPushButton[variant="danger"]:pressed{ background:@{dangerWash}; }
  * neutral-button look app-wide. */
 QPushButton[variant="default"] {
     background:@{inputBg}; color:@{ink};
-    border:1px solid @{divider}; border-radius:@{rS}px;
+    border:1px solid @{divider}; border-radius:@{rC}px;
     padding:8px 16px;
 }
 QPushButton[variant="default"]:hover    { background:@{hoverWash}; border-color:@{accent}; }
@@ -185,7 +187,7 @@ QPushButton[variant="ghost"]:pressed{ background:@{bgSelected}; }
  * change with the rest of the sheet. */
 QMessageBox QPushButton {
     background:@{inputBg}; color:@{ink};
-    border:1px solid @{divider}; border-radius:@{rS}px;
+    border:1px solid @{divider}; border-radius:@{rC}px;
     padding:8px 16px; min-width:84px; font-weight:500;
 }
 QMessageBox QPushButton:hover    { background:@{hoverWash}; border-color:@{accent}; }
@@ -212,7 +214,7 @@ QToolButton::menu-indicator { image:none; }
 QLineEdit, QPlainTextEdit, QTextEdit, QSpinBox, QDoubleSpinBox,
 QDateTimeEdit, QDateEdit, QTimeEdit, QAbstractSpinBox {
     background:@{inputBg}; color:@{ink};
-    border:1px solid @{divider}; border-radius:@{rS}px;
+    border:1px solid @{divider}; border-radius:@{rC}px;
     padding:6px 9px; selection-background-color:@{accent};
     selection-color:@{controlInk};
 }
@@ -274,14 +276,22 @@ QTreeView::item:hover { background:@{bgHover}; }
 QListWidget::item:selected, QListView::item:selected,
 QTreeView::item:selected { background:@{bgSelected}; color:@{ink}; }
 
-/* ── Menus ── */
+/* ── Menus ──
+ * font-size:13px is the blessed "chrome-dense" size (DESIGN.md Typography) --
+ * folded in here from two formerly-bespoke per-instance QMenu overrides in
+ * MainWindow.cpp (message context menu, sidebar filter menu) so every
+ * right-click menu in the app now reads alike instead of three different
+ * ways. item:checked exists because the filter/sort menu's checked entries
+ * relied on it; without it here, deleting that menu's own override would
+ * have silently dropped the checked-state highlight. */
 QMenu {
     background:@{bgSurface}; color:@{ink};
     border:1px solid @{divider}; border-radius:@{rN}px; padding:6px;
 }
-QMenu::item { padding:7px 28px 7px 22px; border-radius:@{rS}px; }
+QMenu::item { padding:7px 28px 7px 22px; border-radius:@{rS}px; font-size:13px; }
 QMenu::item:selected { background:@{bgHover}; color:@{ink}; }
 QMenu::item:disabled { color:@{inkMuted}; }
+QMenu::item:checked { color:@{accent}; font-weight:600; }
 QMenu::separator { height:1px; background:@{divider}; margin:6px 8px; }
 QMenuBar { background:transparent; color:@{ink}; }
 QMenuBar::item:selected { background:@{bgHover}; border-radius:@{rS}px; }

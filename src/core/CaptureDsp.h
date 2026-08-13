@@ -1,4 +1,5 @@
 #pragma once
+#include <QString>
 #include <gst/gst.h>
 
 // Capture-leg (send) WebRTC DSP configuration, split out of PublishPipeline so
@@ -28,6 +29,34 @@ inline void configureCaptureDsp(GstElement *dsp, bool nsEnabled, bool agcEnabled
     // PLAYING. delay-agnostic lets the APM self-estimate the cross-pipeline
     // capture↔playback delay (auto/harmless on AEC3 wap 1.x; load-bearing on
     // the legacy 0.3.x library). See docs/aec-design.md.
+
+    // Noise-suppression aggressiveness. We ship 2 (high); the ELEMENT'S OWN DEFAULT
+    // IS 1 (moderate), and its documentation says increasing the level "will reduce
+    // the noise level at the expense of a HIGHER SPEECH DISTORTION".
+    //
+    // That trade is now a suspect rather than a preference. A gain-invariant A/B on
+    // 2026-08-12 measured our capture chain sitting 7.8 dB BELOW its own idle noise
+    // floor while the far end was active — i.e. ducking the whole near-end signal,
+    // not just the echo. High NS attenuates whatever it classifies as non-speech, and
+    // in a quiet room the near-end IS mostly noise, so it is a plausible contributor.
+    //
+    // TALQ_NS_LEVEL makes it measurable without changing behaviour: absent => 2, the
+    // shipping value. Nothing moves until a floor-checked, null-controlled sweep says
+    // it should. (0=low 1=moderate 2=high 3=very-high, per GstWebrtcNoiseSuppressionLevel.)
+    int nsLevel = 2;
+    if (qEnvironmentVariableIsSet("TALQ_NS_LEVEL")) {
+        bool ok = false;
+        const int v = qEnvironmentVariable("TALQ_NS_LEVEL").toInt(&ok);
+        if (ok && v >= 0 && v <= 3) {
+            nsLevel = v;
+            qInfo() << "configureCaptureDsp: TALQ_NS_LEVEL override — noise-suppression-level ="
+                    << nsLevel << "(shipping default is 2/high; the element's own default is 1/moderate)";
+        } else {
+            qWarning() << "configureCaptureDsp: ignoring out-of-range TALQ_NS_LEVEL"
+                       << qgetenv("TALQ_NS_LEVEL") << "— expected 0..3";
+        }
+    }
+
     if (aecEnabled) {
         g_object_set(dsp,
                      "echo-cancel",             TRUE,
@@ -35,7 +64,7 @@ inline void configureCaptureDsp(GstElement *dsp, bool nsEnabled, bool agcEnabled
                      "delay-agnostic",          TRUE,
                      "extended-filter",         TRUE,
                      "noise-suppression",       nsEnabled ? TRUE : FALSE,
-                     "noise-suppression-level", 2,            // high
+                     "noise-suppression-level", nsLevel,
                      "high-pass-filter",        TRUE,          // voice-friendly rumble cut
                      "voice-detection",         FALSE,
                      nullptr);
@@ -44,7 +73,7 @@ inline void configureCaptureDsp(GstElement *dsp, bool nsEnabled, bool agcEnabled
         g_object_set(dsp,
                      "echo-cancel",             FALSE,
                      "noise-suppression",       nsEnabled ? TRUE : FALSE,
-                     "noise-suppression-level", 2,            // high
+                     "noise-suppression-level", nsLevel,
                      "high-pass-filter",        TRUE,          // voice-friendly rumble cut
                      "voice-detection",         FALSE,
                      nullptr);

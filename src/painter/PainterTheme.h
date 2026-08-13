@@ -74,11 +74,20 @@ public:
 
     // ── Radii ──
     static constexpr int radiusSmall = 6;
+    static constexpr int radiusControl = 8;    // DESIGN.md "control" — buttons, inputs
     static constexpr int radiusNormal = 10;
+    static constexpr int radiusCard = 13;      // DESIGN.md "card" — panels, tiles
 
     // ── Avatar ──
     static constexpr int avatarSize = 36;
     static constexpr int avatarGap = 8;
+
+    // ── Unread badge (the stadium pill) ── was independently redefined as
+    // BadgeHeight=18 / BadgeFontSize=10 in SidebarPainter.h, ThreadsPainter.h
+    // and a local static in TopicTabBar.cpp -- three copies of one constant
+    // pair, promoted here so a future resize has one home.
+    static constexpr int badgeHeight = 18;
+    static constexpr int badgeFontSize = 10;
 
     // ── Layout ──
     static constexpr int messageSpacingGrouped = 6;
@@ -91,8 +100,30 @@ public:
     // ── Author color from actorId (djb2 hash -> 8-color palette) ──
     static QColor authorColor(const QString &actorId);
 
+    // ── Author-palette introspection, for exhaustive contrast tests ──
+    static int authorPaletteSize();
+    static QColor authorPaletteAt(int index);
+
+    // Ink for text drawn ON an arbitrary coloured fill (an author-palette
+    // avatar, an icon backdrop, ...). controlInk is calibrated for the
+    // accent-teal fill alone and fails AA (4.5:1) against several
+    // author-palette hues on the light theme (measured ~2.1-3.3:1, 6 of 8
+    // hues below even the 3:1 large-text bar). Score both of this theme's
+    // own near-black/near-white ink tokens (controlInk, textPrimary --
+    // they're a matched near-black/near-white pair in every shipped theme,
+    // swapped on Paper) by WCAG relative-luminance contrast against the
+    // actual fill and return whichever wins. Not static: the candidates are
+    // per-theme tokens, not pure #000/#fff, so the choice needs instance
+    // data -- every call site already holds a PainterTheme.
+    QColor inkOn(const QColor &fill) const;
+
     // ── Topic color from palette index (6-color palette) ──
     static QColor topicColor(int index);
+    // Introspection for exhaustive contrast tests, same idiom as
+    // authorPaletteSize() -- topicColor(index) already takes a direct index
+    // (unlike authorColor's hashed QString), so no separate "At" accessor
+    // is needed, just the count to iterate.
+    static int topicPaletteSize();
 
     // ── Crop an image to a circle at the given size ──
     static QImage cropToCircle(const QImage &source, int size);

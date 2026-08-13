@@ -8,7 +8,7 @@ ConversationPickerDialog::ConversationPickerDialog(ConversationListModel *model,
     , m_model(model)
     , m_excludeToken(excludeToken)
 {
-    setWindowTitle("Forward to...");
+    setWindowTitle(tr("Forward to..."));
     setFixedSize(380, 480);
     // Inherits the themed app stylesheet (AppStyle) — no hardcoded colours, so
     // it tracks all four themes, including the light (Paper) theme.
@@ -18,7 +18,7 @@ ConversationPickerDialog::ConversationPickerDialog(ConversationListModel *model,
     layout->setSpacing(8);
 
     m_searchField = new QLineEdit(this);
-    m_searchField->setPlaceholderText("Search conversations...");
+    m_searchField->setPlaceholderText(tr("Search conversations..."));
     layout->addWidget(m_searchField);
 
     m_list = new QListWidget(this);

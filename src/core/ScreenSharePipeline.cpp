@@ -162,6 +162,17 @@ bool ScreenSharePipeline::start(const QString &stunServer, const QList<TurnServe
     m_webrtcbin = gst_element_factory_make("webrtcbin", nullptr);
 
     if (!m_pipeline || !m_webrtcbin) {
+        // m_webrtcbin (if created — created at :162) isn't bin-added until
+        // the gst_bin_add_many below (:605/:612), after this check, so it's
+        // still a floating ref here whenever m_pipeline itself failed to
+        // construct. cleanup() only nulls m_webrtcbin (:957) without
+        // unreffing it — it assumes the pipeline already owns it — so drop
+        // it here or it leaks. Nulled, not just unreffed: cleanup() also
+        // calls g_signal_handlers_disconnect_by_data(m_webrtcbin, this)
+        // (:867) first, which would touch a freed element if we merely
+        // unreffed. Same rationale as the element-construction bail-out at
+        // :437-471 and the !screenSrc bail-out below.
+        if (m_webrtcbin) { gst_object_unref(m_webrtcbin); m_webrtcbin = nullptr; }
         emit error("Failed to create screen share pipeline elements");
         cleanup();
         return false;
@@ -348,6 +359,19 @@ bool ScreenSharePipeline::start(const QString &stunServer, const QList<TurnServe
             : "Couldn't start screen capture on this system. Try sharing a single "
               "window instead, or update your graphics drivers.";
         qWarning() << "ScreenSharePipeline:" << why;
+        // m_webrtcbin (created at :162) isn't bin-added until the
+        // gst_bin_add_many further down (:605/:612) — nothing constructed
+        // between here and there (capQueue et al. are built AFTER this
+        // check) is bin-added yet either, but nothing else exists yet at
+        // this point in start() to leak: screenSrc is null by construction
+        // of this branch, and on the WGC paths m_wgcAppsrc only aliases a
+        // non-null screenSrc, so it's null here too. m_webrtcbin is
+        // therefore the only floating ref to drop. cleanup() only nulls it
+        // (:957) without unreffing, and disconnects its signal handlers
+        // (:867) before that null runs, so it must be nulled here too, not
+        // just unreffed, or cleanup() would touch a freed pointer. Same
+        // rationale as the element-construction bail-out at :437-471 above.
+        if (m_webrtcbin) { gst_object_unref(m_webrtcbin); m_webrtcbin = nullptr; }
         emit error(why);
         cleanup();
         return false;
@@ -412,12 +436,36 @@ bool ScreenSharePipeline::start(const QString &stunServer, const QList<TurnServe
 
     if (!videoConvert || !venc || !pay || !ssrcFilter
         || !capQueue || !vscale || !scaleCaps || (useH264 && !profileCaps)) {
-        emit error("Failed to create screen share encoding elements");
-        // Not bin-added yet → drop floating refs (cleanup() only nulls).
+        // Not bin-added yet (that happens below) → drop floating refs BEFORE
+        // emit error(...) (reordered from emit-then-unref): error is
+        // connected non-queued to a lambda that calls stopScreenShare(), so
+        // unreffing first avoids exposing any reentrancy window to a
+        // half-torn-down block. Matches the unref-then-emit ordering already
+        // used at the three PublishPipeline sites.
+        // cleanup() deliberately never unrefs m_screenSrc, m_previewAppsink,
+        // or m_webrtcbin — it assumes all three are already pipeline-owned by
+        // the time it runs, which holds on every OTHER path but not this one.
         for (GstElement *e : { capQueue, vscale, scaleCaps, videoConvert,
-                               venc, m_videoParser, profileCaps, pay, ssrcFilter })
+                               venc, m_videoParser, profileCaps, pay, ssrcFilter,
+                               previewTee, previewQueue, previewConvert })
             if (e) gst_object_unref(e);
         m_videoParser = nullptr;
+        if (m_previewAppsink) { gst_object_unref(m_previewAppsink); m_previewAppsink = nullptr; }
+        // screenSrc, m_screenSrc, and (on the WGC paths) m_wgcAppsrc all alias
+        // the SAME element (assigned at :357 and, for WGC, :267/:305) — only
+        // one floating ref exists regardless of which capture path built it.
+        // Unref once, then null every handle so none dangles.
+        if (screenSrc) gst_object_unref(screenSrc);
+        screenSrc = nullptr;
+        m_screenSrc = nullptr;
+        m_wgcAppsrc = nullptr;
+        // m_webrtcbin (created at :162) isn't bin-added until :570/:577,
+        // after this check. cleanup() only nulls it (:922) without
+        // unreffing, and disconnects its signal handlers (:831) before that
+        // null runs — so it MUST be nulled here too, not just unreffed, or
+        // cleanup() would dereference a freed pointer.
+        if (m_webrtcbin) { gst_object_unref(m_webrtcbin); m_webrtcbin = nullptr; }
+        emit error("Failed to create screen share encoding elements");
         cleanup();
         return false;
     }

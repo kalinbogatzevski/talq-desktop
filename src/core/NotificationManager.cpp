@@ -264,7 +264,17 @@ void NotificationManager::updateUnreadCount(int count)
         int by = 0;
 
         p.setPen(Qt::NoPen);
-        p.setBrush(QColor("#e06060"));
+        // Reuses CallStage/CallPipWidget's "universal end-call red" literal
+        // rather than PainterTheme::danger (calm clay, themed) or unreadBadge
+        // (teal, the in-app "this needs you" signal): this badge is OS chrome
+        // painted onto a static tray icon outside the app window, with no
+        // live PainterTheme access and no re-render hook on theme change, so
+        // a theme-tracked colour would go stale the moment the user switches
+        // themes without also changing their unread count. A fixed alert red
+        // matches the existing precedent for exactly this class of surface
+        // (see DESIGN.md's badge-story note) and every major OS/app tray
+        // badge convention besides.
+        p.setBrush(QColor(0xE2, 0x3B, 0x33));
         p.drawRoundedRect(bx, by, badgeW, badgeH, 8, 8);
 
         p.setFont(font);
@@ -365,7 +375,9 @@ void NotificationManager::updateTaskbarOverlay(int count)
         QPainter p(&img);
         p.setRenderHint(QPainter::Antialiasing);
         p.setPen(Qt::NoPen);
-        p.setBrush(QColor("#e06060"));
+        // Same fixed alert red as the tray icon badge above -- see the
+        // comment there for why this stays theme-independent.
+        p.setBrush(QColor(0xE2, 0x3B, 0x33));
         p.drawEllipse(QRect(0, 0, 16, 16));
 
         const QString text = count > 99 ? QStringLiteral("99+") : QString::number(count);

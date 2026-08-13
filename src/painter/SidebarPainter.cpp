@@ -9,6 +9,8 @@
 #include <QWheelEvent>
 #include <QMouseEvent>
 #include <QHoverEvent>
+#include <QHelpEvent>
+#include <QToolTip>
 #include <QNetworkReply>
 #include <QFontMetrics>
 #include <QtMath>
@@ -300,6 +302,19 @@ void SidebarPainter::resizeEvent(QResizeEvent *event)
 
 bool SidebarPainter::event(QEvent *e)
 {
+    if (e->type() == QEvent::ToolTip) {
+        auto *he = static_cast<QHelpEvent *>(e);
+        int row = rowAtY(he->pos().y());
+        if (row >= 0 && row < m_visibleIndices.size()) {
+            const ConversationLayout &cl = m_layouts[m_visibleIndices[row]];
+            if (cl.nameElided && cl.nameRect.contains(he->pos())) {
+                QToolTip::showText(he->globalPos(), cl.displayName, this);
+                return true;
+            }
+        }
+        QToolTip::hideText();
+        return true;
+    }
     if (e->type() == QEvent::HoverMove) {
         auto *he = static_cast<QHoverEvent *>(e);
         // Replicate hoverMoveEvent
@@ -382,8 +397,43 @@ void SidebarPainter::paintEvent(QPaintEvent *)
 
     p.fillRect(QRectF(0, 0, width(), height()), m_theme.bgSidebar);
 
-    if (m_visibleIndices.isEmpty())
+    if (m_visibleIndices.isEmpty() && m_squeezed) {
+        // Squeezed is a 56px icon-only rail (MainWindow.cpp:1861-1864) with no
+        // room for a sentence — rows never show text there either. Stay a
+        // bare panel rather than clip a message into an unreadable fragment.
         return;
+    }
+
+    if (m_visibleIndices.isEmpty()) {
+        // Name the reason the panel is bare — a text search finding nothing
+        // reads differently from a filter (Unread/Favorites/Direct/Groups)
+        // hiding everything, which reads differently from a genuinely empty
+        // conversation list. Idiom copied from ThreadsPainter::paintEmptyState.
+        QString msg;
+        if (!m_filterText.isEmpty()) {
+            msg = tr("No conversations match \"%1\"").arg(m_filterText);
+        } else {
+            switch (m_filterMode) {
+            case FilterUnread:    msg = tr("No unread conversations"); break;
+            case FilterFavorites: msg = tr("No favorites yet"); break;
+            case FilterDirect:    msg = tr("No direct messages"); break;
+            case FilterGroups:    msg = tr("No groups"); break;
+            case FilterAll:
+            default:              msg = tr("No conversations yet"); break;
+            }
+        }
+        p.setPen(m_theme.textSecondary);
+        QFont f = m_theme.bodyFont();
+        p.setFont(f);
+        // msg can embed m_filterText, which is unbounded user input (the
+        // other branches are all fixed strings) — elide it against the
+        // available width so a long search doesn't clip mid-glyph.
+        qreal maxTextWidth = width() - 2 * PainterTheme::spacingLarge;
+        QString elided = QFontMetrics(f).elidedText(msg, Qt::ElideRight,
+                                                      static_cast<int>(maxTextWidth));
+        p.drawText(QRectF(0, 0, width(), height()), Qt::AlignCenter, elided);
+        return;
+    }
 
     int rowH = m_squeezed ? RowHeightSqueezed : RowHeight;
     qreal vpTop = m_scrollY;
@@ -506,10 +556,12 @@ void SidebarPainter::paintRowNormal(QPainter *p, const ConversationLayout &cl, i
     QFontMetrics nameFM(nameFont);
     QString elidedName = nameFM.elidedText(cl.displayName, Qt::ElideRight,
                                             static_cast<int>(nameRight - nameLeft));
+    const QRectF nameDrawRect(nameLeft, nameY, nameRight - nameLeft, m_theme.fontSizeNormal + 6);
+    cl.nameRect = nameDrawRect;
+    cl.nameElided = (elidedName != cl.displayName);
     p->setPen(m_theme.textPrimary);
     p->setFont(nameFont);
-    p->drawText(QRectF(nameLeft, nameY, nameRight - nameLeft, m_theme.fontSizeNormal + 6),
-                Qt::AlignLeft | Qt::AlignVCenter, elidedName);
+    p->drawText(nameDrawRect, Qt::AlignLeft | Qt::AlignVCenter, elidedName);
 
     // Timestamp
     QColor timeColor = cl.unreadCount > 0 ? m_theme.accent : m_theme.textTime;
@@ -537,11 +589,16 @@ void SidebarPainter::paintRowNormal(QPainter *p, const ConversationLayout &cl, i
         qreal badgeW = qMax(BadgeHeight * 1.0, textW + 10.0);
         rightStuffW = badgeW + PainterTheme::spacingSmall;
     }
+    // Single-sourced: measured once here (both to reserve layout width and,
+    // below, to size the actual draw rect) so a longer translation can never
+    // clip against a width computed from a different font/string pairing.
+    QFont mutedFont;
+    mutedFont.setPixelSize(m_theme.fontSizeTiny);
+    qreal mutedLabelW = 0;
     if (cl.notificationLevel == 3) {
-        QFont mutedFont;
-        mutedFont.setPixelSize(9);
         QFontMetrics mfm(mutedFont);
-        rightStuffW += mfm.horizontalAdvance(mutedLabel) + PainterTheme::spacingSmall;
+        mutedLabelW = mfm.horizontalAdvance(mutedLabel);
+        rightStuffW += mutedLabelW + PainterTheme::spacingSmall;
     }
 
     // Preview text — textSecondary gives readable contrast against the warm
@@ -562,14 +619,14 @@ void SidebarPainter::paintRowNormal(QPainter *p, const ConversationLayout &cl, i
         paintUnreadBadge(p, cl.unreadCount, cl.unreadMention, badgeArea);
     }
 
-    // Muted label
+    // Muted label — full-alpha textMuted (the dedicated de-emphasized token,
+    // not a 60%-tinted textSecondary — was ~2.5:1 on Paper, effectively
+    // invisible), drawn into the width measured above rather than a
+    // hardcoded 30px rect that clipped longer translations.
     if (cl.notificationLevel == 3) {
-        QFont mutedFont;
-        mutedFont.setPixelSize(9);
-        p->setPen(QColor(m_theme.textSecondary.red(), m_theme.textSecondary.green(),
-                         m_theme.textSecondary.blue(), 153));  // 0.6 opacity
+        p->setPen(m_theme.textMuted);
         p->setFont(mutedFont);
-        p->drawText(QRectF(textRight - 30, bottomY, 30, m_theme.fontSizeSmall + 4),
+        p->drawText(QRectF(textRight - mutedLabelW, bottomY, mutedLabelW, m_theme.fontSizeSmall + 4),
                     Qt::AlignRight | Qt::AlignVCenter, mutedLabel);
     }
 }
@@ -634,12 +691,13 @@ void SidebarPainter::paintAvatar(QPainter *p, const ConversationLayout &cl, cons
 {
     // Note to self (type 6) — special bookmark icon
     if (cl.conversationType == 6) {
+        const QColor fill = PainterTheme::authorColor(QStringLiteral("note-to-self"));  // in-palette, not gray
         p->setPen(Qt::NoPen);
-        p->setBrush(PainterTheme::authorColor(QStringLiteral("note-to-self")));  // in-palette, not gray
+        p->setBrush(fill);
         p->drawEllipse(rect);
         QFont iconFont;
         iconFont.setPixelSize(static_cast<int>(rect.width() * 0.5));
-        p->setPen(m_theme.controlInk);
+        p->setPen(m_theme.inkOn(fill));   // No-Gray: ink scored against the actual fill
         p->setFont(iconFont);
         p->drawText(rect, Qt::AlignCenter, QStringLiteral("\U0001F516"));  // 🔖
         return;
@@ -663,7 +721,7 @@ void SidebarPainter::paintAvatar(QPainter *p, const ConversationLayout &cl, cons
         QFont initFont;
         initFont.setPixelSize(size / 2);
         initFont.setWeight(QFont::DemiBold);
-        p->setPen(m_theme.controlInk);   // No-Gray: ink on author color, not #fff
+        p->setPen(m_theme.inkOn(bgColor));   // No-Gray: ink scored against the actual fill
         p->setFont(initFont);
         p->drawText(rect, Qt::AlignCenter, QString(initial));
     }
@@ -688,7 +746,11 @@ void SidebarPainter::paintAvatar(QPainter *p, const ConversationLayout &cl, cons
             QFont qFont;
             qFont.setPixelSize(int(badgeSize * 0.7));
             qFont.setWeight(QFont::Bold);
-            p->setPen(m_theme.controlInk);
+            // Same contrast bug slice D fixed for authorColor fills, via a
+            // different palette: topicColor(4) is #9b7cd4, the SAME hex as
+            // s_authorPalette[4], and controlInk measures ~3.31:1 against it
+            // on Paper -- an AA fail. Score against the actual fill instead.
+            p->setPen(m_theme.inkOn(PainterTheme::topicColor(4)));
             p->setFont(qFont);
             p->drawText(badge, Qt::AlignCenter, QStringLiteral("Q"));
         }

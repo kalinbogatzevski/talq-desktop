@@ -10,6 +10,7 @@
 #include <QUrl>
 #include <gst/app/gstappsink.h>
 #include <gst/app/gstappsrc.h>
+#include "CommsCaptureSource.h"
 #include <gst/rtp/rtp.h>
 #include <gst/sdp/sdp.h>
 #include <thread>
@@ -222,6 +223,16 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
     qDebug() << "PublishPipeline::start() — webrtcbin created:" << (void*)m_webrtcbin;
 
     if (!m_pipeline || !m_webrtcbin) {
+        // m_webrtcbin (if created — created at :221) isn't bin-added until the
+        // audio-chain gst_bin_add_many below (:480/:489/:498), all AFTER this
+        // check, so it's still a floating ref here whenever m_pipeline itself
+        // failed to construct. cleanup() only nulls m_webrtcbin (:1335)
+        // without unreffing it — it assumes the pipeline already owns it —
+        // so drop it here or it leaks silently on every retry through this
+        // audio-tier loop. Nulled, not just unreffed: cleanup() also calls
+        // g_signal_handlers_disconnect_by_data(m_webrtcbin, this) (:1257)
+        // first, which would touch a freed element if we merely unreffed.
+        if (m_webrtcbin) { gst_object_unref(m_webrtcbin); m_webrtcbin = nullptr; }
         emit error("Failed to create publish pipeline elements");
         cleanup();
         return false;
@@ -295,7 +306,49 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
     // Audio capture — wasapi2src (best), wasapisrc (fallback), autoaudiosrc (last resort)
     // DEBUG: set TALQ_TEST_AUDIO=1 env var to use audiotestsrc (440Hz tone) for testing
     GstElement *audiosrc = nullptr;
-    if (qEnvironmentVariableIsSet("TALQ_TEST_AUDIO")) {
+    // Set only when the OS comms capture path actually engaged. Load-bearing:
+    // it disables OUR canceller below, because stacking two of them is worse
+    // than either alone (measured — see the aecEnabled comment).
+    bool osAecActive = false;
+    // TALQ_MIC=comms — own the capture IAudioClient so we can request
+    // AudioCategory_Communications, the ONLY way to engage the endpoint's built-in
+    // AEC. Measured on the Realtek mic array: default category = 0 effects, no AEC;
+    // communications = 3 effects with AEC present and ON. wasapi2src never sets a
+    // category (verified across all of GStreamer), so today that canceller is simply
+    // switched off for us. See src/core/CommsCaptureSource.h for the full evidence.
+    //
+    // OPT-IN. Default behaviour is unchanged, and any failure falls through to the
+    // normal tier selection below rather than breaking capture.
+#ifdef Q_OS_WIN
+    if (!qEnvironmentVariableIsSet("TALQ_TEST_AUDIO") && qgetenv("TALQ_MIC") == "comms") {
+        GstElement *app = gst_element_factory_make("appsrc", "pub-audiosrc");
+        if (app) {
+            auto *cap = new talq::CommsCaptureSource();
+            if (cap->start(app, audioDeviceId)) {
+                // Tie the capture's lifetime to the element: when the pipeline drops
+                // the appsrc, the thread is stopped and joined before the element goes.
+                g_object_set_data_full(G_OBJECT(app), "talq-comms-capture", cap,
+                                       [](gpointer p) {
+                                           auto *c = static_cast<talq::CommsCaptureSource *>(p);
+                                           c->stop();
+                                           delete c;
+                                       });
+                audiosrc = app;
+                osAecActive = m_osAecActive = true;
+                qInfo() << "PublishPipeline: mic via CommsCaptureSource "
+                           "(AudioCategory_Communications — OS effect chain engaged)";
+            } else {
+                delete cap;
+                gst_object_unref(app);
+                qWarning() << "PublishPipeline: TALQ_MIC=comms unavailable; "
+                              "using the normal capture path";
+            }
+        }
+    }
+#endif
+    if (audiosrc) {
+        // already built above
+    } else if (qEnvironmentVariableIsSet("TALQ_TEST_AUDIO")) {
         audiosrc = gst_element_factory_make("audiotestsrc", "pub-audiosrc");
         // TALQ_TEST_AUDIO_VOL lets the AGC harness feed a known-quiet tone
         // (e.g. 0.1 ≈ -20 dBFS peak) so the gain boost is observable. Default
@@ -324,6 +377,19 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         const bool useSelected = (audioTier == 0) && !audioDeviceId.isEmpty();
         audiosrc = gst_element_factory_make("wasapi2src", "pub-audiosrc");
         if (audiosrc) {
+            // AEC reference (buildFarEndTail, "pub-aec-ref", ~line 3208) runs its
+            // wasapi2src with low-latency=TRUE. This capture leg ran at default
+            // buffering, so the two legs were asymmetric — the reference stayed
+            // close to real time while the mic sat behind extra device buffering,
+            // which inflates the capture<->reference delay AEC3 has to model (its
+            // delay search window is finite). Measured overnight in a silent room:
+            // only ~10.9 dB mean cancellation (healthy AEC3 is 30-40 dB) despite a
+            // fully continuous reference (77/82 samples steady at -24.42..-24.43
+            // dB) — ruling out a starved-reference cause and pointing at
+            // delay/convergence instead. low-latency is documented by the plugin
+            // itself as "Optimize all settings for lowest latency. Always safe to
+            // enable." — match the reference leg's setting here.
+            g_object_set(audiosrc, "low-latency", TRUE, nullptr);
             qDebug() << "PublishPipeline: audio source: wasapi2src"
                      << (useSelected ? "(selected device)" : "(system default)");
             if (useSelected)
@@ -355,6 +421,51 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
     // supports "mute" and sits after audioconvert (uniform format), so mute is
     // enforced regardless of which source backend was selected.
     GstElement *volume = gst_element_factory_make("volume", "pub-volume");
+
+    // ─── TALQ_TEST_NEAREND: a SYNTHETIC NEAR-END TALKER, for double-talk ─────────
+    //
+    // THE MISSING TEST. Every AEC measurement in this cycle has been far-end-only
+    // single talk, and on that the shipping chain suppresses echo 8-14 dB BELOW the
+    // room noise floor — inaudible, and it aces every comparison. But every engine
+    // measured also sits BELOW its own idle floor while the far end is active, i.e.
+    // it ducks the WHOLE near-end signal rather than just the echo. That is precisely
+    // what harms DOUBLE-TALK, and no rig here could produce a near-end talker, so the
+    // one failure mode that matches "my voice cuts out when the other person speaks"
+    // has never been measured at all.
+    //
+    // This mixes a synthetic talker into the capture leg AFTER pub-volume (so mute
+    // still works) and BEFORE the AEC stage, so the canceller sees near-end and echo
+    // together exactly as it would in a real double-talk moment.
+    //
+    // 660 Hz against the far end's 440 Hz: a different pitch so the two are separable
+    // by ear and never mistaken for each other in a log.
+    //
+    // THE MEASUREMENT IT ENABLES — near-end preservation, gain-invariant:
+    //     duck_db = median(near injected, far LOUD) - median(near injected, far MUTED)
+    // A large negative number means the canceller is eating the near-end talker while
+    // the far end speaks. THAT is the user-visible defect this whole investigation has
+    // been unable to see.
+    GstElement *nearMixer = nullptr, *nearSrc = nullptr;
+    if (qEnvironmentVariableIsSet("TALQ_TEST_NEAREND")) {
+        nearMixer = gst_element_factory_make("audiomixer", "pub-near-mixer");
+        nearSrc   = gst_element_factory_make("audiotestsrc", "pub-near-talker");
+        if (nearMixer && nearSrc) {
+            double nearVol = 0.3;   // well below the far end, like a real talker vs echo
+            if (qEnvironmentVariableIsSet("TALQ_TEST_NEAREND_VOL"))
+                nearVol = qEnvironmentVariable("TALQ_TEST_NEAREND_VOL").toDouble();
+            g_object_set(nearSrc, "wave", 0 /*sine*/, "freq", 660.0, "is-live", TRUE,
+                         "volume", nearVol, nullptr);
+            qInfo() << "PublishPipeline: TALQ_TEST_NEAREND — injecting a synthetic 660 Hz "
+                       "near-end talker at vol" << nearVol
+                    << "(double-talk test; the far end is 440 Hz)";
+        } else {
+            if (nearMixer) { gst_object_unref(nearMixer); nearMixer = nullptr; }
+            if (nearSrc)   { gst_object_unref(nearSrc);   nearSrc   = nullptr; }
+            qWarning() << "PublishPipeline: TALQ_TEST_NEAREND requested but audiomixer/"
+                          "audiotestsrc unavailable — NO near-end talker will be injected, "
+                          "so any double-talk number from this run is VOID";
+        }
+    }
     GstElement *level = gst_element_factory_make("level", "pub-level");
     GstElement *opusenc = gst_element_factory_make("opusenc", nullptr);
     GstElement *rtpopuspay = gst_element_factory_make("rtpopuspay", "pub-rtpopuspay");
@@ -378,6 +489,15 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
     }
 
     if (!audiosrc || !audioconvert || !audioresample || !volume || !level || !opusenc || !rtpopuspay) {
+        // Not yet bin-added (that happens further down), so nothing else owns
+        // these floating refs and cleanup() only unrefs the pipeline. Same
+        // story for m_webrtcbin (created above at :221): it isn't bin-added
+        // until the branch below (:480/:489/:498), and cleanup() only nulls
+        // it (:1335) without unreffing — so it must be dropped here too.
+        auto freeIf = [](GstElement *&e) { if (e) { gst_object_unref(e); e = nullptr; } };
+        freeIf(audiosrc); freeIf(audioconvert); freeIf(audioresample);
+        freeIf(volume); freeIf(level); freeIf(opusenc); freeIf(rtpopuspay);
+        freeIf(m_webrtcbin);
         emit error("Failed to create audio capture elements");
         cleanup();
         return false;
@@ -395,6 +515,23 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
     // pipeline's two-phase NULL→READY→PAUSED registers the probe before the dsp
     // acquires it) and a tail-build failure degrades to AEC-off instead of a
     // "No echo probe" call drop.
+    // Engine choice is needed by THREE places — the far-end tail below (which must
+    // carry a ProcessReverseStream probe), configureCaptureDsp (which must not enable
+    // a second canceller), and the capture chain assembly. Declared once, here, above
+    // all of them. Deciding it later would mean the DSP was already configured with
+    // echo-cancel ON and both cancellers would run: the exact stacking that gated the
+    // stream on the OS-AEC path.
+    const bool useAec3Engine = (qgetenv("TALQ_AEC_ENGINE") == "aec3");
+
+    // When the OS is doing the cancelling, do not build our reference tail at all:
+    // it feeds a canceller we are about to switch off, and the probe/loopback capture
+    // costs a WASAPI stream for nothing. Clearing m_aecEnabled here also keeps every
+    // later m_aecEnabled check (the erle-proxy log, the retry path) consistent.
+    if (m_aecEnabled && osAecActive) {
+        qInfo() << "PublishPipeline: OS comms AEC active — skipping the far-end "
+                   "reference tail (nothing downstream will use it)";
+        m_aecEnabled = false;
+    }
     if (m_aecEnabled && !buildFarEndTail()) {
         qWarning() << "PublishPipeline: AEC playout tail failed — disabling AEC for this call";
         m_aecEnabled = false;
@@ -424,14 +561,50 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         // That ordering is what makes gst_webrtc_dsp_start succeed instead of
         // failing "No echo probe found" and dropping the call. See
         // docs/aec-design.md. If m_aecEnabled is false, echo-cancel stays off.
-        const bool aecEnabled = m_aecEnabled;
+        // TWO CANCELLERS IN SERIES IS WORSE THAN EITHER ALONE — measured, not feared.
+        //
+        // With the OS comms chain supplying already-processed audio, our webrtcdsp AEC
+        // sees far-end energy it cannot cancel linearly and falls back on its residual
+        // suppressor, gating the stream. The raw-device instrument proved the mic was
+        // healthy the whole time (peak -6..-17 dBFS, ZERO all-zero blocks, ZERO
+        // WASAPI-SILENT flags across 9026 blocks) while downstream went 65% digitally
+        // silent — and ONLY when the far end was loud. Mute the far end and the silence
+        // count fell to 0/101 with the median RISING. The gate was ours, not Windows'.
+        //
+        // So when the OS is cancelling, we must not: no echo-cancel on webrtcdsp, and
+        // no far-end tail (built later, also gated on m_aecEnabled). NS/AGC decisions
+        // are unaffected.
+        // m_aecEnabled was already cleared above when osAecActive, so `&& !osAecActive`
+        // is belt-and-braces rather than load-bearing. The announcement that used to sit
+        // here was a DEAD BRANCH for the same reason — it tested (osAecActive &&
+        // m_aecEnabled), which can no longer both hold. Ground truth is the unconditional
+        // "webrtcdsp NS=/AGC=/AEC=" line below, which reports what actually reached
+        // configureCaptureDsp() rather than what we intended.
+        const bool aecEnabled = m_aecEnabled && !osAecActive && !useAec3Engine;
+        if (useAec3Engine && m_aecEnabled)
+            qInfo() << "PublishPipeline: TALQ_AEC_ENGINE=aec3 — webrtcdsp echo-cancel OFF, "
+                       "our own AudioProcessing will cancel instead";
         if (nsEnabled || agcEnabled || aecEnabled) {
             webrtcdsp = gst_element_factory_make("webrtcdsp", "pub-webrtcdsp");
             if (webrtcdsp) {
+                // ⚠ THIRD INSTANCE OF THE SAME STACKING BUG. On the AEC3 path our own
+                // AudioProcessing already runs noise suppression at the same level, so
+                // leaving webrtcdsp's NS on put TWO high-level suppressors in series —
+                // on an element whose own documentation says each level is bought with
+                // "a higher speech distortion". Same shape as the double canceller
+                // (OS AEC + webrtcdsp) and the double AEC: a second copy of a stage
+                // that was already doing the job, quietly degrading the signal.
+                //
+                // When the AEC3 engine owns the chain it owns NS too; webrtcdsp is then
+                // only a pass-through for AGC.
+                const bool dspNs = nsEnabled && !useAec3Engine;
+                if (nsEnabled && useAec3Engine)
+                    qInfo() << "PublishPipeline: AEC3 engine owns noise suppression — "
+                               "webrtcdsp NS disabled (two suppressors in series distort speech)";
                 // Same config helper the AGC harness (talq-agc-test) exercises.
-                talq::configureCaptureDsp(webrtcdsp, nsEnabled, agcEnabled,
+                talq::configureCaptureDsp(webrtcdsp, dspNs, agcEnabled,
                                           aecEnabled, "talq-aec-probe");
-                qInfo() << "PublishPipeline: webrtcdsp NS=" << nsEnabled
+                qInfo() << "PublishPipeline: webrtcdsp NS=" << dspNs
                         << "AGC=" << agcEnabled << "AEC=" << aecEnabled;
             } else {
                 qWarning() << "PublishPipeline: webrtcdsp unavailable; "
@@ -442,7 +615,19 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         // AEC needs the capture leg pinned to the probe's exact format
         // (48k/S16LE/MONO — mono also avoids the wap-1.x stereo-collapse bug).
         // Inserted between audioresample and webrtcdsp only when AEC is on.
-        if (aecEnabled && webrtcdsp) {
+        //
+        // ⚠ ALSO REQUIRED BY THE DIRECT AEC3 ENGINE, and forgetting that made the
+        // engine silently not exist. aecEnabled is deliberately FALSE when
+        // useAec3Engine is set (so webrtcdsp's canceller stays off), which meant this
+        // capsfilter was never created — and the near-leg branch guards on
+        // `aecCaps && webrtcdsp && useAec3Engine`, so it fell through to the ordinary
+        // chain while the far leg, which re-reads the env var itself, happily reported
+        // itself wired. Two of four wiring lines appeared: exactly the two that do not
+        // require the engine to exist.
+        //
+        // AEC3 needs this pinning MORE than webrtcdsp does: ProcessStream accepts only
+        // exactly 480 int16 mono samples per 10 ms frame.
+        if ((aecEnabled || useAec3Engine) && webrtcdsp) {
             aecCaps = gst_element_factory_make("capsfilter", "pub-aec-caps");
             if (aecCaps) {
                 GstCaps *ac = gst_caps_from_string(
@@ -453,13 +638,168 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         }
     }
 
+#if defined(TALQ_WITH_AEC3)
+    // TALQ_AEC_ENGINE=aec3 — run OUR OWN AudioProcessing instead of webrtcdsp's
+    // echo-cancel. Inserted between aecCaps and webrtcdsp: audiobuffersplit chops the
+    // stream into exact 10 ms frames (AEC3 accepts no other size), and a buffer probe
+    // hands each frame to ProcessStream in place. webrtcdsp stays in the chain for
+    // NS/AGC with echo-cancel switched off, so the two cancellers cannot fight — the
+    // mistake that gated the stream when the OS canceller was engaged.
+    //
+    // OPT-IN and default-off. This exists so the two engines can be compared IN A REAL
+    // CALL: the bench measures far-end-only single talk in a quiet room, where the
+    // existing chain already suppresses echo to 7.8 dB BELOW the noise floor. Whatever
+    // is wrong in the field is not what this rig reproduces.
+    GstElement *aec3Split = nullptr;
+    if (useAec3Engine && !(aecCaps && webrtcdsp)) {
+        // Never fall through quietly. The engine silently not existing — because a
+        // guard operand was false — is exactly how this failed the first time, and
+        // from the outside it is indistinguishable from "the engine ran and did
+        // nothing", which is the worst possible way to lose a measurement.
+        qWarning().nospace()
+            << "PublishPipeline: TALQ_AEC_ENGINE=aec3 requested but the chain cannot host it "
+            << "(aecCaps=" << (aecCaps ? "ok" : "NULL")
+            << " webrtcdsp=" << (webrtcdsp ? "ok" : "NULL")
+            << ") — running the ORDINARY chain; any AEC3 numbers from this run are void";
+    }
+    if (aecCaps && webrtcdsp && useAec3Engine) {
+        m_aec3 = std::make_unique<talq::Aec3Processor>();
+        const int nsLvl = qEnvironmentVariableIsSet("TALQ_NS_LEVEL")
+                        ? qEnvironmentVariable("TALQ_NS_LEVEL").toInt() : 2;
+        const bool mobile = qgetenv("TALQ_AEC_MOBILE") == "1";
+        if (qEnvironmentVariableIsSet("TALQ_AEC_DELAY_MS")) {
+            bool ok = false;
+            const int d = qEnvironmentVariable("TALQ_AEC_DELAY_MS").toInt(&ok);
+            if (ok && d >= 0 && d <= 500) m_aec3DelayMs = d;
+        }
+        if (m_aec3->init(/*exportLinear=*/false, mobile, nsLvl)) {
+            aec3Split = gst_element_factory_make("audiobuffersplit", "pub-aec3-split");
+            if (aec3Split) {
+                // 10 ms — GstAudioBufferSplit takes a fraction, not a duration in ns.
+                g_object_set(aec3Split, "output-buffer-duration", 1, 100, nullptr);
+                qInfo() << "PublishPipeline: AEC engine = AEC3 DIRECT "
+                           "(webrtcdsp echo-cancel disabled; NS/AGC unchanged)"
+                        << "mobile_mode=" << mobile << "stream_delay_ms=" << m_aec3DelayMs;
+            } else {
+                qWarning() << "PublishPipeline: audiobuffersplit unavailable — "
+                              "falling back to the webrtcdsp canceller";
+                m_aec3.reset();
+            }
+        } else {
+            m_aec3.reset();
+        }
+    }
+#endif
+
+    // Near-end injection is done ONCE here rather than in each of the four chain
+    // variants below — editing all four is how a stage ends up wired in three of them
+    // and silently missing from the fourth. `capTail` is what every variant links
+    // onward from: the mixer when a synthetic talker is active, plain `volume`
+    // otherwise, so the default path is byte-for-byte what it was.
+    GstElement *capTail = volume;
+    if (nearMixer && nearSrc) {
+        GstElement *nearConv = gst_element_factory_make("audioconvert", "pub-near-conv");
+        if (nearConv) {
+            gst_bin_add_many(GST_BIN(m_pipeline), nearMixer, nearSrc, nearConv, nullptr);
+            // audiomixer needs matching caps on every sink pad, hence the converter on
+            // the synthetic branch. These three ARE in the bin now, so they can link
+            // here — but `volume` is NOT: it only enters the pipeline in each variant's
+            // gst_bin_add_many further down. Linking volume->nearMixer here therefore
+            // failed on 4 of 4 paths with "don't share a common ancestor", and capTail
+            // silently stayed `volume` — no talker in the signal at all.
+            //
+            // Hoisting the injection into one place was right; hoisting it ABOVE the
+            // bin-add turned a 1-in-4 gap into a 4-in-4 one. The volume->nearMixer link
+            // now happens in linkCaptureHead() below, which every variant calls AFTER
+            // its bin-add.
+            if (gst_element_link_many(nearSrc, nearConv, nearMixer, nullptr)) {
+                capTail = nearMixer;
+            } else {
+                qWarning() << "PublishPipeline: near-end talker branch failed to link — "
+                              "running WITHOUT it; any double-talk number is VOID";
+                nearMixer = nullptr;
+            }
+        }
+    }
+
+    // The capture head, linked in ONE place and called by every variant AFTER its
+    // gst_bin_add_many — which is the ordering constraint the previous attempt broke.
+    // Returns false if either hop fails, so a missing talker can never be silent.
+    auto linkCaptureHead = [&]() -> bool {
+        if (!gst_element_link_many(audiosrc, audioconvert, volume, nullptr))
+            return false;
+        if (!nearMixer) return true;
+        if (!gst_element_link(volume, nearMixer)) {
+            qWarning() << "PublishPipeline: volume->near-mixer link FAILED — no near-end "
+                          "talker in the signal; any double-talk number is VOID";
+            return false;
+        }
+        return true;
+    };
+
     // pub-volume sits right after audioconvert in every variant so mute is
     // enforced at the local source regardless of DSP/AEC configuration.
+#if defined(TALQ_WITH_AEC3)
+    if (aec3Split && webrtcdsp && aecCaps) {
+        gst_bin_add_many(GST_BIN(m_pipeline), audiosrc, audioconvert, volume, audioresample,
+                         aecCaps, aec3Split, webrtcdsp, level, opusenc, rtpopuspay,
+                         m_webrtcbin, nullptr);
+        if (!linkCaptureHead()
+            || !gst_element_link_many(capTail, audioresample,
+                                   aecCaps, aec3Split, webrtcdsp, level, opusenc,
+                                   rtpopuspay, nullptr)) {
+            emit error("Failed to link audio capture chain (aec3)");
+            cleanup();
+            return false;
+        }
+        // Process each 10 ms frame in place, BEFORE webrtcdsp sees it.
+        if (GstPad *sp = gst_element_get_static_pad(aec3Split, "src")) {
+            gst_pad_add_probe(sp, GST_PAD_PROBE_TYPE_BUFFER,
+                [](GstPad *, GstPadProbeInfo *info, gpointer user) -> GstPadProbeReturn {
+                    auto *self = static_cast<PublishPipeline *>(user);
+                    if (!self->m_aec3) return GST_PAD_PROBE_OK;
+                    GstBuffer *b = gst_pad_probe_info_get_buffer(info);
+                    if (!b || !(b = gst_buffer_make_writable(b))) return GST_PAD_PROBE_OK;
+                    GstMapInfo m;
+                    if (gst_buffer_map(b, &m, GST_MAP_READWRITE)) {
+                        if (m.size == (gsize)talq::Aec3Processor::kFrameSamples * 2) {
+                            // AECM (mobile_mode) REQUIRES a stream delay and returns
+                            // -11 (kStreamParameterNotSetError) without one. Setting it
+                            // per frame is cheap and keeps AEC3 and AECM on the same
+                            // path. TALQ_AEC_DELAY_MS overrides the default for sweeps.
+                            self->m_aec3->setStreamDelayMs(self->m_aec3DelayMs);
+
+                            // ⚠ HONOUR THE RETURN VALUE. Ignoring it meant a REJECTED
+                            // frame was forwarded UNCANCELLED: the aec3-mobile arm
+                            // emitted ~96 clean, plausible samples for a canceller that
+                            // had never processed a single frame, and only a per-leg
+                            // arm-identity check caught it. Silent passthrough is the
+                            // worst failure mode this code can have — it looks exactly
+                            // like a working canceller that happens to be poor.
+                            if (!self->m_aec3->processNearEnd(reinterpret_cast<int16_t *>(m.data))) {
+                                if (++self->m_aec3Rejects == 1 || self->m_aec3Rejects % 100 == 0)
+                                    qWarning().nospace()
+                                        << "PublishPipeline: AEC3 REJECTED frame #"
+                                        << self->m_aec3Rejects
+                                        << " — audio is passing through UNCANCELLED. "
+                                           "Any echo measurement from this run is VOID.";
+                            }
+                        }
+                        gst_buffer_unmap(b, &m);
+                    }
+                    GST_PAD_PROBE_INFO_DATA(info) = b;
+                    return GST_PAD_PROBE_OK;
+                }, this, nullptr);
+            gst_object_unref(sp);
+        }
+    } else
+#endif
     if (webrtcdsp && aecCaps) {
         // AEC chain: …audioconvert → volume → audioresample → aecCaps → webrtcdsp → level…
         gst_bin_add_many(GST_BIN(m_pipeline), audiosrc, audioconvert, volume, audioresample,
                          aecCaps, webrtcdsp, level, opusenc, rtpopuspay, m_webrtcbin, nullptr);
-        if (!gst_element_link_many(audiosrc, audioconvert, volume, audioresample,
+        if (!linkCaptureHead()
+            || !gst_element_link_many(capTail, audioresample,
                                    aecCaps, webrtcdsp, level, opusenc, rtpopuspay, nullptr)) {
             emit error("Failed to link audio capture chain");
             cleanup();
@@ -468,7 +808,8 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
     } else if (webrtcdsp) {
         gst_bin_add_many(GST_BIN(m_pipeline), audiosrc, audioconvert, volume, audioresample,
                          webrtcdsp, level, opusenc, rtpopuspay, m_webrtcbin, nullptr);
-        if (!gst_element_link_many(audiosrc, audioconvert, volume, audioresample,
+        if (!linkCaptureHead()
+            || !gst_element_link_many(capTail, audioresample,
                                    webrtcdsp, level, opusenc, rtpopuspay, nullptr)) {
             emit error("Failed to link audio capture chain");
             cleanup();
@@ -477,7 +818,8 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
     } else {
         gst_bin_add_many(GST_BIN(m_pipeline), audiosrc, audioconvert, volume, audioresample,
                          level, opusenc, rtpopuspay, m_webrtcbin, nullptr);
-        if (!gst_element_link_many(audiosrc, audioconvert, volume, audioresample,
+        if (!linkCaptureHead()
+            || !gst_element_link_many(capTail, audioresample,
                                    level, opusenc, rtpopuspay, nullptr)) {
             emit error("Failed to link audio capture chain");
             cleanup();
@@ -492,6 +834,14 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
     guint32 audioSsrc = g_random_int();
     g_object_set(rtpopuspay, "ssrc", audioSsrc, nullptr);
     GstElement *audioCapsFilter = gst_element_factory_make("capsfilter", "pub-audio-ssrc-filter");
+    if (!audioCapsFilter) {
+        // Everything upstream (audiosrc..rtpopuspay, m_webrtcbin) is already
+        // bin-added by the branch above (:479-498), so there is nothing else
+        // floating to free here — same story as simulcastCaps below (:997).
+        emit error("Failed to create audio SSRC capsfilter");
+        cleanup();
+        return false;
+    }
     {
         GstCaps *ssrcCaps = gst_caps_from_string("application/x-rtp");
         gst_caps_set_simple(ssrcCaps, "ssrc", G_TYPE_UINT, audioSsrc, nullptr);
@@ -556,6 +906,14 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
     m_dummyConv  = gst_element_factory_make("videoconvert", "pub-dummyconv");
     m_dummyValve = gst_element_factory_make("valve", "pub-dummyvalve");
     if (!m_dummySrc || !m_dummyCaps || !m_dummyConv || !m_dummyValve) {
+        // Not yet bin-added, so nothing else owns these floating refs and
+        // cleanup() only unrefs the pipeline. m_funnel (created just above at
+        // :555) is the same story — it isn't bin-added until :592, alongside
+        // these, and cleanup() only nulls it (:1311) without unreffing.
+        auto freeIf = [](GstElement *&e) { if (e) { gst_object_unref(e); e = nullptr; } };
+        freeIf(m_dummySrc); freeIf(m_dummyCaps);
+        freeIf(m_dummyConv); freeIf(m_dummyValve);
+        freeIf(m_funnel);
         emit error("Failed to create dummy video source"); cleanup(); return false;
     }
     g_object_set(m_dummySrc, "pattern", 2 /* black */, "is-live", TRUE, nullptr);
@@ -605,6 +963,15 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         g_object_set(sharedRate, "drop-only", TRUE, nullptr);
     m_outputTee   = gst_element_factory_make("tee", "pub-output-tee");
     if (!sharedConvert || !m_sharedScale || !m_sharedCaps || !sharedRate || !m_outputTee) {
+        // Not yet bin-added (that happens below), so nothing else owns these
+        // floating refs; sharedConvert/sharedRate are locals cleanup() can't
+        // reach at all. sharedRate == m_sharedRate (aliased right after
+        // creation above) — unref once, then null both handles so neither
+        // dangles.
+        auto freeIf = [](GstElement *&e) { if (e) { gst_object_unref(e); e = nullptr; } };
+        freeIf(sharedConvert); freeIf(m_sharedScale);
+        freeIf(m_sharedCaps); freeIf(sharedRate); freeIf(m_outputTee);
+        m_sharedRate = nullptr;
         emit error("Failed to create shared chain / outputTee"); cleanup(); return false;
     }
     {
@@ -1224,6 +1591,52 @@ void PublishPipeline::cleanup()
         m_statusDataChannel = nullptr;
     }
 
+    // 0.63.x — release the VIDEO request pad while the pipeline is still
+    // alive and owned by THIS thread. It must happen before the detached
+    // NULL+unref worker below is dispatched: that worker's final unref can
+    // free the bin and its children, and releasing a pad into a freed bin is
+    // a use-after-free, not merely a leak. ScreenSharePipeline.cpp:843-853 is
+    // the reference ordering.
+    //
+    // The pad is a request pad (transfer full) stashed in m_layers[0].sinkPad;
+    // cleanup() previously only nulled the handle, leaking it once per call and
+    // again per audio-tier retry. A GstWebRTCBinPad holds its transceiver, so
+    // the leak pinned a transceiver -> codec bin -> HW encoder session — the
+    // failure mode the 0.52.8 RCA documents. The audio pad at :531 always
+    // dropped its own ref right after linking; this one was the outlier that
+    // never dropped it at all, so it never finalized even once the whole
+    // pipeline was disposed.
+    //
+    // Unlinked from its upstream peer (simulcastCaps' src pad, held only
+    // locally in start() — there is no member to reach it by name, so we
+    // fetch it via gst_pad_get_peer, same as ScreenSharePipeline:844) before
+    // release, mirroring ScreenSharePipeline:844-848 and PeerPipeline:908-919.
+    // gst_pad_unlink() does NOT block on in-flight data — it takes the pads'
+    // OBJECT locks, not their stream locks. Safety here is REFCOUNTING, not
+    // blocking: a push already inside the peer's chain function holds its
+    // own strong ref on the sink pad, acquired before the chain call was
+    // dispatched, so our release+unref from the Qt thread cannot free a pad
+    // out from under a running chain function; the unlink only guarantees no
+    // NEW push can reach it. The worker's later set_state(NULL) below is what
+    // performs the fully synchronized shutdown. The pipeline is still
+    // PLAYING here, and every simulcast encoder branch feeds this single pad
+    // through rtpfunnel, so a buffer can genuinely be in flight when we
+    // unlink — the same hazard ScreenSharePipeline's comment at :836-838
+    // describes ("so no buffer is mid-push when the pad goes away"), not one
+    // narrower to screen capture.
+    for (auto &L : m_layers) {
+        if (!L.sinkPad) continue;
+        GstPad *peer = gst_pad_get_peer(L.sinkPad);
+        if (peer) {
+            gst_pad_unlink(peer, L.sinkPad);
+            gst_object_unref(peer);
+        }
+        if (m_webrtcbin)
+            gst_element_release_request_pad(m_webrtcbin, L.sinkPad);
+        gst_object_unref(L.sinkPad);
+        L.sinkPad = nullptr;
+    }
+
     if (m_pipeline) {
         // 0.40.9 — detach + NULL the pipeline on a worker thread. The
         // synchronous set_state(NULL) waits on every pad's stream lock,
@@ -1260,7 +1673,9 @@ void PublishPipeline::cleanup()
     for (auto &L : m_layers) {
         L.valve = L.scale = L.caps = L.encoder = L.parser
               = L.profileCaps = L.payloader = L.ssrcFilter = nullptr;
-        L.sinkPad = nullptr;
+        // L.sinkPad was already released + nulled above, before the detached
+        // NULL+unref worker was dispatched (see the block preceding
+        // `if (m_pipeline)`).
         L.ssrc = 0;
         L.lastAppliedBitrate = 0;
         L.active = true;
@@ -2008,9 +2423,24 @@ void PublishPipeline::pollBus()
                     // ERLE proxy: during a remote-talking / local-silent window a
                     // working canceller keeps the send RMS well below the loopback
                     // reference RMS; if they track, echo is leaking. ~1/sec.
-                    if (m_aecEnabled && (++m_aecErleDbg % 5 == 0))
-                        qInfo().nospace() << "AEC erle-proxy: farRefRMS=" << m_aecFarRefRms
+                    // NOT gated on m_aecEnabled alone. When the OS is cancelling we
+                    // clear that flag, which would switch off the only instrument that
+                    // grades the change — and an empty instrument reports "0 digitally
+                    // silent samples", indistinguishable from a canceller working
+                    // perfectly. pub-level exists in BOTH arms and sits post-webrtcdsp
+                    // either way, so only the printing was suppressed, never the
+                    // measurement point.
+                    if ((m_aecEnabled || m_osAecActive) && (++m_aecErleDbg % 5 == 0)) {
+                        // On the OS path there IS no far-end reference: the tail that
+                        // feeds m_aecFarRefRms is deliberately not built, so the member
+                        // holds a stale value from a previous call. Emitting that would
+                        // be a fabricated measurement, and the runner gates leg validity
+                        // on farRef, so a stale number would silently decide whether the
+                        // leg counted. -999 is unmistakably "absent" rather than "quiet".
+                        const double farRef = m_osAecActive ? -999.0 : m_aecFarRefRms;
+                        qInfo().nospace() << "AEC erle-proxy: farRefRMS=" << farRef
                                           << "dB postAecSendRMS=" << m_aecSendRms << "dB";
+                    }
                 }
             }
         } else if (GST_MESSAGE_TYPE(msg) == GST_MESSAGE_ERROR) {
@@ -3130,12 +3560,156 @@ bool PublishPipeline::buildFarEndTail()
     g_object_set(m_farSink, "sync", FALSE, "async", FALSE,
                  "enable-last-sample", FALSE, "silent", TRUE, nullptr);
 
+    // ---- TALQ_AEC_REF: reference-alignment mode (docs/aec-reference-alignment-plan.md)
+    //
+    // webrtcechoprobe is designed to sit BEFORE the audio sink: it predicts when the
+    // mic will hear a buffer as (running_time + pipeline_latency). Our reference is a
+    // render LOOPBACK, captured AFTER playback — the mic is hearing it AT capture time,
+    // so the correct prediction here is (running_time + ~0). Feeding a post-playback
+    // signal to an element that adds pipeline_latency DOUBLE-COUNTS the playback path
+    // and pushes the reference LATER than the echo it must cancel.
+    //
+    // Direction is what makes that serious: a canceller buffers a reference arriving
+    // EARLY, but a reference arriving AFTER its own echo is unusable — there is nothing
+    // left to subtract from. AEC3's delay estimator absorbs a bounded offset; a
+    // systematic push the non-causal way eats straight into achievable ERLE.
+    //
+    // "loopback-comp" pre-compensates: subtract the pipeline's reported latency from
+    // each PTS so the probe adding it back lands where the mic actually hears it.
+    // DEFAULT IS UNCHANGED ("loopback") — this ships inert until a floor-checked sweep
+    // says otherwise. Two changes have already been measured inert this cycle.
+    const QByteArray refMode = qEnvironmentVariableIsSet("TALQ_AEC_REF")
+                             ? qgetenv("TALQ_AEC_REF") : QByteArray("loopback");
+    if (refMode == "loopback-comp") {
+        // Latency is only meaningful once the pipeline is PAUSED/PLAYING, so it is
+        // queried lazily on the first buffer and cached — a latency query per buffer
+        // would cost more than the correction is worth.
+        struct FarComp { GstElement *pipeline; GstClockTime lat; bool known; };
+        auto *fc = g_new0(FarComp, 1);
+        fc->pipeline = m_pipeline;   // borrowed; the probe never outlives the pipeline
+        GstPad *sp = gst_element_get_static_pad(caps, "src");
+        if (sp) {
+            gst_pad_add_probe(sp, GST_PAD_PROBE_TYPE_BUFFER,
+                [](GstPad *, GstPadProbeInfo *info, gpointer user) -> GstPadProbeReturn {
+                    auto *fc = static_cast<FarComp *>(user);
+                    if (!fc->known) {
+                        // TALQ_AEC_REF_SHIFT_MS overrides the query entirely.
+                        //
+                        // Asking the pipeline was the original design and it FAILED
+                        // SILENTLY: the query succeeded and returned under 1 ms, so the
+                        // compensation subtracted nothing and the whole hypothesis went
+                        // untested while looking like it had been tried.
+                        //
+                        // The true render->capture offset is not something this pipeline
+                        // knows — the loopback source is a wasapi2src we do not own. So
+                        // stop asking and SWEEP it: set the shift explicitly and find the
+                        // value that maximises cancellation. A clear optimum IS the delay,
+                        // measured rather than queried; a flat response across the sweep
+                        // says alignment is not the limiting factor and the residual
+                        // suppressor is, which is an equally useful answer.
+                        if (qEnvironmentVariableIsSet("TALQ_AEC_REF_SHIFT_MS")) {
+                            bool ok = false;
+                            const int ms = qEnvironmentVariable("TALQ_AEC_REF_SHIFT_MS").toInt(&ok);
+                            if (ok && ms >= 0 && ms <= 500) {
+                                fc->lat   = (GstClockTime)ms * GST_MSECOND;
+                                fc->known = true;
+                                qInfo() << "PublishPipeline: AEC ref shift FORCED to" << ms
+                                        << "ms (TALQ_AEC_REF_SHIFT_MS) — pipeline latency query bypassed";
+                            } else {
+                                qWarning() << "PublishPipeline: ignoring out-of-range "
+                                              "TALQ_AEC_REF_SHIFT_MS" << qgetenv("TALQ_AEC_REF_SHIFT_MS")
+                                           << "— expected 0..500";
+                            }
+                        }
+                        GstQuery *q = fc->known ? nullptr : gst_query_new_latency();
+                        if (q && gst_element_query(fc->pipeline, q)) {
+                            gboolean live = FALSE;
+                            GstClockTime mn = 0, mx = 0;
+                            gst_query_parse_latency(q, &live, &mn, &mx);
+                            fc->lat = GST_CLOCK_TIME_IS_VALID(mn) ? mn : 0;
+                            fc->known = true;
+                            qInfo() << "PublishPipeline: AEC ref loopback-comp — "
+                                       "shifting far-end PTS earlier by"
+                                    << (fc->lat / GST_MSECOND) << "ms";
+                        }
+                        if (q) gst_query_unref(q);   // null when the env override won
+                    }
+                    if (fc->known && fc->lat > 0) {
+                        GstBuffer *b = gst_pad_probe_info_get_buffer(info);
+                        // Writable in-place: this branch is reference-only (fakesink),
+                        // so no other consumer sees these timestamps.
+                        if (b && (b = gst_buffer_make_writable(b))) {
+                            if (GST_BUFFER_PTS_IS_VALID(b))
+                                GST_BUFFER_PTS(b) = (GST_BUFFER_PTS(b) > fc->lat)
+                                                  ? GST_BUFFER_PTS(b) - fc->lat : 0;
+                            GST_PAD_PROBE_INFO_DATA(info) = b;
+                        }
+                    }
+                    return GST_PAD_PROBE_OK;
+                }, fc, (GDestroyNotify)g_free);
+            gst_object_unref(sp);
+        } else {
+            g_free(fc);
+            qWarning() << "PublishPipeline: TALQ_AEC_REF=loopback-comp — no src pad on "
+                          "the far caps filter; falling back to uncompensated loopback";
+        }
+    } else if (refMode != "loopback") {
+        qWarning() << "PublishPipeline: unknown TALQ_AEC_REF" << refMode
+                   << "— using the default loopback reference";
+    }
+
+#if defined(TALQ_WITH_AEC3)
+    // AEC3 DIRECT: the far branch must also feed OUR AudioProcessing, or it has no
+    // reference to subtract and cancels nothing. Same 10 ms framing as the near leg —
+    // AEC3 accepts no other size, and the two streams must be fed in lockstep.
+    GstElement *farSplit = nullptr;
+    if (qgetenv("TALQ_AEC_ENGINE") == "aec3") {
+        farSplit = gst_element_factory_make("audiobuffersplit", "pub-far-aec3-split");
+        if (farSplit) {
+            g_object_set(farSplit, "output-buffer-duration", 1, 100, nullptr);
+            if (GstPad *fsp = gst_element_get_static_pad(farSplit, "src")) {
+                gst_pad_add_probe(fsp, GST_PAD_PROBE_TYPE_BUFFER,
+                    [](GstPad *, GstPadProbeInfo *info, gpointer user) -> GstPadProbeReturn {
+                        auto *self = static_cast<PublishPipeline *>(user);
+                        // Null until start() finishes building it; probes only fire
+                        // once PLAYING, so this is a guard rather than a race.
+                        if (!self->m_aec3) return GST_PAD_PROBE_OK;
+                        GstBuffer *b = gst_pad_probe_info_get_buffer(info);
+                        if (!b) return GST_PAD_PROBE_OK;
+                        GstMapInfo m;
+                        if (gst_buffer_map(b, &m, GST_MAP_READ)) {
+                            if (m.size == (gsize)talq::Aec3Processor::kFrameSamples * 2)
+                                self->m_aec3->pushFarEnd(reinterpret_cast<const int16_t *>(m.data));
+                            gst_buffer_unmap(b, &m);
+                        }
+                        return GST_PAD_PROBE_OK;
+                    }, this, nullptr);
+                gst_object_unref(fsp);
+            }
+            qInfo() << "PublishPipeline: far-end reference will also feed the direct AEC3 engine";
+        } else {
+            qWarning() << "PublishPipeline: audiobuffersplit unavailable on the far leg — "
+                          "the AEC3 engine would have no reference; it will cancel nothing";
+        }
+    }
+    GstElement *chain[] = { m_farSrc, conv, res, caps, farSplit, m_farProbe, lvl, m_farSink };
+#else
     GstElement *chain[] = { m_farSrc, conv, res, caps, m_farProbe, lvl, m_farSink };
+#endif
     for (GstElement *e : chain) if (e) gst_bin_add(GST_BIN(m_pipeline), e);
 
-    bool ok = lvl
-        ? gst_element_link_many(m_farSrc, conv, res, caps, m_farProbe, lvl, m_farSink, nullptr)
-        : gst_element_link_many(m_farSrc, conv, res, caps, m_farProbe, m_farSink, nullptr);
+    // Linked from the same list that was added to the bin. The previous form spelled
+    // the order out twice in gst_element_link_many() calls, which silently left the
+    // optional AEC3 split ADDED BUT UNLINKED — an orphan whose probe would never fire,
+    // so the engine would have had no far-end reference and cancelled nothing while
+    // looking correctly wired.
+    bool ok = true;
+    GstElement *prev = nullptr;
+    for (GstElement *e : chain) {
+        if (!e) continue;                       // lvl and farSplit are both optional
+        if (prev && !gst_element_link(prev, e)) { ok = false; break; }
+        prev = e;
+    }
     if (!ok) {
         qWarning() << "PublishPipeline: AEC loopback-reference link failed — AEC off";
         for (GstElement *e : chain) if (e) gst_bin_remove(GST_BIN(m_pipeline), e);

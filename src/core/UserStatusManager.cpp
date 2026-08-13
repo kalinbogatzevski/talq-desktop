@@ -9,6 +9,7 @@
 #include <QJsonArray>
 #include <QDebug>
 #include <QGuiApplication>
+#include <QPalette>
 #include <QScopeGuard>
 #include <QSessionManager>
 #include <QTimer>
@@ -95,16 +96,27 @@ QString UserStatusManager::label(Status s)
 
 QColor UserStatusManager::colorFor(Status s)
 {
-    // Warm palette, consistent with the contacts' presence dots
-    // (SidebarPainter: online green, away amber, dnd warm clay).
+    // Was a fixed 5-hex palette, identical across all four themes, so it
+    // silently diverged from the SAME contact's presence dot drawn by
+    // SidebarPainter (m_theme.online/amber/danger, per-theme) -- e.g. on
+    // Paper this returned a green/amber/clay that matched none of Paper's
+    // actual tokens. Route through PainterTheme instead: MainWindow's
+    // applyDarkPalette() (re-run on every theme switch, not just at start-up)
+    // publishes online/amber/danger into three otherwise-unused QPalette
+    // roles as a theme-token bag, so this stays a plain static function with
+    // no PainterTheme/theme-id plumbing threaded through its two call sites,
+    // while still tracking all four themes live from one source of truth.
+    // Invisible/Offline keep the original neutral (textMuted -- same warm
+    // "faintest" tone the old #8a8680 approximated, but per-theme correct).
+    const QPalette p = QGuiApplication::palette();
     switch (s) {
-    case Status::Online:    return QColor(0x4c, 0xaf, 0x7d);
-    case Status::Away:      return QColor(0xf0, 0xa0, 0x50);
-    case Status::Dnd:       return QColor(0xd9, 0x69, 0x4c);
-    case Status::Invisible: return QColor(0x8a, 0x86, 0x80);
-    case Status::Offline:   return QColor(0x8a, 0x86, 0x80);
+    case Status::Online:    return p.color(QPalette::Link);         // theme.online
+    case Status::Away:      return p.color(QPalette::LinkVisited);  // theme.amber
+    case Status::Dnd:       return p.color(QPalette::BrightText);   // theme.danger
+    case Status::Invisible: return p.color(QPalette::PlaceholderText); // theme.textMuted
+    case Status::Offline:   return p.color(QPalette::PlaceholderText);
     }
-    return QColor(0x8a, 0x86, 0x80);
+    return p.color(QPalette::PlaceholderText);
 }
 
 void UserStatusManager::onLoggedIn()

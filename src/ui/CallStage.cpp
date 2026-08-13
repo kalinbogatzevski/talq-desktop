@@ -47,6 +47,11 @@ QFont monoFont(int px)
     f.setWeight(QFont::DemiBold);
     return f;
 }
+// Diagnostic: how many frames CallStage::onFrame has seen per participant
+// (see there). File-scope, not function-local, so the stateChanged->Idle
+// handler below can clear it — it's keyed by CallParticipant*, and those
+// addresses go dangling by design the moment a call tears down.
+QHash<CallParticipant*, int> s_dbgCount;
 } // namespace
 
 CallStage::CallStage(CallManager *call, QWidget *parent)
@@ -61,6 +66,7 @@ CallStage::CallStage(CallManager *call, QWidget *parent)
         if (m_call->state() == CallManager::Idle) {
             m_camFrame.clear(); m_scrFrame.clear();
             m_tileSubstream.clear();   // fresh hysteresis seed per call; no cross-call leak
+            s_dbgCount.clear();   // keyed by CallParticipant* — those are dead now
         }
         // Keep the control bar (with the Leave/Cancel button) reachable while
         // reconnecting. Auto-hide only runs in Active, but if the chrome had
@@ -253,7 +259,7 @@ void CallStage::onFrame(CallParticipant *p, bool screen, const QImage &img)
 {
     // Diagnostic: confirm the render path actually receives remote frames
     // (first few + every 100th). Cheap, gated to the debug log only.
-    static QHash<CallParticipant*, int> s_dbgCount;
+    // s_dbgCount is file-scope (see top of file) and cleared on Idle.
     int &n = s_dbgCount[p];
     if (++n <= 3 || n % 100 == 0)
         qDebug() << "CallStage::onFrame" << (p && p->isSelf() ? "SELF" : "REMOTE")
@@ -975,10 +981,11 @@ QImage CallStage::avatarDisc(const QString &id, const QString &name,
     img.fill(Qt::transparent);
     QPainter g(&img);
     g.setRenderHint(QPainter::Antialiasing);
-    g.setBrush(PainterTheme::authorColor(id)); g.setPen(Qt::NoPen);
+    const QColor fill = PainterTheme::authorColor(id);
+    g.setBrush(fill); g.setPen(Qt::NoPen);
     g.drawEllipse(QRectF(0.5, 0.5, size-1.0, size-1.0));
     QFont f = th.nameFont(); f.setPixelSize(int(size*0.36)); f.setWeight(QFont::DemiBold);
-    g.setFont(f); g.setPen(th.controlInk);
+    g.setFont(f); g.setPen(th.inkOn(fill));
     g.drawText(QRectF(0, 0, size, size), Qt::AlignCenter, initials(name));
     return img;
 }
