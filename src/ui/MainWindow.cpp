@@ -100,6 +100,10 @@ MainWindow::~MainWindow()
     // taskbar button); it has no QObject parent to auto-delete it.
     delete m_callWindow;
     m_callWindow = nullptr;
+    // m_imageViewer is likewise constructed with a null parent (own top-level
+    // window) — same reasoning, same fix.
+    delete m_imageViewer;
+    m_imageViewer = nullptr;
 }
 
 MainWindow::MainWindow(
@@ -536,7 +540,7 @@ void MainWindow::buildChatPage()
     connect(m_sidebar, &SidebarPainter::contextMenuRequested, this, [this](int modelIndex, int notifLevel, qreal, qreal) {
         auto *menu = new QMenu(this);
         menu->setAttribute(Qt::WA_DeleteOnClose);
-        auto *action = menu->addAction(notifLevel == 3 ? "Unmute" : "Mute");
+        auto *action = menu->addAction(notifLevel == 3 ? tr("Unmute") : tr("Mute"));
         connect(action, &QAction::triggered, this, [this, modelIndex, notifLevel]() {
             int newLevel = (notifLevel == 3) ? 0 : 3;
             m_conversations->setNotificationLevel(modelIndex, newLevel);
@@ -954,10 +958,13 @@ void MainWindow::buildChatPage()
     connect(m_selectionBar, &SelectionBarWidget::deleteClicked, this, [this]() {
         auto messages = m_chatPainter->selectedMessages();
         int count = messages.size();
-        auto reply = QMessageBox::question(this,
-            QStringLiteral("Delete %1 message%2").arg(count).arg(count == 1 ? "" : "s"),
-            QStringLiteral("Are you sure you want to delete %1 message%2?")
-                .arg(count).arg(count == 1 ? "" : "s"),
+        const QString title = count == 1
+            ? tr("Delete 1 message")
+            : tr("Delete %n messages", "", count);
+        const QString body = count == 1
+            ? tr("Are you sure you want to delete 1 message?")
+            : tr("Are you sure you want to delete %n messages?", "", count);
+        auto reply = QMessageBox::question(this, title, body,
             QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
         if (reply == QMessageBox::Yes) {
             for (const auto &msg : messages)
@@ -1005,29 +1012,14 @@ void MainWindow::buildChatPage()
 
         auto *menu = new QMenu(this);
         menu->setAttribute(Qt::WA_DeleteOnClose);
-        menu->setStyleSheet(QStringLiteral(
-            "QMenu {"
-            "  background: %1;"
-            "  border: 1px solid %2;"
-            "  border-radius: 10px;"
-            "  padding: 6px 0;"
-            "}"
-            "QMenu::item {"
-            "  padding: 6px 16px 6px 12px;"
-            "  color: %3;"
-            "  font-size: 13px;"
-            "}"
-            "QMenu::item:selected {"
-            "  background: %4;"
-            "  color: %5;"
-            "}"
-            "QMenu::separator {"
-            "  height: 1px;"
-            "  background: %2;"
-            "  margin: 4px 8px;"
-            "}"
-        ).arg(hx(th.bgSecondary), hx(th.divider), hx(th.textSecondary),
-              hx(th.bgHover), hx(th.textPrimary)));
+        // Was a bespoke stylesheet (bgSecondary ground, its own padding/item
+        // metrics) that made this menu render differently from every other
+        // QMenu in the app. Freshly constructed per right-click (never
+        // cached), so it picks up the current app-wide AppStyle sheet
+        // (qApp->setStyleSheet, regenerated on every theme switch) with no
+        // per-instance override needed -- same ground, item padding, and
+        // hover/selected colours as the sidebar filter menu and every other
+        // menu now.
 
         // Emoji quick-react row
         auto *emojiRow = new QWidgetAction(menu);
@@ -1059,22 +1051,22 @@ void MainWindow::buildChatPage()
 
         // File actions
         if (hasFile) {
-            menu->addAction(QStringLiteral("\u2B07\uFE0F  Download"), this, [this, fileId, fileName]() {
+            menu->addAction(tr("\u2B07\uFE0F  Download"), this, [this, fileId, fileName]() {
                 m_messages->downloadFile(fileId, fileName);
             });
-            menu->addAction(QStringLiteral("\u2601\uFE0F  Open in Nextcloud"), this, [this, fileId]() {
+            menu->addAction(tr("\u2601\uFE0F  Open in Nextcloud"), this, [this, fileId]() {
                 QDesktopServices::openUrl(QUrl(m_api->serverUrl() + "/f/" + QString::number(fileId)));
             });
         }
 
         // Standard actions
-        menu->addAction(QStringLiteral("\U0001F4CB  Copy"), this, [text]() {
+        menu->addAction(QStringLiteral("\U0001F4CB  ") + tr("Copy"), this, [text]() {
             QString plain = text;
             static const QRegularExpression htmlRe("<[^>]*>");
             plain.remove(htmlRe);
             QApplication::clipboard()->setText(plain);
         });
-        menu->addAction(QStringLiteral("\u21A9\uFE0F  Reply"), this, [this, msgId, author, text]() {
+        menu->addAction(tr("\u21A9\uFE0F  Reply"), this, [this, msgId, author, text]() {
             m_replyToId = msgId;
             m_replyToAuthor = author;
             m_replyToText = text;
@@ -1088,7 +1080,7 @@ void MainWindow::buildChatPage()
             m_composer->showReplyBar(author, plain);
             m_composer->setFocus();
         });
-        menu->addAction(QStringLiteral("\u2197\uFE0F  Forward"), this, [this, msg]() {
+        menu->addAction(tr("\u2197\uFE0F  Forward"), this, [this, msg]() {
             QString body = plainBodyText(msg);
             if (body.isEmpty()) return;
             auto *picker = new ConversationPickerDialog(m_conversations, m_activeConvToken, this);
@@ -1097,10 +1089,10 @@ void MainWindow::buildChatPage()
             }
             picker->deleteLater();
         });
-        menu->addAction(QStringLiteral("\U0001F4CC  Pin"), this, [this, msgId]() {
+        menu->addAction(QStringLiteral("\U0001F4CC  ") + tr("Pin"), this, [this, msgId]() {
             m_messages->pinMessage(msgId);
         });
-        menu->addAction(QStringLiteral("\U0001F517  Copy link"), this, [this, msgId]() {
+        menu->addAction(QStringLiteral("\U0001F517  ") + tr("Copy link"), this, [this, msgId]() {
             QString link = m_messages->messageLink(msgId);
             QApplication::clipboard()->setText(link);
         });
@@ -1108,7 +1100,7 @@ void MainWindow::buildChatPage()
         // messages are read by definition the moment you send them, and the
         // server's lastReadMessage tracks the current user only.
         if (!isOwn) {
-            menu->addAction(QStringLiteral("\U0001F4E9  Mark as unread"), this, [this, msgId]() {
+            menu->addAction(QStringLiteral("\U0001F4E9  ") + tr("Mark as unread"), this, [this, msgId]() {
                 m_messages->markAsUnread(msgId);
             });
         }
@@ -1118,12 +1110,12 @@ void MainWindow::buildChatPage()
         // createNewTopic flow is just "send a seed message + name it",
         // which is type-agnostic. Server-side capability gates the rest.
         if (m_header->conversationType() >= 1) {
-            menu->addAction(QStringLiteral("\U0001F4AC  Thread"), this, [this, msgId]() {
-                openThread(msgId, "Thread");
+            menu->addAction(QStringLiteral("\U0001F4AC  ") + tr("Thread"), this, [this, msgId]() {
+                openThread(msgId, tr("Thread"));
             });
         }
 
-        auto *remindSubmenu = menu->addMenu(QStringLiteral("\u23F0  Remind me\u2026"));
+        auto *remindSubmenu = menu->addMenu(tr("\u23F0  Remind me\u2026"));
         remindSubmenu->setStyleSheet(menu->styleSheet());
         struct QuickPick { const char *label; int hours; };
         const auto addQuick = [this, msgId, remindSubmenu](const QString &label,
@@ -1151,15 +1143,15 @@ void MainWindow::buildChatPage()
         if (isOwn) {
             menu->addSeparator();
             if (!hasFile) {
-                menu->addAction(QStringLiteral("\u270F\uFE0F  Edit"), this, [this, msgId, msg]() {
+                menu->addAction(tr("\u270F\uFE0F  Edit"), this, [this, msgId, msg]() {
                     m_editingMessageId = msgId;
                     QString plain = plainBodyText(msg);
                     m_composer->showEditingBar(plain);
                 });
             }
-            menu->addAction(QStringLiteral("\U0001F5D1\uFE0F  Delete"), this, [this, msgId]() {
-                auto reply = QMessageBox::question(this, "Delete message",
-                    "Are you sure you want to delete this message?",
+            menu->addAction(QStringLiteral("\U0001F5D1\uFE0F  ") + tr("Delete"), this, [this, msgId]() {
+                auto reply = QMessageBox::question(this, tr("Delete message"),
+                    tr("Are you sure you want to delete this message?"),
                     QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
                 if (reply == QMessageBox::Yes)
                     m_messages->deleteMessage(msgId);
@@ -1167,7 +1159,7 @@ void MainWindow::buildChatPage()
         }
 
         menu->addSeparator();
-        menu->addAction(QStringLiteral("\u2610  Select"), this, [this, msgId]() {
+        menu->addAction(tr("\u2610  Select"), this, [this, msgId]() {
             m_chatPainter->enterSelectionMode(msgId);
         });
 
@@ -1703,15 +1695,8 @@ void MainWindow::buildSearchBar(QWidget *chatCol)
 
     m_searchResults = new QListWidget(this);
     m_searchResults->setWindowFlags(Qt::Popup);
-    {
-        PainterTheme th(m_themeId, m_fontScale);
-        auto hx = [](const QColor &c){ return c.name(QColor::HexRgb); };
-        m_searchResults->setStyleSheet(QStringLiteral(
-            "QListWidget { background: %1; color: %2; border: 1px solid %3; border-radius: 6px; }"
-            "QListWidget::item { padding: 6px 10px; }"
-            "QListWidget::item:selected { background: %4; }"
-        ).arg(hx(th.bgSecondary), hx(th.textPrimary), hx(th.divider), hx(th.bgSelected)));
-    }
+    // Themed in restyleChrome() (called once during construction and again on
+    // every theme switch) so Ctrl+D doesn't leave this popup on the old theme.
 
     connect(m_searchResults, &QListWidget::itemActivated, this, [this](QListWidgetItem *it) {
         int msgId = it->data(Qt::UserRole).toInt();
@@ -1726,12 +1711,19 @@ void MainWindow::buildSearchBar(QWidget *chatCol)
             }
         }
         if (!foundLocal) {
-            auto *c = new QMetaObject::Connection;
-            *c = connect(m_messages, &MessageListModel::historyUntilSettled, this,
-                [this, msgId, c](int settledId, bool ok) {
+            // Only one loadHistoryUntil chase can be in flight in the model
+            // (a single m_historyUntilTargetId), so arming a new jump first
+            // abandons whatever the previous click was still waiting on —
+            // otherwise a same-room second click before the first settles
+            // overwrites that target and strands this watcher forever (it
+            // would filter on the old msgId, which the model will never
+            // settle again). setConversationToken's room-change cleanup does
+            // not help here: it is never called for a same-room jump.
+            QObject::disconnect(m_searchJumpConn);
+            m_searchJumpConn = connect(m_messages, &MessageListModel::historyUntilSettled, this,
+                [this, msgId](int settledId, bool ok) {
                     if (settledId != msgId) return;
-                    QObject::disconnect(*c);
-                    delete c;
+                    QObject::disconnect(m_searchJumpConn);
                     if (ok) m_chatPainter->scrollToMessage(msgId);
                 });
             m_messages->loadHistoryUntil(msgId);
@@ -1775,8 +1767,16 @@ void MainWindow::runSearchQuery()
                 m_searchResults->addItem(it);
             }
             if (m_searchResults->count() == 0) {
-                m_searchResults->hide();
-                return;
+                // Zero hits used to just hide the popup — indistinguishable
+                // from search being broken. Show a single disabled row
+                // instead (same non-selectable-placeholder idiom as
+                // SharePickerDialog's addEmptyPlaceholder; that helper has
+                // internal linkage in SharePickerDialog.cpp so it can't be
+                // called from here, but the pattern is replicated exactly).
+                auto *empty = new QListWidgetItem(tr("No matches"));
+                empty->setFlags(Qt::NoItemFlags);
+                empty->setTextAlignment(Qt::AlignCenter);
+                m_searchResults->addItem(empty);
             }
             QPoint p = m_searchInput->mapToGlobal(QPoint(0, m_searchInput->height()));
             m_searchResults->resize(m_searchInput->width(),
@@ -2319,8 +2319,9 @@ void MainWindow::buildWelcomeContent()
     auto *flightPanel = new QFrame(root);
     flightPanel->setObjectName("mcPanel");
     flightPanel->setStyleSheet(QString(
-        "QFrame#mcPanel{background:%1;border:1px solid %2;border-radius:14px;}")
-        .arg(wcss(wt.bgSurface), wcss(wt.divider)));
+        "QFrame#mcPanel{background:%1;border:1px solid %2;border-radius:%3px;}")
+        .arg(wcss(wt.bgSurface), wcss(wt.divider))
+        .arg(PainterTheme::radiusCard));
     auto *flightLayout = new QVBoxLayout(flightPanel);
     flightLayout->setContentsMargins(0, 0, 0, 0);
     flightLayout->setSpacing(0);
@@ -2459,6 +2460,26 @@ void MainWindow::restyleChrome()
             .arg(hx(t.bgSecondary), hx(t.divider), hx(t.textPrimary),
                  hx(t.accent), hx(t.bgHover)));
 
+    if (m_searchResults)
+        m_searchResults->setStyleSheet(QStringLiteral(
+            "QListWidget { background: %1; color: %2; border: 1px solid %3; border-radius: 6px; }"
+            "QListWidget::item { padding: 6px 10px; }"
+            "QListWidget::item:selected { background: %4; }"
+            // The non-selectable "No matches" placeholder (Qt::NoItemFlags,
+            // same idiom as SharePickerDialog::addEmptyPlaceholder) has no
+            // :disabled rule to fall back to here, so it read in the same
+            // full-strength textPrimary as real hits — unlike the sidebar's
+            // and the emoji picker's empty states, both muted. Match them.
+            "QListWidget::item:disabled { color: %5; }"
+        ).arg(hx(t.bgSecondary), hx(t.textPrimary), hx(t.divider), hx(t.bgSelected),
+              hx(t.textSecondary)));
+
+    // Selection bar's four icons are baked QIcons (VectorIcons, tinted so
+    // they actually track the theme -- see SelectionBarWidget's own comment
+    // for why), not QSS, so they need this explicit re-tint hook same as
+    // every other per-instance chrome refresh in this function.
+    if (m_selectionBar) m_selectionBar->retheme(t);
+
     const QString iconQSS = QString(
         "QPushButton{background:transparent;color:%1;border:none;"
         "border-radius:8px;font-size:14px;"
@@ -2486,16 +2507,12 @@ void MainWindow::restyleChrome()
                 .arg(hx(t.accent), hx(t.bgHover), hx(t.bgSelected)));
     }
 
-    if (m_filterMenu)
-        m_filterMenu->setStyleSheet(QString(
-            "QMenu{background:%1;border:1px solid %2;border-radius:10px;"
-            "padding:6px;color:%3;font-size:13px;}"
-            "QMenu::item{padding:7px 28px 7px 24px;border-radius:6px;}"
-            "QMenu::item:selected{background:%4;color:%5;}"
-            "QMenu::item:checked{color:%6;font-weight:600;}"
-            "QMenu::separator{height:1px;background:%2;margin:6px 8px;}")
-            .arg(hx(t.bgSurface), hx(t.divider), hx(t.textPrimary),
-                 hx(t.bgHover), hx(t.textPrimary), hx(t.accent)));
+    // m_filterMenu previously carried its own near-duplicate of the app-wide
+    // QMenu sheet here (same ground/radius/padding, off by 2px on item
+    // padding) plus the only item:checked rule in the app. That rule is now
+    // in AppStyle's own QMenu block, so this menu needs no per-instance
+    // stylesheet at all -- it already re-inherits qApp's sheet on every
+    // theme switch via restyleChrome(), same as every other QMenu.
 
     if (m_profileNameLabel)
         m_profileNameLabel->setStyleSheet(QString(
@@ -2890,6 +2907,24 @@ void MainWindow::applyDarkPalette()
     pal.setColor(QPalette::HighlightedText, theme.controlInk);
     pal.setColor(QPalette::PlaceholderText, theme.textMuted);
     pal.setColor(QPalette::Mid, theme.divider);
+    // QPalette roles repurposed as a theme-token bag (same idiom as
+    // Highlight/HighlightedText/Mid above) for the few custom painters that
+    // read colours via the app QPalette instead of holding a PainterTheme
+    // directly: TalqIconButton's danger chip and UserStatusManager::
+    // colorFor's presence dots. "Spare" means unused by THIS codebase (grep
+    // confirmed no existing setColor/color() call on these three roles) --
+    // NOT unused by Qt itself. Link and LinkVisited are Qt's own roles for
+    // rich-text hyperlink colour in QLabel/QTextBrowser, so Link is now
+    // presence-green. Benign today: the app's one rich-text link site
+    // (Message.cpp's <a href> build) already sets its colour inline
+    // (style='color:#5a9ecf'), overriding the palette entirely -- but the
+    // next QLabel/QTextBrowser with openExternalLinks and no explicit link
+    // colour would silently render its links in theme.online instead of a
+    // normal link colour. Deliberate trade-off, not an oversight; flagging
+    // for whoever adds the next rich-text link surface.
+    pal.setColor(QPalette::BrightText, theme.danger);
+    pal.setColor(QPalette::Link, theme.online);
+    pal.setColor(QPalette::LinkVisited, theme.amber);
     QApplication::setPalette(pal);
 }
 
@@ -3343,8 +3378,14 @@ void MainWindow::createNewTopic()
     dlg.setStyleSheet(QStringLiteral(
         "QDialog { background: %1; color: %2; }"
         "QLabel { color: %2; }"
-        "QLabel#eyebrow { color: %3; font-size: 10px; letter-spacing: 2px;"
-        "  text-transform: uppercase; font-weight: 600; }"
+        // Eyebrow values converged onto AppStyle's role="eyebrow" idiom
+        // (font-size:11px, weight:600, inkMuted/%8) -- this dialog keeps its
+        // own bare `QLabel{color:%2}` rule, which wins over an app-wide
+        // QLabel[role] selector for a label in this dialog by Qt's QSS
+        // origin precedence (a widget's own sheet beats the app sheet
+        // regardless of selector specificity), so the
+        // ID-selector delivery stays local; only the values converge.
+        "QLabel#eyebrow { color: %8; font-size: 11px; font-weight: 600; }"
         "QLineEdit { background: transparent; border: none;"
         "  border-bottom: 1px solid %4; padding: 8px 0; color: %2;"
         "  font-size: 18px; font-weight: 500; }"
@@ -3353,11 +3394,24 @@ void MainWindow::createNewTopic()
         "  padding: 8px 14px; font-size: 12px; letter-spacing: 1px;"
         "  text-transform: uppercase; font-weight: 600; }"
         "QPushButton:hover { color: %2; }"
-        "QPushButton#primary { background: %5; color: %6; border-radius: 6px; }"
-        "QPushButton#primary:hover { background: %5; }"
+        // Radius/padding/hover/pressed converged onto AppStyle's
+        // variant="primary" (accent fill, control-ink text, 8px control
+        // radius, 8px 18px, accentHi hover, darker-on-press) -- this dialog
+        // can't reach that app-wide rule: its own QPushButton{}/#primary
+        // rules above win by Qt's QSS origin precedence (a widget's own
+        // sheet beats the app sheet regardless of selector specificity), so
+        // the VALUES converge here instead of the delivery -- per the spec's
+        // own fallback: "converge the values even where the delivery
+        // mechanism must stay bespoke."
+        "QPushButton#primary { background: %5; color: %6; border-radius: 8px;"
+        "  padding: 8px 18px; }"
+        "QPushButton#primary:hover { background: %9; }"
+        "QPushButton#primary:pressed { background: %10; }"
         "QPushButton#primary:disabled { background: %7; color: %8; }"
     ).arg(hx(th.bgPrimary), hx(th.textPrimary), hx(th.textSecondary), hx(th.divider),
-          hx(th.accent), hx(th.controlInk), hx(th.bgSurface), hx(th.textMuted)));
+          hx(th.accent), hx(th.controlInk), hx(th.bgSurface), hx(th.textMuted),
+          hx(th.accent.lighter(115)))
+     .arg(hx(th.accent.darker(115))));
     auto *lay = new QVBoxLayout(&dlg);
     lay->setContentsMargins(20, 18, 20, 16);
     lay->setSpacing(10);

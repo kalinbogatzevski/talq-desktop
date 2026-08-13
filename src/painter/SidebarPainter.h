@@ -36,6 +36,16 @@ struct ConversationLayout {
     QString timeString;
     QString previewText;       // "author: message" truncated
     qreal y = 0;               // top position in content coordinates
+
+    // Name-label geometry as last painted (paintRowNormal only -- squeezed
+    // rows show no name text). mutable: this struct is handed to the paint
+    // routines as a const ref, but caching where the (possibly elided) name
+    // landed is a pure paint-time byproduct, read back by event()'s
+    // QEvent::ToolTip handler to show the full name on hover -- same idiom
+    // ChatPainter uses for its timestamp tooltip, minus that class's already
+    // more elaborate per-message layout cache.
+    mutable QRectF nameRect;
+    mutable bool nameElided = false;
 };
 
 /**
@@ -119,8 +129,8 @@ private:
     static constexpr int RowHeightSqueezed = 52;
     static constexpr int AvatarSize = 44;      // matches Theme.avatarSize
     static constexpr int AvatarSizeSqueezed = 40;
-    static constexpr int BadgeHeight = 18;
-    static constexpr int BadgeFontSize = 10;
+    static constexpr int BadgeHeight = PainterTheme::badgeHeight;
+    static constexpr int BadgeFontSize = PainterTheme::badgeFontSize;
     static constexpr int FavDotSize = 6;
     static constexpr int StatusDotSize = 10;
     static constexpr int SelectionBarWidth = 3;

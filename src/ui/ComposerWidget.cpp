@@ -1,6 +1,7 @@
 #include "ComposerWidget.h"
 #include "EmojiPickerWidget.h"
 #include "NextcloudFilePickerDialog.h"
+#include "painter/PainterTheme.h"
 #include "core/SignalingClient.h"
 #include "core/EmojiData.h"
 #include "core/MentionCandidate.h"
@@ -483,9 +484,10 @@ void ComposerWidget::setInputFont(const QFont &font)
     // below stays exact. Viewport stays transparent so the QTextEdit's
     // rounded themed background isn't squared off by the inner viewport.
     m_input->setStyleSheet(QString(
-        "QTextEdit { border-radius: 8px; padding: %1px %2px; }"
+        "QTextEdit { border-radius: %3px; padding: %1px %2px; }"
         "QTextEdit > QWidget { background: transparent; }")
-        .arg(QString::number(vpad), QString::number(hpad)));
+        .arg(QString::number(vpad), QString::number(hpad),
+             QString::number(PainterTheme::radiusControl)));
 
     const int lineH = QFontMetrics(font).height();
     // Full vertical chrome the widget must contain so one line of text

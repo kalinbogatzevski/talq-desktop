@@ -263,7 +263,24 @@ void EmojiPickerWidget::rebuild()
         addSection(tr("Symbols"),           EmojiData::inCategory(C::Symbols),    int(C::Symbols));
         addSection(tr("Flags"),             EmojiData::inCategory(C::Flags),      int(C::Flags));
     } else {
-        addSection(tr("Results"), EmojiData::search(m_filter), -1);
+        const auto results = EmojiData::search(m_filter);
+        if (results.isEmpty()) {
+            // A gibberish search used to leave a totally blank scroll area —
+            // indistinguishable from the picker being broken. Centred muted
+            // label, same "role=secondary" idiom as the section headers above.
+            // Leading stretch (paired with the trailing one added below)
+            // centers it vertically in the viewport, matching the brief's
+            // "centred" and ThreadsPainter::paintEmptyState's vertical
+            // mid-point placement rather than pinning it to the top.
+            m_gridLayout->addStretch();
+            auto *empty = new QLabel(tr("No emoji found"), m_gridHost);
+            empty->setAlignment(Qt::AlignCenter);
+            empty->setProperty("role", "secondary");
+            empty->setStyleSheet(QStringLiteral("padding: 24px;"));
+            m_gridLayout->addWidget(empty);
+        } else {
+            addSection(tr("Results"), results, -1);
+        }
     }
     m_gridLayout->addStretch();
 }

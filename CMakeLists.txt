@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(talq VERSION 0.62.4 LANGUAGES CXX)
+project(talq VERSION 0.64.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -192,7 +192,7 @@ set_source_files_properties(
     src/ui/SettingsDialog.cpp
     src/ui/MainWindow.cpp
     PROPERTIES COMPILE_DEFINITIONS
-      "TALQ_VERSION=\"${PROJECT_VERSION}\";TALQ_VERSION_NAME=\"Blue Fiesta Week 2\";TALQ_BUILD_TS=\"${TALQ_BUILD_TS}\""
+      "TALQ_VERSION=\"${PROJECT_VERSION}\";TALQ_VERSION_NAME=\"Blue Fiesta Week 4\";TALQ_BUILD_TS=\"${TALQ_BUILD_TS}\""
 )
 
 # Pre-release flag: when build-release.sh is invoked with --beta it
@@ -238,6 +238,7 @@ if(TALQ_BG AND TALQ_BG_ORT)
     target_compile_definitions(talq PRIVATE TALQ_BG_ORT)
     message(STATUS "TalQ: ONNX Runtime ENABLED for selfie segmentation (#20 Phase 2e)")
 endif()
+
 
 # Branding. 123NET assets live outside the tree in /private (never
 # published); the branded build pulls them in here. The default/public

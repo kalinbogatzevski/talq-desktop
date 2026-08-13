@@ -48,6 +48,37 @@ const Palette &paletteFor(PainterTheme::Theme t) {
     case PainterTheme::Theme::Vivid: default: return kVivid;
     }
 }
+
+// WCAG 2.x relative luminance / contrast ratio (the standard formula: sRGB
+// channels linearised, weighted 0.2126/0.7152/0.0722; contrast is the two
+// luminances' (L+0.05) ratio, lighter over darker). Used by inkOn() to pick
+// the readable ink per fill instead of one ink calibrated for a single hue.
+double srgbChannelToLinear(int channel8)
+{
+    const double c = channel8 / 255.0;
+    // Breakpoint deliberately 0.04045, not the 0.03928 the WCAG prose quotes:
+    // 0.04045 is the real IEC 61966-2-1 sRGB breakpoint (where the linear and
+    // gamma segments meet exactly), and the two values are output-identical
+    // for every 8-bit channel anyway -- they only diverge for channel values
+    // strictly between 10.0164 and 10.3148, an empty integer range. Not a typo.
+    return c <= 0.04045 ? c / 12.92 : qPow((c + 0.055) / 1.055, 2.4);
+}
+
+double relativeLuminance(const QColor &c)
+{
+    return 0.2126 * srgbChannelToLinear(c.red())
+         + 0.7152 * srgbChannelToLinear(c.green())
+         + 0.0722 * srgbChannelToLinear(c.blue());
+}
+
+double contrastRatio(const QColor &a, const QColor &b)
+{
+    const double la = relativeLuminance(a);
+    const double lb = relativeLuminance(b);
+    const double hi = qMax(la, lb);
+    const double lo = qMin(la, lb);
+    return (hi + 0.05) / (lo + 0.05);
+}
 } // namespace
 
 PainterTheme::PainterTheme(Theme t, qreal fontScale)
@@ -143,10 +174,31 @@ QColor PainterTheme::authorColor(const QString &actorId)
     return s_authorPalette[idx];
 }
 
+int PainterTheme::authorPaletteSize()
+{
+    return static_cast<int>(sizeof(s_authorPalette) / sizeof(s_authorPalette[0]));
+}
+
+QColor PainterTheme::authorPaletteAt(int index)
+{
+    return s_authorPalette[qAbs(index) % authorPaletteSize()];
+}
+
+QColor PainterTheme::inkOn(const QColor &fill) const
+{
+    return contrastRatio(fill, controlInk) >= contrastRatio(fill, textPrimary)
+        ? controlInk : textPrimary;
+}
+
 QColor PainterTheme::topicColor(int index)
 {
     constexpr int N = sizeof(s_topicPalette) / sizeof(s_topicPalette[0]);
     return s_topicPalette[qAbs(index) % N];
+}
+
+int PainterTheme::topicPaletteSize()
+{
+    return static_cast<int>(sizeof(s_topicPalette) / sizeof(s_topicPalette[0]));
 }
 
 QImage PainterTheme::cropToCircle(const QImage &source, int size)

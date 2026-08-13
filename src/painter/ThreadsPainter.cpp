@@ -7,6 +7,8 @@
 #include <QWheelEvent>
 #include <QMouseEvent>
 #include <QHoverEvent>
+#include <QHelpEvent>
+#include <QToolTip>
 #include <QFontMetrics>
 #include <QCursor>
 #include <QtMath>
@@ -247,6 +249,19 @@ void ThreadsPainter::mouseReleaseEvent(QMouseEvent *event)
 
 bool ThreadsPainter::event(QEvent *e)
 {
+    if (e->type() == QEvent::ToolTip) {
+        auto *he = static_cast<QHelpEvent *>(e);
+        int row = rowAtY(he->pos().y());
+        if (row >= 0 && row < m_layouts.size()) {
+            const ThreadLayout &tl = m_layouts[row];
+            if (tl.titleElided && tl.titleRect.contains(he->pos())) {
+                QToolTip::showText(he->globalPos(), tl.title, this);
+                return true;
+            }
+        }
+        QToolTip::hideText();
+        return true;
+    }
     if (e->type() == QEvent::HoverMove) {
         auto *he = static_cast<QHoverEvent *>(e);
         qreal mx = he->position().x();
@@ -433,10 +448,12 @@ void ThreadsPainter::paintRow(QPainter *p, const ThreadLayout &tl, int rowIdx)
     QFontMetrics titleFM(titleFont);
     QString elidedTitle = titleFM.elidedText(tl.title, Qt::ElideRight,
                                               static_cast<int>(titleRight - textLeft));
+    const QRectF titleDrawRect(textLeft, titleY, titleRight - textLeft, m_theme.fontSizeNormal + 6);
+    tl.titleRect = titleDrawRect;
+    tl.titleElided = (elidedTitle != tl.title);
     p->setPen(m_theme.textPrimary);
     p->setFont(titleFont);
-    p->drawText(QRectF(textLeft, titleY, titleRight - textLeft, m_theme.fontSizeNormal + 6),
-                Qt::AlignLeft | Qt::AlignVCenter, elidedTitle);
+    p->drawText(titleDrawRect, Qt::AlignLeft | Qt::AlignVCenter, elidedTitle);
 
     // Timestamp
     p->setPen(m_theme.textTime);
@@ -461,11 +478,14 @@ void ThreadsPainter::paintRow(QPainter *p, const ThreadLayout &tl, int rowIdx)
         rightStuffW = badgeW + PainterTheme::spacingSmall;
     }
 
-    // Preview text
+    // Preview text — textSecondary for readable contrast (textMuted is
+    // reserved for disabled-looking states; see the preview-text comment in
+    // SidebarPainter::paintRowNormal, which paints this identical concept
+    // the same way).
     QFont previewFont;
     previewFont.setPixelSize(m_theme.fontSizeSmall);
     qreal previewRight = textRight - rightStuffW;
-    p->setPen(m_theme.textMuted);
+    p->setPen(m_theme.textSecondary);
     p->setFont(previewFont);
     EmojiTextRenderer::drawElided(p,
         QRectF(textLeft, bottomY, previewRight - textLeft, m_theme.fontSizeSmall + 4),
@@ -502,7 +522,13 @@ void ThreadsPainter::paintUnreadBadge(QPainter *p, int count, const QColor &colo
     p->drawRoundedRect(QRectF(badgeX, badgeY, badgeW, BadgeHeight),
                        BadgeHeight / 2.0, BadgeHeight / 2.0);
 
-    p->setPen(m_theme.controlInk);   // No-Gray: ink on accent, not #000
+    // Was a flat m_theme.controlInk regardless of fill -- the exact item-15
+    // defect (SidebarPainter's TalQ badge), at the OTHER topicColor ink
+    // site, missed in the first pass: this badge's fill is `color`
+    // (tl.threadColor = PainterTheme::topicColor(tl.iconColor)) and
+    // iconColor can select any of the 6 topic hues, so this failed AA on
+    // ALL SIX on Paper (2.09-3.31:1), not the one hue the TalQ badge fixed.
+    p->setPen(m_theme.inkOn(color));   // No-Gray: ink scored against the actual fill
     p->setFont(badgeFont);
     p->drawText(QRectF(badgeX, badgeY, badgeW, BadgeHeight), Qt::AlignCenter, countStr);
 }

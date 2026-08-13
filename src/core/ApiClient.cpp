@@ -86,6 +86,16 @@ QNetworkRequest ApiClient::makeRequest(const QString &path, const QUrlQuery &par
     req.setRawHeader("Accept", "application/json");
     req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
     applyBasicAuth(req);
+    // 0.63.1 — a black-holed connection otherwise hangs until the OS TCP
+    // timeout even when the caller is alive and waiting. The 0.63.0 reply
+    // lifetime work fixed the CONTEXT-death case; this is the orthogonal one.
+    // This is Qt's own idle/inactivity timeout (resets on any bytes sent or
+    // received; NOT a hard cap on total transfer duration — it also happens
+    // to be Qt's documented DefaultTransferTimeoutConstant), so a slow-but-
+    // progressing 200-message chat history fetch over a WAN link is fine;
+    // only a genuine multi-second stall trips it.
+    // Long-poll deliberately overrides this — it is meant to stay open.
+    req.setTransferTimeout(30'000);
     return req;
 }
 
@@ -495,6 +505,34 @@ QNetworkReply *ApiClient::postAbsoluteUrl(const QString &path, const QByteArray 
     return m_nam.post(req, body);
 }
 
+void ApiClient::bindReplyLifetime(QNetworkReply *reply, QObject *context)
+{
+    if (!reply) return;
+    // Unconditional and independent of the context: this is the ONLY
+    // deleteLater that always runs.
+    connect(reply, &QNetworkReply::finished, reply, &QNetworkReply::deleteLater);
+    // A caller that dies mid-flight should also stop paying for the
+    // transfer — nobody is left to read the body.
+    //
+    // Qt::QueuedConnection is deliberate, not the connect() default: emit
+    // destroyed(this) runs BEFORE ~QObject disconnects the connections where
+    // `context` is the RECEIVER (that cleanup is a later pass in the same
+    // destructor), so at the moment this fires, the per-endpoint
+    // `finished`->lambda connection gated on `context` is still live. A
+    // Direct connection here would call reply->abort() synchronously,
+    // inside context's destructor — and if abort() synchronously re-emits
+    // finished() (backend-dependent), that still-live connection would
+    // invoke `callback` against a `context` whose derived-class state has
+    // already been torn down: the exact use-after-free the context gating
+    // exists to prevent. Queuing defers abort() until after context's
+    // destructor (and its connection cleanup) has fully completed, so the
+    // gated connection is already gone by the time it runs — safe
+    // regardless of whether the backend's finished() is sync or async.
+    if (context)
+        connect(context, &QObject::destroyed, reply, &QNetworkReply::abort,
+                Qt::QueuedConnection);
+}
+
 void ApiClient::fetchFileImage(int fileId, int maxDim, QObject *context,
                                std::function<void(const QImage &, const QString &)> callback)
 {
@@ -514,6 +552,7 @@ void ApiClient::fetchFileImage(int fileId, int maxDim, QObject *context,
     applyBasicAuth(req);
 
     auto *reply = m_nam.get(req);
+    bindReplyLifetime(reply, context);
     // Use `context` as the receiver so the lambda is auto-disconnected if
     // the caller (e.g. ImageViewerDialog) is destroyed mid-flight.
     connect(reply, &QNetworkReply::finished, context ? context : this,
@@ -557,6 +596,7 @@ void ApiClient::fetchMentions(const QString &token, const QString &search,
     applyBasicAuth(req);
 
     QNetworkReply *reply = m_nam.get(req);
+    bindReplyLifetime(reply, context);
     connect(reply, &QNetworkReply::finished, context ? context : this,
             [reply, callback]() {
         reply->deleteLater();
@@ -632,6 +672,7 @@ void ApiClient::fetchEnabledBots(const QString &token, QObject *context,
     applyBasicAuth(req);
 
     QNetworkReply *reply = m_nam.get(req);
+    bindReplyLifetime(reply, context);
     connect(reply, &QNetworkReply::finished, context ? context : this,
             [reply, callback]() {
         reply->deleteLater();
@@ -660,6 +701,7 @@ void ApiClient::fetchAllBots(QObject *context,
     applyBasicAuth(req);
 
     QNetworkReply *reply = m_nam.get(req);
+    bindReplyLifetime(reply, context);
     connect(reply, &QNetworkReply::finished, context ? context : this,
             [reply, callback]() {
         reply->deleteLater();
@@ -697,6 +739,7 @@ void ApiClient::setBotEnabled(const QString &token, int botId, bool enabled,
     QNetworkReply *reply = enabled
         ? m_nam.sendCustomRequest(req, "POST", QByteArray())
         : m_nam.sendCustomRequest(req, "DELETE");
+    bindReplyLifetime(reply, context);
     connect(reply, &QNetworkReply::finished, context ? context : this,
             [reply, callback]() {
         reply->deleteLater();
@@ -722,6 +765,7 @@ void ApiClient::searchInConversation(const QString &token, const QString &query,
     applyBasicAuth(req);
 
     QNetworkReply *reply = m_nam.get(req);
+    bindReplyLifetime(reply, context);
     connect(reply, &QNetworkReply::finished, context ? context : this,
             [reply, callback]() {
         reply->deleteLater();
@@ -792,6 +836,7 @@ void ApiClient::listNextcloudFolder(const QString &path, QObject *context,
     QNetworkReply *reply = m_nam.sendCustomRequest(req, "PROPFIND", buf);
     buf->setParent(reply);
     trackReply(reply);
+    bindReplyLifetime(reply, context);
 
     const QString requestPathNormalized = p.isEmpty() ? QStringLiteral("/") : "/" + p;
     connect(reply, &QNetworkReply::finished, context ? context : this,
@@ -899,6 +944,7 @@ void ApiClient::shareNextcloudFileToChat(const QString &token, const QString &pa
     auto req = makeRequest(QStringLiteral("apps/files_sharing/api/v1/shares"));
     QNetworkReply *reply = m_nam.post(req, QJsonDocument(body).toJson());
     trackReply(reply);
+    bindReplyLifetime(reply, context);
 
     connect(reply, &QNetworkReply::finished, context ? context : this,
             [reply, callback]() {
@@ -935,6 +981,7 @@ void ApiClient::setMessageReminder(const QString &token, int messageId,
                            + token + "/" + QString::number(messageId) + "/reminder");
     QNetworkReply *reply = m_nam.post(req, QJsonDocument(body).toJson());
     trackReply(reply);
+    bindReplyLifetime(reply, context);
     connect(reply, &QNetworkReply::finished, context ? context : this,
             [reply, callback]() {
         reply->deleteLater();
@@ -955,6 +1002,7 @@ void ApiClient::cancelMessageReminder(const QString &token, int messageId,
                            + token + "/" + QString::number(messageId) + "/reminder");
     QNetworkReply *reply = m_nam.sendCustomRequest(req, "DELETE");
     trackReply(reply);
+    bindReplyLifetime(reply, context);
     connect(reply, &QNetworkReply::finished, context ? context : this,
             [reply, callback]() {
         reply->deleteLater();
@@ -973,6 +1021,7 @@ void ApiClient::fetchUpcomingReminders(QObject *context,
     auto req = makeRequest(QStringLiteral("apps/spreed/api/v1/chat/upcoming-reminders"));
     QNetworkReply *reply = m_nam.get(req);
     trackReply(reply);
+    bindReplyLifetime(reply, context);
     connect(reply, &QNetworkReply::finished, context ? context : this,
             [reply, callback]() {
         reply->deleteLater();
@@ -1018,6 +1067,7 @@ void ApiClient::searchNcUsers(const QString &query, QObject *context,
     auto req = makeRequest(QStringLiteral("core/autocomplete/get"), q);
     QNetworkReply *reply = m_nam.get(req);
     trackReply(reply);
+    bindReplyLifetime(reply, context);
     connect(reply, &QNetworkReply::finished, context ? context : this,
             [reply, callback]() {
         reply->deleteLater();
@@ -1062,6 +1112,7 @@ void ApiClient::createRoom(int roomType, const QString &roomName, const QString 
     auto req = makeRequest(QStringLiteral("apps/spreed/api/v4/room"));
     QNetworkReply *reply = m_nam.post(req, QJsonDocument(body).toJson());
     trackReply(reply);
+    bindReplyLifetime(reply, context);
     connect(reply, &QNetworkReply::finished, context ? context : this,
             [reply, callback]() {
         reply->deleteLater();
@@ -1103,6 +1154,7 @@ void ApiClient::fetchParticipants(const QString &token, QObject *context,
     auto req = makeRequest(QStringLiteral("apps/spreed/api/v4/room/") + token + "/participants");
     QNetworkReply *reply = m_nam.get(req);
     trackReply(reply);
+    bindReplyLifetime(reply, context);
     connect(reply, &QNetworkReply::finished, context ? context : this, [reply, callback]() {
         reply->deleteLater();
         const QJsonObject ocs = QJsonDocument::fromJson(reply->readAll()).object()
@@ -1124,6 +1176,7 @@ void ApiClient::ringAttendee(const QString &token, int attendeeId, QObject *cont
                            + QStringLiteral("/ring/") + QString::number(attendeeId));
     QNetworkReply *reply = m_nam.post(req, QByteArray());
     trackReply(reply);
+    bindReplyLifetime(reply, context);
     connect(reply, &QNetworkReply::finished, context ? context : this, [reply, callback]() {
         reply->deleteLater();
         const QJsonObject ocs = QJsonDocument::fromJson(reply->readAll()).object()
@@ -1147,6 +1200,7 @@ void ApiClient::addRoomParticipant(const QString &token, const QString &userId,
     auto req = makeRequest(QStringLiteral("apps/spreed/api/v4/room/") + token + "/participants");
     QNetworkReply *reply = m_nam.post(req, QJsonDocument(body).toJson());
     trackReply(reply);
+    bindReplyLifetime(reply, context);
     connect(reply, &QNetworkReply::finished, context ? context : this,
             [reply, callback]() {
         reply->deleteLater();
@@ -1168,6 +1222,7 @@ void ApiClient::setRoomName(const QString &token, const QString &name,
     auto req = makeRequest(QStringLiteral("apps/spreed/api/v4/room/") + token);
     QNetworkReply *reply = m_nam.sendCustomRequest(req, "PUT", QJsonDocument(body).toJson());
     trackReply(reply);
+    bindReplyLifetime(reply, context);
     connect(reply, &QNetworkReply::finished, context ? context : this,
             [reply, callback]() {
         reply->deleteLater();
@@ -1232,6 +1287,12 @@ void ApiClient::setRoomAvatar(const QString &token, const QString &imagePath,
     QNetworkReply *reply = m_nam.post(req, multiPart);
     multiPart->setParent(reply);         // multipart (+ file) freed with the reply
     trackReply(reply);
+    // Redundant with the unconditional deleteLater below (this endpoint already
+    // frees the reply regardless of context), but bindReplyLifetime also wires
+    // abort-on-context-destroyed, which this endpoint was missing: without it an
+    // avatar upload kept running (and paying for bandwidth) after the dialog
+    // that started it was closed.
+    bindReplyLifetime(reply, context);
     // Free the reply (+ multipart + the OPEN QFile) even if `context` (the dialog)
     // is destroyed mid-upload — bind cleanup to `this`, NOT the caller, so the file
     // descriptor never leaks on a close-during-upload.
@@ -1268,6 +1329,7 @@ void ApiClient::setRoomDescription(const QString &token, const QString &descript
     auto req = makeRequest(QStringLiteral("apps/spreed/api/v4/room/") + token + "/description");
     QNetworkReply *reply = m_nam.sendCustomRequest(req, "PUT", QJsonDocument(body).toJson());
     trackReply(reply);
+    bindReplyLifetime(reply, context);
     connect(reply, &QNetworkReply::finished, context ? context : this,
             [reply, callback]() {
         reply->deleteLater();
@@ -1286,6 +1348,7 @@ void ApiClient::deleteRoom(const QString &token, QObject *context,
     auto req = makeRequest(QStringLiteral("apps/spreed/api/v4/room/") + token);
     QNetworkReply *reply = m_nam.sendCustomRequest(req, "DELETE");
     trackReply(reply);
+    bindReplyLifetime(reply, context);
     connect(reply, &QNetworkReply::finished, context ? context : this,
             [reply, callback]() {
         reply->deleteLater();
@@ -1307,6 +1370,7 @@ void ApiClient::clearChatHistory(const QString &token, QObject *context,
     auto req = makeRequest(QStringLiteral("apps/spreed/api/v1/chat/") + token);
     QNetworkReply *reply = m_nam.sendCustomRequest(req, "DELETE");
     trackReply(reply);
+    bindReplyLifetime(reply, context);
     connect(reply, &QNetworkReply::finished, context ? context : this,
             [reply, callback]() {
         reply->deleteLater();
@@ -1325,6 +1389,7 @@ void ApiClient::leaveRoom(const QString &token, QObject *context,
     auto req = makeRequest(QStringLiteral("apps/spreed/api/v4/room/") + token + "/participants/self");
     QNetworkReply *reply = m_nam.sendCustomRequest(req, "DELETE");
     trackReply(reply);
+    bindReplyLifetime(reply, context);
     connect(reply, &QNetworkReply::finished, context ? context : this,
             [reply, callback]() {
         reply->deleteLater();
@@ -1343,6 +1408,7 @@ void ApiClient::fetchRoomParticipants(const QString &token, QObject *context,
     auto req = makeRequest(QStringLiteral("apps/spreed/api/v4/room/") + token + "/participants");
     QNetworkReply *reply = m_nam.get(req);
     trackReply(reply);
+    bindReplyLifetime(reply, context);
     connect(reply, &QNetworkReply::finished, context ? context : this,
             [reply, callback]() {
         reply->deleteLater();
@@ -1378,6 +1444,7 @@ void ApiClient::removeRoomParticipant(const QString &token, qint64 attendeeId,
     auto req = makeRequest(QStringLiteral("apps/spreed/api/v4/room/") + token + "/attendees");
     QNetworkReply *reply = m_nam.sendCustomRequest(req, "DELETE", QJsonDocument(body).toJson());
     trackReply(reply);
+    bindReplyLifetime(reply, context);
     connect(reply, &QNetworkReply::finished, context ? context : this,
             [reply, callback]() {
         reply->deleteLater();
@@ -1399,6 +1466,7 @@ void ApiClient::promoteModerator(const QString &token, qint64 attendeeId,
     auto req = makeRequest(QStringLiteral("apps/spreed/api/v4/room/") + token + "/moderators");
     QNetworkReply *reply = m_nam.post(req, QJsonDocument(body).toJson());
     trackReply(reply);
+    bindReplyLifetime(reply, context);
     connect(reply, &QNetworkReply::finished, context ? context : this,
             [reply, callback]() {
         reply->deleteLater();
@@ -1420,6 +1488,7 @@ void ApiClient::demoteModerator(const QString &token, qint64 attendeeId,
     auto req = makeRequest(QStringLiteral("apps/spreed/api/v4/room/") + token + "/moderators");
     QNetworkReply *reply = m_nam.sendCustomRequest(req, "DELETE", QJsonDocument(body).toJson());
     trackReply(reply);
+    bindReplyLifetime(reply, context);
     connect(reply, &QNetworkReply::finished, context ? context : this,
             [reply, callback]() {
         reply->deleteLater();
@@ -1455,6 +1524,7 @@ void ApiClient::sendChatMessage(const QString &token, const QString &text,
     auto req = makeRequest(QStringLiteral("apps/spreed/api/v1/chat/") + token);
     QNetworkReply *reply = m_nam.post(req, QJsonDocument(body).toJson());
     trackReply(reply);
+    bindReplyLifetime(reply, context);
     connect(reply, &QNetworkReply::finished, context ? context : this,
             [reply, callback]() {
         reply->deleteLater();

@@ -1,6 +1,7 @@
 #include "HeaderPainter.h"
 #include "core/ApiClient.h"
 #include "core/SignalingClient.h"
+#include "painter/VectorIcons.h"
 #include <QFile>
 #include <QHash>
 #include <QPainter>
@@ -9,6 +10,7 @@
 #include <QPaintEvent>
 #include <QMouseEvent>
 #include <QHoverEvent>
+#include <QHelpEvent>
 #include <QNetworkReply>
 #include <QFontMetrics>
 #include <QCursor>
@@ -448,7 +450,7 @@ void HeaderPainter::paintEvent(QPaintEvent *)
 
     if (m_isTyping) {
         hasSubtitle = true;
-        subtitleText = m_typingUser + QStringLiteral(" is typing...");
+        subtitleText = tr("%1 is typing...").arg(m_typingUser);
         subtitleColor = m_theme.accent;   // accent differentiates typing (no italic)
     } else if (m_conversationType == 1 && !m_peerStatus.isEmpty()) {
         hasSubtitle = true;
@@ -473,8 +475,15 @@ void HeaderPainter::paintEvent(QPaintEvent *)
         }
     } else if (isViewingTopic && !m_isTyping) {
         hasSubtitle = true;
-        subtitleText = m_conversationName + QStringLiteral(" \u00B7 ") +
-                       QString::number(m_messageCount) + QStringLiteral(" messages");
+        // %n drives Qt's plural machinery (numerus="yes" in the extracted
+        // .ts, independent of the English source spelling); %1 stays a
+        // normal placeholder translators can reorder relative to the count.
+        // "%n messages" (not "%n message(s)") keeps today's no-.ts fallback
+        // byte-identical to the pre-fix UI for every n, since numerus is
+        // driven entirely by the n argument, not by spelling out "(s)". See
+        // docs/superpowers/specs/2026-08-09-pre-1.0-cleanup-design.md,
+        // "Slice C \u2014 i18n" for why this replaced hand-built concatenation.
+        subtitleText = tr("%1 \u00B7 %n messages", "", m_messageCount).arg(m_conversationName);
         subtitleColor = m_theme.textSecondary;
     }
 
@@ -510,10 +519,12 @@ void HeaderPainter::paintEvent(QPaintEvent *)
         // Title
         QColor titleColor = m_conversationName.isEmpty() ? m_theme.textMuted : m_theme.textPrimary;
         QString elidedTitle = titleFM.elidedText(titleText, Qt::ElideRight, static_cast<int>(textW));
+        m_titleRect = QRectF(textLeft, topY, textW, titleH);
+        m_titleElided = (elidedTitle != titleText);
+        m_titleFullText = titleText;
         painter->setFont(titleFont);
         painter->setPen(titleColor);
-        painter->drawText(QRectF(textLeft, topY, textW, titleH),
-                          Qt::AlignLeft | Qt::AlignVCenter, elidedTitle);
+        painter->drawText(m_titleRect, Qt::AlignLeft | Qt::AlignVCenter, elidedTitle);
 
         // Subtitle
         QString elidedSub = subFM.elidedText(subtitleText, Qt::ElideRight, static_cast<int>(textW));
@@ -525,10 +536,12 @@ void HeaderPainter::paintEvent(QPaintEvent *)
         // Single line: centered vertically
         QColor titleColor = m_conversationName.isEmpty() ? m_theme.textMuted : m_theme.textPrimary;
         QString elidedTitle = titleFM.elidedText(titleText, Qt::ElideRight, static_cast<int>(textW));
+        m_titleRect = QRectF(textLeft, 0, textW, h);
+        m_titleElided = (elidedTitle != titleText);
+        m_titleFullText = titleText;
         painter->setFont(titleFont);
         painter->setPen(titleColor);
-        painter->drawText(QRectF(textLeft, 0, textW, h),
-                          Qt::AlignLeft | Qt::AlignVCenter, elidedTitle);
+        painter->drawText(m_titleRect, Qt::AlignLeft | Qt::AlignVCenter, elidedTitle);
     }
 }
 
@@ -676,6 +689,19 @@ void HeaderPainter::paintCallButton(QPainter *p, const QRectF &rect, const QColo
         renderTintedSvg(videoSvg, nullptr, &videoCache, kSvgH);
         return;
     }
+    if (icon == QStringLiteral("\uE721")) {
+        // Search was still a Segoe Fluent codepoint alongside bell/info,
+        // half-migrated relative to phone/video's glyph-fallback-safe paths
+        // above. VectorIcons already has "search" (used elsewhere in the
+        // app) -- route it through the same drawn-path system instead of
+        // adding a third icon-rendering mechanism. Bell/info stay on Segoe
+        // Fluent below: VectorIcons has no "bell" (only "belloff") or "info"
+        // id yet, so migrating those needs a new icon drawn first, out of
+        // scope here.
+        const QRectF ib(c.x() - kSvgH / 2, c.y() - kSvgH / 2, kSvgH, kSvgH);
+        VectorIcons::draw(*p, QStringLiteral("search"), ib, drawColor);
+        return;
+    }
 
     // Text glyphs (search, bell, info) via Segoe Fluent / MDL2. Pixel size
     // picked to match the 18 px visual height of the tight SVGs.
@@ -710,7 +736,7 @@ void HeaderPainter::paintAvatar(QPainter *p, const QRectF &rect)
         QFont initFont;
         initFont.setPixelSize(size / 2);
         initFont.setWeight(QFont::DemiBold);
-        p->setPen(m_theme.controlInk);   // No-Gray: ink on author color
+        p->setPen(m_theme.inkOn(bgColor));   // No-Gray: ink scored against the actual fill
         p->setFont(initFont);
         p->drawText(rect, Qt::AlignCenter, QString(initial));
     }
@@ -913,6 +939,19 @@ void HeaderPainter::mouseReleaseEvent(QMouseEvent *event)
 
 bool HeaderPainter::event(QEvent *e)
 {
+    if (e->type() == QEvent::ToolTip) {
+        // Separate from the HoverMove-driven per-button tooltip system below
+        // (that one only re-anchors on a button-hover EDGE, i.e. btn changing,
+        // so it can't drive a continuous "hovering the title" tooltip). Only
+        // acts when the cursor isn't over a button at all, so it never fights
+        // showTooltipFor()'s already-anchored button tip.
+        auto *he = static_cast<QHelpEvent *>(e);
+        if (buttonAtPos(he->pos()) < 0 && m_titleElided && m_titleRect.contains(he->pos())) {
+            QToolTip::showText(he->globalPos(), m_titleFullText, this);
+            return true;
+        }
+        return true;
+    }
     if (e->type() == QEvent::HoverMove) {
         auto *he = static_cast<QHoverEvent *>(e);
         int btn = buttonAtPos(he->position());

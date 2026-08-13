@@ -274,8 +274,10 @@ void NewChatDialog::applyChrome()
     setStyleSheet(QString(
         "QDialog { background: %1; color: %2; }"
         "QLabel  { color: %2; }"
-        "QLabel#eyebrow { color: %3; font-size: 10px; letter-spacing: 2px;"
-        "  text-transform: uppercase; font-weight: 700; }"
+        // Converged onto AppStyle's role="eyebrow" values (11px/600/inkMuted)
+        // -- %3 already resolves to PlaceholderText=theme.textMuted, the same
+        // token as AppStyle's inkMuted, so only size/weight/tracking changed.
+        "QLabel#eyebrow { color: %3; font-size: 11px; font-weight: 600; }"
         "QLabel#headline { color: %2; font-size: 22px; font-weight: 600;"
         "  letter-spacing: -0.2px; }"
         "QLineEdit { background: transparent; border: none;"
@@ -285,7 +287,7 @@ void NewChatDialog::applyChrome()
         "QLineEdit:focus { border-bottom-color: %7; }"
         "QLineEdit#groupname { font-size: 20px; font-weight: 600; padding: 10px 0; }"
         "QListWidget { background: %5; border: 1px solid %4;"
-        "  border-radius: 12px; color: %2; padding: 4px; outline: none; }"
+        "  border-radius: %9px; color: %2; padding: 4px; outline: none; }"
         "QListWidget::item { padding: 0; border-radius: 8px; color: %2; }"
         "QListWidget::item:hover    { background: %6; }"
         "QListWidget::item:selected { background: %6; }"
@@ -296,7 +298,8 @@ void NewChatDialog::applyChrome()
         "  background: transparent; border: none; }"
         // Cancel / Create use the global variant contract (ghost / primary) —
         // no per-dialog button QSS, no pill (8px control radius, DESIGN.md).
-    ).arg(bg, ink, dim, line, listBg, hover, accent, onAcc));
+    ).arg(bg, ink, dim, line, listBg, hover, accent, onAcc)
+     .arg(PainterTheme::radiusCard));
 }
 
 void NewChatDialog::changeEvent(QEvent *e)

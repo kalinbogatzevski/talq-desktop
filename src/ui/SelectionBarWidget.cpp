@@ -1,4 +1,33 @@
 #include "SelectionBarWidget.h"
+#include "painter/VectorIcons.h"
+
+#include <QGuiApplication>
+#include <QIcon>
+#include <QPainter>
+#include <QPixmap>
+
+namespace {
+// Bake a VectorIcons glyph into a QIcon tinted with the given colour. The
+// four selection-bar buttons used to carry a colour-emoji glyph in their
+// text (up-right arrow, clipboard, wastebasket, all with a VS16 emoji
+// presentation selector) -- Segoe UI Emoji renders those from its own fixed
+// COLR/CPAL palette and ignores the QPainter pen/QSS colour entirely, so
+// they never tinted with the theme the way every other icon in the app
+// does. VectorIcons draws a plain stroked/filled path instead, which the
+// caller tints explicitly, same idiom as TalqIconButton and CallStage.
+QIcon vectorIcon(const QString &id, const QColor &color, int px)
+{
+    const qreal dpr = qGuiApp ? qGuiApp->devicePixelRatio() : 1.0;
+    QPixmap pm(QSize(px, px) * dpr);
+    pm.setDevicePixelRatio(dpr);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    VectorIcons::draw(p, id, QRectF(0, 0, px, px), color);
+    p.end();
+    return QIcon(pm);
+}
+}
 
 SelectionBarWidget::SelectionBarWidget(QWidget *parent)
     : QWidget(parent)
@@ -19,14 +48,22 @@ SelectionBarWidget::SelectionBarWidget(QWidget *parent)
         auto *btn = new QPushButton(text, this);
         btn->setCursor(Qt::PointingHandCursor);
         if (variant) btn->setProperty("variant", variant);
+        btn->setIconSize(QSize(16, 16));
         layout->addWidget(btn);
         return btn;
     };
 
-    m_forwardBtn = makeBtn(QStringLiteral("\u2197\uFE0F Forward"), nullptr);
-    m_copyBtn = makeBtn(QStringLiteral("\U0001F4CB Copy"), nullptr);
-    m_deleteBtn = makeBtn(QStringLiteral("\U0001F5D1\uFE0F Delete"), "danger");
-    m_cancelBtn = makeBtn(QStringLiteral("\u2715 Cancel"), "ghost");
+    // Forward/Copy are standalone secondary actions (exactly the
+    // "Cancel / Done / Refresh / Edit" case AppStyle.cpp's own comment names
+    // for variant="default") but were shipping with no variant at all, so
+    // they fell through to the base QPushButton rule -- transparent, no
+    // border -- and read as plain text until hovered.
+    // QStringLiteral, not tr() -- wrapping label strings for translation is
+    // Slice C's item, not this one.
+    m_forwardBtn = makeBtn(QStringLiteral("Forward"), "default");
+    m_copyBtn = makeBtn(QStringLiteral("Copy"), "default");
+    m_deleteBtn = makeBtn(QStringLiteral("Delete"), "danger");
+    m_cancelBtn = makeBtn(QStringLiteral("Cancel"), "ghost");
 
     connect(m_forwardBtn, &QPushButton::clicked, this, &SelectionBarWidget::forwardClicked);
     connect(m_copyBtn, &QPushButton::clicked, this, &SelectionBarWidget::copyClicked);
@@ -34,6 +71,18 @@ SelectionBarWidget::SelectionBarWidget(QWidget *parent)
     connect(m_cancelBtn, &QPushButton::clicked, this, &SelectionBarWidget::cancelClicked);
 
     setCount(0);
+}
+
+void SelectionBarWidget::retheme(const PainterTheme &t)
+{
+    // Ink per button matches the colour its OWN variant's QSS text already
+    // renders in (AppStyle.cpp), so the icon and label read as one colour:
+    // default -> ink (textPrimary), danger -> danger, ghost -> ink2 (textSecondary).
+    constexpr int kIconPx = 16;
+    if (m_forwardBtn) m_forwardBtn->setIcon(vectorIcon(QStringLiteral("forward"), t.textPrimary, kIconPx));
+    if (m_copyBtn)    m_copyBtn->setIcon(vectorIcon(QStringLiteral("copy"), t.textPrimary, kIconPx));
+    if (m_deleteBtn)  m_deleteBtn->setIcon(vectorIcon(QStringLiteral("trash"), t.danger, kIconPx));
+    if (m_cancelBtn)  m_cancelBtn->setIcon(vectorIcon(QStringLiteral("close"), t.textSecondary, kIconPx));
 }
 
 void SelectionBarWidget::setCount(int count)

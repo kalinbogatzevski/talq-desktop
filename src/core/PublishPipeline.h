@@ -3,6 +3,7 @@
 #include <array>
 #include <atomic>
 #include <memory>
+#include "Aec3Processor.h"
 #include <QElapsedTimer>
 #include <QObject>
 #include <QString>
@@ -405,6 +406,31 @@ private:
     // AEC on the capture leg (echo-cancel + probe). Set via setEchoCancellation
     // before start(); CallManager guarantees the probe exists first.
     bool m_aecEnabled = false;
+    // True when the OS comms capture path is doing the echo cancelling, so OUR
+    // canceller is off. Distinct from m_aecEnabled on purpose: it must NOT gate the
+    // erle-proxy measurement log. Clearing m_aecEnabled alone silenced the only
+    // source of postAecSendRMS, so a comms leg reported zero samples — and therefore
+    // "digital-silence samples: 0", which is byte-identical to the signature of a
+    // PERFECTLY behaving canceller. That would have read as success measured on
+    // nothing.
+    bool m_osAecActive = false;
+
+    // Direct AEC3 engine (TALQ_AEC_ENGINE=aec3), replacing webrtcdsp's echo-cancel
+    // with an AudioProcessing instance we drive ourselves. Held here rather than in
+    // buildFarEndTail/start locals because BOTH legs need it: the far branch feeds
+    // ProcessReverseStream and the near branch ProcessStream, and AEC3 has nothing to
+    // subtract unless the same instance sees both.
+#if defined(TALQ_WITH_AEC3)
+    std::unique_ptr<talq::Aec3Processor> m_aec3;
+    // AECM (mobile_mode) returns -11 kStreamParameterNotSetError without a stream
+    // delay, which is why that arm processed ZERO frames while looking healthy.
+    // TALQ_AEC_DELAY_MS overrides; 40 ms is a conventional starting estimate for a
+    // laptop speaker->mic path, and AEC3 refines it with its own estimator anyway.
+    int m_aec3DelayMs = 40;
+    // Rejected-frame counter. Non-zero means audio went out UNCANCELLED and any echo
+    // number from that run is void.
+    quint64 m_aec3Rejects = 0;
+#endif
     // 0.51.x AEC playout tail (lives in THIS pipeline → shared clock with
     // webrtcdsp). m_farMixer != null means the tail is up. Built before the
     // webrtcdsp config in start() so the probe exists for the dsp's lookup and a

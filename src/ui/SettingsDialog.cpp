@@ -31,6 +31,7 @@
 #include <QUrl>
 #include <QDateTime>
 #include <QMessageBox>
+#include <QSignalBlocker>
 #include <QPushButton>
 #include <QDesktopServices>
 #include <QFrame>
@@ -185,9 +186,13 @@ static QWidget *makeSettingRow(const QString &name,
 }
 
 // Vertical rhythm: one gap between rows in a group, a larger gap before
-// the next group's eyebrow. DESIGN.md spacing scale (8 / 20).
-static constexpr int kRowGap   = 14;
-static constexpr int kGroupGap = 26;
+// the next group's eyebrow. Was a local 14/26 pair with a comment claiming
+// "DESIGN.md spacing scale (8 / 20)" -- neither number is in DESIGN.md's
+// actual scale (tiny/sm/md/lg/xl = 4/8/12/16/24) nor matched the comment's
+// own claimed values. Now the real tokens: spacingNormal for the tight
+// in-group gap, spacingXLarge for the group break.
+static constexpr int kRowGap   = PainterTheme::spacingNormal;
+static constexpr int kGroupGap = PainterTheme::spacingXLarge;
 
 // Helper: horizontal divider line
 static QFrame *makeDivider()
@@ -384,12 +389,12 @@ SettingsDialog::SettingsDialog(
     };
 
     m_tabs = new QTabWidget(this);
-    m_tabs->addTab(wrapInScroll(buildAudioVideoTab()),    "Audio && Video");
-    m_tabs->addTab(wrapInScroll(buildBackgroundTab()),    "Background");
-    m_tabs->addTab(wrapInScroll(buildNotificationsTab()), "Notifications");
+    m_tabs->addTab(wrapInScroll(buildAudioVideoTab()),    tr("Audio && Video"));
+    m_tabs->addTab(wrapInScroll(buildBackgroundTab()),    tr("Background"));
+    m_tabs->addTab(wrapInScroll(buildNotificationsTab()), tr("Notifications"));
     m_tabs->addTab(wrapInScroll(buildUpdatesTab()),       tr("Updates"));
-    m_tabs->addTab(wrapInScroll(buildGeneralTab()),       "General");
-    m_tabs->addTab(wrapInScroll(buildAccountTab()),       "Account");
+    m_tabs->addTab(wrapInScroll(buildGeneralTab()),       tr("General"));
+    m_tabs->addTab(wrapInScroll(buildAccountTab()),       tr("Account"));
     mainLayout->addWidget(m_tabs);
 
     // Tab bar inherits the app-wide AppStyle sheet (theme-driven, all 4
@@ -544,6 +549,38 @@ QWidget *SettingsDialog::buildAudioVideoTab()
         m_settings.value("echoCancellation", true).toBool());
     m_settings.endGroup();
     connect(m_echoCancellation, &QCheckBox::toggled, this, [this](bool checked) {
+        // A FOOTGUN WITH INVERTED INCENTIVES — confirm before disabling.
+        //
+        // Whoever unticks this box suffers NOTHING: echo is heard by the people they
+        // call, who cannot fix it from their side and cannot even see that it is off.
+        // One silent click here can make every future call sound broken to everyone
+        // else, and the person responsible never hears it.
+        //
+        // Measured 2026-08-12, which removes the usual reason to want it off: with AEC
+        // on, our send path suppresses echo 8-14 dB BELOW the room's noise floor AND
+        // preserves the near-end talker during double-talk (+1.23 dB — the voice comes
+        // through slightly LOUDER, not ducked). Turning it off buys no audio quality;
+        // it only exports a defect to whoever you call.
+        if (!checked) {
+            const auto answer = QMessageBox::warning(
+                this, tr("Turn off echo cancellation?"),
+                tr("<b>You will not hear the problem this causes — the people you call "
+                   "will.</b><br><br>"
+                   "With echo cancellation off, everyone you call hears their own voice "
+                   "echoed back from your microphone. They cannot fix it from their side, "
+                   "and they have no way to see that you have switched it off.<br><br>"
+                   "It costs you nothing to leave on: it removes your speakers from your "
+                   "microphone without making your own voice any quieter.<br><br>"
+                   "Only turn this off if your headset or audio hardware already cancels "
+                   "echo itself."),
+                QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel);
+            if (answer != QMessageBox::Yes) {
+                // Restore without re-entering this handler.
+                QSignalBlocker block(m_echoCancellation);
+                m_echoCancellation->setChecked(true);
+                return;
+            }
+        }
         m_settings.beginGroup("Audio");
         m_settings.setValue("echoCancellation", checked);
         m_settings.endGroup();
@@ -1844,6 +1881,11 @@ QWidget *SettingsDialog::buildUpdatesTab()
         rl->setSpacing(8);
         m_updateNowBtn = new QPushButton(tr("Update now"), row);
         m_updateNowBtn->setCursor(Qt::PointingHandCursor);
+        // Standalone secondary action -- exactly AppStyle.cpp's own
+        // variant="default" instruction ("Cancel / Done / Refresh / Edit"),
+        // but was shipping with no variant, so it fell through to the base
+        // QPushButton rule and read as plain text at rest.
+        m_updateNowBtn->setProperty("variant", "default");
         connect(m_updateNowBtn, &QPushButton::clicked, this, [this]() {
             m_updateNowBtn->setEnabled(false);
             m_updateNowBtn->setText(tr("Checking for updates…"));
@@ -1963,7 +2005,7 @@ QWidget *SettingsDialog::buildAccountTab()
     bottomRow->addWidget(m_talqVersionLabel);
     bottomRow->addStretch();
 
-    auto *logoutBtn = new QPushButton("Log out");
+    auto *logoutBtn = new QPushButton(tr("Log out"));
     logoutBtn->setProperty("variant", "danger");
     connect(logoutBtn, &QPushButton::clicked, this, [this]() {
         m_auth->logout();

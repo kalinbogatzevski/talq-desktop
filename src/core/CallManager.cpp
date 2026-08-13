@@ -1120,7 +1120,9 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
             // Dropping them leaves the subscriber with no remote candidates ->
             // ICE stuck at "new" -> permanent "waiting for video". Queue per
             // session; onOfferReceived flushes once the subscriber exists.
-            m_pendingSubCandidates[fromSessionId].append({cStr, mline, mid});
+            auto &pend = m_pendingSubCandidates[fromSessionId];
+            pend.append({cStr, mline, mid});
+            while (pend.size() > 16) pend.removeFirst();   // same cap as the screen-share twin
         }
     });
 
@@ -2343,6 +2345,24 @@ bool CallManager::buildAndStartPublisher()
             m_publishPipeline->setFarEndOutputDevice(
                 m_deviceManager ? m_deviceManager->selectedOutputDeviceId() : QString());
             qInfo() << "CallManager: AEC enabled — inline webrtcechoprobe in the publisher pipeline";
+        } else {
+            // ⚠ SAY IT LOUDLY. This branch used to be silent, so a machine with
+            // Audio/echoCancellation=false ran an ENTIRE CALL with no echo
+            // cancellation and nothing in the log said so — you had to notice the
+            // ABSENCE of the line above.
+            //
+            // That matters because of who hears the damage: echo is heard by the
+            // OTHER party. If this is off here, THEY hear their own voice come
+            // back, and nothing on their side is at fault or can fix it. Measured
+            // 2026-08-12: with AEC on, our send path suppresses echo 8-14 dB BELOW
+            // the room noise floor and preserves the near-end talker during
+            // double-talk (+1.23 dB). With it off, the far end's audio goes
+            // straight back out. The difference between "TalQ echoes" and "TalQ is
+            // clean" can be this one setting.
+            qWarning() << "CallManager: ECHO CANCELLATION IS DISABLED "
+                          "(Audio/echoCancellation=false in settings). The OTHER party "
+                          "will hear their own voice echoed back from this machine. "
+                          "Nothing on their side can fix it — re-enable AEC here.";
         }
     }
 
@@ -2641,15 +2661,17 @@ GstFlowReturn CallManager::onPreviewSample(GstAppSink *sink, gpointer userData)
     auto *self = static_cast<CallManager *>(userData);
     GstSample *sample = gst_app_sink_pull_sample(sink);
     if (!sample) return GST_FLOW_OK;
-    // Bounded hand-off — see FrameHandoff.h. The share preview runs at the
-    // captured monitor's resolution, so an unbounded queue here is expensive
-    // per frame; combined with the remote-video and camera-preview paths it is
-    // what drove a weak box to a 2 GB OOM abort during a two-share call.
-    if (!self->m_sharePreviewHandoff.tryAcquire()) {
+    // Bounded hand-off — see FrameHandoff.h. This is the incoming-call
+    // SELF-preview (camera, via startIncomingCameraPreview), not a screen
+    // share — ScreenSharePipeline::m_previewHandoff guards that path. An
+    // unbounded queue here is the same class of risk FrameHandoff.h exists to
+    // remove: every decoded-frame producer in this app posts through its own
+    // bounded gate so no single one can grow without limit.
+    if (!self->m_selfPreviewHandoff.tryAcquire()) {
         gst_sample_unref(sample);
-        const long long d = self->m_sharePreviewHandoff.dropped();
+        const long long d = self->m_selfPreviewHandoff.dropped();
         if (talq::FrameHandoffGate::isLogWorthy(d))
-            qWarning() << "CallManager: share preview behind — dropped" << d
+            qWarning() << "CallManager: self-preview behind — dropped" << d
                        << "frame(s) to bound memory";
         return GST_FLOW_OK;
     }
@@ -2658,7 +2680,7 @@ GstFlowReturn CallManager::onPreviewSample(GstAppSink *sink, gpointer userData)
         if (guard) {
             if (guard->m_previewProvider)
                 guard->m_previewProvider->feedFrame(sample);
-            guard->m_sharePreviewHandoff.release();
+            guard->m_selfPreviewHandoff.release();
         }
         gst_sample_unref(sample);
     }, Qt::QueuedConnection);
@@ -3789,9 +3811,15 @@ void CallManager::onLoadTick()
     // either climbs into the hundreds/thousands during the call, that path's
     // unbounded QueuedConnection is the leak (fix = coalesce/drop intermediates).
     // bgQ = bytes queued in the unbounded BG-bridge appsrc — if THAT climbs, the
-    // leak is in-pipeline instead. (Temporary; remove with the fix.)
+    // leak is in-pipeline instead. rss = whole-process working set (MB) — same
+    // reading as the host-protection watchdog above (host.procMb, already
+    // computed this tick), so no extra GetProcessMemoryInfo call. The per-path
+    // gauges above localize a leak; rss is the top-line trend that confirms
+    // whether 0.63.0's round of leak fixes actually holds memory flat over a
+    // long call/session during beta soak — kept for that ongoing
+    // verification, not temporary.
     qInfo().noquote() << QString(
-        "[LEAK] prevPend=%1 prevPost=%2 subPend=%3 subPost=%4 bgPass=%5 bgQ=%6KB")
+        "[LEAK] prevPend=%1 prevPost=%2 subPend=%3 subPost=%4 bgPass=%5 bgQ=%6KB rss=%7MB")
         .arg(talq::leak::previewPosted.load(std::memory_order_relaxed)
              - talq::leak::previewDelivered.load(std::memory_order_relaxed))
         .arg(talq::leak::previewPosted.load(std::memory_order_relaxed))
@@ -3799,7 +3827,8 @@ void CallManager::onLoadTick()
              - talq::leak::subDelivered.load(std::memory_order_relaxed))
         .arg(talq::leak::subPosted.load(std::memory_order_relaxed))
         .arg(talq::leak::bgPassThrough.load(std::memory_order_relaxed))
-        .arg(m_publishPipeline ? m_publishPipeline->bgAppsrcQueuedBytes() / 1024 : 0);
+        .arg(m_publishPipeline ? m_publishPipeline->bgAppsrcQueuedBytes() / 1024 : 0)
+        .arg(host.procMb);
 }
 
 void CallManager::stopScreenShare()
@@ -4608,6 +4637,9 @@ void CallManager::stopAllPipelines()
     m_subscribePipelines.clear();
     m_subscriberSids.clear();
     m_desiredSubstream.clear();
+    // Session ids are per-call ephemeral, so entries here can never be hit
+    // again — they were pure accumulation. Its siblings were already cleared.
+    m_peerManualSubstreamOverride.clear();
     m_peerSubstreamWant.clear();   // 0.51.x receive-load raw wants
     m_subscriberRecoveries.clear();
     // 1.0 audit — these two per-session maps are created lazily (m_subStall via

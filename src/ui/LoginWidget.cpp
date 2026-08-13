@@ -59,7 +59,7 @@ LoginWidget::LoginWidget(AuthManager *auth, QWidget *parent)
 
     // Server URL input (hidden for branded)
     if (!m_isBranded) {
-        auto *serverLabel = new QLabel("Server address", centerWidget);
+        auto *serverLabel = new QLabel(tr("Server address"), centerWidget);
         QFont sf; sf.setPixelSize(11); sf.setWeight(QFont::DemiBold);
         serverLabel->setFont(sf);
         layout->addWidget(serverLabel);
@@ -67,7 +67,7 @@ LoginWidget::LoginWidget(AuthManager *auth, QWidget *parent)
 
     m_serverInput = new QLineEdit(centerWidget);
     m_serverInput->setText(m_isBranded ? m_brandServer : "");
-    m_serverInput->setPlaceholderText("https://cloud.example.com");
+    m_serverInput->setPlaceholderText(tr("https://cloud.example.com"));
     m_serverInput->setVisible(!m_isBranded);
     QFont inputFont; inputFont.setPixelSize(14);
     m_serverInput->setFont(inputFont);
@@ -93,7 +93,7 @@ LoginWidget::LoginWidget(AuthManager *auth, QWidget *parent)
     layout->addSpacing(8);
 
     // Connect / Cancel button
-    m_connectBtn = new QPushButton("Connect", centerWidget);
+    m_connectBtn = new QPushButton(tr("Connect"), centerWidget);
     m_connectBtn->setProperty("variant", "primary");
     m_connectBtn->setMinimumHeight(40);
     QFont btnFont; btnFont.setPixelSize(14); btnFont.setWeight(QFont::DemiBold);
@@ -142,14 +142,14 @@ void LoginWidget::paintEvent(QPaintEvent *)
 void LoginWidget::updateState()
 {
     bool waiting = m_auth->isWaitingForBrowser();
-    m_connectBtn->setText(waiting ? "Cancel" : "Connect");
+    m_connectBtn->setText(waiting ? tr("Cancel") : tr("Connect"));
     m_serverInput->setEnabled(!waiting && !m_isBranded);
 
     if (!m_auth->statusMessage().isEmpty() && !waiting) {
         m_statusLabel->setText(m_auth->statusMessage());
         m_statusLabel->show();
     } else if (waiting) {
-        m_statusLabel->setText("Waiting for browser login...\nComplete sign-in in your browser, then return here.");
+        m_statusLabel->setText(tr("Waiting for browser login...\nComplete sign-in in your browser, then return here."));
         m_statusLabel->show();
     } else {
         m_statusLabel->hide();

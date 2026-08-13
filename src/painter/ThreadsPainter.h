@@ -25,6 +25,13 @@ struct ThreadLayout {
     QString previewText;   // "author: message"
     QColor threadColor;
     qreal y = 0;
+
+    // Title-label geometry as last painted. mutable: paintRow receives this
+    // struct by const ref; caching where the (possibly elided) title landed
+    // is a paint-time byproduct, read back by event()'s QEvent::ToolTip
+    // handler -- same idiom as SidebarPainter's nameRect/nameElided.
+    mutable QRectF titleRect;
+    mutable bool titleElided = false;
 };
 
 /**
@@ -77,8 +84,8 @@ private:
     static constexpr int HeaderHeight = 54;
     static constexpr int RowHeight = 64;
     static constexpr int DotSize = 8;
-    static constexpr int BadgeHeight = 18;
-    static constexpr int BadgeFontSize = 10;
+    static constexpr int BadgeHeight = PainterTheme::badgeHeight;
+    static constexpr int BadgeFontSize = PainterTheme::badgeFontSize;
     static constexpr int SelectionBarWidth = 3;
     static constexpr int NewTopicHeight = 44;
 

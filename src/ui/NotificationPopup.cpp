@@ -158,5 +158,5 @@ void NotificationPopup::paintEvent(QPaintEvent *)
     QRectF bgRect = rect().adjusted(4, 4, -4, -4);
     p.setBrush(th.bgSurface);
     p.setPen(QPen(th.divider, 1));
-    p.drawRoundedRect(bgRect, 12, 12);
+    p.drawRoundedRect(bgRect, PainterTheme::radiusCard, PainterTheme::radiusCard);
 }

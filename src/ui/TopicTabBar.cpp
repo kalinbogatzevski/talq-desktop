@@ -262,28 +262,28 @@ QWidget *TopicTabBar::makeChip(const QString &label, int threadId,
         return b;
 
     // #11 — real unread badge: a filled stadium pill sized/colored exactly
-    // like SidebarPainter::paintUnreadBadge (BadgeHeight=18, 10px demibold
+    // like SidebarPainter::paintUnreadBadge (PainterTheme::badgeHeight, demibold
     // count text, unreadBadge fill + controlInk text), placed beside the chip
-    // instead of stuffed into the button's own label text.
-    static constexpr int kBadgeHeight = 18;
-    static constexpr int kBadgeFontPx = 10;
+    // instead of stuffed into the button's own label text. Was a third local
+    // copy of BadgeHeight=18/BadgeFontSize=10 (also independently defined in
+    // SidebarPainter.h and ThreadsPainter.h) -- now the one promoted home.
     const QString countStr = unreadCount > 99 ? QStringLiteral("99+")
                                                : QString::number(unreadCount);
     QFont badgeFont;
-    badgeFont.setPixelSize(kBadgeFontPx);
+    badgeFont.setPixelSize(PainterTheme::badgeFontSize);
     badgeFont.setWeight(QFont::DemiBold);
     const QFontMetrics bfm(badgeFont);
     const int textW = bfm.horizontalAdvance(countStr);
-    const int badgeW = qMax(kBadgeHeight, textW + 10);
+    const int badgeW = qMax(PainterTheme::badgeHeight, textW + 10);
 
     auto *badge = new QLabel(countStr, m_row);
     badge->setFont(badgeFont);
     badge->setAlignment(Qt::AlignCenter);
-    badge->setFixedSize(badgeW, kBadgeHeight);
+    badge->setFixedSize(badgeW, PainterTheme::badgeHeight);
     badge->setStyleSheet(QStringLiteral(
         "QLabel { background: %1; color: %2; border-radius: %3px; }"
     ).arg(c.unreadBadge, c.onAccent)
-     .arg(kBadgeHeight / 2));
+     .arg(PainterTheme::badgeHeight / 2));
 
     auto *wrap = new QWidget(m_row);
     auto *wrapLayout = new QHBoxLayout(wrap);
