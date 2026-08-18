@@ -360,7 +360,7 @@ void ThreadsPainter::paintHeader(QPainter *p)
     arrowFont.setPixelSize(16);
     arrowFont.setWeight(QFont::DemiBold);
     p->setFont(arrowFont);
-    p->setPen(m_theme.accent);
+    p->setPen(m_theme.accentText);
 
     // Draw a simple left arrow using text
     QRectF backRect(PainterTheme::spacingSmall, 0, 28, HeaderHeight);
@@ -557,7 +557,7 @@ void ThreadsPainter::paintNewTopicButton(QPainter *p)
     plusFont.setPixelSize(18);
     plusFont.setWeight(QFont::Bold);
     p->setFont(plusFont);
-    p->setPen(m_theme.accent);
+    p->setPen(m_theme.accentText);
 
     qreal plusLeft = PainterTheme::spacingLarge;
     QFontMetrics plusFM(plusFont);
@@ -569,7 +569,7 @@ void ThreadsPainter::paintNewTopicButton(QPainter *p)
     QFont labelFont;
     labelFont.setPixelSize(m_theme.fontSizeSmall);
     p->setFont(labelFont);
-    p->setPen(m_theme.accent);
+    p->setPen(m_theme.accentText);
     p->drawText(QRectF(plusLeft + plusW + PainterTheme::spacingSmall, btnTop,
                         width() - plusLeft - plusW - PainterTheme::spacingSmall - PainterTheme::spacingLarge,
                         NewTopicHeight),

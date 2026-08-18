@@ -78,6 +78,15 @@ public:
     // resolves to the accent unchanged and nothing moves.
     QColor accentText;
 
+    // Accent as text on the two fills that are NOT chrome grounds, so
+    // accentText (calibrated against bgSelected) does not cover them. Both are
+    // precomputed rather than corrected at paint time: their fills are fixed
+    // per theme, so there is nothing to decide per frame.
+    QColor accentSoft;      // the calm accent tint: selected / unread topic chip
+    QColor accentSoftInk;   // accent, readable ON accentSoft
+    QColor quoteInkPeer;    // reply-quote author, on the inset over a peer bubble
+    QColor quoteInkOwn;     // ...and over your own bubble, which is the darker case
+
     // ── Borders ──
     QColor divider;
 
