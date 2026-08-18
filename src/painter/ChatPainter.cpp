@@ -1630,7 +1630,7 @@ void ChatPainter::paintOwnMessage(QPainter *p, const MessageLayout &ml, qreal of
             letterFont.setPixelSize(14);
             letterFont.setWeight(QFont::DemiBold);
             p->setFont(letterFont);
-            p->setPen(m_theme.controlInk);   // No-Gray: ink on color, not #fff
+            p->setPen(m_theme.inkOn(m_theme.accent));   // scored against the fill
             p->drawText(ar, Qt::AlignCenter, QStringLiteral("Me"));
         }
     }
@@ -1800,7 +1800,13 @@ void ChatPainter::paintOtherMessage(QPainter *p, const MessageLayout &ml, qreal 
     // Author name (non-grouped, above bubble) + optional TalQ tag
     if (!ml.isGrouped && !ml.nameRect.isNull()) {
         QRectF nr = ml.nameRect.translated(0, offsetY);
-        p->setPen(PainterTheme::authorColor(ml.actorId));
+        // authorInk, not authorColor: the raw identity hue is calibrated for
+        // an avatar FILL and measures 2.09-3.31:1 as NAME TEXT. Same hue and
+        // same palette entry (both go through authorPaletteIndex, so the name
+        // always matches the avatar beside it), at a readable lightness.
+        // Note the ground: this name is drawn ABOVE bubbleRect, so it sits on
+        // bgPrimary + the ambient wash, which is what authorInk corrects for.
+        p->setPen(m_theme.authorInk(ml.actorId));
         p->setFont(m_theme.nameFont());
         p->drawText(nr, Qt::AlignLeft | Qt::AlignVCenter, ml.actorName);
 

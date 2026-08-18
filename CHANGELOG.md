@@ -1,5 +1,43 @@
 # Changelog
 
+## v0.64.2 "Blue Fiesta Week 4" — STABLE (2026-08-18)
+
+An accessibility pass over all four themes. 0.64.1 fixed formatted message text
+on the light theme; checking the rest of the palette the same way turned up
+forty more places where text was too faint to meet the contrast standard we
+hold ourselves to, in every theme rather than just the light one.
+
+### Fixed
+* **Timestamps, system messages and other quiet text are readable everywhere.**
+  This is the same value in three places, and it was the faintest text in the
+  app: on the default theme a timestamp sat at less than half the contrast it
+  needed, worst of all inside your own messages. It is now readable on every
+  surface it can land on, while still staying quieter than the text around it —
+  the point of quiet text is to recede, not to disappear.
+* **The primary button is readable on the light theme.** The most important
+  control in any dialog was drawing pale text on its own accent fill. Buttons
+  now pick their text colour by measuring it against the fill they actually sit
+  on, so this cannot drift again as themes change.
+* **Names, links, mentions and status text meet the contrast standard in all
+  four themes** — including author names in group chats, which were among the
+  faintest text in the app on the light theme.
+* **Code blocks are warm like the rest of the app.** They were a cool grey-blue
+  panel, the one thing in the entire palette that broke the rule that no theme
+  contains a cool grey.
+
+### Changed
+* **The dark themes look slightly different**, and deliberately so. Your own
+  message bubble is a deeper shade of the same colour. That was the one surface
+  where quiet text could not be made readable without making it loud everywhere
+  else, so the bubble moved instead of the text. Mentions and links inside your
+  own messages became readable in the same step.
+
+### Notes
+* Contrast is now checked automatically for every theme, across every place
+  text meets a background — not just the handful of surfaces that were covered
+  before. The check also verifies the quiet-to-loud text ordering survives, so
+  a future contrast fix cannot flatten the design to pass.
+
 ## v0.64.1 "Blue Fiesta Week 4" — STABLE (2026-08-18)
 
 A readability fix for the light theme, reported from the field.
