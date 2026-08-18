@@ -1,5 +1,35 @@
 # Changelog
 
+## v0.64.3 "Blue Fiesta Week 4" — STABLE (2026-08-18)
+
+Finishes the accessibility work 0.64.2 started. That release fixed the text
+that sits on the app's standard backgrounds; this one fixes the places where
+accent-coloured text sits on something else — a tinted chip, a quoted message,
+a call overlay — which the earlier pass did not reach.
+
+### Fixed
+* **The selected topic chip is readable.** Its label was the faintest text left
+  anywhere in the app on the light theme: accent-coloured text on an
+  accent-tinted fill, which is close to the same colour twice. The tint and the
+  text colour are now defined together, so the label is chosen to read on the
+  tint rather than happening to share its hue.
+* **The author of a quoted message is readable in a reply** — on both the
+  messages you receive and the ones you send. Inside your own message it was
+  the worse of the two, and the two backgrounds are different, so they now get
+  colours measured against each one rather than a single compromise.
+* **The remaining accent-coloured text meets the standard**: "X is typing",
+  the New Topic button, the new-messages divider, the file attachment label,
+  the call-screen sharing and pin labels, and the release-notes text in both
+  the What's New window and the home screen's flight log.
+
+### Notes
+* The dark themes are unchanged by this release.
+* The automatic contrast check now also covers text drawn on tinted and
+  translucent surfaces, not only on the standard backgrounds — that gap is
+  what let these survive the previous pass. It additionally verifies the
+  colour-correction routine can actually reach the standard from either
+  direction, so an unusual future background cannot silently fall short.
+
 ## v0.64.2 "Blue Fiesta Week 4" — STABLE (2026-08-18)
 
 An accessibility pass over all four themes. 0.64.1 fixed formatted message text

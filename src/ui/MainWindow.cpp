@@ -1642,7 +1642,7 @@ void MainWindow::buildChatPage()
             "strong,b{color:%3;font-weight:700;}"
             "code{color:%3;}"
             "a{color:%3;text-decoration:none;}")
-            .arg(hx(t.textPrimary), hx(t.textSecondary), hx(t.accent)));
+            .arg(hx(t.textPrimary), hx(t.textSecondary), hx(t.accentText)));
         tb->setMarkdown(m_pendingUpdateNotes);
         tb->setReadOnly(true);
         lay->addWidget(tb, 1);
@@ -2361,7 +2361,7 @@ void MainWindow::buildWelcomeContent()
             "strong,b{color:%3;font-weight:700;}"
             "code{color:%3;}"
             "a{color:%3;text-decoration:none;}")
-            .arg(wcss(wt.textPrimary), wcss(wt.textSecondary), wcss(wt.accent)));
+            .arg(wcss(wt.textPrimary), wcss(wt.textSecondary), wcss(wt.accentText)));
         if (!s_changelogMd.isEmpty())
             changelog->setMarkdown(s_changelogMd);
         else
@@ -2504,7 +2504,7 @@ void MainWindow::restyleChrome()
                 "'Segoe MDL2 Assets','Segoe UI Symbol';}"
                 "QPushButton:hover{background:%2;color:%1;}"
                 "QPushButton:pressed{background:%3;}")
-                .arg(hx(t.accent), hx(t.bgHover), hx(t.bgSelected)));
+                .arg(hx(t.accentText), hx(t.bgHover), hx(t.bgSelected)));
     }
 
     // m_filterMenu previously carried its own near-duplicate of the app-wide
@@ -2522,7 +2522,7 @@ void MainWindow::restyleChrome()
     if (m_sidebarCol) {
         if (auto *av = m_sidebarCol->findChild<QLabel*>(QStringLiteral("sbAvatar")))
             av->setStyleSheet(QString("border-radius:18px;background:%1;")
-                                  .arg(hx(t.accent)));
+                                  .arg(hx(t.accentText)));
     }
 
     if (m_splitter)
