@@ -1238,7 +1238,7 @@ void CallStage::paintTile(QPainter &p, const Tile &t, const PainterTheme &th, bo
     }
 
     if (t.isScreen) {
-        p.setPen(th.accent); p.setFont(th.timeFont());
+        p.setPen(th.accentText); p.setFont(th.timeFont());
         p.drawText(rc.adjusted(12, 8, -12, 0), Qt::AlignTop|Qt::AlignLeft,
                    tr("%1 is sharing").arg(cp->isSelf() ? tr("You") : cp->displayName()));
     }
@@ -1265,7 +1265,7 @@ void CallStage::paintTile(QPainter &p, const Tile &t, const PainterTheme &th, bo
         QColor bg = th.bgPrimary; bg.setAlphaF(0.72);
         p.setBrush(bg); p.setPen(QPen(th.accent, 1));
         p.drawRoundedRect(m_pinBadgeRect, bh/2.0, bh/2.0);
-        p.setPen(th.accent);
+        p.setPen(th.accentText);
         p.drawText(m_pinBadgeRect, Qt::AlignCenter, label);
         // Chrome, so a double-click on the badge does not also toggle fullscreen.
         // mouseReleaseEvent hit-tests the badge BEFORE its chrome guard, so being in
@@ -1351,7 +1351,7 @@ void CallStage::paintCentered(QPainter &p, const PainterTheme &th)
             p.setPen(th.inkOn(th.accent)); p.drawText(vid, Qt::AlignCenter, tr("Video"));
             p.setBrush(Qt::NoBrush); p.setPen(QPen(th.accent, 1.3));
             p.drawRoundedRect(aud, 10, 10);
-            p.setPen(th.accent); p.drawText(aud, Qt::AlignCenter, tr("Audio"));
+            p.setPen(th.accentText); p.drawText(aud, Qt::AlignCenter, tr("Audio"));
             p.setBrush(Qt::NoBrush); p.setPen(QPen(th.danger, 1.3));
             p.drawRoundedRect(dec, 10, 10);
             p.setPen(th.danger); p.drawText(dec, Qt::AlignCenter, tr("Decline"));

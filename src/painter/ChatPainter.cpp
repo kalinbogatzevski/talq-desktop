@@ -1587,7 +1587,7 @@ void ChatPainter::paintUnreadSep(QPainter *p, const MessageLayout &ml, qreal off
     p->setBrush(m_theme.bgPrimary);
     p->drawRoundedRect(pill, pill.height() / 2.0, pill.height() / 2.0);
 
-    p->setPen(m_theme.accent);
+    p->setPen(m_theme.accentText);   // 11px label on the bgPrimary pill
     p->setFont(pillFont);
     p->drawText(pill, Qt::AlignCenter, text);
 }
@@ -1976,7 +1976,11 @@ void ChatPainter::paintReplyQuote(QPainter *p, const MessageLayout &ml, qreal of
     QFont tinyFont = m_theme.timeFont();
     tinyFont.setWeight(QFont::DemiBold);
     p->setFont(tinyFont);
-    p->setPen(m_theme.accent);
+    // Per-ground: the quote inset sits on YOUR bubble or the peer's, and the
+    // two are different fills. accentText is calibrated for chrome and only
+    // reaches 4.39 on the own-bubble inset, so this uses the pair tuned for
+    // the actual insets.
+    p->setPen(ml.isOwn ? m_theme.quoteInkOwn : m_theme.quoteInkPeer);
     QRectF authorR(qr.left() + 10, qr.top() + 4, qr.width() - 18, QFontMetrics(tinyFont).height());
     p->drawText(authorR, Qt::AlignLeft | Qt::AlignVCenter, ml.replyToAuthor);
 
@@ -2052,7 +2056,7 @@ void ChatPainter::paintFileAttachment(QPainter *p, const MessageLayout &ml, qrea
         QFont iconFont = m_theme.bodyFont();
         iconFont.setPixelSize(18);
         QRectF iconR(fr.left() + 12, fr.top(), 24, fr.height());
-        p->setPen(m_theme.accent);
+        p->setPen(m_theme.accentText);
         p->setFont(iconFont);
         p->drawText(iconR, Qt::AlignCenter, QStringLiteral("\U0001F4C4"));
 

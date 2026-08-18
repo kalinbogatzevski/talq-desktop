@@ -129,6 +129,15 @@ double contrastRatio(const QColor &a, const QColor &b)
     return (hi + 0.05) / (lo + 0.05);
 }
 
+// Linear blend a->b, matching AppStyle's mix(): used to derive a tint from two
+// theme tokens so no derived colour is ever a hardcoded hex.
+QColor mixColor(const QColor &a, const QColor &b, qreal t)
+{
+    return QColor::fromRgbF(a.redF()   + (b.redF()   - a.redF())   * t,
+                            a.greenF() + (b.greenF() - a.greenF()) * t,
+                            a.blueF()  + (b.blueF()  - a.blueF())  * t);
+}
+
 // Source-over composite of a translucent colour onto an opaque one, so a
 // ground that is painted UNDER a wash can be measured as what the eye sees
 // rather than as the bare fill.
@@ -207,6 +216,34 @@ PainterTheme::PainterTheme(Theme t, qreal fontScale)
     // instead of clearing 4.5. Nothing about the code LOOKED wrong; the
     // conformance test is what caught it. Keep derived-from-derived values
     // last, and keep them in dependency order.
+    // The calm accent tint behind a selected / unread topic chip, and the ink
+    // that reads on it. TopicTabBar used to blend this locally and then put
+    // the RAW accent on top, which measured 2.51:1 on Paper -- the worst text
+    // left in the app after the main sweep. A tint and the ink that goes on it
+    // belong together, so both live here now and the chip just uses them.
+    // Note the argument order. TopicTabBar's local helper was
+    // blend(fg, bg, a) = fg*a + bg*(1-a), i.e. 18% accent over the bar; mixColor
+    // interpolates TOWARD its second argument, so the faithful port is
+    // mixColor(bgSecondary, accent, 0.18), not mixColor(accent, bgSecondary, ...).
+    // Getting it backwards yields 82% accent -- a loud saturated chip, which is
+    // precisely the "too aggressive" look the calm style replaced. The contrast
+    // test passed either way (both are readable with the right ink), so only
+    // reading the emitted value caught it: right contrast, wrong colour.
+    accentSoft    = mixColor(bgSecondary, accent, 0.18);
+    accentSoftInk = readableOn(accent, accentSoft);
+
+    // The reply-quote inset: a faint textPrimary wash over the bubble, so its
+    // real ground differs between a peer bubble and your own. ChatPainter
+    // paints the quoted author's name in accent on top; on your own bubble
+    // that measured 2.69:1. Both variants precomputed, matching the alpha
+    // ChatPainter uses (16 on the light theme, 14 on the dark ones).
+    {
+        QColor wash = textPrimary;
+        wash.setAlpha(isLight ? 16 : 14);
+        quoteInkPeer = readableOn(accent, blendOver(bgSurface,    wash));
+        quoteInkOwn  = readableOn(accent, blendOver(bgMessageOwn, wash));
+    }
+
     const QColor threadGround = blendOver(bgPrimary, ambient);
     for (int i = 0; i < 8; ++i) {
         // Correct against the bare ground first, then against the washed one.
@@ -241,23 +278,40 @@ QColor PainterTheme::readableOn(const QColor &c, const QColor &ground, double mi
     // float, not qreal: Qt 6 changed the ...F colour accessors to float.
     float h = 0, s = 0, l = 0, a = 1;
     c.getHslF(&h, &s, &l, &a);
-    const bool groundIsLight = relativeLuminance(ground) > 0.5;
+    const float hue = (h < 0 ? 0.0f : h);   // achromatic reports -1
 
+    // Search BOTH directions and take whichever reaches the bar with the
+    // SMALLER move, rather than picking a direction up front from
+    // "is the ground lighter than mid-grey".
+    //
+    // That shortcut was wrong at the edges and it is worth spelling out why,
+    // because it looks obviously right: darkening to black tops out at
+    // (Lg+0.05)/0.05 while lightening to white tops out at 1.05/(Lg+0.05),
+    // and those cross at ground luminance ~0.179, not 0.5. For a ground
+    // between roughly 0.18 and 0.5 -- a mid-tone, which no CURRENT theme has
+    // but a future one easily could -- the old code committed to darkening
+    // when only lightening could ever clear the bar, and returned a
+    // best-effort colour that silently missed. Searching both removes the
+    // guess entirely.
     QColor best = c;
     double bestRatio = contrastRatio(c, ground);
     for (int i = 1; i <= 100; ++i) {
         const float step = i / 100.0f;
-        const float nl = groundIsLight ? l - step : l + step;
-        if (nl < 0.0f || nl > 1.0f)
-            break;
-        QColor cand = QColor::fromHslF(h < 0 ? 0.0f : h, s, nl, a);
-        const double r = contrastRatio(cand, ground);
-        if (r > bestRatio) { bestRatio = r; best = cand; }
-        if (r >= minRatio)
-            return cand;
+        for (const float nl : { l - step, l + step }) {
+            if (nl < 0.0f || nl > 1.0f)
+                continue;
+            const QColor cand = QColor::fromHslF(hue, s, nl, a);
+            const double r = contrastRatio(cand, ground);
+            if (r > bestRatio) { bestRatio = r; best = cand; }
+            if (r >= minRatio)
+                return cand;      // first hit == smallest move in either direction
+        }
     }
-    // Ran out of lightness before reaching the bar (only possible for an
-    // extreme ground): return the best we found rather than the original.
+    // Neither direction can reach the bar (an extreme ground, e.g. a fill of
+    // mid luminance against a hue that cannot escape it without losing its
+    // identity). Return the best found rather than the untouched input, so
+    // the result is at least the most readable version available -- and the
+    // conformance test will fail loudly rather than this passing silently.
     return best;
 }
 

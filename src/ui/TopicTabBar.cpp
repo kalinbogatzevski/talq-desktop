@@ -19,7 +19,7 @@
 
 namespace {
 struct Pal {
-    QString accent, onAccent, barBg, chipBg, border, ink, inkDim, hoverBg, accentSoft, unreadBadge;
+    QString accent, onAccent, barBg, chipBg, border, ink, inkDim, hoverBg, accentSoft, accentSoftInk, unreadBadge;
 };
 // bug 10 — source chip colors DIRECTLY from PainterTheme tokens (the single
 // source of truth every other chrome widget uses), NOT from the QApplication
@@ -46,7 +46,8 @@ Pal pal(PainterTheme::Theme t)
              n(th.textPrimary),    // hover text
              n(th.textSecondary),  // unselected chip TEXT — was black in light theme
              n(th.bgHover),        // hover background
-             n(blend(th.accent, th.bgSecondary, 0.18)),  // accentSoft — calm selected tint
+             n(th.accentSoft),     // calm selected tint — now a PainterTheme token
+             n(th.accentSoftInk),  // and the ink that actually reads on it
              n(th.unreadBadge) };  // unread-badge fill, same token as SidebarPainter
 }
 
@@ -193,20 +194,20 @@ QWidget *TopicTabBar::makeChip(const QString &label, int threadId,
             // Calm selected style: a soft accent TINT fill + accent-coloured
             // text + a 1px accent border. Clearly "active" without the loud
             // solid-accent fill that read as too aggressive.
-            "QPushButton { background: %1; color: %2; border: 1px solid %2;"
+            "QPushButton { background: %1; color: %2; border: 1px solid %3;"
             "  border-radius: 16px; padding: 6px 16px; font-size: 13px;"
             "  font-weight: 600; letter-spacing: 0.1px; }"
             "QPushButton:hover { background: %1; }"
-          ).arg(c.accentSoft, c.accent)
+          ).arg(c.accentSoft, c.accentSoftInk, c.accent)
         : hasUnread
         ? QStringLiteral(
             // #11 \u2014 UNREAD inactive chip: accent-tinted fill + accent text +
             // accent border + bolder weight, so an unread topic reads as a badge.
-            "QPushButton { background: %1; color: %2; border: 1px solid %2;"
+            "QPushButton { background: %1; color: %2; border: 1px solid %3;"
             "  border-radius: 16px; padding: 6px 16px; font-size: 13px;"
             "  font-weight: 600; letter-spacing: 0.1px; }"
             "QPushButton:hover { background: %1; }"
-          ).arg(c.accentSoft, c.accent)
+          ).arg(c.accentSoft, c.accentSoftInk, c.accent)
         : QStringLiteral(
             "QPushButton { background: %1; color: %2; border: 1px solid %3;"
             "  border-radius: 16px; padding: 6px 16px; font-size: 13px;"

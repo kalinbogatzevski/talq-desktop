@@ -451,7 +451,7 @@ void HeaderPainter::paintEvent(QPaintEvent *)
     if (m_isTyping) {
         hasSubtitle = true;
         subtitleText = tr("%1 is typing...").arg(m_typingUser);
-        subtitleColor = m_theme.accent;   // accent differentiates typing (no italic)
+        subtitleColor = m_theme.accentText;   // accent differentiates typing (no italic)
     } else if (m_conversationType == 1 && !m_peerStatus.isEmpty()) {
         hasSubtitle = true;
         // Prefer rich status message/icon over plain state label
