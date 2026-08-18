@@ -2915,13 +2915,14 @@ void MainWindow::applyDarkPalette()
     // confirmed no existing setColor/color() call on these three roles) --
     // NOT unused by Qt itself. Link and LinkVisited are Qt's own roles for
     // rich-text hyperlink colour in QLabel/QTextBrowser, so Link is now
-    // presence-green. Benign today: the app's one rich-text link site
-    // (Message.cpp's <a href> build) already sets its colour inline
-    // (style='color:#5a9ecf'), overriding the palette entirely -- but the
-    // next QLabel/QTextBrowser with openExternalLinks and no explicit link
-    // colour would silently render its links in theme.online instead of a
-    // normal link colour. Deliberate trade-off, not an oversight; flagging
-    // for whoever adds the next rich-text link surface.
+    // presence-green. The hazard this comment used to describe as "benign"
+    // is now live: Message.cpp's <a href> build no longer carries an inline
+    // colour (it was dark-tuned and unreadable on the light theme), so the
+    // chat body would render its links presence-green if nothing else set
+    // them. PainterTheme::richTextStyleSheet's `a` rule is what covers it,
+    // and it is load-bearing for exactly that reason. The warning still
+    // stands for the NEXT rich-text surface: any QLabel/QTextBrowser with
+    // openExternalLinks and no explicit link colour inherits green here.
     pal.setColor(QPalette::BrightText, theme.danger);
     pal.setColor(QPalette::Link, theme.online);
     pal.setColor(QPalette::LinkVisited, theme.amber);
