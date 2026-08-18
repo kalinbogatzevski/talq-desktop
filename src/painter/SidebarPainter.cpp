@@ -564,7 +564,9 @@ void SidebarPainter::paintRowNormal(QPainter *p, const ConversationLayout &cl, i
     p->drawText(nameDrawRect, Qt::AlignLeft | Qt::AlignVCenter, elidedName);
 
     // Timestamp
-    QColor timeColor = cl.unreadCount > 0 ? m_theme.accent : m_theme.textTime;
+    // accentText, not accent: this is an 11px timestamp, and the fill-tuned
+    // accent scores 2.85:1 on the selected row in the light theme.
+    QColor timeColor = cl.unreadCount > 0 ? m_theme.accentText : m_theme.textTime;
     p->setPen(timeColor);
     p->setFont(timeFont);
     p->drawText(QRectF(textRight - timeW, nameY, timeW, m_theme.fontSizeNormal + 6),
@@ -676,7 +678,10 @@ void SidebarPainter::paintRowSqueezed(QPainter *p, const ConversationLayout &cl,
         p->drawRoundedRect(QRectF(badgeX, badgeY, badgeW, BadgeHeight),
                            BadgeHeight / 2.0, BadgeHeight / 2.0);
 
-        p->setPen(m_theme.controlInk);   // No-Gray: ink on accent, not #fff
+        // Score the ink against the ACTUAL fill: this badge is accent for a
+        // plain unread but danger for a mention, and controlInk is calibrated
+        // for accent alone. Same idiom already used for author-colour fills.
+        p->setPen(m_theme.inkOn(bgColor));
         p->setFont(badgeFont);
         p->drawText(QRectF(badgeX, badgeY, badgeW, BadgeHeight),
                     Qt::AlignCenter, countStr);
@@ -784,7 +789,7 @@ void SidebarPainter::paintUnreadBadge(QPainter *p, int count, bool mention, cons
     p->drawRoundedRect(QRectF(badgeX, badgeY, badgeW, BadgeHeight),
                        BadgeHeight / 2.0, BadgeHeight / 2.0);
 
-    p->setPen(m_theme.controlInk);
+    p->setPen(m_theme.inkOn(bgColor));   // accent OR danger fill -- score it
     p->setFont(badgeFont);
     p->drawText(QRectF(badgeX, badgeY, badgeW, BadgeHeight), Qt::AlignCenter, countStr);
 }

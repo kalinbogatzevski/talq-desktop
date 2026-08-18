@@ -28,21 +28,46 @@ struct Palette {
     const char *mention, *link, *codeBg;
 };
 // Ported verbatim from the approved mockup (mockups/talq-redesign.html).
+// AA sweep 2026-08-18. PRODUCT.md commits to WCAG AA "across every theme" and
+// adds that the commitment holds "even where they constrain the warm
+// aesthetic". An audit of every token pair the painters actually put together
+// found 40 failures. Three values move per dark theme, each by the SMALLEST
+// step that clears 4.5:1 with headroom, hue and saturation preserved:
+//
+//   tx3  the muted tier (textTime + textMuted + systemMsg -- one value, three
+//        roles) scored 2.4-4.5:1. Timestamps and system messages are content,
+//        not decoration, so the 4.5 bar applies. Lifted only as far as the
+//        CHROME grounds demand; the own-bubble is handled below instead, so
+//        the muted tier stays clearly below tx2 and the hierarchy survives.
+//   own  the sent-bubble fill. It is the one ground where a muted ink could
+//        not be rescued without flattening tx2/tx3 together, so the fill
+//        deepens instead. DESIGN.md asks that "'mine' reads by hue, not a
+//        loud fill", and a deeper fill of the SAME hue is more on-brief, not
+//        less; measured dE against the chat ground is 15.7-21.4, so "mine"
+//        still reads at a glance. This one step also fixed mention, link and
+//        tx2 on that surface at once.
+//   codeBg  #1f2937 was a cool slate at hue 215 -- a flat No-Gray Rule
+//        violation ("no neutral or cool gray exists in any theme"). Rebuilt
+//        on each theme's own ground hue, so the code panel is now warm like
+//        everything else and still reads as its own surface (dE 12.5-22.0).
+//
+// link also lifts slightly and is now one shared value across the three dark
+// themes (it was already shared); mention needed no change anywhere.
 const Palette kEmber{
     "#221c16","#1d1813","#281f18","#322820","#382c1f","#2b221a","#3a3027",
-    "#f6f1e8","#b4ab9c","#8d8273",
-    "#1ac2af","#20413b","#f3a948","#ec8a64","#5fce72","#0e1817", 13,
-    "#14b8a6","#5a9ecf","#1f2937"};
+    "#f6f1e8","#b4ab9c","#a1988b",
+    "#1ac2af","#18312d","#f3a948","#ec8a64","#5fce72","#0e1817", 13,
+    "#14b8a6","#62a3d1","#16110d"};
 const Palette kWarm{
     "#241d15","#1f1812","#2c2318","#382c1d","#3f311e","#2e2418","#43372a",
-    "#f7f1e6","#bcae99","#948770",
-    "#1ecdb6","#224c43","#f6ad3e","#f08a62","#61d36f","#0e1817", 18,
-    "#14b8a6","#5a9ecf","#1f2937"};
+    "#f7f1e6","#bcae99","#a99e8b",
+    "#1ecdb6","#17332d","#f6ad3e","#f08a62","#61d36f","#0e1817", 18,
+    "#14b8a6","#62a3d1","#17120c"};
 const Palette kVivid{
     "#271d12","#211810","#312517","#3d2e1b","#46341d","#342711","#4b3a23",
-    "#fcf5e7","#c8b89a","#9c8c6d",
-    "#21e3c8","#1f5a4f","#ffb84a","#ff9163","#66dd76","#06201c", 28,
-    "#14b8a6","#5a9ecf","#1f2937"};
+    "#fcf5e7","#c8b89a","#afa38a",
+    "#21e3c8","#133630","#ffb84a","#ff9163","#66dd76","#06201c", 28,
+    "#14b8a6","#62a3d1","#19120a"};
 // Paper's three are re-derived, not inherited: measured against BOTH bubble
 // fills this theme actually paints (bgSurface #fffdf5 for a peer's bubble,
 // bgMessageOwn #d7ece6 for your own), the dark values scored 2.02-2.85:1 and
@@ -50,10 +75,18 @@ const Palette kVivid{
 // mention 6.36/5.25, link 6.75/5.57, code text 13.98:1 -- while staying in
 // the same teal/blue families and, for the code fill, in Paper's warm range
 // instead of the cool slate that clashed with it anyway.
+// Paper's four moves are all "darken for a light ground". tx3 for the same
+// muted-tier reason as the dark themes (3.48:1). The other three are the
+// semantic colours, which are painted as TEXT and not only as dots: amber and
+// online carry the header's away/presence subtitle (HeaderPainter), danger
+// carries the failed-send status and time (ChatPainter). On Paper they
+// measured 2.40-3.23:1 -- the worst text in the app after the code panel.
+// Darkening also strictly improves their OTHER role as badge/dot fills on a
+// light ground, so no call site had to change and no token had to split.
 const Palette kPaper{
     "#fbf6ed","#f3eddf","#efe8d8","#fffdf5","#e9e0cd","#efe8d8","#e1d8c4",
-    "#1a1613","#5f5a52","#7c7568",
-    "#0d9488","#d7ece6","#c8821f","#c75a3a","#3a9b48","#fffdf5", 14,
+    "#1a1613","#5f5a52","#666055",
+    "#0d9488","#d7ece6","#855615","#9e462d","#296d33","#fffdf5", 14,
     "#0c6a5f","#1d5f8a","#ece2cd"};
 
 const Palette &paletteFor(PainterTheme::Theme t) {
@@ -95,6 +128,17 @@ double contrastRatio(const QColor &a, const QColor &b)
     const double lo = qMin(la, lb);
     return (hi + 0.05) / (lo + 0.05);
 }
+
+// Source-over composite of a translucent colour onto an opaque one, so a
+// ground that is painted UNDER a wash can be measured as what the eye sees
+// rather than as the bare fill.
+QColor blendOver(const QColor &base, const QColor &over)
+{
+    const double a = over.alphaF();
+    return QColor::fromRgbF(base.redF()   * (1 - a) + over.redF()   * a,
+                            base.greenF() * (1 - a) + over.greenF() * a,
+                            base.blueF()  * (1 - a) + over.blueF()  * a);
+}
 } // namespace
 
 PainterTheme::PainterTheme(Theme t, qreal fontScale)
@@ -130,9 +174,49 @@ PainterTheme::PainterTheme(Theme t, qreal fontScale)
     link    = QColor(p.link);
     codeBg  = QColor(p.codeBg);
 
+    // Accent as TEXT: corrected against the worst ground it is painted on.
+    // The sidebar rows are that worst case (the unread timestamp sits on
+    // bgSelected / bgHover / bgSidebar), so correcting for bgSelected covers
+    // the others too.
+    accentText = readableOn(accent, bgSelected);
+
+    // Author identity as TEXT, corrected against the ground the name is
+    // ACTUALLY drawn on. That is not the bubble: LayoutEngine places
+    // ml.nameRect at the current y and only THEN advances past it, so the
+    // name sits strictly ABOVE bubbleRect and lands on bgPrimary. Correcting
+    // against bgSurface (this code's first attempt) undershot on Paper, where
+    // bgPrimary #fbf6ed is darker than bgSurface #fffdf5 -- all eight hues
+    // measured 4.28-4.47 on the real ground while reading 4.52-4.73 on the
+    // bubble they were tuned for, i.e. the fix missed the bar on the one
+    // theme it was written for.
+    //
+    // The thread also carries the ambient accent wash behind it, so the true
+    // worst case is bgPrimary composited with that wash at its peak alpha.
+    // Correcting against both grounds in turn costs nothing: readableOn
+    // returns its input untouched when it already clears the bar, and both
+    // grounds sit on the same side of mid-luminance, so the second pass can
+    // only continue in the same direction, never fight the first.
     glow = accent;                       // halo color for state
     ambient = accent;                    // soft tint behind the thread
     ambient.setAlpha(p.ambientAlpha);
+
+    // MUST come after `ambient` is assigned, immediately above. Placing this
+    // block earlier -- where the other derived tokens sit -- read a
+    // default-constructed `ambient` and silently produced inks corrected
+    // against a garbage ground: they measured 4.20-4.29 against the real one
+    // instead of clearing 4.5. Nothing about the code LOOKED wrong; the
+    // conformance test is what caught it. Keep derived-from-derived values
+    // last, and keep them in dependency order.
+    const QColor threadGround = blendOver(bgPrimary, ambient);
+    for (int i = 0; i < 8; ++i) {
+        // Correct against the bare ground first, then against the washed one.
+        // readableOn returns its input untouched when it already clears the
+        // bar, so the second pass only moves the hues the wash actually
+        // threatens, and both grounds sit the same side of mid-luminance so
+        // it can only continue in the same direction, never undo the first.
+        QColor ink = readableOn(s_authorPalette[i], bgPrimary);
+        m_authorInk[i] = readableOn(ink, threadGround);
+    }
 
     fontSizeTiny   = qRound(11 * fontScale);
     fontSizeSmall  = qRound(12 * fontScale);
@@ -143,6 +227,67 @@ PainterTheme::PainterTheme(Theme t, qreal fontScale)
 // Compatibility shim: existing call sites pass a darkMode bool.
 PainterTheme::PainterTheme(bool darkMode, qreal fontScale)
     : PainterTheme(darkMode ? Theme::Vivid : Theme::Paper, fontScale) {}
+
+QColor PainterTheme::readableOn(const QColor &c, const QColor &ground, double minRatio)
+{
+    if (contrastRatio(c, ground) >= minRatio)
+        return c;   // already fine -- never move a value that does not need it
+
+    // Move lightness only. Which DIRECTION is decided by the ground, not by
+    // the colour: on a light ground the only way up is darker, and vice
+    // versa. Saturation is held so the hue keeps its identity and its
+    // punch; dropping saturation would desaturate toward gray and walk
+    // straight into the No-Gray Rule.
+    // float, not qreal: Qt 6 changed the ...F colour accessors to float.
+    float h = 0, s = 0, l = 0, a = 1;
+    c.getHslF(&h, &s, &l, &a);
+    const bool groundIsLight = relativeLuminance(ground) > 0.5;
+
+    QColor best = c;
+    double bestRatio = contrastRatio(c, ground);
+    for (int i = 1; i <= 100; ++i) {
+        const float step = i / 100.0f;
+        const float nl = groundIsLight ? l - step : l + step;
+        if (nl < 0.0f || nl > 1.0f)
+            break;
+        QColor cand = QColor::fromHslF(h < 0 ? 0.0f : h, s, nl, a);
+        const double r = contrastRatio(cand, ground);
+        if (r > bestRatio) { bestRatio = r; best = cand; }
+        if (r >= minRatio)
+            return cand;
+    }
+    // Ran out of lightness before reaching the bar (only possible for an
+    // extreme ground): return the best we found rather than the original.
+    return best;
+}
+
+QColor PainterTheme::authorInk(const QString &actorId) const
+{
+    // Shares authorPaletteIndex() with authorColor() rather than repeating the
+    // hash. The first version of this function re-typed it from memory as
+    // textbook djb2 (<<5) + hash, i.e. x33 -- but this app's identity hash is
+    // (<<5) - hash, i.e. x31, matching Theme.qml/MessageBubble.qml. Roughly
+    // seven of every eight actorIds landed on a DIFFERENT palette entry, so a
+    // person's name and the avatar drawn beside it showed unrelated hues.
+    // Nothing caught it, because either index yields a contrast-corrected
+    // colour. One function, one hash, so the two cannot disagree again.
+    return m_authorInk[authorPaletteIndex(actorId)];
+}
+
+QColor PainterTheme::authorInkAt(int index) const
+{
+    return m_authorInk[qBound(0, index, 7)];
+}
+
+int PainterTheme::authorPaletteIndex(const QString &actorId)
+{
+    // djb2 as this project has always computed it (x31), matching
+    // Theme.qml stringHash / MessageBubble.qml authorColor.
+    uint32_t hash = 5381;
+    for (int i = 0; i < actorId.length(); ++i)
+        hash = ((hash << 5) - hash) + actorId.at(i).unicode();
+    return static_cast<int>(hash % 8);
+}
 
 QString PainterTheme::richTextStyleSheet() const
 {
@@ -206,13 +351,9 @@ PainterTheme::Theme PainterTheme::cycle(Theme t)
 
 QColor PainterTheme::authorColor(const QString &actorId)
 {
-    // djb2 hash -- matches Theme.qml stringHash / MessageBubble.qml authorColor
-    uint32_t hash = 5381;
-    for (int i = 0; i < actorId.length(); ++i) {
-        hash = ((hash << 5) - hash) + actorId.at(i).unicode();
-    }
-    int idx = static_cast<int>(hash % 8);
-    return s_authorPalette[idx];
+    // The hash itself lives in authorPaletteIndex() so authorInk() cannot
+    // drift from it (it once did -- see the note there).
+    return s_authorPalette[authorPaletteIndex(actorId)];
 }
 
 int PainterTheme::authorPaletteSize()

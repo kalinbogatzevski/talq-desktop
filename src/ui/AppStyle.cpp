@@ -71,6 +71,18 @@ QString sheet(const PainterTheme &t)
         { "accentHi",    hx(accentHi)        },
         { "accentDim",   hx(accentDim)       },
         { "controlInk",  hx(t.controlInk)    },
+        // Ink for text sitting ON the accent fill. NOT controlInk: that token
+        // is calibrated per theme as a near-black/near-white partner for the
+        // accent, and on Paper the pairing (#fffdf5 on #0d9488) measures
+        // 3.68:1 -- the primary button, the single most important control in
+        // the app, failed AA. inkOn() scores both of the theme's own ink
+        // tokens against the actual fill and returns the winner (4.80:1 on
+        // Paper, 8-10:1 on the dark themes, where it resolves to exactly the
+        // controlInk they already used -- so nothing changes there).
+        { "accentInk",   hx(t.inkOn(t.accent)) },
+        // Accent used as TEXT (color:) rather than as a fill -- see the
+        // accentText token. Identical to accent on the dark themes.
+        { "accentText",  hx(t.accentText)      },
         { "danger",      hx(t.danger)        },
         { "dangerHi",    hx(dangerHi)        },
         { "dangerWash",  hx(dangerWash)      },
@@ -94,7 +106,7 @@ QLabel[role="secondary"] { color:@{ink2}; }
 QLabel[role="muted"]     { color:@{inkMuted}; }
 QLabel[role="title"]     { color:@{ink}; font-size:15px; font-weight:600; }
 QLabel[role="danger"]    { color:@{danger}; }
-QLabel[role="success"]   { color:@{accent}; }
+QLabel[role="success"]   { color:@{accentText}; }
 
 /* Settings surface: group eyebrow + two-column setting rows. Theme-driven
  * (tokens only); the calm-surface / confident-control idiom. */
@@ -138,7 +150,7 @@ QPushButton:disabled { color:@{inkMuted}; }
 QPushButton:focus    { outline:none; }
 
 QPushButton[variant="primary"] {
-    background:@{accent}; color:@{controlInk}; font-weight:600;
+    background:@{accent}; color:@{accentInk}; font-weight:600;
     padding:8px 18px;
 }
 QPushButton[variant="primary"]:hover  { background:@{accentHi}; }
@@ -194,7 +206,7 @@ QMessageBox QPushButton:hover    { background:@{hoverWash}; border-color:@{accen
 QMessageBox QPushButton:pressed  { background:@{bgSelected}; }
 QMessageBox QPushButton:disabled { color:@{inkMuted}; background:@{bgSecondary}; }
 QMessageBox QPushButton:default {
-    background:@{accent}; color:@{controlInk};
+    background:@{accent}; color:@{accentInk};
     border:1px solid @{accent}; font-weight:600;
 }
 QMessageBox QPushButton:default:hover   { background:@{accentHi}; border-color:@{accentHi}; }
@@ -216,7 +228,7 @@ QDateTimeEdit, QDateEdit, QTimeEdit, QAbstractSpinBox {
     background:@{inputBg}; color:@{ink};
     border:1px solid @{divider}; border-radius:@{rC}px;
     padding:6px 9px; selection-background-color:@{accent};
-    selection-color:@{controlInk};
+    selection-color:@{accentInk};
 }
 QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus,
 QSpinBox:focus, QDoubleSpinBox:focus, QDateTimeEdit:focus,
@@ -291,7 +303,7 @@ QMenu {
 QMenu::item { padding:7px 28px 7px 22px; border-radius:@{rS}px; font-size:13px; }
 QMenu::item:selected { background:@{bgHover}; color:@{ink}; }
 QMenu::item:disabled { color:@{inkMuted}; }
-QMenu::item:checked { color:@{accent}; font-weight:600; }
+QMenu::item:checked { color:@{accentText}; font-weight:600; }
 QMenu::separator { height:1px; background:@{divider}; margin:6px 8px; }
 QMenuBar { background:transparent; color:@{ink}; }
 QMenuBar::item:selected { background:@{bgHover}; border-radius:@{rS}px; }

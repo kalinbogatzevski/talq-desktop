@@ -1344,7 +1344,11 @@ void CallStage::paintCentered(QPainter &p, const PainterTheme &th)
             QRectF dec(x, cy, bw, bh);
             p.setBrush(th.accent); p.setPen(Qt::NoPen);
             p.drawRoundedRect(vid, 10, 10);
-            p.setPen(th.controlInk); p.drawText(vid, Qt::AlignCenter, tr("Video"));
+            // inkOn(accent), not controlInk: this label sits on the accent
+            // fill drawn immediately above, and on the light theme the
+            // controlInk pairing is 3.68:1 — on the incoming-call accept
+            // button, which is the worst possible place to be unreadable.
+            p.setPen(th.inkOn(th.accent)); p.drawText(vid, Qt::AlignCenter, tr("Video"));
             p.setBrush(Qt::NoBrush); p.setPen(QPen(th.accent, 1.3));
             p.drawRoundedRect(aud, 10, 10);
             p.setPen(th.accent); p.drawText(aud, Qt::AlignCenter, tr("Audio"));

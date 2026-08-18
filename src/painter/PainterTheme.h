@@ -68,6 +68,16 @@ public:
     QColor link;      // hyperlink text inside a message
     QColor codeBg;    // fill behind `inline code` and ```code blocks```
 
+    // Accent, made readable AS TEXT. The accent is painted as text in ~19
+    // places (sidebar unread timestamp, QLabel[role="success"], ...), not only
+    // as a fill -- and on Paper the fill-calibrated value scores 2.85:1 on the
+    // selected sidebar row. Darkening the accent ITSELF was the wrong lever:
+    // it feeds badges and the primary button, which already pass because their
+    // ink goes through inkOn(). So the fill keeps its value and text gets this.
+    // On the three dark themes the accent already clears AA as text, so this
+    // resolves to the accent unchanged and nothing moves.
+    QColor accentText;
+
     // ── Borders ──
     QColor divider;
 
@@ -110,7 +120,39 @@ public:
     static constexpr int unreadPillHeight = 22;
 
     // ── Author color from actorId (djb2 hash -> 8-color palette) ──
+    // This is the IDENTITY hue: correct for an avatar FILL, where inkOn()
+    // then picks the ink. Do NOT use it for the author's NAME -- see below.
     static QColor authorColor(const QString &actorId);
+
+    // The same author identity, made readable as TEXT on this theme's message
+    // bubble. ChatPainter paints the group-chat author name with the raw hue,
+    // and measured against the bubble fill that is 2.09-3.31:1 for ALL EIGHT
+    // hues on Paper (and 3.88-4.30:1 for two of them on the dark themes) --
+    // the name above every message in every group conversation.
+    //
+    // Hue and saturation are preserved and only lightness moves, so "who said
+    // this" still reads by colour exactly as before; the hue is the identity,
+    // its lightness never was. Precomputed per theme in the constructor, so a
+    // paint pass is a lookup. A hue that already clears AA is returned
+    // untouched, which is why the dark themes barely move.
+    QColor authorInk(const QString &actorId) const;
+
+    // The identity hash, shared by authorColor() and authorInk() so the two
+    // can never index different palette entries for the same actor. Exposed
+    // so tests can assert that agreement directly.
+    static int authorPaletteIndex(const QString &actorId);
+
+    // The corrected author ink by palette index, mirroring authorPaletteAt()
+    // for the raw hue. Lets a test check the whole table without going
+    // through the hash, and check the hash separately.
+    QColor authorInkAt(int index) const;
+
+    // Lightness-only correction of `c` until it clears `minRatio` against
+    // `ground`, preserving hue and saturation. Returns `c` unchanged when it
+    // already passes. This is the general form of the rule above; inkOn()
+    // remains the right tool when you may swap to a different ink entirely.
+    static QColor readableOn(const QColor &c, const QColor &ground,
+                             double minRatio = 4.5);
 
     // ── Author-palette introspection, for exhaustive contrast tests ──
     static int authorPaletteSize();
@@ -164,4 +206,5 @@ public:
 
 private:
     qreal m_fontScale = 1.0;
+    QColor m_authorInk[8];   // authorColor palette, corrected for this theme
 };
