@@ -40,6 +40,13 @@ std::shared_ptr<QTextDocument> LayoutEngine::createBodyDoc(
     doc->setTextWidth(maxWidth);
     doc->setDocumentMargin(0);
 
+    // Theme colours for the formatted runs (<pre>, <code>, <a>, mentions).
+    // The message HTML carries no colour of its own by contract (see
+    // Message.cpp), so this is the only thing that inks them -- and it MUST
+    // precede setHtml: Qt resolves the default style sheet while parsing, so
+    // setting it afterwards silently does nothing.
+    doc->setDefaultStyleSheet(theme.richTextStyleSheet());
+
     // Convert newlines to <br> like QML does, then set as HTML
     QString processed = html;
     processed.replace(QLatin1String("\n"), QLatin1String("<br>"));

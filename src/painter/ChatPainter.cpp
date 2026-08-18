@@ -224,7 +224,12 @@ void ChatPainter::setDarkMode(bool dark)
     m_darkMode = dark;
     m_theme = PainterTheme(m_darkMode, m_fontScale);
     m_ambientCache = QPixmap();      // theme changed → re-rasterise background
-    m_layoutCache.clear();          // colors only affect paint, but bodyDoc fonts are theme-bound
+    // bodyDoc is theme-bound twice over: its font, and (since the formatted-run
+    // colours moved out of the message HTML into PainterTheme::richTextStyleSheet)
+    // the ink on <pre>/<code>/<a>/mentions, which Qt resolves at setHtml time.
+    // Clearing the cache is what re-inks them; without it a theme switch would
+    // keep the previous theme's code fill and link colour.
+    m_layoutCache.clear();
     rebuildAllLayouts();
 }
 

@@ -21,24 +21,40 @@ struct Palette {
     const char *tx, *tx2, *tx3;
     const char *teal, *own, *amber, *clay, *green, *tealInk;
     int ambientAlpha;   // strength of the accent ambient behind the thread
+    // Rich-text body tokens. The three dark themes keep the exact hexes that
+    // used to be hardcoded in Message.cpp (they measure 4.5-13:1 there, so
+    // there is nothing to fix and no reason to churn their look); only Paper
+    // is re-derived, where the dark-tuned values were unreadable.
+    const char *mention, *link, *codeBg;
 };
 // Ported verbatim from the approved mockup (mockups/talq-redesign.html).
 const Palette kEmber{
     "#221c16","#1d1813","#281f18","#322820","#382c1f","#2b221a","#3a3027",
     "#f6f1e8","#b4ab9c","#8d8273",
-    "#1ac2af","#20413b","#f3a948","#ec8a64","#5fce72","#0e1817", 13};
+    "#1ac2af","#20413b","#f3a948","#ec8a64","#5fce72","#0e1817", 13,
+    "#14b8a6","#5a9ecf","#1f2937"};
 const Palette kWarm{
     "#241d15","#1f1812","#2c2318","#382c1d","#3f311e","#2e2418","#43372a",
     "#f7f1e6","#bcae99","#948770",
-    "#1ecdb6","#224c43","#f6ad3e","#f08a62","#61d36f","#0e1817", 18};
+    "#1ecdb6","#224c43","#f6ad3e","#f08a62","#61d36f","#0e1817", 18,
+    "#14b8a6","#5a9ecf","#1f2937"};
 const Palette kVivid{
     "#271d12","#211810","#312517","#3d2e1b","#46341d","#342711","#4b3a23",
     "#fcf5e7","#c8b89a","#9c8c6d",
-    "#21e3c8","#1f5a4f","#ffb84a","#ff9163","#66dd76","#06201c", 28};
+    "#21e3c8","#1f5a4f","#ffb84a","#ff9163","#66dd76","#06201c", 28,
+    "#14b8a6","#5a9ecf","#1f2937"};
+// Paper's three are re-derived, not inherited: measured against BOTH bubble
+// fills this theme actually paints (bgSurface #fffdf5 for a peer's bubble,
+// bgMessageOwn #d7ece6 for your own), the dark values scored 2.02-2.85:1 and
+// the slate code fill 1.22:1. These clear 4.5:1 on both with headroom --
+// mention 6.36/5.25, link 6.75/5.57, code text 13.98:1 -- while staying in
+// the same teal/blue families and, for the code fill, in Paper's warm range
+// instead of the cool slate that clashed with it anyway.
 const Palette kPaper{
     "#fbf6ed","#f3eddf","#efe8d8","#fffdf5","#e9e0cd","#efe8d8","#e1d8c4",
     "#1a1613","#5f5a52","#7c7568",
-    "#0d9488","#d7ece6","#c8821f","#c75a3a","#3a9b48","#fffdf5", 14};
+    "#0d9488","#d7ece6","#c8821f","#c75a3a","#3a9b48","#fffdf5", 14,
+    "#0c6a5f","#1d5f8a","#ece2cd"};
 
 const Palette &paletteFor(PainterTheme::Theme t) {
     switch (t) {
@@ -110,6 +126,10 @@ PainterTheme::PainterTheme(Theme t, qreal fontScale)
     success     = QColor(p.green);
     danger      = QColor(p.clay);
 
+    mention = QColor(p.mention);
+    link    = QColor(p.link);
+    codeBg  = QColor(p.codeBg);
+
     glow = accent;                       // halo color for state
     ambient = accent;                    // soft tint behind the thread
     ambient.setAlpha(p.ambientAlpha);
@@ -123,6 +143,27 @@ PainterTheme::PainterTheme(Theme t, qreal fontScale)
 // Compatibility shim: existing call sites pass a darkMode bool.
 PainterTheme::PainterTheme(bool darkMode, qreal fontScale)
     : PainterTheme(darkMode ? Theme::Vivid : Theme::Paper, fontScale) {}
+
+QString PainterTheme::richTextStyleSheet() const
+{
+    // <code>/<pre> set BOTH fill and ink. Ink is not left to the paint-time
+    // palette on purpose: the old markup set only the fill, and the ink that
+    // fell through was textPrimary -- which is exactly how Paper ended up
+    // painting near-black on a dark slate. Naming both keeps the pair
+    // readable by construction rather than by coincidence of the two tokens.
+    //
+    // The `a` rule is likewise mandatory, not decorative. Qt resolves anchor
+    // colour at setHtml time from the application palette, and MainWindow
+    // deliberately repurposes QPalette::Link as a theme-token slot (it holds
+    // theme.online, a presence green). Without this rule, stripping the old
+    // inline link colour would silently render every message hyperlink green.
+    return QStringLiteral(
+        "pre { background-color:%1; color:%2; font-family:Consolas,monospace }"
+        " code { background-color:%1; color:%2; font-family:Consolas,monospace }"
+        " a { color:%3 }"
+        " .mention { color:%4 }")
+        .arg(codeBg.name(), textPrimary.name(), link.name(), mention.name());
+}
 
 QString PainterTheme::themeId(Theme t)
 {

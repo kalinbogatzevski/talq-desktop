@@ -56,6 +56,18 @@ public:
     QColor success;
     QColor systemMsg;
 
+    // ── Rich-text message body ──
+    // Message HTML (Message::fromJson) used to bake these three colours into
+    // inline style= attributes, which made them theme-blind: an inline colour
+    // beats both the default style sheet and the paint-time palette, so the
+    // one dark-tuned value shipped to every theme. On "Paper" that put
+    // near-black textPrimary on a #1f2937 slate code background -- 1.22:1,
+    // i.e. invisible -- and dropped mentions/links to ~2-2.9:1. They are
+    // tokens now, applied per theme via richTextStyleSheet().
+    QColor mention;   // @user / file-reference emphasis inside a message
+    QColor link;      // hyperlink text inside a message
+    QColor codeBg;    // fill behind `inline code` and ```code blocks```
+
     // ── Borders ──
     QColor divider;
 
@@ -133,6 +145,15 @@ public:
 
     // ── Build preview text from author + message ──
     static QString formatPreviewText(const QString &author, const QString &message);
+
+    // ── Rich-text style sheet for message body documents ──
+    // Applied with QTextDocument::setDefaultStyleSheet BEFORE setHtml (Qt
+    // resolves the sheet at parse time; setting it after is a no-op). Carries
+    // the per-theme colour for <pre>/<code>/<a>/.mention so the message HTML
+    // itself can stay colourless and theme-independent -- the body doc is
+    // rebuilt on every theme change (ChatPainter::setTheme clears the layout
+    // cache), so this tracks the live theme.
+    QString richTextStyleSheet() const;
 
     // ── Fonts ──
     QFont bodyFont() const;
