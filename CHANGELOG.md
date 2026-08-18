@@ -1,5 +1,33 @@
 # Changelog
 
+## v0.64.1 "Blue Fiesta Week 4" — STABLE (2026-08-18)
+
+A readability fix for the light theme, reported from the field.
+
+### Fixed
+* **Formatted message text is readable on the light theme again.** Code — both
+  the `inline` kind and fenced blocks — was being drawn as near-black text on a
+  near-black panel, which in practice meant it was not drawn at all: you could
+  select the text and copy it, but you could not read it. Mentions and links
+  were legible but faint, sitting at roughly half the contrast they should
+  have. All of them now use colours picked for the light theme and measured
+  against both message backgrounds, so a code block reads at about 14:1 where
+  it used to read at 1.2:1.
+
+  The cause was that these three colours were fixed into each message once,
+  when it arrived, using values chosen for the dark themes — so no matter which
+  theme you picked, you got the dark one's colours. They belong to the theme
+  now, and follow it, including when you switch themes with a conversation
+  already open.
+
+### Notes
+* The dark themes are visually unchanged: their colours were already readable
+  and have been kept exactly as they were.
+* There is now an automated check, part of the test suite, that renders a
+  formatted message in all four themes and measures it against the
+  accessibility contrast standard — so this class of problem can be caught by
+  running the tests rather than by someone noticing it on screen.
+
 ## v0.64.0 "Blue Fiesta Week 4" — STABLE (2026-08-13)
 
 The stable release of the Blue Fiesta line. Most of the work behind it was

@@ -13,6 +13,18 @@ namespace {
 // Limited to a chat-message subset on purpose: no headings, no lists, no
 // horizontal rules, no images. People don't use those in chat, and adding
 // them invites false positives on punctuation-heavy plain text.
+//
+// COLOURLESS BY CONTRACT -- do not add a style='color:...' / background here,
+// and the same goes for the mention and link markup further down. This
+// function has no theme and cannot get one: it runs at parse time, once, and
+// its output is what MessageCache replays and what every theme then renders.
+// An inline colour also outranks both the document's default style sheet and
+// the paint-time palette, so anything baked in here wins everywhere. That is
+// precisely how a dark-tuned #1f2937 code fill reached the light "Paper"
+// theme and painted near-black-on-slate at 1.22:1. Emit semantic markup only
+// (<pre>, <code>, <b class='mention'>, <a href>); the colour comes from
+// PainterTheme::richTextStyleSheet(), applied per theme in
+// LayoutEngine::createBodyDoc and rebuilt on every theme change.
 QString applyMarkdown(QString text)
 {
     if (text.isEmpty()) return text;
@@ -35,8 +47,7 @@ QString applyMarkdown(QString text)
         while (it.hasNext()) {
             auto m = it.next();
             out += QStringView{text}.mid(pos, m.capturedStart() - pos);
-            out += park(QStringLiteral("<pre style='background:#1f2937;border-radius:6px;"
-                                      "padding:8px;font-family:Consolas,monospace'>")
+            out += park(QStringLiteral("<pre>")
                         + m.captured(1).trimmed()
                         + QStringLiteral("</pre>"));
             pos = m.capturedEnd();
@@ -57,9 +68,7 @@ QString applyMarkdown(QString text)
         while (it.hasNext()) {
             auto m = it.next();
             out += QStringView{text}.mid(pos, m.capturedStart() - pos);
-            out += park(QStringLiteral("<code style='background:#1f2937;"
-                                      "border-radius:3px;padding:1px 4px;"
-                                      "font-family:Consolas,monospace'>")
+            out += park(QStringLiteral("<code>")
                         + m.captured(1)
                         + QStringLiteral("</code>"));
             pos = m.capturedEnd();
@@ -139,7 +148,7 @@ Message Message::fromJson(const QJsonObject &json)
             if (type == "user" || type == "call" || type == "guest") {
                 // Wrap in styled span for rich text rendering
                 m.message.replace(placeholder,
-                    "<b style='color:#14b8a6'>@" + name.toHtmlEscaped() + "</b>");
+                    "<b class='mention'>@" + name.toHtmlEscaped() + "</b>");
             } else if (type == "file") {
                 m.fileName = param["name"].toString();
                 m.fileMimetype = param["mimetype"].toString();
@@ -157,7 +166,7 @@ Message Message::fromJson(const QJsonObject &json)
                     m.message.replace(placeholder, "");  // image will show as preview
                 } else {
                     m.message.replace(placeholder,
-                        "<b style='color:#14b8a6'>\xF0\x9F\x93\x84 " + name.toHtmlEscaped() + "</b>");
+                        "<b class='mention'>\xF0\x9F\x93\x84 " + name.toHtmlEscaped() + "</b>");
                 }
             } else {
                 m.message.replace(placeholder, name);
@@ -172,7 +181,7 @@ Message Message::fromJson(const QJsonObject &json)
     // Don't linkify URLs already inside <a> or <b> tags
     if (!m.message.contains("href=")) {
         m.message.replace(urlRx,
-            R"(<a href='\1' style='color:#5a9ecf'>\1</a>)");
+            R"(<a href='\1'>\1</a>)");
     }
 
     // Reply parent
