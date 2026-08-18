@@ -2419,7 +2419,7 @@ void MainWindow::showThemeToast(const QString &name)
     m_themeToast->setStyleSheet(QString(
         "background:%1;color:%2;border:none;border-radius:14px;"
         "padding:9px 22px;font-size:14px;font-weight:700;letter-spacing:0.3px;")
-        .arg(hx(t.accent), hx(t.controlInk)));
+        .arg(hx(t.accent), hx(t.inkOn(t.accent))));
     m_themeToast->adjustSize();
     m_themeToast->move((width() - m_themeToast->width()) / 2, 28);
     m_themeToast->raise();
@@ -2562,7 +2562,7 @@ void MainWindow::restyleChrome()
             "border-radius:6px;color:%3;text-align:center;}"
             "QProgressBar#ubProgress::chunk{background:%2;border-radius:5px;}")
             .arg(hx(t.bgSurface), hx(t.accent), hx(t.textPrimary),
-                 hx(t.controlInk), accentHi, hx(t.textTime),
+                 hx(t.inkOn(t.accent)), accentHi, hx(t.textTime),
                  hx(t.bgSecondary), hx(t.divider)));
     }
 }
@@ -2904,7 +2904,8 @@ void MainWindow::applyDarkPalette()
     pal.setColor(QPalette::Button, theme.bgSurface);
     pal.setColor(QPalette::ButtonText, theme.textPrimary);
     pal.setColor(QPalette::Highlight, theme.accent);
-    pal.setColor(QPalette::HighlightedText, theme.controlInk);
+    // Matches AppStyle's selection-color, which moved to inkOn(accent).
+    pal.setColor(QPalette::HighlightedText, theme.inkOn(theme.accent));
     pal.setColor(QPalette::PlaceholderText, theme.textMuted);
     pal.setColor(QPalette::Mid, theme.divider);
     // QPalette roles repurposed as a theme-token bag (same idiom as
@@ -3319,7 +3320,7 @@ QDateTime MainWindow::askReminderTime()
         " border-radius: 6px; padding: 6px 16px; }"
         "QPushButton:default { background: %6; color: %7; }"
     ).arg(hx(th.bgPrimary), hx(th.textPrimary), hx(th.bgSurface), hx(th.divider),
-          hx(th.bgHover), hx(th.accent), hx(th.controlInk)));
+          hx(th.bgHover), hx(th.accent), hx(th.inkOn(th.accent))));
     auto *lay = new QVBoxLayout(&dlg);
     lay->setContentsMargins(16, 16, 16, 16);
     lay->setSpacing(12);
@@ -3410,7 +3411,7 @@ void MainWindow::createNewTopic()
         "QPushButton#primary:pressed { background: %10; }"
         "QPushButton#primary:disabled { background: %7; color: %8; }"
     ).arg(hx(th.bgPrimary), hx(th.textPrimary), hx(th.textSecondary), hx(th.divider),
-          hx(th.accent), hx(th.controlInk), hx(th.bgSurface), hx(th.textMuted),
+          hx(th.accent), hx(th.inkOn(th.accent)), hx(th.bgSurface), hx(th.textMuted),
           hx(th.accent.lighter(115)))
      .arg(hx(th.accent.darker(115))));
     auto *lay = new QVBoxLayout(&dlg);

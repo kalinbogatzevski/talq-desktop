@@ -1,4 +1,11 @@
 #pragma once
+// Include what this header USES, not what its usual includer happens to drag
+// in. It streams to qInfo()/qWarning() below, which needs <QDebug>: inside the
+// talq target another header supplied QDebug transitively and hid the gap, so
+// this compiled there and failed as "invalid use of incomplete type 'QDebug'"
+// in talq-agc-test -- the one target that includes it on its own. A header
+// that only builds via its neighbours is a trap for the next standalone user.
+#include <QDebug>
 #include <QString>
 #include <gst/gst.h>
 

@@ -90,7 +90,7 @@ QString primaryButtonStyle(const QString &extra = QString())
         "  border-radius: 8px; padding: 8px 18px; %5 }"
         "QPushButton:hover   { background: %3; }"
         "QPushButton:pressed { background: %4; }")
-        .arg(n(th.accent), n(th.controlInk),
+        .arg(n(th.accent), n(th.inkOn(th.accent)),
              n(th.accent.lighter(115)), n(th.accent.darker(115)), extra);
 }
 

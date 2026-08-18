@@ -48,7 +48,7 @@ QString rowDelegateSheet()
     const PainterTheme th = activeTheme();
     auto n = [](const QColor &c){ return c.name(QColor::HexRgb); };
     const QString accent  = n(th.accent);         // glyph / selected fill / status
-    const QString onAcc   = n(th.controlInk);     // ink on the accent-filled chip
+    const QString onAcc   = n(th.inkOn(th.accent));  // ink on the accent-filled chip
     const QString name    = n(th.textPrimary);    // display name
     const QString meta    = n(th.textSecondary);  // secondary id/source line
     return QString(
