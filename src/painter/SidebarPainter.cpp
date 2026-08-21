@@ -133,6 +133,27 @@ void SidebarPainter::setFilterMode(int mode)
     rebuildLayouts();
 }
 
+void SidebarPainter::setTagFilter(const QString &tagId)
+{
+    if (m_tagFilterId == tagId) return;
+    m_tagFilterId = tagId;
+    rebuildLayouts();
+}
+
+QString SidebarPainter::tagFilterName() const
+{
+    return m_tagFilterName;
+}
+
+void SidebarPainter::setTagFilterName(const QString &name)
+{
+    // Display-only: the empty-state message names the tag the user picked
+    // rather than showing its numeric id, which would mean nothing to them.
+    if (m_tagFilterName == name) return;
+    m_tagFilterName = name;
+    update();
+}
+
 // ═══════════════════════════════════════════════════════
 // Model signal handlers
 // ═══════════════════════════════════════════════════════
@@ -169,7 +190,11 @@ void SidebarPainter::rebuildLayouts()
         prevSelectedToken = m_layouts[m_selectedIndex].token;
 
     m_layouts.clear();
-    m_visibleIndices.clear();
+    m_rows.clear();
+    // Conversation indices that survive the text/mode/tag filters, in display
+    // order. buildVisibleRows() turns this into m_rows — flat, or split into
+    // tag sections when grouping is on.
+    QVector<int> matching;
 
     if (!m_model) {
         update();
@@ -196,6 +221,7 @@ void SidebarPainter::rebuildLayouts()
         cl.isFavorite = m_model->data(idx, ConversationListModel::FavoriteRole).toBool();
         cl.lastActivity = m_model->data(idx, ConversationListModel::LastActivityRole).toLongLong();
         cl.notificationLevel = m_model->data(idx, ConversationListModel::NotificationLevelRole).toInt();
+        cl.tagIds = m_model->data(idx, ConversationListModel::TagIdsRole).toStringList();
 
         cl.timeString = PainterTheme::formatRelativeTime(cl.lastActivity);
         cl.previewText = PainterTheme::formatPreviewText(cl.lastAuthor, cl.lastMessage);
@@ -224,15 +250,34 @@ void SidebarPainter::rebuildLayouts()
         if (!modeOk)
             continue;
 
-        m_visibleIndices.append(i);
+        // Talk 24 tag filter, applied on top of the built-in mode filter so
+        // the two compose (e.g. "unread" AND tagged "Work"). The two "!"-
+        // prefixed pseudo-tags mirror the server's special tag types:
+        // favourites, and "Other" = carries no tags at all.
+        if (!m_tagFilterId.isEmpty()) {
+            bool tagOk;
+            if (m_tagFilterId == QLatin1String("!favorites"))
+                tagOk = cl.isFavorite;
+            else if (m_tagFilterId == QLatin1String("!other"))
+                tagOk = cl.tagIds.isEmpty();
+            else
+                tagOk = cl.tagIds.contains(m_tagFilterId);
+            if (!tagOk)
+                continue;
+        }
+
+        matching.append(i);
     }
 
     // Sort visible indices. Favorites are always grouped first (except when
     // already filtering to favorites), then the chosen sort key applies.
     const QVector<ConversationLayout> &L = m_layouts;
-    const bool groupFavs = (m_filterMode != FilterFavorites);
+    // When grouping by tag is on, the Favourites SECTION does the favourites-
+    // first job; keeping the flat favourites-float as well would pull
+    // favourites to the top of every other section too.
+    const bool groupFavs = (m_filterMode != FilterFavorites) && !m_groupByTag;
     const int sortMode = m_sortMode;
-    std::stable_sort(m_visibleIndices.begin(), m_visibleIndices.end(),
+    std::stable_sort(matching.begin(), matching.end(),
                      [&L, groupFavs, sortMode](int a, int b) {
         const ConversationLayout &x = L[a];
         const ConversationLayout &y = L[b];
@@ -255,6 +300,8 @@ void SidebarPainter::rebuildLayouts()
         }
     });
 
+    buildVisibleRows(matching);
+
     // Restore selection: find the new index for the previously selected token
     if (!prevSelectedToken.isEmpty()) {
         m_selectedIndex = -1;
@@ -271,22 +318,98 @@ void SidebarPainter::rebuildLayouts()
     update();
 }
 
+void SidebarPainter::buildVisibleRows(const QVector<int> &matching)
+{
+    m_rows.clear();
+    m_tagSectionCounts.clear();
+    const int rowH = m_squeezed ? RowHeightSqueezed : RowHeight;
+
+    // Grouping is off, no tags, or the icon rail (56 px — no room for a header
+    // label): emit the flat list. This is byte-for-byte the 0.64 layout, and
+    // sidebar-row-layout-test pins that the geometry still matches the old
+    // `visibleIdx * rowH` arithmetic exactly.
+    if (!m_groupByTag || m_tags.isEmpty() || m_squeezed) {
+        m_rows.reserve(matching.size());
+        for (int idx : matching) {
+            talq::SidebarRow r;
+            r.layoutIndex = idx;
+            m_rows.push_back(r);
+        }
+        talq::assignRowGeometry(m_rows, rowH, HeaderHeight);
+        return;
+    }
+
+    // Grouped. A conversation appears under EVERY section it belongs to, which
+    // is how a favourite that is also tagged "Work" shows in both — matching
+    // how favourites have always behaved here (pinned above, still listed).
+    // Sections with no conversations are omitted entirely rather than rendered
+    // empty; "Other" in particular is empty exactly when everything is tagged.
+    for (int t = 0; t < m_tags.size(); ++t) {
+        const SidebarTag &tag = m_tags[t];
+
+        QVector<int> members;
+        for (int idx : matching) {
+            const ConversationLayout &cl = m_layouts[idx];
+            bool in;
+            if (tag.id == QLatin1String("!favorites"))
+                in = cl.isFavorite;
+            else if (tag.id == QLatin1String("!other"))
+                in = cl.tagIds.isEmpty();
+            else
+                in = cl.tagIds.contains(tag.id);
+            if (in)
+                members.append(idx);
+        }
+        if (members.isEmpty())
+            continue;
+        m_tagSectionCounts.insert(tag.id, members.size());
+
+        talq::SidebarRow h;
+        h.layoutIndex = -1;
+        h.tagIndex = t;
+        m_rows.push_back(h);
+
+        // A collapsed section keeps its header (that is how you re-open it)
+        // but contributes no conversation rows.
+        if (tag.collapsed)
+            continue;
+        for (int idx : members) {
+            talq::SidebarRow r;
+            r.layoutIndex = idx;
+            r.tagIndex = t;
+            m_rows.push_back(r);
+        }
+    }
+
+    talq::assignRowGeometry(m_rows, rowH, HeaderHeight);
+}
+
+void SidebarPainter::setTags(const QVector<SidebarTag> &tags)
+{
+    m_tags = tags;
+    if (m_groupByTag)
+        rebuildLayouts();
+}
+
+void SidebarPainter::setGroupByTag(bool on)
+{
+    if (m_groupByTag == on) return;
+    m_groupByTag = on;
+    rebuildLayouts();
+}
+
 void SidebarPainter::clampScroll()
 {
-    int rowH = m_squeezed ? RowHeightSqueezed : RowHeight;
-    qreal contentH = m_visibleIndices.size() * rowH;
+    qreal contentH = talq::totalHeight(m_rows);
     qreal maxScroll = qMax(0.0, contentH - height());
     m_scrollY = qBound(0.0, m_scrollY, maxScroll);
 }
 
 int SidebarPainter::rowAtY(qreal viewportY) const
 {
-    int rowH = m_squeezed ? RowHeightSqueezed : RowHeight;
-    qreal canvasY = viewportY + m_scrollY;
-    int row = static_cast<int>(canvasY / rowH);
-    if (row < 0 || row >= m_visibleIndices.size())
-        return -1;
-    return row;
+    // No longer `canvasY / rowH`: with section headers the rows are two
+    // different heights, and the division would silently return a wrong row.
+    return talq::rowAtY(m_rows, viewportY + m_scrollY);
 }
 
 // ═══════════════════════════════════════════════════════
@@ -305,8 +428,9 @@ bool SidebarPainter::event(QEvent *e)
     if (e->type() == QEvent::ToolTip) {
         auto *he = static_cast<QHelpEvent *>(e);
         int row = rowAtY(he->pos().y());
-        if (row >= 0 && row < m_visibleIndices.size()) {
-            const ConversationLayout &cl = m_layouts[m_visibleIndices[row]];
+        if (row >= 0 && row < static_cast<int>(m_rows.size())
+            && !m_rows[row].isHeader()) {
+            const ConversationLayout &cl = m_layouts[m_rows[row].layoutIndex];
             if (cl.nameElided && cl.nameRect.contains(he->pos())) {
                 QToolTip::showText(he->globalPos(), cl.displayName, this);
                 return true;
@@ -357,12 +481,31 @@ void SidebarPainter::mousePressEvent(QMouseEvent *event)
 void SidebarPainter::mouseReleaseEvent(QMouseEvent *event)
 {
     int row = rowAtY(event->position().y());
-    if (row < 0 || row >= m_visibleIndices.size()) {
+    if (row < 0 || row >= static_cast<int>(m_rows.size())) {
         event->accept();
         return;
     }
 
-    int modelIdx = m_visibleIndices[row];
+    // A tag section header: left-click toggles the section. The new state is
+    // applied optimistically AND reported so MainWindow can persist it
+    // server-side — collapsed state is per-user server state, not local UI
+    // state, so it must survive a restart and follow the user to other
+    // devices. Right-click on a header does nothing (there is no per-section
+    // context menu), rather than opening a conversation's menu.
+    if (m_rows[row].isHeader()) {
+        if (event->button() == Qt::LeftButton) {
+            const int t = m_rows[row].tagIndex;
+            if (t >= 0 && t < m_tags.size()) {
+                m_tags[t].collapsed = !m_tags[t].collapsed;
+                emit tagSectionToggled(m_tags[t].id, m_tags[t].collapsed);
+                rebuildLayouts();
+            }
+        }
+        event->accept();
+        return;
+    }
+
+    int modelIdx = m_rows[row].layoutIndex;
     const auto &cl = m_layouts[modelIdx];
 
     if (event->button() == Qt::RightButton) {
@@ -397,14 +540,14 @@ void SidebarPainter::paintEvent(QPaintEvent *)
 
     p.fillRect(QRectF(0, 0, width(), height()), m_theme.bgSidebar);
 
-    if (m_visibleIndices.isEmpty() && m_squeezed) {
+    if (m_rows.empty() && m_squeezed) {
         // Squeezed is a 56px icon-only rail (MainWindow.cpp:1861-1864) with no
         // room for a sentence — rows never show text there either. Stay a
         // bare panel rather than clip a message into an unreadable fragment.
         return;
     }
 
-    if (m_visibleIndices.isEmpty()) {
+    if (m_rows.empty()) {
         // Name the reason the panel is bare — a text search finding nothing
         // reads differently from a filter (Unread/Favorites/Direct/Groups)
         // hiding everything, which reads differently from a genuinely empty
@@ -412,6 +555,13 @@ void SidebarPainter::paintEvent(QPaintEvent *)
         QString msg;
         if (!m_filterText.isEmpty()) {
             msg = tr("No conversations match \"%1\"").arg(m_filterText);
+        } else if (!m_tagFilterId.isEmpty()) {
+            // A tag filter hiding everything reads differently again — and
+            // naming the tag is the difference between "this is broken" and
+            // "nothing is tagged that way yet".
+            msg = m_tagFilterName.isEmpty()
+                      ? tr("Nothing tagged here yet")
+                      : tr("Nothing tagged “%1” yet").arg(m_tagFilterName);
         } else {
             switch (m_filterMode) {
             case FilterUnread:    msg = tr("No unread conversations"); break;
@@ -435,20 +585,23 @@ void SidebarPainter::paintEvent(QPaintEvent *)
         return;
     }
 
-    int rowH = m_squeezed ? RowHeightSqueezed : RowHeight;
     qreal vpTop = m_scrollY;
     qreal vpBottom = m_scrollY + height();
 
-    for (int vi = 0; vi < m_visibleIndices.size(); ++vi) {
-        qreal rowTop = vi * rowH;
-        qreal rowBottom = rowTop + rowH;
+    for (int vi = 0; vi < static_cast<int>(m_rows.size()); ++vi) {
+        const talq::SidebarRow &row = m_rows[vi];
+        qreal rowTop = row.y;
+        qreal rowBottom = rowTop + row.height;
 
         if (rowBottom < vpTop || rowTop > vpBottom)
             continue;
 
-        int modelIdx = m_visibleIndices[vi];
-        const auto &cl = m_layouts[modelIdx];
+        if (row.isHeader()) {
+            paintSectionHeader(&p, row);
+            continue;
+        }
 
+        const auto &cl = m_layouts[row.layoutIndex];
         if (m_squeezed)
             paintRowSqueezed(&p, cl, vi);
         else
@@ -465,9 +618,9 @@ void SidebarPainter::paintEvent(QPaintEvent *)
 void SidebarPainter::paintRowNormal(QPainter *p, const ConversationLayout &cl, int visibleIdx)
 {
     int rowH = RowHeight;
-    qreal rowTop = visibleIdx * rowH - m_scrollY;
+    qreal rowTop = m_rows[visibleIdx].y - m_scrollY;
     qreal w = width();
-    int modelIdx = m_visibleIndices[visibleIdx];
+    int modelIdx = m_rows[visibleIdx].layoutIndex;
 
     // ── Background (selection / hover) ──
     bool selected = (modelIdx == m_selectedIndex);
@@ -640,9 +793,9 @@ void SidebarPainter::paintRowNormal(QPainter *p, const ConversationLayout &cl, i
 void SidebarPainter::paintRowSqueezed(QPainter *p, const ConversationLayout &cl, int visibleIdx)
 {
     int rowH = RowHeightSqueezed;
-    qreal rowTop = visibleIdx * rowH - m_scrollY;
+    qreal rowTop = m_rows[visibleIdx].y - m_scrollY;
     qreal w = width();
-    int modelIdx = m_visibleIndices[visibleIdx];
+    int modelIdx = m_rows[visibleIdx].layoutIndex;
 
     // Selection highlight
     bool selected = (modelIdx == m_selectedIndex);
@@ -798,10 +951,71 @@ void SidebarPainter::paintUnreadBadge(QPainter *p, int count, bool mention, cons
 // Scrollbar
 // ═══════════════════════════════════════════════════════
 
+void SidebarPainter::paintSectionHeader(QPainter *p, const talq::SidebarRow &row)
+{
+    if (row.tagIndex < 0 || row.tagIndex >= m_tags.size())
+        return;
+    const SidebarTag &tag = m_tags[row.tagIndex];
+
+    const qreal top = row.y - m_scrollY;
+    const qreal w = width();
+    const int padX = PainterTheme::spacingLarge;
+
+    // No fill: the header reads as a label over the sidebar, not as a
+    // selectable row. Painting a band here would make it look clickable in the
+    // same way a conversation is, and the two do very different things.
+    p->save();
+    p->setRenderHint(QPainter::Antialiasing, true);
+
+    // Disclosure triangle, rotated by state. Drawn rather than glyphed so it
+    // matches at any DPI and needs no font that carries the character.
+    const qreal cx = padX + 4;
+    const qreal cy = top + row.height / 2.0;
+    QPainterPath tri;
+    if (tag.collapsed) {
+        tri.moveTo(cx - 2.5, cy - 4);
+        tri.lineTo(cx + 3.5, cy);
+        tri.lineTo(cx - 2.5, cy + 4);
+    } else {
+        tri.moveTo(cx - 4, cy - 2.5);
+        tri.lineTo(cx + 4, cy - 2.5);
+        tri.lineTo(cx, cy + 3.5);
+    }
+    tri.closeSubpath();
+    p->fillPath(tri, m_theme.textSecondary);
+
+    // Eyebrow treatment, matching the app's section-label convention.
+    QFont f = m_theme.bodyFont();
+    f.setPointSizeF(f.pointSizeF() * 0.82);
+    f.setWeight(QFont::DemiBold);
+    f.setCapitalization(QFont::AllUppercase);
+    f.setLetterSpacing(QFont::AbsoluteSpacing, 0.6);
+    p->setFont(f);
+    p->setPen(m_theme.textSecondary);
+
+    const qreal textX = cx + 12;
+    const QFontMetrics fm(f);
+    // Reserve room for the count so a long tag name elides against the count
+    // rather than painting through it.
+    const QString count = QString::number(m_tagSectionCounts.value(tag.id, 0));
+    const qreal countW = fm.horizontalAdvance(count) + 8;
+    const qreal availW = w - textX - padX - countW;
+    const QString name = fm.elidedText(tag.name, Qt::ElideRight,
+                                       static_cast<int>(qMax(0.0, availW)));
+    p->drawText(QRectF(textX, top, availW, row.height),
+                Qt::AlignVCenter | Qt::AlignLeft, name);
+
+    // Count on the right. Its value is the section's TOTAL, so a collapsed
+    // section still says how much is hidden under it.
+    p->drawText(QRectF(w - padX - countW, top, countW, row.height),
+                Qt::AlignVCenter | Qt::AlignRight, count);
+
+    p->restore();
+}
+
 void SidebarPainter::paintScrollbar(QPainter *p)
 {
-    int rowH = m_squeezed ? RowHeightSqueezed : RowHeight;
-    qreal contentH = m_visibleIndices.size() * rowH;
+    qreal contentH = talq::totalHeight(m_rows);
     if (contentH <= height())
         return; // no scrollbar needed
 

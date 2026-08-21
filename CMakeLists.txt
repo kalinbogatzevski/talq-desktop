@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(talq VERSION 0.64.3 LANGUAGES CXX)
+project(talq VERSION 0.65.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -184,6 +184,13 @@ string(TIMESTAMP TALQ_BUILD_TS "%m%d-%H%M")
 # Vastanie" → 0.40.x "Panagyurishte" → 0.41.x "Koprivshtitsa". 0.42.x pivoted to
 # Hitchhiker's-Guide "Deep Thought" (computed 42). 0.43.x BETA = "Magrathea",
 # the Guide's legendary planet-building world. Locked 2026-05-29.
+#
+# 0.65.x is a DELIBERATE EXCEPTION to the "new minor line, new codename" half of
+# that thread: it carries 0.64.x's name with a suffix — "Blue Fiesta Week 4
+# Re-match" — because it is the return leg of the same fixture, away in Athens
+# on 2026-08-25. This is intentional; do not "correct" it back to a fresh
+# codename. The per-patch half of the rule still holds: every 0.65.x patch
+# release keeps this exact string.
 set_source_files_properties(
     src/main.cpp
     src/core/CallManager.cpp
@@ -192,7 +199,7 @@ set_source_files_properties(
     src/ui/SettingsDialog.cpp
     src/ui/MainWindow.cpp
     PROPERTIES COMPILE_DEFINITIONS
-      "TALQ_VERSION=\"${PROJECT_VERSION}\";TALQ_VERSION_NAME=\"Blue Fiesta Week 4\";TALQ_BUILD_TS=\"${TALQ_BUILD_TS}\""
+      "TALQ_VERSION=\"${PROJECT_VERSION}\";TALQ_VERSION_NAME=\"Blue Fiesta Week 4 Re-match\";TALQ_BUILD_TS=\"${TALQ_BUILD_TS}\""
 )
 
 # Pre-release flag: when build-release.sh is invoked with --beta it
