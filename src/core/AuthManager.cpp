@@ -309,8 +309,33 @@ void AuthManager::fetchUserInfo()
 
 void AuthManager::fetchServerInfo()
 {
-    m_api->get("cloud/capabilities", [this](bool ok, const QJsonObject &data, int) {
-        if (!ok) return;
+    m_api->get("cloud/capabilities", [this](bool ok, const QJsonObject &data, int status) {
+        if (!ok) {
+            // Capabilities are fetched exactly once per session and every
+            // gated feature reads them, so losing this one request used to
+            // mean silently running the whole session as if the server were
+            // ancient — tags and presets simply missing, on one machine only,
+            // with nothing in the log to explain it. Retry a few times with
+            // backoff before giving up, and say so out loud when we do.
+            if (m_capabilityRetries < kMaxCapabilityRetries) {
+                const int delayMs = 2000 * (1 << m_capabilityRetries);  // 2s, 4s, 8s
+                ++m_capabilityRetries;
+                qWarning() << "capabilities: fetch failed (status" << status
+                           << ") — retry" << m_capabilityRetries << "of"
+                           << kMaxCapabilityRetries << "in" << delayMs << "ms";
+                QTimer::singleShot(delayMs, this, [this]() {
+                    if (m_loggedIn) fetchServerInfo();
+                });
+            } else {
+                qWarning() << "capabilities: giving up after"
+                           << kMaxCapabilityRetries
+                           << "attempts — server features stay DISABLED for "
+                              "this session (tags, presets and any other "
+                              "capability-gated feature will not appear)";
+            }
+            return;
+        }
+        m_capabilityRetries = 0;
 
         // Nextcloud version
         auto version = data["version"].toObject();
@@ -348,18 +373,28 @@ void AuthManager::fetchServerInfo()
             m_signalingMode = "Internal";
         }
 
-        // Thread support (Talk v22+)
+        // Feature capabilities. Keep the WHOLE list: before 0.65.0 this loop
+        // extracted the single literal "threads" and dropped everything else,
+        // which left no way to gate anything version-dependent. setFeatures()
+        // replaces the set wholesale rather than merging, so logging out of a
+        // Talk 24 server and into an older one in the same process cannot carry
+        // the newer server's flags across.
         auto features = spreed["features"].toArray();
-        m_hasThreads = false;
+        std::vector<std::string> featureList;
+        featureList.reserve(features.size());
         for (const auto &f : features) {
-            if (f.toString() == "threads") {
-                m_hasThreads = true;
-                break;
-            }
+            const QString name = f.toString();
+            if (!name.isEmpty())
+                featureList.push_back(name.toStdString());
         }
+        m_capabilities.setFeatures(featureList);
 
         qDebug() << "Server info: NC" << m_ncVersion << "Talk" << m_talkVersion
-                 << "Signaling:" << m_signalingMode << "Threads:" << m_hasThreads;
+                 << "Signaling:" << m_signalingMode
+                 << "| features:" << int(m_capabilities.size())
+                 << "threads:" << hasThreadsSupport()
+                 << "tags:" << supportsConversationTags()
+                 << "presets:" << supportsConversationPresets();
         emit serverInfoChanged();
     });
 }
@@ -377,7 +412,13 @@ void AuthManager::logout()
     setLoggedIn(false);
     m_userId.clear();
     m_displayName.clear();
+    // Drop the server's feature set with the session. Leaving it behind would
+    // let the PREVIOUS server's capabilities gate decisions made against the
+    // next one — the sign-out-of-ncloud, sign-in-to-an-older-server case.
+    m_capabilities.reset();
+    m_capabilityRetries = 0;
     emit userInfoChanged();
+    emit serverInfoChanged();
 }
 
 void AuthManager::setError(const QString &msg)

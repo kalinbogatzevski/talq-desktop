@@ -36,6 +36,8 @@ public:
         HasTopicsRole,
         NotificationLevelRole,
         ParticipantTypeRole,
+        TagIdsRole,        // QStringList — Talk 24 conversation tags
+        AttributesRole,    // int bit-flags — Talk 24 (bit 0 = voice room)
     };
 
     explicit ConversationListModel(ApiClient *api, QObject *parent = nullptr);
@@ -60,6 +62,15 @@ public:
     // Returns 0 if the token isn't in the cached list. Used by the
     // composer to decide whether to auto-prepend a bot mention in 1:1s.
     Q_INVOKABLE int conversationTypeForToken(const QString &token) const;
+    // Talk 24 conversation attribute bit-flags (bit 0 = voice room). Returns 0
+    // for an unknown token and on any pre-24 server, which reads as "no
+    // attributes" — see talq::isVoiceRoom(), which additionally gates on the
+    // presets capability before this value is allowed to mean anything.
+    Q_INVOKABLE int attributesForToken(const QString &token) const;
+    // Ids of the user's tags on this conversation (Talk 24). Empty on older
+    // servers and for untagged conversations — the two are indistinguishable
+    // by design, since both mean "show no tags".
+    QStringList tagIdsForToken(const QString &token) const;
     Q_INVOKABLE void clearUnreadForToken(const QString &token);
     // Mirror a server-side read advance into our cache without a round-trip:
     // sets lastReadMessage and clears unreadMessages for `token`. Used after

@@ -5,7 +5,9 @@
 #include <QHash>
 #include <QSet>
 #include <QImage>
+#include <vector>
 #include "PainterTheme.h"
+#include "SidebarRowLayout.h"
 
 class ConversationListModel;
 class ApiClient;
@@ -31,6 +33,7 @@ struct ConversationLayout {
     bool isFavorite = false;
     qint64 lastActivity = 0;
     int notificationLevel = 0;  // 0=default, 1=always, 2=mention, 3=never
+    QStringList tagIds;         // Talk 24 conversation tags (empty pre-24)
 
     // Computed
     QString timeString;
@@ -96,6 +99,34 @@ public:
     int filterMode() const { return m_filterMode; }
     void setFilterMode(int mode);
 
+    // ── Talk 24 tag filter ──
+    // Orthogonal to FilterMode on purpose: a tag is a user-defined label, not
+    // one of the five built-in buckets, and squeezing tags into the FilterMode
+    // enum would mean renumbering a value already persisted in QSettings.
+    // Empty string = no tag filter. The special ids "!favorites" and "!other"
+    // select the server's two fixed pseudo-tags (favourited conversations, and
+    // conversations carrying no tags at all) — real tag ids are numeric, so a
+    // "!"-prefix can never collide with one.
+    QString tagFilter() const { return m_tagFilterId; }
+    void setTagFilter(const QString &tagId);
+    // Human-readable name of the active tag filter, for the empty state only.
+    QString tagFilterName() const;
+    void setTagFilterName(const QString &name);
+
+    // ── Talk 24 tag grouping (section headers) ──
+    // One tag as the sidebar needs it: already ordered by the caller, and
+    // already localised (built-in Favourites/Other names are rendered by
+    // MainWindow from the tag TYPE, because the server freezes their names at
+    // whatever locale first created them).
+    struct SidebarTag {
+        QString id;         // real tag id, or "!favorites" / "!other"
+        QString name;
+        bool collapsed = false;
+    };
+    void setTags(const QVector<SidebarTag> &tags);
+    bool groupByTag() const { return m_groupByTag; }
+    void setGroupByTag(bool on);
+
 signals:
     void selectedIndexChanged();
 
@@ -108,6 +139,11 @@ signals:
     void contextMenuRequested(int modelIndex, int notificationLevel, qreal globalX, qreal globalY);
 
     void homeRequested();
+
+    // A tag section header was clicked. Collapsed state is SERVER-persisted
+    // (PUT /tags/{id}/collapsed), so the painter reports the intent and lets
+    // MainWindow own the round-trip rather than reaching for ApiClient itself.
+    void tagSectionToggled(const QString &tagId, bool collapsed);
 
 protected:
     void paintEvent(QPaintEvent *event) override;
@@ -127,6 +163,10 @@ private:
     // ── Layout ──
     static constexpr int RowHeight = 62;       // compact, Telegram-style
     static constexpr int RowHeightSqueezed = 52;
+    // Tag section header. Deliberately less than half a conversation row: a
+    // header is a label, and at full row height a few sections would push the
+    // conversations themselves off the screen.
+    static constexpr int HeaderHeight = 28;
     static constexpr int AvatarSize = 44;      // matches Theme.avatarSize
     static constexpr int AvatarSizeSqueezed = 40;
     static constexpr int BadgeHeight = PainterTheme::badgeHeight;
@@ -142,6 +182,10 @@ private:
     // ── Painting helpers ──
     void paintRowNormal(QPainter *p, const ConversationLayout &cl, int visibleIdx);
     void paintRowSqueezed(QPainter *p, const ConversationLayout &cl, int visibleIdx);
+    void paintSectionHeader(QPainter *p, const talq::SidebarRow &row);
+    // Builds m_rows from m_layouts: flat when grouping is off (identical to
+    // 0.64 behaviour), grouped into tag sections when it is on.
+    void buildVisibleRows(const QVector<int> &matching);
     void paintAvatar(QPainter *p, const ConversationLayout &cl, const QRectF &rect);
     void paintUnreadBadge(QPainter *p, int count, bool mention, const QRectF &badgeArea);
     void paintScrollbar(QPainter *p);
@@ -163,6 +207,8 @@ private:
     QString m_filterText;
     int m_sortMode = SortRecent;
     int m_filterMode = FilterAll;
+    QString m_tagFilterId;   // Talk 24; empty = no tag filter
+    QString m_tagFilterName; // display name of the above, for the empty state
     qreal m_scrollY = 0;
     int m_hoveredRow = -1;  // visible row index
 
@@ -172,7 +218,18 @@ private:
     QVector<ConversationLayout> m_layouts;
 
     // Visible layouts after filtering (indices into m_layouts)
-    QVector<int> m_visibleIndices;
+    // The visible list. Holds conversation rows AND tag section headers, each
+    // carrying its own y/height — the sidebar is no longer uniform-row-height,
+    // so nothing may compute a position as `index * rowH` any more. Geometry
+    // and hit testing live in talq::SidebarRowLayout, which pins that a
+    // header-free list still reproduces the old arithmetic exactly.
+    std::vector<talq::SidebarRow> m_rows;
+    QVector<SidebarTag> m_tags;   // ordered; empty unless the server has tags
+    bool m_groupByTag = false;
+    // Conversations per section, keyed by tag id. Held separately from m_rows
+    // because a COLLAPSED section contributes no rows yet must still show how
+    // many conversations are hidden under it.
+    QHash<QString, int> m_tagSectionCounts;
 
     // ── Image caches ──
     QHash<QString, QImage> m_avatarCache;   // cacheKey -> circular avatar

@@ -3,7 +3,10 @@
 #include "core/ApiClient.h"
 #include "painter/PainterTheme.h"
 
+#include <QFontMetrics>
 #include <QHBoxLayout>
+#include <QJsonArray>
+#include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
@@ -121,8 +124,10 @@ QPushButton *makeChip(const QString &label, const QString &id, QWidget *parent)
 // NewChatDialog
 // ────────────────────────────────────────────────────────────────────────
 
-NewChatDialog::NewChatDialog(ApiClient *api, QWidget *parent)
-    : QDialog(parent), m_api(api)
+NewChatDialog::NewChatDialog(ApiClient *api, bool presetsSupported,
+                             bool creationParamsSupported, QWidget *parent)
+    : QDialog(parent), m_api(api), m_presetsSupported(presetsSupported),
+      m_creationParamsSupported(creationParamsSupported)
 {
     setWindowTitle(tr("New conversation"));
     setModal(true);
@@ -172,6 +177,33 @@ NewChatDialog::NewChatDialog(ApiClient *api, QWidget *parent)
     outer->addWidget(m_groupNameBlock);
     outer->addSpacing(22);
     m_groupNameBlock->hide();
+
+    // ── Conversation preset (Talk 24; group mode only) ──
+    // Presets are the server's create-time templates. "Voice room" is one of
+    // them, which is why this strip is also how a voice room gets created —
+    // there is no separate voice-room API. Built but left hidden until the
+    // preset list actually arrives; on a pre-24 server loadPresets() is never
+    // called and the block stays hidden forever, so the dialog is unchanged.
+    m_presetBlock = new QWidget(this);
+    auto *presetLay = new QVBoxLayout(m_presetBlock);
+    presetLay->setContentsMargins(0, 0, 0, 0);
+    presetLay->setSpacing(4);
+    auto *presetEyebrow = new QLabel(tr("CONVERSATION TYPE"), m_presetBlock);
+    presetEyebrow->setObjectName("eyebrow");
+    presetLay->addWidget(presetEyebrow);
+    auto *presetRow = new QWidget(m_presetBlock);
+    m_presetLayout = new QHBoxLayout(presetRow);
+    m_presetLayout->setContentsMargins(0, 0, 0, 0);
+    m_presetLayout->setSpacing(8);
+    m_presetLayout->addStretch();
+    presetLay->addWidget(presetRow);
+    m_presetHint = new QLabel(m_presetBlock);
+    m_presetHint->setProperty("role", "secondary");
+    m_presetHint->setWordWrap(true);
+    presetLay->addWidget(m_presetHint);
+    outer->addWidget(m_presetBlock);
+    outer->addSpacing(18);
+    m_presetBlock->hide();
 
     // ── Members chip row (hidden in Direct mode) ──
     m_chipsBlock = new QWidget(this);
@@ -256,6 +288,11 @@ NewChatDialog::NewChatDialog(ApiClient *api, QWidget *parent)
     m_searchEdit->setFocus();
     refreshCreateEnabled();
     m_status->setText(tr("Start typing to search for people."));
+
+    // Only ask a server that advertises the capability. On anything older the
+    // route does not exist and the 404 would be logged as a real failure.
+    if (m_presetsSupported)
+        loadPresets();
 }
 
 void NewChatDialog::applyChrome()
@@ -319,10 +356,135 @@ void NewChatDialog::setMode(bool group)
     m_groupTab->update();
     m_groupNameBlock->setVisible(group);
     m_chipsBlock->setVisible(group);
+    // Presets configure group-conversation settings (listable, message
+    // expiration, lobby); none of them are meaningful for a 1:1, and the
+    // server's own UI offers them only for groups.
+    m_presetBlock->setVisible(group && !m_presets.isEmpty());
     m_selected.clear();
     rebuildChips();
     if (!m_searchEdit->text().trimmed().isEmpty()) runSearch();
     refreshCreateEnabled();
+}
+
+// ── Talk 24 conversation presets ─────────────────────────────────────────
+
+void NewChatDialog::loadPresets()
+{
+    m_api->fetchRoomPresets([this](bool ok, const QJsonArray &data, int status) {
+        if (!ok) {
+            // Non-fatal by design: the dialog keeps working exactly as it did
+            // in 0.64, just without a preset strip. A server that advertises
+            // the capability but fails the call is a server problem, not a
+            // reason to block the user from creating a conversation.
+            qWarning() << "presets: fetch failed (status" << status
+                       << ") — preset picker stays hidden";
+            return;
+        }
+        m_presets.clear();
+        for (const auto &v : data) {
+            const QJsonObject o = v.toObject();
+            RoomPreset p;
+            p.identifier  = o.value(QStringLiteral("identifier")).toString();
+            p.name        = o.value(QStringLiteral("name")).toString();
+            p.description = o.value(QStringLiteral("description")).toString();
+            p.parameters  = o.value(QStringLiteral("parameters")).toObject();
+            if (p.identifier.isEmpty())
+                continue;
+            // "forced" is not a user-choosable template — it is the admin's
+            // server-side lock, and it returns the literal string "forced" as
+            // BOTH its name and its description. Rendering it would put a
+            // button labelled "forced" in the picker with "forced" as its
+            // explanation, and picking it would mean nothing.
+            if (p.identifier == QLatin1String("forced"))
+                continue;
+            // The server localises name/description; fall back to the
+            // identifier so an unnamed preset is still selectable.
+            if (p.name.isEmpty())
+                p.name = p.identifier;
+            m_presets.append(p);
+        }
+        rebuildPresetButtons();
+        // Only reveal the strip if we are actually in group mode right now.
+        m_presetBlock->setVisible(m_groupTab->isChecked() && !m_presets.isEmpty());
+    });
+}
+
+void NewChatDialog::rebuildPresetButtons()
+{
+    for (QPushButton *b : m_presetButtons)
+        b->deleteLater();
+    m_presetButtons.clear();
+
+    const QPalette p = qApp->palette();
+    const QString ink    = p.color(QPalette::WindowText).name();
+    const QString dim    = p.color(QPalette::PlaceholderText).name();
+    const QString line   = p.color(QPalette::Mid).name();
+    const QString accent = p.color(QPalette::Highlight).name();
+    const QString onAcc  = p.color(QPalette::HighlightedText).name();
+
+    // The strip has to fit the dialog's 560 px content width whatever the
+    // server sends: preset names are server-localised, and a language with
+    // long compounds (or simply more presets in a future Talk) would otherwise
+    // push the row past the edge and clip the last button. Budget the width
+    // evenly and elide into it; the full name stays available as a tooltip
+    // alongside the description.
+    const int contentW = 560 - 2 * 28;               // dialog width less margins
+    const int spacing  = 8 * qMax(0, int(m_presets.size()) - 1);
+    const int perBtn   = m_presets.isEmpty()
+                             ? contentW
+                             : qMax(72, (contentW - spacing) / int(m_presets.size()));
+
+    for (int i = 0; i < m_presets.size(); ++i) {
+        auto *b = new QPushButton(m_presetBlock);
+        b->setCheckable(true);
+        b->setCursor(Qt::PointingHandCursor);
+        b->setFixedHeight(32);
+        b->setMaximumWidth(perBtn);
+        const QFontMetrics fm(b->font());
+        // 28 px of padding/border budget inside the button.
+        b->setText(fm.elidedText(m_presets[i].name, Qt::ElideRight,
+                                 qMax(24, perBtn - 28)));
+        b->setToolTip(m_presets[i].description.isEmpty()
+                          ? m_presets[i].name
+                          : m_presets[i].name + QStringLiteral("\n\n")
+                                + m_presets[i].description);
+        // Ink-on-fill when selected uses the theme's own Highlight/
+        // HighlightedText pair, which theme-conformance-test already asserts
+        // meets WCAG AA in all four themes — so this cannot reintroduce the
+        // contrast failures the 0.64.x sweep fixed.
+        b->setStyleSheet(QString(
+            "QPushButton { background: transparent; color: %1; border: 1px solid %2;"
+            "  border-radius: 8px; padding: 0 14px; font-size: 13px; font-weight: 500; }"
+            "QPushButton:hover   { color: %3; border-color: %4; }"
+            "QPushButton:checked { background: %4; color: %5; border-color: %4;"
+            "  font-weight: 600; }"
+        ).arg(dim, line, ink, accent, onAcc));
+        connect(b, &QPushButton::clicked, this, [this, i]() { selectPreset(i); });
+        m_presetLayout->insertWidget(m_presetLayout->count() - 1, b);
+        m_presetButtons.append(b);
+    }
+
+    // Default to the server's "default" preset when it offers one, so the
+    // strip always shows a definite selection rather than an ambiguous
+    // nothing-selected state.
+    int defaultIdx = -1;
+    for (int i = 0; i < m_presets.size(); ++i) {
+        if (m_presets[i].identifier == QLatin1String("default")) {
+            defaultIdx = i;
+            break;
+        }
+    }
+    selectPreset(defaultIdx >= 0 ? defaultIdx : (m_presets.isEmpty() ? -1 : 0));
+}
+
+void NewChatDialog::selectPreset(int index)
+{
+    m_selectedPreset = index;
+    for (int i = 0; i < m_presetButtons.size(); ++i)
+        m_presetButtons[i]->setChecked(i == index);
+    m_presetHint->setText(index >= 0 && index < m_presets.size()
+                              ? m_presets[index].description
+                              : QString());
 }
 
 void NewChatDialog::runSearch()
@@ -566,6 +728,34 @@ void NewChatDialog::onCreateClicked()
     }
 
     const QString name = m_groupNameEdit->text().trimmed();
+
+    // Talk 24 preset. The server needs BOTH halves: `preset` is what makes it
+    // stamp the voice-room attribute on the room (RoomController only inspects
+    // the identifier, for "voiceroom"), while the individual `parameters` are
+    // ordinary create-time settings the client is expected to send itself —
+    // sending the identifier alone would create a room with none of the
+    // preset's actual settings applied.
+    QJsonObject extras;
+    if (m_selectedPreset >= 0 && m_selectedPreset < m_presets.size()) {
+        const RoomPreset &p = m_presets[m_selectedPreset];
+        extras.insert(QStringLiteral("preset"), p.identifier);
+        // The individual parameters (listable, messageExpiration, …) are all
+        // gated on a DIFFERENT capability — `conversation-creation-all`. On a
+        // server without it those create-time params are refused, so send the
+        // identifier alone. That still produces a correct VOICE ROOM, because
+        // the server keys the voice-room attribute off the identifier and
+        // never reads the parameters: `if ($preset === VoiceRoom::…)`. The
+        // room just does not get the preset's extra settings applied.
+        if (m_creationParamsSupported) {
+            for (auto it = p.parameters.begin(); it != p.parameters.end(); ++it)
+                extras.insert(it.key(), it.value());
+        } else if (!p.parameters.isEmpty()) {
+            qInfo() << "presets: server lacks conversation-creation-all —"
+                    << "sending preset identifier only, without its parameters";
+        }
+        m_createdPreset = p.identifier;
+    }
+
     m_api->createRoom(2, name, QString(), this,
         [this](bool ok, const QString &token, const QString &error) {
             if (!ok) {
@@ -573,6 +763,9 @@ void NewChatDialog::onCreateClicked()
                 m_status->setText(error.isEmpty() ? tr("Server refused.") : error);
                 m_createBtn->setEnabled(true);
                 m_cancelBtn->setEnabled(true);
+                // No room was created, so nothing may report a preset — else
+                // MainWindow would auto-join a call in a room that never existed.
+                m_createdPreset.clear();
                 return;
             }
             m_createdToken = token;
@@ -606,5 +799,5 @@ void NewChatDialog::onCreateClicked()
                         }
                     });
             }
-        });
+        }, extras);
 }
