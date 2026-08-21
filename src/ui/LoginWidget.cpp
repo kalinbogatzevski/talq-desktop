@@ -17,10 +17,18 @@ LoginWidget::LoginWidget(AuthManager *auth, QWidget *parent)
     m_isBranded = true;
     m_brandServer = TALQ_BRAND_SERVER_STR;
     m_brandName = "123NET TalQ";
+    const char *const kLogoResource = ":/123net-logo.png";
 #else
     m_isBranded = false;
     m_brandName = "TalQ";
+    const char *const kLogoResource = ":/logo.png";
 #endif
+    // The logo path is resolved at COMPILE time, not with a ternary on
+    // m_isBranded. A ternary reads identically but emits BOTH string literals
+    // into every binary, so the generic open-source build shipped the brand's
+    // asset path in its .rdata — visible to anyone running `strings` on it —
+    // even though that branch could never execute. Guarding it here keeps the
+    // brand entirely out of the generic build.
 
     auto *outerLayout = new QVBoxLayout(this);
     outerLayout->setAlignment(Qt::AlignCenter);
@@ -33,7 +41,7 @@ LoginWidget::LoginWidget(AuthManager *auth, QWidget *parent)
 
     // Logo
     auto *logoLabel = new QLabel(centerWidget);
-    QPixmap logo(m_isBranded ? ":/123net-logo.png" : ":/logo.png");
+    QPixmap logo(QString::fromLatin1(kLogoResource));
     logoLabel->setPixmap(logo.scaled(72, 72, Qt::KeepAspectRatio, Qt::SmoothTransformation));
     logoLabel->setAlignment(Qt::AlignCenter);
     layout->addWidget(logoLabel);
