@@ -23,6 +23,7 @@
 #include "core/ApiClient.h"
 #include "core/SearchHit.h"
 #include "core/AuthManager.h"
+#include "core/ServerCapabilities.h"
 #include "core/ShutdownWatchdog.h"
 #include "core/NotificationManager.h"
 #include "core/PushClient.h"
@@ -53,6 +54,8 @@
 #include <QScreen>
 #include <QMenu>
 #include <QActionGroup>
+#include <QInputDialog>
+#include <QJsonArray>
 #include <QDesktopServices>
 #include <QDialog>
 #include <QClipboard>
@@ -514,6 +517,40 @@ void MainWindow::buildChatPage()
         restyleChrome();
     });
 
+    // Talk 24 tag filter, restored before the tag list arrives so the sidebar
+    // opens already filtered instead of flashing the full list first. If the
+    // tag turns out to have been deleted, refreshConversationTags() clears it.
+    m_settings.beginGroup("Sidebar");
+    const QString savedTag     = m_settings.value("tagFilter").toString();
+    const QString savedTagName = m_settings.value("tagFilterName").toString();
+    m_settings.endGroup();
+    if (!savedTag.isEmpty()) {
+        m_sidebar->setTagFilter(savedTag);
+        m_sidebar->setTagFilterName(savedTagName);
+    }
+    m_settings.beginGroup("Sidebar");
+    m_sidebar->setGroupByTag(m_settings.value("groupByTag", false).toBool());
+    m_settings.endGroup();
+
+    // Collapsed state is per-user SERVER state (it follows you to other
+    // devices), so a click on a section header has to be written back. The
+    // painter has already applied it optimistically — this only persists it,
+    // and a failure is logged rather than reverted: silently re-expanding a
+    // section under the user's cursor is worse than a state that resyncs on
+    // the next fetch.
+    connect(m_sidebar, &SidebarPainter::tagSectionToggled, this,
+            [this](const QString &tagId, bool collapsed) {
+        if (tagId.startsWith(QLatin1Char('!')))
+            return;   // client-computed pseudo-sections have no server row
+        m_api->put(QStringLiteral("apps/spreed/api/v4/tags/%1/collapsed").arg(tagId),
+                   QJsonObject{{QStringLiteral("collapsed"), collapsed}},
+                   [tagId](bool ok, const QJsonObject &, int status) {
+            if (!ok)
+                qWarning() << "tags: could not persist collapsed state for"
+                           << tagId << "(status" << status << ")";
+        });
+    });
+
     // Home button and clickable-logo → return to welcome screen
     connect(m_homeBtn, &QPushButton::clicked, m_sidebar, &SidebarPainter::homeRequested);
     connect(m_sidebar, &SidebarPainter::homeRequested, this, [this]() {
@@ -545,6 +582,34 @@ void MainWindow::buildChatPage()
             int newLevel = (notifLevel == 3) ? 0 : 3;
             m_conversations->setNotificationLevel(modelIndex, newLevel);
         });
+        const QString ctxToken = m_conversations->tokenAt(modelIndex);
+
+        // Start a call straight from the list — TalQ's answer to Talk 24's
+        // "call from anywhere" avatar-menu entry. That feature adds no API of
+        // its own (it is a web-UI integration onto a ?callUser=…#direct-call
+        // URL), so the equivalent here is simply the existing call path
+        // reachable one right-click earlier instead of only from the open
+        // conversation's header.
+        if (!ctxToken.isEmpty() && m_callManager->callsAvailable()
+            && m_callManager->callToken().isEmpty()) {
+            menu->addSeparator();
+            QAction *callAct = menu->addAction(tr("Call"));
+            connect(callAct, &QAction::triggered, this, [this, ctxToken]() {
+                // Open the conversation first: the call UI reads the active
+                // conversation for the peer's name and avatar, and starting a
+                // call into a room the window is not showing leaves the call
+                // screen labelled with whatever was open before.
+                openConversation(ctxToken);
+                QTimer::singleShot(250, this, [this, ctxToken]() {
+                    if (m_callManager->callToken().isEmpty())
+                        m_callManager->startCall(ctxToken, /*video*/false);
+                });
+            });
+        }
+
+        // Talk 24: assign tags to this conversation. Adds nothing to the menu
+        // on a server without `conversation-tags`, so the 0.64 menu is intact.
+        populateTagAssignMenu(menu, ctxToken);
         menu->popup(QCursor::pos());
     });
 
@@ -1455,6 +1520,10 @@ void MainWindow::buildChatPage()
             m_welcomeTalkLabel->setText(talkVer.isEmpty() ? QStringLiteral("Talk")
                                                           : QStringLiteral("Talk ") + talkVer);
         }
+        // Capabilities have just been parsed — this is the first moment we know
+        // whether the server supports Talk 24 tags. Fetching any earlier would
+        // fire the request before the gate is known.
+        refreshConversationTags();
     });
 
     // Auto-upgrade: share the existing network manager used by ApiClient.
@@ -1940,6 +2009,31 @@ void MainWindow::onConversationSelected(const QString &token, const QString &nam
     m_header->setMessageCount(m_messages->rowCount());
     m_header->setCallsAvailable(m_callManager->callsAvailable());
     m_header->setCallsUnavailableReason(m_callManager->callsUnavailableReason());
+
+    // ── Talk 24 voice rooms: join the call on entering the room ──
+    // "Voice rooms - Join call when joining conversation" (Talk 24
+    // docs/constants.md:79). This is the whole point of a voice room: you open
+    // it and you are in the call, no ringing, no join button.
+    //
+    // Every guard here matters, because auto-joining a call by mistake means a
+    // HOT MIC in a room the user only meant to read:
+    //   - gated on the presets capability, so a pre-24 server (where
+    //     `attributes` is absent and parses as 0) can never trigger it;
+    //   - never while already in a call, since joining a second one tears the
+    //     first down;
+    //   - once per token per session, because this function re-runs on every
+    //     sidebar refresh and reselect — without the latch the user could
+    //     hang up and be dragged straight back in on the next poll.
+    // Audio-only (video=false): a voice room is by definition not a video call.
+    if (talq::shouldAutoJoinCall(m_conversations->attributesForToken(token),
+                                 m_auth && m_auth->supportsVoiceRooms(),
+                                 !m_callManager->callToken().isEmpty(),
+                                 m_autoJoinedVoiceRooms.contains(token))) {
+        m_autoJoinedVoiceRooms.insert(token);
+        qInfo() << "voice room" << token << "— auto-joining call (audio only)";
+        m_callManager->setRemotePeerInfo(name, userId);
+        m_callManager->startCall(token, /*video*/false);
+    }
 
     // Show the topics panel for any real conversation (1:1, group,
     // public) once the server advertises threads support. Earlier
@@ -3353,17 +3447,438 @@ void MainWindow::openUpcomingReminders()
     dlg->show();
 }
 
+// ═══════════════════════════════════════════════════════
+// Talk 24 conversation tags
+// ═══════════════════════════════════════════════════════
+
+namespace {
+
+// The server creates the built-in "Favourites"/"Other" tag rows lazily, on the
+// user's FIRST GET /tags — and it stamps them with whatever locale that
+// request happened to carry, then never updates them. A user who first opened
+// Talk in a German browser gets "Favoriten" forever, including inside an
+// English TalQ. So the two special tags are rendered from their TYPE here and
+// the server-supplied name is deliberately ignored; only custom tags, which
+// the user typed themselves, use it.
+QString tagDisplayName(const talq::ConversationTag &t)
+{
+    if (t.isFavorites())
+        return QCoreApplication::translate("MainWindow", "Favorites");
+    if (t.isOther())
+        return QCoreApplication::translate("MainWindow", "Other");
+    return QString::fromStdString(t.name);
+}
+
+// Sidebar/filter id for a tag: the "!"-prefixed pseudo-ids for the two
+// client-computed special sections, the real snowflake id for custom tags.
+QString tagFilterIdFor(const talq::ConversationTag &t)
+{
+    if (t.isFavorites())
+        return QStringLiteral("!favorites");
+    if (t.isOther())
+        return QStringLiteral("!other");
+    return QString::fromStdString(t.id);
+}
+
+} // namespace
+
+void MainWindow::refreshConversationTags()
+{
+    // Hard gate. On a pre-24 server the v4 /tags route does not exist, and the
+    // 404 would be logged as a real error on every login.
+    if (!m_auth || !m_auth->supportsConversationTags()) {
+        m_tags.clear();
+        // Release any saved CUSTOM tag filter before the menu goes away.
+        // The filter id is restored from QSettings at startup, before
+        // capabilities are known; rebuildTagFilterMenu() then renders no Tags
+        // section at all when there are no tags, including no "No tag filter"
+        // entry. Without this the user would be left with a sidebar filtered
+        // to a tag the server knows nothing about — an empty conversation list
+        // and no UI anywhere to clear it. Reachable two ways: connecting to a
+        // pre-24 server, and the capabilities fetch exhausting its retries.
+        // The "!" pseudo-filters (favourites / untagged) are computed purely
+        // client-side, so they stay valid on any server and are left alone.
+        const QString active = m_sidebar->tagFilter();
+        if (!active.isEmpty() && !active.startsWith(QLatin1Char('!'))) {
+            qInfo() << "tags: server does not support tags — clearing saved "
+                       "tag filter" << active;
+            applyTagFilter(QString(), QString());
+        }
+        rebuildTagFilterMenu();
+        pushTagsToSidebar();   // clears the sidebar's sections too
+        return;
+    }
+    m_api->fetchConversationTags([this](bool ok, const QJsonArray &data, int status) {
+        if (!ok) {
+            qWarning() << "tags: fetch failed (status" << status << ")";
+            // Same trap as the no-capability path above: if we have no tag
+            // list, the funnel menu renders no Tags section, so a saved custom
+            // filter becomes unclearable and the sidebar stays empty. Only
+            // release it when we genuinely hold no tags — a failed REFRESH
+            // while an earlier list is still loaded must not throw away the
+            // user's active filter.
+            if (m_tags.isEmpty()) {
+                const QString active = m_sidebar->tagFilter();
+                if (!active.isEmpty() && !active.startsWith(QLatin1Char('!'))) {
+                    qWarning() << "tags: no tag list available — clearing saved "
+                                  "tag filter" << active << "so the sidebar is "
+                                  "not stuck showing nothing";
+                    applyTagFilter(QString(), QString());
+                }
+            }
+            return;
+        }
+        m_tags.clear();
+        for (const auto &v : data) {
+            const QJsonObject o = v.toObject();
+            talq::ConversationTag t;
+            t.id        = o.value(QStringLiteral("id")).toString().toStdString();
+            t.name      = o.value(QStringLiteral("name")).toString().toStdString();
+            t.sortOrder = o.value(QStringLiteral("sortOrder")).toInt();
+            t.collapsed = o.value(QStringLiteral("collapsed")).toBool();
+            t.type      = o.value(QStringLiteral("type")).toString(
+                              QStringLiteral("custom")).toStdString();
+            if (!t.id.empty())
+                m_tags.append(t);
+        }
+        // Server order is advisory; the special tags' fixed positions and a
+        // deterministic tie-break are decided by talq::sortTags.
+        std::vector<talq::ConversationTag> v(m_tags.begin(), m_tags.end());
+        talq::sortTags(v);
+        m_tags = QVector<talq::ConversationTag>(v.begin(), v.end());
+
+        // A tag deleted on another device leaves a dangling filter id in
+        // QSettings; without this the sidebar would show a permanently empty
+        // list and the user could not get back to "All".
+        const std::string active = m_sidebar->tagFilter().toStdString();
+        if (!active.empty() && active.rfind("!", 0) != 0
+            && !talq::tagFilterStillValid(v, active)) {
+            qInfo() << "tags: active filter" << QString::fromStdString(active)
+                    << "no longer exists — clearing";
+            applyTagFilter(QString(), QString());
+        }
+        rebuildTagFilterMenu();
+        pushTagsToSidebar();
+    });
+}
+
+void MainWindow::pushTagsToSidebar()
+{
+    QVector<SidebarPainter::SidebarTag> out;
+    out.reserve(m_tags.size());
+    for (const talq::ConversationTag &t : m_tags) {
+        SidebarPainter::SidebarTag s;
+        s.id        = tagFilterIdFor(t);
+        s.name      = tagDisplayName(t);
+        s.collapsed = t.collapsed;
+        out.append(s);
+    }
+    m_sidebar->setTags(out);
+}
+
+void MainWindow::applyTagFilter(const QString &tagId, const QString &displayName)
+{
+    m_sidebar->setTagFilter(tagId);
+    m_sidebar->setTagFilterName(displayName);
+    m_settings.beginGroup("Sidebar");
+    m_settings.setValue("tagFilter", tagId);
+    m_settings.setValue("tagFilterName", displayName);
+    m_settings.endGroup();
+}
+
+void MainWindow::rebuildTagFilterMenu()
+{
+    if (!m_filterMenu)
+        return;
+    for (QAction *a : m_tagFilterActions) {
+        m_filterMenu->removeAction(a);
+        a->deleteLater();
+    }
+    m_tagFilterActions.clear();
+    if (m_tags.isEmpty())
+        return;   // pre-24 server, or the user has created no tags
+
+    auto *section = m_filterMenu->addSection(tr("Tags"));
+    m_tagFilterActions.append(section);
+
+    auto *group = new QActionGroup(m_filterMenu);
+    group->setExclusive(true);
+    const QString active = m_sidebar->tagFilter();
+
+    auto addTagAction = [&](const QString &id, const QString &label) {
+        QAction *a = m_filterMenu->addAction(label);
+        a->setCheckable(true);
+        a->setChecked(id == active);
+        group->addAction(a);
+        connect(a, &QAction::triggered, this, [this, id, label]() {
+            applyTagFilter(id, id.isEmpty() ? QString() : label);
+            restyleChrome();
+        });
+        m_tagFilterActions.append(a);
+    };
+
+    addTagAction(QString(), tr("No tag filter"));
+    for (const talq::ConversationTag &t : m_tags)
+        addTagAction(tagFilterIdFor(t), tagDisplayName(t));
+
+    // Grouping is independent of the filter: the filter narrows the list, the
+    // grouping splits whatever survives into labelled sections.
+    QAction *groupAct = m_filterMenu->addAction(tr("Group by tag"));
+    groupAct->setCheckable(true);
+    groupAct->setChecked(m_sidebar->groupByTag());
+    connect(groupAct, &QAction::triggered, this, [this](bool on) {
+        m_sidebar->setGroupByTag(on);
+        m_settings.beginGroup("Sidebar");
+        m_settings.setValue("groupByTag", on);
+        m_settings.endGroup();
+        restyleChrome();
+    });
+    m_tagFilterActions.append(groupAct);
+
+    QAction *manage = m_filterMenu->addAction(tr("Manage tags…"));
+    connect(manage, &QAction::triggered, this, &MainWindow::openTagManager);
+    m_tagFilterActions.append(manage);
+
+    restyleChrome();   // the menu is themed there; new actions must match
+}
+
+// Rename/delete for the tags the user created. Deliberately a small modal
+// rather than nested submenus: renaming needs a text prompt anyway, and
+// deleting is destructive enough to deserve a confirmation that names the tag.
+void MainWindow::openTagManager()
+{
+    QDialog dlg(this);
+    dlg.setWindowTitle(tr("Manage tags"));
+    dlg.setModal(true);
+    dlg.resize(380, 420);
+
+    auto *lay = new QVBoxLayout(&dlg);
+    auto *hint = new QLabel(tr("Rename or remove the tags you created. "
+                               "Favorites and Other are built in."), &dlg);
+    hint->setWordWrap(true);
+    hint->setProperty("role", "secondary");
+    lay->addWidget(hint);
+
+    auto *list = new QListWidget(&dlg);
+    lay->addWidget(list, 1);
+
+    auto reload = [this, list]() {
+        list->clear();
+        for (const talq::ConversationTag &t : m_tags) {
+            if (!t.isCustom())
+                continue;   // built-ins cannot be renamed or deleted (400 "type")
+            auto *item = new QListWidgetItem(QString::fromStdString(t.name), list);
+            item->setData(Qt::UserRole, QString::fromStdString(t.id));
+        }
+        if (list->count() == 0) {
+            auto *empty = new QListWidgetItem(tr("No tags yet"), list);
+            empty->setFlags(Qt::NoItemFlags);
+        }
+    };
+    reload();
+
+    auto *btnRow = new QHBoxLayout();
+    auto *newBtn    = new QPushButton(tr("New…"), &dlg);
+    auto *renameBtn = new QPushButton(tr("Rename…"), &dlg);
+    auto *deleteBtn = new QPushButton(tr("Delete"), &dlg);
+    auto *closeBtn  = new QPushButton(tr("Close"), &dlg);
+    closeBtn->setProperty("variant", "primary");
+    btnRow->addWidget(newBtn);
+    btnRow->addWidget(renameBtn);
+    btnRow->addWidget(deleteBtn);
+    btnRow->addStretch();
+    btnRow->addWidget(closeBtn);
+    lay->addLayout(btnRow);
+
+    // The tag list is refetched after every mutation, so the dialog always
+    // shows server truth rather than a locally-patched guess.
+    auto afterChange = [this, reload]() {
+        refreshConversationTags();
+        QTimer::singleShot(400, this, [reload]() { reload(); });
+    };
+
+    connect(newBtn, &QPushButton::clicked, &dlg, [this, afterChange, &dlg]() {
+        bool okPressed = false;
+        const QString name = QInputDialog::getText(&dlg, tr("New tag"),
+            tr("Tag name:"), QLineEdit::Normal, QString(), &okPressed).trimmed();
+        if (!okPressed || name.isEmpty())
+            return;
+        m_api->createConversationTag(name, [afterChange](bool ok, const QJsonObject &, int st) {
+            if (!ok) { qWarning() << "tags: create failed" << st; return; }
+            afterChange();
+        });
+    });
+
+    connect(renameBtn, &QPushButton::clicked, &dlg, [this, list, afterChange, &dlg]() {
+        auto *item = list->currentItem();
+        if (!item || !(item->flags() & Qt::ItemIsEnabled))
+            return;
+        const QString id = item->data(Qt::UserRole).toString();
+        if (id.isEmpty())
+            return;
+        bool okPressed = false;
+        const QString name = QInputDialog::getText(&dlg, tr("Rename tag"),
+            tr("Tag name:"), QLineEdit::Normal, item->text(), &okPressed).trimmed();
+        if (!okPressed || name.isEmpty() || name == item->text())
+            return;
+        m_api->renameConversationTag(id, name, [afterChange](bool ok, const QJsonObject &, int st) {
+            if (!ok) { qWarning() << "tags: rename failed" << st; return; }
+            afterChange();
+        });
+    });
+
+    connect(deleteBtn, &QPushButton::clicked, &dlg, [this, list, afterChange, &dlg]() {
+        auto *item = list->currentItem();
+        if (!item || !(item->flags() & Qt::ItemIsEnabled))
+            return;
+        const QString id = item->data(Qt::UserRole).toString();
+        if (id.isEmpty())
+            return;
+        // Name the tag in the prompt — "Delete this tag?" is the kind of
+        // question people answer yes to and then regret. The server cascades
+        // the delete across every conversation it was on, so this is not
+        // recoverable from the client.
+        if (QMessageBox::question(&dlg, tr("Delete tag"),
+                tr("Delete the tag “%1”?\n\nIt will be removed from every "
+                   "conversation you put it on. This cannot be undone.")
+                    .arg(item->text()),
+                QMessageBox::Yes | QMessageBox::No, QMessageBox::No)
+            != QMessageBox::Yes)
+            return;
+        m_api->deleteConversationTag(id, [this, id, afterChange](bool ok,
+                                                                 const QJsonObject &, int st) {
+            if (!ok) { qWarning() << "tags: delete failed" << st; return; }
+            // If the deleted tag was the active filter, drop back to "all" —
+            // otherwise the sidebar filters on an id the server no longer has.
+            if (m_sidebar->tagFilter() == id)
+                applyTagFilter(QString(), QString());
+            afterChange();
+        });
+    });
+
+    connect(closeBtn, &QPushButton::clicked, &dlg, &QDialog::accept);
+    dlg.exec();
+}
+
+void MainWindow::populateTagAssignMenu(QMenu *parent, const QString &token)
+{
+    if (!m_auth || !m_auth->supportsConversationTags() || token.isEmpty())
+        return;
+
+    auto *tagMenu = parent->addMenu(tr("Tags"));
+    const QStringList current = m_conversations->tagIdsForToken(token);
+
+    bool anyCustom = false;
+    for (const talq::ConversationTag &t : m_tags) {
+        // Only CUSTOM tags are assignable. "Favourites" and "Other" are
+        // computed by the client (favourite flag / has-no-tags), so offering
+        // them here would be a checkbox that cannot be honoured.
+        if (!t.isCustom())
+            continue;
+        anyCustom = true;
+        const QString id = QString::fromStdString(t.id);
+        QAction *a = tagMenu->addAction(QString::fromStdString(t.name));
+        a->setCheckable(true);
+        a->setChecked(current.contains(id));
+        connect(a, &QAction::triggered, this, [this, token, id](bool checked) {
+            // Read-modify-write: the endpoint REPLACES the whole set, so
+            // sending just this id would strip every other tag. toggledTagSet
+            // is the tested authority for that.
+            std::vector<std::string> cur;
+            for (const QString &s : m_conversations->tagIdsForToken(token))
+                cur.push_back(s.toStdString());
+            const std::vector<std::string> next =
+                talq::toggledTagSet(cur, id.toStdString(), checked);
+            QStringList out;
+            for (const std::string &s : next)
+                out << QString::fromStdString(s);
+            m_api->assignConversationTags(token, out,
+                [this](bool ok, const QJsonObject &, int status) {
+                    if (!ok) {
+                        qWarning() << "tags: assign failed (status" << status << ")";
+                        return;
+                    }
+                    // The response carries the updated room, but a full
+                    // refresh keeps one source of truth for the sidebar.
+                    m_conversations->refresh();
+                });
+        });
+    }
+
+    if (!anyCustom) {
+        QAction *none = tagMenu->addAction(tr("No tags yet"));
+        none->setEnabled(false);
+    }
+
+    tagMenu->addSeparator();
+    QAction *create = tagMenu->addAction(tr("New tag…"));
+    connect(create, &QAction::triggered, this, [this, token]() {
+        bool okPressed = false;
+        const QString name = QInputDialog::getText(
+            this, tr("New tag"), tr("Tag name:"), QLineEdit::Normal,
+            QString(), &okPressed).trimmed();
+        if (!okPressed || name.isEmpty())
+            return;
+        m_api->createConversationTag(name, [this, token](bool ok,
+                                                          const QJsonObject &data,
+                                                          int status) {
+            if (!ok) {
+                qWarning() << "tags: create failed (status" << status << ")";
+                return;
+            }
+            // Assign the brand-new tag to the conversation the user opened the
+            // menu on — creating a tag from a conversation's own menu and then
+            // NOT applying it would be a surprising no-op.
+            const QString newId = data.value(QStringLiteral("id")).toString();
+            refreshConversationTags();
+            if (newId.isEmpty() || token.isEmpty())
+                return;
+            QStringList out = m_conversations->tagIdsForToken(token);
+            if (!out.contains(newId))
+                out << newId;
+            m_api->assignConversationTags(token, out,
+                [this](bool assignOk, const QJsonObject &, int) {
+                    if (assignOk)
+                        m_conversations->refresh();
+                });
+        });
+    });
+}
+
 void MainWindow::openNewChatDialog()
 {
-    auto *dlg = new NewChatDialog(m_api, this);
+    // Talk 24 preset picker appears only when the server advertises it; on
+    // anything older the dialog is byte-for-byte the 0.64 experience.
+    auto *dlg = new NewChatDialog(
+        m_api,
+        m_auth && m_auth->supportsConversationPresets(),
+        m_auth && m_auth->hasCapability(QStringLiteral("conversation-creation-all")),
+        this);
     dlg->setAttribute(Qt::WA_DeleteOnClose);
     connect(dlg, &QDialog::accepted, this, [this, dlg]() {
         const QString token = dlg->createdToken();
         if (token.isEmpty()) return;
+        const bool voiceRoom =
+            dlg->createdPreset() == QLatin1String("voiceroom");
         // Refresh the sidebar so the new room appears, then open it once the
         // conversation row is known to the model.
         m_conversations->refresh();
-        QTimer::singleShot(300, this, [this, token]() { openConversation(token); });
+        QTimer::singleShot(300, this, [this, token, voiceRoom]() {
+            openConversation(token);
+            // A voice room the user JUST created must drop straight into the
+            // call. The generic auto-join in onConversationSelected cannot do
+            // it here: it reads `attributes` out of the conversation model,
+            // and the refresh above may not have landed yet, so the room reads
+            // as attributes=0. We know the preset first-hand, so join directly
+            // — still latched and still refusing to interrupt an existing call.
+            if (!voiceRoom || m_autoJoinedVoiceRooms.contains(token))
+                return;
+            if (!m_callManager->callToken().isEmpty())
+                return;
+            m_autoJoinedVoiceRooms.insert(token);
+            qInfo() << "created voice room" << token << "— joining call";
+            m_callManager->startCall(token, /*video*/false);
+        });
     });
     dlg->exec();
 }

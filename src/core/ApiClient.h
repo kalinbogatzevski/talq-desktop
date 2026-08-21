@@ -176,11 +176,40 @@ public:
     // Create a new Talk room. For a one-to-one, pass roomType=1 + invite=<userId>.
     // For a group, pass roomType=2 + roomName; invite participants afterwards
     // via addRoomParticipant. Callback receives the new room's token.
+    // `extraParams` is merged into the create body and exists for Talk 24
+    // conversation presets: a preset is applied by sending its `parameters`
+    // map (listable, messageExpiration, …) alongside `preset: <identifier>`.
+    // It is a trailing default argument specifically so the two pre-existing
+    // callers (NewChatDialog's 1:1 + group paths, and CallManager's
+    // 1:1-to-group promotion) keep compiling untouched.
     void createRoom(int roomType, const QString &roomName, const QString &invite,
                     QObject *context,
                     std::function<void(bool ok,
                                        const QString &token,
-                                       const QString &error)> callback);
+                                       const QString &error)> callback,
+                    const QJsonObject &extraParams = QJsonObject());
+
+    // ── Talk 24: conversation tags ────────────────────────────────────────
+    // Capability: `conversation-tags`. Tags are PER-USER, not per-room: two
+    // participants in the same conversation see different tags. Gate every one
+    // of these on AuthManager::supportsConversationTags() — an older server
+    // 404s the route, which is indistinguishable from a network failure.
+    // NOTE the API version: tags are v4, but presets below are v1.
+    void fetchConversationTags(ArrayCallback callback);
+    void createConversationTag(const QString &name, Callback callback);
+    void renameConversationTag(const QString &tagId, const QString &name, Callback callback);
+    void deleteConversationTag(const QString &tagId, Callback callback);
+    // REPLACES the conversation's whole tag set — [] unassigns all. To add one
+    // tag you must send every tag it already had plus the new one; build the
+    // list with talq::toggledTagSet() rather than by hand.
+    void assignConversationTags(const QString &token, const QStringList &tagIds,
+                                Callback callback);
+
+    // ── Talk 24: conversation presets ─────────────────────────────────────
+    // Capability: `conversation-presets`. Returns
+    // [{identifier, name, description, parameters:{...}}] — the server's
+    // create-time templates, including "voiceroom". Version is v1, NOT v4.
+    void fetchRoomPresets(ArrayCallback callback);
     // #78 (add-to-call) -- fetch a room's participants; callback receives the raw
     // participant objects (used to resolve a userId -> attendeeId before ringing).
     // Adding a user reuses the existing addRoomParticipant below (group rooms

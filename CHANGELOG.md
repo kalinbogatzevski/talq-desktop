@@ -1,5 +1,68 @@
 # Changelog
 
+## v0.65.1 "Blue Fiesta Week 4 Re-match" — BETA (2026-08-21)
+
+Completes the conversation-organising work 0.65.0 started. That release let you
+tag conversations and filter by one; this one lets the list actually group
+itself, and lets you manage the tags you have made.
+
+### Added
+* **Group the conversation list by tag.** Turn it on in the sort-and-filter
+  menu and the list splits into labelled sections, each showing how many
+  conversations are in it. Click a section to fold it away; the count stays
+  visible so you can see what is hidden. Folded sections are remembered by the
+  server, so they stay folded on your other devices too. Sections with nothing
+  in them are not shown at all. It is off unless you ask for it, and the list
+  is unchanged until you do.
+* **Manage tags** — create, rename and delete, from the same sort-and-filter
+  menu. Deleting asks first and names the tag, because it comes off every
+  conversation you had put it on and cannot be undone.
+* **Call straight from the conversation list.** Right-click a conversation and
+  choose Call, instead of opening it first and using the header.
+
+### Fixed
+* **Favorites and Other are shown in your language.** The server names those
+  two built-in tags once, in whatever language it happened to be asked in
+  first, and then never changes them — so they could show up in the wrong
+  language and stay that way. TalQ now labels them itself.
+* **Long conversation-type names no longer run past the edge** of the new
+  conversation window.
+
+## v0.65.0 "Blue Fiesta Week 4 Re-match" — BETA (2026-08-20)
+
+Brings across the conversation-organising features from Talk 24. Everything
+here checks what your server supports first: on an older server the app looks
+and behaves exactly as 0.64.3 did, with none of it showing up.
+
+### Added
+* **Tags for your conversations.** Right-click any conversation to tag it, or
+  to create a new tag on the spot. The sort-and-filter menu then lets you show
+  only one tag at a time, alongside the filters that were already there — so
+  "unread" and "tagged Work" narrow the list together rather than replacing one
+  another. Tags are yours alone: they are stored per user, so tagging a group
+  chat changes nothing for anyone else in it, and the same tags follow you to
+  your other devices.
+* **Conversation types when creating a group.** The new-conversation dialog now
+  offers the conversation templates the server publishes, with a line
+  explaining what each one does, instead of every new group being identical.
+* **Voice rooms.** One of those templates is a voice room: a conversation you
+  join by opening it. There is no ringing and no join button — you open it and
+  you are in, which suits a standing room people drop into. Opening one joins
+  audio only, never your camera. It will not interrupt a call you are already
+  in, and once you hang up it stays hung up.
+
+### Fixed
+* **Server features are detected reliably.** The list of what a server supports
+  was read once at sign-in, and if that single request failed the app spent the
+  rest of the session assuming an old server — quietly, and typically on one
+  machine only. It now retries, and says so in the log if it truly cannot.
+
+### Notes
+Tags and conversation types need Talk 24 on the server. TalQ checks and simply
+omits them otherwise; nothing is broken by connecting to an older server, and
+signing out of one server and into another no longer carries the first one's
+features across.
+
 ## v0.64.3 "Blue Fiesta Week 4" — STABLE (2026-08-18)
 
 Finishes the accessibility work 0.64.2 started. That release fixed the text

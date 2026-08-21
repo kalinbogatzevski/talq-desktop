@@ -2,6 +2,7 @@
 
 #include <QMainWindow>
 #include <QPointer>
+#include <QSet>
 #include <QStackedWidget>
 #include <QLineEdit>
 #include <QSettings>
@@ -10,6 +11,7 @@
 #include <QPushButton>
 #include <QSplitter>
 #include <QTimer>
+#include "core/ConversationTagLogic.h"
 #include "painter/PainterTheme.h"
 
 class ApiClient;
@@ -134,6 +136,17 @@ private:
     QDateTime askReminderTime();
     void openUpcomingReminders();
     void openNewChatDialog();
+    // ── Talk 24 conversation tags ──
+    // Fetched once per session after login and refreshed whenever the user
+    // changes them. All three are no-ops unless the server advertises
+    // `conversation-tags`, so nothing here fires against an older server.
+    void refreshConversationTags();
+    void rebuildTagFilterMenu();
+    void pushTagsToSidebar();   // hands the ordered, localised list to the painter
+    void openTagManager();      // rename / delete / create for custom tags
+    void applyTagFilter(const QString &tagId, const QString &displayName);
+    // Builds the "Tags" submenu on a conversation's right-click menu.
+    void populateTagAssignMenu(QMenu *parent, const QString &token);
     void openConversationInfo();
     void createNewTopic();
     void buildWelcomeContent();    // (re)build Mission Control content; theme-aware
@@ -200,6 +213,12 @@ private:
     QPushButton *m_homeBtn = nullptr;
     QPushButton *m_filterBtn = nullptr;     // sidebar sort/filter menu trigger
     QMenu *m_filterMenu = nullptr;          // themed in restyleChrome
+    // Talk 24 tags. m_tags is the server's list in display order; the actions
+    // are rebuilt into m_filterMenu each time that list changes, and tracked
+    // so the previous batch can be removed without disturbing the static
+    // Sort-by / Show sections above them.
+    QVector<talq::ConversationTag> m_tags;
+    QList<QAction *> m_tagFilterActions;
     QWidget *m_welcomeWidget = nullptr;     // persistent host (shown/hidden)
     QWidget *m_welcomeContent = nullptr;    // themed content, rebuilt on theme change
     bool m_welcomeDirty = false;            // theme changed while welcome hidden → rebuild on next show
@@ -331,6 +350,12 @@ private:
     bool m_wasFullScreen = false;  // remembered separately because isMaximized() is false in fullscreen
     bool m_geometrySaveEnabled = false;
     QString m_activeConvToken;
+    // Talk 24 voice rooms: tokens we have already auto-joined this session.
+    // onConversationSelected() re-runs on every sidebar refresh and reselect,
+    // so without this latch hanging up would be impossible — the next poll
+    // would rejoin the call immediately. Session-scoped on purpose: after a
+    // restart, opening the voice room should put you back in the call.
+    QSet<QString> m_autoJoinedVoiceRooms;
     int m_activeThreadId = 0;
     QString m_activeThreadTitle;
     int m_activeThreadColor = 0;

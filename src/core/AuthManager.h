@@ -4,6 +4,7 @@
 #include <QSettings>
 #include <QTimer>
 #include "core/ApiClient.h"
+#include "core/ServerCapabilities.h"
 
 /**
  * Manages Nextcloud Login Flow v2 authentication — no embedded browser needed.
@@ -47,7 +48,22 @@ public:
     QString nextcloudVersion() const { return m_ncVersion; }
     QString talkVersion() const { return m_talkVersion; }
     QString signalingMode() const { return m_signalingMode; }
-    bool hasThreadsSupport() const { return m_hasThreads; }
+    bool hasThreadsSupport() const { return hasCapability(QStringLiteral("threads")); }
+
+    // --- server feature gating -------------------------------------------
+    // The whole `spreed.features` list, parsed once per session. Before 0.65.0
+    // this array was read for the single literal "threads" and then discarded,
+    // so nothing else could be gated; every Talk 24 feature added in 0.65.0
+    // goes through here and falls back to the 0.64 behaviour when absent.
+    // Fails CLOSED — see ServerCapabilities.h.
+    bool hasCapability(const QString &feature) const
+    {
+        return m_capabilities.has(feature.toStdString());
+    }
+    const talq::ServerCapabilities &capabilities() const { return m_capabilities; }
+    bool supportsConversationTags() const { return m_capabilities.supportsConversationTags(); }
+    bool supportsConversationPresets() const { return m_capabilities.supportsConversationPresets(); }
+    bool supportsVoiceRooms() const { return m_capabilities.supportsVoiceRooms(); }
 
     Q_INVOKABLE void tryRestore();
     Q_INVOKABLE void startLogin(const QString &serverUrl);
@@ -92,7 +108,11 @@ private:
     QString m_ncVersion;
     QString m_talkVersion;
     QString m_signalingMode;
-    bool m_hasThreads = false;
+    talq::ServerCapabilities m_capabilities;
+    // Bounded retry for the one-shot capabilities fetch. Without it a single
+    // lost request at login disables every gated feature for the session.
+    static constexpr int kMaxCapabilityRetries = 3;
+    int m_capabilityRetries = 0;
 
     // Login Flow v2 poll state
     QString m_pollToken;

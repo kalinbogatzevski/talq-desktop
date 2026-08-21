@@ -1102,12 +1102,20 @@ void ApiClient::searchNcUsers(const QString &query, QObject *context,
 
 void ApiClient::createRoom(int roomType, const QString &roomName, const QString &invite,
                            QObject *context,
-                           std::function<void(bool, const QString &, const QString &)> callback)
+                           std::function<void(bool, const QString &, const QString &)> callback,
+                           const QJsonObject &extraParams)
 {
     QJsonObject body;
     body["roomType"] = roomType;
     if (!roomName.isEmpty()) body["roomName"] = roomName;
     if (!invite.isEmpty())   body["invite"]   = invite;
+    // Preset parameters (Talk 24). Merged AFTER the three base keys but the
+    // base keys win on collision: a preset that carries a roomType must not be
+    // able to turn a 1:1 the user explicitly asked for into a group room.
+    for (auto it = extraParams.begin(); it != extraParams.end(); ++it) {
+        if (!body.contains(it.key()))
+            body.insert(it.key(), it.value());
+    }
 
     auto req = makeRequest(QStringLiteral("apps/spreed/api/v4/room"));
     QNetworkReply *reply = m_nam.post(req, QJsonDocument(body).toJson());
@@ -1146,6 +1154,62 @@ void ApiClient::createRoom(int roomType, const QString &roomName, const QString 
             callback(false, QString(), msg);
         }
     });
+}
+
+// ── Talk 24: conversation tags ───────────────────────────────────────────
+// These deliberately go through the generic verbs (which share handleReply's
+// OCS unwrap, transport-retry and error surfacing) rather than hand-rolling a
+// reply handler like createRoom above does. Callers MUST gate them on
+// AuthManager::supportsConversationTags(); against an older server the route
+// simply does not exist and the 404 is indistinguishable from a real failure.
+// Version note: tags are v4 — fetchRoomPresets() below is v1.
+
+void ApiClient::fetchConversationTags(ArrayCallback callback)
+{
+    getArray(QStringLiteral("apps/spreed/api/v4/tags"), std::move(callback));
+}
+
+void ApiClient::createConversationTag(const QString &name, Callback callback)
+{
+    QJsonObject body;
+    body[QStringLiteral("name")] = name;
+    post(QStringLiteral("apps/spreed/api/v4/tags"), body, std::move(callback));
+}
+
+void ApiClient::renameConversationTag(const QString &tagId, const QString &name,
+                                      Callback callback)
+{
+    QJsonObject body;
+    body[QStringLiteral("name")] = name;
+    put(QStringLiteral("apps/spreed/api/v4/tags/%1").arg(tagId), body, std::move(callback));
+}
+
+void ApiClient::deleteConversationTag(const QString &tagId, Callback callback)
+{
+    del(QStringLiteral("apps/spreed/api/v4/tags/%1").arg(tagId), std::move(callback));
+}
+
+void ApiClient::assignConversationTags(const QString &token, const QStringList &tagIds,
+                                       Callback callback)
+{
+    // The endpoint SETS the whole list; an empty array unassigns every tag.
+    // That is why the array is always sent, even when empty — omitting the key
+    // is not the same request.
+    QJsonArray ids;
+    for (const QString &id : tagIds)
+        ids.append(id);
+    QJsonObject body;
+    body[QStringLiteral("tagIds")] = ids;
+    post(QStringLiteral("apps/spreed/api/v4/room/%1/tags").arg(token), body,
+         std::move(callback));
+}
+
+// ── Talk 24: conversation presets ────────────────────────────────────────
+void ApiClient::fetchRoomPresets(ArrayCallback callback)
+{
+    // v1, not v4 (Talk 24 lib/Controller/PresetController.php:52). Using v4
+    // here yields a 404 that looks exactly like "your server is too old".
+    getArray(QStringLiteral("apps/spreed/api/v1/presets/room"), std::move(callback));
 }
 
 void ApiClient::fetchParticipants(const QString &token, QObject *context,

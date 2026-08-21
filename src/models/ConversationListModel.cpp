@@ -73,6 +73,8 @@ QVariant ConversationListModel::data(const QModelIndex &index, int role) const
         case HasTopicsRole:     return c.hasTopics;
         case NotificationLevelRole: return c.notificationLevel;
         case ParticipantTypeRole:   return c.participantType;
+        case TagIdsRole:        return c.tagIds;
+        case AttributesRole:    return c.attributes;
         default:                return {};
     }
 }
@@ -96,6 +98,8 @@ QHash<int, QByteArray> ConversationListModel::roleNames() const
         {HasTopicsRole,          "hasTopics"},
         {NotificationLevelRole, "notificationLevel"},
         {ParticipantTypeRole,   "participantType"},
+        {TagIdsRole,            "tagIds"},
+        {AttributesRole,        "attributes"},
     };
 }
 
@@ -266,6 +270,22 @@ int ConversationListModel::conversationTypeForToken(const QString &token) const
         if (c.token == token) return c.type;
     }
     return 0;
+}
+
+int ConversationListModel::attributesForToken(const QString &token) const
+{
+    for (const Conversation &c : m_conversations) {
+        if (c.token == token) return c.attributes;
+    }
+    return 0;
+}
+
+QStringList ConversationListModel::tagIdsForToken(const QString &token) const
+{
+    for (const Conversation &c : m_conversations) {
+        if (c.token == token) return c.tagIds;
+    }
+    return {};
 }
 
 void ConversationListModel::startAutoRefresh()
