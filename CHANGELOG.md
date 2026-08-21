@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.65.2 "Blue Fiesta Week 4 Re-match" — BETA (2026-08-21)
+
+Housekeeping on the open-source build. No functional change.
+
+### Fixed
+* **The open-source build no longer carries the branded build's asset paths.**
+  The login screen picked its logo with a runtime choice between the two, which
+  meant both names were compiled into every build — so the generic app carried a
+  reference to an image it can never display. The choice is now made when the
+  app is compiled, so each build contains only its own.
+
+### Notes
+Same features as 0.65.1; rebuild only.
+
 ## v0.65.1 "Blue Fiesta Week 4 Re-match" — BETA (2026-08-21)
 
 Completes the conversation-organising work 0.65.0 started. That release let you
