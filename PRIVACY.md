@@ -39,13 +39,17 @@ your messages, calls, contacts, account details, or usage statistics.
 - No automatic crash/error reporting to the developers.
 - No selling or sharing of any data (there is none to sell or share).
 
-## The 123NET-branded build
+## Branded builds
 
-123 NET CPT (PTY) LTD distributes a branded build of TalQ to its own users. It
-is the **same open-source application**, differing only in pre-configured
-Nextcloud server endpoints and branding. It collects no additional data; the
-same statements above apply. Data you exchange with a 123NET-operated Nextcloud
-server is governed by 123NET's own server-side privacy terms.
+An organisation may distribute its own branded build of TalQ to its users. A
+branded build is the **same open-source application**, differing only in
+pre-configured Nextcloud server endpoints and branding. It collects no
+additional data; the same statements above apply.
+
+Data you exchange with the Nextcloud server you connect to is governed by that
+server operator's own privacy terms, not by this policy — which covers the
+application itself. If you received TalQ from an organisation rather than from
+this repository, ask them for their server-side terms.
 
 ## Changes
 

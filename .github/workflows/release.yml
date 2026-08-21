@@ -7,7 +7,7 @@
 # mingw-w64, which ships Qt6 + GStreamer built with the same compiler) to avoid
 # the aqtinstall-Qt-vs-MSYS2-GStreamer ABI mismatch the local build works around.
 #
-# Scope: GENERIC build only (no 123NET config, no native/wgc — those are kept
+# Scope: GENERIC build only (no branding config, no native/wgc — those are kept
 # out of the public repo). Window-share falls back to full-monitor without WGC.
 #
 # The published installer is built AND Authenticode-signed locally by

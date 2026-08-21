@@ -13,11 +13,12 @@
 // with only a comment naming the capability (MessageListModel.cpp), and
 // clearChatHistory() naming `clear-history` in a comment while checking nothing.
 //
-// TalQ ships to two very different audiences: the branded 123NET build talks to
-// ncloud (currently Nextcloud 34 / Talk 24), while the generic GitHub build
-// talks to whatever server the user happens to run — frequently several major
-// Talk versions behind. Every Talk 24 feature added in 0.65.0 MUST therefore be
-// gated here and degrade to the 0.64 behaviour when the flag is absent.
+// TalQ ships to two very different audiences: a branded build talks to a server
+// its operator keeps current (Nextcloud 34 / Talk 24 at the time of writing),
+// while the generic build talks to whatever server the user happens to run —
+// frequently several major Talk versions behind. Every Talk 24 feature added in
+// 0.65.0 MUST therefore be gated here and degrade to the 0.64 behaviour when the
+// flag is absent.
 #include <algorithm>
 #include <set>
 #include <string>

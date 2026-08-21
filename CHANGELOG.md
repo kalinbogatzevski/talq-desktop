@@ -1769,9 +1769,9 @@ Promotes the 0.51.x line to stable. Highlights since 0.50.11:
 ### Fixed
 
 * **The standard build now installs reliably on managed/work machines.** The
-  standard (non-123NET) build is now code-signed, so Windows no longer mis-flags
+  standard (unbranded) build is now code-signed, so Windows no longer mis-flags
   it as untrusted during install on centrally-managed or cert-trusted computers —
-  the same trust the 123NET build already had. (On a personal/unmanaged PC,
+  the same trust a branded build already had. (On a personal/unmanaged PC,
   Windows Defender may still need a one-time exclusion until the public signing
   certificate is in place.)
 
@@ -3248,7 +3248,7 @@ softer than Telegram on the same camera. Research briefs in
 
 ### Notes
 
-* This is a **beta** — publishes to the ncloud
+* This is a **beta** — publishes to the branded
   `talq-beta-latest.json` channel only; the stable manifest is
   untouched. Stable users on 0.40.16 are unaffected.
 * Next on the cycle: 0.41.1-beta adds the screen-share self-preview
@@ -5378,7 +5378,7 @@ this release removes them and tightens the new chrome.
 - Auto-update banner is taller and more prominent (bold message, accent
   Install button, full borders, theme-tokenized); the side-stripe is gone.
 - Startup update check now runs ~3 s after launch (was 30 s).
-- Branded build: the 123NET logo appears top-right on the welcome screen.
+- Branded build: the brand logo appears top-right on the welcome screen.
 
 ## v0.27.2 (2026-05-16)
 
@@ -6098,12 +6098,12 @@ Root cause: three protocol compliance issues found by comparing TalQ's SDP with 
 - **Scroll to bottom** — chat scrolls down after file upload completes
 
 ### Other Fixes
-- **123NET branding** — brand logo + TalQ sub-logo on login and welcome screens
+- **Branding support** — brand logo + TalQ sub-logo on login and welcome screens
 - **Instant read status** — push events trigger message refresh
 - **Chat scrollbar** — thin scrollbar thumb on right edge
 - **Reaction counts** — fixed showing 0 (array length, not toInt)
 - **Placeholder consistency** — unified to "Message..." across all code paths
-- **Non-branded login** — empty server URL (was hardcoded to 123NET)
+- **Non-branded login** — empty server URL (was hardcoded to the brand's server)
 - **Dead signal removed** — unused `popupRequested` from NotificationManager
 
 ## v0.14.0 (2026-03-29)
@@ -6571,7 +6571,7 @@ Root cause: three protocol compliance issues found by comparing TalQ's SDP with 
 - WebDAV PUT upload + share to conversation
 
 ### Branding
-- 123NET TalQ dedicated build (`cmake -DTALQ_BRAND=123NET`)
+- Dedicated branded build (`cmake -DTALQ_BRAND=<brand>`)
 - Hardcoded server URL, no URL field on login
 - Dual logos on splash (TalQ + brand), brand logo on welcome screen
 - Separate Inno Setup installer for branded builds

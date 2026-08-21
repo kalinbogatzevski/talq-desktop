@@ -151,7 +151,7 @@ void SignalingClient::fetchSettings()
             m_signalingUrl = data["server"].toString().trimmed();
             // Server-provided HPB discovery (optional "servers" field -- see
             // m_discoveredHpbPool in the header). Absent on stock Nextcloud;
-            // present when apps/spreed carries the additive 123NET patch.
+            // present when apps/spreed carries the additive server-side patch.
             m_discoveredHpbPool.clear();
             for (const auto &v : data["servers"].toArray()) {
                 const QString u = v.toObject()["server"].toString().trimmed();
@@ -202,7 +202,7 @@ void SignalingClient::fetchSettings()
             qDebug() << "Signaling: server at" << m_signalingUrl;
             // Automatic nearest-HPB selection: unless a server is pinned manually,
             // probe the candidate pool (Nextcloud-assigned server + the branded
-            // 123NET regional pool) and connect to the NEAREST reachable one — a
+            // build's regional pool) and connect to the NEAREST reachable one — a
             // short, stable WebSocket path is what prevents the long-haul
             // socket-death disconnects. Runs on every (re)connect, so a dead HPB
             // (fails the probe) is naturally skipped on reconnect = failover.

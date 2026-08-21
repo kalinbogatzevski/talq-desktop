@@ -205,7 +205,7 @@ signals:
 private:
     void fetchSettings();
     void connectWebSocket();
-    // Probe the candidate HPB pool (Nextcloud server + branded 123NET pool) and
+    // Probe the candidate HPB pool (Nextcloud server + branded-build pool) and
     // connect to the nearest reachable one; fail-safe to the Nextcloud default.
     void selectNearestHpbAndConnect();
     void onConnected();
@@ -249,7 +249,7 @@ private:
     // alongside the single "server" it already picked. Unpatched/stock
     // Nextcloud omits it entirely, so this is just empty -- selectNearestHpbAndConnect()
     // falls back to exactly today's behaviour. Populated for BOTH generic and
-    // branded builds (the source is the user's own Nextcloud, not 123NET infra),
+    // branded builds (the source is the user's own Nextcloud, not brand infra),
     // unlike TalQHpb::kPool which is branded-only.
     QStringList m_discoveredHpbPool;
     QString m_userId;

@@ -247,8 +247,8 @@ if(TALQ_BG AND TALQ_BG_ORT)
 endif()
 
 
-# Branding. 123NET assets live outside the tree in /private (never
-# published); the branded build pulls them in here. The default/public
+# Branding. Brand assets live outside the tree in /private (never
+# published); a branded build pulls them in here. The default/public
 # build is unbranded and references none of this.
 if(TALQ_BRAND STREQUAL "123NET")
     # Brand identity/endpoints are NOT defined here (would leak into public
@@ -257,16 +257,16 @@ if(TALQ_BRAND STREQUAL "123NET")
     set(_brand_qrc "${CMAKE_SOURCE_DIR}/private/branding/123net/brand.qrc")
     if(NOT EXISTS "${_brand_qrc}")
         message(FATAL_ERROR
-            "TALQ_BRAND=123NET but ${_brand_qrc} is missing. "
-            "The 123NET branding store is private and not part of the "
+            "TALQ_BRAND=${TALQ_BRAND} but ${_brand_qrc} is missing. "
+            "The branding store is private and not part of the "
             "public source. Build without -DTALQ_BRAND for the generic app.")
     endif()
     target_sources(talq PRIVATE "${_brand_qrc}")
     # Private update-channel config (brand_updates.inc) is included by
-    # AppSettings.h under #ifdef TALQ_BRAND_123NET; put it on the path.
+    # AppSettings.h under the brand ifdef; put it on the path.
     target_include_directories(talq PRIVATE
         "${CMAKE_SOURCE_DIR}/private/branding/123net")
-    message(STATUS "Building 123NET branded version")
+    message(STATUS "Building ${TALQ_BRAND} branded version")
 endif()
 
 target_include_directories(talq PRIVATE src ${GST_INCLUDE_DIRS})

@@ -74,7 +74,7 @@ void UpdateChecker::setBetaChannelEnabled(bool on)
 
 void UpdateChecker::checkNow()
 {
-    if (!TalQUpdates::kEnabled) return;   // OSS build: no 123NET update endpoint
+    if (!TalQUpdates::kEnabled) return;   // OSS build: no branded update endpoint
     ++m_checkGen;   // supersede any in-flight async checksum continuation
     m_betaAttempt = betaChannelEnabled();
     fetchManifest();
@@ -134,7 +134,7 @@ void UpdateChecker::fetchManifest()
         req.setRawHeader("Accept", "application/vnd.github+json");
         req.setRawHeader("User-Agent", "TalQ-UpdateChecker");
     } else {
-        // Branded ncloud: beta manifest is the talq-beta-latest.json
+        // Branded channel: beta manifest is the talq-beta-latest.json
         // sibling of the stable talq-latest.json. A missing one falls back
         // to stable in onManifestFetched.
         QString manifestUrl = QString::fromLatin1(TalQUpdates::kManifestUrl);
@@ -261,7 +261,7 @@ void UpdateChecker::onManifestFetched(QNetworkReply *reply)
     // can tell at a glance what they're about to install.
     m.prerelease = m_betaAttempt
                 || root.value(QStringLiteral("prerelease")).toBool();
-    // #31 — forced-downgrade pin (ncloud-manifest only; GitHub has no such field).
+    // #31 — forced-downgrade pin (branded manifest only; GitHub has no such field).
     m.pin = root.value(QStringLiteral("pin")).toBool();
 
     if (!checksumUrl.isEmpty())

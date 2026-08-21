@@ -2293,7 +2293,7 @@ void MainWindow::buildWelcomeContent()
     welcomeLayout->addLayout(cmdBar);
 
     // Greeting (still the empty state: who you are, what to do next). On the
-    // branded build the 123NET logo fills the top-right free space beside the
+    // branded build the brand logo fills the top-right free space beside the
     // two-line greeting, just below the status pill.
     auto *greetRow = new QHBoxLayout();
     greetRow->setSpacing(16);
