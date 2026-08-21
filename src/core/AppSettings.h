@@ -12,9 +12,8 @@
 namespace TalQUpdates {
 #ifdef TALQ_BRANDED
     // The real endpoint + public-share credentials are NOT in the public
-    // source. They live in the private branding store
-    // (private/branding/brand/brand_updates.inc), put on the include path
-    // only for the BRAND build by CMake. A branded build without the
+    // source. They live in the private branding store, which CMake puts on
+    // the include path only for a branded build. A branded build without the
     // private store fails to compile — that's the intended contract.
     #include "brand_updates.inc"
     constexpr bool kUseGithub     = false;   // branded: private channel

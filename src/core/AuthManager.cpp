@@ -414,7 +414,7 @@ void AuthManager::logout()
     m_displayName.clear();
     // Drop the server's feature set with the session. Leaving it behind would
     // let the PREVIOUS server's capabilities gate decisions made against the
-    // next one — the sign-out-of-ncloud, sign-in-to-an-older-server case.
+    // next one — the sign-out-of-one-server, sign-in-to-an-older-one case.
     m_capabilities.reset();
     m_capabilityRetries = 0;
     emit userInfoChanged();

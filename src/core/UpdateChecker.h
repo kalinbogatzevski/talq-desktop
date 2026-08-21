@@ -17,7 +17,7 @@ public:
         QString releaseDate;
         QString notes;
         QString assetFilename;
-        QString assetUrl;       // absolute download URL (GitHub or ncloud)
+        QString assetUrl;       // absolute download URL (GitHub or branded channel)
         QString assetSha256;    // may be empty (GitHub provides no digest)
         bool prerelease = false;  // true when the manifest came from the
                                   // beta channel (so the banner can say so)
@@ -68,7 +68,7 @@ private:
     // no filename suffix) alongside the installer. If one is present in the
     // release's asset list, fetch it and populate m.assetSha256 before
     // finalizing -- gives the generic/GitHub channel the same
-    // download-integrity check the branded/ncloud channel already has via
+    // download-integrity check the branded channel already has via
     // its manifest's native sha256 field. Falls back to no checksum (today's
     // behaviour) if the asset is absent or the fetch fails; never blocks an
     // update on this being unavailable.
