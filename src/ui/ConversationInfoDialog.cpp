@@ -317,6 +317,15 @@ ConversationInfoDialog::ConversationInfoDialog(ApiClient *api,
     });
 
     outer->addSpacing(8);
+    // Dial-in details. Created hidden and filled by setSipInfo(); a room
+    // without SIP never shows the row, which is every room on a server with no
+    // SIP bridge configured.
+    m_sipLabel = new QLabel(QString(), this);
+    m_sipLabel->setWordWrap(true);
+    m_sipLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_sipLabel->setVisible(false);
+    outer->addWidget(m_sipLabel);
+
     m_status = new QLabel(QString(), this);
     m_status->setProperty("role", "secondary");
     outer->addWidget(m_status);
@@ -1092,4 +1101,20 @@ void ConversationInfoDialog::onAddBotClicked()
     });
 
     dlg->open();
+}
+
+void ConversationInfoDialog::setSipInfo(int sipEnabled, const QString &pin)
+{
+    if (!m_sipLabel) return;
+    if (sipEnabled == 0) {              // no SIP on this room -- show nothing
+        m_sipLabel->setVisible(false);
+        return;
+    }
+    // sipEnabled == 2 means dial-in without a per-user PIN, so a PIN line
+    // there would be a lie. Selectable text rather than a button: the useful
+    // action is reading the code out to somebody on another phone.
+    m_sipLabel->setText(pin.isEmpty() || sipEnabled == 2
+        ? tr("You can dial in to this conversation by phone.")
+        : tr("You can dial in by phone. Your PIN is %1.").arg(pin));
+    m_sipLabel->setVisible(true);
 }

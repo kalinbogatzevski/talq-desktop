@@ -107,6 +107,9 @@ public:
     // 3 video-starting / 4 audio-starting / 5 failed). 0 for an unknown
     // token, which reads as "not recording".
     Q_INVOKABLE int callRecordingForToken(const QString &token) const;
+    // SIP dial-in state and this user's dial-in PIN for a room.
+    Q_INVOKABLE int sipEnabledForToken(const QString &token) const;
+    Q_INVOKABLE QString attendeePinForToken(const QString &token) const;
     // Display name for a token, so a cross-conversation search hit can say
     // WHICH conversation it is in. Empty for an unknown token.
     Q_INVOKABLE QString displayNameForToken(const QString &token) const;

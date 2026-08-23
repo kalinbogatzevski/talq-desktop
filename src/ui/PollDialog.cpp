@@ -227,6 +227,13 @@ PollComposerDialog::PollComposerDialog(QWidget *parent)
     root->addWidget(m_multiChoice);
     root->addWidget(m_hideResults);
 
+    // Saving as a draft keeps the poll as a reusable template rather than
+    // posting it. Hidden unless the server supports drafts — see
+    // setDraftsAvailable, called by the owner once capabilities are known.
+    m_asDraft = new QCheckBox(tr("Save as a draft instead of posting it"), this);
+    m_asDraft->setVisible(false);
+    root->addWidget(m_asDraft);
+
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
     buttons->button(QDialogButtonBox::Ok)->setText(tr("Create poll"));
     root->addWidget(buttons);
@@ -278,6 +285,16 @@ QStringList PollComposerDialog::options() const
 int PollComposerDialog::resultMode() const
 {
     return (m_hideResults && m_hideResults->isChecked()) ? 1 : 0;
+}
+
+bool PollComposerDialog::saveAsDraft() const
+{
+    return m_asDraft && m_asDraft->isVisible() && m_asDraft->isChecked();
+}
+
+void PollComposerDialog::setDraftsAvailable(bool v)
+{
+    if (m_asDraft) m_asDraft->setVisible(v);
 }
 
 // 0 = unlimited picks; 1 = exactly one.

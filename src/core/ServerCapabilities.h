@@ -72,7 +72,10 @@ inline const char *const CAP_REACTIONS = "reactions";
 inline const char *const CAP_ROOM_DESCRIPTION = "room-description";
 inline const char *const CAP_START_CALL_FLAG = "start-call-flag";
 inline const char *const CAP_CONVERSATION_SUBFOLDERS = "conversation-subfolders";
+inline const char *const CAP_BREAKOUT_ROOMS = "breakout-rooms-v1";
 inline const char *const CAP_TALK_POLLS = "talk-polls";
+inline const char *const CAP_TALK_POLLS_DRAFTS = "talk-polls-drafts";
+inline const char *const CAP_CHAT_SUMMARY = "chat-summary-api";
 
 // Bit-flags of the conversation `attributes` field (Talk 24 lib/RoomAttributes.php).
 // A bit-flag, not an enum value: test with a mask, never with equality, or a
@@ -151,7 +154,12 @@ public:
     bool supportsReactions() const { return has(CAP_REACTIONS); }
     bool supportsRoomDescription() const { return has(CAP_ROOM_DESCRIPTION); }
     bool supportsStartCallFlag() const { return has(CAP_START_CALL_FLAG); }
+    bool supportsBreakoutRooms() const { return has(CAP_BREAKOUT_ROOMS); }
     bool supportsPolls() const { return has(CAP_TALK_POLLS); }
+    bool supportsPollDrafts() const { return has(CAP_TALK_POLLS_DRAFTS); }
+    // ⚠ Present only when the server has an AI text provider installed.
+    // The capability IS the availability check.
+    bool supportsChatSummary() const { return has(CAP_CHAT_SUMMARY); }
 
 private:
     std::set<std::string> m_features;

@@ -101,6 +101,12 @@ public:
     // Important: keeps notifying even while archived, and Talk exempts it from
     // the "silence archived conversations" behaviour.
     bool important = false;
+    // SIP dial-in. `sipEnabled` is the room's state (0 disabled, 1 enabled,
+    // 2 enabled without a per-user PIN); `attendeePin` is THIS user's dial-in
+    // code and is only sent when SIP is on. Both absent on a server with no
+    // SIP bridge, which is the normal case.
+    int sipEnabled = 0;
+    QString attendeePin;
 
     static Conversation fromJson(const QJsonObject &json);
 

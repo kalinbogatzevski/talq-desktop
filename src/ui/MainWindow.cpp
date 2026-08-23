@@ -14,6 +14,9 @@
 #include "ConversationInfoDialog.h"
 #include "NewChatDialog.h"
 #include "PollDialog.h"
+#include "SubscribedTopicsDialog.h"
+#include "ChatSummaryDialog.h"
+#include "BreakoutRoomsDialog.h"
 #include "TopicTabBar.h"
 #include "UpcomingRemindersDialog.h"
 #include "painter/ChatPainter.h"
@@ -620,6 +623,45 @@ void MainWindow::buildChatPage()
             });
         }
 
+        // Breakout rooms. Moderator-only, group/public only, and only where the
+        // server has them -- three gates, because each of them is a way this
+        // would otherwise fail after the user had already committed to it.
+        if (m_auth && m_auth->capabilities().supportsBreakoutRooms() && !ctxToken.isEmpty()) {
+            const int t  = m_conversations->conversationTypeForToken(ctxToken);
+            const int pt = m_conversations->participantTypeForToken(ctxToken);
+            const bool mod = pt == RoomParticipant::Owner
+                          || pt == RoomParticipant::Moderator
+                          || pt == RoomParticipant::GuestModerator;
+            if (mod && (t == 2 || t == 3)) {
+                QAction *br = menu->addAction(tr("Breakout rooms…"));
+                connect(br, &QAction::triggered, this, [this, ctxToken]() {
+                    auto *dlg = new BreakoutRoomsDialog(m_api, ctxToken, this);
+                    dlg->setAttribute(Qt::WA_DeleteOnClose);
+                    dlg->show();
+                });
+            }
+        }
+
+        // Summarise the unread run. Offered only where the server actually has
+        // an AI provider (the capability IS the availability check) and only
+        // where there is something unread to summarise -- a summary of nothing
+        // is a wasted round trip and a confusing empty dialog.
+        if (m_auth && m_auth->capabilities().supportsChatSummary()) {
+            const int unread = m_conversations->data(
+                m_conversations->index(modelIndex),
+                ConversationListModel::UnreadCountRole).toInt();
+            if (unread > 0) {
+                QAction *sum = menu->addAction(tr("Summarise what I missed"));
+                connect(sum, &QAction::triggered, this, [this, ctxToken, modelIndex]() {
+                    const int lastRead = m_conversations->lastReadMessageForToken(ctxToken);
+                    auto *dlg = new ChatSummaryDialog(m_api, ctxToken,
+                                                      qMax(1, lastRead), this);
+                    dlg->setAttribute(Qt::WA_DeleteOnClose);
+                    dlg->show();
+                });
+            }
+        }
+
         // Archive: keep the conversation and its history, take it out of the
         // list. The answer to rooms a user is neither in nor willing to leave.
         if (m_auth && m_auth->capabilities().supportsArchivedConversations()) {
@@ -775,6 +817,38 @@ void MainWindow::buildChatPage()
     // Topic tabs (Telegram-style horizontal strip below the header).
     m_topicTabBar = new TopicTabBar(chatCol);
     m_topicTabBar->setModel(m_threads);
+    // Followed topics across every conversation. Opening one has to do BOTH
+    // halves -- switch conversation and then select the topic -- or the list is
+    // just another place to look rather than a way to get there.
+    // The server moved us into a breakout room. Follow it: the move has already
+    // happened server-side, so a client that stays put is simply showing the
+    // wrong conversation -- which is exactly what TalQ did before 0.65.4.
+    connect(m_signaling, &SignalingClient::switchedToRoom, this,
+            [this](const QString &token) {
+        if (token.isEmpty() || token == m_activeConvToken) return;
+        // Refresh first: a breakout room is brand new, so the sidebar has never
+        // heard of it and openConversation would have nothing to select.
+        m_conversations->refresh();
+        QTimer::singleShot(600, this, [this, token]() { openConversation(token); });
+    });
+
+    connect(m_topicTabBar, &TopicTabBar::subscribedTopicsRequested, this, [this]() {
+        auto *dlg = new SubscribedTopicsDialog(m_api, m_conversations, this);
+        dlg->setAttribute(Qt::WA_DeleteOnClose);
+        connect(dlg, &SubscribedTopicsDialog::topicChosen, this,
+                [this](const QString &token, int threadId) {
+            openConversation(token);
+            // The topic bar is rebuilt by the conversation switch, so the
+            // selection has to wait for it rather than race it.
+            QTimer::singleShot(500, this, [this, threadId]() {
+                if (!m_threads) return;
+                m_threads->selectTopic(threadId);
+                // The title comes from the model now that the bar has rebuilt.
+                openThread(threadId, m_threads->titleForThread(threadId));
+            });
+        });
+        dlg->show();
+    });
     m_topicTabBar->setTheme(m_themeId);   // bug 10 — theme the chips from PainterTheme
     chatLayout->addWidget(m_topicTabBar);
     connect(m_topicTabBar, &TopicTabBar::threadSelected, this,
@@ -2042,21 +2116,31 @@ void MainWindow::buildSearchBar(QWidget *chatCol)
         const QString token = m_messages->conversationToken();
         auto *dlg = new PollComposerDialog(this);
         dlg->setAttribute(Qt::WA_DeleteOnClose);
+        dlg->setDraftsAvailable(m_auth && m_auth->capabilities().supportsPollDrafts());
         connect(dlg, &QDialog::accepted, this, [this, dlg, token]() {
             // Keep a poll made while a topic is open inside that topic, the
             // same way messages and file shares now do.
             const int threadId = m_messages ? m_messages->threadId() : 0;
+            const bool draft = dlg->saveAsDraft();
             m_api->createPoll(token, dlg->question(), dlg->options(),
                               dlg->resultMode(), dlg->maxVotes(), threadId,
-                              [this, token](bool ok, const QJsonObject &, int) {
+                              [this, token, draft](bool ok, const QJsonObject &, int) {
                 if (!ok) {
                     QMessageBox::warning(this, tr("Poll"),
-                        tr("The poll could not be created."));
+                        draft ? tr("The draft could not be saved.")
+                              : tr("The poll could not be created."));
+                    return;
+                }
+                // A draft posts nothing to the chat, so there is no new message
+                // to refresh in for -- say it landed instead of looking inert.
+                if (draft) {
+                    QMessageBox::information(this, tr("Poll"),
+                        tr("Saved as a draft. You can post it from the attachment menu."));
                     return;
                 }
                 if (m_messages && m_messages->conversationToken() == token)
                     m_messages->refresh();
-            });
+            }, draft);
         });
         dlg->show();
     });
@@ -4384,6 +4468,10 @@ void MainWindow::openConversationInfo()
                                            name, description,
                                            roomType, myType, this);
     dlg->setAttribute(Qt::WA_DeleteOnClose);
+    // Dial-in details, if this room has SIP. Nothing shows on a server with no
+    // SIP bridge, which is every room on ours today.
+    dlg->setSipInfo(m_conversations->sipEnabledForToken(m_activeConvToken),
+                    m_conversations->attendeePinForToken(m_activeConvToken));
     connect(dlg, &ConversationInfoDialog::roomChanged, this, [this]() {
         m_conversations->refresh();
         // A name/picture change from the info dialog must drop the cached

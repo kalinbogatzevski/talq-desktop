@@ -1827,7 +1827,7 @@ void ApiClient::closePoll(const QString &token, int pollId, Callback callback)
 
 void ApiClient::createPoll(const QString &token, const QString &question,
                            const QStringList &options, int resultMode, int maxVotes,
-                           int threadId, Callback callback)
+                           int threadId, Callback callback, bool draft)
 {
     QJsonArray opts;
     for (const QString &o : options) opts.append(o);
@@ -1839,7 +1839,83 @@ void ApiClient::createPoll(const QString &token, const QString &question,
     // Keep a poll created while a topic is open inside that topic, the same way
     // messages and file shares now do.
     if (threadId > 0) body[QStringLiteral("threadId")] = threadId;
+    if (draft) body[QStringLiteral("draft")] = true;
     post(pollPath(token), body, callback);
+}
+
+void ApiClient::fetchSubscribedThreads(int limit, ArrayCallback callback)
+{
+    QUrlQuery q;
+    q.addQueryItem(QStringLiteral("limit"), QString::number(limit));
+    getArray(QStringLiteral("apps/spreed/api/v1/chat/subscribed-threads"), q, callback);
+}
+
+void ApiClient::fetchPollDrafts(const QString &token, ArrayCallback callback)
+{
+    getArray(QStringLiteral("apps/spreed/api/v1/poll/") + token + QStringLiteral("/drafts"),
+             callback);
+}
+
+void ApiClient::publishPollDraft(const QString &token, int pollId, Callback callback)
+{
+    post(QStringLiteral("apps/spreed/api/v1/poll/") + token
+             + QStringLiteral("/draft/") + QString::number(pollId),
+         QJsonObject{}, callback);
+}
+
+void ApiClient::summarizeChat(const QString &token, int fromMessageId, Callback callback)
+{
+    QJsonObject body;
+    body[QStringLiteral("fromMessageId")] = fromMessageId;
+    post(QStringLiteral("apps/spreed/api/v1/chat/") + token + QStringLiteral("/summarize"),
+         body, callback);
+}
+
+void ApiClient::fetchTaskResult(int taskId, Callback callback)
+{
+    // NOT under apps/spreed - this is a core Nextcloud endpoint.
+    get(QStringLiteral("taskprocessing/task/") + QString::number(taskId), callback);
+}
+
+static QString breakoutPath(const QString &token, const QString &suffix = QString())
+{
+    return QStringLiteral("apps/spreed/api/v1/breakout-rooms/") + token + suffix;
+}
+
+void ApiClient::configureBreakoutRooms(const QString &token, int mode, int amount,
+                                       const QString &attendeeMapJson, Callback callback)
+{
+    QJsonObject body;
+    body[QStringLiteral("mode")]   = mode;
+    body[QStringLiteral("amount")] = amount;
+    // Sent as a JSON *string*, not an object -- the server signature is
+    // `string $attendeeMap = '[]'` and decodes it itself.
+    body[QStringLiteral("attendeeMap")] =
+        attendeeMapJson.isEmpty() ? QStringLiteral("[]") : attendeeMapJson;
+    post(breakoutPath(token), body, callback);
+}
+
+void ApiClient::removeBreakoutRooms(const QString &token, Callback callback)
+{
+    del(breakoutPath(token), callback);
+}
+
+void ApiClient::startBreakoutRooms(const QString &token, Callback callback)
+{
+    post(breakoutPath(token, QStringLiteral("/rooms")), QJsonObject{}, callback);
+}
+
+void ApiClient::stopBreakoutRooms(const QString &token, Callback callback)
+{
+    del(breakoutPath(token, QStringLiteral("/rooms")), callback);
+}
+
+void ApiClient::broadcastToBreakoutRooms(const QString &token, const QString &message,
+                                         Callback callback)
+{
+    QJsonObject body;
+    body[QStringLiteral("message")] = message;
+    post(breakoutPath(token, QStringLiteral("/broadcast")), body, callback);
 }
 
 void ApiClient::cancelAll()
