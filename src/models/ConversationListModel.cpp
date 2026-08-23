@@ -540,6 +540,22 @@ int ConversationListModel::callRecordingForToken(const QString &token) const
     return 0;
 }
 
+int ConversationListModel::sipEnabledForToken(const QString &token) const
+{
+    for (const Conversation &c : m_conversations) {
+        if (c.token == token) return c.sipEnabled;
+    }
+    return 0;
+}
+
+QString ConversationListModel::attendeePinForToken(const QString &token) const
+{
+    for (const Conversation &c : m_conversations) {
+        if (c.token == token) return c.attendeePin;
+    }
+    return {};
+}
+
 int ConversationListModel::participantTypeForToken(const QString &token) const
 {
     for (const Conversation &c : m_conversations) {

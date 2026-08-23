@@ -203,6 +203,14 @@ void ThreadListModel::setThreadNotificationLevel(int threadId, int level)
         });
 }
 
+QString ThreadListModel::titleForThread(int threadId) const
+{
+    for (const auto &t : m_threads) {
+        if (t.threadId == threadId) return t.title;
+    }
+    return {};
+}
+
 int ThreadListModel::colorForThread(int threadId) const
 {
     for (const auto &t : m_threads) {

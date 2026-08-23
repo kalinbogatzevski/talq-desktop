@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(talq VERSION 0.65.3 LANGUAGES CXX)
+project(talq VERSION 0.65.4 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -112,6 +112,9 @@ qt_add_executable(talq
     src/ui/ConversationPickerDialog.h
     src/ui/ConversationPickerDialog.cpp
     src/ui/PollDialog.cpp
+    src/ui/BreakoutRoomsDialog.cpp
+    src/ui/ChatSummaryDialog.cpp
+    src/ui/SubscribedTopicsDialog.cpp
     src/ui/ScheduledMessagesDialog.h
     src/ui/ScheduledMessagesDialog.cpp
     src/ui/NotificationPopup.h

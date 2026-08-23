@@ -39,6 +39,9 @@ protected:
     bool eventFilter(QObject *watched, QEvent *e) override;
 
 signals:
+    // The General chip's menu asked for the cross-conversation followed-topics
+    // list. The window owns the dialog and the navigation it produces.
+    void subscribedTopicsRequested();
     void threadSelected(int threadId, const QString &title);
     void allMessagesSelected();
     void newTopicRequested();

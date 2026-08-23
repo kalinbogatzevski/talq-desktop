@@ -275,12 +275,18 @@ QWidget *TopicTabBar::makeChip(const QString &label, int threadId,
                     m_model->deleteTopic(threadId);
             }
         } else {
-            // General / All-messages chip: restore hidden topics.
+            // General / All-messages chip: topics-at-large actions.
+            QAction *followed = nullptr;
+            if (m_threadsCapable)
+                followed = menu.addAction(tr("Topics you follow…"));
             const int n = m_model->hiddenTopicCount();
-            if (n <= 0) return;
-            QAction *unhide = menu.addAction(tr("Show %n hidden topic(s)", nullptr, n));
-            if (menu.exec(b->mapToGlobal(pos)) == unhide)
-                m_model->unhideAllTopics();
+            QAction *unhide = (n > 0)
+                ? menu.addAction(tr("Show %n hidden topic(s)", nullptr, n))
+                : nullptr;
+            if (!followed && !unhide) return;
+            QAction *chosen = menu.exec(b->mapToGlobal(pos));
+            if (chosen && chosen == followed)      emit subscribedTopicsRequested();
+            else if (chosen && chosen == unhide)   m_model->unhideAllTopics();
         }
     });
 

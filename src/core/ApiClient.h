@@ -315,9 +315,45 @@ public:
     void votePoll(const QString &token, int pollId, const QList<int> &optionIds,
                   Callback callback);
     void closePoll(const QString &token, int pollId, Callback callback);
+    // `draft` saves it as a reusable template instead of posting it. Drafts
+    // are moderator-only server-side and gated on `talk-polls-drafts`.
     void createPoll(const QString &token, const QString &question,
                     const QStringList &options, int resultMode, int maxVotes,
-                    int threadId, Callback callback);
+                    int threadId, Callback callback, bool draft = false);
+
+    // Every topic this user follows, across ALL conversations (`threads`).
+    // Each entry carries its own `thread.roomToken`, so this is the only view
+    // in TalQ that crosses conversation boundaries by design.
+    void fetchSubscribedThreads(int limit, ArrayCallback callback);
+
+    // Poll drafts (`talk-polls-drafts`): list the room's saved drafts, and
+    // publish one as a real poll.
+    void fetchPollDrafts(const QString &token, ArrayCallback callback);
+    void publishPollDraft(const QString &token, int pollId, Callback callback);
+
+    // AI chat summary (`chat-summary-api`). Needs a TaskProcessing text
+    // provider installed on the server; without one the capability is absent
+    // and this must never be offered.
+    void summarizeChat(const QString &token, int fromMessageId, Callback callback);
+
+    // Nextcloud's TaskProcessing API. The chat summary is scheduled, not
+    // computed inline: summarizeChat returns 201 {taskId}, and the text
+    // arrives here once the task reaches status STATUS_SUCCESSFUL.
+    void fetchTaskResult(int taskId, Callback callback);
+
+    // --- Breakout rooms (`breakout-rooms-v1`), all v1 -------------------
+    // Moderator-only. `mode`: 1 automatic (server splits people), 2 manual
+    // (attendeeMap decides), 3 free (participants pick). `amount` is how many
+    // rooms. configure CREATES them; start/stop open and close them; remove
+    // deletes them entirely.
+    void configureBreakoutRooms(const QString &token, int mode, int amount,
+                                const QString &attendeeMapJson, Callback callback);
+    void removeBreakoutRooms(const QString &token, Callback callback);
+    void startBreakoutRooms(const QString &token, Callback callback);
+    void stopBreakoutRooms(const QString &token, Callback callback);
+    // A message sent into every breakout room at once.
+    void broadcastToBreakoutRooms(const QString &token, const QString &message,
+                                  Callback callback);
 
     // Room management — rename, description, delete, leave.
     void setRoomName(const QString &token, const QString &name,

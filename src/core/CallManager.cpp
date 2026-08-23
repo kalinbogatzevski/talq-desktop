@@ -42,6 +42,11 @@
 static constexpr int CALL_FLAG_IN_CALL    = 1;
 static constexpr int CALL_FLAG_WITH_AUDIO = 2;
 static constexpr int CALL_FLAG_WITH_VIDEO = 4;
+// A participant who dialled in over SIP (Participant::FLAG_WITH_PHONE). TalQ
+// defined only 1/2/4 before 0.65.4, so a phone caller was indistinguishable
+// from someone with their camera off -- they were shown as a silent, blank
+// video tile rather than as a person on the telephone.
+static constexpr int CALL_FLAG_WITH_PHONE = 8;
 
 static QJsonObject makeCandidateJson(const QString &candidate, int mline, const QString &mid)
 {
@@ -516,6 +521,15 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
 
     // A peer's DELIBERATE hangup (not a transient drop) — end a 1:1 MCU call
     // immediately instead of sitting in the 28s peer-grace "Reconnecting" hold.
+    // A moderator force-muted us. Honour it locally rather than only telling
+    // the user: the point of a force-mute is that the room stops hearing this
+    // client, so it must actually stop transmitting.
+    connect(m_signaling, &SignalingClient::forceMuted, this, [this]() {
+        if (m_muted) return;          // already silent, nothing to do
+        toggleMute();
+        qInfo() << "CallManager: muted by moderator";
+    });
+
     connect(m_signaling, &SignalingClient::peerHungUp,
             this, &CallManager::onPeerHungUp);
 

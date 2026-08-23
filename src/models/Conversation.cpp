@@ -36,6 +36,8 @@ Conversation Conversation::fromJson(const QJsonObject &json)
     c.callRecording = json["callRecording"].toInt(0);
     c.archived = json["isArchived"].toBool(false);
     c.important = json["isImportant"].toBool(false);
+    c.sipEnabled = json["sipEnabled"].toInt(0);
+    c.attendeePin = json["attendeePin"].toString();
     // Talk 24. Both keys are simply absent on older servers: toArray() yields
     // an empty array and toInt() yields 0, so an old server parses as
     // "untagged, no attributes" with no special-casing needed here.

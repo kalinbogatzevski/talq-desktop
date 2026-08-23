@@ -35,6 +35,12 @@ public:
                            int myParticipantType,
                            QWidget *parent = nullptr);
 
+    // SIP dial-in, if the room has it. `sipEnabled` is the room's state
+    // (0 off, 1 on, 2 on without a per-user PIN) and `pin` is THIS user's
+    // dial-in code. Called by the owner, which reads both from the
+    // conversation list; a room without SIP shows nothing at all.
+    void setSipInfo(int sipEnabled, const QString &pin);
+
 signals:
     void roomChanged();   // name/description/members changed
     void roomDeleted();   // room deleted OR current user left
@@ -94,6 +100,7 @@ private:
     QPushButton *m_clearHistoryBtn = nullptr;
     QPushButton *m_deleteBtn = nullptr;
     QPushButton *m_closeBtn = nullptr;
+    QLabel      *m_sipLabel = nullptr;
     QLabel      *m_status = nullptr;
 
     // Bots panel (everyone can view; only moderators see the +Add control).
