@@ -1,4 +1,5 @@
 #include "models/Message.h"
+#include <QJsonArray>
 #include <QRegularExpression>
 #include <QVector>
 
@@ -124,7 +125,16 @@ Message Message::fromJson(const QJsonObject &json)
     // Markdown subset (bold/italic/strike/inline-code/code-block) runs on the
     // escaped text, before mentions/files are substituted. Code-block content
     // is stashed first so its inner '**' / '_' aren't re-interpreted.
-    m.message = applyMarkdown(m.message);
+    //
+    // Talk tells us per message whether it is markdown at all. Until 0.65.3
+    // TalQ ignored that and formatted everything, so a plain-text message
+    // containing `C:\path\**\*.log` or `__init__` came out with chunks bolded
+    // and the markers eaten — silently, and worst in exactly the pasted paths
+    // and code that a NOC team sends each other all day. Missing key -> true,
+    // so an older server still gets the historic unconditional behaviour.
+    m.markdown = json["markdown"].toBool(true);
+    if (m.markdown)
+        m.message = applyMarkdown(m.message);
     m.timestamp = json["timestamp"].toInteger();
     m.lastEditTimestamp = json["lastEditTimestamp"].toInteger();
     m.lastEditActorId   = json["lastEditActorId"].toString();
@@ -154,6 +164,7 @@ Message Message::fromJson(const QJsonObject &json)
                 m.fileMimetype = param["mimetype"].toString();
                 m.fileSize = param["size"].toInteger();
                 m.fileLink = param["link"].toString();
+                m.filePath = param["path"].toString();
                 m.fileId = param["id"].toString().toInt();
                 if (param["preview-available"].toString() == "yes") {
                     // Build preview URL from file ID
@@ -168,8 +179,20 @@ Message Message::fromJson(const QJsonObject &json)
                     m.message.replace(placeholder,
                         "<b class='mention'>\xF0\x9F\x93\x84 " + name.toHtmlEscaped() + "</b>");
                 }
+            } else if (type == "talk-poll") {
+                // A poll is a real object, not a sentence. Before 0.65.3 it
+                // fell through the generic branch below and was flattened to
+                // its question text, so a poll was indistinguishable from
+                // somebody typing that question -- no icon, no affordance, and
+                // no way to vote without opening the web UI.
+                m.pollId = param["id"].toString().toInt();
+                m.pollQuestion = name;
+                m.message.replace(placeholder, QString());
             } else {
-                m.message.replace(placeholder, name);
+                // ⚠ ESCAPED. The other branches escape and this one did not,
+                // so any rich object type TalQ does not special-case injected
+                // its `name` into the message HTML raw.
+                m.message.replace(placeholder, name.toHtmlEscaped());
             }
         }
     }
@@ -203,6 +226,18 @@ Message Message::fromJson(const QJsonObject &json)
     // Reactions: { "👍": 3, "❤️": 1 }
     if (json.contains("reactions")) {
         m.reactions = json["reactions"].toObject();
+    }
+    // ...and which of them are ours: [ "👍" ]. Absent on older servers and
+    // deliberately absent from the `lastMessage` embedded in a conversation,
+    // so an empty list means "not told", never "the user reacted to nothing".
+    if (json.contains("reactionsSelf")) {
+        const QJsonArray self = json["reactionsSelf"].toArray();
+        m.reactionsSelf.reserve(self.size());
+        for (const auto &r : self) {
+            const QString emoji = r.toString();
+            if (!emoji.isEmpty())
+                m.reactionsSelf.append(emoji);
+        }
     }
 
     return m;

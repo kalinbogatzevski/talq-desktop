@@ -350,6 +350,10 @@ private:
     bool m_wasFullScreen = false;  // remembered separately because isMaximized() is false in fullscreen
     bool m_geometrySaveEnabled = false;
     QString m_activeConvToken;
+    // 0.65.3 — unsent composer text, keyed by conversation token, so switching
+    // rooms no longer carries a half-typed message into the wrong one.
+    // In-memory by design: see the note at the save/restore site.
+    QHash<QString, QString> m_composerDrafts;
     // Talk 24 voice rooms: tokens we have already auto-joined this session.
     // onConversationSelected() re-runs on every sidebar refresh and reselect,
     // so without this latch hanging up would be impossible — the next poll

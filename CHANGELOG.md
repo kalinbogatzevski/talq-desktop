@@ -1,5 +1,97 @@
 # Changelog
 
+## v0.65.3 "Blue Fiesta Week 4 Re-match" - BETA (2026-08-23)
+
+Mostly repairs. A pass over the things TalQ was getting quietly wrong turned up
+a set of them, including three in features from the last two releases. It also
+finishes a few controls that TalQ had been drawing for a long time without ever
+letting you use.
+
+### Fixed
+* **What you type stays in the conversation you typed it in.** An unfinished
+  message used to follow you into the next conversation, where one more word
+  and Enter could send it to the wrong person. Each conversation now keeps its
+  own unsent text and gives it back when you return. It lasts until you quit.
+* **Calling from the conversation list is only offered where you can call.**
+  Some conversations only let moderators start a call. The right-click Call
+  entry appeared there anyway and then failed with a message that explained
+  nothing.
+* **Topics stop disappearing from busy conversations.** In an active
+  conversation a topic could quietly vanish from the bar after a day or two.
+* **A file attached inside a topic stays in that topic.** It was being filed in
+  the main conversation instead, with nothing to say so.
+* **Inviting a group or a Team works.** The invite box has always offered them,
+  but a group would quietly fail - in the new-conversation window with "some
+  invites failed", and in an existing conversation by not appearing in the
+  search at all.
+* **Pasted text is left as you wrote it.** Asterisks and underscores in a file
+  path, a search pattern or a piece of code were being treated as formatting,
+  so parts of the message came out bold and the characters disappeared.
+* **Jumping to an older search result works.** Opening a search hit, or a
+  notification, would report the message as missing once it was more than a few
+  hundred messages back, even though it was still there.
+* **Reading in the background no longer clears your notifications.** Scrolling
+  back through a conversation, and opening the details panel, both counted as
+  having read it. A conversation opened while TalQ is in the background is
+  again left unread until you actually look at it.
+* **Pin is only shown to people who can pin.** Only moderators may pin, so for
+  everyone else the button did nothing and said nothing.
+* **A message to everyone no longer looks like a message to you.** An `@all`
+  raised the same red badge as someone addressing you directly. Direct
+  mentions stay red, `@all` is now amber, and ordinary unread is unchanged.
+* **The connection type shown in diagnostics is correct.** Every installation
+  was described as a basic one, including those running a high-performance
+  backend.
+* **Forwarding a file forwards the file.** It used to arrive as a line of text
+  naming the attachment, which the recipient could do nothing with.
+* **Your privacy settings are honoured.** If you have turned off sharing when
+  you are typing, TalQ no longer announces it. If you have turned off sharing
+  your read status, it is no longer displayed either - your own messages still
+  show as sent.
+* **Uploads go to the folder you chose.** Everything was put in "Talk"
+  regardless of the attachment folder set on your account.
+* **Editing a conversation's description starts from the current one.** The box
+  opened empty even when a description was already set, so the only way to
+  change it was to retype it from scratch.
+* **The call button in a conversation you may not call from is no longer
+  offered.** Same restriction as the one in the conversation list.
+
+### Added
+* **Add and remove favourites.** TalQ already pinned favourites to the top of
+  the list and gave them a marker, a filter and their own section - it just had
+  no way to make one, so you had to use the web interface.
+* **Call recording.** If your server records calls, a moderator can start and
+  stop a recording from the call controls. **Everyone in the call sees a
+  "RECORDING" marker** for as long as it runs - it sits above the controls and
+  does not fade with them, and it appears whether the recording was started
+  from TalQ or anywhere else.
+* **Polls.** A poll now shows as a poll - question, answers, and a click to
+  vote - instead of appearing as a plain line of text with no way to take part.
+  You can see the running count where the poll allows it, change your answer
+  while it is open, and end a poll you started. You can create one from the
+  attachment menu. Polls are not offered in one-to-one conversations, because
+  they are not possible there.
+* **Archive a conversation.** Takes it out of your list without leaving it, so
+  the history stays and you can find it again under Archived. You can also mark
+  a conversation important, which keeps it notifying even once archived.
+* **Note to self.** Right-click the new-conversation button to open your own
+  private conversation - TalQ could already show one, but never make one.
+* **Search finds messages in every conversation.** Search used to look only in
+  the conversation you had open, so a message you remembered but could not
+  place was unfindable. Results from elsewhere are listed under the ones from
+  the conversation you are in, and say which conversation they came from.
+* **Your own reactions stand out.** A reaction you have added is now tinted, so
+  you can tell at a glance whether you are part of the count.
+* **Notification settings per topic.** Right-click a topic to follow it, set it
+  to mentions only, or silence it - without changing anything for the rest of
+  the conversation. In a busy conversation this is the difference between
+  following the two topics that matter and muting everything.
+* **All four notification settings per conversation** - default, all messages,
+  mentions only, or never - instead of one mute switch that could only reach
+  the two extremes. **Mentions only**, the useful one in a busy conversation,
+  was previously unreachable. Calls have their own switch alongside, so a quiet
+  conversation can still ring.
+
 ## v0.65.2 "Blue Fiesta Week 4 Re-match" — BETA (2026-08-21)
 
 Housekeeping on the open-source build. No functional change.

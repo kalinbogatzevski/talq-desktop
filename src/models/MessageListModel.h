@@ -40,6 +40,9 @@ public:
         ReplyToTextRole,
         ReplyToAuthorRole,
         ReactionsRole,
+        ReactionsSelfRole,
+        PollIdRole,
+        PollQuestionRole,
         TimeStringRole,
         ShowDateSeparatorRole,  // true if this message starts a new day
         DateStringRole,         // "Today", "Yesterday", "18 Mar 2026"
@@ -47,6 +50,7 @@ public:
         SendStatusRole,         // "sent", "sending", "failed"
         ThreadIdRole,
         FileNameRole,
+        FilePathRole,
         FileMimeRole,
         FileSizeRole,
         FileLinkRole,
@@ -110,6 +114,9 @@ public:
     Q_INVOKABLE void addReaction(int messageId, const QString &emoji);
     Q_INVOKABLE void loadHistory();
     Q_INVOKABLE void loadHistoryUntil(int messageId);
+    // 0.65.3 — licenses the single-request context fetch used by
+    // loadHistoryUntil(). False keeps the historic backwards page walk.
+    void setContextCapable(bool capable) { m_contextCapable = capable; }
     Q_INVOKABLE void deleteMessage(int messageId);
     Q_INVOKABLE void editMessage(int messageId, const QString &newText);
     Q_INVOKABLE void pinMessage(int messageId);
@@ -128,6 +135,15 @@ public:
     Q_INVOKABLE void createTopic(const QString &title);
     Q_INVOKABLE void refresh();  // trigger immediate poll for read status, new messages
     Q_INVOKABLE void sendMessageToToken(const QString &targetToken, const QString &text);
+    // 0.65.3 — forward an attachment by re-sharing its path into another
+    // conversation. Talk 24 has no forward endpoint, so this is what
+    // forwarding a file actually is; before this, a forwarded image arrived
+    // as the literal text "[File: name]".
+    Q_INVOKABLE void shareExistingFile(const QString &path, const QString &targetToken);
+    // The user's server-side attachment folder (config.attachments.folder).
+    // Empty restores the historic "Talk".
+    void setAttachmentFolder(const QString &folder) { m_attachmentFolder = folder; }
+    QString attachmentFolder() const;
 
 signals:
     void historyUntilSettled(int messageId, bool found);
@@ -239,6 +255,14 @@ private:
     // ordering guarantee can never drift between paths. Returns true if a
     // corrective re-sort was performed (cheap O(n) check when already ordered).
     bool enforceNewestFirstInvariant();
+    // 0.65.3 - the pre-context page walk, kept as the fallback for servers
+    // without `chat-get-context` and for a refused context request.
+    void beginPagedHistoryUntil(int messageId);
+    // Whether this server supports `chat-get-context`. Set by the owner;
+    // false means page-walk only, i.e. exactly the 0.65.2 behaviour.
+    bool m_contextCapable = false;
+    // Server-side attachment folder; empty = the historic "Talk".
+    QString m_attachmentFolder;
 
     int m_lastCommonRead = 0;
     int m_unreadBoundary = 0;

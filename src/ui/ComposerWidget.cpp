@@ -244,8 +244,19 @@ ComposerWidget::ComposerWidget(QWidget *parent)
                                     && !m_model->conversationToken().isEmpty();
         fromNc->setEnabled(canShareFromNc);
 
+        // Poll. ABSENT rather than disabled in a one-to-one conversation: the
+        // server refuses a poll there outright — only group and public rooms
+        // may have one — so offering it and failing afterwards would let
+        // someone write a whole poll before being told it was never possible.
+        QAction *newPoll = nullptr;
+        if (m_pollsAvailable && m_conversationType != 1) {
+            menu.addSeparator();
+            newPoll = menu.addAction(QStringLiteral("\U0001F4CA  ") + tr("Poll…"));
+        }
+
         QPoint pos = m_attachBtn->mapToGlobal(QPoint(0, -menu.sizeHint().height()));
         QAction *picked = menu.exec(pos);
+        if (picked && picked == newPoll) { emit createPollRequested(); return; }
         if (picked == fromDevice) {
             QString file = QFileDialog::getOpenFileName(this, tr("Send file"));
             if (!file.isEmpty())
@@ -382,6 +393,33 @@ ComposerWidget::ComposerWidget(QWidget *parent)
 QString ComposerWidget::currentText() const
 {
     return m_input ? m_input->toPlainText().trimmed() : QString();
+}
+
+// 0.65.3. The composer had no way to be written to or emptied from outside:
+// it was cleared only in sendAction(), so switching conversations carried
+// whatever was half-typed into the next room — where it could be sent to the
+// wrong person. Both halves of the draft feature need this.
+void ComposerWidget::setText(const QString &text)
+{
+    if (!m_input) return;
+    // Block signals so restoring a draft does not read as the user typing:
+    // textChanged drives the typing indicator (which would tell the room you
+    // are typing the moment you merely opened it) and the auto-resize.
+    const QSignalBlocker blocker(m_input);
+    m_input->setPlainText(text);
+    // Caret to the end, so the user continues the draft rather than typing in
+    // front of it.
+    QTextCursor c = m_input->textCursor();
+    c.movePosition(QTextCursor::End);
+    m_input->setTextCursor(c);
+    // Height still has to follow the restored content — that is a layout
+    // concern, not a "user typed" one, so it is called directly.
+    autoResizeInput();
+}
+
+void ComposerWidget::clearText()
+{
+    setText(QString());
 }
 
 void ComposerWidget::applyChrome()

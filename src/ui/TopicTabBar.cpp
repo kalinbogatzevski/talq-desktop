@@ -229,10 +229,35 @@ QWidget *TopicTabBar::makeChip(const QString &label, int threadId,
         QMenu menu(this);
 
         if (threadId > 0) {
+            // Per-topic notifications. Muting ONE topic is the thing that keeps
+            // a busy conversation readable -- muting the whole room is too
+            // blunt, and following everything is why people stop reading.
+            // Needs `threads`; on an older server the submenu is simply absent.
+            QMenu *notif = nullptr;
+            if (m_threadsCapable) {
+                notif = menu.addMenu(tr("Notifications"));
+                const int cur = m_model->notificationLevelForThread(threadId);
+                struct Lvl { int v; const char *label; };
+                const Lvl levels[] = {
+                    {0, QT_TR_NOOP("Default")},
+                    {1, QT_TR_NOOP("All messages")},
+                    {2, QT_TR_NOOP("Mentions only")},
+                    {3, QT_TR_NOOP("Never")},
+                };
+                for (const Lvl &l : levels) {
+                    QAction *a = notif->addAction(tr(l.label));
+                    a->setCheckable(true);
+                    a->setChecked(cur == l.v);
+                    a->setData(l.v);
+                }
+                menu.addSeparator();
+            }
             QAction *hide = menu.addAction(tr("Hide topic"));
             QAction *del  = menu.addAction(tr("Delete topic"));
             QAction *chosen = menu.exec(b->mapToGlobal(pos));
-            if (chosen == hide) {
+            if (notif && chosen && chosen->parentWidget() == notif) {
+                m_model->setThreadNotificationLevel(threadId, chosen->data().toInt());
+            } else if (chosen == hide) {
                 m_model->hideTopic(threadId);
             } else if (chosen == del) {
                 QString name = label;

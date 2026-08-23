@@ -74,6 +74,15 @@ inline void draw(QPainter &p, const QString &id, const QRectF &box,
         p.drawRoundedRect(QRectF(3.5, 6, 11, 12), 1.5, 1.5);
         p.drawRoundedRect(QRectF(16.5, 6, 4, 5), 1, 1);
         p.drawRoundedRect(QRectF(16.5, 13, 4, 5), 1, 1);
+    } else if (id == "record") {
+        // A filled disc: the universal record mark, and unmistakable at 24px
+        // where a ring reads as a generic circle. Drawn filled rather than
+        // stroked so it stays solid when the button is tinted.
+        p.save();
+        p.setBrush(p.pen().color());
+        p.setPen(Qt::NoPen);
+        p.drawEllipse(QPointF(12, 12), 6.0, 6.0);
+        p.restore();
     } else if (id == "telemetry") {
         p.drawLine(QPointF(6, 18), QPointF(6, 13));
         p.drawLine(QPointF(12, 18), QPointF(12, 8));

@@ -25,6 +25,10 @@ public:
         TypeRole,
         UnreadCountRole,
         UnreadMentionRole,
+        // 0.65.3 - someone mentioned YOU, as opposed to @all.
+        // unreadMention is true for both, so without this an @all in a
+        // busy room lights the same alarm badge as a direct mention.
+        UnreadMentionDirectRole,
         FavoriteRole,
         LastMessageRole,
         LastAuthorRole,
@@ -38,6 +42,9 @@ public:
         ParticipantTypeRole,
         TagIdsRole,        // QStringList — Talk 24 conversation tags
         AttributesRole,    // int bit-flags — Talk 24 (bit 0 = voice room)
+        DescriptionRole,   // room description, so the info dialog can round-trip it
+        ArchivedRole,      // out of the default list, but still joined
+        ImportantRole,     // keeps notifying even while archived
     };
 
     explicit ConversationListModel(ApiClient *api, QObject *parent = nullptr);
@@ -80,6 +87,33 @@ public:
     Q_INVOKABLE void markReadAt(const QString &token, int lastReadMessageId);
     Q_INVOKABLE void setHasTopics(const QString &token, bool has);
     Q_INVOKABLE void setNotificationLevel(int index, int level);
+    // --- 0.65.3 ---------------------------------------------------------
+    // Favourite state. TalQ has always PAINTED favourites (dot, top-of-list
+    // sort, its own filter and section) but had no way to set one, so a
+    // TalQ-only user had to open the web UI to pin anything.
+    Q_INVOKABLE bool favoriteAt(int index) const;
+    Q_INVOKABLE void setFavorite(int index, bool favorite);
+    // Per-room call ringing (`notification-calls`), separate from the chat
+    // notification level.
+    Q_INVOKABLE bool notificationCallsAt(int index) const;
+    Q_INVOKABLE void setNotificationCalls(int index, bool notify);
+    // Whether this user may start a call here. Defaults true for an unknown
+    // token so callers behave as they did before this was readable.
+    Q_INVOKABLE bool canStartCallForToken(const QString &token) const;
+    // Talk participant type (1 owner, 2 moderator, 3 user, 6 guest-moderator…);
+    // used to hide moderator-only actions rather than let them 403.
+    Q_INVOKABLE int participantTypeForToken(const QString &token) const;
+    // Talk's callRecording state for a room (0 none / 1 video / 2 audio /
+    // 3 video-starting / 4 audio-starting / 5 failed). 0 for an unknown
+    // token, which reads as "not recording".
+    Q_INVOKABLE int callRecordingForToken(const QString &token) const;
+    // Display name for a token, so a cross-conversation search hit can say
+    // WHICH conversation it is in. Empty for an unknown token.
+    Q_INVOKABLE QString displayNameForToken(const QString &token) const;
+    Q_INVOKABLE bool archivedAt(int index) const;
+    Q_INVOKABLE void setArchived(int index, bool archived);
+    Q_INVOKABLE bool importantAt(int index) const;
+    Q_INVOKABLE void setImportant(int index, bool important);
     Q_INVOKABLE void updateLastMessage(const QString &token, const QString &author, const QString &text);
 
     bool isLoading() const { return m_loading; }
@@ -98,6 +132,8 @@ signals:
 private:
     int indexOfToken(const QString &token) const;
     void fetchUserStatuses();
+    // Re-sort in place after a change that moves a row (favouriting).
+    void resort();
 
     struct UserStatus {
         QString state;

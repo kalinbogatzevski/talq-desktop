@@ -134,6 +134,13 @@ public:
                               QObject *context,
                               std::function<void(bool ok, const QVector<SearchHit> &)> callback);
 
+    // Full-text search across EVERY conversation (`unified-search`, provider
+    // `talk-message`). TalQ only ever searched the room you already had open,
+    // so a message you remembered but could not place was unfindable. Each hit
+    // carries its own conversation token, because that is the point.
+    void searchAllConversations(const QString &query, QObject *context,
+                                std::function<void(bool ok, const QVector<SearchHit> &)> callback);
+
     // WebDAV PROPFIND on /remote.php/dav/files/<user>/<path>. Lists immediate
     // children. `path` is the user-root-relative path, empty for root.
     // Callback gets the HTTP status and an error string on failure so the UI
@@ -223,10 +230,94 @@ public:
                       QObject *context,
                       std::function<void(bool ok, const QString &error)> callback);
 
-    // Add a user to an existing room.
+    // Add a participant to an existing room.
+    //
+    // `source` is Talk's share-type discriminator and MUST match where the id
+    // came from: "users" for an account, "groups" for a Nextcloud group,
+    // "circles" for a Team. Until 0.65.3 this was hard-coded to "users", so
+    // picking a group in the invite UI sent the GROUP's id as if it were an
+    // account — the server found no such user and refused, which surfaced as
+    // "Room created, some invites failed" in the create dialog and as nothing
+    // at all in the existing-room panel. The picker had been advertising
+    // groups and Teams with their own glyph the whole time.
+    //
+    // Defaulted so the many existing user-only call sites are unaffected;
+    // anything that offers groups must pass NcUser::source through verbatim.
     void addRoomParticipant(const QString &token, const QString &userId,
                             QObject *context,
-                            std::function<void(bool ok, const QString &error)> callback);
+                            std::function<void(bool ok, const QString &error)> callback,
+                            const QString &source = QStringLiteral("users"));
+
+    // --- 0.65.3 ----------------------------------------------------------
+    // ⚠ Room endpoints are v4; chat and thread endpoints are v1. Not
+    // interchangeable — sending a chat path at v4 404s silently.
+
+    // Pin/unpin a conversation to the top of the list (`favorites`).
+    // POST to set, DELETE to clear; no body either way.
+    void setFavorite(const QString &token, bool favorite, Callback callback = {});
+
+    // Per-room "ring me when a call starts here" (`notification-calls`).
+    // Independent of the chat notification level.
+    void setNotificationCalls(const QString &token, bool notify, Callback callback);
+
+    // The user's Note to self room (`note-to-self`). GET, and it CREATES the
+    // room on first call — which is why a TalQ-only user has never had one.
+    void fetchNoteToSelf(Callback callback);
+
+    // Remove a pin (`pinned-messages`). Moderator-only server-side, same as
+    // pinning.
+    void unpinMessage(const QString &token, int messageId, Callback callback = {});
+
+    // Messages either side of one id, in a single request (`chat-get-context`).
+    // Replaces walking history backwards a page at a time to reach a search hit.
+    // Returns a LIST of TalkChatMessage -> ArrayCallback.
+    void fetchMessageContext(const QString &token, int messageId, int limit,
+                             ArrayCallback callback);
+
+    // The server's list of recently-active threads (`threads`), instead of
+    // inferring the topic list from a window of recent chat messages.
+    // Returns a LIST of TalkThreadInfo, so ArrayCallback: the OCS envelope is
+    // already unwrapped by the time the callback runs, and `ocs.data` here is
+    // an array, not an object.
+    void fetchRecentThreads(const QString &token, int limit, ArrayCallback callback);
+
+    // Call recording (`recording-v1`). Both routes are v1 and BOTH are
+    // #[RequireLoggedInModeratorParticipant] server-side, so callers must gate
+    // on moderator status rather than let a 403 surface as a generic failure.
+    // `status` on start is Talk's recording mode: 1 = video, 2 = audio-only
+    // (Room::RECORDING_VIDEO / RECORDING_AUDIO).
+    void startRecording(const QString &token, int status, Callback callback);
+    void stopRecording(const QString &token, Callback callback);
+
+    // Per-TOPIC notification level (`threads`), independent of the room's.
+    // Levels are Talk's usual 0 default / 1 always / 2 mention-only / 3 never.
+    // v1, and keyed by the topic's ROOT message id.
+    void setThreadNotificationLevel(const QString &token, int threadId, int level,
+                                    Callback callback);
+
+    // Archive a conversation out of the default list without leaving it
+    // (`archived-conversations-v2`), and mark one important so it still
+    // notifies while archived (`important-conversations`). POST sets, DELETE
+    // clears; no body either way. Both v4.
+    void setArchived(const QString &token, bool archived, Callback callback = {});
+    void setImportant(const QString &token, bool important, Callback callback = {});
+
+    // --- Polls (`talk-polls`), all v1 -----------------------------------
+    // fetchPoll returns the poll incl. `options`, `votes`, `votedSelf` and
+    // `status` (0 open / 1 closed / 2 draft). votePoll sends the chosen option
+    // indices; an empty list retracts. closePoll ends it (author/moderator).
+    //
+    // WARNING for createPoll: the server REFUSES a poll in a one-to-one room
+    // with 400 {"error":"room"} (PollController.php:96) -- only group and
+    // public conversations may have polls. Callers must hide the action there
+    // rather than surface that error.
+    void fetchPoll(const QString &token, int pollId, Callback callback);
+    void votePoll(const QString &token, int pollId, const QList<int> &optionIds,
+                  Callback callback);
+    void closePoll(const QString &token, int pollId, Callback callback);
+    void createPoll(const QString &token, const QString &question,
+                    const QStringList &options, int resultMode, int maxVotes,
+                    int threadId, Callback callback);
 
     // Room management — rename, description, delete, leave.
     void setRoomName(const QString &token, const QString &name,

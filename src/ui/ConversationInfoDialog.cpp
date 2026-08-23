@@ -37,6 +37,10 @@ namespace {
 constexpr int kAttendeeIdRole    = Qt::UserRole + 1;
 constexpr int kActorIdRole       = Qt::UserRole + 2;
 constexpr int kParticipantTypeRole = Qt::UserRole + 3;
+// Which kind of thing the search hit is - "users" / "groups" / "circles".
+// Carried on the item so the add call can tell the server what it is being
+// given; without it every id was sent as though it were an account.
+constexpr int kUserSourceRole     = Qt::UserRole + 4;
 
 // Resolve the active theme (single source of truth = PainterTheme), so the
 // bot chrome below tints from the user's theme accent rather than a hardcoded
@@ -633,14 +637,27 @@ void ConversationInfoDialog::runAddSearch()
         [this](bool ok, const QVector<NcUser> &users) {
             if (!ok) { m_addResults->addItem(tr("Search failed.")); return; }
             for (const NcUser &u : users) {
-                // Only individual users can be added via the participants
-                // endpoint — groups/circles resolve to their members.
-                if (u.source != QStringLiteral("users")) continue;
-                const QString label = QStringLiteral("\U0001F464  %1  \u00B7  %2")
+                // Groups and Teams are added by passing their own `source`;
+                // the server expands them to their members. This used to skip
+                // everything that was not an account, on the mistaken premise
+                // that the participants endpoint took users only - so a
+                // moderator could never add a department group to an existing
+                // room and got no explanation, just no search results.
+                // QString, not QChar: QChar is a single UTF-16 code unit and
+                // every one of these emoji is above the BMP, so a QChar would
+                // silently truncate to a replacement glyph.
+                const QString glyph = u.source == QStringLiteral("groups")
+                                          ? QStringLiteral("\U0001F465")   // busts = group
+                                          : u.source == QStringLiteral("circles")
+                                                ? QStringLiteral("\U0001F310")  // globe = Team
+                                                : QStringLiteral("\U0001F464"); // bust = person
+                const QString label = QStringLiteral("%1  %2  ·  %3")
+                                          .arg(glyph)
                                           .arg(u.displayName.isEmpty() ? u.id : u.displayName,
                                                u.id);
                 auto *item = new QListWidgetItem(label, m_addResults);
                 item->setData(kActorIdRole, u.id);
+                item->setData(kUserSourceRole, u.source);
             }
             if (m_addResults->count() == 0) m_addResults->addItem(tr("No matches."));
         });
@@ -651,6 +668,7 @@ void ConversationInfoDialog::onAddResultClicked(QListWidgetItem *item)
     if (!item) return;
     const QString userId = item->data(kActorIdRole).toString();
     if (userId.isEmpty()) return;
+    const QString source = item->data(kUserSourceRole).toString();
 
     m_status->setText(tr("Adding %1\u2026").arg(userId));
     m_api->addRoomParticipant(m_token, userId, this,
@@ -665,7 +683,7 @@ void ConversationInfoDialog::onAddResultClicked(QListWidgetItem *item)
             m_status->setText(tr("Added %1.").arg(userId));
             refreshParticipants();
             emit roomChanged();
-        });
+        }, source);
 }
 
 void ConversationInfoDialog::onLeaveClicked()

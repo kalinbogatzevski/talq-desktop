@@ -30,6 +30,9 @@ struct ConversationLayout {
     int conversationType = 0;
     int unreadCount = 0;
     bool unreadMention = false;
+    // Direct @you, not @all. Drives badge severity.
+    bool unreadMentionDirect = false;
+    bool isArchived = false;
     bool isFavorite = false;
     qint64 lastActivity = 0;
     int notificationLevel = 0;  // 0=default, 1=always, 2=mention, 3=never
@@ -92,7 +95,10 @@ public:
     // ── Sort / filter modes (F1) ──
     enum SortMode  { SortRecent = 0, SortUnread = 1, SortName = 2 };
     enum FilterMode { FilterAll = 0, FilterUnread = 1, FilterFavorites = 2,
-                      FilterDirect = 3, FilterGroups = 4 };
+                      FilterDirect = 3, FilterGroups = 4,
+                      // Archived is the ONLY mode that shows archived rooms;
+                      // every other mode hides them, which is what archiving is.
+                      FilterArchived = 5 };
 
     int sortMode() const { return m_sortMode; }
     void setSortMode(int mode);
@@ -187,7 +193,8 @@ private:
     // 0.64 behaviour), grouped into tag sections when it is on.
     void buildVisibleRows(const QVector<int> &matching);
     void paintAvatar(QPainter *p, const ConversationLayout &cl, const QRectF &rect);
-    void paintUnreadBadge(QPainter *p, int count, bool mention, const QRectF &badgeArea);
+    void paintUnreadBadge(QPainter *p, int count, bool mention, bool directMention,
+                          const QRectF &badgeArea);
     void paintScrollbar(QPainter *p);
 
     // ── Avatar loading ──

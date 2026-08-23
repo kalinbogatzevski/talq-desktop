@@ -21,6 +21,21 @@ Conversation Conversation::fromJson(const QJsonObject &json)
     c.callFlag = json["callFlag"].toInt();
     c.participantInCallFlags = json["participantInCallFlags"].toInt();
     c.notificationLevel = json["notificationLevel"].toInt(0);
+    // 0.65.3. Each of these defaults to the pre-0.65.3 behaviour when the key
+    // is absent, so an older server is indistinguishable from today:
+    //   canStartCall     absent -> true  (offer the action, let the server rule)
+    //   notificationCalls absent -> true (Talk's own default is to ring)
+    //   unreadMentionDirect absent -> false (fall back to the @all-or-direct
+    //                                  badge TalQ has always painted)
+    //   readOnly         absent -> 0 = writable
+    c.canStartCall = json["canStartCall"].toBool(true);
+    c.notificationCalls = json["notificationCalls"].toBool(true);
+    c.unreadMentionDirect = json["unreadMentionDirect"].toBool(false);
+    c.readOnly = json["readOnly"].toInt(0) != 0;
+    c.description = json["description"].toString();
+    c.callRecording = json["callRecording"].toInt(0);
+    c.archived = json["isArchived"].toBool(false);
+    c.important = json["isImportant"].toBool(false);
     // Talk 24. Both keys are simply absent on older servers: toArray() yields
     // an empty array and toInt() yields 0, so an old server parses as
     // "untagged, no attributes" with no special-casing needed here.

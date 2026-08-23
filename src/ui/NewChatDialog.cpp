@@ -783,6 +783,9 @@ void NewChatDialog::onCreateClicked()
             auto remaining = std::make_shared<int>(m_selected.size());
             auto errors    = std::make_shared<QStringList>();
             for (const NcUser &u : m_selected) {
+                // u.source carries "users" / "groups" / "circles" from the
+                // picker; sending it is what makes a group or Team invite
+                // actually add its members instead of being refused.
                 m_api->addRoomParticipant(token, u.id, this,
                     [this, remaining, errors, u](bool addOk, const QString &err) {
                         if (!addOk) errors->append(
@@ -797,7 +800,7 @@ void NewChatDialog::onCreateClicked()
                             }
                             accept();
                         }
-                    });
+                    }, u.source);
             }
         }, extras);
 }
