@@ -13,6 +13,7 @@
 #include "ImageViewerDialog.h"
 #include "ConversationInfoDialog.h"
 #include "NewChatDialog.h"
+#include "PollDialog.h"
 #include "TopicTabBar.h"
 #include "UpcomingRemindersDialog.h"
 #include "painter/ChatPainter.h"
@@ -335,6 +336,7 @@ void MainWindow::buildChatPage()
         { QT_TR_NOOP("Favorites"),         SidebarPainter::FilterFavorites },
         { QT_TR_NOOP("Direct messages"),   SidebarPainter::FilterDirect },
         { QT_TR_NOOP("Groups"),            SidebarPainter::FilterGroups },
+        { QT_TR_NOOP("Archived"),          SidebarPainter::FilterArchived },
     };
     for (const auto &d : filterDefs) {
         QAction *a = m_filterMenu->addAction(tr(d.label));
@@ -405,7 +407,34 @@ void MainWindow::buildChatPage()
     newChatBtn->setToolTip(tr("New chat"));
     newChatBtn->setCursor(Qt::PointingHandCursor);
     profileLayout->addWidget(newChatBtn);
+    // Left-click starts a new conversation; right-click offers Note to self.
+    //
+    // Note to self is a real Talk conversation (room type 6) that TalQ has
+    // always been able to DISPLAY -- it paints the bookmark avatar for it and
+    // excludes it from call buttons -- but could never create, because the
+    // room is only brought into existence by asking the server for it. So a
+    // user who lived in TalQ had no way to get one without opening the web UI.
     connect(newChatBtn, &QPushButton::clicked, this, &MainWindow::openNewChatDialog);
+    newChatBtn->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(newChatBtn, &QPushButton::customContextMenuRequested, this,
+            [this, newChatBtn](const QPoint &pos) {
+        if (!m_auth || !m_auth->capabilities().supportsNoteToSelf()) return;
+        QMenu menu(this);
+        QAction *note = menu.addAction(tr("Note to self"));
+        if (menu.exec(newChatBtn->mapToGlobal(pos)) != note) return;
+        m_api->fetchNoteToSelf([this](bool ok, const QJsonObject &data, int) {
+            if (!ok) {
+                qWarning() << "note-to-self: server refused";
+                return;
+            }
+            const QString token = data.value(QStringLiteral("token")).toString();
+            if (token.isEmpty()) return;
+            // The room may be brand new -- refresh so the sidebar knows about
+            // it before we try to select it.
+            m_conversations->refresh();
+            QTimer::singleShot(400, this, [this, token]() { openConversation(token); });
+        });
+    });
 
     // Theme toggle \u2014 shows the icon for the destination state (sun while
     // dark, moon while light). Same code path as Ctrl+D and the Settings
@@ -491,7 +520,7 @@ void MainWindow::buildChatPage()
     m_settings.endGroup();
     if (savedSort < SidebarPainter::SortRecent || savedSort > SidebarPainter::SortName)
         savedSort = SidebarPainter::SortRecent;
-    if (savedFilter < SidebarPainter::FilterAll || savedFilter > SidebarPainter::FilterGroups)
+    if (savedFilter < SidebarPainter::FilterAll || savedFilter > SidebarPainter::FilterArchived)
         savedFilter = SidebarPainter::FilterAll;
     m_sidebar->setSortMode(savedSort);
     m_sidebar->setFilterMode(savedFilter);
@@ -577,12 +606,83 @@ void MainWindow::buildChatPage()
     connect(m_sidebar, &SidebarPainter::contextMenuRequested, this, [this](int modelIndex, int notifLevel, qreal, qreal) {
         auto *menu = new QMenu(this);
         menu->setAttribute(Qt::WA_DeleteOnClose);
-        auto *action = menu->addAction(notifLevel == 3 ? tr("Unmute") : tr("Mute"));
-        connect(action, &QAction::triggered, this, [this, modelIndex, notifLevel]() {
-            int newLevel = (notifLevel == 3) ? 0 : 3;
-            m_conversations->setNotificationLevel(modelIndex, newLevel);
-        });
         const QString ctxToken = m_conversations->tokenAt(modelIndex);
+
+        // Favourite. TalQ already sorts favourites to the top, paints the dot,
+        // gives them their own filter and section — it just could never SET
+        // one, so a TalQ-only user had to open the web UI to pin a room.
+        if (m_auth && m_auth->capabilities().supportsFavorites()) {
+            const bool fav = m_conversations->favoriteAt(modelIndex);
+            QAction *favAct = menu->addAction(fav ? tr("Remove from favourites")
+                                                  : tr("Add to favourites"));
+            connect(favAct, &QAction::triggered, this, [this, modelIndex, fav]() {
+                m_conversations->setFavorite(modelIndex, !fav);
+            });
+        }
+
+        // Archive: keep the conversation and its history, take it out of the
+        // list. The answer to rooms a user is neither in nor willing to leave.
+        if (m_auth && m_auth->capabilities().supportsArchivedConversations()) {
+            const bool arch = m_conversations->archivedAt(modelIndex);
+            QAction *archAct = menu->addAction(arch ? tr("Unarchive") : tr("Archive"));
+            connect(archAct, &QAction::triggered, this, [this, modelIndex, arch]() {
+                m_conversations->setArchived(modelIndex, !arch);
+            });
+        }
+        // Important: an archived conversation stops notifying, EXCEPT when it
+        // is marked important -- which is the only way to archive something
+        // noisy without going deaf to the one thing that matters in it.
+        if (m_auth && m_auth->capabilities().supportsImportantConversations()) {
+            const bool imp = m_conversations->importantAt(modelIndex);
+            QAction *impAct = menu->addAction(imp ? tr("Not important")
+                                                  : tr("Mark as important"));
+            connect(impAct, &QAction::triggered, this, [this, modelIndex, imp]() {
+                m_conversations->setImportant(modelIndex, !imp);
+            });
+        }
+
+        // Notifications. Until 0.65.3 this was a single Mute/Unmute that only
+        // ever sent level 0 or 3 — so "mentions only" (level 2), the setting a
+        // power user in a busy room actually wants, was unreachable even
+        // though ApiClient and the model had always handled it.
+        if (m_auth && m_auth->capabilities().supportsNotificationLevels()) {
+            QMenu *notif = menu->addMenu(tr("Notifications"));
+            struct Level { int value; const char *label; };
+            // Talk's levels: 0 default, 1 always, 2 mention-only, 3 never.
+            const Level levels[] = {
+                {0, QT_TR_NOOP("Default")},
+                {1, QT_TR_NOOP("All messages")},
+                {2, QT_TR_NOOP("Mentions only")},
+                {3, QT_TR_NOOP("Never")},
+            };
+            for (const Level &l : levels) {
+                QAction *a = notif->addAction(tr(l.label));
+                a->setCheckable(true);
+                a->setChecked(notifLevel == l.value);
+                connect(a, &QAction::triggered, this, [this, modelIndex, v = l.value]() {
+                    m_conversations->setNotificationLevel(modelIndex, v);
+                });
+            }
+            // Ringing is a separate switch from the chat level, deliberately:
+            // a room can be on mentions-only and still ring for calls.
+            if (m_auth->capabilities().supportsNotificationCalls()) {
+                notif->addSeparator();
+                const bool ring = m_conversations->notificationCallsAt(modelIndex);
+                QAction *ringAct = notif->addAction(tr("Ring me for calls here"));
+                ringAct->setCheckable(true);
+                ringAct->setChecked(ring);
+                connect(ringAct, &QAction::triggered, this, [this, modelIndex, ring]() {
+                    m_conversations->setNotificationCalls(modelIndex, !ring);
+                });
+            }
+        } else {
+            // Older server: keep the 0.64 binary toggle exactly as it was.
+            auto *action = menu->addAction(notifLevel == 3 ? tr("Unmute") : tr("Mute"));
+            connect(action, &QAction::triggered, this, [this, modelIndex, notifLevel]() {
+                int newLevel = (notifLevel == 3) ? 0 : 3;
+                m_conversations->setNotificationLevel(modelIndex, newLevel);
+            });
+        }
 
         // Start a call straight from the list — TalQ's answer to Talk 24's
         // "call from anywhere" avatar-menu entry. That feature adds no API of
@@ -590,8 +690,18 @@ void MainWindow::buildChatPage()
         // URL), so the equivalent here is simply the existing call path
         // reachable one right-click earlier instead of only from the open
         // conversation's header.
+        //
+        // ⚠ Gated on canStartCall as well. Talk decides per room whether THIS
+        // user may start a call (the room's `start-call-flag` setting plus the
+        // user's participant type) and sends the answer on the conversation.
+        // 0.65.1 shipped this action without reading it, so in a room where
+        // only moderators may start calls the entry was offered to everyone
+        // and the resulting 403 fell into the generic join-failure branch with
+        // no explanation. Offering an action that cannot work is worse than
+        // not offering it.
         if (!ctxToken.isEmpty() && m_callManager->callsAvailable()
-            && m_callManager->callToken().isEmpty()) {
+            && m_callManager->callToken().isEmpty()
+            && m_conversations->canStartCallForToken(ctxToken)) {
             menu->addSeparator();
             QAction *callAct = menu->addAction(tr("Call"));
             connect(callAct, &QAction::triggered, this, [this, ctxToken]() {
@@ -1046,6 +1156,15 @@ void MainWindow::buildChatPage()
         if (picker->exec() == QDialog::Accepted) {
             QString targetToken = picker->selectedToken();
             for (const auto &msg : messages) {
+                // An attachment is forwarded by re-sharing the file, not by
+                // sending its name as text. Every forward used to go through
+                // plainBodyText(), so a forwarded image arrived as the literal
+                // "[File: name]" and the recipient got nothing they could open.
+                const QString fwdPath = msg.value("filePath").toString();
+                if (msg.value("hasFile").toBool() && !fwdPath.isEmpty()) {
+                    m_messages->shareExistingFile(fwdPath, targetToken);
+                    continue;
+                }
                 QString body = plainBodyText(msg);
                 if (!body.isEmpty())
                     m_messages->sendMessageToToken(targetToken, body);
@@ -1146,17 +1265,47 @@ void MainWindow::buildChatPage()
             m_composer->setFocus();
         });
         menu->addAction(tr("\u2197\uFE0F  Forward"), this, [this, msg]() {
+            const QString fwdPath = msg.value("filePath").toString();
+            const bool fwdIsFile = msg.value("hasFile").toBool() && !fwdPath.isEmpty();
             QString body = plainBodyText(msg);
-            if (body.isEmpty()) return;
+            if (body.isEmpty() && !fwdIsFile) return;
             auto *picker = new ConversationPickerDialog(m_conversations, m_activeConvToken, this);
             if (picker->exec() == QDialog::Accepted) {
-                m_messages->sendMessageToToken(picker->selectedToken(), body);
+                if (fwdIsFile)
+                    m_messages->shareExistingFile(fwdPath, picker->selectedToken());
+                else
+                    m_messages->sendMessageToToken(picker->selectedToken(), body);
             }
             picker->deleteLater();
         });
-        menu->addAction(QStringLiteral("\U0001F4CC  ") + tr("Pin"), this, [this, msgId]() {
-            m_messages->pinMessage(msgId);
-        });
+        // Pin. Offered ONLY where it can actually work.
+        //
+        // The route is #[RequireModeratorParticipant] (ChatController.php:2157),
+        // but until 0.65.3 the entry was shown to everyone — so an ordinary
+        // participant clicking Pin got a 403 that the model reported as a bare
+        // "Failed to pin message", with nothing to suggest the action was never
+        // theirs to take. It was also ungated on the capability, so on a server
+        // without `pinned-messages` it 404'd just as quietly.
+        //
+        // Not offering an action beats offering one that silently fails. There
+        // is deliberately no matching Unpin here: Talk does not put a pinned
+        // flag on the message (there is no `isPinned` in ResponseDefinitions),
+        // so a client cannot tell whether THIS message is the pinned one
+        // without fetching the room's pinned bucket — and an Unpin that might
+        // be a no-op is exactly the kind of misleading control being removed.
+        {
+            const int myType = m_conversations
+                                   ? m_conversations->participantTypeForToken(m_activeConvToken)
+                                   : int(RoomParticipant::User);
+            const bool isModerator = myType == RoomParticipant::Owner
+                                     || myType == RoomParticipant::Moderator
+                                     || myType == RoomParticipant::GuestModerator;
+            if (isModerator && m_auth && m_auth->capabilities().supportsPinnedMessages()) {
+                menu->addAction(QStringLiteral("\U0001F4CC  ") + tr("Pin"), this, [this, msgId]() {
+                    m_messages->pinMessage(msgId);
+                });
+            }
+        }
         menu->addAction(QStringLiteral("\U0001F517  ") + tr("Copy link"), this, [this, msgId]() {
             QString link = m_messages->messageLink(msgId);
             QApplication::clipboard()->setText(link);
@@ -1252,6 +1401,20 @@ void MainWindow::buildChatPage()
 
         auto *menu = new QMenu(this);
         menu->setAttribute(Qt::WA_DeleteOnClose);
+        // DELIBERATE departure from the canonical QMenu rule in
+        // AppStyle.cpp:299-307 — flagged by the 0.62.3 design audit as "two
+        // QMenu looks", and kept on purpose rather than converged.
+        //
+        // This is not a menu of rows; it is a single horizontal strip of emoji
+        // buttons. The 20px radius makes it read as a PILL floating over the
+        // message (the shape the quick-react affordance wants), where the
+        // canonical 10px reads as a dropdown that lost its items. bgSecondary
+        // rather than bgSurface sets it back from the chat ground it hovers
+        // over, and 4px padding keeps the strip tight to the buttons.
+        //
+        // Every value still comes from PainterTheme, so it tracks the theme
+        // like everything else; only the geometry is local. Do not "fix" this
+        // to match the rule without also rethinking the shape.
         menu->setStyleSheet(QStringLiteral(
             "QMenu { background: %1; border: 1px solid %2; border-radius: 20px; padding: 4px; }"
         ).arg(hx(th.bgSecondary), hx(th.divider)));
@@ -1287,6 +1450,15 @@ void MainWindow::buildChatPage()
     connect(m_chatPainter, &ChatPainter::linkActivated, this, [](const QString &url) {
         QDesktopServices::openUrl(QUrl(url));
     });
+    // A poll card opens the voting dialog. The card itself is deliberately
+    // non-interactive -- see ChatPainter::paintPollCard for why.
+    connect(m_chatPainter, &ChatPainter::pollClicked, this, [this](int pollId) {
+        if (!m_messages || m_messages->conversationToken().isEmpty()) return;
+        auto *dlg = new PollDialog(m_api, m_messages->conversationToken(), pollId, this);
+        dlg->setAttribute(Qt::WA_DeleteOnClose);
+        dlg->show();
+    });
+
     connect(m_chatPainter, &ChatPainter::fileClicked, this, [this](int fileId, const QString &mime, const QString &fileName) {
         if (mime.startsWith("image/")) {
             QImage placeholder = m_chatPainter->cachedPreview(fileId);
@@ -1508,6 +1680,18 @@ void MainWindow::buildChatPage()
         m_chatPainter->setMyUserId(m_auth->userId());
     });
 
+    // Unsent drafts belong to the SESSION, not the process. Without this they
+    // would survive a logout and be restored into the next account's window on
+    // the same machine — which is exactly the disclosure the "never persist
+    // drafts" decision at the save/restore site exists to avoid. Same reasoning
+    // as AuthManager dropping the capability set and server config on logout.
+    connect(m_auth, &AuthManager::loggedInChanged, this, [this]() {
+        if (m_auth && !m_auth->isLoggedIn()) {
+            m_composerDrafts.clear();
+            if (m_composer) m_composer->clearText();
+        }
+    });
+
     // Update NC/Talk version labels when server info arrives (async after login)
     connect(m_auth, &AuthManager::serverInfoChanged, this, [this]() {
         if (m_welcomeNcLabel) {
@@ -1520,6 +1704,38 @@ void MainWindow::buildChatPage()
             m_welcomeTalkLabel->setText(talkVer.isEmpty() ? QStringLiteral("Talk")
                                                           : QStringLiteral("Talk ") + talkVer);
         }
+        // 0.65.3 — tell the topic model whether it may use the server's own
+        // thread list. Same reason as the tag fetch below: this signal is the
+        // first moment the capability set is known, and the model must not
+        // call an endpoint an older server does not have.
+        if (m_threads)
+            m_threads->setThreadsCapable(m_auth->hasThreadsSupport());
+        if (m_topicTabBar)
+            m_topicTabBar->setThreadsCapable(m_auth->hasThreadsSupport());
+        // Same for the single-request message-context fetch behind
+        // search-result and notification jumps.
+        if (m_messages)
+            m_messages->setContextCapable(
+                m_auth->capabilities().supportsChatGetContext());
+        // The user's two privacy settings, which live in the capabilities
+        // config block and so were unreadable until 0.65.3. TalQ broadcast
+        // typing, and both broadcast and displayed read status, regardless of
+        // what the user had chosen on the server. Both default to sharing when
+        // the server does not say, which is Talk's default and the historic
+        // behaviour.
+        if (m_signaling)
+            m_signaling->setShareTypingStatus(m_auth->sharesTypingStatus());
+        if (m_chatPainter)
+            m_chatPainter->setShowReadStatus(m_auth->sharesReadStatus());
+        // Where the user's uploads belong. TalQ hard-coded "Talk" and ignored
+        // the folder they had actually configured on the server.
+        if (m_messages)
+            m_messages->setAttachmentFolder(m_auth->attachmentFolder());
+        // Whether the server has a recording backend at all.
+        if (m_callManager)
+            m_callManager->setRecordingAvailable(m_auth->recordingAvailable());
+        if (m_composer)
+            m_composer->setPollsAvailable(m_auth->capabilities().supportsPolls());
         // Capabilities have just been parsed — this is the first moment we know
         // whether the server supports Talk 24 tags. Fetching any earlier would
         // fire the request before the gate is known.
@@ -1771,6 +1987,22 @@ void MainWindow::buildSearchBar(QWidget *chatCol)
         int msgId = it->data(Qt::UserRole).toInt();
         if (msgId <= 0) return;
         m_searchResults->hide();
+        // A cross-conversation hit carries its own room token. Open that room
+        // first, then jump -- otherwise the id means nothing in the room the
+        // user happens to be looking at.
+        const QString hitToken = it->data(Qt::UserRole + 1).toString();
+        if (!hitToken.isEmpty() && m_messages
+            && hitToken != m_messages->conversationToken()) {
+            openConversation(hitToken);
+            // Give the room switch a beat to load before chasing the message;
+            // loadHistoryUntil resolves it from there (one request now that the
+            // context endpoint is used, so this is a short hop, not a page walk).
+            QTimer::singleShot(500, this, [this, msgId]() {
+                if (m_messages) m_messages->loadHistoryUntil(msgId);
+                m_chatPainter->scrollToMessage(msgId);
+            });
+            return;
+        }
         m_chatPainter->scrollToMessage(msgId);
         if (!m_messages) return;
         bool foundLocal = false;
@@ -1805,6 +2037,30 @@ void MainWindow::buildSearchBar(QWidget *chatCol)
         m_searchInput->selectAll();
     });
 
+    connect(m_composer, &ComposerWidget::createPollRequested, this, [this]() {
+        if (!m_messages || m_messages->conversationToken().isEmpty()) return;
+        const QString token = m_messages->conversationToken();
+        auto *dlg = new PollComposerDialog(this);
+        dlg->setAttribute(Qt::WA_DeleteOnClose);
+        connect(dlg, &QDialog::accepted, this, [this, dlg, token]() {
+            // Keep a poll made while a topic is open inside that topic, the
+            // same way messages and file shares now do.
+            const int threadId = m_messages ? m_messages->threadId() : 0;
+            m_api->createPoll(token, dlg->question(), dlg->options(),
+                              dlg->resultMode(), dlg->maxVotes(), threadId,
+                              [this, token](bool ok, const QJsonObject &, int) {
+                if (!ok) {
+                    QMessageBox::warning(this, tr("Poll"),
+                        tr("The poll could not be created."));
+                    return;
+                }
+                if (m_messages && m_messages->conversationToken() == token)
+                    m_messages->refresh();
+            });
+        });
+        dlg->show();
+    });
+
     connect(m_header, &HeaderPainter::remindersRequested,
             this, &MainWindow::openUpcomingReminders);
 
@@ -1823,7 +2079,7 @@ void MainWindow::runSearchQuery()
     }
     QString token = m_messages->conversationToken();
     m_api->searchInConversation(token, q, this,
-        [this, token](bool ok, const QVector<SearchHit> &hits) {
+        [this, token, q](bool ok, const QVector<SearchHit> &hits) {
             if (!m_messages || m_messages->conversationToken() != token) return;
             if (!ok) { m_searchResults->hide(); return; }
             m_searchResults->clear();
@@ -1852,6 +2108,47 @@ void MainWindow::runSearchQuery()
                                     qMin(6, m_searchResults->count()) * 46 + 8);
             m_searchResults->move(p);
             m_searchResults->show();
+
+            // ...then the rest of the account. Searching only the open room
+            // meant a message you remembered but could not place was simply
+            // unfindable in TalQ. Appended rather than merged so the room you
+            // are in still answers first, which is what you usually want.
+            if (!m_auth || !m_auth->capabilities().supportsUnifiedSearch()) return;
+            m_api->searchAllConversations(q, this,
+                [this, token, q](bool gok, const QVector<SearchHit> &others) {
+                    if (!gok || others.isEmpty()) return;
+                    if (!m_messages || m_messages->conversationToken() != token) return;
+                    if (m_searchInput->text().trimmed() != q) return;   // user moved on
+                    // Drop the "No matches" placeholder now that there ARE some.
+                    if (m_searchResults->count() == 1
+                        && m_searchResults->item(0)->flags() == Qt::NoItemFlags)
+                        m_searchResults->clear();
+
+                    auto *hdr = new QListWidgetItem(tr("In other conversations"));
+                    hdr->setFlags(Qt::NoItemFlags);
+                    m_searchResults->addItem(hdr);
+
+                    int added = 0;
+                    for (const SearchHit &h : others) {
+                        if (h.conversationToken == token) continue;   // already listed above
+                        if (++added > 20) break;
+                        const QString room = m_conversations
+                            ? m_conversations->displayNameForToken(h.conversationToken)
+                            : QString();
+                        auto *it = new QListWidgetItem(
+                            QStringLiteral("%1  ·  %2\n%3")
+                                .arg(h.actorName,
+                                     room.isEmpty() ? tr("another conversation") : room,
+                                     h.snippet));
+                        it->setData(Qt::UserRole, h.messageId);
+                        it->setData(Qt::UserRole + 1, h.conversationToken);
+                        m_searchResults->addItem(it);
+                    }
+                    if (added == 0) { delete m_searchResults->takeItem(m_searchResults->count() - 1); return; }
+                    m_searchResults->resize(m_searchInput->width(),
+                                            qMin(8, m_searchResults->count()) * 46 + 8);
+                    m_searchResults->show();
+                });
         });
 }
 
@@ -1932,6 +2229,53 @@ void MainWindow::onConversationSelected(const QString &token, const QString &nam
     if (m_chatPainter->selectionMode())
         m_chatPainter->exitSelectionMode();
 
+    // 0.65.3 — per-conversation composer drafts.
+    //
+    // The composer used to be cleared ONLY on send, so text typed here and
+    // left unsent followed the user into the next conversation. Best case they
+    // noticed; worst case they typed one more word and sent something meant
+    // for one person to another. Staff who switch rooms all day are exactly
+    // the people that bites.
+    //
+    // ⚠ Guarded on the token actually CHANGING. This handler re-fires on every
+    // sidebar refresh and on re-selecting the room already open (see the
+    // auto-join note in ServerCapabilities.h for the same hazard); without the
+    // guard, a refresh landing between keystrokes would save a half-typed
+    // draft and immediately restore it, fighting the cursor.
+    //
+    // Deliberately in-memory only. Persisting drafts would put unsent message
+    // text into the registry, where it outlives the session and the user's
+    // expectation of it — a privacy cost this defect does not require paying.
+    if (m_composer && token != m_activeConvToken) {
+        // ⚠ An edit buffer is NOT a draft. While the editing bar is up the
+        // composer holds the original text of a specific message in the room
+        // being left, bound to m_editingMessageId — so saving it as that room's
+        // draft would hand the user someone's existing message back as unsent
+        // text, and carrying the id across would apply the NEXT room's text to
+        // a message in the previous one. The same applies to a pending reply.
+        //
+        // Edit and reply state leaking across a conversation switch predates
+        // drafts (nothing here ever cleared either), but swapping the composer
+        // text underneath a live editing bar would turn a latent bug into a
+        // reliable one. Drop both at the boundary.
+        const bool wasComposingAgainstAMessage =
+            m_editingMessageId != 0 || m_replyToId != 0;
+        if (!m_activeConvToken.isEmpty() && !wasComposingAgainstAMessage) {
+            const QString draft = m_composer->currentText();
+            if (draft.isEmpty())
+                m_composerDrafts.remove(m_activeConvToken);
+            else
+                m_composerDrafts.insert(m_activeConvToken, draft);
+        }
+        m_editingMessageId = 0;
+        m_replyToId = 0;
+        m_composer->hideEditingBar();
+        m_composer->hideReplyBar();
+        // Absent key yields an empty string, which clears the composer — the
+        // behaviour a user expects when opening a room they have not drafted in.
+        m_composer->setText(m_composerDrafts.value(token));
+    }
+
     m_activeConvToken = token;
 
     // The call window and the main (chat/roster) window are independent —
@@ -1998,6 +2342,8 @@ void MainWindow::onConversationSelected(const QString &token, const QString &nam
         m_signaling->joinRoom(token);
     }
     m_threads->setConversationType(convType);
+    // Polls are refused in one-to-one rooms, so the composer needs the type.
+    if (m_composer) m_composer->setConversationType(convType);
     m_threads->setConversationToken(token);
     m_threadsPainter->setGroupName(name);
 
@@ -2007,7 +2353,21 @@ void MainWindow::onConversationSelected(const QString &token, const QString &nam
 
     m_header->setConversationToken(token);
     m_header->setMessageCount(m_messages->rowCount());
-    m_header->setCallsAvailable(m_callManager->callsAvailable());
+    // Calls are offered only when the backend can carry one AND this user is
+    // allowed to start one HERE. 0.65.3 gated the list action on canStartCall;
+    // the header buttons need the same test or a restricted room still shows a
+    // live call button that fails with a generic error.
+    m_header->setCallsAvailable(m_callManager->callsAvailable()
+                                && m_conversations->canStartCallForToken(token));
+    // Recording is moderator-only server-side; tell the call UI whether THIS
+    // user may control it in THIS room so the button is simply absent rather
+    // than present-and-403ing.
+    {
+        const int myType = m_conversations->participantTypeForToken(token);
+        m_callManager->setCanControlRecording(myType == RoomParticipant::Owner
+                                              || myType == RoomParticipant::Moderator
+                                              || myType == RoomParticipant::GuestModerator);
+    }
     m_header->setCallsUnavailableReason(m_callManager->callsUnavailableReason());
 
     // ── Talk 24 voice rooms: join the call on entering the room ──
@@ -2117,7 +2477,7 @@ void MainWindow::refreshWelcomeStatus()
     const bool sigOn  = m_signaling && m_signaling->isConnected();
     const bool pushOn = m_push && m_push->isConnected();
     const QString gpu = m_callManager ? m_callManager->gpuAccelStatus()
-                                      : QStringLiteral("Software only");
+                                      : tr("Software only");
     const bool gpuOn  = (gpu != QLatin1String("Software only"));
     // Show ALL real GPUs (a 2-GPU laptop should read "NVIDIA RTX 3070 + Intel
     // UHD"), with the hardware-accel codec on the sub-line. Falls back to the
@@ -2141,8 +2501,13 @@ void MainWindow::refreshWelcomeStatus()
     // tracks whether REST calls are actually landing on the server.
     const bool srvOn = !url.isEmpty() && (!m_api || m_api->isServerReachable());
 
-    m_welcomeNameLabel->setText(QStringLiteral("Welcome back, ")
-        + (m_auth ? m_auth->displayName() : QString()));
+    // One tr() with a placeholder, not a concatenation. Built as
+    // QStringLiteral("Welcome back, ") + name until 0.65.3, which is
+    // untranslatable twice over: the string never reached the .ts catalogue at
+    // all, and even wrapped it would have forced every language to put the
+    // name last — which is wrong in plenty of them.
+    m_welcomeNameLabel->setText(
+        tr("Welcome back, %1").arg(m_auth ? m_auth->displayName() : QString()));
     m_welcomeServerLabel->setText(val(url.isEmpty() ? QStringLiteral("offline") : url,
                                       url.isEmpty() ? QStringLiteral("not connected")
                                       : srvOn       ? QStringLiteral("reachable")
@@ -2159,14 +2524,14 @@ void MainWindow::refreshWelcomeStatus()
     if (sigOn) {
         const QString hpb = m_callManager ? m_callManager->selectedSignalingLabel() : QString();
         const int rtt     = m_callManager ? m_callManager->selectedSignalingRttMs() : -1;
-        sigSub = hpb.isEmpty() ? QStringLiteral("HPB realtime")
+        sigSub = hpb.isEmpty() ? tr("HPB realtime")
                : (rtt >= 0 ? QStringLiteral("%1 · %2 ms").arg(hpb).arg(rtt) : hpb);
     }
-    m_welcomeSignalingLabel->setText(val(sigOn ? QStringLiteral("Connected")
-                                                : QStringLiteral("Disconnected"),
+    m_welcomeSignalingLabel->setText(val(sigOn ? tr("Connected")
+                                                : tr("Disconnected"),
                                          sigSub));
-    m_welcomePushLabel->setText(val(pushOn ? QStringLiteral("Real-time")
-                                           : QStringLiteral("Polling"),
+    m_welcomePushLabel->setText(val(pushOn ? tr("Real-time")
+                                           : tr("Polling"),
                                     pushOn ? QStringLiteral("websocket up")
                                            : QStringLiteral("fallback")));
     // Encode-load cap (same rule PublishPipeline applies, via EncodeTier.h): on
@@ -3998,18 +4363,25 @@ void MainWindow::openConversationInfo()
     int roomType = 0;
     int myType = RoomParticipant::User;
     QString name;
+    // The room's CURRENT description, so the dialog can show it rather than an
+    // empty box. A literal QString() was passed here before 0.65.3, so a
+    // moderator opening Info on a room that HAS a description saw a blank
+    // field and could only overwrite it blind -- the only thing stopping a
+    // silent wipe was the dialog's isModified() guard.
+    QString description;
     for (int i = 0; i < m_conversations->rowCount(); ++i) {
         QModelIndex idx = m_conversations->index(i, 0);
         if (idx.data(ConversationListModel::TokenRole).toString() == m_activeConvToken) {
             roomType = idx.data(ConversationListModel::TypeRole).toInt();
             name     = idx.data(ConversationListModel::DisplayNameRole).toString();
+            description = idx.data(ConversationListModel::DescriptionRole).toString();
             const auto v = idx.data(ConversationListModel::ParticipantTypeRole);
             if (v.isValid()) myType = v.toInt();
             break;
         }
     }
     auto *dlg = new ConversationInfoDialog(m_api, m_activeConvToken,
-                                           name, QString(),
+                                           name, description,
                                            roomType, myType, this);
     dlg->setAttribute(Qt::WA_DeleteOnClose);
     connect(dlg, &ConversationInfoDialog::roomChanged, this, [this]() {

@@ -794,6 +794,55 @@ void ApiClient::searchInConversation(const QString &token, const QString &query,
     });
 }
 
+void ApiClient::searchAllConversations(const QString &query, QObject *context,
+                                       std::function<void(bool, const QVector<SearchHit> &)> callback)
+{
+    // `talk-message` rather than `talk-message-current`, and NO `from` scope --
+    // that pair is what makes this search the whole account instead of one room.
+    QUrl url(m_serverUrl + QStringLiteral("/ocs/v2.php/search/providers/talk-message/search"));
+    QUrlQuery q;
+    q.addQueryItem(QStringLiteral("term"), query);
+    q.addQueryItem(QStringLiteral("limit"), QStringLiteral("30"));
+    url.setQuery(q);
+
+    QNetworkRequest req(url);
+    req.setRawHeader("OCS-APIRequest", "true");
+    req.setRawHeader("Accept", "application/json");
+    applyBasicAuth(req);
+
+    QNetworkReply *reply = m_nam.get(req);
+    bindReplyLifetime(reply, context);
+    connect(reply, &QNetworkReply::finished, context ? context : this,
+            [reply, callback]() {
+        reply->deleteLater();
+        QVector<SearchHit> hits;
+        if (reply->error() != QNetworkReply::NoError) {
+            const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+            qWarning() << "searchAllConversations: HTTP" << status << reply->errorString();
+            callback(false, hits);
+            return;
+        }
+        QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
+        const QJsonArray entries = doc.object().value("ocs").toObject()
+                                      .value("data").toObject()
+                                      .value("entries").toArray();
+        for (const QJsonValue &v : entries) {
+            const QJsonObject e = v.toObject();
+            const QJsonObject attrs = e.value("attributes").toObject();
+            SearchHit h;
+            // MessageSearch.php:313 adds the room token as `conversation`.
+            h.conversationToken = attrs.value("conversation").toString();
+            h.messageId = attrs.value("messageId").toString().toInt();
+            h.timestamp = attrs.value("timestamp").toString().toLongLong();
+            h.actorName = e.value("title").toString();
+            h.snippet   = e.value("subline").toString();
+            if (h.messageId > 0 && !h.conversationToken.isEmpty())
+                hits.append(h);
+        }
+        callback(true, hits);
+    });
+}
+
 void ApiClient::listNextcloudFolder(const QString &path, QObject *context,
                                     std::function<void(bool, const QVector<NcFileEntry> &,
                                                        int, const QString &)> callback)
@@ -1255,11 +1304,14 @@ void ApiClient::ringAttendee(const QString &token, int attendeeId, QObject *cont
 
 void ApiClient::addRoomParticipant(const QString &token, const QString &userId,
                                    QObject *context,
-                                   std::function<void(bool, const QString &)> callback)
+                                   std::function<void(bool, const QString &)> callback,
+                                   const QString &source)
 {
     QJsonObject body;
     body["newParticipant"] = userId;
-    body["source"]         = QStringLiteral("users");
+    // Whatever the picker said this id was. See the header for why this was a
+    // literal until 0.65.3 and what it broke.
+    body["source"]         = source.isEmpty() ? QStringLiteral("users") : source;
 
     auto req = makeRequest(QStringLiteral("apps/spreed/api/v4/room/") + token + "/participants");
     QNetworkReply *reply = m_nam.post(req, QJsonDocument(body).toJson());
@@ -1624,6 +1676,170 @@ void ApiClient::setNotificationLevel(const QString &token, int level, Callback c
     } else {
         put(path, body, [](bool, const QJsonObject &, int) {});
     }
+}
+
+// --- 0.65.3 room + chat endpoints ----------------------------------------
+//
+// ⚠ Note the API versions differ and are NOT interchangeable: room endpoints
+// are v4, chat and thread endpoints are v1. Every path below was read off the
+// #[ApiRoute] attribute in Talk 24.0.4's own controllers, because upstream's
+// prose docs have been wrong about this more than once.
+
+void ApiClient::setFavorite(const QString &token, bool favorite, Callback callback)
+{
+    // POST adds, DELETE removes — the room id is the whole request, there is
+    // no body either way (RoomController.php:954 / :973).
+    const QString path = QStringLiteral("apps/spreed/api/v4/room/") + token
+                         + QStringLiteral("/favorite");
+    Callback cb = callback ? callback : Callback([](bool, const QJsonObject &, int) {});
+    if (favorite)
+        post(path, QJsonObject{}, cb);
+    else
+        del(path, cb);
+}
+
+void ApiClient::setNotificationCalls(const QString &token, bool notify, Callback callback)
+{
+    // `level` here is Talk's ParticipantService notification-calls level:
+    // 1 = ring me, 0 = do not (RoomController.php:1026). It is deliberately
+    // separate from the chat notificationLevel, so a room can be
+    // mentions-only for chat and still ring for calls.
+    QJsonObject body;
+    body[QStringLiteral("level")] = notify ? 1 : 0;
+    const QString path = QStringLiteral("apps/spreed/api/v4/room/") + token
+                         + QStringLiteral("/notify-calls");
+    post(path, body, callback ? callback : Callback([](bool, const QJsonObject &, int) {}));
+}
+
+void ApiClient::fetchNoteToSelf(Callback callback)
+{
+    // GET, not POST — the endpoint is "give me my note-to-self room", and it
+    // CREATES the room on first call (RoomController.php:552). That is why a
+    // TalQ-only user never had one: nothing has ever called this, so the room
+    // was only ever created by opening the web UI.
+    get(QStringLiteral("apps/spreed/api/v4/room/note-to-self"), callback);
+}
+
+void ApiClient::unpinMessage(const QString &token, int messageId, Callback callback)
+{
+    const QString path = QStringLiteral("apps/spreed/api/v1/chat/") + token
+                         + QLatin1Char('/') + QString::number(messageId)
+                         + QStringLiteral("/pin");
+    del(path, callback ? callback : Callback([](bool, const QJsonObject &, int) {}));
+}
+
+void ApiClient::fetchMessageContext(const QString &token, int messageId, int limit,
+                                    ArrayCallback callback)
+{
+    // The messages either side of `messageId` in one request. TalQ's
+    // search-result jump used to walk history backwards a page at a time with
+    // a hard 5-page cap, so a hit older than ~500 messages simply never
+    // scrolled into view; the same path serves notification click-through.
+    QUrlQuery q;
+    q.addQueryItem(QStringLiteral("limit"), QString::number(limit));
+    const QString path = QStringLiteral("apps/spreed/api/v1/chat/") + token
+                         + QLatin1Char('/') + QString::number(messageId)
+                         + QStringLiteral("/context");
+    getArray(path, q, callback);
+}
+
+void ApiClient::fetchRecentThreads(const QString &token, int limit, ArrayCallback callback)
+{
+    // The server's own list of recently-active threads. TalQ derived this by
+    // scanning the last 200 chat messages, which silently dropped any topic
+    // whose root message had scrolled past that window.
+    QUrlQuery q;
+    q.addQueryItem(QStringLiteral("limit"), QString::number(limit));
+    const QString path = QStringLiteral("apps/spreed/api/v1/chat/") + token
+                         + QStringLiteral("/threads/recent");
+    getArray(path, q, callback);
+}
+
+void ApiClient::startRecording(const QString &token, int status, Callback callback)
+{
+    QJsonObject body;
+    body[QStringLiteral("status")] = status;
+    post(QStringLiteral("apps/spreed/api/v1/recording/") + token, body,
+         callback ? callback : Callback([](bool, const QJsonObject &, int) {}));
+}
+
+void ApiClient::stopRecording(const QString &token, Callback callback)
+{
+    del(QStringLiteral("apps/spreed/api/v1/recording/") + token,
+        callback ? callback : Callback([](bool, const QJsonObject &, int) {}));
+}
+
+void ApiClient::setThreadNotificationLevel(const QString &token, int threadId, int level,
+                                           Callback callback)
+{
+    QJsonObject body;
+    body[QStringLiteral("level")] = level;
+    const QString path = QStringLiteral("apps/spreed/api/v1/chat/") + token
+                         + QStringLiteral("/threads/") + QString::number(threadId)
+                         + QStringLiteral("/notify");
+    post(path, body, callback ? callback : Callback([](bool, const QJsonObject &, int) {}));
+}
+
+void ApiClient::setArchived(const QString &token, bool archived, Callback callback)
+{
+    const QString path = QStringLiteral("apps/spreed/api/v4/room/") + token
+                         + QStringLiteral("/archive");
+    Callback cb = callback ? callback : Callback([](bool, const QJsonObject &, int) {});
+    if (archived) post(path, QJsonObject{}, cb);
+    else          del(path, cb);
+}
+
+void ApiClient::setImportant(const QString &token, bool important, Callback callback)
+{
+    const QString path = QStringLiteral("apps/spreed/api/v4/room/") + token
+                         + QStringLiteral("/important");
+    Callback cb = callback ? callback : Callback([](bool, const QJsonObject &, int) {});
+    if (important) post(path, QJsonObject{}, cb);
+    else           del(path, cb);
+}
+
+static QString pollPath(const QString &token, int pollId = 0)
+{
+    QString p = QStringLiteral("apps/spreed/api/v1/poll/") + token;
+    if (pollId > 0) p += QLatin1Char('/') + QString::number(pollId);
+    return p;
+}
+
+void ApiClient::fetchPoll(const QString &token, int pollId, Callback callback)
+{
+    get(pollPath(token, pollId), callback);
+}
+
+void ApiClient::votePoll(const QString &token, int pollId, const QList<int> &optionIds,
+                         Callback callback)
+{
+    QJsonArray ids;
+    for (int id : optionIds) ids.append(id);
+    QJsonObject body;
+    body[QStringLiteral("optionIds")] = ids;
+    post(pollPath(token, pollId), body, callback);
+}
+
+void ApiClient::closePoll(const QString &token, int pollId, Callback callback)
+{
+    del(pollPath(token, pollId), callback);
+}
+
+void ApiClient::createPoll(const QString &token, const QString &question,
+                           const QStringList &options, int resultMode, int maxVotes,
+                           int threadId, Callback callback)
+{
+    QJsonArray opts;
+    for (const QString &o : options) opts.append(o);
+    QJsonObject body;
+    body[QStringLiteral("question")]   = question;
+    body[QStringLiteral("options")]    = opts;
+    body[QStringLiteral("resultMode")] = resultMode;   // 0 public, 1 hidden until closed
+    body[QStringLiteral("maxVotes")]   = maxVotes;     // 0 = unlimited
+    // Keep a poll created while a topic is open inside that topic, the same way
+    // messages and file shares now do.
+    if (threadId > 0) body[QStringLiteral("threadId")] = threadId;
+    post(pollPath(token), body, callback);
 }
 
 void ApiClient::cancelAll()

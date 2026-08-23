@@ -1,4 +1,5 @@
 #include "models/MessageListModel.h"
+#include <QPointer>
 #include "core/MessageCache.h"
 #include "core/ChatSyncLogic.h"
 #include "core/TalqLog.h"
@@ -182,6 +183,9 @@ QVariant MessageListModel::data(const QModelIndex &index, int role) const
             return m.replyTo.isEmpty() ? QString() : m.replyTo["message"].toString();
         case ReplyToAuthorRole:
             return m.replyTo.isEmpty() ? QString() : m.replyTo["actorDisplayName"].toString();
+        case ReactionsSelfRole: return m.reactionsSelf;
+        case PollIdRole:        return m.pollId;
+        case PollQuestionRole:  return m.pollQuestion;
         case ReactionsRole: {
             QStringList parts;
             for (auto it = m.reactions.begin(); it != m.reactions.end(); ++it) {
@@ -218,6 +222,8 @@ QVariant MessageListModel::data(const QModelIndex &index, int role) const
             return m.threadId;
         case FileNameRole:
             return m.fileName;
+        case FilePathRole:
+            return m.filePath;
         case FileMimeRole:
             return m.fileMimetype;
         case FileSizeRole:
@@ -255,6 +261,9 @@ QHash<int, QByteArray> MessageListModel::roleNames() const
         {ReplyToTextRole,   "replyToText"},
         {ReplyToAuthorRole, "replyToAuthor"},
         {ReactionsRole,     "reactions"},
+        {ReactionsSelfRole, "reactionsSelf"},
+        {PollIdRole,        "pollId"},
+        {PollQuestionRole,  "pollQuestion"},
         {TimeStringRole,    "timeString"},
         {ShowDateSeparatorRole, "showDateSeparator"},
         {DateStringRole,    "dateString"},
@@ -262,6 +271,7 @@ QHash<int, QByteArray> MessageListModel::roleNames() const
         {SendStatusRole,    "sendStatus"},
         {ThreadIdRole,      "msgThreadId"},
         {FileNameRole,      "fileName"},
+        {FilePathRole,      "filePath"},
         {FileMimeRole,      "fileMime"},
         {FileSizeRole,      "fileSize"},
         {FileLinkRole,      "fileLink"},
@@ -467,6 +477,17 @@ void MessageListModel::loadHistory()
 
     QUrlQuery params;
     params.addQueryItem("lookIntoFuture", "0");
+    // Do not let a BACKGROUND read dismiss the user's Talk
+    // notifications. The chat GET defaults to markNotificationsAsRead=1,
+    // so merely paging history, refreshing the read marker or filling a
+    // gap silently cleared notifications the user had not looked at --
+    // and it defeated the deliberate "opening a room while TalQ is in the
+    // background must not mark it read" guard in setConversationToken,
+    // because the follow-up GET dismissed them anyway.
+    // Dismissal still happens, via the explicit POST .../read, which
+    // calls markMentionNotificationsRead server-side
+    // (ChatController.php:1902). Capability: chat-keep-notifications.
+    params.addQueryItem("markNotificationsAsRead", "0");
     params.addQueryItem("limit", QString::number(kChatPageLimit));
     // Read marker must NOT advance as a side-effect of fetching history — the
     // NC server marks read by DEFAULT when setReadMarker is absent. Reads are
@@ -567,7 +588,7 @@ void MessageListModel::loadHistory()
                 m_historyUntilRemainingPages = 0;
                 emit historyUntilSettled(id, found);
                 if (!found)
-                    emit errorOccurred(QStringLiteral("Message not found in recent history"));
+                    emit errorOccurred(tr("Message not found in recent history"));
             } else {
                 loadHistory();
                 return;
@@ -586,6 +607,81 @@ void MessageListModel::loadHistoryUntil(int messageId)
             return;
         }
     }
+    // Preferred path: ask the server for the messages AROUND the target in one
+    // request.
+    //
+    // The fallback below walks history backwards a page at a time and gives up
+    // after kMaxPages, so a search hit — or a clicked notification — older than
+    // roughly 5 x kChatPageLimit messages simply never scrolled into view, and
+    // the user got "Message not found in recent history" for a message that is
+    // plainly still there. In a busy room that is days of history, not months.
+    if (m_contextCapable && m_api && !m_token.isEmpty()) {
+        const QString currentToken = m_token;
+        QPointer<MessageListModel> guard(this);
+        // Centred on the target, so half the window lands either side of it.
+        m_api->fetchMessageContext(m_token, messageId, kChatPageLimit,
+            [this, guard, currentToken, messageId](bool ok, const QJsonArray &data, int) {
+                if (!guard || m_token != currentToken) return;   // destroyed or stale
+                if (!ok) {
+                    // Endpoint refused: fall back to the page walk rather than
+                    // failing the jump outright.
+                    qWarning() << "chat context fetch failed for" << messageId
+                               << "- falling back to paging history backwards";
+                    beginPagedHistoryUntil(messageId);
+                    return;
+                }
+
+                // Same admission rules as the history merge, so a context
+                // fetch cannot smuggle in rows the normal path filters out.
+                QVector<Message> fetched;
+                for (const auto &val : data) {
+                    Message m = Message::fromJson(val.toObject());
+                    if (m_messageIds.contains(m.id) || m.isReactionMessage()
+                        || m.isCallJoinLeave() || m.isEditMessage() || m.isDeletedMessage())
+                        continue;
+                    if (!passesThreadFilter(m))
+                        continue;
+                    fetched.append(m);
+                }
+
+                if (!fetched.isEmpty()) {
+                    m_cache->saveMessages(m_token, fetched);
+                    for (const auto &m : fetched)
+                        m_messageIds.insert(m.id);
+                    const int first = m_messages.size();
+                    beginInsertRows({}, first, first + fetched.size() - 1);
+                    m_messages.append(fetched);
+                    endInsertRows();
+                    // ⚠ Load-bearing here in a way it is not for loadHistory().
+                    // A context window is centred on the target, so it can
+                    // contain messages NEWER than our current newest — the
+                    // append-is-always-older assumption does not hold. This is
+                    // the single ordering authority and it rebuilds the dedup
+                    // mirror and the oldest cursor from the corrected list.
+                    enforceNewestFirstInvariant();
+                }
+                if (!m_messages.isEmpty())
+                    m_oldestMessageId = m_messages.last().id;
+
+                bool found = false;
+                for (const auto &m : m_messages)
+                    if (m.id == messageId) { found = true; break; }
+                emit historyUntilSettled(messageId, found);
+                if (!found)
+                    emit errorOccurred(tr("Message not found in recent history"));
+                startPoller();
+            });
+        return;
+    }
+
+    beginPagedHistoryUntil(messageId);
+}
+
+// The pre-0.65.3 behaviour: page backwards until the target shows up or the
+// budget runs out. Still the whole implementation on a server without
+// `chat-get-context`, and the fallback when the context endpoint refuses.
+void MessageListModel::beginPagedHistoryUntil(int messageId)
+{
     static constexpr int kMaxPages = 5;
     m_historyUntilTargetId = messageId;
     m_historyUntilRemainingPages = kMaxPages;
@@ -649,6 +745,7 @@ void MessageListModel::refreshReadMarker()
     // effects. We only care about the X-Chat-Last-Common-Read header.
     QUrlQuery params;
     params.addQueryItem("lookIntoFuture", "0");
+    params.addQueryItem("markNotificationsAsRead", "0");
     params.addQueryItem("limit", "1");
     params.addQueryItem("setReadMarker", "0");
 
@@ -678,6 +775,7 @@ void MessageListModel::refreshLatest()
     // This gets the absolute newest messages, regardless of what the cache had.
     QUrlQuery params;
     params.addQueryItem("lookIntoFuture", "0");
+    params.addQueryItem("markNotificationsAsRead", "0");
     params.addQueryItem("limit", QString::number(kChatPageLimit));
     // Do NOT mark read here — the server marks read by default when
     // setReadMarker is absent, which would defeat the focus gate on open
@@ -1058,6 +1156,7 @@ void MessageListModel::runGapFillStep()
     }
     QUrlQuery params;
     params.addQueryItem("lookIntoFuture",     "0");
+    params.addQueryItem("markNotificationsAsRead", "0");
     params.addQueryItem("limit",              "100");
     params.addQueryItem("setReadMarker",      "0");  // never mark read on backfill (server default is 1)
     params.addQueryItem("lastKnownMessageId", QString::number(m_gapFillCursor));
@@ -1835,7 +1934,8 @@ void MessageListModel::sendFileWithCaption(const QString &filePath, const QStrin
 
     qDebug() << "Uploading file:" << fileName << "(" << fileData.size() << "bytes)";
 
-    QString uploadPath = "/remote.php/dav/files/" + m_api->user() + "/Talk/" + fileName;
+    QString uploadPath = "/remote.php/dav/files/" + m_api->user()
+                         + "/" + attachmentFolder() + "/" + fileName;
     auto *uploadReply = m_api->putAbsoluteUrl(uploadPath, fileData);
 
     // Track upload progress
@@ -1866,6 +1966,40 @@ void MessageListModel::sendFileWithCaption(const QString &filePath, const QStrin
     });
 }
 
+// Where uploads go, and where their share path is rooted. The user can set
+// this server-side (capabilities config.attachments.folder); TalQ hard-coded
+// "Talk" until 0.65.3 and so ignored the choice. All three call sites -- the
+// WebDAV upload path, the share body, and the chunked-upload destination --
+// must agree, which is why they all come through here.
+QString MessageListModel::attachmentFolder() const
+{
+    QString f = m_attachmentFolder.isEmpty() ? QStringLiteral("Talk") : m_attachmentFolder;
+    while (f.startsWith(QLatin1Char('/'))) f.remove(0, 1);
+    while (f.endsWith(QLatin1Char('/')))   f.chop(1);
+    return f.isEmpty() ? QStringLiteral("Talk") : f;
+}
+
+// Forward an existing attachment by re-sharing its path into another
+// conversation. Talk 24 has no forward endpoint, so this is what forwarding a
+// file means; `path` comes from the file rich-object on the source message.
+void MessageListModel::shareExistingFile(const QString &path, const QString &token)
+{
+    if (path.isEmpty() || token.isEmpty()) return;
+    QJsonObject body;
+    body["shareType"]   = 10;          // share to a Talk conversation
+    body["shareWith"]   = token;
+    body["path"]        = path;
+    body["permissions"] = 1;           // read-only for recipients
+    m_api->post("apps/files_sharing/api/v1/shares", body,
+        [this, token](bool ok, const QJsonObject &, int) {
+            if (!ok) {
+                emit errorOccurred(tr("Could not forward the attachment."));
+                return;
+            }
+            if (m_token == token) refreshLatest();
+        });
+}
+
 void MessageListModel::shareUploadedFile(const QString &fileName, const QString &token,
                                          const QString &caption)
 {
@@ -1874,15 +2008,27 @@ void MessageListModel::shareUploadedFile(const QString &fileName, const QString 
     QJsonObject body;
     body["shareType"] = 10;  // share to Talk conversation
     body["shareWith"] = token;
-    body["path"] = QString("Talk/" + fileName);
+    body["path"] = attachmentFolder() + "/" + fileName;
     body["permissions"] = 1;  // read permission for recipients
 
-    // Attach caption via talkMetaData (server capability: media-caption)
-    if (!caption.isEmpty()) {
-        QJsonObject metaData;
-        metaData["caption"] = caption;
+    // talkMetaData carries everything about the share that is not the file
+    // itself. Until 0.65.3 only the caption was sent, so attaching a file while
+    // a topic was open dropped it into the ROOM ROOT instead of the topic —
+    // silently, in the feature 0.65.x had just shipped. The user saw their
+    // upload vanish from the topic they were looking at.
+    QJsonObject metaData;
+    if (!caption.isEmpty())
+        metaData["caption"] = caption;            // capability: media-caption
+    // ⚠ Only when the open conversation IS the one being shared into. Uploads
+    // complete asynchronously, so the user can have moved on by the time this
+    // runs — and m_threadId belongs to whatever is open NOW. Without the
+    // token check, a share finishing after a room switch would be filed under
+    // a topic id from a different conversation.
+    // Read server-side by Chat/SystemMessage/Listener.php:435.
+    if (m_threadId > 0 && m_token == token)
+        metaData["threadId"] = m_threadId;        // capability: threads
+    if (!metaData.isEmpty())
         body["talkMetaData"] = QString::fromUtf8(QJsonDocument(metaData).toJson(QJsonDocument::Compact));
-    }
 
     m_api->post("apps/files_sharing/api/v1/shares", body,
         [this, fileName, token](bool ok, const QJsonObject &, int) {
@@ -1938,7 +2084,8 @@ void MessageListModel::uploadFileChunked(const QString &readPath, const QString 
     const QString uuid = QUuid::createUuid().toString(QUuid::Id128);  // 32 hex chars, no braces
     st->uploadFolder = "/remote.php/dav/uploads/" + m_api->user() + "/talq-" + uuid;
     st->destUrl = m_api->serverUrl()
-                + "/remote.php/dav/files/" + m_api->user() + "/Talk/" + fileName;
+                + "/remote.php/dav/files/" + m_api->user()
+                + "/" + attachmentFolder() + "/" + fileName;
 
     qDebug() << "Chunked upload:" << fileName << "(" << st->size << "bytes, "
              << st->chunkSize << "B chunks) ->" << st->uploadFolder;

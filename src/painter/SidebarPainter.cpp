@@ -218,6 +218,8 @@ void SidebarPainter::rebuildLayouts()
         cl.conversationType = m_model->data(idx, ConversationListModel::TypeRole).toInt();
         cl.unreadCount = m_model->data(idx, ConversationListModel::UnreadCountRole).toInt();
         cl.unreadMention = m_model->data(idx, ConversationListModel::UnreadMentionRole).toBool();
+        cl.unreadMentionDirect = m_model->data(idx, ConversationListModel::UnreadMentionDirectRole).toBool();
+        cl.isArchived = m_model->data(idx, ConversationListModel::ArchivedRole).toBool();
         cl.isFavorite = m_model->data(idx, ConversationListModel::FavoriteRole).toBool();
         cl.lastActivity = m_model->data(idx, ConversationListModel::LastActivityRole).toLongLong();
         cl.notificationLevel = m_model->data(idx, ConversationListModel::NotificationLevelRole).toInt();
@@ -237,6 +239,13 @@ void SidebarPainter::rebuildLayouts()
             !cl.displayName.contains(m_filterText, Qt::CaseInsensitive))
             continue;
 
+        // Archived rooms are hidden from EVERY mode except the archived one.
+        // Filtering them out here rather than per-case is deliberate: an
+        // archived room must not reappear just because it is unread, a
+        // favourite, or a group. That is the whole point of archiving it.
+        if (cl.isArchived != (m_filterMode == FilterArchived))
+            continue;
+
         bool modeOk = true;
         switch (m_filterMode) {
         case FilterUnread:    modeOk = cl.unreadCount > 0;          break;
@@ -244,6 +253,7 @@ void SidebarPainter::rebuildLayouts()
         case FilterDirect:    modeOk = cl.conversationType == 1;    break;  // OneToOne
         case FilterGroups:    modeOk = cl.conversationType == 2
                                     || cl.conversationType == 3;    break;  // Group / Public
+        case FilterArchived:  modeOk = true;                        break;  // already filtered above
         case FilterAll:
         default:              modeOk = true;                        break;
         }
@@ -771,7 +781,7 @@ void SidebarPainter::paintRowNormal(QPainter *p, const ConversationLayout &cl, i
     // Unread badge
     if (cl.unreadCount > 0) {
         QRectF badgeArea(previewRight, bottomY - 1, textRight - previewRight, BadgeHeight);
-        paintUnreadBadge(p, cl.unreadCount, cl.unreadMention, badgeArea);
+        paintUnreadBadge(p, cl.unreadCount, cl.unreadMention, cl.unreadMentionDirect, badgeArea);
     }
 
     // Muted label — full-alpha textMuted (the dedicated de-emphasized token,
@@ -825,7 +835,16 @@ void SidebarPainter::paintRowSqueezed(QPainter *p, const ConversationLayout &cl,
         qreal badgeX = avatarRect.right() - badgeW / 2.0;
         qreal badgeY = avatarRect.top() - BadgeHeight / 2.0 + 2;
 
-        QColor bgColor = cl.unreadMention ? m_theme.danger : m_theme.accent;
+        // Three levels rather than two. `unreadMention` is set by an @all
+        // just as much as by a direct @you, so before 0.65.3 a room-wide
+        // announcement raised the same alarm-red badge as someone actually
+        // asking you something -- which trains people to ignore the red one.
+        //   accent = plain unread   amber = @all   danger = @you
+        // Servers without `direct-mention-flag` never set the direct bit, so
+        // every mention stays amber there rather than being wrongly promoted.
+        QColor bgColor = cl.unreadMentionDirect ? m_theme.danger
+                       : cl.unreadMention       ? m_theme.amber
+                                                : m_theme.accent;
         p->setPen(Qt::NoPen);
         p->setBrush(bgColor);
         p->drawRoundedRect(QRectF(badgeX, badgeY, badgeW, BadgeHeight),
@@ -919,7 +938,8 @@ void SidebarPainter::paintAvatar(QPainter *p, const ConversationLayout &cl, cons
 // Unread badge
 // ═══════════════════════════════════════════════════════
 
-void SidebarPainter::paintUnreadBadge(QPainter *p, int count, bool mention, const QRectF &badgeArea)
+void SidebarPainter::paintUnreadBadge(QPainter *p, int count, bool mention, bool directMention,
+                                      const QRectF &badgeArea)
 {
     QString countStr = count > 99 ? QStringLiteral("99+") : QString::number(count);
     QFont badgeFont;
@@ -933,10 +953,14 @@ void SidebarPainter::paintUnreadBadge(QPainter *p, int count, bool mention, cons
     qreal badgeX = badgeArea.right() - badgeW;
     qreal badgeY = badgeArea.top() + (badgeArea.height() - BadgeHeight) / 2.0;
 
-    // Mention = clay (danger), plain unread = teal. Differentiated, and
-    // consistent with the squeezed-row path; teal no longer carries two
-    // meanings.
-    QColor bgColor = mention ? m_theme.danger : m_theme.unreadBadge;
+    // Three levels, matching the full-row path: direct @you = clay (danger),
+    // @all = amber, plain unread = teal. Before 0.65.3 an @all raised the same
+    // alarm colour as a direct mention, which is how a red badge stops meaning
+    // anything. Servers without `direct-mention-flag` never set the direct
+    // bit, so mentions stay amber there rather than being wrongly promoted.
+    QColor bgColor = directMention ? m_theme.danger
+                   : mention       ? m_theme.amber
+                                   : m_theme.unreadBadge;
     p->setPen(Qt::NoPen);
     p->setBrush(bgColor);
     p->drawRoundedRect(QRectF(badgeX, badgeY, badgeW, BadgeHeight),

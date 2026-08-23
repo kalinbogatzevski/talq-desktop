@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QJsonObject>
 #include <QObject>
 #include <QSettings>
 #include <QTimer>
@@ -61,6 +62,42 @@ public:
         return m_capabilities.has(feature.toStdString());
     }
     const talq::ServerCapabilities &capabilities() const { return m_capabilities; }
+
+    // --- server-side config (capabilities `spreed.config`) ----------------
+    // The user's and admin's server preferences, e.g.
+    //   config.attachments.folder            where uploads belong
+    //   config.chat.read-privacy             0 = public, 1 = private
+    //   config.chat.typing-privacy           same encoding
+    //   config.call.recording                whether recording is available
+    //   config.conversations.can-create      whether this user may create rooms
+    //
+    // Every accessor takes a fallback and returns it when the section or key is
+    // absent, because an older Talk sends only a fraction of these. Pick the
+    // fallback to mean "behave the way TalQ did before this was readable", so a
+    // missing key can never change existing behaviour.
+    bool configBool(const QString &section, const QString &key, bool fallback) const;
+    int configInt(const QString &section, const QString &key, int fallback) const;
+    QString configString(const QString &section, const QString &key,
+                         const QString &fallback = QString()) const;
+
+    // Talk encodes both privacy settings as 0 = public / 1 = private
+    // (Participant::PRIVACY_PUBLIC). Absent -> public, which is what TalQ did
+    // unconditionally before it could read them.
+    bool sharesReadStatus() const { return configInt(QStringLiteral("chat"),
+                                                     QStringLiteral("read-privacy"), 0) == 0; }
+    bool sharesTypingStatus() const { return configInt(QStringLiteral("chat"),
+                                                       QStringLiteral("typing-privacy"), 0) == 0; }
+    // Empty means "server did not say" -> callers keep the historic "Talk/".
+    QString attachmentFolder() const { return configString(QStringLiteral("attachments"),
+                                                           QStringLiteral("folder")); }
+    bool canCreateConversations() const { return configBool(QStringLiteral("conversations"),
+                                                            QStringLiteral("can-create"), true); }
+    bool callsEnabledOnServer() const { return configBool(QStringLiteral("call"),
+                                                          QStringLiteral("enabled"), true); }
+    bool recordingAvailable() const { return configBool(QStringLiteral("call"),
+                                                        QStringLiteral("recording"), false); }
+    bool recordingConsentRequired() const { return configBool(QStringLiteral("call"),
+                                                              QStringLiteral("recording-consent"), false); }
     bool supportsConversationTags() const { return m_capabilities.supportsConversationTags(); }
     bool supportsConversationPresets() const { return m_capabilities.supportsConversationPresets(); }
     bool supportsVoiceRooms() const { return m_capabilities.supportsVoiceRooms(); }
@@ -109,6 +146,12 @@ private:
     QString m_talkVersion;
     QString m_signalingMode;
     talq::ServerCapabilities m_capabilities;
+    // `spreed.config` verbatim. Replaced wholesale on each capabilities fetch
+    // and cleared on logout, for the same reason ServerCapabilities refuses to
+    // merge: one process can sign out of a Talk 24 server and into an older
+    // one, and carrying the first server's config across would answer questions
+    // about the second server with the first one's settings.
+    QJsonObject m_serverConfig;
     // Bounded retry for the one-shot capabilities fetch. Without it a single
     // lost request at login disables every gated feature for the session.
     static constexpr int kMaxCapabilityRetries = 3;

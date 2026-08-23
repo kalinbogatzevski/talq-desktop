@@ -942,6 +942,39 @@ void CallStage::paintEvent(QPaintEvent *)
             p.setPen(th.controlInk);
             p.drawText(lbl, Qt::AlignCenter, label);
         }
+        // ── Being recorded ──────────────────────────────────────────────
+        // Painted BEFORE the auto-hiding chrome and outside its alpha, so it
+        // never fades with the control bar: the one thing a participant must
+        // always be able to see is that the call is being recorded. Driven off
+        // the ROOM's state, so it shows whether the recording was started here,
+        // from the web UI, or by anyone else.
+        if (m_call && m_call->isRecording()) {
+            const int st = m_call->recordingState();
+            // 3/4 = the backend is still joining; say so rather than claim a
+            // recording is already running. 5 = it failed and Talk leaves the
+            // room in that state until a moderator clears it.
+            const QString label = (st == 3 || st == 4) ? tr("RECORDING STARTING")
+                                : (st == 5)            ? tr("RECORDING FAILED")
+                                                       : tr("RECORDING");
+            QFont rf = monoFont(8); rf.setBold(true);
+            p.setFont(rf);
+            QFontMetrics rfm(rf);
+            const qreal dot = 7.0;
+            const qreal wRec = rfm.horizontalAdvance(label) + 12 + dot + 6;
+            QRectF rec((width() - wRec) / 2.0, 10, wRec, 18);
+            QColor recBg = th.danger; recBg.setAlphaF(0.94);
+            p.setBrush(recBg); p.setPen(Qt::NoPen);
+            p.drawRoundedRect(rec, 9, 9);
+            // The dot, then the word. controlInk is the theme's ink for a
+            // danger fill, so this stays readable in all four themes.
+            p.setBrush(th.controlInk);
+            p.drawEllipse(QPointF(rec.left() + 6 + dot / 2, rec.center().y()), dot / 2, dot / 2);
+            p.setPen(th.controlInk);
+            p.drawText(QRectF(rec.left() + 6 + dot + 6, rec.top(),
+                              rec.width() - (6 + dot + 6) - 6, rec.height()),
+                       Qt::AlignVCenter | Qt::AlignLeft, label);
+        }
+
         paintStatusPill(p, th);
         if (m_telemetryOpen) paintTelemetry(p, th);
         // Top info/action chrome + bottom control bar fade together.
@@ -1425,6 +1458,9 @@ void CallStage::buildButtons()
 
     QStringList ctl = {"mic", "cam"};
     if (active)          ctl << "share" << "telemetry";
+    // Recording is moderator-only server-side and needs a recording backend
+    // deployed, so the button appears only where it can actually work.
+    if (active && m_call->canControlRecording()) ctl << "record";
     if (active && group) ctl << "roster" << "layout";
     ctl << "full";
 
@@ -1451,6 +1487,9 @@ void CallStage::buildButtons()
                                 b.tip = b.on ? tr("Turn camera off") : tr("Turn camera on"); }
         else if (id=="share") { b.on = m_call->isScreenSharing();
                                 b.tip = b.on ? tr("Stop sharing") : tr("Share screen"); }
+        else if (id=="record"){ b.on = m_call->isRecording();
+                                b.tip = b.on ? tr("Stop recording")
+                                             : tr("Record this call"); }
         else if (id=="telemetry"){ b.on = m_telemetryOpen;
                                 b.tip = b.on ? tr("Hide telemetry") : tr("Telemetry"); }
         else if (id=="roster"){ b.on = m_rosterOpen;
@@ -2052,8 +2091,8 @@ void CallStage::computeActionPillGeometry()
     // into the SAME member rects, so the drawn buttons and the hit-rects can't
     // drift. Keep the constants/labels in lockstep with paintActionPills.
     const QString highLabel = highQualityLabel();
-    const QString kLowLabel = QStringLiteral("Low (180p)");
-    const QString kMedLabel = QStringLiteral("Medium (360p)");
+    const QString kLowLabel = tr("Low (180p)");
+    const QString kMedLabel = tr("Medium (360p)");
     const QString qVal = (m_qualityOverride < 0)
         ? tr("AUTO")
         : (m_qualityOverride == 0 ? kLowLabel
@@ -2142,8 +2181,8 @@ void CallStage::paintActionPills(QPainter &p, const PainterTheme &th)
     // Display values — deterministic from the same state computeActionPillGeometry
     // used, so positions never drift from the drawn content.
     const QString highLabel = highQualityLabel();
-    const QString kLowLabel = QStringLiteral("Low (180p)");
-    const QString kMedLabel = QStringLiteral("Medium (360p)");
+    const QString kLowLabel = tr("Low (180p)");
+    const QString kMedLabel = tr("Medium (360p)");
     const QString qVal = (m_qualityOverride < 0)
         ? tr("AUTO")
         : (m_qualityOverride == 0 ? kLowLabel
@@ -2471,9 +2510,9 @@ void CallStage::mouseMoveEvent(QMouseEvent *e)
         m_hoverPill = hovPill;
         if (hovPill == QStringLiteral("quality")) {
             const QString highLab = highQualityLabel();
-            const QString cur = (m_qualityOverride < 0) ? QStringLiteral("Auto")
-                : (m_qualityOverride == 0 ? QStringLiteral("Low (180p)")
-                   : m_qualityOverride == 1 ? QStringLiteral("Medium (360p)") : highLab);
+            const QString cur = (m_qualityOverride < 0) ? tr("Auto")
+                : (m_qualityOverride == 0 ? tr("Low (180p)")
+                   : m_qualityOverride == 1 ? tr("Medium (360p)") : highLab);
             QToolTip::showText(e->globalPosition().toPoint(),
                 tr("Receive quality: %1\nClick to pick the substream the SFU forwards.").arg(cur),
                 this);
@@ -2662,6 +2701,14 @@ void CallStage::mousePressEvent(QMouseEvent *e)
         if (id=="mic")        m_call->toggleMute();
         else if (id=="cam")   m_call->toggleCamera();
         else if (id=="share") emit /*window picks target*/ requestToggleShare();
+        else if (id=="record") {
+            // Audio-only: a recorded ISP support call is about what was
+            // said, and video multiplies the storage for no gain. A video
+            // option belongs in a menu, not on a one-click toggle.
+            if (m_call->isRecording()) m_call->stopRecording();
+            else                       m_call->startRecording(/*video*/false);
+            update();
+        }
         else if (id=="telemetry") { m_telemetryOpen=!m_telemetryOpen; update(); }
         else if (id=="roster")    { m_rosterOpen=!m_rosterOpen; update(); }
         else if (id=="layout")    {

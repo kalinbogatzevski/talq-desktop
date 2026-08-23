@@ -53,6 +53,16 @@ class ChatPainter : public QWidget
     Q_OBJECT
 
 public:
+    // 0.65.3 - whether to show READ status on own messages. Talk's guidance is
+    // that the read indicator is reciprocal: a user who has turned off
+    // "share my read status" server-side (config.chat.read-privacy = 1) should
+    // not be shown other people's either. TalQ both broadcast and displayed it
+    // unconditionally before it could read the setting. When false, own
+    // messages still show DELIVERED, so the user keeps the confirmation that
+    // the message left the client -- only the read distinction is withheld.
+    void setShowReadStatus(bool show) { if (m_showReadStatus == show) return;
+                                        m_showReadStatus = show; update(); }
+
     explicit ChatPainter(QWidget *parent = nullptr);
 
     // ── Property accessors ──
@@ -128,6 +138,8 @@ signals:
     void hoveredIndexChanged();
     void linkActivated(const QString &url);
     void fileClicked(int fileId, const QString &mime, const QString &fileName);
+    // A poll card was clicked; the window opens the voting dialog.
+    void pollClicked(int pollId);
     void reactionClicked(int messageId, const QString &emoji);
     void replyRequested(int messageId, const QString &author, const QString &text);
     void reactRequested(int messageId, const QPoint &globalPos);
@@ -164,6 +176,8 @@ private slots:
     void onModelReset();
 
 private:
+    bool m_showReadStatus = true;
+
     void rebuildAllLayouts();
     void clampScroll();
     int layoutIndexAtY(qreal viewportY) const;
@@ -187,6 +201,8 @@ private:
     void paintOwnMessage(QPainter *p, const MessageLayout &ml, qreal offsetY);
     void paintOtherMessage(QPainter *p, const MessageLayout &ml, qreal offsetY);
     void paintReplyQuote(QPainter *p, const MessageLayout &ml, qreal offsetY);
+    // Poll card. Non-interactive by design - the dialog does the voting.
+    void paintPollCard(QPainter *p, const MessageLayout &ml, qreal offsetY);
     void paintFileAttachment(QPainter *p, const MessageLayout &ml, qreal offsetY);
     // Timestamp floated over the bottom-right of an edge-to-edge image bubble,
     // on a dark scrim so it stays legible over any photo.

@@ -214,6 +214,14 @@ private:
     void sendHello();
     void sendBye();
     void sendRoomMessage(const QString &msgType);
+public:
+    // Whether this user shares their typing status (server-side setting,
+    // capabilities config.chat.typing-privacy: 0 = public, 1 = private).
+    // Defaults true = share, which is Talk's default and what TalQ did before
+    // it could read the setting at all.
+    void setShareTypingStatus(bool share) { m_shareTypingStatus = share; }
+private:
+    bool m_shareTypingStatus = true;
     void reconnect();
 
     ApiClient *m_api;

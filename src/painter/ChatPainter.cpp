@@ -401,6 +401,7 @@ QVariantMap ChatPainter::variantMapFromLayout(const MessageLayout &ml) const
         {"hasFile", ml.hasFile},
         {"fileId", ml.fileId},
         {"fileName", ml.fileName},
+        {"filePath", ml.filePath},
         {"fileMime", ml.fileMime},
     };
 }
@@ -430,6 +431,11 @@ QString ChatPainter::hitTestAt(qreal x, qreal y)
     // Link
     QString link = hitTestLink(ml, canvasPos);
     if (!link.isEmpty()) return QStringLiteral("link:") + link;
+
+    // Poll card. Checked BEFORE the file/reaction hits because a poll row has
+    // neither, and a poll must always be reachable by a plain click.
+    if (ml.pollId > 0 && !ml.pollRect.isNull() && ml.pollRect.contains(canvasPos))
+        return QStringLiteral("poll:%1").arg(ml.pollId);
 
     // File — include MIME for image detection
     if (ml.hasFile && !ml.fileRect.isNull() && ml.fileRect.contains(canvasPos))
@@ -524,6 +530,7 @@ static void translateLayoutY(MessageLayout &ml, qreal dy)
     ml.timeRect.translate(0, dy);
     ml.quoteRect.translate(0, dy);
     ml.fileRect.translate(0, dy);
+    ml.pollRect.translate(0, dy);
     ml.reactBarRect.translate(0, dy);
 }
 
@@ -1139,6 +1146,9 @@ void ChatPainter::mouseReleaseEvent(QMouseEvent *event)
                 QStringList rparts = hit.mid(9).split(":");
                 if (rparts.size() >= 2)
                     emit reactionClicked(rparts[0].toInt(), rparts.mid(1).join(":"));
+            } else if (hit.startsWith("poll:")) {
+                const int pid = hit.mid(5).toInt();
+                if (pid > 0) emit pollClicked(pid);
             } else if (hit.startsWith("file:")) {
                 QStringList parts = hit.mid(5).split(":");
                 if (parts.size() >= 3) {
@@ -1660,6 +1670,9 @@ void ChatPainter::paintOwnMessage(QPainter *p, const MessageLayout &ml, qreal of
     if (ml.hasFile && !ml.fileRect.isNull())
         paintFileAttachment(p, ml, offsetY);
 
+    // Poll card (see paintPollCard for why it is not interactive here)
+    paintPollCard(p, ml, offsetY);
+
     // Body text
     if (ml.bodyDoc) {
         p->save();
@@ -1728,8 +1741,12 @@ void ChatPainter::paintOwnMessage(QPainter *p, const MessageLayout &ml, qreal of
             timeColor = m_theme.danger;
             statusChar = QStringLiteral("\u26A0");  // ⚠ warning
         } else if (ml.sendStatus != QLatin1String("sending")) {
-            statusColor = ml.isRead ? m_theme.accent : timeColor;
-            statusChar = ml.isRead ? QStringLiteral("\u25C9") : QStringLiteral("\u25CB");  // ◉ read, ○ delivered
+            // Withhold the READ distinction when the user has turned off sharing
+            // their read status server-side; DELIVERED still shows, so the send
+            // confirmation is never lost. See ChatPainter::setShowReadStatus.
+            const bool showRead = ml.isRead && m_showReadStatus;
+            statusColor = showRead ? m_theme.accent : timeColor;
+            statusChar = showRead ? QStringLiteral("\u25C9") : QStringLiteral("\u25CB");  // ◉ read, ○ delivered
         }
 
         QFont statusFont = m_theme.timeFont();
@@ -1834,6 +1851,9 @@ void ChatPainter::paintOtherMessage(QPainter *p, const MessageLayout &ml, qreal 
     if (ml.hasFile && !ml.fileRect.isNull())
         paintFileAttachment(p, ml, offsetY);
 
+    // Poll card (see paintPollCard for why it is not interactive here)
+    paintPollCard(p, ml, offsetY);
+
     // Body text
     if (ml.bodyDoc) {
         p->save();
@@ -1916,8 +1936,12 @@ void ChatPainter::paintImageTimeOverlay(QPainter *p, const MessageLayout &ml, qr
         statusChar = QStringLiteral("⚠");
         statusColor = m_theme.danger;
     } else if (ml.isOwn && ml.sendStatus != QLatin1String("sending")) {
-        statusChar = ml.isRead ? QStringLiteral("◉") : QStringLiteral("○");
-        statusColor = ml.isRead ? m_theme.accent : onScrim;
+        // Withhold the READ distinction when the user has turned off sharing
+        // their read status server-side; DELIVERED still shows, so the send
+        // confirmation is never lost. See ChatPainter::setShowReadStatus.
+        const bool showRead = ml.isRead && m_showReadStatus;
+        statusChar = showRead ? QStringLiteral("◉") : QStringLiteral("○");
+        statusColor = showRead ? m_theme.accent : onScrim;
     }
 
     QFont timeFont = m_theme.timeFont();
@@ -1996,6 +2020,50 @@ void ChatPainter::paintReplyQuote(QPainter *p, const MessageLayout &ml, qreal of
 }
 
 // ─── File attachment ────────────────────────────────
+
+
+// Poll card — a bordered panel carrying the question and a Vote affordance.
+//
+// Deliberately NOT an interactive in-bubble surface. The chat is laid out once
+// and scrolled, so a row whose height changed when someone voted would reflow
+// history under the reader; and painting option rows, hover states and
+// hit-testing into the bubble is exactly the shape that produced the
+// reaction-pill hit-test drift this codebase already had to fix once. The
+// options, counts and voting live in a dialog that this card opens, which
+// keeps the row a predictable height and keeps voting off the paint path.
+//
+// Colours reuse the accent-tint pair, which theme-conformance-test already
+// scores against itself, so no new ink/fill pair is introduced here.
+void ChatPainter::paintPollCard(QPainter *p, const MessageLayout &ml, qreal offsetY)
+{
+    if (ml.pollId <= 0 || ml.pollRect.isNull()) return;
+    const QRectF pr = ml.pollRect.translated(0, offsetY);
+    p->save();
+    p->setRenderHint(QPainter::Antialiasing, true);
+    p->setBrush(m_theme.accentSoft);
+    p->setPen(QPen(m_theme.accent, 1.0));
+    p->drawRoundedRect(pr.adjusted(0.5, 0.5, -0.5, -0.5), 10, 10);
+
+    QFont qf = m_theme.bodyFont();
+    qf.setBold(true);
+    p->setFont(qf);
+    p->setPen(m_theme.accentSoftInk);
+    const QFontMetrics qfm(qf);
+    const QRectF qr(pr.left() + 12, pr.top() + 12,
+                    pr.width() - 24,
+                    qMax(qreal(0), qMin(qreal(qfm.lineSpacing() * 2),
+                                        pr.height() - 12 - 18 - 12)));
+    p->drawText(qr, Qt::TextWordWrap | Qt::AlignTop | Qt::AlignLeft, ml.pollQuestion);
+
+    QFont af = m_theme.timeFont();
+    af.setBold(true);
+    p->setFont(af);
+    p->drawText(QRectF(pr.left() + 12, pr.bottom() - 12 - 18, pr.width() - 24, 18),
+                Qt::AlignVCenter | Qt::AlignLeft,
+                QStringLiteral("\U0001F4CA  ") + tr("Poll — click to vote"));
+    p->restore();
+}
+
 
 void ChatPainter::paintFileAttachment(QPainter *p, const MessageLayout &ml, qreal offsetY)
 {
@@ -2152,9 +2220,27 @@ void ChatPainter::paintReactions(QPainter *p, const MessageLayout &ml, qreal off
 
         QRectF pill(x, bar.top(), pillW, pillH);
 
+        // Your own reactions read differently from everyone else's.
+        //
+        // Until 0.65.3 TalQ did not parse `reactionsSelf` at all, so every pill
+        // looked identical and there was no way to tell "three people liked
+        // this" from "three people including me" -- nor, before clicking,
+        // whether a click would add your reaction or take it away.
+        //
+        // Marked with the accent tint rather than a border so the bar keeps its
+        // shape and nothing shifts by a pixel between the two states; the ink
+        // is scored against whichever fill is actually used.
+        const bool mine = ml.reactionsSelf.contains(emoji);
+        QColor thisPillBg = pillBg;
+        QColor thisCountColor = countColor;
+        if (mine) {
+            thisPillBg = m_theme.accentSoft;
+            thisCountColor = m_theme.accentSoftInk;
+        }
+
         // Pill background
         p->setPen(Qt::NoPen);
-        p->setBrush(pillBg);
+        p->setBrush(thisPillBg);
         p->drawRoundedRect(pill, pillH / 2.0, pillH / 2.0);
 
         // Emoji
@@ -2171,7 +2257,7 @@ void ChatPainter::paintReactions(QPainter *p, const MessageLayout &ml, qreal off
         }
 
         // Count
-        p->setPen(countColor);
+        p->setPen(thisCountColor);
         p->setFont(countFont);
         p->drawText(QRectF(x + pillPadX + emojiW + lp.emojiCountGap, bar.top(), countW, pillH),
                      Qt::AlignCenter, count);

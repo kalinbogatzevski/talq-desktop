@@ -66,6 +66,15 @@ struct MessageLayout
     bool hasFile = false;
     int fileId = 0;
     QString fileName;
+    // Path in the user's Files, so a forward can re-share the attachment.
+    QString filePath;
+    // Emoji the CURRENT user has reacted with, so their own pills can be
+    // marked. Without it a pill cannot say whether you are in the count.
+    QStringList reactionsSelf;
+    // Poll card. pollId > 0 means this row renders a poll instead of prose.
+    int pollId = 0;
+    QString pollQuestion;
+    QRectF pollRect;
     QString fileMime;
     qint64 fileSize = 0;
 

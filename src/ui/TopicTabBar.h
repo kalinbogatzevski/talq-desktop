@@ -43,7 +43,15 @@ signals:
     void allMessagesSelected();
     void newTopicRequested();
 
+public:
+    // Whether the server supports per-topic notification levels
+    // (`threads`). False hides the submenu rather than offering a
+    // control that would 404.
+    void setThreadsCapable(bool c) { m_threadsCapable = c; }
+
 private:
+    bool m_threadsCapable = false;
+
     void rebuild();
     void applyBarChrome();   // bar bg/border + thin scrollbar, palette-driven
     // Returns the chip's top-level widget: either the QPushButton itself (no

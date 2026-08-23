@@ -2,6 +2,7 @@
 
 #include <QObject>
 #include <QString>
+#include <QStringList>
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QDateTime>
@@ -48,6 +49,26 @@ public:
     // but we treat it as an opaque string.
     QString referenceId;
     QJsonObject reactions;
+    // 0.65.3. Which reactions the CURRENT user has already left on this
+    // message (`reactionsSelf`, a list of emoji). Without it a client cannot
+    // tell "3 people liked this" from "3 people including me liked this", so
+    // the pill cannot be highlighted and clicking it cannot know whether it is
+    // adding or retracting. ⚠ Talk deliberately omits this field from the
+    // `lastMessage` embedded in a conversation for performance
+    // (ResponseDefinitions.php:515), so it is only populated on real chat
+    // fetches — never rely on it in sidebar previews.
+    QStringList reactionsSelf;
+    // Whether the server says to render this message as markdown. TalQ applied
+    // markdown to EVERY message until 0.65.3, which ate asterisks and
+    // underscores in pasted paths, globs and code that the server had marked
+    // plain. Absent on older servers -> true, i.e. exactly the old behaviour.
+    bool markdown = true;
+    // Poll (`talk-polls`). Non-zero pollId means this message IS a poll; the
+    // question is kept separately because the body is deliberately emptied so
+    // the poll renders as a card rather than as its own question in prose.
+    int pollId = 0;
+    QString pollQuestion;
+    bool hasPoll() const { return pollId > 0; }
     QString sendStatus;
     QString systemMessage;
     bool silent = false;   // sender used "Send silently" — receivers must
@@ -58,6 +79,12 @@ public:
     QString fileMimetype;
     qint64 fileSize = 0;
     QString fileLink;
+    // 0.65.3 - the file's path in the user's own Files, sent by Talk on the
+    // file rich-object (Chat/Parser/SystemMessage.php:893). Needed to FORWARD
+    // an attachment: there is no forward endpoint in Talk 24, so forwarding a
+    // file means re-sharing this path into the target conversation. Without it
+    // a forwarded image arrived as the literal text "[File: name]".
+    QString filePath;
     QString filePreviewUrl;  // empty if no preview
     int fileId = 0;
     bool hasFile() const { return fileId > 0; }

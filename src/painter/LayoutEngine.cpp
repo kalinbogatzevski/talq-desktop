@@ -88,11 +88,15 @@ MessageLayout LayoutEngine::computeLayout(
     ml.replyToAuthor = model->data(idx, MessageListModel::ReplyToAuthorRole).toString();
     ml.replyToText  = model->data(idx, MessageListModel::ReplyToTextRole).toString();
     ml.reactions    = model->data(idx, MessageListModel::ReactionsRole).toString();
+    ml.reactionsSelf = model->data(idx, MessageListModel::ReactionsSelfRole).toStringList();
+    ml.pollId       = model->data(idx, MessageListModel::PollIdRole).toInt();
+    ml.pollQuestion = model->data(idx, MessageListModel::PollQuestionRole).toString();
 
     // File attachment
     ml.hasFile  = model->data(idx, MessageListModel::HasFileRole).toBool();
     ml.fileId   = model->data(idx, MessageListModel::FileIdRole).toInt();
     ml.fileName = model->data(idx, MessageListModel::FileNameRole).toString();
+    ml.filePath = model->data(idx, MessageListModel::FilePathRole).toString();
     ml.fileMime = model->data(idx, MessageListModel::FileMimeRole).toString();
     ml.fileSize = model->data(idx, MessageListModel::FileSizeRole).toLongLong();
 
@@ -290,6 +294,28 @@ MessageLayout LayoutEngine::computeLayout(
         auto [fileW, fileH] = fileRectSize(ml.fileMime, contentW, maxThumbW, maxThumbH, imageAspectRatio);
         ml.fileRect = QRectF(contentX, y, fileW, fileH);
         y += fileH + 4;
+    }
+
+    // Poll card.
+    //
+    // A fixed-height card rather than a variable-height interactive surface:
+    // the question, an icon and a "Vote" affordance, with the options and
+    // results in a dialog the card opens. That keeps the bubble a predictable
+    // size (the chat is laid out once and scrolled, so a row whose height
+    // changes when someone votes would reflow history under the reader) and
+    // keeps voting off the paint path entirely.
+    if (ml.pollId > 0) {
+        // Two lines of question at most, plus the action row.
+        QFont qf = theme.bodyFont();
+        qf.setBold(true);
+        const QFontMetrics qfm(qf);
+        const qreal innerW = contentW - 2 * 12.0;
+        QRect need = qfm.boundingRect(QRect(0, 0, int(innerW), 0),
+                                      Qt::TextWordWrap, ml.pollQuestion);
+        const qreal qh = qMin(qreal(need.height()), qreal(qfm.lineSpacing() * 2));
+        const qreal cardH = 12.0 + qh + 8.0 + 18.0 + 12.0;   // pad + q + gap + action + pad
+        ml.pollRect = QRectF(contentX, y, contentW, cardH);
+        y += cardH + 4;
     }
 
     // Body text

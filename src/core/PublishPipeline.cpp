@@ -85,7 +85,7 @@ PublishPipeline::PublishPipeline(QObject *parent)
                 s.setValue("cameraSrcCaps", QString()); s.endGroup();
                 emit cameraNegotiationFailed();
             }
-            emit cameraError(QStringLiteral("Camera stopped delivering frames"));
+            emit cameraError(tr("Camera stopped delivering frames"));
             return;   // cameraError → CallManager stops the watchdog via disableCamera
         }
         ++m_camRecoveryAttempts;
@@ -1454,7 +1454,7 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         // Get the actual GStreamer error from the bus
         GstBus *bus = gst_element_get_bus(m_pipeline);
         GstMessage *errMsg = gst_bus_pop_filtered(bus, GST_MESSAGE_ERROR);
-        QString detail = QStringLiteral("Failed to start publish pipeline");
+        QString detail = tr("Failed to start publish pipeline");
         bool audioCulprit = false;
         bool farSinkCulprit = false;   // 0.51.x AEC: the shared playout wasapi2sink
         if (errMsg) {
@@ -1520,7 +1520,7 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
     if (audioTier >= 2) {
         qWarning() << "PublishPipeline: connected with SILENT audio — "
                       "microphone unavailable, call continues";
-        emit audioError(QStringLiteral("Microphone unavailable"));
+        emit audioError(tr("Microphone unavailable"));
     } else if (audioTier == 1) {
         qInfo() << "PublishPipeline: connected on the system-default microphone "
                    "(the selected capture device could not be opened)";
@@ -2515,7 +2515,7 @@ void PublishPipeline::pollBus()
                 qWarning() << "PublishPipeline: camera source ERROR --" << errMsg
                            << dbgStr << "(camera unavailable; call stays up)";
                 emit cameraError(errMsg.isEmpty()
-                                 ? QStringLiteral("Camera unavailable") : errMsg);
+                                 ? tr("Camera unavailable") : errMsg);
             } else {
                 qWarning() << "PublishPipeline ERROR:" << errMsg << dbgStr;
                 // Non-branch error (e.g., webrtcbin transport): log only,

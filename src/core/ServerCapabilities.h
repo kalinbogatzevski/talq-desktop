@@ -45,6 +45,35 @@ inline const char *const CAP_CONVERSATION_TAGS = "conversation-tags";
 inline const char *const CAP_CONVERSATION_PRESETS = "conversation-presets";
 inline const char *const CAP_THREADS = "threads";
 
+// 0.65.3. Every string below was read out of Talk 24.0.4's own
+// lib/Capabilities.php FEATURES list rather than out of docs/ — the tag/preset
+// cycle found three places where the documentation names a capability that the
+// server never advertises (see the `conversation-attributes` note above), so
+// docs are a lead and lib/ is the truth.
+//
+// Most of these gate something that TalQ was ALREADY doing unconditionally
+// (see the file header): the point of adding them is that the generic build
+// talks to whatever server the user runs, and an ungated call against an older
+// Talk either 404s or silently no-ops.
+inline const char *const CAP_FAVORITES = "favorites";
+inline const char *const CAP_NOTIFICATION_LEVELS = "notification-levels";
+inline const char *const CAP_NOTIFICATION_CALLS = "notification-calls";
+inline const char *const CAP_NOTE_TO_SELF = "note-to-self";
+inline const char *const CAP_IMPORTANT_CONVERSATIONS = "important-conversations";
+inline const char *const CAP_CHAT_GET_CONTEXT = "chat-get-context";
+inline const char *const CAP_CHAT_KEEP_NOTIFICATIONS = "chat-keep-notifications";
+inline const char *const CAP_DIRECT_MENTION_FLAG = "direct-mention-flag";
+inline const char *const CAP_PINNED_MESSAGES = "pinned-messages";
+inline const char *const CAP_ARCHIVED_CONVERSATIONS = "archived-conversations-v2";
+inline const char *const CAP_INVITE_GROUPS_AND_MAILS = "invite-groups-and-mails";
+inline const char *const CAP_CIRCLES_SUPPORT = "circles-support";
+inline const char *const CAP_UNIFIED_SEARCH = "unified-search";
+inline const char *const CAP_REACTIONS = "reactions";
+inline const char *const CAP_ROOM_DESCRIPTION = "room-description";
+inline const char *const CAP_START_CALL_FLAG = "start-call-flag";
+inline const char *const CAP_CONVERSATION_SUBFOLDERS = "conversation-subfolders";
+inline const char *const CAP_TALK_POLLS = "talk-polls";
+
 // Bit-flags of the conversation `attributes` field (Talk 24 lib/RoomAttributes.php).
 // A bit-flag, not an enum value: test with a mask, never with equality, or a
 // future second attribute bit silently turns every voice room into a non-voice
@@ -104,6 +133,25 @@ public:
     // the presets flag is what licenses BOTH the create-time preset picker and
     // reading `attributes` off an existing conversation.
     bool supportsVoiceRooms() const { return supportsConversationPresets(); }
+
+    // --- 0.65.3 gates -----------------------------------------------------
+    bool supportsFavorites() const { return has(CAP_FAVORITES); }
+    bool supportsNotificationLevels() const { return has(CAP_NOTIFICATION_LEVELS); }
+    bool supportsNotificationCalls() const { return has(CAP_NOTIFICATION_CALLS); }
+    bool supportsNoteToSelf() const { return has(CAP_NOTE_TO_SELF); }
+    bool supportsImportantConversations() const { return has(CAP_IMPORTANT_CONVERSATIONS); }
+    bool supportsChatGetContext() const { return has(CAP_CHAT_GET_CONTEXT); }
+    bool supportsKeepNotifications() const { return has(CAP_CHAT_KEEP_NOTIFICATIONS); }
+    bool supportsDirectMentionFlag() const { return has(CAP_DIRECT_MENTION_FLAG); }
+    bool supportsPinnedMessages() const { return has(CAP_PINNED_MESSAGES); }
+    bool supportsArchivedConversations() const { return has(CAP_ARCHIVED_CONVERSATIONS); }
+    bool supportsGroupInvites() const { return has(CAP_INVITE_GROUPS_AND_MAILS); }
+    bool supportsCircles() const { return has(CAP_CIRCLES_SUPPORT); }
+    bool supportsUnifiedSearch() const { return has(CAP_UNIFIED_SEARCH); }
+    bool supportsReactions() const { return has(CAP_REACTIONS); }
+    bool supportsRoomDescription() const { return has(CAP_ROOM_DESCRIPTION); }
+    bool supportsStartCallFlag() const { return has(CAP_START_CALL_FLAG); }
+    bool supportsPolls() const { return has(CAP_TALK_POLLS); }
 
 private:
     std::set<std::string> m_features;

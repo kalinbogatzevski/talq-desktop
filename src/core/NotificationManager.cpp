@@ -53,12 +53,12 @@ QVector<QPair<QString, QString>> NotificationManager::bundledTones()
 {
     // Order = order shown in Settings combo + tray submenu. Default = first.
     return {
-        { QStringLiteral("chime"),  QStringLiteral("Chime")  },
+        { QStringLiteral("chime"),  tr("Chime")  },
         { QStringLiteral("pop"),    QStringLiteral("Pop")    },
-        { QStringLiteral("ding"),   QStringLiteral("Ding")   },
-        { QStringLiteral("notify"), QStringLiteral("Notify") },
-        { QStringLiteral("soft"),   QStringLiteral("Soft")   },
-        { QStringLiteral("tone"),   QStringLiteral("Tone")   },
+        { QStringLiteral("ding"),   tr("Ding")   },
+        { QStringLiteral("notify"), tr("Notify") },
+        { QStringLiteral("soft"),   tr("Soft")   },
+        { QStringLiteral("tone"),   tr("Tone")   },
     };
 }
 
