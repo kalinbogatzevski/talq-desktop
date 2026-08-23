@@ -1121,6 +1121,15 @@ void SignalingClient::sendStoppedTyping()
 void SignalingClient::sendRoomMessage(const QString &msgType)
 {
     if (!m_authenticated || m_currentRoom.isEmpty()) return;
+    // Typing privacy. The user can turn "share my typing status" off on the
+    // server, and until 0.65.3 TalQ never read that setting and broadcast
+    // regardless -- so a user who had explicitly opted out was still telling
+    // every room when they were typing. Defaults to sharing when the server
+    // does not say, which is what TalQ did before and matches Talk's default.
+    if (!m_shareTypingStatus
+        && (msgType == QLatin1String("startedTyping")
+            || msgType == QLatin1String("stoppedTyping")))
+        return;
 
     QJsonObject msg;
     msg["type"] = QString("message");

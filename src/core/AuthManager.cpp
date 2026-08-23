@@ -4,6 +4,7 @@
 #include <QNetworkReply>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonValue>
 #include <QDebug>
 
 #ifdef Q_OS_WIN
@@ -356,16 +357,39 @@ void AuthManager::fetchServerInfo()
         if (!talkVersion.isEmpty())
             m_talkVersion = talkVersion;
 
-        // Signaling mode
+        // The WHOLE config block, kept. Until 0.65.3 this object was opened
+        // only to read the signaling mode and then dropped, so every
+        // server-side preference the user had set — attachment folder, typing
+        // and read privacy, whether calls are even enabled, the recording and
+        // SIP flags — was invisible to the client and TalQ substituted its own
+        // local answer. Anything reading it must tolerate a missing key: an
+        // older Talk simply does not send most of these.
         auto config = spreed["config"].toObject();
+        m_serverConfig = config;
+
+        // Signaling mode.
+        //
+        // ⚠ The key is `mode`, NOT `signalingMode`. Talk 24 emits it as
+        // config.signaling.mode (lib/Capabilities.php:329) and has done for
+        // many versions; reading `signalingMode` matched nothing, fell into the
+        // else-branch below and made every build report "Internal" — including
+        // the branded one, which is never anything but the HPB. That is
+        // log-only, but the HPB is exactly the subsystem we read logs to debug,
+        // so it has been quietly misreporting the thing under investigation.
+        // The old key stays as a fallback for servers old enough to send it.
         auto signaling = config["signaling"].toObject();
-        auto signalingMode = signaling["signalingMode"].toString();
+        auto signalingMode = signaling["mode"].toString();
+        if (signalingMode.isEmpty())
+            signalingMode = signaling["signalingMode"].toString();
         if (!signalingMode.isEmpty()) {
             if (signalingMode == "internal")
                 m_signalingMode = "Internal";
             else if (signalingMode == "external")
                 m_signalingMode = "High Performance Backend";
-            else if (signalingMode == "clustered")
+            // Talk's third value is `conversation_cluster`
+            // (lib/Config.php:34), never "clustered" — the old spelling here
+            // matched nothing and fell through to the raw string.
+            else if (signalingMode == "conversation_cluster")
                 m_signalingMode = "Clustered HPB";
             else
                 m_signalingMode = signalingMode;
@@ -392,11 +416,42 @@ void AuthManager::fetchServerInfo()
         qDebug() << "Server info: NC" << m_ncVersion << "Talk" << m_talkVersion
                  << "Signaling:" << m_signalingMode
                  << "| features:" << int(m_capabilities.size())
+                 << "| config sections:" << m_serverConfig.keys()
                  << "threads:" << hasThreadsSupport()
                  << "tags:" << supportsConversationTags()
-                 << "presets:" << supportsConversationPresets();
+                 << "presets:" << supportsConversationPresets()
+                 << "recording:" << recordingAvailable()
+                 << "readStatus:" << sharesReadStatus()
+                 << "typing:" << sharesTypingStatus();
         emit serverInfoChanged();
     });
+}
+
+// --- server-side config readers ------------------------------------------
+//
+// One shape for all three: look up the section, then the key, and hand back the
+// caller's fallback the moment either is missing. `isUndefined()` rather than a
+// truthiness test matters — `false`, `0` and `""` are all legitimate values the
+// server sends deliberately, and treating them as "absent" would silently
+// substitute the fallback for a setting the user actually chose.
+
+bool AuthManager::configBool(const QString &section, const QString &key, bool fallback) const
+{
+    const QJsonValue v = m_serverConfig.value(section).toObject().value(key);
+    return v.isUndefined() ? fallback : v.toBool(fallback);
+}
+
+int AuthManager::configInt(const QString &section, const QString &key, int fallback) const
+{
+    const QJsonValue v = m_serverConfig.value(section).toObject().value(key);
+    return v.isUndefined() ? fallback : v.toInt(fallback);
+}
+
+QString AuthManager::configString(const QString &section, const QString &key,
+                                  const QString &fallback) const
+{
+    const QJsonValue v = m_serverConfig.value(section).toObject().value(key);
+    return v.isUndefined() ? fallback : v.toString(fallback);
 }
 
 void AuthManager::logout()
@@ -416,6 +471,7 @@ void AuthManager::logout()
     // let the PREVIOUS server's capabilities gate decisions made against the
     // next one — the sign-out-of-one-server, sign-in-to-an-older-one case.
     m_capabilities.reset();
+    m_serverConfig = QJsonObject();
     m_capabilityRetries = 0;
     emit userInfoChanged();
     emit serverInfoChanged();

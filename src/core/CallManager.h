@@ -87,6 +87,25 @@ public:
     // state() != Idle; used by MainWindow to keep the signaling session
     // pinned to the call's room while a call is in progress.
     QString callToken() const { return m_callToken; }
+
+    // --- call recording (`recording-v1`) --------------------------------
+    // Talk's state for the room we are in: 0 none, 1 video, 2 audio,
+    // 3/4 starting, 5 failed. Non-zero means a recording is running or about
+    // to be, and EVERY participant must be shown that -- being recorded
+    // without knowing is the one thing this feature must never allow.
+    int recordingState() const;
+    bool isRecording() const { return recordingState() != 0; }
+    // Whether the server offers recording at all (config.call.recording).
+    void setRecordingAvailable(bool v) { m_recordingAvailable = v; }
+    bool recordingAvailable() const { return m_recordingAvailable; }
+    // Whether THIS user may start/stop it. Both routes are
+    // #[RequireLoggedInModeratorParticipant], so a non-moderator must not be
+    // offered the control rather than be handed a 403.
+    void setCanControlRecording(bool v) { m_canControlRecording = v; }
+    bool canControlRecording() const { return m_canControlRecording && m_recordingAvailable; }
+    // `video` false records audio only (Room::RECORDING_AUDIO).
+    void startRecording(bool video);
+    void stopRecording();
     bool isMuted() const { return m_muted; }
     bool isCameraOn() const { return m_cameraOn; }
     // True when the camera device failed to open during this call (missing,
@@ -432,6 +451,8 @@ private:
     CallParticipant *m_selfParticipant = nullptr;
 
     ApiClient *m_api;
+    bool m_recordingAvailable = false;
+    bool m_canControlRecording = false;
     SignalingClient *m_signaling;
     MediaDeviceManager *m_deviceManager = nullptr;
     // MCU dual pipelines

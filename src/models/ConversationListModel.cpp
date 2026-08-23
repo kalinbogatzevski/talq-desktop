@@ -45,6 +45,7 @@ QVariant ConversationListModel::data(const QModelIndex &index, int role) const
         case TypeRole:          return c.type;
         case UnreadCountRole:   return c.unreadMessages;
         case UnreadMentionRole: return c.unreadMention;
+        case UnreadMentionDirectRole: return c.unreadMentionDirect;
         case FavoriteRole:      return c.favorite;
         case LastMessageRole:   return c.lastMessageText;
         case LastAuthorRole:    return c.lastMessageAuthor;
@@ -75,6 +76,9 @@ QVariant ConversationListModel::data(const QModelIndex &index, int role) const
         case ParticipantTypeRole:   return c.participantType;
         case TagIdsRole:        return c.tagIds;
         case AttributesRole:    return c.attributes;
+        case DescriptionRole:   return c.description;
+        case ArchivedRole:      return c.archived;
+        case ImportantRole:     return c.important;
         default:                return {};
     }
 }
@@ -87,6 +91,7 @@ QHash<int, QByteArray> ConversationListModel::roleNames() const
         {TypeRole,          "conversationType"},
         {UnreadCountRole,   "unreadCount"},
         {UnreadMentionRole, "unreadMention"},
+        {UnreadMentionDirectRole, "unreadMentionDirect"},
         {FavoriteRole,      "isFavorite"},
         {LastMessageRole,   "lastMessage"},
         {LastAuthorRole,    "lastAuthor"},
@@ -100,6 +105,9 @@ QHash<int, QByteArray> ConversationListModel::roleNames() const
         {ParticipantTypeRole,   "participantType"},
         {TagIdsRole,            "tagIds"},
         {AttributesRole,        "attributes"},
+        {DescriptionRole,       "description"},
+        {ArchivedRole,          "isArchived"},
+        {ImportantRole,         "isImportant"},
     };
 }
 
@@ -403,6 +411,141 @@ void ConversationListModel::setNotificationLevel(int idx, int level)
             m_conversations[i].notificationLevel = level;
             emit dataChanged(index(i), index(i), {NotificationLevelRole});
         });
+}
+
+// --- 0.65.3 ---------------------------------------------------------------
+
+// Re-apply Conversation::operator< in place. A full model reset rather than a
+// dataChanged: favouriting moves the row to the top of the list, and the
+// sidebar's selection is index-based, so anything cheaper would leave the
+// painted order and the model disagreeing until the next poll.
+void ConversationListModel::resort()
+{
+    beginResetModel();
+    std::sort(m_conversations.begin(), m_conversations.end());
+    endResetModel();
+}
+
+bool ConversationListModel::favoriteAt(int idx) const
+{
+    if (idx < 0 || idx >= m_conversations.size()) return false;
+    return m_conversations[idx].favorite;
+}
+
+void ConversationListModel::setFavorite(int idx, bool favorite)
+{
+    if (idx < 0 || idx >= m_conversations.size()) return;
+    const QString token = m_conversations[idx].token;
+    m_api->setFavorite(token, favorite,
+        [this, token, favorite](bool success, const QJsonObject &, int) {
+            if (!success) return;
+            const int i = indexOfToken(token);
+            if (i < 0) return;
+            m_conversations[i].favorite = favorite;
+            // Favourites sort to the top (Conversation::operator<), so the row
+            // does not merely repaint — it MOVES. Re-sorting through the same
+            // path the refresh uses keeps the list ordered without waiting for
+            // the next poll, which would otherwise leave the star set but the
+            // row still sitting in its old position.
+            resort();
+        });
+}
+
+QString ConversationListModel::displayNameForToken(const QString &token) const
+{
+    for (const Conversation &c : m_conversations) {
+        if (c.token == token) return c.displayName;
+    }
+    return {};
+}
+
+bool ConversationListModel::archivedAt(int idx) const
+{
+    if (idx < 0 || idx >= m_conversations.size()) return false;
+    return m_conversations[idx].archived;
+}
+
+void ConversationListModel::setArchived(int idx, bool archived)
+{
+    if (idx < 0 || idx >= m_conversations.size()) return;
+    const QString token = m_conversations[idx].token;
+    m_api->setArchived(token, archived,
+        [this, token, archived](bool ok, const QJsonObject &, int) {
+            if (!ok) return;
+            const int i = indexOfToken(token);
+            if (i < 0) return;
+            m_conversations[i].archived = archived;
+            // Archiving REMOVES the row from the default list, so this is a
+            // structural change, not a repaint -- reset so the sidebar rebuilds
+            // its visible set rather than leaving a row it should no longer show.
+            resort();
+        });
+}
+
+bool ConversationListModel::importantAt(int idx) const
+{
+    if (idx < 0 || idx >= m_conversations.size()) return false;
+    return m_conversations[idx].important;
+}
+
+void ConversationListModel::setImportant(int idx, bool important)
+{
+    if (idx < 0 || idx >= m_conversations.size()) return;
+    const QString token = m_conversations[idx].token;
+    m_api->setImportant(token, important,
+        [this, token, important](bool ok, const QJsonObject &, int) {
+            if (!ok) return;
+            const int i = indexOfToken(token);
+            if (i < 0) return;
+            m_conversations[i].important = important;
+            emit dataChanged(index(i), index(i), {ImportantRole});
+        });
+}
+
+bool ConversationListModel::notificationCallsAt(int idx) const
+{
+    if (idx < 0 || idx >= m_conversations.size()) return true;
+    return m_conversations[idx].notificationCalls;
+}
+
+void ConversationListModel::setNotificationCalls(int idx, bool notify)
+{
+    if (idx < 0 || idx >= m_conversations.size()) return;
+    const QString token = m_conversations[idx].token;
+    m_api->setNotificationCalls(token, notify,
+        [this, token, notify](bool success, const QJsonObject &, int) {
+            if (!success) return;
+            const int i = indexOfToken(token);
+            if (i < 0) return;
+            m_conversations[i].notificationCalls = notify;
+        });
+}
+
+bool ConversationListModel::canStartCallForToken(const QString &token) const
+{
+    for (const Conversation &c : m_conversations) {
+        // Default TRUE for an unknown token: the caller should offer the
+        // action and let the server rule on it, which is what TalQ did before
+        // this was readable at all.
+        if (c.token == token) return c.canStartCall;
+    }
+    return true;
+}
+
+int ConversationListModel::callRecordingForToken(const QString &token) const
+{
+    for (const Conversation &c : m_conversations) {
+        if (c.token == token) return c.callRecording;
+    }
+    return 0;
+}
+
+int ConversationListModel::participantTypeForToken(const QString &token) const
+{
+    for (const Conversation &c : m_conversations) {
+        if (c.token == token) return c.participantType;
+    }
+    return 0;
 }
 
 void ConversationListModel::updateLastMessage(const QString &token, const QString &author, const QString &text)

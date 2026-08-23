@@ -457,7 +457,7 @@ void UpdateChecker::onDownloadFinished(QNetworkReply *reply, QFile *out)
     if (!m_downloadExpectedSha256.isEmpty()) {
         if (!verifySha256(path, m_downloadExpectedSha256)) {
             QFile::remove(path);
-            emit downloadFailed(QStringLiteral("Checksum verification failed"));
+            emit downloadFailed(tr("Checksum verification failed"));
             return;
         }
     } else {

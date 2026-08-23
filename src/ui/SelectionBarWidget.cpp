@@ -58,12 +58,12 @@ SelectionBarWidget::SelectionBarWidget(QWidget *parent)
     // for variant="default") but were shipping with no variant at all, so
     // they fell through to the base QPushButton rule -- transparent, no
     // border -- and read as plain text until hovered.
-    // QStringLiteral, not tr() -- wrapping label strings for translation is
-    // Slice C's item, not this one.
-    m_forwardBtn = makeBtn(QStringLiteral("Forward"), "default");
-    m_copyBtn = makeBtn(QStringLiteral("Copy"), "default");
-    m_deleteBtn = makeBtn(QStringLiteral("Delete"), "danger");
-    m_cancelBtn = makeBtn(QStringLiteral("Cancel"), "ghost");
+    // Wrapped for translation in 0.65.3 (the deferred "Slice C" item): these
+    // are four visible buttons, about as user-facing as a string gets.
+    m_forwardBtn = makeBtn(tr("Forward"), "default");
+    m_copyBtn = makeBtn(tr("Copy"), "default");
+    m_deleteBtn = makeBtn(tr("Delete"), "danger");
+    m_cancelBtn = makeBtn(tr("Cancel"), "ghost");
 
     connect(m_forwardBtn, &QPushButton::clicked, this, &SelectionBarWidget::forwardClicked);
     connect(m_copyBtn, &QPushButton::clicked, this, &SelectionBarWidget::copyClicked);

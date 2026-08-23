@@ -18,6 +18,11 @@ struct ThreadInfo {
     int iconColor = 0;
     int unreadCount = 0;
     int lastReadMessageId = 0;
+    // Per-topic notification level (0 default / 1 all / 2 mentions / 3 never).
+    // Talk keeps this per THREAD as well as per room, which is what lets a
+    // busy conversation stay readable: follow the two topics that matter and
+    // mute the rest. Only the server's thread list reports it.
+    int notificationLevel = 0;
     bool isAllMessages = false;
 };
 
@@ -39,6 +44,7 @@ public:
         ReplyCountRole,
         IconColorRole,
         UnreadCountRole,
+        NotificationLevelRole,
         IsAllMessagesRole,
     };
 
@@ -61,6 +67,12 @@ public:
     Q_INVOKABLE void markTopicRead(int threadId);
     Q_INVOKABLE void selectTopic(int threadId);
     Q_INVOKABLE int colorForThread(int threadId) const;
+    // Per-topic notification level. This is the setting that makes a busy
+    // conversation usable: follow the two topics that matter and mute the
+    // rest, without muting the whole room. Server-side per thread; needs
+    // `threads`. Levels: 0 default / 1 all / 2 mentions only / 3 never.
+    Q_INVOKABLE int notificationLevelForThread(int threadId) const;
+    Q_INVOKABLE void setThreadNotificationLevel(int threadId, int level);
 
     // Best-effort "delete topic". Nextcloud Talk has NO thread-delete endpoint
     // (upstream issue #17146), so a topic is a grouping of messages with no
@@ -106,6 +118,22 @@ signals:
 
 private:
     void fetchThreads();
+    // 0.65.3 — the message-window scan that fetchThreads() used to be. Kept as
+    // the source of per-topic unread counts and previews, and as the whole
+    // implementation when the server has no `threads` capability.
+    void scanThreadsFromMessages();
+    // Topics the SERVER reports as recently active, keyed by thread id.
+    // Merged into the scan's result so a topic whose root has scrolled out of
+    // the 200-message window still appears in the bar.
+    QHash<int, ThreadInfo> m_serverThreads;
+    // Whether this server supports `threads`. Set by the owner; false means
+    // scan-only, i.e. exactly the 0.65.2 behaviour.
+    bool m_threadsCapable = false;
+
+public:
+    void setThreadsCapable(bool capable) { m_threadsCapable = capable; }
+
+private:
     void loadHiddenTopics();   // from QSettings for m_token
     void saveHiddenTopics();
 

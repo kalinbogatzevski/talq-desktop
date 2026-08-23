@@ -37,6 +37,7 @@ QVariant ThreadListModel::data(const QModelIndex &index, int role) const
     case ReplyCountRole:  return t.replyCount;
     case IconColorRole:   return t.iconColor;
     case UnreadCountRole:   return t.unreadCount;
+    case NotificationLevelRole: return t.notificationLevel;
     case IsAllMessagesRole: return t.isAllMessages;
     }
     return {};
@@ -53,6 +54,7 @@ QHash<int, QByteArray> ThreadListModel::roleNames() const
         {ReplyCountRole, "replyCount"},
         {IconColorRole, "iconColor"},
         {UnreadCountRole, "unreadCount"},
+        {NotificationLevelRole, "notificationLevel"},
         {IsAllMessagesRole, "isAllMessages"},
     };
 }
@@ -176,6 +178,31 @@ void ThreadListModel::selectTopic(int threadId)
     markTopicRead(threadId);
 }
 
+int ThreadListModel::notificationLevelForThread(int threadId) const
+{
+    for (const auto &t : m_threads) {
+        if (t.threadId == threadId) return t.notificationLevel;
+    }
+    return 0;
+}
+
+void ThreadListModel::setThreadNotificationLevel(int threadId, int level)
+{
+    if (threadId <= 0 || m_token.isEmpty() || !m_api) return;
+    const QString token = m_token;
+    QPointer<ThreadListModel> guard(this);
+    m_api->setThreadNotificationLevel(token, threadId, level,
+        [this, guard, token, threadId, level](bool ok, const QJsonObject &, int) {
+            if (!guard || token != m_token || !ok) return;
+            for (int i = 0; i < m_threads.size(); ++i) {
+                if (m_threads[i].threadId != threadId) continue;
+                m_threads[i].notificationLevel = level;
+                emit dataChanged(index(i), index(i), {NotificationLevelRole});
+                break;
+            }
+        });
+}
+
 int ThreadListModel::colorForThread(int threadId) const
 {
     for (const auto &t : m_threads) {
@@ -195,6 +222,11 @@ void ThreadListModel::deleteTopic(int threadId)
     params.addQueryItem("limit", "200");
     params.addQueryItem("lookIntoFuture", "0");
     params.addQueryItem("setReadMarker", "0");  // collecting a topic's msgs to delete must not mark the room read (server default is 1)
+    // ...and must not dismiss the user's notifications either. setReadMarker
+    // and markNotificationsAsRead are SEPARATE switches, both defaulting to 1:
+    // suppressing only the first still cleared notifications as a side effect
+    // of a background scan. Capability: chat-keep-notifications.
+    params.addQueryItem("markNotificationsAsRead", "0");
 
     QPointer<ThreadListModel> guard(this);
     // No server-side thread delete exists (upstream #17146), so collect the
@@ -308,7 +340,70 @@ void ThreadListModel::saveHiddenTopics()
     s.setValue(QStringLiteral("Topics/hidden/") + m_token, ids);
 }
 
+// Ask the server for its own list of recently-active threads, then scan.
+//
+// Ordering matters and is deliberate: the scan is what commits the model, so
+// the server list must already be in m_serverThreads when it runs. Both the
+// failure and the no-capability paths fall through to the scan unchanged, so
+// an older server -- or a server that simply refuses this call -- behaves
+// exactly as 0.65.2 did.
 void ThreadListModel::fetchThreads()
+{
+    if (m_token.isEmpty() || !m_api) return;
+    if (!m_threadsCapable) {          // older server: scan-only, as before
+        scanThreadsFromMessages();
+        return;
+    }
+
+    const QString capturedToken = m_token;
+    QPointer<ThreadListModel> guard(this);
+    m_api->fetchRecentThreads(m_token, 100,
+        [this, guard, capturedToken](bool ok, const QJsonArray &list, int) {
+            if (!guard || capturedToken != m_token) return;   // destroyed or stale
+            m_serverThreads.clear();
+            // Refresh the room read marker BEFORE deriving unread flags below.
+            // The scan sets this too, but it runs after us, so on the first
+            // fetch after opening a room it would still be 0 here and every
+            // server-only topic would come back marked read.
+            if (m_conversations)
+                m_roomLastReadId = m_conversations->lastReadMessageForToken(m_token);
+            if (ok) {
+                // Already unwrapped from the OCS envelope by getArray().
+                for (const QJsonValue &v : list) {
+                    const QJsonObject o = v.toObject();
+                    const QJsonObject th = o.value(QStringLiteral("thread")).toObject();
+                    const int id = th.value(QStringLiteral("id")).toInt();
+                    if (id <= 0) continue;
+                    ThreadInfo info;
+                    info.threadId     = id;
+                    info.title        = th.value(QStringLiteral("title")).toString();
+                    info.lastActivity = th.value(QStringLiteral("lastActivity"))
+                                            .toVariant().toLongLong();
+                    info.replyCount   = th.value(QStringLiteral("numReplies")).toInt();
+                    info.notificationLevel = o.value(QStringLiteral("attendee")).toObject()
+                                              .value(QStringLiteral("notificationLevel")).toInt(0);
+                    // `last` is the thread's most recent message, or null.
+                    const QJsonObject last = o.value(QStringLiteral("last")).toObject();
+                    info.lastMessage  = last.value(QStringLiteral("message")).toString();
+                    info.lastAuthor   = last.value(QStringLiteral("actorDisplayName")).toString();
+                    // Approximate: see the merge comment in the scan.
+                    const int lastId = th.value(QStringLiteral("lastMessageId")).toInt();
+                    info.unreadCount  = (m_roomLastReadId > 0 && lastId > m_roomLastReadId) ? 1 : 0;
+                    m_serverThreads.insert(id, info);
+                }
+            } else {
+                qWarning() << "topics: threads/recent failed for" << capturedToken
+                           << "- falling back to the message scan alone";
+            }
+            scanThreadsFromMessages();
+        });
+}
+
+// The historical implementation: infer the topic list by scanning a window of
+// recent chat messages. Still the source of per-topic UNREAD counts and last
+// message previews, which the thread endpoint does not provide, and still the
+// whole implementation on a server without `threads`.
+void ThreadListModel::scanThreadsFromMessages()
 {
     m_loading = true;
     emit loadingChanged();
@@ -317,6 +412,7 @@ void ThreadListModel::fetchThreads()
     params.addQueryItem("limit", "200");
     params.addQueryItem("lookIntoFuture", "0");
     params.addQueryItem("setReadMarker", "0");  // fetching the thread list must not mark the room read (server default is 1)
+    params.addQueryItem("markNotificationsAsRead", "0");  // nor dismiss notifications (separate switch, also defaults to 1)
 
     const QString path = "apps/spreed/api/v1/chat/" + m_token;
 
@@ -405,6 +501,34 @@ void ThreadListModel::fetchThreads()
                 acc.latestMessage = msg["message"].toString();
                 acc.latestAuthor = msg["actorDisplayName"].toString();
             }
+        }
+
+        // Fold in every topic the SERVER knows about that the message scan
+        // did not see. This is the fix for topics silently vanishing: the scan
+        // reads only the last 200 messages, so a topic whose root and recent
+        // replies have both scrolled past that window disappeared from the bar
+        // entirely -- in a busy room, after days rather than months, and with
+        // no indication anything was missing.
+        //
+        // The scan still wins where it has data, because it is the only source
+        // of per-topic unread counts. This merge only ADDS topics, and gives
+        // them an unread count derived from the room read marker: the thread
+        // endpoint reports lastMessageId but not how many of the messages
+        // below it are unread, so this is "something unread" (1) rather than a
+        // precise tally. Better an approximate badge on a visible topic than an
+        // exact badge on a topic the user cannot see.
+        for (auto it = m_serverThreads.cbegin(); it != m_serverThreads.cend(); ++it) {
+            if (threadMap.contains(it.key()))
+                continue;
+            ThreadAccumulator acc;
+            acc.threadRootId   = it.value().threadId;
+            acc.threadTitle    = it.value().title;
+            acc.latestTimestamp = it.value().lastActivity;
+            acc.latestMessage  = it.value().lastMessage;
+            acc.latestAuthor   = it.value().lastAuthor;
+            acc.count          = it.value().replyCount;
+            acc.unread         = it.value().unreadCount;
+            threadMap.insert(it.key(), acc);
         }
 
         // Build ThreadInfo list

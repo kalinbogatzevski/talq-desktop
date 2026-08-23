@@ -71,6 +71,37 @@ public:
     // talq::isVoiceRoom() so it stays gated on the presets capability.
     int attributes = 0;
 
+    // 0.65.3. Whether THIS user may start a call here. Talk decides it from the
+    // room's `start-call-flag` setting plus the user's participant type, and
+    // sends the answer per room — a client cannot derive it. Defaults TRUE so a
+    // server that does not send it behaves exactly as TalQ did before, i.e.
+    // offer the call action and let the server reject it.
+    bool canStartCall = true;
+    // Per-room "ring me when a call starts" switch (`notification-calls`),
+    // independent of notificationLevel: a room can be on mentions-only and
+    // still ring for calls, which is the combination people actually want in a
+    // busy room. Defaults true = Talk's own default.
+    bool notificationCalls = true;
+    // Someone mentioned YOU specifically, as opposed to @all
+    // (`direct-mention-flag`). unreadMention is true for both, which is why an
+    // @all in a busy room currently lights the same badge as a real mention.
+    bool unreadMentionDirect = false;
+    // Read-only rooms (`readOnly` == 1) refuse chat posts. Without this the
+    // composer looks live and the user only finds out when the POST fails.
+    bool readOnly = false;
+    QString description;
+    // Talk's recording state for this room (Room.php:53-58):
+    //   0 none · 1 video · 2 audio · 3 video-starting · 4 audio-starting · 5 failed
+    // Anything non-zero means a recording is running or coming up, and every
+    // participant must be able to see that.
+    int callRecording = 0;
+    // Archived: still joined, still receiving, but out of the default list.
+    // The answer to "rooms I am neither in nor willing to leave".
+    bool archived = false;
+    // Important: keeps notifying even while archived, and Talk exempts it from
+    // the "silence archived conversations" behaviour.
+    bool important = false;
+
     static Conversation fromJson(const QJsonObject &json);
 
     // For sorting: most recent activity first

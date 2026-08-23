@@ -44,12 +44,22 @@ public:
     // an async paste-encode fails.
     void cancelPendingFile();
     void setNextSendSilent(bool s) { m_nextSendSilent = s; }
+    // Polls: available on the server (`talk-polls`), and the type of the open
+    // conversation — 1 is one-to-one, where the server refuses polls outright.
+    void setPollsAvailable(bool v) { m_pollsAvailable = v; }
+    void setConversationType(int t) { m_conversationType = t; }
     bool isNextSendSilent() const { return m_nextSendSilent; }
 
     // Trimmed contents of the input box. Empty = composer is "clean". Used
     // by the auto-install gate so a draft in flight can't be killed by a
     // background self-restart.
     QString currentText() const;
+    // 0.65.3 — needed for per-conversation drafts. Neither existed before, so
+    // nothing outside sendAction() could empty or prefill the composer.
+    // setText() deliberately does NOT emit textChanged: restoring a draft must
+    // not fire the typing indicator or count as user interaction.
+    void setText(const QString &text);
+    void clearText();
     void showReplyBar(const QString &author, const QString &preview);
     void hideReplyBar();
     void showEditingBar(const QString &originalText);
@@ -73,6 +83,8 @@ signals:
     // "Manage scheduled…" entry in the send button's right-click menu.
     // MainWindow opens ScheduledMessagesDialog in response.
     void manageScheduledRequested();
+    // The user picked "Poll…" from the attach menu; the window owns the dialog.
+    void createPollRequested();
 
 private slots:
     void sendAction();
@@ -101,6 +113,8 @@ private:
     // the real chrome (padding + border) on top of the document height.
     int  m_inputVPad = 8;
 
+    bool m_pollsAvailable = false;
+    int  m_conversationType = 0;
     QTextEdit *m_input = nullptr;
     TalqIconButton *m_sendBtn = nullptr;
     TalqIconButton *m_attachBtn = nullptr;

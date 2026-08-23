@@ -136,15 +136,15 @@ QVector<QPair<QString, QString>> CallManager::ringtones()
     // soft are the bundled CC0 ring WAVs at :/sounds/ring_<id>.wav. Order
     // here is the order shown in the Settings combo.
     return {
-        { QStringLiteral("classic"),  QStringLiteral("Classic bell")    },
-        { QStringLiteral("bright"),   QStringLiteral("Bright bell")     },
-        { QStringLiteral("soft"),     QStringLiteral("Soft bell")       },
-        { QStringLiteral("landline"), QStringLiteral("Landline (US)")   },
-        { QStringLiteral("uk"),       QStringLiteral("Double ring (UK)")},
-        { QStringLiteral("oldphone"), QStringLiteral("Old telephone")   },
-        { QStringLiteral("trill"),    QStringLiteral("Digital trill")   },
+        { QStringLiteral("classic"),  tr("Classic bell")    },
+        { QStringLiteral("bright"),   tr("Bright bell")     },
+        { QStringLiteral("soft"),     tr("Soft bell")       },
+        { QStringLiteral("landline"), tr("Landline (US)")   },
+        { QStringLiteral("uk"),       tr("Double ring (UK)")},
+        { QStringLiteral("oldphone"), tr("Old telephone")   },
+        { QStringLiteral("trill"),    tr("Digital trill")   },
         { QStringLiteral("default"),  QStringLiteral("TalQ tone")       },
-        { QStringLiteral("none"),     QStringLiteral("None (silent)")   },
+        { QStringLiteral("none"),     tr("None (silent)")   },
     };
 }
 
@@ -2685,6 +2685,52 @@ GstFlowReturn CallManager::onPreviewSample(GstAppSink *sink, gpointer userData)
         gst_sample_unref(sample);
     }, Qt::QueuedConnection);
     return GST_FLOW_OK;
+}
+
+// --- call recording -------------------------------------------------------
+//
+// TalQ does not record anything itself: the recording backend joins the call
+// as a headless participant and records server-side, so the client's whole job
+// is to ask for it and to make the state unmistakable to everyone in the room.
+// That second half is the important one -- a participant who does not know
+// they are being recorded is the failure this feature must never produce, so
+// the indicator is driven off the ROOM's state (which every participant sees)
+// rather than off whether this client started it.
+
+int CallManager::recordingState() const
+{
+    if (!m_conversations || m_callToken.isEmpty()) return 0;
+    return m_conversations->callRecordingForToken(m_callToken);
+}
+
+void CallManager::startRecording(bool video)
+{
+    if (m_callToken.isEmpty() || !canControlRecording()) return;
+    // Room::RECORDING_VIDEO = 1, RECORDING_AUDIO = 2 (Room.php:54-55).
+    const int status = video ? 1 : 2;
+    const QString token = m_callToken;
+    m_api->startRecording(token, status, [this](bool ok, const QJsonObject &data, int) {
+        if (ok) return;
+        // Surface the server's own reason rather than a generic failure: the
+        // 400 body carries {"error": "..."} and the most likely values are
+        // about configuration, which the user can act on.
+        const QString err = data.value(QStringLiteral("error")).toString();
+        // Logged, not raised: there is no in-call notice channel for a
+        // non-fatal control failure, and callFailed() would read as the CALL
+        // having died. The visible consequence is simply that the recording
+        // indicator never lights. Surfacing this in the call UI is a follow-up.
+        qWarning() << "recording: start refused --" << err;
+    });
+}
+
+void CallManager::stopRecording()
+{
+    if (m_callToken.isEmpty() || !canControlRecording()) return;
+    m_api->stopRecording(m_callToken, [this](bool ok, const QJsonObject &data, int) {
+        if (ok) return;
+        const QString err = data.value(QStringLiteral("error")).toString();
+        qWarning() << "recording: stop refused --" << err;
+    });
 }
 
 void CallManager::setRemotePeerInfo(const QString &name, const QString &peerId) {
