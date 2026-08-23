@@ -81,6 +81,10 @@ public:
     QStringList options() const;   // trimmed, empties dropped
     int         resultMode() const;
     int         maxVotes() const;
+    // Save as a reusable draft instead of posting the poll now.
+    bool        saveAsDraft() const;
+    // Offer the draft option only where the server supports drafts.
+    void        setDraftsAvailable(bool v);
 
 private:
     void addOptionRow();
@@ -90,4 +94,5 @@ private:
     QList<QLineEdit *>  m_optionEdits;
     QAbstractButton    *m_hideResults = nullptr;
     QAbstractButton    *m_multiChoice = nullptr;
+    QAbstractButton    *m_asDraft = nullptr;
 };

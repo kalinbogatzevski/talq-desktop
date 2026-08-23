@@ -553,6 +553,25 @@ void SignalingClient::onTextMessage(const QString &msg)
         qInfo() << "Signaling: joined room";
         m_roomJoinAcked = true;   // authoritative: HPB confirmed room membership
         emit roomJoined();
+
+        // ── Breakout rooms: the server MOVED us ──────────────────────────
+        // When a moderator starts breakout rooms, the HPB does not ask -- it
+        // sends the room we are now in, and the client is expected to follow.
+        // The token arrives on the `room` message itself, so a token that is
+        // not the one we asked for IS the move.
+        //
+        // TalQ ignored this entirely before 0.65.4 (`grep switchto` = 0 hits),
+        // so a participant whose moderator started breakout rooms stayed
+        // looking at the main room while the server considered them moved --
+        // no error, just the wrong conversation on screen.
+        const QString servedToken = obj["room"].toObject()["roomid"].toString();
+        if (!servedToken.isEmpty() && !m_currentRoom.isEmpty()
+            && servedToken != m_currentRoom) {
+            qInfo() << "Signaling: server switched us from" << m_currentRoom
+                    << "to" << servedToken << "(breakout rooms)";
+            m_currentRoom = servedToken;
+            emit switchedToRoom(servedToken);
+        }
     }
     else if (type == "message") {
         QJsonObject messageObj = obj["message"].toObject();
@@ -604,6 +623,18 @@ void SignalingClient::onTextMessage(const QString &msg)
             return;
         }
 
+        // Moderator force-mute. Talk sends it as a "control" message with an
+        // action of "forceMute"; without this branch the moderator's UI showed
+        // the mute as applied while this client kept transmitting -- the worst
+        // possible split between what a room believes and what it hears.
+        if (msgType == "control") {
+            const QString action = msgData["action"].toString();
+            if (action == QLatin1String("forceMute")) {
+                qInfo() << "Signaling: force-muted by a moderator";
+                emit forceMuted();
+            }
+            return;
+        }
         if (msgType == "unshareScreen") {
             qDebug() << "Signaling: received unshareScreen from" << senderSessionId.left(20);
             emit screenShareStopped(senderSessionId);

@@ -1,5 +1,40 @@
 # Changelog
 
+## v0.65.4 "Blue Fiesta Week 4 Re-match" - BETA (2026-08-23)
+
+Follows 0.65.3 the same day. Mostly things that only matter once more than two
+people are in a conversation - and two of them are cases where TalQ was ignoring
+something the server had already decided.
+
+### Added
+* **Topics you follow, across every conversation.** Right-click the General
+  chip and pick "Topics you follow". Each entry says which conversation it is
+  in, and opening one takes you to that conversation and that topic, rather
+  than making you go and find it.
+* **Breakout rooms.** If you moderate a group conversation you can split it
+  into rooms, open them, send an announcement to all of them at once, and bring
+  everyone back. And if someone else opens breakout rooms, **TalQ now moves you
+  with everyone else** - it used to leave you looking at the main conversation
+  while the server had already moved you.
+* **Poll drafts.** Save a poll as a draft instead of posting it, and post it
+  later.
+* **Dial-in details.** If a conversation can be joined by phone, the details
+  panel now says so and shows your own PIN.
+* **A summary of what you missed.** Where the server offers it, right-click a
+  conversation with unread messages and ask for a summary of them.
+
+### Fixed
+* **Being muted by a moderator now actually mutes you.** TalQ ignored the
+  instruction entirely: the moderator was told you had been muted, and your
+  microphone kept going. This is the one to know about if you have run a large
+  call recently.
+* **Someone who dialled in by phone is no longer shown as a person with their
+  camera off.**
+
+### Notes
+Breakout rooms, dial-in and the summary each depend on the server offering
+them, and stay out of sight otherwise.
+
 ## v0.65.3 "Blue Fiesta Week 4 Re-match" - BETA (2026-08-23)
 
 Mostly repairs. A pass over the things TalQ was getting quietly wrong turned up

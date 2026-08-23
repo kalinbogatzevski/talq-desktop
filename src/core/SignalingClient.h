@@ -188,6 +188,13 @@ signals:
     // subscriber whose publisher reconnected under a new session/SSRCs.
     void roomPeerLeft(const QString &sessionId);
     void roomJoined();
+    // The server moved us to another conversation (breakout rooms). The window
+    // follows it; nothing else can, because only the server decides this.
+    void switchedToRoom(const QString &token);
+    // A moderator force-muted us. Talk sends this as msgType "control"; TalQ
+    // had no branch for it at all, so the moderator's UI believed the mute had
+    // landed while this client carried on transmitting.
+    void forceMuted();
     void remoteMuteChanged(const QString &sessionId, const QString &media, bool muted);
     void screenShareStopped(const QString &sessionId);
     // Peer signalled a DELIBERATE hangup (TalQ-private) — end a 1:1 call now

@@ -67,6 +67,8 @@ public:
     Q_INVOKABLE void markTopicRead(int threadId);
     Q_INVOKABLE void selectTopic(int threadId);
     Q_INVOKABLE int colorForThread(int threadId) const;
+    // Topic title by id; empty for an unknown id.
+    Q_INVOKABLE QString titleForThread(int threadId) const;
     // Per-topic notification level. This is the setting that makes a busy
     // conversation usable: follow the two topics that matter and mute the
     // rest, without muting the whole room. Server-side per thread; needs
