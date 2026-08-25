@@ -41,6 +41,7 @@ class StatusDot;
 class SelectionBarWidget;
 class ImageViewerDialog;
 class UpdateChecker;
+class CtiService;
 class QProgressBar;
 class QMenu;
 
@@ -49,6 +50,13 @@ class MainWindow : public QMainWindow
     Q_OBJECT
 
 public:
+    // Exposed so main.cpp can surface CTI status as a toast. Without this the
+    // "your device is no longer authorised" message is emitted to a signal
+    // whose only receiver lives inside the lazily-constructed SettingsDialog,
+    // so an agent who never opens Settings is told nothing at all and simply
+    // stops getting call pop-ups.
+    class CtiService *ctiService() const { return m_cti; }
+
     explicit MainWindow(
         ApiClient *api,
         AuthManager *auth,
@@ -248,6 +256,9 @@ private:
 
     // Auto-update banner
     UpdateChecker *m_updateChecker = nullptr;
+    // Screen-pop for inbound phone calls. Dormant unless the user has
+    // paired a device, so an unconfigured install pays nothing for it.
+    CtiService *m_cti = nullptr;
     QWidget       *m_updateBanner = nullptr;
     class QLabel  *m_updateLabel = nullptr;
     QProgressBar  *m_updateProgress = nullptr;

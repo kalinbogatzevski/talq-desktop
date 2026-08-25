@@ -127,6 +127,7 @@ void talqTerminateHandler()
 #include "core/TalqLog.h"
 #include "core/ShutdownWatchdog.h"
 #include "ui/MainWindow.h"
+#include "core/CtiService.h"
 #include "ui/NotificationPopup.h"
 #include "ui/NotificationStack.h"
 #include "painter/ChatPainter.h"
@@ -839,6 +840,18 @@ int main(int argc, char *argv[])
     NotificationStack notifStack;
     QObject::connect(&notifications, &NotificationManager::desktopPopupRequested,
                      &notifStack, &NotificationStack::notify);
+
+    // Surface CTI (phone screen-pop) problems as an ordinary toast. The
+    // service also emits these to the Settings dialog, but that is constructed
+    // lazily -- so without this an agent whose device stops being authorised
+    // is told nothing and simply stops seeing who is calling.
+    if (CtiService *cti = window.ctiService()) {
+        QObject::connect(cti, &CtiService::pairingMessage, &notifStack,
+                         [&notifStack](const QString &message, bool isError) {
+            if (isError)
+                notifStack.notify(QObject::tr("Phone"), message, QString());
+        });
+    }
     // #78 (add-to-call) -- when a 2nd call arrives during an active call (#77),
     // its toast is clickable to ADD that caller into your call instead of
     // navigating to their conversation. Tracked here across the two handlers.
