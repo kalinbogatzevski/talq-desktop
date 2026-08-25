@@ -60,6 +60,8 @@
 #include <QActionGroup>
 #include <QInputDialog>
 #include <QJsonArray>
+#include "core/CtiService.h"
+
 #include <QDesktopServices>
 #include <QDialog>
 #include <QClipboard>
@@ -1819,6 +1821,12 @@ void MainWindow::buildChatPage()
     // Auto-upgrade: share the existing network manager used by ApiClient.
     m_updateChecker = new UpdateChecker(m_api->networkAccessManager(), this);
 
+    // Inbound-call screen-pop. start() is a no-op until the user pairs a
+    // device, so this costs an unconfigured install nothing but the object.
+    m_cti = new CtiService(this);
+    m_cti->setTheme(m_themeId);
+    m_cti->start();
+
     connect(m_updateChecker, &UpdateChecker::updateAvailable,
             this, [this](const UpdateChecker::Manifest &m) {
         // 0.52.14 — manual "Update now" in flight: cancel the up-to-date fallback,
@@ -3416,6 +3424,7 @@ void MainWindow::applyThemeId(PainterTheme::Theme t)
     m_threadsPainter->setTheme(t);
     if (m_callWindow) m_callWindow->setTheme(t);
     if (m_topicTabBar) m_topicTabBar->setTheme(t);   // bug 10
+    if (m_cti) m_cti->setTheme(t);
     applyDarkPalette();
     restyleChrome();          // search field, sidebar icons, profile, splitter
     // Re-tint the Mission Control home. Rebuilding it (delete + recreate ~30
@@ -4509,6 +4518,7 @@ void MainWindow::ensureSettingsDialog()
     // Must run before the dialog is first shown so syncBgPreview() never hits
     // its construct-a-private-engine fallback.
     m_settingsDialog->setSharedBackgroundEngine(m_callManager->backgroundEngine());
+    m_settingsDialog->setCtiService(m_cti);
     // The Settings live background preview opens a SECOND camera consumer. During
     // a call the publisher already holds the (exclusive, Windows MF) camera, so
     // the preview must not open the device or it steals it and wedges the in-call

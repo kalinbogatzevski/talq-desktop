@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(talq VERSION 0.65.4 LANGUAGES CXX)
+project(talq VERSION 0.67.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -52,6 +52,8 @@ qt_add_executable(talq
     src/core/NotificationManager.cpp
     src/core/PushClient.cpp
     src/core/SignalingClient.cpp
+    src/core/CtiClient.cpp
+    src/core/CtiService.cpp
     src/models/Conversation.cpp
     src/models/Message.cpp
     src/models/ConversationListModel.cpp
@@ -119,6 +121,7 @@ qt_add_executable(talq
     src/ui/ScheduledMessagesDialog.cpp
     src/ui/NotificationPopup.h
     src/ui/NotificationPopup.cpp
+    src/ui/CallerCardPopup.cpp
     src/ui/NotificationStack.h
     src/ui/NotificationStack.cpp
     src/ui/EmojiPickerWidget.h
@@ -195,6 +198,12 @@ string(TIMESTAMP TALQ_BUILD_TS "%m%d-%H%M")
 # on 2026-08-25. This is intentional; do not "correct" it back to a fresh
 # codename. The per-patch half of the rule still holds: every 0.65.x patch
 # release keeps this exact string.
+#
+# 0.66.x IS DELIBERATELY SKIPPED. Odd minors are beta lines and even minors are
+# stable, so 0.66.x would have been the stable cut of the 0.65.x work; it was
+# passed over on purpose so the CTI screen-pop — a large enough addition to
+# want its own line — lands in 0.67.x. There is no missing release to hunt for.
+# The codename carries across unchanged, by the same exception as above.
 set_source_files_properties(
     src/main.cpp
     src/core/CallManager.cpp

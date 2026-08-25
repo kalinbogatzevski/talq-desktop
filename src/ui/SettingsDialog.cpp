@@ -1,4 +1,8 @@
 #include "SettingsDialog.h"
+
+#include "core/CtiService.h"
+
+#include <QLineEdit>
 #include "painter/PainterTheme.h"
 #include "core/MediaDeviceManager.h"
 #include "core/Diagnostics.h"
@@ -392,6 +396,7 @@ SettingsDialog::SettingsDialog(
     m_tabs->addTab(wrapInScroll(buildAudioVideoTab()),    tr("Audio && Video"));
     m_tabs->addTab(wrapInScroll(buildBackgroundTab()),    tr("Background"));
     m_tabs->addTab(wrapInScroll(buildNotificationsTab()), tr("Notifications"));
+    m_tabs->addTab(wrapInScroll(buildPhoneTab()),         tr("Phone"));
     m_tabs->addTab(wrapInScroll(buildUpdatesTab()),       tr("Updates"));
     m_tabs->addTab(wrapInScroll(buildGeneralTab()),       tr("General"));
     m_tabs->addTab(wrapInScroll(buildAccountTab()),       tr("Account"));
@@ -2184,4 +2189,125 @@ void SettingsDialog::loadGeneralSettings()
         m_themeCombo->setCurrentIndex(idx < 0 ? 2 : idx);
         m_themeCombo->blockSignals(false);
     }
+}
+
+// ═══════════════════════════════════════════════════════
+// Phone — inbound-call screen-pop
+// ═══════════════════════════════════════════════════════
+
+void SettingsDialog::setCtiService(CtiService *cti)
+{
+    m_cti = cti;
+    if (!m_cti)
+        return;
+
+    connect(m_cti, &CtiService::pairingMessage, this,
+            [this](const QString &message, bool isError) {
+        if (!m_ctiStatus) return;
+        m_ctiStatus->setText(message);
+        // Errors are the only thing worth colouring here; danger-as-text is
+        // already scored by the theme conformance suite.
+        const PainterTheme th = activeTheme();
+        m_ctiStatus->setStyleSheet(
+            QStringLiteral("color: %1;").arg(isError ? th.danger.name()
+                                                     : th.textSecondary.name()));
+        if (m_ctiPairBtn) m_ctiPairBtn->setEnabled(true);
+    });
+
+    connect(m_cti, &CtiService::pairingSucceeded, this,
+            [this](const QString &displayName, const QString &extension) {
+        if (m_ctiEnabled) m_ctiEnabled->setChecked(true);
+        if (!m_ctiStatus) return;
+        m_ctiStatus->setText(extension.isEmpty()
+            ? tr("Paired as %1.").arg(displayName)
+            : tr("Paired as %1 on extension %2.").arg(displayName, extension));
+    });
+}
+
+QWidget *SettingsDialog::buildPhoneTab()
+{
+    auto *w = new QWidget(this);
+    auto *lay = new QVBoxLayout(w);
+    lay->setContentsMargins(24, 22, 24, 22);
+    lay->setSpacing(kRowGap);
+
+    lay->addWidget(makeSectionHeader("Incoming calls"));
+
+    m_ctiEnabled = new QCheckBox(w);
+    m_ctiEnabled->setChecked(CtiService::enabledSetting());
+    connect(m_ctiEnabled, &QCheckBox::toggled, this, [this](bool checked) {
+        CtiService::setEnabledSetting(checked);
+        if (m_cti) {
+            if (checked) m_cti->start();
+            else         m_cti->stop();
+        }
+    });
+    lay->addWidget(makeSettingRow(
+        tr("Show who is calling"),
+        tr("When your desk phone rings, a card appears with the caller's "
+           "details and a link to open them."),
+        m_ctiEnabled));
+
+    m_ctiServerUrl = new QLineEdit(w);
+    m_ctiServerUrl->setPlaceholderText(QStringLiteral("wss://pbx.example.com:8790"));
+    m_ctiServerUrl->setText(CtiService::serverUrl().toString());
+    m_ctiServerUrl->setMinimumWidth(260);
+    connect(m_ctiServerUrl, &QLineEdit::editingFinished, this, [this]() {
+        CtiService::setServerUrl(QUrl(m_ctiServerUrl->text().trimmed()));
+        if (m_cti) m_cti->start();
+    });
+    lay->addWidget(makeSettingRow(
+        tr("Call service address"),
+        tr("Supplied by whoever runs your phone system."),
+        m_ctiServerUrl));
+
+    m_ctiErpUrl = new QLineEdit(w);
+    m_ctiErpUrl->setPlaceholderText(QStringLiteral("https://erp.example.com"));
+    m_ctiErpUrl->setText(CtiService::erpBaseUrl().toString());
+    m_ctiErpUrl->setMinimumWidth(260);
+    connect(m_ctiErpUrl, &QLineEdit::editingFinished, this, [this]() {
+        CtiService::setErpBaseUrl(QUrl(m_ctiErpUrl->text().trimmed()));
+    });
+    lay->addWidget(makeSettingRow(
+        tr("Customer system address"),
+        tr("Where caller details are looked up."),
+        m_ctiErpUrl));
+
+    m_ctiPairBtn = new QPushButton(tr("Pair this device"), w);
+    connect(m_ctiPairBtn, &QPushButton::clicked, this, [this]() {
+        if (!m_cti) return;
+        // Save whatever is typed first: pairing needs the customer-system
+        // address, and losing a call because a field was never committed is a
+        // silly way to fail.
+        if (m_ctiErpUrl)
+            CtiService::setErpBaseUrl(QUrl(m_ctiErpUrl->text().trimmed()));
+        if (m_ctiServerUrl)
+            CtiService::setServerUrl(QUrl(m_ctiServerUrl->text().trimmed()));
+        m_ctiPairBtn->setEnabled(false);
+        if (m_ctiStatus) m_ctiStatus->setText(tr("Starting…"));
+        m_cti->beginPairing();
+    });
+    lay->addWidget(makeSettingRow(
+        tr("Authorise this computer"),
+        tr("Opens your browser, where you are already signed in, and asks you "
+           "to approve. Your password is never typed here."),
+        m_ctiPairBtn));
+
+    m_ctiStatus = new QLabel(w);
+    m_ctiStatus->setWordWrap(true);
+    // Derived from LIVE state, not just whether a token exists on disk: a
+    // revoked device still has its token, and reporting "paired" while the
+    // client is latched off is worse than saying nothing.
+    if (CtiService::token().isEmpty())
+        m_ctiStatus->setText(tr("This device is not paired yet."));
+    else if (m_cti && m_cti->isConnected())
+        m_ctiStatus->setText(tr("Paired and connected."));
+    else if (CtiService::serverUrl().isEmpty())
+        m_ctiStatus->setText(tr("Paired, but no call service address is set."));
+    else
+        m_ctiStatus->setText(tr("Paired, but not connected right now."));
+    lay->addWidget(m_ctiStatus);
+
+    lay->addStretch(1);
+    return w;
 }

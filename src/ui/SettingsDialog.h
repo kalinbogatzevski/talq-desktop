@@ -10,6 +10,7 @@
 #include <QPushButton>
 #include <QSettings>
 
+class QLineEdit;
 class QListWidget;
 class QSlider;
 class QTimer;
@@ -54,6 +55,11 @@ public:
     // duplicate GL stack — ~10-20 MB carried for the session. NOT owned.
     void setSharedBackgroundEngine(class BackgroundEngine *engine);
 
+    // Screen-pop for inbound phone calls. Owned by MainWindow; the dialog only
+    // drives pairing and reads status, so an install that never pairs shows an
+    // inert tab rather than a broken one.
+    void setCtiService(class CtiService *cti);
+
 protected:
     // Tear down the live BG preview pipeline (releases the camera so a
     // subsequent call can claim it). Sync also runs on showEvent so the
@@ -97,6 +103,7 @@ private:
     QWidget *buildGeneralTab();
     QWidget *buildAccountTab();
     QWidget *buildUpdatesTab();
+    QWidget *buildPhoneTab();
     void populateDeviceCombos();
     void populateCameraQualityCombo();  // fills from selected camera's caps
     void loadNotificationSettings();
@@ -178,6 +185,13 @@ private:
     QComboBox *m_themeCombo = nullptr;
 
     // Updates tab
+    class CtiService *m_cti = nullptr;
+    QCheckBox  *m_ctiEnabled   = nullptr;
+    QLineEdit  *m_ctiServerUrl = nullptr;
+    QLineEdit  *m_ctiErpUrl    = nullptr;
+    QPushButton *m_ctiPairBtn  = nullptr;
+    QLabel     *m_ctiStatus    = nullptr;
+
     QCheckBox *m_updatesAutoCheck = nullptr;
     QCheckBox *m_updatesBeta = nullptr;
     // 0.40.2 —auto-install on idle. The checkbox gates the whole feature;
