@@ -1,5 +1,35 @@
 # Changelog
 
+## v0.67.0 "Blue Fiesta Week 4 Re-match" - BETA (2026-08-25)
+
+Note there is no 0.66.x. It was skipped on purpose so this could have a line of
+its own.
+
+One feature, for anyone who answers the phone at work.
+
+### Added
+* **See who is calling before you pick up.** When your desk phone rings, a card
+  appears with the caller's name, their account, whether they are already
+  affected by an outage, and how many open tickets they have. One click opens
+  them in your browser to carry on as normal.
+
+  The card does not steal your keyboard, so a call arriving while you are
+  halfway through a message will not eat what you were typing. It stays up for
+  as long as the phone is ringing rather than disappearing on a timer, and if a
+  colleague picks the call up first, it quietly goes away. If you answer, it
+  stays - that is usually when you want it most.
+
+  If the caller is not recognised, or the lookup is slow or fails, you still get
+  the card with the number on it.
+
+  Your phone keeps working exactly as it does today: TalQ watches, it does not
+  answer, transfer or hang up anything.
+
+  Turn it on under Settings - Phone. Authorising the app happens in your
+  browser, where you are already signed in, so no password is typed into TalQ.
+  Your workplace needs to have set this up; if yours has not, the tab simply
+  does nothing.
+
 ## v0.65.4 "Blue Fiesta Week 4 Re-match" - BETA (2026-08-23)
 
 Follows 0.65.3 the same day. Mostly things that only matter once more than two
