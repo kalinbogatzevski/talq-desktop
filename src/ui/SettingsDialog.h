@@ -38,6 +38,9 @@ public:
     // 0.40.15 — opens directly on the Audio & Video tab. Used by the
     // in-call BACKGROUND dropdown's "Open background settings…" entry.
     void selectAudioVideoTab();
+    // By label, not index: the tab order has changed before and a
+    // hardcoded index fails silently by opening the wrong page.
+    void selectPhoneTab();
     // 0.52.14 — MainWindow drives the manual "Update now" button's status text
     // (e.g. "Update found — installing…", "You're up to date"); auto-reverts.
     void setUpdateNowStatus(const QString &text);

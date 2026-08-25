@@ -102,6 +102,7 @@ private slots:
     // Audio & Video tab (the home of the blur slider + image picker).
     // Triggered from CallWindow's "Open background settings…" menu.
     void openSettingsToBackgrounds();
+    void openSettingsToPhone();
 
 private:
     // 0.40.15 — lazy-build SettingsDialog with all the connections the
