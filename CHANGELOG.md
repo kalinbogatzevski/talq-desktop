@@ -1,5 +1,37 @@
 # Changelog
 
+## v0.68.0 "Blue Fiesta Week 4 Re-match" — STABLE (2026-08-25)
+
+The stable release of the Blue Fiesta Week 4 line. Coming from 0.64.3 this is a
+large one: conversation tags, presets and voice rooms, breakout rooms, topics
+you follow across every conversation, poll drafts, dial-in details — and, for
+anyone who answers the phone at work, a card that tells you who is calling
+before you pick up. Each is described under the beta entries below.
+
+There is no 0.66.x. It was skipped on purpose.
+
+### Added
+* **The home screen says whether your phone is linked.** Where your workplace
+  has set up caller details, the board now shows which extension you are
+  answering as. You can see at a glance that it is working, rather than finding
+  out the next time a call comes in and nothing happens.
+
+### Fixed
+* **The buttons on the caller card look like buttons.** They were drawn as
+  plain text, so the one thing the card most wants you to do did not look like
+  something you could click.
+* **The home screen no longer loses half its status tiles on a narrower
+  window.** They sat in a fixed four columns, so anything past the fourth was
+  cut off the right edge — and a tile that has been cut off looks exactly like
+  one that was never there. They now rearrange to fit the window they are given,
+  and the page scrolls when there is more than fits.
+
+### Notes
+* Caller details are documented for anyone who wants to connect them to their
+  own phone system and customer database rather than ours: `docs/CTI-SCREEN-POP.md`
+  is the contract, and `docs/CTI-INTEGRATION-EXAMPLES.md` walks through a
+  working integration in about a hundred lines.
+
 ## v0.67.4 "Blue Fiesta Week 4 Re-match" - BETA (2026-08-25)
 
 ### Added

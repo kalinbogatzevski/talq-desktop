@@ -82,6 +82,8 @@
 #include <QFile>
 #include <QResizeEvent>
 #include <QKeyEvent>
+#include <QScrollArea>
+#include <QStyle>
 #include <QProgressBar>
 #include <QProcess>
 
@@ -880,6 +882,18 @@ void MainWindow::buildChatPage()
     auto *welcomeHostLayout = new QVBoxLayout(m_welcomeWidget);
     welcomeHostLayout->setContentsMargins(0, 0, 0, 0);
     welcomeHostLayout->setSpacing(0);
+    // The board has to fit whatever window it is given. On a short or narrow
+    // one the tiles reflow onto more rows than the column has height for, and
+    // a QVBoxLayout answers that by squeezing every child below its minimum --
+    // which reads as tiles overlapping and their second line sliced off, not
+    // as "there is more below". Scrolling is the honest answer: nothing is
+    // hidden, it is just further down.
+    m_welcomeScroll = new QScrollArea(m_welcomeWidget);
+    m_welcomeScroll->setWidgetResizable(true);          // root tracks viewport width
+    m_welcomeScroll->setFrameShape(QFrame::NoFrame);
+    m_welcomeScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_welcomeScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    welcomeHostLayout->addWidget(m_welcomeScroll);
     chatLayout->addWidget(m_welcomeWidget, 1);
     // Telemetry stays live across theme rebuilds (UniqueConnection keeps a
     // single connection; refreshWelcomeStatus guards on the rebuilt labels).
@@ -2554,6 +2568,80 @@ void MainWindow::switchToChat()
     m_composer->hide();
 }
 
+
+// Reflow the Mission Control tiles for the width we actually have.
+//
+// The grid used to be hardcoded to four columns, which needs roughly 1400px.
+// On a narrower window the surplus columns were simply clipped off the right
+// edge -- so SIGNALING, PUSH and GPU were invisible and nobody noticed,
+// because a clipped tile looks exactly like a tile that was never added.
+// Floor for a telemetry tile: below this it reads as a label, not a readout.
+// relayoutWelcomeTiles() raises it per tile when the text needs more room.
+static constexpr int kWcTileMinHeight = 92;
+
+void MainWindow::relayoutWelcomeTiles()
+{
+    if (!m_wcGrid || m_wcTiles.isEmpty()) return;
+
+    // Width available to the grid, falling back to the host while the layout
+    // is still settling.
+    // m_welcomeWidget is a plain child of the chat column with no scroll area,
+    // so its width is genuinely what the user can see. The GRID's geometry is
+    // not: when the tiles cannot shrink it reports its own minimum, which is
+    // wider than the panel -- the very situation this function exists to fix.
+    int avail = m_welcomeWidget ? m_welcomeWidget->width() : 0;
+    if (avail <= 0 && m_welcomeContent) avail = m_welcomeContent->width();
+    if (avail <= 0) return;
+    avail -= 72;   // the welcome layout's left+right margins
+    // Always reserve the scrollbar, even while it is hidden. Measuring the
+    // live viewport instead oscillates: the bar appears, the viewport narrows,
+    // the column count drops, the content gets taller, and the bar is now
+    // permanent -- or it flickers between the two states forever.
+    if (m_welcomeScroll)
+        avail -= m_welcomeScroll->style()->pixelMetric(QStyle::PM_ScrollBarExtent);
+
+    // A tile stops being readable below roughly this width; better to drop to
+    // fewer columns than to squeeze every tile into illegibility.
+    constexpr int kMinTileWidth = 210;
+    int cols = avail / kMinTileWidth;
+    cols = qBound(1, cols, 4);
+    // Now give every tile a minimum height that actually fits its own text at
+    // the width it is about to get. A grid row is only as tall as the tallest
+    // minimum in it, and a QLabel's word wrap does NOT feed back into that:
+    // the row stays one line tall and the wrapped remainder is clipped away
+    // inside the frame. Asking the tile's own layout what it needs at that
+    // width is the only answer that stays right as the text changes -- a
+    // hand-tuned constant per column count is wrong the moment a GPU has a
+    // longer name.
+    const int spacing = m_wcGrid->spacing();
+    const int colWidth = (avail - spacing * (cols - 1)) / cols;
+    for (const WcTile &t : m_wcTiles) {
+        if (!t.w || !t.w->layout()) continue;
+        const int span  = qMin(t.span, cols);
+        const int width = colWidth * span + spacing * (span - 1);
+        const int need  = t.w->layout()->totalHeightForWidth(width);
+        t.w->setMinimumHeight(qMax(kWcTileMinHeight, need));
+    }
+
+    if (cols == m_wcGridCols) return;      // column count unchanged
+    m_wcGridCols = cols;
+
+    for (const WcTile &t : m_wcTiles)
+        if (t.w) m_wcGrid->removeWidget(t.w);
+
+    int row = 0, col = 0;
+    for (const WcTile &t : m_wcTiles) {
+        if (!t.w) continue;
+        const int span = qMin(t.span, cols);
+        if (col + span > cols) { ++row; col = 0; }   // does not fit: next row
+        m_wcGrid->addWidget(t.w, row, col, 1, span);
+        col += span;
+        if (col >= cols) { ++row; col = 0; }
+    }
+    for (int c = 0; c < 4; ++c)
+        m_wcGrid->setColumnStretch(c, c < cols ? 1 : 0);
+}
+
 // Repaint the Mission Control board: tile values, status LEDs, system pill.
 // Called on entry to the chat page and whenever signaling/push flip.
 void MainWindow::refreshWelcomeStatus()
@@ -2645,6 +2733,28 @@ void MainWindow::refreshWelcomeStatus()
     };
     setLed(m_wcSignalLed, sigOn);
     setLed(m_wcPushLed, pushOn);
+
+    // PHONE: three states worth telling apart. "Paired but not connected" is
+    // the one that matters -- it looks identical to working until a call comes
+    // in and nothing happens, so it gets the warning LED rather than silence.
+    if (m_welcomePhoneLabel) {
+        const bool paired    = !CtiService::token().isEmpty();
+        const bool connected = m_cti && m_cti->isConnected();
+        const QString ext    = m_cti ? m_cti->extension() : QString();
+        QString big, sub;
+        if (!paired) {
+            big = tr("not linked");
+            sub = tr("set up in settings");
+        } else if (connected) {
+            big = ext.isEmpty() ? tr("linked") : tr("ext %1").arg(ext);
+            sub = tr("screen-pop ready");
+        } else {
+            big = tr("linked");
+            sub = tr("reconnecting");
+        }
+        m_welcomePhoneLabel->setText(val(big, sub));
+        setLed(m_wcPhoneLed, connected);
+    }
     setLed(m_wcGpuLed, gpuOn);
 
     if (m_wcStatusPill) {
@@ -2690,19 +2800,33 @@ void MainWindow::buildWelcomeContent()
 {
     if (!m_welcomeWidget) return;
     m_welcomeDirty = false;
-    if (m_welcomeContent) { delete m_welcomeContent; m_welcomeContent = nullptr; }
+    if (m_welcomeContent) {
+        // Detach first: QScrollArea::setWidget deletes whatever it still holds,
+        // so deleting behind its back leaves it with a dangling pointer.
+        if (m_welcomeScroll) m_welcomeScroll->takeWidget();
+        delete m_welcomeContent;
+        m_welcomeContent = nullptr;
+    }
 
     PainterTheme wt(m_themeId, m_fontScale);
     auto wcss = [](const QColor &c){ return c.name(QColor::HexRgb); };
     const QString wmono = QStringLiteral("'Consolas','Cascadia Mono',monospace");
 
-    auto *root = new QWidget(m_welcomeWidget);
+    auto *root = new QWidget;
     m_welcomeContent = root;
     root->setObjectName("welcomeRoot");
     root->setStyleSheet(QString(
         "QWidget#welcomeRoot{background:%1;} QLabel{background:transparent;}")
         .arg(wcss(wt.bgPrimary)));
-    m_welcomeWidget->layout()->addWidget(root);
+    // The viewport and the scroll area itself must carry the page colour too,
+    // or the theme stops at the content's edge and the surround stays default.
+    if (m_welcomeScroll)
+        m_welcomeScroll->setStyleSheet(QString(
+            "QScrollArea{background:%1;border:none;}"
+            "QScrollArea > QWidget > QWidget{background:%1;}")
+            .arg(wcss(wt.bgPrimary)));
+    // root is handed to the scroll area at the END of this function:
+    // QScrollArea::setWidget wants a widget that already has its layout.
     auto *welcomeLayout = new QVBoxLayout(root);
     welcomeLayout->setContentsMargins(34, 26, 38, 22);
     welcomeLayout->setSpacing(15);
@@ -2820,6 +2944,7 @@ void MainWindow::buildWelcomeContent()
         pc->addLayout(txt, 1);
 
         auto *pairBtn = new QPushButton(tr("Set up"), pairCard);
+        pairBtn->setProperty("variant", "primary");   // opt-in filled look
         pairBtn->setCursor(Qt::PointingHandCursor);
         connect(pairBtn, &QPushButton::clicked, this, &MainWindow::openSettingsToPhone);
         pc->addWidget(pairBtn, 0, Qt::AlignVCenter);
@@ -2836,7 +2961,12 @@ void MainWindow::buildWelcomeContent()
         tile->setStyleSheet(QString(
             "QFrame#mcTile{background:%1;border:1px solid %2;border-radius:13px;}")
             .arg(wcss(wt.bgSurface), wcss(wt.divider)));
-        tile->setMinimumHeight(92);
+        tile->setMinimumHeight(kWcTileMinHeight);
+        tile->setMinimumWidth(150);
+        QSizePolicy tsp = tile->sizePolicy();
+        tsp.setHeightForWidth(true);
+        tsp.setVerticalPolicy(QSizePolicy::MinimumExpanding);
+        tile->setSizePolicy(tsp);
         auto *tl = new QVBoxLayout(tile);
         tl->setContentsMargins(15, 13, 16, 14);
         tl->setSpacing(6);
@@ -2855,19 +2985,48 @@ void MainWindow::buildWelcomeContent()
         tl->addStretch();
         auto *val = new QLabel(tile);
         val->setTextFormat(Qt::RichText);
+        // Wrap, or the label pins a minimum width around its longest line and
+        // the tile can never narrow -- which is what pushed half the grid off
+        // the right edge in the first place.
+        val->setWordWrap(true);
+        // Wrapping alone is not enough: QLabel does NOT turn on the size
+        // policy's heightForWidth when word wrap is enabled, so a layout
+        // still reserves one line's worth of height and the second line
+        // paints straight over the tile below. Ask for it explicitly, on the
+        // label and on the frame, or the grid never propagates the question.
+        QSizePolicy vsp = val->sizePolicy();
+        vsp.setHeightForWidth(true);
+        vsp.setVerticalPolicy(QSizePolicy::MinimumExpanding);
+        val->setSizePolicy(vsp);
         val->setStyleSheet(QString("color:%1;").arg(wcss(wt.textPrimary)));
         tl->addWidget(val);
         if (valOut) *valOut = val;
         if (ledOut) *ledOut = led;
         return tile;
     };
-    grid->addWidget(makeTile(QStringLiteral("SERVER"),    &m_welcomeServerLabel,    nullptr),        0, 0, 1, 2);
-    grid->addWidget(makeTile(QStringLiteral("SIGNALING"), &m_welcomeSignalingLabel, &m_wcSignalLed), 0, 2);
-    grid->addWidget(makeTile(QStringLiteral("PUSH"),      &m_welcomePushLabel,      &m_wcPushLed),   0, 3);
-    grid->addWidget(makeTile(QStringLiteral("NEXTCLOUD"), &m_welcomeNcLabel,        nullptr),        1, 0);
-    grid->addWidget(makeTile(QStringLiteral("TALK"),      &m_welcomeTalkLabel,      nullptr),        1, 1);
-    grid->addWidget(makeTile(QStringLiteral("GPU"),       &m_welcomeGpuLabel,       &m_wcGpuLed),    1, 2, 1, 2);
-    for (int c = 0; c < 4; ++c) grid->setColumnStretch(c, 1);
+    // Registered in reading order with a preferred span; relayoutWelcomeTiles()
+    // decides the actual grid positions from the available width.
+    m_wcTiles.clear();
+    m_wcTiles.append({ makeTile(QStringLiteral("SERVER"),    &m_welcomeServerLabel,    nullptr),        2 });
+    m_wcTiles.append({ makeTile(QStringLiteral("SIGNALING"), &m_welcomeSignalingLabel, &m_wcSignalLed), 1 });
+    m_wcTiles.append({ makeTile(QStringLiteral("PUSH"),      &m_welcomePushLabel,      &m_wcPushLed),   1 });
+    m_wcTiles.append({ makeTile(QStringLiteral("NEXTCLOUD"), &m_welcomeNcLabel,        nullptr),        1 });
+    m_wcTiles.append({ makeTile(QStringLiteral("TALK"),      &m_welcomeTalkLabel,      nullptr),        1 });
+    // PHONE only exists where a call service is configured. On a plain build
+    // with no URL there is nothing to report, and an empty tile would just be
+    // a question the user cannot answer.
+    m_welcomePhoneLabel = nullptr;
+    m_wcPhoneLed = nullptr;
+    m_wcTiles.append({ makeTile(QStringLiteral("GPU"), &m_welcomeGpuLabel, &m_wcGpuLed), 1 });
+    if (!CtiService::serverUrl().isEmpty()) {
+        m_wcTiles.append({ makeTile(QStringLiteral("PHONE"),
+                                    &m_welcomePhoneLabel, &m_wcPhoneLed), 1 });
+    }
+
+    // Place them for the width we actually have, not a fixed four columns.
+    m_wcGrid = grid;
+    m_wcGridCols = 0;
+    relayoutWelcomeTiles();
     welcomeLayout->addLayout(grid);
 
     // Subsystems strip: GStreamer codec/transport availability.
@@ -2977,6 +3136,11 @@ void MainWindow::buildWelcomeContent()
             .arg(wcss(wt.textTime), wmono));
         welcomeLayout->addWidget(foot);
     }
+
+    if (m_welcomeScroll)
+        m_welcomeScroll->setWidget(root);        // now that root has its layout
+    else
+        m_welcomeWidget->layout()->addWidget(root);
 
     refreshWelcomeStatus();
 }
@@ -3590,6 +3754,10 @@ void MainWindow::resizeEvent(QResizeEvent *e)
 {
     QMainWindow::resizeEvent(e);
     m_saveGeometryTimer.start();
+    // Reflow the Mission Control tiles for the new width. Cheap: it returns
+    // immediately unless the column count actually changed, so dragging a
+    // window edge does not rebuild the grid on every pixel.
+    relayoutWelcomeTiles();
 }
 
 void MainWindow::onUpdateReadyToLaunch(const QString &installerPath)
