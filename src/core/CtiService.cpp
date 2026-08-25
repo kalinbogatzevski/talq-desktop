@@ -318,7 +318,13 @@ void CtiService::lookupCustomer(const QString &callId, const QString &caller)
     QNetworkRequest req(url);
     // The AGENT's own token, not a system key — so the ERP applies that
     // agent's permissions rather than the daemon's.
-    req.setRawHeader("Authorization", ("Bearer " + token()).toUtf8());
+    //
+    // X-API-Key, NOT "Authorization: Bearer". The server accepts both in code,
+    // but Apache strips Authorization before PHP sees it, so a Bearer request
+    // is rejected by the allowlist gate with a 403 — which would surface here
+    // as "Not a known customer" for every single caller. Verified against
+    // production before shipping.
+    req.setRawHeader("X-API-Key", token().toUtf8());
     req.setRawHeader("Accept", "application/json");
     // The phone rings for ~20s. A lookup still outstanding after 15 is no
     // longer useful, and without a timeout the card sits on "Looking up..."
