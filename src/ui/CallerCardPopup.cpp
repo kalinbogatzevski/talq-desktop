@@ -11,10 +11,10 @@
 
 namespace {
 
-// Wide enough for a company name without wrapping every time, tall enough for
-// a name, a company line, badges and two buttons.
-constexpr int kCardWidth  = 400;
-constexpr int kCardHeight = 168;
+// Wide enough for a company name and a "Balance due  R 1 234.56" row without
+// wrapping. Height is NOT fixed -- the card grows with whatever the server
+// sends, which is the whole point of the design.
+constexpr int kCardWidth = 400;
 
 } // namespace
 
@@ -26,10 +26,10 @@ CallerCardPopup::CallerCardPopup(QWidget *parent)
 
     // WA_ShowWithoutActivating plus WindowDoesNotAcceptFocus is what keeps the
     // agent's cursor in the message they were typing. Without both, a call
-    // during composition eats a keystroke or two.
+    // arriving mid-sentence eats a keystroke or two.
     setAttribute(Qt::WA_TranslucentBackground);
     setAttribute(Qt::WA_ShowWithoutActivating);
-    setFixedSize(kCardWidth, kCardHeight);
+    setFixedWidth(kCardWidth);
 
     auto *root = new QVBoxLayout(this);
     root->setContentsMargins(20, 16, 20, 14);
@@ -43,60 +43,48 @@ CallerCardPopup::CallerCardPopup(QWidget *parent)
     m_title = new QLabel(this);
     m_title->setAttribute(Qt::WA_TranslucentBackground);
     m_title->setTextFormat(Qt::PlainText);
-    m_title->setWordWrap(false);
     root->addWidget(m_title);
 
     m_subtitle = new QLabel(this);
     m_subtitle->setAttribute(Qt::WA_TranslucentBackground);
     m_subtitle->setTextFormat(Qt::PlainText);
-    m_subtitle->setWordWrap(false);
+    m_subtitle->setWordWrap(true);
     root->addWidget(m_subtitle);
 
-    auto *badgeRow = new QHBoxLayout();
-    badgeRow->setContentsMargins(0, 4, 0, 0);
-    badgeRow->setSpacing(8);
+    m_badgeRow = new QWidget(this);
+    auto *badges = new QHBoxLayout(m_badgeRow);
+    badges->setContentsMargins(0, 4, 0, 2);
+    badges->setSpacing(6);
+    badges->addStretch(1);
+    root->addWidget(m_badgeRow);
 
-    m_outage = new QLabel(this);
-    m_outage->setAttribute(Qt::WA_TranslucentBackground);
-    m_outage->setTextFormat(Qt::PlainText);
-    m_outage->setVisible(false);
-    badgeRow->addWidget(m_outage);
+    auto *fieldsHost = new QWidget(this);
+    m_fieldsLayout = new QVBoxLayout(fieldsHost);
+    m_fieldsLayout->setContentsMargins(0, 4, 0, 0);
+    m_fieldsLayout->setSpacing(2);
+    root->addWidget(fieldsHost);
 
-    m_badges = new QLabel(this);
-    m_badges->setAttribute(Qt::WA_TranslucentBackground);
-    m_badges->setTextFormat(Qt::PlainText);
-    badgeRow->addWidget(m_badges);
-    badgeRow->addStretch(1);
-    root->addLayout(badgeRow);
+    m_more = new QLabel(this);
+    m_more->setAttribute(Qt::WA_TranslucentBackground);
+    m_more->setTextFormat(Qt::PlainText);
+    m_more->setVisible(false);
+    root->addWidget(m_more);
 
-    root->addStretch(1);
+    m_actionRow = new QWidget(this);
+    auto *actions = new QHBoxLayout(m_actionRow);
+    actions->setContentsMargins(0, 10, 0, 0);
+    actions->setSpacing(8);
+    actions->addStretch(1);
 
-    auto *buttonRow = new QHBoxLayout();
-    buttonRow->setContentsMargins(0, 0, 0, 0);
-    buttonRow->setSpacing(8);
-    buttonRow->addStretch(1);
-
-    m_dismissButton = new QPushButton(tr("Dismiss"), this);
+    m_dismissButton = new QPushButton(tr("Dismiss"), m_actionRow);
     m_dismissButton->setFlat(true);
     m_dismissButton->setCursor(Qt::PointingHandCursor);
     m_dismissButton->setFocusPolicy(Qt::NoFocus);
     connect(m_dismissButton, &QPushButton::clicked, this, [this]() {
         emit dismissed(m_callId);
     });
-    buttonRow->addWidget(m_dismissButton);
-
-    m_openButton = new QPushButton(tr("Open customer"), this);
-    m_openButton->setCursor(Qt::PointingHandCursor);
-    m_openButton->setFocusPolicy(Qt::NoFocus);
-    // Nothing to open until the lookup supplies a URL. Showing a button that
-    // does nothing is worse than showing none.
-    m_openButton->setEnabled(false);
-    connect(m_openButton, &QPushButton::clicked, this, [this]() {
-        emit openRequested(m_callId);
-    });
-    buttonRow->addWidget(m_openButton);
-
-    root->addLayout(buttonRow);
+    actions->addWidget(m_dismissButton);
+    root->addWidget(m_actionRow);
 
     applyChrome();
 }
@@ -106,78 +94,201 @@ void CallerCardPopup::showForCall(const QString &callId, const QString &callerNu
 {
     m_callId = callId;
     m_callerNumber = callerNumber;
-    m_openUrl = QUrl();
-    m_openButton->setEnabled(false);
-    m_outage->setVisible(false);
-    m_badges->clear();
+    m_card = CardData();
 
     // Shown before the lookup returns, deliberately: the phone is ringing now.
     m_title->setText(QString::fromStdString(
         talq::fallbackCardTitle(callerNumber.toStdString())));
     m_subtitle->setText(tr("Looking up…"));
+    rebuildBody();
+    rebuildActions();
 
     setState(State::Ringing);
+    resizeToContent();
     move(position);
     show();
     raise();
 }
 
-void CallerCardPopup::applyCustomer(const QString &displayName, const QString &company,
-                                    const QString &ucn, bool isOutage,
-                                    int contractCount, int openTicketCount,
-                                    const QUrl &openUrl)
+void CallerCardPopup::applyCard(const CardData &card)
 {
-    if (!displayName.isEmpty())
-        m_title->setText(displayName);
+    m_card = card;
 
-    QStringList sub;
-    if (!company.isEmpty()) sub << company;
-    if (!ucn.isEmpty())     sub << ucn;
-    if (!m_callerNumber.isEmpty() && !displayName.isEmpty())
-        sub << m_callerNumber;
-    m_subtitle->setText(sub.join(QStringLiteral("  ·  ")));
+    m_title->setText(!card.title.isEmpty()
+                         ? card.title
+                         : QString::fromStdString(
+                               talq::fallbackCardTitle(m_callerNumber.toStdString())));
+    m_subtitle->setText(card.subtitle);
+    m_subtitle->setVisible(!card.subtitle.isEmpty());
 
-    QStringList badges;
-    if (contractCount > 0)
-        badges << tr("%n contract(s)", nullptr, contractCount);
-    if (openTicketCount > 0)
-        badges << tr("%n open ticket(s)", nullptr, openTicketCount);
-    m_badges->setText(badges.join(QStringLiteral("  ·  ")));
-
-    // The one thing an agent most needs before speaking: this customer is
-    // already affected by a known outage.
-    m_outage->setText(tr(" OUTAGE "));
-    m_outage->setVisible(isOutage);
-
-    m_openUrl = openUrl;
-    m_openButton->setEnabled(openUrl.isValid());
-
+    rebuildBody();
+    rebuildActions();
     applyChrome();
+    resizeToContent();
 }
 
 void CallerCardPopup::applyUnknownCaller()
 {
-    m_title->setText(QString::fromStdString(
-        talq::fallbackCardTitle(m_callerNumber.toStdString())));
-    m_subtitle->setText(tr("Not a known customer"));
-    m_badges->clear();
-    m_outage->setVisible(false);
-    m_openButton->setEnabled(false);
+    CardData card;
+    card.known = false;
+    card.title = QString::fromStdString(
+        talq::fallbackCardTitle(m_callerNumber.toStdString()));
+    card.subtitle = tr("Not a known customer");
+    applyCard(card);
+}
+
+void CallerCardPopup::clearLayout(QVBoxLayout *layout)
+{
+    if (!layout)
+        return;
+    while (QLayoutItem *item = layout->takeAt(0)) {
+        if (QWidget *w = item->widget())
+            w->deleteLater();
+        delete item;
+    }
+}
+
+void CallerCardPopup::rebuildBody()
+{
+    const PainterTheme th(m_theme, 1.0);
+
+    // ── badges ──────────────────────────────────────────────────────────────
+    if (auto *row = qobject_cast<QHBoxLayout *>(m_badgeRow->layout())) {
+        while (row->count() > 1) {                    // keep the trailing stretch
+            QLayoutItem *item = row->takeAt(0);
+            if (QWidget *w = item->widget())
+                w->deleteLater();
+            delete item;
+        }
+        for (const Badge &b : m_card.badges) {
+            if (b.text.isEmpty())
+                continue;
+            auto *chip = new QLabel(QStringLiteral(" %1 ").arg(b.text), m_badgeRow);
+            chip->setTextFormat(Qt::PlainText);
+            QFont f = chip->font();
+            f.setBold(true);
+            f.setPointSize(th.fontSizeTiny);
+            chip->setFont(f);
+            const QColor fill = inkForStyle(b.style);
+            chip->setStyleSheet(
+                QStringLiteral("color: %1; background: %2; border-radius: 4px;")
+                    .arg(th.inkOn(fill).name(), fill.name()));
+            row->insertWidget(row->count() - 1, chip);
+        }
+        m_badgeRow->setVisible(!m_card.badges.isEmpty());
+    }
+
+    // ── fields ──────────────────────────────────────────────────────────────
+    clearLayout(m_fieldsLayout);
+
+    const int total = m_card.fields.size();
+    const int shown = talq::visibleFieldCount(total);
+    for (int i = 0; i < shown; ++i) {
+        const Field &f = m_card.fields.at(i);
+        auto *rowWidget = new QWidget(this);
+        auto *row = new QHBoxLayout(rowWidget);
+        row->setContentsMargins(0, 0, 0, 0);
+        row->setSpacing(10);
+
+        auto *label = new QLabel(f.label, rowWidget);
+        label->setTextFormat(Qt::PlainText);
+        label->setStyleSheet(QStringLiteral("color: %1; background: transparent;")
+                                 .arg(th.textSecondary.name()));
+        QFont lf = label->font();
+        lf.setPointSize(th.fontSizeSmall);
+        label->setFont(lf);
+
+        auto *value = new QLabel(f.value, rowWidget);
+        value->setTextFormat(Qt::PlainText);
+        value->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        value->setStyleSheet(QStringLiteral("color: %1; background: transparent;")
+                                 .arg(inkForStyle(f.style).name()));
+        QFont vf = value->font();
+        vf.setPointSize(th.fontSizeSmall);
+        vf.setBold(f.style == QLatin1String("warning") || f.style == QLatin1String("danger"));
+        value->setFont(vf);
+
+        row->addWidget(label);
+        row->addStretch(1);
+        row->addWidget(value);
+        m_fieldsLayout->addWidget(rowWidget);
+    }
+
+    // Say so rather than silently truncating: an agent who cannot see the
+    // count has no way to know the card is not the whole story.
+    const int hidden = talq::hiddenFieldCount(total);
+    m_more->setVisible(hidden > 0);
+    if (hidden > 0) {
+        m_more->setText(tr("+%n more…", nullptr, hidden));
+        m_more->setStyleSheet(QStringLiteral("color: %1; background: transparent;")
+                                  .arg(th.textMuted.name()));
+        QFont mf = m_more->font();
+        mf.setPointSize(th.fontSizeTiny);
+        m_more->setFont(mf);
+    }
+}
+
+void CallerCardPopup::rebuildActions()
+{
+    auto *row = qobject_cast<QHBoxLayout *>(m_actionRow->layout());
+    if (!row)
+        return;
+
+    // Drop every generated button, keeping the stretch and the permanent
+    // Dismiss control.
+    for (int i = row->count() - 1; i >= 0; --i) {
+        QWidget *w = row->itemAt(i)->widget();
+        if (w && w != m_dismissButton) {
+            QLayoutItem *item = row->takeAt(i);
+            w->deleteLater();
+            delete item;
+        }
+    }
+
+    for (const Action &a : m_card.actions) {
+        if (a.label.isEmpty() || !a.url.isValid())
+            continue;
+        auto *btn = new QPushButton(a.label, m_actionRow);
+        btn->setCursor(Qt::PointingHandCursor);
+        btn->setFocusPolicy(Qt::NoFocus);
+        const QUrl url = a.url;
+        connect(btn, &QPushButton::clicked, this, [this, url]() {
+            // The owner validates the scheme; the card never opens anything.
+            emit openRequested(m_callId, url);
+        });
+        row->addWidget(btn);
+    }
+}
+
+QColor CallerCardPopup::inkForStyle(const QString &style) const
+{
+    const PainterTheme th(m_theme, 1.0);
+    switch (talq::cardStyleFromWire(style.toStdString())) {
+    case talq::CardStyle::Muted:   return th.textSecondary;
+    case talq::CardStyle::Warning: return th.amber;
+    case talq::CardStyle::Danger:  return th.danger;
+    case talq::CardStyle::Normal:  break;
+    }
+    return th.textPrimary;
+}
+
+void CallerCardPopup::resizeToContent()
+{
+    // Width is fixed; height follows whatever the server sent. adjustSize()
+    // after a rebuild is what lets the card grow for a rich customer and stay
+    // compact for a bare number.
+    layout()->activate();
+    adjustSize();
+    setFixedWidth(kCardWidth);
 }
 
 void CallerCardPopup::setState(State state)
 {
     m_state = state;
     switch (state) {
-    case State::Ringing:
-        m_status->setText(tr("Incoming call"));
-        break;
-    case State::Active:
-        m_status->setText(tr("On this call"));
-        break;
-    case State::Missed:
-        m_status->setText(tr("Missed call"));
-        break;
+    case State::Ringing: m_status->setText(tr("Incoming call")); break;
+    case State::Active:  m_status->setText(tr("On this call"));  break;
+    case State::Missed:  m_status->setText(tr("Missed call"));   break;
     }
     applyChrome();
 }
@@ -186,6 +297,8 @@ void CallerCardPopup::setTheme(PainterTheme::Theme theme)
 {
     m_theme = theme;
     applyChrome();
+    rebuildBody();          // badge/field colours are baked into stylesheets
+    resizeToContent();
     update();
 }
 
@@ -203,25 +316,10 @@ void CallerCardPopup::applyChrome()
                              .arg(c.name()));
     };
 
-    // The status line is the accent-as-text case, which the theme conformance
-    // suite already scores against the card surface.
-    styleLabel(m_status,   m_state == State::Missed ? th.danger : th.accent,
-               th.fontSizeTiny,   true);
-    styleLabel(m_title,    th.textPrimary,   th.fontSizeLarge,  true);
-    styleLabel(m_subtitle, th.textSecondary, th.fontSizeSmall,  false);
-    styleLabel(m_badges,   th.textSecondary, th.fontSizeSmall,  false);
-
-    // Outage badge: danger fill with inkOn(danger) — an existing, AA-validated
-    // pair, so this introduces no new colour combination to register.
-    if (m_outage) {
-        QFont f = m_outage->font();
-        f.setBold(true);
-        f.setPointSize(th.fontSizeTiny);
-        m_outage->setFont(f);
-        m_outage->setStyleSheet(
-            QStringLiteral("color: %1; background: %2; border-radius: 4px;")
-                .arg(th.inkOn(th.danger).name(), th.danger.name()));
-    }
+    styleLabel(m_status, m_state == State::Missed ? th.danger : th.accent,
+               th.fontSizeTiny, true);
+    styleLabel(m_title,    th.textPrimary,   th.fontSizeLarge, true);
+    styleLabel(m_subtitle, th.textSecondary, th.fontSizeSmall, false);
 }
 
 void CallerCardPopup::changeEvent(QEvent *event)

@@ -2250,6 +2250,8 @@ QWidget *SettingsDialog::buildPhoneTab()
 
     m_ctiServerUrl = new QLineEdit(w);
     m_ctiServerUrl->setPlaceholderText(QStringLiteral("wss://pbx.example.com:8790"));
+    // The EFFECTIVE value, so a branded install shows its own address already
+    // filled in rather than an empty box the user is expected to guess at.
     m_ctiServerUrl->setText(CtiService::serverUrl().toString());
     m_ctiServerUrl->setMinimumWidth(260);
     connect(m_ctiServerUrl, &QLineEdit::editingFinished, this, [this]() {

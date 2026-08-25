@@ -1,11 +1,13 @@
 #include "CtiService.h"
 
 #include "core/CtiClient.h"
+#include "core/CtiDefaults.h"
 #include "core/TalqLog.h"
 #include "ui/CallerCardPopup.h"
 
 #include <QDesktopServices>
 #include <QGuiApplication>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QNetworkAccessManager>
@@ -78,11 +80,25 @@ CtiService::~CtiService() = default;
 
 // ── Settings ────────────────────────────────────────────────────────────────
 
-bool CtiService::enabledSetting()       { return QSettings().value(kKeyEnabled, false).toBool(); }
+bool CtiService::enabledSetting()
+{
+    // Branded builds default ON. An explicit off is remembered, because
+    // QSettings tells "never set" apart from "set to false" -- otherwise
+    // turning it off would silently revert on the next launch.
+    return QSettings().value(kKeyEnabled, TalQCti::kEnabledByDefault).toBool();
+}
 void CtiService::setEnabledSetting(bool on) { QSettings().setValue(kKeyEnabled, on); }
-QUrl CtiService::serverUrl()            { return QSettings().value(kKeyServer).toUrl(); }
+QUrl CtiService::serverUrl()
+{
+    const QUrl set = QSettings().value(kKeyServer).toUrl();
+    return set.isEmpty() ? QUrl(QString::fromUtf8(TalQCti::kServerUrl)) : set;
+}
 void CtiService::setServerUrl(const QUrl &u) { QSettings().setValue(kKeyServer, u); }
-QUrl CtiService::erpBaseUrl()           { return QSettings().value(kKeyErpBase).toUrl(); }
+QUrl CtiService::erpBaseUrl()
+{
+    const QUrl set = QSettings().value(kKeyErpBase).toUrl();
+    return set.isEmpty() ? QUrl(QString::fromUtf8(TalQCti::kErpBaseUrl)) : set;
+}
 void CtiService::setErpBaseUrl(const QUrl &u) { QSettings().setValue(kKeyErpBase, u); }
 QString CtiService::token()             { return QSettings().value(kKeyToken).toString(); }
 void CtiService::setToken(const QString &t)  { QSettings().setValue(kKeyToken, t); }
@@ -134,6 +150,87 @@ void CtiService::setTheme(PainterTheme::Theme theme)
             e.card->setTheme(theme);
 }
 
+
+// Turn the server's response into a card.
+//
+// Two shapes are understood. The CURRENT one is self-describing -- title,
+// subtitle, badges, ordered label/value rows, actions -- so the server can add
+// a field, or show different fields to different roles, without anyone
+// rebuilding this client. The OLDER flat shape (display_name, ucn, is_outage,
+// contract_count...) is still read as a fallback, because a server may be
+// ahead of or behind any given desktop and neither should break the other.
+static CallerCardPopup::CardData parseCard(const QJsonObject &data)
+{
+    CallerCardPopup::CardData card;
+    card.known = data.value(QStringLiteral("known")).toBool();
+    if (!card.known)
+        return card;
+
+    card.title    = data.value(QStringLiteral("title")).toString();
+    card.subtitle = data.value(QStringLiteral("subtitle")).toString();
+
+    for (const QJsonValue &v : data.value(QStringLiteral("badges")).toArray()) {
+        const QJsonObject o = v.toObject();
+        const QString text = o.value(QStringLiteral("text")).toString();
+        if (!text.isEmpty())
+            card.badges.append({ text, o.value(QStringLiteral("style")).toString() });
+    }
+
+    for (const QJsonValue &v : data.value(QStringLiteral("fields")).toArray()) {
+        const QJsonObject o = v.toObject();
+        const QString label = o.value(QStringLiteral("label")).toString();
+        const QString value = o.value(QStringLiteral("value")).toString();
+        // A row with neither half is noise, not information.
+        if (label.isEmpty() && value.isEmpty())
+            continue;
+        card.fields.append({ label, value, o.value(QStringLiteral("style")).toString() });
+    }
+
+    for (const QJsonValue &v : data.value(QStringLiteral("actions")).toArray()) {
+        const QJsonObject o = v.toObject();
+        const QString label = o.value(QStringLiteral("label")).toString();
+        const QString href  = o.value(QStringLiteral("url")).toString();
+        if (label.isEmpty() || href.isEmpty())
+            continue;
+        card.actions.append({ label, QUrl(href) });
+    }
+
+    // ── Fallback: the pre-self-describing flat shape ────────────────────────
+    if (card.title.isEmpty())
+        card.title = data.value(QStringLiteral("display_name")).toString();
+
+    if (card.subtitle.isEmpty()) {
+        QStringList parts;
+        const QString company = data.value(QStringLiteral("company")).toString();
+        const QString ucn     = data.value(QStringLiteral("ucn")).toString();
+        if (!company.isEmpty()) parts << company;
+        if (!ucn.isEmpty())     parts << ucn;
+        card.subtitle = parts.join(QStringLiteral("  ·  "));
+    }
+
+    if (card.badges.isEmpty() && data.value(QStringLiteral("is_outage")).toBool())
+        card.badges.append({ QObject::tr("OUTAGE"), QStringLiteral("danger") });
+
+    if (card.fields.isEmpty()) {
+        const int contracts = data.value(QStringLiteral("contract_count")).toInt();
+        const int tickets   = data.value(QStringLiteral("open_ticket_count")).toInt();
+        if (contracts > 0)
+            card.fields.append({ QObject::tr("Contracts"),
+                                 QString::number(contracts), QString() });
+        if (tickets > 0)
+            card.fields.append({ QObject::tr("Open tickets"),
+                                 QString::number(tickets), QString() });
+    }
+
+    if (card.actions.isEmpty()) {
+        const QString href = data.value(QStringLiteral("url")).toString();
+        if (!href.isEmpty())
+            card.actions.append({ QObject::tr("Open customer"), QUrl(href) });
+    }
+
+    return card;
+}
+
 // ── Card bookkeeping ────────────────────────────────────────────────────────
 
 CallerCardPopup *CtiService::cardFor(const QString &callId) const
@@ -175,13 +272,18 @@ void CtiService::onRinging(const QString &callId, const QString &caller,
         m_store.onEnd(id.toStdString(), "cancelled");
         dropCard(id, 0);
     });
-    connect(card, &CallerCardPopup::openRequested, this, [this](const QString &id) {
-        // Resolve from the sender, not from m_cards: a card that is lingering
-        // after a missed call has already been removed from the hash, and
-        // looking it up there would silently do nothing.
-        auto *target = qobject_cast<CallerCardPopup *>(sender());
-        if (target && isSafeToOpen(target->openUrl()))
-            QDesktopServices::openUrl(target->openUrl());
+    connect(card, &CallerCardPopup::openRequested, this,
+            [this](const QString &id, const QUrl &url) {
+        Q_UNUSED(id);
+        // The card hands us a URL and never opens anything itself, so scheme
+        // validation lives in exactly one place. `url` came from a server, and
+        // the card is an UNPROMPTED popup -- without this, one click could
+        // launch file:// or any registered handler.
+        const QUrl resolved = url.isRelative() ? erpBaseUrl().resolved(url) : url;
+        if (isSafeToOpen(resolved))
+            QDesktopServices::openUrl(resolved);
+        else
+            TWARN("CTI: refusing to open" << resolved.scheme() << "URL from the server");
     });
 
     m_cards.append(CardEntry{ callId, card, false });
@@ -357,26 +459,7 @@ void CtiService::lookupCustomer(const QString &callId, const QString &caller)
             return;
         }
 
-        // The server returns a RELATIVE path ("/en/admin/sales/..."), so it has
-        // to be resolved against the configured base before it can be opened —
-        // handing a relative URL to a browser does nothing at all. resolved()
-        // leaves an absolute URL untouched, so a server that returns a full one
-        // still works.
-        const QString rawUrl = data.value(QStringLiteral("url")).toString();
-        QUrl openUrl;
-        if (!rawUrl.isEmpty()) {
-            const QUrl parsed(rawUrl);
-            openUrl = parsed.isRelative() ? erpBaseUrl().resolved(parsed) : parsed;
-        }
-
-        card->applyCustomer(
-            data.value(QStringLiteral("display_name")).toString(),
-            data.value(QStringLiteral("company")).toString(),
-            data.value(QStringLiteral("ucn")).toString(),
-            data.value(QStringLiteral("is_outage")).toBool(),
-            data.value(QStringLiteral("contract_count")).toInt(),
-            data.value(QStringLiteral("open_ticket_count")).toInt(),
-            openUrl);
+        card->applyCard(parseCard(data));
     });
 }
 
