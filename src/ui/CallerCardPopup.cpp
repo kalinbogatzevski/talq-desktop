@@ -182,7 +182,7 @@ void CallerCardPopup::rebuildBody()
     clearLayout(m_fieldsLayout);
 
     const int total = m_card.fields.size();
-    const int shown = talq::visibleFieldCount(total);
+    const int shown = talq::visibleFieldCount(total, m_card.maxFields);
     for (int i = 0; i < shown; ++i) {
         const Field &f = m_card.fields.at(i);
         auto *rowWidget = new QWidget(this);
@@ -216,7 +216,7 @@ void CallerCardPopup::rebuildBody()
 
     // Say so rather than silently truncating: an agent who cannot see the
     // count has no way to know the card is not the whole story.
-    const int hidden = talq::hiddenFieldCount(total);
+    const int hidden = talq::hiddenFieldCount(total, m_card.maxFields);
     m_more->setVisible(hidden > 0);
     if (hidden > 0) {
         m_more->setText(tr("+%n more…", nullptr, hidden));

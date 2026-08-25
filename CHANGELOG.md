@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.67.3 "Blue Fiesta Week 4 Re-match" - BETA (2026-08-25)
+
+### Changed
+* **How much the caller card shows is now up to your workplace.** They can show
+  more detail on it without you needing a new version of TalQ.
+
 ## v0.67.2 "Blue Fiesta Week 4 Re-match" - BETA (2026-08-25)
 
 ### Changed

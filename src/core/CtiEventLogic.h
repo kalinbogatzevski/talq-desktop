@@ -11,7 +11,9 @@
 //   {"type":"end","call_id":"<opaque>","reason":"answered_elsewhere"}
 //
 // That keeps the phone system swappable: whatever a site runs, it writes a
-// daemon that speaks this and the client is unchanged.
+// daemon that speaks this and the client is unchanged. The full contract --
+// pairing, events, the card payload and the security requirements -- is
+// documented for third parties in docs/CTI-SCREEN-POP.md.
 //
 // What is left here is genuinely the client's job and genuinely fiddly: an
 // agent can have several calls ringing at once (a queue call plus a direct
@@ -166,20 +168,35 @@ inline CardStyle cardStyleFromWire(const std::string &style)
     return CardStyle::Normal;
 }
 
-// A customer with twenty contracts must not produce a card taller than the
-// screen. The server sends its rows in priority order; the client shows the
-// first few and leaves the rest behind the button.
-inline constexpr int kMaxVisibleFields = 6;
+// How many rows fit is the SERVER's call, not a client constant -- otherwise
+// deciding to show one more contract would mean shipping a new desktop build,
+// which is the whole thing this design exists to avoid.
+//
+// The client keeps only a hard ceiling. A server that asks for 500 rows is
+// either mistaken or hostile, and either way a card taller than the screen is
+// unusable and unclosable.
+inline constexpr int kDefaultMaxFields = 6;    // when the server says nothing
+inline constexpr int kHardMaxFields    = 14;   // the server may never exceed this
 
-inline int visibleFieldCount(int total)
+// `serverLimit` <= 0 means "not specified" -- an older server, or one that
+// does not care.
+inline int resolveFieldLimit(int serverLimit)
 {
-    if (total <= 0) return 0;
-    return total < kMaxVisibleFields ? total : kMaxVisibleFields;
+    if (serverLimit <= 0)
+        return kDefaultMaxFields;
+    return serverLimit < kHardMaxFields ? serverLimit : kHardMaxFields;
 }
 
-inline int hiddenFieldCount(int total)
+inline int visibleFieldCount(int total, int serverLimit = 0)
 {
-    const int shown = visibleFieldCount(total);
+    if (total <= 0) return 0;
+    const int limit = resolveFieldLimit(serverLimit);
+    return total < limit ? total : limit;
+}
+
+inline int hiddenFieldCount(int total, int serverLimit = 0)
+{
+    const int shown = visibleFieldCount(total, serverLimit);
     return total > shown ? total - shown : 0;
 }
 
