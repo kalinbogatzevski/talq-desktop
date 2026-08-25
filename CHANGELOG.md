@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.67.1 "Blue Fiesta Week 4 Re-match" - BETA (2026-08-25)
+
+### Fixed
+* **Caller details now actually load.** In 0.67.0 every incoming call showed the
+  number but said the caller was not a known customer, even when they were. The
+  card itself was fine; the request that fetches the details was being turned
+  away before it arrived.
+
 ## v0.67.0 "Blue Fiesta Week 4 Re-match" - BETA (2026-08-25)
 
 Note there is no 0.66.x. It was skipped on purpose so this could have a line of
