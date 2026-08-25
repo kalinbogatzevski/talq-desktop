@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.67.2 "Blue Fiesta Week 4 Re-match" - BETA (2026-08-25)
+
+### Changed
+* **The caller card can now show much more about who is calling.** What appears
+  on it is decided by your workplace and by what you are allowed to see, so two
+  people answering the same call may see different things. It grows to fit
+  whatever it is given rather than being a fixed size, and where there is more
+  than fits, it says so instead of quietly leaving it out.
+* **Links on the card are buttons now**, and there can be more than one.
+
+### Fixed
+* **"Open customer" opens the right page.** It was going somewhere that showed
+  nothing useful.
+
 ## v0.67.1 "Blue Fiesta Week 4 Re-match" - BETA (2026-08-25)
 
 ### Fixed

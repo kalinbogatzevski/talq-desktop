@@ -3,21 +3,32 @@
 #include "painter/PainterTheme.h"
 
 #include <QUrl>
+#include <QVector>
 #include <QWidget>
 
 class QLabel;
 class QPushButton;
+class QVBoxLayout;
 
 /**
  * The card shown while a customer's call is ringing.
  *
- * Three deliberate differences from a chat toast:
+ * It is a DUMB RENDERER. The server describes the whole card -- title,
+ * subtitle, badges, an ordered list of label/value rows, and a set of actions
+ * -- and this class draws whatever arrives. It does not know what a "balance"
+ * or a "contract" is, and it does no formatting: every value is a
+ * display-ready string the server produced.
  *
- *  - It NEVER steals focus. The agent is probably mid-sentence in a message.
- *  - It is dismissed by CALL STATE, not by a timer. A card that disappears
- *    after a few seconds while the caller is still waiting is worse than no
- *    card, because by then the agent has come to rely on it.
- *  - It carries actions, because knowing who is calling is only half of it.
+ * That is deliberate and is the point of the design. Adding a field, or
+ * showing different fields to different roles, becomes a server-side change
+ * deployable in minutes. Nothing here needs rebuilding or reshipping.
+ *
+ * Three behaviours that are NOT the server's to choose:
+ *  - colour: `style` is a closed vocabulary mapped to AA-validated theme
+ *    pairs, so a card can never violate the contrast guarantees;
+ *  - what may be opened: only http/https, checked by the owner;
+ *  - how many rows fit: capped, so twenty contracts cannot produce a card
+ *    taller than the screen.
  */
 class CallerCardPopup : public QWidget
 {
@@ -30,33 +41,55 @@ public:
         Missed,    // rang out; lingers briefly so it can be acted on
     };
 
+    struct Badge {
+        QString text;
+        QString style;   // normal | muted | warning | danger
+    };
+    struct Field {
+        QString label;
+        QString value;
+        QString style;
+    };
+    struct Action {
+        QString label;
+        QUrl url;
+    };
+
+    /** Everything the server said about this caller. */
+    struct CardData {
+        bool known = false;
+        QString title;
+        QString subtitle;
+        QVector<Badge> badges;
+        QVector<Field> fields;
+        QVector<Action> actions;
+    };
+
     explicit CallerCardPopup(QWidget *parent = nullptr);
 
-    // Called as soon as the ring arrives, before the ERP has answered. The
+    // Shown the moment the phone rings, before the lookup has answered. The
     // card appears immediately with the bare number rather than waiting on a
-    // lookup that might be slow or might fail.
+    // request that might be slow or might fail.
     void showForCall(const QString &callId, const QString &callerNumber,
                      const QPoint &position);
 
-    // Fills in whatever the lookup returned. Safe to never arrive.
-    void applyCustomer(const QString &displayName, const QString &company,
-                       const QString &ucn, bool isOutage,
-                       int contractCount, int openTicketCount,
-                       const QUrl &openUrl);
+    // Fills the card in from whatever the server sent. Safe to never arrive.
+    void applyCard(const CardData &card);
 
-    // The lookup failed or the caller is not a known customer. The card stays
-    // up — this is exactly when the agent knows least.
+    // The lookup failed, or this caller is not a known customer. The card
+    // stays up: that is exactly when the agent knows least.
     void applyUnknownCaller();
 
     void setState(State state);
     QString callId() const { return m_callId; }
-    QUrl openUrl() const { return m_openUrl; }
 
     void setTheme(PainterTheme::Theme theme);
 
 signals:
     void dismissed(const QString &callId);
-    void openRequested(const QString &callId);
+    // Carries the URL rather than an index, so the owner validates the scheme
+    // in one place and the card never opens anything itself.
+    void openRequested(const QString &callId, const QUrl &url);
 
 protected:
     void paintEvent(QPaintEvent *event) override;
@@ -64,18 +97,23 @@ protected:
 
 private:
     void applyChrome();
-    void relayoutBadges();
+    void rebuildBody();          // badges + fields, from m_card
+    void rebuildActions();       // one button per action
+    void clearLayout(QVBoxLayout *layout);
+    QColor inkForStyle(const QString &style) const;
+    void resizeToContent();
 
     QString m_callId;
     QString m_callerNumber;
-    QUrl m_openUrl;
+    CardData m_card;
 
-    QLabel *m_title = nullptr;      // customer name, or the bare number
-    QLabel *m_subtitle = nullptr;   // company / UCN
-    QLabel *m_status = nullptr;     // "Ringing on 131" / "On this call" / "Missed"
-    QLabel *m_badges = nullptr;     // contracts, tickets
-    QLabel *m_outage = nullptr;     // painted only when the customer is affected
-    QPushButton *m_openButton = nullptr;
+    QLabel *m_status = nullptr;      // "Incoming call" / "On this call" / "Missed"
+    QLabel *m_title = nullptr;
+    QLabel *m_subtitle = nullptr;
+    QWidget *m_badgeRow = nullptr;
+    QVBoxLayout *m_fieldsLayout = nullptr;
+    QLabel *m_more = nullptr;        // "+3 more" when the list is capped
+    QWidget *m_actionRow = nullptr;
     QPushButton *m_dismissButton = nullptr;
 
     State m_state = State::Ringing;
