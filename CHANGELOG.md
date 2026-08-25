@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.67.4 "Blue Fiesta Week 4 Re-match" - BETA (2026-08-25)
+
+### Added
+* **A prompt on the home screen if your phone is not linked yet.** Where your
+  workplace has set this up, TalQ now offers to walk you through it instead of
+  the feature simply never happening.
+
 ## v0.67.3 "Blue Fiesta Week 4 Re-match" - BETA (2026-08-25)
 
 ### Changed
