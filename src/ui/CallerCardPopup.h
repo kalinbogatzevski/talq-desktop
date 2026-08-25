@@ -63,6 +63,10 @@ public:
         QVector<Badge> badges;
         QVector<Field> fields;
         QVector<Action> actions;
+        // How many field rows the server wants shown. 0 = unspecified, in
+        // which case the client's default applies. The client enforces a hard
+        // ceiling regardless -- see talq::resolveFieldLimit.
+        int maxFields = 0;
     };
 
     explicit CallerCardPopup(QWidget *parent = nullptr);

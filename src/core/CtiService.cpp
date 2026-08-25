@@ -166,6 +166,10 @@ static CallerCardPopup::CardData parseCard(const QJsonObject &data)
     if (!card.known)
         return card;
 
+    // The server decides how many rows its card is worth; the client only
+    // enforces a ceiling. Absent means "use the client default".
+    card.maxFields = data.value(QStringLiteral("max_fields")).toInt();
+
     card.title    = data.value(QStringLiteral("title")).toString();
     card.subtitle = data.value(QStringLiteral("subtitle")).toString();
 
