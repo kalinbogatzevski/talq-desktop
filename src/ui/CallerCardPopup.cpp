@@ -77,7 +77,11 @@ CallerCardPopup::CallerCardPopup(QWidget *parent)
     actions->addStretch(1);
 
     m_dismissButton = new QPushButton(tr("Dismiss"), m_actionRow);
-    m_dismissButton->setFlat(true);
+    // The app's bare QPushButton is transparent and borderless by design --
+    // the filled/outlined looks are OPT-IN via the `variant` property (see
+    // AppStyle). Without one, these read as plain text rather than controls,
+    // which is exactly how they first shipped.
+    m_dismissButton->setProperty("variant", "ghost");
     m_dismissButton->setCursor(Qt::PointingHandCursor);
     m_dismissButton->setFocusPolicy(Qt::NoFocus);
     connect(m_dismissButton, &QPushButton::clicked, this, [this]() {
@@ -249,6 +253,7 @@ void CallerCardPopup::rebuildActions()
         if (a.label.isEmpty() || !a.url.isValid())
             continue;
         auto *btn = new QPushButton(a.label, m_actionRow);
+        btn->setProperty("variant", "primary");   // the call to action, filled
         btn->setCursor(Qt::PointingHandCursor);
         btn->setFocusPolicy(Qt::NoFocus);
         const QUrl url = a.url;
