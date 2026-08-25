@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QMainWindow>
+#include <QVector>
 #include <QPointer>
 #include <QSet>
 #include <QStackedWidget>
@@ -40,6 +41,8 @@ class StatusPopover;
 class StatusDot;
 class SelectionBarWidget;
 class ImageViewerDialog;
+class QScrollArea;
+class QGridLayout;
 class UpdateChecker;
 class CtiService;
 class QProgressBar;
@@ -229,6 +232,7 @@ private:
     QVector<talq::ConversationTag> m_tags;
     QList<QAction *> m_tagFilterActions;
     QWidget *m_welcomeWidget = nullptr;     // persistent host (shown/hidden)
+    QScrollArea *m_welcomeScroll = nullptr; // vertical overflow for the board
     QWidget *m_welcomeContent = nullptr;    // themed content, rebuilt on theme change
     bool m_welcomeDirty = false;            // theme changed while welcome hidden → rebuild on next show
     QLabel *m_themeToast = nullptr;         // transient "Theme: X" overlay
@@ -239,10 +243,22 @@ private:
     QLabel *m_welcomeSignalingLabel = nullptr;
     QLabel *m_welcomePushLabel = nullptr;
     QLabel *m_welcomeGpuLabel = nullptr;
+    QLabel *m_welcomePhoneLabel = nullptr;   // PHONE tile (only when configured)
     QLabel *m_wcStatusPill = nullptr;           // "ALL SYSTEMS NOMINAL" pill
     QLabel *m_wcSignalLed = nullptr;            // status LEDs for live subsystems
     QLabel *m_wcPushLed = nullptr;
     QLabel *m_wcGpuLed = nullptr;
+    QLabel *m_wcPhoneLed = nullptr;
+
+    // Mission Control telemetry tiles, kept so the grid can REFLOW on resize.
+    // A fixed 4-column grid needs ~1400px; the panel is often far narrower,
+    // and the surplus columns were simply clipped off the right edge -- which
+    // is why SIGNALING, PUSH and GPU were invisible on a 1453px window.
+    struct WcTile { QWidget *w = nullptr; int span = 1; };
+    QVector<WcTile> m_wcTiles;
+    QGridLayout *m_wcGrid = nullptr;
+    int m_wcGridCols = 0;              // last applied column count
+    void relayoutWelcomeTiles();       // recompute columns from the panel width
 
     // Connection-status strip — a quiet, Telegram-style "Connecting…" bar
     // shown whenever ApiClient reports the Nextcloud server unreachable (REST
