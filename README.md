@@ -224,6 +224,26 @@ conversations appear. The funnel control in the search row sorts and
 filters the list; Settings → Audio & Video selects devices and toggles
 noise suppression.
 
+## Caller screen-pop (optional)
+
+TalQ can show a card about the caller while your desk phone is still ringing,
+and open that customer in your browser. It works with **any** phone system and
+**any** CRM, because TalQ implements only the client half — you supply a small
+bridge that says "extension X is ringing from Y", and an endpoint that turns a
+number into a card. TalQ never places, answers or ends a call; it watches and
+draws what you send it.
+
+- **[docs/CTI-INTEGRATION-EXAMPLES.md](docs/CTI-INTEGRATION-EXAMPLES.md)** — a
+  walkthrough with a complete working integration in about a hundred lines
+  (standard library only), plus notes for Asterisk, FreeSWITCH and webhook-based
+  cloud PBXs.
+- **[docs/CTI-SCREEN-POP.md](docs/CTI-SCREEN-POP.md)** — the exact contract:
+  pairing, the event stream, and the card payload.
+
+The card is described entirely by your server, so adding a field or showing
+different detail to different roles never needs a new TalQ build. Turn it on
+under Settings → Phone.
+
 ## Status
 
 TalQ is what I use every day, but it's honest about where it is:

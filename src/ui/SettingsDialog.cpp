@@ -424,6 +424,17 @@ void SettingsDialog::selectAudioVideoTab()
     if (m_tabs) m_tabs->setCurrentIndex(0);
 }
 
+void SettingsDialog::selectPhoneTab()
+{
+    if (!m_tabs) return;
+    for (int i = 0; i < m_tabs->count(); ++i) {
+        if (m_tabs->tabText(i) == tr("Phone")) {
+            m_tabs->setCurrentIndex(i);
+            return;
+        }
+    }
+}
+
 void SettingsDialog::setUpdateNowStatus(const QString &text)
 {
     // 0.52.14 — MainWindow reports the manual "Update now" outcome here. Show it,

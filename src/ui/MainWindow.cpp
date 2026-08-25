@@ -2787,6 +2787,46 @@ void MainWindow::buildWelcomeContent()
     }
     welcomeLayout->addLayout(greetRow);
 
+    // ── Phone screen-pop: configured, but this device was never paired ──────
+    // Deliberately NOT gated on the brand ifdef. The real question is "is a
+    // call service configured that we have no credential for", which is true
+    // for a branded install out of the box and for any organisation that ships
+    // its own defaults, and false for a plain build that has no URL. Without
+    // this the feature is invisible: nothing rings, nothing pops, and there is
+    // no hint that anything was ever meant to.
+    if (!CtiService::serverUrl().isEmpty() && CtiService::token().isEmpty()) {
+        auto *pairCard = new QWidget(root);
+        pairCard->setObjectName("ctiPairCard");
+        pairCard->setStyleSheet(QString(
+            "QWidget#ctiPairCard{background:%1;border:1px solid %2;border-radius:10px;}")
+            .arg(wcss(wt.bgSurface), wcss(wt.accent)));
+        auto *pc = new QHBoxLayout(pairCard);
+        pc->setContentsMargins(16, 12, 14, 12);
+        pc->setSpacing(12);
+
+        auto *txt = new QVBoxLayout();
+        txt->setSpacing(2);
+        auto *ph = new QLabel(tr("See who is calling"), pairCard);
+        ph->setStyleSheet(QString("color:%1;font-size:14px;font-weight:600;")
+                              .arg(wcss(wt.textPrimary)));
+        auto *pb = new QLabel(
+            tr("Link this computer to your desk phone and a card will appear "
+               "with the caller's details while it rings."), pairCard);
+        pb->setWordWrap(true);
+        pb->setStyleSheet(QString("color:%1;font-size:12px;")
+                              .arg(wcss(wt.textSecondary)));
+        txt->addWidget(ph);
+        txt->addWidget(pb);
+        pc->addLayout(txt, 1);
+
+        auto *pairBtn = new QPushButton(tr("Set up"), pairCard);
+        pairBtn->setCursor(Qt::PointingHandCursor);
+        connect(pairBtn, &QPushButton::clicked, this, &MainWindow::openSettingsToPhone);
+        pc->addWidget(pairBtn, 0, Qt::AlignVCenter);
+
+        welcomeLayout->addWidget(pairCard);
+    }
+
     // Telemetry grid: SERVER (wide) / SIGNALING / PUSH / NEXTCLOUD / TALK / GPU.
     auto *grid = new QGridLayout();
     grid->setSpacing(11);
@@ -4581,4 +4621,17 @@ void MainWindow::openSettingsToBackgrounds()
     m_settingsDialog->refresh();
     m_settingsDialog->selectAudioVideoTab();
     m_settingsDialog->exec();
+}
+
+void MainWindow::openSettingsToPhone()
+{
+    ensureSettingsDialog();
+    m_settingsDialog->refresh();
+    m_settingsDialog->selectPhoneTab();
+    m_settingsDialog->exec();
+    // Pairing may have just happened, which changes whether the prompt below
+    // belongs on the home board at all.
+    m_welcomeDirty = true;
+    if (m_welcomeWidget && m_welcomeWidget->isVisible())
+        buildWelcomeContent();
 }

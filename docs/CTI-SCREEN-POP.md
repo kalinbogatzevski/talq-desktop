@@ -8,6 +8,11 @@ and knows nothing about either.
 This document is the contract. Implement it and TalQ will work against your
 setup with no changes to TalQ and no custom build.
 
+If you would rather start from something that runs,
+[CTI-INTEGRATION-EXAMPLES.md](CTI-INTEGRATION-EXAMPLES.md) is a walkthrough with
+a complete working integration in about a hundred lines, plus notes on wiring it
+to Asterisk, FreeSWITCH or a webhook-based cloud PBX.
+
 ## What you provide
 
 Two things, and they can be the same service or two:
