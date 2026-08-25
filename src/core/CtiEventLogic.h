@@ -141,6 +141,48 @@ private:
     std::vector<ActiveCard> m_cards;
 };
 
+// ── Card content: a CLOSED style vocabulary ─────────────────────────────────
+
+// The server describes its own card, but it does NOT get to choose colours.
+// A hex value or an unrecognised name from the server would walk straight past
+// the AA contrast guarantees the theme suite enforces, so the wire carries a
+// small fixed vocabulary and anything outside it degrades to Normal. Each of
+// these maps to a pair the conformance suite already scores.
+enum class CardStyle {
+    Normal,    // textPrimary
+    Muted,     // textSecondary
+    Warning,   // amber      (amber-as-text is AA-registered)
+    Danger,    // danger     (danger-as-text is AA-registered)
+};
+
+inline CardStyle cardStyleFromWire(const std::string &style)
+{
+    if (style == "muted")   return CardStyle::Muted;
+    if (style == "warning") return CardStyle::Warning;
+    if (style == "danger")  return CardStyle::Danger;
+    // "normal", empty, or anything this build has never heard of. Degrading
+    // rather than rejecting is deliberate: a newer server adding a style must
+    // not blank out an older client's card.
+    return CardStyle::Normal;
+}
+
+// A customer with twenty contracts must not produce a card taller than the
+// screen. The server sends its rows in priority order; the client shows the
+// first few and leaves the rest behind the button.
+inline constexpr int kMaxVisibleFields = 6;
+
+inline int visibleFieldCount(int total)
+{
+    if (total <= 0) return 0;
+    return total < kMaxVisibleFields ? total : kMaxVisibleFields;
+}
+
+inline int hiddenFieldCount(int total)
+{
+    const int shown = visibleFieldCount(total);
+    return total > shown ? total - shown : 0;
+}
+
 // ── Wire-event validation ───────────────────────────────────────────────────
 
 // The daemon is trusted, but it is still a separate process across a socket,
