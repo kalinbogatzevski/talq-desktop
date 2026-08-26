@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.68.1 "Blue Fiesta Week 4 Re-match" — STABLE (2026-08-26)
+
+### Fixed
+* **Forwarding a message keeps its formatting.** A forwarded message arrived as
+  flat text: bold, italics, lists, quotes, code blocks and links were all eaten
+  on the way out. It is now passed on exactly as it was written.
+
+### Added
+* **A forwarded message says who wrote it.** It now carries a "Forwarded from"
+  line above the original, which is otherwise reproduced word for word.
+
 ## v0.68.0 "Blue Fiesta Week 4 Re-match" — STABLE (2026-08-25)
 
 The stable release of the Blue Fiesta Week 4 line. Coming from 0.64.3 this is a
