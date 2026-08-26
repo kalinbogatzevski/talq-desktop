@@ -140,6 +140,12 @@ public:
     // forwarding a file actually is; before this, a forwarded image arrived
     // as the literal text "[File: name]".
     Q_INVOKABLE void shareExistingFile(const QString &path, const QString &targetToken);
+    // The exact body to POST when forwarding `messageId`, or empty when this
+    // message is not forwardable as text (not in the model yet, or it carries a
+    // rich object that must be re-shared rather than described). Reads the
+    // server's own markup out of rawJson -- see ForwardLogic.h for why the
+    // rendered text is not an acceptable source.
+    Q_INVOKABLE QString forwardBodyFor(int messageId) const;
     // The user's server-side attachment folder (config.attachments.folder).
     // Empty restores the historic "Talk".
     void setAttachmentFolder(const QString &folder) { m_attachmentFolder = folder; }

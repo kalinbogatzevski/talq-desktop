@@ -1,3 +1,4 @@
+#include "core/ForwardLogic.h"
 #include "models/MessageListModel.h"
 #include <QPointer>
 #include "core/MessageCache.h"
@@ -1977,6 +1978,51 @@ QString MessageListModel::attachmentFolder() const
     while (f.startsWith(QLatin1Char('/'))) f.remove(0, 1);
     while (f.endsWith(QLatin1Char('/')))   f.chop(1);
     return f.isEmpty() ? QStringLiteral("Talk") : f;
+}
+
+// Build the exact body to POST when forwarding `messageId`.
+//
+// Reads `rawJson`, deliberately NOT Message::message: fromJson() rewrites that
+// field IN PLACE into rendered html (escape -> markdown -> placeholder
+// substitution -> linkify), so by the time anything else sees it the original
+// markup is gone. Forwarding used to take that html and flatten it further with
+// QTextDocument::toPlainText(), which is why a forwarded message arrived as
+// plain text with every marker eaten. rawJson is the server's own bytes and the
+// only lossless copy we keep.
+QString MessageListModel::forwardBodyFor(int messageId) const
+{
+    for (const Message &m : m_messages) {
+        if (m.id != messageId) continue;
+
+        const QString raw = m.rawJson.value("message").toString();
+        if (raw.isEmpty()) return QString();   // optimistic send: no server copy yet
+
+        std::vector<talq::MentionParam> mentions;
+        std::vector<std::string> otherKeys;
+        const QJsonObject params = m.rawJson.value("messageParameters").toObject();
+        for (auto it = params.begin(); it != params.end(); ++it) {
+            const QJsonObject p = it.value().toObject();
+            if (it.key().startsWith(QLatin1String("mention"))) {
+                mentions.push_back({ it.key().toStdString(),
+                                     p.value("id").toString().toStdString(),
+                                     p.value("name").toString().toStdString() });
+            } else {
+                otherKeys.push_back(it.key().toStdString());
+            }
+        }
+
+        // A poll / deck card / shared file is not prose. Upstream re-shares
+        // those through their own endpoint; sending the raw "{object}" would
+        // deliver literal braces, so hand the caller nothing and let it stay on
+        // whatever path already handles them.
+        if (talq::carriesRichObject(raw.toStdString(), otherKeys))
+            return QString();
+
+        return QString::fromStdString(
+            talq::forwardBody(raw.toStdString(), mentions,
+                              m.actorDisplayName.toStdString()));
+    }
+    return QString();   // not in the model
 }
 
 // Forward an existing attachment by re-sharing its path into another
