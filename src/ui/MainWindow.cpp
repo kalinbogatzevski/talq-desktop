@@ -1255,7 +1255,23 @@ void MainWindow::buildChatPage()
                     m_messages->shareExistingFile(fwdPath, targetToken);
                     continue;
                 }
-                QString body = plainBodyText(msg);
+                // Forward the SERVER'S OWN MARKUP, not the rendered body.
+                // plainBodyText() exists to flatten html for the clipboard and
+                // for quoting; using it here sent a copy that had been through
+                // markup -> html -> plain text, so every forwarded message
+                // arrived stripped of its formatting.
+                const int fwdId = msg.value("messageId").toInt();
+                QString body = m_messages->forwardBodyFor(fwdId);
+                if (body.isEmpty()) {
+                    // Not forwardable as markup: an optimistic send with no
+                    // server copy yet, or a rich object that is not prose.
+                    // The flattened text is still better than nothing, but say
+                    // so -- a silent downgrade here is exactly how the original
+                    // bug went unnoticed.
+                    qWarning() << "forward: no raw markup for message" << fwdId
+                               << "- falling back to flattened text";
+                    body = plainBodyText(msg);
+                }
                 if (!body.isEmpty())
                     m_messages->sendMessageToToken(targetToken, body);
             }
