@@ -139,6 +139,8 @@ signals:
     void linkActivated(const QString &url);
     void fileClicked(int fileId, const QString &mime, const QString &fileName);
     // A poll card was clicked; the window opens the voting dialog.
+    // The quote block on a reply was clicked: jump to the message it quotes.
+    void quotedMessageClicked(int parentMessageId);
     void pollClicked(int pollId);
     void reactionClicked(int messageId, const QString &emoji);
     void replyRequested(int messageId, const QString &author, const QString &text);

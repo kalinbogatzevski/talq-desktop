@@ -144,6 +144,73 @@ void MainWindow::forwardOneMessage(const QVariantMap &msg, const QString &target
         m_messages->sendMessageToToken(targetToken, body);
 }
 
+// Put `messageId` on screen, fetching the history around it first when it is
+// outside the loaded window. The ONE implementation.
+//
+// It has to be one, and not one per caller: the model tracks a single
+// m_historyUntilTargetId, so a second chase armed while the first is in flight
+// overwrites that target and strands the earlier watcher forever -- it would go
+// on filtering for an id the model will never settle again. Owning the
+// disconnect-then-arm sequence in a single place is what makes that
+// unrepresentable. (setConversationToken's room-change cleanup does not help:
+// it is never called for a same-room jump.)
+void MainWindow::jumpToMessage(int messageId)
+{
+    if (messageId <= 0 || !m_messages) return;
+
+    // Harmless when the target is not laid out yet -- scrollToMessage simply
+    // finds nothing and returns.
+    m_chatPainter->scrollToMessage(messageId);
+
+    for (int i = 0; i < m_messages->rowCount(); ++i) {
+        if (m_messages->data(m_messages->index(i), MessageListModel::IdRole).toInt() == messageId)
+            return;   // already loaded; the scroll above did the work
+    }
+
+    QObject::disconnect(m_jumpConn);
+    m_jumpConn = connect(m_messages, &MessageListModel::historyUntilSettled, this,
+        [this, messageId](int settledId, bool ok) {
+            if (settledId != messageId) return;
+            QObject::disconnect(m_jumpConn);
+            // ok == false means the message is gone (deleted, or expired out of
+            // retention). Nothing to scroll to, and nothing worth interrupting
+            // the user over -- the quote stays on screen either way.
+            if (ok) m_chatPainter->scrollToMessage(messageId);
+        });
+    m_messages->loadHistoryUntil(messageId);
+}
+
+// Open the composer to edit `messageId`. The ONE implementation.
+//
+// Edit is reachable two ways -- the up-arrow shortcut and the right-click menu
+// -- and both used to load the RENDERED text: one via plainBodyText(), one by
+// inlining the same setHtml()/toPlainText() pair. Either way the markup was
+// already gone, so saving an edit rewrote the message WITHOUT its formatting
+// and destroyed the original in place. (That inlined copy is why grepping for
+// plainBodyText did not turn up both sites.)
+//
+// `fallbackPlain` is used only when there is no server copy to read -- an
+// optimistic send not yet acknowledged. Editing then flattens exactly as it
+// used to, which is the old behaviour rather than a new failure.
+void MainWindow::beginEditingMessage(int messageId, const QString &fallbackPlain)
+{
+    if (messageId <= 0 || !m_messages) return;
+
+    QString source = m_messages->rawBodyFor(messageId);
+    if (source.isEmpty()) {
+        if (fallbackPlain.isEmpty()) return;
+        qWarning() << "edit: no raw markup for message" << messageId
+                   << "- editing the flattened text";
+        source = fallbackPlain;
+    }
+
+    m_editingMessageId = messageId;
+    // Mentions arrive as @"id" -- exactly what the composer's own autocomplete
+    // inserts (ComposerWidget.cpp:1180), so an edited mention round-trips
+    // through the server unchanged.
+    m_composer->showEditingBar(source);
+}
+
 MainWindow::~MainWindow()
 {
     qInfo() << "[SHUTDOWN] ~MainWindow begin";   // 0.51.15 TEMP hang diag
@@ -1195,8 +1262,7 @@ void MainWindow::buildChatPage()
             const QString plain = doc.toPlainText().trimmed();
             if (plain.isEmpty())
                 continue;
-            m_editingMessageId = id;
-            m_composer->showEditingBar(plain);
+            beginEditingMessage(id, plain);
             break;
         }
     });
@@ -1277,6 +1343,10 @@ void MainWindow::buildChatPage()
             m_chatPainter->exitSelectionMode();
         }
     });
+
+    // Clicking the quote on a reply drives back to the message it quotes.
+    connect(m_chatPainter, &ChatPainter::quotedMessageClicked,
+            this, &MainWindow::jumpToMessage);
 
     connect(m_selectionBar, &SelectionBarWidget::forwardClicked, this, [this]() {
         auto messages = m_chatPainter->selectedMessages();
@@ -1468,9 +1538,7 @@ void MainWindow::buildChatPage()
             menu->addSeparator();
             if (!hasFile) {
                 menu->addAction(tr("\u270F\uFE0F  Edit"), this, [this, msgId, msg]() {
-                    m_editingMessageId = msgId;
-                    QString plain = plainBodyText(msg);
-                    m_composer->showEditingBar(plain);
+                    beginEditingMessage(msgId, plainBodyText(msg));
                 });
             }
             menu->addAction(QStringLiteral("\U0001F5D1\uFE0F  ") + tr("Delete"), this, [this, msgId]() {
@@ -2113,38 +2181,10 @@ void MainWindow::buildSearchBar(QWidget *chatCol)
             // Give the room switch a beat to load before chasing the message;
             // loadHistoryUntil resolves it from there (one request now that the
             // context endpoint is used, so this is a short hop, not a page walk).
-            QTimer::singleShot(500, this, [this, msgId]() {
-                if (m_messages) m_messages->loadHistoryUntil(msgId);
-                m_chatPainter->scrollToMessage(msgId);
-            });
+            QTimer::singleShot(500, this, [this, msgId]() { jumpToMessage(msgId); });
             return;
         }
-        m_chatPainter->scrollToMessage(msgId);
-        if (!m_messages) return;
-        bool foundLocal = false;
-        for (int i = 0; i < m_messages->rowCount(); ++i) {
-            if (m_messages->data(m_messages->index(i), MessageListModel::IdRole).toInt() == msgId) {
-                foundLocal = true; break;
-            }
-        }
-        if (!foundLocal) {
-            // Only one loadHistoryUntil chase can be in flight in the model
-            // (a single m_historyUntilTargetId), so arming a new jump first
-            // abandons whatever the previous click was still waiting on —
-            // otherwise a same-room second click before the first settles
-            // overwrites that target and strands this watcher forever (it
-            // would filter on the old msgId, which the model will never
-            // settle again). setConversationToken's room-change cleanup does
-            // not help here: it is never called for a same-room jump.
-            QObject::disconnect(m_searchJumpConn);
-            m_searchJumpConn = connect(m_messages, &MessageListModel::historyUntilSettled, this,
-                [this, msgId](int settledId, bool ok) {
-                    if (settledId != msgId) return;
-                    QObject::disconnect(m_searchJumpConn);
-                    if (ok) m_chatPainter->scrollToMessage(msgId);
-                });
-            m_messages->loadHistoryUntil(msgId);
-        }
+        jumpToMessage(msgId);
     });
 
     connect(m_header, &HeaderPainter::searchRequested, this, [this]() {

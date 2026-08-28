@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.69.0 "Saedinenie" — BETA (2026-08-28)
+
+Opens a new line, and a new name: Съединение — the Unification of 6 September
+1885. This is a beta.
+
+### Added
+* **Click the quote on a reply to jump to the message it answers.** Replies used
+  to show you a snippet of what they were answering and leave you to go and find
+  it. The quote is now a way back: the original is brought on screen and briefly
+  highlighted, fetching the older part of the conversation first if it has
+  scrolled out of reach.
+
+### Fixed
+* **Editing a message no longer strips its formatting.** The editor was handed
+  the message as it appears on screen rather than as it was written, so saving
+  an edit quietly rewrote it without its bold, lists or links — losing the
+  original in the process. It now opens with what you actually typed.
+
 ## v0.68.2 "Blue Fiesta Week 4 Re-match" — STABLE (2026-08-28)
 
 ### Fixed
