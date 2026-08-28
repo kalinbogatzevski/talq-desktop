@@ -78,6 +78,32 @@ inline QString codenameBlurb(const QString &verName)
             "name over the release line that put things back together: a reply "
             "now leads back to what it answers, and editing a message no longer "
             "severs it from the way it was written.").arg(verName);
+    if (verName == QStringLiteral("Blue Fiesta Week 4 Re-match"))
+        return QObject::tr("Codename \"%1\" — the return leg, away in Athens on "
+            "25 August 2026, of the play-off tie that \"Blue Fiesta Week 4\" was "
+            "named for: the last gate before the Champions League proper, for "
+            "PFC Levski Sofia, \"Sinite\" (the Blues), the maintainer's club. "
+            "The name was deliberately reused rather than replaced, because the "
+            "fixture was the same one — and it then carried three release lines, "
+            "which is unusual and also the point: 0.65.x brought the Talk 24 work "
+            "(conversation tags, presets and voice rooms, breakout rooms, topics "
+            "you follow across every conversation, poll drafts), 0.67.x added the "
+            "caller screen-pop that ties the phone on your desk to the customer "
+            "on your screen, and 0.68.x promoted all of it to stable. A long tie, "
+            "and a long line.").arg(verName);
+    if (verName == QStringLiteral("Blue Fiesta Week 4"))
+        return QObject::tr("Codename \"%1\" — week four of the blue celebration "
+            "for PFC Levski Sofia, \"Sinite\" (the Blues), the maintainer's club: "
+            "the PLAY-OFF round of the 2026–27 UEFA Champions League, the last "
+            "gate before the league phase, reached by winning through the "
+            "qualifying rounds that \"Blue Fiesta\" and weeks two and three were "
+            "named for. Twenty years earlier, in 2006–07, Levski became the first "
+            "Bulgarian club ever to reach the Champions League group stage, drawn "
+            "with Barcelona, Chelsea and Werder Bremen. A name over the release "
+            "that stopped guessing about echo and went and measured it — proving "
+            "the cancellation does its job, and closing the ways it could quietly "
+            "stop doing it — and then over the pass that made every theme meet "
+            "the contrast standard rather than nearly meet it.").arg(verName);
     if (verName == QStringLiteral("Blue Fiesta Week 3"))
         return QObject::tr("Codename \"%1\" — week three of the blue celebration "
             "for PFC Levski Sofia, \"Sinite\" (the Blues), the maintainer's club: "
