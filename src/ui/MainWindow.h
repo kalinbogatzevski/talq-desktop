@@ -258,6 +258,11 @@ private:
     QVector<WcTile> m_wcTiles;
     QGridLayout *m_wcGrid = nullptr;
     int m_wcGridCols = 0;              // last applied column count
+    // The ONE implementation of forwarding a message. Both entry points (the
+    // selection bar and the right-click menu) call this; they were separate
+    // copies and fixing only one is exactly how 0.68.1 shipped a fix that did
+    // nothing for the menu.
+    void forwardOneMessage(const QVariantMap &msg, const QString &targetToken);
     void relayoutWelcomeTiles();       // recompute columns from the panel width
 
     // Connection-status strip — a quiet, Telegram-style "Connecting…" bar
