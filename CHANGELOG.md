@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.69.1 "Saedinenie" — BETA (2026-08-28)
+
+### Added
+* **Call back from the caller card.** Where your workplace has set it up, the
+  card now offers to ring your desk phone and connect it to the caller — useful
+  most on the call you just missed. It appears only where dialling is actually
+  configured, so you never get a button that cannot work.
+
+### Fixed
+* **A pre-release build now says so on the home screen.** The title bar has said
+  it for a long time; the board you actually look at did not, so a beta was
+  indistinguishable from a stable release.
+* **The codename tells its story again.** "Saedinenie" had no entry, so hovering
+  it showed the bare name. It now explains the Unification of 1885, as the
+  earlier codenames do.
+
 ## v0.69.0 "Saedinenie" — BETA (2026-08-28)
 
 Opens a new line, and a new name: Съединение — the Unification of 6 September

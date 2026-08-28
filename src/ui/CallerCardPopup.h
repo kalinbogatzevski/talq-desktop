@@ -85,12 +85,20 @@ public:
     void applyUnknownCaller();
 
     void setState(State state);
+
+    // Whether this site can place calls. The card is otherwise a dumb
+    // renderer of what the server sent, and this is the one exception: the
+    // ABILITY to dial is a property of this desktop and its daemon, not of
+    // the customer record, so the server has nothing to say about it.
+    void setCanDial(bool canDial);
     QString callId() const { return m_callId; }
 
     void setTheme(PainterTheme::Theme theme);
 
 signals:
     void dismissed(const QString &callId);
+    // Ring this desk phone and connect it to the caller.
+    void dialRequested(const QString &number);
     // Carries the URL rather than an index, so the owner validates the scheme
     // in one place and the card never opens anything itself.
     void openRequested(const QString &callId, const QUrl &url);
@@ -120,6 +128,7 @@ private:
     QWidget *m_actionRow = nullptr;
     QPushButton *m_dismissButton = nullptr;
 
+    bool m_canDial = false;
     State m_state = State::Ringing;
     PainterTheme::Theme m_theme = PainterTheme::Theme::Vivid;
 };
