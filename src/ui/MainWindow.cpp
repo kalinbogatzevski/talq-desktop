@@ -104,6 +104,46 @@ static QString plainBodyText(const QVariantMap &msg)
     return body;
 }
 
+// Forward ONE message to ONE conversation. The single implementation.
+//
+// There are two ways to forward -- the selection bar and the right-click menu --
+// and they used to be independent copies of this logic. When the selection-bar
+// copy was fixed in 0.68.1 to stop flattening the body, the menu copy silently
+// kept the bug, so the fix appeared to do nothing for anyone who forwards the
+// way most people do. That is the entire reason this is a function: a third
+// entry point should be unable to reintroduce the defect by construction.
+void MainWindow::forwardOneMessage(const QVariantMap &msg, const QString &targetToken)
+{
+    if (targetToken.isEmpty()) return;
+
+    // An attachment is forwarded by re-sharing the file, not by sending its
+    // name as text: forwarding used to send "[File: name]" and the recipient
+    // got nothing they could open.
+    const QString fwdPath = msg.value("filePath").toString();
+    if (msg.value("hasFile").toBool() && !fwdPath.isEmpty()) {
+        m_messages->shareExistingFile(fwdPath, targetToken);
+        return;
+    }
+
+    // Send the SERVER'S OWN MARKUP, not the rendered body. plainBodyText()
+    // flattens html for the clipboard and for quote previews; using it here
+    // sent a copy that had been through markup -> html -> plain text, which
+    // ate every marker AND collapsed the blank lines between paragraphs.
+    const int fwdId = msg.value("messageId").toInt();
+    QString body = m_messages->forwardBodyFor(fwdId);
+    if (body.isEmpty()) {
+        // Not forwardable as markup: an optimistic send with no server copy
+        // yet, or a rich object that is not prose. The flattened text beats
+        // sending nothing, but say so -- a silent downgrade is how this went
+        // unnoticed the first time.
+        qWarning() << "forward: no raw markup for message" << fwdId
+                   << "- falling back to flattened text";
+        body = plainBodyText(msg);
+    }
+    if (!body.isEmpty())
+        m_messages->sendMessageToToken(targetToken, body);
+}
+
 MainWindow::~MainWindow()
 {
     qInfo() << "[SHUTDOWN] ~MainWindow begin";   // 0.51.15 TEMP hang diag
@@ -1245,36 +1285,8 @@ void MainWindow::buildChatPage()
         auto *picker = new ConversationPickerDialog(m_conversations, m_activeConvToken, this);
         if (picker->exec() == QDialog::Accepted) {
             QString targetToken = picker->selectedToken();
-            for (const auto &msg : messages) {
-                // An attachment is forwarded by re-sharing the file, not by
-                // sending its name as text. Every forward used to go through
-                // plainBodyText(), so a forwarded image arrived as the literal
-                // "[File: name]" and the recipient got nothing they could open.
-                const QString fwdPath = msg.value("filePath").toString();
-                if (msg.value("hasFile").toBool() && !fwdPath.isEmpty()) {
-                    m_messages->shareExistingFile(fwdPath, targetToken);
-                    continue;
-                }
-                // Forward the SERVER'S OWN MARKUP, not the rendered body.
-                // plainBodyText() exists to flatten html for the clipboard and
-                // for quoting; using it here sent a copy that had been through
-                // markup -> html -> plain text, so every forwarded message
-                // arrived stripped of its formatting.
-                const int fwdId = msg.value("messageId").toInt();
-                QString body = m_messages->forwardBodyFor(fwdId);
-                if (body.isEmpty()) {
-                    // Not forwardable as markup: an optimistic send with no
-                    // server copy yet, or a rich object that is not prose.
-                    // The flattened text is still better than nothing, but say
-                    // so -- a silent downgrade here is exactly how the original
-                    // bug went unnoticed.
-                    qWarning() << "forward: no raw markup for message" << fwdId
-                               << "- falling back to flattened text";
-                    body = plainBodyText(msg);
-                }
-                if (!body.isEmpty())
-                    m_messages->sendMessageToToken(targetToken, body);
-            }
+            for (const auto &msg : messages)
+                forwardOneMessage(msg, targetToken);
             m_chatPainter->exitSelectionMode();
         }
         picker->deleteLater();
@@ -1371,17 +1383,9 @@ void MainWindow::buildChatPage()
             m_composer->setFocus();
         });
         menu->addAction(tr("\u2197\uFE0F  Forward"), this, [this, msg]() {
-            const QString fwdPath = msg.value("filePath").toString();
-            const bool fwdIsFile = msg.value("hasFile").toBool() && !fwdPath.isEmpty();
-            QString body = plainBodyText(msg);
-            if (body.isEmpty() && !fwdIsFile) return;
             auto *picker = new ConversationPickerDialog(m_conversations, m_activeConvToken, this);
-            if (picker->exec() == QDialog::Accepted) {
-                if (fwdIsFile)
-                    m_messages->shareExistingFile(fwdPath, picker->selectedToken());
-                else
-                    m_messages->sendMessageToToken(picker->selectedToken(), body);
-            }
+            if (picker->exec() == QDialog::Accepted)
+                forwardOneMessage(msg, picker->selectedToken());
             picker->deleteLater();
         });
         // Pin. Offered ONLY where it can actually work.
