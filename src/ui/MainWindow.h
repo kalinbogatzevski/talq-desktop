@@ -262,6 +262,15 @@ private:
     // selection bar and the right-click menu) call this; they were separate
     // copies and fixing only one is exactly how 0.68.1 shipped a fix that did
     // nothing for the menu.
+    // The ONE implementation of "put message `messageId` on screen": scroll to
+    // it, fetching the surrounding history first if it is outside the loaded
+    // window. Used by the search results and by clicking a reply quote.
+    void jumpToMessage(int messageId);
+    // The ONE implementation of opening the composer to edit a message. Both
+    // entry points (up-arrow and the right-click menu) call this; they were
+    // separate copies that each loaded the rendered text and so stripped the
+    // formatting on save.
+    void beginEditingMessage(int messageId, const QString &fallbackPlain);
     void forwardOneMessage(const QVariantMap &msg, const QString &targetToken);
     void relayoutWelcomeTiles();       // recompute columns from the panel width
 
@@ -363,7 +372,9 @@ private:
     // one jump can ever be in flight). A value member, not a heap allocation:
     // arming a new jump disconnects whatever the previous one left behind
     // first, so a same-room second click can never strand a connection.
-    QMetaObject::Connection m_searchJumpConn;
+    // Watcher for an in-flight loadHistoryUntil chase. ONE member, because
+    // the model has ONE m_historyUntilTargetId -- see jumpToMessage().
+    QMetaObject::Connection m_jumpConn;
 
     // State
     bool m_chatMode = false;

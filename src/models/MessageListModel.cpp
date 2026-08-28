@@ -184,6 +184,16 @@ QVariant MessageListModel::data(const QModelIndex &index, int role) const
             return m.replyTo.isEmpty() ? QString() : m.replyTo["message"].toString();
         case ReplyToAuthorRole:
             return m.replyTo.isEmpty() ? QString() : m.replyTo["actorDisplayName"].toString();
+        case ReplyToIdRole:
+            // Mirrors ReplyToTextRole's suppression exactly: inside a thread the
+            // root is not quoted on every reply, so it must not be a jump target
+            // either -- the id and the quote the user can actually see have to
+            // agree, or the clickable region says one thing and the pixels say
+            // another.
+            if (m.replyTo.isEmpty()) return 0;
+            if (m_threadId > 0 && m.replyTo.value("id").toInt() == m_threadId)
+                return 0;
+            return m.replyTo.value("id").toInt();
         case ReactionsSelfRole: return m.reactionsSelf;
         case PollIdRole:        return m.pollId;
         case PollQuestionRole:  return m.pollQuestion;
@@ -261,6 +271,7 @@ QHash<int, QByteArray> MessageListModel::roleNames() const
         {IsGroupedRole,     "isGrouped"},
         {ReplyToTextRole,   "replyToText"},
         {ReplyToAuthorRole, "replyToAuthor"},
+        {ReplyToIdRole,     "replyToId"},
         {ReactionsRole,     "reactions"},
         {ReactionsSelfRole, "reactionsSelf"},
         {PollIdRole,        "pollId"},
@@ -1989,7 +2000,7 @@ QString MessageListModel::attachmentFolder() const
 // QTextDocument::toPlainText(), which is why a forwarded message arrived as
 // plain text with every marker eaten. rawJson is the server's own bytes and the
 // only lossless copy we keep.
-QString MessageListModel::forwardBodyFor(int messageId) const
+QString MessageListModel::rawBodyFor(int messageId) const
 {
     for (const Message &m : m_messages) {
         if (m.id != messageId) continue;
@@ -2018,11 +2029,26 @@ QString MessageListModel::forwardBodyFor(int messageId) const
         if (talq::carriesRichObject(raw.toStdString(), otherKeys))
             return QString();
 
+        // No attribution here -- this is the SOURCE text. forwardBodyFor() adds
+        // the "Forwarded from" line; editing must not.
         return QString::fromStdString(
-            talq::forwardBody(raw.toStdString(), mentions,
-                              m.actorDisplayName.toStdString()));
+            talq::forwardBody(raw.toStdString(), mentions, std::string()));
     }
     return QString();   // not in the model
+}
+
+// The body to POST when forwarding: the source text with an attribution line.
+QString MessageListModel::forwardBodyFor(int messageId) const
+{
+    const QString body = rawBodyFor(messageId);
+    if (body.isEmpty()) return QString();
+
+    QString author;
+    for (const Message &m : m_messages)
+        if (m.id == messageId) { author = m.actorDisplayName; break; }
+
+    return QString::fromStdString(
+        talq::forwardBody(body.toStdString(), {}, author.toStdString()));
 }
 
 // Forward an existing attachment by re-sharing its path into another

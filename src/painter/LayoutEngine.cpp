@@ -86,6 +86,7 @@ MessageLayout LayoutEngine::computeLayout(
     ml.isRead       = model->data(idx, MessageListModel::IsReadRole).toBool();
     ml.sendStatus   = model->data(idx, MessageListModel::SendStatusRole).toString();
     ml.replyToAuthor = model->data(idx, MessageListModel::ReplyToAuthorRole).toString();
+    ml.replyToId     = model->data(idx, MessageListModel::ReplyToIdRole).toInt();
     ml.replyToText  = model->data(idx, MessageListModel::ReplyToTextRole).toString();
     ml.reactions    = model->data(idx, MessageListModel::ReactionsRole).toString();
     ml.reactionsSelf = model->data(idx, MessageListModel::ReactionsSelfRole).toStringList();
