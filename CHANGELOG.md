@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.68.2 "Blue Fiesta Week 4 Re-match" — STABLE (2026-08-28)
+
+### Fixed
+* **Forwarding really does keep the formatting now.** 0.68.1 fixed this for one
+  of the two ways to forward a message and missed the other, so forwarding from
+  the right-click menu — the way most people do it — still arrived as flat text
+  with the paragraph breaks run together. Both now share one implementation, so
+  they cannot drift apart again.
+
 ## v0.68.1 "Blue Fiesta Week 4 Re-match" — STABLE (2026-08-26)
 
 ### Fixed
