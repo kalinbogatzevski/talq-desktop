@@ -112,6 +112,28 @@ void CtiClient::scheduleReconnect()
     m_backoffMs = qMin(m_backoffMs * 2, kMaxBackoffMs);
 }
 
+void CtiClient::dial(const QString &number)
+{
+    // Refuse locally rather than send a request that cannot succeed. The
+    // daemon validates again -- it must, since it cannot trust any client --
+    // but failing here means the user hears why immediately instead of after
+    // a round trip.
+    if (!m_ready || !m_canDial) {
+        emit dialResult(false, QStringLiteral("not-enabled"));
+        return;
+    }
+    if (number.trimmed().isEmpty()) {
+        emit dialResult(false, QStringLiteral("bad-number"));
+        return;
+    }
+
+    QJsonObject req;
+    req[QStringLiteral("type")] = QStringLiteral("dial");
+    req[QStringLiteral("number")] = number;
+    m_socket->sendTextMessage(QString::fromUtf8(
+        QJsonDocument(req).toJson(QJsonDocument::Compact)));
+}
+
 void CtiClient::onTextMessageReceived(const QString &message)
 {
     m_idleTimer.start();   // any message proves the connection is alive
@@ -124,6 +146,11 @@ void CtiClient::onTextMessageReceived(const QString &message)
         m_ready = true;
         m_backoffMs = kMinBackoffMs;   // a good connection resets the penalty
         m_extension = obj.value(QStringLiteral("extension")).toString();
+        // Absent on an older daemon, which is exactly right: a daemon that
+        // does not advertise dialling cannot do it, so defaulting to false
+        // means an upgraded desktop against an old daemon simply shows no
+        // dial control rather than a broken one.
+        m_canDial = obj.value(QStringLiteral("can_dial")).toBool(false);
         emit ready(m_extension, obj.value(QStringLiteral("display_name")).toString());
         return;
     }
@@ -138,6 +165,12 @@ void CtiClient::onTextMessageReceived(const QString &message)
     if (type == QLatin1String("end")) {
         emit ended(obj.value(QStringLiteral("call_id")).toString(),
                    obj.value(QStringLiteral("reason")).toString());
+        return;
+    }
+
+    if (type == QLatin1String("dial-result")) {
+        emit dialResult(obj.value(QStringLiteral("ok")).toBool(),
+                        obj.value(QStringLiteral("detail")).toString());
         return;
     }
 

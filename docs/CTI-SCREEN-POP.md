@@ -216,6 +216,60 @@ Absolute, or relative to the customer system address. **Only `http` and
 `https` are opened** — the card is an unprompted pop-up, so anything that could
 launch a local handler is refused.
 
+## 4. Click-to-dial — optional
+
+If your bridge can place calls, say so in `ready`:
+
+```json
+{"type": "ready", "extension": "131", "display_name": "Sam Patel", "can_dial": true}
+```
+
+Omit it, or send `false`, and TalQ leaves the dial control out entirely. A
+button that cannot work is worse than no button, so this is opt-in rather than
+assumed — an older bridge that says nothing gets no dial UI, which is correct.
+
+TalQ then asks:
+
+```json
+{"type": "dial", "number": "+27215550100"}
+```
+
+and you answer:
+
+```json
+{"type": "dial-result", "ok": true,  "detail": "ringing"}
+{"type": "dial-result", "ok": false, "detail": "bad-number"}
+```
+
+`detail` is a short machine-readable reason so the client can say something
+specific: `ringing`, `bad-number`, `too-soon`, `not-enabled`, `pbx-unreachable`.
+
+**Note what the request does not contain: an extension.** Take it from the
+credential on the connection, never from the message. A client that could name
+its own extension could place calls billed to a colleague and showing their
+caller ID.
+
+**Implementer notes, and these are the ones that bite:**
+
+- **Ring the agent's own phone first, then connect to the destination.**
+  Dialling straight out and bridging afterwards bypasses whatever outbound
+  routing, permissions and call recording your phone system already applies.
+- **Validate the destination as an allowlist, not by escaping.** If your
+  control protocol is line-delimited — AMI is, and so are several others — a
+  number containing a carriage return does not corrupt one field, it ends your
+  command and lets the rest be read as further commands. Refuse anything that
+  is not digits.
+- **Give dialling its own credential.** Everything else in this protocol is
+  read-only, and that is worth keeping true: if the same credential both
+  watches events and places calls, a defect anywhere in the screen-pop path
+  becomes a defect that can dial. Two credentials cost nothing.
+- **Do not grant the permission that allows running commands.** Many telephony
+  APIs let an originate request name an application to execute. If yours does,
+  the account must not be able to reach it, and your code should use the
+  extension/context form regardless.
+- **Rate-limit per agent.** A double-click, or a client retrying a failed
+  request, must not become a burst of real phone calls.
+
 ## Security
 
 Worth stating plainly, because the failure modes are not obvious:

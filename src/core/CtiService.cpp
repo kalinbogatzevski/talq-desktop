@@ -64,6 +64,7 @@ CtiService::CtiService(QObject *parent)
     , m_client(new CtiClient(this))
     , m_net(new QNetworkAccessManager(this))
 {
+    connect(m_client, &CtiClient::dialResult, this, &CtiService::dialResult);
     connect(m_client, &CtiClient::ringing, this, &CtiService::onRinging);
     connect(m_client, &CtiClient::ended,   this, &CtiService::onEnded);
     connect(m_client, &CtiClient::disconnected,
@@ -106,6 +107,20 @@ void CtiService::clearToken()           { QSettings().remove(kKeyToken); }
 
 bool CtiService::isEnabled() const   { return enabledSetting(); }
 bool CtiService::isConnected() const { return m_client && m_client->isConnected(); }
+
+bool CtiService::canDial() const
+{
+    return m_client && m_client->canDial();
+}
+
+void CtiService::dial(const QString &number)
+{
+    if (!m_client) {
+        emit dialResult(false, QStringLiteral("not-enabled"));
+        return;
+    }
+    m_client->dial(number);
+}
 QString CtiService::extension() const { return m_client ? m_client->extension() : QString(); }
 
 // ── Lifecycle ───────────────────────────────────────────────────────────────
@@ -272,6 +287,10 @@ void CtiService::onRinging(const QString &callId, const QString &caller,
 
     auto *card = new CallerCardPopup();
     card->setTheme(m_theme);
+    card->setCanDial(canDial());
+    connect(card, &CallerCardPopup::dialRequested, this, [this](const QString &n) {
+        dial(n);
+    });
     connect(card, &CallerCardPopup::dismissed, this, [this](const QString &id) {
         m_store.onEnd(id.toStdString(), "cancelled");
         dropCard(id, 0);

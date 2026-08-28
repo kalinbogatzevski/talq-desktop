@@ -58,6 +58,26 @@ inline QString codenameBlurb(const QString &verName)
         || verName == QStringLiteral("Koprivshtitsa"))
         return QObject::tr("Codename \"%1\" — Bulgaria's April Uprising of 1876, "
             "150th anniversary (2026).").arg(verName);
+    if (verName == QStringLiteral("Saedinenie"))
+        return QObject::tr("Codename \"%1\" — Съединение, the Unification of "
+            "Bulgaria, 6 September 1885. The Treaty of Berlin had cut the country "
+            "in two seven years earlier: the Principality north of the Balkan "
+            "range, and Eastern Rumelia south of it, left under Ottoman "
+            "suzerainty. The Bulgarian Secret Central Revolutionary Committee, "
+            "led by Zahari Stoyanov, spent 1885 preparing to undo that. It began "
+            "in the village of Golyamo Konare — renamed Saedinenie afterwards, "
+            "and still called that today. On 6 September the militia entered "
+            "Plovdiv under Danail Nikolaev, deposed Governor-General Gavril "
+            "Krastevich without a shot fired, and proclaimed the two halves one "
+            "country; Prince Alexander I accepted it rather than disown them. "
+            "Serbia declared war that November expecting an easy border "
+            "adjustment, and lost at Slivnitsa to an army whose senior Russian "
+            "officers had been withdrawn — it is remembered as the war of the "
+            "captains against the generals. \"Съединението прави силата\", "
+            "unity makes strength, has been on the coat of arms ever since. A "
+            "name over the release line that put things back together: a reply "
+            "now leads back to what it answers, and editing a message no longer "
+            "severs it from the way it was written.").arg(verName);
     if (verName == QStringLiteral("Blue Fiesta Week 3"))
         return QObject::tr("Codename \"%1\" — week three of the blue celebration "
             "for PFC Levski Sofia, \"Sinite\" (the Blues), the maintainer's club: "

@@ -36,6 +36,15 @@ public:
 
     bool isEnabled() const;
     bool isConnected() const;
+
+    // Whether this site has click-to-dial configured. False unless the daemon
+    // said so on connect, so the UI can omit the control entirely rather than
+    // show one that cannot work.
+    bool canDial() const;
+
+    // Ring this desk phone, then connect it to `number`. Fire and forget; the
+    // outcome arrives as dialResult().
+    void dial(const QString &number);
     QString extension() const;
 
     void setTheme(PainterTheme::Theme theme);
@@ -63,6 +72,7 @@ signals:
     void statusChanged();
     void pairingMessage(const QString &message, bool isError);
     void pairingSucceeded(const QString &displayName, const QString &extension);
+    void dialResult(bool ok, const QString &detail);
 
 private slots:
     void onRinging(const QString &callId, const QString &caller, const QString &extension);

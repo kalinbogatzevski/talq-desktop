@@ -2908,6 +2908,30 @@ void MainWindow::buildWelcomeContent()
         return l;
     };
     cmdBar->addWidget(makeTag("BUILD " + QApplication::applicationVersion()));
+#ifdef TALQ_PRERELEASE
+    // Pre-release marker on the board itself. The title bar has carried this
+    // since 0.43.x, but the title bar is not where anyone looks -- the home
+    // screen is, and a beta was indistinguishable from a stable release on it.
+    //
+    // FILLED amber, where the codename beside it is OUTLINED amber: same hue
+    // family so it does not introduce a fourth colour into the command bar,
+    // different weight so the two never read as the same kind of thing. The
+    // accent stays reserved for "needs you", and danger would overstate what
+    // is a deliberate opt-in.
+    //
+    // inkOn() picks the contrast-safe ink for that fill; the pair is already
+    // pinned by theme_conformance_test ("inkOn(amber) on amber").
+    {
+        auto *pre = new QLabel(QStringLiteral("PRE-RELEASE"), root);
+        pre->setToolTip(tr("A test build, ahead of the stable release.\n"
+                           "Turn off Pre-release updates in Settings to go back."));
+        pre->setStyleSheet(QString(
+            "color:%1;background:%2;font-family:%3;font-size:10px;font-weight:bold;"
+            "letter-spacing:1px;border:1px solid %2;border-radius:6px;padding:4px 8px;")
+            .arg(wcss(wt.inkOn(wt.amber)), wcss(wt.amber), wmono));
+        cmdBar->addWidget(pre);
+    }
+#endif
 #ifdef TALQ_BRAND_123NET
     cmdBar->addWidget(makeTag(QStringLiteral("123NET")));
 #endif
