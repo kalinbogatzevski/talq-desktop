@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(talq VERSION 0.68.2 LANGUAGES CXX)
+project(talq VERSION 0.69.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -204,6 +204,13 @@ string(TIMESTAMP TALQ_BUILD_TS "%m%d-%H%M")
 # passed over on purpose so the CTI screen-pop — a large enough addition to
 # want its own line — lands in 0.67.x. There is no missing release to hunt for.
 # The codename carries across unchanged, by the same exception as above.
+#
+# 0.69.x RETURNS TO THE BULGARIAN-HISTORY THREAD as "Saedinenie" — Съединение,
+# the Unification of Bulgaria with Eastern Rumelia on 6 September 1885, and the
+# official holiday falling inside this beta window. The Blue Fiesta run
+# (0.58.x–0.68.x) was the football detour; this picks the original thread back
+# up, and follows 0.39.x's EVENT-name pattern rather than the place-name pattern
+# of 0.40.x/0.41.x. Chosen 2026-08-28.
 set_source_files_properties(
     src/main.cpp
     src/core/CallManager.cpp
@@ -212,7 +219,7 @@ set_source_files_properties(
     src/ui/SettingsDialog.cpp
     src/ui/MainWindow.cpp
     PROPERTIES COMPILE_DEFINITIONS
-      "TALQ_VERSION=\"${PROJECT_VERSION}\";TALQ_VERSION_NAME=\"Blue Fiesta Week 4 Re-match\";TALQ_BUILD_TS=\"${TALQ_BUILD_TS}\""
+      "TALQ_VERSION=\"${PROJECT_VERSION}\";TALQ_VERSION_NAME=\"Saedinenie\";TALQ_BUILD_TS=\"${TALQ_BUILD_TS}\""
 )
 
 # Pre-release flag: when build-release.sh is invoked with --beta it

@@ -60,6 +60,7 @@ public:
         LastEditTimestampRole,
         SilentRole,             // sender suppressed notifications for this message
         ReferenceIdRole,        // #80 -- client referenceId (machine marker, e.g. "talq/busy")
+        ReplyToIdRole,          // parent message id, so a click on the quote can jump to it
     };
 
     explicit MessageListModel(ApiClient *api, MessageCache *cache, QObject *parent = nullptr);
@@ -145,6 +146,12 @@ public:
     // rich object that must be re-shared rather than described). Reads the
     // server's own markup out of rawJson -- see ForwardLogic.h for why the
     // rendered text is not an acceptable source.
+    // The message's ORIGINAL markup, with {mention-*} restored to the @"id"
+    // syntax the server re-parses (which is also exactly what the composer
+    // itself inserts). Empty when there is no server copy yet or the message
+    // carries a rich object that is not prose. This is what anything needing
+    // the source text must use -- forwarding, and editing.
+    Q_INVOKABLE QString rawBodyFor(int messageId) const;
     Q_INVOKABLE QString forwardBodyFor(int messageId) const;
     // The user's server-side attachment folder (config.attachments.folder).
     // Empty restores the historic "Talk".

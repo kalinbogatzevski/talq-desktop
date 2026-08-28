@@ -56,6 +56,9 @@ struct MessageLayout
     bool isRead = false;
 
     // ── Reply quote data ──
+    // Parent message id. Non-zero exactly when a quote is drawn, so the
+    // clickable region and the visible quote can never disagree.
+    int replyToId = 0;
     QString replyToAuthor;
     QString replyToText;
 

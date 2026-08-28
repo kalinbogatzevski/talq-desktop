@@ -428,6 +428,12 @@ QString ChatPainter::hitTestAt(qreal x, qreal y)
             return QStringLiteral("reply:%1").arg(ml.messageId);
     }
 
+    // Reply quote -> jump to the message being replied to. Checked after the
+    // hover bar, which floats over the top of the bubble where the quote sits
+    // and must keep winning that overlap.
+    if (ml.replyToId > 0 && !ml.quoteRect.isNull() && ml.quoteRect.contains(canvasPos))
+        return QStringLiteral("jumpto:%1").arg(ml.replyToId);
+
     // Link
     QString link = hitTestLink(ml, canvasPos);
     if (!link.isEmpty()) return QStringLiteral("link:") + link;
@@ -1146,6 +1152,9 @@ void ChatPainter::mouseReleaseEvent(QMouseEvent *event)
                 QStringList rparts = hit.mid(9).split(":");
                 if (rparts.size() >= 2)
                     emit reactionClicked(rparts[0].toInt(), rparts.mid(1).join(":"));
+            } else if (hit.startsWith("jumpto:")) {
+                const int parentId = hit.mid(7).toInt();
+                if (parentId > 0) emit quotedMessageClicked(parentId);
             } else if (hit.startsWith("poll:")) {
                 const int pid = hit.mid(5).toInt();
                 if (pid > 0) emit pollClicked(pid);
