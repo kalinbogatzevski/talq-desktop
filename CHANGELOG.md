@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.69.2 "Saedinenie" — BETA (2026-08-28)
+
+### Fixed
+* **Every codename tells its story now.** "Blue Fiesta Week 4" and its re-match
+  had no entry, so hovering them since 0.64.0 showed only the bare name. Both
+  are written up, and every codename the app has ever shipped now has one.
+
 ## v0.69.1 "Saedinenie" — BETA (2026-08-28)
 
 ### Added
