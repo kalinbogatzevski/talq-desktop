@@ -30,6 +30,17 @@ public:
     bool isConnected() const { return m_ready; }
     QString extension() const { return m_extension; }
 
+    // Whether THIS site can place calls. Advertised by the daemon on `ready`,
+    // because dialling needs a second, separately-permissioned credential the
+    // operator has to configure. False everywhere it was not set up, and the
+    // UI leaves the control out rather than offering one guaranteed to fail.
+    bool canDial() const { return m_canDial; }
+
+    // Ask the daemon to ring this desk phone and connect it to `number`.
+    // The extension is NOT sent: the daemon takes it from the pairing, so a
+    // client cannot place a call as somebody else.
+    void dial(const QString &number);
+
 signals:
     // The daemon accepted us and told us which extension we are watching.
     void ready(const QString &extension, const QString &displayName);
@@ -43,6 +54,11 @@ signals:
     // Terminal: the token is bad, revoked or expired. Retrying cannot fix it,
     // so the UI says so once instead of looping forever.
     void authenticationFailed(const QString &reason);
+
+    // Outcome of a dial(). `detail` is a short machine reason -- ringing,
+    // bad-number, too-soon, not-enabled, pbx-unreachable -- so the UI can say
+    // something specific instead of "failed".
+    void dialResult(bool ok, const QString &detail);
 
 private slots:
     void onConnected();
@@ -61,6 +77,7 @@ private:
     QTimer m_idleTimer;
 
     bool m_running = false;        // start() called and not stopped
+    bool m_canDial = false;
     bool m_ready = false;          // handshake completed
     bool m_authRejected = false;   // stop retrying; the credential is the problem
     int m_backoffMs = kMinBackoffMs;

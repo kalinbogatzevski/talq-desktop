@@ -232,6 +232,15 @@ void CallerCardPopup::rebuildBody()
     }
 }
 
+void CallerCardPopup::setCanDial(bool canDial)
+{
+    if (m_canDial == canDial)
+        return;
+    m_canDial = canDial;
+    rebuildActions();
+    resizeToContent();
+}
+
 void CallerCardPopup::rebuildActions()
 {
     auto *row = qobject_cast<QHBoxLayout *>(m_actionRow->layout());
@@ -247,6 +256,26 @@ void CallerCardPopup::rebuildActions()
             w->deleteLater();
             delete item;
         }
+    }
+
+    // Call back, before the server's own actions. Offered only where the
+    // daemon said dialling is configured AND there is a number to dial: a
+    // withheld number produces a card with nothing to call.
+    //
+    // It leads because of WHEN this card is on screen. On a missed call it is
+    // the thing the agent wants; on a ringing one it is the thing they must
+    // not hit by reflex, which is why it is a ghost button next to the filled
+    // primary actions rather than competing with them.
+    if (m_canDial && !m_callerNumber.trimmed().isEmpty()) {
+        auto *call = new QPushButton(tr("Call back"), m_actionRow);
+        call->setProperty("variant", "ghost");
+        call->setCursor(Qt::PointingHandCursor);
+        call->setFocusPolicy(Qt::NoFocus);
+        const QString number = m_callerNumber;
+        connect(call, &QPushButton::clicked, this, [this, number]() {
+            emit dialRequested(number);
+        });
+        row->addWidget(call);
     }
 
     for (const Action &a : m_card.actions) {
