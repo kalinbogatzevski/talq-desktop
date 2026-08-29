@@ -200,6 +200,73 @@ less useful than the button next to it.
 **Be quick.** This runs while a phone is ringing. A couple of indexed queries.
 If something is expensive, leave it off the card and let the button fetch it.
 
+## Letting people dial out
+
+Optional, and separate from everything above: the card can offer to ring the
+agent's own phone and connect it to the caller. Say so when you accept the
+connection, and handle one more message:
+
+```python
+# in serve(), instead of the plain ready frame
+writer.write(frame(json.dumps({"type": "ready",
+                               "extension": AGENT_EXTENSION,
+                               "can_dial": True})))
+
+# ... and in your read loop
+msg = json.loads(await read_frame(reader))
+if msg.get("type") == "dial":
+    number = normalise(msg.get("number", ""))     # see below -- do not skip this
+    if not number:
+        ok, detail = False, "bad-number"
+    else:
+        ok, detail = your_phone_system.originate(AGENT_EXTENSION, number)
+    writer.write(frame(json.dumps({"type": "dial-result",
+                                   "ok": ok, "detail": detail})))
+    await writer.drain()
+```
+
+Omit `can_dial` and TalQ shows no dial control at all, which is the right
+default: a button that cannot work is worse than no button.
+
+Four things decide whether this is safe, and none of them are obvious:
+
+**Ring the agent first, then connect.** Originate to their extension with the
+destination as the target, rather than dialling out and bridging afterwards.
+Done the second way, the call bypasses whatever outbound routing, permissions
+and call recording your phone system already applies.
+
+**Validate the destination as an allowlist.** This is the one that will hurt
+you. If your control protocol is line-delimited — AMI is, and so are others —
+then a number containing a carriage return does not corrupt a field, it *ends
+your command*, and what follows is read as the next command:
+
+```python
+def normalise(raw):
+    if any(c in raw for c in ("\r", "\n", "\0")):
+        return ""                      # constructed, not mistyped: refuse it
+    digits = "".join(c for c in raw if c.isdigit())
+    if not 3 <= len(digits) <= 24:
+        return ""
+    return ("+" + digits) if raw.lstrip().startswith("+") else digits
+```
+
+Escaping is the wrong instinct here. Allowlist digits and refuse the rest.
+
+**Give dialling its own credential.** Everything else in this protocol is
+read-only, and that is worth keeping true. If one credential both watches
+events and places calls, then any defect in the screen-pop path becomes a
+defect that can dial. Two credentials cost nothing.
+
+**Do not grant the permission that runs commands.** Many telephony APIs let an
+originate request name an application to execute — Asterisk's AMI does, gated
+behind its `system` class. Your dialling account must not have it, and your
+code should use the extension/context form regardless.
+
+**Take the extension from the connection, never from the message.** The example
+above uses `AGENT_EXTENSION`, not anything out of `msg`. A client that could
+name its own extension could place calls billed to a colleague, showing their
+caller ID.
+
 ## Testing without a PBX
 
 Keep the fake ring loop from the demo and point it at your real CRM lookup
