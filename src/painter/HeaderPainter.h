@@ -8,6 +8,7 @@
 class ApiClient;
 class QNetworkReply;
 class SignalingClient;
+class ShiftStatusService;
 
 /**
  * QWidget that renders the chat header bar via QPainter.
@@ -86,6 +87,9 @@ public:
 
     void setApi(ApiClient *api);
     void setSignaling(SignalingClient *signaling);
+    // Optional. Absent (or unpaired) simply means no shift chip is drawn --
+    // the header keeps rendering presence exactly as it does today.
+    void setShiftStatus(ShiftStatusService *shiftStatus);
 
 signals:
     void expandSidebarClicked();
@@ -187,5 +191,6 @@ private:
 
     ApiClient *m_api = nullptr;
     SignalingClient *m_signaling = nullptr;
+    ShiftStatusService *m_shiftStatus = nullptr;
     PainterTheme m_theme;
 };

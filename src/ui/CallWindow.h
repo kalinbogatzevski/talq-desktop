@@ -25,6 +25,9 @@ class CallWindow : public QWidget
 public:
     CallWindow(CallManager *call, ApiClient *api, QWidget *parent = nullptr);
 
+    // Forwarded to the stage. Optional: absent means no chip is drawn.
+    void setShiftStatus(class ShiftStatusService *shiftStatus);
+
     void setTheme(PainterTheme::Theme t);
 
     // Compact always-on-top corner dock, so a call survives the user

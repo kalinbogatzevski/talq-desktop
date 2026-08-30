@@ -59,6 +59,7 @@ public:
     // so an agent who never opens Settings is told nothing at all and simply
     // stops getting call pop-ups.
     class CtiService *ctiService() const { return m_cti; }
+    class ShiftStatusService *shiftStatus() const { return m_shiftStatus; }
 
     explicit MainWindow(
         ApiClient *api,
@@ -108,6 +109,11 @@ private slots:
     void openSettingsToPhone();
 
 private:
+    // Tell ShiftStatusService which colleagues are on screen. Cheap and
+    // idempotent -- the service dedupes, clamps and skips anything still
+    // fresh, so calling it on every list refresh costs nothing.
+    void observeShiftUsers();
+
     // 0.40.15 — lazy-build SettingsDialog with all the connections the
     // sidebar button used to set up inline. Shared by the button and by
     // openSettingsToBackgrounds so the wiring can't drift.
@@ -290,6 +296,7 @@ private:
     // Screen-pop for inbound phone calls. Dormant unless the user has
     // paired a device, so an unconfigured install pays nothing for it.
     CtiService *m_cti = nullptr;
+    ShiftStatusService *m_shiftStatus = nullptr;
     QWidget       *m_updateBanner = nullptr;
     class QLabel  *m_updateLabel = nullptr;
     QProgressBar  *m_updateProgress = nullptr;

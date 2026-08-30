@@ -1,5 +1,6 @@
 #include "CallStage.h"
 #include "core/VideoFrameProvider.h"
+#include "core/ShiftStatusService.h"
 #include "painter/VectorIcons.h"
 #include "ui/NoticeStack.h"
 #include "ui/SubstreamPolicy.h"
@@ -1335,6 +1336,16 @@ void CallStage::paintTile(QPainter &p, const Tile &t, const PainterTheme &th, bo
     }
 }
 
+void CallStage::setShiftStatus(ShiftStatusService *shiftStatus)
+{
+    if (shiftStatus == m_shiftStatus) return;
+    m_shiftStatus = shiftStatus;
+    if (m_shiftStatus) {
+        connect(m_shiftStatus, &ShiftStatusService::statusesChanged,
+                this, qOverload<>(&QWidget::update));
+    }
+}
+
 void CallStage::paintCentered(QPainter &p, const PainterTheme &th)
 {
     const auto state = m_call->state();
@@ -1361,6 +1372,34 @@ void CallStage::paintCentered(QPainter &p, const PainterTheme &th)
                                                    : tr("Waiting for others to join");
     p.setPen(th.textSecondary); p.setFont(th.systemFont());
     p.drawText(QRectF(0, height()/2.0+30, width(), 22), Qt::AlignHCenter, sub);
+
+    // Whether this colleague is actually working, on its own line rather than
+    // appended to the sub-line above -- that line is about the CALL ("Incoming
+    // call", "Connecting..."), and mixing a fact about the person into it
+    // reads as though it were part of the call's state.
+    //
+    // 1:1 only. remotePeerId() is empty in a group call, and a per-tile uid is
+    // not reachable at all, so there is nothing to show there.
+    if (m_shiftStatus && !m_call->remotePeerId().isEmpty()) {
+        const talq::ShiftState st = m_shiftStatus->stateFor(m_call->remotePeerId());
+        if (talq::shiftStateIsDrawable(st)) {
+            QString chip = m_shiftStatus->labelFor(m_call->remotePeerId());
+            if (chip.isEmpty()) {
+                switch (st) {
+                case talq::ShiftState::OnShift:  chip = tr("On shift");  break;
+                case talq::ShiftState::OnBreak:  chip = tr("On break");  break;
+                case talq::ShiftState::OffShift: chip = tr("Off shift"); break;
+                case talq::ShiftState::Unknown:  break;
+                }
+            }
+            // Same restraint as the sidebar: only the exceptions take a
+            // colour, and both of these are already AA-registered as text.
+            p.setPen(st == talq::ShiftState::OnBreak ? th.amber
+                   : st == talq::ShiftState::OffShift ? th.textMuted
+                                                      : th.textSecondary);
+            p.drawText(QRectF(0, height()/2.0+52, width(), 20), Qt::AlignHCenter, chip);
+        }
+    }
 
     // Incoming → Accept / Decline. Else → status pill + control bar.
     if (state == CallManager::Incoming) {

@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.69.3 "Saedinenie" — BETA (2026-08-30)
+
+### Added
+* **See whether a colleague is actually working.** Where your workplace has set
+  it up, TalQ now shows whether the person you are talking to is on shift, on
+  break, or off shift — in the chat header, on their row in the list, on a
+  one-to-one call, and in a room's member list. It answers a different question
+  from the presence dot: an app left open at 22:00 is not someone who is going
+  to reply.
+
+  In the list it sits at the bottom-left of the avatar, opposite the presence
+  dot — green for on shift, amber for on break, and an off-shift row is dimmed
+  so it recedes while you are looking for someone to ask right now. The chat
+  header spells it out in words alongside their status.
+
+  It says as little as it can. There are no working hours, no team name and no
+  break times — just whether they are available right now, because that is what
+  changes whether you wait or ask someone else. Your workplace decides who may
+  see it, and anyone TalQ cannot get an answer for simply shows nothing at all.
+
 ## v0.69.2 "Saedinenie" — BETA (2026-08-28)
 
 ### Fixed

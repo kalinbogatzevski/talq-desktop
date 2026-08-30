@@ -2,6 +2,7 @@
 
 #include "core/ApiClient.h"
 #include "core/NcUser.h"
+#include "core/ShiftStatusService.h"
 #include "painter/PainterTheme.h"
 
 #include <QCursor>
@@ -542,9 +543,30 @@ void ConversationInfoDialog::populateParticipants(const QVector<RoomParticipant>
         const QString id   = p.userId.isEmpty() ? tr("(guest)") : p.userId;
         const QString role = roleLabel(p.participantType);
         const QString canRemove = (m_amOwnerOrMod && !isMe) ? QStringLiteral("   \u00D7") : QString();
-        const QString label = QStringLiteral("\U0001F464  %1  \u00B7  %2  \u00B7  %3%4")
-                                  .arg(name, id, role, canRemove);
+        // Shift state as TEXT rather than a coloured dot. This list has no
+        // delegate -- every row is one flat string -- and a word is both
+        // cheaper here and more accessible than a colour that anyone
+        // red-green colourblind would have to guess at. Same restraint as the
+        // other surfaces: on-shift is the expected case and says nothing, so
+        // only the exceptions add a segment.
+        QString shiftSuffix;
+        bool dimRow = false;
+        if (m_shiftStatus && !p.userId.isEmpty()) {
+            const talq::ShiftState st = m_shiftStatus->stateFor(p.userId);
+            if (talq::shiftMarksExceptionInList(st)) {
+                QString word = m_shiftStatus->labelFor(p.userId);
+                if (word.isEmpty())
+                    word = (st == talq::ShiftState::OnBreak) ? tr("On break") : tr("Off shift");
+                shiftSuffix = QStringLiteral("  \u00B7  ") + word;
+                dimRow = (st == talq::ShiftState::OffShift);
+            }
+        }
+
+        const QString label = QStringLiteral("\U0001F464  %1  \u00B7  %2  \u00B7  %3%4%5")
+                                  .arg(name, id, role, shiftSuffix, canRemove);
         auto *item = new QListWidgetItem(label, m_memberList);
+        if (dimRow)
+            item->setForeground(palette().color(QPalette::Disabled, QPalette::WindowText));
         // A long name/id/role combo elides in the list's fixed width with no
         // way to see the rest -- the other elided text sites in the app all
         // resolve this via a tooltip; QListWidgetItem never gets one unless
@@ -554,6 +576,20 @@ void ConversationInfoDialog::populateParticipants(const QVector<RoomParticipant>
         item->setData(kActorIdRole, p.userId);
         item->setData(kParticipantTypeRole, p.participantType);
     }
+
+    // Declare the whole member list to the service. This is the only surface
+    // that works for a GROUP room, so without it a group's rows would stay
+    // Unknown forever -- the sidebar sweep only ever walks 1:1 conversations.
+    // The rows re-render when statusesChanged lands and the dialog refreshes.
+    if (m_shiftStatus) {
+        QStringList uids;
+        uids.reserve(items.size());
+        for (const RoomParticipant &rp : items)
+            if (!rp.userId.isEmpty())
+                uids << rp.userId;
+        m_shiftStatus->observe(uids);
+    }
+
     m_status->clear();
 }
 

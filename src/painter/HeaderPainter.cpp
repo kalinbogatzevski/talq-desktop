@@ -1,6 +1,7 @@
 #include "HeaderPainter.h"
 #include "core/ApiClient.h"
 #include "core/SignalingClient.h"
+#include "core/ShiftStatusService.h"
 #include "painter/VectorIcons.h"
 #include <QFile>
 #include <QHash>
@@ -226,6 +227,17 @@ void HeaderPainter::setTheme(PainterTheme::Theme t) {
 void HeaderPainter::setApi(ApiClient *api) {
     if (api == m_api) return;
     m_api = api;
+}
+
+void HeaderPainter::setShiftStatus(ShiftStatusService *shiftStatus) {
+    if (shiftStatus == m_shiftStatus) return;
+    m_shiftStatus = shiftStatus;
+    // Repaint when a batch lands, so the chip appears without waiting for the
+    // next conversation switch — same reasoning as setSignaling below.
+    if (m_shiftStatus) {
+        connect(m_shiftStatus, &ShiftStatusService::statusesChanged,
+                this, qOverload<>(&QWidget::update));
+    }
 }
 
 void HeaderPainter::setSignaling(SignalingClient *signaling) {
@@ -504,6 +516,45 @@ void HeaderPainter::paintEvent(QPaintEvent *)
         }
     }
 
+    // ── Shift chip ──────────────────────────────────────────────────────
+    // Whether this colleague is actually working, as opposed to merely
+    // reachable. It COMPOSES with presence rather than replacing it: they
+    // answer different questions ("are they at work" vs "is the app open"),
+    // and on a bad day the interesting case is exactly when they disagree.
+    //
+    // Typing still wins the whole line -- it is transient and more urgent
+    // than either.
+    //
+    // The colours are deliberately the ones already registered as text in the
+    // theme conformance suite. On-shift is the EXPECTED case during the
+    // working day, so it is neutral rather than a third green competing with
+    // the presence dot; only the exceptions take a colour.
+    QString shiftText;
+    QColor  shiftColor = m_theme.textSecondary;
+    if (!m_isTyping && m_conversationType == 1 && m_shiftStatus
+        && !m_conversationUserId.isEmpty()) {
+        const talq::ShiftState st = m_shiftStatus->stateFor(m_conversationUserId);
+        if (talq::shiftStateIsDrawable(st)) {
+            shiftText = m_shiftStatus->labelFor(m_conversationUserId);
+            if (shiftText.isEmpty()) {
+                // The server owns the wording, but a server that sends a state
+                // and no label must not produce a blank chip.
+                switch (st) {
+                case talq::ShiftState::OnShift:  shiftText = tr("On shift");  break;
+                case talq::ShiftState::OnBreak:  shiftText = tr("On break");  break;
+                case talq::ShiftState::OffShift: shiftText = tr("Off shift"); break;
+                case talq::ShiftState::Unknown:  break;
+                }
+            }
+            switch (st) {
+            case talq::ShiftState::OnBreak:  shiftColor = m_theme.amber;       break;
+            case talq::ShiftState::OffShift: shiftColor = m_theme.textMuted;   break;
+            default:                         shiftColor = m_theme.textSecondary; break;
+            }
+            hasSubtitle = true;
+        }
+    }
+
     if (hasSubtitle) {
         // Two-line layout: title at ~1/3 height, subtitle below
         qreal titleH = titleFM.height();
@@ -526,12 +577,32 @@ void HeaderPainter::paintEvent(QPaintEvent *)
         painter->setPen(titleColor);
         painter->drawText(m_titleRect, Qt::AlignLeft | Qt::AlignVCenter, elidedTitle);
 
-        // Subtitle
-        QString elidedSub = subFM.elidedText(subtitleText, Qt::ElideRight, static_cast<int>(textW));
+        // Subtitle. The shift chip is drawn FIRST and keeps its place: when
+        // the header is narrow it is the presence text that gets elided away,
+        // never the chip. This is the one surface with room for the word, so
+        // it is the one place the answer is spelled out.
+        const qreal subY = topY + titleH + 1;
+        qreal subX = textLeft;
+        qreal subAvail = textW;
         painter->setFont(subFont);
-        painter->setPen(subtitleColor);
-        painter->drawText(QRectF(textLeft, topY + titleH + 1, textW, subH),
-                          Qt::AlignLeft | Qt::AlignVCenter, elidedSub);
+        if (!shiftText.isEmpty()) {
+            const QString chip = shiftText
+                + (subtitleText.isEmpty() ? QString() : QStringLiteral(" · "));
+            const qreal chipW = qMin<qreal>(subFM.horizontalAdvance(chip), subAvail);
+            painter->setPen(shiftColor);
+            painter->drawText(QRectF(subX, subY, chipW, subH),
+                              Qt::AlignLeft | Qt::AlignVCenter,
+                              subFM.elidedText(chip, Qt::ElideRight, static_cast<int>(chipW)));
+            subX += chipW;
+            subAvail -= chipW;
+        }
+        if (subAvail > 0 && !subtitleText.isEmpty()) {
+            const QString elidedSub =
+                subFM.elidedText(subtitleText, Qt::ElideRight, static_cast<int>(subAvail));
+            painter->setPen(subtitleColor);
+            painter->drawText(QRectF(subX, subY, subAvail, subH),
+                              Qt::AlignLeft | Qt::AlignVCenter, elidedSub);
+        }
     } else {
         // Single line: centered vertically
         QColor titleColor = m_conversationName.isEmpty() ? m_theme.textMuted : m_theme.textPrimary;
