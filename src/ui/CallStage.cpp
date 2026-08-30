@@ -1392,12 +1392,30 @@ void CallStage::paintCentered(QPainter &p, const PainterTheme &th)
                 case talq::ShiftState::Unknown:  break;
                 }
             }
-            // Same restraint as the sidebar: only the exceptions take a
-            // colour, and both of these are already AA-registered as text.
-            p.setPen(st == talq::ShiftState::OnBreak ? th.amber
-                   : st == talq::ShiftState::OffShift ? th.textMuted
-                                                      : th.textSecondary);
-            p.drawText(QRectF(0, height()/2.0+52, width(), 20), Qt::AlignHCenter, chip);
+            // Bullet + colour, same vocabulary as the chat header, so the two
+            // surfaces read identically. Every state takes a colour: a neutral
+            // on-shift blends into whatever is beside it and gets misread.
+            const QColor shiftColor = st == talq::ShiftState::OnBreak  ? th.amber
+                                    : st == talq::ShiftState::OffShift ? th.textMuted
+                                                                       : th.online;
+            const QFontMetrics fm(p.font());
+            const qreal dotD = qMax<qreal>(6.0, fm.height() * 0.34);
+            const qreal gap  = 6.0;
+            const qreal textW = fm.horizontalAdvance(chip);
+            // Centre the disc and the label TOGETHER, so the pair sits on the
+            // same axis as the name above rather than the text drifting right.
+            const qreal totalW = dotD + gap + textW;
+            const qreal left   = (width() - totalW) / 2.0;
+            const qreal rowY   = height() / 2.0 + 52;
+
+            p.setPen(Qt::NoPen);
+            p.setBrush(shiftColor);
+            p.drawEllipse(QRectF(left, rowY + (20 - dotD) / 2.0, dotD, dotD));
+            p.setBrush(Qt::NoBrush);
+
+            p.setPen(shiftColor);
+            p.drawText(QRectF(left + dotD + gap, rowY, textW, 20),
+                       Qt::AlignLeft | Qt::AlignVCenter, chip);
         }
     }
 

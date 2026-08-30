@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.69.4 "Saedinenie" — BETA (2026-08-30)
+
+### Fixed
+* **The shift indicator is actually legible now.** It shared a line with the
+  presence text in the same muted grey, so "On shift · Online" read as one
+  sentence rather than two separate facts about the person. Each state now has
+  its own colour — green on shift, amber on break, dimmed off shift — and the
+  line leads with a coloured dot, so you can read someone's availability at a
+  glance instead of parsing the words. The call screen matches.
+
 ## v0.69.3 "Saedinenie" — BETA (2026-08-30)
 
 ### Added
