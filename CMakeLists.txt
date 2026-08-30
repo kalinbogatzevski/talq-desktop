@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(talq VERSION 0.69.2 LANGUAGES CXX)
+project(talq VERSION 0.69.3 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -54,6 +54,7 @@ qt_add_executable(talq
     src/core/SignalingClient.cpp
     src/core/CtiClient.cpp
     src/core/CtiService.cpp
+    src/core/ShiftStatusService.cpp
     src/models/Conversation.cpp
     src/models/Message.cpp
     src/models/ConversationListModel.cpp

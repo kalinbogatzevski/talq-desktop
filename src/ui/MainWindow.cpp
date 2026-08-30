@@ -61,6 +61,7 @@
 #include <QInputDialog>
 #include <QJsonArray>
 #include "core/CtiService.h"
+#include "core/ShiftStatusService.h"
 
 #include <QDesktopServices>
 #include <QDialog>
@@ -390,6 +391,27 @@ void MainWindow::buildLoginPage()
     m_stack->addWidget(m_loginWidget);
 }
 
+void MainWindow::observeShiftUsers()
+{
+    if (!m_shiftStatus || !m_conversations)
+        return;
+
+    QStringList uids;
+    const int n = m_conversations->rowCount();
+    uids.reserve(n);
+    for (int i = 0; i < n; ++i) {
+        const QModelIndex idx = m_conversations->index(i);
+        // 1:1 only -- exactly like every other per-person indicator in the
+        // app. A group room has no single "the other person" to report on.
+        if (idx.data(ConversationListModel::TypeRole).toInt() != 1)
+            continue;
+        const QString uid = idx.data(ConversationListModel::ActorIdRole).toString();
+        if (!uid.isEmpty())
+            uids << uid;
+    }
+    m_shiftStatus->observe(uids);
+}
+
 void MainWindow::buildChatPage()
 {
     m_chatPage = new QWidget(m_stack);
@@ -617,12 +639,23 @@ void MainWindow::buildChatPage()
             this, &MainWindow::refreshStatusIndicator);
     refreshStatusIndicator();
 
+    // Shift status shares CtiService's ERP address and credential (both are
+    // static accessors), so it has no ordering dependency on m_cti and can be
+    // built here, before the painters that read it.
+    m_shiftStatus = new ShiftStatusService(this);
+
     m_sidebar = new SidebarPainter(sidebarCol);
     m_sidebar->setModel(m_conversations);
     m_sidebar->setApi(m_api);
     m_sidebar->setSignaling(m_signaling);
+    m_sidebar->setShiftStatus(m_shiftStatus);
     m_sidebar->setTheme(m_themeId);
     sidebarLayout->addWidget(m_sidebar, 1);
+
+    // Re-declare who is on screen whenever the list changes. observe() dedupes,
+    // clamps and skips anything still fresh, so this is cheap to call often.
+    connect(m_conversations, &ConversationListModel::countChanged,
+            this, &MainWindow::observeShiftUsers);
 
     connect(m_searchField, &QLineEdit::textChanged, m_sidebar, &SidebarPainter::setFilterText);
     connect(m_sidebar, &SidebarPainter::conversationClicked, this, &MainWindow::onConversationSelected);
@@ -923,6 +956,7 @@ void MainWindow::buildChatPage()
     m_header->setTheme(m_themeId);
     m_header->setApi(m_api);
     m_header->setSignaling(m_signaling);
+    m_header->setShiftStatus(m_shiftStatus);
     chatLayout->addWidget(m_header);
 
     // Topic tabs (Telegram-style horizontal strip below the header).
@@ -1846,6 +1880,7 @@ void MainWindow::buildChatPage()
     // MainWindow is the app-lifetime singleton that holds this pointer;
     // it is deleted in ~MainWindow.
     m_callWindow = new CallWindow(m_callManager, m_api, nullptr);
+    m_callWindow->setShiftStatus(m_shiftStatus);
 
     // 0.40.15 — "Open background settings…" entry on the in-call
     // BACKGROUND dropdown jumps to Settings → Audio & Video (tab 0,
@@ -1928,6 +1963,12 @@ void MainWindow::buildChatPage()
     m_cti = new CtiService(this);
     m_cti->setTheme(m_themeId);
     m_cti->start();
+    // Same settings, same credential -- start it where CTI starts so a fresh
+    // pairing takes effect without an app restart.
+    if (m_shiftStatus) {
+        m_shiftStatus->start();
+        observeShiftUsers();
+    }
 
     connect(m_updateChecker, &UpdateChecker::updateAvailable,
             this, [this](const UpdateChecker::Manifest &m) {
@@ -2466,6 +2507,11 @@ void MainWindow::onConversationSelected(const QString &token, const QString &nam
 
     m_header->setConversationName(name);
     m_header->setConversationUserId(userId);
+    // Opening a chat should not wait for the next poll to learn whether this
+    // colleague is working. observe() fetches immediately for an id it has
+    // never seen, and is a no-op for one it already holds.
+    if (m_shiftStatus && convType == 1 && !userId.isEmpty())
+        m_shiftStatus->observe({userId});
     m_header->setConversationType(convType);
     m_header->setPeerStatus(userStatus, statusMessage, statusIcon);
 
@@ -4769,6 +4815,9 @@ void MainWindow::openConversationInfo()
                                            name, description,
                                            roomType, myType, this);
     dlg->setAttribute(Qt::WA_DeleteOnClose);
+    // Must be set BEFORE the participant fetch returns — populateParticipants
+    // reads it while building each row.
+    dlg->setShiftStatus(m_shiftStatus);
     // Dial-in details, if this room has SIP. Nothing shows on a server with no
     // SIP bridge, which is every room on ours today.
     dlg->setSipInfo(m_conversations->sipEnabledForToken(m_activeConvToken),

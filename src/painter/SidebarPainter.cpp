@@ -2,6 +2,7 @@
 #include "models/ConversationListModel.h"
 #include "core/ApiClient.h"
 #include "core/SignalingClient.h"
+#include "core/ShiftStatusService.h"
 #include "EmojiTextRenderer.h"
 #include <QPainter>
 #include <QPainterPath>
@@ -65,6 +66,18 @@ void SidebarPainter::setApi(ApiClient *api)
 {
     if (api == m_api) return;
     m_api = api;
+}
+
+void SidebarPainter::setShiftStatus(ShiftStatusService *shiftStatus)
+{
+    if (shiftStatus == m_shiftStatus) return;
+    m_shiftStatus = shiftStatus;
+    // Repaint when a batch lands, so markers appear without waiting for the
+    // next model refresh.
+    if (m_shiftStatus) {
+        connect(m_shiftStatus, &ShiftStatusService::statusesChanged,
+                this, qOverload<>(&QWidget::update));
+    }
 }
 
 void SidebarPainter::setSignaling(SignalingClient *signaling)
@@ -667,7 +680,54 @@ void SidebarPainter::paintRowNormal(QPainter *p, const ConversationLayout &cl, i
 
     // ── Avatar ──
     QRectF avatarRect(padLeft, avatarY, AvatarSize, AvatarSize);
+    // ── Shift status ──
+    // Every known state is marked, on-shift included. An earlier draft marked
+    // only the exceptions, on the theory that badging the normal case is
+    // noise -- but that made "on shift" and "we have no idea" look identical
+    // in the list, which is the one question this feature exists to answer.
+    //
+    // It cannot be a corner badge shaped like the presence dot: the dot owns
+    // bottom-right, the TalQ "Q" pill owns top-right, and `online` and
+    // `success` are literally the same green in every theme. So this takes
+    // the one free corner, bottom-LEFT, and is a rounded SQUARE -- position
+    // and shape carry the distinction, not hue.
+    //
+    // Green here alongside a green presence dot is deliberate rather than
+    // accidental: two greens means "at work AND reachable", which is exactly
+    // the state you are scanning the list for.
+    talq::ShiftState shiftState = talq::ShiftState::Unknown;
+    if (m_shiftStatus && cl.conversationType == 1 && !cl.participantUserId.isEmpty())
+        shiftState = m_shiftStatus->stateFor(cl.participantUserId);
+
+    // Off-shift also dims the avatar. The marker says which state it is; the
+    // dimming is what makes a row recede when you are scanning for someone to
+    // ask right now.
+    const bool dimForOffShift = (shiftState == talq::ShiftState::OffShift);
+    if (dimForOffShift)
+        p->setOpacity(0.55);
     paintAvatar(p, cl, avatarRect);
+    if (dimForOffShift)
+        p->setOpacity(1.0);
+
+    if (talq::shiftStateIsDrawable(shiftState)) {
+        QColor shiftColor;
+        switch (shiftState) {
+        case talq::ShiftState::OnShift:  shiftColor = m_theme.online;    break;
+        case talq::ShiftState::OnBreak:  shiftColor = m_theme.amber;     break;
+        case talq::ShiftState::OffShift: shiftColor = m_theme.textMuted; break;
+        case talq::ShiftState::Unknown:  break;
+        }
+        const qreal s = StatusDotSize;
+        const qreal x = avatarRect.left() - 1;
+        const qreal y = avatarRect.bottom() - s + 1;
+        // Ring it in the sidebar background, same as the presence dot, so it
+        // reads against any avatar image behind it.
+        p->setPen(Qt::NoPen);
+        p->setBrush(m_theme.bgSidebar);
+        p->drawRoundedRect(QRectF(x - 1.5, y - 1.5, s + 3, s + 3), 3.5, 3.5);
+        p->setBrush(shiftColor);
+        p->drawRoundedRect(QRectF(x, y, s, s), 2.5, 2.5);
+    }
 
     // ── Status dot (1:1 conversations only, colored by presence) ──
     if (cl.conversationType == 1) {

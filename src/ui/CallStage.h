@@ -31,6 +31,9 @@ class CallStage : public QWidget
     Q_OBJECT
 
 public:
+    // Optional. Absent, unconfigured or unpaired means no chip is drawn.
+    void setShiftStatus(class ShiftStatusService *shiftStatus);
+
     explicit CallStage(CallManager *call, QWidget *parent = nullptr);
     ~CallStage() override;
 
@@ -167,6 +170,7 @@ private:
     QImage avatarDisc(const QString &id, const QString &name, int size, const PainterTheme &th) const;
 
     CallManager *m_call;
+    class ShiftStatusService *m_shiftStatus = nullptr;
     PainterTheme::Theme m_themeId = PainterTheme::Theme::Vivid;
     // 0.56.1 — connected once (lazily, from paintEvent) to the call window's
     // QWindow::screenChanged so a self monitor-share re-evaluates placeholder<->
