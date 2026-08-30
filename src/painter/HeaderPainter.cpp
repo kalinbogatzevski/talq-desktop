@@ -525,12 +525,14 @@ void HeaderPainter::paintEvent(QPaintEvent *)
     // Typing still wins the whole line -- it is transient and more urgent
     // than either.
     //
-    // The colours are deliberately the ones already registered as text in the
-    // theme conformance suite. On-shift is the EXPECTED case during the
-    // working day, so it is neutral rather than a third green competing with
-    // the presence dot; only the exceptions take a colour.
+    // EVERY state takes a colour, and the chip leads with a painted BULLET.
+    // An earlier version made on-shift neutral grey so it would not shout --
+    // which left "On shift · Online" as one undifferentiated grey run that
+    // read as a single sentence. The bullet is what separates the two facts at
+    // a glance; the colour is what makes the state readable without parsing
+    // the words.
     QString shiftText;
-    QColor  shiftColor = m_theme.textSecondary;
+    QColor  shiftColor = m_theme.online;
     if (!m_isTyping && m_conversationType == 1 && m_shiftStatus
         && !m_conversationUserId.isEmpty()) {
         const talq::ShiftState st = m_shiftStatus->stateFor(m_conversationUserId);
@@ -547,9 +549,9 @@ void HeaderPainter::paintEvent(QPaintEvent *)
                 }
             }
             switch (st) {
-            case talq::ShiftState::OnBreak:  shiftColor = m_theme.amber;       break;
-            case talq::ShiftState::OffShift: shiftColor = m_theme.textMuted;   break;
-            default:                         shiftColor = m_theme.textSecondary; break;
+            case talq::ShiftState::OnBreak:  shiftColor = m_theme.amber;     break;
+            case talq::ShiftState::OffShift: shiftColor = m_theme.textMuted; break;
+            default:                         shiftColor = m_theme.online;    break;
             }
             hasSubtitle = true;
         }
@@ -586,6 +588,22 @@ void HeaderPainter::paintEvent(QPaintEvent *)
         qreal subAvail = textW;
         painter->setFont(subFont);
         if (!shiftText.isEmpty()) {
+            // A painted disc, not a "•" glyph: the glyph's size and baseline
+            // vary by font and it renders muddy at small sizes, while this is
+            // exact at any DPI and takes the state colour directly.
+            const qreal dotD = qMax<qreal>(5.0, subH * 0.36);
+            const qreal gap  = 5.0;
+            if (subAvail > dotD + gap) {
+                painter->setPen(Qt::NoPen);
+                painter->setBrush(shiftColor);
+                painter->setRenderHint(QPainter::Antialiasing, true);
+                painter->drawEllipse(
+                    QRectF(subX, subY + (subH - dotD) / 2.0, dotD, dotD));
+                painter->setBrush(Qt::NoBrush);
+                subX     += dotD + gap;
+                subAvail -= dotD + gap;
+            }
+
             const QString chip = shiftText
                 + (subtitleText.isEmpty() ? QString() : QStringLiteral(" · "));
             const qreal chipW = qMin<qreal>(subFM.horizontalAdvance(chip), subAvail);
