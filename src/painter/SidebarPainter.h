@@ -12,6 +12,7 @@
 class ConversationListModel;
 class ApiClient;
 class SignalingClient;
+class ShiftStatusService;
 class QNetworkReply;
 
 /**
@@ -68,6 +69,9 @@ public:
     void setModel(ConversationListModel *model);
     void setApi(ApiClient *api);
     void setSignaling(SignalingClient *signaling);
+    // Optional. Absent (or unpaired) means no shift marker is drawn -- rows
+    // render exactly as they do today.
+    void setShiftStatus(ShiftStatusService *shiftStatus);
 
     bool darkMode() const { return m_darkMode; }
     void setDarkMode(bool dark);
@@ -206,6 +210,7 @@ private:
     ConversationListModel *m_model = nullptr;
     ApiClient *m_api = nullptr;
     SignalingClient *m_signaling = nullptr;
+    ShiftStatusService *m_shiftStatus = nullptr;
     bool m_darkMode = true;
     PainterTheme::Theme m_themeId = PainterTheme::Theme::Vivid;
     int m_selectedIndex = -1;

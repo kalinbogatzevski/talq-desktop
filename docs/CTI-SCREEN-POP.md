@@ -270,6 +270,64 @@ caller ID.
 - **Rate-limit per agent.** A double-click, or a client retrying a failed
   request, must not become a burst of real phone calls.
 
+## 5. Colleague shift status — optional
+
+Nothing to do with the phone system, but it reuses the credential and base URL
+you already configured above, so it is documented here rather than in a second
+place.
+
+TalQ can show whether the colleague you are talking to is **actually working**
+right now, as opposed to merely having the app open. Presence and shift status
+answer different questions, and the interesting case is when they disagree: a
+green dot at 22:00 does not mean anyone is going to answer.
+
+If you do not implement this endpoint, TalQ simply never shows the indicator.
+
+```
+POST {erp_base}/api/v1/hr/shift-status
+X-API-Key: <the agent's own credential>
+Content-Type: application/json
+
+{"nc_usernames": ["sam", "alex", "kim"]}
+```
+
+You answer:
+
+```json
+{"statuses": {
+    "sam":  {"state": "on_shift",  "label": "On shift"},
+    "alex": {"state": "on_break",  "label": "On break"},
+    "kim":  {"state": "unknown",   "label": ""}
+}}
+```
+
+`state` is a closed set: `on_shift`, `on_break`, `off_shift`, `unknown`. TalQ
+picks the colour and the layout from `state` and never parses `label`, so you
+can reword the display text — "Rostered", "Off duty", a translation — without
+anyone shipping a new desktop build. A state this build has never heard of
+degrades to `unknown` rather than blanking, so you can add one safely.
+
+Rules worth knowing before you implement it:
+
+- **Return every name you were asked about.** A name you cannot resolve comes
+  back as `unknown`, not omitted. TalQ then stops asking about it for a while;
+  omit it and it will ask again on every poll forever.
+- **`unknown` must be indistinguishable from "no permission".** It is what TalQ
+  draws nothing for, and that is the point: a refused request, a timeout and an
+  unmapped colleague should all look the same to the person reading the screen.
+  Do not return 403 for a caller who simply may not see this — return `unknown`.
+- **Decide the policy yourself.** Who may see whose schedule is your call and
+  must be enforced on your side. TalQ has no permission model and cannot filter
+  for you.
+- **Say as little as possible.** The four states are deliberately coarse. There
+  is no field for the working window, the team, or when a break started,
+  because "not available now" is what a colleague needs and a full schedule is
+  not.
+- **At most 100 names per request.** TalQ clamps its own batches; reject
+  anything larger with a 400.
+- TalQ polls at about two minutes, and asks immediately when a conversation is
+  opened. Expect a handful of requests per client per hour, not per minute.
+
 ## Security
 
 Worth stating plainly, because the failure modes are not obvious:

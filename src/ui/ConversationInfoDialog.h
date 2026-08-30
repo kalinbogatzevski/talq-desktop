@@ -6,6 +6,7 @@
 #include "core/BotInfo.h"
 
 class ApiClient;
+class ShiftStatusService;
 class QLabel;
 class QLineEdit;
 class QListWidget;
@@ -27,6 +28,10 @@ class ConversationInfoDialog : public QDialog
 {
     Q_OBJECT
 public:
+    // Optional. Absent means rows render exactly as they do today. This is
+    // the only surface that can carry shift state for a GROUP room.
+    void setShiftStatus(ShiftStatusService *shiftStatus) { m_shiftStatus = shiftStatus; }
+
     ConversationInfoDialog(ApiClient *api,
                            const QString &token,
                            const QString &currentName,
@@ -76,6 +81,7 @@ private:
     void fetchRoomAvatar();                       // #25 — load the CURRENT room avatar on open
 
     ApiClient   *m_api = nullptr;
+    ShiftStatusService *m_shiftStatus = nullptr;
     QString      m_token;
     int          m_roomType = 0;
     int          m_myType   = 0;

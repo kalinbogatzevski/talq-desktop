@@ -305,3 +305,9 @@ void CallWindow::pickShareTarget()
     else
         m_call->startScreenShare(target.monitorIndex, 0, presentation);
 }
+
+void CallWindow::setShiftStatus(ShiftStatusService *shiftStatus)
+{
+    if (m_stage)
+        m_stage->setShiftStatus(shiftStatus);
+}
