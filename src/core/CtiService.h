@@ -8,6 +8,10 @@
 // implementation of the protocol.
 
 #include "core/CtiEventLogic.h"
+// For CardData, which both the caller card and the colleague card carry. It is
+// a plain struct; this does not pull a widget into core's headers beyond the
+// one that already lives here.
+#include "ui/InfoCardBody.h"
 
 #include <QList>
 #include <QObject>
@@ -49,6 +53,14 @@ public:
 
     void setTheme(PainterTheme::Theme theme);
 
+    // ── Colleague card ──────────────────────────────────────────────────
+    // "Tell me about this colleague." Answers with personCardReady(), or with
+    // nothing at all: a site that never implements the endpoint, an unpaired
+    // desktop, and a viewer who may not see this person are all the same
+    // silence, deliberately. The card that asked keeps its identity and shift
+    // layers either way.
+    void fetchPersonCard(const QString &ncUsername);
+
     // ── Settings ────────────────────────────────────────────────────────
     static bool enabledSetting();
     static void setEnabledSetting(bool on);
@@ -73,6 +85,11 @@ signals:
     void pairingMessage(const QString &message, bool isError);
     void pairingSucceeded(const QString &displayName, const QString &extension);
     void dialResult(bool ok, const QString &detail);
+    // A colleague card came back. Carries the id it was asked about so a slow
+    // reply for someone the user has since navigated away from can be dropped
+    // rather than painted onto whoever is on screen now.
+    void personCardReady(const QString &ncUsername,
+                         const InfoCardBody::CardData &card);
 
 private slots:
     void onRinging(const QString &callId, const QString &caller, const QString &extension);

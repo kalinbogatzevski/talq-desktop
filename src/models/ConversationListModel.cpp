@@ -363,6 +363,29 @@ int ConversationListModel::lastReadMessageForToken(const QString &token) const
     return (i >= 0) ? m_conversations[i].lastReadMessage : 0;
 }
 
+QString ConversationListModel::userStatusForUserId(const QString &userId) const
+{
+    return m_userStatuses.value(userId).state;
+}
+
+QString ConversationListModel::userStatusMessageForUserId(const QString &userId) const
+{
+    return m_userStatuses.value(userId).message;
+}
+
+QString ConversationListModel::oneToOneTokenForUserId(const QString &userId) const
+{
+    if (userId.isEmpty())
+        return {};
+    for (const auto &c : m_conversations) {
+        // A 1:1 room's `name` IS the peer's user id -- the same fact the
+        // presence accessors above rely on.
+        if (c.type == Conversation::OneToOne && c.name == userId)
+            return c.token;
+    }
+    return {};
+}
+
 QString ConversationListModel::userStatusForToken(const QString &token) const
 {
     for (const auto &c : m_conversations) {

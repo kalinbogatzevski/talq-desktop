@@ -1,5 +1,6 @@
 #pragma once
 
+#include "InfoCardBody.h"
 #include "painter/PainterTheme.h"
 
 #include <QUrl>
@@ -8,20 +9,18 @@
 
 class QLabel;
 class QPushButton;
-class QVBoxLayout;
 
 /**
  * The card shown while a customer's call is ringing.
  *
- * It is a DUMB RENDERER. The server describes the whole card -- title,
- * subtitle, badges, an ordered list of label/value rows, and a set of actions
- * -- and this class draws whatever arrives. It does not know what a "balance"
- * or a "contract" is, and it does no formatting: every value is a
- * display-ready string the server produced.
+ * The server describes the card -- title, subtitle, badges, an ordered list of
+ * label/value rows, and a set of actions -- and InfoCardBody draws whatever
+ * arrives. This class owns only what is specific to a CALL: the state line,
+ * the Dismiss and Call back controls, the chrome that goes accent-edged while
+ * ringing, and the call id that every signal carries.
  *
- * That is deliberate and is the point of the design. Adding a field, or
- * showing different fields to different roles, becomes a server-side change
- * deployable in minutes. Nothing here needs rebuilding or reshipping.
+ * Adding a field, or showing different fields to different roles, is therefore
+ * a server-side change deployable in minutes. Nothing here needs rebuilding.
  *
  * Three behaviours that are NOT the server's to choose:
  *  - colour: `style` is a closed vocabulary mapped to AA-validated theme
@@ -41,33 +40,12 @@ public:
         Missed,    // rang out; lingers briefly so it can be acted on
     };
 
-    struct Badge {
-        QString text;
-        QString style;   // normal | muted | warning | danger
-    };
-    struct Field {
-        QString label;
-        QString value;
-        QString style;
-    };
-    struct Action {
-        QString label;
-        QUrl url;
-    };
-
-    /** Everything the server said about this caller. */
-    struct CardData {
-        bool known = false;
-        QString title;
-        QString subtitle;
-        QVector<Badge> badges;
-        QVector<Field> fields;
-        QVector<Action> actions;
-        // How many field rows the server wants shown. 0 = unspecified, in
-        // which case the client's default applies. The client enforces a hard
-        // ceiling regardless -- see talq::resolveFieldLimit.
-        int maxFields = 0;
-    };
+    // The card payload is shared with every other card surface, so it lives in
+    // InfoCardBody. Aliased here so this class's API is unchanged by that.
+    using Badge    = InfoCardBody::Badge;
+    using Field    = InfoCardBody::Field;
+    using Action   = InfoCardBody::Action;
+    using CardData = InfoCardBody::CardData;
 
     explicit CallerCardPopup(QWidget *parent = nullptr);
 
@@ -109,24 +87,16 @@ protected:
 
 private:
     void applyChrome();
-    void rebuildBody();          // badges + fields, from m_card
-    void rebuildActions();       // one button per action
-    void clearLayout(QVBoxLayout *layout);
-    QColor inkForStyle(const QString &style) const;
+    void rebuildActions();       // the local Call back control
     void resizeToContent();
 
     QString m_callId;
     QString m_callerNumber;
-    CardData m_card;
 
     QLabel *m_status = nullptr;      // "Incoming call" / "On this call" / "Missed"
-    QLabel *m_title = nullptr;
-    QLabel *m_subtitle = nullptr;
-    QWidget *m_badgeRow = nullptr;
-    QVBoxLayout *m_fieldsLayout = nullptr;
-    QLabel *m_more = nullptr;        // "+3 more" when the list is capped
-    QWidget *m_actionRow = nullptr;
+    InfoCardBody *m_body = nullptr;  // everything the server described
     QPushButton *m_dismissButton = nullptr;
+    QPushButton *m_callButton = nullptr;
 
     bool m_canDial = false;
     State m_state = State::Ringing;
