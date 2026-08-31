@@ -1,5 +1,33 @@
 # Changelog
 
+## v0.69.6 "Saedinenie" — BETA (2026-08-31)
+
+### Fixed
+* **The shift status on a person's card is readable now.** "On shift" and "On
+  break" sat directly under the online status in the same size and weight, so
+  the two ran together as one line of text and neither read as a status. The
+  shift state is now a small outlined chip in its own right, set apart from the
+  presence line, with the same coloured dot the rest of the app uses.
+
+* **Colleague cards work against a customer system running on this machine.**
+  Anyone building an integration against a local test server got a card with no
+  rows on it and no explanation, because the colleague lookup — unlike the
+  caller lookup and shift status beside it — refused a plain `http://` address
+  even on loopback. It now follows the same rule as the rest.
+
+### Documentation
+* **The setup and build instructions were wrong, and are now right.** They named
+  a compiler that no longer builds this app and put it ahead of the working one,
+  which is the exact mix that produces a program that compiles cleanly and then
+  refuses to start. Anyone who followed them lost an afternoon.
+
+* **The card integration is properly written up.** There is now one place that
+  explains both cards — the one for an incoming caller and the one for a
+  colleague — what your server sends, and why the fields are yours to define
+  rather than ours: adding one is a change on your side that appears the next
+  time somebody opens a card, with no new version of TalQ. The walkthrough gains
+  a working colleague-card handler alongside the existing example.
+
 ## v0.69.5 "Saedinenie" — BETA (2026-08-31)
 
 ### Added
