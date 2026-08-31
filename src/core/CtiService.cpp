@@ -486,6 +486,68 @@ void CtiService::lookupCustomer(const QString &callId, const QString &caller)
     });
 }
 
+// ── Colleague card ──────────────────────────────────────────────────────────
+
+// The same contract as the screen-pop lookup, keyed by person instead of phone
+// number. That is the whole design: one dumb-renderer card format, two
+// sources, so a site adds a field to either by changing a server response and
+// nobody ships a build.
+//
+// Every failure here is silent on purpose. A site that never implements this
+// endpoint lands in the error branch on every click, and that is not an error
+// state -- the card keeps its identity and shift layers, which is exactly what
+// an OSS deployment with no ERP at all sees.
+void CtiService::fetchPersonCard(const QString &ncUsername)
+{
+    const QUrl base = erpBaseUrl();
+    if (base.isEmpty() || token().isEmpty())
+        return;   // unconfigured or unpaired: dormant, not broken
+    if (base.scheme() != QLatin1String("https")) {
+        TWARN("Person card skipped: ERP address must use https://");
+        return;
+    }
+
+    // The id goes into an AUTHENTICATED request path, so it is percent-encoded
+    // for the same reason the caller number is: unencoded, a crafted value
+    // could walk the path and make the desktop GET an endpoint it never chose,
+    // carrying the user's own credential.
+    const QString safe = QString::fromLatin1(
+        QUrl::toPercentEncoding(ncUsername, QByteArray(), QByteArray("/?#")));
+    QNetworkRequest req(QUrl(base.toString()
+                             + QStringLiteral("/api/v1/people/card/") + safe));
+    // The VIEWER's own token, not a system key -- so the ERP applies that
+    // person's permissions and can return a different card to different
+    // people. X-API-Key, not Bearer: Apache strips Authorization before PHP
+    // sees it.
+    req.setRawHeader("X-API-Key", token().toUtf8());
+    req.setRawHeader("Accept", "application/json");
+    // Shorter than the caller lookup's 15s: nobody is holding a ringing phone,
+    // and a card the user has already dismissed should stop waiting.
+    req.setTransferTimeout(10'000);
+
+    QNetworkReply *reply = m_net->get(req);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, ncUsername]() {
+        reply->deleteLater();
+
+        if (reply->error() != QNetworkReply::NoError) {
+            TLOG_NET("Person card lookup failed:" << reply->errorString());
+            return;
+        }
+
+        const QJsonObject body = QJsonDocument::fromJson(reply->readAll()).object();
+        const QJsonObject data = body.contains(QStringLiteral("data"))
+                                     ? body.value(QStringLiteral("data")).toObject()
+                                     : body;
+
+        // "known": false must be indistinguishable from "you may not see this
+        // person", which is why a site returns it rather than a 403.
+        if (!data.value(QStringLiteral("known")).toBool())
+            return;
+
+        emit personCardReady(ncUsername, parseCard(data));
+    });
+}
+
 // ── Pairing ─────────────────────────────────────────────────────────────────
 
 void CtiService::beginPairing()

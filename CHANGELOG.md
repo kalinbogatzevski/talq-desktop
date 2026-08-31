@@ -1,5 +1,39 @@
 # Changelog
 
+## v0.69.5 "Saedinenie" — BETA (2026-08-31)
+
+### Added
+* **Click someone's picture to see who they are.** In any conversation, click
+  the picture next to a message — or a name in a room's member list — and a
+  card opens with that person on it: their picture, their name, whether they
+  are online and what their status says, and whether they are on shift right
+  now. It is the fastest way to answer "is this person around, and are they
+  actually working?" without leaving the conversation you are in.
+
+  The card is also the first place those two facts sit side by side, which is
+  where they are most useful. Someone showing green at 22:00 is not someone who
+  is going to reply, and now you can see both halves of that at once.
+
+* **Your workplace decides what else the card shows.** Beyond the name, picture
+  and presence, every row on the card comes from your organisation's own
+  system — a job title, a team, a desk extension, anything worth knowing about
+  a colleague. TalQ just draws what it is given, in the order it is given, so
+  your administrators can add a field or change the wording and it appears the
+  next time anyone opens a card. Nobody has to install a new version.
+
+  If your workplace has not set this up, the card still opens and still shows
+  the picture, the name and the presence — the parts that need no configuration
+  at all. Every layer is independent, so you get whatever your site has, and
+  never an empty box. The full contract is documented for administrators in
+  `docs/CTI-SCREEN-POP.md`.
+
+### Fixed
+* **Shift status in a room's member list was stuck.** The rows showed whatever
+  was known at the moment the window opened and never updated, so a colleague
+  who started a break while you had the list open still looked available — and
+  if the information had not arrived yet when you opened it, it never appeared
+  at all. The rows now update as the information lands.
+
 ## v0.69.4 "Saedinenie" — BETA (2026-08-30)
 
 ### Fixed

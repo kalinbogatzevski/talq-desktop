@@ -145,6 +145,11 @@ signals:
     void reactionClicked(int messageId, const QString &emoji);
     void replyRequested(int messageId, const QString &author, const QString &text);
     void reactRequested(int messageId, const QPoint &globalPos);
+    // A message author's avatar was clicked; the window opens the person card.
+    // The anchor is the avatar's global rect, so the card can point at the
+    // thing that was clicked rather than at the cursor.
+    void avatarClicked(const QString &actorId, const QString &actorName,
+                       const QRect &anchorGlobal);
     void contextMenuRequested(const QVariantMap &msgData, const QPoint &globalPos);
     void fileDropped(const QString &filePath);
     void selectionModeChanged(bool active);

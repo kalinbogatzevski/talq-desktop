@@ -16,6 +16,7 @@
 #include <QListWidgetItem>
 #include <QMenu>
 #include <QMessageBox>
+#include <QMouseEvent>
 #include <QPainter>
 #include <QPixmap>
 #include <QImage>
@@ -38,6 +39,12 @@ namespace {
 constexpr int kAttendeeIdRole    = Qt::UserRole + 1;
 constexpr int kActorIdRole       = Qt::UserRole + 2;
 constexpr int kParticipantTypeRole = Qt::UserRole + 3;
+// The bare display name. item->text() is the whole composed row -- name, id,
+// role and shift suffix -- and is not a name anyone should be handed.
+// +5 rather than +4: the search list below already claims +4, and although the
+// two roles live on different widgets, reusing the number is how they stop
+// living on different widgets one refactor from now.
+constexpr int kDisplayNameRole   = Qt::UserRole + 5;
 // Which kind of thing the search hit is - "users" / "groups" / "circles".
 // Carried on the item so the add call can tell the server what it is being
 // given; without it every id was sent as though it were an account.
@@ -372,6 +379,13 @@ ConversationInfoDialog::ConversationInfoDialog(ApiClient *api,
             this, &ConversationInfoDialog::onAddResultClicked);
     // Right-click a member row for the promote/demote/remove menu — left-clicks
     // don't do anything so tapping names doesn't keep popping menus.
+    // Left-click opens the person card. Removal lives on the context menu, so
+    // the two gestures must not compete -- and QListWidget::itemClicked fires
+    // for EVERY button, so using it would open the card and the remove menu
+    // together on one right-click. Filtering the viewport's release event is
+    // the way to be sure which button was actually pressed.
+    m_memberList->viewport()->installEventFilter(this);
+
     connect(m_memberList, &QListWidget::customContextMenuRequested,
             this, [this](const QPoint &pos) {
         if (auto *item = m_memberList->itemAt(pos)) onRemoveMember(item);
@@ -573,6 +587,7 @@ void ConversationInfoDialog::populateParticipants(const QVector<RoomParticipant>
         // set explicitly.
         item->setToolTip(label);
         item->setData(kAttendeeIdRole, p.attendeeId);
+        item->setData(kDisplayNameRole, name);
         item->setData(kActorIdRole, p.userId);
         item->setData(kParticipantTypeRole, p.participantType);
     }
@@ -580,7 +595,9 @@ void ConversationInfoDialog::populateParticipants(const QVector<RoomParticipant>
     // Declare the whole member list to the service. This is the only surface
     // that works for a GROUP room, so without it a group's rows would stay
     // Unknown forever -- the sidebar sweep only ever walks 1:1 conversations.
-    // The rows re-render when statusesChanged lands and the dialog refreshes.
+    // The rows re-render when statusesChanged lands: setShiftStatus() connects
+    // it to refreshParticipants(). That connection is what makes this comment
+    // true -- it shipped without one in 0.69.3, so the rows were stale.
     if (m_shiftStatus) {
         QStringList uids;
         uids.reserve(items.size());
@@ -591,6 +608,43 @@ void ConversationInfoDialog::populateParticipants(const QVector<RoomParticipant>
     }
 
     m_status->clear();
+}
+
+bool ConversationInfoDialog::eventFilter(QObject *watched, QEvent *event)
+{
+    if (m_memberList && watched == m_memberList->viewport()
+        && event->type() == QEvent::MouseButtonRelease) {
+        auto *me = static_cast<QMouseEvent *>(event);
+        if (me->button() == Qt::LeftButton) {
+            if (QListWidgetItem *item = m_memberList->itemAt(me->position().toPoint())) {
+                const QString actorId = item->data(kActorIdRole).toString();
+                if (!actorId.isEmpty()) {   // a guest has no id to look up
+                    const QRect r = m_memberList->visualItemRect(item);
+                    emit personCardRequested(
+                        actorId, item->data(kDisplayNameRole).toString(),
+                        QRect(m_memberList->viewport()->mapToGlobal(r.topLeft()),
+                              r.size()));
+                }
+            }
+        }
+    }
+    return QDialog::eventFilter(watched, event);
+}
+
+void ConversationInfoDialog::setShiftStatus(ShiftStatusService *shiftStatus)
+{
+    if (m_shiftStatus == shiftStatus)
+        return;
+    m_shiftStatus = shiftStatus;
+    if (!m_shiftStatus)
+        return;
+    // Without this the rows show whatever happened to be cached when the
+    // dialog opened, and a first-ever lookup never appears at all. The comment
+    // in populateParticipants() has claimed otherwise since 0.69.3 -- it was
+    // aspirational, and this is what makes it true.
+    connect(m_shiftStatus, &ShiftStatusService::statusesChanged,
+            this, &ConversationInfoDialog::refreshParticipants,
+            Qt::UniqueConnection);
 }
 
 void ConversationInfoDialog::onRemoveMember(QListWidgetItem *item)

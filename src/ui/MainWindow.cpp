@@ -62,6 +62,7 @@
 #include <QJsonArray>
 #include "core/CtiService.h"
 #include "core/ShiftStatusService.h"
+#include "ui/PersonCardPopup.h"
 
 #include <QDesktopServices>
 #include <QDialog>
@@ -1381,6 +1382,9 @@ void MainWindow::buildChatPage()
     // Clicking the quote on a reply drives back to the message it quotes.
     connect(m_chatPainter, &ChatPainter::quotedMessageClicked,
             this, &MainWindow::jumpToMessage);
+
+    connect(m_chatPainter, &ChatPainter::avatarClicked,
+            this, &MainWindow::showPersonCard);
 
     connect(m_selectionBar, &SelectionBarWidget::forwardClicked, this, [this]() {
         auto messages = m_chatPainter->selectedMessages();
@@ -3816,6 +3820,120 @@ void MainWindow::applyDarkPalette()
     QApplication::setPalette(pal);
 }
 
+// ── The colleague card ──────────────────────────────────────────────────────
+//
+// One card, opened from every avatar in the app. Built lazily and kept, so the
+// wiring below happens once rather than per click, and so a card that is
+// already on screen for someone else is simply re-pointed.
+void MainWindow::showPersonCard(const QString &actorId, const QString &actorName,
+                                const QRect &anchorGlobal)
+{
+    if (actorId.isEmpty())
+        return;
+
+    // The card is rebuilt per open rather than kept, because its parent has to
+    // change with the caller: the conversation-info dialog is
+    // application-modal, so a card parented to the window would be blocked by
+    // it and simply never appear.
+    if (m_personCard)
+        m_personCard->close();
+    QWidget *owner = QApplication::activeModalWidget();
+    if (!owner)
+        owner = this;
+
+    {
+        m_personCard = new PersonCardPopup(owner);
+        m_personCard->setAttribute(Qt::WA_DeleteOnClose);
+        m_personCard->setShiftStatus(m_shiftStatus);
+
+        connect(m_personCard, &PersonCardPopup::cardNeeded, this,
+                [this](const QString &id) {
+            if (m_cti) m_cti->fetchPersonCard(id);
+        });
+
+        connect(m_personCard, &PersonCardPopup::avatarNeeded,
+                this, &MainWindow::fetchPersonCardAvatar);
+
+        connect(m_personCard, &PersonCardPopup::messageRequested, this,
+                [this](const QString &id) {
+            // Prefer the conversation that already exists; creating a second
+            // 1:1 with the same person is not something the server dedupes
+            // for us in the sidebar the user is looking at.
+            const QString existing = m_conversations
+                                         ? m_conversations->oneToOneTokenForUserId(id)
+                                         : QString();
+            if (!existing.isEmpty()) {
+                openConversation(existing);
+                return;
+            }
+            m_api->createRoom(1, QString(), id, this,
+                              [this](bool ok, const QString &token, const QString &) {
+                if (!ok || token.isEmpty())
+                    return;
+                // The sidebar has never heard of a brand-new room, so it has
+                // to be refreshed before there is anything to select.
+                m_conversations->refresh();
+                QTimer::singleShot(600, this, [this, token]() { openConversation(token); });
+            });
+        });
+
+        // The card emits a url and never opens one. ONE place validates the
+        // scheme, exactly as the caller card does: a popup the user did not
+        // explicitly ask to navigate must never be able to launch a local
+        // handler.
+        connect(m_personCard, &PersonCardPopup::openRequested, this,
+                [](const QUrl &url) {
+            if (url.scheme() == QLatin1String("http")
+                || url.scheme() == QLatin1String("https"))
+                QDesktopServices::openUrl(url);
+        });
+
+        // Wired exactly once and never torn down: it outlives any single card,
+        // and re-connecting per open would stack a duplicate slot per click.
+        if (m_cti && !m_personCardWiredToCti) {
+            m_personCardWiredToCti = true;
+            connect(m_cti, &CtiService::personCardReady, this,
+                    [this](const QString &id, const InfoCardBody::CardData &card) {
+                // A reply for someone the user has since navigated away from
+                // must not paint onto whoever is on screen now.
+                if (m_personCard && m_personCard->actorId() == id)
+                    m_personCard->setCard(card);
+            });
+        }
+    }
+
+    m_personCard->setTheme(m_themeId);
+    m_personCard->showForPerson(actorId, actorName, anchorGlobal);
+
+    if (m_conversations) {
+        m_personCard->setPresence(m_conversations->userStatusForUserId(actorId),
+                                  m_conversations->userStatusMessageForUserId(actorId));
+    }
+}
+
+// The chat's own avatar cache holds a hard 36x36 circle crop with no
+// devicePixelRatio, so reusing it at 56px looks soft. This is the same
+// endpoint at a size worth showing.
+void MainWindow::fetchPersonCardAvatar(const QString &actorId)
+{
+    if (actorId.isEmpty() || !m_api)
+        return;
+    auto *reply = m_api->getAbsoluteUrl("/index.php/avatar/" + actorId + "/128");
+    connect(reply, &QNetworkReply::finished, this, [this, reply, actorId]() {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError)
+            return;   // the card keeps its initials fallback
+        QImage img;
+        if (!img.loadFromData(reply->readAll()))
+            return;
+        // Same guard as the card payload: a slow avatar for the previous
+        // person must not land on the current one.
+        if (!m_personCard || m_personCard->actorId() != actorId)
+            return;
+        m_personCard->setAvatar(QPixmap::fromImage(PainterTheme::cropToCircle(img, 56)));
+    });
+}
+
 void MainWindow::loadProfileAvatar(QLabel *avatarLabel)
 {
     auto *reply = m_api->getAbsoluteUrl("/index.php/avatar/" + m_auth->userId() + "/64");
@@ -4818,6 +4936,8 @@ void MainWindow::openConversationInfo()
     // Must be set BEFORE the participant fetch returns — populateParticipants
     // reads it while building each row.
     dlg->setShiftStatus(m_shiftStatus);
+    connect(dlg, &ConversationInfoDialog::personCardRequested,
+            this, &MainWindow::showPersonCard);
     // Dial-in details, if this room has SIP. Nothing shows on a server with no
     // SIP bridge, which is every room on ours today.
     dlg->setSipInfo(m_conversations->sipEnabledForToken(m_activeConvToken),

@@ -454,6 +454,20 @@ QString ChatPainter::hitTestAt(qreal x, qreal y)
             return QStringLiteral("reaction:%1:%2").arg(ml.messageId).arg(emoji);
     }
 
+    // Avatar -> the person card. Checked LAST on purpose: the avatar sits at
+    // x in [12,48], left of bubbleLeft, so it overlaps nothing today -- and
+    // being last means it still cannot steal a hit if something later grows
+    // into that column.
+    //
+    // Only the first message of a run has a non-null avatarRect (the grouping
+    // rule above), so a burst of five messages from one colleague offers one
+    // target rather than five. The token carries the messageId, NOT the
+    // actorId: an actorId is a free-form server string, the file: token above
+    // already shows colon-splitting is fragile, and a bot's id can contain a
+    // '/'. The actor is resolved from m_layouts at dispatch time.
+    if (!ml.isSystem && !ml.avatarRect.isNull() && ml.avatarRect.contains(canvasPos))
+        return QStringLiteral("avatar:%1").arg(ml.messageId);
+
     return {};
 }
 
@@ -1172,6 +1186,23 @@ void ChatPainter::mouseReleaseEvent(QMouseEvent *event)
                 if (clickIdx >= 0 && clickIdx < m_layouts.size()) {
                     const auto &clickMl = m_layouts[clickIdx];
                     emit replyRequested(clickMl.messageId, clickMl.actorName, clickMl.bodyHtml);
+                }
+            } else if (hit.startsWith("avatar:")) {
+                const int aMsgId = hit.mid(7).toInt();
+                const int aIdx = layoutIndexAtY(event->position().y() + m_scrollY);
+                if (aIdx >= 0 && aIdx < m_layouts.size()) {
+                    const auto &aMl = m_layouts[aIdx];
+                    // The row under the cursor must still be the row that was
+                    // pressed; a scroll between press and release would
+                    // otherwise open a card for the wrong person.
+                    if (aMl.messageId == aMsgId && !aMl.actorId.isEmpty()) {
+                        const QRectF r = aMl.avatarRect;
+                        const QRect anchor(
+                            mapToGlobal(QPoint(qRound(r.left()),
+                                               qRound(r.top() - m_scrollY))),
+                            QSize(qRound(r.width()), qRound(r.height())));
+                        emit avatarClicked(aMl.actorId, aMl.actorName, anchor);
+                    }
                 }
             } else if (hit.startsWith("react:")) {
                 int rMsgId = hit.mid(6).toInt();
