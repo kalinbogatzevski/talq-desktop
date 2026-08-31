@@ -328,6 +328,65 @@ Rules worth knowing before you implement it:
 - TalQ polls at about two minutes, and asks immediately when a conversation is
   opened. Expect a handful of requests per client per hour, not per minute.
 
+## 6. Colleague card — optional
+
+Clicking a colleague's avatar in TalQ opens a card about that person. Its
+contents are **entirely yours to define**: TalQ renders whatever this endpoint
+sends, in the order it sends it, and knows nothing about what a "job title" or
+an "extension" is.
+
+This is the same card format as §3, keyed by Nextcloud username instead of
+phone number. If you already implement the screen-pop card, you already have
+almost all of this.
+
+```
+GET {customer_system}/api/v1/people/card/{nc_username}
+X-API-Key: <the api_key from pairing>
+```
+
+You answer with exactly the §3 response:
+
+```json
+{
+  "known": true,
+  "title": "Rakesh Naidoo",
+  "subtitle": "Support Engineer  ·  Network Operations",
+  "badges": [ {"text": "Paired", "style": "normal"} ],
+  "fields": [
+    {"label": "Extension", "value": "214"},
+    {"label": "Email",     "value": "rakesh@example.com"}
+  ],
+  "actions": [ {"label": "Open in HR", "url": "/hr/employees/1042"} ],
+  "max_fields": 8
+}
+```
+
+Someone you do not recognise, or do not wish this viewer to see, is:
+
+```json
+{"known": false}
+```
+
+Everything from §3 applies unchanged — `style`, `max_fields`, `actions[].url`,
+and "everything is a display-ready string". What is worth stating separately:
+
+- **`{"known": false}` must be indistinguishable from "may not see".** Do not
+  return 403 for a viewer who simply lacks permission; return `known: false`.
+  TalQ has no permission model, cannot filter for you, and draws the same
+  nothing for a refusal, a timeout and a person you have never heard of.
+- **A field someone may not see is absent, not blanked.** The request carries
+  that user's own credential precisely so you can vary the answer per viewer.
+- **Fetched once, when the card opens.** There is no polling. A job title does
+  not change while someone looks at it, so one request per click is the whole
+  cost.
+- **Omitting this endpoint is a supported configuration.** The card still opens
+  and still shows the colleague's name, picture and Nextcloud presence — and
+  their shift status if you implement §5. The two endpoints are independent;
+  implement either, both, or neither.
+- **Consider what you are widening.** A desk extension or a job title that no
+  ordinary staff member can see in your own web UI does not become less
+  sensitive here. Decide the exposure deliberately, and enforce it on your side.
+
 ## Security
 
 Worth stating plainly, because the failure modes are not obvious:

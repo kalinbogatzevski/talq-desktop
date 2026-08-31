@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(talq VERSION 0.69.4 LANGUAGES CXX)
+project(talq VERSION 0.69.5 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -123,6 +123,10 @@ qt_add_executable(talq
     src/ui/NotificationPopup.h
     src/ui/NotificationPopup.cpp
     src/ui/CallerCardPopup.cpp
+    src/ui/InfoCardBody.h
+    src/ui/InfoCardBody.cpp
+    src/ui/PersonCardPopup.h
+    src/ui/PersonCardPopup.cpp
     src/ui/NotificationStack.h
     src/ui/NotificationStack.cpp
     src/ui/EmojiPickerWidget.h

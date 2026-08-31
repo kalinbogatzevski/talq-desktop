@@ -30,7 +30,7 @@ class ConversationInfoDialog : public QDialog
 public:
     // Optional. Absent means rows render exactly as they do today. This is
     // the only surface that can carry shift state for a GROUP room.
-    void setShiftStatus(ShiftStatusService *shiftStatus) { m_shiftStatus = shiftStatus; }
+    void setShiftStatus(ShiftStatusService *shiftStatus);
 
     ConversationInfoDialog(ApiClient *api,
                            const QString &token,
@@ -49,9 +49,17 @@ public:
 signals:
     void roomChanged();   // name/description/members changed
     void roomDeleted();   // room deleted OR current user left
+    // A member row was clicked. The owner opens the person card; this dialog
+    // deliberately does not own it, so every avatar surface shows the same
+    // card wired the same way.
+    void personCardRequested(const QString &actorId, const QString &displayName,
+                             const QRect &anchorGlobal);
 
 protected:
     void changeEvent(QEvent *e) override;   // re-theme on palette change
+    // Watches the member list's viewport so a LEFT release opens the person
+    // card and a right one is left entirely to the context menu.
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
 private slots:
     void saveName();

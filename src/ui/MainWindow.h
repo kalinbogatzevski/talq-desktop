@@ -166,6 +166,12 @@ private:
     // Builds the "Tags" submenu on a conversation's right-click menu.
     void populateTagAssignMenu(QMenu *parent, const QString &token);
     void openConversationInfo();
+    // Every avatar surface in the app funnels here, so the card is built and
+    // wired in exactly one place and behaves identically wherever it is opened
+    // from.
+    void showPersonCard(const QString &actorId, const QString &actorName,
+                        const QRect &anchorGlobal);
+    void fetchPersonCardAvatar(const QString &actorId);
     void createNewTopic();
     void buildWelcomeContent();    // (re)build Mission Control content; theme-aware
     void showWelcome();            // rebuild-if-dirty, then show + refresh
@@ -296,6 +302,11 @@ private:
     // Screen-pop for inbound phone calls. Dormant unless the user has
     // paired a device, so an unconfigured install pays nothing for it.
     CtiService *m_cti = nullptr;
+    // Rebuilt per open, because its PARENT has to change: the conversation-info
+    // dialog is application-modal, and a card parented to the window would be
+    // blocked by it. QPointer because it deletes itself on close.
+    QPointer<class PersonCardPopup> m_personCard;
+    bool m_personCardWiredToCti = false;   // the one connection that outlives a card
     ShiftStatusService *m_shiftStatus = nullptr;
     QWidget       *m_updateBanner = nullptr;
     class QLabel  *m_updateLabel = nullptr;

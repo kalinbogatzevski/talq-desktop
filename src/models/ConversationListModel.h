@@ -65,6 +65,21 @@ public:
     Q_INVOKABLE QString userStatusForToken(const QString &token) const;
     Q_INVOKABLE QString userStatusMessageForToken(const QString &token) const;
     Q_INVOKABLE QString userStatusIconForToken(const QString &token) const;
+
+    // Presence by userId. The hash is already keyed this way -- the token
+    // accessors above exist only because the sidebar holds a token and not an
+    // id, and they linear-scan to get here.
+    //
+    // Coverage caveat worth knowing before trusting a blank: this is populated
+    // from the CONVERSATION LIST, so a colleague who appears in a group room
+    // the user has never messaged privately legitimately has no entry. That
+    // renders as no presence line, which is correct -- "never fetched" is not
+    // "offline" and must not be drawn as one.
+    Q_INVOKABLE QString userStatusForUserId(const QString &userId) const;
+    Q_INVOKABLE QString userStatusMessageForUserId(const QString &userId) const;
+
+    // The existing 1:1 with this person, or empty if there is none yet.
+    Q_INVOKABLE QString oneToOneTokenForUserId(const QString &userId) const;
     // Conversation type (1 = one_to_one, 2 = group, 3 = public, etc.).
     // Returns 0 if the token isn't in the cached list. Used by the
     // composer to decide whether to auto-prepend a bot mention in 1:1s.
