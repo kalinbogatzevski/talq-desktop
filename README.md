@@ -8,18 +8,19 @@
 
 Your team chat as a real desktop app: instant open, near-zero idle, built to be left running all day.
 
-<sub>Latest codename: **Blue Fiesta Week 2** (stable **0.62**) — for **Levski Sofia**, Sofia's blue club, and its run into the next **Champions League** qualifying round (hence *Week 2*). A name about momentum carried forward — fitting for the line that makes **video smoother on older and lower-powered computers**: machines without hardware video acceleration, with older integrated graphics, or with few CPU cores now send a **single, steady stream** (up to 360p, or 480p on request) instead of several at once, with the frame rate **starting low and ramping up** so a call never overwhelms the machine at the first frame — plus a live frame-rate readout on your own tile, tidier non-overlapping in-call notices, and call logs that finally say which microphone was in use and whether a person's audio arrived silent. It continues the **Blue Fiesta** line (stable **0.60**), after **July Morning** (0.56, clean calls), **Bafana Bafana** (0.52), **Slartibartfast** (0.50), **Botev** (0.48), **Margaritka** (0.46), *Magrathea* (0.44) and *Deep Thought* (0.42) 🔵</sub>
+<sub>Current line: **Saedinenie** — Bulgarian for *unification*, for the line that brings the pieces of a person into one place: whether a colleague is online, whether they are actually on shift, and whatever else your own systems know about them, on one card. Stable is **0.68.2**; **0.69.x** is the open beta line (odd minor = beta, even = stable). It follows **Blue Fiesta** (0.68 stable, 0.60), **July Morning** (0.56, clean calls), **Bafana Bafana** (0.52), **Slartibartfast** (0.50), **Botev** (0.48), **Margaritka** (0.46), *Magrathea* (0.44) and *Deep Thought* (0.42) 🔵</sub>
 
 </div>
 
-> ⚠️ **Status:** Chat is the solid, daily-driver core. **Audio/video
-> calls, simulcast quality switching, and screen sharing now work end to
-> end** and are verified in real two-party use (1:1 and MCU/conference)
-> as of v0.38.0. Simulcast publishing (180p / 360p / 720p layers, with
-> per-receiver substream selection) shipped in stable after end-to-end
-> harness validation across all three substream levels. The remaining
-> work is breadth of cross-network/NAT hardening and multi-party
-> validation beyond two peers. Windows only for now.
+> ⚠️ **Status:** Chat is the solid, daily-driver core. **Audio/video calls,
+> simulcast quality switching, and screen sharing work end to end** and are
+> verified in real two-party use (1:1 and MCU/conference). The remaining work
+> is breadth of cross-network/NAT hardening and multi-party validation beyond
+> two peers.
+>
+> **Group calls need a Talk High Performance Backend** on the server — that is
+> a Nextcloud Talk requirement, not a TalQ one, but it is the thing most often
+> missing when calls do not work. Windows only for now.
 
 ---
 
@@ -73,14 +74,25 @@ eventually you rebuild the part that's between you and the work.
   (outbound bandwidth sparkline, codec / encoder / TX-RX resolution
   cards, per-participant subsystem chips) and a matching strip on the
   Settings dialog. One diagnostic surface, one design language.
+- **Know who you are talking to** — click the picture beside a message,
+  or a name in a room's member list, and a card opens: their picture and
+  name, whether they are online and what their status says, and — where
+  your workplace provides it — whether they are **on shift right now**.
+  Presence and shift answer different questions, and the interesting case
+  is when they disagree: an app left open at 22:00 is not someone who is
+  going to reply. **Every other row on that card is defined by your own
+  server**, so a job title, a team or a desk extension appears without
+  anyone shipping a new TalQ build. See *Cards from your own systems*.
 - **Four themes** — Ember, Warm, Vivid, Paper. Calm, warm, fast.
 - **Built to idle** — QPainter-on-QWidget rendering, no web engine; near-
   zero CPU at rest.
-- **Self-tested** — `talq-call-test` is a headless harness that runs the
-  real publish + subscribe pipelines against the MCU and asserts
-  end-to-end correctness for simulcast, substream switching, screen
-  sharing, mute propagation, and more — so regressions surface without a
-  human in the loop.
+- **Self-tested** — a suite of headless logic tests runs on every build,
+  and `talq-call-test` drives the real publish + subscribe pipelines
+  against the MCU to check signalling, negotiation and the substream
+  ladder. It is honest about its limits: on a single headless box media
+  frames do not route, so it proves the call is *set up* correctly, not
+  that video arrived. See [`docs/TESTING.md`](docs/TESTING.md), which
+  states for each level what it proves and what it cannot.
 
 ## Download
 
@@ -106,66 +118,66 @@ the publisher.
 - **Windows 10/11, 64-bit.** TalQ currently uses Windows-specific media
   and compositor paths; Linux/macOS are not supported yet.
 - A **Nextcloud server with the Talk app** enabled, and an account on it.
+- For **group calls**, that server also needs a **Talk High Performance
+  Backend**. This is a Nextcloud Talk requirement rather than a TalQ one, but
+  it is the single most common reason calls do not work.
 
 Prebuilt installers are on the [Releases](https://github.com/kalinbogatzevski/talq-desktop/releases)
 page (see [Download](#download) above). To build from source, read on.
 
 ## Build from source (Windows)
 
-TalQ builds with the **MinGW** toolchain (Qt's `mingw_64` kit) and links
-**GStreamer from MSYS2**. Both are required; calls won't compile without
-GStreamer. The toolchain is intentionally pinned (Qt 6.8.2 + MinGW 13.1 +
-GStreamer 1.28.x) — other versions may work but these are what's tested.
+TalQ is built with the **MSYS2 mingw-w64 toolchain** — GCC 15, Qt 6.10 and
+GStreamer 1.28 all come from the same MSYS2 prefix. Only CMake and Ninja come
+from the Qt installer.
+
+> ⚠️ **Use one toolchain, not two.** Do not build against a Qt installed by the
+> Qt online installer (`C:\Qt.x\mingw_64`) with the MSYS2 compiler, or
+> against MSYS2's Qt with the Qt installer's MinGW. Mixing them links two C++
+> runtimes into one binary; it compiles and links cleanly and then dies at
+> launch with `0xC00000FD`. That shipped once, as 0.55.1, and the release was
+> withdrawn. If `C:\Qt\Tools\mingw1310_64` is on your `PATH`, take it off.
 
 ### Prerequisites
 
-- **Python 3.10+** (for `aqtinstall`)
+- **MSYS2** — <https://www.msys2.org>, default location `C:\msys64`. This
+  provides the compiler, Qt and GStreamer.
 - **Git** (Git Bash provides the shell the commands below assume)
-- **MSYS2** — provides the GStreamer runtime + dev packages
-- *(optional)* **Visual Studio 2022 Build Tools** with the C++ workload +
-  a Windows 11 SDK — only needed to build the single-**window** screen-share
-  helper (see step 5). Everything else, including whole-screen sharing,
-  builds without it.
+- **Python 3.10+** — CMake runs `scripts/gen-emoji-data.py` at configure time
+- *(optional)* **Visual Studio 2022 Build Tools** with the C++ workload and a
+  Windows 11 SDK — needed only to *rebuild* the single-window capture helper.
+  The prebuilt `native/wgc/talq_wgc.dll` is committed, so a plain clone already
+  has window capture; see step 5.
 
-### 1. Install Qt 6.8.2 + build tools
+### 1. Install the toolchain (MSYS2)
 
-```bash
-pip install aqtinstall
-
-# Qt 6.8.2 with MinGW + WebSockets + Multimedia
-python -m aqt install-qt windows desktop 6.8.2 win64_mingw --outputdir C:\Qt -m qtwebsockets qtmultimedia
-
-# MinGW 13.1 compiler, CMake, Ninja
-python -m aqt install-tool windows desktop tools_mingw1310 --outputdir C:\Qt
-python -m aqt install-tool windows desktop tools_cmake --outputdir C:\Qt
-python -m aqt install-tool windows desktop tools_ninja --outputdir C:\Qt
-```
-
-You should now have `C:\Qt\6.8.2\mingw_64\`, `C:\Qt\Tools\mingw1310_64\`,
-`C:\Qt\Tools\CMake_64\`, `C:\Qt\Tools\Ninja\`.
-
-### 2. Install MSYS2 + GStreamer
-
-Install **MSYS2** from <https://www.msys2.org> (default location
-`C:\msys64`). Then, in an **MSYS2 MinGW64** shell, install GStreamer and the
-plugin sets TalQ uses (WebRTC, the codec/parser elements, the Windows
-capture/output backends):
+In an **MSYS2 MinGW64** shell:
 
 ```bash
 pacman -Syu     # update first (re-open the shell if it asks you to)
-pacman -S --needed \
-  mingw-w64-x86_64-gstreamer \
-  mingw-w64-x86_64-gst-plugins-base \
-  mingw-w64-x86_64-gst-plugins-good \
-  mingw-w64-x86_64-gst-plugins-bad \
-  mingw-w64-x86_64-gst-plugins-ugly \
-  mingw-w64-x86_64-gst-plugins-rs \
-  mingw-w64-x86_64-gst-libav
+pacman -S --needed   mingw-w64-x86_64-gcc   mingw-w64-x86_64-qt6-base   mingw-w64-x86_64-qt6-websockets   mingw-w64-x86_64-qt6-multimedia   mingw-w64-x86_64-qt6-svg   mingw-w64-x86_64-gstreamer   mingw-w64-x86_64-gst-plugins-base   mingw-w64-x86_64-gst-plugins-good   mingw-w64-x86_64-gst-plugins-bad   mingw-w64-x86_64-gst-plugins-ugly   mingw-w64-x86_64-gst-plugins-rs   mingw-w64-x86_64-gst-libav   mingw-w64-x86_64-libnice   mingw-w64-x86_64-libsrtp
 ```
+
+> ⚠️ Be conservative with `pacman -S` in this prefix afterwards. A package set
+> that pulls a mismatched runtime is the other route to `0xC00000FD`.
 
 CMake looks for GStreamer under `C:/msys64/mingw64` by default (the
 `GSTREAMER_ROOT` cache variable). If your MSYS2 is elsewhere, pass
 `-DGSTREAMER_ROOT=/path/to/mingw64` at configure time.
+
+### 2. Install CMake + Ninja
+
+These are the only pieces that come from the Qt installer. Any recent CMake and
+Ninja will do — if you already have them on `PATH`, skip this.
+
+```bash
+pip install aqtinstall
+python -m aqt install-tool windows desktop tools_cmake --outputdir C:\Qt
+python -m aqt install-tool windows desktop tools_ninja --outputdir C:\Qt
+```
+
+**Do not** install `tools_mingw1310` or a `win64_mingw` Qt — see the warning
+above.
 
 ### 3. Clone
 
@@ -180,21 +192,26 @@ cd talq-desktop
 ### 4. Configure and build
 
 ```bash
-# Git Bash — MinGW + CMake + Ninja on PATH
-export PATH="/c/Qt/Tools/mingw1310_64/bin:/c/Qt/Tools/CMake_64/bin:/c/Qt/Tools/Ninja:/c/msys64/mingw64/bin:$PATH"
-cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_PREFIX_PATH=/c/Qt/6.8.2/mingw_64 -DCMAKE_CXX_COMPILER=g++ -Wno-dev
+# Git Bash — MSYS2 first on PATH, then CMake + Ninja
+export PATH="/c/msys64/mingw64/bin:/c/Qt/Tools/CMake_64/bin:/c/Qt/Tools/Ninja:$PATH"
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -Wno-dev
 cmake --build build --target talq
 ```
 
-### 5. *(optional)* Build the window-capture helper
+MSYS2 must come **first** on `PATH`: its `g++`, `qmake6` and Qt CMake package
+all have to be the ones CMake finds.
 
-Sharing a **single application window** (rather than a whole monitor) uses
-Windows Graphics Capture, whose headers ship only with MSVC + the Windows 11
-SDK — not with the MinGW GStreamer TalQ otherwise uses. So it lives in a tiny,
-self-contained C-ABI DLL loaded at runtime. Whole-screen sharing works without
-it; if you skip this step, picking a window just reports that window capture
-is unavailable.
+### 5. *(optional)* Rebuild the window-capture helper
+
+**Skip this unless you are changing it.** Sharing a *single application window*
+(rather than a whole monitor) uses Windows Graphics Capture, whose headers ship
+only with MSVC and the Windows 11 SDK — not with the MinGW toolchain TalQ
+otherwise uses. So it lives in a tiny, self-contained C-ABI DLL loaded at
+runtime, and **the built `native/wgc/talq_wgc.dll` is committed to the
+repository**: a plain clone already has working window capture.
+
+You only need this step to rebuild the DLL after editing
+`native/wgc/talq_wgc.cpp`, and only then do you need VS2022 + the Win11 SDK.
 
 ```bash
 # From a shell where cmd is available (needs VS2022 Build Tools + Win11 SDK):
@@ -224,25 +241,60 @@ conversations appear. The funnel control in the search row sorts and
 filters the list; Settings → Audio & Video selects devices and toggles
 noise suppression.
 
-## Caller screen-pop (optional)
+## Cards from your own systems (optional)
 
-TalQ can show a card about the caller while your desk phone is still ringing,
-and open that customer in your browser. It works with **any** phone system and
-**any** CRM, because TalQ implements only the client half — you supply a small
-bridge that says "extension X is ringing from Y", and an endpoint that turns a
-number into a card. TalQ never places, answers or ends a call; it watches and
-draws what you send it.
+TalQ can show a card about a **person** — either the customer whose call is
+ringing, or the colleague whose picture you just clicked. Both are optional,
+both work with whatever systems you already run, and both are **described
+entirely by your server**.
 
-- **[docs/CTI-INTEGRATION-EXAMPLES.md](docs/CTI-INTEGRATION-EXAMPLES.md)** — a
-  walkthrough with a complete working integration in about a hundred lines
-  (standard library only), plus notes for Asterisk, FreeSWITCH and webhook-based
-  cloud PBXs.
+That last part is the whole design. TalQ does not know what a "balance", a
+"contract" or a "job title" is. Your endpoint answers with a title, a subtitle,
+some badges, an ordered list of label/value rows and some buttons; TalQ draws
+what it is given, in the order it is given. **Adding a field, rewording one, or
+showing different detail to different people is a change on your side that
+takes effect the next time someone opens a card** — no new TalQ build, no
+redeploy to anyone's desktop.
+
+```
+   your phone system ──▶  your bridge  ──WebSocket──▶  TalQ
+                                                        │
+   your CRM / ERP / HR  ◀────────── HTTPS ──────────────┘
+```
+
+There are four endpoints, and **every one of them is optional**. Implement the
+ones that are worth it to you; the parts you skip simply do not appear.
+
+| What you implement | What the user gets |
+| --- | --- |
+| Pairing | A desktop can obtain a credential of its own |
+| A ring event source (WebSocket) | A card appears while the phone is still ringing |
+| `GET …/pbx/screen-pop/{number}` | That card says who is calling |
+| `GET …/people/card/{username}` | Clicking a colleague's picture shows what your systems know about them |
+| `POST …/hr/shift-status` | Colleagues show as on shift, on break or off shift |
+
+The last two have nothing to do with telephony — a site with no phone system at
+all can implement them on their own. And a site that implements *none* of this
+still gets the person card: it falls back to the picture, the name and the
+Nextcloud presence, which need no configuration.
+
+TalQ never places, answers or ends a call. It watches and draws.
+
+- **[docs/CTI-INTEGRATION-EXAMPLES.md](docs/CTI-INTEGRATION-EXAMPLES.md)** — the
+  practical walkthrough, with a complete working integration in about a hundred
+  lines of standard-library Python, plus notes for Asterisk, FreeSWITCH and
+  webhook-based cloud PBXs.
 - **[docs/CTI-SCREEN-POP.md](docs/CTI-SCREEN-POP.md)** — the exact contract:
-  pairing, the event stream, and the card payload.
+  pairing, the event stream, both card payloads and shift status.
 
-The card is described entirely by your server, so adding a field or showing
-different detail to different roles never needs a new TalQ build. Turn it on
-under Settings → Phone.
+Three things are deliberately **not** yours to choose, because they are
+promises TalQ makes to the person reading the screen: the colour vocabulary is
+a closed set (so a card can never break the contrast guarantees in any theme),
+only `http`/`https` links are opened (a card is an unprompted pop-up), and the
+row count is capped (a card taller than the screen cannot be read or
+dismissed). Rows past the cap are announced, never silently dropped.
+
+Turn it on under **Settings → Phone**.
 
 ## Status
 
@@ -252,8 +304,8 @@ TalQ is what I use every day, but it's honest about where it is:
   notifications, the conversation list — the things I rely on for hours a
   day.
 - **Solid in two-party use:** **audio/video calls, simulcast quality
-  switching, and screen sharing.** As of v0.38.0 the WebRTC pipeline is
-  verified working end to end in real 1:1 and MCU/conference use —
+  switching, and screen sharing.** The WebRTC pipeline is verified working
+  end to end in real 1:1 and MCU/conference use —
   hardware H264, three-layer simulcast publishing with auto + manual
   substream selection, screen sharing with live-thumbnail picker — with
   crash barriers so a media failure can't take the app down. A headless
@@ -262,6 +314,12 @@ TalQ is what I use every day, but it's honest about where it is:
 - **Multi-party (3+ peers):** works, but hasn't been validated as
   exhaustively as 1:1; field reports from larger meetings are the most
   useful contribution right now.
+- **Newest, least proven:** the **person card** and the **shift status** it
+  can show. Both shipped in the 0.69.x beta line and have far less field
+  mileage than anything above. The card falls back to name, picture and
+  presence when a site provides nothing, so the failure mode is a quieter
+  card rather than a broken one — but if you wire an endpoint up, I would
+  like to hear how it went.
 - **Windows only.** Linux/macOS would need the media/compositor paths
   reworked.
 - **Help especially welcome here:** call reliability across the range of
@@ -272,7 +330,7 @@ I'd rather you know that going in than discover it on a customer call.
 
 ## Architecture
 
-- **Qt 6.8.2 Widgets**, **C++20**, MinGW 13.1, CMake + Ninja.
+- **Qt 6.10 Widgets**, **C++20**, mingw-w64 GCC 15 (from MSYS2), CMake + Ninja.
 - The conversation list and message view are rendered with **QPainter on
   QWidget** — no QML, no web engine. Earlier versions used QML; it was
   replaced for rendering control and idle cost.
@@ -298,10 +356,12 @@ for new versions. Everything else stays on your machine. See
 
 TalQ is licensed under the **Apache License 2.0** — see [`LICENSE`](LICENSE).
 
-It links and bundles third-party components (Qt and GStreamer under LGPL,
-the Twemoji emoji set under CC-BY 4.0, the Inter typeface under the SIL
-OFL) under their own terms; see [`NOTICE`](NOTICE) and
-[`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).
+It links and bundles third-party components under their own terms — Qt and
+GStreamer (LGPL), the Twemoji emoji set (CC-BY 4.0), the Inter typeface (SIL
+OFL), Feather Icons (MIT), ONNX Runtime (MIT), the MediaPipe Selfie Segmenter
+model (Apache-2.0), and the bundled call-background images (**AGPL-3.0**).
+If you redistribute TalQ, read [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md)
+and [`NOTICE`](NOTICE) in full — the terms are not uniform.
 
 "Nextcloud" is a registered trademark of Nextcloud GmbH. TalQ is an
 independent, unofficial client and is not affiliated with or endorsed by
