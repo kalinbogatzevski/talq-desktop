@@ -502,7 +502,11 @@ void CtiService::fetchPersonCard(const QString &ncUsername)
     const QUrl base = erpBaseUrl();
     if (base.isEmpty() || token().isEmpty())
         return;   // unconfigured or unpaired: dormant, not broken
-    if (base.scheme() != QLatin1String("https")) {
+    // Same rule as the caller lookup: the request carries a working credential,
+    // so plaintext off-loopback would leak it to anyone on the path. Loopback is
+    // exempt because that is where someone develops an integration against the
+    // documented demo, which serves http://127.0.0.1.
+    if (base.scheme().toLower() != QLatin1String("https") && !isLoopback(base)) {
         TWARN("Person card skipped: ERP address must use https://");
         return;
     }

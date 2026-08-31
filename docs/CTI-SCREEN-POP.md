@@ -1,9 +1,13 @@
-# Caller screen-pop — integrating your phone system
+# Caller screen-pop and colleague cards — integrating your own systems
 
-TalQ can show a card about the caller while the phone is still ringing, and open
-that customer in your browser. It works with whatever telephony and whatever
-customer system you already run, because TalQ implements only the *client* half
-and knows nothing about either.
+TalQ can show a card about a **person**: the customer whose call is ringing, or
+the colleague whose picture someone just clicked. It works with whatever
+telephony, customer system and HR system you already run, because TalQ
+implements only the *client* half and knows nothing about any of them.
+
+Every endpoint here is **optional and independent**. The two colleague-facing
+ones (§5, §6) have nothing to do with telephony — a site with no phone system at
+all can implement those on their own.
 
 This document is the contract. Implement it and TalQ will work against your
 setup with no changes to TalQ and no custom build.
@@ -15,12 +19,19 @@ to Asterisk, FreeSWITCH or a webhook-based cloud PBX.
 
 ## What you provide
 
-Two things, and they can be the same service or two:
+Two things for the **caller pop**, and they can be the same service or two:
 
 1. **An event source** — a WebSocket server that tells a desktop when its
    extension is ringing.
 2. **A card source** — an HTTP endpoint that turns a phone number into
    something worth showing.
+
+Then two optional extras for **colleagues**, both plain HTTP on the same base
+URL and credential, neither involving a phone system:
+
+3. **A colleague card source** (§6) — turns a Nextcloud username into the same
+   kind of card, shown when someone clicks that person's picture.
+4. **Shift status** (§5) — says whether a colleague is working right now.
 
 TalQ never talks to your PBX. It never places, answers, transfers or ends a
 call. It watches, and it draws what you send it.
@@ -32,7 +43,7 @@ Under **Settings → Phone** the user supplies:
 | Field | Meaning |
 | --- | --- |
 | Call service address | `wss://your-host:port` — your event source |
-| Customer system address | `https://your-erp.example` — base for the card and pairing endpoints |
+| Customer system address | `https://your-erp.example` — base for pairing, the caller card, the colleague card and shift status |
 
 A distribution may ship defaults for both so nobody types a URL.
 
@@ -136,7 +147,7 @@ TalQ answers WebSocket pings and sends its own roughly every 25 seconds; if
 nothing arrives for about 70 seconds it assumes the connection is dead and
 reconnects. Keep the socket alive or expect reconnects.
 
-## 3. The card source — HTTP
+## 3. The caller card source — HTTP
 
 When a `ring` arrives, TalQ asks your system who is calling, using **the
 agent's own credential**:
@@ -379,6 +390,11 @@ and "everything is a display-ready string". What is worth stating separately:
 - **Fetched once, when the card opens.** There is no polling. A job title does
   not change while someone looks at it, so one request per click is the whole
   cost.
+- **TalQ never asks about an id containing `/`.** A Nextcloud actor id can be a
+  bot's (`bots/…`), and putting one in a request path would be a path walk made
+  with the viewer's own credential, so those are filtered client-side and the
+  card simply shows no rows for them. Guest ids are opaque session hashes with
+  no `/`, so those **do** reach you — answer `{"known": false}`.
 - **Omitting this endpoint is a supported configuration.** The card still opens
   and still shows the colleague's name, picture and Nextcloud presence — and
   their shift status if you implement §5. The two endpoints are independent;
@@ -391,9 +407,15 @@ and "everything is a display-ready string". What is worth stating separately:
 
 Worth stating plainly, because the failure modes are not obvious:
 
-- **The pairing credential is the same one used for card lookups.** Anyone who
-  can read the WebSocket frame can read customer data as that user. This is why
-  plaintext is refused off `localhost`.
+- **One credential now reads more than customer records.** The key issued at
+  pairing is what TalQ presents for the caller card, the colleague card *and*
+  shift status. Anyone who can read it can read all three as that user, which is
+  why plaintext is refused off `localhost`. Scope it to exactly those reads.
+- **The colleague card widens who sees what — decide that deliberately.** A desk
+  extension or a job title that no ordinary member of staff can see in your own
+  web UI does not become less sensitive because a chat client renders it. The
+  request carries the viewer's own credential precisely so you can answer
+  differently per viewer; use that rather than shipping one card to everyone.
 - **Scope the credential narrowly.** It should do nothing but read screen-pop
   cards. Give it an expiry and make it revocable per device.
 - **Prefer a read-only event source.** If your daemon holds telephony

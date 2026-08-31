@@ -1,8 +1,13 @@
-# Building your own caller screen-pop integration
+# Building your own card integration
 
-TalQ shows a card about the caller while the phone rings. It implements only the
-client half, so it works with whatever phone system and whatever customer system
-you already run — you write the bit in the middle.
+TalQ shows a card about a person: the customer whose call is ringing, and the
+colleague whose picture someone just clicked. It implements only the client
+half, so it works with whatever phone system, customer system and HR system you
+already run — you write the bit in the middle.
+
+The colleague card needs no telephony at all. If you have no phone system, skip
+to *Showing a card about a colleague* and implement that one endpoint on its
+own.
 
 This is the practical walkthrough. [CTI-SCREEN-POP.md](CTI-SCREEN-POP.md) is the
 exact contract; come here first, go there when you need the detail.
@@ -267,6 +272,81 @@ above uses `AGENT_EXTENSION`, not anything out of `msg`. A client that could
 name its own extension could place calls billed to a colleague, showing their
 caller ID.
 
+## Showing a card about a colleague
+
+Clicking someone's picture in TalQ opens a card about them. Name, picture and
+presence come from Nextcloud and always work. Everything else on that card comes
+from **one GET**, in exactly the format you already return for a caller:
+
+```
+GET {customer_system}/api/v1/people/card/{nc_username}
+X-API-Key: <the api_key from pairing>
+```
+
+Add this to the demo's `do_GET`, beside the `/screen-pop/` branch:
+
+```python
+        if "/people/card/" in self.path:
+            username = self.path.rsplit("/", 1)[-1]
+            # Look this person up in YOUR directory. Same card format as a
+            # caller: TalQ has no idea what a "job title" is, it just draws
+            # the rows you send in the order you send them.
+            staff = DIRECTORY.get(username)
+            if not staff:
+                return self._json({"known": False})
+            return self._json({
+                "known": True,
+                "title": staff["name"],
+                "subtitle": f"{staff['title']}  ·  {staff['team']}",
+                "badges": [{"text": "Paired", "style": "normal"}]
+                          if staff.get("extension") else [],
+                "fields": [
+                    {"label": "Extension", "value": staff.get("extension", "—")},
+                    {"label": "Email",     "value": staff["email"]},
+                ],
+                "actions": [{"label": "Open in HR",
+                             "url": f"https://hr.example.com/staff/{username}"}],
+                "max_fields": 6,
+            })
+```
+
+with a stand-in directory near the top of the file:
+
+```python
+DIRECTORY = {
+    "rakesh": {"name": "Rakesh Naidoo", "title": "Support Engineer",
+               "team": "Network Operations", "extension": "214",
+               "email": "rakesh@example.com"},
+}
+```
+
+That is the entire feature. Four things differ from the caller lookup and are
+worth knowing before you ship it:
+
+- **Answer `{"known": false}`, never `403`.** Someone the viewer may not see and
+  someone who does not exist must be indistinguishable, because TalQ has no
+  permission model and draws the same nothing for both. A `403` is an error a
+  future version might decide to surface.
+- **One request per click, no polling.** A job title does not change while
+  somebody looks at it. TalQ gives up after 10 seconds.
+- **You get usernames, and some of them are strangers.** Guests appear as opaque
+  session hashes; answer `known: false`. Ids containing `/` (a bot's `bots/…`)
+  never reach you at all — TalQ filters those out rather than put one in a
+  request path carrying the viewer's credential.
+- **The viewer's own key is what arrives**, so you can and should answer
+  differently for different people. A field somebody may not see should be
+  **absent**, not blanked — TalQ shows nothing and cannot tell the difference.
+
+Worth pausing on before you pick fields: a desk extension or a job title that no
+ordinary member of staff can see in your own web UI does not become less
+sensitive because a chat client draws it. Decide the exposure on purpose.
+
+If you also want colleagues to show as **on shift** or **on break**, that is a
+separate optional endpoint — `POST …/hr/shift-status`, documented as §5 of
+[CTI-SCREEN-POP.md](CTI-SCREEN-POP.md). It is a different question from this
+card: the card says who somebody is, shift status says whether they are working
+right now.
+
 ## Testing without a PBX
 
 Keep the fake ring loop from the demo and point it at your real CRM lookup
@@ -311,4 +391,5 @@ exists in your system.
 - [ ] Absent rather than blank for anything the agent may not see
 - [ ] All values pre-formatted; `style` only ever `normal`/`muted`/`warning`/`danger`
 - [ ] `actions[].url` is http/https
+- [ ] Colleague card answers `{"known": false}` — never `403` — for someone the viewer may not see
 - [ ] `wss://` and `https://` in production

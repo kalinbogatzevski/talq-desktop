@@ -21,36 +21,56 @@ constexpr int kAvatarPx  = 56;
 
 } // namespace
 
-// A status chip that leads with a PAINTED DISC.
+// A status chip: an outlined pill that leads with a PAINTED DISC.
 //
-// Never a "•" glyph: its size and baseline vary by font and it renders
-// muddy at small sizes (HeaderPainter.cpp:590-605). And every state takes a
-// colour -- an earlier build made on-shift a neutral grey so it would not
-// shout, which left "On shift" and the presence line as one undifferentiated
-// grey run and made the chip unreadable as a status at all.
+// The disc is painted, never a "•" glyph -- the glyph's size and baseline vary
+// by font and it renders muddy at small sizes (HeaderPainter.cpp:590-605). And
+// every state takes a colour: an earlier build made on-shift a neutral grey so
+// it would not shout, which left the chip unreadable as a status at all.
+//
+// The OUTLINE is why this is a widget rather than a styled label. On a card the
+// chip sits directly under the presence line, and as plain text at the same
+// size and weight the two melted into one paragraph -- you could not see where
+// "Online" stopped and "On shift" began. A container says "this is a status",
+// not "this is another sentence". It stays an outline rather than a fill so the
+// card keeps one loud thing at most, and so the label's ink remains
+// textPrimary-on-bgSurface, a pair the conformance suite already scores.
 class ShiftChipLabel : public QLabel
 {
 public:
-    explicit ShiftChipLabel(QWidget *parent) : QLabel(parent) {}
+    explicit ShiftChipLabel(QWidget *parent) : QLabel(parent)
+    {
+        // Room for the disc on the left and breathing space inside the pill.
+        setContentsMargins(kDiscZone, 3, 10, 3);
+        setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
+    }
 
-    void setDot(const QColor &c) { m_dot = c; update(); }
+    void setAccent(const QColor &c) { m_accent = c; update(); }
 
 protected:
     void paintEvent(QPaintEvent *e) override
     {
-        if (m_dot.isValid() && !text().isEmpty()) {
+        if (m_accent.isValid() && !text().isEmpty()) {
             QPainter p(this);
             p.setRenderHint(QPainter::Antialiasing);
-            const qreal d = qMax(5.0, height() * 0.36);
+
+            const QRectF pill = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+            p.setBrush(Qt::NoBrush);
+            p.setPen(QPen(m_accent, 1.0));
+            p.drawRoundedRect(pill, pill.height() / 2.0, pill.height() / 2.0);
+
+            const qreal d = qMax(5.0, height() * 0.30);
             p.setPen(Qt::NoPen);
-            p.setBrush(m_dot);
-            p.drawEllipse(QPointF(d / 2.0, height() / 2.0), d / 2.0, d / 2.0);
+            p.setBrush(m_accent);
+            p.drawEllipse(QPointF(kDiscZone / 2.0, height() / 2.0), d / 2.0, d / 2.0);
         }
         QLabel::paintEvent(e);
     }
 
 private:
-    QColor m_dot;
+    // Left inset the disc is centred in, and where the text therefore starts.
+    static constexpr int kDiscZone = 18;
+    QColor m_accent;
 };
 
 PersonCardPopup::PersonCardPopup(QWidget *parent)
@@ -95,7 +115,15 @@ PersonCardPopup::PersonCardPopup(QWidget *parent)
     m_shift->setAttribute(Qt::WA_TranslucentBackground);
     m_shift->setTextFormat(Qt::PlainText);
     m_shift->setVisible(false);
-    idCol->addWidget(m_shift);
+    // Its own row with a trailing stretch: a pill that spans the card's width
+    // is a banner, not a chip. The leading gap separates it from the presence
+    // line above -- the two are different kinds of fact and should not touch.
+    idCol->addSpacing(4);
+    auto *shiftRow = new QHBoxLayout;
+    shiftRow->setContentsMargins(0, 0, 0, 0);
+    shiftRow->addWidget(m_shift);
+    shiftRow->addStretch(1);
+    idCol->addLayout(shiftRow);
 
     idCol->addStretch(1);
     idRow->addLayout(idCol, 1);
@@ -246,7 +274,10 @@ void PersonCardPopup::applyChrome()
 
     styleLabel(m_name,     th.textPrimary,   th.fontSizeLarge, true);
     styleLabel(m_presence, th.textSecondary, th.fontSizeSmall, false);
-    styleLabel(m_shift,    th.textPrimary,   th.fontSizeSmall, false);
+    // Tiny and bold, the same type as the caller card's badges -- a chip reads
+    // as a chip because of its type as much as its outline. Matching the
+    // presence line's size and weight is what made the two melt together.
+    styleLabel(m_shift,    th.textPrimary,   th.fontSizeTiny,  true);
 }
 
 void PersonCardPopup::refreshShiftChip()
@@ -272,14 +303,14 @@ void PersonCardPopup::refreshShiftChip()
     if (!draw)
         return;
 
-    QColor dot;
+    QColor accent;
     switch (st) {
-    case talq::ShiftState::OnBreak:  dot = th.amber;     break;
-    case talq::ShiftState::OffShift: dot = th.textMuted; break;
-    default:                         dot = th.online;    break;
+    case talq::ShiftState::OnBreak:  accent = th.amber;     break;
+    case talq::ShiftState::OffShift: accent = th.textMuted; break;
+    default:                         accent = th.online;    break;
     }
-    m_shift->setDot(dot);
-    m_shift->setText(QStringLiteral("     ") + text);   // room for the disc
+    m_shift->setAccent(accent);
+    m_shift->setText(text);   // the pill's own margins make room for the disc
 }
 
 void PersonCardPopup::refreshAvatar()
