@@ -557,9 +557,13 @@ void MessageListModel::loadHistory()
         // API returns newest-first; keep as-is (our storage is newest-first)
         QVector<Message> olderMsgs;
         for (const auto &val : data) {
-            Message m = Message::fromJson(val.toObject());
-            if (m_messageIds.contains(m.id) || m.isReactionMessage()
-                || m.isCallJoinLeave() || m.isEditMessage() || m.isDeletedMessage())
+            const QJsonObject obj = val.toObject();
+            Message m = Message::fromJson(obj);
+            // Control rows are absorbed even on a history page: a reaction or a
+            // deletion that only ever appeared here used to be thrown away.
+            if (absorbControlMessage(obj, m))
+                continue;
+            if (m_messageIds.contains(m.id))
                 continue;
             if (!passesThreadFilter(m))
                 continue;
@@ -650,9 +654,11 @@ void MessageListModel::loadHistoryUntil(int messageId)
                 // fetch cannot smuggle in rows the normal path filters out.
                 QVector<Message> fetched;
                 for (const auto &val : data) {
-                    Message m = Message::fromJson(val.toObject());
-                    if (m_messageIds.contains(m.id) || m.isReactionMessage()
-                        || m.isCallJoinLeave() || m.isEditMessage() || m.isDeletedMessage())
+                    const QJsonObject obj = val.toObject();
+                    Message m = Message::fromJson(obj);
+                    if (absorbControlMessage(obj, m))
+                        continue;
+                    if (m_messageIds.contains(m.id))
                         continue;
                     if (!passesThreadFilter(m))
                         continue;
@@ -906,13 +912,7 @@ void MessageListModel::refreshLatest()
             Message m = Message::fromJson(obj);
             if (m.systemMessage == QLatin1String("history_cleared"))
                 continue;   // purge already handled by the pre-scan above
-            if (m.isReactionMessage()) {
-                // bug 8 — apply the reaction delta to its target (see
-                // onMessagesReceived) instead of dropping the refresh event.
-                applyReactionSystemMessage(obj);
-                continue;
-            }
-            if (m.isCallJoinLeave() || m.isEditMessage() || m.isDeletedMessage())
+            if (absorbControlMessage(obj, m))
                 continue;
             // 0.41.3-beta — own-message echo dedup (see onMessagesReceived).
             replaceTempByReferenceId(m);
@@ -1206,9 +1206,9 @@ void MessageListModel::runGapFillStep()
         QVector<Message> filled;
         int               oldestInPage = std::numeric_limits<int>::max();
         for (const auto &val : data) {
-            Message m = Message::fromJson(val.toObject());
-            if (m.isReactionMessage() || m.isCallJoinLeave() || m.isEditMessage()
-                || m.isDeletedMessage())
+            const QJsonObject obj = val.toObject();
+            Message m = Message::fromJson(obj);
+            if (absorbControlMessage(obj, m))
                 continue;
             // 0.41.3-beta — same client-side filter as the receive paths.
             if (!passesThreadFilter(m)) continue;
@@ -1292,27 +1292,7 @@ void MessageListModel::onMessagesReceived(const QJsonArray &messages)
             clearLocalHistory();
             continue;
         }
-        if (m.isReactionMessage()) {
-            // bug 8 — a reaction added by another client arrives as a system
-            // message whose `parent` is the target comment carrying the
-            // updated reactions map. Apply the delta to the target instead of
-            // silently dropping it; still keep it out of the visible list.
-            applyReactionSystemMessage(obj);
-            continue;
-        }
-        if (m.isDeletedMessage()) {
-            // Hide deletion noise (Telegram-style) AND remove the original from
-            // the live view. Upstream's "message_deleted" event exists for
-            // exactly this — its `parent` is the deleted message; a
-            // "comment_deleted" carries the deleted id itself.
-            int target = m.id;
-            if (m.systemMessage == QLatin1String("message_deleted"))
-                target = obj.value(QStringLiteral("parent")).toObject()
-                            .value(QStringLiteral("id")).toInt();
-            removeMessageById(target);
-            continue;
-        }
-        if (m.isCallJoinLeave() || m.isEditMessage())
+        if (absorbControlMessage(obj, m))
             continue;
         // 0.41.3-beta — own-message echo dedup. If the long-poll
         // returns a message whose referenceId matches a still-pending
@@ -1692,10 +1672,101 @@ void MessageListModel::applyReactionSystemMessage(const QJsonObject &systemMessa
     updateReactions(targetId, parent.value(QStringLiteral("reactions")).toObject());
 }
 
+// Control rows are EVENTS, not content. Reactions, edits and deletions all
+// arrive as ordinary-looking entries in the same arrays as real messages, and
+// each one carries an authoritative update for a message we may already be
+// holding -- in memory, in the cache, or both.
+//
+// Every receive path used to filter them out with its own copy of the same
+// condition, and the copies had drifted: the live poll applied a reaction but a
+// history page silently dropped it, an edit was discarded everywhere, and a
+// deletion never reached the cache from any path at all. One funnel instead, so
+// a rule fixed here is fixed on every path that ingests server data.
+//
+// Returns true when the row was absorbed and must not be admitted as content.
+bool MessageListModel::absorbControlMessage(const QJsonObject &obj, const Message &m)
+{
+    if (m.isReactionMessage()) {
+        applyReactionSystemMessage(obj);
+        return true;
+    }
+    if (m.isEditMessage()) {
+        applyEditSystemMessage(obj);
+        return true;
+    }
+    if (m.isDeletedMessage()) {
+        // "message_deleted" names its victim in `parent`; a "comment_deleted"
+        // row IS the victim, already replaced by its tombstone.
+        int target = m.id;
+        if (m.systemMessage == QLatin1String("message_deleted"))
+            target = obj.value(QStringLiteral("parent")).toObject()
+                        .value(QStringLiteral("id")).toInt();
+        removeMessageById(target);
+        return true;
+    }
+    if (m.isCallJoinLeave())
+        return true;
+    return false;
+}
+
+void MessageListModel::applyEditSystemMessage(const QJsonObject &systemMessageJson)
+{
+    // Mirrors applyReactionSystemMessage: the authoritative new state rides on
+    // `parent`, so re-parse that and replace the loaded copy in place, then
+    // write it back to the cache so a restart does not resurrect the old text.
+    const QJsonObject parent = systemMessageJson.value(QStringLiteral("parent")).toObject();
+    const int targetId = parent.value(QStringLiteral("id")).toInt();
+    if (targetId <= 0)
+        return;
+
+    const Message edited = Message::fromJson(parent);
+
+    int idx = -1;
+    for (int i = 0; i < m_messages.size(); ++i) {
+        if (m_messages[i].id == targetId) { idx = i; break; }
+    }
+    if (idx < 0) {
+        // Not loaded right now. The cache still holds the stale body, and
+        // nothing later would correct it, so overwrite that copy directly --
+        // saveMessages keys on (token, message_id), so this replaces it.
+        if (m_cache && !m_token.isEmpty())
+            m_cache->saveMessages(m_token, {edited});
+        return;
+    }
+
+    m_messages[idx] = edited;
+    emit dataChanged(index(idx), index(idx),
+                     {MessageTextRole, LastEditTimestampRole});
+    if (m_cache && !m_token.isEmpty())
+        m_cache->saveMessages(m_token, {m_messages[idx]});
+}
+
 void MessageListModel::removeMessageById(int id)
 {
-    if (id <= 0 || !m_messageIds.contains(id))
+    if (id <= 0)
         return;
+
+    // Purge the CACHE first, and unconditionally.
+    //
+    // Two bugs lived in the old guard `if (!m_messageIds.contains(id)) return;`.
+    // It dropped the row from m_messages and nothing else, so SQLite kept the
+    // deleted message forever and handed it straight back on the next load --
+    // a message deleted on the server reappeared in the chat after a restart.
+    // And because the guard returned early when the target was not currently
+    // loaded, a deletion for anything scrolled out of the window (or trimmed by
+    // trimOldMessages) was discarded entirely, so the cache was never told at
+    // all -- that copy could never be reclaimed by any later event.
+    //
+    // The reaction path already learned this exact lesson; see
+    // applyReactionSystemMessage, whose comment records reactions "stayed
+    // missing across reopen/restart because the cached snapshot was never
+    // refreshed". Deletion is the same shape of bug with a worse symptom:
+    // content the sender explicitly retracted staying on someone's screen.
+    if (m_cache && !m_token.isEmpty())
+        m_cache->deleteMessage(m_token, id);
+
+    if (!m_messageIds.contains(id))
+        return;                       // not on screen; the cache purge was the point
     for (int i = 0; i < m_messages.size(); ++i) {
         if (m_messages[i].id == id) {
             beginRemoveRows(QModelIndex(), i, i);

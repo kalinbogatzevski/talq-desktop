@@ -77,6 +77,12 @@ public:
     void setCard(const CardData &card);
     const CardData &card() const { return m_card; }
 
+    // The width the owner will give this widget, in px. Field values are laid
+    // out against it to work out how tall each row must be; without it the
+    // rows are sized during the first layout pass, when the widget is still
+    // 0 px wide, and every multi-line value ends up a line short.
+    void setValueWidthHint(int px);
+
     void setTitleText(const QString &text);
     void setSubtitleText(const QString &text);
 
@@ -95,6 +101,12 @@ signals:
     // in one place and this widget never opens anything itself.
     void openRequested(const QUrl &url);
 
+protected:
+    // A click anywhere in a value selects the WHOLE value, rather than
+    // dropping a caret where the pointer landed. These are addresses and
+    // numbers people want in one piece; part of an email is never useful.
+    bool eventFilter(QObject *watched, QEvent *event) override;
+
 private:
     void rebuildBody();       // badges + fields, from m_card
     void rebuildActions();    // one button per server action
@@ -108,6 +120,7 @@ private:
     QWidget *m_badgeRow = nullptr;
     QVBoxLayout *m_fieldsLayout = nullptr;
     QLabel *m_more = nullptr;        // "+3 more" when the list is capped
+    int m_widthHint = 0;
     QWidget *m_actionRow = nullptr;
 
     PainterTheme::Theme m_theme = PainterTheme::Theme::Vivid;

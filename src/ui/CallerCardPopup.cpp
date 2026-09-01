@@ -41,6 +41,9 @@ CallerCardPopup::CallerCardPopup(QWidget *parent)
     root->addWidget(m_status);
 
     m_body = new InfoCardBody(this);
+    // Same fixed-width arithmetic as the person card: root's margins are 20
+    // either side, so that is what a value row has to lay out against.
+    m_body->setValueWidthHint(kCardWidth - 40);
     // The body only ever emits a url; this class re-emits it with the call id
     // attached, so the owner still validates the scheme in exactly one place.
     connect(m_body, &InfoCardBody::openRequested, this, [this](const QUrl &url) {

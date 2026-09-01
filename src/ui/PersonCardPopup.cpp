@@ -16,7 +16,10 @@ namespace {
 
 // Narrower than the caller card (400): that one carries account numbers and
 // currency rows, this one carries a name and a handful of short facts.
-constexpr int kCardWidth = 340;
+// 400, the same as the caller card. Two cards that do the same job at two
+// different widths is an inconsistency nobody chose, and the extra 60 px is
+// what keeps an ordinary work email address on one line.
+constexpr int kCardWidth = 400;
 constexpr int kAvatarPx  = 56;
 
 } // namespace
@@ -144,6 +147,10 @@ PersonCardPopup::PersonCardPopup(QWidget *parent)
 
     // ── the layer the server describes ──────────────────────────────────────
     m_body = new InfoCardBody(this);
+    // The card is a fixed width, so the body can be told exactly how much room
+    // a value row will have and size its rows from that instead of guessing
+    // during the first layout pass. root's margins are 20 either side.
+    m_body->setValueWidthHint(kCardWidth - 40);
     connect(m_body, &InfoCardBody::openRequested,
             this, &PersonCardPopup::openRequested);
     root->addWidget(m_body);
@@ -151,7 +158,10 @@ PersonCardPopup::PersonCardPopup(QWidget *parent)
     auto *msg = new QPushButton(tr("Message"), m_body);
     // Variants are opt-in; a bare QPushButton in this app is transparent and
     // borderless and would read as plain text.
-    msg->setProperty("variant", "ghost");
+    // "default" (outlined), not "ghost". Ghost is transparent and
+    // borderless, so the card's only action read as a stray line of text
+    // and gave no sign it could be pressed.
+    msg->setProperty("variant", "default");
     msg->setCursor(Qt::PointingHandCursor);
     connect(msg, &QPushButton::clicked, this, [this]() {
         emit messageRequested(m_actorId);
@@ -256,7 +266,17 @@ void PersonCardPopup::setAvatar(const QPixmap &pixmap)
 
 void PersonCardPopup::setCard(const InfoCardBody::CardData &card)
 {
-    m_body->setCard(card);
+    // The identity row above ALREADY shows the name. A server that also sends
+    // it as the card title -- which the ERP does -- had it rendered a second
+    // time, in the same weight, four lines below the first. Dropping it here
+    // rather than in InfoCardBody keeps that widget the dumb renderer its
+    // contract says it is: it has no idea what its owner drew above it, and
+    // the caller card legitimately has no headline of its own.
+    InfoCardBody::CardData c = card;
+    if (!c.title.isEmpty() && m_name
+        && c.title.compare(m_name->text(), Qt::CaseInsensitive) == 0)
+        c.title.clear();
+    m_body->setCard(c);
     resizeToContent();
 }
 
