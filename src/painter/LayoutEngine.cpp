@@ -29,6 +29,13 @@ std::pair<qreal, qreal> LayoutEngine::fileRectSize(
         }
         return {w, h};
     }
+    // An audio attachment is a transport, not a document: a play control, a
+    // progress track and a clock. It gets a fixed compact width rather than
+    // the full content width -- a 40-second voice note stretched across the
+    // whole bubble reads as a much longer recording than it is.
+    if (mime.startsWith(QLatin1String("audio/")))
+        return {qMin(maxWidth, 300.0), 48.0};
+
     return {maxWidth, 44.0};
 }
 
@@ -100,6 +107,8 @@ MessageLayout LayoutEngine::computeLayout(
     ml.filePath = model->data(idx, MessageListModel::FilePathRole).toString();
     ml.fileMime = model->data(idx, MessageListModel::FileMimeRole).toString();
     ml.fileSize = model->data(idx, MessageListModel::FileSizeRole).toLongLong();
+    ml.fileHideDownload =
+        model->data(idx, MessageListModel::FileHideDownloadRole).toBool();
 
     ml.isOwn = (ml.actorId == myUserId);
 

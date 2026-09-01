@@ -166,6 +166,8 @@ Message Message::fromJson(const QJsonObject &json)
                 m.fileLink = param["link"].toString();
                 m.filePath = param["path"].toString();
                 m.fileId = param["id"].toString().toInt();
+                m.fileHideDownload =
+                    param["hide-download"].toString() == QLatin1String("yes");
                 if (param["preview-available"].toString() == "yes") {
                     // Build preview URL from file ID
                     m.filePreviewUrl = param["link"].toString().section("/f/", 0, 0)

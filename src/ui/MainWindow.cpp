@@ -11,6 +11,11 @@
 #include "ConversationPickerDialog.h"
 #include "ScheduledMessagesDialog.h"
 #include "ImageViewerDialog.h"
+#include "core/AudioPlayer.h"
+#include "core/VoiceRecorder.h"
+#include <QDir>
+#include <QFileInfo>
+#include <QStandardPaths>
 #include "ConversationInfoDialog.h"
 #include "NewChatDialog.h"
 #include "PollDialog.h"
@@ -1058,6 +1063,14 @@ void MainWindow::buildChatPage()
     // Chat content (hidden until conversation selected)
     m_chatPainter = new ChatPainter(chatCol);
     m_chatPainter->setModel(m_messages);
+    m_audio = new AudioPlayer(this);
+    m_chatPainter->setAudioPlayer(m_audio);
+    connect(m_audio, &AudioPlayer::failed, this,
+            [this](int, const QString &reason) {
+        // A voice message that does nothing when clicked is the exact defect
+        // this feature removes. If it cannot play, say why.
+        QMessageBox::warning(this, tr("Cannot play audio"), reason);
+    });
     m_chatPainter->setMyUserId(m_auth->userId());
     m_chatPainter->setSignaling(m_signaling);
     m_chatPainter->setTheme(m_themeId);
@@ -1213,6 +1226,50 @@ void MainWindow::buildChatPage()
     // chat painter got m_fontScale at startup (line ~577); the composer
     // stayed at 1.0 until the user pressed a zoom shortcut again.
     applyFontScale(m_fontScale);
+
+    // ── Voice messages ──
+    // Three owners, one step each: the recorder owns the microphone and the
+    // file, the composer owns the button and the readout, the model owns the
+    // upload. None of them knows about more than its own step.
+    m_recorder = new VoiceRecorder(this);
+    connect(m_recorder, &VoiceRecorder::stateChanged, this, [this]() {
+        m_composer->setRecordingState(m_recorder->isRecording());
+    });
+    connect(m_recorder, &VoiceRecorder::tick, this, [this]() {
+        m_composer->setRecordingElapsed(m_recorder->elapsedMs());
+    });
+    connect(m_recorder, &VoiceRecorder::failed, this, [this](const QString &reason) {
+        m_composer->setRecordingState(false);
+        QMessageBox::warning(this, tr("Recording failed"), reason);
+    });
+    connect(m_recorder, &VoiceRecorder::finished, this,
+            [this](const QString &path, qint64 durationMs) {
+        // Under a second is a mis-click, not a message. Sending it would drop
+        // a 0-second bubble into someone's chat that they cannot help but tap.
+        if (durationMs < 1000) {
+            QFile::remove(path);
+            return;
+        }
+        m_messages->sendVoiceMessage(path);
+    });
+    connect(m_composer, &ComposerWidget::voiceRecordToggled, this, [this]() {
+        if (m_recorder->isRecording()) {
+            m_recorder->stop();
+            return;
+        }
+        if (!m_messages || m_messages->conversationToken().isEmpty())
+            return;
+        // Named for Talk's own convention, so other clients label it the way
+        // their users expect; the timestamp keeps two recordings apart.
+        const QString path = QStandardPaths::writableLocation(QStandardPaths::TempLocation)
+            + QStringLiteral("/voice-message-")
+            + QDateTime::currentDateTimeUtc().toString(QStringLiteral("yyyyMMdd-HHmmss"))
+            + QStringLiteral(".mp3");
+        m_recorder->start(path);
+    });
+    connect(m_composer, &ComposerWidget::voiceRecordCancelled, this, [this]() {
+        m_recorder->cancel();
+    });
 
     m_selectionBar = new SelectionBarWidget(chatCol);
     m_selectionBar->hide();
@@ -1461,9 +1518,18 @@ void MainWindow::buildChatPage()
 
         // File actions
         if (hasFile) {
-            menu->addAction(tr("\u2B07\uFE0F  Download"), this, [this, fileId, fileName]() {
-                m_messages->downloadFile(fileId, fileName);
-            });
+            // The sharer set hide-download on this share. The server still
+            // serves the bytes -- "Open in Nextcloud" below reaches them, and
+            // so does any browser -- so this is not a boundary being enforced,
+            // it is a stated intent being honoured. Not offering the action is
+            // the whole of what a client can honestly do about it.
+            if (!msg.value("fileHideDownload").toBool()) {
+                menu->addAction(tr("\u2B07\uFE0F  Download"), this, [this, fileId, fileName]() {
+                    // Menu Download SAVES; it does not open. The click on the
+                    // bubble is the gesture that means "show me this".
+                    m_messages->downloadFile(fileId, fileName, /*openWhenDone*/ false);
+                });
+            }
             menu->addAction(tr("\u2601\uFE0F  Open in Nextcloud"), this, [this, fileId]() {
                 QDesktopServices::openUrl(QUrl(m_api->serverUrl() + "/f/" + QString::number(fileId)));
             });
@@ -1675,11 +1741,27 @@ void MainWindow::buildChatPage()
         dlg->show();
     });
 
+    // Inline audio. A click on the round control plays or pauses; a click on
+    // the track seeks. Both arrive through one signal because the bubble is
+    // painted rather than built from widgets, so the hit test is the only
+    // thing that knows which part of the row was pressed.
+    connect(m_chatPainter, &ChatPainter::audioClicked, this,
+            [this](int fileId, const QString &fileName, double frac, bool onTrack) {
+        playAudioAttachment(fileId, fileName, frac, onTrack);
+    });
+
     connect(m_chatPainter, &ChatPainter::fileClicked, this, [this](int fileId, const QString &mime, const QString &fileName) {
         if (mime.startsWith("image/")) {
             QImage placeholder = m_chatPainter->cachedPreview(fileId);
-            if (!m_imageViewer)
+            if (!m_imageViewer) {
                 m_imageViewer = new ImageViewerDialog(m_api, nullptr);
+                // The viewer holds a preview render, never the original file,
+                // so its "Save as…" asks the model to fetch the real bytes.
+                connect(m_imageViewer, &ImageViewerDialog::saveOriginalRequested,
+                        this, [this](int id, const QString &name, const QString &dest) {
+                    m_messages->saveFileAs(id, name, dest);
+                });
+            }
             m_imageViewer->setImage(fileId, fileName, placeholder);
             m_imageViewer->show();
             m_imageViewer->raise();
@@ -4293,6 +4375,72 @@ void MainWindow::maybeLaunchPendingInstaller()
     // that never propagates can't bypass it.
     talq::armShutdownWatchdog(6);
     QTimer::singleShot(500, qApp, &QApplication::quit);
+}
+
+// Play, pause or seek an audio attachment.
+//
+// The bytes have to be local before GStreamer can decode them, so the first
+// click on a clip fetches it into the cache dir and starts playback when it
+// lands; every later click is instant. The cache is keyed by fileId, which is
+// the server's own immutable id for the file -- a name would collide the
+// moment two rooms each hold a "voice-message.mp3".
+void MainWindow::playAudioAttachment(int fileId, const QString &fileName,
+                                     double fraction, bool onTrack)
+{
+    if (!m_audio || !m_messages || fileId <= 0)
+        return;
+
+    const bool isCurrent = m_audio->currentFileId() == fileId;
+
+    // A seek only means anything on the clip that is already loaded. On any
+    // other row the click is "start this one" -- treating it as a seek would
+    // begin a recording somewhere in its middle because of where a finger
+    // happened to land.
+    if (isCurrent && onTrack) {
+        m_audio->seekFraction(fraction);
+        return;
+    }
+    if (isCurrent) {
+        m_audio->togglePause();
+        return;
+    }
+
+    const auto cached = m_audioCache.constFind(fileId);
+    if (cached != m_audioCache.constEnd() && QFileInfo::exists(*cached)) {
+        m_audio->play(fileId, *cached);
+        return;
+    }
+
+    // One fetch at a time per file: a second click while the first is in
+    // flight would start a second download writing the same path.
+    if (m_audioFetching.contains(fileId))
+        return;
+    m_audioFetching.insert(fileId);
+
+    const QString dir = QStandardPaths::writableLocation(QStandardPaths::CacheLocation)
+                        + QStringLiteral("/audio");
+    QDir().mkpath(dir);
+    // The id keeps the name unique; the suffix keeps the decoder's type guess
+    // honest, since playbin's typefind is happier with a plausible extension.
+    const QString suffix = QFileInfo(fileName).suffix();
+    const QString dest = dir + QStringLiteral("/%1").arg(fileId)
+                         + (suffix.isEmpty() ? QString() : QLatin1Char('.') + suffix);
+
+    // A one-shot connection: saveFileAs is shared with the image viewer, so a
+    // permanent handler here would try to play whatever that saved next.
+    auto *conn = new QMetaObject::Connection;
+    *conn = connect(m_messages, &MessageListModel::fileSavedAs, this,
+                    [this, conn, fileId, dest](const QString &savePath) {
+        if (savePath != dest)
+            return;                       // some other save finished first
+        disconnect(*conn);
+        delete conn;
+        m_audioFetching.remove(fileId);
+        m_audioCache.insert(fileId, savePath);
+        m_audio->play(fileId, savePath);
+    });
+
+    m_messages->saveFileAs(fileId, fileName, dest);
 }
 
 void MainWindow::scheduleReminder(int messageId, const QDateTime &when)

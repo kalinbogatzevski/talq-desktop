@@ -502,17 +502,19 @@ void HeaderPainter::paintEvent(QPaintEvent *)
     // Surface the correspondent's TalQ client in 1-on-1 chats \u2014 appended to
     // the status line, or standalone if there is no status line. Persisted
     // peer identity (see SignalingClient) makes this reliable across sessions.
+    //
+    // It carries its OWN colour rather than inheriting subtitleColor. Appending
+    // it to subtitleText left the version string painted in the presence state
+    // colour, so "Online \u00B7 TalQ 0.68.2" rendered as one green run and the
+    // client version read as part of the presence answer. It is a fact about
+    // their build, not about their state: always muted.
+    QString clientText;
     if (m_conversationType == 1 && m_signaling && !m_conversationUserId.isEmpty()) {
         QString tc = m_signaling->peerClientInfo(m_conversationUserId);
         if (tc.startsWith(QStringLiteral("TalQ"))) {
             tc.replace(QLatin1Char('/'), QLatin1Char(' '));   // "TalQ/0.25.6" \u2192 "TalQ 0.25.6"
-            if (hasSubtitle && !subtitleText.isEmpty()) {
-                subtitleText += QStringLiteral(" \u00B7 ") + tc;
-            } else {
-                hasSubtitle = true;
-                subtitleText = tc;
-                subtitleColor = m_theme.textMuted;
-            }
+            clientText = tc;
+            hasSubtitle = true;
         }
     }
 
@@ -522,18 +524,39 @@ void HeaderPainter::paintEvent(QPaintEvent *)
     // answer different questions ("are they at work" vs "is the app open"),
     // and on a bad day the interesting case is exactly when they disagree.
     //
-    // Typing still wins the whole line -- it is transient and more urgent
-    // than either.
+    // Typing NO LONGER suppresses it. That gate existed because the two shared
+    // the status line and competed for the same pixels; on the name row they
+    // never touch, and leaving it in blinked the pill off and on with every
+    // typing burst -- motion that conveys nothing, on a surface whose whole
+    // brief is to stay calm. Whether someone is at work does not change
+    // because they started a sentence.
     //
-    // EVERY state takes a colour, and the chip leads with a painted BULLET.
-    // An earlier version made on-shift neutral grey so it would not shout --
-    // which left "On shift · Online" as one undifferentiated grey run that
-    // read as a single sentence. The bullet is what separates the two facts at
-    // a glance; the colour is what makes the state readable without parsing
-    // the words.
+    // It rides the NAME row, not the status row, and it is a real outlined
+    // pill. Until 0.69.6 it was bare coloured text spliced into the front of
+    // the presence line ("• On shift · Online · TalQ 0.68.2"), which failed
+    // twice over. Three unrelated facts -- an ERP fact, a Nextcloud fact and a
+    // build string -- shared one dot-separated run in one colour, so they read
+    // as a single sentence. And it led with a painted DISC, which is the
+    // presence token: the sidebar header a few hundred px to the left draws an
+    // identical green disc + green word to mean the user's OWN presence, so
+    // the same mark meant two different things on one screen.
+    //
+    // The rest of the app had already solved this and the header was the one
+    // surface that had not adopted either answer. SidebarPainter marks shift
+    // with a rounded SQUARE bottom-left and presence with a circle
+    // bottom-right -- "position and shape carry the distinction, not hue".
+    // PersonCardPopup wraps the same fact in an outlined pill, because as
+    // plain text at the same size the two melted into one paragraph. CallStage
+    // gives it its own line so it is not read as part of the call's state.
+    // This takes both: the card's pill container, with the sidebar's square
+    // marker instead of the presence-shaped disc.
+    //
+    // Row assignment is the substance of the fix: the name row answers "who is
+    // this and are they working", the status row answers "are they reachable",
+    // and nothing crosses between them.
     QString shiftText;
     QColor  shiftColor = m_theme.online;
-    if (!m_isTyping && m_conversationType == 1 && m_shiftStatus
+    if (m_conversationType == 1 && m_shiftStatus
         && !m_conversationUserId.isEmpty()) {
         const talq::ShiftState st = m_shiftStatus->stateFor(m_conversationUserId);
         if (talq::shiftStateIsDrawable(st)) {
@@ -553,9 +576,73 @@ void HeaderPainter::paintEvent(QPaintEvent *)
             case talq::ShiftState::OffShift: shiftColor = m_theme.textMuted; break;
             default:                         shiftColor = m_theme.online;    break;
             }
-            hasSubtitle = true;
+            // Deliberately does NOT set hasSubtitle: the pill lives on the
+            // name row, so a shift state alone must not manufacture an empty
+            // status row under the name.
         }
     }
+
+    // Pill geometry, needed before the title is elided so the name can give up
+    // exactly the width the pill takes and no more.
+    QFont pillFont = m_theme.bodyFont();
+    pillFont.setPixelSize(m_theme.fontSizeTiny);
+    pillFont.setWeight(QFont::DemiBold);
+    const QFontMetrics pillFM(pillFont);
+    const qreal pillH    = pillFM.height() + 6.0;
+    const qreal pillMark = qMax<qreal>(7.0, pillH * 0.34);   // rounded square
+    // Left inset the marker is centred in, mirroring ShiftChipLabel's kDiscZone.
+    const qreal pillLead = pillMark + 12.0;
+    const qreal pillW    = shiftText.isEmpty()
+                             ? 0.0
+                             : pillLead + pillFM.horizontalAdvance(shiftText) + 11.0;
+    const qreal pillGap  = 10.0;
+
+    // The NAME wins. A pill that squeezed the name down to a stub would trade
+    // the question people actually open a chat to answer for a secondary one,
+    // so below this floor the pill is simply not drawn.
+    static constexpr qreal kMinTitleW = 72.0;
+    const bool drawPill = pillW > 0.0 && (textW - pillW - pillGap) >= kMinTitleW;
+    const qreal titleW  = drawPill ? textW - pillW - pillGap : textW;
+
+    // Paints the pill to the right of the name, vertically centred on the name
+    // row. Shared by the two-line and single-line branches below.
+    auto paintShiftPill = [&](qreal left, qreal rowTop, qreal rowH) {
+        if (!drawPill)
+            return;
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing, true);
+
+        const QRectF pill(left, rowTop + (rowH - pillH) / 2.0, pillW, pillH);
+        // Outline, never a fill: the header keeps at most one loud thing, and
+        // an outlined pill leaves the label's ink textPrimary-on-bgPrimary --
+        // a pair theme-conformance-test already scores in all four themes.
+        painter->setBrush(Qt::NoBrush);
+        painter->setPen(QPen(shiftColor, 1.0));
+        painter->drawRoundedRect(pill.adjusted(0.5, 0.5, -0.5, -0.5),
+                                 pill.height() / 2.0, pill.height() / 2.0);
+
+        // A rounded SQUARE, matching SidebarPainter's shift marker. The circle
+        // belongs to presence and must not appear here -- which means the
+        // corner radius is load-bearing, not taste: the sidebar's marker is
+        // 10px with a 2.5px radius, and anything above that quarter-of-a-side
+        // ratio rounds a marker this small back into the very disc it exists
+        // to not be.
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(shiftColor);
+        const qreal markR = pillMark * 0.25;
+        painter->drawRoundedRect(
+            QRectF(pill.left() + 8.0, pill.center().y() - pillMark / 2.0,
+                   pillMark, pillMark), markR, markR);
+
+        painter->setBrush(Qt::NoBrush);
+        painter->setFont(pillFont);
+        painter->setPen(m_theme.textPrimary);
+        painter->drawText(
+            QRectF(pill.left() + pillLead, pill.top(),
+                   pill.width() - pillLead, pill.height()),
+            Qt::AlignLeft | Qt::AlignVCenter, shiftText);
+        painter->restore();
+    };
 
     if (hasSubtitle) {
         // Two-line layout: title at ~1/3 height, subtitle below
@@ -571,66 +658,66 @@ void HeaderPainter::paintEvent(QPaintEvent *)
 
         // Title
         QColor titleColor = m_conversationName.isEmpty() ? m_theme.textMuted : m_theme.textPrimary;
-        QString elidedTitle = titleFM.elidedText(titleText, Qt::ElideRight, static_cast<int>(textW));
-        m_titleRect = QRectF(textLeft, topY, textW, titleH);
+        QString elidedTitle = titleFM.elidedText(titleText, Qt::ElideRight, static_cast<int>(titleW));
+        m_titleRect = QRectF(textLeft, topY, titleW, titleH);
         m_titleElided = (elidedTitle != titleText);
         m_titleFullText = titleText;
         painter->setFont(titleFont);
         painter->setPen(titleColor);
         painter->drawText(m_titleRect, Qt::AlignLeft | Qt::AlignVCenter, elidedTitle);
 
-        // Subtitle. The shift chip is drawn FIRST and keeps its place: when
-        // the header is narrow it is the presence text that gets elided away,
-        // never the chip. This is the one surface with room for the word, so
-        // it is the one place the answer is spelled out.
+        // The pill sits against the name's ACTUAL width, not the column's, so
+        // it tucks in beside a short name instead of floating off at the far
+        // right of the header.
+        paintShiftPill(textLeft + qMin<qreal>(titleFM.horizontalAdvance(elidedTitle), titleW)
+                           + pillGap,
+                       topY, titleH);
+
+        // Subtitle: presence, then the peer's client build. Two runs with two
+        // colours -- the state word carries the state colour, the build string
+        // is always muted. Presence is elided first; the build string is the
+        // less interesting half and simply falls off the end with it.
         const qreal subY = topY + titleH + 1;
         qreal subX = textLeft;
         qreal subAvail = textW;
         painter->setFont(subFont);
-        if (!shiftText.isEmpty()) {
-            // A painted disc, not a "•" glyph: the glyph's size and baseline
-            // vary by font and it renders muddy at small sizes, while this is
-            // exact at any DPI and takes the state colour directly.
-            const qreal dotD = qMax<qreal>(5.0, subH * 0.36);
-            const qreal gap  = 5.0;
-            if (subAvail > dotD + gap) {
-                painter->setPen(Qt::NoPen);
-                painter->setBrush(shiftColor);
-                painter->setRenderHint(QPainter::Antialiasing, true);
-                painter->drawEllipse(
-                    QRectF(subX, subY + (subH - dotD) / 2.0, dotD, dotD));
-                painter->setBrush(Qt::NoBrush);
-                subX     += dotD + gap;
-                subAvail -= dotD + gap;
-            }
-
-            const QString chip = shiftText
-                + (subtitleText.isEmpty() ? QString() : QStringLiteral(" · "));
-            const qreal chipW = qMin<qreal>(subFM.horizontalAdvance(chip), subAvail);
-            painter->setPen(shiftColor);
-            painter->drawText(QRectF(subX, subY, chipW, subH),
-                              Qt::AlignLeft | Qt::AlignVCenter,
-                              subFM.elidedText(chip, Qt::ElideRight, static_cast<int>(chipW)));
-            subX += chipW;
-            subAvail -= chipW;
-        }
         if (subAvail > 0 && !subtitleText.isEmpty()) {
-            const QString elidedSub =
-                subFM.elidedText(subtitleText, Qt::ElideRight, static_cast<int>(subAvail));
+            const qreal runW = qMin<qreal>(subFM.horizontalAdvance(subtitleText), subAvail);
             painter->setPen(subtitleColor);
+            painter->drawText(QRectF(subX, subY, runW, subH),
+                              Qt::AlignLeft | Qt::AlignVCenter,
+                              subFM.elidedText(subtitleText, Qt::ElideRight,
+                                               static_cast<int>(runW)));
+            subX     += runW;
+            subAvail -= runW;
+        }
+        if (subAvail > 0 && !clientText.isEmpty()) {
+            const QString run = subtitleText.isEmpty()
+                                    ? clientText
+                                    : QStringLiteral(" · ") + clientText;
+            painter->setPen(m_theme.textMuted);
             painter->drawText(QRectF(subX, subY, subAvail, subH),
-                              Qt::AlignLeft | Qt::AlignVCenter, elidedSub);
+                              Qt::AlignLeft | Qt::AlignVCenter,
+                              subFM.elidedText(run, Qt::ElideRight,
+                                               static_cast<int>(subAvail)));
         }
     } else {
-        // Single line: centered vertically
+        // Single line: centered vertically. The pill still belongs here -- a
+        // colleague with a known shift state but no presence, no typing and no
+        // reported client is exactly the case where the shift answer is the
+        // only thing the header has to say.
         QColor titleColor = m_conversationName.isEmpty() ? m_theme.textMuted : m_theme.textPrimary;
-        QString elidedTitle = titleFM.elidedText(titleText, Qt::ElideRight, static_cast<int>(textW));
-        m_titleRect = QRectF(textLeft, 0, textW, h);
+        QString elidedTitle = titleFM.elidedText(titleText, Qt::ElideRight, static_cast<int>(titleW));
+        m_titleRect = QRectF(textLeft, 0, titleW, h);
         m_titleElided = (elidedTitle != titleText);
         m_titleFullText = titleText;
         painter->setFont(titleFont);
         painter->setPen(titleColor);
         painter->drawText(m_titleRect, Qt::AlignLeft | Qt::AlignVCenter, elidedTitle);
+
+        paintShiftPill(textLeft + qMin<qreal>(titleFM.horizontalAdvance(elidedTitle), titleW)
+                           + pillGap,
+                       0, h);
     }
 }
 
