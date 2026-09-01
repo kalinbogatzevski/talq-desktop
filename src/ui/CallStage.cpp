@@ -1392,9 +1392,11 @@ void CallStage::paintCentered(QPainter &p, const PainterTheme &th)
                 case talq::ShiftState::Unknown:  break;
                 }
             }
-            // Bullet + colour, same vocabulary as the chat header, so the two
-            // surfaces read identically. Every state takes a colour: a neutral
-            // on-shift blends into whatever is beside it and gets misread.
+            // Marker + colour, same vocabulary as the chat header pill and the
+            // person card, so every surface reads identically. Every state
+            // takes a colour: a neutral on-shift blends into whatever is beside
+            // it and gets misread. The marker is a rounded SQUARE -- a disc is
+            // the presence token app-wide, and in the same green.
             const QColor shiftColor = st == talq::ShiftState::OnBreak  ? th.amber
                                     : st == talq::ShiftState::OffShift ? th.textMuted
                                                                        : th.online;
@@ -1410,7 +1412,10 @@ void CallStage::paintCentered(QPainter &p, const PainterTheme &th)
 
             p.setPen(Qt::NoPen);
             p.setBrush(shiftColor);
-            p.drawEllipse(QRectF(left, rowY + (20 - dotD) / 2.0, dotD, dotD));
+            // Radius = a quarter of the side, as in SidebarPainter and the
+            // card chip. A fixed radius rounds a marker this small into a disc.
+            p.drawRoundedRect(QRectF(left, rowY + (20 - dotD) / 2.0, dotD, dotD),
+                              dotD * 0.25, dotD * 0.25);
             p.setBrush(Qt::NoBrush);
 
             p.setPen(shiftColor);

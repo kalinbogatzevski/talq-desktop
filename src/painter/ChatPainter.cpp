@@ -1,4 +1,5 @@
 #include "ChatPainter.h"
+#include "core/AudioPlayer.h"
 #include "LayoutEngine.h"
 #include "models/MessageListModel.h"
 #include <QPainter>
@@ -128,6 +129,24 @@ void ChatPainter::updateLoadingState()
 // ═══════════════════════════════════════════════════════
 // Properties
 // ═══════════════════════════════════════════════════════
+
+void ChatPainter::setAudioPlayer(AudioPlayer *player)
+{
+    if (player == m_audio)
+        return;
+    if (m_audio)
+        disconnect(m_audio, nullptr, this, nullptr);
+    m_audio = player;
+    if (m_audio) {
+        // Every tick is a repaint of the progress head. update() over the whole
+        // viewport rather than the one bubble's rect: the active clip's row can
+        // be scrolled, re-laid-out or gone between ticks, so there is no rect
+        // that is reliably still its own.
+        connect(m_audio, &AudioPlayer::changed, this,
+                qOverload<>(&QWidget::update));
+    }
+    update();
+}
 
 void ChatPainter::setModel(MessageListModel *mdl)
 {
@@ -403,6 +422,7 @@ QVariantMap ChatPainter::variantMapFromLayout(const MessageLayout &ml) const
         {"fileName", ml.fileName},
         {"filePath", ml.filePath},
         {"fileMime", ml.fileMime},
+        {"fileHideDownload", ml.fileHideDownload},
     };
 }
 
@@ -444,8 +464,27 @@ QString ChatPainter::hitTestAt(qreal x, qreal y)
         return QStringLiteral("poll:%1").arg(ml.pollId);
 
     // File — include MIME for image detection
-    if (ml.hasFile && !ml.fileRect.isNull() && ml.fileRect.contains(canvasPos))
+    if (ml.hasFile && !ml.fileRect.isNull() && ml.fileRect.contains(canvasPos)) {
+        if (ml.fileMime.startsWith(QLatin1String("audio/"))) {
+            // Where along the row the click landed decides what it means. The
+            // button zone is the round control on the left; everything right
+            // of it is the track, and a hit there is a seek.
+            const qreal btnZone = ml.fileRect.left() + kAudioButtonZone;
+            const bool onTrack  = canvasPos.x() > btnZone;
+            const qreal trackW  = ml.fileRect.right() - btnZone - kAudioRightPad;
+            const double frac   = trackW > 1.0
+                ? qBound(0.0, (canvasPos.x() - btnZone) / trackW, 1.0) : 0.0;
+            // PERMILLE, as an integer. Formatting the fraction with
+            // arg(double) emits the DEFAULT LOCALE's decimal separator, while
+            // toDouble() on the other side only ever accepts a point -- so on
+            // any comma-decimal locale "0,42" parsed back as 0 and every seek
+            // jumped to the start of the clip.
+            return QStringLiteral("audio:%1:%2:%3:%4")
+                .arg(ml.fileId).arg(qRound(frac * 1000.0))
+                .arg(onTrack ? 1 : 0).arg(ml.fileName);
+        }
         return QStringLiteral("file:%1:%2:%3").arg(ml.fileId).arg(ml.fileMime, ml.fileName);
+    }
 
     // Reaction
     if (!ml.reactions.isEmpty() && !ml.reactBarRect.isNull()) {
@@ -1172,6 +1211,15 @@ void ChatPainter::mouseReleaseEvent(QMouseEvent *event)
             } else if (hit.startsWith("poll:")) {
                 const int pid = hit.mid(5).toInt();
                 if (pid > 0) emit pollClicked(pid);
+            } else if (hit.startsWith("audio:")) {
+                QStringList parts = hit.mid(6).split(":");
+                if (parts.size() >= 4) {
+                    const int fid = parts[0].toInt();
+                    const double frac = parts[1].toInt() / 1000.0;
+                    const bool onTrack = parts[2] == QLatin1String("1");
+                    const QString fname = parts.mid(3).join(":");
+                    if (fid > 0) emit audioClicked(fid, fname, frac, onTrack);
+                }
             } else if (hit.startsWith("file:")) {
                 QStringList parts = hit.mid(5).split(":");
                 if (parts.size() >= 3) {
@@ -2105,10 +2153,128 @@ void ChatPainter::paintPollCard(QPainter *p, const MessageLayout &ml, qreal offs
 }
 
 
+// An audio attachment: round play/pause control, a progress track, and a
+// clock. Painted instead of the generic document pill because a voice message
+// answered by "📄 voice-message.mp3, 84 KB" tells you nothing you wanted to
+// know -- not how long it is, not whether you have heard it, and clicking it
+// only handed the file to whatever the OS opens .mp3 with.
+//
+// State comes from the ONE AudioPlayer: only the clip it currently holds shows
+// progress, everything else paints at rest. That is why the player is
+// single-slot -- the painter never has to decide between two playing bubbles.
+void ChatPainter::paintAudioAttachment(QPainter *p, const MessageLayout &ml,
+                                       const QRectF &fr)
+{
+    const bool active  = m_audio && m_audio->currentFileId() == ml.fileId;
+    const bool playing = active && m_audio->isPlaying();
+    const double frac  = active ? m_audio->progress() : 0.0;
+
+    p->save();
+    p->setRenderHint(QPainter::Antialiasing, true);
+
+    // NO pill behind this. The bubble is already the container, and the first
+    // cut drew a filled surface pill inside it with a fully saturated accent
+    // disc on top -- a container inside a container, and on an own-message
+    // bubble (which is itself accent-tinted) that put accent on accent. It was
+    // the loudest thing on the screen for the least important reason. The
+    // bubble carries the ground; this draws only the three things that mean
+    // something: a control, a position, a time.
+    // One ink for both bubble kinds: textPrimary is the scored pairing on
+    // each of them, so the track and clock derive from it by alpha rather
+    // than from a token that is only correct on one ground.
+    const QColor ink = m_theme.textPrimary;
+
+    // ── Play / pause control ──
+    // A RING, not a filled disc. The header's buttons established the rule for
+    // this app: calm at rest, accent reserved for the glyph. A 32px saturated
+    // circle is a call-to-action; a voice note is not one.
+    const qreal d = 30.0;
+    const QRectF btn(fr.left() + 2.0, fr.center().y() - d / 2.0, d, d);
+    p->setBrush(Qt::NoBrush);
+    p->setPen(QPen(m_theme.accentText, 1.4));
+    p->drawEllipse(btn.adjusted(0.7, 0.7, -0.7, -0.7));
+
+    p->setPen(Qt::NoPen);
+    p->setBrush(m_theme.accentText);
+    const qreal g = d * 0.26;                       // glyph half-extent
+    const QPointF c = btn.center();
+    if (playing) {
+        // Two bars, drawn rather than glyphs: ⏸/▶ vary wildly by font and
+        // render muddy at this size, and the pair needs an exact optical
+        // centre that a text baseline will not give.
+        const qreal bw = g * 0.40, gap = g * 0.32;
+        p->drawRoundedRect(QRectF(c.x() - gap - bw, c.y() - g, bw, g * 2), 1.2, 1.2);
+        p->drawRoundedRect(QRectF(c.x() + gap,      c.y() - g, bw, g * 2), 1.2, 1.2);
+    } else {
+        // Nudged right by a fifth of its width: a triangle centred on its
+        // bounding box reads as left-heavy inside a circle.
+        QPainterPath tri;
+        const qreal nudge = g * 0.20;
+        tri.moveTo(c.x() - g * 0.62 + nudge, c.y() - g * 0.86);
+        tri.lineTo(c.x() + g * 0.92 + nudge, c.y());
+        tri.lineTo(c.x() - g * 0.62 + nudge, c.y() + g * 0.86);
+        tri.closeSubpath();
+        p->fillPath(tri, m_theme.accentText);
+    }
+
+    // ── Track + clock ──
+    const qreal trackL = fr.left() + kAudioButtonZone;
+    const qreal trackR = fr.right() - kAudioRightPad;
+    const QString clock = active ? formatClock(m_audio->positionMs()) : QString();
+    QFont cf = m_theme.timeFont();
+    const QFontMetrics cfm(cf);
+    // The clock's width is RESERVED whether or not it is showing, so the track
+    // does not shorten by 40 px the instant playback starts.
+    const qreal clockW = cfm.horizontalAdvance(QStringLiteral("00:00")) + 10.0;
+
+    if (trackR - clockW > trackL + 8.0) {
+        const qreal barW = trackR - clockW - trackL;
+        const QRectF bar(trackL, fr.center().y() - 1.5, barW, 3.0);
+        // The rest-state track is the ink at low alpha rather than a theme
+        // token, because this sits on TWO different grounds (own and peer
+        // bubbles) and no single token is correct on both.
+        QColor base = ink; base.setAlphaF(0.22f);
+        p->setPen(Qt::NoPen);
+        p->setBrush(base);
+        p->drawRoundedRect(bar, 1.5, 1.5);
+        if (frac > 0.0) {
+            p->setBrush(m_theme.accentText);
+            p->drawRoundedRect(QRectF(bar.left(), bar.top(), barW * frac, bar.height()), 1.5, 1.5);
+            // A head only while it is moving: it marks the exact position,
+            // which a filled bar alone is hard to read to the pixel.
+            p->drawEllipse(QPointF(bar.left() + barW * frac, bar.center().y()), 4.0, 4.0);
+        }
+        if (!clock.isEmpty()) {
+            QColor ct = ink; ct.setAlphaF(0.72f);
+            p->setPen(ct);
+            p->setFont(cf);
+            p->drawText(QRectF(trackR - clockW, fr.top(), clockW, fr.height()),
+                        Qt::AlignRight | Qt::AlignVCenter, clock);
+        }
+    }
+    p->restore();
+}
+
+// mm:ss, and h:mm:ss only once there is an hour to show.
+QString ChatPainter::formatClock(qint64 ms)
+{
+    const qint64 total = ms / 1000;
+    const qint64 h = total / 3600, m = (total % 3600) / 60, s = total % 60;
+    if (h > 0)
+        return QStringLiteral("%1:%2:%3").arg(h)
+            .arg(m, 2, 10, QLatin1Char('0')).arg(s, 2, 10, QLatin1Char('0'));
+    return QStringLiteral("%1:%2").arg(m).arg(s, 2, 10, QLatin1Char('0'));
+}
+
 void ChatPainter::paintFileAttachment(QPainter *p, const MessageLayout &ml, qreal offsetY)
 {
     QRectF fr = ml.fileRect.translated(0, offsetY);
     bool isImage = ml.fileMime.startsWith(QLatin1String("image/"));
+
+    if (ml.fileMime.startsWith(QLatin1String("audio/"))) {
+        paintAudioAttachment(p, ml, fr);
+        return;
+    }
 
     if (isImage) {
         // Try to draw the loaded preview image

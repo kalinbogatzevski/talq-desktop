@@ -83,6 +83,11 @@ signals:
     // "Manage scheduled…" entry in the send button's right-click menu.
     // MainWindow opens ScheduledMessagesDialog in response.
     void manageScheduledRequested();
+    // Voice message: the composer owns the button and the timer readout, the
+    // window owns the recorder and the sending. Emitted on the first click
+    // (start) and the second (stop and send); cancel discards.
+    void voiceRecordToggled();
+    void voiceRecordCancelled();
     // The user picked "Poll…" from the attach menu; the window owns the dialog.
     void createPollRequested();
 
@@ -119,6 +124,17 @@ private:
     TalqIconButton *m_sendBtn = nullptr;
     TalqIconButton *m_attachBtn = nullptr;
     TalqIconButton *m_emojiBtn = nullptr;
+    TalqIconButton *m_micBtn = nullptr;
+    QLabel *m_recLabel = nullptr;      // elapsed time while recording
+    TalqIconButton *m_recCancelBtn = nullptr;
+    bool m_recording = false;
+
+public:
+    // Driven by MainWindow from VoiceRecorder's signals: the composer never
+    // touches the microphone, it only shows what is happening.
+    void setRecordingState(bool recording);
+    void setRecordingElapsed(qint64 ms);
+private:
     EmojiPickerWidget *m_picker = nullptr;
     SignalingClient *m_signaling = nullptr;
     MessageListModel *m_model = nullptr;

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(talq VERSION 0.69.6 LANGUAGES CXX)
+project(talq VERSION 0.69.7 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -84,6 +84,10 @@ qt_add_executable(talq
     src/core/AppSettings.cpp
     src/core/UpdateChecker.h
     src/core/UpdateChecker.cpp
+    src/core/AudioPlayer.h
+    src/core/AudioPlayer.cpp
+    src/core/VoiceRecorder.h
+    src/core/VoiceRecorder.cpp
     src/painter/PainterTheme.cpp
     src/painter/LayoutEngine.cpp
     src/painter/ChatPainter.cpp

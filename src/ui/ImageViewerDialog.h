@@ -25,6 +25,14 @@ public:
     explicit ImageViewerDialog(ApiClient *api, QWidget *parent = nullptr);
     void setImage(int fileId, const QString &fileName, const QImage &placeholder);
 
+signals:
+    // "Save as..." wants the ORIGINAL file, which this dialog has never held --
+    // what it displays is /core/preview's re-render, capped to the screen. The
+    // owner routes this to the model, which is the one place that knows how to
+    // fetch an attachment's real bytes.
+    void saveOriginalRequested(int fileId, const QString &fileName,
+                               const QString &destPath);
+
 protected:
     void keyPressEvent(QKeyEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
