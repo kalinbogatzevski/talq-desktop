@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(talq VERSION 0.69.7 LANGUAGES CXX)
+project(talq VERSION 0.70.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -220,6 +220,13 @@ string(TIMESTAMP TALQ_BUILD_TS "%m%d-%H%M")
 # (0.58.x–0.68.x) was the football detour; this picks the original thread back
 # up, and follows 0.39.x's EVENT-name pattern rather than the place-name pattern
 # of 0.40.x/0.41.x. Chosen 2026-08-28.
+#
+# 0.70.x CONTINUES THE THREAD as "Slivnitsa" -- Сливница, 5-7 November 1885,
+# the battle that defended the Unification two months after 0.69.x's
+# "Saedinenie" declared it. It picks up exactly where that blurb ends, and the
+# fixture fits the release: an even minor is the STABLE cut of the odd line
+# before it, so 0.70.0 is the one that makes the 0.69.x work hold. Event-name
+# pattern, as with Saedinenie and 0.39.x. Chosen 2026-09-01.
 set_source_files_properties(
     src/main.cpp
     src/core/CallManager.cpp
@@ -228,7 +235,7 @@ set_source_files_properties(
     src/ui/SettingsDialog.cpp
     src/ui/MainWindow.cpp
     PROPERTIES COMPILE_DEFINITIONS
-      "TALQ_VERSION=\"${PROJECT_VERSION}\";TALQ_VERSION_NAME=\"Saedinenie\";TALQ_BUILD_TS=\"${TALQ_BUILD_TS}\""
+      "TALQ_VERSION=\"${PROJECT_VERSION}\";TALQ_VERSION_NAME=\"Slivnitsa\";TALQ_BUILD_TS=\"${TALQ_BUILD_TS}\""
 )
 
 # Pre-release flag: when build-release.sh is invoked with --beta it

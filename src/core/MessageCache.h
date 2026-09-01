@@ -40,6 +40,10 @@ signals:
     void lastCommonReadLoaded(const QString &token, int messageId);
 
 public slots:
+    // Purge ONE message. A deletion that only leaves the in-memory list
+    // resurrects from SQLite on the next load, so the cache has to hear about
+    // it too -- the same lesson the reaction path already learned.
+    void deleteMessage(const QString &token, int messageId);
     void clearConversation(const QString &token);
     void clearAll();
 
@@ -62,6 +66,7 @@ public:
     Q_INVOKABLE QVector<Message> doLoadMessages(const QString &token, int limit);
     Q_INVOKABLE void doSaveMessages(const QString &token, const QVector<Message> &messages);
     Q_INVOKABLE int doLastMessageId(const QString &token);
+    Q_INVOKABLE void doDeleteMessage(const QString &token, int messageId);
     Q_INVOKABLE void doClearConversation(const QString &token);
     Q_INVOKABLE void doClearAll();
     Q_INVOKABLE void doInit();

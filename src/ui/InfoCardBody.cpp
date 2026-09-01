@@ -6,6 +6,14 @@
 #include <QLabel>
 #include <QPushButton>
 #include <QVBoxLayout>
+#include <QApplication>
+#include <QClipboard>
+#include <QCursor>
+#include <QEvent>
+#include <QFontMetrics>
+#include <QToolTip>
+#include "ui/TalqIconButton.h"
+#include <QTextEdit>
 
 InfoCardBody::InfoCardBody(QWidget *parent)
     : QWidget(parent)
@@ -71,6 +79,14 @@ void InfoCardBody::setCard(const CardData &card)
         setSubtitleText(card.subtitle);
     rebuildBody();
     rebuildActions();
+}
+
+void InfoCardBody::setValueWidthHint(int px)
+{
+    if (m_widthHint == px)
+        return;
+    m_widthHint = px;
+    rebuildBody();
 }
 
 void InfoCardBody::setTitleText(const QString &text)
@@ -142,10 +158,21 @@ void InfoCardBody::rebuildBody()
             f.setBold(true);
             f.setPointSize(th.fontSizeTiny);
             chip->setFont(f);
-            const QColor fill = inkForStyle(b.style);
-            chip->setStyleSheet(
-                QStringLiteral("color: %1; background: %2; border-radius: 4px;")
-                    .arg(th.inkOn(fill).name(), fill.name()));
+            // A FILLED chip is a raised voice, and only warning/danger have
+            // earned one. `normal` used textPrimary as the FILL, which made a
+            // routine status ("Paired") the brightest object on the card --
+            // louder than the person's own name. Normal and muted are
+            // outlined instead: same closed vocabulary, same AA-scored ink,
+            // a quarter of the shout.
+            const QColor accent = inkForStyle(b.style);
+            const talq::CardStyle cs = talq::cardStyleFromWire(b.style.toStdString());
+            const bool loud = (cs == talq::CardStyle::Warning || cs == talq::CardStyle::Danger);
+            chip->setStyleSheet(loud
+                ? QStringLiteral("color: %1; background: %2; border-radius: 4px;")
+                      .arg(th.inkOn(accent).name(), accent.name())
+                : QStringLiteral("color: %1; background: transparent;"
+                                 "border: 1px solid %2; border-radius: 4px;")
+                      .arg(th.textSecondary.name(), th.divider.name()));
             row->insertWidget(row->count() - 1, chip);
         }
         m_badgeRow->setVisible(!m_card.badges.isEmpty());
@@ -156,6 +183,28 @@ void InfoCardBody::rebuildBody()
 
     const int total = m_card.fields.size();
     const int shown = talq::visibleFieldCount(total, m_card.maxFields);
+
+    // The labels form a real COLUMN, sized once to the widest of them, so the
+    // values all start on the same x and the eye can run straight down them.
+    // The old row was label + stretch + right-aligned value, which pushed
+    // every value to a different x AND, being a non-wrapping QLabel whose
+    // minimum width is its full text, could not be shrunk by the layout: a
+    // long address simply ran off the fixed-width card and was cut. Nobody
+    // could read it and nobody could copy it either.
+    QFont lf = font();
+    lf.setPointSize(th.fontSizeSmall);
+    const QFontMetrics lfm(lf);
+    int labelW = 0;
+    for (int i = 0; i < shown; ++i)
+        labelW = qMax(labelW, lfm.horizontalAdvance(m_card.fields.at(i).label));
+    labelW = qMin(labelW, 130);          // a verbose label must not eat the value's room
+
+    // What is left for the value once the label column, the two gaps and the
+    // copy button have taken theirs. Falls back to this widget's own width
+    // when no owner supplied a hint.
+    const int hintW = m_widthHint > 0 ? m_widthHint : width();
+    const int valueWidth = hintW - labelW - 10 - 22 - 10;
+
     for (int i = 0; i < shown; ++i) {
         const Field &f = m_card.fields.at(i);
         auto *rowWidget = new QWidget(this);
@@ -165,25 +214,100 @@ void InfoCardBody::rebuildBody()
 
         auto *label = new QLabel(f.label, rowWidget);
         label->setTextFormat(Qt::PlainText);
+        label->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+        label->setFixedWidth(labelW);
         label->setStyleSheet(QStringLiteral("color: %1; background: transparent;")
                                  .arg(th.textSecondary.name()));
-        QFont lf = label->font();
-        lf.setPointSize(th.fontSizeSmall);
         label->setFont(lf);
 
-        auto *value = new QLabel(f.value, rowWidget);
-        value->setTextFormat(Qt::PlainText);
-        value->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        value->setStyleSheet(QStringLiteral("color: %1; background: transparent;")
+        // A read-only QTextEdit, not a QLabel.
+        //
+        // QLabel cannot do this job. Its word wrap breaks at word boundaries
+        // only, and an email address is ONE unbreakable token -- so a long
+        // address was not wrapped, it was silently cut ("...@123net.co", with
+        // the .za gone). The alternatives all corrupt the clipboard: eliding
+        // hides characters, and inserting breaks or zero-width spaces to force
+        // a wrap puts those characters into anything the user then selects and
+        // pastes. A text document wraps ANYWHERE and still yields the exact
+        // original characters to a selection, which is the only combination
+        // that satisfies both "show me all of it" and "let me copy it".
+        auto *value = new QTextEdit(rowWidget);
+        value->setReadOnly(true);
+        value->setFrameStyle(QFrame::NoFrame);
+        value->setWordWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
+        value->setLineWrapMode(QTextEdit::WidgetWidth);
+        value->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        value->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        value->setTextInteractionFlags(Qt::TextSelectableByMouse
+                                       | Qt::TextSelectableByKeyboard);
+        value->document()->setDocumentMargin(0);
+        value->viewport()->setAutoFillBackground(false);
+        value->setStyleSheet(QStringLiteral("QTextEdit { color: %1; background: transparent;"
+                                            " border: none; }")
                                  .arg(inkForStyle(f.style).name()));
         QFont vf = value->font();
         vf.setPointSize(th.fontSizeSmall);
         vf.setBold(f.style == QLatin1String("warning") || f.style == QLatin1String("danger"));
+        // Font BEFORE text: the first layout pass has to use the metrics we
+        // actually render with, or the height it reports is for a different
+        // font than the one on screen.
         value->setFont(vf);
+        value->document()->setDefaultFont(vf);
+        value->setPlainText(f.value);
+        // A QTextEdit has no useful sizeHint for this, so it would claim a
+        // scroll-area's worth of height. Track the laid-out document instead:
+        // the signal fires again whenever the wrap changes the line count, so
+        // the row is exactly as tall as its text and no taller.
+        // Height is MEASURED, not observed. Two earlier attempts drove it from
+        // the live document -- the documentSizeChanged signal, then a
+        // singleShot re-fit -- and both lost the race with the layout: the
+        // first measurement happens while the widget is still 0 px wide, so
+        // the document reports one line, and a QTextEdit that ends up shorter
+        // than its content SCROLLS. That is what put the digits half out of
+        // frame and cut the second line off the address.
+        //
+        // So measure against the width this row will actually get, which is
+        // arithmetic the owner's fixed card width makes knowable up front, and
+        // set the height once. A widget that is never too short never scrolls,
+        // and the whole class of timing bug goes away.
+        const int avail = qMax(40, valueWidth);
+        QFontMetrics vfm(vf);
+        const int textH = vfm.boundingRect(QRect(0, 0, avail, 0),
+                                           Qt::TextWordWrap | Qt::TextWrapAnywhere,
+                                           f.value).height();
+        // +8, not +2. A QTextEdit is a scroll area: its viewport is inset from
+        // the widget by the frame and the scroll-area chrome, so a widget sized
+        // to exactly the text leaves a viewport SHORTER than the text -- and a
+        // viewport shorter than its content scrolls. That is what cut the tops
+        // off the digits and hid the second line of the address, with the
+        // measured height correct all along (verified: fixedH 22 against docH
+        // 20, and it still clipped). The slack absorbs the chrome.
+        value->setFixedHeight(qMax(vfm.height(), textH) + 8);
+        value->document()->setTextWidth(avail);
+        // Park the cursor at the start: a cursor left at the end of the
+        // document makes the view scroll to it the moment the widget is shown.
+        value->moveCursor(QTextCursor::Start);
+        // A pointing hand, not an I-beam: the click does not place a caret, it
+        // takes the whole value (see eventFilter).
+        value->viewport()->setCursor(Qt::PointingHandCursor);
+        value->viewport()->installEventFilter(this);
 
-        row->addWidget(label);
-        row->addStretch(1);
-        row->addWidget(value);
+        // One click puts the value on the clipboard. It copies f.value, the
+        // string the server sent, NOT whatever the label is currently
+        // rendering -- so wrapping, eliding or any future display transform
+        // can never put a mangled address in somebody's paste buffer.
+        auto *copyBtn = new TalqIconButton(QStringLiteral("copy"), rowWidget);
+        copyBtn->setFixedSize(22, 22);
+        copyBtn->setToolTip(tr("Copy %1").arg(f.label.toLower()));
+        const QString exact = f.value;
+        connect(copyBtn, &QAbstractButton::clicked, this, [exact, copyBtn]() {
+            QApplication::clipboard()->setText(exact);
+            QToolTip::showText(QCursor::pos(), tr("Copied"), copyBtn);
+        });
+
+        row->addWidget(label, 0, Qt::AlignTop);
+        row->addWidget(value, 1);
+        row->addWidget(copyBtn, 0, Qt::AlignTop);
         m_fieldsLayout->addWidget(rowWidget);
     }
 
@@ -250,4 +374,20 @@ QColor InfoCardBody::inkForStyle(const QString &style) const
     case talq::CardStyle::Normal:  break;
     }
     return th.textPrimary;
+}
+
+bool InfoCardBody::eventFilter(QObject *watched, QEvent *event)
+{
+    if (event->type() == QEvent::MouseButtonPress) {
+        // The filter is installed on the VIEWPORT, so the value widget is its
+        // parent. Selecting everything and swallowing the press is the whole
+        // behaviour: without swallowing it, Qt would immediately collapse the
+        // selection to a caret under the pointer and begin a drag.
+        if (auto *edit = qobject_cast<QTextEdit *>(watched->parent())) {
+            edit->selectAll();
+            edit->setFocus(Qt::MouseFocusReason);
+            return true;
+        }
+    }
+    return QWidget::eventFilter(watched, event);
 }

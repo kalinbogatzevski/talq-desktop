@@ -58,6 +58,23 @@ inline QString codenameBlurb(const QString &verName)
         || verName == QStringLiteral("Koprivshtitsa"))
         return QObject::tr("Codename \"%1\" — Bulgaria's April Uprising of 1876, "
             "150th anniversary (2026).").arg(verName);
+    if (verName == QStringLiteral("Slivnitsa"))
+        return QObject::tr("Codename \"%1\" — Сливница, "
+            "5–7 November 1885, the battle that defended the Unification two "
+            "months after it was declared. Serbia attacked expecting a walkover: "
+            "Russia had recalled every senior Russian officer from the Bulgarian "
+            "army in protest at the Unification, so the units that met them were "
+            "led by captains and lieutenants — it is remembered as the war of "
+            "the captains against the generals. The army was massed on the "
+            "Ottoman frontier in the south, the wrong end of the country; it "
+            "marched the length of Bulgaria to the ridge at Slivnitsa, some "
+            "arriving straight into the line. They held for three days under "
+            "Danail Nikolaev, then counter-attacked, took Pirot, and were still "
+            "advancing when Austria-Hungary intervened to stop them short of "
+            "Belgrade. The Treaty of Bucharest moved not one border — which "
+            "was the whole point: the Unification stood. A name over the release "
+            "that makes the previous line's work stable, and over a run of "
+            "fixes for things that had been quietly wrong for a long time.").arg(verName);
     if (verName == QStringLiteral("Saedinenie"))
         return QObject::tr("Codename \"%1\" — Съединение, the Unification of "
             "Bulgaria, 6 September 1885. The Treaty of Berlin had cut the country "

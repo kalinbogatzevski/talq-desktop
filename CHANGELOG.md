@@ -1,5 +1,87 @@
 # Changelog
 
+## v0.70.0 "Slivnitsa" — STABLE (2026-09-01)
+
+Opens a new line, and promotes everything the 0.69.x betas built to stable. The
+name continues where the last one left off: Сливница, the battle two months
+after the Unification that made it hold.
+
+### Added
+* **Voice messages.** There is a microphone beside the paperclip: press it to
+  record, press it again to send, or bin it. A voice message you receive is a
+  player in the chat — press to listen, press anywhere along the bar to jump
+  there — rather than a document you had to download and open in something
+  else. Recordings are sent as ordinary mp3, so they play on any client.
+
+  Any audio attachment plays in place, not just voice messages: a shared song, a
+  recorded call, a clip.
+
+* **See whether a colleague is actually working.** Where your workplace has set
+  it up, TalQ shows whether the person you are talking to is on shift, on break
+  or off shift — in the chat header, on their row in the list, on a call, and in
+  a room's member list. It answers a different question from the presence dot:
+  an app left open at 22:00 is not someone who is going to reply. It says as
+  little as it can — no working hours, no team, no break times — and anyone TalQ
+  cannot get an answer for shows nothing at all.
+
+* **Click the quote on a reply to jump to the message it answers.** The original
+  is brought on screen and briefly highlighted, fetching the older part of the
+  conversation first if it has scrolled out of reach.
+
+* **Call back from the caller card.** Where dialling is configured, the card
+  offers to ring your desk phone and connect it to the caller — useful most on
+  the call you just missed.
+
+### Fixed
+* **Downloading a file works.** Every download was asking the server for an
+  address it has never had, so the request failed for every file, for every
+  user, every time — and the error path quietly opened the file in a browser
+  instead, which looked enough like a deliberate "open in the browser" that the
+  failure went unnoticed. Files now save straight to your Downloads folder.
+  Clicking a file opens it; choosing Download from its menu saves it and tells
+  you where it went. Large files stream to disk instead of being held in memory,
+  and when something goes wrong you are told.
+
+  This also fixes downloads on servers where your login name is not your account
+  name, where nothing would have downloaded at all.
+
+* **Chats stay in sync.** A message someone deleted came back after a restart:
+  it was removed from the screen but never from the local copy, and a deletion
+  for anything scrolled out of view was discarded outright. An edit by the other
+  person was ignored entirely, so their old wording stayed on screen and in
+  storage indefinitely. Deletions and edits now reach local storage on every
+  path the app receives messages on — and reactions, which had the same gap on
+  some of those paths, come with them.
+
+* **New topics show up, and say when they have something unread.** The app asked
+  for more topics than the server returns at once, so the request failed every
+  time and the list fell back to guessing from recent messages. A topic somebody
+  had just started could be invisible — you would be notified of a message and
+  then not find it anywhere.
+
+* **The card behind an avatar is readable.** A long email address ran past the
+  edge of the card and was cut off, and nothing on the card could be selected or
+  copied. Values now wrap instead of clipping, clicking one selects the whole of
+  it, and there is a copy button on every row. The person's name is no longer
+  printed twice.
+
+* **Saving a picture gives you the original.** "Save as…" in the image viewer
+  was writing out the preview on screen — a copy shrunk to fit your monitor —
+  and offering to save it under an extension that could not match what it was.
+
+* **The shift status reads as its own fact.** It sat in front of "Online",
+  dot-separated and in the same colour, so a fact from your rostering system, a
+  fact from the chat server and the other person's app version ran together as
+  one sentence. It is now a small outlined chip beside the name, and the status
+  line underneath is about presence and nothing else.
+
+* **Editing a message no longer strips its formatting.** The editor was handed
+  the message as it appears on screen rather than as it was written, so saving
+  quietly rewrote it without its bold, lists or links.
+
+* **A file the sender marked as not-for-download is no longer offered for
+  download.** The setting was ignored entirely.
+
 ## v0.69.7 "Saedinenie" — BETA (2026-09-01)
 
 ### Added
