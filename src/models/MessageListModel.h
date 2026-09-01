@@ -211,6 +211,15 @@ private slots:
     // event, so reactions added by OTHER clients appear (and survive cache
     // reload). Never shown as a visible message.
     void applyReactionSystemMessage(const QJsonObject &systemMessageJson);
+    // A peer's edit arrives as a system message whose `parent` carries the new
+    // body. Apply it in place and re-cache, the same shape as the reaction
+    // path -- the long-poll only ever returns messages newer than the last
+    // known id, so nothing else will ever correct a stale body.
+    void applyEditSystemMessage(const QJsonObject &systemMessageJson);
+    // One funnel for reaction / edit / delete / call-join rows, shared by every
+    // path that ingests server data. Returns true when the row was an event
+    // rather than content and must not be admitted to the list.
+    bool absorbControlMessage(const QJsonObject &obj, const Message &m);
     // Remove a single message row by id (local only — no server call). Used to
     // hide deletion tombstones live when a "message_deleted" event arrives.
     void removeMessageById(int id);

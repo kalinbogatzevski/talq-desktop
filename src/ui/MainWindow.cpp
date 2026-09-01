@@ -1252,11 +1252,21 @@ void MainWindow::buildChatPage()
         }
         m_messages->sendVoiceMessage(path);
     });
+    // Keep the recorder on whatever microphone the user has chosen, and follow
+    // them if they change it in Settings mid-session. Read at record time as
+    // well, below, so a device selected while this window was already built is
+    // never missed.
+    connect(m_deviceManager, &MediaDeviceManager::selectedChanged, this, [this]() {
+        m_recorder->setInputDevice(m_deviceManager->selectedInputDeviceId());
+    });
+    m_recorder->setInputDevice(m_deviceManager->selectedInputDeviceId());
+
     connect(m_composer, &ComposerWidget::voiceRecordToggled, this, [this]() {
         if (m_recorder->isRecording()) {
             m_recorder->stop();
             return;
         }
+        m_recorder->setInputDevice(m_deviceManager->selectedInputDeviceId());
         if (!m_messages || m_messages->conversationToken().isEmpty())
             return;
         // Named for Talk's own convention, so other clients label it the way

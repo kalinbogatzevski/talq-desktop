@@ -84,6 +84,14 @@ void MessageCache::clearConversation(const QString &token)
         Q_ARG(QString, token));
 }
 
+void MessageCache::deleteMessage(const QString &token, int messageId)
+{
+    if (token.isEmpty() || messageId <= 0)
+        return;
+    QMetaObject::invokeMethod(m_worker, "doDeleteMessage", Qt::QueuedConnection,
+        Q_ARG(QString, token), Q_ARG(int, messageId));
+}
+
 void MessageCache::clearAll()
 {
     QMetaObject::invokeMethod(m_worker, "doClearAll", Qt::QueuedConnection);
@@ -248,6 +256,15 @@ int MessageCacheWorker::doLastMessageId(const QString &token)
     if (q.exec() && q.next())
         return q.value(0).toInt();
     return 0;
+}
+
+void MessageCacheWorker::doDeleteMessage(const QString &token, int messageId)
+{
+    QSqlQuery q(m_db);
+    q.prepare("DELETE FROM messages WHERE token = :token AND message_id = :id");
+    q.bindValue(":token", token);
+    q.bindValue(":id", messageId);
+    q.exec();
 }
 
 void MessageCacheWorker::doClearConversation(const QString &token)

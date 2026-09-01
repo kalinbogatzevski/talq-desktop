@@ -30,6 +30,12 @@ public:
 
     // Begin recording to `outPath`. Emits failed() and stays stopped if the
     // microphone or the encoder is unavailable.
+    // The capture device to open, as MediaDeviceManager::selectedInputDeviceId()
+    // returns it -- the {GUID} `device.id` form wasapi2src wants, NOT a friendly
+    // name. Empty means "system default", which is only correct when the user
+    // has not chosen a microphone.
+    void setInputDevice(const QString &deviceId) { m_deviceId = deviceId; }
+
     void start(const QString &outPath);
     // Stop and finalise. Emits finished(path, durationMs) once the file is
     // complete -- NOT when the pipeline is told to stop: an mp3 whose trailer
@@ -54,6 +60,8 @@ private:
     GstElement *m_pipeline = nullptr;
     QTimer      m_timer;
     QString     m_path;
+    QString     m_deviceId;
     bool        m_recording = false;
     qint64      m_elapsedMs = 0;
+    double      m_peakDb = -1000.0;   // loudest peak seen, dBFS
 };
