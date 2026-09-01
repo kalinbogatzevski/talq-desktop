@@ -273,11 +273,31 @@ void ImageViewerDialog::saveAs()
     if (QFileInfo(defaultName).suffix().isEmpty())
         defaultName += QStringLiteral(".png");
 
+    // The filter follows the file's OWN type. It used to be a fixed
+    // "Images (*.png *.jpg *.jpeg *.bmp)", which quietly proposed saving a
+    // .gif, .webp, .heic or .svg under an extension it is not -- and since
+    // QImage::save picks its writer from the extension, agreeing to that
+    // silently transcoded the picture.
+    const QString suffix = QFileInfo(defaultName).suffix().toLower();
+    const QString filter = suffix.isEmpty()
+        ? tr("All files (*)")
+        : tr("%1 file (*.%2);;All files (*)").arg(suffix.toUpper(), suffix);
+
     QString path = QFileDialog::getSaveFileName(
-        this, tr("Save image"), defaultName,
-        tr("Images (*.png *.jpg *.jpeg *.bmp)"));
+        this, tr("Save image"), defaultName, filter);
     if (path.isEmpty()) return;
 
+    // Ask for the ORIGINAL bytes when we know which file this is. What is on
+    // screen is a server-side preview render capped to the screen's largest
+    // edge (see setImage -> fetchFileImage), so saving it wrote a downscaled
+    // re-encode of a photo the user believed they were saving intact.
+    if (m_currentFileId > 0) {
+        emit saveOriginalRequested(m_currentFileId, m_currentFileName, path);
+        return;
+    }
+
+    // No fileId: nothing to fetch, so the on-screen render is genuinely all
+    // there is. Save it rather than refusing.
     if (!m_currentImage.save(path)) {
         QMessageBox::warning(this, tr("Save failed"),
             tr("Could not save image to:\n%1").arg(path));

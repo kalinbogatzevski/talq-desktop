@@ -295,6 +295,11 @@ void AuthManager::fetchUserInfo()
         }
 
         m_userId = data["id"].toString();
+        // The canonical uid, which is what WebDAV addresses a home by. Until
+        // this landed, every DAV URL in the app was built from the LOGIN NAME
+        // -- identical on a local-account server, wrong on LDAP or email
+        // login. See ApiClient::davUser().
+        m_api->setDavUserId(m_userId);
         m_displayName = data["displayname"].toString();
         if (m_displayName.isEmpty())
             m_displayName = m_userId;

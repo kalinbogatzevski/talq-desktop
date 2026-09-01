@@ -63,6 +63,7 @@ GST_RUNTIME_DLLS=(
     libgstreamer-1.0-0 libgstbase-1.0-0 libgstapp-1.0-0
     libgstsdp-1.0-0 libgstwebrtc-1.0-0 libgstrtp-1.0-0
     libgstpbutils-1.0-0 libgstaudio-1.0-0 libgstbadaudio-1.0-0 libgsttag-1.0-0
+    libgstriff-1.0-0
     libgstvideo-1.0-0 libgstnet-1.0-0 libgstsctp-1.0-0
     libgstwebrtcnice-1.0-0
     libgstd3d11-1.0-0 libgstd3dshader-1.0-0 libgstd3d12-1.0-0
@@ -94,6 +95,12 @@ GST_PLUGINS=(
     d3d11 nvcodec qsv x264
     videoparsersbad
     rsrtp rswebrtc
+    # Attachment audio playback (voice messages and any audio/* file). playbin
+    # has to find a demuxer/parser/decoder for whatever actually arrives: wav,
+    # ogg/vorbis, ogg/opus, mp3 (id3demux + mpg123), m4a/aac (isomp4 + faad),
+    # webm/opus (matroska), flac. Omit them and a click reports a missing
+    # plugin and plays nothing -- which is exactly what the first cut did.
+    wavparse ogg vorbis flac isomp4 matroska id3demux mpg123 faad lame
 )
 for p in "${GST_PLUGINS[@]}"; do
     src="$MSYS2_DIR/lib/gstreamer-1.0/libgst${p}.dll"
@@ -134,6 +141,8 @@ for dll in liborc-0.4-0.dll zlib1.dll \
     libtasn1-6.dll libunistring-5.dll libzstd.dll \
     libbrotlicommon.dll libbrotlidec.dll libbrotlienc.dll \
     libwebrtc-audio-processing-1-3.dll \
+    libogg-0.dll libvorbis-0.dll libvorbisenc-2.dll \
+    libFLAC.dll libmpg123-0.dll libfaad-2.dll libmp3lame-0.dll \
     libb2-1.dll libbz2-1.dll libdouble-conversion.dll libfreetype-6.dll \
     libgraphite2.dll libharfbuzz-0.dll libmd4c.dll libpcre2-16-0.dll \
     libpng16-16.dll libsqlite3-0.dll; do

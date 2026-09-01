@@ -80,6 +80,10 @@ struct MessageLayout
     QRectF pollRect;
     QString fileMime;
     qint64 fileSize = 0;
+    // The sharer asked this attachment not be offered for download. Carried
+    // into the layout so the context menu can drop the entry without having
+    // to reach back into the model.
+    bool fileHideDownload = false;
 
     // ── Geometry (absolute Y in document space) ──
     qreal totalY = 0;

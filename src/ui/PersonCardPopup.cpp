@@ -21,12 +21,21 @@ constexpr int kAvatarPx  = 56;
 
 } // namespace
 
-// A status chip: an outlined pill that leads with a PAINTED DISC.
+// A status chip: an outlined pill that leads with a PAINTED ROUNDED SQUARE.
 //
-// The disc is painted, never a "•" glyph -- the glyph's size and baseline vary
-// by font and it renders muddy at small sizes (HeaderPainter.cpp:590-605). And
-// every state takes a colour: an earlier build made on-shift a neutral grey so
-// it would not shout, which left the chip unreadable as a status at all.
+// The marker is painted, never a "•" glyph -- the glyph's size and baseline
+// vary by font and it renders muddy at small sizes. And every state takes a
+// colour: an earlier build made on-shift a neutral grey so it would not shout,
+// which left the chip unreadable as a status at all.
+//
+// SQUARE, not a disc. A disc is the presence token everywhere else in the app
+// (SidebarPainter's bottom-right dot, the header status line, the sidebar's
+// own-presence row), and `online` and `success` are literally the same green in
+// every theme -- so a green disc beside a green word reads as presence no
+// matter what the word says. SidebarPainter settled this for the conversation
+// list by giving shift the bottom-LEFT corner and a rounded square; the header
+// pill and this one now use the same shape, so one mark means one thing
+// app-wide.
 //
 // The OUTLINE is why this is a widget rather than a styled label. On a card the
 // chip sits directly under the presence line, and as plain text at the same
@@ -59,10 +68,14 @@ protected:
             p.setPen(QPen(m_accent, 1.0));
             p.drawRoundedRect(pill, pill.height() / 2.0, pill.height() / 2.0);
 
-            const qreal d = qMax(5.0, height() * 0.30);
+            // Radius is a QUARTER of the side, matching SidebarPainter's 10px
+            // marker at 2.5px. A fixed radius rounds a marker this small back
+            // into a disc, which is the presence token this must not be.
+            const qreal d = qMax(6.0, height() * 0.34);
             p.setPen(Qt::NoPen);
             p.setBrush(m_accent);
-            p.drawEllipse(QPointF(kDiscZone / 2.0, height() / 2.0), d / 2.0, d / 2.0);
+            p.drawRoundedRect(QRectF(kDiscZone / 2.0 - d / 2.0, height() / 2.0 - d / 2.0,
+                                     d, d), d * 0.25, d * 0.25);
         }
         QLabel::paintEvent(e);
     }

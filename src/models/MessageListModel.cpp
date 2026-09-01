@@ -247,6 +247,8 @@ QVariant MessageListModel::data(const QModelIndex &index, int role) const
             return m.hasFile();
         case FileIdRole:
             return m.fileId;
+        case FileHideDownloadRole:
+            return m.fileHideDownload;
         case LastEditTimestampRole:
             return m.lastEditTimestamp;
         case SilentRole:
@@ -290,6 +292,7 @@ QHash<int, QByteArray> MessageListModel::roleNames() const
         {FilePreviewRole,   "filePreview"},
         {HasFileRole,       "hasFile"},
         {FileIdRole,            "fileId"},
+        {FileHideDownloadRole,  "fileHideDownload"},
         {LastEditTimestampRole, "lastEditTimestamp"},
         {SilentRole,            "silent"},
     };
@@ -2099,6 +2102,17 @@ void MessageListModel::shareUploadedFile(const QString &fileName, const QString 
     // Read server-side by Chat/SystemMessage/Listener.php:435.
     if (m_threadId > 0 && m_token == token)
         metaData["threadId"] = m_threadId;        // capability: threads
+
+    // A voice message is an ordinary audio attachment PLUS this flag; without
+    // it every client renders a file pill instead of a player. The server only
+    // honours it for audio/mpeg or audio/wav (ChatController.php:2556), which
+    // is why VoiceRecorder writes mp3 and not the opus used elsewhere.
+    //
+    // Keyed by FILENAME rather than a member flag: uploads complete out of
+    // order, so a flag set at send time can be read by whichever upload
+    // happens to finish next.
+    if (m_voiceMessageFiles.remove(fileName))
+        metaData["messageType"] = QStringLiteral("voice-message");
     if (!metaData.isEmpty())
         body["talkMetaData"] = QString::fromUtf8(QJsonDocument(metaData).toJson(QJsonDocument::Compact));
 
@@ -2287,61 +2301,239 @@ void MessageListModel::onLastCommonReadChanged(int messageId)
         emit dataChanged(index(first), index(last), {IsReadRole});
 }
 
-void MessageListModel::downloadFile(int fileId, const QString &fileName)
+// ── Downloading an attachment ────────────────────────────────────────────
+//
+// Until 0.69.7 this issued GET /index.php/f/<id>/download, which is not a
+// route Nextcloud has ever declared (apps/files/appinfo/routes.php declares
+// only /f/{fileid} -> View#showFile). It returned 404 on every request, for
+// every file, for every user, and the error branch then quietly opened
+// /f/<id> in a browser -- so "Download" reliably produced the Nextcloud web
+// UI and never a file. The silent hand-off is why it went unnoticed: it was
+// byte-identical to the "Open in Nextcloud" menu entry sitting next to it, so
+// the failure was indistinguishable from a different action succeeding.
+//
+// The route that works is the user's own WebDAV home. Talk resolves the file
+// rich-object's `path` against the REQUESTING user's folder, so a file another
+// participant uploaded is reachable at the recipient's own DAV path -- no
+// share juggling, no owner lookup.
+//
+// `fileId` stays the key the callers pass, because it is the only durable one:
+// `path` is a snapshot taken when the message was parsed and goes stale the
+// moment anyone renames or moves the file, while the id is valid forever. So
+// the path is looked up from the model here rather than threaded through the
+// UI, and when it is missing or stale the id is resolved back to a live path
+// over DAV SEARCH before giving up.
+//
+// Deliberately NOT used: the OCS direct-download API (POST
+// apps/dav/api/v1/direct). It works, but it mints an unauthenticated, reusable
+// URL valid for eight hours, and it is gated on link sharing being enabled
+// server-wide -- a security posture change and an admin-toggleable dependency,
+// in exchange for nothing this route does not already do.
+// Send a recording as a voice message. The upload is the ordinary attachment
+// path; the only difference is the messageType flag added at share time.
+void MessageListModel::sendVoiceMessage(const QString &filePath)
+{
+    if (filePath.isEmpty() || !QFileInfo::exists(filePath))
+        return;
+    m_voiceMessageFiles.insert(QFileInfo(filePath).fileName());
+    sendFileWithCaption(filePath, QString());
+}
+
+void MessageListModel::downloadFile(int fileId, const QString &fileName,
+                                    bool openWhenDone)
+{
+    startFileFetch(fileId, fileName, openWhenDone, QString());
+}
+
+void MessageListModel::saveFileAs(int fileId, const QString &fileName,
+                                  const QString &destPath)
+{
+    if (destPath.isEmpty()) return;
+    startFileFetch(fileId, fileName, /*openWhenDone*/ false, destPath);
+}
+
+void MessageListModel::startFileFetch(int fileId, const QString &fileName,
+                                      bool openWhenDone, const QString &destPath)
 {
     if (fileId <= 0 || fileName.isEmpty()) return;
 
-    // Download via Nextcloud file ID endpoint (works for any participant with access)
-    QString downloadPath = "/index.php/f/" + QString::number(fileId) + "/download";
-    auto *reply = m_api->getAbsoluteUrl(downloadPath);
-
-    connect(reply, &QNetworkReply::finished, this, [this, reply, fileName, fileId]() {
-        reply->deleteLater();
-
-        if (reply->error() != QNetworkReply::NoError) {
-            qWarning() << "File download failed:" << reply->errorString();
-            // Fallback: open in browser
-            QDesktopServices::openUrl(QUrl(m_api->serverUrl() + "/f/" + QString::number(fileId)));
-            return;
+    // The path the message was parsed with, if this message is still loaded.
+    QString davPath;
+    for (const Message &m : m_messages) {
+        if (m.fileId == fileId) {
+            davPath = m.filePath;
+            break;
         }
+    }
 
-        QByteArray data = reply->readAll();
-        if (data.isEmpty()) {
-            emit errorOccurred("Downloaded file is empty");
-            return;
-        }
+    // A `path` that carries no directory component is the server's degraded
+    // answer for a share it could not resolve into the viewer's home (see the
+    // guest / allowInaccurate branches of SystemMessage.php). It is a display
+    // name, not a location, so it must not be turned into a DAV URL.
+    if (!davPath.contains(QLatin1Char('/')))
+        davPath.clear();
 
-        // Save to Downloads folder — sanitize filename to prevent path traversal
-        QString safeFileName = QFileInfo(fileName).fileName();  // strip directory components
-        safeFileName.remove(QRegularExpression("[/\\\\]"));     // extra safety
-        if (safeFileName.isEmpty()) safeFileName = "download";
-        QString downloadsDir = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
-        QString savePath = downloadsDir + "/" + safeFileName;
-
-        // Avoid overwriting — add (1), (2) etc.
-        if (QFile::exists(savePath)) {
-            QString base = QFileInfo(safeFileName).completeBaseName();
-            QString ext = QFileInfo(safeFileName).suffix();
-            int n = 1;
-            while (QFile::exists(savePath)) {
-                savePath = downloadsDir + "/" + base + " (" + QString::number(n++) + ")" +
-                    (ext.isEmpty() ? "" : "." + ext);
+    if (davPath.isEmpty()) {
+        resolveDavPathById(fileId,
+            [this, fileId, fileName, openWhenDone, destPath](const QString &path) {
+            if (path.isEmpty()) {
+                emit errorOccurred(tr("Could not locate \"%1\" on the server.").arg(fileName));
+                return;
             }
-        }
+            fetchDavFile(path, fileId, fileName, openWhenDone, destPath);
+        });
+        return;
+    }
 
-        QFile file(savePath);
-        if (!file.open(QIODevice::WriteOnly)) {
-            emit errorOccurred("Cannot save file: " + savePath);
+    fetchDavFile(davPath, fileId, fileName, openWhenDone, destPath);
+}
+
+// Resolve a fileId back to a path in the current user's DAV home. Nextcloud
+// exposes no /f/<id> alias over DAV and its REPORT filter only understands
+// system tags, but the SEARCH backend declares oc:fileid as a searchable
+// property -- so one authenticated round trip recovers the live href.
+void MessageListModel::resolveDavPathById(int fileId,
+                                          std::function<void(const QString &)> done)
+{
+    const QString body = QStringLiteral(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+        "<d:searchrequest xmlns:d=\"DAV:\" xmlns:oc=\"http://owncloud.org/ns\">"
+        "<d:basicsearch>"
+        "<d:select><d:prop><oc:fileid/></d:prop></d:select>"
+        "<d:from><d:scope><d:href>/files/%1</d:href><d:depth>infinity</d:depth></d:scope></d:from>"
+        "<d:where><d:eq><d:prop><oc:fileid/></d:prop><d:literal>%2</d:literal></d:eq></d:where>"
+        "<d:limit><d:nresults>1</d:nresults></d:limit>"
+        "</d:basicsearch></d:searchrequest>")
+        .arg(m_api->davUser(), QString::number(fileId));
+
+    auto *reply = m_api->davRequest("SEARCH", QStringLiteral("/remote.php/dav/"),
+                                    body.toUtf8(),
+                                    {{"Content-Type", "text/xml; charset=utf-8"}});
+
+    connect(reply, &QNetworkReply::finished, this, [this, reply, done]() {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError) {
+            qWarning() << "DAV SEARCH by fileid failed:" << reply->errorString();
+            done(QString());
             return;
         }
-        file.write(data);
-        file.close();
 
-        qDebug() << "File downloaded to:" << savePath;
-
-        // Open the file
-        QDesktopServices::openUrl(QUrl::fromLocalFile(savePath));
+        // The response href is already percent-encoded and prefixed with the
+        // DAV root; hand back the portion below the user's home so the caller
+        // can treat it exactly like a `path` from a message.
+        const QString xml = QString::fromUtf8(reply->readAll());
+        const QString prefix = QStringLiteral("/remote.php/dav/files/")
+                               + m_api->davUser() + QLatin1Char('/');
+        const int at = xml.indexOf(prefix);
+        if (at < 0) {
+            done(QString());
+            return;
+        }
+        const int end = xml.indexOf(QLatin1Char('<'), at);
+        if (end < 0) {
+            done(QString());
+            return;
+        }
+        done(QUrl::fromPercentEncoding(
+            xml.mid(at + prefix.size(), end - at - prefix.size()).toUtf8()));
     });
+}
+
+void MessageListModel::fetchDavFile(const QString &davPath, int fileId,
+                                    const QString &fileName, bool openWhenDone,
+                                    const QString &destPath)
+{
+    const QString url = QStringLiteral("/remote.php/dav/files/") + m_api->davUser()
+                        + QLatin1Char('/') + ApiClient::encodeDavPath(davPath);
+    auto *reply = m_api->getAbsoluteUrl(url);
+
+    // Choose the destination BEFORE the bytes arrive and stream into it. The
+    // previous implementation buffered the whole reply with readAll(), which
+    // holds an entire video in memory to write it straight back out.
+    //
+    // An explicit destPath is a place the user just picked in a save dialog,
+    // so it is written as given -- they have already answered the overwrite
+    // question. Only the implicit Downloads destination gets de-duplicated.
+    const QString savePath = destPath.isEmpty() ? uniqueDownloadPath(fileName) : destPath;
+    if (savePath.isEmpty()) {
+        reply->abort();
+        reply->deleteLater();
+        emit errorOccurred(tr("Cannot write to the Downloads folder."));
+        return;
+    }
+
+    auto *out = new QFile(savePath);
+    if (!out->open(QIODevice::WriteOnly)) {
+        delete out;
+        reply->abort();
+        reply->deleteLater();
+        emit errorOccurred(tr("Cannot save \"%1\".").arg(QFileInfo(savePath).fileName()));
+        return;
+    }
+
+    connect(reply, &QNetworkReply::readyRead, out, [reply, out]() {
+        out->write(reply->readAll());
+    });
+
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, out, savePath, fileId, fileName, openWhenDone, destPath]() {
+        reply->deleteLater();
+        const bool ok = reply->error() == QNetworkReply::NoError;
+        if (ok)
+            out->write(reply->readAll());   // whatever readyRead did not take
+        out->close();
+        const qint64 written = out->size();
+        delete out;
+
+        if (!ok || written <= 0) {
+            // A half-written file is worse than none: it looks like a download
+            // that worked until you open it.
+            QFile::remove(savePath);
+            qWarning() << "File download failed:" << reply->errorString()
+                       << "id" << fileId;
+            // NO silent browser hand-off. That branch is what hid the broken
+            // route for the whole life of this feature, and it is exactly the
+            // "Open in Nextcloud" action the user can already choose
+            // deliberately. Say what went wrong instead.
+            emit errorOccurred(tr("Could not download \"%1\".").arg(fileName));
+            return;
+        }
+
+        qDebug() << "File downloaded to:" << savePath << written << "bytes";
+        if (!destPath.isEmpty()) {
+            // The user chose this location. Announcing it back to them would
+            // be telling them something they just typed.
+            emit fileSavedAs(savePath);
+            return;
+        }
+        emit fileDownloaded(savePath, openWhenDone);
+        if (openWhenDone)
+            QDesktopServices::openUrl(QUrl::fromLocalFile(savePath));
+    });
+}
+
+// Downloads/<name>, with " (1)", " (2)" … appended rather than overwriting.
+QString MessageListModel::uniqueDownloadPath(const QString &fileName)
+{
+    QString safe = QFileInfo(fileName).fileName();       // strip any directory
+    safe.remove(QRegularExpression("[/\\\\]"));          // extra safety
+    if (safe.isEmpty()) safe = QStringLiteral("download");
+
+    const QString dir = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
+    if (dir.isEmpty() || !QDir().mkpath(dir))
+        return QString();
+
+    QString path = dir + QLatin1Char('/') + safe;
+    if (!QFile::exists(path))
+        return path;
+
+    const QString base = QFileInfo(safe).completeBaseName();
+    const QString ext  = QFileInfo(safe).suffix();
+    for (int n = 1; QFile::exists(path); ++n) {
+        path = dir + QLatin1Char('/') + base + " (" + QString::number(n) + ")"
+               + (ext.isEmpty() ? QString() : QLatin1Char('.') + ext);
+    }
+    return path;
 }
 
 bool MessageListModel::pasteClipboardImage()

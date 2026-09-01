@@ -1,5 +1,59 @@
 # Changelog
 
+## v0.69.7 "Saedinenie" — BETA (2026-09-01)
+
+### Added
+* **Voice messages — record one, and play the ones you are sent.** There is a
+  microphone beside the paperclip: press it to record, press it again to send,
+  or bin it. A received voice message is now a player in the chat — press to
+  listen, press anywhere on the bar to jump there — instead of a document you
+  had to download and open in something else. Recordings are sent as ordinary
+  mp3, so they play anywhere, on any client.
+
+* **Any audio attachment plays in place**, not just voice messages. A shared
+  song, a recorded call, a clip — same player, no download.
+
+### Fixed
+* **Downloading a file works again.** Every download in the app was asking the
+  server for an address it has never had, so the request failed every single
+  time and the app quietly opened the file in a browser instead. That looked
+  enough like a deliberate "open in the browser" that the failure went
+  unnoticed. Files now save straight to your Downloads folder. Clicking a file
+  in the chat opens it; choosing Download from its menu saves it and tells you
+  where it went. When something does go wrong you are now told, rather than
+  being handed a browser window.
+
+* **Large files no longer load entirely into memory to be saved.** A download
+  is written to disk as it arrives.
+
+* **Saving a picture gives you the original.** "Save as…" in the image viewer
+  was writing out the preview it had on screen — a copy shrunk to fit your
+  monitor — and offering to save it under an extension that could not match
+  what it was. It now fetches the real file, untouched.
+
+* **New topics show up, and say when they have something unread.** The app was
+  asking for more topics than the server will return in one go, so the request
+  failed every time and the list quietly fell back to guessing from recent
+  messages. A topic somebody had just started could therefore be invisible —
+  you would be notified of a message and then not find it anywhere.
+
+* **A file the sender marked as not-for-download is no longer offered for
+  download.** The setting was ignored entirely.
+
+* **Downloads work on servers where your login name is not your account name.**
+  Every file address was built from what you type to log in rather than the
+  account it resolves to. The two match on a simple server and differ on a
+  directory-backed one, where nothing would have downloaded at all.
+
+### Changed
+* **The shift status has moved off the status line.** It sat in front of
+  "Online", dot-separated and in the same colour, so a fact from your rostering
+  system, a fact from the chat server and the other person's app version read
+  as one sentence — and it led with the same coloured dot that means presence
+  everywhere else in the app. It is now a small outlined chip beside the name,
+  with a square marker rather than a round one, and the status line underneath
+  is about presence and nothing else.
+
 ## v0.69.6 "Saedinenie" — BETA (2026-08-31)
 
 ### Fixed

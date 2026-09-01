@@ -11,6 +11,8 @@
 #include "PainterTheme.h"
 #include "painter/ReactionLayout.h"
 
+class AudioPlayer;
+
 /**
  * Character-level text selection state, spanning one or more messages.
  * Anchor = where the mouse was pressed. Active = where the mouse is now.
@@ -67,6 +69,10 @@ public:
 
     // ── Property accessors ──
     void setModel(MessageListModel *model);
+    // The one audio player, owned by MainWindow. The painter READS its state to
+    // draw the active clip's progress and never drives it -- transport leaves
+    // through audioClicked() and comes back as a repaint.
+    void setAudioPlayer(AudioPlayer *player);
     MessageListModel *model() const { return m_model; }
     void setSignaling(SignalingClient *signaling);
 
@@ -138,6 +144,12 @@ signals:
     void hoveredIndexChanged();
     void linkActivated(const QString &url);
     void fileClicked(int fileId, const QString &mime, const QString &fileName);
+    // An audio attachment was clicked. Separate from fileClicked because it is
+    // a TRANSPORT gesture, not an open: it carries where along the track the
+    // click landed, so the same signal serves play/pause (a hit on the button)
+    // and seek (a hit on the progress bar).
+    void audioClicked(int fileId, const QString &fileName, double fraction,
+                      bool onTrack);
     // A poll card was clicked; the window opens the voting dialog.
     // The quote block on a reply was clicked: jump to the message it quotes.
     void quotedMessageClicked(int parentMessageId);
@@ -211,6 +223,16 @@ private:
     // Poll card. Non-interactive by design - the dialog does the voting.
     void paintPollCard(QPainter *p, const MessageLayout &ml, qreal offsetY);
     void paintFileAttachment(QPainter *p, const MessageLayout &ml, qreal offsetY);
+    // Audio attachment: play/pause control + progress track + clock.
+    void paintAudioAttachment(QPainter *p, const MessageLayout &ml, const QRectF &fr);
+    static QString formatClock(qint64 ms);
+
+    // Geometry shared by the audio painter and the audio hit test, so a click
+    // always lands on the control the pixels show. kAudioButtonZone is the
+    // width reserved on the left for the round button (8 px inset + the button
+    // + 8 px gap); everything right of it up to kAudioRightPad is the track.
+    static constexpr qreal kAudioButtonZone = 44.0;
+    static constexpr qreal kAudioRightPad   = 12.0;
     // Timestamp floated over the bottom-right of an edge-to-edge image bubble,
     // on a dark scrim so it stays legible over any photo.
     void paintImageTimeOverlay(QPainter *p, const MessageLayout &ml, qreal offsetY);
@@ -240,6 +262,7 @@ private:
 
     // ── State ──
     MessageListModel *m_model = nullptr;
+    AudioPlayer *m_audio = nullptr;
     SignalingClient *m_signaling = nullptr;
     QString m_myUserId;
     int m_unreadBoundary = 0;

@@ -852,6 +852,24 @@ int main(int argc, char *argv[])
                 notifStack.notify(QObject::tr("Phone"), message, QString());
         });
     }
+    // A saved attachment says where it went. Straight to the stack, NOT via
+    // NotificationManager::notify -- that gate drops any toast raised while
+    // the main window is active (NotificationManager.cpp:198), and you are by
+    // definition looking at TalQ at the moment you ask it to save a file, so
+    // the notice would never once appear. Same reason the CTI toast above
+    // takes this route.
+    //
+    // Only when the file was NOT opened. Announcing "saved to Downloads" over
+    // a document that just opened in front of the user is noise about
+    // something they can already see.
+    QObject::connect(&messages, &MessageListModel::fileDownloaded, &notifStack,
+                     [&notifStack](const QString &savePath, bool opened) {
+        if (opened)
+            return;
+        notifStack.notify(QObject::tr("Saved to Downloads"),
+                          QFileInfo(savePath).fileName(), QString());
+    });
+
     // #78 (add-to-call) -- when a 2nd call arrives during an active call (#77),
     // its toast is clickable to ADD that caller into your call instead of
     // navigating to their conversation. Tracked here across the two handlers.

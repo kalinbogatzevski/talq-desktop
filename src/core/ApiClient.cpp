@@ -53,9 +53,33 @@ void ApiClient::setCredentials(const QString &user, const QString &password)
     m_password.fill(QChar(0));
     m_user = user;
     m_password = password;
-    if (userChanged)
+    if (userChanged) {
+        // The canonical uid belongs to the OLD account. Keeping it would point
+        // every DAV URL at the previous user's home until fetchUserInfo()
+        // happens to return, and on logout it would outlive the credential
+        // entirely. davUser() falls back to the login name until the real uid
+        // arrives.
+        m_davUserId.clear();
         resetSession();
+    }
     emit authenticatedChanged();
+}
+
+void ApiClient::setDavUserId(const QString &uid)
+{
+    m_davUserId = uid;
+}
+
+QString ApiClient::encodeDavPath(const QString &path)
+{
+    // '/' stays literal so it keeps working as the path separator; everything
+    // else outside the unreserved set is percent-encoded. Spaces, parentheses
+    // and non-ASCII names all round-trip -- verified against the live server
+    // on names containing each.
+    QString p = path;
+    while (p.startsWith(QLatin1Char('/')))
+        p.remove(0, 1);
+    return QString::fromLatin1(QUrl::toPercentEncoding(p, "/"));
 }
 
 void ApiClient::resetSession()

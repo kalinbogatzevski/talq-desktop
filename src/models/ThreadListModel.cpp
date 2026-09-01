@@ -365,7 +365,15 @@ void ThreadListModel::fetchThreads()
 
     const QString capturedToken = m_token;
     QPointer<ThreadListModel> guard(this);
-    m_api->fetchRecentThreads(m_token, 100,
+    // 50, NOT 100. ThreadController::getRecentActiveThreads declares
+    // `@param int<1, 50> $limit`, so 100 is rejected with a bare HTTP 400 --
+    // every call, every room, since this endpoint was adopted. The failure was
+    // invisible because fetchThreads() falls back to scanning recent messages,
+    // which mostly looks right; what it loses is exactly what the server list
+    // was added to fix (a thread whose root has scrolled out of the scan
+    // window). The neighbouring /threads (subscribed) endpoint DOES allow 100,
+    // which is how the two came to be confused.
+    m_api->fetchRecentThreads(m_token, 50,
         [this, guard, capturedToken](bool ok, const QJsonArray &list, int) {
             if (!guard || capturedToken != m_token) return;   // destroyed or stale
             m_serverThreads.clear();

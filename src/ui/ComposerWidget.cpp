@@ -186,6 +186,31 @@ ComposerWidget::ComposerWidget(QWidget *parent)
     m_attachBtn->setToolTip(tr("Attach file"));
     layout->addWidget(m_attachBtn);
 
+    // Voice message. Next to the paperclip because it is the same kind of
+    // act -- attaching something that is not typed -- and because the two
+    // never apply at once.
+    m_micBtn = new TalqIconButton(QStringLiteral("mic"), this);
+    m_micBtn->setFixedSize(38, 38);
+    m_micBtn->setToolTip(tr("Record a voice message"));
+    layout->addWidget(m_micBtn);
+    connect(m_micBtn, &QAbstractButton::clicked,
+            this, &ComposerWidget::voiceRecordToggled);
+
+    // Discard. Shown only while recording, and FIRST in the row so the
+    // destructive control is nowhere near the one that sends.
+    m_recCancelBtn = new TalqIconButton(QStringLiteral("trash"), this);
+    m_recCancelBtn->setFixedSize(34, 34);
+    m_recCancelBtn->setToolTip(tr("Discard recording"));
+    m_recCancelBtn->setVisible(false);
+    layout->addWidget(m_recCancelBtn);
+    connect(m_recCancelBtn, &QAbstractButton::clicked,
+            this, &ComposerWidget::voiceRecordCancelled);
+
+    // Elapsed time, standing in for the text field while recording.
+    m_recLabel = new QLabel(this);
+    m_recLabel->setVisible(false);
+    layout->addWidget(m_recLabel, 1);
+
     m_input = new ComposeTextEdit(this);
     m_input->setPlaceholderText(tr("Write a message\u2026"));
     setFocusProxy(m_input);
@@ -1274,4 +1299,50 @@ bool ComposerWidget::eventFilter(QObject *watched, QEvent *event)
         }
     }
     return QWidget::eventFilter(watched, event);
+}
+
+// While recording, the composer stops being a text field: there is nothing to
+// type and the only two useful acts are "send this" and "throw it away". The
+// text input, emoji and send controls are hidden rather than disabled, so
+// there is no greyed-out furniture to read past.
+void ComposerWidget::setRecordingState(bool recording)
+{
+    if (m_recording == recording)
+        return;
+    m_recording = recording;
+
+    m_input->setVisible(!recording);
+    m_emojiBtn->setVisible(!recording);
+    m_sendBtn->setVisible(!recording);
+    // Attach stays VISIBLE (just disabled) so the button beside it does not
+    // move. Hiding it re-packed the row and slid the record control ~120 px
+    // left the instant recording began -- so the place you pressed to start
+    // was not the place you had to press to stop, and the discard button had
+    // slid under your cursor instead. A toggle that relocates itself between
+    // its two states is a trap, not a control.
+    m_attachBtn->setEnabled(!recording);
+    m_recLabel->setVisible(recording);
+    m_recCancelBtn->setVisible(recording);
+
+    // The mic turns into the send-this control. Danger colouring is
+    // deliberately NOT used: stopping a recording is not destructive, the
+    // trash button beside it is.
+    m_micBtn->setIconId(recording ? QStringLiteral("send") : QStringLiteral("mic"));
+    m_micBtn->setToolTip(recording ? tr("Send voice message")
+                                   : tr("Record a voice message"));
+    if (recording)
+        setRecordingElapsed(0);
+    else
+        m_input->setFocus();
+}
+
+void ComposerWidget::setRecordingElapsed(qint64 ms)
+{
+    if (!m_recLabel)
+        return;
+    const qint64 total = ms / 1000;
+    // A painted disc, not a bullet glyph -- same reason as everywhere else in
+    // this app: the glyph's size and baseline move with the font.
+    m_recLabel->setText(QStringLiteral("●  %1:%2")
+        .arg(total / 60).arg(total % 60, 2, 10, QLatin1Char('0')));
 }

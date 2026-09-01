@@ -44,6 +44,27 @@ public:
     bool isAuthenticated() const { return !m_user.isEmpty() && !m_password.isEmpty(); }
     QString user() const { return m_user; }
 
+    // ── The canonical uid, for building WebDAV paths ──────────────────────
+    // `m_user` is the LOGIN NAME -- whatever the person typed, straight out of
+    // Login Flow v2's `loginName`. WebDAV addresses a home by the canonical
+    // uid instead (`/remote.php/dav/files/<uid>/...`), and the two are only
+    // the same string on a plain local-account server. On any LDAP or
+    // email-login deployment they differ, and every DAV URL built from the
+    // login name 404s for every user and every file.
+    //
+    // AuthManager already learns the real uid from OCS `cloud/user` (`id`) on
+    // both the fresh-login and session-restore paths; this is where it lands.
+    // davUser() falls back to the login name so a DAV call made before
+    // fetchUserInfo() returns behaves exactly as it did before, rather than
+    // building a URL with an empty user segment.
+    void setDavUserId(const QString &uid);
+    QString davUser() const { return m_davUserId.isEmpty() ? m_user : m_davUserId; }
+
+    // Percent-encodes a DAV-relative path for use in a URL, leaving '/'
+    // intact as the separator. The one encoding rule for every DAV URL this
+    // client builds -- see listNextcloudFolder, which established it.
+    static QString encodeDavPath(const QString &path);
+
     // ── Server reachability ───────────────────────────────────────────────
     // Whether the Nextcloud server is answering REST requests at all. This is
     // the authoritative "is the server connection working" signal: it is
@@ -477,6 +498,7 @@ private:
     QNetworkAccessManager m_nam;
     QString m_serverUrl;
     QString m_user;
+    QString m_davUserId;   // canonical uid from OCS cloud/user; see davUser()
     QString m_password;
     QList<QNetworkReply*> m_pendingReplies;
 

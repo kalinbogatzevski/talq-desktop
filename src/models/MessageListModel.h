@@ -57,6 +57,7 @@ public:
         FilePreviewRole,
         HasFileRole,
         FileIdRole,
+        FileHideDownloadRole,   // sharer asked that this not be offered for download
         LastEditTimestampRole,
         SilentRole,             // sender suppressed notifications for this message
         ReferenceIdRole,        // #80 -- client referenceId (machine marker, e.g. "talq/busy")
@@ -126,7 +127,22 @@ public:
     Q_INVOKABLE void sendFileWithCaption(const QString &filePath, const QString &caption);
     Q_INVOKABLE void promptFileSend(const QString &filePath);
     Q_INVOKABLE void cleanupTempFile(const QString &filePath);
-    Q_INVOKABLE void downloadFile(int fileId, const QString &fileName);
+    // openWhenDone splits the two gestures that reach this. Clicking the file
+    // bubble means "show me this", so it opens; the context-menu Download
+    // means "put a copy on my disk", so it saves and says where. Same bytes,
+    // different intent.
+    Q_INVOKABLE void downloadFile(int fileId, const QString &fileName,
+                                  bool openWhenDone = true);
+    // Upload and share a recording as a VOICE MESSAGE rather than a plain
+    // audio attachment. See shareUploadedFile for what the flag buys.
+    Q_INVOKABLE void sendVoiceMessage(const QString &filePath);
+    // Write the ORIGINAL bytes of an attachment to a caller-chosen path. The
+    // image viewer's "Save as..." used to re-encode its on-screen QImage --
+    // which is a server-side preview render capped to the screen, so a 4000px
+    // photo saved as a screen-sized JPEG and a .gif/.webp/.heic saved through
+    // a png/jpg/bmp filter. Same fetch as downloadFile, different destination.
+    Q_INVOKABLE void saveFileAs(int fileId, const QString &fileName,
+                                const QString &destPath);
 
     // Upload progress (0.0 to 1.0, -1 = no upload)
     Q_PROPERTY(double uploadProgress READ uploadProgress NOTIFY uploadProgressChanged)
@@ -171,6 +187,14 @@ signals:
     void uploadProgressChanged();
     void hasMoreHistoryChanged();
     void pasteReady(const QString &filePath, int width, int height);
+    // An attachment finished writing to disk. `opened` says whether the file
+    // was also handed to the OS, so a listener can tell the user where it went
+    // WITHOUT announcing a file that is already open in front of them.
+    void fileDownloaded(const QString &savePath, bool opened);
+    // A saveFileAs() destination finished writing. Distinct from
+    // fileDownloaded so the "Saved to Downloads" toast never fires for a file
+    // the user explicitly placed somewhere else.
+    void fileSavedAs(const QString &savePath);
     void unreadBoundaryChanged();
     // Emitted after POST /chat/{token}/schedule succeeds — UI uses this to
     // confirm the schedule (toast / banner) without polling the queue.
@@ -200,10 +224,24 @@ private:
     void startPoller();
     void trimOldMessages();
     void refreshLatest();
+    // Download helpers. resolveDavPathById recovers a live DAV path for a
+    // fileId when the message's cached `path` is missing or degraded;
+    // fetchDavFile streams the bytes to disk; uniqueDownloadPath picks the
+    // destination without ever overwriting.
+    void resolveDavPathById(int fileId, std::function<void(const QString &)> done);
+    void fetchDavFile(const QString &davPath, int fileId, const QString &fileName,
+                      bool openWhenDone, const QString &destPath = QString());
+    // Shared entry: resolve a path for `fileId` (from the loaded message, else
+    // over DAV SEARCH) and hand it to fetchDavFile.
+    void startFileFetch(int fileId, const QString &fileName, bool openWhenDone,
+                        const QString &destPath);
+    static QString uniqueDownloadPath(const QString &fileName);
     // File-upload helpers (used by sendFileWithCaption). shareUploadedFile posts
     // the Talk share once the bytes are on the server (shared by the single-PUT
     // and chunked paths); uploadFileChunked streams a large file via Nextcloud
     // chunked-upload v2 so we never readAll() the whole file into memory.
+    // Filenames queued by sendVoiceMessage, consumed by shareUploadedFile.
+    QSet<QString> m_voiceMessageFiles;
     void shareUploadedFile(const QString &fileName, const QString &token,
                            const QString &caption);
     void uploadFileChunked(const QString &readPath, const QString &fileName,

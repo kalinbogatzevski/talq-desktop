@@ -41,6 +41,8 @@ class StatusPopover;
 class StatusDot;
 class SelectionBarWidget;
 class ImageViewerDialog;
+class AudioPlayer;
+class VoiceRecorder;
 class QScrollArea;
 class QGridLayout;
 class UpdateChecker;
@@ -441,4 +443,13 @@ private:
     CallWindow *m_callWindow = nullptr;
     SettingsDialog *m_settingsDialog = nullptr;
     QPointer<ImageViewerDialog> m_imageViewer;
+    // Inline audio playback. The player is single-slot by design (see
+    // AudioPlayer.h); m_audioCache maps a fileId to the copy already fetched
+    // into the cache dir, so replaying a voice message costs no network.
+    AudioPlayer *m_audio = nullptr;
+    VoiceRecorder *m_recorder = nullptr;
+    QHash<int, QString> m_audioCache;
+    QSet<int> m_audioFetching;
+    void playAudioAttachment(int fileId, const QString &fileName,
+                             double fraction, bool onTrack);
 };

@@ -88,6 +88,14 @@ public:
     QString filePreviewUrl;  // empty if no preview
     int fileId = 0;
     bool hasFile() const { return fileId > 0; }
+    // The sharer asked that this attachment not be offered for download
+    // (Chat/Parser/SystemMessage.php:1067, from the share's hideDownload
+    // flag). It is a statement of intent, not an access control -- the server
+    // still serves the bytes to anyone who can see the share, so honouring it
+    // is a courtesy the client owes and not a boundary it enforces. TalQ
+    // ignored it entirely until 0.69.7, which only looked correct while
+    // download itself was broken.
+    bool fileHideDownload = false;
 
     // Original server JSON — stored for lossless caching
     QJsonObject rawJson;
