@@ -71,6 +71,12 @@ CtiService::CtiService(QObject *parent)
             this, &CtiService::onDisconnectedFromDaemon);
     connect(m_client, &CtiClient::authenticationFailed,
             this, &CtiService::onAuthenticationFailed);
+    // Every health transition becomes a statusChanged(), including the ones
+    // that have no other signal: a first connection that never lands used to
+    // emit nothing at all, so a blocked port was indistinguishable from a
+    // feature nobody had set up.
+    connect(m_client, &CtiClient::healthChanged, this,
+            [this](CtiClient::Health) { emit statusChanged(); });
     connect(m_client, &CtiClient::ready, this, [this](const QString &ext, const QString &) {
         TLOG_NET("CTI ready on extension" << ext);
         emit statusChanged();
@@ -107,6 +113,26 @@ void CtiService::clearToken()           { QSettings().remove(kKeyToken); }
 
 bool CtiService::isEnabled() const   { return enabledSetting(); }
 bool CtiService::isConnected() const { return m_client && m_client->isConnected(); }
+
+CtiClient::Health CtiService::health() const
+{
+    // A feature the user switched off, or that this install never configured,
+    // is Off rather than "broken" -- warning someone about a subsystem they
+    // deliberately do not use is just a scold they cannot act on.
+    if (!enabledSetting() || serverUrl().isEmpty() || token().isEmpty())
+        return CtiClient::Health::Off;
+    return m_client ? m_client->health() : CtiClient::Health::Off;
+}
+
+qint64 CtiService::unhealthyForMs() const
+{
+    return m_client ? m_client->unhealthyForMs() : 0;
+}
+
+bool CtiService::everConnected() const
+{
+    return m_client && m_client->everConnected();
+}
 
 bool CtiService::canDial() const
 {
@@ -356,8 +382,22 @@ void CtiService::onDisconnectedFromDaemon()
 void CtiService::onAuthenticationFailed(const QString &reason)
 {
     TWARN("CTI disabled: authentication failed —" << reason);
-    emit pairingMessage(tr("This device is no longer authorised for call pop-ups. "
-                           "Pair it again in Settings."), true);
+
+    // These two reasons need OPPOSITE advice, and telling them apart matters
+    // more than it looks. "no-extension" means the pairing worked and the
+    // account simply has no extension linked -- re-pairing SUCCEEDS every time
+    // and changes nothing, so sending the user round that loop wastes their
+    // afternoon and points them at their credential instead of at the one
+    // person who can fix it. The correct wording already existed at the pairing
+    // step; it just never reached the user on any later launch.
+    if (reason == QLatin1String("no-extension")) {
+        emit pairingMessage(tr("Paired, but no phone extension is linked to your "
+                               "account. Ask an administrator to set one, or "
+                               "calls will not appear."), true);
+    } else {
+        emit pairingMessage(tr("This device is no longer authorised for call pop-ups. "
+                               "Pair it again in Settings."), true);
+    }
     emit statusChanged();
 }
 

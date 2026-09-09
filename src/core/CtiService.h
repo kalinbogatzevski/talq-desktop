@@ -7,6 +7,7 @@
 // build has the feature and any organisation can point it at their own
 // implementation of the protocol.
 
+#include "core/CtiClient.h"
 #include "core/CtiEventLogic.h"
 // For CardData, which both the caller card and the colleague card carry. It is
 // a plain struct; this does not pull a widget into core's headers beyond the
@@ -22,7 +23,6 @@
 #include "painter/PainterTheme.h"
 
 class CallerCardPopup;
-class CtiClient;
 class QNetworkAccessManager;
 
 class CtiService : public QObject
@@ -40,6 +40,14 @@ public:
 
     bool isEnabled() const;
     bool isConnected() const;
+
+    // Live health, for a UI that has to tell "reconnecting" apart from "this
+    // has been unreachable all morning and nobody has been told". Off when the
+    // feature is switched off or was never configured, so an install that does
+    // not use screen-pop never produces a warning about it.
+    CtiClient::Health health() const;
+    qint64 unhealthyForMs() const;
+    bool everConnected() const;
 
     // Whether this site has click-to-dial configured. False unless the daemon
     // said so on connect, so the UI can omit the control entirely rather than

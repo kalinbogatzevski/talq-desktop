@@ -8,6 +8,7 @@
 // also why there is no TALQ_BRAND ifdef anywhere near it: the server URL is a
 // setting, so the open-source build has the feature too.
 
+#include <QElapsedTimer>
 #include <QObject>
 #include <QString>
 #include <QTimer>
@@ -22,6 +23,37 @@ class CtiClient : public QObject
 public:
     explicit CtiClient(QObject *parent = nullptr);
     ~CtiClient() override;
+
+    // Why this exists: `m_ready == false` used to be the only thing a consumer
+    // could see, and it covered six unrelated realities -- never started, first
+    // connect in flight, retrying against a blocked port, latched off for a bad
+    // credential, and so on. A site whose firewall blocked this port therefore
+    // looked EXACTLY like a site that had never configured the feature, and the
+    // UI could say nothing useful about either. Distinguishing them is the whole
+    // point: "reconnecting" is reassuring and true for a blip, and a lie for a
+    // policy block that will never come back on its own.
+    enum class Health {
+        Off,                  // stopped: disabled, unconfigured, or no token
+        Connecting,           // trying, and has NEVER succeeded this run
+        Reconnecting,         // was connected, dropped, retrying with backoff
+        Connected,            // handshake done; events are flowing
+        RefusedNoExtension,   // terminal: paired, but no extension is linked
+        RefusedUnauthorised,  // terminal: the token is bad, revoked or expired
+    };
+    Q_ENUM(Health)
+
+    Health health() const { return m_health; }
+
+    // How long we have been in a non-Connected, non-Off state, in ms; 0 when
+    // healthy or deliberately off. The UI uses this to stay quiet through a
+    // blip and speak up once a fault has clearly outlived one.
+    qint64 unhealthyForMs() const
+    { return m_unhealthySince.isValid() ? m_unhealthySince.elapsed() : 0; }
+
+    // Distinguishes "never worked on this machine" from "worked, then broke".
+    // A first-ever connection that never lands points at configuration or a
+    // network policy; a drop after success points at an outage.
+    bool everConnected() const { return m_everConnected; }
 
     // Both are stored by the caller (QSettings); this class just uses them.
     void start(const QUrl &url, const QString &token);
@@ -55,6 +87,11 @@ signals:
     // so the UI says so once instead of looping forever.
     void authenticationFailed(const QString &reason);
 
+    // Every transition of health(), including the ones that produce no other
+    // signal at all -- a first connect that never lands emitted NOTHING before
+    // this existed, which is precisely why a blocked port was invisible.
+    void healthChanged(CtiClient::Health health);
+
     // Outcome of a dial(). `detail` is a short machine reason -- ringing,
     // bad-number, too-soon, not-enabled, pbx-unreachable -- so the UI can say
     // something specific instead of "failed".
@@ -67,6 +104,7 @@ private slots:
 
 private:
     void scheduleReconnect();
+    void setHealth(Health h);
 
     QWebSocket *m_socket = nullptr;
     QUrl m_url;
@@ -81,6 +119,10 @@ private:
     bool m_ready = false;          // handshake completed
     bool m_authRejected = false;   // stop retrying; the credential is the problem
     int m_backoffMs = kMinBackoffMs;
+
+    Health m_health = Health::Off;
+    bool m_everConnected = false;
+    QElapsedTimer m_unhealthySince;   // invalid while Connected or Off
 
     // A ringing phone is a several-second window, so a slow first reconnect
     // would silently miss calls; but a tight loop against a down daemon is
