@@ -65,6 +65,7 @@
 #include <QActionGroup>
 #include <QInputDialog>
 #include <QJsonArray>
+#include "core/ConnectionHealthPolicy.h"
 #include "core/CtiService.h"
 #include "core/ShiftStatusService.h"
 #include "ui/PersonCardPopup.h"
@@ -1054,6 +1055,8 @@ void MainWindow::buildChatPage()
     // trips a debug-build assert and aborts) -- connect straight to the member.
     connect(m_signaling, &SignalingClient::signalingRttChanged, this,
             &MainWindow::refreshWelcomeStatus, Qt::UniqueConnection);
+    connect(m_signaling, &SignalingClient::connectedChanged, this,
+            &MainWindow::refreshConnectionHealth, Qt::UniqueConnection);
     buildWelcomeContent();
 
     // Give MessageListModel access to ConversationListModel so it can snapshot
@@ -1096,6 +1099,49 @@ void MainWindow::buildChatPage()
     m_offlineLabel->setText(tr("Connecting…"));
     offLay->addWidget(m_offlineLabel, 1);
     chatLayout->insertWidget(0, m_offlineBanner);
+
+    // ── Connection-health warning strip (restyleChrome) ────────────────────
+    // Lives in the chat column, not on the Home board, because the Home board
+    // is hidden the instant a conversation is opened -- which is where a user
+    // spends the entire day, and is exactly how a dead screen-pop went
+    // unnoticed for weeks. Amber, never red: this is "something is broken and
+    // you should tell someone", not "stop what you are doing".
+    m_healthBanner = new QWidget(chatCol);
+    m_healthBanner->setObjectName("healthRoot");
+    m_healthBanner->hide();
+    auto *hlthLay = new QHBoxLayout(m_healthBanner);
+    hlthLay->setContentsMargins(12, 8, 8, 8);
+    hlthLay->setSpacing(8);
+    m_healthLabel = new QLabel(m_healthBanner);
+    m_healthLabel->setObjectName("healthLabel");
+    m_healthLabel->setWordWrap(true);
+    hlthLay->addWidget(m_healthLabel, 1);
+    m_healthAction = new QPushButton(tr("Open settings"), m_healthBanner);
+    m_healthAction->setObjectName("healthAction");
+    m_healthAction->setCursor(Qt::PointingHandCursor);
+    connect(m_healthAction, &QPushButton::clicked, this, &MainWindow::openSettingsToPhone);
+    hlthLay->addWidget(m_healthAction, 0);
+    m_healthClose = new QPushButton(QStringLiteral("✕"), m_healthBanner);
+    m_healthClose->setObjectName("healthClose");
+    m_healthClose->setCursor(Qt::PointingHandCursor);
+    m_healthClose->setFixedWidth(24);
+    m_healthClose->setToolTip(tr("Hide until this is fixed or TalQ restarts"));
+    connect(m_healthClose, &QPushButton::clicked, this, [this]() {
+        // Dismiss THIS fault, not warnings in general: if the fault changes
+        // (or comes back after being fixed) the user is told again. A close
+        // button that silences the next, different problem would recreate the
+        // silence this strip exists to end.
+        m_healthDismissedKey = m_healthKey;
+        if (m_healthBanner) m_healthBanner->hide();
+    });
+    hlthLay->addWidget(m_healthClose, 0);
+    chatLayout->insertWidget(0, m_healthBanner);
+
+    // Crossing the age threshold emits no signal of its own, so poll. 20s is
+    // far cheaper than the fault it catches and never races the 2-minute gate.
+    m_healthPollTimer.setInterval(20000);
+    connect(&m_healthPollTimer, &QTimer::timeout, this, &MainWindow::refreshConnectionHealth);
+    m_healthPollTimer.start();
 
     // Animate the trailing dots (Telegram cycles "Connecting" with 1–3 dots) so
     // the strip reads as actively working, not stuck. Runs only while offline.
@@ -2058,6 +2104,16 @@ void MainWindow::buildChatPage()
     // device, so this costs an unconfigured install nothing but the object.
     m_cti = new CtiService(this);
     m_cti->setTheme(m_themeId);
+    // CtiService::statusChanged had ZERO subscribers in the entire tree: it was
+    // emitted and heard by nobody, so even the Home PHONE tile could sit on a
+    // stale answer indefinitely and a never-connecting client reported nothing
+    // anywhere. Both surfaces are wired here, where m_cti finally exists.
+    // (UniqueConnection needs a pointer-to-member slot -- a lambda trips a
+    // debug-build assert.)
+    connect(m_cti, &CtiService::statusChanged, this,
+            &MainWindow::refreshWelcomeStatus, Qt::UniqueConnection);
+    connect(m_cti, &CtiService::statusChanged, this,
+            &MainWindow::refreshConnectionHealth, Qt::UniqueConnection);
     m_cti->start();
     // Same settings, same credential -- start it where CTI starts so a fresh
     // pairing takes effect without an app restart.
@@ -2993,6 +3049,95 @@ void MainWindow::onServerReachabilityChanged(bool online)
     }
 
     refreshWelcomeStatus();   // update the Home "server" tile + status pill
+    refreshConnectionHealth();
+}
+
+// Which fault, if any, the chat-column health strip is currently reporting.
+//
+// The ordering is deliberate: a TERMINAL refusal outranks an unreachable
+// service, because it is a verdict the server has already given us and no
+// amount of waiting changes it. Everything else has to outlive a threshold
+// first -- the app must not shout about a two-second blip, and the existing
+// offline strip already covers ordinary transience in a calmer voice.
+void MainWindow::refreshConnectionHealth()
+{
+    if (!m_healthBanner || !m_healthLabel)
+        return;
+
+    // connectedChanged gives the edge; this clock gives the AGE, which is what
+    // separates "reconnecting" from "this has been broken since breakfast".
+    const bool sigUp = m_signaling && m_signaling->isConnected();
+    if (sigUp)
+        m_sigDownSince.invalidate();
+    else if (!m_sigDownSince.isValid())
+        m_sigDownSince.start();
+
+    const CtiClient::Health h = m_cti ? m_cti->health() : CtiClient::Health::Off;
+
+    talq::ConnectionHealthInputs in;
+    in.ctiInUse                 = (h != CtiClient::Health::Off);
+    in.ctiConnected             = (h == CtiClient::Health::Connected);
+    in.ctiEverConnected         = m_cti && m_cti->everConnected();
+    in.ctiRefusedNoExtension    = (h == CtiClient::Health::RefusedNoExtension);
+    in.ctiRefusedUnauthorised   = (h == CtiClient::Health::RefusedUnauthorised);
+    in.ctiUnhealthyMs           = m_cti ? m_cti->unhealthyForMs() : 0;
+    in.signalingUp              = sigUp;
+    in.signalingDownMs          = m_sigDownSince.isValid() ? m_sigDownSince.elapsed() : 0;
+
+    const talq::HealthFault fault = talq::decideHealthFault(in);
+    const QString key = QString::fromLatin1(talq::healthFaultKey(fault));
+    const bool showAction = talq::healthFaultHasAction(fault);
+
+    QString text;
+    switch (fault) {
+    case talq::HealthFault::None:
+        break;
+    case talq::HealthFault::CtiNoExtension:
+        text = tr("No phone extension is linked to your account, so you will not see "
+                  "who is calling. Ask an administrator to link one — pairing this "
+                  "computer again will not fix it.");
+        break;
+    case talq::HealthFault::CtiUnauthorised:
+        text = tr("This computer is no longer authorised for call pop-ups, so you will "
+                  "not see who is calling. Pair it again in Settings.");
+        break;
+    case talq::HealthFault::SignalingDown:
+        text = tr("TalQ cannot reach the call server, so calls may not connect. If this "
+                  "does not clear on its own, a firewall or group policy may be blocking "
+                  "it — contact your IT admin.");
+        break;
+    case talq::HealthFault::CtiNeverConnected:
+        text = tr("TalQ has not been able to reach the call service, so you will not see "
+                  "who is calling. This usually means a firewall or group policy is "
+                  "blocking it — contact your IT admin.");
+        break;
+    case talq::HealthFault::CtiLost:
+        text = tr("TalQ has lost the call service, so you will not see who is calling. "
+                  "It is still trying to reconnect.");
+        break;
+    }
+
+    if (key.isEmpty()) {
+        // Healthy again: forget the dismissal too, so the NEXT fault — or this
+        // one returning — is reported rather than silently inheriting a close
+        // the user clicked hours ago about something else.
+        m_healthKey.clear();
+        m_healthDismissedKey.clear();
+        m_healthBanner->hide();
+        return;
+    }
+
+    m_healthKey = key;
+    if (key == m_healthDismissedKey) {
+        m_healthBanner->hide();
+        return;
+    }
+
+    m_healthLabel->setText(text);
+    if (m_healthAction)
+        m_healthAction->setVisible(showAction);
+    m_healthBanner->show();
+    m_healthBanner->raise();   // keep above sibling painter widgets
 }
 
 // Builds (or rebuilds, on theme change) the Mission Control content inside
@@ -3520,6 +3665,31 @@ void MainWindow::restyleChrome()
             "QLabel#offlineLabel{color:%3;font-size:12px;font-weight:500;"
             "letter-spacing:0.2px;background:transparent;}")
             .arg(hx(t.bgSecondary), hx(t.divider), hx(t.textSecondary)));
+    }
+
+    if (m_healthBanner) {
+        // Amber, not danger. Every degraded-subsystem cue in this app is amber
+        // (camera/mic banners, the quality chip, the Home LEDs) and red is
+        // reserved for things the user must stop and act on. A 4px amber left
+        // stripe over a neutral surface is the same shape as the camera and mic
+        // banners, so it reads as one family rather than a new alarm.
+        // Text stays textPrimary ON bgSecondary — a pair the theme conformance
+        // suite already scores — rather than amber-on-surface, which is a
+        // contrast risk in the lighter themes.
+        m_healthBanner->setStyleSheet(QString(
+            "QWidget#healthRoot{background:%1;border-bottom:1px solid %2;"
+            "border-left:4px solid %3;}"
+            "QLabel#healthLabel{color:%4;font-size:12px;font-weight:500;"
+            "background:transparent;}"
+            "QPushButton#healthAction{color:%5;border:1px solid %2;"
+            "border-radius:7px;padding:5px 12px;font-weight:600;"
+            "background:transparent;}"
+            "QPushButton#healthAction:hover{color:%4;border-color:%3;}"
+            "QPushButton#healthClose{color:%5;border:none;background:transparent;"
+            "font-size:13px;}"
+            "QPushButton#healthClose:hover{color:%4;}")
+            .arg(hx(t.bgSecondary), hx(t.divider), hx(t.amber),
+                 hx(t.textPrimary), hx(t.textSecondary)));
     }
 
     if (m_updateBanner) {

@@ -2228,11 +2228,72 @@ void SettingsDialog::setCtiService(CtiService *cti)
     connect(m_cti, &CtiService::pairingSucceeded, this,
             [this](const QString &displayName, const QString &extension) {
         if (m_ctiEnabled) m_ctiEnabled->setChecked(true);
+        if (m_ctiUnpairBtn) m_ctiUnpairBtn->setVisible(true);
         if (!m_ctiStatus) return;
         m_ctiStatus->setText(extension.isEmpty()
             ? tr("Paired as %1.").arg(displayName)
             : tr("Paired as %1 on extension %2.").arg(displayName, extension));
     });
+
+    // Now that the service exists, the status line can finally tell the truth.
+    connect(m_cti, &CtiService::statusChanged, this,
+            &SettingsDialog::refreshCtiStatusLabel);
+    refreshCtiStatusLabel();
+}
+
+void SettingsDialog::refreshCtiStatusLabel()
+{
+    if (!m_ctiStatus)
+        return;
+
+    if (m_ctiUnpairBtn)
+        m_ctiUnpairBtn->setVisible(!CtiService::token().isEmpty());
+
+    // Named states, not one "not connected right now" for six different
+    // realities. A user who is told which of these it is can act; a user told
+    // only that it is "not connected" re-pairs at random, which is exactly the
+    // loop that wasted an afternoon.
+    QString text;
+    if (CtiService::token().isEmpty()) {
+        text = tr("This device is not paired yet.");
+    } else if (CtiService::serverUrl().isEmpty()) {
+        text = tr("Paired, but no call service address is set.");
+    } else if (!m_cti) {
+        // Called from buildPhoneTab(), before the service is handed over.
+        // Claim nothing we cannot know.
+        text = tr("Paired, but not connected right now.");
+    } else {
+        switch (m_cti->health()) {
+        case CtiClient::Health::Connected:
+            text = m_cti->extension().isEmpty()
+                       ? tr("Paired and connected.")
+                       : tr("Paired and connected on extension %1.").arg(m_cti->extension());
+            break;
+        case CtiClient::Health::RefusedNoExtension:
+            // The one case where re-pairing provably cannot help, so say so
+            // rather than leaving the Pair button looking like the answer.
+            text = tr("Paired, but no phone extension is linked to your account. "
+                      "Ask an administrator to link one — pairing again will not "
+                      "fix it.");
+            break;
+        case CtiClient::Health::RefusedUnauthorised:
+            text = tr("This device is no longer authorised. Pair it again.");
+            break;
+        case CtiClient::Health::Connecting:
+            text = tr("Paired. Trying to reach the call service…");
+            break;
+        case CtiClient::Health::Reconnecting:
+            text = tr("Paired, but the connection dropped. Reconnecting…");
+            break;
+        case CtiClient::Health::Off:
+            text = tr("Paired, but call pop-ups are switched off.");
+            break;
+        }
+    }
+    m_ctiStatus->setText(text);
+
+    const PainterTheme th = activeTheme();
+    m_ctiStatus->setStyleSheet(QStringLiteral("color: %1;").arg(th.textSecondary.name()));
 }
 
 QWidget *SettingsDialog::buildPhoneTab()
@@ -2306,19 +2367,38 @@ QWidget *SettingsDialog::buildPhoneTab()
            "to approve. Your password is never typed here."),
         m_ctiPairBtn));
 
+    // Unpairing had no control at all: CtiService::clearToken() existed and
+    // nothing ever called it, so a device could be paired but never un-paired
+    // without editing the registry. It matters for a shared or reassigned
+    // desk, where the token belongs to whoever approved it.
+    m_ctiUnpairBtn = new QPushButton(tr("Unpair this device"), w);
+    m_ctiUnpairBtn->setVisible(!CtiService::token().isEmpty());
+    connect(m_ctiUnpairBtn, &QPushButton::clicked, this, [this]() {
+        if (QMessageBox::question(
+                this, tr("Unpair this device"),
+                tr("Call pop-ups will stop until you pair again. Continue?"))
+            != QMessageBox::Yes)
+            return;
+        CtiService::clearToken();
+        if (m_cti) m_cti->stop();
+        if (m_ctiUnpairBtn) m_ctiUnpairBtn->setVisible(false);
+        refreshCtiStatusLabel();
+    });
+    lay->addWidget(makeSettingRow(
+        tr("Forget this pairing"),
+        // Says what re-pairing can and cannot change, because the natural
+        // assumption -- that pairing chooses the extension -- is wrong, and
+        // acting on it wastes real time. The extension follows the ACCOUNT.
+        tr("Removes the key stored on this computer. Your extension comes from "
+           "your account, not from this device, so pair again as a different "
+           "person to watch a different phone."),
+        m_ctiUnpairBtn));
+
     m_ctiStatus = new QLabel(w);
     m_ctiStatus->setWordWrap(true);
-    // Derived from LIVE state, not just whether a token exists on disk: a
-    // revoked device still has its token, and reporting "paired" while the
-    // client is latched off is worse than saying nothing.
-    if (CtiService::token().isEmpty())
-        m_ctiStatus->setText(tr("This device is not paired yet."));
-    else if (m_cti && m_cti->isConnected())
-        m_ctiStatus->setText(tr("Paired and connected."));
-    else if (CtiService::serverUrl().isEmpty())
-        m_ctiStatus->setText(tr("Paired, but no call service address is set."));
-    else
-        m_ctiStatus->setText(tr("Paired, but not connected right now."));
+    // Filled in by refreshCtiStatusLabel(), which is also called again from
+    // setCtiService() once the live service exists -- see the note there.
+    refreshCtiStatusLabel();
     lay->addWidget(m_ctiStatus);
 
     lay->addStretch(1);

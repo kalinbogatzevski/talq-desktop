@@ -107,6 +107,12 @@ private:
     QWidget *buildAccountTab();
     QWidget *buildUpdatesTab();
     QWidget *buildPhoneTab();
+    // Recomputes the Phone tab's status line from LIVE state. buildPhoneTab()
+    // runs in the constructor, before setCtiService() hands over the service,
+    // so anything it decided about connectedness was answered with a null
+    // pointer -- "Paired and connected." was literally unreachable. This is
+    // called once the service exists and on every status change after that.
+    void refreshCtiStatusLabel();
     void populateDeviceCombos();
     void populateCameraQualityCombo();  // fills from selected camera's caps
     void loadNotificationSettings();
@@ -193,6 +199,7 @@ private:
     QLineEdit  *m_ctiServerUrl = nullptr;
     QLineEdit  *m_ctiErpUrl    = nullptr;
     QPushButton *m_ctiPairBtn  = nullptr;
+    QPushButton *m_ctiUnpairBtn = nullptr;
     QLabel     *m_ctiStatus    = nullptr;
 
     QCheckBox *m_updatesAutoCheck = nullptr;

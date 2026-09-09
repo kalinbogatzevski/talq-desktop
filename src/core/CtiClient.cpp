@@ -51,6 +51,25 @@ CtiClient::CtiClient(QObject *parent)
 
 CtiClient::~CtiClient() = default;
 
+// The single place health moves. Emitting only on a real change keeps the UI
+// from redrawing on every backoff tick, and the elapsed clock starts on the
+// EDGE into ill health rather than being restarted by each retry -- otherwise
+// "unhealthy for 40 minutes" would reset to zero every time the reconnect
+// timer fired, and no threshold could ever be reached.
+void CtiClient::setHealth(Health h)
+{
+    if (m_health == h)
+        return;
+    m_health = h;
+
+    if (h == Health::Connected || h == Health::Off)
+        m_unhealthySince.invalidate();
+    else if (!m_unhealthySince.isValid())
+        m_unhealthySince.start();
+
+    emit healthChanged(h);
+}
+
 void CtiClient::start(const QUrl &url, const QString &token)
 {
     if (url.isEmpty() || token.isEmpty()) {
@@ -66,6 +85,8 @@ void CtiClient::start(const QUrl &url, const QString &token)
     m_running = true;
     m_backoffMs = kMinBackoffMs;
 
+    setHealth(m_everConnected ? Health::Reconnecting : Health::Connecting);
+
     m_socket->close();
     m_socket->open(m_url);
 }
@@ -78,6 +99,7 @@ void CtiClient::stop()
     m_keepAliveTimer.stop();
     m_idleTimer.stop();
     m_socket->close();
+    setHealth(Health::Off);
 }
 
 void CtiClient::onConnected()
@@ -102,8 +124,12 @@ void CtiClient::onDisconnected()
     if (wasReady)
         emit disconnected();
 
-    if (m_running && !m_authRejected)
+    if (m_running && !m_authRejected) {
+        // A terminal refusal has already set its own health and must not be
+        // overwritten here by the socket close that follows it.
+        setHealth(m_everConnected ? Health::Reconnecting : Health::Connecting);
         scheduleReconnect();
+    }
 }
 
 void CtiClient::scheduleReconnect()
@@ -144,6 +170,8 @@ void CtiClient::onTextMessageReceived(const QString &message)
 
     if (type == QLatin1String("ready")) {
         m_ready = true;
+        m_everConnected = true;
+        setHealth(Health::Connected);
         m_backoffMs = kMinBackoffMs;   // a good connection resets the penalty
         m_extension = obj.value(QStringLiteral("extension")).toString();
         // Absent on an older daemon, which is exactly right: a daemon that
@@ -195,6 +223,12 @@ void CtiClient::onTextMessageReceived(const QString &message)
         m_reconnectTimer.stop();
         m_keepAliveTimer.stop();
         m_idleTimer.stop();
+        // Set health BEFORE closing the socket: close() lands in
+        // onDisconnected(), and a terminal refusal must not be relabelled
+        // "reconnecting" by the teardown it causes.
+        setHealth(reason == QLatin1String("no-extension")
+                      ? Health::RefusedNoExtension
+                      : Health::RefusedUnauthorised);
         m_socket->close();
         TWARN("CTI authentication refused:" << reason);
         emit authenticationFailed(reason);

@@ -11,6 +11,7 @@
 #include <QLabel>
 #include <QPushButton>
 #include <QSplitter>
+#include <QElapsedTimer>
 #include <QTimer>
 #include "core/ConversationTagLogic.h"
 #include "painter/PainterTheme.h"
@@ -180,6 +181,13 @@ private:
     void restyleChrome();          // re-apply theme tokens to QSS-styled chrome
     void showThemeToast(const QString &name);  // brief "Theme: X" overlay
     void refreshWelcomeStatus();   // repaint Mission Control telemetry/LEDs/pill
+
+    // Decides whether the connection-health strip is shown, and what it says.
+    // Cheap and idempotent, so it is safe to call from every signal that could
+    // change the answer as well as from a slow poll -- the poll exists because
+    // crossing the "this has gone on too long" threshold produces no signal of
+    // its own.
+    void refreshConnectionHealth();
     // Show/hide the offline banner + desktop-notify on server up/down.
     void onServerReachabilityChanged(bool online);
 
@@ -298,6 +306,23 @@ private:
     QLabel  *m_offlineLabel = nullptr;
     QTimer   m_offlineAnimTimer;           // animates the trailing "…" while offline
     int      m_offlineDots = 0;
+
+    // ── Connection-health warning strip ─────────────────────────────────
+    // Separate from the offline strip on purpose. That one is deliberately
+    // reassuring because REST reachability really is transient; this one exists
+    // for faults that DO NOT come back on their own -- a blocked port, a policy
+    // change, an account with no extension linked. Those were previously
+    // invisible: the only CTI indicator lived on the Home board, which is
+    // hidden the moment a conversation is opened, so a desk could sit dark for
+    // days with nobody told.
+    QWidget     *m_healthBanner = nullptr;
+    QLabel      *m_healthLabel = nullptr;
+    QPushButton *m_healthAction = nullptr;
+    QPushButton *m_healthClose = nullptr;
+    QTimer       m_healthPollTimer;        // re-checks the age threshold
+    QElapsedTimer m_sigDownSince;          // how long signaling has been down
+    QString      m_healthKey;              // which fault is on screen now
+    QString      m_healthDismissedKey;     // fault the user closed this session
 
     // Auto-update banner
     UpdateChecker *m_updateChecker = nullptr;
