@@ -1,5 +1,46 @@
 # Changelog
 
+## v0.70.1 "Slivnitsa" — STABLE (2026-09-09)
+
+When TalQ cannot reach the phone system, it now says so. Until this release it
+did not: a desk could sit for weeks without a single caller card while the app
+looked perfectly healthy, and nothing anywhere — on screen, in a log, on the
+server — said why.
+
+### Added
+* **A warning when the call service or the call server cannot be reached.** A
+  quiet amber strip appears above the conversation, telling you what has stopped
+  working and what will happen because of it — you will not see who is calling,
+  or calls may not connect. It waits two minutes first, so an ordinary blip or a
+  laptop waking from sleep never triggers it, and it names the likeliest cause:
+  a firewall or a group policy blocking the connection is the one thing a person
+  at the desk cannot guess and IT can fix in a minute.
+
+  The strip lives beside the conversation rather than on the Home screen,
+  because Home is hidden the moment you open a chat — which is where the old
+  indicator was, and why nobody ever saw it.
+
+* **Unpair this device.** Settings → Phone can now forget the key stored on this
+  computer. It also spells out what pairing does and does not decide: your
+  extension comes from your account, not from this device, so pairing again as
+  yourself will never move you to a different phone.
+
+### Fixed
+* **"Pair it again" is no longer the advice when pairing cannot possibly help.**
+  An account with no phone extension linked was told its device was no longer
+  authorised, so the natural response was to pair again — which always succeeded
+  and never fixed anything. That case now says what is actually wrong and who
+  can fix it.
+
+* **Settings → Phone tells you which of six situations you are in.** It used to
+  answer "not connected right now" for all of them, and could never say
+  "connected" at all — the check ran before the connection existed, so that
+  answer was unreachable. It now distinguishes connecting, reconnecting,
+  refused, switched off, and connected on a named extension.
+
+* **The Home screen's phone tile updates.** It was listening for a signal that
+  nothing was sending, so it could show a stale answer indefinitely.
+
 ## v0.70.0 "Slivnitsa" — STABLE (2026-09-01)
 
 Opens a new line, and promotes everything the 0.69.x betas built to stable. The
