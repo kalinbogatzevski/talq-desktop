@@ -1,5 +1,32 @@
 # Changelog
 
+## v0.70.3 "Slivnitsa" — STABLE (2026-09-10)
+
+Restores chat notifications, calls and screen-pops on office PCs that reach the internet through
+a company proxy.
+
+### Fixed
+* **Every live connection failed instantly on PCs configured with a company proxy.** Signaling,
+  push notifications and the phone screen-pop all failed the moment they were attempted — on a
+  machine where ordinary chat, logging in and loading avatars worked perfectly. The affected desk
+  showed "Signaling: offline", "Push: polling fallback" and a phone link that reconnected forever.
+
+  The cause was inside TalQ, not on the network. Windows can describe a proxy in a way that suits
+  ordinary web pages but cannot carry a live connection, and TalQ passed that description straight
+  to the connection, which refused it before sending a single byte. Nothing reached the network at
+  all, which is why it resisted diagnosis for so long and why opening firewall rules did not help
+  it: the failure took zero milliseconds, and no firewall can act that fast.
+
+  TalQ now asks the system for a proxy suitable for a live connection, and where the answer is
+  only usable for web pages it connects through the very same proxy in the manner that does work.
+  Machines with no proxy are unaffected, and a proxy configured to let a destination bypass it is
+  still honoured.
+
+* **The connection log now records the proxy in use.** Each attempt reports which proxy was
+  selected and whether it could carry a live connection, so a desk that cannot connect can be
+  diagnosed from its log alone rather than by guesswork. Proxy usernames and passwords are never
+  written.
+
 ## v0.70.2 "Slivnitsa" — STABLE (2026-09-10)
 
 Stops the new connection warning from crying wolf.

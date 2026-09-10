@@ -1,5 +1,6 @@
 #include "core/PushClient.h"
 #include <QNetworkReply>
+#include "core/WebSocketProxy.h"
 #include <QDebug>
 
 PushClient::PushClient(ApiClient *api, QObject *parent)
@@ -39,8 +40,10 @@ void PushClient::start()
     wsUrl += "/push/ws";
     m_pushEndpoint = wsUrl;
 
-    qDebug() << "Push: connecting to" << m_pushEndpoint;
-    m_ws.open(QUrl(m_pushEndpoint));
+    const QUrl pushUrl(m_pushEndpoint);
+    const QString proxyNote = talq::applyWebSocketProxy(m_ws, pushUrl);
+    qDebug() << "Push: connecting to" << m_pushEndpoint << "| proxy:" << proxyNote;
+    m_ws.open(pushUrl);
 }
 
 void PushClient::stop()
