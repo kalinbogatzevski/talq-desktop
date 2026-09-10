@@ -1,6 +1,7 @@
 #include "CtiClient.h"
 
 #include "TalqLog.h"
+#include "core/WebSocketProxy.h"
 
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -44,8 +45,10 @@ CtiClient::CtiClient(QObject *parent)
 
     m_reconnectTimer.setSingleShot(true);
     connect(&m_reconnectTimer, &QTimer::timeout, this, [this]() {
-        if (m_running && !m_authRejected)
+        if (m_running && !m_authRejected) {
+            talq::applyWebSocketProxy(*m_socket, m_url);
             m_socket->open(m_url);
+        }
     });
 }
 
@@ -88,6 +91,8 @@ void CtiClient::start(const QUrl &url, const QString &token)
     setHealth(m_everConnected ? Health::Reconnecting : Health::Connecting);
 
     m_socket->close();
+    const QString ctiProxyNote = talq::applyWebSocketProxy(*m_socket, m_url);
+    TLOG_NET("CTI proxy:" << ctiProxyNote);
     m_socket->open(m_url);
 }
 

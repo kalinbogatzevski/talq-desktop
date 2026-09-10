@@ -2,6 +2,7 @@
 #include "core/TalqLog.h"
 #include "core/ChatSyncLogic.h"
 #include "core/HpbPool.h"
+#include "core/WebSocketProxy.h"
 #include <QJsonDocument>
 #include <QSettings>
 #include <QDateTime>
@@ -398,8 +399,10 @@ void SignalingClient::connectWebSocket()
         wsUrl += "/";
     wsUrl += "spreed";
 
-    qDebug() << "Signaling: connecting to" << wsUrl;
-    m_ws.open(QUrl(wsUrl));
+    const QUrl signalingUrl(wsUrl);
+    const QString proxyNote = talq::applyWebSocketProxy(m_ws, signalingUrl);
+    qDebug() << "Signaling: connecting to" << wsUrl << "| proxy:" << proxyNote;
+    m_ws.open(signalingUrl);
 }
 
 void SignalingClient::onConnected()
