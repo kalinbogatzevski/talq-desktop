@@ -54,6 +54,30 @@ struct ConnectionHealthInputs {
     bool signalingUp = true;
     HealthMs signalingDownMs = 0;
 
+    // Whether the ORDINARY web connection to the server is working, and for how
+    // long it has been working without interruption.
+    //
+    // Both are needed, and for different bugs:
+    //
+    //  - `serverReachable` false means the machine has no usable network at all
+    //    (Wi-Fi off, lid closed, on a train). Signaling and the screen-pop are
+    //    of course down too, but blaming a firewall for the user's own Wi-Fi is
+    //    worse than saying nothing -- and TalQ already shows its calm
+    //    "Connecting…" strip for exactly this. Two contradictory banners, one of
+    //    them accusing IT, is the failure mode this guards.
+    //
+    //  - `serverReachableForMs` guards the moment the network COMES BACK. The
+    //    fault clocks have been running the whole time the lid was shut, so
+    //    without this the warning fires the instant Wi-Fi returns -- before the
+    //    client has had even one reconnect attempt, whose backoff can be a
+    //    minute. The threshold has to measure time since the network returned,
+    //    not time since the fault began.
+    // Defaults fail SAFE, not convenient: a caller who forgets to fill these in
+    // gets silence rather than a false accusation aimed at somebody's IT
+    // department. Callers that mean "long-established connection" must say so.
+    bool serverReachable = true;
+    HealthMs serverReachableForMs = 0;
+
     // Long enough that a blip, a laptop waking from sleep, or a Wi-Fi roam
     // never trips it; short enough that somebody still finds out the same
     // morning. Overridable so the tests do not have to sleep.
@@ -62,10 +86,23 @@ struct ConnectionHealthInputs {
 
 inline HealthFault decideHealthFault(const ConnectionHealthInputs &in)
 {
+    // Terminal refusals are reported even with no network, and that is not an
+    // oversight: they can only have been learned over a socket that WAS working,
+    // so they say something true and durable about the account, not about the
+    // link. Everything below them is a statement about reachability, and a
+    // statement about reachability is worthless when the machine has no network.
     if (in.ctiInUse && in.ctiRefusedNoExtension)
         return HealthFault::CtiNoExtension;
     if (in.ctiInUse && in.ctiRefusedUnauthorised)
         return HealthFault::CtiUnauthorised;
+
+    // No network, or the network only just returned: say nothing. The calm
+    // "Connecting…" strip already owns this story, and accusing a firewall
+    // while the user's own Wi-Fi is off -- or one second after it comes back,
+    // before a single reconnect has been attempted -- destroys the credibility
+    // of every warning this file exists to raise.
+    if (!in.serverReachable || in.serverReachableForMs <= in.warnAfterMs)
+        return HealthFault::None;
 
     if (!in.signalingUp && in.signalingDownMs > in.warnAfterMs)
         return HealthFault::SignalingDown;
