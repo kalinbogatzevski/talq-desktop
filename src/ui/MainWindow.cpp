@@ -66,6 +66,8 @@
 #include <QInputDialog>
 #include <QJsonArray>
 #include "core/ConnectionHealthPolicy.h"
+#include "core/AlertEscalationPolicy.h"
+#include "core/WebSocketProxy.h"
 #include "core/CtiService.h"
 #include "core/ShiftStatusService.h"
 #include "ui/PersonCardPopup.h"
@@ -3097,11 +3099,48 @@ void MainWindow::refreshConnectionHealth()
     in.serverReachable          = srvUp;
     in.serverReachableForMs     = m_onlineSince.isValid() ? m_onlineSince.elapsed() : 0;
 
+    // The second witness. Push is a DIFFERENT service on a different URL, so
+    // signalling and push both dead while ordinary HTTP to the same server is
+    // healthy points at this machine's ability to hold a live connection at
+    // all -- not at either server. See ConnectionHealthPolicy.h.
+    const bool pushUp = !m_push || m_push->isConnected();
+    if (pushUp)
+        m_pushDownSince.invalidate();
+    else if (!m_pushDownSince.isValid())
+        m_pushDownSince.start();
+    in.pushUp                   = pushUp;
+    in.pushDownMs               = m_pushDownSince.isValid() ? m_pushDownSince.elapsed() : 0;
+    in.proxyAuthFailed          = talq::proxyAuthenticationFailed();
+
+    // Nothing is expected to be up until the user is actually logged in and the
+    // background services have been told the server's URLs. Before that every
+    // socket is legitimately down while ApiClient still reports "reachable"
+    // (it assumes reachable until something proves otherwise), which is exactly
+    // the shape of a fault -- and a fresh install sitting on the login screen
+    // would accuse the user's IT department two minutes after first launch.
+    in.servicesExpected         = m_auth && m_auth->isLoggedIn();
+
+    // Whether the SERVER offers each service. Not "has it ever connected":
+    // a proxy-blocked machine learns both URLs over plain HTTP and then fails
+    // to connect, which is a fault; a stock Nextcloud with neither service is
+    // simply a smaller deployment and must never be warned about.
+    in.signalingConfigured      = m_signaling && !m_signaling->signalingUrl().isEmpty();
+    in.pushConfigured           = m_push && m_push->isConfigured();
+    in.serverHttpHealthy        = !m_api || m_api->isServerHealthy();
+
     const talq::HealthFault fault = talq::decideHealthFault(in);
     const QString key = QString::fromLatin1(talq::healthFaultKey(fault));
     const bool showAction = talq::healthFaultHasAction(fault);
 
-    QString text;
+    // A verdict the server has already given, rather than something still in
+    // flight. These skip the escalation clocks entirely -- there is nothing to
+    // wait for, so holding the warning back only delays the fix.
+    const bool terminal = (fault == talq::HealthFault::CtiNoExtension
+                        || fault == talq::HealthFault::CtiUnauthorised
+                        || fault == talq::HealthFault::ProxyAuthRequired);
+
+    QString text;         // the banner and the notification body
+    QString shortReason;  // the tray tooltip: a few words, read on hover
     switch (fault) {
     case talq::HealthFault::None:
         break;
@@ -3109,39 +3148,121 @@ void MainWindow::refreshConnectionHealth()
         text = tr("No phone extension is linked to your account, so you will not see "
                   "who is calling. Ask an administrator to link one — pairing this "
                   "computer again will not fix it.");
+        shortReason = tr("no extension linked");
         break;
     case talq::HealthFault::CtiUnauthorised:
         text = tr("This computer is no longer authorised for call pop-ups, so you will "
                   "not see who is calling. Pair it again in Settings.");
+        shortReason = tr("call pop-ups not authorised");
+        break;
+    case talq::HealthFault::ProxyAuthRequired:
+        text = tr("Your network's proxy is asking TalQ for a username and password, "
+                  "which TalQ cannot provide. Messages may still work, but calls and "
+                  "call pop-ups will not. Ask your IT admin to let this computer reach "
+                  "TalQ's servers without signing in to the proxy.");
+        shortReason = tr("proxy needs a sign-in");
+        break;
+    case talq::HealthFault::WebSocketsBlocked:
+        // The finding that took a week to reach by hand. Say what was actually
+        // observed -- ordinary web access works, live connections do not -- so
+        // an IT admin reading it over the user's shoulder knows where to look
+        // instead of testing whether the site loads, which it does.
+        text = tr("TalQ can load your messages but cannot hold a live connection, so "
+                  "calls, instant message alerts and call pop-ups will not work. This "
+                  "is usually a firewall or proxy that allows ordinary web pages but "
+                  "blocks live connections; it can also mean the server is having "
+                  "trouble. If it does not clear on its own, contact your IT admin.");
+        shortReason = tr("live connections blocked");
         break;
     case talq::HealthFault::SignalingDown:
         text = tr("TalQ cannot reach the call server, so calls may not connect. If this "
                   "does not clear on its own, a firewall or group policy may be blocking "
                   "it — contact your IT admin.");
+        shortReason = tr("call server unreachable");
         break;
     case talq::HealthFault::CtiNeverConnected:
         text = tr("TalQ has not been able to reach the call service, so you will not see "
                   "who is calling. This usually means a firewall or group policy is "
                   "blocking it — contact your IT admin.");
+        shortReason = tr("phone system unreachable");
         break;
     case talq::HealthFault::CtiLost:
         text = tr("TalQ has lost the call service, so you will not see who is calling. "
                   "It is still trying to reconnect.");
+        shortReason = tr("phone system lost");
         break;
     }
 
-    if (key.isEmpty()) {
-        // Healthy again: forget the dismissal too, so the NEXT fault — or this
-        // one returning — is reported rather than silently inheriting a close
-        // the user clicked hours ago about something else.
+    // ---- escalation -------------------------------------------------------
+    //
+    // How LOUD, decided separately from WHAT, in AlertEscalationPolicy.h. The
+    // split matters: this is the code path that was withdrawn once already for
+    // being too noisy, and the rules that keep it honest belong somewhere they
+    // can be tested rather than inline in a widget refresh.
+    //
+    // Two continuities are tracked here rather than in the policy, because they
+    // are about the SEQUENCE of refreshes and the policy only sees one moment:
+    //
+    //  * The fault clock runs on "is anything wrong", NOT on which fault is
+    //    named. Faults are ranked, so a machine that gets WORSE can change its
+    //    label -- CTI lost for ten minutes, then signalling drops too and
+    //    outranks it. Restarting the clock there would put the tray disc OUT at
+    //    the exact moment the situation deteriorated, and hold it out for
+    //    another five minutes.
+    //
+    //  * Which faults have been notified is remembered ACROSS brief recoveries.
+    //    A standing fault behind a flaky link clears and returns every time the
+    //    Wi-Fi roams; forgetting on the first healthy poll would re-toast the
+    //    same unchanged problem every few minutes, which is precisely the
+    //    behaviour that got the old notifications removed.
+    const bool faultPresent = !key.isEmpty();
+
+    if (faultPresent) {
+        m_healthySince.invalidate();
+        if (!m_healthFaultSince.isValid())
+            m_healthFaultSince.start();
+    } else {
+        m_healthFaultSince.invalidate();
+        if (!m_healthySince.isValid())
+            m_healthySince.start();
+        // Only once the machine has been genuinely well for a while do we
+        // forget what we already said. Long enough that a roam or a lid does
+        // not reset it; short enough that a problem returning tomorrow is
+        // treated as news.
+        constexpr qint64 kForgetAfterMs = 300000;
+        if (m_healthySince.elapsed() > kForgetAfterMs) {
+            m_healthNotifiedKeys.clear();
+            m_healthDismissedKey.clear();
+        }
+    }
+
+    talq::AlertEscalationInputs esc;
+    esc.faultPresent    = faultPresent;
+    esc.faultIsTerminal = terminal;
+    esc.faultHeldMs     = m_healthFaultSince.isValid() ? m_healthFaultSince.elapsed() : 0;
+    esc.alreadyNotified = faultPresent && m_healthNotifiedKeys.contains(key);
+    esc.bannerDismissed = faultPresent && key == m_healthDismissedKey;
+    const talq::AlertPlan plan = talq::decideAlert(esc);
+
+    if (plan.sendNotification && m_notifications) {
+        // Marked as spent ONLY if it actually went out. notifyConnectionFault
+        // returns false when the user has notifications switched off, and
+        // burning the one-per-fault budget on a popup nobody saw would leave
+        // the tray disc as the only surface that ever mentions it.
+        if (m_notifications->notifyConnectionFault(tr("TalQ connection problem"), text))
+            m_healthNotifiedKeys.insert(key);
+    }
+    if (m_notifications)
+        m_notifications->setConnectionAlarm(plan.trayAlarm, shortReason);
+
+    if (!faultPresent) {
         m_healthKey.clear();
-        m_healthDismissedKey.clear();
         m_healthBanner->hide();
         return;
     }
 
     m_healthKey = key;
-    if (key == m_healthDismissedKey) {
+    if (!plan.showBanner) {
         m_healthBanner->hide();
         return;
     }

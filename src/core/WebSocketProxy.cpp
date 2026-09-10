@@ -1,41 +1,32 @@
 #include "core/WebSocketProxy.h"
+#include "core/SystemProxy.h"
 #include "core/WebSocketProxyPolicy.h"
 
 #include <QNetworkProxy>
 #include <QUrl>
 #include <QWebSocket>
+#include <QAuthenticator>
+#include <QDebug>
 #include <vector>
 
 namespace talq {
 namespace {
 
-int defaultPortFor(const QUrl &url)
-{
-    // A WebSocket URL usually carries no explicit port, but the proxy query
-    // needs one -- and asking about port 0 is how you get a nonsense answer.
-    const QString scheme = url.scheme().toLower();
-    return url.port(scheme == QStringLiteral("wss") ? 443 : 80);
-}
+// Set by a 407, cleared by any WebSocket that actually connects.
+//
+// It must be clearable, and the reason is a laptop. One challenge on hotel or
+// guest Wi-Fi would otherwise pin TalQ into a terminal "your proxy needs a
+// sign-in" for the rest of the session -- red tray, undismissable banner --
+// long after the user got home to a network with no proxy at all, where
+// everything works. Worse, because that fault is terminal it is evaluated
+// ahead of every other rule, so it would also BLIND the health report to a
+// real outage that happened later the same evening.
+//
+// A successful connection is proof the proxy is not refusing us, so it is the
+// right thing to clear on. Flicker is not a concern: the health policy already
+// requires a fault to outlive a threshold before anyone is told about it.
+bool g_proxyAuthFailed = false;
 
-QList<QNetworkProxy> resolveCandidates(const QUrl &url)
-{
-    // TcpSocket, NOT the default UrlRequest query. This is the whole point:
-    // for a URL request Qt will happily return a caching proxy, which is
-    // correct for HTTP and fatal for a socket. Asking as a TCP socket makes
-    // Qt answer the question we are actually asking.
-    QNetworkProxyQuery query(url.host(), defaultPortFor(url), QString(),
-                             QNetworkProxyQuery::TcpSocket);
-    return QNetworkProxyFactory::proxyForQuery(query);
-}
-
-ProxyCandidate toPolicyInput(const QNetworkProxy &p)
-{
-    ProxyCandidate c;
-    c.isDirect    = (p.type() == QNetworkProxy::NoProxy);
-    c.canTunnel   = p.capabilities().testFlag(QNetworkProxy::TunnelingCapability);
-    c.hasEndpoint = !p.hostName().isEmpty() && p.port() > 0;
-    return c;
-}
 
 // Host and port only -- never user()/password(). This ends up in a log file.
 QString describeCandidates(const QList<QNetworkProxy> &proxies)
@@ -73,13 +64,8 @@ QString applyWebSocketProxy(QWebSocket &socket, const QUrl &url)
     // ONE resolution. Everything below -- the installed proxy and the line that
     // gets logged about it -- is derived from this single answer, so the two can
     // never disagree.
-    const QList<QNetworkProxy> proxies = resolveCandidates(url);
-
-    std::vector<ProxyCandidate> inputs;
-    inputs.reserve(static_cast<size_t>(proxies.size()));
-    for (const QNetworkProxy &p : proxies)
-        inputs.push_back(toPolicyInput(p));
-
+    const QList<QNetworkProxy> proxies = systemTcpProxiesFor(url);
+    const std::vector<ProxyCandidate> inputs = toProxyCandidates(proxies);
     const ProxyVerdict verdict =
         decideWebSocketProxy(inputs.data(), static_cast<int>(inputs.size()));
 
@@ -105,6 +91,40 @@ QString applyWebSocketProxy(QWebSocket &socket, const QUrl &url)
     }
 
     return QStringLiteral("%1 -> %2").arg(describeCandidates(proxies), action);
+}
+
+void watchProxyAuthentication(QWebSocket &socket)
+{
+    // Any successful connection retires the flag: whatever the proxy did
+    // before, it is not blocking us now.
+    QObject::connect(&socket, &QWebSocket::connected, [&socket]() {
+        if (g_proxyAuthFailed) {
+            g_proxyAuthFailed = false;
+            qInfo() << "Proxy authentication no longer blocking:"
+                    << "a WebSocket connected successfully.";
+        }
+    });
+
+    QObject::connect(&socket, &QWebSocket::proxyAuthenticationRequired,
+                     [](const QNetworkProxy &proxy, QAuthenticator *) {
+        // We deliberately do NOT fill the authenticator in. TalQ holds no proxy
+        // credentials, and guessing the logged-in user's domain password would
+        // be both wrong and a good way to lock an account out. Leaving it empty
+        // fails the CONNECT, which is the honest outcome -- and now a reported
+        // one instead of a silent reconnect loop.
+        if (!g_proxyAuthFailed) {
+            g_proxyAuthFailed = true;
+            qWarning() << "Proxy at" << proxy.hostName()
+                       << "requires authentication that TalQ cannot supply;"
+                       << "live connections and call media will not work"
+                       << "until it is exempted or made open to this machine.";
+        }
+    });
+}
+
+bool proxyAuthenticationFailed()
+{
+    return g_proxyAuthFailed;
 }
 
 } // namespace talq

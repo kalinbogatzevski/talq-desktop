@@ -76,6 +76,12 @@ public:
     // realtime WebSockets (SignalingClient/PushClient) are secondary — they
     // are absent on servers without an HPB and so can't stand in for this.
     bool isServerReachable() const { return m_serverReachable; }
+
+    // Reachable AND not visibly broken. A run of 5xx means the box is up but
+    // the application behind it is not, which looks identical to a blocked
+    // network from the client unless it is counted separately.
+    bool isServerHealthy() const
+    { return m_serverReachable && m_serverErrorStreak < kServerErrorStreak; }
     // Active lightweight health check — an unauthenticated GET of the
     // server's /status.php (Nextcloud's canonical health endpoint). Feeds the
     // same reachability tracker, so it can both confirm an outage fast and
@@ -511,4 +517,8 @@ private:
     bool   m_probeInFlight = false;
     QTimer m_reachProbeTimer;
     static constexpr int kOfflineMisses = 2;
+    // Consecutive 5xx before we stop calling the server healthy. More than one
+    // so a single unlucky request cannot mute the real fault reporting.
+    int    m_serverErrorStreak = 0;
+    static constexpr int kServerErrorStreak = 3;
 };

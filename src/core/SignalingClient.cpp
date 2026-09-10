@@ -26,6 +26,7 @@ SignalingClient::SignalingClient(ApiClient *api, QObject *parent)
     : QObject(parent)
     , m_api(api)
 {
+    talq::watchProxyAuthentication(m_ws);
     connect(&m_ws, &QWebSocket::connected, this, &SignalingClient::onConnected);
     connect(&m_ws, &QWebSocket::disconnected, this, &SignalingClient::onDisconnected);
     connect(&m_ws, &QWebSocket::textMessageReceived, this, &SignalingClient::onTextMessage);

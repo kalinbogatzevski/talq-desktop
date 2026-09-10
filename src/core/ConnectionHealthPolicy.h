@@ -34,12 +34,44 @@ enum class HealthFault {
     None,
     CtiNoExtension,       // terminal: paired, but the account has no extension
     CtiUnauthorised,      // terminal: token bad, revoked or expired
+    ProxyAuthRequired,    // terminal: the proxy demands credentials we cannot give
+    WebSocketsBlocked,    // ordinary web works, every live connection is refused
     SignalingDown,        // calls will not connect
     CtiNeverConnected,    // never reached the daemon on this machine
     CtiLost,              // worked before, not now
 };
 
 struct ConnectionHealthInputs {
+    // Whether the client is logged in and its background services have been
+    // started. Defaults to FALSE, and that default is the point: the health
+    // poll runs from the moment the window is constructed, long before anyone
+    // has logged in, and at that moment every socket is legitimately down
+    // while ordinary HTTP looks "reachable" (ApiClient assumes reachable until
+    // something proves otherwise). Without this gate a fresh install sitting on
+    // the login screen manufactures a fault out of nothing and, two minutes
+    // later, tells the user to contact their IT department.
+    bool servicesExpected = false;
+
+    // Whether the SERVER told us these services exist. This is the difference
+    // between "we cannot reach the call server" and "this deployment has no
+    // call server", and it is not the same question as "has it ever connected":
+    //   - a stock Nextcloud with no high-performance backend and no notify_push
+    //     is a perfectly healthy, ordinary configuration, and must never be
+    //     warned about;
+    //   - a machine whose proxy blocks WebSockets learns the URLs fine over
+    //     plain HTTP and then fails to connect -- configured, never connected,
+    //     and exactly the case that must warn.
+    // Keying on "ever connected" would get the second case backwards.
+    bool signalingConfigured = false;
+    bool pushConfigured = false;
+
+    // Whether the server is not merely answering but actually well. A box in
+    // maintenance mode answers every request with a 5xx -- reachable, and
+    // refusing every WebSocket. From the client that is indistinguishable from
+    // a proxy blocking live connections, so without this the whole office is
+    // told to contact IT about an outage on our own side.
+    bool serverHttpHealthy = true;
+
     // CTI is only judged when the site actually uses it. An install with the
     // feature switched off, or never configured, must never be warned about it
     // -- a permanent scold about a feature you do not use is worse than
@@ -53,6 +85,30 @@ struct ConnectionHealthInputs {
 
     bool signalingUp = true;
     HealthMs signalingDownMs = 0;
+
+    // Push (notify_push) is tracked for ONE reason: it is the second witness.
+    //
+    // Signalling alone going quiet is ambiguous -- the call server could simply
+    // be down. But signalling AND push are different services, on different
+    // hosts, reached over different URLs. They share exactly one thing: both
+    // are WebSockets. So when ordinary HTTP to the very same server is healthy
+    // and BOTH of them are dead, the common factor is not any of those servers,
+    // it is that this machine cannot open a live connection at all.
+    //
+    // That is a real diagnosis, and it is the one that took a week to reach by
+    // hand: a desk logged in fine, listed rooms fine, fetched a 409 KB avatar
+    // fine, and had every WebSocket refused. Encoding it here means the next
+    // desk says so itself.
+    bool pushUp = true;
+    HealthMs pushDownMs = 0;
+
+    // A proxy stands between this machine and the server, and it demanded
+    // credentials we could not satisfy. Terminal like the other refusals: a 407
+    // does not resolve itself, and for CALL MEDIA it cannot be worked around at
+    // all -- libnice sends only preemptive Basic auth and treats any non-2xx
+    // reply to its CONNECT as fatal, so an NTLM or Kerberos proxy ends the
+    // media path outright rather than degrading it.
+    bool proxyAuthFailed = false;
 
     // Whether the ORDINARY web connection to the server is working, and for how
     // long it has been working without interruption.
@@ -86,6 +142,12 @@ struct ConnectionHealthInputs {
 
 inline HealthFault decideHealthFault(const ConnectionHealthInputs &in)
 {
+    // Nothing is expected to be up yet, so nothing can be wrong. Before login
+    // every socket is down by design; reporting that as a fault is how a
+    // warning system loses the user's trust on first run.
+    if (!in.servicesExpected)
+        return HealthFault::None;
+
     // Terminal refusals are reported even with no network, and that is not an
     // oversight: they can only have been learned over a socket that WAS working,
     // so they say something true and durable about the account, not about the
@@ -96,6 +158,13 @@ inline HealthFault decideHealthFault(const ConnectionHealthInputs &in)
     if (in.ctiInUse && in.ctiRefusedUnauthorised)
         return HealthFault::CtiUnauthorised;
 
+    // Also terminal, and NOT gated on reachability below: a proxy that
+    // challenged us proves both that there is a network and that something on
+    // it is refusing us. Waiting for the reachability threshold would only
+    // delay a fault that will never clear by itself.
+    if (in.proxyAuthFailed)
+        return HealthFault::ProxyAuthRequired;
+
     // No network, or the network only just returned: say nothing. The calm
     // "Connecting…" strip already owns this story, and accusing a firewall
     // while the user's own Wi-Fi is off -- or one second after it comes back,
@@ -104,7 +173,26 @@ inline HealthFault decideHealthFault(const ConnectionHealthInputs &in)
     if (!in.serverReachable || in.serverReachableForMs <= in.warnAfterMs)
         return HealthFault::None;
 
-    if (!in.signalingUp && in.signalingDownMs > in.warnAfterMs)
+    // BEFORE the per-service faults, because it explains them. If HTTP to the
+    // server is working and every WebSocket is refused, reporting "the call
+    // server is unreachable" is true but useless -- it sends the user to the
+    // wrong place. The specific finding outranks the general symptom.
+    // BOTH must be services this deployment actually has, or the "two
+    // independent witnesses" argument collapses: on a server with no
+    // notify_push, push is permanently "down" and would silently supply the
+    // second witness for free, turning every ordinary call-server outage into
+    // a firewall accusation.
+    if (in.signalingConfigured && in.pushConfigured
+        && in.serverHttpHealthy
+        && !in.signalingUp && !in.pushUp
+        && in.signalingDownMs > in.warnAfterMs
+        && in.pushDownMs > in.warnAfterMs)
+        return HealthFault::WebSocketsBlocked;
+
+    // Only if the server said there IS one. A deployment without a
+    // high-performance backend is not broken, it is just smaller.
+    if (in.signalingConfigured && !in.signalingUp
+        && in.signalingDownMs > in.warnAfterMs)
         return HealthFault::SignalingDown;
 
     if (in.ctiInUse && !in.ctiConnected && in.ctiUnhealthyMs > in.warnAfterMs)
@@ -124,6 +212,8 @@ inline const char *healthFaultKey(HealthFault f)
     case HealthFault::None:              return "";
     case HealthFault::CtiNoExtension:    return "cti-no-extension";
     case HealthFault::CtiUnauthorised:   return "cti-unauthorised";
+    case HealthFault::ProxyAuthRequired: return "proxy-auth";
+    case HealthFault::WebSocketsBlocked: return "websockets-blocked";
     case HealthFault::SignalingDown:     return "signaling-down";
     case HealthFault::CtiNeverConnected: return "cti-never";
     case HealthFault::CtiLost:           return "cti-lost";

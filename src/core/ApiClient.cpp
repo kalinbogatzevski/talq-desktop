@@ -171,6 +171,19 @@ void ApiClient::noteNetworkOutcome(QNetworkReply *reply)
     if (err == QNetworkReply::NoError || httpStatus > 0) {
         m_reachMisses = 0;
         setReachable(true);
+
+        // Reachable is not the same as healthy, and the difference matters to
+        // the connection-health report. A server in maintenance mode, or one
+        // whose Redis has died, answers every request with a 5xx: the box is
+        // demonstrably up, so reachability stays true, while the WebSocket
+        // endpoints are refusing everyone. Without this counter that state is
+        // indistinguishable from a proxy blocking live connections, and TalQ
+        // would tell a whole office to go and talk to their IT department
+        // about an outage on our side.
+        if (httpStatus >= 500)
+            ++m_serverErrorStreak;
+        else
+            m_serverErrorStreak = 0;
         return;
     }
 

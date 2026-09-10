@@ -33,4 +33,18 @@ namespace talq {
 // file users are asked to email in.
 QString applyWebSocketProxy(QWebSocket &socket, const QUrl &url);
 
+// Watch this socket for a proxy that demands credentials we cannot supply.
+//
+// Process-wide on purpose: "does this machine's proxy challenge us" is a fact
+// about the machine, not about one socket, and the answer must be available to
+// the health policy even though the socket that learned it may have been torn
+// down long since. It is also the fact that decides whether CALL MEDIA can work
+// at all -- libnice sends only preemptive Basic auth and treats any non-2xx
+// reply to its CONNECT as fatal, so an NTLM or Kerberos proxy ends the media
+// path outright rather than degrading it.
+void watchProxyAuthentication(QWebSocket &socket);
+
+// Whether such a challenge has been seen this run.
+bool proxyAuthenticationFailed();
+
 } // namespace talq
