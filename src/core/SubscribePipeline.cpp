@@ -1,4 +1,5 @@
 #include "core/SubscribePipeline.h"
+#include "core/MediaProxy.h"
 #include <QDebug>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -47,6 +48,34 @@ bool SubscribePipeline::start(const QString &stunServer, const QList<TurnServer>
     }
     g_object_set(m_webrtcbin, "bundle-policy",
                  GST_WEBRTC_BUNDLE_POLICY_MAX_BUNDLE, nullptr);
+
+    // Point media at the machine's HTTP proxy, if it has one. webrtcbin hands
+    // this to libnice, where it has exactly ONE consumer: the TURN-over-TCP
+    // socket (agent_create_tcp_turn_socket). So it is purely ADDITIVE -- it
+    // makes a TURN/TCP relay candidate reachable on a network that blocks UDP,
+    // and touches nothing about the UDP candidates, so ICE still takes the
+    // cheaper direct path wherever one still works.
+    //
+    // Deliberately NOT paired with ice-transport-policy=relay: libnice's
+    // force-relay is fail-closed, so on a machine where UDP was working that
+    // would throw away every working candidate and leave the call with none if
+    // the proxy refused the CONNECT.
+    //
+    // Set BEFORE add-turn-server and before gathering starts: gstwebrtc
+    // resolves the proxy host asynchronously, and a TURN/TCP socket created
+    // before that resolution lands would be built without the proxy.
+    {
+        QStringList allTurnUrls;
+        for (const auto &t : turnServers)
+            allTurnUrls += t.urls;
+        const QString mediaProxy = talq::mediaHttpProxyUrlForTurn(allTurnUrls);
+        if (!mediaProxy.isEmpty()) {
+            qDebug() << "SubscribePipeline: media HTTP proxy:"
+                     << talq::maskProxyCredentials(mediaProxy);
+            g_object_set(m_webrtcbin, "http-proxy",
+                         mediaProxy.toUtf8().constData(), nullptr);
+        }
+    }
 
     // Disable ICE-TCP gathering -- see PublishPipeline.cpp's ice-agent block
     // for the full rationale (Janus runs ICE-TCP disabled cluster-wide;

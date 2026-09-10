@@ -7,6 +7,7 @@ PushClient::PushClient(ApiClient *api, QObject *parent)
     : QObject(parent)
     , m_api(api)
 {
+    talq::watchProxyAuthentication(m_ws);
     connect(&m_ws, &QWebSocket::connected, this, &PushClient::onConnected);
     connect(&m_ws, &QWebSocket::disconnected, this, &PushClient::onDisconnected);
     connect(&m_ws, &QWebSocket::textMessageReceived, this, &PushClient::onTextMessageReceived);

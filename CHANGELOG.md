@@ -1,5 +1,50 @@
 # Changelog
 
+## v0.71.0 "First School Day" — BETA (2026-09-10)
+
+Opens the proxy line: calls can find a way out of an office network that blocks direct media, and
+TalQ now says clearly when something is wrong instead of failing quietly.
+
+### Added
+* **Calls can now use the company proxy when the network blocks direct media.** On a locked-down
+  office network the audio and video path is usually the first thing to fail: it does not use the
+  web ports, and firewalls that permit browsing routinely drop it. TalQ now offers the call a route
+  through the same proxy Windows already uses, so a relayed connection can be established where a
+  direct one cannot.
+
+  This is strictly an addition. The direct routes are still offered and still preferred, so on a
+  normal network nothing changes and calls keep taking the shorter, better-quality path — the proxy
+  route is only used when it is the one that works. A destination the machine is configured to
+  reach directly stays direct.
+
+  Two limits worth stating plainly. The proxy must permit a tunnelled connection to the relay
+  server, which many restrictive proxies allow only on the standard secure web port — so this does
+  not remove the need for the relay servers to be reachable. And a call carried this way shares one
+  connection through the proxy, so it is more sensitive to congestion than a direct call.
+
+* **TalQ can now tell "your messages work but live connections are blocked" apart from an outage.**
+  Previously a desk in this state reported only that the call server was unreachable, which sent
+  people to look at a call server that was perfectly healthy. TalQ now recognises the pattern —
+  ordinary web access working while every live connection is refused — and says so, which is the
+  difference between a week of guesswork and one sentence.
+
+* **A proxy that demands a username and password is now reported.** TalQ cannot sign in to a proxy,
+  and for calls it cannot work around one, so this is now stated plainly instead of appearing as an
+  endless reconnection. It clears by itself once the machine is on a network where connections
+  succeed, so a laptop that met such a proxy in a hotel does not keep complaining at home.
+
+### Changed
+* **A problem that will not fix itself is now harder to miss.** The warning strip could be closed,
+  and it lives in the message area, so a desk could sit broken for days without anyone noticing.
+  A fault that persists now also raises a desktop notification and marks the tray icon until it is
+  genuinely resolved — and closing the strip no longer silences either.
+
+  The quiet "Connecting…" strip is unchanged and still handles the ordinary case. Brief
+  interruptions — a wireless roam, a laptop waking, a short drop — never raise a notification, and
+  neither does TalQ before you have signed in. The louder warnings are reserved for a problem that
+  has failed to clear on its own or that the server has already given a definitive answer about.
+  Connection warnings never make a sound.
+
 ## v0.70.3 "Slivnitsa" — STABLE (2026-09-10)
 
 Restores chat notifications, calls and screen-pops on office PCs that reach the internet through

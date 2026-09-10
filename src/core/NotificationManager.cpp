@@ -217,6 +217,38 @@ void NotificationManager::notify(const QString &title, const QString &message, b
     }
 }
 
+// A connection fault, routed AROUND notify() on purpose.
+//
+// notify() is built for chat messages and its two rules are both wrong here:
+//
+//   * It plays a sound when the window is NOT focused -- which is precisely
+//     the state this warning exists for. Worse, that sound is played before
+//     the notifications-enabled gate and (for the default "chime" tone) via
+//     PlaySound(SND_MEMORY), which this file documents as bypassing Focus
+//     Assist. A connection warning that chimes through Do Not Disturb is the
+//     exact complaint that got 0.51.6 withdrawn after one day.
+//
+//   * It DROPS the popup entirely when the window IS focused. For a chat
+//     message that is right; you are already looking at it. For a fault it
+//     means the one warning we are allowed to raise is silently swallowed for
+//     anyone who keeps TalQ open on a second monitor -- which is the normal
+//     posture for this app.
+//
+// So: never a sound, and shown whether or not the window is focused. Returns
+// whether it actually went out, so the caller can avoid spending its
+// once-per-fault budget on a notification the user never received.
+//
+// It still respects notificationsEnabled. A user who switched notifications
+// off gets the tray disc instead, which is always-on and costs them nothing.
+bool NotificationManager::notifyConnectionFault(const QString &title,
+                                                const QString &message)
+{
+    if (!m_notificationsEnabled)
+        return false;
+    emit desktopPopupRequested(title, message, QString());
+    return true;
+}
+
 void NotificationManager::setNotifStyle(const QString &style)
 {
     if (m_notifStyle != style) {
@@ -242,20 +274,47 @@ void NotificationManager::updateUnreadCount(int count)
     updateTaskbarOverlay(count);
 #endif
 
+    refreshTrayIcon();
+}
+
+// A connection fault worth interrupting the user about is showing, or has
+// cleared. Unlike the unread badge this is NOT transient: it stays lit until
+// the fault is actually fixed, because it is the only surface the user cannot
+// dismiss. See AlertEscalationPolicy.h for which faults get here and when.
+void NotificationManager::setConnectionAlarm(bool on, const QString &reason)
+{
+    if (on == m_connectionAlarm && reason == m_alarmReason) return;
+    m_connectionAlarm = on;
+    m_alarmReason = reason;
+    refreshTrayIcon();
+}
+
+// The ONE writer of the tray icon and tooltip.
+//
+// It composites every overlay in one pass on purpose. Both the unread badge and
+// the connection alarm start from m_baseIcon, so two independent writers would
+// each erase the other's mark -- whichever ran last would win, and the bug
+// would show up as "the alarm disappears when a message arrives", which is
+// precisely when you least want it to.
+void NotificationManager::refreshTrayIcon()
+{
     if (!m_trayIcon) return;
 
-    if (count > 0) {
-        m_trayIcon->setToolTip(QString("TalQ — %1 unread").arg(count));
+    const bool hasBadge = m_unreadCount > 0;
+    if (!hasBadge && !m_connectionAlarm) {
+        m_trayIcon->setToolTip("TalQ");
+        m_trayIcon->setIcon(QIcon(":/logo.png"));
+        return;
+    }
 
-        // Paint badge on icon
-        QPixmap icon = m_baseIcon;
-        QPainter p(&icon);
-        p.setRenderHint(QPainter::Antialiasing);
+    QPixmap icon = m_baseIcon;
+    QPainter p(&icon);
+    p.setRenderHint(QPainter::Antialiasing);
 
-        // Red badge circle
-        QString text = count > 99 ? "99+" : QString::number(count);
+    if (hasBadge) {
+        QString text = m_unreadCount > 99 ? "99+" : QString::number(m_unreadCount);
         QFont font;
-        font.setPixelSize(count > 9 ? 11 : 13);
+        font.setPixelSize(m_unreadCount > 9 ? 11 : 13);
         font.setBold(true);
         QFontMetrics fm(font);
         int badgeW = qMax(16, fm.horizontalAdvance(text) + 6);
@@ -280,13 +339,35 @@ void NotificationManager::updateUnreadCount(int count)
         p.setFont(font);
         p.setPen(Qt::white);
         p.drawText(QRect(bx, by, badgeW, badgeH), Qt::AlignCenter, text);
-        p.end();
-
-        m_trayIcon->setIcon(QIcon(icon));
-    } else {
-        m_trayIcon->setToolTip("TalQ");
-        m_trayIcon->setIcon(QIcon(":/logo.png"));
     }
+
+    if (m_connectionAlarm) {
+        // A PAINTED DISC, never a glyph -- the house rule for every state
+        // indicator, and doubly right here where the surface is 32px of OS
+        // chrome and a text character would render as mush.
+        //
+        // Bottom-LEFT, because the unread badge owns the top-right and these
+        // two must be readable at the same time: "you have 3 messages AND your
+        // phone system is unreachable" is a completely ordinary state.
+        const int d = 13;
+        const int ax = 0;
+        const int ay = icon.height() - d;
+        p.setPen(QPen(Qt::white, 2));
+        p.setBrush(QColor(0xE2, 0x3B, 0x33));
+        p.drawEllipse(QRect(ax, ay, d, d));
+    }
+    p.end();
+
+    m_trayIcon->setIcon(QIcon(icon));
+
+    // Tooltip: the fault outranks the unread count. A user hovering a tray icon
+    // that has turned red is asking "what is wrong", not "how many messages".
+    if (m_connectionAlarm && !m_alarmReason.isEmpty())
+        m_trayIcon->setToolTip(QStringLiteral("TalQ — %1").arg(m_alarmReason));
+    else if (m_connectionAlarm)
+        m_trayIcon->setToolTip(QStringLiteral("TalQ — connection problem"));
+    else
+        m_trayIcon->setToolTip(QString("TalQ — %1 unread").arg(m_unreadCount));
 }
 
 #ifdef Q_OS_WIN
