@@ -321,6 +321,7 @@ private:
     QPushButton *m_healthClose = nullptr;
     QTimer       m_healthPollTimer;        // re-checks the age threshold
     QElapsedTimer m_sigDownSince;          // how long signaling has been down
+    QElapsedTimer m_onlineSince;           // how long ordinary web access has been up
     QString      m_healthKey;              // which fault is on screen now
     QString      m_healthDismissedKey;     // fault the user closed this session
 

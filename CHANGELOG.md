@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.70.2 "Slivnitsa" — STABLE (2026-09-10)
+
+Stops the new connection warning from crying wolf.
+
+### Fixed
+* **No warning when the problem is simply that you have no internet.** 0.70.1 would wait two
+  minutes and then announce that a firewall or group policy might be blocking TalQ — when the
+  actual cause was a closed laptop lid, a train, or Wi-Fi switched off. It appeared directly
+  beneath the quiet "Connecting…" strip, which says the opposite, and it blamed an IT department
+  for something they had not done. The warning now stays quiet unless the ordinary web connection
+  to the server is working: that is exactly what distinguishes "the network is blocking one
+  service" from "there is no network".
+
+  A refusal the server has already given — an account with no extension linked, or a device whose
+  access was revoked — is still reported, because it was learned over a connection that was
+  working and remains true regardless.
+
+* **No warning the instant a laptop wakes.** The fault timers keep running while a machine is
+  asleep, so a lid opened after eight hours met the two-minute threshold immediately and warned
+  before the first reconnection had even been attempted. The countdown now starts when the network
+  comes back, not when the fault began.
+
 ## v0.70.1 "Slivnitsa" — STABLE (2026-09-09)
 
 When TalQ cannot reach the phone system, it now says so. Until this release it

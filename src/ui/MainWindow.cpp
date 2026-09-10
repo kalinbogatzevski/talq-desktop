@@ -3072,6 +3072,17 @@ void MainWindow::refreshConnectionHealth()
     else if (!m_sigDownSince.isValid())
         m_sigDownSince.start();
 
+    // How long ordinary web access has been up. Restarted from zero on every
+    // outage, so the threshold below measures time since the NETWORK returned
+    // rather than time since the fault began -- a laptop that spent the night
+    // shut has hours on its fault clocks and would otherwise accuse the
+    // firewall the instant it woke.
+    const bool srvUp = !m_api || m_api->isServerReachable();
+    if (!srvUp)
+        m_onlineSince.invalidate();
+    else if (!m_onlineSince.isValid())
+        m_onlineSince.start();
+
     const CtiClient::Health h = m_cti ? m_cti->health() : CtiClient::Health::Off;
 
     talq::ConnectionHealthInputs in;
@@ -3083,6 +3094,8 @@ void MainWindow::refreshConnectionHealth()
     in.ctiUnhealthyMs           = m_cti ? m_cti->unhealthyForMs() : 0;
     in.signalingUp              = sigUp;
     in.signalingDownMs          = m_sigDownSince.isValid() ? m_sigDownSince.elapsed() : 0;
+    in.serverReachable          = srvUp;
+    in.serverReachableForMs     = m_onlineSince.isValid() ? m_onlineSince.elapsed() : 0;
 
     const talq::HealthFault fault = talq::decideHealthFault(in);
     const QString key = QString::fromLatin1(talq::healthFaultKey(fault));
