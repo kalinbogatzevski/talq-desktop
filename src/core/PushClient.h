@@ -25,6 +25,11 @@ public:
     void stop();
     bool isConnected() const { return m_connected; }
 
+    // Whether the SERVER offers notify_push at all. Empty until the endpoint
+    // has been worked out, which is what distinguishes "this deployment has no
+    // push service" from "push is configured and refusing to connect".
+    bool isConfigured() const { return !m_pushEndpoint.isEmpty(); }
+
 signals:
     void connectedChanged();
     void pushReceived(const QString &type);  // "notify_notification", "notify_file", etc.

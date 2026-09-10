@@ -11,6 +11,7 @@ CtiClient::CtiClient(QObject *parent)
     : QObject(parent)
 {
     m_socket = new QWebSocket(QString(), QWebSocketProtocol::VersionLatest, this);
+    talq::watchProxyAuthentication(*m_socket);
     connect(m_socket, &QWebSocket::connected,    this, &CtiClient::onConnected);
     connect(m_socket, &QWebSocket::disconnected, this, &CtiClient::onDisconnected);
     connect(m_socket, &QWebSocket::textMessageReceived,

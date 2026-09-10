@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(talq VERSION 0.70.3 LANGUAGES CXX)
+project(talq VERSION 0.71.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -54,6 +54,8 @@ qt_add_executable(talq
     src/core/SignalingClient.cpp
     src/core/CtiClient.cpp
     src/core/WebSocketProxy.cpp
+    src/core/SystemProxy.cpp
+    src/core/MediaProxy.cpp
     src/core/CtiService.cpp
     src/core/ShiftStatusService.cpp
     src/models/Conversation.cpp
@@ -228,6 +230,13 @@ string(TIMESTAMP TALQ_BUILD_TS "%m%d-%H%M")
 # fixture fits the release: an even minor is the STABLE cut of the odd line
 # before it, so 0.70.0 is the one that makes the 0.69.x work hold. Event-name
 # pattern, as with Saedinenie and 0.39.x. Chosen 2026-09-01.
+#
+# 0.71.x IS "First School Day" -- Първи учебен ден, 15 September, the first day
+# of the school year and the one date in the Bulgarian calendar that is about
+# starting something rather than commemorating it. It breaks from the
+# battle-and-treaty thread of 0.69.x/0.70.x deliberately: this line opens the
+# proxy work, where TalQ learns to reach the outside world from inside a
+# locked-down office network. Chosen by Kalin, 2026-09-10.
 set_source_files_properties(
     src/main.cpp
     src/core/CallManager.cpp
@@ -236,7 +245,7 @@ set_source_files_properties(
     src/ui/SettingsDialog.cpp
     src/ui/MainWindow.cpp
     PROPERTIES COMPILE_DEFINITIONS
-      "TALQ_VERSION=\"${PROJECT_VERSION}\";TALQ_VERSION_NAME=\"Slivnitsa\";TALQ_BUILD_TS=\"${TALQ_BUILD_TS}\""
+      "TALQ_VERSION=\"${PROJECT_VERSION}\";TALQ_VERSION_NAME=\"First School Day\";TALQ_BUILD_TS=\"${TALQ_BUILD_TS}\""
 )
 
 # Pre-release flag: when build-release.sh is invoked with --beta it

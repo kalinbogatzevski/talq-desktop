@@ -324,6 +324,10 @@ private:
     QElapsedTimer m_onlineSince;           // how long ordinary web access has been up
     QString      m_healthKey;              // which fault is on screen now
     QString      m_healthDismissedKey;     // fault the user closed this session
+    QSet<QString> m_healthNotifiedKeys;    // faults already notified about
+    QElapsedTimer m_healthySince;          // how long nothing has been wrong
+    QElapsedTimer m_pushDownSince;         // how long push has been down
+    QElapsedTimer m_healthFaultSince;      // how long THIS fault has been present
 
     // Auto-update banner
     UpdateChecker *m_updateChecker = nullptr;

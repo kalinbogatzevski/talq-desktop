@@ -48,6 +48,15 @@ public:
     Q_INVOKABLE void notify(const QString &title, const QString &message, bool alwaysSound = false, const QString &token = QString());
     Q_INVOKABLE void clearNotifications();
     Q_INVOKABLE void updateUnreadCount(int count);
+
+    // Light or clear the tray's connection-fault disc. Stays lit until the
+    // fault clears -- it is the surface the user cannot dismiss.
+    void setConnectionAlarm(bool on, const QString &reason = QString());
+
+    // Raise a connection-fault popup. Never plays a sound and is not
+    // suppressed when the window has focus; returns whether it was actually
+    // shown. See the implementation for why notify() is wrong for this.
+    bool notifyConnectionFault(const QString &title, const QString &message);
     // Re-assert the Windows taskbar overlay badge for the CURRENT unread count,
     // bypassing updateUnreadCount()'s "count unchanged" early-return. MainWindow
     // calls this whenever the taskbar button is (re)created — first show,
@@ -69,6 +78,9 @@ signals:
 
 private:
     void setupTrayIcon();
+    // The single writer of the tray icon + tooltip: composites the unread
+    // badge and the fault disc in one pass so neither can erase the other.
+    void refreshTrayIcon();
     void loadSoundForId(const QString &id);  // fills m_wavData from :/sounds/<id>.wav
     void playInternalSound();
     void playSystemSound();
@@ -83,6 +95,8 @@ private:
     int m_unreadCount = 0;
     QByteArray m_wavData;  // bytes of the currently-selected tone (empty for none/system)
     QPixmap m_baseIcon;
+    bool m_connectionAlarm = false;
+    QString m_alarmReason;
 
 #ifdef Q_OS_WIN
     // Taskbar overlay (the small badge on the app's taskbar button).

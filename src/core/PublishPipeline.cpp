@@ -1,4 +1,5 @@
 #include "core/PublishPipeline.h"
+#include "core/MediaProxy.h"
 #include "core/BackgroundEngine.h"
 #include "core/LeakStats.h"
 #include <QDebug>
@@ -249,12 +250,53 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
     g_object_set(m_webrtcbin, "bundle-policy",
                  GST_WEBRTC_BUNDLE_POLICY_MAX_BUNDLE, nullptr);
 
+    // Point media at the machine's HTTP proxy, if it has one. webrtcbin hands
+    // this to libnice, where it has exactly ONE consumer: the TURN-over-TCP
+    // socket (agent_create_tcp_turn_socket). So it is purely ADDITIVE -- it
+    // makes a TURN/TCP relay candidate reachable on a network that blocks UDP,
+    // and touches nothing about the UDP candidates, so ICE still takes the
+    // cheaper direct path wherever one still works.
+    //
+    // Deliberately NOT paired with ice-transport-policy=relay: libnice's
+    // force-relay is fail-closed, so on a machine where UDP was working that
+    // would throw away every working candidate and leave the call with none if
+    // the proxy refused the CONNECT.
+    //
+    // Set BEFORE add-turn-server and before gathering starts: gstwebrtc
+    // resolves the proxy host asynchronously, and a TURN/TCP socket created
+    // before that resolution lands would be built without the proxy.
+    {
+        QStringList allTurnUrls;
+        for (const auto &t : turnServers)
+            allTurnUrls += t.urls;
+        const QString mediaProxy = talq::mediaHttpProxyUrlForTurn(allTurnUrls);
+        if (!mediaProxy.isEmpty()) {
+            qDebug() << "PublishPipeline: media HTTP proxy:"
+                     << talq::maskProxyCredentials(mediaProxy);
+            g_object_set(m_webrtcbin, "http-proxy",
+                         mediaProxy.toUtf8().constData(), nullptr);
+        }
+    }
+
     // Disable ICE-TCP candidate gathering. GStreamer's ice-agent (GstWebRTCNice)
     // defaults ice-tcp to TRUE, but Janus runs with ICE-TCP disabled cluster-wide
     // (it needs ICE-Lite pairing too, which this deployment doesn't run) --
-    // libnice unconditionally rejects any TCP-transport candidate on the far end
+    // libnice then rejects any TCP-transport candidate arriving from the far end
     // (agent.c's priv_add_remote_candidate), so every TCP host candidate we
-    // gather and trickle is guaranteed-useless dead weight. Usually harmless
+    // gather and trickle is guaranteed-useless dead weight. NOTE, verified
+    // against libnice 0.1.23 source: that rejection is conditional on
+    // `!agent->use_ice_tcp` -- it is THIS setting that creates it, not a libnice
+    // invariant. The setting still earns its place (Janus has ICE-TCP off
+    // cluster-wide, so the candidates would be useless regardless), but do not
+    // cite the rejection as an independent reason for it.
+    //
+    // This does NOT disable TURN over TCP/TLS, and so does not disable the
+    // http-proxy media path set above. The single use_ice_tcp guard on the TURN
+    // path (agent.c:2977) also requires reliable_tcp, which libnice sets only
+    // under OC2007 compatibility; webrtcbin builds its agent with
+    // NICE_COMPATIBILITY_RFC5245, so that guard is dead code here. A TURN/TCP
+    // relay candidate is emitted with transport UDP, which is why Janus accepts
+    // it like any other relay candidate. Usually harmless
     // (a UDP candidate still gets through), but on a cross-region pairing it eats
     // into Janus's fixed ICE/DTLS give-up budget when it's the only batch that
     // arrives -- root-caused via the "Failed to add some remote candidates
