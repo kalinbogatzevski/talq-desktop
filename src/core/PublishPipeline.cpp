@@ -1,6 +1,8 @@
 #include "core/PublishPipeline.h"
 #include "core/MediaProxy.h"
 #include "core/IceStats.h"
+#include <QCoreApplication>
+#include <memory>
 #include "core/BackgroundEngine.h"
 #include "core/LeakStats.h"
 #include <QDebug>
@@ -276,6 +278,7 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
                      << talq::maskProxyCredentials(mediaProxy);
             g_object_set(m_webrtcbin, "http-proxy",
                          mediaProxy.toUtf8().constData(), nullptr);
+            m_mediaProxyConfigured = true;
         }
     }
 
@@ -2878,8 +2881,34 @@ void PublishPipeline::onIceStateChanged(GObject *obj, GParamSpec *, gpointer use
         // nothing about whether the proxied relay carried it or a direct UDP
         // route did -- and on a restricted network that is exactly the question.
         if (stateName == QLatin1String("connected")
-            || stateName == QLatin1String("completed"))
-            talq::logSelectedCandidatePair(guard->m_webrtcbin, QStringLiteral("PublishPipeline:"));
+            || stateName == QLatin1String("completed")) {
+            // Token copied HERE, on the Qt thread, while the object is known
+            // alive. The callback below runs on a GStreamer thread and must not
+            // touch the pipeline at all; it only forwards plain values and an
+            // expiry test that is evaluated back on the Qt thread.
+            PublishPipeline *self2 = guard;
+            std::weak_ptr<char> alive = self2->m_aliveToken;
+            const bool proxied = self2->m_mediaProxyConfigured;
+            talq::querySelectedCandidatePair(
+                guard->m_webrtcbin, QStringLiteral("PublishPipeline:"),
+                [alive, self2, proxied](const talq::SelectedPair &sp) {
+                    if (!sp.valid) return;
+                    const QString ty = sp.localType;
+                    const QString rp = sp.relayProtocol;
+                    // "via proxy" only where a proxy could possibly have been
+                    // involved: libnice consults it for TURN over TCP/TLS and
+                    // nowhere else, so a plain TURN/UDP relay is not proxied
+                    // even on a machine that has one configured.
+                    const bool via = proxied && sp.relayCouldUseProxy();
+                    // qApp outlives every pipeline, so the hop itself is safe;
+                    // the token decides whether the receiver still exists, and
+                    // it is tested on the receiver's own thread.
+                    QMetaObject::invokeMethod(qApp, [alive, self2, ty, rp, via]() {
+                        if (alive.expired()) return;
+                        emit self2->mediaPathResolved(ty, rp, via);
+                    }, Qt::QueuedConnection);
+                });
+        }
         emit guard->iceStateChanged(stateName);
     }, Qt::QueuedConnection);
 }

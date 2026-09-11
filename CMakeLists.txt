@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(talq VERSION 0.71.1 LANGUAGES CXX)
+project(talq VERSION 0.72.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -232,12 +232,35 @@ string(TIMESTAMP TALQ_BUILD_TS "%m%d-%H%M")
 # before it, so 0.70.0 is the one that makes the 0.69.x work hold. Event-name
 # pattern, as with Saedinenie and 0.39.x. Chosen 2026-09-01.
 #
-# 0.71.x IS "First School Day" -- Първи учебен ден, 15 September, the first day
-# of the school year and the one date in the Bulgarian calendar that is about
-# starting something rather than commemorating it. It breaks from the
-# battle-and-treaty thread of 0.69.x/0.70.x deliberately: this line opens the
-# proxy work, where TalQ learns to reach the outside world from inside a
-# locked-down office network. Chosen by Kalin, 2026-09-10.
+# 0.71.x IS "First School Day" -- Първи учебен ден, 15 September.
+#
+# The date is not the obvious one. Bulgarian schools went back on 1 SEPTEMBER
+# until 1921, when Aleksandar Stamboliyski's agrarian government moved it to the
+# 15th on the proposal of his education minister, Stoyan Omarchevski. The reason
+# was practical rather than ceremonial: it left children two more weeks in the
+# autumn to help their parents bring in the harvest, in an economy that was
+# overwhelmingly agrarian.
+#
+# The harvest reason is long gone and the date stayed anyway -- which is the
+# part that suits this line. 0.71.x is largely about things that were decided
+# for one set of conditions and quietly outlived them: an ICE-TCP flag set for
+# a cross-region bug that turned out to gate nothing we needed, a nearest-server
+# probe written before anyone here had met a corporate proxy, and a notification
+# design withdrawn in 0.51.7 whose reasoning still held even as the problem it
+# was withdrawn for changed shape.
+#
+# It also keeps the Bulgarian thread running (0.39.x Aprilsko Vastanie -> 0.40.x
+# Panagyurishte -> 0.41.x Koprivshtitsa -> 0.69.x Saedinenie -> 0.70.x
+# Slivnitsa), and follows the EVENT-name pattern rather than the place-name one.
+# Chosen by Kalin, 2026-09-10.
+# Sources: tribune.bg, tvn.bg, banker.bg (15 Sept 1921, Omarchevski/Stamboliyski).
+#
+# 0.72.x KEEPS "First School Day" -- a deliberate exception to the one-name-per
+# -minor-line rule, made at Kalin's request. 0.72.0 is the STABLE cut of exactly
+# the 0.71.x work and nothing else, so the shared name says that plainly; a new
+# codename here would imply a new body of work and hide the promotion. This is
+# the same kind of exception as the 0.66.x skip above, and like that one it is
+# recorded rather than silently done. Decided 2026-09-11.
 set_source_files_properties(
     src/main.cpp
     src/core/CallManager.cpp
