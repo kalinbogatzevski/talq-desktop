@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.71.1 "First School Day" — BETA (2026-09-11)
+
+Fixes nearest-server selection on PCs behind a company proxy, and makes it possible to tell from
+the log how a call actually connected.
+
+### Fixed
+* **Desks behind a company proxy were being sent to the wrong region.** TalQ measures which of the
+  call servers is closest by briefly connecting to each one, and those measurements were made
+  without going through the proxy — so on a proxied PC every measurement failed, and TalQ silently
+  fell back to an arbitrary choice. A desk in South Africa was being served from Europe, which
+  works, but adds delay to every call for no reason.
+
+  The measurement now goes through the proxy when there is one. It still ranks the servers
+  correctly: the extra time to reach the proxy is the same for all of them, so it cancels out of
+  the comparison.
+
+### Added
+* **The log now records how a call connected.** Once a call settles, TalQ writes down which route
+  the audio and video actually took — a direct one, or a relay through a call server. A call that
+  works is not by itself evidence that any particular route was used, and on a restricted network
+  that is precisely the question worth answering.
+
 ## v0.71.0 "First School Day" — BETA (2026-09-10)
 
 Opens the proxy line: calls can find a way out of an office network that blocks direct media, and

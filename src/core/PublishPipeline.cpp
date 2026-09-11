@@ -1,5 +1,6 @@
 #include "core/PublishPipeline.h"
 #include "core/MediaProxy.h"
+#include "core/IceStats.h"
 #include "core/BackgroundEngine.h"
 #include "core/LeakStats.h"
 #include <QDebug>
@@ -2873,6 +2874,12 @@ void PublishPipeline::onIceStateChanged(GObject *obj, GParamSpec *, gpointer use
     QMetaObject::invokeMethod(self, [guard, stateName]() {
         if (!guard) return;
         qDebug() << "PublishPipeline: ICE ->" << stateName;
+        // Once ICE settles, say WHICH path won. A call that works proves
+        // nothing about whether the proxied relay carried it or a direct UDP
+        // route did -- and on a restricted network that is exactly the question.
+        if (stateName == QLatin1String("connected")
+            || stateName == QLatin1String("completed"))
+            talq::logSelectedCandidatePair(guard->m_webrtcbin, QStringLiteral("PublishPipeline:"));
         emit guard->iceStateChanged(stateName);
     }, Qt::QueuedConnection);
 }
