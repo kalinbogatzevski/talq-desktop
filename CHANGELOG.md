@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.72.1 "First School Day" — STABLE (2026-09-11)
+
+### Fixed
+* **The release codename had no story behind it.** Hovering the codename, and the About section in
+  Settings, showed only the name — every previous codename explains itself there, and this one fell
+  through to a bare label. It now tells the same story as the rest: Първи учебен ден, 15 September,
+  why the Bulgarian school year opens on the 15th rather than the 1st, and what that has to do with
+  this release.
+
 ## v0.72.0 "First School Day" — STABLE (2026-09-11)
 
 Promotes the 0.71.x line: TalQ now works properly on office PCs that reach the internet through a
