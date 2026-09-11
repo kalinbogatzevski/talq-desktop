@@ -59,7 +59,18 @@ install sees no change in the response at all.
 
 On the client, we do the mirror image: read `servers` if present, probe each
 candidate with a cheap TCP connect to measure round-trip time, and connect to
-the fastest one that answers. If the field is absent — a stock, unpatched
+the fastest one that answers.
+
+Two details that matter on real networks. The probe honours the machine's
+system proxy, because on a proxied desktop a direct socket simply fails and
+*every* candidate then measures as unreachable — at which point the client has
+no ranking left and falls back to an arbitrary choice, which is how a desk can
+end up served from another continent while appearing to work perfectly.
+Measuring through a proxy still ranks correctly even though the absolute
+numbers are inflated: the time to reach the proxy is the same for every
+candidate, so it cancels out of the comparison. And when no candidate answers
+at all, the client says so in its log rather than silently pretending it chose
+the nearest one. If the field is absent — a stock, unpatched
 Nextcloud — the client falls back to exactly its previous single-server
 behaviour. No feature flag, no version negotiation: presence of the field
 *is* the capability check.

@@ -53,6 +53,14 @@ A distribution may ship defaults for both so nobody types a URL.
 refuses plaintext elsewhere and says so in Settings. This is not
 configurable, and the reason is below under Security.
 
+**Corporate proxies.** TalQ opens this WebSocket through whatever proxy
+Windows is configured with. If your desks sit behind one, prefer the standard
+secure web port: a restrictive proxy commonly permits a tunnelled connection
+only to port 443 and refuses everything else, so an event source on an unusual
+port can be unreachable from exactly the machines you most want it on. If the
+proxy also demands a username and password, TalQ cannot authenticate to it and
+will report that rather than reconnecting silently.
+
 ## 1. Pairing — how a desktop gets a credential
 
 TalQ never asks the user for their password to your system. Instead it uses a
