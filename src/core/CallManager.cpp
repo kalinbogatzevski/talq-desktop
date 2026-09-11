@@ -1,4 +1,5 @@
 #include "core/CallManager.h"
+
 #include "core/BackgroundEngine.h"
 #include "core/LeakStats.h"
 #include "core/VideoEncoderUtil.h"   // talqAvoidNvenc() latch
@@ -2162,6 +2163,19 @@ bool CallManager::buildAndStartPublisher()
         m_signaling->sendEndOfCandidates(m_signaling->sessionId(), pubSid);
     });
 
+    // A rebuilt publisher renegotiates ICE, so the previous answer is void
+    // until the new one arrives.
+    m_mediaPathType.clear();
+    m_mediaPathRelayProto.clear();
+    m_mediaPathViaProxy = false;
+
+    connect(m_publishPipeline, &PublishPipeline::mediaPathResolved,
+            this, [this](const QString &type, const QString &relayProto, bool viaProxy) {
+        m_mediaPathType      = type;
+        m_mediaPathRelayProto = relayProto;
+        m_mediaPathViaProxy  = viaProxy;
+    });
+
     connect(m_publishPipeline, &PublishPipeline::iceStateChanged,
             this, [this](const QString &state) {
         qDebug() << "CallManager: publisher ICE:" << state;
@@ -3590,6 +3604,38 @@ QString CallManager::selectedTurnLabel() const
     return hosts.join(QStringLiteral(", "));
 }
 
+// Telemetry: how the outbound media is actually travelling.
+//
+// This row exists because a call that works proves nothing about HOW it
+// connected. TalQ offers a proxied TURN/TCP relay candidate alongside the
+// ordinary direct ones and lets ICE choose, so on a restricted network
+// "the call worked" is ambiguous between "the proxy path carried it" and
+// "a direct route was available all along".
+//
+// Reads cached values only. It is called from the paint path, which repaints
+// at ~30 fps while the telemetry panel is open, so it must not resolve the
+// system proxy (a potentially blocking WPAD/PAC lookup) or walk the TURN list.
+QString CallManager::selectedMediaPathLabel() const
+{
+    if (m_mediaPathType.isEmpty())
+        return QString();
+
+    if (m_mediaPathType != QStringLiteral("relay")) {
+        // host / srflx: it found its own way out and no relay was involved.
+        return tr("direct (%1)").arg(m_mediaPathType);
+    }
+
+    // For a relay the interesting transport is how we reach the TURN server,
+    // not the candidate's own -- a TURN/TCP relay candidate is still announced
+    // as UDP, so the candidate protocol cannot tell the two apart.
+    QString out = m_mediaPathRelayProto.isEmpty()
+                    ? tr("relayed")
+                    : tr("relayed over %1").arg(m_mediaPathRelayProto);
+    if (m_mediaPathViaProxy)
+        out += QStringLiteral("  ·  ") + tr("via proxy");
+    return out;
+}
+
 // Telemetry: the signaling/HPB server this client is connected to (host only).
 QString CallManager::selectedSignalingLabel() const
 {
@@ -4754,6 +4800,13 @@ void CallManager::teardown(const QString &reason)
 {
     setStatusDetail("");
     m_peerPeakRxHeight = 0;        // fresh basis for the next call's quality label
+    // Same reason: the route is a property of ONE call. Left set, the panel
+    // reports the previous call's path for the opening seconds of the next --
+    // and "relayed via proxy" is exactly the claim you do not want to make
+    // about a call that has not connected yet.
+    m_mediaPathType.clear();
+    m_mediaPathRelayProto.clear();
+    m_mediaPathViaProxy = false;
     stopLoadController();          // 0.51.x: disarm the tick + reset caps to full
     m_ringTimeout.stop();
     m_durationTimer.stop();

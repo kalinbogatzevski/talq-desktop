@@ -192,6 +192,12 @@ public:
     // Measured RTT (ms) to the selected TURN relay / HPB from the nearest-server
     // probes, or -1 if unknown. For the telemetry ROUTING readout.
     int selectedTurnRttMs() const;
+
+    // Telemetry: how this call's outbound media is actually travelling --
+    // relayed through a TURN server or straight out -- and whether a proxy is
+    // carrying it. Empty until ICE settles. Local display only; TalQ reports
+    // nothing anywhere (see PRIVACY.md).
+    QString selectedMediaPathLabel() const;
     int selectedSignalingRttMs() const;
 
     Q_INVOKABLE void startCall(const QString &token, bool withVideo);
@@ -362,6 +368,14 @@ private slots:
     void onAudioLevelUpdated(double level);
 
 private:
+    // Set from PublishPipeline::mediaPathResolved once ICE settles, and RESET
+    // per call -- a stale value would report the previous call's route for the
+    // opening seconds of the next one. All three are plain cached values so the
+    // telemetry row costs nothing to draw at ~30 fps.
+    QString m_mediaPathType;       // "host" / "srflx" / "relay"
+    QString m_mediaPathRelayProto; // how the relay reaches TURN: udp / tcp / tls
+    bool    m_mediaPathViaProxy = false;
+
     void setState(CallState newState);
 
     // 0.51.x load controller internals.

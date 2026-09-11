@@ -201,6 +201,12 @@ signals:
     void localOfferReady(const QString &sdp);
     void iceCandidateReady(const QString &candidate, int sdpMLineIndex, const QString &sdpMid);
     void iceStateChanged(const QString &state);
+    // What ICE actually settled on for this call's outbound media: the local
+    // candidate type ("host"/"srflx"/"relay") and its protocol. Drives the
+    // in-call ROUTING readout, which is the only place the answer is visible
+    // while a call is up.
+    void mediaPathResolved(const QString &localType, const QString &relayProtocol,
+                           bool viaProxy);
     void iceGatheringComplete();           // ICE gathering done → endOfCandidates
     void audioLevelUpdated(double level);  // 0.0 to 1.0
     void error(const QString &message);
@@ -238,6 +244,19 @@ public slots:
     void pollBus();  // called from CallManager's GLib timer
 
 private:
+    // True when start() actually installed an http-proxy on this webrtcbin.
+    // Captured there rather than re-derived later: resolving the system proxy
+    // is a potentially blocking Windows call (WPAD/PAC), and the only other
+    // consumer is a telemetry row that repaints ~30x a second.
+    bool m_mediaProxyConfigured = false;
+
+    // Ownership token for cross-thread callbacks. Destroyed with this object on
+    // the Qt thread, so a callback that hops to the Qt thread and finds it
+    // expired knows the pipeline is gone. A QPointer cannot do this job: testing
+    // it on a GStreamer thread and dereferencing it moments later races a
+    // deleteLater() on the Qt thread.
+    std::shared_ptr<char> m_aliveToken = std::make_shared<char>();
+
     void cleanup();
     bool buildCameraChain(int deviceIndex, bool hd1080);
     void reArmCameraSource();   // 0.52.13 — stall recovery: NULL→PLAYING the MF source

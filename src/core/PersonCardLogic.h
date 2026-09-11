@@ -100,7 +100,7 @@ inline std::string personPresenceLine(const std::string &state,
 }
 
 // The chip's words. A server label always wins for a KNOWN state -- that is
-// what lets a deployment reword "On shift" to "Rostered", or translate it,
+// what lets a deployment reword "Working" to "Rostered", or translate it,
 // without anyone shipping a build.
 //
 // Unknown says nothing at all, and no server label can make it speak. Unknown
@@ -113,9 +113,9 @@ inline std::string personShiftChipText(ShiftState state,
     const std::string label = person_detail::trimCopy(serverLabel);
     if (!label.empty()) return label;
     switch (state) {
-    case ShiftState::OnShift:  return "On shift";
+    case ShiftState::OnShift:  return "Working";
     case ShiftState::OnBreak:  return "On break";
-    case ShiftState::OffShift: return "Off shift";
+    case ShiftState::OffShift: return "Outside hours";
     case ShiftState::Unknown:  break;
     }
     return {};

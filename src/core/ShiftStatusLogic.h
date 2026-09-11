@@ -6,7 +6,7 @@
 // public holidays. A site's ERP resolves all of that and sends back a closed
 // state plus a display label:
 //
-//   {"statuses": {"<user-id>": {"state":"on_shift","label":"On shift"}}}
+//   {"statuses": {"<user-id>": {"state":"on_shift","label":"Working"}}}
 //
 // That split is not incidental. TalQ has no permission model and cannot have
 // one -- it renders what arrives and cannot tell "you may not see this" from
@@ -113,7 +113,7 @@ inline std::vector<std::string> buildShiftBatch(const std::vector<std::string> &
 
 inline constexpr std::size_t kMaxShiftLabelChars = 24;
 
-// The server owns the wording, so "On shift" can become "Rostered" without a
+// The server owns the wording, so "Working" can become "Rostered" without a
 // desktop release. The client owns everything that can break the layout:
 // control characters (one newline turns a single-line chip into two) and
 // length.
