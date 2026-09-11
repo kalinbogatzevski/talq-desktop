@@ -3,6 +3,9 @@
 #include "core/ChatSyncLogic.h"
 #include "core/HpbPool.h"
 #include "core/WebSocketProxy.h"
+#include "core/SystemProxy.h"
+#include "core/MediaProxyPolicy.h"
+#include <QNetworkProxy>
 #include <QJsonDocument>
 #include <QSettings>
 #include <QDateTime>
@@ -305,15 +308,53 @@ void SignalingClient::selectNearestHpbAndConnect()
     // isolates the TCP handshake RTT).
     for (size_t i = 0; i < probes->size(); ++i) {
         const QString host = (*probes)[i].host;
-        QHostInfo::lookupHost(host, this, [this, probes, selectionDone, i](const QHostInfo &info) {
-            if (*selectionDone) return;
-            if (info.error() != QHostInfo::NoError || info.addresses().isEmpty()) return;
-            const QHostAddress addr = info.addresses().first();
+
+        // Does a proxy stand between us and this POP? Asked once per candidate,
+        // before any probing, because the answer changes HOW we measure.
+        //
+        // This is the call site that was missed when the WebSockets were fixed
+        // in 0.70.3, and the symptom was subtle rather than loud: a raw
+        // QTcpSocket inherits the system proxy like everything else, so on a
+        // proxied desk every probe failed, every RTT came back -1, and the
+        // "no candidate answered" fallback quietly routed a South African desk
+        // to the Bulgarian POP. Nothing looked broken -- calls connected, just
+        // through the wrong continent.
+        const QList<QNetworkProxy> probeProxies = talq::systemTcpProxiesFor(host, 443);
+        const std::vector<talq::ProxyCandidate> probeCands =
+            talq::toProxyCandidates(probeProxies);
+        const int chosenProxy =
+            talq::decideMediaProxy(probeCands.data(), int(probeCands.size()));
+        const bool viaProxy = (chosenProxy >= 0);
+        QNetworkProxy probeProxy;
+        if (viaProxy) {
+            const QNetworkProxy &src = probeProxies.at(chosenProxy);
+            // Re-cast for the same reason the WebSockets do: a proxy Qt labels
+            // caching-only cannot carry a socket, and the CONNECT is what we
+            // actually need from it.
+            probeProxy = src.capabilities().testFlag(QNetworkProxy::TunnelingCapability)
+                       ? src
+                       : QNetworkProxy(QNetworkProxy::HttpProxy, src.hostName(),
+                                       src.port(), src.user(), src.password());
+        }
+
+        // Measuring THROUGH a proxy still ranks the POPs correctly, which is the
+        // only thing this probe is for. The tunnel is established end to end --
+        // Qt reports `connected` only once the proxy has itself reached the
+        // target -- so each sample is (client->proxy) + (proxy->POP). The first
+        // term is the same for all three candidates, so it inflates every
+        // number equally and cancels out of the comparison. Absolute values
+        // become meaningless; the ordering, which is what we select on, does not.
+        auto startProbe = [this, probes, selectionDone, i, viaProxy, probeProxy]
+                          (const QHostAddress &addr, const QString &hostName) {
             for (int s = 0; s < kProbeSamples; ++s) {
-                QTimer::singleShot(s * kSampleSpacingMs, this, [this, probes, selectionDone, i, addr]() {
+                QTimer::singleShot(s * kSampleSpacingMs, this,
+                                   [this, probes, selectionDone, i, addr, hostName,
+                                    viaProxy, probeProxy]() {
                     if (*selectionDone) return;
                     Probe &pr = (*probes)[i];
                     auto *sock = new QTcpSocket(this);
+                    sock->setProxy(viaProxy ? probeProxy
+                                            : QNetworkProxy(QNetworkProxy::NoProxy));
                     auto t = std::make_shared<QElapsedTimer>();
                     t->start();
                     pr.socks.push_back(sock);
@@ -328,9 +369,30 @@ void SignalingClient::selectNearestHpbAndConnect()
                         if (pr.minRtt < 0 || rtt < pr.minRtt) pr.minRtt = rtt;
                         sock->abort();
                     });
-                    sock->connectToHost(addr, 443);
+                    // By NAME when proxied: a CONNECT to a bare IP is refused by
+                    // many corporate proxies, and letting the proxy resolve is
+                    // also what the real connection will do. Direct, we keep
+                    // using the pre-resolved address so DNS stays out of the
+                    // measurement.
+                    if (viaProxy)
+                        sock->connectToHost(hostName, 443);
+                    else
+                        sock->connectToHost(addr, 443);
                 });
             }
+        };
+
+        if (viaProxy) {
+            // No lookup needed -- the proxy resolves. Skipping it also avoids
+            // failing the whole probe on a network where DNS is proxy-only.
+            startProbe(QHostAddress(), host);
+            continue;
+        }
+
+        QHostInfo::lookupHost(host, this, [startProbe, selectionDone, host](const QHostInfo &info) {
+            if (*selectionDone) return;
+            if (info.error() != QHostInfo::NoError || info.addresses().isEmpty()) return;
+            startProbe(info.addresses().first(), host);
         });
     }
 
