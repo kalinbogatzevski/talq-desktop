@@ -122,6 +122,13 @@ the publisher.
   Backend**. This is a Nextcloud Talk requirement rather than a TalQ one, but
   it is the single most common reason calls do not work.
 
+- **Behind a corporate proxy?** TalQ follows the proxy Windows is configured
+  with, for ordinary web requests *and* for the live connections that carry
+  calls, message alerts and caller pop-ups. One limit is worth knowing before
+  you deploy: if the proxy demands a username and password, TalQ cannot sign
+  in to it — messages may still work, but calls will not. TalQ says so plainly
+  rather than retrying forever.
+
 Prebuilt installers are on the [Releases](https://github.com/kalinbogatzevski/talq-desktop/releases)
 page (see [Download](#download) above). To build from source, read on.
 
