@@ -570,7 +570,7 @@ void ConversationInfoDialog::populateParticipants(const QVector<RoomParticipant>
             if (talq::shiftMarksExceptionInList(st)) {
                 QString word = m_shiftStatus->labelFor(p.userId);
                 if (word.isEmpty())
-                    word = (st == talq::ShiftState::OnBreak) ? tr("On break") : tr("Off shift");
+                    word = (st == talq::ShiftState::OnBreak) ? tr("On break") : tr("Outside hours");
                 shiftSuffix = QStringLiteral("  \u00B7  ") + word;
                 dimRow = (st == talq::ShiftState::OffShift);
             }

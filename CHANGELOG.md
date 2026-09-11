@@ -1,5 +1,61 @@
 # Changelog
 
+## v0.72.0 "First School Day" — STABLE (2026-09-11)
+
+Promotes the 0.71.x line: TalQ now works properly on office PCs that reach the internet through a
+company proxy, and says clearly when something is wrong instead of failing quietly.
+
+Everyone on 0.70.x gets all of the below. If you ran the 0.71.x beta, the only additions are the
+fixes at the end.
+
+### Added
+* **Calls can use the company proxy when the network blocks direct media.** On a locked-down office
+  network the audio and video path is usually the first thing to fail: it does not use the web
+  ports, and firewalls that permit browsing routinely drop it. TalQ now offers the call a route
+  through the same proxy Windows already uses.
+
+  Strictly an addition — the direct routes are still offered and still preferred, so on a normal
+  network nothing changes and calls keep taking the shorter, better-quality path. A destination the
+  machine is configured to reach directly stays direct. The proxy must still permit a tunnelled
+  connection to the relay server, so this does not remove the need for those servers to be
+  reachable.
+
+* **TalQ can tell "your messages work but live connections are blocked" apart from an outage.**
+  Previously a desk in this state reported only that the call server was unreachable, sending
+  people to look at a call server that was perfectly healthy.
+
+* **A proxy that demands a username and password is now reported.** TalQ cannot sign in to one, and
+  for calls it cannot work around one. It clears by itself once the machine is on a network where
+  connections succeed, so a laptop that met such a proxy in a hotel does not keep complaining at
+  home.
+
+* **The call screen's telemetry panel shows how the media is actually travelling** — direct, or
+  relayed through a call server, and whether a proxy is carrying it. A call that works does not by
+  itself say which route it took, and on a restricted network that is the question worth answering.
+  Shown on your own screen during your own call; nothing is sent anywhere.
+
+### Fixed
+* **Desks behind a company proxy were being sent to the wrong region.** TalQ picks the closest call
+  server by briefly connecting to each one, and those measurements were made without going through
+  the proxy — so on a proxied PC every measurement failed and TalQ fell back to an arbitrary
+  choice. A desk in South Africa was being served from Europe: it works, but adds delay to every
+  call for no reason.
+
+* **A problem that will not fix itself is now harder to miss.** The warning strip could be closed,
+  and it lives in the message area, so a desk could sit broken for days unnoticed. A persistent
+  fault now also raises a desktop notification and marks the tray icon until it is genuinely
+  resolved, and closing the strip no longer silences either.
+
+  Brief interruptions — a wireless roam, a laptop waking, a short drop — never raise a
+  notification, and neither does TalQ before you have signed in. Connection warnings never make a
+  sound.
+
+### Changed
+* **"On shift" now reads "Working", and "Off shift" reads "Outside hours."** The indicator covers
+  both rostered shift workers and office staff on ordinary weekday hours, so the old wording
+  described only half the people it applied to. Sites whose own system supplies this wording are
+  unaffected.
+
 ## v0.71.1 "First School Day" — BETA (2026-09-11)
 
 Fixes nearest-server selection on PCs behind a company proxy, and makes it possible to tell from

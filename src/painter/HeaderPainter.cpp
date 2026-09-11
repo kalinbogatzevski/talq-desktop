@@ -565,9 +565,9 @@ void HeaderPainter::paintEvent(QPaintEvent *)
                 // The server owns the wording, but a server that sends a state
                 // and no label must not produce a blank chip.
                 switch (st) {
-                case talq::ShiftState::OnShift:  shiftText = tr("On shift");  break;
+                case talq::ShiftState::OnShift:  shiftText = tr("Working");  break;
                 case talq::ShiftState::OnBreak:  shiftText = tr("On break");  break;
-                case talq::ShiftState::OffShift: shiftText = tr("Off shift"); break;
+                case talq::ShiftState::OffShift: shiftText = tr("Outside hours"); break;
                 case talq::ShiftState::Unknown:  break;
                 }
             }

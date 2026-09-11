@@ -1386,9 +1386,9 @@ void CallStage::paintCentered(QPainter &p, const PainterTheme &th)
             QString chip = m_shiftStatus->labelFor(m_call->remotePeerId());
             if (chip.isEmpty()) {
                 switch (st) {
-                case talq::ShiftState::OnShift:  chip = tr("On shift");  break;
+                case talq::ShiftState::OnShift:  chip = tr("Working");  break;
                 case talq::ShiftState::OnBreak:  chip = tr("On break");  break;
-                case talq::ShiftState::OffShift: chip = tr("Off shift"); break;
+                case talq::ShiftState::OffShift: chip = tr("Outside hours"); break;
                 case talq::ShiftState::Unknown:  break;
                 }
             }
@@ -2497,6 +2497,11 @@ void CallStage::paintTelemetry(QPainter &p, const PainterTheme &th)
         };
         row(QStringLiteral("HPB"),  withRtt(m_call->selectedSignalingLabel(), m_call->selectedSignalingRttMs()));
         row(QStringLiteral("TURN"), withRtt(m_call->selectedTurnLabel(),      m_call->selectedTurnRttMs()));
+        // What the media is ACTUALLY doing, as opposed to what was offered.
+        // The two rows above list what this call COULD use; this one is the
+        // route ICE settled on, which is the only way to tell a call that
+        // succeeded through a proxy from one that never needed it.
+        row(QStringLiteral("MEDIA"), m_call->selectedMediaPathLabel());
         y += 8;
     }
 
