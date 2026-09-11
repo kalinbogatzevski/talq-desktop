@@ -58,6 +58,21 @@ inline QString codenameBlurb(const QString &verName)
         || verName == QStringLiteral("Koprivshtitsa"))
         return QObject::tr("Codename \"%1\" — Bulgaria's April Uprising of 1876, "
             "150th anniversary (2026).").arg(verName);
+    if (verName == QStringLiteral("First School Day"))
+        return QObject::tr("Codename \"%1\" — Първи учебен ден, 15 September, "
+            "when the first bell rings and the school year opens: the ceremonial "
+            "assembly, the flowers, the meeting with the class teacher, and the "
+            "families who come mainly for the first-graders. The date is not the "
+            "obvious one. Bulgarian schools went back on 1 September until 1921, "
+            "when Aleksandar Stamboliyski's agrarian government moved the opening "
+            "two weeks later on the proposal of his education minister, Stoyan "
+            "Omarchevski. The reason was practical rather than ceremonial: it left "
+            "children two more weeks in the autumn to help bring in the harvest, in "
+            "an economy that was overwhelmingly agrarian. The harvest reason is "
+            "long gone and the date stayed anyway — a hundred years on, the bell "
+            "still rings on the 15th. A fitting name for a release about things "
+            "decided for conditions that no longer exist, and about getting TalQ "
+            "through to desks shut behind a locked-down office network.").arg(verName);
     if (verName == QStringLiteral("Slivnitsa"))
         return QObject::tr("Codename \"%1\" — Сливница, "
             "5–7 November 1885, the battle that defended the Unification two "
