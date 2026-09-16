@@ -31,6 +31,11 @@
 #include "core/PowerStateInhibitor.h"   // keep the machine awake during a call
 #include "core/MemShedPolicy.h"         // host-protection memory-shed decision (onLoadTick)
 #include "core/ShareCapPolicy.h"        // screen-share quality level -> encode cap
+#include "core/SubscribeOfferPolicy.h"  // parked offers, per-sid candidate routing, requestoffer gate
+#include "core/CallJoinPolicy.h"        // STUN/TURN cache, media-start barrier, join-failure decisions
+#include "core/CallRecoveryPolicy.h"    // publisher rebuild deadline/gates, subscriber recovery by phase
+#include "core/SubscriberRxStallPolicy.h" // inbound packets-received stall (audio-only peers)
+#include "core/SecondDeviceRingPolicy.h"  // no ring / no status revert for a call we're in elsewhere
 
 class BackgroundEngine;   // #20 — owned by CallManager; lives across calls.
 class ConversationListModel;
@@ -185,8 +190,9 @@ public:
     // PublishPipeline::sendFps() drain from paint code (repaints at ~30 fps
     // would corrupt the measurement).
     int sendFps() const { return m_sendFps; }
-    // Telemetry: the routing this call actually selected — the TURN relay host(s)
-    // in use (after nearest-selection) and the signaling/HPB server host.
+    // Telemetry: the routing this call actually selected — the TURN hosts a new
+    // pipeline would be built with, in relay-plan order (probe RTT first), and
+    // the signaling/HPB server host.
     QString selectedTurnLabel() const;
     QString selectedSignalingLabel() const;
     // Measured RTT (ms) to the selected TURN relay / HPB from the nearest-server
@@ -341,6 +347,9 @@ signals:
     // revert, which would 404 if it ran before the server processed the
     // leave — should listen here. If the network is dead, this signal
     // never fires; the server's own session timeout handles cleanup.
+    // Emitted only for a call THIS device sent a join POST for: a ring that
+    // timed out, was declined or was answered on another device never set the
+    // "In a call" status, so there is nothing of ours to revert (2026-09-16 D12).
     void callServerLeaveAcked();
     void audioLevelChanged();
     void callStatsChanged();
@@ -390,6 +399,53 @@ private:
     void    stopLoadController();    // disarm + reset caps to full on call end
     void    onLoadTick();            // one controller tick → apply send + receive caps
     void joinCallOnServer(bool withVideo);
+
+    // --- Call-join lifecycle (2026-09-16 RCA D3/D5; decisions in core/CallJoinPolicy.h) ---
+    // A POST call/{token} can hang 90 s server-side AFTER the join committed, so
+    // its response is no longer the only proof we are in the call, and STUN/TURN
+    // no longer wait for it. Media starts once BOTH are true: join confirmed
+    // (REST 200, HPB participants update listing our session, or a REST
+    // reconcile) and ICE servers usable -- whichever arrives last.
+    void resetCallJoinState(bool outgoing);          // fresh call: new generation + clean flags
+    void onCallJoinPostResult(int gen, const QString &token, bool withVideo, bool ok, int statusCode);
+    // A join POST (or session-reset re-register) answered after its call ended.
+    void onLateJoinPostResult(const QString &token, bool ok, int statusCode);
+    // status 0 / 5xx: GET call/{token} (no backend notification) before any re-POST.
+    // verifyingRejection: a 4xx that followed HPB-only confirmation (review CR-4).
+    void reconcileCallJoin(int gen, const QString &token, bool withVideo, int failedStatus,
+                           bool verifyingRejection);
+    void onCallJoinConfirmed(const char *source, bool viaHpb);
+    void failCallJoin(int statusCode);               // the old "Couldn't start the call" path
+    void maybeStartCallMedia();
+    void startCallMedia();                           // publisher + peer discovery (was the join callback body)
+    void flushDeferredRequestOffers();               // requestoffers held until our join was confirmed
+    // A join POST of an ended call may still commit server-side (Talk writes
+    // in_call ~90 s late when its notifier hangs): after the hold, GET
+    // call/{token} and leave if our session is listed (talq::planCallEnd).
+    void scheduleLateJoinCommitCheck(const QString &token, qint64 delayMs);
+    // Does a GET call/{token} row's NEXTCLOUD session id belong to this device?
+    // Our room join event mapped it to our HPB sid; `selfSid` is that sid as
+    // snapshotted by the caller ("" = the live one).
+    bool isOwnNcSession(const QString &ncSessionId, const QString &selfSid = QString()) const;
+    // Bumped by resetCallJoinState (startCall/acceptCall) and teardown. Every
+    // async join / reconcile / STUN-TURN callback captures it; a mismatch means
+    // the call it belonged to is gone (hung up, torn down, replaced).
+    int  m_callGen = 0;
+    bool m_joinIsOutgoing = false;    // startCall (true) vs acceptCall (false)
+    talq::JoinPostLedger m_joinPosts; // POST call/{token}s of THIS call: sent / in flight / unresolved
+    bool m_callMediaStarted = false;  // startCallMedia() already ran for this call
+    talq::OwnJoinGate m_ownJoin;      // our own session confirmed in the call
+
+    // STUN/TURN for pipelines. Fetched per call at join time (in parallel with
+    // the join POST), refreshed when older than talq::kIceRefreshAfterMs, retried
+    // with backoff on failure. A failed refresh never wipes a working list.
+    // refreshIceServers(true, ...) forces a re-fetch -- for a signaling session
+    // reset, whose rebuilds should not ride the old credentials.
+    void refreshIceServers(bool force, const char *reason);
+    bool iceServersUsable() const;
+    talq::IceServerCache m_iceCache;
+    bool m_iceFetchInFlight = false;
+    int  m_iceFetchFailures = 0;
     // Asynchronous: invokes `onDone` (if provided) when the DELETE /call
     // response comes back from the server, or immediately if there's no
     // call to leave. Qt's network reply callback fires unconditionally
@@ -453,6 +509,33 @@ private:
     void recoverPublisher(const QString &reason);
     void rebuildPublisherAndReoffer();
     bool buildAndStartPublisher();
+    // 2026-09-16 RCA D8 (MT-13) -- a rebuild's end: ICE connected/completed/
+    // failed, start() failure, session reset, deadline or teardown.
+    void concludePublisherRebuild();
+
+    // 2026-09-16 RCA D12 -- incoming-call detection shared by the conversation
+    // poll (onIncomingCallDetected) and the HPB participants path, which also
+    // knows the ringing peer's session. Both suppress a ring for a call our own
+    // user is already in on another device (core/SecondDeviceRingPolicy.h).
+    void detectIncomingCall(const QString &callerName, const QString &token, int callFlag,
+                            const QString &peerSessionId);
+    void ringIncomingCall(const QString &callerName, const QString &token, int callFlag,
+                          const QString &peerSessionId, bool restCheckAtRingStart);
+    void seedRingParticipants(const QString &token, const QString &peerSessionId,
+                              const QString &callerName);
+    void onRingPrecheckResult(int gen, const QString &token, talq::OwnPresence presence,
+                              const char *source);
+    void stopRingingAnsweredElsewhere(const char *source);
+    // One GET call/{token} for the ringing call; stops the ring if our own user
+    // is in it on another device.
+    void checkRingAnsweredElsewhere(const char *source);
+    // Our signaling is in `token`'s room and the join is acked: HPB own-session
+    // JOINED edges for that call reach us (talq::planRingEvidence).
+    bool signalingCoversCallRoom(const QString &token) const;
+    talq::OwnPresence ownPresenceFromSignaling(const QString &token) const;
+    // GET call/{token} -> our own user in that call on another session?
+    void queryOwnPresenceInCall(const QString &token,
+                                std::function<void(talq::OwnPresence)> onResult);
 
     // --- Participant registry (additive; mirrors signaling/pipeline state) ---
     CallParticipant *ensureParticipant(const QString &sessionId, const QString &name);
@@ -533,6 +616,11 @@ private:
     // then froze (its publisher reconnected under new SSRCs, with no ICE-failed
     // to trip recovery) fires recoverSubscriber. Pruned on recover/re-offer/left.
     QHash<QString, SubscriberStallPolicy> m_subStall;
+    // 2026-09-16 RCA D8 -- per-peer inbound packets-received stall watchdog for
+    // peers the frame-stall watchdog cannot see (camera off): an unmuted,
+    // connected subscriber whose RTP stopped is recovered. Same prune sites as
+    // m_subStall. See core/SubscriberRxStallPolicy.h for the false-positive case.
+    QHash<QString, SubscriberRxStallPolicy> m_subRxStall;
     // Per-tile signal-quality glyph. updateCallStats() ticks each subscriber's
     // SignalQualityPolicy every 2 s alongside m_subStall, from
     // SubscribeWebrtcSrc::pollInboundRtp()'s windowed loss/jitter, and
@@ -568,22 +656,38 @@ private:
     QString m_callToken;
     QString m_stunServer;
     QList<TurnServer> m_turnServers;
-    // Nearest-TURN preference (0.57.6): a client offered TURN servers in several
-    // regions can get its publish media relayed cross-continent (field: Ivan in ZA
-    // relayed via the BG TURN -> SA->BG->SA detour -> shredded outbound audio+video,
-    // while his ping/speedtest/receive were all fine). probeNearestTurnAsync()
-    // RTT-probes each offered TURN host on room-join; effectiveTurnServers() then
-    // hands the call pipelines only the nearest host(s), so a relay (when ICE needs
-    // one) is always local. Falls back to the full list until probed / if none answer.
-    QList<TurnServer> m_nearestTurnServers;
-    bool m_turnProbed = false;
+    // TURN host ranking and nearest-POP narrowing (TurnListPolicy.h).
+    // probeNearestTurnAsync() RTT-probes each offered TURN host (UDP STUN
+    // Binding); effectiveTurnServers() orders ALL hosts by the result, and every
+    // pipeline budgets that to <= 8 libnice relays. A build made while the call
+    // is Active, on a result younger than 20 s, keeps only the nearby hosts
+    // (0.57.6, field: a client's media relayed through another region's POP).
+    // Every other build -- the publisher (built in Connecting, rebuilt in
+    // Reconnecting), a recovery rebuild, or once the probe has stopped
+    // re-running -- gets every host: a
+    // list narrowed to one POP trapped the call when that POP died (failure
+    // model B4, 2026-09-16).
+    // Host (lower-case) -> RTT ms, -1 = probed without an answer; absent = never
+    // probed. Replaced whole when a probe completes, never cleared mid-probe.
+    QHash<QString, int> m_turnRttByHost;
+    QElapsedTimer m_turnRttAt;   // restarted when m_turnRttByHost lands; invalid = no result
     int  m_turnBestRttMs = -1;   // best measured TURN RTT (ms) from the probe; telemetry
     int  m_turnProbeGen = 0;   // bumped per probe so a stale timer can't clobber a newer one
     // updateCallStats() tick counter (2s/tick) gating the periodic TURN RTT
     // re-probe below -- see the comment at its use site for the interval choice.
     int  m_turnRttTick = 0;
+    // selectedTurnLabel() cache. The label is read on the telemetry paint path
+    // (~30 fps), so its host lists are rebuilt only when an input changes: the
+    // TURN list (probeNearestTurnAsync() runs right after every assignment and
+    // invalidates), a probe result (invalidates), or the signaling host.
+    mutable QString m_turnLabelAll;         // every offered host, plan order
+    mutable QString m_turnLabelNearby;      // the hosts a narrowed build keeps
+    mutable QString m_turnLabelSignaling;   // signaling host both were built with
+    mutable bool m_turnLabelValid = false;
     void probeNearestTurnAsync();
-    QList<TurnServer> effectiveTurnServers() const;
+    // recoveryBuild: the pipeline replaces one that failed; it never narrows.
+    QList<TurnServer> effectiveTurnServers(bool recoveryBuild = false) const;
+    bool mayNarrowTurnServers(bool recoveryBuild) const;
     QString m_remoteSessionId;
     QString m_remotePeerName;
     QString m_remotePeerId;
@@ -642,6 +746,26 @@ private:
 
     QTimer m_durationTimer;
     QTimer m_ringTimeout;
+    // 2026-09-16 RCA D12 -- second-device ringing. A ring waits (bounded by
+    // talq::kRingPrecheckMaxWaitMs) for GET call/{token} to show whether our own
+    // user is already in the call elsewhere -- except an HPB-detected ring in the
+    // room our signaling is joined to, which re-checks the HPB maps one turn
+    // later instead. While ringing, the GET repeats every
+    // talq::kRingingSelfCheckIntervalMs only while our signaling does not cover
+    // the call's room (talq::planRingEvidence).
+    struct RingPrecheck {
+        QString token;           // "" = no pre-check waiting to ring
+        QString callerName;
+        QString peerSessionId;
+        int     callFlag = 0;
+        bool    restCheckAtRingStart = false;   // talq::RingEvidencePlan
+    };
+    RingPrecheck m_ringPrecheck;
+    int    m_ringPrecheckGen = 0;
+    // The ring whose answered-elsewhere GET is still outstanding ("" = none).
+    QString m_ringSelfCheckInFlightToken;
+    QTimer m_ringPrecheckTimer;
+    QTimer m_ringingSelfCheckTimer;
     QTimer m_statsTimer;
     // Publisher ICE "failed" means our send path to the MCU died (e.g. a
     // long-haul link revoking ICE consent). Zoom-style recovery: NEVER
@@ -658,7 +782,30 @@ private:
     // leak the prior one (1.0 audit).
     QTimer *m_callPollTimer = nullptr;
     int    m_pubRetryAttempts   = 0;     // resets to 0 on ICE connected/completed
-    bool   m_pubRebuildInFlight = false; // serialize rebuilds (one at a time)
+    // Serialize rebuilds (one at a time). 2026-09-16 RCA D8 (MT-13): a rebuild
+    // whose offer was never answered used to block every later one forever; the
+    // gate now stops blocking after talq::kPublisherRebuildDeadlineMs, and
+    // m_pubRebuildDeadline actively re-arms recovery at that point (the stats
+    // tick does not run while Reconnecting).
+    talq::PublisherRebuildGate m_pubRebuild;
+    QTimer m_pubRebuildDeadline;
+    // A rebuild waiting to build (core/CallRecoveryPolicy.h
+    // decidePublisherRebuildStep). m_sessionResetAtMs: a session reset whose
+    // forced room re-join is not acked yet (0 = none). m_pubIceWaitSinceMs: when
+    // this rebuild first found a STUN/TURN fetch in flight (0 = not waiting).
+    qint64 m_sessionResetAtMs  = 0;
+    qint64 m_pubIceWaitSinceMs = 0;
+    int    m_pubLastWaitStep   = 0;      // last logged talq::PublisherRebuildStep (log once per wait)
+    // The outbound-RTP stall watchdog tripped: the live publisher lost send
+    // consent and hot-loops encoder + nicesink (PublisherStallPolicy.h). A
+    // rebuild that has to wait stops that publisher instead of keeping it. Any
+    // other publisher is kept while waiting: it owns the self-preview
+    // (m_localVideoProvider) and the mic meter, and costs no more than a normal
+    // call's capture + encode. Remote audio does NOT depend on it -- since
+    // 0.52.4 every subscriber plays out through its own wasapi2sink and the AEC
+    // reference is a WASAPI loopback capture (SubscribeWebrtcSrc.cpp audio pad,
+    // PublishPipeline.cpp loopback reference; addFarEndPeer returns null).
+    bool   m_pubSendLegStalled = false;
     // 2026-07-13 field incident — REST-evidence backstop (full RCA at the
     // noteRestPeerEvidence definition). An outgoing call's ONLY exit from
     // Outgoing was the HPB participants-update rising edge (inCall 0→N →
@@ -900,19 +1047,25 @@ private:
     QHash<QString,int> m_screenSubFailRetries;
     static constexpr int kScreenSubFailMaxRetries = 4;
 
-    // Offers received before ICE servers are available (P3 race guard)
-    struct PendingOffer { QString fromSessionId; QString sdp; QString sid; };
-    QList<PendingOffer> m_pendingOffers;
+    // Offers received before ICE servers are usable (P3 race guard). At most ONE
+    // per (peer, roomType) -- the newest; parking fulfils that peer's
+    // requestoffer (2026-09-16 offer storm, see core/SubscribeOfferPolicy.h).
+    talq::ParkedOfferQueue<QString> m_parkedOffers;
     void processPendingOffers();
     // Trickle-ICE early candidates: the MCU sends a subscriber's remote
     // candidates together with (or just before) its offer, which can land
-    // ~100ms before onOfferReceived has built the SubscribeWebrtcSrc. Queue
-    // them per remote session and flush when the subscriber is created --
-    // otherwise the subscriber starts with ZERO remote candidates and ICE
-    // never leaves "new" ("waiting for video"). The official client queues.
+    // ~100ms before onOfferReceived has built the SubscribeWebrtcSrc. Buffer
+    // them and flush when the subscriber is created -- otherwise the
+    // subscriber starts with ZERO remote candidates and ICE never leaves "new"
+    // ("waiting for video"). The official client queues. Keyed by (peer, MCU
+    // sid), not by peer: a per-peer queue flushed 8 handles' candidates into
+    // one stale subscriber on 2026-09-16 (RCA D6).
     struct PendingIceCandidate { QString candidate; int mline; QString mid; };
-    QHash<QString, QVector<PendingIceCandidate>> m_pendingSubCandidates;
-    // Screen-share equivalent of m_pendingSubCandidates. The SCREEN candidate
+    talq::SubscriberCandidateRouter<QString, PendingIceCandidate> m_subCandidates;
+    // Sessions that LEFT the room (dead sids): never requestoffer them until the
+    // same sid re-enters (field 2026-09-16: 17 requests to a crashed session).
+    talq::DepartedSessions<QString> m_departedSids;
+    // Screen-share equivalent of m_subCandidates. The SCREEN candidate
     // router (handleScreenOffer's sibling in candidateReceived) had NO queue,
     // unlike the camera path above: a screen subscriber's remote candidates that
     // the MCU trickles with/just before its offer were DROPPED if they landed
