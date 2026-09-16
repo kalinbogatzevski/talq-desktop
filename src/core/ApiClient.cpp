@@ -1,4 +1,5 @@
 #include "core/ApiClient.h"
+#include "core/RestReachabilityPolicy.h"
 #include <QBuffer>
 #include <QCoreApplication>
 #include <QFile>
@@ -155,21 +156,34 @@ bool ApiClient::isRetryableTransportError(QNetworkReply *reply) const
                        "was established"), Qt::CaseInsensitive);
 }
 
-void ApiClient::noteNetworkOutcome(QNetworkReply *reply)
+void ApiClient::noteNetworkOutcome(QNetworkReply *reply, bool fromProbe)
 {
     if (!reply) return;
     const QNetworkReply::NetworkError err = reply->error();
-    // A deliberately-aborted request (logout cancelAll, context death) is not
-    // an outage — ignore it so teardown can't trip the offline banner.
-    if (err == QNetworkReply::OperationCanceledError) return;
-
     const int httpStatus =
         reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
 
-    // The server answered at the HTTP layer (any status — a 401/404/500 still
-    // proves the box is reachable), so we're online. Recovery is instant.
-    if (err == QNetworkReply::NoError || httpStatus > 0) {
-        m_reachMisses = 0;
+    // A deliberately-aborted request (logout cancelAll, context death) is not
+    // an outage. The server answered at the HTTP layer (any status — a
+    // 401/404/500 still proves the box is reachable). A TRANSFER TIMEOUT
+    // (QNetworkReply::TimeoutError) on an ordinary request only proves that
+    // request hung — Talk holds call POST/PUT/DELETE up to 90 s on a dead HPB
+    // notify — so it asks the probe to confirm instead of counting a miss
+    // (2026-09-16 false OFFLINE at 11:37:40; see RestReachabilityPolicy.h).
+    talq::ReplyKind kind = talq::ReplyKind::TransportFailure;
+    if (err == QNetworkReply::OperationCanceledError)
+        kind = talq::ReplyKind::Cancelled;
+    else if (err == QNetworkReply::NoError || httpStatus > 0)
+        kind = talq::ReplyKind::HttpAnswered;
+    else if (err == QNetworkReply::TimeoutError)
+        kind = talq::ReplyKind::TransferTimeout;
+
+    const talq::ReachabilityDecision d = talq::decideReachability(
+        m_reachMisses, kind, fromProbe, m_probeInFlight, kOfflineMisses);
+    m_reachMisses = d.misses;
+
+    // Recovery is instant.
+    if (d.serverAnswered) {
         setReachable(true);
 
         // Reachable is not the same as healthy, and the difference matters to
@@ -187,12 +201,11 @@ void ApiClient::noteNetworkOutcome(QNetworkReply *reply)
         return;
     }
 
-    // Transport failure with no HTTP response: the request never reached the
-    // server. Confirm a first miss fast with an active probe (don't wait for
-    // the 30 s poll); flip offline once misses cross the threshold.
-    if (++m_reachMisses == 1 && !m_probeInFlight)
+    // No HTTP response. Confirm fast with an active probe (don't wait for the
+    // 30 s poll); flip offline once real misses cross the threshold.
+    if (d.scheduleProbe)
         QTimer::singleShot(2000, this, [this]{ probeReachability(); });
-    if (m_reachMisses >= kOfflineMisses)
+    if (d.setOffline)
         setReachable(false);
 }
 
@@ -223,7 +236,7 @@ void ApiClient::probeReachability()
     QNetworkReply *reply = m_nam.get(req);
     connect(reply, &QNetworkReply::finished, this, [this, reply]{
         m_probeInFlight = false;
-        noteNetworkOutcome(reply);
+        noteNetworkOutcome(reply, /*fromProbe*/true);
         reply->deleteLater();
     });
 }

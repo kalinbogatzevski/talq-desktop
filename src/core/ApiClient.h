@@ -497,8 +497,10 @@ private:
 
     // Update reachability from a finished reply (called once per reply).
     // Ignores deliberately-cancelled requests so logout/teardown can't be
-    // mistaken for an outage.
-    void noteNetworkOutcome(QNetworkReply *reply);
+    // mistaken for an outage. `fromProbe` marks the /status.php probe, whose
+    // transfer timeout is a real miss (an ordinary request's is only a reason
+    // to probe -- core/RestReachabilityPolicy.h).
+    void noteNetworkOutcome(QNetworkReply *reply, bool fromProbe = false);
     void setReachable(bool online);
 
     QNetworkAccessManager m_nam;

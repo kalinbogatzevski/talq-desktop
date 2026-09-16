@@ -9,6 +9,7 @@
 #include "core/TalqLog.h"
 #include "core/WasapiDucking.h"
 #include "core/DebugMonitor.h"   // readProcessMemoryMB() for the host-protection watchdog
+#include "core/TurnList.h"       // TURN relay plan: host order by probe RTT
 #include "ui/ShareOverlay.h"
 #include "models/ConversationListModel.h"
 #include <QJsonObject>
@@ -562,6 +563,7 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
     // Room peer joined — request their stream if we're in a call
     connect(m_signaling, &SignalingClient::roomPeerJoined,
             this, [this](const QString &sessionId) {
+        m_departedSids.noteJoined(sessionId);   // F10 — a sid back in the room is requestable again
         if (tryAdoptReturningPeer(sessionId)) return;   // #bug3 -- peer back from grace
         if ((m_state == Connecting || m_state == Active)
             && !m_subscribePipelines.contains(sessionId)) {
@@ -614,6 +616,17 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
         const bool hadPending = m_pendingRequestOffers.contains(sessionId)
                                 || m_subscribePipelines.contains(sessionId);
         dropSubscriber(sessionId);
+        // F10 (field, 2026-09-16) — dropping the subscriber was not
+        // enough: the participant stayed in m_participants, so the
+        // subscribe-reconcile sweep in onLoadTick re-requested the dead sid one
+        // second later and every 8 s after (17 not_allowed, each 25 s late while
+        // the HPB waited on an unreachable POP). A room-left sid can never be in
+        // the call again, so block it in the requestPeerStream funnel and drop
+        // its tile. If the peer's leave also reaches us as participantLeftCall,
+        // that path's removeParticipant is a no-op and its 1:1 grace/sibling
+        // logic runs unchanged.
+        m_departedSids.noteLeft(sessionId);
+        removeParticipant(sessionId);
         if (hadPending)
             qInfo() << "CallManager: peer" << sessionId.left(20)
                     << "left room -- dropped its dead-sid subscriber (A3a; new sid resubscribes)";
@@ -637,26 +650,69 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
                    << "— re-registering call, rebuilding publisher + subscribers";
         setState(Reconnecting);
 
+        // 2026-09-16 RCA D8 — a session reset usually means the HPB/POP we were
+        // on died. Re-fetch STUN/TURN (and fresh TURN credentials) instead of
+        // rebuilding on the list cached at join; rebuildPublisherAndReoffer
+        // waits briefly for it (talq::kRebuildIceFetchWaitMaxMs), the
+        // re-subscribes on Active normally find it landed.
+        refreshIceServers(true, "signaling-session-reset");
+
+        // 2026-09-16 review CR-6 — every MCU handle under the old session is
+        // dead, including those of parked offers and buffered candidates for
+        // peers that have no subscriber yet (the drop loop below only reaches
+        // peers WITH one); replaying them builds pipelines on dead handles. And
+        // the HPB's in-call confirmation belonged to the old session: until the
+        // new one is in the call, not_allowed says nothing about a peer.
+        m_parkedOffers.clear();
+        m_subCandidates.clear();
+        m_ownJoin.noteSessionReset();
+
         // (1) Re-register our NEW session in the server CALL record. The
         // SignalingClient already re-POSTed the ROOM (participants/active), but
         // call membership (inCall flags) was bound to the dead session, so peers
         // would see us in the room yet not in the call. A targeted silent POST
         // re-adds us without the heavyweight initial-join orchestration
         // (joinCallOnServer also re-fetches STUN/TURN + rebuilds — not wanted here).
+        // It is a join POST like any other: recorded for the leave/late-commit
+        // plan, and its 200 re-confirms the join (review CR-6).
         if (!m_callToken.isEmpty()) {
             QJsonObject body;
             body["flags"] = callFlags(m_cameraOn, !m_muted);
             body["silent"] = true;            // already mid-call — never re-ring
             body["recordingConsent"] = false;
-            m_api->post("apps/spreed/api/v4/call/" + m_callToken, body,
-                [](bool ok, const QJsonObject &, int sc) {
-                    if (!ok) qWarning() << "CallManager: session-reset call re-register failed, status=" << sc;
+            const int gen = m_callGen;
+            const QString token = m_callToken;
+            m_joinPosts.noteSent(QDateTime::currentMSecsSinceEpoch());
+            m_api->post("apps/spreed/api/v4/call/" + token, body,
+                [this, gen, token](bool ok, const QJsonObject &, int sc) {
+                    if (gen != m_callGen) {
+                        onLateJoinPostResult(token, ok, sc);
+                        return;
+                    }
+                    m_joinPosts.noteResult(ok, sc);
+                    if (ok) {
+                        onCallJoinConfirmed("REST 200 (session-reset re-register)", /*viaHpb*/false);
+                        return;
+                    }
+                    qWarning() << "CallManager: session-reset call re-register failed, status=" << sc
+                               << "-- not_allowed stays uncounted until the HPB lists the new session in the call";
                 });
         }
 
         // (2) Rebuild + re-offer our publisher under the new sid. buildAndStartPublisher
         // reads the live sessionId(), so the rebuilt offer carries the new session.
+        // 2026-09-16 RCA D8 (MT-13) — anything in flight or scheduled belongs to
+        // the dead session: a rebuild whose offer went out while signaling was
+        // down is never answered (it used to make recoverPublisher return early
+        // here, forever), and a backoff armed during the outage (up to 30 s)
+        // would delay this recovery. Clear both. The rebuild then waits for the
+        // forced room re-join SignalingClient just started (capped), so the
+        // offer is not sent before the new session is back in the room.
+        concludePublisherRebuild();
+        m_pubRetryTimer.stop();
         m_pubRetryAttempts = 0;
+        m_pubLastWaitStep  = 0;
+        m_sessionResetAtMs = QDateTime::currentMSecsSinceEpoch();
         recoverPublisher("signaling-session-reset");
 
         // (3) Our subscriber handles were under the dead session too. Drop each
@@ -710,8 +766,32 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
     // echo — which we deliberately do NOT add (inventing signaling fields has
     // broken calls twice).
     connect(m_signaling, &SignalingClient::requestOfferRejected, this, [this]() {
+        // 2026-09-16 RCA — the HPB also answers not_allowed while OUR session is
+        // not yet in the call (server/hub.go isInSameCall checks the sender
+        // first). That says nothing about the peer, so it must not spend the
+        // peer's escalation budget; see talq::OwnJoinGate::countsRejection.
+        if (!m_ownJoin.countsRejection(QDateTime::currentMSecsSinceEpoch())) {
+            qInfo() << "CallManager: requestoffer not_allowed before our own join settled"
+                       " on the HPB -- not counted toward escalation";
+            return;
+        }
         for (const QString &sid : m_pendingRequestOffers)
             ++m_requestOfferRejections[sid];
+    });
+
+    // 2026-09-16 RCA D3/D5 — the HPB listing OUR session in the call proves the
+    // join committed, even while the POST call/{token} response is still hanging
+    // on Talk's synchronous backend notifier (field: HPB inCall 60 s before the
+    // REST 200). Only accepted once our own POST went out for this call;
+    // that narrows, but cannot close, the window in which a late update from a
+    // previous call in the same room (its leave still unprocessed) could confirm.
+    connect(m_signaling, &SignalingClient::selfCallFlagsUpdated, this,
+            [this](const QString &roomToken, int inCall) {
+        if (!(inCall & CALL_FLAG_IN_CALL)) return;
+        if (!m_joinPosts.sent || m_callToken.isEmpty() || roomToken != m_callToken) return;
+        if (m_state != Outgoing && m_state != Connecting
+            && m_state != Active && m_state != Reconnecting) return;
+        onCallJoinConfirmed("HPB participants update (own session in call)", /*viaHpb*/true);
     });
 
     // Keep the self participant mirrored to our own media state.
@@ -997,7 +1077,9 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
             });
             m_screenSubscribers[from] = sub;
             qDebug() << "CallManager: starting screen subscriber, STUN:" << m_stunServer;
-            if (!sub->start(m_stunServer, effectiveTurnServers())) {
+            // A retry after ICE failed never narrows its TURN hosts (see the
+            // camera subscriber's start).
+            if (!sub->start(m_stunServer, effectiveTurnServers(m_screenSubFailRetries.value(from) > 0))) {
                 qWarning() << "CallManager: failed to start screen subscriber pipeline";
                 m_screenSubscribers.remove(from);
                 sub->deleteLater();
@@ -1076,7 +1158,8 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
         onAnswerReceived(from, sdp);
     });
     connect(m_signaling, &SignalingClient::candidateReceived,
-            this, [this](const QString &fromSessionId, const QJsonObject &candidate, const QString &roomType) {
+            this, [this](const QString &fromSessionId, const QJsonObject &candidate, const QString &roomType,
+                         const QString &sid) {
         // Unwrap: payload may be {candidate: {candidate, sdpMLineIndex, sdpMid}}
         QJsonObject c = candidate.contains("candidate") && candidate["candidate"].isObject()
             ? candidate["candidate"].toObject() : candidate;
@@ -1090,7 +1173,7 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
         // ONLY (Idle/Ending) — NOT Outgoing/Incoming: during an outgoing MCU ring
         // the publisher's OWN remote candidates trickle from Janus and are routed
         // below (it needs them to connect), and early subscriber candidates must
-        // still queue into m_pendingSubCandidates.
+        // still buffer in m_subCandidates.
         if (callTornDown()) return;
 
         // Route by roomType: screen candidates go to screen pipelines
@@ -1126,18 +1209,30 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
         // Video candidates (MCU path)
         if (fromSessionId == m_signaling->sessionId() && m_publishPipeline) {
             m_publishPipeline->addIceCandidate(cStr, mline, mid);
-        } else if (m_subscribePipelines.contains(fromSessionId)) {
-            m_subscribePipelines[fromSessionId]->addIceCandidate(cStr, mline, mid);
         } else if (fromSessionId != m_signaling->sessionId()) {
-            // Subscriber for this peer isn't built yet: the MCU trickles its
-            // remote candidates with/just before the offer, which can arrive
-            // ~100ms before onOfferReceived constructs the SubscribeWebrtcSrc.
-            // Dropping them leaves the subscriber with no remote candidates ->
-            // ICE stuck at "new" -> permanent "waiting for video". Queue per
-            // session; onOfferReceived flushes once the subscriber exists.
-            auto &pend = m_pendingSubCandidates[fromSessionId];
-            pend.append({cStr, mline, mid});
-            while (pend.size() > 16) pend.removeFirst();   // same cap as the screen-share twin
+            // Subscriber candidates are routed by the MCU sid (Janus handle) the
+            // message carries, not by peer (RCA D6, 2026-09-16). The MCU trickles
+            // a handle's candidates with/just before its offer, which can arrive
+            // ~100ms before onOfferReceived builds the SubscribeWebrtcSrc -- and
+            // on a re-offer, while the OLD handle's subscriber is still live.
+            // Delivering by peer fed a new handle's candidates into the stale
+            // subscriber, and a per-peer queue flushed 8 handles' worth into the
+            // first (instantly destroyed) subscriber of a replay. Buffered ones
+            // are flushed by onOfferReceived into the subscriber built for that
+            // exact sid; candidates for a superseded handle are dropped.
+            SubscribeWebrtcSrc *sub = m_subscribePipelines.value(fromSessionId);
+            using Route = talq::SubscriberCandidateRouter<QString, PendingIceCandidate>::Route;
+            switch (m_subCandidates.onCandidate(fromSessionId, sid, {cStr, mline, mid}, sub != nullptr)) {
+            case Route::Deliver:
+                sub->addIceCandidate(cStr, mline, mid);
+                break;
+            case Route::Buffer:
+                break;
+            case Route::Drop:
+                qDebug() << "CallManager: dropping candidate for superseded subscriber sid"
+                         << sid << "from" << fromSessionId.left(20);
+                break;
+            }
         }
     });
 
@@ -1188,6 +1283,55 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
         rebuildPublisherAndReoffer();
     });
 
+    // 2026-09-16 RCA D8 (MT-13) — an in-flight rebuild concludes only on its
+    // publisher's ICE connected/completed/failed. One whose offer was never
+    // answered (sent while signaling was down, or lost with a dying HPB) sits in
+    // "new" forever and used to block every later recoverPublisher. Bound it.
+    // Its own timer: the stats tick does not run while Reconnecting. Precise, so
+    // a coarse early fire cannot land before the deadline it enforces.
+    m_pubRebuildDeadline.setSingleShot(true);
+    m_pubRebuildDeadline.setTimerType(Qt::PreciseTimer);
+    m_pubRebuildDeadline.setInterval(int(talq::kPublisherRebuildDeadlineMs));
+    connect(&m_pubRebuildDeadline, &QTimer::timeout, this, [this]() {
+        if (!m_pubRebuild.inFlight()) return;
+        qWarning() << "CallManager: publisher rebuild reached no ICE outcome within"
+                   << talq::kPublisherRebuildDeadlineMs / 1000
+                   << "s (offer unanswered?) -- abandoning it and retrying";
+        concludePublisherRebuild();
+        if (m_state == Reconnecting)
+            recoverPublisher(QStringLiteral("rebuild-deadline"));
+    });
+
+    // 2026-09-16 RCA D12 — second-device ringing (see detectIncomingCall).
+    // The pre-check cap: no answer from GET call/{token} in time -> ring anyway;
+    // a late answer can still stop the ring (onRingPrecheckResult).
+    m_ringPrecheckTimer.setSingleShot(true);
+    m_ringPrecheckTimer.setInterval(talq::kRingPrecheckMaxWaitMs);
+    connect(&m_ringPrecheckTimer, &QTimer::timeout, this, [this]() {
+        if (m_ringPrecheck.token.isEmpty()) return;
+        const RingPrecheck pc = m_ringPrecheck;
+        m_ringPrecheck = RingPrecheck{};
+        if (m_state != Idle) return;
+        qInfo() << "CallManager: could not tell within" << talq::kRingPrecheckMaxWaitMs
+                << "ms whether our own user is already in" << pc.token << "-- ringing";
+        ringIncomingCall(pc.callerName, pc.token, pc.callFlag, pc.peerSessionId, pc.restCheckAtRingStart);
+    });
+    // While ringing: our own user answering on another device is invisible to
+    // HPB events when our signaling is in a different room, so ask the server.
+    // Review CR-9: only then. Decided per tick, because the user can open or
+    // leave the call's conversation while it rings.
+    m_ringingSelfCheckTimer.setInterval(talq::kRingingSelfCheckIntervalMs);
+    connect(&m_ringingSelfCheckTimer, &QTimer::timeout, this, [this]() {
+        if (m_state != Incoming || m_callToken.isEmpty()) {
+            m_ringingSelfCheckTimer.stop();
+            return;
+        }
+        if (!talq::planRingEvidence(/*fromHpbEvent*/false, signalingCoversCallRoom(m_callToken))
+                 .pollRestWhileRinging)
+            return;   // the HPB own-session JOINED edge covers it
+        checkRingAnsweredElsewhere("REST call list");
+    });
+
     // #bug3 -- peer-grace: a transient remote-peer inCall=0 / drop+rejoin must
     // NOT end a 1:1 call. We hold Reconnecting for this window and auto-re-
     // subscribe when the same userId returns (tryAdoptReturningPeer). Only a
@@ -1227,9 +1371,17 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
             m_requestOfferRetry.stop();
             return;
         }
+        // Our own join not confirmed yet: every send would be not_allowed. Hold
+        // the bookkeeping; onCallJoinConfirmed flushes it (2026-09-16 RCA).
+        if (!m_ownJoin.confirmed())
+            return;
         const auto sids = m_pendingRequestOffers;
         for (const QString &sid : sids) {
-            if (m_subscribePipelines.contains(sid)) {
+            // A PARKED offer is a delivered offer: re-requesting would make the MCU
+            // re-create the subscriber on a new handle and send yet another offer
+            // (the 16-offer storm of 2026-09-16).
+            if (m_subscribePipelines.contains(sid)
+                || m_parkedOffers.contains(sid, QStringLiteral("video"))) {
                 m_pendingRequestOffers.remove(sid);
                 m_requestOfferAttempts.remove(sid);
                 m_requestOfferRejections.remove(sid);
@@ -1581,10 +1733,11 @@ void CallManager::updateCallStats()
     // spam every offered TURN host far more than a telemetry number needs, so
     // gate it to every 4th tick (~8s) -- frequent enough to look "live" next
     // to the signaling RTT (~25s cadence), rare enough to stay polite to the
-    // network. Reuses probeNearestTurnAsync() as-is (same nearest-selection
-    // logic it already does on join); the brief mid-probe window where
-    // effectiveTurnServers() reverts to the full list is the same accepted
-    // fallback it already uses when nothing has answered yet.
+    // network (one 20-byte STUN Binding per TURN host). This cadence is also
+    // what lets an Active build narrow to the nearby TURN POPs: a result older
+    // than 20 s (two missed probes, or the call left Active and this timer
+    // stopped) is not trusted to narrow (TurnListPolicy.h). The previous
+    // per-host RTTs stay in force until the new ones land.
     if ((++m_turnRttTick % 4) == 0)
         probeNearestTurnAsync();
 
@@ -1638,12 +1791,14 @@ void CallManager::updateCallStats()
     // recoverSubscriber take()s from m_subscribePipelines (mutating it mid-loop
     // would be UB) -- collect stalled sids, then recover after the loop.
     QStringList stalledSubs;
+    QStringList rxStalledSubs;   // 2026-09-16 D8 — inbound RTP stopped (see below)
     for (auto it = m_subscribePipelines.constBegin();
          it != m_subscribePipelines.constEnd(); ++it) {
         const QString &sid = it.key();
         SubscribeWebrtcSrc *s = it.value();
         if (!s || !s->isRunning()) {
             m_subStall.remove(sid);
+            m_subRxStall.remove(sid);
             m_signalQuality.remove(sid);
             continue;
         }
@@ -1665,6 +1820,16 @@ void CallManager::updateCallStats()
             connectedNow, s->rxStatsValid(),
             s->rxPacketsLost(), s->rxPacketsReceived(), s->rxJitterMs());
         if (p) p->setSignalQuality(sigLevel);
+
+        // 2026-09-16 RCA D8 — receive-stall watchdog on the same one-tick-stale
+        // packets-received. The frame-stall watchdog below only sees video, so
+        // a camera-off peer whose media path died (dead MCU proxy / TURN relay:
+        // no HPB event, ICE may stay connected) stayed silent. Gated on the
+        // peer being unmuted (unknown peer = muted); why silence still carries
+        // RTP is recorded in core/SubscriberRxStallPolicy.h.
+        if (m_subRxStall[sid].onTick(s->rxPacketsReceived(), s->rxStatsValid(), connectedNow,
+                                     /*peerAudioMuted*/ !p || p->audioMuted(), pending))
+            rxStalledSubs << sid;
         s->pollInboundRtp();   // async refresh for the next tick
 
         if (fc > 0) m_neverDecodedRecoveries.remove(sid);   // D2 fix — real frame clears the budget
@@ -1693,6 +1858,13 @@ void CallManager::updateCallStats()
         qWarning() << "CallManager: subscriber" << sid.left(20)
                    << "frame-stalled -- rebuilding (publisher likely reconnected)";
         recoverSubscriber(sid, QStringLiteral("frame-stall"));
+    }
+    for (const QString &sid : rxStalledSubs) {
+        if (stalledSubs.contains(sid)) continue;   // already rebuilt above
+        qWarning() << "CallManager: subscriber" << sid.left(20)
+                   << "receives no RTP although the peer is unmuted -- rebuilding"
+                      " (media path likely dead)";
+        recoverSubscriber(sid, QStringLiteral("rx-stall"));
     }
 
     // Screen-subscriber FRAME-liveness sampler (runs here in updateCallStats, the
@@ -1737,7 +1909,7 @@ void CallManager::updateCallStats()
     // down, so it can't double- or false-fire; the policy fires once then
     // re-arms. When not eligible, reset so a resumed publisher re-baselines.
     if (m_publishPipeline && m_publishPipeline->isRunning()
-        && !m_screenShareTearingDown && !m_pubRebuildInFlight
+        && !m_screenShareTearingDown && !m_pubRebuild.inFlight()
         && !m_pubRetryTimer.isActive()) {
         m_publishPipeline->pollOutboundRtp();   // async refresh for the next tick
         const bool expectedToSend = m_cameraOn || !m_muted;
@@ -1746,11 +1918,19 @@ void CallManager::updateCallStats()
                           "(consent likely revoked; publisher ICE still 'completed')";
             if (m_state == Active || m_state == Connecting)
                 setState(Reconnecting);
+            m_pubSendLegStalled = true;   // a waiting rebuild must still stop the flood
             recoverPublisher(QStringLiteral("publish-stall"));
         }
     } else {
         m_pubStall.reset();
     }
+
+    // STUN/TURN age check: a call that outlives talq::kIceRefreshAfterMs
+    // re-fetches, so later publisher/subscriber rebuilds do not ride TURN
+    // credentials near their 24 h expiry. A no-op otherwise (one comparison);
+    // while a failed fetch is retrying, its backoff timer owns the next attempt.
+    if (m_iceFetchFailures == 0)
+        refreshIceServers(false, "age-check");
 
     // Remote peer
     if (!m_remoteSessionId.isEmpty())
@@ -1774,6 +1954,12 @@ void CallManager::setState(CallState newState)
 {
     if (m_state == newState) return;
     m_state = newState;
+    // Idle HPB re-homing must never move signaling under a ringing, connecting,
+    // live or reconnecting call (SignalingClient::setCallBusy). This is the one
+    // place m_state changes, so the flag cannot drift from it.
+    m_signaling->setCallBusy(newState == Outgoing || newState == Incoming
+                             || newState == Connecting || newState == Active
+                             || newState == Reconnecting);
     qInfo() << "CallManager: state ->" << newState;
     // 0.40.15 — Connecting→Active promotion race fix. If the publisher
     // ICE already reached "connected"/"completed" BEFORE we got the
@@ -1816,10 +2002,13 @@ void CallManager::setState(CallState newState)
         // Reconnecting and deferred the re-subscribe to here (publisher is now
         // re-registered + Active, so the MCU will accept requestoffers). Re-request
         // every in-call peer; requestPeerStream self-dedupes on already-subscribed.
+        // A peer that publishes no media is skipped (talq::resubscribeOnActive).
         if (m_resubscribeOnActive) {
             m_resubscribeOnActive = false;
             for (auto *p : m_participants)
-                if (p && !p->isSelf() && !m_subscribePipelines.contains(p->sessionId()))
+                if (p && !p->isSelf() && !m_subscribePipelines.contains(p->sessionId())
+                    && talq::resubscribeOnActive(m_signaling->callFlagsForSession(p->sessionId()),
+                                                 p->audioMuted(), p->videoMuted()))
                     requestPeerStream(p->sessionId());
         }
     } else {
@@ -1842,6 +2031,7 @@ void CallManager::startCall(const QString &token, bool withVideo)
               << "sigSession=" << m_signaling->sessionId().left(20));
     m_callToken = token;
     m_callJoinAttempts = 0;
+    resetCallJoinState(/*outgoing*/true);
     m_lastRingoutToken.clear();   // #bug4 -- a manual (re)dial supersedes any pending late-answer window
     m_peerGraceActive = false; m_peerGraceTimer.stop();   // #bug3 -- fresh call, no stale grace
     m_withVideo = withVideo;
@@ -1980,7 +2170,7 @@ bool CallManager::tryAdoptReturningPeer(const QString &sessionId)
     // (a link flap can down both). If it is, stay Reconnecting; the publisher
     // ICE-connected path flips us to Active when it recovers.
     if (m_state == Reconnecting
-        && !m_pubRetryTimer.isActive() && !m_pubRebuildInFlight) {
+        && !m_pubRetryTimer.isActive() && !m_pubRebuild.inFlight()) {
         setState(Active);
         setStatusDetail("Connected");
     }
@@ -1991,6 +2181,16 @@ void CallManager::requestPeerStream(const QString &sessionId)
 {
     if (sessionId.isEmpty() || sessionId == m_signaling->sessionId()) return;
     if (m_subscribePipelines.contains(sessionId)) return;   // already subscribed
+    // F10 — a sid that left the room is dead until it re-enters; this funnel
+    // covers every caller (reconcile sweep, escalation, flags, rejoin paths).
+    if (!m_departedSids.mayRequest(sessionId)) {
+        qInfo() << "CallManager: not requesting offer from" << sessionId.left(20)
+                << "-- that session left the room";
+        return;
+    }
+    // An offer is already parked for this peer (waiting only for STUN/TURN):
+    // the request is fulfilled; asking again re-creates the MCU subscriber.
+    if (m_parkedOffers.contains(sessionId, QStringLiteral("video"))) return;
     // Asymmetric-chop fix: the CALLER reaches this twice for the same
     // peer (once when its publisher comes up + the remote is already
     // joined, again on participantJoinedCall / roomPeerJoined). Without
@@ -2002,10 +2202,57 @@ void CallManager::requestPeerStream(const QString &sessionId)
     // equivalent. Retries still happen via m_requestOfferRetry, which
     // calls signaling->requestOffer directly (not this function).
     if (m_pendingRequestOffers.contains(sessionId)) return;
+    // 2026-09-16 RCA — the HPB rejects a requestoffer while OUR session is not in
+    // the call yet (every join used to open with a guaranteed not_allowed, and
+    // the answer to it came 8 s later on the retry tick). Hold it until the join
+    // is confirmed; onCallJoinConfirmed -> flushDeferredRequestOffers sends it.
+    // Recorded only in Connecting/Active, the states the flush serves: an entry
+    // held in any other state would sit in the dedupe set above with no timer
+    // and silently swallow every later request for that peer.
+    if (!m_ownJoin.confirmed()) {
+        if (m_state != Connecting && m_state != Active) return;
+        m_pendingRequestOffers.insert(sessionId);
+        m_requestOfferAttempts[sessionId] = 0;
+        qInfo() << "CallManager: requestoffer for" << sessionId.left(20)
+                << "deferred until our own call join is confirmed";
+        return;
+    }
     m_pendingRequestOffers.insert(sessionId);
     m_requestOfferAttempts[sessionId] = 0;
     m_signaling->requestOffer(sessionId, "video");
     if (!m_requestOfferRetry.isActive())
+        m_requestOfferRetry.start();
+}
+
+void CallManager::flushDeferredRequestOffers()
+{
+    // Any other state: drop the bookkeeping exactly as the retry tick does there,
+    // so a stale entry cannot block the peer's next requestPeerStream.
+    if (m_state != Connecting && m_state != Active) {
+        m_pendingRequestOffers.clear();
+        m_requestOfferAttempts.clear();
+        m_requestOfferRejections.clear();
+        m_requestOfferRetry.stop();
+        return;
+    }
+    int sent = 0;
+    const auto sids = m_pendingRequestOffers;
+    for (const QString &sid : sids) {
+        if (m_subscribePipelines.contains(sid)
+            || m_parkedOffers.contains(sid, QStringLiteral("video"))) {
+            m_pendingRequestOffers.remove(sid);
+            m_requestOfferAttempts.remove(sid);
+            m_requestOfferRejections.remove(sid);
+            continue;
+        }
+        m_requestOfferAttempts[sid] = 0;
+        m_signaling->requestOffer(sid, "video");
+        ++sent;
+    }
+    if (sent)
+        qInfo() << "CallManager: own call join confirmed -- sent" << sent
+                << "deferred requestoffer(s)";
+    if (!m_pendingRequestOffers.isEmpty() && !m_requestOfferRetry.isActive())
         m_requestOfferRetry.start();
 }
 
@@ -2023,11 +2270,26 @@ void CallManager::requestPeerStream(const QString &sessionId)
 void CallManager::recoverSubscriber(const QString &sessionId, const QString &reason)
 {
     if (sessionId.isEmpty()) return;
-    if (m_state != Connecting && m_state != Active) return;  // teardown owns cleanup
+    // 2026-09-16 RCA D8 (MT-12) — a failure that arrives while Reconnecting (ICE
+    // failed, end-session, decoder fault, not_allowed escalation) used to return
+    // here and was lost: the dead pipeline stayed in m_subscribePipelines, which
+    // also hid the peer from the onLoadTick reconcile sweep, so an audio-only
+    // peer stayed silent for the rest of the call. Now it is torn down at once
+    // and re-requested on the next Active by the m_resubscribeOnActive replay
+    // (the requestoffer retry net self-cancels while Reconnecting).
+    const talq::SubscriberRecoveryAction action = talq::decideSubscriberRecovery(
+        m_state == Connecting || m_state == Active, m_state == Reconnecting);
+    if (action == talq::SubscriberRecoveryAction::Ignore) return;  // teardown owns cleanup
 
     const bool hadSub = m_subscribePipelines.contains(sessionId);
     if (!hadSub && m_pendingRequestOffers.contains(sessionId))
         return;  // already recovering (end-session + ICE-failed both fired for one death)
+    if (!hadSub && action == talq::SubscriberRecoveryAction::DeferToActive) {
+        // Nothing left to tear down (a second edge of the same death, or no
+        // subscriber yet): the Active replay covers it without spending budget.
+        m_resubscribeOnActive = true;
+        return;
+    }
 
     const int n = ++m_subscriberRecoveries[sessionId];
 
@@ -2039,6 +2301,7 @@ void CallManager::recoverSubscriber(const QString &sessionId, const QString &rea
     }
     m_subscriberSids.remove(sessionId);
     m_subStall.remove(sessionId);   // #bug2 -- fresh baseline for the rebuilt feed
+    m_subRxStall.remove(sessionId);
     m_signalQuality.remove(sessionId);
     m_pendingRequestOffers.remove(sessionId);
     m_requestOfferAttempts.remove(sessionId);
@@ -2066,6 +2329,14 @@ void CallManager::recoverSubscriber(const QString &sessionId, const QString &rea
         return;  // never hangUp() from a subscriber problem
     }
 
+    if (action == talq::SubscriberRecoveryAction::DeferToActive) {
+        qInfo() << "CallManager: subscriber for" << sessionId.left(20)
+                << "failed (" << reason << ") while Reconnecting, attempt" << n
+                << "— dropped now, re-subscribing when the call is Active again";
+        m_resubscribeOnActive = true;
+        return;
+    }
+
     qInfo() << "CallManager: recovering subscriber for" << sessionId.left(20)
             << "(" << reason << ") attempt" << n << "— re-subscribing";
     setStatusDetail("Reconnecting peer video…");
@@ -2088,10 +2359,15 @@ void CallManager::dropSubscriber(const QString &sessionId)
     }
     m_subscriberSids.remove(sessionId);
     m_subStall.remove(sessionId);
+    m_subRxStall.remove(sessionId);
     m_signalQuality.remove(sessionId);
     m_pendingRequestOffers.remove(sessionId);
     m_requestOfferAttempts.remove(sessionId);
     m_requestOfferRejections.remove(sessionId);
+    // Every MCU handle of this subscription is dead too: its parked offer and
+    // buffered candidates must not be replayed into a later build.
+    m_parkedOffers.dropPeer(sessionId);
+    m_subCandidates.forgetPeer(sessionId);
     m_subscriberRecoveries.remove(sessionId);
     m_neverDecodedRecoveries.remove(sessionId);   // D2 fix
     if (m_remoteVideoProvider && m_remoteVideoProvider == deadProv) {
@@ -2204,7 +2480,7 @@ bool CallManager::buildAndStartPublisher()
             }
             m_pubRetryTimer.stop();
             m_pubRetryAttempts   = 0;
-            m_pubRebuildInFlight = false;
+            concludePublisherRebuild();
         } else if (state == "failed") {
             // A failed edge collateral to a screen-share teardown must never
             // touch the call (#138).
@@ -2216,7 +2492,7 @@ bool CallManager::buildAndStartPublisher()
             // This rebuild attempt has concluded (failed); clear the in-flight
             // guard so recoverPublisher() can arm the next backoff. Zoom-style:
             // NEVER auto-drop — enter Reconnecting and keep retrying.
-            m_pubRebuildInFlight = false;
+            concludePublisherRebuild();
             if (m_state == Active || m_state == Connecting)
                 setState(Reconnecting);
             recoverPublisher("ice-failed");
@@ -2455,10 +2731,17 @@ void CallManager::recoverPublisher(const QString &reason)
     // or user Cancel / peer-left / room-closed (→teardown).
     if (m_state != Reconnecting && m_state != Active)
         return;                       // Idle/Ending → teardown handles cleanup
-    if (m_pubRebuildInFlight)
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    if (m_pubRebuild.blocksNewRebuild(nowMs))
         return;                       // a rebuild is mid-flight; don't stack
+    if (m_pubRebuild.expired(nowMs)) {
+        // 2026-09-16 RCA D8 (MT-13) — past its deadline it can no longer block
+        // (m_pubRebuildDeadline normally concludes it first).
+        qWarning() << "CallManager: abandoning a publisher rebuild past its deadline";
+        concludePublisherRebuild();
+    }
     if (m_pubRetryTimer.isActive())
-        return;                       // next attempt already scheduled
+        return;                       // next attempt (or a rebuild's wait poll) already scheduled
 
     // Exponential backoff, capped at 30s, INDEFINITE (no attempt cap). First
     // attempt waits 1s — preserves the old "transient blip" tolerance.
@@ -2475,7 +2758,77 @@ void CallManager::rebuildPublisherAndReoffer()
 {
     if (m_state != Reconnecting) return;   // recovered or torn down meanwhile
 
-    m_pubRebuildInFlight = true;
+    // 2026-09-16 review CR-7 — a session reset while the join is still being
+    // confirmed (accept path, Connecting) lands here before startCallMedia ever
+    // built a publisher. There is nothing to rebuild, and a publisher built now
+    // would offer before our session is in the call and then be overwritten
+    // (leaked, mic + camera running) by startCallMedia. The media-start barrier
+    // builds it once the join is confirmed; its ICE connected ends Reconnecting.
+    if (!m_callMediaStarted) {
+        qInfo() << "CallManager: publisher rebuild skipped -- call media not started yet"
+                   " (join or STUN/TURN pending); startCallMedia builds the publisher";
+        return;
+    }
+
+    // 2026-09-16 RCA D8 (MT-13) — build only when the new offer can be answered.
+    // While signaling is unauthenticated SignalingClient drops the offer
+    // silently; right after a session reset the new session is not back in the
+    // room yet; a forced STUN/TURN refresh may be about to land. Waiting spends
+    // no backoff attempt (nothing was tried) and keeps the old pipeline -- the
+    // self-preview and mic meter stay live at a normal call's capture/encode
+    // cost; remote audio plays through each subscriber's own sink either way --
+    // unless the stall watchdog found it hot-looping on a dead send leg.
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    if (m_sessionResetAtMs > 0 && m_signaling->roomJoinAcked())
+        m_sessionResetAtMs = 0;
+    if (!m_iceFetchInFlight)
+        m_pubIceWaitSinceMs = 0;
+    else if (m_pubIceWaitSinceMs == 0)
+        m_pubIceWaitSinceMs = nowMs;
+    talq::PublisherRebuildInputs in;
+    in.signalingUp        = m_signaling->isConnected();
+    in.awaitingRoomRejoin = m_sessionResetAtMs > 0;
+    in.roomRejoinWaitedMs = in.awaitingRoomRejoin ? nowMs - m_sessionResetAtMs : 0;
+    in.iceFetchInFlight   = m_iceFetchInFlight;
+    in.iceFetchWaitedMs   = m_iceFetchInFlight ? nowMs - m_pubIceWaitSinceMs : 0;
+    const talq::PublisherRebuildStep step = talq::decidePublisherRebuildStep(in);
+    if (step != talq::PublisherRebuildStep::Build) {
+        if (int(step) != m_pubLastWaitStep) {   // log each wait reason once
+            m_pubLastWaitStep = int(step);
+            qInfo() << "CallManager: publisher rebuild waiting --"
+                    << (step == talq::PublisherRebuildStep::WaitForSignaling
+                            ? "signaling is down (the offer would be dropped)"
+                        : step == talq::PublisherRebuildStep::WaitForRoomRejoin
+                            ? "new signaling session not back in the room yet"
+                            : "fresh STUN/TURN servers are being fetched");
+        }
+        if (m_pubSendLegStalled && m_publishPipeline) {
+            // The rebuild used to stop this hot-looping publisher within 1 s.
+            qWarning() << "CallManager: stopping the stalled publisher while its rebuild waits";
+            m_publishPipeline->disconnect(this);
+            m_publishPipeline->stop();
+            m_publishPipeline->deleteLater();
+            m_publishPipeline = nullptr;
+            m_localVideoProvider = nullptr;   // owned by the dying pipeline
+            emit localVideoProviderChanged();
+        }
+        m_pubSendLegStalled = false;
+        m_pubRetryTimer.start(talq::kRebuildWaitPollMs);
+        return;
+    }
+    m_pubSendLegStalled = false;   // the old publisher is replaced just below
+    if (in.awaitingRoomRejoin)
+        qWarning() << "CallManager: room re-join still not acknowledged after"
+                   << in.roomRejoinWaitedMs << "ms -- offering anyway";
+    if (in.iceFetchInFlight)
+        qWarning() << "CallManager: STUN/TURN refresh still running after"
+                   << in.iceFetchWaitedMs << "ms -- rebuilding on the cached servers";
+    m_sessionResetAtMs  = 0;
+    m_pubIceWaitSinceMs = 0;
+    m_pubLastWaitStep   = 0;
+
+    m_pubRebuild.begin(nowMs);
+    m_pubRebuildDeadline.start();
     qInfo() << "CallManager: rebuilding publisher (reconnect attempt"
             << m_pubRetryAttempts << ")";
 
@@ -2493,7 +2846,8 @@ void CallManager::rebuildPublisherAndReoffer()
     }
 
     // Rebuild on the CACHED STUN/TURN — no network fetch, so this works even
-    // while the link is still flapping. Success is signalled asynchronously by
+    // while the link is still flapping (a session reset re-fetched them first,
+    // see above). Success is signalled asynchronously by
     // the new pipeline's ICE reaching connected (which clears the in-flight
     // guard and returns to Active). If it can't even start, don't drop — arm
     // the next backoff.
@@ -2505,9 +2859,15 @@ void CallManager::rebuildPublisherAndReoffer()
             m_publishPipeline->deleteLater();
             m_publishPipeline = nullptr;
         }
-        m_pubRebuildInFlight = false;
+        concludePublisherRebuild();
         recoverPublisher("rebuild-start-failed");
     }
+}
+
+void CallManager::concludePublisherRebuild()
+{
+    m_pubRebuild.conclude();
+    m_pubRebuildDeadline.stop();
 }
 
 void CallManager::maybeReplyBusy(const QString &callerName, const QString &token)
@@ -2536,6 +2896,12 @@ void CallManager::maybeReplyBusy(const QString &callerName, const QString &token
 }
 
 void CallManager::onIncomingCallDetected(const QString &callerName, const QString &token, int callFlag)
+{
+    detectIncomingCall(callerName, token, callFlag, QString());
+}
+
+void CallManager::detectIncomingCall(const QString &callerName, const QString &token, int callFlag,
+                                     const QString &peerSessionId)
 {
     if (m_state != Idle) {
         maybeReplyBusy(callerName, token);
@@ -2574,19 +2940,223 @@ void CallManager::onIncomingCallDetected(const QString &callerName, const QStrin
         return;
     }
 
+    // 2026-09-16 RCA D12 — never ring for a call our own user is already in on
+    // another device. The conversation poll's guard (participantInCallFlags) is
+    // a field Talk 24 does not send, and even `participantFlags` would only
+    // describe THIS device's session; the HPB path ignored own-user joins only
+    // for the joiner itself. A second device rang 60 s for two calls while its
+    // user was in both on another device. Evidence, in order:
+    //  1. HPB session maps, when our signaling is in that room (immediate).
+    //  2. HPB-detected ring in the room our signaling is joined to: re-check
+    //     those maps one event-loop turn later, once the rest of the same
+    //     participants update (possibly our sibling's entry) is applied, then
+    //     ring and send one non-blocking GET call/{token} (review CR-9).
+    //  3. Otherwise GET call/{token} (a plain SELECT, no backend notification),
+    //     waited on for at most talq::kRingPrecheckMaxWaitMs; unknown rings.
+    if (talq::decideIncomingRing(ownPresenceFromSignaling(token))
+            == talq::IncomingRingAction::SuppressInCallElsewhere) {
+        qInfo() << "CallManager: not ringing for" << token
+                << "-- our own user is already in that call on another device (HPB)";
+        return;
+    }
+    switch (talq::classifyRingDetection(!m_ringPrecheck.token.isEmpty(), m_ringPrecheck.token == token)) {
+    case talq::RingDetection::AlreadyChecking:
+        return;   // this call's check is already running
+    case talq::RingDetection::SecondCall:
+        // The pending call rings first; this one is the second call, as it was
+        // when detection rang at once (review UX-1).
+        qInfo() << "CallManager: incoming call in" << token << "while the ring check for"
+                << m_ringPrecheck.token << "is pending -- treating it as a second call";
+        maybeReplyBusy(callerName, token);
+        return;
+    case talq::RingDetection::StartCheck:
+        break;
+    }
+    const talq::RingEvidencePlan plan =
+        talq::planRingEvidence(/*fromHpbEvent*/!peerSessionId.isEmpty(), signalingCoversCallRoom(token));
+    m_ringPrecheck.token         = token;
+    m_ringPrecheck.callerName    = callerName;
+    m_ringPrecheck.peerSessionId = peerSessionId;
+    m_ringPrecheck.callFlag      = callFlag;
+    m_ringPrecheck.restCheckAtRingStart = plan.restCheckAtRingStart;
+    const int gen = ++m_ringPrecheckGen;
+    if (plan.deferOneTurn) {
+        m_ringPrecheckTimer.stop();
+        QTimer::singleShot(0, this, [this, gen, token]() {
+            onRingPrecheckResult(gen, token, ownPresenceFromSignaling(token), "HPB");
+        });
+        return;
+    }
+    m_ringPrecheckTimer.start();
+    queryOwnPresenceInCall(token, [this, gen, token](talq::OwnPresence presence) {
+        onRingPrecheckResult(gen, token, presence, "REST call list");
+    });
+}
+
+void CallManager::onRingPrecheckResult(int gen, const QString &token, talq::OwnPresence presence,
+                                       const char *source)
+{
+    if (gen != m_ringPrecheckGen) return;   // a newer detection replaced this one
+    if (m_ringPrecheck.token == token) {
+        const RingPrecheck pc = m_ringPrecheck;
+        m_ringPrecheck = RingPrecheck{};
+        m_ringPrecheckTimer.stop();
+        if (m_state != Idle) return;
+        if (talq::decideIncomingRing(presence) == talq::IncomingRingAction::SuppressInCallElsewhere) {
+            qInfo() << "CallManager: not ringing for" << token
+                    << "-- our own user is already in that call on another device (" << source << ")";
+            return;
+        }
+        ringIncomingCall(pc.callerName, pc.token, pc.callFlag, pc.peerSessionId, pc.restCheckAtRingStart);
+        return;
+    }
+    // The wait cap already rang: a late answer can still stop the ring.
+    if (m_state == Incoming && m_callToken == token && talq::shouldStopRinging(presence))
+        stopRingingAnsweredElsewhere("late REST call list");
+}
+
+bool CallManager::signalingCoversCallRoom(const QString &token) const
+{
+    return !token.isEmpty() && token == m_signaling->currentRoom() && m_signaling->roomJoinAcked();
+}
+
+void CallManager::checkRingAnsweredElsewhere(const char *source)
+{
+    if (m_state != Incoming || m_callToken.isEmpty()) return;
+    const QString token = m_callToken;
+    // Review LC-2 — never stack GETs for the same ring: on a slow server the
+    // ticks outpace the answers (up to the 30 s transfer timeout each).
+    if (m_ringSelfCheckInFlightToken == token) return;
+    m_ringSelfCheckInFlightToken = token;
+    queryOwnPresenceInCall(token, [this, token, source](talq::OwnPresence p) {
+        if (m_ringSelfCheckInFlightToken == token) m_ringSelfCheckInFlightToken.clear();
+        if (m_state == Incoming && m_callToken == token && talq::shouldStopRinging(p))
+            stopRingingAnsweredElsewhere(source);
+    });
+}
+
+void CallManager::ringIncomingCall(const QString &callerName, const QString &token, int callFlag,
+                                   const QString &peerSessionId, bool restCheckAtRingStart)
+{
     qDebug() << "CallManager: incoming call detected:" << callerName << "token=" << token;
     m_callToken = token;
     m_remotePeerName = callerName;
     m_withVideo = (callFlag & CALL_FLAG_WITH_VIDEO) != 0;
     m_incomingTime = QDateTime::currentDateTime();
     m_userActionReady = false;
+    m_ringSelfCheckInFlightToken.clear();   // a GET lost by an earlier ring must not mute this one
     setState(Incoming);
     m_ringTimeout.start();
     emit callInfoChanged();
     emit incomingCall(callerName, token, m_withVideo);
+    // A late "answered on another device" can end the ring from a nested event
+    // loop inside that emit; never start the camera for a ring that is gone.
+    if (m_state != Incoming) return;
     // #13: pre-answer self-preview for video calls. Camera turns on while
     // the call rings so the callee can check framing before answering.
     if (m_withVideo) startIncomingCameraPreview();
+    // HPB-detected rings know the ringing session. Latched only once we really
+    // ring — a suppressed detection must not leave a stale m_remoteSessionId
+    // behind while Idle (startCall never clears it; only teardown does), which
+    // would jam the next call's adopt gate.
+    if (!peerSessionId.isEmpty() && m_state == Incoming) {
+        m_remoteSessionId = peerSessionId;
+        if (isOneToOneCall())
+            m_remotePeerUserId = m_signaling->userIdForSession(peerSessionId);
+    }
+    seedRingParticipants(token, peerSessionId, callerName);
+    // Ticks send a GET only while our signaling does not cover this room.
+    m_ringingSelfCheckTimer.start();
+    // HPB-detected ring: a sibling that joined before our signaling entered the
+    // room is invisible to the HPB maps (talq::planRingEvidence).
+    if (restCheckAtRingStart)
+        checkRingAnsweredElsewhere("REST call list at ring start");
+}
+
+// Review LC-1 — register the ringing call's peers the moment the ring starts.
+// When detection rang at once, onParticipantJoinedCall's registration block ran
+// right after it in state Incoming (0.40.15) and put the caller, and every other
+// session of the same participants update, into the model with its name and
+// media flags. The ring now waits for evidence first (a turn, or a REST round
+// trip), so those JOINED edges were handled while Idle and registered nobody;
+// they never fire again, and neither accept nor the offer path supplies a name.
+// The HPB maps of the call's room hold the same facts, complete by now.
+void CallManager::seedRingParticipants(const QString &token, const QString &peerSessionId,
+                                       const QString &callerName)
+{
+    if (m_state != Incoming || token.isEmpty() || token != m_signaling->currentRoom())
+        return;   // the HPB maps describe another room
+    const QString selfSid  = m_signaling->sessionId();
+    const QString selfUser = m_signaling->userId();
+    QStringList sids = m_signaling->inCallSessions();
+    if (!peerSessionId.isEmpty() && sids.removeAll(peerSessionId) > 0)
+        sids.prepend(peerSessionId);   // the caller's tile first, as before
+    for (const QString &sid : sids) {
+        const int flags = m_signaling->callFlagsForSession(sid);
+        const QString user = m_signaling->userIdForSession(sid);
+        if (!talq::seedsRingParticipant(sid == selfSid, !selfUser.isEmpty() && user == selfUser, flags))
+            continue;
+        const QString name = (sid == peerSessionId && !callerName.isEmpty())
+                                 ? callerName : m_signaling->displayNameForSession(sid);
+        if (auto *p = ensureParticipant(sid, name)) {
+            p->setAudioMuted(!(flags & CALL_FLAG_WITH_AUDIO));
+            p->setVideoMuted(!(flags & CALL_FLAG_WITH_VIDEO));
+        }
+        if (isOneToOneCall() && isPeerUserSession(sid))
+            m_peerInCallSids.insert(sid);
+    }
+}
+
+void CallManager::stopRingingAnsweredElsewhere(const char *source)
+{
+    if (m_state != Incoming) return;
+    qInfo() << "CallManager: our own user is in" << m_callToken
+            << "on another device (" << source << ") -- stopping the ring";
+    m_ringingSelfCheckTimer.stop();
+    m_ringTimeout.stop();
+    // Nothing joined here, so teardown sends no leave and (D12) reverts no
+    // status. "cancel" in the reason keeps main.cpp's "Call ended" toast quiet:
+    // for the user nothing ended, they are in the call on the other device.
+    teardown("Ring cancelled: answered on another device");
+}
+
+talq::OwnPresence CallManager::ownPresenceFromSignaling(const QString &token) const
+{
+    const QString selfUser = m_signaling->userId();
+    const bool roomMatches = !token.isEmpty() && token == m_signaling->currentRoom();
+    int others = 0;
+    if (roomMatches && !selfUser.isEmpty()) {
+        const QString selfSid = m_signaling->sessionId();
+        // Both maps are room-scoped (SignalingClient::joinRoom clears the flags).
+        const QStringList sids = m_signaling->sessionsForUser(selfUser);
+        for (const QString &sid : sids)
+            if (sid != selfSid && (m_signaling->callFlagsForSession(sid) & CALL_FLAG_IN_CALL))
+                ++others;
+    }
+    return talq::ownPresenceFromHpb(roomMatches, !selfUser.isEmpty(), others);
+}
+
+void CallManager::queryOwnPresenceInCall(const QString &token,
+                                         std::function<void(talq::OwnPresence)> onResult)
+{
+    // GET call/{token}: sessions with in_call != 0 and a recent ping (spreed
+    // 24.0.4 CallController::getPeersForCall), rows actorType/actorId/sessionId.
+    m_api->getArray("apps/spreed/api/v4/call/" + token,
+        [this, onResult](bool ok, const QJsonArray &rows, int) {
+            const QString selfUser = m_signaling->userId();
+            std::vector<talq::CallPeerRow> peers;
+            peers.reserve(size_t(rows.size()));
+            for (const auto &v : rows) {
+                const QJsonObject row = v.toObject();
+                talq::CallPeerRow r;
+                r.actorIsUser     = row["actorType"].toString() == QLatin1String("users");
+                r.actorIsSelfUser = !selfUser.isEmpty() && row["actorId"].toString() == selfUser;
+                r.isThisDevice    = isOwnNcSession(row["sessionId"].toString());
+                peers.push_back(r);
+            }
+            if (onResult)
+                onResult(talq::ownPresenceFromCallPeers(ok, !selfUser.isEmpty(), peers));
+        });
 }
 
 // #13 — Pre-answer self-preview pipeline (standalone, not coupled to
@@ -2787,6 +3357,7 @@ void CallManager::acceptCall(bool withVideo) {
     stopIncomingCameraPreview();
     m_withVideo = withVideo; m_cameraOn = withVideo; m_muted = false; m_callDuration = 0;
     m_callJoinAttempts = 0;
+    resetCallJoinState(/*outgoing*/false);
     m_peerGraceActive = false; m_peerGraceTimer.stop();   // #bug3 -- fresh call, no stale grace
     m_cameraUnavailable = false;   // fresh call: clear any prior failure
     m_cameraGraceRetries = 0;      // fresh call: fresh grace-retry budget
@@ -3445,31 +4016,6 @@ void CallManager::applyReceiveLoadCaps(int substreamCap, bool capFocused)
         sendDesiredSubstream(it.key(), effectiveSubstreamFor(it.key(), it.value()));
 }
 
-// Parse host+port out of a TURN/STUN url. Accepts "turn:host:port?transport=udp",
-// "turns://user@host:port", "stun:host:port" — with or without scheme //, user@, or query.
-static bool parseTurnHostPort(const QString &url, QString &host, quint16 &port)
-{
-    QString s = url.trimmed();
-    for (const char *scheme : {"turns://","turn://","stuns://","stun://","turns:","turn:","stuns:","stun:"})
-        if (s.startsWith(QLatin1String(scheme))) { s = s.mid(int(qstrlen(scheme))); break; }
-    const int at = s.indexOf(QLatin1Char('@')); if (at >= 0) s = s.mid(at + 1);
-    const int q  = s.indexOf(QLatin1Char('?')); if (q  >= 0) s = s.left(q);
-    const int sl = s.indexOf(QLatin1Char('/')); if (sl >= 0) s = s.left(sl);
-    port = 3478;
-    if (s.startsWith(QLatin1Char('['))) {                    // bracketed IPv6
-        const int rb = s.indexOf(QLatin1Char(']')); if (rb < 0) return false;
-        host = s.mid(1, rb - 1);
-        const int c = s.indexOf(QLatin1Char(':'), rb);
-        if (c >= 0) port = quint16(s.mid(c + 1).toUInt());
-    } else {
-        const int c = s.lastIndexOf(QLatin1Char(':'));
-        if (c >= 0) { host = s.left(c); port = quint16(s.mid(c + 1).toUInt()); }
-        else host = s;
-    }
-    if (port == 0) port = 3478;
-    return !host.isEmpty();
-}
-
 // Build a 20-byte STUN Binding Request (RFC 5389): type 0x0001, length 0,
 // magic cookie 0x2112A442, and a random 96-bit transaction id (returned in txid
 // so the response can be matched). Every STUN/TURN server answers this on
@@ -3486,22 +4032,34 @@ static QByteArray makeStunBindingRequest(QByteArray &txid)
     return req;
 }
 
-// UDP-STUN-probe every offered TURN host and keep only the nearest, so a TURN
-// relay (when ICE needs one) is always local instead of cross-continent.
+// UDP-STUN-probe every offered TURN host and record its RTT per host, which
+// effectiveTurnServers() uses to ORDER the hosts and, for a build that may
+// narrow, to keep only the nearby POPs. Narrowing is the only way to keep a
+// relay local: verified in gst-plugins-bad 1.28.1 nice.c, webrtcnice hands the
+// relays to libnice in hash-table order and libnice ranks relays by that
+// position, so URI order cannot make ICE prefer the nearest relay. Narrowing is
+// also a trap when the nearby POP dies, because this probe only re-runs while
+// the call is Active (failure model B4), so it applies only to a non-recovery
+// build while Active on a fresh result (TurnListPolicy.h mayNarrowTurnHosts).
 // Why STUN-over-UDP and not a TCP connect to :3478: coturn commonly filters TCP
-// :3478 (→ the old probe got no answer and reported "best RTT -1", then fell
-// back to ALL relays — the far-relay detour that shredded Ivan's send), and a
+// :3478 (→ the old probe got no answer and reported "best RTT -1"), and a
 // TCP-connect time folds in the 3-way handshake + DNS. A STUN Binding round-trip
 // on UDP:3478 is answered by every TURN server and measures the real RTT. DNS is
 // resolved first and excluded from the timing. Async + non-blocking on the main
-// thread; runs when the TURN list arrives on room-join. effectiveTurnServers()
-// returns the full list until this resolves.
+// thread; runs when the TURN list arrives on room-join. The previous result
+// stays in force until this one lands, so a pipeline built mid-probe gets the
+// same list as one built just before it.
 void CallManager::probeNearestTurnAsync()
 {
-    m_turnProbed = false;
-    m_nearestTurnServers.clear();
     const int gen = ++m_turnProbeGen;
-    if (m_turnServers.size() <= 1) { m_nearestTurnServers = m_turnServers; m_turnProbed = true; return; }
+    m_turnLabelValid = false;   // runs right after every m_turnServers assignment
+    const QHash<QString, quint16> probePorts = talq::turnProbePorts(m_turnServers);
+    if (probePorts.isEmpty()) {
+        m_turnRttByHost.clear();
+        m_turnRttAt.invalidate();
+        m_turnBestRttMs = -1;
+        return;
+    }
 
     // Probe state lives in a shared_ptr owned by the timer functor below. If THIS
     // CallManager is destroyed within the window, Qt destroys the (context=this)
@@ -3511,16 +4069,10 @@ void CallManager::probeNearestTurnAsync()
     // after destruction.
     struct Probe { QString host; quint16 port; QUdpSocket *sock = nullptr; QByteArray txid; QElapsedTimer t; bool sent = false; int rtt = -1; };
     auto probes = std::make_shared<std::vector<Probe>>();
-    QSet<QString> seen;
-    for (const TurnServer &ts : m_turnServers)
-        for (const QString &url : ts.urls) {
-            QString h; quint16 p;
-            if (!parseTurnHostPort(url, h, p) || seen.contains(h)) continue;
-            seen.insert(h);
-            Probe pr; pr.host = h; pr.port = p;
-            probes->push_back(pr);
-        }
-    if (probes->empty()) { m_nearestTurnServers = m_turnServers; m_turnProbed = true; return; }
+    for (const QString &h : talq::turnHosts(m_turnServers)) {
+        Probe pr; pr.host = h; pr.port = probePorts.value(h);
+        probes->push_back(pr);
+    }
 
     for (Probe &pr : *probes) {                          // vector is fully built -> &pr is stable
         pr.sock = new QUdpSocket(this);
@@ -3550,58 +4102,65 @@ void CallManager::probeNearestTurnAsync()
             for (Probe &pr : *probes) if (pr.sock) { pr.sock->disconnect(); pr.sock->close(); pr.sock->deleteLater(); }
         };
         if (gen != m_turnProbeGen) { cleanup(); return; }   // a newer probe superseded this one
-        int best = std::numeric_limits<int>::max();
-        QHash<QString,int> rttByHost;
-        for (Probe &pr : *probes) {
-            rttByHost[pr.host] = pr.rtt;
-            if (pr.rtt >= 0 && pr.rtt < best) best = pr.rtt;
+        int best = -1;
+        QHash<QString, int> rttByHost;
+        QStringList perHost;
+        for (const Probe &pr : *probes) {
+            rttByHost.insert(pr.host, pr.rtt);          // -1 = probed, no answer
+            if (pr.rtt >= 0 && (best < 0 || pr.rtt < best)) best = pr.rtt;
+            perHost << pr.host + QLatin1Char('=') + QString::number(pr.rtt);
         }
-        // Narrow the TURN list to the nearest region only when a genuinely local
-        // relay answered (best < 120 ms). UDP-STUN RTT is accurate (unlike the old
-        // TCP-connect probe), so a same-region relay reads ~5-40 ms and a
-        // cross-continent one ~150+ ms — the split is clean. When nothing answers
-        // (best -1) or every relay is far, keep the FULL list: redundancy beats a
-        // possibly-wrong "nearest".
-        if (best != std::numeric_limits<int>::max() && best < 120) {
-            const int margin = 40;   // same-region hosts stay; a far one (+100ms) is dropped
-            QList<TurnServer> nearby;   // NOTE: 'near' is a legacy Windows macro — do not use it
-            for (const TurnServer &ts : m_turnServers) {
-                bool isNear = false;
-                for (const QString &url : ts.urls) {
-                    QString h; quint16 p;
-                    if (parseTurnHostPort(url, h, p) && rttByHost.value(h, -1) >= 0
-                        && rttByHost.value(h) <= best + margin) { isNear = true; break; }
-                }
-                if (isNear) nearby.append(ts);
-            }
-            if (!nearby.isEmpty()) m_nearestTurnServers = nearby;
-        }
-        if (m_nearestTurnServers.isEmpty()) m_nearestTurnServers = m_turnServers;  // nothing answered -> keep all
-        m_turnProbed = true;
-        m_turnBestRttMs = (best == std::numeric_limits<int>::max()) ? -1 : best;
+        m_turnRttByHost = rttByHost;   // replaced whole; never cleared while a probe runs
+        m_turnRttAt.start();
+        m_turnBestRttMs = best;
+        m_turnLabelValid = false;
+        selectedTurnLabel();           // rebuild the cache once, here, not on paint
         qInfo().nospace() << "CallManager: nearest-TURN probe (UDP STUN) done — best RTT "
-            << (best == std::numeric_limits<int>::max() ? -1 : best) << " ms; using "
-            << m_nearestTurnServers.size() << "/" << m_turnServers.size() << " TURN server(s): "
-            << selectedTurnLabel();
+            << best << " ms; RTT per host (ms, -1 = no answer): " << perHost.join(QStringLiteral(", "))
+            << "; relay host order: " << m_turnLabelAll
+            << "; a narrowed build keeps: " << m_turnLabelNearby;
         cleanup();
     });
 }
 
-QList<TurnServer> CallManager::effectiveTurnServers() const
+bool CallManager::mayNarrowTurnServers(bool recoveryBuild) const
 {
-    return (m_turnProbed && !m_nearestTurnServers.isEmpty()) ? m_nearestTurnServers : m_turnServers;
+    return talq::mayNarrowTurnHosts(m_state == Active,
+                                    m_turnRttAt.isValid() ? m_turnRttAt.elapsed() : -1,
+                                    recoveryBuild);
 }
 
-// Telemetry: the TURN relay host(s) actually in use (post nearest-selection).
+// The TURN entries a pipeline is built with, regrouped in plan order: hosts the
+// probe reached by RTT, then unprobed ones, then the ones it could not reach,
+// with the signaling POP first among equals. Before the first probe result that
+// is config order with the signaling POP first. When mayNarrowTurnServers()
+// allows it, only the nearby hosts stay. Each pipeline then budgets these to at
+// most 8 libnice relays, every remaining host kept (TurnList.h).
+QList<TurnServer> CallManager::effectiveTurnServers(bool recoveryBuild) const
+{
+    const bool narrow = mayNarrowTurnServers(recoveryBuild);
+    const QList<TurnServer> servers =
+        talq::turnServersForBuild(m_turnServers, m_turnRttByHost, selectedSignalingLabel(), narrow);
+    if (narrow)
+        qDebug() << "CallManager: TURN plan for this build narrowed to nearby host(s):"
+                 << talq::turnHosts(servers) << "probe age" << m_turnRttAt.elapsed() << "ms";
+    return servers;
+}
+
+// Telemetry: the TURN hosts a new (non-recovery) pipeline would be built with,
+// in plan order. Cached; see m_turnLabelValid.
 QString CallManager::selectedTurnLabel() const
 {
-    QStringList hosts;
-    for (const TurnServer &ts : effectiveTurnServers())
-        for (const QString &url : ts.urls) {
-            QString h; quint16 p;
-            if (parseTurnHostPort(url, h, p) && !hosts.contains(h)) hosts << h;
-        }
-    return hosts.join(QStringLiteral(", "));
+    const QString signalingHost = selectedSignalingLabel();
+    if (!m_turnLabelValid || signalingHost != m_turnLabelSignaling) {
+        m_turnLabelAll = talq::turnHosts(m_turnServers, m_turnRttByHost, signalingHost, false)
+                             .join(QStringLiteral(", "));
+        m_turnLabelNearby = talq::turnHosts(m_turnServers, m_turnRttByHost, signalingHost, true)
+                                .join(QStringLiteral(", "));
+        m_turnLabelSignaling = signalingHost;
+        m_turnLabelValid = true;
+    }
+    return mayNarrowTurnServers(false) ? m_turnLabelNearby : m_turnLabelAll;
 }
 
 // Telemetry: how the outbound media is actually travelling.
@@ -4263,289 +4822,585 @@ void CallManager::joinCallOnServer(bool withVideo)
     // call here covers every path. No-op off Windows.
     talq::disableCommunicationsDucking();
 
+    // STUN/TURN for THIS call, fetched in parallel with the join POST (RCA D3,
+    // 2026-09-16). They used to be fetched only in the POST's success callback,
+    // so a join that committed while its response hung on Talk's synchronous HPB
+    // notifier left every subscriber offer parked for a minute. A no-op on the
+    // re-POST rounds (already fetched or in flight for this call).
+    refreshIceServers(false, "call-join");
+
     QJsonObject body;
     body["flags"] = callFlags(withVideo, !m_muted);
     // Match the official client's POST call/{token} parameter shape.
     body["silent"] = false;            // ring participants normally
     body["recordingConsent"] = false;  // no consent UI; server enforces only if required
-    m_api->post("apps/spreed/api/v4/call/" + m_callToken, body,
-        [this, withVideo](bool ok, const QJsonObject &, int statusCode) {
-            if (!ok) {
-                // The SERVER rejected our call-join (e.g. a 5xx). Never silently
-                // drop the call with no word to the user. First absorb a brief
-                // transient blip with a couple of quick auto-retries; if it
-                // still fails, intercept it and surface a clear, plain-language
-                // message -- and remember the token so the signaling echo does
-                // not immediately re-ring us as a phantom incoming call.
-                const bool transient   = (statusCode == 0) || (statusCode >= 500 && statusCode <= 599);
-                const bool stillTrying = (m_state == Outgoing || m_state == Connecting || m_state == Incoming);
-                if (transient && stillTrying && m_callJoinAttempts < kMaxCallJoinAttempts) {
-                    ++m_callJoinAttempts;
-                    const int delayMs = 600 * m_callJoinAttempts;   // 600 ms, then 1200 ms
-                    qWarning() << "CallManager: call-join failed status=" << statusCode
-                               << "- auto-retry" << m_callJoinAttempts << "of"
-                               << kMaxCallJoinAttempts << "in" << delayMs << "ms";
-                    setStatusDetail(tr("Server busy, retrying..."));
-                    QTimer::singleShot(delayMs, this, [this, withVideo]() {
-                        if (m_state == Outgoing || m_state == Connecting || m_state == Incoming)
-                            joinCallOnServer(withVideo);
-                    });
+    const int gen = m_callGen;
+    const QString token = m_callToken;
+    m_joinPosts.noteSent(QDateTime::currentMSecsSinceEpoch());
+    m_api->post("apps/spreed/api/v4/call/" + token, body,
+        [this, gen, token, withVideo](bool ok, const QJsonObject &, int statusCode) {
+            onCallJoinPostResult(gen, token, withVideo, ok, statusCode);
+        });
+}
+
+void CallManager::resetCallJoinState(bool outgoing)
+{
+    ++m_callGen;
+    m_joinIsOutgoing   = outgoing;
+    m_joinPosts        = talq::JoinPostLedger{};
+    m_callMediaStarted = false;
+    m_ownJoin.reset();
+    m_iceFetchFailures = 0;
+}
+
+void CallManager::onCallJoinPostResult(int gen, const QString &token, bool withVideo,
+                                       bool ok, int statusCode)
+{
+    if (gen != m_callGen) {
+        onLateJoinPostResult(token, ok, statusCode);
+        return;
+    }
+    m_joinPosts.noteResult(ok, statusCode);
+
+    if (ok) {
+        onCallJoinConfirmed("REST 200", /*viaHpb*/false);
+        return;
+    }
+
+    talq::JoinFailure f;
+    f.status        = statusCode;
+    f.stillTrying   = talq::isStillJoining(m_state == Outgoing || m_state == Connecting || m_state == Incoming,
+                                           m_state == Reconnecting, m_ownJoin.confirmed());
+    f.alreadyJoined = m_ownJoin.confirmed();
+    f.attempts      = m_callJoinAttempts;
+    f.maxAttempts   = kMaxCallJoinAttempts;
+    switch (talq::decideJoinFailure(f)) {
+    case talq::JoinFailureAction::IgnoreStale:
+        qInfo() << "CallManager: call-join failed status=" << statusCode
+                << "but the call is no longer joining (state" << m_state << ") -- ignored";
+        return;
+    case talq::JoinFailureAction::TreatAsJoined:
+        // A late 0/5xx after we already proceeded must not tear a working call
+        // down: the HPB lists our session in the call, so the join committed.
+        qWarning() << "CallManager: call-join POST failed status=" << statusCode
+                   << "but our session is already in the call -- continuing, no re-POST";
+        return;
+    case talq::JoinFailureAction::Reconcile:
+        ++m_callJoinAttempts;
+        reconcileCallJoin(gen, token, withVideo, statusCode, /*verifyingRejection*/false);
+        return;
+    case talq::JoinFailureAction::VerifyRejection:
+        reconcileCallJoin(gen, token, withVideo, statusCode, /*verifyingRejection*/true);
+        return;
+    case talq::JoinFailureAction::Fail:
+        failCallJoin(statusCode);
+        return;
+    }
+}
+
+void CallManager::onLateJoinPostResult(const QString &token, bool ok, int statusCode)
+{
+    // The call this POST belonged to is gone. Field case (2026-09-16): hung up
+    // while the POST hung; its status 0 arrived 2 s later and
+    // still raised "Couldn't start the call". Never surface it. The POST may
+    // nevertheless have COMMITTED (a 200, or a 0/5xx after the write) after
+    // teardown's leave went out, so leave once more -- unless this device is
+    // back in that call. A write later still is teardown's timed check.
+    qInfo() << "CallManager: late call-join result (status" << statusCode
+            << ") for a call that already ended -- ignored";
+    const bool rejoined = !token.isEmpty() && m_callToken == token
+                          && m_state != Idle && m_state != Incoming;
+    if (token.isEmpty()
+        || talq::decideLateJoinResult(ok, statusCode, rejoined) != talq::LateCommitAction::Leave)
+        return;
+    QJsonObject body;
+    body["all"] = false;
+    m_api->del("apps/spreed/api/v4/call/" + token, body,
+        [token](bool ok2, const QJsonObject &, int sc) {
+            qInfo() << "CallManager: follow-up leave for" << token
+                    << (ok2 ? "delivered" : "failed") << sc;
+        });
+}
+
+void CallManager::reconcileCallJoin(int gen, const QString &token, bool withVideo, int failedStatus,
+                                    bool verifyingRejection)
+{
+    // RCA D5 (2026-09-16): status 0 / 5xx does NOT mean "not joined". Talk throws
+    // from its HPB notifier after partial commits, and TalQ's 30 s transfer
+    // timeout is shorter than the notifier's 90 s. A blind re-POST started a NEW
+    // ringing call after the other side had left (field, 2026-09-16). Ask first:
+    // GET call/{token} is a plain SELECT (spreed 24.0.4
+    // CallController::getPeersForCall; InjectionMiddleware writes nothing), so it
+    // answers promptly while notifications hang.
+    // Review CR-4: the same GET settles a 4xx that arrived after only the HPB
+    // had confirmed the join (that update may belong to a previous call).
+    // A hang-up during this window is teardown's: it bumps the generation, sends
+    // the leave and schedules the late-commit check (talq::planCallEnd).
+    if (verifyingRejection)
+        qWarning() << "CallManager: call-join POST rejected status=" << failedStatus
+                   << "after the HPB listed our session in the call -- checking the server's call list";
+    else
+        qWarning() << "CallManager: call-join failed status=" << failedStatus
+                   << "- checking whether the join committed before re-POSTing (round"
+                   << m_callJoinAttempts << "of" << kMaxCallJoinAttempts << ")";
+    if (!verifyingRejection)
+        setStatusDetail(tr("Server busy, retrying..."));
+    m_api->getArray("apps/spreed/api/v4/call/" + token,
+        [this, gen, token, withVideo, failedStatus, verifyingRejection](bool ok, const QJsonArray &rows, int) {
+            if (gen != m_callGen) return;
+            talq::JoinReconcile r;
+            r.restOk             = ok;
+            r.outgoing           = m_joinIsOutgoing;
+            r.alreadyJoined      = m_ownJoin.confirmed();
+            r.verifyingRejection = verifyingRejection;
+            // Review CR-3: REST alone cannot prove "nobody left" -- its list drops
+            // sessions whose POP stopped pinging the backend. The HPB must agree.
+            r.hpbRoomKnown    = signalingCoversCallRoom(token) && m_signaling->participantsUpdateSeen();
+            r.hpbOthersInCall = r.hpbRoomKnown ? m_signaling->otherSessionsInCall() : 0;
+            const QString selfUser = m_signaling->userId();
+            for (const auto &v : rows) {
+                const QJsonObject row = v.toObject();
+                // Rows carry the NEXTCLOUD session id. Matching on the user id
+                // instead would also match this user's other devices.
+                if (isOwnNcSession(row["sessionId"].toString())) {
+                    r.selfListed = true;
+                    continue;
+                }
+                if (row["actorType"].toString() == QLatin1String("users")
+                    && !selfUser.isEmpty() && row["actorId"].toString() == selfUser)
+                    continue;   // our own user on another device is not the other side
+                ++r.othersInCall;
+            }
+            switch (talq::decideJoinReconcile(r)) {
+            case talq::JoinReconcileAction::TreatAsJoined:
+                if (verifyingRejection) {
+                    qWarning() << "CallManager: join reconcile --"
+                               << (ok ? "our session IS in the call" : "call list unavailable, keeping the HPB evidence")
+                               << "-- ignoring the rejected POST";
                     return;
                 }
-
-                qWarning() << "CallManager: failed to join call, status=" << statusCode
-                           << "(retries exhausted; informing user)";
-                m_callJoinAttempts = 0;
-                m_lastOutgoingToken = m_callToken;
-                m_lastOutgoingTime  = QDateTime::currentDateTime();
-
-                const QString codeStr = (statusCode == 0)
-                    ? tr("no response") : QString::number(statusCode);
-                const QString title = tr("Couldn't start the call");
-                QString msg;
-                if (statusCode == 0 || statusCode >= 500)
-                    msg = tr("The server reported an error (%1), so the call couldn't "
-                             "be started.\n\nThis is a problem on the server, not on your "
-                             "device. Please try again in a moment -- if it keeps "
-                             "happening, let your administrator know.").arg(codeStr);
-                else if (statusCode == 403)
-                    msg = tr("You don't have permission to start a call in this "
-                             "conversation (403).");
-                else if (statusCode == 404)
-                    msg = tr("This conversation could not be found on the server (404).");
-                else
-                    msg = tr("The call couldn't be started (%1). Please try again.").arg(codeStr);
-
-                emit callFailed(title, msg);
-                teardown("Failed to join call");
+                qWarning() << "CallManager: join reconcile -- our session IS in the call"
+                              " (the join committed; its response was lost) -- continuing";
+                onCallJoinConfirmed("REST reconcile (GET call lists our session)", /*viaHpb*/false);
+                return;
+            case talq::JoinReconcileAction::Fail:
+                qWarning() << "CallManager: join reconcile -- the server rejected the join and does not"
+                              " list our session; the HPB confirmation was stale";
+                failCallJoin(failedStatus);
+                return;
+            case talq::JoinReconcileAction::CallGone:
+                qWarning() << "CallManager: join reconcile -- nobody is left in the call (REST and HPB);"
+                              " not re-POSTing (that would start a new call)";
+                teardown("Call ended");   // sends the leave: our POSTs may still commit
+                return;
+            case talq::JoinReconcileAction::RePost: {
+                const int delayMs = 600 * m_callJoinAttempts;   // 600 ms, then 1200 ms
+                qWarning() << "CallManager: join reconcile -- not in the call"
+                           << (ok ? "" : "(reconcile GET failed too)")
+                           << "- re-POSTing in" << delayMs << "ms";
+                QTimer::singleShot(delayMs, this, [this, gen, withVideo]() {
+                    if (gen != m_callGen || m_ownJoin.confirmed()) return;
+                    if (talq::isStillJoining(m_state == Outgoing || m_state == Connecting || m_state == Incoming,
+                                             m_state == Reconnecting, m_ownJoin.confirmed()))
+                        joinCallOnServer(withVideo);
+                });
                 return;
             }
-
-            m_callJoinAttempts = 0;
-            m_joinedCall = true;
-            setStatusDetail("Fetching servers");
-            qDebug() << "CallManager: joined call, MCU=" << m_signaling->hasMcu();
-
-            // Fetch STUN server
-            m_api->get("apps/spreed/api/v3/signaling/settings",
-                [this](bool ok2, const QJsonObject &settings, int) {
-                    // Use the server's configured STUN order (what the
-                    // official client does); only fall back to the public
-                    // default if the server provided none.
-                    m_stunServer.clear();
-                    if (ok2) {
-                        const auto stunArr = settings["stunservers"].toArray();
-                        for (const auto &s : stunArr) {
-                            const auto urls = s.toObject()["urls"].toArray();
-                            if (!urls.isEmpty()) {
-                                m_stunServer = urls.first().toString();
-                                break;
-                            }
-                        }
-                    }
-                    if (m_stunServer.isEmpty())
-                        m_stunServer = "stun:stun.nextcloud.com:443";
-                    qDebug() << "CallManager: STUN:" << m_stunServer;
-
-                    QList<TurnServer> turnServers;
-                    auto turnArr = settings["turnservers"].toArray();
-                    for (const auto &ts : turnArr) {
-                        auto obj = ts.toObject();
-                        TurnServer turn;
-                        auto urls = obj["urls"].toArray();
-                        for (const auto &u : urls)
-                            turn.urls.append(u.toString());
-                        turn.username = obj["username"].toString();
-                        turn.credential = obj["credential"].toString();
-                        if (!turn.urls.isEmpty())
-                            turnServers.append(turn);
-                    }
-                    qDebug() << "CallManager: found" << turnServers.size() << "TURN servers";
-                    m_turnServers = turnServers;
-                    // RTT-probe the offered TURN hosts now (on room-join) so that by
-                    // the time a call starts we relay only through the NEAREST one.
-                    probeNearestTurnAsync();
-
-                    // Process any offers that arrived before ICE servers were available
-                    processPendingOffers();
-
-                    setStatusDetail("Starting pipeline");
-
-                        // --- MCU mode: build + start the publisher (send leg). ---
-                        // Factored into buildAndStartPublisher() so the
-                        // Zoom-style reconnect path can rebuild the publisher on
-                        // the cached STUN/TURN without re-joining the call.
-                        if (!buildAndStartPublisher()) {
-                            teardown("Failed to start audio pipeline");
-                            return;
-                        }
-
-                        // If remote peer already joined (incoming call), request their stream
-                        if (!m_remoteSessionId.isEmpty() && !m_subscribePipelines.contains(m_remoteSessionId)) {
-                            setStatusDetail("Requesting peer stream");
-                            requestPeerStream(m_remoteSessionId);
-                            qDebug() << "CallManager: sent requestOffer for already-joined remote peer";
-                        } else {
-                            // Discover who's already in the call and request their streams.
-                            // Poll periodically since HPB participant events may not arrive
-                            // for mobile clients using internal signaling.
-                            auto pollParticipants = [this]() {
-                                if (m_state == Idle || !m_remoteSessionId.isEmpty()) return;
-                                TLOG_CALL("polling call participants for" << m_callToken);
-                                m_api->getArray("apps/spreed/api/v4/call/" + m_callToken,
-                                    [this](bool ok, const QJsonArray &data, int) {
-                                        if (!ok || m_state == Idle || !m_remoteSessionId.isEmpty())
-                                            return;
-                                        for (const auto &val : data) {
-                                            const QJsonObject p = val.toObject();
-                                            const QString ncSid = p["sessionId"].toString();
-                                            if (ncSid.isEmpty()) continue;
-                                            // #bug5 — GET call/{token} returns ONLY the sessions
-                                            // CONNECTED to the call, and (live-verified against
-                                            // this NC 33: raw row = actorType/actorId/displayName/
-                                            // token/lastPing/sessionId) carries NO inCall field at
-                                            // all. The old `inCall == 0 → skip` gate therefore
-                                            // dropped EVERY row — the poll could never adopt
-                                            // anyone, which is why the caller sat in Outgoing
-                                            // ("Calling…") until the 60s ring-out. Presence in
-                                            // the list IS "in the call"; use the flags when a
-                                            // server variant does send them, else assume audio
-                                            // (Janus forwards the peer's whole feed for a single
-                                            // subscription; the real flags follow with the next
-                                            // HPB participants update).
-                                            int inCall = p["inCall"].toInt();
-                                            if (inCall == 0)
-                                                inCall = CALL_FLAG_IN_CALL | CALL_FLAG_WITH_AUDIO;
-                                            // #bug5 — the REST sessionId is the NEXTCLOUD
-                                            // session id, a DIFFERENT id space from the HPB
-                                            // signaling sid that requestoffer/subscribers
-                                            // route on. The old code compared it to the HPB
-                                            // sid for the self-skip (never matched — it could
-                                            // adopt OUR OWN row) and fed it straight to
-                                            // requestPeerStream (the HPB has no such recipient
-                                            // → no offer, ever — and the poisoned
-                                            // m_remoteSessionId then blocked the real
-                                            // JOINED-edge adopt for the rest of the ring, so
-                                            // the caller rang out 60s against a peer whose
-                                            // inCall was already 7). Skip self by USER id and
-                                            // translate NC→HPB via the room-join event
-                                            // mappings instead.
-                                            const QString uid = p["actorId"].toString();
-                                            if (p["actorType"].toString() == QLatin1String("users")
-                                                && !uid.isEmpty() && uid == m_signaling->userId())
-                                                continue;   // our own user (any device) — never adoptable
-                                            // 2026-07-13 backstop — freshness stamp for the
-                                            // promoted-without-sid window: ANY non-self row still
-                                            // in the call list means "the answered peer is still
-                                            // there", mapped or not (a mapped row can be
-                                            // temporarily unadoptable, e.g. mid-Reconnecting, and
-                                            // must not trip the vanished-peer check below).
-                                            if (m_restPromoted && m_remoteSessionId.isEmpty())
-                                                m_restPeerLastSeenMs = QDateTime::currentMSecsSinceEpoch();
-                                            QString sid = m_signaling->hpbSessionForNcSession(ncSid);
-                                            if (sid.isEmpty() && !uid.isEmpty())
-                                                sid = m_signaling->sessionsForUser(uid).value(0);
-                                            if (sid.isEmpty() || sid == m_signaling->sessionId()) {
-                                                TLOG_CALL("REST peer" << ncSid.left(20)
-                                                          << "has no known signaling sid yet — waiting"
-                                                             " for its room join event");
-                                                // 2026-07-13 field incident — waiting is NOT
-                                                // enough. The HPB stayed silent about an ANSWERED
-                                                // callee for 3 whole ring-outs (its participants
-                                                // updates carried only our own session; the callee
-                                                // never appeared in ANY signaling event), and both
-                                                // NC→HPB maps are HPB-fed — so this branch is
-                                                // exactly where the "guaranteed" REST fallback went
-                                                // blind, silently skipping the answered peer every
-                                                // 3s for the whole 60s ring. Hand the row to the
-                                                // backstop: it promotes out of Outgoing on REST
-                                                // evidence alone, keeps resolving on later ticks,
-                                                // and surfaces the delivery failure LOUDLY instead
-                                                // of ringing into the void. (A row that maps to our
-                                                // OWN session is not peer evidence — skip those.)
-                                                if (sid.isEmpty())
-                                                    noteRestPeerEvidence(ncSid, p["displayName"].toString());
-                                                continue;
-                                            }
-                                            TLOG_CALL("discovered in-call peer via REST:"
-                                                      << sid.left(20) << "flags=" << inCall);
-                                            // Route through the SAME handler the HPB JOINED
-                                            // edge uses so every adopt side-effect applies
-                                            // once, consistently: ring-timer stop, Connecting,
-                                            // #bug4 peer-user stamping + m_peerInCallSids,
-                                            // media-state broadcast, subscribe gating (incl.
-                                            // the group fallthrough for additional peers). The
-                                            // poll is then exactly a replay of the missed
-                                            // edge, not a second adoption code path.
-                                            onParticipantJoinedCall(sid, inCall,
-                                                                    p["displayName"].toString());
-                                    }
-                                        // 2026-07-13 backstop — the promotion stopped the 60s
-                                        // ring timeout (correctly: the call WAS answered), so a
-                                        // callee who answers, waits on "connecting", and gives up
-                                        // before their HPB sid ever resolves would otherwise park
-                                        // us in Connecting/Active FOREVER — their hang-up is
-                                        // invisible to us (participantLeftCall is HPB-fed too).
-                                        // Their REST row disappearing for ~3 poll ticks is the
-                                        // one signal we do have; end the call truthfully instead
-                                        // of trading the old forever-ring for a forever-connect.
-                                        if (m_restPromoted && m_remoteSessionId.isEmpty()
-                                            && m_restPeerLastSeenMs > 0
-                                            && QDateTime::currentMSecsSinceEpoch()
-                                                   - m_restPeerLastSeenMs > 10000) {
-                                            qWarning() << "CallManager: REST-proven peer vanished"
-                                                          " from the call before their HPB session"
-                                                          " ever resolved — they answered, then gave"
-                                                          " up while signaling never delivered their"
-                                                          " session (field 2026-07-13). Ending call.";
-                                            teardown("Call ended before media could be established");
-                                        }
-                                });
-                            };
-                            // Upstream Talk (v23.0.4, MCU mode) waits for the
-                            // signaling layer's usersInCallChanged event and
-                            // never polls eagerly — but that only covers peers
-                            // whose call-join produces an EDGE. A peer ALREADY
-                            // ESTABLISHED in the call (the remote kept the call
-                            // open; we join/redial) produces no edge, and the
-                            // HPB protocol has no request to fetch the current
-                            // in-call list (doc-checked: push-only), so this
-                            // REST poll is the ONLY discovery for that peer.
-                            // Fire it once ~1.2s after our publisher starts:
-                            // late enough that the old immediate-poll concern
-                            // (subscribing a JUST-joining peer before its
-                            // publish registers → choppy) cannot apply to the
-                            // target case — an established peer's publish has
-                            // been registered for seconds — and a just-joining
-                            // peer is instead adopted by its own JOINED edge
-                            // (the poll self-disables once m_remoteSessionId is
-                            // set). A rare still-early requestoffer is absorbed
-                            // by the 8s requestoffer retry net + the 0.52.7
-                            // not_allowed→recoverSubscriber escalation. The 3s
-                            // timer stays as the backup for the documented
-                            // mobile/internal-signaling path where HPB
-                            // participant events may not fire.
-                            // 1.0 audit — owned by m_callPollTimer and killed in
-                            // stopAllPipelines (which runs on teardown AND on a
-                            // fresh call start), so a re-entered setup can't leak
-                            // the prior timer. Once the peer is found
-                            // pollParticipants early-returns, so it idles cheaply
-                            // until teardown rather than needing a self-delete edge.
-                            if (m_callPollTimer) {
-                                m_callPollTimer->stop();
-                                m_callPollTimer->deleteLater();
-                            }
-                            m_callPollTimer = new QTimer(this);
-                            m_callPollTimer->setInterval(3000);
-                            connect(m_callPollTimer, &QTimer::timeout, this, pollParticipants);
-                            m_callPollTimer->start();
-                            QTimer::singleShot(1200, this, pollParticipants);
-                        }
-
-                        // Video is now included in the initial pipeline (no delayed renegotiation)
-                        // Camera preview starts immediately when pipeline starts
-                });
+            }
         });
+}
+
+void CallManager::failCallJoin(int statusCode)
+{
+    // The SERVER rejected our call-join (e.g. a 5xx) and reconciling could not
+    // show it committed. Never silently drop the call with no word to the user:
+    // surface a clear, plain-language message -- and remember the token so the
+    // signaling echo does not immediately re-ring us as a phantom incoming call.
+    qWarning() << "CallManager: failed to join call, status=" << statusCode
+               << "(retries exhausted; informing user)";
+    m_callJoinAttempts = 0;
+    m_lastOutgoingToken = m_callToken;
+    m_lastOutgoingTime  = QDateTime::currentDateTime();
+
+    const QString codeStr = (statusCode == 0)
+        ? tr("no response") : QString::number(statusCode);
+    const QString title = tr("Couldn't start the call");
+    QString msg;
+    if (statusCode == 0 || statusCode >= 500)
+        msg = tr("The server reported an error (%1), so the call couldn't "
+                 "be started.\n\nThis is a problem on the server, not on your "
+                 "device. Please try again in a moment -- if it keeps "
+                 "happening, let your administrator know.").arg(codeStr);
+    else if (statusCode == 403)
+        msg = tr("You don't have permission to start a call in this "
+                 "conversation (403).");
+    else if (statusCode == 404)
+        msg = tr("This conversation could not be found on the server (404).");
+    else
+        msg = tr("The call couldn't be started (%1). Please try again.").arg(codeStr);
+
+    emit callFailed(title, msg);
+    teardown("Failed to join call");
+}
+
+void CallManager::onCallJoinConfirmed(const char *source, bool viaHpb)
+{
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    const bool edge = viaHpb ? m_ownJoin.noteHpbSelfInCall(now)
+                             : m_ownJoin.noteRestConfirmed(now);
+    m_joinedCall = true;       // a hang-up from here on must send the leave
+    m_callJoinAttempts = 0;
+    if (!edge) return;
+    qDebug() << "CallManager: joined call, MCU=" << m_signaling->hasMcu();
+    qInfo() << "CallManager: own call join confirmed via" << source
+            << (m_joinPosts.inFlight > 0 ? "(join POST response still outstanding)" : "");
+    flushDeferredRequestOffers();
+    maybeStartCallMedia();
+}
+
+void CallManager::maybeStartCallMedia()
+{
+    const bool callLive = (m_state == Outgoing || m_state == Connecting
+                           || m_state == Active || m_state == Reconnecting);
+    const bool usable = iceServersUsable();
+    if (!talq::shouldStartCallMedia(m_joinedCall, usable, m_callMediaStarted, callLive)) {
+        if (callLive && m_joinedCall && !m_callMediaStarted && !usable) {
+            setStatusDetail("Fetching servers");
+            if (m_iceFetchFailures == 0)          // a failing fetch's backoff owns retries
+                refreshIceServers(false, "media-start");
+        }
+        return;
+    }
+    m_callMediaStarted = true;
+    startCallMedia();
+}
+
+bool CallManager::iceServersUsable() const
+{
+    return !m_stunServer.isEmpty()
+        && talq::iceServersUsable(m_iceCache, QDateTime::currentMSecsSinceEpoch(), m_callGen);
+}
+
+bool CallManager::isOwnNcSession(const QString &ncSessionId, const QString &selfSid) const
+{
+    if (ncSessionId.isEmpty()) return false;
+    const QString hpbSid = m_signaling->hpbSessionForNcSession(ncSessionId);
+    if (hpbSid.isEmpty()) return false;
+    return hpbSid == m_signaling->sessionId() || (!selfSid.isEmpty() && hpbSid == selfSid);
+}
+
+void CallManager::scheduleLateJoinCommitCheck(const QString &token, qint64 delayMs)
+{
+    // Snapshot our HPB sid: a session reset before the check mints a new one,
+    // while the row that may commit late belongs to this one.
+    const QString selfSid = m_signaling->sessionId();
+    qInfo() << "CallManager: a join POST for" << token << "may still commit server-side --"
+               " re-checking the call list in" << delayMs / 1000 << "s";
+    QTimer::singleShot(int(delayMs), this, [this, token, selfSid]() {
+        m_api->getArray("apps/spreed/api/v4/call/" + token,
+            [this, token, selfSid](bool ok, const QJsonArray &rows, int sc) {
+                bool selfListed = false;
+                for (const auto &v : rows)
+                    if (isOwnNcSession(v.toObject()["sessionId"].toString(), selfSid))
+                        selfListed = true;
+                const bool rejoined = m_callToken == token && m_state != Idle && m_state != Incoming;
+                if (talq::decideLateJoinCommitCheck(ok, selfListed, rejoined) != talq::LateCommitAction::Leave) {
+                    qInfo() << "CallManager: late-commit check for" << token << "-- nothing to leave"
+                            << (rejoined ? "(back in that call)" : "");
+                    return;
+                }
+                if (ok)
+                    qWarning() << "CallManager: late-commit check for" << token
+                               << "-- our session is still listed in the call after it ended -- leaving";
+                else
+                    qWarning() << "CallManager: late-commit check for" << token << "-- call list unavailable"
+                                  " (status" << sc << ") -- leaving anyway (a no-op if not in the call)";
+                QJsonObject body;
+                body["all"] = false;
+                m_api->delMustComplete("apps/spreed/api/v4/call/" + token, body, this,
+                    [token](bool ok2, int sc2) {
+                        qInfo() << "CallManager: late-commit leave for" << token
+                                << (ok2 ? "delivered" : "failed") << sc2;
+                    });
+            });
+    });
+}
+
+void CallManager::refreshIceServers(bool force, const char *reason)
+{
+    if (!talq::shouldFetchIceServers(m_iceCache, QDateTime::currentMSecsSinceEpoch(),
+                                     m_callGen, m_iceFetchInFlight, force))
+        return;
+    m_iceFetchInFlight = true;
+    const QString why = QString::fromLatin1(reason);
+    qInfo() << "CallManager: fetching STUN/TURN servers (" << why << ")";
+    // The result is applied to whatever call is CURRENT when it lands, not the
+    // call that started it: while a fetch is in flight no other one can start
+    // (shouldFetchIceServers), so a re-dial inside a hung fetch's window depends
+    // on this one to replay its parked offers and start its media.
+    m_api->get("apps/spreed/api/v3/signaling/settings",
+        [this, why](bool ok, const QJsonObject &settings, int statusCode) {
+            m_iceFetchInFlight = false;
+            if (ok) {
+                // Use the server's configured STUN order (what the official
+                // client does); only fall back to the public default if the
+                // server provided none. Parsed into locals first: only a
+                // SUCCESSFUL fetch may replace the lists pipelines rebuild on.
+                QString stun;
+                const auto stunArr = settings["stunservers"].toArray();
+                for (const auto &s : stunArr) {
+                    const auto urls = s.toObject()["urls"].toArray();
+                    if (!urls.isEmpty()) {
+                        stun = urls.first().toString();
+                        break;
+                    }
+                }
+                if (stun.isEmpty())
+                    stun = "stun:stun.nextcloud.com:443";
+
+                QList<TurnServer> turnServers;
+                const auto turnArr = settings["turnservers"].toArray();
+                for (const auto &ts : turnArr) {
+                    const auto obj = ts.toObject();
+                    TurnServer turn;
+                    const auto urls = obj["urls"].toArray();
+                    for (const auto &u : urls)
+                        turn.urls.append(u.toString());
+                    turn.username = obj["username"].toString();
+                    turn.credential = obj["credential"].toString();
+                    if (!turn.urls.isEmpty())
+                        turnServers.append(turn);
+                }
+                m_stunServer  = stun;
+                m_turnServers = turnServers;
+                m_iceCache.fetchedAtMs    = QDateTime::currentMSecsSinceEpoch();
+                m_iceCache.fetchedForCall = m_callGen;
+                m_iceCache.fallback       = false;
+                m_iceFetchFailures = 0;
+                qDebug() << "CallManager: STUN:" << m_stunServer;
+                qDebug() << "CallManager: found" << turnServers.size() << "TURN servers";
+                // RTT-probe the offered TURN hosts now so that pipelines relay
+                // only through the NEAREST one.
+                probeNearestTurnAsync();
+            } else {
+                ++m_iceFetchFailures;
+                const bool usable = iceServersUsable();
+                qWarning() << "CallManager: STUN/TURN fetch failed (" << why << ") status="
+                           << statusCode << "attempt" << m_iceFetchFailures
+                           << (usable ? "-- keeping the cached servers" : "");
+                if (talq::shouldUsePublicStunFallback(m_iceFetchFailures, usable)) {
+                    qWarning() << "CallManager: no usable STUN/TURN after" << m_iceFetchFailures
+                               << "attempts -- falling back to public STUN with no TURN"
+                                  " (a relay-only network cannot connect until a retry succeeds)";
+                    m_stunServer = "stun:stun.nextcloud.com:443";
+                    m_turnServers.clear();
+                    m_iceCache.fallback = true;
+                    m_iceCache.fallbackForCall = m_callGen;   // this call only (review CR-2)
+                    probeNearestTurnAsync();
+                }
+                if (!callTornDown() && talq::shouldRetryIceFetch(m_iceFetchFailures)) {
+                    const int retryGen = m_callGen;
+                    QTimer::singleShot(talq::iceFetchRetryDelayMs(m_iceFetchFailures), this,
+                        [this, retryGen]() {
+                            if (retryGen != m_callGen || callTornDown()) return;
+                            refreshIceServers(true, "retry");
+                        });
+                }
+            }
+            // No call live: the cache is kept for the next one.
+            if (callTornDown() || !iceServersUsable()) return;
+            // Offers that arrived before ICE servers were usable.
+            processPendingOffers();
+            maybeStartCallMedia();
+        });
+}
+
+void CallManager::startCallMedia()
+{
+    // Normally already replayed by the STUN/TURN callback; a no-op then.
+    processPendingOffers();
+
+    setStatusDetail("Starting pipeline");
+
+    // --- MCU mode: build + start the publisher (send leg). ---
+    // Factored into buildAndStartPublisher() so the
+    // Zoom-style reconnect path can rebuild the publisher on
+    // the cached STUN/TURN without re-joining the call.
+    // Review CR-7: never build over an existing publisher -- buildAndStartPublisher
+    // assigns m_publishPipeline without stopping the old one, which would leak a
+    // running mic/camera pipeline. (rebuildPublisherAndReoffer no longer builds
+    // before media start; this guards any other path.)
+    if (m_publishPipeline) {
+        qWarning() << "CallManager: startCallMedia found a publisher already built -- keeping it";
+    } else if (!buildAndStartPublisher()) {
+        teardown("Failed to start audio pipeline");
+        return;
+    }
+
+    // If remote peer already joined (incoming call), request their stream
+    if (!m_remoteSessionId.isEmpty() && !m_subscribePipelines.contains(m_remoteSessionId)) {
+        setStatusDetail("Requesting peer stream");
+        requestPeerStream(m_remoteSessionId);
+        qDebug() << "CallManager: sent requestOffer for already-joined remote peer";
+    } else {
+        // Discover who's already in the call and request their streams.
+        // Poll periodically since HPB participant events may not arrive
+        // for mobile clients using internal signaling.
+        auto pollParticipants = [this]() {
+            if (m_state == Idle || !m_remoteSessionId.isEmpty()) return;
+            TLOG_CALL("polling call participants for" << m_callToken);
+            m_api->getArray("apps/spreed/api/v4/call/" + m_callToken,
+                [this](bool ok, const QJsonArray &data, int) {
+                    if (!ok || m_state == Idle || !m_remoteSessionId.isEmpty())
+                        return;
+                    for (const auto &val : data) {
+                        const QJsonObject p = val.toObject();
+                        const QString ncSid = p["sessionId"].toString();
+                        if (ncSid.isEmpty()) continue;
+                        // #bug5 — GET call/{token} returns ONLY the sessions
+                        // CONNECTED to the call, and (live-verified against
+                        // this NC 33: raw row = actorType/actorId/displayName/
+                        // token/lastPing/sessionId) carries NO inCall field at
+                        // all. The old `inCall == 0 → skip` gate therefore
+                        // dropped EVERY row — the poll could never adopt
+                        // anyone, which is why the caller sat in Outgoing
+                        // ("Calling…") until the 60s ring-out. Presence in
+                        // the list IS "in the call"; use the flags when a
+                        // server variant does send them, else assume audio
+                        // (Janus forwards the peer's whole feed for a single
+                        // subscription; the real flags follow with the next
+                        // HPB participants update).
+                        int inCall = p["inCall"].toInt();
+                        if (inCall == 0)
+                            inCall = CALL_FLAG_IN_CALL | CALL_FLAG_WITH_AUDIO;
+                        // #bug5 — the REST sessionId is the NEXTCLOUD
+                        // session id, a DIFFERENT id space from the HPB
+                        // signaling sid that requestoffer/subscribers
+                        // route on. The old code compared it to the HPB
+                        // sid for the self-skip (never matched — it could
+                        // adopt OUR OWN row) and fed it straight to
+                        // requestPeerStream (the HPB has no such recipient
+                        // → no offer, ever — and the poisoned
+                        // m_remoteSessionId then blocked the real
+                        // JOINED-edge adopt for the rest of the ring, so
+                        // the caller rang out 60s against a peer whose
+                        // inCall was already 7). Skip self by USER id and
+                        // translate NC→HPB via the room-join event
+                        // mappings instead.
+                        const QString uid = p["actorId"].toString();
+                        if (p["actorType"].toString() == QLatin1String("users")
+                            && !uid.isEmpty() && uid == m_signaling->userId())
+                            continue;   // our own user (any device) — never adoptable
+                        // 2026-07-13 backstop — freshness stamp for the
+                        // promoted-without-sid window: ANY non-self row still
+                        // in the call list means "the answered peer is still
+                        // there", mapped or not (a mapped row can be
+                        // temporarily unadoptable, e.g. mid-Reconnecting, and
+                        // must not trip the vanished-peer check below).
+                        if (m_restPromoted && m_remoteSessionId.isEmpty())
+                            m_restPeerLastSeenMs = QDateTime::currentMSecsSinceEpoch();
+                        QString sid = m_signaling->hpbSessionForNcSession(ncSid);
+                        if (sid.isEmpty() && !uid.isEmpty())
+                            sid = m_signaling->sessionsForUser(uid).value(0);
+                        if (sid.isEmpty() || sid == m_signaling->sessionId()) {
+                            TLOG_CALL("REST peer" << ncSid.left(20)
+                                      << "has no known signaling sid yet — waiting"
+                                         " for its room join event");
+                            // 2026-07-13 field incident — waiting is NOT
+                            // enough. The HPB stayed silent about an ANSWERED
+                            // callee for 3 whole ring-outs (its participants
+                            // updates carried only our own session; the callee
+                            // never appeared in ANY signaling event), and both
+                            // NC→HPB maps are HPB-fed — so this branch is
+                            // exactly where the "guaranteed" REST fallback went
+                            // blind, silently skipping the answered peer every
+                            // 3s for the whole 60s ring. Hand the row to the
+                            // backstop: it promotes out of Outgoing on REST
+                            // evidence alone, keeps resolving on later ticks,
+                            // and surfaces the delivery failure LOUDLY instead
+                            // of ringing into the void. (A row that maps to our
+                            // OWN session is not peer evidence — skip those.)
+                            if (sid.isEmpty())
+                                noteRestPeerEvidence(ncSid, p["displayName"].toString());
+                            continue;
+                        }
+                        TLOG_CALL("discovered in-call peer via REST:"
+                                  << sid.left(20) << "flags=" << inCall);
+                        // Route through the SAME handler the HPB JOINED
+                        // edge uses so every adopt side-effect applies
+                        // once, consistently: ring-timer stop, Connecting,
+                        // #bug4 peer-user stamping + m_peerInCallSids,
+                        // media-state broadcast, subscribe gating (incl.
+                        // the group fallthrough for additional peers). The
+                        // poll is then exactly a replay of the missed
+                        // edge, not a second adoption code path.
+                        onParticipantJoinedCall(sid, inCall,
+                                                p["displayName"].toString());
+                }
+                    // 2026-07-13 backstop — the promotion stopped the 60s
+                    // ring timeout (correctly: the call WAS answered), so a
+                    // callee who answers, waits on "connecting", and gives up
+                    // before their HPB sid ever resolves would otherwise park
+                    // us in Connecting/Active FOREVER — their hang-up is
+                    // invisible to us (participantLeftCall is HPB-fed too).
+                    // Their REST row disappearing for ~3 poll ticks is the
+                    // one signal we do have; end the call truthfully instead
+                    // of trading the old forever-ring for a forever-connect.
+                    if (m_restPromoted && m_remoteSessionId.isEmpty()
+                        && m_restPeerLastSeenMs > 0
+                        && QDateTime::currentMSecsSinceEpoch()
+                               - m_restPeerLastSeenMs > 10000) {
+                        qWarning() << "CallManager: REST-proven peer vanished"
+                                      " from the call before their HPB session"
+                                      " ever resolved — they answered, then gave"
+                                      " up while signaling never delivered their"
+                                      " session (field 2026-07-13). Ending call.";
+                        teardown("Call ended before media could be established");
+                    }
+            });
+        };
+        // Upstream Talk (v23.0.4, MCU mode) waits for the
+        // signaling layer's usersInCallChanged event and
+        // never polls eagerly — but that only covers peers
+        // whose call-join produces an EDGE. A peer ALREADY
+        // ESTABLISHED in the call (the remote kept the call
+        // open; we join/redial) produces no edge, and the
+        // HPB protocol has no request to fetch the current
+        // in-call list (doc-checked: push-only), so this
+        // REST poll is the ONLY discovery for that peer.
+        // Fire it once ~1.2s after our publisher starts:
+        // late enough that the old immediate-poll concern
+        // (subscribing a JUST-joining peer before its
+        // publish registers → choppy) cannot apply to the
+        // target case — an established peer's publish has
+        // been registered for seconds — and a just-joining
+        // peer is instead adopted by its own JOINED edge
+        // (the poll self-disables once m_remoteSessionId is
+        // set). A rare still-early requestoffer is absorbed
+        // by the 8s requestoffer retry net + the 0.52.7
+        // not_allowed→recoverSubscriber escalation. The 3s
+        // timer stays as the backup for the documented
+        // mobile/internal-signaling path where HPB
+        // participant events may not fire.
+        // 1.0 audit — owned by m_callPollTimer and killed in
+        // stopAllPipelines (which runs on teardown AND on a
+        // fresh call start), so a re-entered setup can't leak
+        // the prior timer. Once the peer is found
+        // pollParticipants early-returns, so it idles cheaply
+        // until teardown rather than needing a self-delete edge.
+        if (m_callPollTimer) {
+            m_callPollTimer->stop();
+            m_callPollTimer->deleteLater();
+        }
+        m_callPollTimer = new QTimer(this);
+        m_callPollTimer->setInterval(3000);
+        connect(m_callPollTimer, &QTimer::timeout, this, pollParticipants);
+        m_callPollTimer->start();
+        QTimer::singleShot(1200, this, pollParticipants);
+    }
+
+    // Video is now included in the initial pipeline (no delayed renegotiation)
+    // Camera preview starts immediately when pipeline starts
 }
 
 // 2026-07-13 field incident — CLIENT-SIDE BACKSTOP for an HPB that never
@@ -4674,9 +5529,14 @@ void CallManager::leaveCallOnServer(const QString &token, bool wasJoined,
 
 void CallManager::leaveCallBeacon()
 {
-    if (!m_joinedCall || m_callToken.isEmpty()) return;
+    // Any join POST of this call may have committed server-side, including one
+    // whose status 0 put it into the reconcile window (talq::planCallEnd).
+    if (!talq::planCallEnd(m_joinPosts, m_joinedCall, QDateTime::currentMSecsSinceEpoch()).sendLeave
+        || m_callToken.isEmpty())
+        return;
     qInfo() << "CallManager: leave-call beacon for" << m_callToken;
-    m_joinedCall = false;  // guard against duplicate beacons / re-entry
+    m_joinedCall = false;                  // guard against duplicate beacons / re-entry
+    m_joinPosts  = talq::JoinPostLedger{};
 
     QJsonObject body;
     body["all"] = false;
@@ -4749,7 +5609,7 @@ void CallManager::stopAllPipelines()
     m_peerSubstreamWant.clear();   // 0.51.x receive-load raw wants
     m_subscriberRecoveries.clear();
     // 1.0 audit — these two per-session maps are created lazily (m_subStall via
-    // operator[] in updateCallStats; m_pendingSubCandidates on early trickle-ICE)
+    // operator[] in updateCallStats; m_subCandidates on early trickle-ICE)
     // and were only ever removed per-session, never bulk-cleared on full teardown.
     // A full call teardown deletes the subscribers in the loop above WITHOUT
     // touching them, so each call leaked one-or-more entries keyed by an ephemeral
@@ -4757,10 +5617,18 @@ void CallManager::stopAllPipelines()
     m_subStall.clear();
     m_signalQuality.clear();   // per-tile signal-quality glyph — same lifecycle as m_subStall
     m_pubStall.reset();
-    m_pendingSubCandidates.clear();
+    m_subCandidates.clear();
     m_pubRetryTimer.stop();
     m_pubRetryAttempts   = 0;
-    m_pubRebuildInFlight = false;
+    concludePublisherRebuild();
+    m_sessionResetAtMs  = 0;
+    m_pubIceWaitSinceMs = 0;
+    m_pubLastWaitStep   = 0;
+    m_pubSendLegStalled = false;
+    m_subRxStall.clear();   // 2026-09-16 D8 — same lifecycle as m_subStall
+    // 2026-09-16 D12 — the while-ringing self check belongs to the ring. (A ring
+    // pre-check is left alone: it only rings from Idle and self-cleans otherwise.)
+    m_ringingSelfCheckTimer.stop();
     m_pubIceConnectedSeen = false;
     // 2026-07-13 — REST-evidence backstop state is strictly per-call; reset
     // it at this single cleanup point (stopAllPipelines runs on teardown AND
@@ -4819,7 +5687,19 @@ void CallManager::teardown(const QString &reason)
     // the joined flag, and without sending it the OTHER party never gets
     // the "participant left" event (it stays in the call).
     const QString leaveToken = m_callToken;
-    const bool    wasJoined  = m_joinedCall;
+    // 2026-09-16 RCA D5/D12, review CR-1 — one plan for what this call may still
+    // hold server-side (talq::planCallEnd), snapshotted before
+    // resetCallJoinState below:
+    //  - leave whenever a join POST went out: it may have committed, and a
+    //    leave for a session not in the call is harmless. A field call skipped the
+    //    DELETE with a POST in flight; the reconcile window after a status 0 did
+    //    too.
+    //  - revert the "In a call" status only if this device joined or tried to
+    //    (spreed Status/Listener.php sets it when a session enters the call).
+    //  - a POST still in flight or ended 0/5xx can write in_call ~90 s after it
+    //    was sent, after this leave: check the call list once that hold is over.
+    const talq::CallEndPlan endPlan =
+        talq::planCallEnd(m_joinPosts, m_joinedCall, QDateTime::currentMSecsSinceEpoch());
     stopAllPipelines();
 
     // Local state cleanup runs immediately — anything that affects the
@@ -4840,7 +5720,7 @@ void CallManager::teardown(const QString &reason)
     m_remoteAudioMuted = true;
     m_speaking = false;
     m_speakingGrace.stop();
-    m_pendingOffers.clear();
+    m_parkedOffers.clear();
     m_pendingRequestOffers.clear();
     m_requestOfferAttempts.clear();
     m_requestOfferRejections.clear();   // 0.52.7
@@ -4908,6 +5788,9 @@ void CallManager::teardown(const QString &reason)
     // (mid-call network drops could otherwise leave the call window
     // pinned "in call" until Qt's transport timeout, a minute+ later).
     m_joinedCall = false;
+    // Invalidate every async join / reconcile / STUN-TURN callback of this call.
+    resetCallJoinState(/*outgoing*/false);
+    m_departedSids.clear();   // per-call hygiene; a departure while ringing still counts
     setState(Idle);
     // Release the wake lock now the call is over — must run on teardown, not
     // only from updateCameraSuppression, which is not called on this path.
@@ -4919,9 +5802,19 @@ void CallManager::teardown(const QString &reason)
     // user-status revert) listens to callServerLeaveAcked. If the network
     // is dead the signal never fires, which is fine — the server's own
     // participant-timeout cleans up that session.
-    leaveCallOnServer(leaveToken, wasJoined, [this]() {
-        emit callServerLeaveAcked();
+    // 2026-09-16 RCA D12 — a ring that timed out, was declined or was answered
+    // elsewhere acks at once (nothing to leave), and the revert it triggered
+    // cleared the status Talk had set for the user's OTHER device, the one
+    // really in the call (three field rings, 2026-09-16).
+    leaveCallOnServer(leaveToken, endPlan.sendLeave, [this, revert = endPlan.revertStatusAfterLeave]() {
+        if (revert)
+            emit callServerLeaveAcked();
+        else
+            qInfo() << "CallManager: call ended without joining on this device"
+                       " -- leaving the user status alone";
     });
+    if (endPlan.lateCommitCheck && !leaveToken.isEmpty())
+        scheduleLateJoinCommitCheck(leaveToken, endPlan.lateCommitCheckDelayMs);
 }
 
 void CallManager::onAudioLevelUpdated(double level)
@@ -5031,6 +5924,7 @@ void CallManager::onParticipantJoinedCall(const QString &sessionId, int flags, c
         TLOG_CALL("ignoring own session join");
         return;
     }
+    m_departedSids.noteJoined(sessionId);   // F10 — a listed in-call session is not departed
 
     // #bug3 -- a 1:1 peer returning from a grace hold (same userId, likely a NEW
     // session id). Take priority over the empty-guard adopt below so the userId
@@ -5133,6 +6027,19 @@ void CallManager::onParticipantJoinedCall(const QString &sessionId, int flags, c
         emit callInfoChanged();
         requestPeerStream(sessionId);   // self-dedupes with the group path
     }
+    // 2026-09-16 RCA D12 — our OWN user joined this call from another session
+    // while this device rings: it was answered on the other device. A second
+    // device got exactly this edge (state Incoming) and
+    // rang on until the 60 s timeout. Only own-user joins were ignored, and
+    // only while Idle.
+    else if (m_state == Incoming && !m_callToken.isEmpty()
+             && m_signaling->currentRoom() == m_callToken
+             && talq::isOwnOtherSession(!m_signaling->userId().isEmpty(),
+                                        m_signaling->userIdForSession(sessionId) == m_signaling->userId(),
+                                        sessionId == m_signaling->sessionId())) {
+        stopRingingAnsweredElsewhere("HPB participants update");
+        return;
+    }
     else if (m_state == Idle) {
         // Suppress self-ring: if the joining participant is OUR OWN user
         // on another device (same Nextcloud userId, different session),
@@ -5179,18 +6086,11 @@ void CallManager::onParticipantJoinedCall(const QString &sessionId, int flags, c
                       << sessionId.left(20));
         } else {
             // Incoming call detected via signaling — route through the same
-            // path as conversation-list detection so cooldown applies.
-            const QString token = m_signaling->currentRoom();
-            onIncomingCallDetected(displayName, token, flags);
-            // Latch the sid only if we actually started ringing — a cooldown-
-            // suppressed detection must not leave a stale m_remoteSessionId
-            // behind while Idle (startCall never clears it; only teardown
-            // does), which would jam the next call's adopt gate.
-            if (m_state == Incoming) {
-                m_remoteSessionId = sessionId;
-                if (isOneToOneCall())
-                    m_remotePeerUserId = m_signaling->userIdForSession(sessionId);
-            }
+            // path as conversation-list detection so cooldowns and the D12
+            // own-user-in-call check apply. The ring may start after a short
+            // REST check, so the sid is latched, and this update's in-call
+            // peers registered, by ringIncomingCall -- only if it really rings.
+            detectIncomingCall(displayName, m_signaling->currentRoom(), flags, sessionId);
         }
     }
 
@@ -5204,6 +6104,8 @@ void CallManager::onParticipantJoinedCall(const QString &sessionId, int flags, c
     // (prevFlags 0 → inCall>0) and the peer never appears on subsequent
     // state ticks — the stage falls through to "Waiting for others to
     // join" even though the peer is plainly in the room server-side.
+    // Edges handled while a ring still waits for evidence (state Idle) are
+    // registered when it starts ringing (seedRingParticipants).
     if (m_state == Incoming || m_state == Outgoing
         || m_state == Connecting || m_state == Active) {
         if (auto *p = ensureParticipant(sessionId, displayName)) {
@@ -5240,6 +6142,8 @@ void CallManager::onParticipantLeftCall(const QString &sessionId)
     m_pendingRequestOffers.remove(sessionId);
     m_requestOfferAttempts.remove(sessionId);
     m_requestOfferRejections.remove(sessionId);   // 0.52.7 — offer landed; clear rejection budget
+    m_parkedOffers.dropPeer(sessionId);           // its MCU handles die with the leave
+    m_subCandidates.forgetPeer(sessionId);
 
     // Remove subscriber pipeline for this peer
     if (m_subscribePipelines.contains(sessionId)) {
@@ -5252,6 +6156,7 @@ void CallManager::onParticipantLeftCall(const QString &sessionId)
         if (m_publishPipeline) m_publishPipeline->removeFarEndPeer(sessionId);
         m_subscriberSids.remove(sessionId);
         m_subStall.remove(sessionId);   // #bug2
+        m_subRxStall.remove(sessionId);
         m_signalQuality.remove(sessionId);
         m_desiredSubstream.remove(sessionId);      // 1.0 audit — were leaking a
         m_peerSubstreamWant.remove(sessionId);     // 0.51.x receive-load raw want
@@ -5346,12 +6251,13 @@ void CallManager::onParticipantLeftCall(const QString &sessionId)
 
 void CallManager::processPendingOffers()
 {
-    if (m_pendingOffers.isEmpty()) return;
-    qDebug() << "CallManager: processing" << m_pendingOffers.size() << "pending offer(s)";
-    auto pending = m_pendingOffers;
-    m_pendingOffers.clear();
+    if (m_parkedOffers.empty()) return;
+    // Already deduped to the newest offer per peer (a replay of every parked
+    // offer built 16 webrtcbins in ~110 ms on 2026-09-16).
+    const auto pending = m_parkedOffers.drain();
+    qInfo() << "CallManager: processing" << int(pending.size()) << "parked offer(s)";
     for (const auto &o : pending)
-        onOfferReceived(o.fromSessionId, o.sdp, o.sid);
+        onOfferReceived(o.peer, o.sdp, o.sid);
 }
 
 void CallManager::onOfferReceived(const QString &fromSessionId, const QString &sdp, const QString &sid)
@@ -5375,14 +6281,6 @@ void CallManager::onOfferReceived(const QString &fromSessionId, const QString &s
         return;
     }
 
-    // Guard: don't create subscribers until ICE servers are available
-    if (m_stunServer.isEmpty()) {
-        m_pendingOffers.append({fromSessionId, sdp, sid});
-        qDebug() << "CallManager: queuing offer — ICE servers not yet available";
-        return;
-    }
-
-    // An offer arrived for this peer — stop retrying requestoffer for it.
     // Data-only subscriber offer (m=application/datachannel only, NO m=video)
     // means the remote publisher's media is not registered in Janus yet -- we
     // requested the offer before their camera feed came up (a race when joining
@@ -5403,9 +6301,35 @@ void CallManager::onOfferReceived(const QString &fromSessionId, const QString &s
         }
         if (!m_requestOfferRetry.isActive())
             m_requestOfferRetry.start();
+        m_subCandidates.retire(fromSessionId, sid);   // this handle is discarded
         return;
     }
 
+    // Guard: don't create subscribers until ICE servers are usable -- PARK the
+    // offer. (Checked after the data-only test, which needs no ICE servers and
+    // must NOT count as a delivered offer.) Parking FULFILS the requestoffer:
+    // re-requesting makes the MCU tear the subscriber down, re-join it on a new
+    // Janus handle and send another offer -- 8 retry rounds x 2 peers parked 16
+    // offers on 2026-09-16. Only the newest offer per peer is kept; the handle it
+    // replaces is retired so its buffered candidates are dropped.
+    if (!iceServersUsable()) {
+        const QString superseded =
+            m_parkedOffers.park({fromSessionId, QStringLiteral("video"), sid, sdp});
+        if (!superseded.isEmpty())
+            m_subCandidates.retire(fromSessionId, superseded);
+        m_pendingRequestOffers.remove(fromSessionId);
+        m_requestOfferAttempts.remove(fromSessionId);
+        m_requestOfferRejections.remove(fromSessionId);
+        if (m_pendingRequestOffers.isEmpty())
+            m_requestOfferRetry.stop();
+        qInfo() << "CallManager: queuing offer — ICE servers not yet available (parked sid="
+                << sid << (superseded.isEmpty() ? QString() : "replacing sid=" + superseded) << ")";
+        if (m_iceFetchFailures == 0)          // a failing fetch's backoff owns retries
+            refreshIceServers(false, "offer-parked");
+        return;
+    }
+
+    // An offer arrived for this peer — stop retrying requestoffer for it.
     m_pendingRequestOffers.remove(fromSessionId);
     m_requestOfferAttempts.remove(fromSessionId);
     m_requestOfferRejections.remove(fromSessionId);   // 0.52.7 — real offer landed; clear rejection budget
@@ -5434,6 +6358,7 @@ void CallManager::onOfferReceived(const QString &fromSessionId, const QString &s
             old->deleteLater();
         }
         m_subStall.remove(fromSessionId);   // #bug2 -- re-baseline the fresh subscriber
+        m_subRxStall.remove(fromSessionId);
         m_signalQuality.remove(fromSessionId);
     }
 
@@ -5449,22 +6374,33 @@ void CallManager::onOfferReceived(const QString &fromSessionId, const QString &s
             sub->setFarEndAppsrc(src);
     }
 
+    // Answer / candidates / end-of-candidates go out under the sid THIS
+    // subscriber was built for (RCA D6). Every offer now builds a fresh
+    // subscriber, so reading m_subscriberSids at emit time could only ever
+    // attach a superseded subscriber's late message to the NEWER handle's sid.
+    // A superseded subscriber (no longer the peer's current one; pointer
+    // compared, never dereferenced) stays silent.
     connect(sub, &SubscribeWebrtcSrc::localAnswerReady,
-            this, [this, fromSessionId](const QString &sdp) {
-        QString currentSid = m_subscriberSids.value(fromSessionId);
-        m_signaling->sendAnswer(fromSessionId, sdp, currentSid);
-        qDebug() << "CallManager: sent subscriber answer to" << fromSessionId.left(20) << "sid=" << currentSid;
+            this, [this, fromSessionId, sid, sub](const QString &sdp) {
+        if (m_subscribePipelines.value(fromSessionId) != sub) {
+            qDebug() << "CallManager: dropping answer from superseded subscriber"
+                     << fromSessionId.left(20) << "sid=" << sid;
+            return;
+        }
+        m_signaling->sendAnswer(fromSessionId, sdp, sid);
+        qDebug() << "CallManager: sent subscriber answer to" << fromSessionId.left(20) << "sid=" << sid;
     });
 
     connect(sub, &SubscribeWebrtcSrc::iceCandidateReady,
-            this, [this, fromSessionId](const QString &candidate, int mline, const QString &mid) {
-        QString currentSid = m_subscriberSids.value(fromSessionId);
-        m_signaling->sendCandidate(fromSessionId, makeCandidateJson(candidate, mline, mid), currentSid);
+            this, [this, fromSessionId, sid, sub](const QString &candidate, int mline, const QString &mid) {
+        if (m_subscribePipelines.value(fromSessionId) != sub) return;
+        m_signaling->sendCandidate(fromSessionId, makeCandidateJson(candidate, mline, mid), sid);
     });
 
     connect(sub, &SubscribeWebrtcSrc::iceGatheringComplete,
-            this, [this, fromSessionId]() {
-        m_signaling->sendEndOfCandidates(fromSessionId, m_subscriberSids.value(fromSessionId));
+            this, [this, fromSessionId, sid, sub]() {
+        if (m_subscribePipelines.value(fromSessionId) != sub) return;
+        m_signaling->sendEndOfCandidates(fromSessionId, sid);
     });
 
     connect(sub, &SubscribeWebrtcSrc::iceStateChanged,
@@ -5594,7 +6530,10 @@ void CallManager::onOfferReceived(const QString &fromSessionId, const QString &s
     });
 
     m_subscribePipelines[fromSessionId] = sub;
-    if (!sub->start(m_stunServer, effectiveTurnServers(), m_deviceManager ? m_deviceManager->selectedOutputDeviceId() : QString())) {
+    // A re-subscribe after a failure never narrows its TURN hosts: the relay
+    // it lost can belong to a POP that still answers the RTT probe.
+    const bool subRecovery = m_subscriberRecoveries.value(fromSessionId) > 0;
+    if (!sub->start(m_stunServer, effectiveTurnServers(subRecovery), m_deviceManager ? m_deviceManager->selectedOutputDeviceId() : QString())) {
         qWarning() << "CallManager: failed to start subscriber pipeline for" << fromSessionId.left(20);
         m_subscribePipelines.remove(fromSessionId);
         m_subscriberSids.remove(fromSessionId);
@@ -5618,14 +6557,15 @@ void CallManager::onOfferReceived(const QString &fromSessionId, const QString &s
     // is now set, so webrtcbin will accept them. Without this the subscriber
     // can start with ZERO remote candidates -> ICE stuck at "new" -> permanent
     // "waiting for video" (the timing race is why some peers connect and some
-    // don't on the same call).
-    if (m_pendingSubCandidates.contains(fromSessionId)) {
-        const auto pend = m_pendingSubCandidates.take(fromSessionId);
-        for (const auto &pc : pend)
-            sub->addIceCandidate(pc.candidate, pc.mline, pc.mid);
-        qInfo() << "CallManager: flushed" << pend.size()
-                << "queued remote ICE candidates into subscriber" << fromSessionId.left(20);
-    }
+    // don't on the same call). Only THIS sid's candidates: the router retires
+    // every other handle of the peer (RCA D6).
+    const auto early = m_subCandidates.onSubscriberBuilt(fromSessionId, sid);
+    for (const auto &pc : early)
+        sub->addIceCandidate(pc.candidate, pc.mline, pc.mid);
+    if (!early.empty())
+        qInfo() << "CallManager: flushed" << int(early.size())
+                << "queued remote ICE candidates into subscriber" << fromSessionId.left(20)
+                << "sid=" << sid;
 }
 
 void CallManager::onAnswerReceived(const QString &fromSessionId, const QString &sdp)

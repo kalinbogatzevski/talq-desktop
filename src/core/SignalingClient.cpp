@@ -17,6 +17,8 @@
 #include <memory>
 #include <vector>
 #include <limits>
+#include <string>
+#include <utility>
 
 // bug 3 — a cached peer TalQ version is only trusted as "current" if observed
 // within this window; older entries render as no chip rather than a wrong
@@ -24,6 +26,53 @@
 // infrequent (room overlap / calls), so we would rather under-blank than show
 // a confidently-wrong stale version.
 static constexpr qint64 kPeerVersionFreshMs = 30LL * 24 * 60 * 60 * 1000; // 30 days
+
+// TCP:443 connects per candidate in the nearest-HPB probe (see probeHpbPool).
+static constexpr int kProbeSamples = 4;
+
+// Parse the host from a signaling URL (wss://host/path, https://host/path).
+static QString hpbHostOf(const QString &url)
+{
+    const QUrl u(url.trimmed());
+    if (!u.host().isEmpty()) return u.host();
+    QString s = url.trimmed();
+    const int i  = s.indexOf(QStringLiteral("://")); if (i  >= 0) s = s.mid(i + 3);
+    const int sl = s.indexOf(QLatin1Char('/'));      if (sl >= 0) s = s.left(sl);
+    const int c  = s.lastIndexOf(QLatin1Char(':'));  if (c  >= 0) s = s.left(c);
+    return s;
+}
+
+// Normalise a pool url to the BASE url (no trailing "/spreed"): connectWebSocket()
+// appends "/spreed" itself, so a pool url that already carries it would double
+// up to /standalone-signaling/spreed/spreed → 404.
+static QString hpbBaseUrl(const QString &url)
+{
+    QString base = url.trimmed();
+    if (base.endsWith(QLatin1Char('/')))         base.chop(1);
+    if (base.endsWith(QLatin1String("/spreed"))) base.chop(7);
+    return base;
+}
+
+// The WebSocket URL for a base signaling URL (https://host/path -> wss://host/path/spreed).
+static QString hpbSocketUrl(const QString &baseUrl)
+{
+    QString wsUrl = baseUrl;
+    wsUrl.replace("https://", "wss://").replace("http://", "ws://");
+    if (!wsUrl.endsWith("/"))
+        wsUrl += "/";
+    wsUrl += "spreed";
+    return wsUrl;
+}
+
+// Host keys for HpbRehomePolicy::observeProbe, in candidate order.
+static std::vector<std::string> hpbHostKeys(const QStringList &urls)
+{
+    std::vector<std::string> hosts;
+    hosts.reserve(size_t(urls.size()));
+    for (const QString &u : urls)
+        hosts.push_back(hpbHostOf(u).toStdString());
+    return hosts;
+}
 
 SignalingClient::SignalingClient(ApiClient *api, QObject *parent)
     : QObject(parent)
@@ -37,15 +86,25 @@ SignalingClient::SignalingClient(ApiClient *api, QObject *parent)
         qWarning() << "Signaling: WebSocket error:" << err << m_ws.errorString();
         // A1 fix — a pure CONNECT failure (host unreachable / refused — the normal
         // case during an outage, and exactly when the 250ms fast-resume retry
-        // fires) does NOT emit `disconnected` (Qt only emits that when an already
-        // ESTABLISHED socket closes), so onDisconnected()'s reconnect driver never
-        // runs. Before this wave fetchSettings()'s REST failure always re-armed
-        // reconnect; the fast path skips that, so without this the client would be
-        // left with no socket and no pending retry -> signaling dead until restart.
-        // Drive the retry here when the socket isn't connected, and unwind the
-        // fast-resume bookkeeping (so the next attempt does a full settings fetch).
-        if (m_ws.state() != QAbstractSocket::ConnectedState) {
-            if (m_fastResumePending) { m_fastResumePending = false; m_resumeId.clear(); }
+        // fires) was believed not to emit `disconnected`. Qt 6.10 does emit it:
+        // QWebSocketPrivate::processStateChanged turns the TCP socket's
+        // Unconnected state into `disconnected` for a Connecting websocket, and it
+        // arrives BEFORE this error (field log 11:31:41.180), so onDisconnected()
+        // normally arms the retry first and the isActive() guard below no-ops.
+        // A failed HTTP upgrade (a non-101 answer, e.g. a 502 from the web front
+        // while signaling behind it is down) reports in the OTHER order:
+        // processHandshake emits this error while the socket is still Connecting,
+        // then disconnects it. onDisconnected() does the bookkeeping for that
+        // attempt, so act here ONLY when the socket is already Unconnected.
+        // Handling it here as well ran resumeAfterFailedAttempt twice for one
+        // attempt: the second pass read "the settings attempt failed too" and
+        // dropped the resume id, and the retry doubled the backoff twice.
+        // Kept as the safety net for a failure that reports only an error (the
+        // socket never left Unconnected): without a pending retry, signaling
+        // would stay dead until restart. A socket still Connecting or Closing
+        // always ends in `disconnected`, or in m_connectTimer's abort.
+        if (m_ws.state() == QAbstractSocket::UnconnectedState) {
+            if (m_fastResumePending) onAttemptFailedBeforeHello();
             if (!m_reconnectTimer.isActive()) reconnect();   // guard vs onDisconnected double-arm
         }
     });
@@ -80,17 +139,57 @@ SignalingClient::SignalingClient(ApiClient *api, QObject *parent)
             sendTalqClientHello();
     });
 
+    m_monoClock.start();
+
+    // Connect bound (see m_connectTimer). ONE timer covers every m_ws.open():
+    // fast resume and full connect both go through connectWebSocket(). Qt 6.10:
+    // abort() on a connecting QWebSocket drops the TCP socket straight to
+    // Unconnected, which QWebSocketPrivate::processStateChanged turns into
+    // exactly one `disconnected` and no errorOccurred. So onDisconnected() does
+    // the bookkeeping: the retry after a failed fast resume is a settings fetch
+    // + HPB probe -- the actual failover -- still carrying the resume id
+    // (talq::resumeAfterFailedAttempt).
+    m_connectTimer.setSingleShot(true);
+    connect(&m_connectTimer, &QTimer::timeout, this, [this]() {
+        const auto st = m_ws.state();
+        if (st == QAbstractSocket::ConnectedState || st == QAbstractSocket::UnconnectedState)
+            return;
+        const qint64 boundMs = m_connectBoundMs;
+        ++m_connectTimeouts;
+        qWarning().nospace() << "Signaling: connect to " << hpbHostOf(m_signalingUrl)
+                             << " timed out after " << boundMs / 1000 << " s -> aborting";
+        m_ws.abort();
+    });
+
     // HPB signaling keepalive (see m_keepAliveTimer). Ping every 25 s while
     // the socket is up so the server's 60 s read-deadline -- and any idle
     // proxy/NAT -- never culls the connection mid-call. Started on connect,
-    // stopped on disconnect.
-    m_keepAliveTimer.setInterval(25 * 1000);
+    // stopped on disconnect. The same tick drives the pong watchdog and the
+    // idle re-home check, both of which only make sense while connected.
+    m_keepAliveTimer.setInterval(int(talq::kSigKeepAliveIntervalMs));
     connect(&m_keepAliveTimer, &QTimer::timeout, this, [this]() {
+        if (m_ws.state() != QAbstractSocket::ConnectedState)
+            return;
+        const auto verdict = m_pongWatchdog.onKeepAliveTick(sigNow());
+        if (verdict != talq::PongWatchdogPolicy::Verdict::SendPing) {
+            // An earlier ping is still unanswered, or the clock jumped: settle
+            // that first. Not the moment to re-home.
+            applyWatchdogVerdict(verdict);
+            return;
+        }
+        m_ws.ping();
+        m_pongDeadline.start(int(talq::kSigPongTimeoutMs));
+        maybeStartRehomeProbe();
+    });
+    m_pongDeadline.setSingleShot(true);
+    connect(&m_pongDeadline, &QTimer::timeout, this, [this]() {
         if (m_ws.state() == QAbstractSocket::ConnectedState)
-            m_ws.ping();
+            applyWatchdogVerdict(m_pongWatchdog.onDeadline(sigNow()));
     });
     connect(&m_ws, &QWebSocket::pong, this,
             [this](quint64 elapsed, const QByteArray &) {
+        m_pongWatchdog.onInbound(sigNow());
+        m_pongDeadline.stop();
         qDebug() << "Signaling: keepalive pong, RTT" << elapsed << "ms";
         // Keep the telemetry RTT fresh for the life of the connection: the
         // one-shot nearest-HPB probe only measures at connect time, so
@@ -113,12 +212,16 @@ void SignalingClient::start()
     // fetched ticket/auth is pure waste on this path) and go straight to the
     // WebSocket. This is what keeps the resume inside the server's grace window.
     // Cold start, or a definitive resume rejection (which clears m_resumeId),
-    // falls through to the full settings fetch.
-    if (!m_resumeId.isEmpty() && !m_signalingUrl.isEmpty()) {
+    // falls through to the full settings fetch. So does a fast resume that
+    // already failed at the socket (m_resumeViaSettings): the settings fetch and
+    // HPB probe pick a server that answers, and the hello there still resumes.
+    if (!m_resumeId.isEmpty() && !m_signalingUrl.isEmpty() && !m_resumeViaSettings) {
         m_fastResumePending = true;
         connectWebSocket();
         return;
     }
+    if (m_resumeViaSettings && !m_resumeId.isEmpty())
+        qInfo() << "Signaling: resuming via settings fetch + HPB probe (fast resume failed)";
     fetchSettings();
 }
 
@@ -127,12 +230,24 @@ void SignalingClient::stop()
     m_reconnectTimer.stop();
     m_talqClientReannounce.stop();
     m_keepAliveTimer.stop();
+    m_pongDeadline.stop();
+    m_connectTimer.stop();
+    m_connectTimeouts = 0;
+    m_rehomeUrl.clear();
+    m_rehomeReturnUrl.clear();
+    m_rehomeSettings = QJsonObject();
+    m_rehomeConnectPending = false;
+    m_rehome.reset();          // also drops an outstanding probe/verification result
+    m_rehome.onCallBusyChanged(sigNow(), m_callBusy);   // a reset must not forget a live call
     sendBye();                 // graceful HPB disconnect (matches upstream)
     m_ws.close();
     m_sessionId.clear();
     m_resumeId.clear();        // bye released the session -- no resume after a deliberate stop
     m_resuming = false;
     m_fastResumePending = false;
+    m_resumeViaSettings = false;
+    m_roomAckedBeforeDrop = false;
+    m_roomAckedTokenBeforeDrop.clear();
     m_sessionEstablished = false;   // A2 — deliberate stop is a clean slate
     m_sessionToUserId.clear(); // 1.0 audit — release the session->userId map on a
                                // deliberate disconnect/logout (no grace after stop)
@@ -145,102 +260,122 @@ void SignalingClient::stop()
 
 void SignalingClient::fetchSettings()
 {
+    // An idle re-home fetched the settings (fresh ticket) moments before it gave
+    // up the working session (switchHpbTo), so its connect does not depend on
+    // Nextcloud answering a second time. Only that re-home's own step uses them.
+    const QJsonObject rehomeSettings = std::exchange(m_rehomeSettings, QJsonObject());
+    if (!m_rehomeUrl.isEmpty() && !rehomeSettings.isEmpty()) {
+        onSettingsFetched(true, rehomeSettings);
+        return;
+    }
     m_api->get("apps/spreed/api/v3/signaling/settings",
-        [this](bool ok, const QJsonObject &data, int) {
-            if (!ok) {
-                qWarning() << "Signaling: failed to get settings";
-                reconnect();
-                return;
-            }
-
-            m_signalingUrl = data["server"].toString().trimmed();
-            // Server-provided HPB discovery (optional "servers" field -- see
-            // m_discoveredHpbPool in the header). Absent on stock Nextcloud;
-            // present when apps/spreed carries the additive server-side patch.
-            m_discoveredHpbPool.clear();
-            for (const auto &v : data["servers"].toArray()) {
-                const QString u = v.toObject()["server"].toString().trimmed();
-                if (!u.isEmpty()) m_discoveredHpbPool << u;
-            }
-            // Manual signaling-server override (hidden, for A/B stability testing —
-            // QSettings key Signaling/overrideServer). Pins a specific regional HPB
-            // (e.g. storm/BG) instead of the per-conversation server the backend
-            // assigns; the Nextcloud-issued ticket still validates because a clustered
-            // HPB shares the same backend + secret. Empty string = normal behaviour.
-            {
-                const QString ov = QSettings(QStringLiteral("TalQ"), QStringLiteral("TalQ"))
-                                       .value(QStringLiteral("Signaling/overrideServer")).toString().trimmed();
-                if (!ov.isEmpty()) {
-                    qInfo() << "Signaling: MANUAL override ->" << ov << "(backend gave" << m_signalingUrl << ")";
-                    m_signalingUrl = ov;
-                }
-            }
-            // Per-instance override (highest precedence). talq-call-test drives each
-            // bot to a SPECIFIC HPB to exercise a cross-server clustered call — the
-            // process-global QSettings override can't do that (one key, both bots).
-            if (!m_serverOverride.isEmpty()) {
-                qInfo() << "Signaling: per-instance override ->" << m_serverOverride;
-                m_signalingUrl = m_serverOverride;
-            }
-            if (m_signalingUrl.isEmpty()) {
-                qDebug() << "Signaling: no standalone server configured";
-                return;
-            }
-
-            // Auth params: prefer hello v2.0 (signed JWT) when the server
-            // provides it, exactly like the official client; fall back to
-            // v1.0 (userid/ticket) otherwise.
-            QJsonObject authParams = data["helloAuthParams"].toObject();
-            QJsonObject v1 = authParams["1.0"].toObject();
-            m_userId = v1["userid"].toString();
-            m_ticket = v1["ticket"].toString();
-            // (v2.0 token is also offered by the server but our v2 hello
-            // envelope was rejected at runtime — see sendHello(); we use
-            // v1.0, which requires the ticket.)
-            m_helloV2Token = authParams["2.0"].toObject()["token"].toString();
-
-            if (m_ticket.isEmpty()) {
-                qWarning() << "Signaling: no ticket in settings";
-                return;
-            }
-
-            qDebug() << "Signaling: server at" << m_signalingUrl;
-            // Automatic nearest-HPB selection: unless a server is pinned manually,
-            // probe the candidate pool (Nextcloud-assigned server + the branded
-            // build's regional pool) and connect to the NEAREST reachable one — a
-            // short, stable WebSocket path is what prevents the long-haul
-            // socket-death disconnects. Runs on every (re)connect, so a dead HPB
-            // (fails the probe) is naturally skipped on reconnect = failover.
-            const bool manualPin = !m_serverOverride.isEmpty()
-                || !QSettings(QStringLiteral("TalQ"), QStringLiteral("TalQ"))
-                        .value(QStringLiteral("Signaling/overrideServer")).toString().trimmed().isEmpty();
-            if (manualPin)
-                connectWebSocket();
-            else
-                selectNearestHpbAndConnect();
-        });
+        [this](bool ok, const QJsonObject &data, int) { onSettingsFetched(ok, data); });
 }
 
-// Parse the host from a signaling URL (wss://host/path, https://host/path).
-static QString hpbHostOf(const QString &url)
+void SignalingClient::onSettingsFetched(bool ok, const QJsonObject &data)
 {
-    const QUrl u(url.trimmed());
-    if (!u.host().isEmpty()) return u.host();
-    QString s = url.trimmed();
-    const int i  = s.indexOf(QStringLiteral("://")); if (i  >= 0) s = s.mid(i + 3);
-    const int sl = s.indexOf(QLatin1Char('/'));      if (sl >= 0) s = s.left(sl);
-    const int c  = s.lastIndexOf(QLatin1Char(':'));  if (c  >= 0) s = s.left(c);
-    return s;
+    // A pending idle re-home is honoured by THIS fetch only, whatever its
+    // outcome -- a failure falls back to the normal probe and backoff.
+    // There is no ticket to connect with anyway.
+    const QString rehomeUrl = std::exchange(m_rehomeUrl, QString());
+    if (!ok) {
+        qWarning() << "Signaling: failed to get settings";
+        m_rehomeReturnUrl.clear();
+        onAttemptFailedBeforeHello();   // a resume carried this far is dropped
+        reconnect();
+        return;
+    }
+
+    m_signalingUrl = data["server"].toString().trimmed();
+    // Server-provided HPB discovery (optional "servers" field -- see
+    // m_discoveredHpbPool in the header). Absent on stock Nextcloud;
+    // present when apps/spreed carries the additive server-side patch.
+    m_discoveredHpbPool.clear();
+    for (const auto &v : data["servers"].toArray()) {
+        const QString u = v.toObject()["server"].toString().trimmed();
+        if (!u.isEmpty()) m_discoveredHpbPool << u;
+    }
+    // Manual signaling-server override (hidden, for A/B stability testing —
+    // QSettings key Signaling/overrideServer). Pins a specific regional HPB
+    // (e.g. storm/BG) instead of the per-conversation server the backend
+    // assigns; the Nextcloud-issued ticket still validates because a clustered
+    // HPB shares the same backend + secret. Empty string = normal behaviour.
+    {
+        const QString ov = QSettings(QStringLiteral("TalQ"), QStringLiteral("TalQ"))
+                               .value(QStringLiteral("Signaling/overrideServer")).toString().trimmed();
+        if (!ov.isEmpty()) {
+            qInfo() << "Signaling: MANUAL override ->" << ov << "(backend gave" << m_signalingUrl << ")";
+            m_signalingUrl = ov;
+        }
+    }
+    // Per-instance override (highest precedence). talq-call-test drives each
+    // bot to a SPECIFIC HPB to exercise a cross-server clustered call — the
+    // process-global QSettings override can't do that (one key, both bots).
+    if (!m_serverOverride.isEmpty()) {
+        qInfo() << "Signaling: per-instance override ->" << m_serverOverride;
+        m_signalingUrl = m_serverOverride;
+    }
+    if (m_signalingUrl.isEmpty()) {
+        qDebug() << "Signaling: no standalone server configured";
+        return;
+    }
+
+    // Auth params: prefer hello v2.0 (signed JWT) when the server
+    // provides it, exactly like the official client; fall back to
+    // v1.0 (userid/ticket) otherwise.
+    QJsonObject authParams = data["helloAuthParams"].toObject();
+    QJsonObject v1 = authParams["1.0"].toObject();
+    m_userId = v1["userid"].toString();
+    m_ticket = v1["ticket"].toString();
+    // (v2.0 token is also offered by the server but our v2 hello
+    // envelope was rejected at runtime — see sendHello(); we use
+    // v1.0, which requires the ticket.)
+    m_helloV2Token = authParams["2.0"].toObject()["token"].toString();
+
+    if (m_ticket.isEmpty()) {
+        qWarning() << "Signaling: no ticket in settings";
+        return;
+    }
+
+    qDebug() << "Signaling: server at" << m_signalingUrl;
+    // Automatic nearest-HPB selection: unless a server is pinned manually,
+    // probe the candidate pool (Nextcloud-assigned server + the branded
+    // build's regional pool) and connect to the NEAREST reachable one — a
+    // short, stable WebSocket path is what prevents the long-haul
+    // socket-death disconnects. Runs on every (re)connect, so a dead HPB
+    // (fails the probe) is naturally skipped on reconnect = failover.
+    if (manualHpbPin()) {
+        m_rehomeReturnUrl.clear();
+        connectWebSocket();
+    } else if (!rehomeUrl.isEmpty()) {
+        // Idle re-home (switchHpbTo): the background probe chose this
+        // server and its signaling answered a WebSocket handshake moments
+        // ago. Probing again would only re-roll jitter against the server
+        // we just left. If this connect still fails before hello,
+        // onDisconnected() holds the target down and comes straight back
+        // to the server we left (m_rehomeReturnUrl), without probing. A
+        // failure on the way back falls through to normal selection.
+        const bool returning = m_rehomeReturnUrl.isEmpty();
+        qInfo().nospace() << "Signaling: HPB re-home — "
+                          << (returning ? "returning to " : "connecting to ")
+                          << hpbHostOf(rehomeUrl);
+        m_signalingUrl = rehomeUrl;
+        m_rehomeConnectPending = true;
+        connectWebSocket();
+    } else {
+        m_rehomeReturnUrl.clear();
+        selectNearestHpbAndConnect();
+    }
 }
 
-// Probe TCP:443 RTT to each candidate HPB and connect to the nearest reachable
-// one. :443 is the web front (Caddy/Apache) of every HPB and is always open, so
-// unlike the TURN :3478 probe the connect time is a reliable network RTT. The
-// Nextcloud-assigned server is always a candidate AND the fail-safe fallback: if
-// nothing answers we keep it and connect anyway (never serverless). Probe state
-// lives in a shared_ptr owned by the timer functor; the sockets are parented to
-// `this`, so a destroyed SignalingClient cleans them up on that same path.
-void SignalingClient::selectNearestHpbAndConnect()
+bool SignalingClient::manualHpbPin() const
+{
+    return !m_serverOverride.isEmpty()
+        || !QSettings(QStringLiteral("TalQ"), QStringLiteral("TalQ"))
+                .value(QStringLiteral("Signaling/overrideServer")).toString().trimmed().isEmpty();
+}
+
+QStringList SignalingClient::hpbCandidateUrls() const
 {
     QStringList urls;
     urls << m_signalingUrl;                               // Nextcloud baseline
@@ -254,27 +389,79 @@ void SignalingClient::selectNearestHpbAndConnect()
         if (h.isEmpty() || seen.contains(h)) continue;
         seen.insert(h); cands << u;
     }
+    return cands;
+}
+
+// Nearest-HPB selection on (re)connect: probe the pool, apply the shared rule
+// (talq::pickHpb, HpbRehomePolicy.h), connect. The Nextcloud-assigned server is
+// always a candidate AND the fail-safe fallback: if nothing answers we keep it
+// and connect anyway (never serverless).
+void SignalingClient::selectNearestHpbAndConnect()
+{
+    const QStringList cands = hpbCandidateUrls();
     if (cands.size() <= 1) { connectWebSocket(); return; } // nothing to choose
 
-    // --- Nearest-HPB selection tunables ---------------------------------
+    probeHpbPool(cands, [this](const QStringList &urls,
+                               const std::vector<talq::HpbProbeSample> &measured) {
+        // Record what the probe saw (a silent POP is held down once it comes
+        // back) and mark held-down candidates, then apply the shared rule.
+        std::vector<talq::HpbProbeSample> samples = measured;
+        const std::vector<std::string> hosts = hpbHostKeys(urls);
+        m_rehome.observeProbe(sigNow(), hosts.data(), samples.data(), int(samples.size()));
+        const talq::HpbPick pick = talq::pickHpb(samples.data(), int(samples.size()));
+        const QString chosenUrl = pick.index >= 0 ? urls.at(pick.index) : QString();
+        const int chosenRtt = pick.index >= 0 ? samples[size_t(pick.index)].minRttMs : -1;
+
+        {
+            auto line = qInfo().nospace();
+            line << "Signaling: HPB select — " << talq::hpbPickReasonText(pick.reason)
+                 << " chosen=" << hpbHostOf(chosenUrl.isEmpty() ? m_signalingUrl : chosenUrl)
+                 << " rtt=" << chosenRtt << " (min of " << kProbeSamples << ")"
+                 << " incumbentRtt=" << pick.incumbentRttMs
+                 << " bestChallengerRtt=" << pick.bestChallengerRttMs
+                 << " anyChallengerRtt=" << pick.anyChallengerRttMs;
+            if (pick.heldDownRttMs >= 0)   // appended only then: the usual shape is unchanged
+                line << " heldDownRtt=" << pick.heldDownRttMs;
+        }
+
+        if (!chosenUrl.isEmpty()) {
+            m_signalingUrl   = hpbBaseUrl(chosenUrl);   // sticky too — set URL EXPLICITLY
+            m_signalingRttMs = chosenRtt;
+        }
+        // A selection with a silent candidate (a failover) re-checks soon; see
+        // HpbRehomePolicy for why "silent" and not "won" decides that.
+        m_rehome.onSelection(sigNow(), pick);
+        connectWebSocket();
+    });
+}
+
+// Probe TCP:443 RTT to each candidate HPB. :443 is the web front (Caddy/Apache)
+// of every HPB and is always open, so unlike the TURN :3478 probe the connect
+// time is a reliable network RTT. Measures only: it never touches m_ws, so the
+// idle re-home check runs it while connected. Probe state lives in a shared_ptr
+// owned by the timer functor; the sockets are parented to `this`, so a
+// destroyed SignalingClient cleans them up on that same path.
+void SignalingClient::probeHpbPool(const QStringList &cands, HpbProbeDone done)
+{
+    // --- Nearest-HPB probe tunables ------------------------------------------
     // A SINGLE TCP:443 sample per candidate is far too noisy to choose between
     // POPs whose true RTTs are close (field: turn-bg ~15ms, turn-ru ~150ms,
     // turn-za ~200ms — but DNS/TLS/loss jitter on one 1200ms window let a FAR
     // POP win, stranding a BG user on turn-za / turn-ru). Fix: take several
     // samples per candidate and use the MIN (the true network floor; jitter
-    // only ever ADDS latency, so min is the robust estimator), then only SWITCH
-    // AWAY from the incumbent (the server we're already on, or the Nextcloud
-    // baseline on a cold start) if a challenger is faster by a real MARGIN.
-    // This kills jitter-driven flapping while still following a genuinely
-    // nearer POP.
-    constexpr int kProbeSamples    = 4;    // TCP:443 connects per candidate
+    // only ever ADDS latency, so min is the robust estimator); the decision
+    // (talq::pickHpb) then only SWITCHES AWAY from the incumbent (the server
+    // we're already on, or the Nextcloud baseline on a cold start) if a
+    // challenger is faster by a real MARGIN (talq::kHpbSwitchMarginMs). This
+    // kills jitter-driven flapping while still following a genuinely nearer POP.
+    // kProbeSamples (TCP:443 connects per candidate) is file-scope: the select
+    // log line reports it.
     constexpr int kSampleSpacingMs = 120;  // stagger between a candidate's samples
     constexpr int kSelectAfterMs   = 900;  // when to decide (covers 4 staggered samples + RTT)
-    constexpr int kSwitchMarginMs  = 30;   // challenger must beat incumbent by this to win
 
     // The incumbent = the HPB we last successfully connected to (sticky across
     // reconnects), else the Nextcloud-assigned baseline on a cold start. We only
-    // leave it for a clearly-closer POP (see kSwitchMarginMs). This is what stops
+    // leave it for a clearly-closer POP (see talq::kHpbSwitchMarginMs). This is what stops
     // a jitter-driven reconnect from stranding us on a far POP.
     const QString incumbentHost = hpbHostOf(m_lastConnectedHpbHost.isEmpty()
                                             ? m_signalingUrl : m_lastConnectedHpbHost);
@@ -396,81 +583,64 @@ void SignalingClient::selectNearestHpbAndConnect()
         });
     }
 
-    QTimer::singleShot(kSelectAfterMs, this, [this, probes, selectionDone]() {
+    QTimer::singleShot(kSelectAfterMs, this, [probes, selectionDone, done = std::move(done)]() {
         *selectionDone = true;   // any still-pending callback now no-ops
-        // Incumbent RTT (if it answered), the best challenger with >= 2 samples
-        // (allowed to DISPLACE a live incumbent), and the best challenger with
-        // any sample (only used when the incumbent was silent — something beats
-        // nothing). Requiring 2 samples to displace stops a single lucky late
-        // sample from re-introducing the jitter this whole rewrite kills.
-        QString incumbentUrl; int incumbentRtt = -1;
-        QString bestUrl;      int bestRtt = -1;   // >= 2 samples
-        QString anyUrl;       int anyRtt  = -1;   // >= 1 sample
+        // Report every candidate in probe order. Requiring 2 samples to displace
+        // a live incumbent (talq::kHpbDisplaceMinSamples) stops a single lucky
+        // late sample from re-introducing the jitter this whole rewrite kills.
+        QStringList urls;
+        std::vector<talq::HpbProbeSample> samples;
+        samples.reserve(probes->size());
         for (Probe &pr : *probes) {
-            if (pr.isIncumbent) {
-                incumbentUrl = pr.url;
-                if (pr.minRtt >= 0) incumbentRtt = pr.minRtt;
-            } else if (pr.minRtt >= 0) {
-                if (anyRtt < 0 || pr.minRtt < anyRtt) { anyRtt = pr.minRtt; anyUrl = pr.url; }
-                if (pr.samplesDone >= 2 && (bestRtt < 0 || pr.minRtt < bestRtt)) {
-                    bestRtt = pr.minRtt; bestUrl = pr.url;
-                }
-            }
+            urls << pr.url;
+            talq::HpbProbeSample smp;
+            smp.minRttMs    = pr.minRtt;
+            smp.samples     = pr.samplesDone;
+            smp.isIncumbent = pr.isIncumbent;
+            samples.push_back(smp);
             for (QTcpSocket *s : pr.socks) { s->disconnect(); s->abort(); s->deleteLater(); }
             pr.socks.clear();
         }
-
-        // Keep the incumbent unless a >=2-sample challenger beats it by the
-        // margin. If the incumbent was silent, take any answering challenger.
-        QString chosenUrl; int chosenRtt = -1; const char *why = "no candidate answered";
-        if (incumbentRtt >= 0 && bestRtt >= 0 && bestRtt <= incumbentRtt - kSwitchMarginMs) {
-            chosenUrl = bestUrl; chosenRtt = bestRtt;
-            why = "switched (beat incumbent by margin, >=2 samples)";
-        } else if (incumbentRtt >= 0) {
-            chosenUrl = incumbentUrl; chosenRtt = incumbentRtt;   // sticky — set URL EXPLICITLY
-            why = "sticky (within margin)";
-        } else if (anyRtt >= 0) {
-            chosenUrl = anyUrl; chosenRtt = anyRtt;
-            why = "incumbent silent";
-        }
-
-        qInfo().nospace() << "Signaling: HPB select — " << why
-                          << " chosen=" << hpbHostOf(chosenUrl.isEmpty() ? m_signalingUrl : chosenUrl)
-                          << " rtt=" << chosenRtt << " (min of " << kProbeSamples << ")"
-                          << " incumbentRtt=" << incumbentRtt
-                          << " bestChallengerRtt=" << bestRtt << " anyChallengerRtt=" << anyRtt;
-
-        if (!chosenUrl.isEmpty()) {
-            // Normalise to the BASE url (no trailing "/spreed"): connectWebSocket()
-            // appends "/spreed" itself, so a pool url that already carries it would
-            // double up to /standalone-signaling/spreed/spreed → 404.
-            QString base = chosenUrl.trimmed();
-            if (base.endsWith(QLatin1Char('/')))         base.chop(1);
-            if (base.endsWith(QLatin1String("/spreed"))) base.chop(7);
-            m_signalingUrl   = base;
-            m_signalingRttMs = chosenRtt;
-        }
-        connectWebSocket();
+        done(urls, samples);
     });
 }
 
 void SignalingClient::connectWebSocket()
 {
-    QString wsUrl = m_signalingUrl;
-    wsUrl.replace("https://", "wss://").replace("http://", "ws://");
-    if (!wsUrl.endsWith("/"))
-        wsUrl += "/";
-    wsUrl += "spreed";
-
+    const QString wsUrl = hpbSocketUrl(m_signalingUrl);
     const QUrl signalingUrl(wsUrl);
     const QString proxyNote = talq::applyWebSocketProxy(m_ws, signalingUrl);
     qDebug() << "Signaling: connecting to" << wsUrl << "| proxy:" << proxyNote;
+    // The ONLY m_ws.open() call site: fast resume and full connect both land
+    // here, so this one bound covers both (see m_connectTimer). A host whose
+    // last connect was slow starts at a longer step (talq::signalingConnectTimeoutMs).
+    m_connectHost = hpbHostOf(m_signalingUrl);
+    m_connectBoundMs = talq::signalingConnectTimeoutMs(m_connectTimeouts,
+                                                       m_lastConnectMsByHost.value(m_connectHost, -1));
+    m_connectStartedMs = m_monoClock.elapsed();
+    m_connectTimer.start(int(m_connectBoundMs));
     m_ws.open(signalingUrl);
 }
 
 void SignalingClient::onConnected()
 {
     qDebug() << "Signaling: WebSocket connected, waiting for welcome";
+    m_connectTimer.stop();
+    m_connectTimeouts = 0;
+    // Remember how long this host took, so the next connect to it is not
+    // bounded below what it needs. A reading beyond the cap can only come from
+    // a suspend during the connect; it says nothing about the host.
+    const qint64 connectMs = m_monoClock.elapsed() - m_connectStartedMs;
+    if (m_connectStartedMs >= 0 && connectMs >= 0 && connectMs <= talq::kSigConnectTimeoutMaxMs
+        && !m_connectHost.isEmpty()) {
+        if (connectMs > talq::kSigConnectTimeoutMs)
+            qInfo().nospace() << "Signaling: connect to " << m_connectHost << " took " << connectMs
+                              << " ms -> the next connect to it allows "
+                              << talq::signalingConnectTimeoutMs(0, connectMs) / 1000 << " s";
+        m_lastConnectMsByHost.insert(m_connectHost, connectMs);
+    }
+    m_connectStartedMs = -1;
+    m_pongWatchdog.reset(sigNow());
     m_reconnectDelay = 2000;
     // Remember the HPB we actually connected to — the nearest-HPB probe stays
     // sticky to this on the next reconnect unless a challenger wins by margin,
@@ -483,25 +653,78 @@ void SignalingClient::onDisconnected()
 {
     qDebug() << "Signaling: disconnected";
     m_keepAliveTimer.stop();
+    m_pongDeadline.stop();
+    m_connectTimer.stop();
     bool wasAuth = m_authenticated;
     m_authenticated = false;
-    m_roomJoinAcked = false;   // room membership is void until re-acked post-reconnect
+    if (wasAuth) {
+        // Snapshot for a resume (see m_roomAckedBeforeDrop). Only the drop of
+        // the authenticated session: a failed reconnect attempt lands here with
+        // the ack already false and must not overwrite it.
+        m_roomAckedBeforeDrop = m_roomJoinAcked;
+        m_roomAckedTokenBeforeDrop = m_currentRoom;
+    }
+    m_roomJoinAcked = false;   // room membership is void until re-acked (or resumed) post-reconnect
     m_sessionId.clear();
-    // A1 — if a fast-resume attempt couldn't even establish the socket (e.g. a
-    // stale cached signaling URL), it disconnects without ever authenticating.
-    // Drop the resume id so the next attempt does a full settings refresh
-    // (fresh URL + ticket) instead of looping on the same dead fast path.
-    if (m_fastResumePending && !wasAuth) {
-        qWarning() << "Signaling: fast-resume socket failed -> full settings refresh next";
-        m_fastResumePending = false;
-        m_resumeId.clear();
+    if (!wasAuth) {
+        // An idle re-home whose connect failed before hello, although the
+        // target's signaling answered a verification moments ago (it can still
+        // die in between). Hold it down so neither selection path picks it
+        // again soon, and go straight back to the server we left: it was
+        // healthy a second ago, and re-probing would let the broken POP win on
+        // TCP:443 again.
+        if (m_rehomeConnectPending) {
+            m_rehomeConnectPending = false;
+            const QString failedHost = hpbHostOf(m_signalingUrl);
+            const QString back = std::exchange(m_rehomeReturnUrl, QString());
+            if (!back.isEmpty()) {
+                m_rehome.observeConnectFailure(sigNow(), failedHost.toStdString());
+                qWarning().nospace() << "Signaling: HPB re-home to " << failedHost
+                                     << " failed before hello -> held down, straight back to "
+                                     << hpbHostOf(back);
+                m_rehomeUrl = back;   // reconnect(): 250 ms, then connect to it directly
+            } else {
+                qWarning().nospace() << "Signaling: return to " << failedHost
+                                     << " after a failed re-home also failed -> normal selection";
+            }
+        }
+        // A1 — a fast resume that couldn't even establish the socket (a dead
+        // POP, the connect bound, a stale cached URL) goes to a full settings
+        // refresh (fresh URL + ticket) instead of looping on the same dead fast
+        // path, still carrying its resume id once.
+        onAttemptFailedBeforeHello();
     }
     if (wasAuth) emit connectedChanged();
     reconnect();
 }
 
+void SignalingClient::onAttemptFailedBeforeHello()
+{
+    using R = talq::ResumeAfterFailure;
+    switch (talq::resumeAfterFailedAttempt(!m_resumeId.isEmpty(), m_fastResumePending,
+                                           m_resumeViaSettings)) {
+    case R::RetryViaSettings:
+        qWarning() << "Signaling: fast-resume socket failed -> settings fetch + HPB probe next,"
+                   << "keeping the resume id (any cluster member can resume it)";
+        m_resumeViaSettings = true;
+        break;
+    case R::Drop:
+        qWarning() << "Signaling: resume via settings fetch failed too -> fresh session next";
+        m_resumeId.clear();
+        m_resumeViaSettings = false;
+        break;
+    case R::Unchanged:
+        break;
+    }
+    m_fastResumePending = false;
+}
+
 void SignalingClient::onTextMessage(const QString &msg)
 {
+    // Any inbound frame proves the server can reach us, same as a pong.
+    m_pongWatchdog.onInbound(sigNow());
+    m_pongDeadline.stop();
+
     QJsonDocument doc = QJsonDocument::fromJson(msg.toUtf8());
     if (doc.isNull()) {
         qWarning() << "Signaling: received malformed JSON:" << msg.left(200);
@@ -528,9 +751,23 @@ void SignalingClient::onTextMessage(const QString &msg)
         if (!rid.isEmpty()) m_resumeId = rid;
         m_authenticated = true;
         m_fastResumePending = false;   // A1 — this attempt authenticated
+        m_resumeViaSettings = false;
+        m_rehomeConnectPending = false;   // a re-home (or the return from one) landed
+        m_rehomeReturnUrl.clear();
 
         const bool wasResume = m_resuming;
         m_resuming = false;
+        // A resume keeps the session in its room server-side (nextcloud-spreed-
+        // signaling hub.go: SetClient + NotifySessionResumed, which re-sends the
+        // participants list but never a "room" reply), so restore the ack the
+        // dropped session had, if we still want the same room. A fresh hello
+        // re-joins below and gets its own ack.
+        const bool restoreRoomAck = wasResume && m_roomAckedBeforeDrop
+                                    && !m_currentRoom.isEmpty()
+                                    && m_roomAckedTokenBeforeDrop == m_currentRoom;
+        m_roomAckedBeforeDrop = false;
+        m_roomAckedTokenBeforeDrop.clear();
+        if (restoreRoomAck) m_roomJoinAcked = true;
         // A2 — was there a live session BEFORE this hello? A fresh (non-resumed)
         // hello that replaces an existing in-room session is a session RESET.
         // Capture before we mark the new one established so the very first cold
@@ -556,7 +793,11 @@ void SignalingClient::onTextMessage(const QString &msg)
             // so do NOT re-join (that would be a fresh join and the peers
             // would see us leave+rejoin). The call survives untouched.
             qDebug() << "Signaling: session RESUMED" << m_sessionId.left(16) + "..."
-                     << "room" << m_currentRoom;
+                     << "room" << m_currentRoom << "acked" << m_roomJoinAcked;
+            // A call start waiting on the room may proceed -- unless a
+            // connectedChanged handler already moved us to another room.
+            if (restoreRoomAck && m_roomJoinAcked)
+                emit roomJoined();
         } else {
             qDebug() << "Signaling: authenticated, session:" << m_sessionId.left(20) + "...";
             // Fresh session -- re-join room if we had one. force=true: this is
@@ -601,6 +842,7 @@ void SignalingClient::onTextMessage(const QString &msg)
             qWarning() << "Signaling: resume rejected -> full re-hello";
             m_resuming = false;
             m_resumeId.clear();
+            m_resumeViaSettings = false;
             if (m_fastResumePending) {
                 // A1 — we took the fast path and skipped the settings fetch, so
                 // we have no FRESH ticket for a clean re-auth (a stale ticket can
@@ -673,9 +915,14 @@ void SignalingClient::onTextMessage(const QString &msg)
                 candidate = payload;
             }
             QString candRoomType = msgData["roomType"].toString("video");
+            // The MCU sends "sid" = the subscriber's Janus handle on every
+            // candidate, same as on the offer (spreed-signaling clientsession.go
+            // sendCandidate). CallManager routes by it: a re-offered peer's new
+            // handle trickles candidates BEFORE its offer arrives.
+            const QString candSid = msgData["sid"].toString();
             qInfo() << "Signaling: received candidate from" << senderSessionId.left(20)
-                     << "roomType=" << candRoomType;
-            emit candidateReceived(senderSessionId, candidate, candRoomType);
+                     << "roomType=" << candRoomType << "sid=" << candSid;
+            emit candidateReceived(senderSessionId, candidate, candRoomType, candSid);
             return;
         }
         if (msgType == "endOfCandidates") {
@@ -888,6 +1135,8 @@ void SignalingClient::onTextMessage(const QString &msg)
             QJsonObject update = event["update"].toObject();
             QJsonArray users = update["users"].toArray();
             TLOG_SIG("participants update:" << users.size() << "users in room" << update["roomid"].toString());
+            if (update["roomid"].toString() == m_currentRoom)
+                m_participantsUpdateSeen = true;
             bool sawNewPeer = false;
             for (const QJsonValue &val : users) {
                 QJsonObject user = val.toObject();
@@ -896,6 +1145,9 @@ void SignalingClient::onTextMessage(const QString &msg)
                 if (sid.isEmpty()) continue;
                 if (sid == m_sessionId) {
                     TLOG_SIG("  skip self sid=" << sid.left(20) << "inCall=" << inCall);
+                    // The HPB's view of OUR call membership: the earliest proof a
+                    // join committed while the POST response is still hanging.
+                    emit selfCallFlagsUpdated(update["roomid"].toString(), inCall);
                     continue;
                 }
 
@@ -1052,6 +1304,8 @@ void SignalingClient::joinRoom(const QString &token, bool force)
     const bool roomChanged = (token != m_currentRoom);
     m_currentRoom = token;
     m_roomJoinAcked = false;   // a join is now in flight; not acked until WS "room"
+    m_roomAckedBeforeDrop = false;   // a resume must not restore an ack this join supersedes
+    m_roomAckedTokenBeforeDrop.clear();
 
     // Clear state from previous room
     if (!m_typingUser.isEmpty()) {
@@ -1060,6 +1314,7 @@ void SignalingClient::joinRoom(const QString &token, bool force)
         m_typingClearTimer.stop();
     }
     m_participantCallFlags.clear();
+    m_participantsUpdateSeen = false;
     m_participantNames.clear();
     if (roomChanged) {
         m_sessionToUserId.clear();
@@ -1421,6 +1676,13 @@ void SignalingClient::requestOffer(const QString &sessionId, const QString &room
 void SignalingClient::reconnect()
 {
     if (m_api->serverUrl().isEmpty()) return;
+    // Idle re-home (switchHpbTo): a deliberate move, not a failure, so no
+    // backoff and no doubling. It cannot loop: the settings fetch this leads to
+    // consumes m_rehomeUrl whatever its outcome.
+    if (!m_rehomeUrl.isEmpty()) {
+        m_reconnectTimer.start(kResumeReconnectMs);
+        return;
+    }
     // A1 — when a resume is still possible, race the socket on a short fixed
     // delay so the resume lands inside the server's grace window. Only the cold
     // path (no resume id) uses the exponential backoff, which protects a dead
@@ -1431,4 +1693,233 @@ void SignalingClient::reconnect()
     }
     m_reconnectTimer.start(m_reconnectDelay);
     m_reconnectDelay = qMin(m_reconnectDelay * 2, 60000);
+}
+
+talq::SigClock SignalingClient::sigNow() const
+{
+    return talq::SigClock{m_monoClock.elapsed(), QDateTime::currentMSecsSinceEpoch()};
+}
+
+void SignalingClient::setCallBusy(bool busy)
+{
+    if (busy == m_callBusy) return;
+    m_callBusy = busy;
+    m_rehome.onCallBusyChanged(sigNow(), busy);
+}
+
+bool SignalingClient::applyWatchdogVerdict(talq::PongWatchdogPolicy::Verdict verdict)
+{
+    using V = talq::PongWatchdogPolicy::Verdict;
+    switch (verdict) {
+    case V::Recheck:
+        m_pongDeadline.start(int(m_pongWatchdog.recheckInMs()));
+        return false;
+    case V::PongMissed:
+        // The POP's egress died on 2026-09-16 with the TCP connection still
+        // open. Abort now instead of waiting for Windows to notice (never, behind
+        // a CONNECT proxy). The abort emits `disconnected` once -> onDisconnected
+        // -> fast resume to the same URL (bounded by m_connectTimer) -> settings
+        // fetch + probe, still offering the resume id.
+        qWarning().nospace() << "Signaling: no pong from " << hpbHostOf(m_signalingUrl)
+                             << " within " << talq::kSigPongTimeoutMs / 1000
+                             << " s -> aborting socket (failover)";
+        m_ws.abort();
+        return true;
+    case V::SuspendGap:
+        // Not a pong miss: the machine slept (or the loop stalled past the
+        // server's own 60 s read deadline). The socket is almost certainly
+        // dead; reconnect instead of pinging into it. A stale resume id is
+        // rejected by the server and falls back to a fresh hello + probe.
+        qInfo().nospace() << "Signaling: " << m_pongWatchdog.lastGapMs() / 1000
+                          << " s clock gap (system suspend or stalled event loop) -> reconnecting";
+        m_ws.abort();
+        return true;
+    case V::None:
+    case V::SendPing:
+        return false;
+    }
+    return false;
+}
+
+talq::HpbRehomeGates SignalingClient::rehomeGates() const
+{
+    talq::HpbRehomeGates g;
+    // Settled on signaling: authenticated on an open socket, no resume or
+    // re-home in progress, and the current room (if any) acked -- a switch
+    // must not cut across a join that is still in flight. A resumed session
+    // has its ack restored (onTextMessage "hello"), so it is settled too.
+    g.connected = m_authenticated
+                  && m_ws.state() == QAbstractSocket::ConnectedState
+                  && !m_resuming && !m_fastResumePending && m_rehomeUrl.isEmpty()
+                  && (m_currentRoom.isEmpty() || m_roomJoinAcked);
+    // A re-join clears m_participantCallFlags, so the next participants update
+    // re-emits participantJoinedCall for every peer already in a call -- and an
+    // Idle CallManager rings on that (onParticipantJoinedCall -> Idle branch).
+    // Never re-home while anyone in the viewed room is in a call.
+    for (auto it = m_participantCallFlags.constBegin(); it != m_participantCallFlags.constEnd(); ++it) {
+        if (it.value() > 0) { g.roomCallActive = true; break; }
+    }
+    g.canChoose = m_idleRehomeEnabled && !manualHpbPin() && hpbCandidateUrls().size() > 1;
+    return g;
+}
+
+void SignalingClient::maybeStartRehomeProbe()
+{
+    const talq::SigClock now = sigNow();
+    // Cheap check first: the gates read QSettings and rebuild the candidate
+    // list, so pay for them only on the tick a probe is actually due.
+    if (!m_rehome.probeDue(now) || !m_rehome.startProbe(now, rehomeGates()))
+        return;
+
+    const QString fromHost = hpbHostOf(m_signalingUrl);
+    probeHpbPool(hpbCandidateUrls(),
+                 [this, fromHost](const QStringList &urls,
+                                  const std::vector<talq::HpbProbeSample> &measured) {
+        std::vector<talq::HpbProbeSample> samples = measured;
+        const std::vector<std::string> hosts = hpbHostKeys(urls);
+        m_rehome.observeProbe(sigNow(), hosts.data(), samples.data(), int(samples.size()));
+        const talq::HpbPick pick = talq::pickHpb(samples.data(), int(samples.size()));
+        talq::HpbRehomeGates g = rehomeGates();
+        // The probe measured against `fromHost` as incumbent. A reconnect
+        // in the meantime may have moved us; its own selection already ran.
+        if (hpbHostOf(m_signalingUrl) != fromHost)
+            g.connected = false;
+        const auto verdict = m_rehome.onProbeResult(sigNow(), pick, g);
+        const bool verify = (verdict == talq::HpbRehomePolicy::Verdict::Verify);
+        const QString chosenHost = pick.index >= 0 ? hpbHostOf(urls.at(pick.index)) : QString();
+
+        {
+            auto line = qInfo().nospace();
+            line << "Signaling: HPB re-home check — " << talq::hpbPickReasonText(pick.reason)
+                 << " current=" << fromHost
+                 << " best=" << chosenHost
+                 << " incumbentRtt=" << pick.incumbentRttMs
+                 << " bestChallengerRtt=" << pick.bestChallengerRttMs
+                 << " anyChallengerRtt=" << pick.anyChallengerRttMs;
+            if (pick.heldDownRttMs >= 0)
+                line << " heldDownRtt=" << pick.heldDownRttMs;
+            line << " allAnswered=" << pick.allAnswered
+                 << " busy=" << m_callBusy << " roomCall=" << g.roomCallActive
+                 << " -> " << (verify ? "VERIFY" : "stay");
+            if (!verify)
+                line << " (next: " << (m_rehome.mode() == talq::HpbRehomePolicy::Mode::Recovering
+                                           ? "recovering" : "settled") << ")";
+        }
+        if (!verify)
+            return;
+
+        const QString targetUrl = hpbBaseUrl(urls.at(pick.index));
+        const int targetRtt = samples[size_t(pick.index)].minRttMs;
+        verifyHpbSignaling(targetUrl, [this, fromHost, targetUrl, targetRtt](bool ok, const QString &why) {
+            const QString targetHost = hpbHostOf(targetUrl);
+            if (!ok) {
+                talq::HpbRehomeGates g2 = rehomeGates();
+                if (hpbHostOf(m_signalingUrl) != fromHost)
+                    g2.connected = false;
+                m_rehome.observeConnectFailure(sigNow(), targetHost.toStdString());
+                m_rehome.onVerifyResult(sigNow(), false, g2);
+                qInfo().nospace() << "Signaling: HPB re-home verify — " << targetHost
+                                  << ": FAILED, held down (" << why << ")"
+                                  << " busy=" << m_callBusy << " roomCall=" << g2.roomCallActive
+                                  << " -> stay";
+                return;
+            }
+            // The target's signaling answers. The new connection also needs a
+            // fresh ticket from Nextcloud, and the switch ends this session
+            // (bye), so fetch it BEFORE giving anything up: if Nextcloud cannot
+            // answer right now, staying costs nothing, while switching would
+            // leave an idle, healthy client with no signaling until it recovers.
+            // A failure here is not the target's fault: no hold-down.
+            m_api->get("apps/spreed/api/v3/signaling/settings",
+                [this, fromHost, targetUrl, targetRtt, targetHost](bool restOk, const QJsonObject &data, int) {
+                    talq::HpbRehomeGates g2 = rehomeGates();
+                    if (hpbHostOf(m_signalingUrl) != fromHost)
+                        g2.connected = false;
+                    const bool ready = restOk && !data.isEmpty();
+                    const auto v = m_rehome.onVerifyResult(sigNow(), ready, g2);
+                    const bool moving = (v == talq::HpbRehomePolicy::Verdict::Switch);
+                    qInfo().nospace() << "Signaling: HPB re-home verify — " << targetHost << ": signaling answered, "
+                                      << (ready ? "settings fetched" : "settings fetch FAILED (Nextcloud)")
+                                      << " busy=" << m_callBusy << " roomCall=" << g2.roomCallActive
+                                      << " -> " << (moving ? "SWITCH" : "stay");
+                    if (moving)
+                        switchHpbTo(targetUrl, targetRtt, data);
+                });
+        });
+    });
+}
+
+// Before an idle re-home gives up a working connection, prove the target's
+// signaling service answers, not just its web front. TCP:443 is Caddy/Apache,
+// which keeps answering while the signaling container behind it restarts or
+// crash-loops. The server sends `welcome` as soon as it accepts a WebSocket
+// (server/hub.go processNewClient -> sendWelcome), so one throw-away handshake
+// through the same proxy decision tests the path the real connect will take.
+// No hello is sent, so no session is created; the socket is closed at once
+// (the server would drop it after its 2 s hello timeout anyway).
+void SignalingClient::verifyHpbSignaling(const QString &baseUrl, HpbVerifyDone done)
+{
+    const QUrl url(hpbSocketUrl(baseUrl));
+    auto *ws = new QWebSocket(QString(), QWebSocketProtocol::VersionLatest, this);
+    // Not talq::watchProxyAuthentication(): its handlers capture the socket by
+    // reference with no context object, which this short-lived socket would
+    // leave dangling. A proxy that challenges fails the check -> we stay.
+    talq::applyWebSocketProxy(*ws, url);
+
+    auto finished = std::make_shared<bool>(false);
+    auto finish = [ws, finished, done = std::move(done)](bool ok, const QString &why) {
+        if (*finished) return;
+        *finished = true;
+        QObject::disconnect(ws, nullptr, nullptr, nullptr);
+        // Close with a close frame (the server logs no abnormal closure) and
+        // delete once closed, or after 2 s whatever happens.
+        QObject::connect(ws, &QWebSocket::disconnected, ws, &QObject::deleteLater);
+        QTimer::singleShot(2000, ws, &QObject::deleteLater);
+        if (ws->state() == QAbstractSocket::ConnectedState) ws->close();
+        else ws->abort();
+        done(ok, why);
+    };
+    connect(ws, &QWebSocket::textMessageReceived, this, [finish](const QString &msg) {
+        const QString type = QJsonDocument::fromJson(msg.toUtf8()).object()
+                                 .value(QStringLiteral("type")).toString();
+        finish(type == QLatin1String("welcome"),
+               QStringLiteral("first message was \"%1\", not welcome").arg(type));
+    });
+    connect(ws, &QWebSocket::disconnected, this, [finish, ws]() {
+        finish(false, QStringLiteral("closed before welcome: ") + ws->errorString());
+    });
+    connect(ws, &QWebSocket::errorOccurred, this, [finish, ws](QAbstractSocket::SocketError) {
+        finish(false, ws->errorString());
+    });
+    QTimer::singleShot(int(talq::kHpbVerifyTimeoutMs), ws, [finish]() {
+        finish(false, QStringLiteral("no welcome within %1 s").arg(talq::kHpbVerifyTimeoutMs / 1000));
+    });
+    ws->open(url);
+}
+
+// Graceful idle move to a nearer, verified HPB, through the normal reconnect
+// path: bye (the server closes the session at once, so the room sees a clean
+// leave, not a 30 s ghost), close, then reconnect() -> start() -> fetchSettings()
+// connects to m_rehomeUrl with the ticket in `settings` (fetched just before
+// this call) -> fresh hello -> joinRoom(force)
+// re-enters the current room (same token, so the peer maps survive) ->
+// sessionReset, which CallManager ignores unless Connecting/Active/Reconnecting
+// (and the policy only allowed this while no call of ours was busy). If that
+// connect fails before hello, onDisconnected() returns to m_rehomeReturnUrl.
+void SignalingClient::switchHpbTo(const QString &url, int rttMs, const QJsonObject &settings)
+{
+    const QString base = hpbBaseUrl(url);
+    qInfo().nospace() << "Signaling: HPB re-home — leaving " << hpbHostOf(m_signalingUrl)
+                      << " (ping rtt " << m_signalingRttMs << " ms) for " << hpbHostOf(base)
+                      << " (probe rtt " << rttMs << " ms)";
+    m_rehomeReturnUrl = m_signalingUrl;
+    m_rehomeUrl = base;
+    m_rehomeSettings = settings;
+    m_signalingRttMs = rttMs;
+    sendBye();
+    m_resumeId.clear();          // bye ended the session; a resume could only be rejected
+    m_resuming = false;
+    m_fastResumePending = false;
+    m_resumeViaSettings = false;
+    m_ws.close();                // -> disconnected -> onDisconnected -> reconnect()
 }

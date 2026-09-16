@@ -1,6 +1,7 @@
 #include "core/SubscribeWebrtcSrc.h"
 #include "core/VideoFrameProvider.h"
 #include "core/LeakStats.h"
+#include "core/TurnList.h"
 #include <QDebug>
 #include <QPointer>
 #include <QRegularExpression>
@@ -230,23 +231,16 @@ bool SubscribeWebrtcSrc::start(const QString &stunServer,
             gstStun = "stun://" + gstStun.mid(5);
         g_object_set(m_webrtcsrc, "stun-server", gstStun.toUtf8().constData(), nullptr);
     }
+    // TURN relays: the shared budgeted plan (TurnListPolicy.h). webrtcsrc
+    // forwards each entry to its webrtcbin's add-turn-server (gst-plugins-rs
+    // webrtcsrc/imp.rs start_session), so the same 8-relay budget applies. This
+    // site used to pass every URL uncapped: 9 relays for the 3-POP list, and a
+    // libnice g_warning from every camera subscriber at once on 2026-09-16.
     {
-        QStringList urls;
-        for (const auto &turn : turnServers)
-            for (const auto &url : turn.urls) {
-                QString u = url;
-                u.remove(QRegularExpression("\\?transport=.*$"));
-                if (u.startsWith("turn:")  && !u.startsWith("turn://"))  u.replace("turn:",  "turn://");
-                if (u.startsWith("turns:") && !u.startsWith("turns://")) u.replace("turns:", "turns://");
-                u.replace("://", QString("://%1:%2@").arg(
-                    QString(QUrl::toPercentEncoding(turn.username)),
-                    QString(QUrl::toPercentEncoding(turn.credential))));
-                urls << u;
-            }
-        if (!urls.isEmpty()) {
-            QList<QByteArray> enc;
-            for (const auto &u : urls) enc << u.toUtf8();
-            setStringArrayProp(m_webrtcsrc, "turn-servers", enc);
+        const talq::GstTurnList turnList = talq::gstTurnList(turnServers);
+        if (!turnList.uris.isEmpty()) {
+            qDebug() << "SubscribeWebrtcSrc: TURN relays" << turnList.logUris;
+            setStringArrayProp(m_webrtcsrc, "turn-servers", turnList.uris);
         }
     }
     setStringArrayProp(m_webrtcsrc, "video-codecs",
