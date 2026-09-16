@@ -1,5 +1,61 @@
 # Changelog
 
+## v0.72.2 "First School Day" — STABLE (2026-09-16)
+
+Calls now survive a call server going down. A group call during a regional server outage exposed a
+chain of problems: a slow server turned into a burst of duplicate video connections, and that
+burst crashed TalQ. Each link in the chain is fixed separately, so any one of them failing again
+no longer takes the call down.
+
+### Fixed
+* **A crash during calls.** When several media connections reported a problem at the same moment,
+  the logging library could collide with itself, show an untitled "Error" box and then close
+  TalQ. TalQ now writes those messages itself, one complete line at a time, and the crash can no
+  longer happen.
+
+* **A slow server no longer causes a flood of video connections.** When joining a call took longer
+  than expected, TalQ kept asking for everyone's video every few seconds and then opened all the
+  answers at once: 16 connections for 2 people. It now keeps only the newest answer per person and
+  stops asking once one has arrived. Relay server details are fetched as soon as the call starts,
+  instead of after the server confirms the join.
+
+* **Joining a call when the server is slow.** If the join request times out, TalQ first checks
+  whether it already joined instead of trying again, so a slow server no longer produces duplicate
+  "joined the call" messages, a new ringing call after the first ended, or a "Couldn't start the
+  call" box after you have hung up. One slow request no longer marks the whole server offline.
+
+* **Relay servers are all used.** Every call offers a relay through each call server, up to the
+  limit the media engine supports. Before, one region was always left out, and video connections
+  asked for more relays than the media engine accepts. Relay credentials are refreshed for each
+  call, so relayed calls no longer fail after TalQ has been running for more than a day.
+
+* **Recovering from a lost connection mid-call.** Rebuilding your outgoing audio and video can no
+  longer get stuck on "Reconnecting", a participant whose connection fails during a reconnect is
+  picked up again once it completes, and a participant whose audio silently stops arriving is
+  reconnected.
+
+* **Faster failover when a call server stops answering.** A connection attempt now gives up after
+  10 seconds instead of hanging for 40 or more, and a connection that stops answering keepalives
+  is re-established within about 30 seconds.
+
+* **Moving back to the nearest server after an outage.** TalQ used to stay on a distant server
+  until it was restarted. Once the nearer server has been healthy for 15 minutes, TalQ now moves
+  back with a short background reconnect. It never does this during a call, while a call is
+  ringing, or while someone in the open conversation is in a call.
+
+* **A second device no longer rings for a call you are already in.** Answering on one device stops
+  the ring on the others, and a device that only rang no longer clears your "In a call" status. A
+  call detected in a conversation you are not viewing can start ringing up to 2.5 seconds later
+  while TalQ checks this with the server.
+
+* **Logs and crash reports no longer contain credentials.** Passwords and access tokens are masked
+  in every log line, including relay server details reported by the media engine. Crash dumps now
+  contain only what is needed to find the fault and no longer include memory that could hold your
+  login. A crash dump written by an older version is deleted when 0.72.2 first starts.
+
+  **If you share logs:** log files written by versions before 0.72.2 can contain connection
+  credentials. Delete older `talq_debug_*.log` files before sharing the log folder.
+
 ## v0.72.1 "First School Day" — STABLE (2026-09-11)
 
 ### Fixed

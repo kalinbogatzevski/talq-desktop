@@ -1,5 +1,6 @@
 #include "core/PublishPipeline.h"
 #include "core/MediaProxy.h"
+#include "core/TurnList.h"
 #include "core/IceStats.h"
 #include <QCoreApplication>
 #include <memory>
@@ -314,40 +315,22 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         }
     }
 
-    // libnice caps TURN servers at 8 PER COMPONENT and silently drops any beyond
-    // that ("cannot have more than 8 turn servers per component"), which can leave
-    // the pipeline with a broken/partial relay set and ICE failing. With a 3-POP
-    // pool each offering turn:+turns: that's 6+ urls, and the ordering the backend
-    // sends isn't guaranteed nearest-first, so an over-8 list can drop the CLOSEST
-    // relay. Cap at 8 and keep the first 8 (the backend already sorts by proximity;
-    // the nearest-TURN probe further front-loads the closest POP).
-    constexpr int kMaxTurnServers = 8;
-    int turnAdded = 0;
-    for (const auto &turn : turnServers) {
-        for (const auto &url : turn.urls) {
-            if (turnAdded >= kMaxTurnServers) break;
-            QString gstUrl = url;
-            gstUrl.remove(QRegularExpression("\\?transport=.*$"));
-            if (gstUrl.startsWith("turn:") && !gstUrl.startsWith("turn://"))
-                gstUrl.replace("turn:", "turn://");
-            if (gstUrl.startsWith("turns:") && !gstUrl.startsWith("turns://"))
-                gstUrl.replace("turns:", "turns://");
-            QString escapedUser = QString(QUrl::toPercentEncoding(turn.username));
-            QString escapedCred = QString(QUrl::toPercentEncoding(turn.credential));
-            gstUrl.replace("://", QString("://%1:%2@").arg(escapedUser, escapedCred));
-            // Mask credentials in log output
-            QString logUrl = gstUrl;
-            logUrl.replace(QRegularExpression("://[^@]+@"), "://***@");
-            qDebug() << "PublishPipeline: adding TURN server" << logUrl;
-            gboolean ret = FALSE;
-            g_signal_emit_by_name(m_webrtcbin, "add-turn-server", gstUrl.toUtf8().constData(), &ret);
-            ++turnAdded;
-        }
-        if (turnAdded >= kMaxTurnServers) break;
+    // TURN relays come from the one plan every pipeline shares (TurnList.h /
+    // TurnListPolicy.h). libnice refuses a 9th relay per component with a
+    // g_warning, and on 2026-09-16 many of those at once reached a fatal GLib
+    // race, so the plan counts RELAYS the way webrtcnice creates them and stops
+    // at 8. Every POP gets a relay before any POP gets a second one, so the cap
+    // can no longer drop a whole POP (Nextcloud sends POPs in config order, not
+    // nearest-first). The plan decides WHICH relays exist, not which one ICE
+    // prefers: webrtcnice applies them to libnice in hash-table order.
+    const talq::GstTurnList turnList = talq::gstTurnList(turnServers);
+    for (qsizetype i = 0; i < turnList.uris.size(); ++i) {
+        qDebug() << "PublishPipeline: adding TURN relay" << turnList.logUris.at(i);
+        gboolean ret = FALSE;
+        g_signal_emit_by_name(m_webrtcbin, "add-turn-server", turnList.uris.at(i).constData(), &ret);
+        if (!ret)
+            qWarning() << "PublishPipeline: webrtcbin rejected TURN relay" << turnList.logUris.at(i);
     }
-    if (turnAdded >= kMaxTurnServers)
-        qDebug() << "PublishPipeline: TURN list capped at" << kMaxTurnServers
-                 << "(libnice per-component limit)";
 
     // Audio capture — wasapi2src (best), wasapisrc (fallback), autoaudiosrc (last resort)
     // DEBUG: set TALQ_TEST_AUDIO=1 env var to use audiotestsrc (440Hz tone) for testing

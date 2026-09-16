@@ -1,5 +1,6 @@
 #include "core/ScreenSharePipeline.h"
 #include "core/MediaProxy.h"
+#include "core/TurnList.h"
 #include "core/VideoEncoderUtil.h"
 #include "core/KeyframePolicy.h"
 #include <gst/rtp/rtp.h>
@@ -229,27 +230,14 @@ bool ScreenSharePipeline::start(const QString &stunServer, const QList<TurnServe
         }
     }
 
-    // libnice caps TURN servers at 8 per component (silently dropping extras).
-    // A 3-POP turn:/turns: pool exceeds that; cap to keep the nearest 8.
-    constexpr int kMaxTurnServers = 8;
-    int turnAdded = 0;
-    for (const auto &turn : turnServers) {
-        for (const auto &url : turn.urls) {
-            if (turnAdded >= kMaxTurnServers) break;
-            QString gstUrl = url;
-            gstUrl.remove(QRegularExpression("\\?transport=.*$"));
-            if (gstUrl.startsWith("turn:") && !gstUrl.startsWith("turn://"))
-                gstUrl.replace("turn:", "turn://");
-            if (gstUrl.startsWith("turns:") && !gstUrl.startsWith("turns://"))
-                gstUrl.replace("turns:", "turns://");
-            QString escapedUser = QString(QUrl::toPercentEncoding(turn.username));
-            QString escapedCred = QString(QUrl::toPercentEncoding(turn.credential));
-            gstUrl.replace("://", QString("://%1:%2@").arg(escapedUser, escapedCred));
-            gboolean ret = FALSE;
-            g_signal_emit_by_name(m_webrtcbin, "add-turn-server", gstUrl.toUtf8().constData(), &ret);
-            ++turnAdded;
-        }
-        if (turnAdded >= kMaxTurnServers) break;
+    // TURN relays: the shared budgeted plan -- see PublishPipeline.cpp's TURN
+    // block and TurnListPolicy.h (at most 8 libnice relays, every POP kept).
+    const talq::GstTurnList turnList = talq::gstTurnList(turnServers);
+    for (qsizetype i = 0; i < turnList.uris.size(); ++i) {
+        gboolean ret = FALSE;
+        g_signal_emit_by_name(m_webrtcbin, "add-turn-server", turnList.uris.at(i).constData(), &ret);
+        if (!ret)
+            qWarning() << "ScreenSharePipeline: webrtcbin rejected TURN relay" << turnList.logUris.at(i);
     }
 
     // Screen capture source. Two real Windows bugs the previous wiring hit:

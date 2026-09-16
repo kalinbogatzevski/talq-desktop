@@ -3,10 +3,15 @@
 #include <QObject>
 #include <QWebSocket>
 #include <QTimer>
+#include <QElapsedTimer>
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QHash>
+#include <functional>
+#include <vector>
 #include "core/ApiClient.h"
+#include "core/HpbRehomePolicy.h"
+#include "core/SignalingWatchdogPolicy.h"
 
 struct TurnServer {
     QStringList urls;
@@ -39,7 +44,7 @@ public:
     // in the call produced no flag transition (we recorded them while idle),
     // so without this the call rings to "no answer" against an already-active
     // room (the "remote keeps the call open, I join" case).
-    void forceCallParticipantResync() { m_participantCallFlags.clear(); }
+    void forceCallParticipantResync() { m_participantCallFlags.clear(); m_participantsUpdateSeen = false; }
 
     QString typingUser() const { return m_typingUser; }
     QString typingRoom() const { return m_typingRoom; }
@@ -59,7 +64,9 @@ public:
     // True only when the HPB has confirmed membership of currentRoom() (the WS
     // "room" ack arrived). Prefer this over `currentRoom() == token` when
     // deciding whether it is safe to proceed as if joined — currentRoom() is
-    // set optimistically before the join handshake completes.
+    // set optimistically before the join handshake completes. A successful
+    // session RESUME restores the ack the dropped session had for the same room
+    // (the server kept the membership; a resume gets no "room" reply).
     bool roomJoinAcked() const { return m_roomJoinAcked; }
     // The signaling/HPB server URL this client is connected to (for telemetry).
     QString signalingUrl() const { return m_signalingUrl; }
@@ -69,6 +76,14 @@ public:
     // Per-instance signaling-server override (highest precedence). Used by
     // talq-call-test to pin each bot to a specific HPB for a cross-server call.
     void setServerOverride(const QString &url) { m_serverOverride = url; }
+    // Idle HPB re-homing (HpbRehomePolicy.h) must never move signaling under a
+    // call. CallManager reports every state change here (CallManager::setState):
+    // true while ringing, connecting, live or reconnecting.
+    void setCallBusy(bool busy);
+    // Re-homing is on by default. A client that drives calls WITHOUT
+    // CallManager (talq-call-test) cannot report call state, so it turns
+    // re-homing off rather than risk a switch mid-call.
+    void setIdleRehomeEnabled(bool enabled) { m_idleRehomeEnabled = enabled; }
     // Our own Nextcloud user id (for same-user multi-device checks, e.g.
     // suppressing the incoming-call ring on the caller's other device).
     QString userId() const { return m_userId; }
@@ -99,6 +114,38 @@ public:
     // Entries persist while a session is inCall>0 and are pruned on its leave
     // edge, so this is a safe "does this sibling claim media" probe.
     int callFlagsForSession(const QString &sid) const { return m_participantCallFlags.value(sid, 0); }
+    // Sessions the HPB lists in the current room's call (in-call flag set), our
+    // own session excluded. Order is arbitrary.
+    QStringList inCallSessions() const
+    {
+        QStringList out;
+        for (auto it = m_participantCallFlags.constBegin(); it != m_participantCallFlags.constEnd(); ++it)
+            if (it.value() & 1)   // Participant::FLAG_IN_CALL
+                out.append(it.key());
+        return out;
+    }
+    // Display name for a session, resolved the way participantJoinedCall
+    // resolves it (name cache by user id, else the user id); "" if unknown.
+    QString displayNameForSession(const QString &sid) const
+    {
+        const QString uid = m_sessionToUserId.value(sid);
+        return uid.isEmpty() ? QString() : m_participantNames.value(uid, uid);
+    }
+    // 2026-09-16 review CR-3 — the HPB's view of who ELSE is in the current
+    // room's call, for "has everybody left?" decisions that must not trust REST
+    // alone (GET call/{token} drops sessions whose POP stopped pinging the
+    // backend). Only meaningful once participantsUpdateSeen(): joining a room
+    // delivers no in-call list, and each update lists only the sessions that
+    // changed, so the map is what the HPB has told us since the join.
+    int otherSessionsInCall() const
+    {
+        int n = 0;
+        for (int flags : m_participantCallFlags)
+            if (flags & 1)   // Participant::FLAG_IN_CALL
+                ++n;
+        return n;
+    }
+    bool participantsUpdateSeen() const { return m_participantsUpdateSeen; }
     // 0.41.9-beta — mcuCodecHints: when true (default) the offer carries
     // audiocodec/videocodec fields that the HPB uses to provision a Janus
     // MCU publisher (the production path). For TRUE peer-to-peer relay we
@@ -172,12 +219,20 @@ signals:
     // WebRTC signaling signals
     void offerReceived(const QString &fromSessionId, const QString &sdp, const QString &sid, const QString &roomType);
     void answerReceived(const QString &fromSessionId, const QString &sdp, const QString &roomType);
-    void candidateReceived(const QString &fromSessionId, const QJsonObject &candidate, const QString &roomType);
+    // `sid` is the MCU handle the candidate belongs to ("" when the sender set
+    // none, e.g. P2P). Trailing so 3-argument connects keep compiling.
+    void candidateReceived(const QString &fromSessionId, const QJsonObject &candidate, const QString &roomType,
+                           const QString &sid);
     void endOfCandidatesReceived(const QString &fromSessionId);
     // 0.52.7 — the MCU rejected a requestoffer ("not_allowed: Not allowed to
     // request offer."). Carries NO sid (the HPB error has none); CallManager
     // correlates it to the peers it currently has a requestoffer outstanding for.
     void requestOfferRejected();
+    // Our OWN session's inCall flags as listed in an HPB participants update for
+    // `roomToken` (every update, not only changes). CallManager treats inCall>0
+    // after its join POST as proof the join committed, even while that POST's
+    // response is still hanging (2026-09-16: ~60 s before the REST 200).
+    void selfCallFlagsUpdated(const QString &roomToken, int inCall);
     void participantJoinedCall(const QString &sessionId, int flags, const QString &displayName);
     void participantLeftCall(const QString &sessionId);
     void participantFlagsChanged(const QString &sessionId, int oldFlags, int newFlags);
@@ -211,10 +266,41 @@ signals:
 
 private:
     void fetchSettings();
+    // The settings fetch's result: failure bookkeeping, or apply the server
+    // URL, pool and hello auth, then connect.
+    void onSettingsFetched(bool ok, const QJsonObject &data);
     void connectWebSocket();
     // Probe the candidate HPB pool (Nextcloud server + branded-build pool) and
     // connect to the nearest reachable one; fail-safe to the Nextcloud default.
     void selectNearestHpbAndConnect();
+    // The candidate HPB urls, deduplicated by host, Nextcloud's server first.
+    QStringList hpbCandidateUrls() const;
+    // A server pinned by hand (per-instance or QSettings override).
+    bool manualHpbPin() const;
+    // Measure TCP:443 RTT to every candidate WITHOUT touching the live socket,
+    // then report per-candidate samples (same order as `cands`) to `done`.
+    using HpbProbeDone = std::function<void(const QStringList &urls,
+                                            const std::vector<talq::HpbProbeSample> &samples)>;
+    void probeHpbPool(const QStringList &cands, HpbProbeDone done);
+    // Idle re-homing: run on every keepalive tick; probes when the policy says
+    // so and switches gracefully when a clearly nearer HPB answers and its
+    // signaling passes verifyHpbSignaling().
+    void maybeStartRehomeProbe();
+    talq::HpbRehomeGates rehomeGates() const;
+    // Throw-away WebSocket handshake to `baseUrl`: ok only if the signaling
+    // server sends `welcome` within talq::kHpbVerifyTimeoutMs.
+    using HpbVerifyDone = std::function<void(bool ok, const QString &why)>;
+    void verifyHpbSignaling(const QString &baseUrl, HpbVerifyDone done);
+    // `settings`: signaling/settings fetched just before the switch; the
+    // reconnect it triggers uses them instead of fetching again.
+    void switchHpbTo(const QString &url, int rttMs, const QJsonObject &settings);
+    // A connect attempt ended before hello (socket failure, connect bound, or
+    // the settings fetch failing): decide what happens to a held resume id
+    // (talq::resumeAfterFailedAttempt).
+    void onAttemptFailedBeforeHello();
+    // Apply a pong-watchdog verdict. Returns true if the socket was aborted.
+    bool applyWatchdogVerdict(talq::PongWatchdogPolicy::Verdict verdict);
+    talq::SigClock sigNow() const;
     void onConnected();
     void onDisconnected();
     void onTextMessage(const QString &msg);
@@ -252,6 +338,45 @@ private:
     // server auto-PONGs ours) with comfortable margin under the 60 s
     // deadline. Purely transport-level -- the protocol has no JSON ping.
     QTimer m_keepAliveTimer;
+    // Pong watchdog (SignalingWatchdogPolicy.h). The keepalive used to only
+    // LOG pongs, so a POP whose egress died went unnoticed until Windows gave
+    // up on the TCP connection ~20 s after the first unanswered ping, and never
+    // behind a CONNECT proxy. Armed on each ping, stopped by the pong or any
+    // inbound frame.
+    QTimer m_pongDeadline;
+    talq::PongWatchdogPolicy m_pongWatchdog;
+    // Bounds every m_ws.open() (SignalingWatchdogPolicy.h). Without it a fast
+    // resume to a dead POP waited out the OS/Qt connect timeout: 42.1 s in the
+    // field, longer than the server's 30 s resume grace.
+    QTimer m_connectTimer;
+    int    m_connectTimeouts = 0;   // consecutive, reset on a successful connect
+    qint64 m_connectBoundMs = 0;    // the bound m_connectTimer was armed with
+    QString m_connectHost;          // host of the connect in flight
+    qint64 m_connectStartedMs = -1; // m_monoClock at that connect's open(), -1 = none
+    // How long the last successful connect to each HPB host took (ms). Keeps a
+    // host that needs longer than the first bound (a dual-stack host with a dead
+    // IPv6 path) from being aborted on every reconnect.
+    QHash<QString, qint64> m_lastConnectMsByHost;
+    QElapsedTimer m_monoClock;      // monotonic half of sigNow()
+    // Idle re-homing (HpbRehomePolicy.h): selection used to run only on a
+    // reconnect, so a client stayed on a far POP for hours after its nearer POP
+    // recovered.
+    talq::HpbRehomePolicy m_rehome;
+    bool    m_callBusy = false;           // last value CallManager reported
+    bool    m_idleRehomeEnabled = true;
+    // Set by switchHpbTo(): the verified HPB the background probe chose. The
+    // reconnect it triggers connects straight to it instead of probing again.
+    // Consumed by the next settings fetch, success or failure.
+    QString m_rehomeUrl;
+    // The server switchHpbTo() left. If the connect to the target fails before
+    // hello, onDisconnected() goes straight back here (via m_rehomeUrl) without
+    // probing. Cleared on hello, on use, and by a normal selection.
+    QString m_rehomeReturnUrl;
+    bool    m_rehomeConnectPending = false;   // a direct re-home connect has not reached hello yet
+    // signaling/settings fetched right before switchHpbTo() gave up the working
+    // session (a Nextcloud that cannot answer that GET must not cost us the
+    // session). Consumed by the re-home's own settings step; empty otherwise.
+    QJsonObject m_rehomeSettings;
 
     QString m_signalingUrl;
     QString m_serverOverride;   // per-instance HPB pin (talq-call-test cross-server)
@@ -288,6 +413,11 @@ private:
     // is outstanding (no auth yet); cleared on auth, or on failure we fall back
     // to a full settings refresh.
     bool    m_fastResumePending = false;
+    // The fast resume failed at the socket (dead POP, connect bound). The next
+    // attempt fetches settings and probes, but still offers m_resumeId: any
+    // cluster member resumes or proxies it. One attempt only; if it fails too
+    // the id is dropped (talq::resumeAfterFailedAttempt).
+    bool    m_resumeViaSettings = false;
     // A2 — set once we have ever authenticated a session this app-run. Lets a
     // LATER fresh (non-resumed) hello be recognised as a session RESET (vs the
     // very first cold hello, which must not trigger publisher rebuilds).
@@ -300,7 +430,18 @@ private:
     // are safely in this room" — a transient REST failure or a mid-flight join
     // would otherwise read as joined (dead live-push, a call that proceeds
     // before HPB room membership exists). This is the authoritative flag.
+    // A successful RESUME restores it (see m_roomAckedBeforeDrop).
     bool    m_roomJoinAcked = false;
+    // The room ack as it stood when an authenticated session dropped. A resume
+    // keeps the session's room membership server-side and never gets a "room"
+    // reply, so the resume restores the ack from this snapshot, if the room is
+    // still the same. Without it roomJoinAcked() stayed false for as long as the
+    // conversation stayed open: idle re-homing never ran, and the next same-room
+    // joinRoom() re-joined (minting a new Nextcloud session). Taken only on the
+    // drop of an AUTHENTICATED session: failed reconnect attempts must not
+    // overwrite it. Voided by joinRoom(), stop() and a fresh hello.
+    bool    m_roomAckedBeforeDrop = false;
+    QString m_roomAckedTokenBeforeDrop;
     QString m_typingUser;
     QString m_typingRoom;  // room token where typing was detected
     bool m_authenticated = false;
@@ -309,6 +450,7 @@ private:
 
     // Track participant inCall flags for change detection
     QHash<QString, int> m_participantCallFlags;
+    bool m_participantsUpdateSeen = false;   // a participants update for m_currentRoom since joinRoom/resync
     QHash<QString, QString> m_participantNames;  // userId → displayName
 
     // TalQ peer client info — userId → "TalQ/X.Y.Z". Populated from HPB

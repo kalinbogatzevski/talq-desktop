@@ -38,6 +38,7 @@
 #include <dbghelp.h>
 #pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "dbghelp.lib")
+#include "core/CrashDumpFlags.h"
 #endif
 
 // Crash backstop. A native fault (access violation, etc.) would otherwise
@@ -63,11 +64,16 @@ void talqWriteMiniDump(EXCEPTION_POINTERS *info)
     mei.ThreadId = GetCurrentThreadId();
     mei.ExceptionPointers = info;
     mei.ClientPointers = FALSE;
-    MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), f,
-                      MiniDumpWithIndirectlyReferencedMemory,
-                      info ? &mei : nullptr, nullptr, nullptr);
+    // Stacks, contexts, modules and thread info only. The old
+    // MiniDumpWithIndirectlyReferencedMemory copied heap pages referenced from
+    // stacks, and a shared 2026-09-16 dump carried the user's app password,
+    // session cookies and TURN credentials that way (core/CrashDumpFlags.h).
+    const BOOL written = MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), f,
+                                           kTalqMiniDumpType,
+                                           info ? &mei : nullptr, nullptr, nullptr);
     CloseHandle(f);
-    fprintf(stderr, "[TalQ FATAL] minidump written\n");
+    fprintf(stderr, written ? "[TalQ FATAL] minidump written\n"
+                            : "[TalQ FATAL] minidump write FAILED\n");
     fflush(stderr);
 }
 
@@ -84,14 +90,15 @@ LONG WINAPI talqCrashFilter(EXCEPTION_POINTERS *info)
     return EXCEPTION_EXECUTE_HANDLER;  // terminate with evidence, not silently
 }
 
-// SetUnhandledExceptionFilter does NOT catch abort() (SIGABRT). GLib
-// g_assert/g_error and — critically — a Rust panic inside the gstrswebrtc
-// plugin (the new subscribe path) terminate via abort(), which would
-// otherwise vanish with no dump. This backstop catches that class too.
+// SetUnhandledExceptionFilter does NOT catch abort() (SIGABRT). GLib fatal
+// logs (g_error, a failed g_assert, a critical or recursion GLib treats as
+// fatal) and a plugin that panics or aborts all terminate via abort(), which
+// would otherwise vanish with no dump. This backstop catches that class too.
+// The banner names the class, not a guess: the last log lines say which.
 extern "C" void talqAbortHandler(int)
 {
-    fprintf(stderr, "\n[TalQ FATAL] abort()/SIGABRT — likely a GLib assertion "
-                     "or Rust panic in a GStreamer plugin. Writing dump.\n");
+    fprintf(stderr, "\n[TalQ FATAL] abort()/SIGABRT — a GLib fatal log or assertion "
+                     "(see the lines above), g_error, or a plugin panic. Writing dump.\n");
     fflush(stderr);
     talqWriteMiniDump(nullptr);
     signal(SIGABRT, SIG_DFL);
@@ -139,6 +146,11 @@ void talqTerminateHandler()
 #include <QMessageBox>
 #include <gst/gst.h>
 #include <cstring>
+#include <string_view>
+#include "core/GLibLogWriter.h"      // D1 — GLib log writer without the Win32 handler race
+#include "core/GstLogFunction.h"     // D11 — redacted GStreamer debug output
+#include "core/LogRedaction.h"
+#include "core/LogSink.h"
 #include "core/VideoEncoderUtil.h"   // B1/B4 — software-decode latch + HW-decoder demotion
 #include "core/HwEncoderProbe.h"     // #74 — cached out-of-process HW-encoder probe
 
@@ -180,6 +192,14 @@ void talqTerminateHandler()
 
 int main(int argc, char *argv[])
 {
+    // D1 (2026-09-16 call crash) — replace GLib's default log writer FIRST.
+    // The default one races on a process-global CRT handler when two threads
+    // log at once and turns that into a fatal MessageBox + abort (reproduced in
+    // tests/glib_log_race_test.cpp). GLib accepts one writer per process and it
+    // must be set before any GLib/GStreamer thread exists, so: here, before the
+    // probe branch too (the probe child runs real pipelines).
+    TalqGLibLog::install();
+
     // #74 — hidden hardware-encoder probe entry point. When launched with
     // --probe-hwcodec this process is a short-lived CHILD spawned by a running
     // TalQ: it instantiates each hardware H.264 encoder in a real 720p pipeline,
@@ -331,9 +351,13 @@ int main(int argc, char *argv[])
                 // Non-verbose: drop qDebug() noise, keep info/warn/critical
                 // so the always-on log stays lean but still diagnostic.
                 if (!TalqLog::g_verbose && t == QtDebugMsg) return;
-                QByteArray line = (QTime::currentTime().toString("HH:mm:ss.zzz") + " " + msg + "\n").toUtf8();
-                fwrite(line.constData(), 1, line.size(), stderr);
-                fflush(stderr);
+                const QByteArray line = (QTime::currentTime().toString("HH:mm:ss.zzz") + " " + msg + "\n").toUtf8();
+                // D11: mask URI userinfo / Authorization values on EVERY line —
+                // per-call-site masking missed third-party output. The shared
+                // sink serialises this with the GLib and GStreamer writers.
+                const std::string safe = LogRedaction::redact(
+                    std::string_view(line.constData(), static_cast<size_t>(line.size())));
+                TalqLogSink::writeLine(safe.data(), safe.size());
                 // A warning/error is often the last thing logged before a hard
                 // freeze (e.g. a camera/encoder fault on the weak-iGPU box). flush
                 // alone only reaches the OS cache, which a power-reset loses — so
@@ -357,10 +381,28 @@ int main(int argc, char *argv[])
             // fault / abort / Rust panic now leaves a minidump next to the
             // log instead of TalQ vanishing without a trace.
             {
+                // Strip only the trailing extension. replace(".log") also hit
+                // the profile folder (C:/Users/sales.logistics -> salesistics), so the
+                // dump pointed into a directory that does not exist.
                 QString dump = logPath;
-                dump.replace(QStringLiteral(".log"), QString());
+                if (dump.endsWith(QLatin1String(".log")))
+                    dump.chop(4);
                 dump += QStringLiteral(".crash.dmp");
                 const std::wstring w = dump.toStdWString();
+                // A dump left by a build before 2026-09-16 copied heap pages:
+                // the shared one held the app password, session cookies and
+                // TURN credentials, and "Open log folder" offers it to anyone
+                // asked for logs. Delete it once. A kTalqMiniDumpType dump (the
+                // last crash of this build) is kept for the report.
+                if (talqDumpCopiesHeap(w.c_str())) {
+                    if (DeleteFileW(w.c_str()))
+                        qInfo().noquote() << "[TalQ] deleted a crash dump from an older build"
+                                             " (it held heap memory, which can include credentials)";
+                    else
+                        qWarning().noquote() << "[TalQ] could not delete an older build's crash dump"
+                                                " (it can hold credentials; delete it before sharing"
+                                                " the log folder), error" << GetLastError();
+                }
                 wcsncpy(g_crashDumpPath, w.c_str(), MAX_PATH - 1);
                 SetUnhandledExceptionFilter(talqCrashFilter);
                 // abort()/SIGABRT and unhandled C++ exceptions bypass the
@@ -397,6 +439,12 @@ int main(int argc, char *argv[])
             logPath.clear();
         }
     }
+
+    // D11 — GStreamer's default log function wrote element messages verbatim,
+    // including webrtcnice's "Could not set TURN server turn://user:pass@host".
+    // Swap it for the redacting one BEFORE gst_init (that is what stops init
+    // adding the default). Same line layout; GST_DEBUG above still sets levels.
+    TalqGstLog::install();
 
     gst_init(&argc, &argv);
 
