@@ -12,6 +12,7 @@
 #include "ScheduledMessagesDialog.h"
 #include "ImageViewerDialog.h"
 #include "core/AudioPlayer.h"
+#include "core/UpdateInstallGatePolicy.h"
 #include "core/VoiceRecorder.h"
 #include <QDir>
 #include <QFileInfo>
@@ -318,6 +319,12 @@ MainWindow::MainWindow(
     // handles its own stop condition.
     connect(&m_autoInstallTick, &QTimer::timeout,
             this, &MainWindow::onUpdateAutoInstallTick);
+    // Post-call grace for an install the user accepted. A member rather than a
+    // QTimer::singleShot so that Cancel auto-install, the countdown taking the
+    // install back, and the launch itself can all stop it.
+    m_postCallGraceTimer.setSingleShot(true);
+    connect(&m_postCallGraceTimer, &QTimer::timeout,
+            this, &MainWindow::maybeLaunchPendingInstaller);
 
     // 0.40.16 — TalQ-input idle metric. Global event filter on qApp so
     // every mouse/key/wheel event that flows through OUR app event loop
@@ -749,6 +756,13 @@ void MainWindow::buildChatPage()
         updateTopicMode(false);
         // Clear the active conversation in the message model (empty token = no conversation)
         m_messages->setConversationToken(QString());
+        // Leaving the room for Home is leaving it: its unsent text becomes its
+        // draft exactly as on a switch to another room, BEFORE the token is
+        // cleared. Home used to clear the token only, so the text stayed in the
+        // hidden composer (and a draft restored earlier stayed in the map), and
+        // either one blocked the automatic install until a room was opened.
+        stashComposerDraftOnLeave();
+        if (m_composer) m_composer->clearText();
         m_activeConvToken.clear();
         m_chatPainter->hide();
         if (m_composer) m_composer->hide();
@@ -1982,8 +1996,25 @@ void MainWindow::buildChatPage()
             m_signaling->joinRoom(m_activeConvToken);
         }
     });
-    connect(m_callManager, &CallManager::stateChanged,
-            this, &MainWindow::maybeLaunchPendingInstaller);
+    // A call ending may retry only an install the user accepted and a call
+    // deferred. An automatic one stays with the countdown, which also waits
+    // out the post-call grace, and a cancelled one waits for the user -- so a
+    // call can no longer launch either past the idle and unsent-work gates, or
+    // after "Cancel auto-install". Connected after the handler above, so
+    // m_lastCallActiveMs is already fresh here.
+    connect(m_callManager, &CallManager::stateChanged, this, [this]() {
+        if (m_pendingInstallerPath.isEmpty()) return;
+        switch (talq::onCallStateChanged(installGateInputs())) {
+        case talq::CallStateInstallAction::RetryLaunch:
+            maybeLaunchPendingInstaller();
+            break;
+        case talq::CallStateInstallAction::ResumeAutoCountdown:
+            resumeAutoInstallCountdown();
+            break;
+        case talq::CallStateInstallAction::None:
+            break;
+        }
+    });
     connect(m_callManager, &CallManager::durationChanged, this, [this]() {
         m_header->setCallDuration(m_callManager->callDuration());
         m_lastCallActiveMs = QDateTime::currentMSecsSinceEpoch();  // 0.53.2 — ~1s in-call heartbeat
@@ -2047,6 +2078,16 @@ void MainWindow::buildChatPage()
             m_composerDrafts.clear();
             if (m_composer) m_composer->clearText();
         }
+    });
+
+    // A draft for a room that is no longer in the list (deleted, left, removed
+    // from it on another device) can never be sent, but it would block the
+    // automatic install until logout. countChanged is emitted after every
+    // SUCCESSFUL list refresh and never on a failed one, so a network error
+    // cannot empty the list and take real drafts with it.
+    connect(m_conversations, &ConversationListModel::countChanged, this, [this]() {
+        if (m_composerDrafts.isEmpty()) return;
+        talq::dropDraftsForUnlistedRooms(m_composerDrafts, listedConversationTokens());
     });
 
     // Update NC/Talk version labels when server info arrives (async after login)
@@ -2126,19 +2167,6 @@ void MainWindow::buildChatPage()
 
     connect(m_updateChecker, &UpdateChecker::updateAvailable,
             this, [this](const UpdateChecker::Manifest &m) {
-        // 0.52.14 — manual "Update now" in flight: cancel the up-to-date fallback,
-        // tell the Settings button an update is on the way, and FORCE the download
-        // ourselves. The auto-install acceptUpdate() below is gated on
-        // autoInstall-enabled / not-cancelled / new-version, so without this an
-        // update found via "Update now" with auto-install off (or a re-click of an
-        // already-offered version) would never download — leaving the flag stuck
-        // true and a later install skipping the idle countdown. acceptUpdate() is
-        // idempotent (no-op unless a pending update exists; re-arms the download).
-        if (m_userWantsImmediateInstall && m_updateNowChecking) {
-            m_updateNowChecking = false;
-            if (m_settingsDialog) m_settingsDialog->setUpdateNowStatus(tr("Update found — installing…"));
-            if (m_updateChecker) m_updateChecker->acceptUpdate();
-        }
         // Reset the self-heal one-shot ONLY when a genuinely new
         // version is offered. Periodic poll re-emits the same
         // manifest; without the version guard, an AV-quarantine
@@ -2153,6 +2181,32 @@ void MainWindow::buildChatPage()
             m_updateRelaunchAttempted = false;
             m_lastOfferedVersion = m.version;
         }
+        // An installer already waiting is for an older version. Drop it before
+        // the banner offers the new one: its Install now would otherwise start
+        // the old installer (one restart for an update that is already out of
+        // date, then another), and downloading the new version deletes the old
+        // file anyway. What the waiting install was travels with
+        // m_replacedInstall to the download that replaces it. Done before any
+        // download below starts, so the file removed is never one being written.
+        const bool replacedHere = talq::newVersionReplacesWaitingInstaller(
+            isNewVersion, !m_pendingInstallerPath.isEmpty());
+        if (replacedHere)
+            replaceWaitingInstaller();
+        bool downloadStarted = false;
+        // 0.52.14 — manual "Update now" in flight: cancel the up-to-date fallback,
+        // tell the Settings button an update is on the way, and FORCE the download
+        // ourselves. The auto-install acceptUpdate() below is gated on
+        // autoInstall-enabled / not-cancelled / new-version, so without this an
+        // update found via "Update now" with auto-install off (or a re-click of an
+        // already-offered version) would never download — leaving the flag stuck
+        // true and a later install skipping the idle countdown. acceptUpdate() is
+        // idempotent (no-op unless a pending update exists; re-arms the download).
+        if (m_userWantsImmediateInstall && m_updateNowChecking) {
+            m_updateNowChecking = false;
+            if (m_settingsDialog) m_settingsDialog->setUpdateNowStatus(tr("Update found — installing…"));
+            if (m_updateChecker) m_updateChecker->acceptUpdate();
+            downloadStarted = true;
+        }
         m_pendingUpdateNotes = m.notes;
         // Append a "PRE-RELEASE" emphasis when the offered update came
         // from the beta channel — bold + separator dot, no inline hex
@@ -2165,6 +2219,12 @@ void MainWindow::buildChatPage()
         m_updateProgress->hide();
         m_updateInstallBtn->setText(tr("Install now"));
         m_updateInstallBtn->show();
+        // "Cancel auto-install" only while the countdown owns the install: the
+        // button acts on m_autoInstallActive, so its text must follow it. Left as
+        // it was, an install taken over by Update now (or replaced above) kept
+        // offering a cancel that only hid the banner.
+        m_updateLaterBtn->setText(m_autoInstallActive ? tr("Cancel auto-install")
+                                                      : tr("Later"));
         m_updateLaterBtn->show();
         m_updateWhatsNewBtn->show();
         m_updateBannerActive = true;
@@ -2179,12 +2239,21 @@ void MainWindow::buildChatPage()
         // the auto-flow for this session — the [Cancel auto-install]
         // path takes over once the download finishes. Auto-download
         // does NOT trigger again if the user already opted out for
-        // this session.
+        // this session -- unless the new version replaced an install the
+        // user had accepted, which would otherwise be lost to it.
         const bool autoInstallEnabled = QSettings()
             .value(QStringLiteral("updates/autoInstall"), true).toBool();
-        if (autoInstallEnabled && !m_autoInstallCancelledForSession && isNewVersion) {
-            m_updateChecker->acceptUpdate();
+        if (talq::downloadOfferedVersion(isNewVersion, autoInstallEnabled,
+                                         m_autoInstallCancelledForSession,
+                                         m_replacedInstall.kind)) {
+            if (!downloadStarted) m_updateChecker->acceptUpdate();
+            downloadStarted = true;
         }
+        // Nothing is downloading for the install dropped above (a cancelled one,
+        // or auto-install switched off since): it has nowhere to travel, and must
+        // not attach itself to some later download the user starts.
+        if (replacedHere && !downloadStarted)
+            m_replacedInstall = talq::InstallRequest{};
     });
     connect(m_updateChecker, &UpdateChecker::downloadProgress,
             this, [this](qreal pct) {
@@ -2201,8 +2270,14 @@ void MainWindow::buildChatPage()
         m_updateProgress->hide();
         m_updateInstallBtn->setText(tr("Retry"));
         m_updateInstallBtn->show();
+        m_updateLaterBtn->setText(m_autoInstallActive ? tr("Cancel auto-install")
+                                                      : tr("Later"));
         m_updateLaterBtn->show();
         m_updateWhatsNewBtn->hide();
+        // A download that replaced a waiting install failed. That installer is
+        // gone, so the request has nothing left to travel with; Retry is a new
+        // click and lands like one.
+        m_replacedInstall = talq::InstallRequest{};
         // 0.52.14 — a "Update now" request must not leave its flags armed if the
         // download fails (else a later completed download would skip the idle
         // countdown). Clear them and report back to the Settings button.
@@ -2220,13 +2295,22 @@ void MainWindow::buildChatPage()
         // bypasses the idle gate and triggers immediately. Otherwise
         // it's the classic "accept the offered update" path that kicks
         // off the download.
-        if (m_autoInstallActive && !m_pendingInstallerPath.isEmpty()) {
+        // The same holds for ANY installer already downloaded and waiting --
+        // above all one whose auto-install was cancelled, which launches only
+        // on this click. Re-downloading it instead used to land it again as an
+        // accepted (or even automatic) install rather than the explicit one the
+        // user just asked for. A waiting installer is always for the version
+        // the banner offers: a newer offer drops it (updateAvailable above), so
+        // this click then downloads the newer one below. A launch that failed
+        // twice clears the path, so its "Retry" still goes to the download too.
+        if (!m_pendingInstallerPath.isEmpty()) {
             m_autoInstallActive = false;
             m_autoInstallTick.stop();
             m_updateLabel->setText(tr("Update downloaded — relaunching…"));
             m_updateInstallBtn->hide();
             m_updateLaterBtn->hide();
             m_updateWhatsNewBtn->hide();
+            m_installKind = talq::kindAfterExplicitInstall(m_installKind);
             m_explicitInstallRequested = true;   // 0.53.2 — user clicked: skip the post-call grace
             maybeLaunchPendingInstaller();
             return;
@@ -2243,6 +2327,12 @@ void MainWindow::buildChatPage()
             m_autoInstallActive = false;
             m_autoInstallCancelledForSession = true;
             m_autoInstallTick.stop();
+            // The installer stays on disk but nothing starts it on its own any
+            // more -- not a call ending, not the post-call grace. Only an
+            // explicit Install now / Update now does.
+            m_installKind = talq::kindAfterCancelAutoInstall(m_installKind);
+            m_postCallGraceTimer.stop();
+            m_installWaitingForCall = false;
             m_updateLabel->setText(
                 tr("<b>Update ready.</b> Click <i>Install now</i> when "
                    "you're ready."));
@@ -2608,33 +2698,13 @@ void MainWindow::onConversationSelected(const QString &token, const QString &nam
     // text into the registry, where it outlives the session and the user's
     // expectation of it — a privacy cost this defect does not require paying.
     if (m_composer && token != m_activeConvToken) {
-        // ⚠ An edit buffer is NOT a draft. While the editing bar is up the
-        // composer holds the original text of a specific message in the room
-        // being left, bound to m_editingMessageId — so saving it as that room's
-        // draft would hand the user someone's existing message back as unsent
-        // text, and carrying the id across would apply the NEXT room's text to
-        // a message in the previous one. The same applies to a pending reply.
-        //
-        // Edit and reply state leaking across a conversation switch predates
-        // drafts (nothing here ever cleared either), but swapping the composer
-        // text underneath a live editing bar would turn a latent bug into a
-        // reliable one. Drop both at the boundary.
-        const bool wasComposingAgainstAMessage =
-            m_editingMessageId != 0 || m_replyToId != 0;
-        if (!m_activeConvToken.isEmpty() && !wasComposingAgainstAMessage) {
-            const QString draft = m_composer->currentText();
-            if (draft.isEmpty())
-                m_composerDrafts.remove(m_activeConvToken);
-            else
-                m_composerDrafts.insert(m_activeConvToken, draft);
-        }
-        m_editingMessageId = 0;
-        m_replyToId = 0;
-        m_composer->hideEditingBar();
-        m_composer->hideReplyBar();
+        stashComposerDraftOnLeave();
         // Absent key yields an empty string, which clears the composer — the
         // behaviour a user expects when opening a room they have not drafted in.
-        m_composer->setText(m_composerDrafts.value(token));
+        // take(), not value(): the draft now lives in the composer, and a copy
+        // left in the map outlived the text once it was sent, blocking the
+        // automatic install from every other room.
+        m_composer->setText(talq::takeDraftOnEnter(m_composerDrafts, token));
     }
 
     m_activeConvToken = token;
@@ -4407,10 +4477,31 @@ void MainWindow::resizeEvent(QResizeEvent *e)
 void MainWindow::onUpdateReadyToLaunch(const QString &installerPath)
 {
     m_pendingInstallerPath = installerPath;
-    // 0.53.2 — a fresh download is AUTOMATIC by default; the manual branch below
-    // re-sets the explicit flag. Resetting here stops a stale flag from a prior
-    // failed/abandoned explicit install making this auto-install skip the grace.
-    m_explicitInstallRequested = false;
+    // What kind of install this is, decided once, here. Nothing later re-reads
+    // updates/autoInstall to reclassify it (UpdateInstallGatePolicy.h). A
+    // download that replaced a waiting install -- the re-download after a
+    // failed launch, or a newer version -- keeps what that install was: an
+    // Install now stays explicit, an automatic one stays automatic.
+    const talq::InstallRequest landed = talq::installWhenDownloadLands(
+        m_userWantsImmediateInstall,
+        QSettings().value(QStringLiteral("updates/autoInstall"), true).toBool(),
+        m_autoInstallCancelledForSession,
+        m_replacedInstall);
+    m_replacedInstall = talq::InstallRequest{};
+    m_installKind = landed.kind;
+    // 0.53.2 — a fresh download is AUTOMATIC by default. The explicit flag is
+    // set from this landing alone (Update now, or an explicit install carried
+    // across a re-download), so a stale flag from a prior failed/abandoned
+    // explicit install cannot make this auto-install skip the grace.
+    m_explicitInstallRequested = landed.explicitRequest;
+    m_installWaitingForCall = false;
+    // A re-landed download must not inherit a grace wait, or a countdown, that
+    // belonged to the previous installer.
+    m_postCallGraceTimer.stop();
+    if (m_installKind != talq::InstallKind::Automatic) {
+        m_autoInstallActive = false;
+        m_autoInstallTick.stop();
+    }
     m_updateProgress->hide();
 
     // 0.52.14 \u2014 the user clicked "Update now": skip the idle countdown and install
@@ -4419,7 +4510,8 @@ void MainWindow::onUpdateReadyToLaunch(const QString &installerPath)
     if (m_userWantsImmediateInstall) {
         m_userWantsImmediateInstall = false;
         m_updateNowChecking = false;
-        m_explicitInstallRequested = true;   // 0.53.2 \u2014 manual "Update now": skip the post-call grace
+        // 0.53.2 \u2014 manual "Update now": explicit, so the post-call grace is skipped
+        // (installWhenDownloadLands has already set the flag).
         m_updateLabel->setText(tr("Update downloaded \u2014 installing\u2026"));
         m_updateInstallBtn->hide();
         m_updateLaterBtn->hide();
@@ -4431,36 +4523,17 @@ void MainWindow::onUpdateReadyToLaunch(const QString &installerPath)
     // 0.41.0 \u2014 when auto-install-on-idle is enabled (default ON), stage
     // the install behind the idle gate instead of immediately quitting
     // the app. The user keeps a visible "Cancel auto-install" escape
-    // hatch and an "Install now" override. Active calls / unsent text /
-    // mid-upload are hard-gated below; user activity (mouse/keyboard)
+    // hatch and an "Install now" override. Active calls and the post-call
+    // grace / unsent work / mid-upload are hard-gated by the countdown
+    // (talq::autoInstallBlocked); user activity (mouse/keyboard)
     // resets the countdown via GetLastInputInfo.
-    const bool autoInstallEnabled =
-        QSettings().value(QStringLiteral("updates/autoInstall"), true).toBool();
-    if (autoInstallEnabled && !m_autoInstallCancelledForSession) {
-        m_autoInstallActive = true;
-        m_countdownNotified = false;
-        // Anchor the wait window to download-completion time. A user who
-        // was passively watching the download for longer than the
-        // configured idle threshold would otherwise see GetLastInputInfo
-        // already past the gate on the first tick and the install would
-        // fire with no visible countdown.
-        m_autoInstallReadyAtMs = QDateTime::currentMSecsSinceEpoch();
-        m_updateBannerActive = true;
-        m_updateBanner->show();
-        m_updateBanner->raise();
-        m_updateInstallBtn->setText(tr("Install now"));
-        m_updateInstallBtn->show();
-        m_updateLaterBtn->setText(tr("Cancel auto-install"));
-        m_updateLaterBtn->show();
-        m_updateWhatsNewBtn->hide();
-        m_autoInstallTick.setInterval(1000);   // 1 s so the visible MM:SS countdown ticks once a second
-        m_autoInstallTick.setSingleShot(false);
-        if (!m_autoInstallTick.isActive()) m_autoInstallTick.start();
-        onUpdateAutoInstallTick();   // paint the banner immediately
+    if (m_installKind == talq::InstallKind::Automatic) {
+        startAutoInstallCountdown();
         return;
     }
 
-    // Auto-install disabled (or cancelled for this session) \u2014 original
+    // Auto-install disabled (or cancelled for this session), or an install the
+    // user had already accepted before it was downloaded again \u2014 original
     // immediate-relaunch path.
     m_updateLabel->setText(tr("Update downloaded \u2014 relaunching\u2026"));
     m_updateInstallBtn->hide();
@@ -4469,9 +4542,20 @@ void MainWindow::onUpdateReadyToLaunch(const QString &installerPath)
     maybeLaunchPendingInstaller();
 }
 
+static int autoInstallIdleMinutes()
+{
+    return qBound(1,
+        QSettings().value(QStringLiteral("updates/autoInstallIdleMinutes"), 5).toInt(),
+        60);
+}
+
 void MainWindow::onUpdateAutoInstallTick()
 {
-    if (!m_autoInstallActive || m_pendingInstallerPath.isEmpty()) {
+    // Only an automatic install counts down. Anything else reaching here (an
+    // explicit request, a cancel) has already taken the install over.
+    if (!m_autoInstallActive || m_pendingInstallerPath.isEmpty()
+        || m_installKind != talq::InstallKind::Automatic) {
+        m_autoInstallActive = false;
         m_autoInstallTick.stop();
         return;
     }
@@ -4482,24 +4566,20 @@ void MainWindow::onUpdateAutoInstallTick()
     // idle window, or during the final-minute countdown. This keeps a
     // non-urgent update prompt from sitting above the chat all day.
     constexpr qint64 kPreviewIdleMs = 30 * 1000;   // 30 s of inactivity
-    constexpr qint64 kCountdownMs   = 60 * 1000;   // last-60 s window
+    constexpr qint64 kCountdownMs   = talq::kAutoInstallFinalCountdownMs;   // last-60 s window
 
     // Any held mouse button counts as active input even though
     // GetLastInputInfo only tracks events (presses, releases,
     // movement) \u2014 a slow drag-resize / drag-select / drag-to-scroll
     // keeps the cursor still for minutes while the idle counter climbs.
-    const bool blocked =
-        (m_callManager
-            && (m_callManager->state() != CallManager::Idle
-                || m_callManager->isScreenSharing()))
-        || (m_composer && !m_composer->currentText().isEmpty())
-        || (m_messages && m_messages->uploadProgress() >= 0.0)
-        || (QApplication::mouseButtons() != Qt::NoButton);
+    // The full list, including the post-call grace, a staged file and a
+    // voice recording, is talq::autoInstallBlocked.
+    const talq::InstallGateInputs gates = installGateInputs();
+    const bool blocked = talq::autoInstallBlocked(gates, kPostCallInstallGraceMs);
 
-    const int idleWaitMin = qBound(1,
-        QSettings().value(QStringLiteral("updates/autoInstallIdleMinutes"), 5).toInt(),
-        60);
+    const int idleWaitMin = autoInstallIdleMinutes();
     const qint64 idleWaitMs = qint64(idleWaitMin) * 60 * 1000;
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
 
     if (blocked) {
         // User is mid-something \u2014 fully hide the banner; the next tick
@@ -4511,7 +4591,31 @@ void MainWindow::onUpdateAutoInstallTick()
         // install fired IMMEDIATELY, restarting the app out from under the user and
         // killing the call (Kalin, live). Resetting here forces the update to wait
         // the full idle window AFTER the call/activity ends, never the moment it drops.
-        m_lastTalqInputMs = QDateTime::currentMSecsSinceEpoch();
+        //
+        // Except while the post-call grace is the ONLY block: the call is over and
+        // the user may well be idle, so resetting there made the install wait the
+        // grace plus the whole idle window after every call. The countdown's anchor
+        // is moved instead, far enough that its final minute still shows in full
+        // once the grace runs out (talq::countdownReadyAtAfterGrace).
+        if (talq::blockedOnlyByPostCallGrace(gates, kPostCallInstallGraceMs))
+            m_autoInstallReadyAtMs = talq::countdownReadyAtAfterGrace(
+                m_autoInstallReadyAtMs,
+                nowMs + talq::postCallGraceRemainingMs(gates, kPostCallInstallGraceMs),
+                idleWaitMs, kCountdownMs);
+        else
+            m_lastTalqInputMs = nowMs;
+        // The banner is hidden, but opening a conversation or Home re-shows it
+        // for a moment; say what an automatic install actually waits for. (It
+        // does NOT start when the call ends: that text belongs to an install
+        // the user accepted.)
+        if (gates.callActive || talq::withinPostCallGrace(gates, kPostCallInstallGraceMs))
+            m_updateLabel->setText(
+                tr("<b>Update ready.</b> It will install a few minutes after "
+                   "your call, once you are idle."));
+        else
+            m_updateLabel->setText(
+                tr("<b>Update ready.</b> Will auto-install when you've been "
+                   "idle for %n minute(s).", "", idleWaitMin));
         if (m_updateBanner) m_updateBanner->hide();
         return;
     }
@@ -4521,18 +4625,14 @@ void MainWindow::onUpdateAutoInstallTick()
     // the user touched the keyboard or mouse anywhere on the desktop,
     // even in another app. Per user intent, only input that actually
     // reaches TalQ (m_lastTalqInputMs, set by eventFilter) should reset.
-    const qint64 nowMs  = QDateTime::currentMSecsSinceEpoch();
-    qint64       idleMs = qMax<qint64>(0, nowMs - m_lastTalqInputMs);
-
+    //
     // Clamp the effective idle to ms-since-download-ready so the
     // countdown always runs at least once. Without this, a user who
     // was already idle while the download streamed would skip the
-    // visible "Installing in M:SS…" banner entirely.
-    if (m_autoInstallReadyAtMs > 0) {
-        const qint64 sinceReady =
-            QDateTime::currentMSecsSinceEpoch() - m_autoInstallReadyAtMs;
-        idleMs = qMin(idleMs, sinceReady);
-    }
+    // visible "Installing in M:SS…" banner entirely. (The same anchor is
+    // what the post-call grace moves, above.)
+    const qint64 idleMs =
+        talq::countdownIdleMs(nowMs, m_lastTalqInputMs, m_autoInstallReadyAtMs);
 
     const qint64 remainingMs = idleWaitMs - idleMs;
     const bool inCountdown   = (remainingMs <= kCountdownMs);
@@ -4572,11 +4672,10 @@ void MainWindow::onUpdateAutoInstallTick()
 
     if (idleMs >= idleWaitMs) {
         // Idle window satisfied \u2014 kick the relaunch path. We don't
-        // pre-set a "relaunching\u2026" label here: if the user has joined
-        // a call between the gate check above and the inner call gate
-        // inside maybeLaunchPendingInstaller, that path sets its own
-        // "you're in a call" label and the connection wired in the
-        // ctor will retry once the call ends.
+        // pre-set a "relaunching\u2026" label here: maybeLaunchPendingInstaller
+        // re-checks the same gates, and if one has closed in between (a call
+        // joined, text typed) it hands the install straight back to this
+        // countdown, which restores the banner.
         m_autoInstallActive = false;
         m_autoInstallTick.stop();
         m_updateInstallBtn->hide();
@@ -4602,33 +4701,181 @@ void MainWindow::onUpdateAutoInstallTick()
     }
 }
 
+bool MainWindow::hasUnsentComposerText() const
+{
+    return talq::hasUnsentComposerText(m_composer ? m_composer->currentText() : QString(),
+                                       m_composerDrafts, m_activeConvToken);
+}
+
+talq::InstallGateInputs MainWindow::installGateInputs() const
+{
+    talq::InstallGateInputs in;
+    in.kind = m_installKind;
+    in.explicitRequest = m_explicitInstallRequested;
+    in.waitingForCallToEnd = m_installWaitingForCall;
+    in.callActive = m_callManager
+        && (m_callManager->state() != CallManager::Idle || m_callManager->isScreenSharing());
+    // A clock stepping backwards reads as "the call just ended" -- the safe side.
+    in.msSinceLastCall = m_lastCallActiveMs > 0
+        ? qMax<qint64>(0, QDateTime::currentMSecsSinceEpoch() - m_lastCallActiveMs)
+        : -1;
+    in.unsentText = hasUnsentComposerText();
+    in.attachmentStaged = m_composer && m_composer->hasStagedAttachment();
+    in.voiceRecording = m_recorder && m_recorder->isRecording();
+    in.uploadInProgress = m_messages && m_messages->uploadProgress() >= 0.0;
+    in.mouseButtonHeld = QApplication::mouseButtons() != Qt::NoButton;
+    return in;
+}
+
+void MainWindow::startAutoInstallCountdown()
+{
+    m_autoInstallActive = true;
+    m_countdownNotified = false;
+    // Anchor the wait window to the moment the countdown (re)starts. A user who
+    // was passively watching the download -- or sat idle through whatever had
+    // stopped the countdown -- for longer than the configured idle threshold
+    // would otherwise see the idle counter already past the gate on the first
+    // tick and the install would fire with no visible countdown.
+    m_autoInstallReadyAtMs = QDateTime::currentMSecsSinceEpoch();
+    m_updateBannerActive = true;
+    m_updateBanner->show();
+    m_updateBanner->raise();
+    m_updateLabel->setText(
+        tr("<b>Update ready.</b> Will auto-install when you've been "
+           "idle for %n minute(s).", "", autoInstallIdleMinutes()));
+    m_updateProgress->hide();
+    m_updateInstallBtn->setText(tr("Install now"));
+    m_updateInstallBtn->show();
+    m_updateLaterBtn->setText(tr("Cancel auto-install"));
+    m_updateLaterBtn->show();
+    m_updateWhatsNewBtn->hide();
+    m_autoInstallTick.setInterval(1000);   // 1 s so the visible MM:SS countdown ticks once a second
+    m_autoInstallTick.setSingleShot(false);
+    if (!m_autoInstallTick.isActive()) m_autoInstallTick.start();
+    onUpdateAutoInstallTick();   // paint the banner immediately
+}
+
+void MainWindow::resumeAutoInstallCountdown()
+{
+    if (m_pendingInstallerPath.isEmpty()
+        || m_installKind != talq::InstallKind::Automatic)
+        return;
+    m_postCallGraceTimer.stop();
+    m_installWaitingForCall = false;
+    // Already counting down: leave the wait, the banner and the one-minute
+    // notification exactly as they are.
+    if (m_autoInstallActive && m_autoInstallTick.isActive())
+        return;
+    // The tick stopped itself before trying to launch and hid the banner
+    // buttons; restore everything the countdown had, not just the timer.
+    startAutoInstallCountdown();
+}
+
+void MainWindow::replaceWaitingInstaller()
+{
+    // What the waiting install was travels to the download that replaces it
+    // (talq::installWhenDownloadLands). The installer itself is deleted --
+    // when no download follows (a cancelled install replaced by a newer
+    // version), nothing else would sweep it out of the temp directory, where
+    // stale installers draw AV alerts -- and with it goes everything that
+    // could still start it: the countdown, the post-call grace, a launch
+    // deferred by a call.
+    m_replacedInstall = talq::InstallRequest{m_installKind, m_explicitInstallRequested};
+    QFile::remove(m_pendingInstallerPath);
+    m_pendingInstallerPath.clear();
+    m_installKind = talq::InstallKind::None;
+    m_explicitInstallRequested = false;
+    m_installWaitingForCall = false;
+    m_autoInstallActive = false;
+    m_autoInstallTick.stop();
+    m_postCallGraceTimer.stop();
+}
+
+void MainWindow::stashComposerDraftOnLeave()
+{
+    if (!m_composer) return;
+    // ⚠ An edit buffer is NOT a draft. While the editing bar is up the
+    // composer holds the original text of a specific message in the room
+    // being left, bound to m_editingMessageId — so saving it as that room's
+    // draft would hand the user someone's existing message back as unsent
+    // text, and carrying the id across would apply the NEXT room's text to
+    // a message in the previous one. Not saving is not enough: the room's
+    // entry is REMOVED, because any entry left behind keeps blocking the
+    // automatic install.
+    //
+    // A reply is different: the reply bar keeps whatever the user had typed
+    // (often a draft restored a moment ago) and they type on, so that text is
+    // theirs and is kept as the room's plain draft. Only the binding to the
+    // message goes -- carried across, it would send the next room's text as a
+    // reply to a message in this one.
+    //
+    // Edit and reply state leaking across a conversation switch predates
+    // drafts (nothing here ever cleared either), but swapping the composer
+    // text underneath a live editing bar would turn a latent bug into a
+    // reliable one. Drop both at the boundary. See talq::stashDraftOnLeave.
+    const talq::ComposerBinding binding =
+        m_editingMessageId != 0 ? talq::ComposerBinding::Edit
+        : m_replyToId != 0      ? talq::ComposerBinding::Reply
+                                : talq::ComposerBinding::None;
+    talq::stashDraftOnLeave(m_composerDrafts, m_activeConvToken,
+                            m_composer->currentText(), binding);
+    m_editingMessageId = 0;
+    m_replyToId = 0;
+    m_composer->hideEditingBar();
+    m_composer->hideReplyBar();
+}
+
+QSet<QString> MainWindow::listedConversationTokens() const
+{
+    QSet<QString> tokens;
+    if (!m_conversations) return tokens;
+    const int count = m_conversations->rowCount();
+    tokens.reserve(count);
+    for (int i = 0; i < count; ++i)
+        tokens.insert(m_conversations->tokenAt(i));
+    return tokens;
+}
+
 void MainWindow::maybeLaunchPendingInstaller()
 {
     if (m_pendingInstallerPath.isEmpty()) return;
+    // Every pass decides afresh; a grace wait that still applies is re-armed
+    // below. This is also what stops the timer on a launch.
+    m_postCallGraceTimer.stop();
 
-    if (m_callManager) {
-        if (m_callManager->state() != CallManager::Idle
-            || m_callManager->isScreenSharing()) {
-            m_lastCallActiveMs = QDateTime::currentMSecsSinceEpoch();
-            m_updateLabel->setText(
-                tr("You\u2019re in a call \u2014 update will start when the call ends."));
-            return;  // slot re-runs on callStateChanged
-        }
+    const talq::InstallGateInputs gates = installGateInputs();
+    switch (talq::beforeLaunch(gates, kPostCallInstallGraceMs)) {
+    case talq::LaunchDecision::Hold:
+        // A cancelled auto-install: only an explicit Install now / Update now
+        // (which re-classify it first) may start it.
+        return;
+    case talq::LaunchDecision::ResumeAutoCountdown:
+        // Automatic install, but a gate closed since the countdown's last check:
+        // a call, the post-call grace, unsent work, an upload. The countdown
+        // hides the banner and waits the full idle window again once it clears.
+        resumeAutoInstallCountdown();
+        return;
+    case talq::LaunchDecision::WaitForCall:
+        // Only an install the user accepted gets here, so the promise holds.
+        m_lastCallActiveMs = QDateTime::currentMSecsSinceEpoch();
+        m_updateLabel->setText(
+            tr("You\u2019re in a call \u2014 update will start when the call ends."));
+        m_installWaitingForCall = true;   // retried on callStateChanged
+        return;
+    case talq::LaunchDecision::WaitForPostCallGrace:
         // 0.53.2 \u2014 POST-CALL GRACE: never restart the instant a call ends. A brief
         // Idle gap between back-to-back calls (or right after hangup) must not kill
         // an active session. Wait kPostCallInstallGraceMs of NO call before
         // installing; a new call refreshes m_lastCallActiveMs and extends the grace.
-        // (The auto-install tick's TalQ-input idle logic still applies on top.)
-        const qint64 sinceCall =
-            QDateTime::currentMSecsSinceEpoch() - m_lastCallActiveMs;
-        if (!m_explicitInstallRequested       // an explicit Install/Update-now skips the grace
-            && m_lastCallActiveMs > 0 && sinceCall < kPostCallInstallGraceMs) {
-            m_updateLabel->setText(
-                tr("Update will start a little after your call."));
-            QTimer::singleShot(int(kPostCallInstallGraceMs - sinceCall) + 250, this,
-                               &MainWindow::maybeLaunchPendingInstaller);
-            return;
-        }
+        // An explicit Install/Update-now skips it. Automatic installs never get
+        // here: their countdown treats the grace as a gate.
+        m_updateLabel->setText(
+            tr("Update will start a little after your call."));
+        m_postCallGraceTimer.start(
+            int(talq::postCallGraceRemainingMs(gates, kPostCallInstallGraceMs)) + 250);
+        return;
+    case talq::LaunchDecision::Launch:
+        break;
     }
 
     const QStringList args{
@@ -4647,8 +4894,12 @@ void MainWindow::maybeLaunchPendingInstaller()
         // "manual install" path required. If THAT re-download also
         // produces an unlaunchable file, surface the failure (probably
         // an environment issue we can't paper over).
-        QFile::remove(m_pendingInstallerPath);
-        m_pendingInstallerPath.clear();
+        // replaceWaitingInstaller deletes the cached file. The re-download is
+        // the same install: it lands as what this one was (an Install now stays
+        // explicit, an automatic install stays automatic even if auto-install
+        // is switched off meanwhile), not re-derived from the settings of the
+        // moment it lands.
+        replaceWaitingInstaller();
         if (m_updateChecker && !m_updateRelaunchAttempted) {
             m_updateRelaunchAttempted = true;
             m_updateLabel->setText(
@@ -4658,6 +4909,7 @@ void MainWindow::maybeLaunchPendingInstaller()
             m_updateChecker->retryDownload();
             return;
         }
+        m_replacedInstall = talq::InstallRequest{};   // no re-download: nothing to carry
         m_updateLabel->setText(tr(
             "Auto-update failed twice. Try Retry, restart TalQ, or "
             "download the latest installer from the project's Releases "
@@ -4675,7 +4927,11 @@ void MainWindow::maybeLaunchPendingInstaller()
     // /VERYSILENT installers racing the same files). Clear it now (+ the explicit
     // flag) so any re-entry early-returns at the empty-path check up top.
     m_pendingInstallerPath.clear();
+    m_installKind = talq::InstallKind::None;
     m_explicitInstallRequested = false;
+    m_installWaitingForCall = false;
+    m_autoInstallActive = false;
+    m_autoInstallTick.stop();
     // Arm the force-exit watchdog AT THE AUTO-UPDATE TRIGGER (not just the tray-
     // Quit one — the 0.51.15 fix covered only that path). The downloaded
     // installer is already running with /CLOSEAPPLICATIONS; we now quit ourselves
@@ -5415,10 +5671,17 @@ void MainWindow::openConversationInfo()
         if (m_header)      m_header->invalidateAvatars();
         if (m_chatPainter) m_chatPainter->invalidateAvatars();
     });
-    connect(dlg, &ConversationInfoDialog::roomDeleted, this, [this]() {
+    connect(dlg, &ConversationInfoDialog::roomDeleted, this,
+            [this, infoToken = m_activeConvToken]() {
         m_conversations->refresh();
         // Drop the user back to Home — the room they were viewing is gone.
         emit m_sidebar->homeRequested();
+        // Going Home has just saved the room's unsent text as its draft (the
+        // list still holds the room until the refresh above lands). There is
+        // nowhere to send it now; drop it here rather than wait for that
+        // refresh, which may fail and would leave the draft blocking the
+        // automatic install.
+        m_composerDrafts.remove(infoToken);
     });
     dlg->exec();
 }
@@ -5477,6 +5740,16 @@ void MainWindow::ensureSettingsDialog()
             // directly (maybeLaunchPendingInstaller respects the no-restart-during-
             // call gate). 0.53.2 — flag it explicit so the post-call grace is skipped:
             // the user just clicked Update now, they want it installed.
+            // It stops being automatic (or cancelled): stop the countdown and
+            // take its buttons down, as the banner's own Install now does, so a
+            // click on a leftover "Install now" cannot restart the download and
+            // turn this back into an automatic install.
+            m_autoInstallActive = false;
+            m_autoInstallTick.stop();
+            m_updateInstallBtn->hide();
+            m_updateLaterBtn->hide();
+            m_updateWhatsNewBtn->hide();
+            m_installKind = talq::kindAfterExplicitInstall(m_installKind);
             m_explicitInstallRequested = true;
             if (m_settingsDialog) m_settingsDialog->setUpdateNowStatus(tr("Installing update…"));
             maybeLaunchPendingInstaller();

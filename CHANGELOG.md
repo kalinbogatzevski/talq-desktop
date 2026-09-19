@@ -1,5 +1,32 @@
 # Changelog
 
+## v0.72.3 "First School Day" — STABLE (2026-09-19)
+
+### Fixed
+* **An update could restart TalQ while another conversation still held unsent text.** Since 0.65.3
+  each conversation keeps its own half-written message, and those live only in memory — so an
+  update that installed "because nothing was unsent" threw away anything typed in a conversation
+  other than the open one. The check now covers every conversation, and also a file you have
+  attached but not sent and a voice message still recording. All three are lost on a restart.
+
+  The open conversation is still judged by what is actually in its message box, so text you have
+  already sent never holds an update back.
+
+* **A call ending could start a waiting update immediately.** Any call ending was enough, which
+  skipped the idle wait, ignored unsent text, and happened even after you clicked *Cancel
+  auto-install*. An automatic update now only ever installs from the idle countdown, and a
+  cancelled one waits until you click *Install now*. An update you asked for yourself still waits
+  for the call to end and then installs, as before.
+
+  After a call, an automatic update waits for whichever is longer: your idle setting, or about four
+  minutes. The last minute is always shown as a countdown you can cancel.
+
+* **Smaller fixes in the same area.** A restarted countdown shows *Cancel auto-install* again and
+  still warns before installing. When a newer version arrives while an update is waiting, the old
+  installer is dropped instead of being started by *Install now* — and if you had already accepted
+  the older one, the newer one is fetched for you. Text you were writing as a reply is kept as a
+  draft when you switch conversations.
+
 ## v0.72.2 "First School Day" — STABLE (2026-09-16)
 
 Calls now survive a call server going down. A group call during a regional server outage exposed a
