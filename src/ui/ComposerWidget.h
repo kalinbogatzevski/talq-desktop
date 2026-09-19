@@ -43,6 +43,16 @@ public:
     // Exposed so the inner ComposeTextEdit can clear the pending bar when
     // an async paste-encode fails.
     void cancelPendingFile();
+    // A file waiting in the composer to be sent, including a pasted image that
+    // is still being prepared (its path is only known once the encode is
+    // done, but the bar is already up). It is not a per-conversation draft and
+    // does not survive a restart, so the auto-install gate treats it like
+    // unsent text. isHidden(), not isVisible(): the bar keeps its state while
+    // the whole composer is hidden on Home.
+    bool hasStagedAttachment() const
+    {
+        return !m_pendingFilePath.isEmpty() || (m_pendingBar && !m_pendingBar->isHidden());
+    }
     void setNextSendSilent(bool s) { m_nextSendSilent = s; }
     // Polls: available on the server (`talk-polls`), and the type of the open
     // conversation — 1 is one-to-one, where the server refuses polls outright.
