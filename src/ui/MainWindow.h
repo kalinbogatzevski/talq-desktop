@@ -14,6 +14,7 @@
 #include <QElapsedTimer>
 #include <QTimer>
 #include "core/ConversationTagLogic.h"
+#include "core/UpdateInstallGatePolicy.h"
 #include "painter/PainterTheme.h"
 
 class ApiClient;
@@ -123,11 +124,35 @@ private:
     void ensureSettingsDialog();
     // 0.40.2 —fires every few seconds while an update is staged AND
     // auto-install-on-idle is enabled. Reads the system idle counter,
-    // checks the hard gates (no active call, empty composer, no upload),
-    // updates the banner text/countdown, and finally calls
-    // maybeLaunchPendingInstaller once the user has been idle for the
-    // configured window.
+    // checks the hard gates (talq::autoInstallBlocked: call and post-call
+    // grace, unsent work, upload), updates the banner text/countdown, and
+    // finally calls maybeLaunchPendingInstaller once the user has been idle
+    // for the configured window.
     void onUpdateAutoInstallTick();
+    // Unsent composer text in ANY conversation, not only the open one.
+    bool hasUnsentComposerText() const;
+    // Everything the install decisions in UpdateInstallGatePolicy.h look at,
+    // gathered in one place so the call-state handler, the countdown tick and
+    // the launch itself can never judge the same moment differently.
+    talq::InstallGateInputs installGateInputs() const;
+    // Shows the countdown banner (Install now / Cancel auto-install), resets
+    // the one-minute notification and the idle anchor, and starts the tick.
+    void startAutoInstallCountdown();
+    // Hands a pending AUTOMATIC install back to the idle countdown. A no-op
+    // while the countdown is already running, so a call-state change in the
+    // middle of it cannot re-arm the notification or reset the wait.
+    void resumeAutoInstallCountdown();
+    // Abandons the waiting installer for a download that replaces it (a newer
+    // version, or the re-download after a failed launch): deletes its file,
+    // moves its kind and explicit flag to m_replacedInstall, and stops the
+    // countdown, the grace timer and a call deferral.
+    void replaceWaitingInstaller();
+    // Saves (or removes) the open conversation's unsent text in
+    // m_composerDrafts and drops any edit/reply state. Called whenever the
+    // open conversation is left: for another conversation, or for Home.
+    void stashComposerDraftOnLeave();
+    // Tokens of every conversation in the list, archived ones included.
+    QSet<QString> listedConversationTokens() const;
 
 private:
     void buildChatPage();
@@ -383,12 +408,38 @@ private:
     // Cleared on a successful launch. (m_userWantsImmediateInstall can't carry this:
     // it's cleared before the gate runs at every call site.)
     bool   m_explicitInstallRequested = false;
+    // A launch the user asked for (or accepted) was deferred by a call.
+    // Only such a launch is retried directly when the call ends; an automatic
+    // install goes back through the countdown instead (UpdateInstallGatePolicy.h).
+    bool   m_installWaitingForCall = false;
+    // What kind of install m_pendingInstallerPath is. Recorded when the
+    // download lands and changed only by Cancel auto-install and by an
+    // explicit Install now / Update now -- never re-derived from the
+    // auto-install setting, which is how a cancelled install used to launch
+    // itself after a call. None whenever no installer is pending.
+    talq::InstallKind m_installKind = talq::InstallKind::None;
+    // The install a download in flight replaces: set by replaceWaitingInstaller
+    // (a newer version offered, or the self-heal re-download), consumed when
+    // that download lands, cleared when it fails or when no download follows.
+    // It lives exactly as long as that download, so Later / the banner close
+    // (which do not stop a download) leave it alone -- clearing it there
+    // would turn a re-downloading Install now back into an idle countdown.
+    talq::InstallRequest m_replacedInstall;
+    // Retries a user-accepted install once the post-call grace has run out.
+    // Automatic installs never use it: their countdown treats the grace as a
+    // gate. Stopped by resumeAutoInstallCountdown, Cancel auto-install,
+    // replaceWaitingInstaller, a landing download and every pass through
+    // maybeLaunchPendingInstaller (which re-arms it only when the grace still
+    // applies).
+    QTimer m_postCallGraceTimer;
     // 0.40.6 — ms-since-epoch when the download landed (the moment the
     // user could realistically see the countdown banner). The tick
     // clamps the effective idle time to (now - this) so a user who was
     // already idle the whole download still gets to see the countdown
     // run, rather than the install firing on the first tick because
-    // GetLastInputInfo was already past the threshold.
+    // GetLastInputInfo was already past the threshold. Reset when the
+    // countdown restarts, and moved later while only the post-call grace
+    // blocks it (talq::countdownReadyAtAfterGrace).
     qint64 m_autoInstallReadyAtMs = 0;
     // 0.40.16 — TalQ-input idle metric. ms-since-epoch of the last
     // mouse/key/wheel event routed through our QApplication (set by
@@ -400,7 +451,8 @@ private:
     qint64 m_lastTalqInputMs = 0;
     // 0.53.2 — ms-since-epoch of the last moment a CALL was active (refreshed every
     // ~1 s during a call via durationChanged, and on every call-state change). The
-    // install gate (maybeLaunchPendingInstaller) defers until kPostCallInstallGraceMs
+    // install gates (the auto-install countdown, and maybeLaunchPendingInstaller for
+    // an install the user accepted) defer until kPostCallInstallGraceMs
     // of NO call has elapsed, so an update that landed mid-session NEVER restarts TalQ
     // the instant a call ends — back-to-back test calls keep refreshing this and hold
     // the install off. Replaces the old immediate stateChanged→install fire that
