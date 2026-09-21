@@ -10,6 +10,7 @@
 #include "MessageLayout.h"
 #include "PainterTheme.h"
 #include "painter/ReactionLayout.h"
+#include "painter/JumpToBottomLogic.h"
 
 class AudioPlayer;
 
@@ -213,6 +214,17 @@ private:
     void copySelectedText();
     QVariantMap variantMapFromLayout(const MessageLayout &ml) const;
 
+    // ── Jump-to-bottom control (geometry and rules: painter/JumpToBottomLogic.h) ──
+    // The layout is recomputed from live state every call rather than cached, so
+    // paint, hit-test, hover and tooltip cannot disagree about where it is.
+    talq::JumpToBottomLayout jumpToBottomLayout() const;
+    // How many messages from other people are newer than m_seenNewestId.
+    int  newMessagesBelow() const;
+    // Record the newest real id currently in the view as "seen". Called whenever
+    // the view is at the bottom.
+    void syncSeenNewest();
+    void paintJumpToBottom(QPainter *p);
+
     // ── Painting helpers ──
     void paintDateSep(QPainter *p, const MessageLayout &ml, qreal offsetY);
     void paintUnreadSep(QPainter *p, const MessageLayout &ml, qreal offsetY);
@@ -277,6 +289,15 @@ private:
     qreal m_fontScale = 1.0;
     qreal m_scrollY = 0;
     bool  m_forcePinBottom = false;   // bug 1 — keep view at bottom across open-time reset storm
+    // Jump-to-bottom control. The newest real message id that was in view the
+    // last time the view was at the bottom (0 = not known yet); the badge counts
+    // the messages from other people that are newer than it. Derived, never
+    // incremented, so it needs no signal and clears itself on reaching the bottom.
+    int   m_seenNewestId = 0;
+    bool  m_jumpPressed = false;      // a press landed on the control and is not yet released
+    bool  m_jumpHover = false;
+    qint64  m_jumpClickMs = 0;        // when the control last fired: see mouseDoubleClickEvent
+    QPointF m_jumpClickPos;
     qreal m_contentHeight = 0;
     int m_hoveredIndex = -1;
 

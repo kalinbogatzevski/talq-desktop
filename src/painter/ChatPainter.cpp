@@ -289,6 +289,10 @@ void ChatPainter::setScrollY(qreal y)
     // open-time cache-load/refreshLatest reset storm.
     if (m_forcePinBottom && !atBottom())
         m_forcePinBottom = false;
+    // Reaching the bottom by ANY route (wheel, scrollbar, the jump control,
+    // a send) is what "seen" means: it clears the jump control's count.
+    if (atBottom())
+        syncSeenNewest();
     if (wasAtBottom != atBottom())
         emit atBottomChanged();
     emit scrollYChanged();
@@ -341,7 +345,97 @@ void ChatPainter::pinToBottom()
     // messages are never left below the fold by the open-time reset churn.
     // setScrollY clears the flag the moment the user scrolls up.
     m_forcePinBottom = true;
+    // A new conversation's ids are unrelated to the last one's, so drop the
+    // jump control's "seen" marker rather than count against a stale one. The
+    // scroll below, and every rebuild while the pin holds, re-syncs it.
+    m_seenNewestId = 0;
     scrollToBottom();
+}
+
+// ─── Jump-to-bottom control ─────────────────────────
+// Geometry, the show/hide rule and the count live in JumpToBottomLogic.h so the
+// painter and the hit-test cannot disagree; these are the thin adapters.
+
+talq::JumpToBottomLayout ChatPainter::jumpToBottomLayout() const
+{
+    return talq::layoutJumpToBottom(
+        width(), height(),
+        talq::jumpToBottomVisible(atBottom(), m_selectionMode),
+        newMessagesBelow(), PainterTheme::badgeHeight);
+}
+
+int ChatPainter::newMessagesBelow() const
+{
+    // While the open-time pin holds the view is still re-landing at the bottom
+    // and m_seenNewestId may belong to the previous conversation: nothing is
+    // "below" yet.
+    if (m_forcePinBottom)
+        return 0;
+    return talq::countNewBelow(int(m_layouts.size()), [this](int i) {
+        const MessageLayout &ml = m_layouts[i];
+        return talq::JumpRowFacts{ml.messageId, ml.isOwn, ml.isSystem};
+    }, m_seenNewestId);
+}
+
+void ChatPainter::syncSeenNewest()
+{
+    m_seenNewestId = talq::newestRealId(int(m_layouts.size()), [this](int i) {
+        const MessageLayout &ml = m_layouts[i];
+        return talq::JumpRowFacts{ml.messageId, ml.isOwn, ml.isSystem};
+    });
+}
+
+void ChatPainter::paintJumpToBottom(QPainter *p)
+{
+    const talq::JumpToBottomLayout jl = jumpToBottomLayout();
+    if (!jl.visible)
+        return;
+
+    p->save();
+    p->setRenderHint(QPainter::Antialiasing, true);
+
+    // A calm bgSurface disc with a text-tier RING, no shadow (Flat-But-Stateful).
+    // The ring is what makes it findable: the control floats over the chat
+    // ground, peer bubbles and -- at the right edge -- your own bubble, and a
+    // fill alone vanishes on the one that shares it (a peer bubble IS bgSurface).
+    // A hairline divider was the first attempt and was invisible; the colours
+    // live in PainterTheme::floatingButton() so the conformance suite scores
+    // exactly what is painted here.
+    const PainterTheme::FloatingButtonColors col = m_theme.floatingButton();
+    constexpr qreal kRingW = 1.5;
+    const QRectF btn(jl.button.x, jl.button.y, jl.button.w, jl.button.h);
+    p->setPen(QPen(m_jumpHover ? col.ringHover : col.ring, kRingW));
+    p->setBrush(m_jumpHover ? col.fillHover : col.fill);
+    // Inset by half the pen so the stroke stays inside the rect the hit test uses.
+    p->drawEllipse(btn.adjusted(kRingW / 2, kRingW / 2, -kRingW / 2, -kRingW / 2));
+
+    // Down chevron.
+    const QPointF c = btn.center();
+    p->setPen(QPen(m_jumpHover ? col.glyphHover : col.glyph,
+                   2.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    p->setBrush(Qt::NoBrush);
+    QPainterPath chevron;
+    chevron.moveTo(c.x() - 6.5, c.y() - 3.0);
+    chevron.lineTo(c.x(),       c.y() + 3.0);
+    chevron.lineTo(c.x() + 6.5, c.y() - 3.0);
+    p->drawPath(chevron);
+
+    // Count: the in-app plain-unread badge (DESIGN.md), same fill and ink as
+    // the sidebar's.
+    if (!jl.badge.isNull()) {
+        const QRectF b(jl.badge.x, jl.badge.y, jl.badge.w, jl.badge.h);
+        p->setPen(Qt::NoPen);
+        p->setBrush(m_theme.unreadBadge);
+        p->drawRoundedRect(b, b.height() / 2.0, b.height() / 2.0);
+
+        QFont f;
+        f.setPixelSize(PainterTheme::badgeFontSize);
+        f.setWeight(QFont::DemiBold);
+        p->setFont(f);
+        p->setPen(m_theme.inkOn(m_theme.unreadBadge));
+        p->drawText(b, Qt::AlignCenter, QString::fromStdString(jl.badgeText));
+    }
+    p->restore();
 }
 
 void ChatPainter::enterSelectionMode(int firstMessageId)
@@ -428,6 +522,13 @@ QVariantMap ChatPainter::variantMapFromLayout(const MessageLayout &ml) const
 
 QString ChatPainter::hitTestAt(qreal x, qreal y)
 {
+    // The jump-to-bottom control is anchored to the VIEWPORT, not to a message
+    // row, so it is tested first and BEFORE the canvas conversion below, which
+    // returns {} for any point with no row under it. It also floats over rows
+    // and has to win over whatever they contain.
+    if (talq::jumpToBottomHit(jumpToBottomLayout(), x, y))
+        return QStringLiteral("jumpbottom");
+
     // All rects in m_layouts are canvas-absolute (y starts at startY which is cumulative)
     QPointF canvasPos(x, y + m_scrollY);
     int idx = layoutIndexAtY(canvasPos.y());
@@ -514,6 +615,17 @@ void ChatPainter::setHoveredPos(qreal x, qreal y)
 {
     QPointF canvasPos(x, y + m_scrollY);
     int idx = layoutIndexAtY(canvasPos.y());
+
+    // The jump-to-bottom control floats over the rows: it has its own hover
+    // state, and hovering it must not raise the hover bar of the message
+    // behind it.
+    const bool onJump = talq::jumpToBottomHit(jumpToBottomLayout(), x, y);
+    if (onJump != m_jumpHover) {
+        m_jumpHover = onJump;
+        update();
+    }
+    if (onJump)
+        idx = -1;
 
     // Don't hover system messages or sending/failed messages
     if (idx >= 0 && idx < m_layouts.size()) {
@@ -746,6 +858,10 @@ void ChatPainter::rebuildAllLayouts()
     // storm, independent of the transient m_scrollY during those resets).
     if (wasAtBottom || m_forcePinBottom)
         scrollToBottom();
+    // Content that fits the view has nowhere to scroll, so it is always "at the
+    // bottom" without a scroll ever landing there.
+    if (atBottom())
+        syncSeenNewest();
 
     update();
 
@@ -869,6 +985,19 @@ bool ChatPainter::event(QEvent *e)
 {
     if (e->type() == QEvent::ToolTip) {
         auto *he = static_cast<QHelpEvent*>(e);
+        // The jump-to-bottom control first: it floats over the rows, and its
+        // tooltip must not be shadowed by the timestamp tooltip of the row
+        // behind it.
+        const talq::JumpToBottomLayout jl = jumpToBottomLayout();
+        if (talq::jumpToBottomHit(jl, he->pos().x(), he->pos().y())) {
+            QToolTip::showText(he->globalPos(),
+                jl.badgeText.empty()
+                    ? tr("Jump to the latest message")
+                    : tr("Jump to the latest message (%1 new)")
+                          .arg(QString::fromStdString(jl.badgeText)),
+                this);
+            return true;
+        }
         QPointF canvas(he->pos().x(), he->pos().y() + m_scrollY);
         for (const auto &ml : m_layouts) {
             if (ml.isSystem || ml.showDateSep) continue;
@@ -924,6 +1053,20 @@ void ChatPainter::wheelEvent(QWheelEvent *event)
 
 void ChatPainter::mousePressEvent(QMouseEvent *event)
 {
+    // The jump-to-bottom control floats over the rows, so it is claimed BEFORE
+    // any row gesture. Otherwise a press on it would anchor a text selection in
+    // the message behind it, a slight drag would enter whole-message selection
+    // mode, and a right-click would open that message's context menu. Both
+    // buttons are swallowed; only a left click on release acts (see
+    // mouseReleaseEvent).
+    if ((event->button() == Qt::LeftButton || event->button() == Qt::RightButton)
+        && hitTestAt(event->position().x(), event->position().y())
+               == QLatin1String("jumpbottom")) {
+        m_jumpPressed = (event->button() == Qt::LeftButton);
+        event->accept();
+        return;
+    }
+
     if (event->button() == Qt::LeftButton || event->button() == Qt::RightButton) {
         m_dragging = true;
         m_dragMoved = false;
@@ -937,7 +1080,7 @@ void ChatPainter::mousePressEvent(QMouseEvent *event)
         // when content overflows. This pre-empts drag-to-select / text-anchor.
         if (event->button() == Qt::LeftButton
             && m_contentHeight > height()
-            && event->position().x() >= width() - 14) {
+            && event->position().x() >= width() - talq::kScrollbarGrabStrip) {
             qreal viewH = height();
             qreal thumbH = qMax(20.0, (viewH / m_contentHeight) * viewH);
             qreal maxScroll = m_contentHeight - viewH;
@@ -1148,6 +1291,25 @@ void ChatPainter::mouseMoveEvent(QMouseEvent *event)
 
 void ChatPainter::mouseReleaseEvent(QMouseEvent *event)
 {
+    // Pair of the jump-to-bottom claim in mousePressEvent. Fires only when the
+    // release is still on the control, so pressing and dragging off cancels, as
+    // with any button. scrollToBottom, not pinToBottom: the pin exists for the
+    // open-time reset storm, and live messages after landing are already
+    // followed by the at-bottom check in MainWindow.
+    if (m_jumpPressed) {
+        m_jumpPressed = false;
+        if (event->button() == Qt::LeftButton
+            && talq::jumpToBottomHit(jumpToBottomLayout(),
+                                     event->position().x(), event->position().y())) {
+            // Remembered for mouseDoubleClickEvent: this click hides the control.
+            m_jumpClickMs  = QDateTime::currentMSecsSinceEpoch();
+            m_jumpClickPos = event->position();
+            scrollToBottom();
+        }
+        event->accept();
+        return;
+    }
+
     if (!m_dragging) return;
     m_dragging = false;
 
@@ -1288,6 +1450,18 @@ void ChatPainter::mouseReleaseEvent(QMouseEvent *event)
 
 void ChatPainter::mouseDoubleClickEvent(QMouseEvent *event)
 {
+    // A fast double-click on the jump control: its first click already took the
+    // view to the bottom and hid the control, so the second press arrives here
+    // as a double-click over whatever message is now under the cursor. Swallow
+    // it, or it would select a word in that message.
+    if (QDateTime::currentMSecsSinceEpoch() - m_jumpClickMs
+            <= QApplication::doubleClickInterval()
+        && (event->position() - m_jumpClickPos).manhattanLength()
+            <= 2 * QApplication::startDragDistance()) {
+        event->accept();
+        return;
+    }
+
     if (event->button() != Qt::LeftButton || m_selectionMode) {
         QWidget::mouseDoubleClickEvent(event);
         return;
@@ -1565,9 +1739,17 @@ void ChatPainter::paintEvent(QPaintEvent *)
     qreal vpBottom = m_scrollY + height();
     qreal offsetY = -m_scrollY;
 
-    // One-Signal Rule: the unread state is carried solely by the "New
-    // messages" separator pill. The former full-viewport teal wash was a
-    // large competing teal fill and has been removed.
+    // One-Signal Rule: inside the message flow the unread state is carried
+    // solely by the "New messages" separator pill. The former full-viewport
+    // teal wash was a large competing teal fill and has been removed.
+    //
+    // The one other place a count shows is the jump-to-bottom control
+    // (paintJumpToBottom), and it is not a second marker in the flow. It answers
+    // a different question from the separator -- the separator marks where the
+    // unread began when the conversation was opened, the count tallies what has
+    // arrived since the view was last at the bottom -- and it sits on the control
+    // that resolves it instead of painting the flow. See DESIGN.md,
+    // "Jump-to-bottom control".
 
     for (int i = 0; i < m_layouts.size(); ++i) {
         const auto &ml = m_layouts[i];
@@ -1642,6 +1824,10 @@ void ChatPainter::paintEvent(QPaintEvent *)
         p.setBrush(thumbColor);
         p.drawRoundedRect(QRectF(scrollbarX, thumbY, scrollbarW, thumbH), 2, 2);
     }
+
+    // Floats above everything, including the scrollbar's column (it is inset to
+    // stay clear of it).
+    paintJumpToBottom(&p);
 }
 
 // ─── Date separator ─────────────────────────────────

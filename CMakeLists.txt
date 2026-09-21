@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(talq VERSION 0.72.3 LANGUAGES CXX)
+project(talq VERSION 0.73.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -261,6 +261,24 @@ string(TIMESTAMP TALQ_BUILD_TS "%m%d-%H%M")
 # codename here would imply a new body of work and hide the promotion. This is
 # the same kind of exception as the 0.66.x skip above, and like that one it is
 # recorded rather than silently done. Decided 2026-09-11.
+#
+# 0.73.x IS "Nezavisimost" -- Независимост, the Declaration of Independence of
+# 22 September 1908. The date is the OLD STYLE one: Bulgaria kept the Julian
+# calendar until 1916, so the same day fell on 5 October in the Gregorian
+# calendar, and the holiday still keeps the 22nd. Prince Ferdinand read the
+# manifesto in the church of the Holy Forty Martyrs at Veliko Tarnovo and took
+# the title of Tsar; the Ottoman Empire recognised it in April 1909.
+#
+# It continues the Bulgarian-history thread (0.69.x Saedinenie, 6 Sept 1885 ->
+# 0.70.x Slivnitsa, Nov 1885 -> 0.71.x/0.72.x First School Day, 15 Sept ->
+# 0.73.x Nezavisimost, 22 Sept 1908) and follows the EVENT-name pattern. It is
+# the name that was proposed for 0.72.x on 2026-09-11 and set aside when Kalin
+# chose to carry "First School Day" across the stable cut; it comes back for
+# the next line, which is a new BETA. 0.73.x is odd, so it is the beta line.
+# Chosen by Kalin, 2026-09-21, the day before the holiday.
+# Sources: bta.bg (22 Sept 1908; 14 Apr 1916 calendar switch), bas.bg,
+# historymuseum.org (22-09-day), and Scelle, "Bulgarian Independence", AJIL 1912
+# (prints the 1909 protocol texts).
 set_source_files_properties(
     src/main.cpp
     src/core/CallManager.cpp
@@ -269,7 +287,7 @@ set_source_files_properties(
     src/ui/SettingsDialog.cpp
     src/ui/MainWindow.cpp
     PROPERTIES COMPILE_DEFINITIONS
-      "TALQ_VERSION=\"${PROJECT_VERSION}\";TALQ_VERSION_NAME=\"First School Day\";TALQ_BUILD_TS=\"${TALQ_BUILD_TS}\""
+      "TALQ_VERSION=\"${PROJECT_VERSION}\";TALQ_VERSION_NAME=\"Nezavisimost\";TALQ_BUILD_TS=\"${TALQ_BUILD_TS}\""
 )
 
 # Pre-release flag: when build-release.sh is invoked with --beta it

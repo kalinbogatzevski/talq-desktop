@@ -426,6 +426,18 @@ QColor PainterTheme::inkOn(const QColor &fill) const
         ? controlInk : textPrimary;
 }
 
+PainterTheme::FloatingButtonColors PainterTheme::floatingButton() const
+{
+    FloatingButtonColors c;
+    c.fill       = bgSurface;      // calm inside; the ring does the finding
+    c.fillHover  = bgHover;        // one rung up the ladder
+    c.ring       = textSecondary;  // AA against every ground (conformance suite)
+    c.ringHover  = textPrimary;
+    c.glyph      = textPrimary;    // AA on bgSurface
+    c.glyphHover = textPrimary;    // AA on bgHover
+    return c;
+}
+
 QColor PainterTheme::topicColor(int index)
 {
     constexpr int N = sizeof(s_topicPalette) / sizeof(s_topicPalette[0]);

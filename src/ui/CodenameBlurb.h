@@ -58,6 +58,25 @@ inline QString codenameBlurb(const QString &verName)
         || verName == QStringLiteral("Koprivshtitsa"))
         return QObject::tr("Codename \"%1\" — Bulgaria's April Uprising of 1876, "
             "150th anniversary (2026).").arg(verName);
+    if (verName == QStringLiteral("Nezavisimost"))
+        return QObject::tr("Codename \"%1\" — Независимост, the Declaration of "
+            "Independence of Bulgaria, 22 September 1908. The date is the Old "
+            "Style one: Bulgaria kept the Julian calendar until 1916, so the same "
+            "day fell on 5 October in the Gregorian calendar, and the holiday "
+            "still keeps the 22nd. Thirty years after the Treaty of Berlin, "
+            "Bulgaria was still an autonomous, tributary principality under the "
+            "Ottoman Sultan's suzerainty. The Young Turk revolution of July 1908 unsettled "
+            "the empire; after a railway strike in early September Bulgaria kept "
+            "the stretch of the Oriental Railway that ran through its territory; "
+            "and on the 22nd, in the church of the Holy Forty Martyrs at Veliko "
+            "Tarnovo — the medieval capital of the Bulgarian tsars, whose tombs "
+            "the church holds — Prince Ferdinand read the manifesto, drafted on "
+            "the royal train the evening before, that proclaimed a free and "
+            "independent state, and took the title of Tsar. The Ottoman Empire "
+            "recognised it in April 1909; the price was settled in money, with "
+            "Russia writing off part of the war indemnity Turkey still owed it "
+            "and Bulgaria taking on a long debt to Russia in return. Ден на "
+            "Независимостта is an official public holiday.").arg(verName);
     if (verName == QStringLiteral("First School Day"))
         return QObject::tr("Codename \"%1\" — Първи учебен ден, 15 September, "
             "when the first bell rings and the school year opens: the ceremonial "

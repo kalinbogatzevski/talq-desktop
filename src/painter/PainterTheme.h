@@ -180,6 +180,22 @@ public:
     // data -- every call site already holds a PainterTheme.
     QColor inkOn(const QColor &fill) const;
 
+    // ── Floating round button (the chat view's jump-to-bottom control) ──
+    // Resolved in ONE place so ChatPainter and theme-conformance-test score the
+    // very same pairs. The control floats over the chat ground, a peer bubble
+    // and -- sitting at the right edge -- most often YOUR OWN bubble, so a fill
+    // cannot be what makes it findable: its fill IS the peer bubble's fill. The
+    // RING carries the edge instead. It is the text-secondary tier, which the
+    // conformance suite already holds to AA against every ground, so it reads on
+    // all of them in every theme. The hover bar's hairline `divider` was the
+    // first attempt, and was invisible.
+    struct FloatingButtonColors {
+        QColor fill, fillHover;      // the disc
+        QColor ring, ringHover;      // its outline
+        QColor glyph, glyphHover;    // the arrow inside
+    };
+    FloatingButtonColors floatingButton() const;
+
     // ── Topic color from palette index (6-color palette) ──
     static QColor topicColor(int index);
     // Introspection for exhaustive contrast tests, same idiom as
