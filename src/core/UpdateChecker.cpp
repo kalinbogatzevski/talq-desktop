@@ -1,6 +1,7 @@
 #include "UpdateChecker.h"
 
 #include "AppSettings.h"
+#include "ChecksumAsset.h"
 #include "VersionCompare.h"
 
 #include <QCryptographicHash>
@@ -289,14 +290,18 @@ void UpdateChecker::fetchChecksumThenFinalize(Manifest m, const QString &checksu
             return;
         }
         if (reply->error() == QNetworkReply::NoError) {
-            const QString hex = QString::fromLatin1(reply->readAll().trimmed()).toLower();
-            // 64 lowercase hex chars, nothing else — a malformed/unexpected
-            // asset body must not silently pass as a valid digest.
-            static const QRegularExpression sha256Re(QStringLiteral("^[0-9a-f]{64}$"));
-            if (sha256Re.match(hex).hasMatch())
+            // A bare digest or real sha256sum output, one file or a list; see
+            // ChecksumAsset.h for why accepting only bare hex skipped this
+            // check on every GitHub release. Anything it cannot trust comes
+            // back empty and we fall through to HTTPS-only, as before.
+            const QString hex = talq::sha256FromChecksumAsset(reply->readAll(), m.assetFilename);
+            if (!hex.isEmpty()) {
                 m.assetSha256 = hex;
-            else
-                qWarning() << "UpdateChecker: checksum asset content not a sha256 hex digest";
+                qInfo() << "UpdateChecker: checksum asset gives sha256 for" << m.assetFilename;
+            } else {
+                qWarning() << "UpdateChecker: checksum asset has no usable sha256 for"
+                           << m.assetFilename;
+            }
         } else {
             qWarning() << "UpdateChecker: checksum asset fetch failed:" << reply->errorString();
         }
@@ -456,6 +461,11 @@ void UpdateChecker::onDownloadFinished(QNetworkReply *reply, QFile *out)
     // different release's sha256 — see m_downloadExpectedSha256).
     if (!m_downloadExpectedSha256.isEmpty()) {
         if (!verifySha256(path, m_downloadExpectedSha256)) {
+            // Logged, not only bannered: the banner is overwritten by the next
+            // poll, and the log is what a support case is read from.
+            qWarning() << "UpdateChecker: checksum mismatch, installer refused:"
+                       << path << QFileInfo(path).size() << "bytes, expected"
+                       << m_downloadExpectedSha256;
             QFile::remove(path);
             emit downloadFailed(tr("Checksum verification failed"));
             return;
@@ -472,7 +482,13 @@ void UpdateChecker::onDownloadFinished(QNetworkReply *reply, QFile *out)
 bool UpdateChecker::verifySha256(const QString &filePath, const QString &expectedHex)
 {
     QFile f(filePath);
-    if (!f.open(QIODevice::ReadOnly)) return false;
+    if (!f.open(QIODevice::ReadOnly)) {
+        // Also refused, but for a different reason (an AV hold, a lock): say so,
+        // or it reads as a tampered download.
+        qWarning() << "UpdateChecker: could not read the downloaded installer to verify it:"
+                   << filePath << f.errorString();
+        return false;
+    }
     QCryptographicHash h(QCryptographicHash::Sha256);
     constexpr qint64 chunk = 64 * 1024;
     QByteArray buf;
@@ -481,5 +497,7 @@ bool UpdateChecker::verifySha256(const QString &filePath, const QString &expecte
         h.addData(buf);
     }
     const QString got = QString::fromLatin1(h.result().toHex()).toLower();
+    if (got != expectedHex.toLower())
+        qWarning() << "UpdateChecker: installer sha256 is" << got;
     return got == expectedHex.toLower();
 }

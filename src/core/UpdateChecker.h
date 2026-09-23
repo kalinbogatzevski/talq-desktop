@@ -64,8 +64,9 @@ private:
     void fetchManifest();
     void onManifestFetched(QNetworkReply *reply);
     // GitHub exposes no per-asset digest field, so the release also
-    // publishes a companion "<assetFilename>.sha256" text asset (plain hex,
-    // no filename suffix) alongside the installer. If one is present in the
+    // publishes a companion "<assetFilename>.sha256" text asset alongside the
+    // installer: a bare digest or sha256sum output (the accepted forms and
+    // why are in ChecksumAsset.h). If one is present in the
     // release's asset list, fetch it and populate m.assetSha256 before
     // finalizing -- gives the generic/GitHub channel the same
     // download-integrity check the branded channel already has via
