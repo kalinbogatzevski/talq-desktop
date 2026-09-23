@@ -1059,10 +1059,17 @@ void ChatPainter::mousePressEvent(QMouseEvent *event)
     // mode, and a right-click would open that message's context menu. Both
     // buttons are swallowed; only a left click on release acts (see
     // mouseReleaseEvent).
-    if ((event->button() == Qt::LeftButton || event->button() == Qt::RightButton)
-        && hitTestAt(event->position().x(), event->position().y())
-               == QLatin1String("jumpbottom")) {
+    //
+    // Qt has already moved keyboard focus here by now (ClickFocus). The control
+    // is a button, not content, so it hands focus straight back: someone who
+    // was typing a draft keeps typing into it after the jump.
+    // Every button is claimed on the control, not just left and right: Qt gives
+    // click focus for a middle or side-button press too.
+    m_focusGuard.beginPress();
+    if (hitTestAt(event->position().x(), event->position().y())
+            == QLatin1String("jumpbottom")) {
         m_jumpPressed = (event->button() == Qt::LeftButton);
+        m_focusGuard.giveBack();
         event->accept();
         return;
     }
@@ -1098,6 +1105,7 @@ void ChatPainter::mousePressEvent(QMouseEvent *event)
                 setScrollY((newThumbY / (viewH - thumbH)) * maxScroll);
             }
             m_draggingScrollbar = true;
+            m_focusGuard.giveBack();   // a scrollbar is not content: no focus, like QScrollBar
             event->accept();
             return;
         }
@@ -1454,16 +1462,45 @@ void ChatPainter::mouseDoubleClickEvent(QMouseEvent *event)
     // view to the bottom and hid the control, so the second press arrives here
     // as a double-click over whatever message is now under the cursor. Swallow
     // it, or it would select a word in that message.
+    //
+    // Qt gives click focus on a double-click too, so each path below consumes
+    // this event's focus record exactly once: here, in mousePressEvent (which
+    // QWidget::mouseDoubleClickEvent forwards to), or before the word-select.
     if (QDateTime::currentMSecsSinceEpoch() - m_jumpClickMs
             <= QApplication::doubleClickInterval()
         && (event->position() - m_jumpClickPos).manhattanLength()
             <= 2 * QApplication::startDragDistance()) {
+        m_focusGuard.beginPress();
+        m_focusGuard.giveBack();
+        event->accept();
+        return;
+    }
+    // A double-click on the control while it is still visible (its first click
+    // did not fire the jump: a right-click, or a press dragged off). Qt sends
+    // no press for the second click, only this event, so claim it exactly as
+    // mousePressEvent would -- the release that follows fires the jump -- or it
+    // would fall through to selecting a word under the control.
+    if (hitTestAt(event->position().x(), event->position().y())
+            == QLatin1String("jumpbottom")) {
+        m_focusGuard.beginPress();
+        m_jumpPressed = (event->button() == Qt::LeftButton);
+        m_focusGuard.giveBack();
         event->accept();
         return;
     }
 
     if (event->button() != Qt::LeftButton || m_selectionMode) {
         QWidget::mouseDoubleClickEvent(event);
+        return;
+    }
+
+    m_focusGuard.beginPress();
+    // A double-click on the scrollbar strip: no word to select there, and the
+    // scrollbar does not take focus (see the grab in mousePressEvent).
+    if (m_contentHeight > height()
+        && event->position().x() >= width() - talq::kScrollbarGrabStrip) {
+        m_focusGuard.giveBack();
+        event->accept();
         return;
     }
 

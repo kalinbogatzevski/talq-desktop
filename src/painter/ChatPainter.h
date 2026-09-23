@@ -11,6 +11,7 @@
 #include "PainterTheme.h"
 #include "painter/ReactionLayout.h"
 #include "painter/JumpToBottomLogic.h"
+#include "painter/ClickFocusGuard.h"
 
 class AudioPlayer;
 
@@ -296,6 +297,9 @@ private:
     int   m_seenNewestId = 0;
     bool  m_jumpPressed = false;      // a press landed on the control and is not yet released
     bool  m_jumpHover = false;
+    // Clicking the jump control or the scrollbar must not take keyboard focus
+    // from the composer: this hands it back (see ClickFocusGuard.h).
+    ClickFocusGuard m_focusGuard{this};
     qint64  m_jumpClickMs = 0;        // when the control last fired: see mouseDoubleClickEvent
     QPointF m_jumpClickPos;
     qreal m_contentHeight = 0;

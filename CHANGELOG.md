@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.73.1 "Nezavisimost" — BETA (2026-09-23)
+
+### Fixed
+* **Clicking the jump-to-latest button no longer takes the cursor out of the message box.** If you
+  were typing, scrolled up to check something and clicked the button to come back, what you typed
+  next went nowhere until you clicked the message box again. The button now leaves the cursor
+  where it was, whether that is the message box or the search field. Dragging the chat's scrollbar
+  behaves the same way now.
+* **Updates downloaded from GitHub are now actually checked against their published checksum.** Each
+  GitHub release carries a small checksum file next to the installer, but TalQ only accepted a file
+  holding the bare checksum, while the published one also names the installer, as the standard
+  checksum tools write it. The check was therefore skipped and the download trusted on the secure
+  connection alone. TalQ now reads both forms, and a list covering several files too, using the line
+  for the installer it downloaded. Builds that update from their own server were not affected.
+
 ## v0.73.0 "Nezavisimost" — BETA (2026-09-21)
 
 ### Added

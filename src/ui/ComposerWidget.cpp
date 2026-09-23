@@ -2,6 +2,7 @@
 #include "EmojiPickerWidget.h"
 #include "NextcloudFilePickerDialog.h"
 #include "painter/PainterTheme.h"
+#include "painter/ClickFocusGuard.h"
 #include "core/SignalingClient.h"
 #include "core/EmojiData.h"
 #include "core/MentionCandidate.h"
@@ -1228,9 +1229,13 @@ bool ComposerWidget::eventFilter(QObject *watched, QEvent *event)
             return true;
         }
     }
+    // Focus handed straight back by the chat view (a click on its jump button
+    // or scrollbar, see ClickFocusGuard.h) is not interaction: counting it
+    // would dismiss the "New messages" divider and mark the room read the
+    // moment someone grabs the scrollbar to read back through what is unread.
     if (watched == m_input
         && (event->type() == QEvent::MouseButtonPress
-            || event->type() == QEvent::FocusIn)) {
+            || (event->type() == QEvent::FocusIn && !ClickFocusGuard::returningFocus()))) {
         emit userInteracted();
     }
     // Composer lost focus (user clicked the chat list / message / elsewhere
