@@ -143,6 +143,16 @@ public:
     // a png/jpg/bmp filter. Same fetch as downloadFile, different destination.
     Q_INVOKABLE void saveFileAs(int fileId, const QString &fileName,
                                 const QString &destPath);
+    // An attachment's ORIGINAL bytes, in memory -- for a caller that needs the
+    // content rather than a file on disk (ImageClipboard). Same path lookup as
+    // downloadFile. Failure is reported ONLY through `done`, never through
+    // errorOccurred: that raises a modal box, and this caller has a fallback,
+    // so the box would announce a failure the user never actually meets. More
+    // than `maxBytes` aborts the transfer and fails, and so does a transfer
+    // that stalls for 30 s. `done` is not called at all once `context` is
+    // gone; deleting `context` also aborts the transfer.
+    void fetchFileBytes(int fileId, qint64 maxBytes, QObject *context,
+                        std::function<void(const QByteArray &bytes, const QString &error)> done);
 
     // Upload progress (0.0 to 1.0, -1 = no upload)
     Q_PROPERTY(double uploadProgress READ uploadProgress NOTIFY uploadProgressChanged)
@@ -240,10 +250,13 @@ private:
     void resolveDavPathById(int fileId, std::function<void(const QString &)> done);
     void fetchDavFile(const QString &davPath, int fileId, const QString &fileName,
                       bool openWhenDone, const QString &destPath = QString());
-    // Shared entry: resolve a path for `fileId` (from the loaded message, else
-    // over DAV SEARCH) and hand it to fetchDavFile.
+    // Shared entry: resolve a path for `fileId` and hand it to fetchDavFile.
     void startFileFetch(int fileId, const QString &fileName, bool openWhenDone,
                         const QString &destPath);
+    // The DAV path for `fileId`: the loaded message's own, else recovered over
+    // DAV SEARCH. `done` gets an empty string when neither finds it. The one
+    // lookup behind both startFileFetch and fetchFileBytes.
+    void withDavPath(int fileId, std::function<void(const QString &)> done);
     static QString uniqueDownloadPath(const QString &fileName);
     // File-upload helpers (used by sendFileWithCaption). shareUploadedFile posts
     // the Talk share once the bytes are on the server (shared by the single-PUT

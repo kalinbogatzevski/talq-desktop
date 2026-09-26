@@ -129,15 +129,33 @@ public:
                               const QByteArray &body = QByteArray(),
                               const QMap<QByteArray, QByteArray> &headers = {});
 
-    // GET with absolute path (no OCS prefix, no OCS headers)
-    QNetworkReply *getAbsoluteUrl(const QString &path);
+    // GET with absolute path (no OCS prefix, no OCS headers). A non-zero
+    // `transferTimeoutMs` is Qt's inactivity timeout (see makeRequest): a
+    // stalled transfer errors out instead of hanging, a progressing one never
+    // trips it. 0 keeps the old behaviour -- no timeout -- for existing callers.
+    QNetworkReply *getAbsoluteUrl(const QString &path, int transferTimeoutMs = 0);
+
+    // Lifetime wiring shared by every context-taking endpoint -- and by any
+    // caller outside this class that binds a raw reply's handlers to its own
+    // context (MessageListModel::fetchFileBytes).
+    //
+    // The per-endpoint `finished` handler is deliberately bound to the
+    // CALLER's context so it cannot touch a destroyed dialog. But that
+    // gating also means Qt severs it when the context dies — and the only
+    // reply->deleteLater() lived inside it. The reply, parented to the
+    // long-lived m_nam and absent from m_pendingReplies, then completed,
+    // buffered its whole body, and survived to app exit. Closing a dialog
+    // over a slow link was enough.
+    static void bindReplyLifetime(QNetworkReply *reply, QObject *context);
 
     // Fetch a rendering from Nextcloud's preview endpoint. `maxDim` caps the
     // larger edge in pixels (aspect ratio is preserved). `context` is the
     // QObject that owns the callback — if it dies before the reply arrives,
     // the callback is auto-disconnected (prevents use-after-free).
+    // `transferTimeoutMs` as for getAbsoluteUrl; 0 = none.
     void fetchFileImage(int fileId, int maxDim, QObject *context,
-                        std::function<void(const QImage &, const QString &error)> callback);
+                        std::function<void(const QImage &, const QString &error)> callback,
+                        int transferTimeoutMs = 0);
 
     // Fetch mention candidates for a room (Nextcloud Talk v4 API). Same
     // context-safety contract as fetchFileImage.
@@ -483,17 +501,6 @@ private:
     void handleArrayReply(QNetworkReply *reply, ArrayCallback callback,
                           std::function<QNetworkReply*()> resend = {}, int attempt = 0);
     void trackReply(QNetworkReply *reply);
-
-    // Lifetime wiring shared by every context-taking endpoint.
-    //
-    // The per-endpoint `finished` handler is deliberately bound to the
-    // CALLER's context so it cannot touch a destroyed dialog. But that
-    // gating also means Qt severs it when the context dies — and the only
-    // reply->deleteLater() lived inside it. The reply, parented to the
-    // long-lived m_nam and absent from m_pendingReplies, then completed,
-    // buffered its whole body, and survived to app exit. Closing a dialog
-    // over a slow link was enough.
-    static void bindReplyLifetime(QNetworkReply *reply, QObject *context);
 
     // Update reachability from a finished reply (called once per reply).
     // Ignores deliberately-cancelled requests so logout/teardown can't be
