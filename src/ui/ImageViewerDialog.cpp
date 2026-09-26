@@ -1,5 +1,6 @@
 #include "ImageViewerDialog.h"
 
+#include "ImageClipboard.h"
 #include "core/ApiClient.h"
 #include "painter/PainterTheme.h"
 
@@ -48,8 +49,8 @@ PainterTheme viewerChromeTheme()
 }
 } // namespace
 
-ImageViewerDialog::ImageViewerDialog(ApiClient *api, QWidget *parent)
-    : QWidget(parent, Qt::Window), m_api(api)
+ImageViewerDialog::ImageViewerDialog(ApiClient *api, ImageClipboard *clipboard, QWidget *parent)
+    : QWidget(parent, Qt::Window), m_api(api), m_clipboard(clipboard)
 {
     setWindowTitle(tr("Image viewer"));
 
@@ -178,10 +179,12 @@ void ImageViewerDialog::zoomByStep(bool zoomIn)
     m_view->scale(s, s);
 }
 
-void ImageViewerDialog::setImage(int fileId, const QString &fileName, const QImage &placeholder)
+void ImageViewerDialog::setImage(int fileId, const QString &fileName, const QString &mime,
+                                 const QImage &placeholder)
 {
     m_currentFileId = fileId;
     m_currentFileName = fileName;
+    m_currentMime = mime;
     // Name the OS window (taskbar / alt-tab) after the file, not a generic
     // "Image viewer", and bring it to the front — clicking an image while
     // the viewer is already open (e.g. behind the call window) must surface
@@ -219,6 +222,29 @@ void ImageViewerDialog::setImage(int fileId, const QString &fileName, const QIma
 
 void ImageViewerDialog::copyImage()
 {
+    // The ORIGINAL, through the same route as the chat's "Copy image". What is
+    // on screen is /core/preview's re-render capped to the screen, and until
+    // that arrives the chat's thumbnail (at most 800x600) enlarged to fit; Copy
+    // used to take whichever of the two the viewer held, at its own size.
+    if (m_clipboard && m_currentFileId > 0) {
+        showToast(tr("Copying image…"));
+        const QPointer<ImageViewerDialog> self(this);
+        const int fileId = m_currentFileId;
+        m_clipboard->copy(fileId, m_currentMime, [self, fileId](bool ok) {
+            if (!self) return;
+            const QString text = ok ? tr("Image copied") : tr("Couldn't copy the image");
+            // Copy-then-Esc is the natural way to go and paste, and the copy is
+            // still running then: the result belongs wherever the user now is.
+            if (self->isVisible() && self->m_currentFileId == fileId)
+                self->showToast(text);
+            else
+                emit self->copyAnnouncement(text);
+        });
+        return;
+    }
+
+    // No fileId: nothing to fetch, so the on-screen render is genuinely all
+    // there is. Copy it rather than refusing.
     if (m_currentImage.isNull()) return;
     QApplication::clipboard()->setImage(m_currentImage);
     showToast(tr("Copied to clipboard"));
@@ -308,7 +334,9 @@ void ImageViewerDialog::keyPressEvent(QKeyEvent *event)
 {
     if (event->modifiers() & Qt::ControlModifier) {
         switch (event->key()) {
-        case Qt::Key_C: copyImage(); return;
+        // A held Ctrl+C repeats ~30 times a second, and each copy fetches the
+        // whole original; one press is one copy.
+        case Qt::Key_C: if (!event->isAutoRepeat()) copyImage(); return;
         case Qt::Key_S: saveAs();    return;
         default: break;
         }

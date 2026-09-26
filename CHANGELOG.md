@@ -1,5 +1,47 @@
 # Changelog
 
+## v0.74.0 "Ravnodenstvie" — STABLE (2026-09-26)
+
+Promotes the 0.73.x line, and adds copying a picture straight out of the chat.
+
+Everyone on 0.72.x gets all of the below. If you ran the 0.73.x beta, the only addition is
+*Copy image*.
+
+### Added
+* **Copy an image from the chat without opening it first.** Right-click a picture in the message
+  list and choose *Copy image*. What lands on the clipboard is the file that was sent, at its full
+  size, so a screenshot pastes exactly as it was taken and a phone photo pastes the right way up.
+  For the few picture types TalQ cannot open itself, such as iPhone HEIC photos, it copies the
+  largest version the server can make of it instead. A short note says when the picture is on the
+  clipboard, or that it could not be copied.
+
+  Copy in the image viewer now does the same. It used to copy the picture it was showing, which is
+  a smaller version sized to your screen, or, if you were quick, the blurry thumbnail from the chat.
+
+  If you copy something else while a large picture is still being fetched, what you copied last
+  stays on the clipboard. The option is not offered on files whose owner has turned off
+  downloading, the same as *Download*.
+
+* **A button to jump back to the latest message.** Whenever you are not looking at the newest
+  message, a round button with a down arrow appears at the bottom right of the message list, and
+  one click takes you straight to it, keeping the cursor in the message box if you were typing.
+  It is there however you got to the older message: scrolling up with the mouse wheel or the
+  scrollbar, or being taken there by a reply quote or a search result. It disappears again once
+  you are back at the bottom.
+
+  While you are scrolled away, messages that other people send add to a small count on the button
+  (shown as 99+ past ninety-nine). The count is only about what arrived after you last were at the
+  bottom: the *New messages* marker still shows what was unread when you opened the conversation.
+  Your own messages and system lines such as "someone joined" are not counted.
+
+### Fixed
+* **Updates downloaded from GitHub are now actually checked against their published checksum.** Each
+  GitHub release carries a small checksum file next to the installer, but TalQ only accepted a file
+  holding the bare checksum, while the published one also names the installer, as the standard
+  checksum tools write it. The check was therefore skipped and the download trusted on the secure
+  connection alone. TalQ now reads both forms. Builds that update from their own server were not
+  affected.
+
 ## v0.73.1 "Nezavisimost" — BETA (2026-09-23)
 
 ### Fixed

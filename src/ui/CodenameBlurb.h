@@ -58,6 +58,15 @@ inline QString codenameBlurb(const QString &verName)
         || verName == QStringLiteral("Koprivshtitsa"))
         return QObject::tr("Codename \"%1\" — Bulgaria's April Uprising of 1876, "
             "150th anniversary (2026).").arg(verName);
+    if (verName == QStringLiteral("Ravnodenstvie"))
+        return QObject::tr("Codename \"%1\" — Равноденствие, the equinox: literally "
+            "\"equal day\", when day and night come close to the same length all "
+            "over the Earth. The September equinox of 2026 fell at 00:05 UTC on 23 "
+            "September — 03:05 in Sofia, 02:05 in Johannesburg. That same instant is "
+            "the astronomical start of autumn in Bulgaria and of spring in South "
+            "Africa, the two countries TalQ calls home: one moment, two seasons. The "
+            "stable release that follows it brings the 0.73.x work to everyone, and "
+            "lets you copy a picture straight out of the chat.").arg(verName);
     if (verName == QStringLiteral("Nezavisimost"))
         return QObject::tr("Codename \"%1\" — Независимост, the Declaration of "
             "Independence of Bulgaria, 22 September 1908. The date is the Old "

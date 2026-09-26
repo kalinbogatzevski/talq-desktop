@@ -2428,6 +2428,18 @@ void MessageListModel::startFileFetch(int fileId, const QString &fileName,
 {
     if (fileId <= 0 || fileName.isEmpty()) return;
 
+    withDavPath(fileId,
+        [this, fileId, fileName, openWhenDone, destPath](const QString &path) {
+        if (path.isEmpty()) {
+            emit errorOccurred(tr("Could not locate \"%1\" on the server.").arg(fileName));
+            return;
+        }
+        fetchDavFile(path, fileId, fileName, openWhenDone, destPath);
+    });
+}
+
+void MessageListModel::withDavPath(int fileId, std::function<void(const QString &)> done)
+{
     // The path the message was parsed with, if this message is still loaded.
     QString davPath;
     for (const Message &m : m_messages) {
@@ -2445,18 +2457,64 @@ void MessageListModel::startFileFetch(int fileId, const QString &fileName,
         davPath.clear();
 
     if (davPath.isEmpty()) {
-        resolveDavPathById(fileId,
-            [this, fileId, fileName, openWhenDone, destPath](const QString &path) {
-            if (path.isEmpty()) {
-                emit errorOccurred(tr("Could not locate \"%1\" on the server.").arg(fileName));
-                return;
-            }
-            fetchDavFile(path, fileId, fileName, openWhenDone, destPath);
-        });
+        resolveDavPathById(fileId, std::move(done));
         return;
     }
+    done(davPath);
+}
 
-    fetchDavFile(davPath, fileId, fileName, openWhenDone, destPath);
+void MessageListModel::fetchFileBytes(int fileId, qint64 maxBytes, QObject *context,
+                                      std::function<void(const QByteArray &, const QString &)> done)
+{
+    if (fileId <= 0) {
+        done({}, QStringLiteral("no file id"));
+        return;
+    }
+    const QPointer<QObject> ctx(context);
+    withDavPath(fileId, [this, ctx, maxBytes, done](const QString &path) {
+        if (!ctx) return;
+        if (path.isEmpty()) {
+            done({}, QStringLiteral("not found on the server"));
+            return;
+        }
+        const QString url = QStringLiteral("/remote.php/dav/files/") + m_api->davUser()
+                            + QLatin1Char('/') + ApiClient::encodeDavPath(path);
+        // Inactivity, not a total cap: a large original crawling over a slow
+        // link keeps going, a black-holed one fails into the caller's fallback
+        // instead of hanging there for good.
+        QNetworkReply *reply = m_api->getAbsoluteUrl(url, 30'000);
+        ApiClient::bindReplyLifetime(reply, ctx.data());
+
+        // Counted as it streams, so an oversized file is dropped at the cap
+        // rather than buffered whole first.
+        auto body = std::make_shared<QByteArray>();
+        auto overCap = std::make_shared<bool>(false);
+        connect(reply, &QNetworkReply::readyRead, ctx.data(), [reply, body, overCap, maxBytes]() {
+            if (*overCap) return;
+            body->append(reply->readAll());
+            if (body->size() > maxBytes) {
+                *overCap = true;
+                body->clear();
+                reply->abort();
+            }
+        });
+        connect(reply, &QNetworkReply::finished, ctx.data(), [reply, body, overCap, maxBytes, done]() {
+            if (*overCap) {
+                done({}, QStringLiteral("larger than %1 bytes").arg(maxBytes));
+                return;
+            }
+            if (reply->error() != QNetworkReply::NoError) {
+                done({}, reply->errorString());
+                return;
+            }
+            body->append(reply->readAll());   // whatever readyRead did not take
+            if (body->size() > maxBytes) {
+                done({}, QStringLiteral("larger than %1 bytes").arg(maxBytes));
+                return;
+            }
+            done(*body, QString());
+        });
+    });
 }
 
 // Resolve a fileId back to a path in the current user's DAV home. Nextcloud

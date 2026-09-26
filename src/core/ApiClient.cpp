@@ -514,10 +514,12 @@ QNetworkReply *ApiClient::getLongPoll(const QString &path, const QUrlQuery &para
     return reply;
 }
 
-QNetworkReply *ApiClient::getAbsoluteUrl(const QString &path)
+QNetworkReply *ApiClient::getAbsoluteUrl(const QString &path, int transferTimeoutMs)
 {
     QNetworkRequest req{QUrl(m_serverUrl + path)};
     applyBasicAuth(req);
+    if (transferTimeoutMs > 0)
+        req.setTransferTimeout(transferTimeoutMs);
     // Not added to m_pendingReplies — caller manages lifetime
     return m_nam.get(req);
 }
@@ -584,7 +586,8 @@ void ApiClient::bindReplyLifetime(QNetworkReply *reply, QObject *context)
 }
 
 void ApiClient::fetchFileImage(int fileId, int maxDim, QObject *context,
-                               std::function<void(const QImage &, const QString &)> callback)
+                               std::function<void(const QImage &, const QString &)> callback,
+                               int transferTimeoutMs)
 {
     // Nextcloud's preview endpoint returns a rendering capped to (x,y); a=1
     // preserves aspect ratio. maxDim controls the larger edge — callers pass
@@ -600,6 +603,8 @@ void ApiClient::fetchFileImage(int fileId, int maxDim, QObject *context,
     QNetworkRequest req(url);
     req.setRawHeader("OCS-APIRequest", "true");
     applyBasicAuth(req);
+    if (transferTimeoutMs > 0)
+        req.setTransferTimeout(transferTimeoutMs);
 
     auto *reply = m_nam.get(req);
     bindReplyLifetime(reply, context);
