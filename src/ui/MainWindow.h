@@ -43,6 +43,7 @@ class StatusPopover;
 class StatusDot;
 class SelectionBarWidget;
 class ImageViewerDialog;
+class ImageClipboard;
 class AudioPlayer;
 class VoiceRecorder;
 class QScrollArea;
@@ -205,6 +206,7 @@ private:
     void showWelcome();            // rebuild-if-dirty, then show + refresh
     void restyleChrome();          // re-apply theme tokens to QSS-styled chrome
     void showThemeToast(const QString &name);  // brief "Theme: X" overlay
+    void showToast(const QString &text);       // brief top-centre confirmation pill
     void refreshWelcomeStatus();   // repaint Mission Control telemetry/LEDs/pill
 
     // Decides whether the connection-health strip is shown, and what it says.
@@ -282,7 +284,8 @@ private:
     QScrollArea *m_welcomeScroll = nullptr; // vertical overflow for the board
     QWidget *m_welcomeContent = nullptr;    // themed content, rebuilt on theme change
     bool m_welcomeDirty = false;            // theme changed while welcome hidden → rebuild on next show
-    QLabel *m_themeToast = nullptr;         // transient "Theme: X" overlay
+    QLabel *m_toast = nullptr;              // transient confirmation pill (showToast)
+    QTimer *m_toastHideTimer = nullptr;     // restarted per toast, so a new one gets its full time
     QLabel *m_welcomeNameLabel = nullptr;
     QLabel *m_welcomeServerLabel = nullptr;     // Mission Control tile values
     QLabel *m_welcomeNcLabel = nullptr;
@@ -525,6 +528,8 @@ private:
     CallWindow *m_callWindow = nullptr;
     SettingsDialog *m_settingsDialog = nullptr;
     QPointer<ImageViewerDialog> m_imageViewer;
+    // Shared by the chat's "Copy image" and the viewer's Copy (see ImageClipboard.h).
+    ImageClipboard *m_imageClipboard = nullptr;
     // Inline audio playback. The player is single-slot by design (see
     // AudioPlayer.h); m_audioCache maps a fileId to the copy already fetched
     // into the cache dir, so replaying a voice message costs no network.

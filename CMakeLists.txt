@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(talq VERSION 0.73.1 LANGUAGES CXX)
+project(talq VERSION 0.74.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -141,6 +141,8 @@ qt_add_executable(talq
     src/ui/EmojiPickerWidget.cpp
     src/ui/ImageViewerDialog.h
     src/ui/ImageViewerDialog.cpp
+    src/ui/ImageClipboard.h
+    src/ui/ImageClipboard.cpp
     src/core/EmojiData.h
     src/core/EmojiData.cpp
     src/core/EmojiData_generated.cpp
@@ -279,6 +281,18 @@ string(TIMESTAMP TALQ_BUILD_TS "%m%d-%H%M")
 # Sources: bta.bg (22 Sept 1908; 14 Apr 1916 calendar switch), bas.bg,
 # historymuseum.org (22-09-day), and Scelle, "Bulgarian Independence", AJIL 1912
 # (prints the 1909 protocol texts).
+#
+# 0.74.x IS "Ravnodenstvie" -- Равноденствие, the equinox, literally "equal day".
+# The September equinox of 2026 fell at 00:05 UTC on 23 September: 03:05 in
+# Sofia, 02:05 in Johannesburg. The same instant is the astronomical start of
+# autumn in Bulgaria and of spring in South Africa -- one moment, two seasons.
+#
+# It steps off the Bulgarian-history thread for one line (a season, not an
+# event) while keeping the transliterated-Bulgarian form of Saedinenie and
+# Nezavisimost. 0.74.x is even, so it is STABLE: the 0.73.x beta work plus
+# "Copy image". Chosen by Kalin, 2026-09-26. "Buditeli" (1 November) was
+# offered and held back for a line cut nearer that date.
+# Sources: timeanddate.com and earthsky.org (2026 September equinox, 00:05 UTC).
 set_source_files_properties(
     src/main.cpp
     src/core/CallManager.cpp
@@ -287,7 +301,7 @@ set_source_files_properties(
     src/ui/SettingsDialog.cpp
     src/ui/MainWindow.cpp
     PROPERTIES COMPILE_DEFINITIONS
-      "TALQ_VERSION=\"${PROJECT_VERSION}\";TALQ_VERSION_NAME=\"Nezavisimost\";TALQ_BUILD_TS=\"${TALQ_BUILD_TS}\""
+      "TALQ_VERSION=\"${PROJECT_VERSION}\";TALQ_VERSION_NAME=\"Ravnodenstvie\";TALQ_BUILD_TS=\"${TALQ_BUILD_TS}\""
 )
 
 # Pre-release flag: when build-release.sh is invoked with --beta it

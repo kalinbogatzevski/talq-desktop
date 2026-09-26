@@ -10,8 +10,10 @@
 #include "SelectionBarWidget.h"
 #include "ConversationPickerDialog.h"
 #include "ScheduledMessagesDialog.h"
+#include "ImageClipboard.h"
 #include "ImageViewerDialog.h"
 #include "core/AudioPlayer.h"
+#include "core/ImageCopyLogic.h"
 #include "core/UpdateInstallGatePolicy.h"
 #include "core/VoiceRecorder.h"
 #include <QDir>
@@ -1535,6 +1537,8 @@ void MainWindow::buildChatPage()
             emit m_selectionBar->copyClicked();
     });
 
+    m_imageClipboard = new ImageClipboard(m_api, m_messages, this);
+
     // Right-click context menu on messages
     connect(m_chatPainter, &ChatPainter::contextMenuRequested, this, [this](const QVariantMap &msg, const QPoint &globalPos) {
         int msgId = msg.value("messageId").toInt();
@@ -1600,6 +1604,18 @@ void MainWindow::buildChatPage()
                     // Menu Download SAVES; it does not open. The click on the
                     // bubble is the gesture that means "show me this".
                     m_messages->downloadFile(fileId, fileName, /*openWhenDone*/ false);
+                });
+            }
+            // Straight from the chat, without opening the viewer first. Same
+            // hide-download rule as Download above; see ImageCopyLogic.h.
+            if (talq::offerCopyImage(fileMime.toStdString(), fileId,
+                                     msg.value("fileHideDownload").toBool())) {
+                menu->addAction(QStringLiteral("\U0001F5BC\uFE0F  ") + tr("Copy image"), this,
+                                [this, fileId, fileMime]() {
+                    showToast(tr("Copying image\u2026"));
+                    m_imageClipboard->copy(fileId, fileMime, [this](bool ok) {
+                        showToast(ok ? tr("Image copied") : tr("Couldn't copy the image"));
+                    });
                 });
             }
             menu->addAction(tr("\u2601\uFE0F  Open in Nextcloud"), this, [this, fileId]() {
@@ -1826,15 +1842,17 @@ void MainWindow::buildChatPage()
         if (mime.startsWith("image/")) {
             QImage placeholder = m_chatPainter->cachedPreview(fileId);
             if (!m_imageViewer) {
-                m_imageViewer = new ImageViewerDialog(m_api, nullptr);
+                m_imageViewer = new ImageViewerDialog(m_api, m_imageClipboard, nullptr);
                 // The viewer holds a preview render, never the original file,
                 // so its "Save as…" asks the model to fetch the real bytes.
                 connect(m_imageViewer, &ImageViewerDialog::saveOriginalRequested,
                         this, [this](int id, const QString &name, const QString &dest) {
                     m_messages->saveFileAs(id, name, dest);
                 });
+                connect(m_imageViewer, &ImageViewerDialog::copyAnnouncement,
+                        this, &MainWindow::showToast);
             }
-            m_imageViewer->setImage(fileId, fileName, placeholder);
+            m_imageViewer->setImage(fileId, fileName, mime, placeholder);
             m_imageViewer->show();
             m_imageViewer->raise();
             m_imageViewer->activateWindow();
@@ -3732,30 +3750,42 @@ void MainWindow::showWelcome()
     refreshWelcomeStatus();
 }
 
-// Brief, theme-tinted "Theme: X" overlay, bottom-centre, auto-hiding. Honors
-// reduced-motion by not animating (plain show/hide).
 void MainWindow::showThemeToast(const QString &name)
+{
+    showToast(tr("  Theme: %1  ").arg(name));
+}
+
+// Brief, theme-tinted confirmation pill, top-centre, auto-hiding. Honors
+// reduced-motion by not animating (plain show/hide).
+//
+// The hide timer is one restartable member, not a singleShot per call: "Image
+// copied" follows "Copying image..." on the same label, and a singleShot left
+// over from the first would hide the second a moment after it appeared.
+void MainWindow::showToast(const QString &text)
 {
     PainterTheme t(m_themeId, m_fontScale);
     auto hx = [](const QColor &c){ return c.name(QColor::HexRgb); };
-    if (!m_themeToast) {
-        m_themeToast = new QLabel(this);
-        m_themeToast->setAttribute(Qt::WA_TransparentForMouseEvents);
-        m_themeToast->setAlignment(Qt::AlignCenter);
+    if (!m_toast) {
+        m_toast = new QLabel(this);
+        m_toast->setAttribute(Qt::WA_TransparentForMouseEvents);
+        m_toast->setAlignment(Qt::AlignCenter);
+        m_toastHideTimer = new QTimer(this);
+        m_toastHideTimer->setSingleShot(true);
+        m_toastHideTimer->setInterval(1600);
+        connect(m_toastHideTimer, &QTimer::timeout, m_toast, &QWidget::hide);
     }
-    m_themeToast->setText(tr("  Theme: %1  ").arg(name));
+    m_toast->setText(text);
     // High-contrast accent pill (controlInk on accent), top-centre so it's
     // unmistakable. Transient confirmation, so the One-Signal accent is fine.
-    m_themeToast->setStyleSheet(QString(
+    m_toast->setStyleSheet(QString(
         "background:%1;color:%2;border:none;border-radius:14px;"
         "padding:9px 22px;font-size:14px;font-weight:700;letter-spacing:0.3px;")
         .arg(hx(t.accent), hx(t.inkOn(t.accent))));
-    m_themeToast->adjustSize();
-    m_themeToast->move((width() - m_themeToast->width()) / 2, 28);
-    m_themeToast->raise();
-    m_themeToast->show();
-    QPointer<QLabel> tp(m_themeToast);
-    QTimer::singleShot(1600, this, [tp]{ if (tp) tp->hide(); });
+    m_toast->adjustSize();
+    m_toast->move((width() - m_toast->width()) / 2, 28);
+    m_toast->raise();
+    m_toast->show();
+    m_toastHideTimer->start();
 }
 
 // Re-apply theme tokens to the QSS-styled sidebar chrome. These widgets are
