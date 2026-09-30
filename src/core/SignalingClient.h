@@ -316,6 +316,7 @@ public:
 private:
     bool m_shareTypingStatus = true;
     void reconnect();
+    void handleControlPayload(const QJsonObject &payload);
 
     ApiClient *m_api;
     QWebSocket m_ws;

@@ -5,6 +5,7 @@
 #include "core/WebSocketProxy.h"
 #include "core/SystemProxy.h"
 #include "core/MediaProxyPolicy.h"
+#include "core/ForceMutePolicy.h"
 #include <QNetworkProxy>
 #include <QJsonDocument>
 #include <QSettings>
@@ -936,16 +937,10 @@ void SignalingClient::onTextMessage(const QString &msg)
             return;
         }
 
-        // Moderator force-mute. Talk sends it as a "control" message with an
-        // action of "forceMute"; without this branch the moderator's UI showed
-        // the mute as applied while this client kept transmitting -- the worst
-        // possible split between what a room believes and what it hears.
+        // A "control" wrapped in a "message" (internal-signaling shape). Under
+        // the HPB it arrives as a top-level "control" instead -- handled below.
         if (msgType == "control") {
-            const QString action = msgData["action"].toString();
-            if (action == QLatin1String("forceMute")) {
-                qInfo() << "Signaling: force-muted by a moderator";
-                emit forceMuted();
-            }
+            handleControlPayload(msgData["payload"].toObject());
             return;
         }
         if (msgType == "unshareScreen") {
@@ -1024,6 +1019,13 @@ void SignalingClient::onTextMessage(const QString &msg)
                 qDebug() << "Signaling: received talq.client without userId — sender=" << senderObj;
             }
         }
+    }
+    else if (type == "control") {
+        // Standalone signaling sends Talk's control messages (moderator
+        // force-mute) as a top-level {type:"control", control:{sender, data}},
+        // NOT inside a "message" (spreed signaling.js sendCallMessage /
+        // Standalone receive switch).
+        handleControlPayload(obj["control"].toObject()["data"].toObject());
     }
     else if (type == "event") {
         QJsonObject event = obj["event"].toObject();
@@ -1671,6 +1673,28 @@ void SignalingClient::requestOffer(const QString &sessionId, const QString &room
 
     m_ws.sendTextMessage(QJsonDocument(msg).toJson(QJsonDocument::Compact));
     qInfo() << "Signaling: sent requestOffer to" << sessionId.left(20) << "type=" << roomType;
+}
+
+// Moderator force-mute. Without it the moderator's UI shows the mute as applied
+// while this client keeps transmitting -- the worst possible split between what
+// a room believes and what it hears. The payload names its target (peerId) and
+// reaches the whole room -- see ForceMutePolicy.h for the wire shape.
+void SignalingClient::handleControlPayload(const QJsonObject &payload)
+{
+    const QString peerId = payload["peerId"].toString();
+    switch (talq::classifyForceMute(payload["action"].toString().toStdString(),
+                                    peerId.toStdString(),
+                                    m_sessionId.toStdString())) {
+    case talq::ForceMuteTarget::Self:
+        qInfo() << "Signaling: force-muted by a moderator";
+        emit forceMuted();
+        break;
+    case talq::ForceMuteTarget::Other:
+        emit remoteMuteChanged(peerId, QStringLiteral("audio"), true);
+        break;
+    case talq::ForceMuteTarget::None:
+        break;
+    }
 }
 
 void SignalingClient::reconnect()

@@ -283,6 +283,8 @@ public:
     // Play a ringtone once (no loop) for the Settings preview. Static so the
     // Settings dialog can audition without a live CallManager instance.
     static void auditionRingtone(const QString &id);
+    // Own status is Do Not Disturb: an incoming call still shows, but silently.
+    void setDoNotDisturb(bool on) { m_doNotDisturb = on; }
     VideoFrameProvider *remoteScreenProvider() const { return m_remoteScreenProvider; }
     void onIncomingCallDetected(const QString &callerName, const QString &token, int callFlag);
     // #77 -- called from onIncomingCallDetected when a second call arrives while
@@ -635,6 +637,7 @@ private:
     // laptop. Reset on each publisher (re)build + full call teardown.
     PublisherStallPolicy m_pubStall;
     QByteArray m_ringtoneData;  // backing buffer for the selected ring (SND_ASYNC reads from it)
+    bool m_doNotDisturb = false;  // own status is DND -> incoming ring stays silent
 
     // #13: pre-answer self-preview pipeline. Standalone camera→appsink
     // pipeline that runs while an incoming VIDEO call rings, so the callee

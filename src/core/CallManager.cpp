@@ -1,6 +1,7 @@
 #include "core/CallManager.h"
 
 #include "core/BackgroundEngine.h"
+#include "core/MicInUse.h"
 #include "core/LeakStats.h"
 #include "core/VideoEncoderUtil.h"   // talqAvoidNvenc() latch
 #include "core/HwEncoderProbe.h"   // talqHwEncoderProbeExcludes() — #74 probe exclusions
@@ -169,6 +170,19 @@ void CallManager::startRingtone() {
         const QString id = s.value("incomingRingtone", "classic").toString();
         s.endGroup();
         if (id == "none") return;
+        // Silent (the call window still pops up) only in Do Not Disturb or while
+        // another app has the mic -- a Zoom/Teams ring would go straight into
+        // the user's headset. Away alone does NOT silence it: auto-away from
+        // inactivity is exactly when a ring must be heard. MicInUsePolicy.h.
+        if (m_doNotDisturb) {
+            qInfo() << "CallManager: incoming ring silent -- status is Do Not Disturb";
+            return;
+        }
+        QString micUser;
+        if (talq::anotherAppUsingMic(&micUser)) {
+            qInfo() << "CallManager: incoming ring silent -- mic in use by" << micUser;
+            return;
+        }
         if (id != "default") {
             QFile f(QStringLiteral(":/sounds/ring_%1.wav").arg(id));
             if (f.open(QIODevice::ReadOnly)) {
@@ -2041,6 +2055,7 @@ void CallManager::startCall(const QString &token, bool withVideo)
     m_micUnavailable = false;      // fresh call: clear any prior mic failure
     emit cameraChanged();
     m_muted = false;
+    emit muteChanged();   // fresh call: a mute left over from the last call must not linger on the self tile / PiP
     m_callDuration = 0;
     setState(Outgoing);
     setStatusDetail("Joining room");
@@ -2404,6 +2419,14 @@ bool CallManager::buildAndStartPublisher()
 
     qDebug() << "CallManager: creating PublishPipeline...";
     m_publishPipeline = new PublishPipeline(this);
+    // Carry the user's mute into the NEW pipeline before start() builds the
+    // audio chain (pub-volume reads it at build time). A fresh PublishPipeline
+    // defaults to unmuted, and toggleMute() only reaches a pipeline that
+    // already exists -- so a mute pressed while ringing/connecting (before the
+    // first build) or held across a reconnect rebuild left the mic LIVE while
+    // the UI, the call flags and every peer's tile all said muted.
+    m_publishPipeline->setMuted(m_muted);
+    qInfo() << "CallManager: publisher built, muted=" << m_muted;
     m_pubStall.reset();   // fresh outbound-RTP baseline for this (re)built publisher
     m_publishPipeline->setBackgroundEngine(m_backgroundEngine);
     m_localVideoProvider = m_publishPipeline->localVideoProvider();
@@ -3363,6 +3386,7 @@ void CallManager::acceptCall(bool withVideo) {
     m_cameraGraceRetries = 0;      // fresh call: fresh grace-retry budget
     m_micUnavailable = false;      // fresh call: clear any prior mic failure
     emit cameraChanged();
+    emit muteChanged();
     m_ringTimeout.stop();
     setStatusDetail("Joining room");
     setState(Connecting);

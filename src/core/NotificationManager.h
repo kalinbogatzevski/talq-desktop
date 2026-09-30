@@ -44,6 +44,8 @@ public:
     void playCurrentSound();
     bool isNotificationsEnabled() const { return m_notificationsEnabled; }
     void setNotificationsEnabled(bool v);
+    // Own status is Do Not Disturb: popups still show, no sound.
+    void setDoNotDisturb(bool on) { m_doNotDisturb = on; }
 
     Q_INVOKABLE void notify(const QString &title, const QString &message, bool alwaysSound = false, const QString &token = QString());
     Q_INVOKABLE void clearNotifications();
@@ -92,6 +94,7 @@ private:
     QString m_soundId = "chime";       // see header doc for valid values
     QString m_notifStyle = "popup";    // "popup" (Telegram-style) or "windows" (toast)
     bool m_notificationsEnabled = true;
+    bool m_doNotDisturb = false;
     int m_unreadCount = 0;
     QByteArray m_wavData;  // bytes of the currently-selected tone (empty for none/system)
     QPixmap m_baseIcon;
