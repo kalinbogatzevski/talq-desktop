@@ -1,5 +1,6 @@
 #include "ThreadListModel.h"
 #include "models/ConversationListModel.h"
+#include <QGuiApplication>
 #include <QJsonObject>
 #include <QUrlQuery>
 #include <QPointer>
@@ -13,6 +14,16 @@ ThreadListModel::ThreadListModel(ApiClient *api, QObject *parent)
     : QAbstractListModel(parent)
     , m_api(api)
 {
+    // The open topic is read only while TalQ is in front (the same rule as
+    // MessageListModel::markAsRead). Whatever arrived in it while TalQ was in
+    // the background is read the moment the user comes back to it.
+    if (qGuiApp) {
+        connect(qGuiApp, &QGuiApplication::applicationStateChanged, this,
+                [this](Qt::ApplicationState st) {
+            if (st == Qt::ApplicationActive && m_selectedThreadId > 0)
+                markTopicRead(m_selectedThreadId);
+        });
+    }
 }
 
 int ThreadListModel::rowCount(const QModelIndex &parent) const
@@ -135,6 +146,10 @@ void ThreadListModel::setConversationToken(const QString &token)
     m_token = token;
     emit tokenChanged();
     loadHiddenTopics();   // per-room hidden set
+    loadTopicSeen();      // per-room, per-topic read state
+    // The open topic belongs to the previous room; MainWindow re-selects one.
+    m_selectedThreadId = -1;
+    m_lastScanNewestId = 0;
 
     // Blank the list immediately — without this, the previous room's topics
     // stay visible (and also gate out the cache path, which bails when
@@ -163,12 +178,19 @@ void ThreadListModel::refresh()
 
 void ThreadListModel::markTopicRead(int threadId)
 {
+    if (threadId <= 0) return;
     for (int i = 0; i < m_threads.size(); ++i) {
-        if (m_threads[i].threadId == threadId && m_threads[i].unreadCount > 0) {
+        if (m_threads[i].threadId != threadId) continue;
+        const int newest = m_threads[i].lastMessageId;
+        if (newest > m_topicSeen.value(threadId, 0)) {
+            m_topicSeen.insert(threadId, newest);
+            saveTopicSeen();
+        }
+        if (m_threads[i].unreadCount > 0) {
             m_threads[i].unreadCount = 0;
             emit dataChanged(index(i), index(i), {UnreadCountRole});
-            break;
         }
+        break;
     }
 }
 
@@ -338,6 +360,57 @@ void ThreadListModel::loadHiddenTopics()
     }
 }
 
+void ThreadListModel::loadTopicSeen()
+{
+    m_topicSeen.clear();
+    m_topicSeenDirty = false;
+    if (m_token.isEmpty()) return;
+    QSettings s(QStringLiteral("TalQ"), QStringLiteral("TalQ"));
+    // "threadId:seenId" pairs.
+    const QStringList pairs =
+        s.value(QStringLiteral("Topics/seen/") + m_token).toStringList();
+    for (const QString &pair : pairs) {
+        const int colon = pair.indexOf(QLatin1Char(':'));
+        if (colon <= 0) continue;
+        bool okT = false, okS = false;
+        const int tid  = pair.left(colon).toInt(&okT);
+        const int seen = pair.mid(colon + 1).toInt(&okS);
+        if (okT && okS && tid > 0 && seen > 0)
+            m_topicSeen.insert(tid, seen);
+    }
+}
+
+void ThreadListModel::saveTopicSeen()
+{
+    m_topicSeenDirty = false;
+    if (m_token.isEmpty()) return;
+    QStringList pairs;
+    for (auto it = m_topicSeen.cbegin(); it != m_topicSeen.cend(); ++it)
+        pairs << QStringLiteral("%1:%2").arg(it.key()).arg(it.value());
+    QSettings s(QStringLiteral("TalQ"), QStringLiteral("TalQ"));
+    s.setValue(QStringLiteral("Topics/seen/") + m_token, pairs);
+}
+
+int ThreadListModel::topicReadFloor(int threadId)
+{
+    const auto it = m_topicSeen.constFind(threadId);
+    if (it != m_topicSeen.cend())
+        return it.value();
+    // First sighting on this install: everything the room marker already
+    // covers was read before TalQ started tracking this topic. After this the
+    // room marker no longer moves the topic's floor.
+    if (m_roomLastReadId <= 0)
+        return -1;
+    // A topic that first shows up in a later scan was created after the
+    // previous one; a room marker that has meanwhile moved past it (a newer
+    // message read in "All messages") says nothing about the topic.
+    const int seed = m_lastScanNewestId > 0 ? qMin(m_roomLastReadId, m_lastScanNewestId)
+                                            : m_roomLastReadId;
+    m_topicSeen.insert(threadId, seed);
+    m_topicSeenDirty = true;
+    return seed;
+}
+
 void ThreadListModel::saveHiddenTopics()
 {
     if (m_token.isEmpty()) return;
@@ -402,9 +475,13 @@ void ThreadListModel::fetchThreads()
                     const QJsonObject last = o.value(QStringLiteral("last")).toObject();
                     info.lastMessage  = last.value(QStringLiteral("message")).toString();
                     info.lastAuthor   = last.value(QStringLiteral("actorDisplayName")).toString();
-                    // Approximate: see the merge comment in the scan.
-                    const int lastId = th.value(QStringLiteral("lastMessageId")).toInt();
-                    info.unreadCount  = (m_roomLastReadId > 0 && lastId > m_roomLastReadId) ? 1 : 0;
+                    // Unread is derived in the scan's merge, against the
+                    // topic's own read floor.
+                    info.lastMessageId = th.value(QStringLiteral("lastMessageId")).toInt();
+                    info.lastIsOwn = last.value(QStringLiteral("actorType")).toString()
+                                         == QLatin1String("users")
+                                     && last.value(QStringLiteral("actorId")).toString()
+                                         == m_api->user();
                     m_serverThreads.insert(id, info);
                 }
             } else {
@@ -460,12 +537,18 @@ void ThreadListModel::scanThreadsFromMessages()
             QString latestMessage;
             QString latestAuthor;
             int count = 0;
-            int unread = 0;   // messages in this topic with id > room read marker
+            int newestId = 0;          // newest real comment, own ones included
+            QVector<int> othersIds;    // real comments by someone else
+            bool fromServerOnly = false;
+            bool serverLastIsOwn = false;
         };
+        const QString me = m_api->user();
         QHash<int, ThreadAccumulator> threadMap;
+        int scanNewestId = 0;
 
         for (const QJsonValue &val : data) {
             const QJsonObject msg = val.toObject();
+            scanNewestId = qMax(scanNewestId, msg["id"].toInt());
 
             // A message belongs to a thread if EITHER:
             //   (a) it carries isThread:true (the API tags replies inside
@@ -499,12 +582,18 @@ void ThreadListModel::scanThreadsFromMessages()
             if (isThreadFlag && isRealComment)
                 acc.count++;
 
-            // Per-topic unread: real comments newer than the room read marker.
-            // The marker advances as the user reads (or sends), so own/just-read
-            // messages stop counting on the next refresh. Drives the "· N" badge.
-            if (isRealComment && m_roomLastReadId > 0
-                && msg["id"].toInt() > m_roomLastReadId)
-                acc.unread++;
+            // Per-topic unread is counted after the loop, against the topic's
+            // own read floor; here only collect the candidates. Our own
+            // messages are never unread (the room marker used to cover that,
+            // because the server advances it when we send).
+            if (isRealComment) {
+                const int mid = msg["id"].toInt();
+                acc.newestId = qMax(acc.newestId, mid);
+                const bool own = msg["actorType"].toString() == QLatin1String("users")
+                                 && msg["actorId"].toString() == me;
+                if (!own)
+                    acc.othersIds.append(mid);
+            }
 
             // Use the API-provided thread title
             if (acc.threadTitle.isEmpty() && !threadTitleStr.isEmpty())
@@ -528,7 +617,7 @@ void ThreadListModel::scanThreadsFromMessages()
         //
         // The scan still wins where it has data, because it is the only source
         // of per-topic unread counts. This merge only ADDS topics, and gives
-        // them an unread count derived from the room read marker: the thread
+        // them an unread count derived from the topic's read floor: the thread
         // endpoint reports lastMessageId but not how many of the messages
         // below it are unread, so this is "something unread" (1) rather than a
         // precise tally. Better an approximate badge on a visible topic than an
@@ -543,7 +632,9 @@ void ThreadListModel::scanThreadsFromMessages()
             acc.latestMessage  = it.value().lastMessage;
             acc.latestAuthor   = it.value().lastAuthor;
             acc.count          = it.value().replyCount;
-            acc.unread         = it.value().unreadCount;
+            acc.newestId       = it.value().lastMessageId;
+            acc.fromServerOnly = true;
+            acc.serverLastIsOwn = it.value().lastIsOwn;
             threadMap.insert(it.key(), acc);
         }
 
@@ -563,6 +654,26 @@ void ThreadListModel::scanThreadsFromMessages()
             info.lastAuthor = acc.latestAuthor;
             info.lastActivity = acc.latestTimestamp;
             info.replyCount = acc.count;
+            info.lastMessageId = acc.newestId;
+            const bool isOpen = acc.threadRootId == m_selectedThreadId
+                                && m_selectedThreadId > 0;
+            const bool inFront = !qGuiApp
+                || QGuiApplication::applicationState() == Qt::ApplicationActive;
+            if (isOpen && inFront && acc.newestId > m_topicSeen.value(acc.threadRootId, 0)) {
+                // The open topic is being read: everything in it so far is seen.
+                m_topicSeen.insert(acc.threadRootId, acc.newestId);
+                m_topicSeenDirty = true;
+            }
+            const int floor = topicReadFloor(acc.threadRootId);
+            int unread = 0;
+            if (floor >= 0) {
+                if (acc.fromServerOnly) {
+                    unread = (acc.newestId > floor && !acc.serverLastIsOwn) ? 1 : 0;
+                } else {
+                    for (int mid : acc.othersIds)
+                        if (mid > floor) ++unread;
+                }
+            }
             // 0.52.7 — the topic the user is CURRENTLY viewing is read by
             // definition; never recompute it as unread. Without this, opening a
             // topic clears its count optimistically (markTopicRead) but the next
@@ -571,8 +682,7 @@ void ThreadListModel::scanThreadsFromMessages()
             // back on the open topic the instant any message arrived. (0.52.7 made
             // fetchThreads fire on every inbound batch, which would have made that
             // flicker constant.)
-            info.unreadCount = (acc.threadRootId == m_selectedThreadId
-                                && m_selectedThreadId > 0) ? 0 : acc.unread;
+            info.unreadCount = isOpen ? 0 : unread;
 
             // Deterministic color from title hash
             uint hash = qHash(info.title);
@@ -605,6 +715,10 @@ void ThreadListModel::scanThreadsFromMessages()
         threads.prepend(allMsg);
 
         bool hadTopics = m_threads.size() > 1;  // BEFORE update
+
+        if (m_topicSeenDirty)
+            saveTopicSeen();
+        m_lastScanNewestId = qMax(m_lastScanNewestId, scanNewestId);
 
         beginResetModel();
         m_threads = std::move(threads);

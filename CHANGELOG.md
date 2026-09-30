@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.74.3 "Ravnodenstvie" — STABLE (2026-09-30)
+
+Topics show how many new messages are waiting in them again.
+
+### Fixed
+* **A topic with new messages now shows its count on the topic strip above the chat.** When
+  someone wrote in a topic you were not looking at, its chip was meant to show how many new
+  messages were waiting, but the count never appeared: reading anything else in the
+  conversation, in *All messages* or in another topic, counted the whole conversation as read,
+  topics included. Each topic now keeps track of what you have read in it, and its count
+  clears only when you open that topic. Your own messages never count as new.
+
+  Reading a conversation on your phone or in the browser does not clear these counts in TalQ;
+  they clear when you open the topic in TalQ.
+
 ## v0.74.2 "Ravnodenstvie" — STABLE (2026-09-30)
 
 The ✕ that cancels a reply or an edit is visible again.

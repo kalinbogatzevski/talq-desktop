@@ -18,6 +18,8 @@ struct ThreadInfo {
     int iconColor = 0;
     int unreadCount = 0;
     int lastReadMessageId = 0;
+    int lastMessageId = 0;      // newest real message in the topic (what "read" means for it)
+    bool lastIsOwn = false;     // server-only topics: that newest message is our own
     // Per-topic notification level (0 default / 1 all / 2 mentions / 3 never).
     // Talk keeps this per THREAD as well as per room, which is what lets a
     // busy conversation stay readable: follow the two topics that matter and
@@ -138,6 +140,11 @@ public:
 private:
     void loadHiddenTopics();   // from QSettings for m_token
     void saveHiddenTopics();
+    void loadTopicSeen();      // from QSettings for m_token
+    void saveTopicSeen();
+    // The id at or below which topic `threadId` counts as read, or -1 when it
+    // cannot be known yet (no read marker for the room so far).
+    int topicReadFloor(int threadId);
 
     ApiClient *m_api;
     QVector<ThreadInfo> m_threads;
@@ -149,4 +156,17 @@ private:
     int m_roomLastReadId = 0;
     ConversationListModel *m_conversations = nullptr;
     QSet<int> m_hiddenTopics;   // per-room, persisted; filtered from the chips
+    // Per-topic read state, per room, persisted: the newest message id the user
+    // has seen IN that topic. Talk keeps one read marker per room and none per
+    // topic, and the room marker advances whenever the user reads anything newer
+    // anywhere in the room -- measured against it, every topic's count was wiped
+    // the moment a message was read in "All messages" or another topic. A topic
+    // is seeded from the room marker the first time it is seen, then advances
+    // only when that topic itself is open.
+    QHash<int, int> m_topicSeen;
+    bool m_topicSeenDirty = false;
+    // Newest message id the previous scan of this room saw (0 = no scan yet).
+    // Seeds a topic first seen by a LATER scan: its messages above this are new
+    // to TalQ even if the room marker already moved past them.
+    int m_lastScanNewestId = 0;
 };
