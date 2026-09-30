@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.74.4 "Ravnodenstvie" — STABLE (2026-10-01)
+
+A topic's new-message count now sits inside the topic's own chip.
+
+### Changed
+* **The count of new messages in a topic is shown inside that topic's chip**, after its name,
+  instead of as a separate bubble beside it, where it could read as belonging to the next
+  topic along.
+* **The topic you are in is the only highlighted chip.** Topics with new messages used to be
+  highlighted the same way, so the open topic was hard to pick out among them. A topic with
+  new messages now shows its name in bold with the count; the open topic keeps the teal
+  highlight.
+
 ## v0.74.3 "Ravnodenstvie" — STABLE (2026-09-30)
 
 Topics show how many new messages are waiting in them again.
