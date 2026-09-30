@@ -2938,6 +2938,15 @@ void CallStage::leaveEvent(QEvent *)
 
 void CallStage::keyPressEvent(QKeyEvent *e)
 {
+    // Holding a toggle key past the OS repeat delay would flip mute/camera once
+    // per auto-repeat and land in an arbitrary state.
+    if (e->isAutoRepeat()) {
+        switch (e->key()) {
+        case Qt::Key_M: case Qt::Key_V: case Qt::Key_S: case Qt::Key_F: case Qt::Key_T:
+            e->accept(); return;
+        default: break;
+        }
+    }
     switch (e->key()) {
     case Qt::Key_M: m_call->toggleMute(); break;
     case Qt::Key_V: m_call->toggleCamera(); break;

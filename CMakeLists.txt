@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(talq VERSION 0.74.0 LANGUAGES CXX)
+project(talq VERSION 0.74.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -69,6 +69,7 @@ qt_add_executable(talq
     src/core/SubscribeWebrtcSrc.cpp
     src/core/Diagnostics.cpp
     src/core/WasapiDucking.cpp
+    src/core/MicInUse.cpp
     src/core/VideoFrameProvider.h
     src/core/VideoFrameProvider.cpp
     src/core/MediaDeviceManager.cpp

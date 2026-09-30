@@ -1155,6 +1155,16 @@ int main(int argc, char *argv[])
             userStatus.onLoggedIn();
     });
 
+    // Do Not Disturb silences TalQ's chime and incoming ring (popups and the
+    // call window still show). Away deliberately does not.
+    auto applyDnd = [&userStatus, &notifications, &callManager]() {
+        const bool dnd = userStatus.status() == UserStatusManager::Status::Dnd;
+        notifications.setDoNotDisturb(dnd);
+        callManager.setDoNotDisturb(dnd);
+    };
+    QObject::connect(&userStatus, &UserStatusManager::statusChanged, &notifications, applyDnd);
+    applyDnd();
+
     // Free the server-side call participant on every clean exit so a
     // closed/quit/logged-out client never leaves "in a call" lingering.
     QObject::connect(&auth, &AuthManager::loggedInChanged, &callManager, [&auth, &callManager]() {

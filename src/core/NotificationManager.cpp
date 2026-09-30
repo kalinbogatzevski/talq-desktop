@@ -1,5 +1,6 @@
 #include "core/NotificationManager.h"
 #include "core/ShutdownWatchdog.h"
+#include "core/MicInUse.h"
 #include <QApplication>
 #include <QWidget>
 #include <QIcon>
@@ -197,18 +198,30 @@ void NotificationManager::playSystemSound()
 
 void NotificationManager::notify(const QString &title, const QString &message, bool alwaysSound, const QString &token)
 {
+    // Notifications off means off: no popup AND no sound. This gate used to sit
+    // after the sound, so a user who switched notifications off still got the
+    // chime (Kalin, 2026-09-30).
+    if (!m_notificationsEnabled) return;
+
     bool windowActive = m_window && m_window->isActiveWindow();
 
-    // Play sound: always for cross-chat, only when unfocused for active chat
-    if (alwaysSound || !windowActive) {
+    // Play sound: always for cross-chat, only when unfocused for active chat --
+    // but never in Do Not Disturb, nor while another app has the mic (a
+    // Zoom/Teams call in the user's headset). The popup below still shows.
+    // Away alone does NOT silence it. See MicInUsePolicy.h.
+    const bool wantSound = (alwaysSound || !windowActive) && m_soundId != "none";
+    QString micUser;
+    if (wantSound && m_doNotDisturb) {
+        qInfo() << "NotificationManager: sound skipped -- status is Do Not Disturb";
+    } else if (wantSound && talq::anotherAppUsingMic(&micUser)) {
+        qInfo() << "NotificationManager: sound skipped -- mic in use by" << micUser;
+    } else if (alwaysSound || !windowActive) {
         if (m_soundId == "system") {
             playSystemSound();
         } else if (m_soundId != "none") {
             playInternalSound();  // m_wavData holds the selected tone bytes
         }
     }
-
-    if (!m_notificationsEnabled) return;
 
     // Always show popup for cross-chat messages (alwaysSound = true means different conversation)
     // Only skip for messages in the active conversation when window is focused

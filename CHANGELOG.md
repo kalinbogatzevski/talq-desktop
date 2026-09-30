@@ -1,5 +1,41 @@
 # Changelog
 
+## v0.74.1 "Ravnodenstvie" — STABLE (2026-09-30)
+
+Mute now holds from the very first press, and TalQ stays quiet while you are in a call in
+another app.
+
+### Fixed
+* **Muting early in a call, or staying muted through a reconnect, no longer leaves your
+  microphone on.** If you pressed Mute in the first moment or two after starting or accepting a
+  call, before its audio had started, TalQ showed you as muted, and so did everyone else's
+  screen, but your microphone was still being sent. The same happened when a call reconnected
+  after a network drop while you were muted. Pressing Unmute then seemed to do nothing, and
+  only a second press actually muted you. Mute now applies whenever the call's audio starts
+  or restarts.
+* **A moderator muting you now actually mutes you.** When a moderator muted a TalQ user, the
+  room showed that person as muted while TalQ went on sending their microphone. TalQ now
+  mutes itself when it is the one being muted, and shows the mute on the tile of anyone else
+  in the call who is muted this way.
+* **Holding the M key no longer flips mute on and off repeatedly.** A long press counts once.
+  The same goes for the camera, share, full-screen and telemetry keys.
+* **A new call no longer shows a mute left over from the previous one** on your own tile or in
+  the small call window.
+* **Turning off *Desktop notifications* in TalQ's tray menu now turns off the notification
+  sound too.** It used to hide the pop-up but still play the sound.
+
+### Changed
+* **No sounds while you are in a call in another app.** While another program on the same
+  computer is using your microphone, TalQ plays no message sound and no incoming-call ring.
+  The pop-up at the bottom right and the incoming-call window still appear as usual, and
+  sounds come back as soon as that call ends. A call in TalQ itself does not count.
+* **No sounds in Do Not Disturb.** With your status set to *Do Not Disturb*, TalQ plays no
+  message sound and no ring; pop-ups and the incoming-call window still appear. Setting it on
+  another device takes effect within about a minute.
+
+  *Away* does not silence TalQ. You are set to Away automatically when you have been idle,
+  and that is exactly when a ring needs to be heard.
+
 ## v0.74.0 "Ravnodenstvie" — STABLE (2026-09-26)
 
 Promotes the 0.73.x line, and adds copying a picture straight out of the chat.
