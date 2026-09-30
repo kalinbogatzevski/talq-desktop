@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.74.2 "Ravnodenstvie" — STABLE (2026-09-30)
+
+The ✕ that cancels a reply or an edit is visible again.
+
+### Fixed
+* **The ✕ that closes the reply preview above the message box can be seen again, in every
+  theme.** When you replied to a message, the ✕ to the right of the quoted message was
+  drawn blank, although clicking that spot still cancelled the reply. The same was true of
+  the ✕ on the bar shown while you edit a message. Both now show, in the theme's own text
+  colour. The ✕ that removes a file waiting to be sent was also partly cut off; it now
+  shows in full.
+
 ## v0.74.1 "Ravnodenstvie" — STABLE (2026-09-30)
 
 Mute now holds from the very first press, and TalQ stays quiet while you are in a call in
