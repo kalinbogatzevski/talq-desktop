@@ -1094,8 +1094,25 @@ int main(int argc, char *argv[])
         if (!roomToken.isEmpty() && threads.conversationToken() != roomToken)    // not the open room
             return;
         static qint64 lastThreadRefreshMs = 0;
+        static bool trailingPending = false;
         const qint64 now = QDateTime::currentMSecsSinceEpoch();
-        if (now - lastThreadRefreshMs < 4000) return;                           // rate-limit
+        const qint64 wait = 4000 - (now - lastThreadRefreshMs);
+        if (wait > 0) {                                                         // rate-limit
+            // Defer instead of dropping: the event that is rate-limited away
+            // is often the reply itself (it follows the push for the message
+            // before it), and nothing else would refresh the chips until the
+            // room's next activity.
+            if (!trailingPending) {
+                trailingPending = true;
+                QTimer::singleShot(int(wait), &threads, [&threads]() {
+                    trailingPending = false;
+                    lastThreadRefreshMs = QDateTime::currentMSecsSinceEpoch();
+                    if (!threads.conversationToken().isEmpty())
+                        threads.refresh();
+                });
+            }
+            return;
+        }
         lastThreadRefreshMs = now;
         threads.refresh();
     };

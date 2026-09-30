@@ -2872,6 +2872,10 @@ void MainWindow::openThread(int threadId, const QString &title)
     // 0.40.9 — sync the topic-bar selection so the active topic chip is
     // visibly highlighted instead of "All messages" staying lit.
     if (m_topicTabBar) m_topicTabBar->setSelectedThreadId(threadId);
+    // Tell the topic model which topic is open, so it counts that topic as
+    // read. The chips come through here and never did, so the model only
+    // learned of topics opened from the old side panel.
+    if (m_threads) m_threads->selectTopic(threadId);
 }
 
 void MainWindow::closeThread()
@@ -2883,6 +2887,7 @@ void MainWindow::closeThread()
     m_messages->setThreadId(0);
     m_composer->setTopicName("");
     if (m_topicTabBar) m_topicTabBar->setSelectedThreadId(0);
+    if (m_threads) m_threads->selectTopic(0);
 }
 
 void MainWindow::updateTopicMode(bool active)
