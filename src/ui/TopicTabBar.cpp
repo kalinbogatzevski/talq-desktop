@@ -19,7 +19,7 @@
 
 namespace {
 struct Pal {
-    QString accent, onAccent, barBg, chipBg, border, ink, inkDim, hoverBg, accentSoft, accentSoftInk, unreadBadge;
+    QString accent, onAccent, barBg, chipBg, border, ink, inkDim, hoverBg, accentSoft, accentSoftInk, unreadBadge, badgeInk;
 };
 // bug 10 — source chip colors DIRECTLY from PainterTheme tokens (the single
 // source of truth every other chrome widget uses), NOT from the QApplication
@@ -48,7 +48,8 @@ Pal pal(PainterTheme::Theme t)
              n(th.bgHover),        // hover background
              n(th.accentSoft),     // calm selected tint — now a PainterTheme token
              n(th.accentSoftInk),  // and the ink that actually reads on it
-             n(th.unreadBadge) };  // unread-badge fill, same token as SidebarPainter
+             n(th.unreadBadge),    // unread-badge fill, same token as SidebarPainter
+             n(th.inkOn(th.unreadBadge)) };  // its ink: scored per theme, as the sidebar badge
 }
 
 // QMessageBox button styling now lives once in the global app sheet
@@ -179,41 +180,58 @@ QWidget *TopicTabBar::makeChip(const QString &label, int threadId,
 {
     auto *b = new QPushButton(m_row);
     const bool hasUnread = unreadCount > 0;
-    // #11 \u2014 per-topic unread count now rides a real badge widget (see below),
-    // matching SidebarPainter::paintUnreadBadge's pill \u2014 not text stuffed into
-    // the chip label. An UNREAD inactive chip still takes an accent-tinted
-    // "has unread" treatment so the topic visibly stands out at a glance; the
-    // active chip already pops, so it keeps the plain style.
+
+    // The unread count lives INSIDE the chip, after the title: one object per
+    // topic, so the count can never be read as belonging to the neighbouring
+    // chip. The capsule sits in the chip's right padding, inset kCountInset
+    // from the chip edge on every side the height allows, so its round ends
+    // nest inside the chip's (radius 16 around radius 9).
+    constexpr int kChipH = 32, kCountInset = 7, kTitleGap = 8;
+    const QString countStr = unreadCount > 99 ? QStringLiteral("99+")
+                                               : QString::number(unreadCount);
+    QFont badgeFont;
+    badgeFont.setPixelSize(PainterTheme::badgeFontSize);
+    badgeFont.setWeight(QFont::DemiBold);
+    const int badgeW = qMax(PainterTheme::badgeHeight,
+                            QFontMetrics(badgeFont).horizontalAdvance(countStr) + 10);
+    const int padRight = hasUnread ? kTitleGap + badgeW + kCountInset : 16;
+    // Three chip states, each distinct at a glance:
+    //   open   — accent tint + accent border (the only tinted chip: where you are)
+    //   unread — the plain chip, but a full-ink SemiBold title plus the count
+    //            (the count carries the signal; the weight means unread never
+    //            rests on colour alone)
+    //   read   — the plain chip, dimmed ink, regular weight
+    // Unread chips used to share the open chip's tint and border, which left
+    // the open topic indistinguishable from every topic with news.
     b->setText(label);
     b->setCursor(Qt::PointingHandCursor);
-    b->setFixedHeight(32);
+    b->setFixedHeight(kChipH);
     b->setFocusPolicy(Qt::NoFocus);
     const Pal c = pal(m_themeId);
-    b->setStyleSheet(active
+    QString css = active
         ? QStringLiteral(
             // Calm selected style: a soft accent TINT fill + accent-coloured
             // text + a 1px accent border. Clearly "active" without the loud
             // solid-accent fill that read as too aggressive.
             "QPushButton { background: %1; color: %2; border: 1px solid %3;"
-            "  border-radius: 16px; padding: 6px 16px; font-size: 13px;"
+            "  border-radius: 16px; padding: 6px %PAD%px 6px 16px; font-size: 13px;"
             "  font-weight: 600; letter-spacing: 0.1px; }"
             "QPushButton:hover { background: %1; }"
           ).arg(c.accentSoft, c.accentSoftInk, c.accent)
         : hasUnread
         ? QStringLiteral(
-            // #11 \u2014 UNREAD inactive chip: accent-tinted fill + accent text +
-            // accent border + bolder weight, so an unread topic reads as a badge.
             "QPushButton { background: %1; color: %2; border: 1px solid %3;"
-            "  border-radius: 16px; padding: 6px 16px; font-size: 13px;"
+            "  border-radius: 16px; padding: 6px %PAD%px 6px 16px; font-size: 13px;"
             "  font-weight: 600; letter-spacing: 0.1px; }"
-            "QPushButton:hover { background: %1; }"
-          ).arg(c.accentSoft, c.accentSoftInk, c.accent)
+            "QPushButton:hover { background: %4; border-color: %5; }"
+          ).arg(c.chipBg, c.ink, c.border, c.hoverBg, c.accent)
         : QStringLiteral(
             "QPushButton { background: %1; color: %2; border: 1px solid %3;"
-            "  border-radius: 16px; padding: 6px 16px; font-size: 13px;"
+            "  border-radius: 16px; padding: 6px %PAD%px 6px 16px; font-size: 13px;"
             "  font-weight: 500; letter-spacing: 0.1px; }"
             "QPushButton:hover { background: %4; color: %5; border-color: %6; }"
-          ).arg(c.chipBg, c.inkDim, c.border, c.hoverBg, c.ink, c.accent));
+          ).arg(c.chipBg, c.inkDim, c.border, c.hoverBg, c.ink, c.accent);
+    b->setStyleSheet(css.replace(QStringLiteral("%PAD%"), QString::number(padRight)));
     connect(b, &QPushButton::clicked, this, [this, threadId, label]() {
         if (threadId == 0) emit allMessagesSelected();
         else               emit threadSelected(threadId, label);
@@ -293,38 +311,28 @@ QWidget *TopicTabBar::makeChip(const QString &label, int threadId,
     if (!hasUnread)
         return b;
 
-    // #11 — real unread badge: a filled stadium pill sized/colored exactly
-    // like SidebarPainter::paintUnreadBadge (PainterTheme::badgeHeight, demibold
-    // count text, unreadBadge fill + controlInk text), placed beside the chip
-    // instead of stuffed into the button's own label text. Was a third local
-    // copy of BadgeHeight=18/BadgeFontSize=10 (also independently defined in
-    // SidebarPainter.h and ThreadsPainter.h) -- now the one promoted home.
-    const QString countStr = unreadCount > 99 ? QStringLiteral("99+")
-                                               : QString::number(unreadCount);
-    QFont badgeFont;
-    badgeFont.setPixelSize(PainterTheme::badgeFontSize);
-    badgeFont.setWeight(QFont::DemiBold);
-    const QFontMetrics bfm(badgeFont);
-    const int textW = bfm.horizontalAdvance(countStr);
-    const int badgeW = qMax(PainterTheme::badgeHeight, textW + 10);
-
-    auto *badge = new QLabel(countStr, m_row);
+    // The count capsule: the same pill as SidebarPainter::paintUnreadBadge
+    // (PainterTheme::badgeHeight, demibold, unreadBadge fill with its scored
+    // ink), laid inside the chip's right padding. Transparent to the mouse, so
+    // a click or right-click on the count is a click on the topic.
+    auto *badge = new QLabel(countStr, b);
+    badge->setObjectName(QStringLiteral("topicUnreadCount"));
+    badge->setAttribute(Qt::WA_TransparentForMouseEvents);
     badge->setFont(badgeFont);
     badge->setAlignment(Qt::AlignCenter);
     badge->setFixedSize(badgeW, PainterTheme::badgeHeight);
     badge->setStyleSheet(QStringLiteral(
         "QLabel { background: %1; color: %2; border-radius: %3px; }"
-    ).arg(c.unreadBadge, c.onAccent)
+    ).arg(c.unreadBadge, c.badgeInk)
      .arg(PainterTheme::badgeHeight / 2));
+    badge->setAccessibleName(tr("%n unread", nullptr, unreadCount));
 
-    auto *wrap = new QWidget(m_row);
-    auto *wrapLayout = new QHBoxLayout(wrap);
-    wrapLayout->setContentsMargins(0, 0, 0, 0);
-    wrapLayout->setSpacing(6);
-    wrapLayout->setAlignment(Qt::AlignVCenter);
-    wrapLayout->addWidget(b);
-    wrapLayout->addWidget(badge, 0, Qt::AlignVCenter);
-    return wrap;
+    auto *inner = new QHBoxLayout(b);
+    inner->setContentsMargins(0, 0, kCountInset, 0);
+    inner->setSpacing(0);
+    inner->addStretch(1);
+    inner->addWidget(badge, 0, Qt::AlignVCenter);
+    return b;
 }
 
 void TopicTabBar::rebuild()
