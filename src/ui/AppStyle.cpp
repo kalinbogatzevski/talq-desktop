@@ -33,7 +33,7 @@ public:
             auto *w = qobject_cast<QWidget *>(o);
             auto *pe = static_cast<QDynamicPropertyChangeEvent *>(e);
             const QByteArray n = pe->propertyName();
-            if (w && (n == "variant" || n == "role")) {
+            if (w && (n == "variant" || n == "role" || n == "glyph")) {
                 w->style()->unpolish(w);
                 w->style()->polish(w);
                 w->update();
@@ -189,6 +189,13 @@ QPushButton[variant="ghost"] {
 }
 QPushButton[variant="ghost"]:hover  { color:@{ink}; background:@{hoverWash}; }
 QPushButton[variant="ghost"]:pressed{ background:@{bgSelected}; }
+
+/* Glyph modifier — a variant's colours on a fixed-size single-glyph button
+ * (✕). The variants' text padding (14px a side) exceeds a 28px button, so the
+ * content box collapses to 0px and the glyph is clipped away: clickable but
+ * invisible. The extra [variant] makes this outrank every variant rule
+ * whatever the source order. */
+QPushButton[variant][glyph="true"] { padding:0; }
 
 /* ── Message boxes ──
  * Every QMessageBox button gets the real button look app-wide, so no box is

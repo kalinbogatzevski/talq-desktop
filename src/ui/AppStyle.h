@@ -18,6 +18,7 @@
 //     btn->setProperty("variant", "primary");   // accent call-to-action
 //     btn->setProperty("variant", "danger");    // destructive (outline)
 //     btn->setProperty("variant", "ghost");     // quiet text button
+//     btn->setProperty("glyph",   true);        // + fixed-size ✕ glyph: no padding
 //     lbl->setProperty("role",    "secondary"); // dimmer caption text
 //     lbl->setProperty("role",    "muted");     // faintest hint text
 //

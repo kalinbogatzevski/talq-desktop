@@ -335,6 +335,7 @@ ComposerWidget::ComposerWidget(QWidget *parent)
     m_pendingCancelBtn = new QPushButton("\u2715", m_pendingBar);
     m_pendingCancelBtn->setObjectName("pendingCancel");
     m_pendingCancelBtn->setProperty("variant", "danger");
+    m_pendingCancelBtn->setProperty("glyph", true);
     m_pendingCancelBtn->setFixedSize(32, 32);
     m_pendingCancelBtn->setCursor(Qt::PointingHandCursor);
     m_pendingCancelBtn->setToolTip("Cancel");
@@ -363,6 +364,7 @@ ComposerWidget::ComposerWidget(QWidget *parent)
     replyCancelBtn->setCursor(Qt::PointingHandCursor);
     replyCancelBtn->setObjectName("replyCancel");
     replyCancelBtn->setProperty("variant", "ghost");
+    replyCancelBtn->setProperty("glyph", true);
     connect(replyCancelBtn, &QPushButton::clicked, this, &ComposerWidget::hideReplyBar);
     replyBarLayout->addWidget(replyCancelBtn);
 
@@ -389,6 +391,7 @@ ComposerWidget::ComposerWidget(QWidget *parent)
     editCancelBtn->setCursor(Qt::PointingHandCursor);
     editCancelBtn->setObjectName("editCancel");
     editCancelBtn->setProperty("variant", "ghost");
+    editCancelBtn->setProperty("glyph", true);
     connect(editCancelBtn, &QPushButton::clicked, this, &ComposerWidget::hideEditingBar);
     editBarLayout->addWidget(editCancelBtn);
 
