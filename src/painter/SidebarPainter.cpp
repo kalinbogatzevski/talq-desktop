@@ -735,6 +735,9 @@ void SidebarPainter::paintRowNormal(QPainter *p, const ConversationLayout &cl, i
         if (cl.userStatus == QStringLiteral("online")) dotColor = m_theme.online;
         else if (cl.userStatus == QStringLiteral("away")) dotColor = m_theme.amber;       // warm secondary
         else if (cl.userStatus == QStringLiteral("dnd")) dotColor = m_theme.danger;      // warm clay, not fire-engine
+        // "busy" (Nextcloud 30+: a calendar meeting or a call) is a do-not-
+        // interrupt state too. With no dot it read exactly like Offline.
+        else if (cl.userStatus == QStringLiteral("busy")) dotColor = m_theme.danger;
         if (dotColor.isValid()) {
             qreal dotSize = StatusDotSize;
             qreal dotX = avatarRect.right() - dotSize + 1;

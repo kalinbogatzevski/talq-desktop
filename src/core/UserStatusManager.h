@@ -67,6 +67,11 @@ public slots:
     // "online" can't stomp an Away/DND/custom status another device just set.
     // Driven by the 60 s heartbeat (keepAlive=true) + window activation (false).
     void refreshFromServer(bool keepAliveOnline);
+    // Tell the server we are here (status "online", or "away" while TalQ holds
+    // an auto-Away / the session is locked) via the user_status heartbeat.
+    void sendPresenceHeartbeat();
+    // Write the auto-Away marker to disk when it changes.
+    void persistAutoAway(bool on);
 
     void setStatusType(Status s);
     void setPredefined(const QString &messageId, qint64 clearAt);
@@ -129,6 +134,11 @@ private:
     // connected), so m_sessionLocked stays false at runtime. Follow-up.
     QTimer m_idlePoll;
     bool   m_autoAwayActive = false;   // true while we hold an auto-flipped Away
+    // m_autoAwayActive, as last written to disk. TalQ's auto-Away is written to
+    // the server as a USER-DEFINED Away, which the server never clears or
+    // lets a heartbeat override; without remembering it across a restart, a
+    // TalQ that quit while idle left the user showing Away for good.
+    bool   m_autoAwayPersisted = false;
     bool   m_sessionLocked  = false;
     bool   m_inIdleTick     = false;   // reentrancy guard (nested event loops)
 public:

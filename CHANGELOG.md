@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.74.6 "Ravnodenstvie" — STABLE (2026-10-01)
+
+People who use TalQ now show as online to everyone else.
+
+### Fixed
+* **TalQ users no longer appear offline while they are using TalQ.** Your server marks anyone it
+  has not heard from for a while as offline. After a short gap, such as the computer sleeping,
+  TalQ being restarted or the network dropping, TalQ never told the server you were back, so
+  you showed as offline to everyone for the rest of the day. TalQ now keeps your presence up to
+  date the way the server expects. A status you chose yourself, such as Away, Do not disturb or
+  Invisible, is left exactly as you set it.
+* **You no longer stay "Away" after TalQ restarts.** If TalQ closed or updated while it had
+  marked you Away for being idle, you stayed Away until you changed it by hand. TalQ now puts you
+  back online as soon as you use it again.
+* **People in a meeting or a call show as Busy, not Offline.** Their status now shows in red
+  with the word *Busy*.
+
+People appear online again once they are running this version.
+
 ## v0.74.5 "Ravnodenstvie" — STABLE (2026-10-01)
 
 Updates that install while TalQ is minimized now stay out of your way.

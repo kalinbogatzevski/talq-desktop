@@ -481,6 +481,10 @@ void HeaderPainter::paintEvent(QPaintEvent *)
         } else if (m_peerStatus == QStringLiteral("dnd")) {
             subtitleText = tr("Do not disturb");
             subtitleColor = m_theme.danger;
+        } else if (m_peerStatus == QStringLiteral("busy")) {
+            // Nextcloud 30+ (a calendar meeting or a call); was shown as "Offline".
+            subtitleText = tr("Busy");
+            subtitleColor = m_theme.danger;
         } else {
             subtitleText = tr("Offline");
             subtitleColor = m_theme.textMuted;

@@ -11,6 +11,7 @@
 #include <QGuiApplication>
 #include <QPalette>
 #include <QScopeGuard>
+#include <QSettings>
 #include <QSessionManager>
 #include <QTimer>
 
@@ -23,6 +24,8 @@ inline QString statusPath(const QString &suffix = QString())
 {
     return QStringLiteral("apps/user_status/api/v1/user_status") + suffix;
 }
+const QString kHeartbeat     = QStringLiteral("apps/user_status/api/v1/heartbeat");
+const QString kAutoAwayKey   = QStringLiteral("userStatus/autoAwaySetByTalq");
 const QString kPredefined = QStringLiteral("apps/user_status/api/v1/predefined_statuses");
 }
 
@@ -206,7 +209,9 @@ void UserStatusManager::onIdleTick()
                 emit statusChanged();
                 qWarning() << "UserStatusManager: auto-Away PUT failed, "
                               "reverting local state";
+                return;
             }
+            persistAutoAway(true);
         });
     } else if (m_autoAwayActive && idleMs < kIdleAwayThresholdMs
                && !m_sessionLocked) {
@@ -260,7 +265,9 @@ void UserStatusManager::tryRestoreFromAutoAway()
             emit statusChanged();
             qWarning() << "UserStatusManager: auto-Away restore PUT failed — "
                           "reverting local state, will retry on next activity/tick";
+            return;
         }
+        persistAutoAway(false);
     });
 }
 
@@ -286,7 +293,9 @@ void UserStatusManager::onSessionLocked()
             m_status         = priorStatus;
             m_autoAwayActive = priorAuto;
             emit statusChanged();
+            return;
         }
+        persistAutoAway(true);
     });
 }
 
@@ -352,18 +361,54 @@ void UserStatusManager::refreshFromServer(bool keepAliveOnline)
             qInfo() << "UserStatus: refreshed from server (status now"
                     << statusKey(m_status) << "msg=" << m_message << ")";
         }
-        // Keep online presence alive ONLY when the authoritative status is
-        // Online and we're not holding an auto-Away / locked session. This is
-        // the read-before-write guard: if another device set Away/DND/custom,
-        // m_status now reflects that and we do NOT re-assert online over it.
-        if (keepAliveOnline && m_status == Status::Online
-            && !m_autoAwayActive && !m_sessionLocked) {
-            QJsonObject body;
-            body["statusType"] = "online";
-            m_api->put(statusPath(QStringLiteral("/status")), body,
-                       [](bool, const QJsonObject &, int) {});
+        // Presence: every cycle, whatever the status we just read. The old
+        // keep-alive re-PUT "online" only while the server already said
+        // Online — but the server's cleanup job turns every status not
+        // refreshed for 15 minutes to Offline (any sleep, closed lid, restart
+        // or network gap), and from then on that guard never fired again:
+        // the user showed Offline to everyone, all day, while using TalQ.
+        // The heartbeat is the server's own presence call and is safe to
+        // send unconditionally: it never overrides an Away / Busy / DND /
+        // Invisible the user chose (UserLiveStatusListener, PERSISTENT_STATUSES).
+        if (keepAliveOnline)
+            sendPresenceHeartbeat();
+    });
+}
+
+void UserStatusManager::sendPresenceHeartbeat()
+{
+    // A status the user chose themselves (not TalQ's auto-Away) is never
+    // changed by a heartbeat; the server answers 204 with no body, which the
+    // API layer logs as invalid JSON once a minute. Nothing to say: skip it.
+    if (m_userDefined && !m_autoAwayActive && m_status != Status::Online
+        && m_status != Status::Offline)
+        return;
+    QJsonObject body;
+    body["status"] = (m_autoAwayActive || m_sessionLocked) ? "away" : "online";
+    m_api->put(kHeartbeat, body, [this](bool ok, const QJsonObject &d, int) {
+        // 204 = nothing changed; 200 carries the resulting status.
+        if (!ok || !d.contains(QStringLiteral("status")))
+            return;
+        if (QDateTime::currentMSecsSinceEpoch() - m_lastUserChangeMs < 10000)
+            return;   // a local change is in flight; same grace as the refresh
+        const Status prev = m_status;
+        m_status = statusFromKey(d.value(QStringLiteral("status")).toString());
+        if (m_status == Status::Online)
+            m_autoAwayActive = false;
+        if (m_status != prev) {
+            emit statusChanged();
+            qInfo() << "UserStatus: presence heartbeat ->" << statusKey(m_status);
         }
     });
+}
+
+void UserStatusManager::persistAutoAway(bool on)
+{
+    if (on == m_autoAwayPersisted) return;
+    m_autoAwayPersisted = on;
+    QSettings s;
+    if (on) s.setValue(kAutoAwayKey, true);
+    else    s.remove(kAutoAwayKey);
 }
 
 void UserStatusManager::revertStuckCall()
@@ -377,7 +422,25 @@ void UserStatusManager::revertStuckCall()
     // AND every call-end — the field bug (2026-06-04). So: fetch the current
     // status first; if it isn't the stuck call status, do nothing at all.
     m_api->get(statusPath(), [this](bool ok, const QJsonObject &d, int) {
-        if (ok) { applyFromJson(d); emit statusChanged(); }   // also the initial load
+        if (ok) {
+            applyFromJson(d);   // also the initial load
+            // An Away that THIS install set automatically before it quit (or
+            // restarted to update) is still ours: the server keeps it as a
+            // user-defined Away forever. Take it back as auto-Away so the
+            // first activity restores Online. Only a plain Away with no
+            // message qualifies — anything else was set by a person.
+            m_autoAwayPersisted = QSettings().value(kAutoAwayKey, false).toBool();
+            if (m_autoAwayPersisted && m_status == Status::Away && m_messageId.isEmpty()
+                && m_message.isEmpty()) {
+                m_autoAwayActive = true;
+                qInfo() << "UserStatus: reclaiming the auto-Away a previous run left";
+            } else {
+                persistAutoAway(false);
+            }
+            emit statusChanged();
+            // Report presence right away instead of after the first minute.
+            sendPresenceHeartbeat();
+        }
         if (!ok || m_messageId != QLatin1String("call")) {
             if (TalqLog::g_verbose)
                 qDebug().nospace() << "UserStatus: no stuck 'call' status (ok=" << ok
@@ -427,8 +490,10 @@ void UserStatusManager::applyFromJson(const QJsonObject &d)
     // the server says we're Online, we're no longer in an auto-flipped Away,
     // so clear the flag (otherwise a stale m_autoAwayActive could confuse the
     // next restore/idle decision).
-    if (m_status == Status::Online)
+    if (m_status == Status::Online) {
         m_autoAwayActive = false;
+        persistAutoAway(false);
+    }
 }
 
 void UserStatusManager::takeSnapshot()
@@ -458,6 +523,7 @@ void UserStatusManager::setStatusType(Status s)
     // tracker; clear the auto flag so the next idle tick doesn't try
     // to "restore" their intentional choice to Online.
     m_autoAwayActive = false;
+    persistAutoAway(false);
     takeSnapshot();
     m_lastUserChangeMs = QDateTime::currentMSecsSinceEpoch();
     m_status = s;
