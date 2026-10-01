@@ -7570,7 +7570,7 @@ Root cause: three protocol compliance issues found by comparing TalQ's SDP with 
 - Hardcoded server URL, no URL field on login
 - Dual logos on splash (TalQ + brand), brand logo on welcome screen
 - Separate Inno Setup installer for branded builds
-- Self-signed code signing: the distributor
+- Self-signed code signing
 
 ### Fixes
 - Typing indicator filtered by current room (was showing wrong chat)

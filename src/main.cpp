@@ -38,6 +38,9 @@
 #include <dbghelp.h>
 #pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "dbghelp.lib")
+#ifdef TALQ_BRANDED
+#include "brand_identity.inc"   // private branding store: TALQ_BRAND_* identity
+#endif
 #include "core/CrashDumpFlags.h"
 #endif
 
@@ -606,8 +609,8 @@ int main(int argc, char *argv[])
         return 0;
     }
 #ifdef TALQ_BRANDED
-    app.setApplicationName("BRAND TalQ");
-    app.setOrganizationName("BRAND");
+    app.setApplicationName(TALQ_BRAND_APP_NAME);
+    app.setOrganizationName(TALQ_BRAND_ORG_NAME);
 #else
     app.setApplicationName("TalQ");
     app.setOrganizationName("TalQ");
@@ -690,7 +693,7 @@ int main(int argc, char *argv[])
     QSplashScreen *splashKeep = nullptr;
     {
 #ifdef TALQ_BRANDED
-        QPixmap logoPix(":/brand-logo.png");
+        QPixmap logoPix(TALQ_BRAND_LOGO_RESOURCE);
 #else
         QPixmap logoPix(":/logo.png");
 #endif

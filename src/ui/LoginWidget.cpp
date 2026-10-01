@@ -13,11 +13,11 @@ LoginWidget::LoginWidget(AuthManager *auth, QWidget *parent)
     , m_auth(auth)
 {
 #ifdef TALQ_BRANDED
-#include "brand_identity.inc"   // private; defines TALQ_BRAND_SERVER_STR
+#include "brand_identity.inc"   // private: TALQ_BRAND_* identity
     m_isBranded = true;
     m_brandServer = TALQ_BRAND_SERVER_STR;
-    m_brandName = "BRAND TalQ";
-    const char *const kLogoResource = ":/brand-logo.png";
+    m_brandName = TALQ_BRAND_APP_NAME;
+    const char *const kLogoResource = TALQ_BRAND_LOGO_RESOURCE;
 #else
     m_isBranded = false;
     m_brandName = "TalQ";

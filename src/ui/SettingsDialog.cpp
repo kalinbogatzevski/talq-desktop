@@ -1,3 +1,6 @@
+#ifdef TALQ_BRANDED
+#include "brand_identity.inc"   // private branding store: TALQ_BRAND_* identity
+#endif
 #include "SettingsDialog.h"
 
 #include "core/CtiService.h"
@@ -1757,7 +1760,7 @@ QWidget *SettingsDialog::buildGeneralTab()
             text += QStringLiteral("Channel:  stable build\n");
 #endif
 #ifdef TALQ_BRANDED
-            text += QStringLiteral("Brand:    BRAND\n");
+            text += QStringLiteral("Brand:    " TALQ_BRAND_SHORT_NAME "\n");
 #else
             text += QStringLiteral("Brand:    generic\n");
 #endif

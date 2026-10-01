@@ -1,3 +1,6 @@
+#ifdef TALQ_BRANDED
+#include "brand_identity.inc"   // private branding store: TALQ_BRAND_* identity
+#endif
 #include "UpdateChecker.h"
 
 #include "AppSettings.h"
@@ -106,7 +109,7 @@ void UpdateChecker::deferUpdate()
 QString UpdateChecker::brandKeyForThisBuild()
 {
 #ifdef TALQ_BRANDED
-    return QStringLiteral("brand");
+    return QStringLiteral(TALQ_BRAND_UPDATE_CHANNEL);
 #else
     return QStringLiteral("generic");
 #endif

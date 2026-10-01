@@ -353,11 +353,14 @@ endif()
 # Branding. Brand assets live outside the tree in /private (never
 # published); a branded build pulls them in here. The default/public
 # build is unbranded and references none of this.
-if(TALQ_BRAND STREQUAL "BRAND")
+if(TALQ_BRAND)
+    # The private store for brand X is private/branding/<x>/ (lower-case).
+    string(TOLOWER "${TALQ_BRAND}" _brand_dir_name)
+    set(_brand_dir "${CMAKE_SOURCE_DIR}/private/branding/${_brand_dir_name}")
     # Brand identity/endpoints are NOT defined here (would leak into public
     # source). They come from the private include store at compile time.
     target_compile_definitions(talq PRIVATE TALQ_BRANDED)
-    set(_brand_qrc "${CMAKE_SOURCE_DIR}/private/branding/brand/brand.qrc")
+    set(_brand_qrc "${_brand_dir}/brand.qrc")
     if(NOT EXISTS "${_brand_qrc}")
         message(FATAL_ERROR
             "TALQ_BRAND=${TALQ_BRAND} but ${_brand_qrc} is missing. "
@@ -368,7 +371,7 @@ if(TALQ_BRAND STREQUAL "BRAND")
     # Private update-channel config (brand_updates.inc) is included by
     # AppSettings.h under the brand ifdef; put it on the path.
     target_include_directories(talq PRIVATE
-        "${CMAKE_SOURCE_DIR}/private/branding/brand")
+        "${_brand_dir}")
     message(STATUS "Building ${TALQ_BRAND} branded version")
 endif()
 

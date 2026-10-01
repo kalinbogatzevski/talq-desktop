@@ -6,7 +6,7 @@
 // wrong place. On a domain PC with a Windows system proxy, all three of TalQ's
 // WebSockets -- signaling, push and CTI -- died like this:
 //
-//   13:04:55.233 Signaling: connecting to "wss://turn-pop.../spreed"
+//   13:04:55.233 Signaling: connecting to "wss://<pop>/spreed"
 //   13:04:55.233 Signaling: disconnected
 //
 // Same millisecond. No TCP handshake, no TLS, no packet ever left the machine.
