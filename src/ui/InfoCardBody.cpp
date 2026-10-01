@@ -224,7 +224,7 @@ void InfoCardBody::rebuildBody()
         //
         // QLabel cannot do this job. Its word wrap breaks at word boundaries
         // only, and an email address is ONE unbreakable token -- so a long
-        // address was not wrapped, it was silently cut ("...@example.invalid", with
+        // address was not wrapped, it was silently cut ("...@example.co", with
         // the .za gone). The alternatives all corrupt the clipboard: eliding
         // hides characters, and inserting breaks or zero-width spaces to force
         // a wrap puts those characters into anything the user then selects and

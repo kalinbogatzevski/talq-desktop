@@ -1,3 +1,6 @@
+#ifdef TALQ_BRANDED
+#include "brand_identity.inc"   // private branding store: TALQ_BRAND_* identity
+#endif
 #include "MainWindow.h"
 #include "CallWindow.h"
 #include "SettingsDialog.h"
@@ -274,7 +277,7 @@ MainWindow::MainWindow(
     // build-release.sh --beta sets).
     QString winTitle =
 #ifdef TALQ_BRANDED
-        "BRAND TalQ "
+        TALQ_BRAND_APP_NAME " "
 #else
         "TalQ "
 #endif
@@ -3454,7 +3457,7 @@ void MainWindow::buildWelcomeContent()
     }
 #endif
 #ifdef TALQ_BRANDED
-    cmdBar->addWidget(makeTag(QStringLiteral("BRAND")));
+    cmdBar->addWidget(makeTag(QStringLiteral(TALQ_BRAND_SHORT_NAME)));
 #endif
     // Per-release codename pill. A celebratory moment, so it wears the warm
     // amber (secondary), not the accent (the accent stays the one "needs
@@ -3503,7 +3506,7 @@ void MainWindow::buildWelcomeContent()
     greetRow->addStretch();
     {
 #ifdef TALQ_BRANDED
-        QPixmap lp(QStringLiteral(":/brand-logo.png"));
+        QPixmap lp(QStringLiteral(TALQ_BRAND_LOGO_RESOURCE));
 #else
         QPixmap lp(QStringLiteral(":/logo.png"));
 #endif

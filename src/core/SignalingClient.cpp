@@ -446,9 +446,9 @@ void SignalingClient::probeHpbPool(const QStringList &cands, HpbProbeDone done)
 {
     // --- Nearest-HPB probe tunables ------------------------------------------
     // A SINGLE TCP:443 sample per candidate is far too noisy to choose between
-    // POPs whose true RTTs are close (field: turn-pop ~15ms, turn-pop ~150ms,
-    // turn-pop ~200ms — but DNS/TLS/loss jitter on one 1200ms window let a FAR
-    // POP win, stranding a BG user on turn-pop / turn-pop). Fix: take several
+    // POPs whose true RTTs are close (field: a near POP ~15ms, a mid one
+    // ~150ms, a far one ~200ms — but DNS/TLS/loss jitter on one 1200ms window
+    // let a FAR POP win, stranding a user on a distant POP). Fix: take several
     // samples per candidate and use the MIN (the true network floor; jitter
     // only ever ADDS latency, so min is the robust estimator); the decision
     // (talq::pickHpb) then only SWITCHES AWAY from the incumbent (the server
