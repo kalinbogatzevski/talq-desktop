@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.74.5 "Ravnodenstvie" — STABLE (2026-10-01)
+
+Updates that install while TalQ is minimized now stay out of your way.
+
+### Fixed
+* **An update that installs while TalQ is minimized no longer brings TalQ to the front.** TalQ
+  installs updates when you have not used it for a while, which is often while it sits minimized
+  or in the tray. After the update it used to start again as a full window in front of whatever
+  you were working on. It now comes back minimized, the way you left it, and opens as before when
+  you click it.
+* **The one-minute "about to install" notice no longer plays a sound.** When TalQ was in the
+  background the notice played the new-message sound, so it was easy to mistake for a message.
+* **"Start minimized to tray" in Settings now works.** The option was saved but ignored, so TalQ
+  always opened as a full window.
+
 ## v0.74.4 "Ravnodenstvie" — STABLE (2026-10-01)
 
 A topic's new-message count now sits inside the topic's own chip.

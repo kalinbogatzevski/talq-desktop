@@ -371,6 +371,13 @@ MainWindow::MainWindow(
         applyThemeId(PainterTheme::cycle(m_themeId));
     });
 
+    // Start minimized: the user's setting, or a relaunch by the auto-updater
+    // of a TalQ that was minimized or in the tray when it installed (written
+    // by maybeLaunchPendingInstaller). The relaunch flag is one-shot.
+    m_startMinimizedPending = m_settings.value(QStringLiteral("startMinimized"), false).toBool()
+        || m_settings.value(QStringLiteral("updates/relaunchMinimized"), false).toBool();
+    m_settings.remove(QStringLiteral("updates/relaunchMinimized"));
+
     // ── Auth signals ──
     connect(m_auth, &AuthManager::restoringChanged, this, [this]() {
         if (!m_auth->isRestoringSession()) {
@@ -4219,11 +4226,24 @@ void MainWindow::restoreChatGeometry()
         }
     }
 
-    // Restore maximized state if that was the last state
-    if (vis == 4)
-        showMaximized();
-    else
+    if (m_startMinimizedPending) {
+        // To the taskbar, not the screen, and never activated: a TalQ that the
+        // updater restarted must not jump in front of whatever the user is
+        // working in. A maximized window keeps that bit through the minimize,
+        // so restoring it from the taskbar brings it back maximized.
+        m_startMinimizedPending = false;
+        m_wasMaximized = (vis == 4);
+        setAttribute(Qt::WA_ShowWithoutActivating, true);
+        setWindowState((vis == 4 ? Qt::WindowMaximized : Qt::WindowNoState)
+                       | Qt::WindowMinimized);
         show();
+        setAttribute(Qt::WA_ShowWithoutActivating, false);
+    } else if (vis == 4) {
+        // Restore maximized state if that was the last state
+        showMaximized();
+    } else {
+        show();
+    }
 
     // Delay enabling geometry save to avoid saving during restore
     QTimer::singleShot(500, this, [this]() {
@@ -4687,8 +4707,10 @@ void MainWindow::onUpdateAutoInstallTick()
                      "Open TalQ to cancel.")
                 : tr("TalQ will install the new version in %1 s. "
                      "Open TalQ to cancel.").arg(sec);
-            m_notifications->notify(tr("Update ready to install"),
-                                    msg, /*alwaysSound*/ false, QString());
+            // Silent: TalQ is usually in the background when this fires, and
+            // notify() chimes for an unfocused window, which made the warning
+            // sound like a new message.
+            m_notifications->notifySilently(tr("Update ready to install"), msg);
         }
     }
 
@@ -4920,8 +4942,15 @@ void MainWindow::maybeLaunchPendingInstaller()
         QStringLiteral("/RESTARTAPPLICATIONS"),
         QStringLiteral("/NORESTART"),
     };
+    // The installer relaunches TalQ when it finishes. If TalQ is minimized or
+    // in the tray now, the new version starts the same way (see the
+    // constructor) instead of popping up over the user's work.
+    m_settings.setValue(QStringLiteral("updates/relaunchMinimized"),
+                        isMinimized() || !isVisible());
+    m_settings.sync();
     bool ok = QProcess::startDetached(m_pendingInstallerPath, args);
     if (!ok) {
+        m_settings.remove(QStringLiteral("updates/relaunchMinimized"));
         // Self-heal: the downloaded installer can't be launched. Most
         // common causes are AV quarantine, a stale file lock from an
         // interrupted prior run, or zero-byte from a truncated write.

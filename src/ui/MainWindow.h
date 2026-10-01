@@ -496,6 +496,10 @@ private:
     // loses each time the button is destroyed. 0 until registered / non-Windows.
     unsigned int m_taskbarButtonCreatedMsg = 0;
     bool m_wasMaximized = false;
+    // The first chat show of this run goes to the taskbar instead of the
+    // screen: "Start minimized to tray", or a restart by the auto-updater of a
+    // TalQ that was minimized. Consumed by restoreChatGeometry().
+    bool m_startMinimizedPending = false;
     bool m_wasFullScreen = false;  // remembered separately because isMaximized() is false in fullscreen
     bool m_geometrySaveEnabled = false;
     QString m_activeConvToken;

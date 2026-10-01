@@ -59,6 +59,10 @@ public:
     // suppressed when the window has focus; returns whether it was actually
     // shown. See the implementation for why notify() is wrong for this.
     bool notifyConnectionFault(const QString &title, const QString &message);
+    // A popup that never makes a sound, shown whether or not TalQ is focused;
+    // respects notificationsEnabled. For app notices that are not messages.
+    // Returns whether it went out.
+    bool notifySilently(const QString &title, const QString &message);
     // Re-assert the Windows taskbar overlay badge for the CURRENT unread count,
     // bypassing updateUnreadCount()'s "count unchanged" early-return. MainWindow
     // calls this whenever the taskbar button is (re)created — first show,

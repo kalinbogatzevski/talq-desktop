@@ -256,6 +256,11 @@ void NotificationManager::notify(const QString &title, const QString &message, b
 bool NotificationManager::notifyConnectionFault(const QString &title,
                                                 const QString &message)
 {
+    return notifySilently(title, message);
+}
+
+bool NotificationManager::notifySilently(const QString &title, const QString &message)
+{
     if (!m_notificationsEnabled)
         return false;
     emit desktopPopupRequested(title, message, QString());
