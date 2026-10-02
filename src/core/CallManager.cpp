@@ -170,10 +170,12 @@ void CallManager::startRingtone() {
         const QString id = s.value("incomingRingtone", "classic").toString();
         s.endGroup();
         if (id == "none") return;
-        // Silent (the call window still pops up) only in Do Not Disturb or while
-        // another app has the mic -- a Zoom/Teams ring would go straight into
-        // the user's headset. Away alone does NOT silence it: auto-away from
-        // inactivity is exactly when a ring must be heard. MicInUsePolicy.h.
+        // Silent (the call window still pops up) while another app has the mic --
+        // a Zoom/Teams ring would go straight into the user's headset. Away
+        // alone does NOT silence it: auto-away from inactivity is exactly when a
+        // ring must be heard. MicInUsePolicy.h. Do Not Disturb never gets here:
+        // ringIncomingCall refuses the call before it enters Incoming. This
+        // check is the safety net for any other route into the Incoming state.
         if (m_doNotDisturb) {
             qInfo() << "CallManager: incoming ring silent -- status is Do Not Disturb";
             return;
@@ -691,7 +693,7 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
         // plan, and its 200 re-confirms the join (review CR-6).
         if (!m_callToken.isEmpty()) {
             QJsonObject body;
-            body["flags"] = callFlags(m_cameraOn, !m_muted);
+            body["flags"] = callFlags(m_cameraOn, sendingAudio());
             body["silent"] = true;            // already mid-call — never re-ring
             body["recordingConsent"] = false;
             const int gen = m_callGen;
@@ -1926,6 +1928,10 @@ void CallManager::updateCallStats()
         && !m_screenShareTearingDown && !m_pubRebuild.inFlight()
         && !m_pubRetryTimer.isActive()) {
         m_publishPipeline->pollOutboundRtp();   // async refresh for the next tick
+        // Deliberately !m_muted, NOT sendingAudio(): this asks "should RTP be
+        // flowing", and the silent fallback source (mic unavailable) still sends
+        // RTP. Gating on the mic would switch the stall watchdog off for an
+        // audio-only call with a dead mic.
         const bool expectedToSend = m_cameraOn || !m_muted;
         if (m_pubStall.onTick(m_publishPipeline->outboundPacketsSent(), expectedToSend)) {
             qWarning() << "CallManager: publisher outbound-RTP stalled -- recovering "
@@ -2010,8 +2016,12 @@ void CallManager::setState(CallState newState)
             emit localVideoProviderChanged();
         }
         // Broadcast initial media state so remote peers show correct mute/video status
-        broadcastMediaState("audio", !m_muted);
+        broadcastMediaState("audio", sendingAudio());
         broadcastMediaState("video", m_cameraOn);
+        if (m_resyncCallFlagsOnActive) {   // advertised mic state changed during the build
+            m_resyncCallFlagsOnActive = false;
+            updateCallFlags();
+        }
         // A2 fix — a signaling session reset dropped all subscribers while
         // Reconnecting and deferred the re-subscribe to here (publisher is now
         // re-registered + Active, so the MCU will accept requestoffers). Re-request
@@ -2649,7 +2659,7 @@ bool CallManager::buildAndStartPublisher()
         // inside PublishPipeline::start() before the call has fully joined.
         QTimer::singleShot(0, this, [this]() {
             if (m_state == Idle || m_state == Ending) return;
-            broadcastMediaState("audio", false);
+            broadcastMediaState("audio", sendingAudio());
             updateCallFlags();
         });
     });
@@ -2700,11 +2710,35 @@ bool CallManager::buildAndStartPublisher()
     // remote peer's), keep the camera simulcast suppressed on the fresh
     // pipeline too. Runs before start() so its build-time layer gate applies.
     updateCameraSuppression();
+    // A fresh publisher retries the microphone from scratch, so forget the last
+    // build's failure first: PublishPipeline::audioError fires synchronously
+    // INSIDE start() on every build that lands on the silent source and
+    // re-raises the flag. Before this the flag stuck for the rest of the call --
+    // the banner stayed up and the peers' "audio off" was never corrected after
+    // the mic came back.
+    const bool micWasUnavailable = m_micUnavailable;
+    m_micUnavailable = false;
     if (!m_publishPipeline->start(m_stunServer, effectiveTurnServers(),
         m_deviceManager ? m_deviceManager->selectedInputDeviceId() : QString(),
         m_withVideo, videoDeviceIndex(), preferHd1080())) {
         qWarning() << "CallManager: failed to start publish pipeline";
+        m_micUnavailable = micWasUnavailable;   // the build told us nothing about the mic
         return false;
+    }
+    if (micWasUnavailable != m_micUnavailable) {
+        if (!m_micUnavailable)
+            qInfo() << "CallManager: microphone recovered on the rebuilt publisher";
+        // The mic state we advertise just CHANGED (failed on this build, or came
+        // back). The peers get the corrected mute state from the Active
+        // broadcast, but the server's in-call flags were set by an earlier join
+        // POST / re-POST, and updateCallFlags() is a no-op until Connecting or
+        // Active (this build runs in Outgoing or Reconnecting) -- so the
+        // audioError handler's own updateCallFlags() can be lost. Replay it on
+        // the next Active; a redundant PUT is harmless.
+        m_resyncCallFlagsOnActive = true;
+        // m_micUnavailable has no notify signal of its own: muteChanged re-syncs
+        // the self tile and repaints the PiP chip / mic button (isMicLive()).
+        emit muteChanged();
     }
     // Weak-device single-stream notice: fires for ANY weak tier (Software OR
     // WeakIgpu OR a low-core Auto demotion), not just the software-encoder
@@ -2931,6 +2965,16 @@ void CallManager::detectIncomingCall(const QString &callerName, const QString &t
         return;
     }
 
+    // Do Not Disturb: refuse BEFORE any ring-evidence work. Past this point a
+    // detection starts a REST check and, while an earlier check is pending, is
+    // classified as a "second call" and answered with a "on another call" chat
+    // message -- false information from a user who is merely not to be disturbed.
+    // ringIncomingCall keeps its own check for a ring check already in flight.
+    if (m_doNotDisturb) {
+        qDebug() << "CallManager: incoming call from" << callerName << "ignored -- Do Not Disturb";
+        return;
+    }
+
     // Cooldown: don't re-detect the same call we just declined
     if (token == m_lastDeclinedToken
         && m_lastDeclinedTime.isValid()
@@ -3058,9 +3102,37 @@ void CallManager::checkRingAnsweredElsewhere(const char *source)
     });
 }
 
+void CallManager::setDoNotDisturb(bool on)
+{
+    m_doNotDisturb = on;
+    if (!on) return;
+    // A ring check already in flight must not finish into a ring, nor turn the
+    // next detection into a "second call" busy reply. Bumping the generation
+    // makes its pending answer a no-op (onRingPrecheckResult).
+    if (!m_ringPrecheck.token.isEmpty()) {
+        m_ringPrecheck = RingPrecheck{};
+        m_ringPrecheckTimer.stop();
+        ++m_ringPrecheckGen;
+    }
+    // DND switched on mid-ring: the call window is already up (it stays, so the
+    // user can still answer or decline), but it must stop making noise.
+    if (m_state == Incoming)
+        stopRingtone();
+}
+
 void CallManager::ringIncomingCall(const QString &callerName, const QString &token, int callFlag,
                                    const QString &peerSessionId, bool restCheckAtRingStart)
 {
+    // Do Not Disturb: an incoming call is not announced at all -- no ring, no
+    // call window, no ring timers (Kalin, 2026-10-02: "stop all notifications
+    // and sounds entirely"). This is the ONLY place a call enters Incoming, so
+    // refusing here before any state changes covers the REST poll, the HPB
+    // path and a ring check that was already in flight when DND went on. The
+    // caller simply is not answered; their side times out as for any ring-out.
+    if (m_doNotDisturb) {
+        qInfo() << "CallManager: incoming call from" << callerName << "ignored -- status is Do Not Disturb";
+        return;
+    }
     qDebug() << "CallManager: incoming call detected:" << callerName << "token=" << token;
     m_callToken = token;
     m_remotePeerName = callerName;
@@ -3503,8 +3575,10 @@ void CallManager::toggleMute() {
             m_publishPipeline->sendStatusMessage(R"({"type":"stoppedSpeaking"})");
     }
 
-    // Broadcast mute/unmute state to peers via signaling (NC Talk compatibility)
-    broadcastMediaState("audio", !m_muted);
+    // Broadcast mute/unmute state to peers via signaling (NC Talk compatibility).
+    // sendingAudio(), not !m_muted: unmuting with a dead mic must not tell the
+    // peers "audio on" while we are publishing the silent fallback.
+    broadcastMediaState("audio", sendingAudio());
 
     // Upstream keeps the in-call flags in sync with mic state (clears the
     // WITH_AUDIO bit on mute) so the participant list / other clients show
@@ -4831,7 +4905,7 @@ void CallManager::updateCallFlags()
         return;
 
     QJsonObject body;
-    body["flags"] = callFlags(m_cameraOn, !m_muted);
+    body["flags"] = callFlags(m_cameraOn, sendingAudio());
     m_api->put("apps/spreed/api/v4/call/" + m_callToken, body,
         [](bool ok, const QJsonObject &, int statusCode) {
             if (!ok) qWarning() << "CallManager: failed to update call flags, status=" << statusCode;
@@ -4854,7 +4928,7 @@ void CallManager::joinCallOnServer(bool withVideo)
     refreshIceServers(false, "call-join");
 
     QJsonObject body;
-    body["flags"] = callFlags(withVideo, !m_muted);
+    body["flags"] = callFlags(withVideo, sendingAudio());
     // Match the official client's POST call/{token} parameter shape.
     body["silent"] = false;            // ring participants normally
     body["recordingConsent"] = false;  // no consent UI; server enforces only if required
@@ -5705,6 +5779,7 @@ void CallManager::teardown(const QString &reason)
     m_cameraApplyTimer.stop();          // D3 fix — no stray coalesced toggle into the next call
     m_neverDecodedRecoveries.clear();   // D2 fix
     m_resubscribeOnActive = false;      // A2 fix
+    m_resyncCallFlagsOnActive = false;  // a pending flags replay must not leak into the next call
     stopIncomingCameraPreview();   // #13: release the camera (safe no-op if not running)
     // Snapshot the call identity BEFORE the local-state cleanup below
     // clears it — the server-leave DELETE at the end needs the token and
@@ -5904,7 +5979,7 @@ CallParticipant *CallManager::ensureSelfParticipant()
 void CallManager::syncSelfParticipant()
 {
     if (!m_selfParticipant) return;
-    m_selfParticipant->setAudioMuted(m_muted);
+    m_selfParticipant->setAudioMuted(!sendingAudio());   // a dead mic reads muted, like it does to the peers
     m_selfParticipant->setVideoMuted(!m_cameraOn);
     m_selfParticipant->setScreenSharing(m_screenSharing);
     m_selfParticipant->setCamera(m_localVideoProvider);
@@ -6011,7 +6086,7 @@ void CallManager::onParticipantJoinedCall(const QString &sessionId, int flags, c
         emit callInfoChanged();
 
         // Broadcast media state now that remote peer can receive it
-        broadcastMediaState("audio", !m_muted);
+        broadcastMediaState("audio", sendingAudio());
         broadcastMediaState("video", m_cameraOn);
 
         if (flags & (CALL_FLAG_WITH_AUDIO | CALL_FLAG_WITH_VIDEO)) {
@@ -6454,7 +6529,7 @@ void CallManager::onOfferReceived(const QString &fromSessionId, const QString &s
             const int want = m_desiredSubstream.value(fromSessionId, 2);
             m_signaling->sendSelectStream(fromSessionId,
                                           m_subscriberSids.value(fromSessionId), want);
-            broadcastMediaState("audio", !m_muted);
+            broadcastMediaState("audio", sendingAudio());
             broadcastMediaState("video", m_cameraOn);
             // Announce our TalQ version on the data channel so other TalQ
             // peers can show it. Re-sent here because a new subscriber may

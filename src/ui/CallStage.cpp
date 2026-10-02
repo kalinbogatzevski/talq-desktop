@@ -1543,8 +1543,10 @@ void CallStage::buildButtons()
 
     auto add = [&](const QString &id, const QRectF &r){
         Btn b; b.id = id; b.rect = r;
-        if (id=="mic")        { b.on = !m_call->isMuted();
-                                b.tip = b.on ? tr("Mute") : tr("Unmute"); }
+        if (id=="mic")        { b.on = m_call->isMicLive();   // a dead mic reads off, not "on"
+                                // "Unmute" would be a lie: unmuting cannot fix a mic that won't open.
+                                b.tip = m_call->isMicUnavailable() ? tr("Microphone unavailable")
+                                      : b.on ? tr("Mute") : tr("Unmute"); }
         else if (id=="cam")   { b.on = m_call->isCameraOn();
                                 b.tip = b.on ? tr("Turn camera off") : tr("Turn camera on"); }
         else if (id=="share") { b.on = m_call->isScreenSharing();

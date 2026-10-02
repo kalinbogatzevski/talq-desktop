@@ -198,16 +198,38 @@ void NotificationManager::playSystemSound()
 
 void NotificationManager::notify(const QString &title, const QString &message, bool alwaysSound, const QString &token)
 {
+    deliver(title, message, alwaysSound, token, /*feedback=*/false);
+}
+
+void NotificationManager::notifyFeedback(const QString &title, const QString &message, bool alwaysSound, const QString &token)
+{
+    deliver(title, message, alwaysSound, token, /*feedback=*/true);
+}
+
+void NotificationManager::deliver(const QString &title, const QString &message, bool alwaysSound,
+                                  const QString &token, bool feedback)
+{
     // Notifications off means off: no popup AND no sound. This gate used to sit
     // after the sound, so a user who switched notifications off still got the
     // chime (Kalin, 2026-09-30).
     if (!m_notificationsEnabled) return;
 
+    // Do Not Disturb means nothing at all -- no popup, no sound (Kalin,
+    // 2026-10-02; it used to silence only the sound). Feedback about what the
+    // user is doing right now is the one exception, and it stays silent below.
+    if (m_doNotDisturb && !feedback) {
+        // No title in the log: for chat it is the sender's name, and a who-
+        // messaged-when timeline does not belong in a file people send to us.
+        qInfo() << "NotificationManager: notification suppressed -- status is Do Not Disturb";
+        return;
+    }
+
     bool windowActive = m_window && m_window->isActiveWindow();
 
     // Play sound: always for cross-chat, only when unfocused for active chat --
-    // but never in Do Not Disturb, nor while another app has the mic (a
-    // Zoom/Teams call in the user's headset). The popup below still shows.
+    // but never in Do Not Disturb (a feedback toast gets here in DND, and is
+    // silent), nor while another app has the mic (a Zoom/Teams call in the
+    // user's headset). The popup below still shows.
     // Away alone does NOT silence it. See MicInUsePolicy.h.
     const bool wantSound = (alwaysSound || !windowActive) && m_soundId != "none";
     QString micUser;
@@ -262,6 +284,11 @@ bool NotificationManager::notifyConnectionFault(const QString &title,
 bool NotificationManager::notifySilently(const QString &title, const QString &message)
 {
     if (!m_notificationsEnabled)
+        return false;
+    // Do Not Disturb: nothing goes out, and the caller is told so (false) so a
+    // once-per-fault budget is not spent on a popup nobody saw. No log line --
+    // the health check asks every tick while a fault lasts.
+    if (m_doNotDisturb)
         return false;
     emit desktopPopupRequested(title, message, QString());
     return true;

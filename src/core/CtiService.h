@@ -61,6 +61,10 @@ public:
 
     void setTheme(PainterTheme::Theme theme);
 
+    // Own status is Do Not Disturb: an incoming desk-phone call raises no
+    // caller card. The call itself is still tracked, so its end is handled.
+    void setDoNotDisturb(bool on) { m_doNotDisturb = on; }
+
     // ── Colleague card ──────────────────────────────────────────────────
     // "Tell me about this colleague." Answers with personCardReady(), or with
     // nothing at all: a site that never implements the endpoint, an unpaired
@@ -138,4 +142,5 @@ private:
     int m_pairPollMs = 2000;   // overridden by the server's poll_interval
 
     PainterTheme::Theme m_theme = PainterTheme::Theme::Vivid;
+    bool m_doNotDisturb = false;
 };

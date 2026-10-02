@@ -4702,8 +4702,9 @@ void MainWindow::onUpdateAutoInstallTick()
     // bring TalQ to focus. The notification gives them a real chance
     // to alt-tab over and cancel.
     if (inCountdown && !m_countdownNotified) {
-        m_countdownNotified = true;
-        if (m_notifications) {
+        if (!m_notifications) {
+            m_countdownNotified = true;
+        } else {
             const int sec = int(qMax<qint64>(0, remainingMs) / 1000);
             const QString msg = sec >= 30
                 ? tr("TalQ will install the new version in about a minute. "
@@ -4713,7 +4714,12 @@ void MainWindow::onUpdateAutoInstallTick()
             // Silent: TalQ is usually in the background when this fires, and
             // notify() chimes for an unfocused window, which made the warning
             // sound like a new message.
-            m_notifications->notifySilently(tr("Update ready to install"), msg);
+            // Spent only once it really went out: in Do Not Disturb it returns
+            // false, and burning the one-shot on a warning nobody saw would leave
+            // the in-window banner as the only cue. Left unspent, it shows if
+            // DND ends before the install.
+            if (m_notifications->notifySilently(tr("Update ready to install"), msg))
+                m_countdownNotified = true;
         }
     }
 
@@ -5087,7 +5093,8 @@ void MainWindow::scheduleReminder(int messageId, const QDateTime &when)
     m_api->setMessageReminder(token, messageId, when, this,
         [this, when](bool ok, const QString &error) {
             if (ok) {
-                m_notifications->notify(tr("Reminder set"),
+                // Confirms the click the user just made, so DND still shows it.
+                m_notifications->notifyFeedback(tr("Reminder set"),
                     tr("You'll be reminded at %1")
                         .arg(when.toString(QStringLiteral("ddd d MMM, HH:mm"))),
                     false, QString());

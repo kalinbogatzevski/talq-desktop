@@ -112,6 +112,11 @@ public:
     void startRecording(bool video);
     void stopRecording();
     bool isMuted() const { return m_muted; }
+    // What the LOCAL surface (mic button, PiP chip, self tile) shows for the
+    // mic: live only when the user has not muted AND the mic actually opened --
+    // the same rule as what the peers are told (sendingAudio()). isMuted() stays
+    // the user's own mute intent; a dead mic must not read as "mic on".
+    bool isMicLive() const { return sendingAudio(); }
     bool isCameraOn() const { return m_cameraOn; }
     // True when the camera device failed to open during this call (missing,
     // in use by another app, or blocked by OS privacy). Distinct from
@@ -283,8 +288,11 @@ public:
     // Play a ringtone once (no loop) for the Settings preview. Static so the
     // Settings dialog can audition without a live CallManager instance.
     static void auditionRingtone(const QString &id);
-    // Own status is Do Not Disturb: an incoming call still shows, but silently.
-    void setDoNotDisturb(bool on) { m_doNotDisturb = on; }
+    // Own status is Do Not Disturb: an incoming call is ignored entirely -- no
+    // ring, no call window (ringIncomingCall). Switching DND on WHILE a call is
+    // ringing also stops that ring. Calls the user places or is already in are
+    // untouched.
+    void setDoNotDisturb(bool on);
     VideoFrameProvider *remoteScreenProvider() const { return m_remoteScreenProvider; }
     void onIncomingCallDetected(const QString &callerName, const QString &token, int callFlag);
     // #77 -- called from onIncomingCallDetected when a second call arrives while
@@ -468,6 +476,11 @@ private:
     bool preferHd1080() const;
     void broadcastMediaState(const QString &media, bool enabled);
     void updateCallFlags();
+    // What we tell peers about our microphone: audio is ON only when the user
+    // has not muted AND the mic actually opened. A silent-fallback publisher
+    // (m_micUnavailable) must never advertise audio -- every flags/mute
+    // broadcast goes through here, not through a bare !m_muted.
+    bool sendingAudio() const { return !m_muted && !m_micUnavailable; }
 
     // Upstream Talk requires the signaling room (session + WS room) to be
     // joined before POST call/{token}, or participant/offer events are
@@ -702,7 +715,10 @@ private:
     // the user toggles the camera back on (a retry).
     bool m_cameraUnavailable = false;
     // Set when the mic can't be opened and the publisher fell back to silent
-    // audio; drives the "microphone unavailable" banner. Reset at every call.
+    // audio; drives the "microphone unavailable" banner. Reset at every call
+    // and at every publisher (re)build: PublishPipeline::audioError re-raises
+    // it synchronously inside start() if the mic still won't open, so a rebuild
+    // that recovers the mic clears the banner and the peers' "audio off".
     bool m_micUnavailable = false;
     bool m_speaking = false;
     QTimer m_speakingGrace;
@@ -902,6 +918,7 @@ private:
     bool m_softwareEncoderNotified = false;  // once-per-call guard for softwareVideoEncoderNotice
     bool m_hwDecodeFallbackDone = false;     // B4 — one-shot guard for the d3d11 decode-fault fallback
     bool m_resubscribeOnActive = false;      // A2 fix — replay subscriber re-request on the next Active
+    bool m_resyncCallFlagsOnActive = false;  // the advertised mic state changed during a publisher build — PUT the corrected in-call flags on the next Active
     QHash<QString,int> m_neverDecodedRecoveries;  // D2 fix — bounded never-decoded rebuilds per sid
     QString m_videoQualityNotice;            // 0.52.5 — "" = full quality; else the sender chip text
     void setVideoQualityNotice(const QString &text);   // emits videoQualityNoticeChanged() on change
