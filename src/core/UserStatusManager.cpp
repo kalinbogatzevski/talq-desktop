@@ -233,6 +233,17 @@ void UserStatusManager::tryRestoreFromAutoAway()
     // intentional status. Cross-platform: the caller's activity is the
     // "user is back" signal, so no OS idle query is needed here.
     if (m_sessionLocked) return;
+    // Only an Away can be restored. If the status has moved on without us -- most
+    // importantly Do Not Disturb set on another device while TalQ held its
+    // auto-Away -- the marker is stale, and writing Online here would silently
+    // end the user's DND on every device. Drop the marker and leave the status.
+    if (m_status != Status::Away) {
+        if (m_autoAwayActive) {
+            m_autoAwayActive = false;
+            persistAutoAway(false);
+        }
+        return;
+    }
     // bug 13 (broadened) — restore on activity for ANY *automatic* Away, not
     // just one WE set: either m_autoAwayActive (TalQ flipped it) OR the status
     // is Away and NOT user-defined (the server's presence-based auto-away, or
@@ -487,10 +498,11 @@ void UserStatusManager::applyFromJson(const QJsonObject &d)
     m_clearAt     = d.value(QStringLiteral("clearAt")).toVariant().toLongLong();
     m_userDefined = d.value(QStringLiteral("statusIsUserDefined")).toBool();
     // bug 13 — keep the auto-away tracker consistent with the server truth: if
-    // the server says we're Online, we're no longer in an auto-flipped Away,
+    // the server says we're anything but Away (Online, or Do Not Disturb / Busy /
+    // Invisible set on another device), we're no longer in an auto-flipped Away,
     // so clear the flag (otherwise a stale m_autoAwayActive could confuse the
-    // next restore/idle decision).
-    if (m_status == Status::Online) {
+    // next restore/idle decision -- and restore OVER a status the user chose).
+    if (m_status != Status::Away) {
         m_autoAwayActive = false;
         persistAutoAway(false);
     }

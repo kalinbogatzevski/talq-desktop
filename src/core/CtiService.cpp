@@ -311,6 +311,14 @@ void CtiService::onRinging(const QString &callId, const QString &caller,
     if (action != talq::CardAction::Show)
         return;   // duplicate — a reconnect can replay a ring
 
+    // Do Not Disturb: no pop-up. The store has already recorded the call, so its
+    // end event is handled normally -- every card lookup below is null-safe
+    // (onEnded, dropCard, lookupCustomer all tolerate a call with no card).
+    if (m_doNotDisturb) {
+        TLOG_NET("CTI: caller card suppressed -- status is Do Not Disturb");
+        return;
+    }
+
     auto *card = new CallerCardPopup();
     card->setTheme(m_theme);
     card->setCanDial(canDial());

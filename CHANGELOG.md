@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.74.7 "Ravnodenstvie" — STABLE (2026-10-02)
+
+Do Not Disturb now really means it, and TalQ is honest when your microphone does not work.
+
+### Changed
+* **Do Not Disturb silences TalQ completely.** While your status is Do Not Disturb, TalQ shows
+  no message pop-ups and plays no sounds. An incoming call does not ring and does not open a
+  call window, and the phone caller card stays away. Things you do yourself still answer you,
+  quietly: a screen share that did not start, a call you placed that was declined or not
+  answered, a saved attachment. Away changes nothing.
+
+### Fixed
+* **A microphone that cannot be opened is no longer shown as working.** When TalQ cannot open
+  your microphone it carries on with silence so the call survives. Until now the other people
+  were still told you were unmuted, and your own microphone button and tile looked live. Now
+  they see you as muted, your button says "Microphone unavailable", and if the microphone comes
+  back after a reconnect the notice clears by itself.
+* **Coming back from being away no longer ends a Do Not Disturb you set elsewhere.** If TalQ had
+  marked you Away for being idle, your next keystroke set you back to Online, even if you had
+  switched to Do Not Disturb on your phone or in the web app in the meantime. TalQ now leaves
+  any status you chose alone.
+
 ## v0.74.6 "Ravnodenstvie" — STABLE (2026-10-01)
 
 People who use TalQ now show as online to everyone else.

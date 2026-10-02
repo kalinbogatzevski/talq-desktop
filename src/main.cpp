@@ -898,8 +898,11 @@ int main(int argc, char *argv[])
     // is told nothing and simply stops seeing who is calling.
     if (CtiService *cti = window.ctiService()) {
         QObject::connect(cti, &CtiService::pairingMessage, &notifStack,
-                         [&notifStack](const QString &message, bool isError) {
-            if (isError)
+                         [&notifStack, &notifications](const QString &message, bool isError) {
+            // Straight to the stack, so NotificationManager's Do Not Disturb gate
+            // does not see it: apply the same rule here. It is an unprompted
+            // notice from the phone service, not feedback on something the user did.
+            if (isError && !notifications.isDoNotDisturb())
                 notifStack.notify(QObject::tr("Phone"), message, QString());
         });
     }
@@ -1006,8 +1009,9 @@ int main(int argc, char *argv[])
     // #78 -- add-to-call outcome feedback.
     QObject::connect(&callManager, &CallManager::addToCallResult, &notifications,
                      [&notifications](bool ok, const QString &message) {
-        notifications.notify(ok ? QObject::tr("Add to call") : QObject::tr("Add to call — failed"),
-                             message, false);
+        // Feedback on the click the user just made, so DND still shows it.
+        notifications.notifyFeedback(ok ? QObject::tr("Add to call") : QObject::tr("Add to call — failed"),
+                                     message, false);
     });
     QObject::connect(&callManager, &CallManager::busyAutoReply, &api,
                      [&api, &callManager](const QString &token, const QString &text) {
@@ -1020,7 +1024,8 @@ int main(int argc, char *argv[])
     // #80 -- caller-side popup when the peer we're ringing is on another call.
     QObject::connect(&callManager, &CallManager::peerBusy, &notifications,
                      [&notifications](const QString &peerName) {
-        notifications.notify(peerName, QObject::tr("is on another call"), true);
+        // About the call the user is placing right now (the busy tone plays too).
+        notifications.notifyFeedback(peerName, QObject::tr("is on another call"), true);
     });
 
     // "Call ended" desktop notification. callEnded fires once per terminal
@@ -1034,13 +1039,25 @@ int main(int argc, char *argv[])
         const QString r = reason.toLower();
         if (r.contains("hung up") || r.contains("cancel")) return;
         QString msg;
+        bool ownCall = true;
         if (r.contains("declined"))        msg = QObject::tr("Call declined.");
         else if (r.contains("no answer"))  msg = QObject::tr("No answer.");
         else if (r.contains("failed") || r.contains("ice")
                  || r.contains("pipeline") || r.contains("start"))
             msg = QObject::tr("Connection lost.");
-        else                               msg = QObject::tr("The call ended.");
-        notifications.notify(QObject::tr("Call ended"), msg, /*alwaysSound=*/true, QString());
+        else {
+            // Generic ending: an incoming ring nobody answered (ring timeout) or
+            // the other side leaving. That arrives from outside, so it follows
+            // Do Not Disturb like any other notification.
+            msg = QObject::tr("The call ended.");
+            ownCall = false;
+        }
+        // Declined / no answer / lost are feedback on a call the user placed or
+        // was in, so DND still shows them (silently).
+        if (ownCall)
+            notifications.notifyFeedback(QObject::tr("Call ended"), msg, /*alwaysSound=*/true, QString());
+        else
+            notifications.notify(QObject::tr("Call ended"), msg, /*alwaysSound=*/true, QString());
     });
 
     // Screen-share reliability — surface the auto-retry + the give-up to the
@@ -1051,19 +1068,22 @@ int main(int argc, char *argv[])
     // ready-to-show reason. Both are non-interactive toasts (empty token).
     QObject::connect(&callManager, &CallManager::screenShareRetrying, &notifications,
                      [&notifications]() {
-        notifications.notify(QObject::tr("Screen sharing"),
-                             QObject::tr("Still starting your screen share…"),
-                             /*alwaysSound=*/false, QString());
+        notifications.notifyFeedback(QObject::tr("Screen sharing"),
+                                     QObject::tr("Still starting your screen share…"),
+                                     /*alwaysSound=*/false, QString());
     });
     QObject::connect(&callManager, &CallManager::screenShareFailed, &notifications,
                      [&notifications](const QString &reason) {
-        notifications.notify(QObject::tr("Screen sharing"), reason,
-                             /*alwaysSound=*/true, QString());
+        notifications.notifyFeedback(QObject::tr("Screen sharing"), reason,
+                                     /*alwaysSound=*/true, QString());
     });
     // Camera fell back to the software (x264) encoder — let the user know once
     // why CPU may be higher (no usable hardware video encoder on this machine).
     QObject::connect(&callManager, &CallManager::softwareVideoEncoderNotice, &notifications,
                      [&notifications]() {
+        // An automatic advisory, not a reply to anything the user did, so it
+        // follows Do Not Disturb. The call surface keeps a persistent chip with
+        // the same information.
         notifications.notify(QObject::tr("Video encoding"),
                              QObject::tr("Using software video encoding — your graphics "
                                          "encoder is unavailable; this may use more CPU."),
@@ -1175,12 +1195,16 @@ int main(int argc, char *argv[])
             userStatus.onLoggedIn();
     });
 
-    // Do Not Disturb silences TalQ's chime and incoming ring (popups and the
-    // call window still show). Away deliberately does not.
-    auto applyDnd = [&userStatus, &notifications, &callManager]() {
+    // Do Not Disturb stops everything that arrives from outside: no popups, no
+    // chime, no incoming-call ring or call window, no phone caller card. Feedback
+    // about what the user is doing right now (notifyFeedback) still shows, and
+    // silently. Away deliberately does not do any of this.
+    CtiService *ctiForDnd = window.ctiService();
+    auto applyDnd = [&userStatus, &notifications, &callManager, ctiForDnd]() {
         const bool dnd = userStatus.status() == UserStatusManager::Status::Dnd;
         notifications.setDoNotDisturb(dnd);
         callManager.setDoNotDisturb(dnd);
+        if (ctiForDnd) ctiForDnd->setDoNotDisturb(dnd);
     };
     QObject::connect(&userStatus, &UserStatusManager::statusChanged, &notifications, applyDnd);
     applyDnd();

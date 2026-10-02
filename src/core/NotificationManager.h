@@ -44,10 +44,21 @@ public:
     void playCurrentSound();
     bool isNotificationsEnabled() const { return m_notificationsEnabled; }
     void setNotificationsEnabled(bool v);
-    // Own status is Do Not Disturb: popups still show, no sound.
+    // Own status is Do Not Disturb: notify() and notifySilently() raise NOTHING
+    // -- no popup, no sound. Only notifyFeedback() still shows (still silent).
     void setDoNotDisturb(bool on) { m_doNotDisturb = on; }
+    bool isDoNotDisturb() const { return m_doNotDisturb; }
 
+    // Something arrived from OUTSIDE (a message, a second caller, a server
+    // notice). Silent in Do Not Disturb: no popup and no sound. This is the
+    // default on purpose -- a new caller is quiet in DND unless it opts out.
     Q_INVOKABLE void notify(const QString &title, const QString &message, bool alwaysSound = false, const QString &token = QString());
+    // Feedback about something the user is doing RIGHT NOW (their own outgoing
+    // call, a screen share they started, a reminder they just set). Do Not
+    // Disturb must not swallow it -- a share that silently failed is worse than
+    // a toast -- but it never makes a sound in DND. Use sparingly: anything
+    // that came from another person or from the server belongs in notify().
+    void notifyFeedback(const QString &title, const QString &message, bool alwaysSound = false, const QString &token = QString());
     Q_INVOKABLE void clearNotifications();
     Q_INVOKABLE void updateUnreadCount(int count);
 
@@ -60,8 +71,8 @@ public:
     // shown. See the implementation for why notify() is wrong for this.
     bool notifyConnectionFault(const QString &title, const QString &message);
     // A popup that never makes a sound, shown whether or not TalQ is focused;
-    // respects notificationsEnabled. For app notices that are not messages.
-    // Returns whether it went out.
+    // respects notificationsEnabled and Do Not Disturb. For app notices that are
+    // not messages. Returns whether it went out.
     bool notifySilently(const QString &title, const QString &message);
     // Re-assert the Windows taskbar overlay badge for the CURRENT unread count,
     // bypassing updateUnreadCount()'s "count unchanged" early-return. MainWindow
@@ -90,6 +101,10 @@ private:
     void loadSoundForId(const QString &id);  // fills m_wavData from :/sounds/<id>.wav
     void playInternalSound();
     void playSystemSound();
+    // The one body behind notify() and notifyFeedback(); `feedback` is the only
+    // difference (whether Do Not Disturb still lets the popup through).
+    void deliver(const QString &title, const QString &message, bool alwaysSound,
+                 const QString &token, bool feedback);
     void onTrayActivated(QSystemTrayIcon::ActivationReason reason);
 
     QSystemTrayIcon *m_trayIcon = nullptr;

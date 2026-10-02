@@ -123,7 +123,7 @@ void CallPipWidget::paintEvent(QPaintEvent *)
     const QRectF bar(0, rc.height() - barH, rc.width(), barH);
     p.fillRect(bar, QColor(0, 0, 0, 140));
 
-    const bool muted = m_call->isMuted();
+    const bool muted = !m_call->isMicLive();   // muted by the user OR mic unavailable
     // Stored as a member (not a local) so mousePress/Release can hit-test it:
     // clicking the chip toggles mute, same as the mic button on the full stage.
     // Was 22x22 -- under the 24px minimum tap target on the dock's most-used
