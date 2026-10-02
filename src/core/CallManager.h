@@ -293,6 +293,16 @@ public:
     // ringing also stops that ring. Calls the user places or is already in are
     // untouched.
     void setDoNotDisturb(bool on);
+    // `hook(proceed)` reads the user's status now and must call `proceed` exactly
+    // once, soon - after the answer is applied, or at once if it was read moments
+    // ago, or after a short cap if the read is slow or fails. Used before a call
+    // is DROPPED because Do Not Disturb is believed on: that belief can be stale
+    // (DND switched off on another device, or remembered from the last run), and
+    // losing a real call to it is the worse mistake. It is deliberately NOT used
+    // before a call rings: waiting there hides a pending call from the ring state
+    // machine (see detectIncomingCall). Unset = no re-read.
+    using FreshStatusHook = std::function<void(std::function<void()> proceed)>;
+    void setFreshStatusHook(FreshStatusHook hook) { m_freshStatusHook = std::move(hook); }
     VideoFrameProvider *remoteScreenProvider() const { return m_remoteScreenProvider; }
     void onIncomingCallDetected(const QString &callerName, const QString &token, int callFlag);
     // #77 -- called from onIncomingCallDetected when a second call arrives while
@@ -780,6 +790,17 @@ private:
         bool    restCheckAtRingStart = false;   // talq::RingEvidencePlan
     };
     RingPrecheck m_ringPrecheck;
+    // Run `then` once the user's CURRENT status has been read and applied (see
+    // setFreshStatusHook); at once when no hook is installed.
+    void afterFreshStatus(std::function<void()> then);
+    // False only when we can SEE that the caller has left the call (their
+    // session's in-call flag is gone); true when unknown. For detections that
+    // are replayed after a short wait.
+    bool callerStillInCall(const QString &token, const QString &peerSessionId);
+    FreshStatusHook m_freshStatusHook;
+    // A "was Do Not Disturb really still on?" re-read is outstanding; one at a
+    // time (detectIncomingCall).
+    bool m_dndRecheckInFlight = false;
     int    m_ringPrecheckGen = 0;
     // The ring whose answered-elsewhere GET is still outstanding ("" = none).
     QString m_ringSelfCheckInFlightToken;

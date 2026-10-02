@@ -2971,6 +2971,39 @@ void CallManager::detectIncomingCall(const QString &callerName, const QString &t
     // message -- false information from a user who is merely not to be disturbed.
     // ringIncomingCall keeps its own check for a ring check already in flight.
     if (m_doNotDisturb) {
+        // The DND we know of can be stale: remembered from the last run, or switched
+        // off on another device since the last status poll, and dropping a real
+        // call because of that is far worse than one extra status read. The
+        // detection edge fires once per call, so a refusal here is final - verify
+        // first, and run the detection again if DND is in fact off. When the status
+        // was read moments ago the hook answers at once with DND unchanged, and we
+        // refuse. Nothing is held pending during the read, so the ring state
+        // machine never sees this call until it is replayed (or refused for good).
+        // Known limit: only one re-check at a time, and a read slower than the
+        // hook's cap still refuses (a call is lost only if DND just ended AND the
+        // read is that slow, or two calls land within the same read).
+        if (m_freshStatusHook && !m_dndRecheckInFlight) {
+            m_dndRecheckInFlight = true;
+            qDebug() << "CallManager: incoming call from" << callerName
+                     << "-- Do Not Disturb believed on, re-reading the status before refusing";
+            afterFreshStatus([this, callerName, token, callFlag, peerSessionId]() {
+                m_dndRecheckInFlight = false;
+                if (m_doNotDisturb) {   // DND really is on: the refusal stands
+                    qDebug() << "CallManager: incoming call from" << callerName << "ignored -- Do Not Disturb";
+                    return;
+                }
+                if (m_state != Idle)    // the line was taken while we asked
+                    return;
+                // The detection is replayed from a snapshot taken up to a few
+                // seconds ago: do not ring for a caller who hung up while we asked.
+                if (!callerStillInCall(token, peerSessionId)) {
+                    qInfo() << "CallManager: caller left while Do Not Disturb was re-checked -- not ringing";
+                    return;
+                }
+                detectIncomingCall(callerName, token, callFlag, peerSessionId);
+            });
+            return;
+        }
         qDebug() << "CallManager: incoming call from" << callerName << "ignored -- Do Not Disturb";
         return;
     }
@@ -3100,6 +3133,39 @@ void CallManager::checkRingAnsweredElsewhere(const char *source)
         if (m_state == Incoming && m_callToken == token && talq::shouldStopRinging(p))
             stopRingingAnsweredElsewhere(source);
     });
+}
+
+bool CallManager::callerStillInCall(const QString &token, const QString &peerSessionId)
+{
+    // Only the signaling path knows the caller's session, and only while it is
+    // joined to the call's room; with no session id, or another room, there is
+    // nothing to check and the call gets the benefit of the doubt (the ring-time
+    // checks take over).
+    if (peerSessionId.isEmpty() || !signalingCoversCallRoom(token))
+        return true;
+    // Nobody known to be in the call at all means "don't know yet", not "the
+    // caller left": a signaling re-join clears the participant flags until the
+    // next participants update. Refusing on that would lose a real call for good,
+    // while the opposite mistake (a 1:1 caller who just hung up) is a short ring
+    // that is declined with one click.
+    const QStringList inCall = m_signaling->inCallSessions();
+    if (inCall.isEmpty())
+        return true;
+    return inCall.contains(peerSessionId);
+}
+
+void CallManager::afterFreshStatus(std::function<void()> then)
+{
+    // TalQ learns of a Do Not Disturb change made on another device through its
+    // 20 s status poll. Before a call is refused for a DND that may be stale, this
+    // reads the status now and runs `then` after the answer has been applied
+    // (setDoNotDisturb already updated) - or at once when the status was read
+    // moments ago, or after the hook's cap if the read is slow or fails. It is used
+    // ONLY on the refusal path, never before a call rings. No hook = run at once.
+    if (m_freshStatusHook)
+        m_freshStatusHook(std::move(then));
+    else
+        then();
 }
 
 void CallManager::setDoNotDisturb(bool on)

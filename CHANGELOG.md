@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.74.8 "Ravnodenstvie" — STABLE (2026-10-02)
+
+A status you change on your phone now reaches TalQ in seconds, and Do Not Disturb holds from the moment TalQ starts.
+
+### Changed
+* **Do Not Disturb set on another device takes effect within seconds.** TalQ now checks your
+  status every 20 seconds, so switching to Do Not Disturb on your phone or in the web app
+  silences TalQ almost at once instead of up to a minute later.
+* **TalQ starts out quiet if you were in Do Not Disturb.** For the first seconds after TalQ
+  started it did not yet know your status, so it could pop up or ring. It now remembers that you
+  were in Do Not Disturb and stays quiet until the server confirms your status.
+
+### Fixed
+* **An incoming call is no longer lost because TalQ wrongly believes you are in Do Not Disturb.**
+  If you had switched Do Not Disturb off elsewhere, or TalQ only remembered it from last time,
+  TalQ used to ignore the call. It now checks your current status before ignoring a call.
+* **Going idle and coming back can no longer leave you stuck as Away.** A status check that
+  happened to arrive while TalQ was marking you Away, or bringing you back, could undo that change
+  and leave you showing Away while you were at the keyboard. TalQ's own changes are now protected
+  from this.
+
 ## v0.74.7 "Ravnodenstvie" — STABLE (2026-10-02)
 
 Do Not Disturb now really means it, and TalQ is honest when your microphone does not work.
