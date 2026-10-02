@@ -1,9 +1,12 @@
 #pragma once
 
+#include <QElapsedTimer>
 #include <QObject>
 #include <QString>
 #include <QVector>
 #include <QTimer>
+
+#include <functional>
 
 class ApiClient;
 class AuthManager;
@@ -41,7 +44,22 @@ public:
     QString messageId() const { return m_messageId; }
     qint64  clearAt() const { return m_clearAt; }
     bool    isUserDefined() const { return m_userDefined; }
+    // Whether the user is in Do Not Disturb, as best we know. Until the first
+    // answer from the server arrives after startup the status is unknown (it
+    // reads Offline), so this returns what the LAST run knew: relaunching TalQ
+    // must not start out ringing and popping up for a user who is in DND. The
+    // first server answer corrects it. Always use this, not status() == Dnd.
+    bool    isDoNotDisturb() const { return m_statusLoaded ? m_status == Status::Dnd : m_lastKnownDnd; }
     const QVector<Predefined> &predefinedStatuses() const { return m_predefined; }
+
+    // Read the status from the server right now, then call `done` - exactly once,
+    // whatever happens: it fires when the answer has been applied, when the read
+    // fails, or after a short cap (a few seconds), and at once if the status was
+    // read a few seconds ago. Used before an incoming call is REFUSED for Do Not
+    // Disturb, so a DND that was switched off elsewhere (or is only remembered
+    // from the last run) does not drop a real call. `done` is therefore always
+    // safe to treat as "go ahead and decide".
+    void refreshThen(std::function<void()> done);
 
     // Shared with the contacts' presence dots so own/other dots match.
     static QColor colorFor(Status s);
@@ -65,7 +83,8 @@ public slots:
     // only when keepAliveOnline and the SERVER truth is Online — re-assert
     // online to keep presence alive. Read-before-write so a stale local
     // "online" can't stomp an Away/DND/custom status another device just set.
-    // Driven by the 60 s heartbeat (keepAlive=true) + window activation (false).
+    // Driven by the 60 s heartbeat (keepAlive=true), the 20 s read-only status
+    // poll and window activation (both false).
     void refreshFromServer(bool keepAliveOnline);
     // Tell the server we are here (status "online", or "away" while TalQ holds
     // an auto-Away / the session is locked) via the user_status heartbeat.
@@ -90,6 +109,12 @@ signals:
 private:
     void fetchPredefined();
     void fetchCurrent();
+    // refreshFromServer's body; `done` (may be empty) runs after the answer has
+    // been handled on EVERY path, including a failed read.
+    void doRefresh(bool keepAliveOnline, std::function<void()> done);
+    // Remember (on disk) whether we are in Do Not Disturb, once the status is
+    // known, so the next launch can start quiet. See isDoNotDisturb().
+    void persistKnownDnd();
     void applyFromJson(const QJsonObject &d);
     void takeSnapshot();
     void rollback();
@@ -98,17 +123,22 @@ private:
     AuthManager *m_auth;
 
     Status  m_status = Status::Offline;
+    // False from startup/logout until the status has really been learned (server
+    // answer, or the user choosing one): m_status is then only a placeholder.
+    bool    m_statusLoaded = false;
+    bool    m_lastKnownDnd = false;     // DND as of the last run; see isDoNotDisturb()
+    QElapsedTimer m_sinceLastRead;      // time since the last successful status read (invalid = never)
     QString m_message;
     QString m_icon;
     QString m_messageId;
     qint64  m_clearAt = 0;
     bool    m_userDefined = false;
-    // Wall-clock ms of the last LOCAL (user-initiated) status write.
-    // refreshFromServer skips applying the server snapshot within ~10 s of this
-    // so a stale read — fired by the popover-close window-activation (or the 60 s
-    // tick) BEFORE our own PUT has propagated — can't revert the change the user
-    // just made on THIS device. Bug: "status changed from TalQ doesn't apply /
-    // display", 2026-06-04.
+    // Wall-clock ms of the last LOCAL status write - the user's own, or TalQ's
+    // automatic Away flip / restore. refreshFromServer skips applying the server
+    // snapshot within ~10 s of this so a stale read - fired by the popover-close
+    // window-activation, the 60 s tick or the 20 s status poll BEFORE our own PUT
+    // has propagated - can't revert the change just made on THIS device. Bug:
+    // "status changed from TalQ doesn't apply / display", 2026-06-04.
     qint64  m_lastUserChangeMs = 0;
     QVector<Predefined> m_predefined;
 
@@ -117,9 +147,16 @@ private:
     QString m_snapMessage, m_snapIcon, m_snapMessageId;
     qint64  m_snapClearAt = 0;
     bool    m_snapUserDefined = false;
+    bool    m_snapStatusLoaded = false;   // so a failed write can't leave "loaded" set over a placeholder
+    bool    m_snapLastKnownDnd = false;   // ...nor move the remembered DND on a write that never landed
 
     // Keeps automatic presence alive; never overwrites a user-set state.
     QTimer m_heartbeat;
+    // Read-only, much faster poll of the server's status, so a change made on
+    // ANOTHER device (Do Not Disturb above all) arrives in seconds. See
+    // kStatusPollMs in the .cpp for why this is a poll and not a push.
+    QTimer m_statusPoll;
+    bool   m_statusPollInFlight = false;
 
     // ---- Auto-away on Windows idle / lock / sleep ----
     //

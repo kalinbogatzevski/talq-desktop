@@ -15,6 +15,8 @@
 #include <QSessionManager>
 #include <QTimer>
 
+#include <memory>
+
 #ifdef Q_OS_WIN
 #include <windows.h>
 #endif
@@ -26,6 +28,26 @@ inline QString statusPath(const QString &suffix = QString())
 }
 const QString kHeartbeat     = QStringLiteral("apps/user_status/api/v1/heartbeat");
 const QString kAutoAwayKey   = QStringLiteral("userStatus/autoAwaySetByTalq");
+const QString kKnownDndKey   = QStringLiteral("userStatus/lastKnownDnd");
+// refreshThen(): a status read newer than this is fresh enough to rely on, and
+// the longest we wait for a read before letting the caller carry on regardless.
+constexpr qint64 kFreshEnoughMs  = 5000;
+// The longest refreshThen() waits for the server's answer before letting its
+// caller carry on regardless. Nothing is held pending while it waits (see
+// CallManager::detectIncomingCall), so it can be generous: a longer cap only
+// means a slow link still gets its answer before a call is finally refused.
+constexpr int    kStatusReadCapMs = 4000;
+// How often the user's status is read from the server. Other messengers learn of
+// a status change made on another device at once because the server pushes it;
+// this server cannot (notify_push 1.4.1 has no status event and the user_status
+// app sends nothing to it), so TalQ approximates that by asking often. Do Not
+// Disturb set on a phone therefore reaches the PC within this many ms, not
+// within a minute. One small GET per user per interval, no write.
+// COST (measured on ncloud, 2026-10-02: ~2.7 requests/s in total, ~64% of it chat
+// and room polling): on top of the 60 s heartbeat's own read this adds
+// 60000/kStatusPollMs GETs per client per minute - about +3 at 20 s, i.e. roughly
+// +1 request/s for ~22 clients. Halve the interval only if that headroom exists.
+constexpr int    kStatusPollMs   = 20000;
 const QString kPredefined = QStringLiteral("apps/user_status/api/v1/predefined_statuses");
 }
 
@@ -34,13 +56,35 @@ UserStatusManager::UserStatusManager(ApiClient *api, AuthManager *auth, QObject 
     , m_api(api)
     , m_auth(auth)
 {
+    // Do Not Disturb as the last run knew it: used until the server answers, so a
+    // relaunch (it took ~20 s here before the first answer) starts quiet.
+    m_lastKnownDnd = QSettings().value(kKnownDndKey, false).toBool();
+    connect(this, &UserStatusManager::statusChanged, this, &UserStatusManager::persistKnownDnd);
+
     m_heartbeat.setInterval(60000);
     connect(&m_heartbeat, &QTimer::timeout, this, [this]() {
-        // Each cycle: pull the authoritative status (so a change on ANOTHER
-        // instance of this account shows up here within ~60 s) and keep our
+        // Each cycle: pull the authoritative status (the faster read-only
+        // m_statusPoll below carries cross-device changes; this one is the
+        // read-before-write for the presence heartbeat) and keep our
         // online presence alive — read-before-write so we never re-assert a
         // stale local "online" over an Away/DND/custom another device just set.
         refreshFromServer(/*keepAliveOnline=*/true);
+    });
+
+    // Cross-device status sync, much faster than the heartbeat above and READ-ONLY
+    // (no presence write: the heartbeat keeps its own 60 s cadence). A slow server
+    // must not make these pile up, hence the in-flight guard; doRefresh runs its
+    // continuation on every path, including a failed or cancelled read.
+    m_statusPoll.setInterval(kStatusPollMs);
+    connect(&m_statusPoll, &QTimer::timeout, this, [this]() {
+        if (m_statusPollInFlight)
+            return;
+        // Every third tick lands on the heartbeat's own read, and a window
+        // activation reads too: skip a poll when the status was read a moment ago.
+        if (m_sinceLastRead.isValid() && m_sinceLastRead.elapsed() < kStatusPollMs / 2)
+            return;
+        m_statusPollInFlight = true;
+        doRefresh(/*keepAliveOnline=*/false, [this]() { m_statusPollInFlight = false; });
     });
 
     // Idle-poll wakeup. 30 s cadence is the upstream NC Talk web idle
@@ -132,16 +176,26 @@ void UserStatusManager::onLoggedIn()
     // redundant second GET).
     revertStuckCall();
     m_heartbeat.start();
+    m_statusPoll.start();
     m_idlePoll.start();
 }
 
 void UserStatusManager::onLoggedOut()
 {
     m_heartbeat.stop();
+    m_statusPoll.stop();
+    m_statusPollInFlight = false;
     m_idlePoll.stop();
     m_autoAwayActive = false;
     m_sessionLocked  = false;
     m_inIdleTick     = false;
+    // Logged out: the status is unknown again, and the next account must not
+    // inherit this one's Do Not Disturb. Cleared BEFORE statusChanged below, so
+    // the persist slot sees "not loaded" and leaves the cleared key alone.
+    m_statusLoaded = false;
+    m_lastKnownDnd = false;
+    m_sinceLastRead.invalidate();
+    QSettings().remove(kKnownDndKey);
     m_status = Status::Offline;
     m_message.clear();
     m_icon.clear();
@@ -194,6 +248,10 @@ void UserStatusManager::onIdleTick()
         // still Online.
         const Status priorStatus = m_status;
         const bool   priorAuto   = m_autoAwayActive;
+        // TalQ's own write counts as a local change: a status poll that was
+        // already in flight must not apply its older "Online" over this flip and
+        // strand us in a half-undone Away (see doRefresh's 10 s grace).
+        m_lastUserChangeMs = QDateTime::currentMSecsSinceEpoch();
         m_status         = Status::Away;
         m_autoAwayActive = true;
         emit statusChanged();
@@ -261,6 +319,9 @@ void UserStatusManager::tryRestoreFromAutoAway()
                           << " autoFlag=" << m_autoAwayActive
                           << " userDefined=" << m_userDefined << ")";
     const Status priorStatus = m_status;
+    // Same as the auto-Away flip: our own write must not be undone by a status
+    // read that left before it landed.
+    m_lastUserChangeMs = QDateTime::currentMSecsSinceEpoch();
     m_status         = Status::Online;
     m_autoAwayActive = false;
     emit statusChanged();
@@ -293,6 +354,7 @@ void UserStatusManager::onSessionLocked()
     if (m_status != Status::Online) return;
     const Status priorStatus = m_status;
     const bool   priorAuto   = m_autoAwayActive;
+    m_lastUserChangeMs = QDateTime::currentMSecsSinceEpoch();   // our own write: see onIdleTick
     m_status         = Status::Away;
     m_autoAwayActive = true;
     emit statusChanged();
@@ -346,7 +408,37 @@ void UserStatusManager::fetchCurrent()
 
 void UserStatusManager::refreshFromServer(bool keepAliveOnline)
 {
-    m_api->get(statusPath(), [this, keepAliveOnline](bool ok, const QJsonObject &d, int) {
+    doRefresh(keepAliveOnline, {});
+}
+
+void UserStatusManager::refreshThen(std::function<void()> done)
+{
+    // Read a few seconds ago is read enough: no extra round trip for a burst of
+    // calls, or right after the poll or a window activation already asked.
+    // (Monotonic clock: a wall-clock step must not make an old read look fresh.)
+    if (m_sinceLastRead.isValid() && m_sinceLastRead.elapsed() < kFreshEnoughMs) {
+        done();
+        return;
+    }
+    // `done` must run exactly once even though two things race to run it: the
+    // answer, and the cap that stops a slow or dead connection from holding up
+    // the caller for long.
+    auto fired = std::make_shared<bool>(false);
+    auto once = [fired, done]() {
+        if (*fired) return;
+        *fired = true;
+        done();
+    };
+    QTimer::singleShot(kStatusReadCapMs, this, once);
+    doRefresh(/*keepAliveOnline=*/false, once);
+}
+
+void UserStatusManager::doRefresh(bool keepAliveOnline, std::function<void()> done)
+{
+    m_api->get(statusPath(), [this, keepAliveOnline, done](bool ok, const QJsonObject &d, int) {
+        // `done` runs on every way out of this handler, after the answer (if any)
+        // has been applied - including the grace-window early return below.
+        auto finish = qScopeGuard([&done]() { if (done) done(); });
         if (!ok) return;   // transient; try again next cycle
         // Don't let a stale read revert a status the user JUST changed on this
         // device: closing the status popover re-activates the window (and the
@@ -362,11 +454,16 @@ void UserStatusManager::refreshFromServer(bool keepAliveOnline)
         const QString prevMessage   = m_message;
         const QString prevIcon      = m_icon;
         const QString prevMessageId = m_messageId;
+        const bool    wasLoaded     = m_statusLoaded;
         applyFromJson(d);
         // Multi-instance sync: NC user_status is per-USER, so this GET returns
         // whatever the newest write (this device or another) left. Repaint only
-        // on a real change to avoid needless churn.
-        if (m_status != prevStatus || m_message != prevMessage
+        // on a real change to avoid needless churn - except the FIRST real answer
+        // after startup/logout, which must always be announced: the status was
+        // only a placeholder before, and isDoNotDisturb() changes meaning with it
+        // (a remembered DND must not outlive a first answer that merely equals
+        // the Offline placeholder).
+        if (!wasLoaded || m_status != prevStatus || m_message != prevMessage
             || m_icon != prevIcon || m_messageId != prevMessageId) {
             emit statusChanged();
             qInfo() << "UserStatus: refreshed from server (status now"
@@ -402,15 +499,34 @@ void UserStatusManager::sendPresenceHeartbeat()
             return;
         if (QDateTime::currentMSecsSinceEpoch() - m_lastUserChangeMs < 10000)
             return;   // a local change is in flight; same grace as the refresh
-        const Status prev = m_status;
+        const Status prev      = m_status;
+        const bool   wasLoaded = m_statusLoaded;
         m_status = statusFromKey(d.value(QStringLiteral("status")).toString());
+        m_statusLoaded = true;   // the server just told us what it is
         if (m_status == Status::Online)
             m_autoAwayActive = false;
-        if (m_status != prev) {
+        // `!wasLoaded` is defence in depth: the heartbeat normally follows a
+        // successful status read, so the status is already loaded here.
+        if (!wasLoaded || m_status != prev) {
             emit statusChanged();
             qInfo() << "UserStatus: presence heartbeat ->" << statusKey(m_status);
         }
     });
+}
+
+void UserStatusManager::persistKnownDnd()
+{
+    // Only a status we really know. While it is a placeholder (startup, logout)
+    // the stored answer from the last run must be left alone - that is its job.
+    if (!m_statusLoaded)
+        return;
+    const bool dnd = (m_status == Status::Dnd);
+    if (dnd == m_lastKnownDnd)
+        return;
+    m_lastKnownDnd = dnd;
+    QSettings s;
+    if (dnd) s.setValue(kKnownDndKey, true);
+    else     s.remove(kKnownDndKey);
 }
 
 void UserStatusManager::persistAutoAway(bool on)
@@ -492,6 +608,10 @@ void UserStatusManager::revertStuckCall()
 void UserStatusManager::applyFromJson(const QJsonObject &d)
 {
     m_status      = statusFromKey(d.value(QStringLiteral("status")).toString());
+    // A real server answer: the status is no longer a placeholder (see
+    // isDoNotDisturb), and this is the moment of the freshest read.
+    m_statusLoaded = true;
+    m_sinceLastRead.restart();
     m_message     = d.value(QStringLiteral("message")).toString();
     m_icon        = d.value(QStringLiteral("icon")).toString();
     m_messageId   = d.value(QStringLiteral("messageId")).toString();
@@ -516,6 +636,8 @@ void UserStatusManager::takeSnapshot()
     m_snapMessageId   = m_messageId;
     m_snapClearAt     = m_clearAt;
     m_snapUserDefined = m_userDefined;
+    m_snapStatusLoaded = m_statusLoaded;
+    m_snapLastKnownDnd = m_lastKnownDnd;
 }
 
 void UserStatusManager::rollback()
@@ -526,6 +648,15 @@ void UserStatusManager::rollback()
     m_messageId   = m_snapMessageId;
     m_clearAt     = m_snapClearAt;
     m_userDefined = m_snapUserDefined;
+    m_statusLoaded = m_snapStatusLoaded;   // a write made before the first answer must not leave a placeholder "loaded"
+    if (!m_statusLoaded && m_lastKnownDnd != m_snapLastKnownDnd) {
+        // The optimistic write moved the remembered DND (persistKnownDnd) while
+        // the real status was still unknown. The write failed: put it back.
+        m_lastKnownDnd = m_snapLastKnownDnd;
+        QSettings s;
+        if (m_lastKnownDnd) s.setValue(kKnownDndKey, true);
+        else                s.remove(kKnownDndKey);
+    }
     emit statusChanged();
 }
 
@@ -539,6 +670,7 @@ void UserStatusManager::setStatusType(Status s)
     takeSnapshot();
     m_lastUserChangeMs = QDateTime::currentMSecsSinceEpoch();
     m_status = s;
+    m_statusLoaded = true;   // the user just told us what it is
     m_userDefined = true;
     emit statusChanged();  // optimistic
 

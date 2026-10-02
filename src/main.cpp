@@ -1201,13 +1201,25 @@ int main(int argc, char *argv[])
     // silently. Away deliberately does not do any of this.
     CtiService *ctiForDnd = window.ctiService();
     auto applyDnd = [&userStatus, &notifications, &callManager, ctiForDnd]() {
-        const bool dnd = userStatus.status() == UserStatusManager::Status::Dnd;
+        // isDoNotDisturb(), not status() == Dnd: for the first ~20 s after launch
+        // the status is still unknown (it reads Offline), and this answers with
+        // what the last run knew, so a relaunch starts out quiet.
+        const bool dnd = userStatus.isDoNotDisturb();
         notifications.setDoNotDisturb(dnd);
         callManager.setDoNotDisturb(dnd);
         if (ctiForDnd) ctiForDnd->setDoNotDisturb(dnd);
     };
     QObject::connect(&userStatus, &UserStatusManager::statusChanged, &notifications, applyDnd);
     applyDnd();
+    // The Do Not Disturb we believe in can be stale: remembered from the last run
+    // until the first status answer, or switched off on another device since the
+    // 20 s status poll (the server cannot push a status change). Before
+    // CallManager DROPS a call because of it, it re-reads the status here
+    // (UserStatusManager::refreshThen: skipped if read moments ago, capped at a few
+    // seconds). The answer lands in applyDnd via statusChanged first.
+    callManager.setFreshStatusHook([&userStatus](std::function<void()> proceed) {
+        userStatus.refreshThen(std::move(proceed));
+    });
 
     // Free the server-side call participant on every clean exit so a
     // closed/quit/logged-out client never leaves "in a call" lingering.
