@@ -944,7 +944,9 @@ int main(int argc, char *argv[])
     QObject::connect(&messages, &MessageListModel::newMessagesAtEnd, &conversations, [&messages, &conversations]() {
         int count = messages.rowCount();
         if (count == 0) return;
-        auto idx = messages.index(0);
+        // The announced message, not row 0: an unsent message pinned at the front
+        // is row 0 and would put the user's OWN unsent text in the sidebar preview.
+        auto idx = messages.index(messages.latestArrivedRow());
         QString author = messages.data(idx, MessageListModel::ActorNameRole).toString();
         QString text = messages.data(idx, MessageListModel::MessageTextRole).toString();
         text.remove(QRegularExpression("<[^>]*>"));
@@ -956,7 +958,11 @@ int main(int argc, char *argv[])
     QObject::connect(&messages, &MessageListModel::newMessagesAtEnd, &notifications, [&messages, &notifications, &auth, &callManager]() {
         int count = messages.rowCount();
         if (count == 0) return;
-        auto idx = messages.index(0);  // model is newest-first, index 0 = latest message
+        // The announced message. The model is newest-first, but row 0 is only the latest
+        // message while no unsent message of ours is pinned in front of it -- one
+        // there made this handler read OUR text, see our own id, and swallow the
+        // peer's toast and sound (and the busy signal below).
+        auto idx = messages.index(messages.latestArrivedRow());
         // #80 -- TalQ-exclusive busy signal: the peer we're ringing auto-replied
         // with the "talq/busy" marker. If we're still ringing THIS conversation,
         // play the busy tone + popup; swallow it so it isn't also toasted.

@@ -95,6 +95,11 @@ void ApiClient::resetSession()
     m_nam.clearAccessCache();
 }
 
+void ApiClient::dropPooledConnections()
+{
+    m_nam.clearConnectionCache();
+}
+
 QNetworkRequest ApiClient::makeRequest(const QString &path, const QUrlQuery &params) const
 {
     // Build full OCS URL

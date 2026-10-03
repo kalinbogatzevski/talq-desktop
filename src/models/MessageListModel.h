@@ -2,6 +2,9 @@
 
 #include <QAbstractListModel>
 #include <QVector>
+#include <QHash>
+#include <QSet>
+#include <QList>
 #include <QJsonArray>
 #include <QTimer>
 #include <memory>
@@ -112,7 +115,35 @@ public:
     // conversation refresh.
     Q_INVOKABLE void markAsUnread(int messageId);
     Q_INVOKABLE void sendFile(const QString &filePath);
+    // The user pressed Retry on a message that did not send. It does NOT blindly
+    // re-POST: it asks the server whether the message is already there first
+    // (see the send outbox below), because "failed" can mean "delivered".
     Q_INVOKABLE void retryMessage(int tempId);
+    // The user gave up on an unsent message. Drops it from the room and from the
+    // outbox. If its POST was somehow still live and lands, it simply arrives as
+    // a normal message through the poller.
+    Q_INVOKABLE void discardFailed(int tempId);
+    // A hint that sending may work now: the server answered after an outage, the
+    // window regained focus, a room was opened. Pulls the next retry forward;
+    // it never bypasses the check-then-resend gate and never fires faster than
+    // SendRetryPolicy::kMinSpacingMs after an entry's last activity.
+    void kickOutbox();
+    // Drop every unsent message and its row. For logout / account change: unsent
+    // text belongs to the SESSION, exactly like the composer drafts (see the
+    // loggedInChanged handler in MainWindow) -- it must not be re-sent as, or
+    // shown to, the next account that signs in on this machine.
+    void clearOutbox();
+    // True while any unsent message is still being retried (a given-up one is not
+    // counted: it waits for the user and must not hold up an update forever). The
+    // auto-update install gate reads this: restarting would throw them away.
+    bool hasPendingSends() const;
+    // False while the message's last attempt is still in flight (its answer is on
+    // its way, Retry has nothing to do yet) or when it is no longer tracked.
+    bool canRetry(int tempId) const;
+    // The row of the message that newMessagesAtEnd() just announced. Row 0 is the
+    // newest message only when no unsent message is pinned in front of it, so a
+    // listener must not assume index(0).
+    int latestArrivedRow() const;
     Q_INVOKABLE void addReaction(int messageId, const QString &emoji);
     Q_INVOKABLE void loadHistory();
     Q_INVOKABLE void loadHistoryUntil(int messageId);
@@ -279,7 +310,89 @@ private:
     // read-marker events (only new-message events), so the long-poll never
     // breaks early on a pure-read advance.
     void refreshReadMarker();
-    void postAndReplace(const QString &token, const QJsonObject &body, int tempId);
+
+    // ---- send outbox -------------------------------------------------------
+    // Every composer message the server has not yet confirmed. It lives OUTSIDE
+    // m_messages on purpose: m_messages is wiped by a room switch, a topic-tab
+    // switch and a history clear, which used to take the user's unsent text with
+    // it (field log 2026-10-03 11:19:58). The row in m_messages is only the
+    // outbox entry's picture; setConversationToken() redraws it on return.
+    //
+    // The rules (all in core/SendRetryPolicy.h so they are unit-tested):
+    //  * an attempt is in flight until its reply callback fires, however the row
+    //    looks -- the 20 s "failed" flip is display only and cannot abort the POST;
+    //  * never re-POST on a guess: probe the room's recent history for our
+    //    referenceId first, because Talk 24 saves a comment BEFORE its HPB notify
+    //    and does not deduplicate on referenceId;
+    //  * strictly oldest-first per room, so a retry never overtakes an older
+    //    message that is still waiting.
+    struct OutboxEntry {
+        QString     token;
+        QString     owner;               // account (user + server) that wrote it
+        int         tempId = 0;          // negative, unique for the session
+        QString     text;                // exactly as POSTed (auto-@bot prefix included)
+        QString     referenceId;
+        int         replyToId = 0;       // goes in the body
+        QJsonObject replyTo;             // the parent as drawn in the quote; empty if not loaded
+        int         threadId = 0;
+        bool        silent = false;
+        qint64      sentAtSecs = 0;      // CLIENT clock; shown as the bubble's time only
+        qint64      sentAtMs = 0;
+        // The newest SERVER id this room had in the model when the message was
+        // sent. A message the server saved afterwards has a larger id, which is
+        // what lets a history window PROVE it covers the send (X-Chat-Last-Given).
+        // 0 when the room had none loaded: coverage then cannot be proven.
+        int         knownNewestId = 0;
+
+        int         postAttempts = 0;
+        bool        everPosted = false;  // a POST has actually been started (not just queued)
+        quint64     attemptSeq = 0;      // names the CURRENT attempt for its callback and timer
+        bool        inFlight = false;
+        qint64      inFlightSinceMs = 0;
+        bool        slow = false;        // 20 s without an answer -- display only
+        bool        permanent = false;   // given up; only a manual Retry continues
+        bool        manual = false;      // the user pressed Retry on this message
+        bool        needFreshConnection = false;   // last failure was a transport one
+        qint64      nextTryMs = 0;
+        qint64      lastActivityMs = 0;
+        int         probeFailures = 0;
+        int         lastStatus = 0;
+    };
+
+    OutboxEntry *findEntry(int tempId);
+    QString statusFor(const OutboxEntry &e) const;
+    Message tempMessageFor(const OutboxEntry &e) const;
+    QJsonObject postBodyFor(const OutboxEntry &e) const;
+    bool entryVisibleInView(const OutboxEntry &e) const;
+    void refreshRowStatus(int tempId);
+    void startAttempt(int tempId);
+    void onAttemptSlow(int tempId, quint64 seq);
+    void onAttemptFinished(int tempId, quint64 seq, const QString &token, bool ok,
+                           const QJsonObject &data, int status);
+    // Who is signed in right now: user + server. An entry is only ever probed,
+    // sent or redrawn for the account that wrote it.
+    QString outboxOwner() const;
+    void deliverReal(const QString &token, int tempId, const Message &real);
+    bool dropOutboxEntry(int tempId);
+    void removeTempRow(int tempId);     // the row only; the outbox entry is the caller's business
+    void outboxTick();
+    void probeToken(const QString &token);
+    void sendNextQueued(const QString &token);
+    void syncOutboxTimer();
+    void reinsertOutboxTemps();
+    // The newest / oldest SERVER id in the list, or 0 when only pending temps
+    // (negative ids) are there. The poll cursor and the scroll-back cursor must
+    // never be seeded from a temp.
+    int  newestRealId() const;
+    int  oldestRealId() const;
+    bool hasRealMessages() const { return newestRealId() > 0; }
+
+    QVector<OutboxEntry> m_outbox;            // send order, oldest first
+    QHash<QString, QList<int>> m_sendQueue;   // per room: tempIds cleared to POST, in order
+    QSet<QString> m_probing;                  // rooms with a history probe in flight
+    QTimer m_outboxTimer;                     // 2 s tick while any entry is still active
+    quint64 m_attemptCounter = 0;
+    int m_latestArrivedRow = 0;               // see latestArrivedRow()
 
     ApiClient *m_api;
     MessageCache *m_cache;

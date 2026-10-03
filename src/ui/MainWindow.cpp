@@ -1549,6 +1549,28 @@ void MainWindow::buildChatPage()
 
     m_imageClipboard = new ImageClipboard(m_api, m_messages, this);
 
+    // The warning on an unsent message was clicked: Retry now / Discard. Retry
+    // goes through the outbox's check-then-resend, so it cannot post a second
+    // copy of a message that actually landed. (Before this nothing in the UI
+    // could reach retryMessage at all -- its only caller was the QML bubble,
+    // gone since the painter became the only chat renderer.)
+    connect(m_chatPainter, &ChatPainter::retryRequested, this,
+            [this](int tempId, const QPoint &globalPos) {
+        auto *menu = new QMenu(this);
+        menu->setAttribute(Qt::WA_DeleteOnClose);
+        // While the last attempt is still in flight its answer is on its way and
+        // there is nothing to retry yet; saying so beats a click that does nothing.
+        const bool canRetry = m_messages->canRetry(tempId);
+        QAction *retry   = menu->addAction(canRetry ? tr("Retry now") : tr("Still trying…"));
+        retry->setEnabled(canRetry);
+        QAction *discard = menu->addAction(tr("Discard message"));
+        connect(retry, &QAction::triggered, this,
+                [this, tempId]() { m_messages->retryMessage(tempId); });
+        connect(discard, &QAction::triggered, this,
+                [this, tempId]() { m_messages->discardFailed(tempId); });
+        menu->popup(globalPos);
+    });
+
     // Right-click context menu on messages
     connect(m_chatPainter, &ChatPainter::contextMenuRequested, this, [this](const QVariantMap &msg, const QPoint &globalPos) {
         int msgId = msg.value("messageId").toInt();
@@ -2105,6 +2127,10 @@ void MainWindow::buildChatPage()
         if (m_auth && !m_auth->isLoggedIn()) {
             m_composerDrafts.clear();
             if (m_composer) m_composer->clearText();
+            // Sent-but-unconfirmed messages are the same kind of thing: still the
+            // session's. Left alone they would be probed and re-POSTed with the NEXT
+            // account's credentials, or redrawn in its window as its own message.
+            if (m_messages) m_messages->clearOutbox();
         }
     });
 
@@ -3143,6 +3169,11 @@ void MainWindow::onServerReachabilityChanged(bool online)
     if (online) {
         m_offlineAnimTimer.stop();
         if (m_offlineBanner) m_offlineBanner->hide();
+        // The server is answering again: an unsent message may go now. A hint,
+        // not a trigger -- it only pulls the outbox's next check forward (this
+        // edge needs two misses to flip and never fires for a lone timeout or an
+        // HTTP error, so the outbox also runs on its own backoff).
+        if (m_messages) m_messages->kickOutbox();
     } else {
         m_offlineDots = 0;
         if (m_offlineLabel) m_offlineLabel->setText(tr("Connecting…"));
@@ -4785,7 +4816,10 @@ talq::InstallGateInputs MainWindow::installGateInputs() const
     in.msSinceLastCall = m_lastCallActiveMs > 0
         ? qMax<qint64>(0, QDateTime::currentMSecsSinceEpoch() - m_lastCallActiveMs)
         : -1;
-    in.unsentText = hasUnsentComposerText();
+    // Typed text the user has not sent, or sent text the server has not yet
+    // confirmed: the send outbox lives in memory only, and a restart discards it.
+    in.unsentText = hasUnsentComposerText()
+        || (m_messages && m_messages->hasPendingSends());
     in.attachmentStaged = m_composer && m_composer->hasStagedAttachment();
     in.voiceRecording = m_recorder && m_recorder->isRecording();
     in.uploadInProgress = m_messages && m_messages->uploadProgress() >= 0.0;

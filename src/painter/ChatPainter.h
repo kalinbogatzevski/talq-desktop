@@ -165,6 +165,9 @@ signals:
     void avatarClicked(const QString &actorId, const QString &actorName,
                        const QRect &anchorGlobal);
     void contextMenuRequested(const QVariantMap &msgData, const QPoint &globalPos);
+    // The warning on an own message that did not send was clicked. tempId is the
+    // pending message's negative id; the window offers Retry now / Discard.
+    void retryRequested(int tempId, const QPoint &globalPos);
     void fileDropped(const QString &filePath);
     void selectionModeChanged(bool active);
     void selectionChanged(int count);
