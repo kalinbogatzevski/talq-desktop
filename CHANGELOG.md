@@ -1,5 +1,37 @@
 # Changelog
 
+## v0.74.9 "Ravnodenstvie" — STABLE (2026-10-03)
+
+A message that could not be sent no longer stays unsent: TalQ sends it again by itself once the
+connection is back.
+
+### Changed
+* **Click the warning on a message that did not send to retry or discard it.** "Retry now"
+  checks and sends it at once; "Discard message" removes it.
+* **TalQ waits to install an update while a message is still waiting to be sent**, so the
+  restart cannot throw it away.
+
+### Fixed
+* **A message that failed to send is now sent again automatically.** If your connection dropped
+  as you pressed Send, the message showed a warning and stayed unsent for good, even after the
+  connection came back. TalQ now keeps it and tries again as soon as the server can be reached.
+  Before sending it again TalQ checks whether the message had already arrived, so it is never
+  posted twice. Messages go out in the order you wrote them.
+* **An unsent message is no longer lost when you open another conversation.** It is shown again
+  when you come back, and TalQ keeps trying in the background.
+* **The warning on a message that did not send now appears straight away.** It could keep
+  saying "Sending…" until something else redrew the chat.
+* **Other people's pop-ups and sounds are no longer lost while one of your own messages waits to
+  be sent.** Their message was hidden behind yours, so no pop-up appeared and the conversation
+  list showed your unsent text instead.
+
+### Good to know
+* A message that is still waiting to be sent is kept only while TalQ is running. Quitting TalQ
+  discards it.
+* If a very busy conversation received hundreds of messages while you were offline, TalQ cannot
+  be certain your message did not arrive. It then leaves the message for you to retry by hand
+  instead of risking a duplicate.
+
 ## v0.74.8 "Ravnodenstvie" — STABLE (2026-10-02)
 
 A status you change on your phone now reaches TalQ in seconds, and Do Not Disturb holds from the moment TalQ starts.

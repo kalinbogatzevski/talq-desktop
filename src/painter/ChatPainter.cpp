@@ -520,6 +520,18 @@ QVariantMap ChatPainter::variantMapFromLayout(const MessageLayout &ml) const
     };
 }
 
+// An own message that did not send. Its status area (the warning glyph and the
+// time beside it) is the one place to act on it: Retry now / Discard. The target
+// is wider than the drawn glyph, which is ~12 px. Only a pending temp (negative
+// id) can be here -- a delivered message has a server id and a different menu.
+static bool isRetryTarget(const MessageLayout &ml, const QPointF &canvasPos)
+{
+    return ml.isOwn && !ml.isSystem && ml.messageId < 0
+        && ml.sendStatus == QLatin1String("failed")
+        && !ml.timeRect.isNull()
+        && ml.timeRect.adjusted(-10, -6, 10, 6).contains(canvasPos);
+}
+
 QString ChatPainter::hitTestAt(qreal x, qreal y)
 {
     // The jump-to-bottom control is anchored to the VIEWPORT, not to a message
@@ -535,6 +547,10 @@ QString ChatPainter::hitTestAt(qreal x, qreal y)
     if (idx < 0 || idx >= m_layouts.size()) return {};
 
     const auto &ml = m_layouts[idx];
+
+    // An unsent message: click its warning to retry or discard it.
+    if (isRetryTarget(ml, canvasPos))
+        return QStringLiteral("retry:%1").arg(ml.messageId);
 
     // Hover bar buttons — check regardless of hover index (hover may clear during click)
     if (!ml.isSystem && ml.sendStatus != QLatin1String("sending")
@@ -933,7 +949,14 @@ void ChatPainter::onDataChanged(const QModelIndex &topLeft, const QModelIndex &b
             for (int r = first; r <= last; ++r) {
                 auto idx = m_model->index(r);
                 int id = m_model->data(idx, MessageListModel::IdRole).toInt();
-                if (id <= 0) continue;
+                // Skip only id 0 (rows that are not messages). A pending send has a
+                // NEGATIVE temp id and used to be skipped here too -- yet it is the
+                // one row whose status really changes what is drawn ("Sending..."
+                // becomes the failed warning and back). Its layout sits in
+                // m_layouts keyed by that id like any other, so the in-place patch
+                // below reaches it; without this the bubble kept saying "Sending..."
+                // until some unrelated rebuild (a banner appearing, a peer message).
+                if (id == 0) continue;
                 updates.insert(id, qMakePair(
                     m_model->data(idx, MessageListModel::IsReadRole).toBool(),
                     m_model->data(idx, MessageListModel::SendStatusRole).toString()));
@@ -999,6 +1022,16 @@ bool ChatPainter::event(QEvent *e)
             return true;
         }
         QPointF canvas(he->pos().x(), he->pos().y() + m_scrollY);
+        // An unsent message: say what its clickable warning does, before the
+        // timestamp tooltip that would otherwise sit on the same spot.
+        {
+            const int li = layoutIndexAtY(canvas.y());
+            if (li >= 0 && li < m_layouts.size() && isRetryTarget(m_layouts[li], canvas)) {
+                QToolTip::showText(he->globalPos(),
+                    tr("Not sent. Click to retry or discard."), this);
+                return true;
+            }
+        }
         for (const auto &ml : m_layouts) {
             if (ml.isSystem || ml.showDateSep) continue;
             if (!ml.timeRect.contains(canvas)) continue;
@@ -1421,6 +1454,16 @@ void ChatPainter::mouseReleaseEvent(QMouseEvent *event)
                             QSize(qRound(r.width()), qRound(r.height())));
                         emit avatarClicked(aMl.actorId, aMl.actorName, anchor);
                     }
+                }
+            } else if (hit.startsWith("retry:")) {
+                const int tempId = hit.mid(6).toInt();
+                const int tIdx = layoutIndexAtY(event->position().y() + m_scrollY);
+                // The row under the cursor must still be the row that was pressed
+                // (a scroll, or a delivery swapping the temp for the real message,
+                // between press and release).
+                if (tempId < 0 && tIdx >= 0 && tIdx < m_layouts.size()
+                    && m_layouts[tIdx].messageId == tempId) {
+                    emit retryRequested(tempId, mapToGlobal(event->position().toPoint()));
                 }
             } else if (hit.startsWith("react:")) {
                 int rMsgId = hit.mid(6).toInt();

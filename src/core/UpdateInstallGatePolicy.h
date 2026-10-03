@@ -238,7 +238,8 @@ struct InstallGateInputs {
     bool   waitingForCallToEnd = false;  // a user-accepted launch was deferred by a call
     bool   callActive = false;           // a call or a screen share is running
     qint64 msSinceLastCall = -1;         // -1: no call this session
-    bool   unsentText = false;           // the composer, or a draft in any conversation
+    bool   unsentText = false;           // the composer, a draft in any conversation, or a sent
+                                         // message the server has not confirmed yet (in memory only)
     bool   attachmentStaged = false;     // a file waiting in the composer to be sent
     bool   voiceRecording = false;       // a voice message is being recorded
     bool   uploadInProgress = false;

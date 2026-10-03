@@ -3,6 +3,7 @@
 #include <QPointer>
 #include "core/MessageCache.h"
 #include "core/ChatSyncLogic.h"
+#include "core/SendRetryPolicy.h"
 #include "core/TalqLog.h"
 #include "models/ConversationListModel.h"
 #include <QCryptographicHash>
@@ -93,7 +94,10 @@ MessageListModel::MessageListModel(ApiClient *api, MessageCache *cache, QObject 
 
         // Display cached messages instantly (even if empty — still trigger API fetch)
         // Cache returns oldest-first; reverse to newest-first for BottomToTop display.
-        if (!messages.isEmpty() && m_messages.isEmpty()) {
+        // "Nothing loaded yet" means no SERVER message: a pending send redrawn by
+        // reinsertOutboxTemps() sits in front and must not keep the cached
+        // history from showing.
+        if (!messages.isEmpty() && !hasRealMessages()) {
             QVector<Message> filtered;
             for (const auto &m : messages) {
                 if (m.isReactionMessage() || m.isCallJoinLeave()
@@ -113,12 +117,14 @@ MessageListModel::MessageListModel(ApiClient *api, MessageCache *cache, QObject 
                 // makes the reload order identical to the live order.
                 std::sort(filtered.begin(), filtered.end(),
                           [](const Message &a, const Message &b) { return talq::messageSortsBefore(a.id, b.id); });
-                beginInsertRows({}, 0, filtered.size() - 1);
-                m_messages = filtered;
+                // Behind any pending temps already at the front (usually none).
+                const int firstNew = m_messages.size();
+                beginInsertRows({}, firstNew, firstNew + filtered.size() - 1);
+                m_messages.append(filtered);
                 for (const auto &m : filtered)
                     m_messageIds.insert(m.id);
                 endInsertRows();
-                m_oldestMessageId = m_messages.last().id;  // oldest is now at the end
+                m_oldestMessageId = oldestRealId();  // oldest is now at the end
                 // Don't emit newMessagesAtEnd — BottomToTop naturally positions at bottom
             }
         }
@@ -136,9 +142,18 @@ MessageListModel::MessageListModel(ApiClient *api, MessageCache *cache, QObject 
     // room is open or the marker is already current.
     connect(qGuiApp, &QGuiApplication::applicationStateChanged, this,
             [this](Qt::ApplicationState s) {
-        if (s == Qt::ApplicationActive)
+        if (s == Qt::ApplicationActive) {
             markAsRead();
+            // Coming back to the window (or waking the laptop) is the commonest
+            // moment the link has just been fixed: let an unsent message try soon.
+            kickOutbox();
+        }
     });
+
+    // Send outbox: one cheap pass every 2 s while any unsent message is still
+    // active; stopped when there is none (syncOutboxTimer).
+    m_outboxTimer.setInterval(2000);
+    connect(&m_outboxTimer, &QTimer::timeout, this, &MessageListModel::outboxTick);
 }
 
 MessageListModel::~MessageListModel()
@@ -418,10 +433,17 @@ void MessageListModel::setConversationToken(const QString &token)
         endRemoveRows();
     }
 
+    // Anything this room still owes the server comes back on screen. Without it
+    // a message that failed while the user was elsewhere simply vanished.
+    reinsertOutboxTemps();
+
     emit conversationTokenChanged();
 
     if (token.isEmpty())
         return;
+
+    // Opening a room is a good moment to try an unsent message in it.
+    kickOutbox();
 
     // Show the most recent page from the local cache instantly, then fetch
     // fresh from the API in the background (triggered after the cache loads).
@@ -455,6 +477,7 @@ void MessageListModel::setThreadId(int id)
 
     m_threadId = id;
     m_oldestMessageId = 0;
+    reinsertOutboxTemps();   // the reset above dropped unsent messages of this view
     emit threadIdChanged();
 
     m_poller->setThreadId(id);
@@ -478,6 +501,7 @@ void MessageListModel::setHideThreadMessages(bool hide)
         m_messageIds.clear();
         endResetModel();
         m_oldestMessageId = 0;
+        reinsertOutboxTemps();
         loadHistory();
     }
 }
@@ -563,6 +587,11 @@ void MessageListModel::loadHistory()
             // deletion that only ever appeared here used to be thrown away.
             if (absorbControlMessage(obj, m))
                 continue;
+            // An unsent message that DID land is redrawn by reinsertOutboxTemps()
+            // right before this page loads (topic switch, hide-topics toggle); join
+            // it to its real copy here, as refreshLatest and the poller do, or both
+            // would be drawn until the next refresh.
+            replaceTempByReferenceId(m);
             if (m_messageIds.contains(m.id))
                 continue;
             if (!passesThreadFilter(m))
@@ -590,7 +619,7 @@ void MessageListModel::loadHistory()
         }
 
         if (!m_messages.isEmpty())
-            m_oldestMessageId = m_messages.last().id;  // oldest is at the end
+            m_oldestMessageId = oldestRealId();  // oldest is at the end
 
         // Don't emit newMessagesAtEnd() — these are OLDER messages appended
         // at the end (top of BottomToTop view). No scroll needed.
@@ -682,7 +711,7 @@ void MessageListModel::loadHistoryUntil(int messageId)
                     enforceNewestFirstInvariant();
                 }
                 if (!m_messages.isEmpty())
-                    m_oldestMessageId = m_messages.last().id;
+                    m_oldestMessageId = oldestRealId();
 
                 bool found = false;
                 for (const auto &m : m_messages)
@@ -711,7 +740,11 @@ void MessageListModel::beginPagedHistoryUntil(int messageId)
 
 void MessageListModel::startPoller()
 {
-    int lastId = m_messages.isEmpty() ? 0 : m_messages.first().id;  // newest is at index 0
+    // Newest SERVER id. Index 0 is a pending temp (negative id) while a send is
+    // unconfirmed -- seeding from it refused to start the poller at all, and
+    // refreshLatest() had just stopped it (RCA 2026-10-03: "Poller: NOT
+    // starting" twice, then silence until the resend's POST happened to work).
+    int lastId = newestRealId();
     if (lastId <= 0) {
         qDebug() << "Poller: NOT starting — no messages loaded yet for" << m_token;
         return;  // never poll with lastKnown=0, it downloads entire history
@@ -747,7 +780,7 @@ void MessageListModel::trimOldMessages()
     endRemoveRows();
 
     if (!m_messages.isEmpty())
-        m_oldestMessageId = m_messages.last().id;
+        m_oldestMessageId = oldestRealId();
     m_hasMoreHistory = true;  // can re-fetch trimmed messages on scroll-up
     emit hasMoreHistoryChanged();
 }
@@ -1153,6 +1186,11 @@ bool MessageListModel::replaceTempByReferenceId(const Message &real)
             m_messages[i] = real;
             const QModelIndex mi = index(i);
             emit dataChanged(mi, mi);
+            // The server has it: the outbox is no longer responsible for it, and
+            // its reply callback (if still outstanding) must not touch it.
+            if (dropOutboxEntry(tempId))
+                qInfo().nospace() << "SendOutbox: delivered via echo token=" << m_token
+                                  << " temp=" << tempId << " id=" << real.id;
             return true;
         }
     }
@@ -1237,7 +1275,7 @@ void MessageListModel::runGapFillStep()
             m_messages = std::move(deduped);
             endResetModel();
             if (!m_messages.isEmpty())
-                m_oldestMessageId = m_messages.last().id;
+                m_oldestMessageId = oldestRealId();
             m_cache->saveMessages(m_token, m_messages);
             qDebug() << "MessageListModel: gap-fill page added"
                      << filled.size() << "msgs, total=" << m_messages.size();
@@ -1328,14 +1366,28 @@ void MessageListModel::onMessagesReceived(const QJsonArray &messages)
     // Save only the newly received messages to cache (not the full list)
     QVector<Message> toCache = newMsgs;
 
-    // Prepend new messages at index 0 (newest-first: new = front)
+    // Prepend new messages (newest-first: new = front)
     // In BottomToTop view, index 0 is at the bottom — new messages appear at bottom
+    //
+    // "Front" means just BEHIND any unsent messages pinned there: a pending temp
+    // (negative id) sorts newer than every server id. Inserting at row 0 left the
+    // list out of order, so enforceNewestFirstInvariant() below paid a model reset
+    // and a cold relayout of every row for EACH incoming batch, for as long as one
+    // unsent message was waiting -- now the steady state during a reconnect.
     for (const auto &m : newMsgs)
         m_messageIds.insert(m.id);
     std::reverse(newMsgs.begin(), newMsgs.end());
-    beginInsertRows({}, 0, newMsgs.size() - 1);
-    newMsgs.append(std::move(m_messages));
-    m_messages = std::move(newMsgs);
+    int lead = 0;
+    while (lead < m_messages.size() && m_messages[lead].id < 0) ++lead;
+    beginInsertRows({}, lead, lead + newMsgs.size() - 1);
+    QVector<Message> merged;
+    merged.reserve(m_messages.size() + newMsgs.size());
+    for (int i = 0; i < lead; ++i)
+        merged.append(std::move(m_messages[i]));
+    merged.append(newMsgs);
+    for (int i = lead; i < m_messages.size(); ++i)
+        merged.append(std::move(m_messages[i]));
+    m_messages = std::move(merged);
     endInsertRows();
 
     // bug 1 (REAL FIX) — the prepend above assumes the batch strictly dominates
@@ -1357,105 +1409,685 @@ void MessageListModel::onMessagesReceived(const QJsonArray &messages)
     // Trim old messages to prevent unbounded memory growth
     trimOldMessages();
 
+    // Tell listeners where the newest SERVER message is. It is row 0 only when no
+    // unsent message is pinned in front; the toast and the sidebar preview used to
+    // read row 0 and so showed (or dropped) the user's OWN unsent text instead of
+    // the peer's message that had just arrived.
+    {
+        int newestReal = 0;
+        while (newestReal < m_messages.size() && m_messages[newestReal].id < 0) ++newestReal;
+        m_latestArrivedRow = newestReal;
+    }
     emit newMessagesAtEnd();
 
     // Auto-mark as read when new messages arrive
     markAsRead();
 }
 
-void MessageListModel::postAndReplace(const QString &token, const QJsonObject &body, int tempId)
+// ===========================================================================
+// SEND OUTBOX  (design and rules: see the OutboxEntry comment in the header and
+// core/SendRetryPolicy.h; evidence: RCA 2026-10-03, memory
+// rca_message-send-retry-lost-on-reconnect)
+//
+// Before this, a composer message that failed was marked "failed" in RAM and
+// never touched again: nothing re-sent it when the link came back, retryMessage
+// had no caller since the QML UI went away, and a room switch wiped it.
+// ===========================================================================
+
+static qint64 outboxNowMs() { return QDateTime::currentMSecsSinceEpoch(); }
+
+int MessageListModel::newestRealId() const
 {
-    m_api->post("apps/spreed/api/v1/chat/" + token, body,
-        [this, tempId, token](bool ok, const QJsonObject &data, int) {
-            if (m_token != token) return;
+    for (const auto &m : m_messages)
+        if (m.id > 0) return m.id;       // temps (negative) sort to the front
+    return 0;
+}
 
-            int idx = -1;
-            for (int i = 0; i < m_messages.size(); ++i) {
-                if (m_messages[i].id == tempId) { idx = i; break; }
-            }
-            // 0.41.3-beta — the optimistic temp may already be gone:
-            // the long-poll caught the same message first and the new
-            // replaceTempByReferenceId() handler removed it. If the
-            // POST response carries a real id we already have in the
-            // model, we're done — no action needed.
-            if (idx < 0) {
-                if (ok && !data.isEmpty()) {
-                    Message real = Message::fromJson(data);
-                    if (m_messageIds.contains(real.id))
-                        return;   // poller delivered + dedup handled it
-                    // Edge case: temp gone, real not in model (rare,
-                    // e.g. cache cleared mid-flight). Insert fresh so
-                    // the user doesn't lose their just-sent message.
-                    if (!passesThreadFilter(real)) return;
-                    m_messageIds.insert(real.id);
-                    beginInsertRows({}, 0, 0);
-                    m_messages.prepend(real);
-                    endInsertRows();
-                    m_cache->saveMessages(m_token, {real});
-                }
-                return;
-            }
+int MessageListModel::oldestRealId() const
+{
+    for (int i = m_messages.size() - 1; i >= 0; --i)
+        if (m_messages[i].id > 0) return m_messages[i].id;
+    return 0;
+}
 
-            if (ok && !data.isEmpty()) {
-                Message real = Message::fromJson(data);
+MessageListModel::OutboxEntry *MessageListModel::findEntry(int tempId)
+{
+    for (auto &e : m_outbox)
+        if (e.tempId == tempId) return &e;
+    return nullptr;
+}
 
-                // Check if the poller already added this message (race condition)
-                bool alreadyExists = false;
-                for (int i = 0; i < m_messages.size(); ++i) {
-                    if (i != idx && m_messages[i].id == real.id) {
-                        alreadyExists = true;
-                        break;
-                    }
-                }
+QString MessageListModel::outboxOwner() const
+{
+    // user + server: an entry written under one account must never be probed,
+    // POSTed or redrawn under another (shared machine, account switch).
+    return m_api->user() + QLatin1Char('@') + m_api->serverUrl();
+}
 
-                if (alreadyExists) {
-                    // Poller beat us — remove the optimistic placeholder
-                    beginRemoveRows({}, idx, idx);
-                    m_messageIds.remove(tempId);
-                    m_messages.removeAt(idx);
-                    endRemoveRows();
-                } else {
-                    // Replace optimistic with real — update ID tracking
-                    m_messageIds.remove(tempId);
-                    m_messageIds.insert(real.id);
-                    m_messages[idx] = real;
-                    emit dataChanged(index(idx), index(idx));
-                    m_cache->saveMessages(m_token, {real});
-                    // bug 7 — a brand-new group opened empty never started the
-                    // poller (startPoller bails when there is no message id to
-                    // anchor the long-poll on). Now that the first send has a
-                    // real server id, start the live poll loop so peer replies
-                    // appear without the user having to re-select the room.
-                    if (m_poller && !m_poller->isPolling())
-                        startPoller();
-                }
-            } else {
-                m_messages[idx].sendStatus = "failed";
-                emit dataChanged(index(idx), index(idx), {SendStatusRole});
-            }
+bool MessageListModel::hasPendingSends() const
+{
+    for (const auto &e : m_outbox)
+        if (!e.permanent) return true;
+    return false;
+}
+
+bool MessageListModel::canRetry(int tempId) const
+{
+    for (const auto &e : m_outbox)
+        if (e.tempId == tempId) return !e.inFlight;
+    return false;
+}
+
+int MessageListModel::latestArrivedRow() const
+{
+    return qBound(0, m_latestArrivedRow, qMax(0, int(m_messages.size()) - 1));
+}
+
+void MessageListModel::clearOutbox()
+{
+    if (m_outbox.isEmpty() && m_sendQueue.isEmpty()) return;
+    qInfo().nospace() << "SendOutbox: cleared (" << m_outbox.size()
+                      << " unsent message(s) dropped -- session ended)";
+    // Their rows go too, or a dead row would stay on screen with nothing behind it.
+    QVector<int> temps;
+    for (const auto &e : m_outbox) temps.append(e.tempId);
+    for (int id : temps) removeTempRow(id);
+    m_outbox.clear();
+    m_sendQueue.clear();
+    // m_probing is left alone on purpose: a probe in flight clears its own entry
+    // when its reply lands, and the reply finds no entries to act on.
+    syncOutboxTimer();
+}
+
+QString MessageListModel::statusFor(const OutboxEntry &e) const
+{
+    using talq::sendretry::Display;
+    return talq::sendretry::displayState(e.inFlight, e.slow, e.everPosted, e.permanent)
+            == Display::Failed
+        ? QStringLiteral("failed") : QStringLiteral("sending");
+}
+
+Message MessageListModel::tempMessageFor(const OutboxEntry &e) const
+{
+    Message m;
+    m.id = e.tempId;
+    m.token = e.token;
+    m.actorType = "users";
+    m.actorId = m_api->user();
+    m.actorDisplayName = "";
+    m.message = e.text;   // #26 — auto-prepended @<bot> visible in own bubble
+    m.timestamp = e.sentAtSecs;
+    m.messageType = "comment";
+    m.sendStatus = statusFor(e);
+    m.referenceId = e.referenceId;
+    m.silent = e.silent;
+    // bug 4 — the quote renders immediately, from the parent already in the
+    // model when the message was sent; the echo later refines it.
+    if (!e.replyTo.isEmpty()) {
+        m.replyToId = e.replyToId;
+        m.replyTo = e.replyTo;
+    }
+    // 0.41.3-beta — tag the temp with its thread so the client-side thread
+    // filter keeps it visible until the server's echo lands.
+    if (e.threadId > 0) m.threadId = e.threadId;
+    return m;
+}
+
+QJsonObject MessageListModel::postBodyFor(const OutboxEntry &e) const
+{
+    // The WHOLE original request. The old retryMessage rebuilt it from {message}
+    // alone and silently dropped the reply target, the topic and the silent flag.
+    QJsonObject body;
+    body["message"] = e.text;
+    body["referenceId"] = e.referenceId;
+    if (e.replyToId > 0)
+        body["replyTo"] = e.replyToId;
+    if (e.silent) body["silent"] = true;
+    // 0.40.9 — Talk's send-message API takes a top-level `threadId` parameter for
+    // posting INTO an existing thread; wiring it into `replyTo` rendered every
+    // topic message as a reply-quote of the seed.
+    if (e.threadId > 0) body["threadId"] = e.threadId;
+    return body;
+}
+
+bool MessageListModel::entryVisibleInView(const OutboxEntry &e) const
+{
+    // Same rule as passesThreadFilter for a real message. (passesThreadFilter
+    // itself waves every temp through, which is right while the user is typing
+    // in a tab but would draw a message from topic A inside topic B on redraw.)
+    if (m_threadId > 0) return e.threadId == m_threadId;
+    return !(m_hideThreadMessages && e.threadId > 0);
+}
+
+void MessageListModel::refreshRowStatus(int tempId)
+{
+    const OutboxEntry *e = findEntry(tempId);
+    if (!e || e->token != m_token) return;
+    const QString status = statusFor(*e);
+    for (int i = 0; i < m_messages.size(); ++i) {
+        if (m_messages[i].id != tempId) continue;
+        if (m_messages[i].sendStatus != status) {
+            m_messages[i].sendStatus = status;
+            emit dataChanged(index(i), index(i), {SendStatusRole});
+        }
+        return;
+    }
+}
+
+void MessageListModel::syncOutboxTimer()
+{
+    bool active = false;
+    for (const auto &e : m_outbox)
+        if (!e.permanent) { active = true; break; }
+    if (active && !m_outboxTimer.isActive())
+        m_outboxTimer.start();
+    else if (!active && m_outboxTimer.isActive())
+        m_outboxTimer.stop();
+}
+
+bool MessageListModel::dropOutboxEntry(int tempId)
+{
+    for (int i = 0; i < m_outbox.size(); ++i) {
+        if (m_outbox[i].tempId != tempId) continue;
+        const QString token = m_outbox[i].token;
+        m_outbox.removeAt(i);
+        auto it = m_sendQueue.find(token);
+        if (it != m_sendQueue.end()) {
+            it->removeAll(tempId);
+            if (it->isEmpty()) m_sendQueue.erase(it);
+        }
+        syncOutboxTimer();
+        return true;
+    }
+    return false;
+}
+
+void MessageListModel::reinsertOutboxTemps()
+{
+    if (m_token.isEmpty() || m_outbox.isEmpty()) return;
+    QVector<Message> temps;
+    const QString owner = outboxOwner();
+    for (const auto &e : m_outbox) {
+        if (e.token != m_token || e.owner != owner || m_messageIds.contains(e.tempId)
+            || !entryVisibleInView(e))
+            continue;
+        temps.append(tempMessageFor(e));
+    }
+    if (temps.isEmpty()) return;
+    std::sort(temps.begin(), temps.end(), [](const Message &a, const Message &b) {
+        return talq::messageSortsBefore(a.id, b.id);
+    });
+    for (const auto &t : temps)
+        m_messageIds.insert(t.id);
+    qInfo().nospace() << "SendOutbox: redrawing " << temps.size()
+                      << " unsent message(s) token=" << m_token;
+    beginInsertRows({}, 0, temps.size() - 1);
+    temps.append(std::move(m_messages));
+    m_messages = std::move(temps);
+    endInsertRows();
+}
+
+void MessageListModel::startAttempt(int tempId)
+{
+    OutboxEntry *e = findEntry(tempId);
+    if (!e || e->inFlight) return;
+
+    e->postAttempts++;
+    // From here on this message may be on the server. A queued one that has not
+    // reached this line cannot be, so the history window proves nothing about it
+    // and cannot give it up (see afterProbe). A forced re-send (manual) is spent
+    // by the POST it forces -- it must not outlive the user's click.
+    e->everPosted = true;
+    e->manual = false;
+    e->attemptSeq = ++m_attemptCounter;
+    e->inFlight = true;
+    e->slow = false;
+    e->inFlightSinceMs = e->lastActivityMs = outboxNowMs();
+    const quint64 seq = e->attemptSeq;
+    const QString token = e->token;
+    qInfo().nospace() << "SendOutbox: POST token=" << token << " temp=" << tempId
+                      << " attempt=" << e->postAttempts << " len=" << e->text.length();
+    refreshRowStatus(tempId);
+
+    m_api->post("apps/spreed/api/v1/chat/" + token, postBodyFor(*e),
+        [this, tempId, seq, token](bool ok, const QJsonObject &data, int status) {
+            onAttemptFinished(tempId, seq, token, ok, data, status);
         });
 
-    // bug 7 — a brand-new group (no poller yet) or a POST callback that never
-    // lands would otherwise leave the optimistic stuck on "Sending" forever
-    // with no way to retry. Arm a timeout: if the temp is still pending after
-    // 20 s (not reconciled by the POST callback above nor by the poller's
-    // referenceId echo), mark it failed so the user sees it and can retry.
-    // Self-cancels — if the temp was reconciled it no longer exists, so the
-    // loop is a no-op. Generation+token guarded so a slow-but-successful send
-    // after a conversation switch is never falsely failed.
-    const int genAtSend = m_generation;
-    const QString tokenAtSend = token;
-    QTimer::singleShot(20000, this, [this, tempId, tokenAtSend, genAtSend]() {
-        if (m_token != tokenAtSend || m_generation != genAtSend) return;
-        for (int i = 0; i < m_messages.size(); ++i) {
-            if (m_messages[i].id == tempId
-                && m_messages[i].sendStatus == QStringLiteral("sending")) {
-                m_messages[i].sendStatus = QStringLiteral("failed");
-                emit dataChanged(index(i), index(i), {SendStatusRole});
+    // Display only. After 20 s without an answer the bubble says "failed" so the
+    // user is never left watching "Sending..." forever (bug 7) -- but this does
+    // NOT end the attempt: ApiClient::post has no handle to abort and its own
+    // transfer timeout is 30 s, so the request can still land. The attempt stays
+    // in flight, and nothing re-sends it, until the reply callback fires.
+    QTimer::singleShot(20000, this, [this, tempId, seq]() { onAttemptSlow(tempId, seq); });
+}
+
+void MessageListModel::onAttemptSlow(int tempId, quint64 seq)
+{
+    OutboxEntry *e = findEntry(tempId);
+    if (!e || e->attemptSeq != seq || !e->inFlight) return;   // answered, or a newer attempt
+    e->slow = true;
+    qInfo().nospace() << "SendOutbox: no answer after 20 s token=" << e->token
+                      << " temp=" << tempId << " attempt=" << e->postAttempts
+                      << " -- shown as failed, request still live";
+    refreshRowStatus(tempId);
+}
+
+void MessageListModel::onAttemptFinished(int tempId, quint64 seq, const QString &token,
+                                         bool ok, const QJsonObject &data, int status)
+{
+    OutboxEntry *e = findEntry(tempId);
+    if (!e) {
+        // Already reconciled by the poller's echo (which dropped the entry), or
+        // discarded by the user. Whatever was queued behind it has been waiting
+        // for exactly this reply: let it go.
+        qInfo().nospace() << "SendOutbox: reply for an untracked send temp=" << tempId
+                          << " ok=" << ok << " status=" << status;
+        sendNextQueued(token);
+        return;
+    }
+
+    if (ok && !data.isEmpty()) {
+        qInfo().nospace() << "SendOutbox: delivered token=" << token << " temp=" << tempId
+                          << " attempts=" << e->postAttempts << " id="
+                          << data.value(QStringLiteral("id")).toInt();
+        const Message real = Message::fromJson(data);
+        deliverReal(token, tempId, real);          // also drops the entry
+        sendNextQueued(token);                      // the next one waiting behind it
+        return;
+    }
+    if (seq != e->attemptSeq) {
+        qInfo().nospace() << "SendOutbox: ignoring a stale failure token=" << token
+                          << " temp=" << tempId << " status=" << status;
+        return;
+    }
+
+    // A failure. NOT proof of non-delivery: Talk saves before it notifies the HPB,
+    // so a timeout, a 5xx or a 400 can follow a message that is already stored.
+    // The next step is therefore a history probe, never a blind re-POST.
+    e->inFlight = false;
+    e->slow = false;
+    e->lastStatus = status;
+    e->lastActivityMs = outboxNowMs();
+    e->needFreshConnection = (status == 0);
+    // How long it hung before failing: a slow failure means the server may still be
+    // working on it, so the first check waits longer (SendRetryPolicy::kSlowFailureMs).
+    const qint64 hungMs = qMax<qint64>(0, e->lastActivityMs - e->inFlightSinceMs);
+    const auto outcome = talq::sendretry::onPostFailed(status, e->postAttempts, hungMs);
+    if (outcome.giveUp) {
+        e->permanent = true;
+        qInfo().nospace() << "SendOutbox: giving up token=" << token << " temp=" << tempId
+                          << " status=" << status << " attempts=" << e->postAttempts
+                          << " (needs a manual retry)";
+    } else {
+        e->nextTryMs = e->lastActivityMs + outcome.nextTryDelayMs;
+        qInfo().nospace() << "SendOutbox: attempt failed token=" << token << " temp=" << tempId
+                          << " status=" << status << " attempts=" << e->postAttempts
+                          << " next check in " << outcome.nextTryDelayMs << " ms";
+    }
+    m_sendQueue.remove(token);    // whatever was queued behind this waits behind it
+    refreshRowStatus(tempId);
+    syncOutboxTimer();
+}
+
+void MessageListModel::deliverReal(const QString &token, int tempId, const Message &real)
+{
+    dropOutboxEntry(tempId);
+    // A room that is not open has nothing to redraw; opening it later reads the
+    // message from the server like any other.
+    if (m_token != token) return;
+
+    int idx = -1;
+    for (int i = 0; i < m_messages.size(); ++i) {
+        if (m_messages[i].id == tempId) { idx = i; break; }
+    }
+    // 0.41.3-beta — the optimistic temp may already be gone: the long-poll caught
+    // the same message first and replaceTempByReferenceId() swapped it. If we
+    // already hold the real id, we're done — no action needed.
+    if (idx < 0) {
+        if (m_messageIds.contains(real.id))
+            return;   // poller delivered + dedup handled it
+        // Edge case: temp gone, real not in model (rare, e.g. cache cleared or the
+        // room reset mid-flight). Insert fresh so the user doesn't lose their
+        // just-sent message -- behind any newer pending temps, which sort first.
+        if (!passesThreadFilter(real)) return;
+        int at = 0;
+        while (at < m_messages.size() && m_messages[at].id < 0) ++at;
+        m_messageIds.insert(real.id);
+        beginInsertRows({}, at, at);
+        m_messages.insert(at, real);
+        endInsertRows();
+        m_cache->saveMessages(m_token, {real});
+        return;
+    }
+
+    // Check if the poller already added this message (race condition)
+    bool alreadyExists = false;
+    for (int i = 0; i < m_messages.size(); ++i) {
+        if (i != idx && m_messages[i].id == real.id) {
+            alreadyExists = true;
+            break;
+        }
+    }
+
+    if (alreadyExists) {
+        // Poller beat us — remove the optimistic placeholder
+        beginRemoveRows({}, idx, idx);
+        m_messageIds.remove(tempId);
+        m_messages.removeAt(idx);
+        endRemoveRows();
+        return;
+    }
+
+    // Replace optimistic with real — update ID tracking
+    m_messageIds.remove(tempId);
+    m_messageIds.insert(real.id);
+    m_messages[idx] = real;
+    emit dataChanged(index(idx), index(idx));
+    m_cache->saveMessages(m_token, {real});
+    // Two unsent messages can be delivered newest-first; a real row must never
+    // sit in front of a pending temp.
+    enforceNewestFirstInvariant();
+    // bug 7 — a brand-new group opened empty never started the poller (startPoller
+    // bails when there is no message id to anchor the long-poll on). Now that the
+    // first send has a real server id, start the live poll loop so peer replies
+    // appear without the user having to re-select the room.
+    if (m_poller && !m_poller->isPolling())
+        startPoller();
+}
+
+void MessageListModel::sendNextQueued(const QString &token)
+{
+    auto it = m_sendQueue.find(token);
+    if (it == m_sendQueue.end()) return;
+    while (!it->isEmpty()) {
+        const int id = it->takeFirst();
+        const OutboxEntry *e = findEntry(id);
+        if (!e || e->permanent || e->inFlight) continue;
+        startAttempt(id);
+        return;
+    }
+    m_sendQueue.erase(it);
+}
+
+void MessageListModel::outboxTick()
+{
+    const qint64 now = outboxNowMs();
+
+    // Unsent text belongs to the SESSION. clearOutbox() is the prompt path (logout);
+    // this is the net under it: an entry written by another account is never
+    // probed, POSTed or kept.
+    {
+        const QString owner = outboxOwner();
+        QVector<int> foreign;
+        for (const auto &e : m_outbox)
+            if (e.owner != owner) foreign.append(e.tempId);
+        for (int id : foreign) {
+            qInfo().nospace() << "SendOutbox: dropping an unsent message written by another account temp=" << id;
+            dropOutboxEntry(id);
+            removeTempRow(id);
+        }
+    }
+
+    // The deadlines are wall-clock. A clock stepped back after a resume would leave
+    // one hours away, and a stepped-back in-flight stamp a watchdog that never fires.
+    for (auto &e : m_outbox) {
+        e.nextTryMs = talq::sendretry::sanitizeNextTryMs(e.nextTryMs, now);
+        if (e.inFlightSinceMs > now) e.inFlightSinceMs = now;
+    }
+
+    // Watchdog: an attempt whose callback never fires (impossible under the 30 s
+    // transfer timeout, but the cost of being wrong is a message stuck forever).
+    // Its attemptSeq moves on, so a callback that arrives late is stale: a
+    // success is still honoured (the message exists), a failure is ignored.
+    QVector<int> released;
+    for (auto &e : m_outbox) {
+        if (!e.inFlight || now - e.inFlightSinceMs <= talq::sendretry::kInFlightWatchdogMs)
+            continue;
+        qWarning().nospace() << "SendOutbox: attempt never answered, releasing token=" << e.token
+                             << " temp=" << e.tempId << " attempt=" << e.postAttempts;
+        e.inFlight = false;
+        e.slow = false;
+        e.attemptSeq = ++m_attemptCounter;
+        e.lastStatus = 0;
+        e.lastActivityMs = now;
+        e.needFreshConnection = true;
+        const auto o = talq::sendretry::onPostFailed(0, e.postAttempts,
+                                                     now - e.inFlightSinceMs);
+        if (o.giveUp) e.permanent = true;
+        else          e.nextTryMs = now + o.nextTryDelayMs;
+        m_sendQueue.remove(e.token);
+        released.append(e.tempId);
+    }
+    for (int id : released) refreshRowStatus(id);
+
+    // One probe per room, started only by that room's OLDEST active entry: the
+    // ones behind it share its fate, so a retry never overtakes an older message.
+    QSet<QString> seen;
+    QStringList toProbe;
+    for (const auto &e : m_outbox) {
+        if (e.permanent || seen.contains(e.token)) continue;
+        seen.insert(e.token);
+        if (talq::sendretry::headReady(e.inFlight, e.permanent, e.nextTryMs, now))
+            toProbe.append(e.token);
+    }
+    for (const QString &token : toProbe)
+        probeToken(token);
+
+    syncOutboxTimer();
+}
+
+void MessageListModel::probeToken(const QString &token)
+{
+    if (m_probing.contains(token)) return;
+
+    // After a transport failure the pooled HTTP/2 connection is the likeliest
+    // thing that died; the probe and the POST after it would queue onto it.
+    bool freshConnection = false;
+    for (auto &e : m_outbox) {
+        if (e.token != token || e.permanent || e.inFlight) continue;
+        if (e.needFreshConnection) { freshConnection = true; e.needFreshConnection = false; }
+    }
+    if (freshConnection)
+        m_api->dropPooledConnections();
+
+    m_probing.insert(token);
+
+    // The newest page of the room's history. This one request is BOTH the "is the
+    // connection back" test and the "did it already land" check. Same flags as
+    // refreshLatest: never advance the read marker or clear notifications.
+    QUrlQuery params;
+    params.addQueryItem("lookIntoFuture", "0");
+    params.addQueryItem("markNotificationsAsRead", "0");
+    params.addQueryItem("limit", QString::number(kChatPageLimit));
+    params.addQueryItem("setReadMarker", "0");
+    qInfo().nospace() << "SendOutbox: checking history token=" << token
+                      << (freshConnection ? " (fresh connection)" : "");
+    const qint64 probeStart = outboxNowMs();
+    QNetworkReply *reply = m_api->getRaw("apps/spreed/api/v1/chat/" + token, params);
+
+    connect(reply, &QNetworkReply::finished, this, [this, reply, token, probeStart]() {
+        m_probing.remove(token);
+        reply->deleteLater();
+        const qint64 now = outboxNowMs();
+        const int httpStatus =
+            reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+
+        // An empty history is HTTP 304 with no body (ChatController.php:1109) --
+        // a real, conclusive answer. Anything else that is not a clean 200 with a
+        // parsable envelope tells us nothing (a captive portal answers 200 with
+        // HTML), so it must never be read as "the room is empty".
+        QJsonArray page;
+        bool answered = false;
+        if (reply->error() == QNetworkReply::NoError) {
+            if (httpStatus == 304) {
+                answered = true;
+            } else {
+                const QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
+                const QJsonObject ocs = doc.object().value(QStringLiteral("ocs")).toObject();
+                if (!doc.isNull() && ocs.value(QStringLiteral("data")).isArray()) {
+                    page = ocs.value(QStringLiteral("data")).toArray();
+                    answered = true;
+                }
+            }
+        }
+
+        if (!answered) {
+            const bool giveUp = talq::sendretry::classifyProbeFailure(httpStatus)
+                                == talq::sendretry::ProbeFailure::GiveUp;
+            QVector<int> touched;
+            for (auto &e : m_outbox) {
+                if (e.token != token || e.permanent || e.inFlight) continue;
+                e.lastActivityMs = now;
+                if (giveUp) {
+                    e.permanent = true;
+                } else {
+                    ++e.probeFailures;
+                    e.nextTryMs = now + talq::sendretry::probeDelayMs(e.probeFailures);
+                    if (httpStatus == 0) e.needFreshConnection = true;
+                }
+                touched.append(e.tempId);
+            }
+            qInfo().nospace() << "SendOutbox: history check failed token=" << token
+                              << " http=" << httpStatus << " error=" << reply->errorString()
+                              << (giveUp ? " -- giving up on this room's unsent messages"
+                                         : " -- will try again");
+            for (int id : touched) refreshRowStatus(id);
+            syncOutboxTimer();
+            return;
+        }
+
+        // The page, indexed by referenceId.
+        QHash<QString, QJsonObject> byRef;
+        for (const QJsonValue &v : page) {
+            const QJsonObject o = v.toObject();
+            const QString ref = o.value(QStringLiteral("referenceId")).toString();
+            if (!ref.isEmpty()) byRef.insert(ref, o);
+        }
+        // How far back the window REALLY reaches. Not the number of messages on the
+        // page: Talk applies `limit` to the raw comments and only then drops the ones
+        // the caller may not see, so a full window can come back short. X-Chat-Last-Given
+        // is the id of the oldest RAW comment in the window (ChatController.php:1212-1214).
+        // No header and no messages means the room has no comments at all (the 200-with-[]
+        // form of "empty"; the usual form is the 304 above).
+        const qint64 lastGiven = reply->rawHeader("X-Chat-Last-Given").toLongLong();
+        const bool emptyHistory = httpStatus == 304 || (page.isEmpty() && lastGiven == 0);
+
+        // Decide for every entry of this room first, apply afterwards: delivering
+        // removes entries, which must not happen while we walk the list.
+        QVector<QPair<int, Message>> delivered;
+        QVector<int> toSend, giveUp;
+        for (auto &e : m_outbox) {
+            if (e.token != token || e.permanent || e.inFlight) continue;
+            // Something happened to it while this request was out (its attempt
+            // finished, or it was only just queued): the page predates that, and
+            // judging it against the page would be judging it against stale data.
+            // The next probe takes it.
+            if (e.lastActivityMs > probeStart) continue;
+            e.probeFailures = 0;
+            e.lastActivityMs = now;
+            const bool found = byRef.contains(e.referenceId);
+            const auto verdict = talq::sendretry::probeVerdict(
+                found, emptyHistory, lastGiven, e.knownNewestId);
+            switch (talq::sendretry::afterProbe(verdict, e.manual, e.everPosted)) {
+            case talq::sendretry::AfterProbe::MarkDelivered:
+                delivered.append({e.tempId, Message::fromJson(byRef.value(e.referenceId))});
+                break;
+            case talq::sendretry::AfterProbe::Resend:
+                toSend.append(e.tempId);
+                break;
+            case talq::sendretry::AfterProbe::GiveUp:
+                e.permanent = true;
+                giveUp.append(e.tempId);
                 break;
             }
         }
+
+        qInfo().nospace() << "SendOutbox: history checked token=" << token
+                          << " page=" << page.size() << " lastGiven=" << lastGiven
+                          << (emptyHistory ? " (empty room)" : "")
+                          << " delivered=" << delivered.size() << " resend=" << toSend.size()
+                          << " unclear=" << giveUp.size();
+        for (int id : giveUp) {
+            qInfo().nospace() << "SendOutbox: history window does not provably cover temp=" << id
+                              << " -- not re-sending automatically (could duplicate); Retry forces it";
+            refreshRowStatus(id);
+        }
+        for (const auto &d : delivered) {
+            qInfo().nospace() << "SendOutbox: already on the server token=" << token
+                              << " temp=" << d.first << " id=" << d.second.id << " -- not re-sending";
+            deliverReal(token, d.first, d.second);
+        }
+        if (!toSend.isEmpty()) {
+            m_sendQueue[token] = QList<int>(toSend.begin(), toSend.end());
+            sendNextQueued(token);
+        }
+        syncOutboxTimer();
     });
+}
+
+void MessageListModel::kickOutbox()
+{
+    const qint64 now = outboxNowMs();
+    bool any = false;
+    for (auto &e : m_outbox) {
+        if (e.permanent || e.inFlight) continue;
+        e.nextTryMs = talq::sendretry::kickedNextTryMs(e.nextTryMs, now, e.lastActivityMs);
+        any = true;
+    }
+    if (!any) return;
+    qInfo() << "SendOutbox: recovery hint -- unsent messages will be checked shortly";
+    syncOutboxTimer();     // the 2 s tick picks up the pulled-forward deadline
+}
+
+void MessageListModel::retryMessage(int tempId)
+{
+    OutboxEntry *e = findEntry(tempId);
+    if (!e) return;
+    if (e->inFlight) {
+        qInfo().nospace() << "SendOutbox: Retry ignored, attempt still in flight temp=" << tempId;
+        return;
+    }
+    // Retry means "check, then send if it is not there" -- the user cannot know
+    // whether the failed attempt landed, and neither can we. It starts a fresh
+    // attempt budget, forgives a permanent classification once, and lets an
+    // inconclusive history window through (manual), since otherwise a message in
+    // a very busy room could never be re-sent at all.
+    e->permanent = false;
+    e->manual = true;
+    e->postAttempts = 0;
+    e->probeFailures = 0;
+    e->nextTryMs = 0;
+    e->lastActivityMs = outboxNowMs();
+    // "Now" is for the room's whole queue: a message behind an older one that is
+    // waiting out a backoff would otherwise sit until that deadline, because only
+    // the oldest active entry of a room may start a check.
+    for (auto &o : m_outbox)
+        if (o.token == e->token && !o.permanent && !o.inFlight) o.nextTryMs = 0;
+    qInfo().nospace() << "SendOutbox: manual retry token=" << e->token << " temp=" << tempId;
+    refreshRowStatus(tempId);
+    syncOutboxTimer();
+    QTimer::singleShot(0, this, &MessageListModel::outboxTick);
+}
+
+void MessageListModel::discardFailed(int tempId)
+{
+    if (!findEntry(tempId)) return;
+    qInfo().nospace() << "SendOutbox: discarded by the user temp=" << tempId;
+    dropOutboxEntry(tempId);
+    removeTempRow(tempId);
+}
+
+void MessageListModel::removeTempRow(int tempId)
+{
+    for (int i = 0; i < m_messages.size(); ++i) {
+        if (m_messages[i].id != tempId) continue;
+        beginRemoveRows({}, i, i);
+        m_messageIds.remove(tempId);
+        m_messages.removeAt(i);
+        endRemoveRows();
+        return;
+    }
 }
 
 void MessageListModel::setAutoMentionBot(const QString &mentionSlug)
@@ -1501,6 +2133,10 @@ void MessageListModel::sendMessage(const QString &text, int replyToId, bool sile
     // that arrives concurrently for the same own message. Without
     // this key, back-to-back sends + late POST callbacks raced and
     // the FIRST optimistic could be erased — the field bug.
+    //
+    // It identifies our message; it does NOT make a second POST harmless -- Talk
+    // 24 stores a duplicate (no server-side dedup). A re-send therefore goes
+    // through the outbox's history check first (see the header).
     const QByteArray refSeed = QByteArray("talq-")
         + QByteArray::number(QDateTime::currentMSecsSinceEpoch())
         + QByteArray("-")
@@ -1508,21 +2144,22 @@ void MessageListModel::sendMessage(const QString &text, int replyToId, bool sile
     const QString referenceId = QString::fromLatin1(
         QCryptographicHash::hash(refSeed, QCryptographicHash::Sha256).toHex());
 
-    Message optimistic;
-    optimistic.id = tempId;
-    optimistic.token = m_token;
-    optimistic.actorType = "users";
-    optimistic.actorId = m_api->user();
-    optimistic.actorDisplayName = "";
-    optimistic.message = actualText;  // #26 — auto-prepended @<bot> visible in own bubble
-    optimistic.timestamp = QDateTime::currentSecsSinceEpoch();
-    optimistic.messageType = "comment";
-    optimistic.sendStatus = "sending";
-    optimistic.referenceId = referenceId;
-    // 0.41.3-beta — when sending FROM a thread tab, tag the optimistic
-    // with the thread id locally so the client-side thread filter
-    // (next paragraph) keeps it visible until the server's echo lands.
-    if (m_threadId > 0) optimistic.threadId = m_threadId;
+    // Everything needed to send this message again, exactly as it is sent now.
+    OutboxEntry entry;
+    entry.token = m_token;
+    entry.owner = outboxOwner();
+    // The newest server id this room has right now. A message the server saves
+    // from this send on gets a larger one, which is what lets a later history
+    // window prove it covers the send (SendRetryPolicy::probeVerdict).
+    entry.knownNewestId = newestRealId();
+    entry.tempId = tempId;
+    entry.text = actualText;
+    entry.referenceId = referenceId;
+    entry.replyToId = replyToId > 0 ? replyToId : 0;
+    entry.silent = silent;
+    entry.threadId = m_threadId > 0 ? m_threadId : 0;
+    entry.sentAtSecs = QDateTime::currentSecsSinceEpoch();
+    entry.sentAtMs = entry.lastActivityMs = outboxNowMs();
 
     // bug 4 — populate the optimistic message's reply parent from the target
     // already in the model, so the quote renders IMMEDIATELY rather than only
@@ -1531,17 +2168,32 @@ void MessageListModel::sendMessage(const QString &text, int replyToId, bool sile
     if (replyToId > 0) {
         for (const auto &p : m_messages) {
             if (p.id != replyToId) continue;
-            optimistic.replyToId = replyToId;
             QJsonObject r;
             r[QStringLiteral("id")]               = p.id;
             r[QStringLiteral("actorId")]          = p.actorId;
             r[QStringLiteral("actorType")]        = p.actorType;
             r[QStringLiteral("actorDisplayName")] = p.actorDisplayName;
             r[QStringLiteral("message")]          = p.message;
-            optimistic.replyTo = r;
+            entry.replyTo = r;
             break;
         }
     }
+
+    // An older unsent message in this room is still waiting to be retried: sending
+    // this one straight away would land it AHEAD of that one. Queue behind it
+    // instead; the outbox sends both, oldest first. An older message that is
+    // merely in flight (the user typing quickly) does not hold this one back.
+    bool behindOlder = false;
+    for (const auto &o : m_outbox) {
+        if (o.token == m_token
+            && talq::sendretry::blocksNewSend(o.inFlight, o.permanent)) {
+            behindOlder = true;
+            break;
+        }
+    }
+
+    m_outbox.append(entry);
+    const Message optimistic = tempMessageFor(m_outbox.last());
 
     // Prepend at index 0 (newest-first: new = front)
     m_messageIds.insert(tempId);
@@ -1550,22 +2202,8 @@ void MessageListModel::sendMessage(const QString &text, int replyToId, bool sile
     endInsertRows();
 
     emit messageSent();
+    m_latestArrivedRow = 0;      // our own temp, which is the front row
     emit newMessagesAtEnd();
-
-    QJsonObject body;
-    body["message"] = actualText;
-    body["referenceId"] = referenceId;
-    if (replyToId > 0)
-        body["replyTo"] = replyToId;
-    if (silent) body["silent"] = true;
-    // 0.40.9 — Talk's send-message API takes a top-level `threadId`
-    // parameter for posting INTO an existing thread. Before this, the
-    // composer wired the active thread id into `replyTo`, which the
-    // server then rendered as a reply-quote of the seed message, so
-    // every message in a topic looked like "↳ replying to 📌 Refunds".
-    // threadId is the proper hook: the message joins the thread without
-    // a spurious reply-quote.
-    if (m_threadId > 0) body["threadId"] = m_threadId;
 
     // 0.41.2-beta — diagnostic. We're chasing a "zero messages in
     // Refunds thread" field bug where one client's messages don't
@@ -1575,31 +2213,14 @@ void MessageListModel::sendMessage(const QString &text, int replyToId, bool sile
     qInfo().nospace() << "MessageListModel: sendMessage token=" << m_token
                       << " threadId=" << m_threadId
                       << " replyTo=" << replyToId
-                      << " len=" << actualText.length();
+                      << " len=" << actualText.length()
+                      << (behindOlder ? " (queued behind an older unsent message)" : "");
 
-    postAndReplace(m_token, body, tempId);
-}
-
-void MessageListModel::retryMessage(int tempId)
-{
-    int idx = -1;
-    for (int i = 0; i < m_messages.size(); ++i) {
-        if (m_messages[i].id == tempId) { idx = i; break; }
-    }
-    if (idx < 0) return;
-
-    Message &msg = m_messages[idx];
-    if (msg.sendStatus != "failed") return;
-
-    msg.sendStatus = "sending";
-    emit dataChanged(index(idx), index(idx), {SendStatusRole});
-
-    QString text = msg.message;
-    QString currentToken = m_token;
-    QJsonObject body;
-    body["message"] = text;
-
-    postAndReplace(currentToken, body, tempId);
+    syncOutboxTimer();
+    if (behindOlder)
+        kickOutbox();
+    else
+        startAttempt(tempId);
 }
 
 void MessageListModel::addReaction(int messageId, const QString &emoji)
@@ -1792,6 +2413,7 @@ void MessageListModel::clearLocalHistory()
     m_oldestMessageId = 0;
     m_unreadBoundary = 0;
     m_hasMoreHistory = false;
+    reinsertOutboxTemps();   // a cleared room does not cancel what we still owe it
     if (m_cache && !m_token.isEmpty())
         m_cache->clearConversation(m_token);
     emit unreadBoundaryChanged();

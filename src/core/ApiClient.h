@@ -469,6 +469,14 @@ public:
     // user change; exposed for callers that need an explicit reset.
     void resetSession();
 
+    // Close the pooled connections so the next request opens a fresh one. For a
+    // caller that is about to try again after a transport failure: the failure
+    // usually means the pooled HTTP/2 connection died (field log 2026-10-03
+    // 11:20:08, every in-flight stream reset at once), and the next request
+    // would otherwise be queued onto the same corpse. Requests already in
+    // flight are not affected (Qt docs: clearConnectionCache).
+    void dropPooledConnections();
+
     // Cancel all pending requests
     void cancelAll();
 
