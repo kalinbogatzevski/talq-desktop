@@ -34,6 +34,7 @@
 #include <QSet>
 #include <QString>
 #include <QtGlobal>
+#include <string>
 
 namespace talq {
 
@@ -270,6 +271,25 @@ inline bool autoInstallBlocked(const InstallGateInputs &in, qint64 graceMs)
         || in.voiceRecording
         || in.uploadInProgress
         || in.mouseButtonHeld;
+}
+
+// Which gates are closed right now, for the log only: "" when none is, otherwise
+// a comma-separated list in a fixed order. It must stay in step with
+// autoInstallBlocked() -- the test checks that exhaustively -- because this line is
+// the only way to tell, after the fact, why an automatic install did not happen
+// (2026-10-08: an install sat held ~2 h 45 min and nothing recorded by what).
+inline std::string closedGateNames(const InstallGateInputs &in, qint64 graceMs)
+{
+    std::string s;
+    auto add = [&s](const char *name) { if (!s.empty()) s += ','; s += name; };
+    if (in.callActive)                   add("call");
+    if (withinPostCallGrace(in, graceMs)) add("post-call-grace");
+    if (in.unsentText)                   add("unsent-text");
+    if (in.attachmentStaged)             add("attachment-staged");
+    if (in.voiceRecording)               add("voice-recording");
+    if (in.uploadInProgress)             add("upload");
+    if (in.mouseButtonHeld)              add("mouse-button-held");
+    return s;
 }
 
 // The countdown is waiting for nothing but the post-call grace to run out.

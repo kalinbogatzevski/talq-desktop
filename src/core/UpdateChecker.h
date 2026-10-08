@@ -85,6 +85,7 @@ private:
     QNetworkAccessManager *m_nam;
     QTimer m_pollTimer;
     Manifest m_lastManifest;
+    QString  m_lastLoggedOffer;   // the poll re-offers the same version every 5 min; log it once
     bool m_hasPendingUpdate = false;
     QString m_downloadPath;
     // Digest snapshotted at startDownload() time, verified against in

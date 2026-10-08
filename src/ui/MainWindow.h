@@ -130,6 +130,9 @@ private:
     // finally calls maybeLaunchPendingInstaller once the user has been idle
     // for the configured window.
     void onUpdateAutoInstallTick();
+    // Log (only) which install gates are closed, when that set changes -- the one record of why an
+    // automatic install is waiting. See UpdateInstallGatePolicy.h closedGateNames().
+    void noteInstallGateChange(const talq::InstallGateInputs &gates);
     // Unsent composer text in ANY conversation, not only the open one.
     bool hasUnsentComposerText() const;
     // Everything the install decisions in UpdateInstallGatePolicy.h look at,
@@ -466,6 +469,10 @@ private:
     // exactly once per auto-install cycle. Cleared whenever the cycle
     // resets (cancelled, install fired, gate-blocked, etc).
     bool   m_countdownNotified = false;
+    QString m_lastInstallGateNote;        // closedGateNames() at the last tick that logged
+    qint64  m_lastInstallGateChangeMs = 0; // when that set last changed
+    qint64  m_installHeldSinceMs = 0;      // when the install first became held (not reset by a gate swap)
+    qint64  m_lastInstallGateLogMs = 0;    // last line written for it (heartbeat while it stays closed)
 
     // Search bar
     class QWidget *m_searchBar = nullptr;

@@ -3,7 +3,7 @@
 // Hidden, headless end-to-end check of the REAL CallManager:
 //
 //     talq.exe --selftest-call [--log <file>] [--callee <talq-call-test.exe>]
-//                              [--rounds N] [--early-rounds N]
+//                              [--rounds N] [--early-rounds N] [--cold-session]
 //
 // The call harness (tests/call_test.cpp) drives SignalingClient and the
 // pipelines directly and has NO CallManager, so nothing automatic exercised the

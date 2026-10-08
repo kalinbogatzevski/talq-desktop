@@ -5083,6 +5083,7 @@ void CallManager::resetCallJoinState(bool outgoing)
     m_callMediaStarted = false;
     m_ownJoin.reset();
     m_iceFetchFailures = 0;
+    m_callRoomRejoins  = 0;   // each call gets its own single forced room re-join
 }
 
 void CallManager::onCallJoinPostResult(int gen, const QString &token, bool withVideo,
@@ -5106,6 +5107,8 @@ void CallManager::onCallJoinPostResult(int gen, const QString &token, bool withV
     f.alreadyJoined = m_ownJoin.confirmed();
     f.attempts      = m_callJoinAttempts;
     f.maxAttempts   = kMaxCallJoinAttempts;
+    f.roomRejoins    = m_callRoomRejoins;
+    f.maxRoomRejoins = kMaxCallRoomRejoins;
     switch (talq::decideJoinFailure(f)) {
     case talq::JoinFailureAction::IgnoreStale:
         qInfo() << "CallManager: call-join failed status=" << statusCode
@@ -5124,10 +5127,119 @@ void CallManager::onCallJoinPostResult(int gen, const QString &token, bool withV
     case talq::JoinFailureAction::VerifyRejection:
         reconcileCallJoin(gen, token, withVideo, statusCode, /*verifyingRejection*/true);
         return;
+    case talq::JoinFailureAction::RejoinRoom:
+        ++m_callRoomRejoins;
+        rejoinRoomThenRepost(gen, token, withVideo, statusCode);
+        return;
     case talq::JoinFailureAction::Fail:
         failCallJoin(statusCode);
         return;
     }
+}
+
+void CallManager::rejoinRoomThenRepost(int gen, const QString &token, bool withVideo, int failedStatus)
+{
+    // WHY leave and join the room again, and not just a second participants/active: each
+    // participants/active mints a NEW Nextcloud session (measured: the second one returns a
+    // different sessionId). Talk binds the call join to the PHP session's room session; the HPB
+    // binds our signaling socket to whatever sessionId the WS "room" message carried. The first
+    // POST's session is the one the socket is in, so a bare second POST would let the join
+    // succeed under a session the socket never joined -- a call with no signaling events. The
+    // socket has to move to the NEW session: leaveRoom(), then joinRoom(force) (which re-POSTs
+    // participants/active and re-sends the WS room message), and roomJoined says the HPB acked.
+    qWarning() << "CallManager: call-join answered" << failedStatus << "for" << token
+               << "-- the room session did not take; re-joining the room once, then retrying the join";
+    setStatusDetail(QStringLiteral("Joining room"));
+
+    struct RejoinState {
+        bool done = false;      // one outcome only: ack, failure or timeout, whichever comes first
+        bool left = false;      // leaveRoom() went out: the socket is OUT of the room until it joins again
+        bool joinSent = false;  // joinRoom(force) went out; only a roomJoined after this is its ack
+        QList<QMetaObject::Connection> conns;
+    };
+    auto st = std::make_shared<RejoinState>();
+    auto settle = [st]() {
+        st->done = true;
+        for (const QMetaObject::Connection &c : st->conns) QObject::disconnect(c);
+        st->conns.clear();
+    };
+    auto stillWanted = [this, gen]() {
+        return gen == m_callGen
+            && talq::isStillJoining(m_state == Outgoing || m_state == Connecting || m_state == Incoming,
+                                    m_state == Reconnecting, m_ownJoin.confirmed());
+    };
+    // The leave took the socket out of the room. Every way out of this retry except a successful
+    // re-join (hung up meanwhile, re-join refused, timeout) must put it back, or live events for
+    // the conversation (chat refresh, typing) stay dead until something else joins it.
+    auto restoreRoom = [this, st, token]() {
+        if (!st->left || !m_signaling->isConnected()) return;
+        if (m_signaling->roomJoinAcked() && m_signaling->currentRoom() == token) return;
+        m_signaling->joinRoom(token, /*force*/true);
+    };
+
+    // Leave acknowledged (or the wait ran out): join again under the new session. The roomJoined
+    // listener is connected HERE, immediately before the join is sent -- an earlier one could take
+    // an unrelated roomJoined (a resumed socket re-announcing the old membership) for the ack.
+    auto proceed = [this, st, settle, stillWanted, restoreRoom, token, withVideo]() {
+        if (st->done || st->joinSent) return;
+        if (!stillWanted()) {      // hung up meanwhile: just put the socket back
+            settle();
+            restoreRoom();
+            return;
+        }
+        st->joinSent = true;
+        st->conns.append(connect(m_signaling, &SignalingClient::roomJoined, this,
+            [this, st, settle, stillWanted, withVideo]() {
+                if (st->done) return;
+                settle();
+                if (!stillWanted()) return;
+                qInfo() << "CallManager: room re-joined -- retrying the call join";
+                joinCallOnServer(withVideo);
+            }));
+        m_signaling->joinRoom(token, /*force*/true);
+    };
+
+    st->conns.append(connect(m_signaling, &SignalingClient::roomJoinFailed, this,
+        [this, st, settle, stillWanted, restoreRoom, token, failedStatus](const QString &t, int status) {
+            if (st->done || t != token) return;
+            settle();
+            restoreRoom();
+            if (!stillWanted()) return;
+            qWarning() << "CallManager: the room re-join failed too (status" << status
+                       << ") -- the conversation is not reachable; giving up with" << failedStatus;
+            failCallJoin(failedStatus);
+        }));
+    QTimer::singleShot(kRoomRejoinTimeoutMs, this, [this, st, settle, stillWanted, restoreRoom, failedStatus]() {
+        if (st->done) return;
+        settle();
+        restoreRoom();
+        if (!stillWanted()) return;
+        qWarning() << "CallManager: room re-join did not finish in time -- giving up with" << failedStatus;
+        failCallJoin(failedStatus);
+    });
+
+    // Conversation list FIRST, then LEAVE, then join again. After a fresh Nextcloud session lost
+    // its first participants/active, only a session that has served GET /v4/room (or has seen an
+    // earlier participants/active) retains the next one. Measured against ncloud 2026-10-08,
+    // deterministic over repeats:
+    //   a room join happened in the new session, the join was lost (404):
+    //     retry [participants/active, call] -> 200      retry [GET room, participants/active, call] -> 200
+    //   the session was replaced under an already-joined room (no participants/active in it):
+    //     retry [participants/active, call] -> 404 AGAIN  retry [GET room, participants/active, call] -> 200
+    // so the list GET is what makes the retry hold in both; its outcome does not matter. The
+    // signaling server refuses a second room join from a socket that is still in the room
+    // ("already_joined", seen live 2026-10-08: no ack ever came and the first version of this retry
+    // sat out its timeout), hence the leave. If the leave is not acknowledged in time the join is
+    // tried anyway; if that is refused too, the 15 s bound ends it with the original 404.
+    m_api->getArray("apps/spreed/api/v4/room",
+        [this, st, settle, stillWanted, proceed](bool, const QJsonArray &, int) {
+            if (st->done) return;
+            if (!stillWanted()) { settle(); return; }   // nothing left yet, nothing to restore
+            st->conns.append(connect(m_signaling, &SignalingClient::roomLeft, this, proceed));
+            QTimer::singleShot(kRoomLeaveWaitMs, this, proceed);
+            st->left = true;     // from here the socket may be out of the room
+            m_signaling->leaveRoom();
+        });
 }
 
 void CallManager::onLateJoinPostResult(const QString &token, bool ok, int statusCode)
