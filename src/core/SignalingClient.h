@@ -55,6 +55,16 @@ public:
     // a fresh Nextcloud session and retires the one carrying the in-call
     // flag, collapsing a live call (see joinRoom in the .cpp).
     Q_INVOKABLE void joinRoom(const QString &token, bool force = false);
+    // Leave the room this socket is in (WS `room` message with an empty roomid). The server
+    // refuses a second join from a socket that is still in the room ("already_joined"), so
+    // moving to a NEW Nextcloud session in the SAME room needs leave -> joinRoom(token, true).
+    // roomLeft() is emitted when the server acknowledges. While a leave is pending, an
+    // empty-roomid `room` message is consumed as that acknowledgement and is not taken for a
+    // join ack -- even if joinRoom() has been called meanwhile, because the flag is cleared only
+    // by the ack itself, by a real (non-empty) join ack, or by a disconnect. Every other `room`
+    // message is untouched.
+    // Used only by CallManager's one-shot recovery from a call-join 404.
+    void leaveRoom();
     Q_INVOKABLE void sendStartedTyping();
     Q_INVOKABLE void sendStoppedTyping();
 
@@ -252,6 +262,12 @@ signals:
     // subscriber whose publisher reconnected under a new session/SSRCs.
     void roomPeerLeft(const QString &sessionId);
     void roomJoined();
+    void roomLeft();   // the server acknowledged leaveRoom()
+    // The participants/active POST of a joinRoom() came back unsuccessful (status 0
+    // = no response). Lets a waiter that is blocked on roomJoined() -- CallManager's
+    // forced room re-join after a call-join 404 -- stop at once instead of sitting
+    // out its timeout. Only emitted while `token` is still the room being joined.
+    void roomJoinFailed(const QString &token, int status);
     // The server moved us to another conversation (breakout rooms). The window
     // follows it; nothing else can, because only the server decides this.
     void switchedToRoom(const QString &token);
@@ -442,6 +458,7 @@ private:
     // before HPB room membership exists). This is the authoritative flag.
     // A successful RESUME restores it (see m_roomAckedBeforeDrop).
     bool    m_roomJoinAcked = false;
+    bool    m_roomLeavePending = false;   // leaveRoom() sent, its empty-roomid answer not seen yet
     // The room ack as it stood when an authenticated session dropped. A resume
     // keeps the session's room membership server-side and never gets a "room"
     // reply, so the resume restores the ack from this snapshot, if the room is

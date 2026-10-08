@@ -65,6 +65,12 @@ std::mutex                       g_capMtx;
 QStringList                      g_cap;
 std::mutex                       g_hookMtx;
 std::function<void()>            g_earlyHook;    // armed by an early-hang-up round
+// The log line that makes an early round hang up. Normally the offer being created; in a
+// --cold-session early round it is the signaling socket leaving the room (the 404 retry is
+// then abandoned with the socket outside the room, which CallManager must repair).
+constexpr const char *kTriggerOfferCreated = "PublishPipeline: offer created";
+constexpr const char *kTriggerLeavingRoom  = "Signaling: leaving room";
+std::atomic<const char *>        g_earlyTrigger{kTriggerOfferCreated};
 QObject                         *g_hookCtx = nullptr;
 
 int capSize()
@@ -99,7 +105,7 @@ void selfTestMessageHandler(QtMsgType, const QMessageLogContext &, const QString
     // delivered -- the race a hang-up has with a publisher that is mid-offer.
     // Fire ONCE, on the main thread, from the event loop -- never from inside this
     // handler.
-    if (msg.contains(QLatin1String("PublishPipeline: offer created"))) {
+    if (msg.contains(QLatin1String(g_earlyTrigger.load()))) {
         std::function<void()> hook;
         QObject *ctx = nullptr;
         {
@@ -185,6 +191,10 @@ struct Cfg {
     QString logPath;
     int     healthyRounds = 2;
     int     earlyRounds   = 3;
+    // --cold-session: no REST warm-up, and the REST session (cookie jar) is dropped right
+    // before every call. A brand-new Nextcloud session loses its first participants/active, so
+    // the call join answers 404 -- on demand. Proves CallManager's one-shot room re-join heals it.
+    bool    coldSession   = false;
 };
 
 struct Round {
@@ -231,11 +241,19 @@ public:
         m_signaling.setIdleRehomeEnabled(false);
 
         connect(&m_cm, &CallManager::stateChanged, this, &SelfTest::onState);
+        connect(&m_cm, &CallManager::callFailed, this, [](const QString &title, const QString &msg) {
+            say("callFailed: " + title + " -- " + msg.left(120).simplified());
+        });
         connect(&m_signaling, &SignalingClient::connectedChanged, this, [this]() {
             if (!m_signaling.isConnected() || m_began) return;
             m_began = true;
             say("signaling connected as " + m_cfg.user);
-            warmRestSession();
+            if (m_cfg.coldSession) {
+                say("cold session: no REST warm-up; the REST session is dropped before every call");
+                QTimer::singleShot(1500, this, [this]() { beginRound(); });
+            } else {
+                warmRestSession();
+            }
         });
         connect(&m_tick, &QTimer::timeout, this, &SelfTest::tick);
         m_tick.start(500);
@@ -263,12 +281,15 @@ private:
     // cookie jar, ONE participants/active followed by POST call/{token} answers
     // 404, and GET room then shows sessionId 0 -- the room session was not
     // retained, and the PHP session cookie changed between requests. What was
-    // tried before that single participants/active: GET /v4/room first -> the join
-    // held; GET /v4/call/{token} first -> still 404; a chat GET first -> still
-    // 404; participants/active TWICE -> held. The real app has made many requests
-    // before its first call, which is consistent with it not hitting this, but
-    // that is not verified. Warm the session the way that was seen to work: one
-    // conversation-list GET before anything joins a room.
+    // tried before that single participants/active: GET /v4/room (list or single)
+    // first -> the join held; any other first request (none, capabilities, GET
+    // /v4/call/{token}, chat, signaling settings, user status) -> still 404;
+    // participants/active TWICE -> held. So a plain "many requests before the first
+    // call" does NOT protect a session; only having served GET /v4/room does, and the
+    // real app lists its conversations before any call. Whether it could still meet
+    // this (a server-side session loss while it runs) is not verified. Warm the
+    // session the way that was seen to work: one conversation-list GET before
+    // anything joins a room.
     void warmRestSession()
     {
         QNetworkReply *reply = m_api.getRaw("apps/spreed/api/v4/room");
@@ -386,9 +407,14 @@ private:
         r.startIdx = capSize();
         r.startedMs = nowMs();
         if (r.early) {
+            g_earlyTrigger = m_cfg.coldSession ? kTriggerLeavingRoom : kTriggerOfferCreated;
             std::lock_guard<std::mutex> lk(g_hookMtx);
             g_hookCtx = this;
             g_earlyHook = [this]() { onOfferCreated(); };
+        }
+        if (m_cfg.coldSession) {
+            m_api.resetSession();   // fresh cookie jar: the next REST request opens a new Nextcloud session
+            say("cold session: REST session dropped");
         }
         say(QString("round %1: startCall(%2, video)").arg(r.n).arg(m_cfg.token));
         m_cm.startCall(m_cfg.token, true);
@@ -399,7 +425,8 @@ private:
         if (m_idx >= int(m_rounds.size()) || m_phase != Phase::InCall) return;
         Round &r = cur();
         if (!r.early || r.hangupSent || m_cm.state() == CallManager::Idle) return;
-        hangUp(r, "early hang-up with the offer created but not yet delivered");
+        hangUp(r, m_cfg.coldSession ? "early hang-up while the room re-join retry was running"
+                                : "early hang-up with the offer created but not yet delivered");
     }
 
     void hangUp(Round &r, const QString &why)
@@ -492,7 +519,7 @@ private:
         static const QRegularExpression reMint(R"~(sent publish offer to own session, sid=\s*"?(\d+)"?)~");
         static const QRegularExpression reAnswer(R"~(received answer from "[^"]*" sid=\s*"([^"]*)")~");
         static const QRegularExpression reBad(
-            R"(ice-new-stall|ignoring (answer|candidate) for replaced publisher|Signaling: DROPPED)");
+            R"(ice-new-stall|ignoring (answer|candidate) for replaced publisher|Signaling: DROPPED|CallManager: failed to join call)");
         static const QRegularExpression reLateWs(R"~(Signaling: WS >> "(offer|candidate)")~");
         static const QRegularExpression reReqOffer(R"~(Signaling: WS >> "requestoffer")~");
 
@@ -511,7 +538,55 @@ private:
             if (reReqOffer.match(l).hasMatch()) r.notes << "requestoffer after Idle (not asserted): " + l.left(100);
         }
 
+        // What --cold-session is for: the join answered 404, CallManager re-entered the room
+        // exactly once, and the retried join then held (the media checks prove the latter).
+        // A cold round in which no 404 happened proves NOTHING about the retry, so it fails
+        // rather than passing quietly.
+        auto coldChecks = [&]() {
+            if (!m_cfg.coldSession) return;
+            int started = 0, retried = 0, got404 = 0;
+            for (const QString &l : all) {
+                if (l.contains(QLatin1String("re-joining the room once"))) ++started;
+                if (l.contains(QLatin1String("room re-joined -- retrying the call join"))) ++retried;
+                if (l.contains(QLatin1String("failed to join call, status= 404"))) ++got404;
+            }
+            if (started == 0 && got404 == 0)
+                r.fails << "--cold-session: the first call join did not answer 404, so the room re-join was never exercised "
+                           "(the server no longer reproduces the session loss, or resetSession() no longer drops it)";
+            else if (started == 0)
+                r.fails << QString("the call join answered 404 %1x but no room re-join was started").arg(got404);
+            else if (retried != started)
+                r.fails << QString("a room re-join started %1x but the join was retried %2x").arg(started).arg(retried);
+            else
+                r.notes << QString("recovered from a call-join 404 with %1 room re-join(s)").arg(started);
+            if (started > 1)
+                r.fails << QString("%1 room re-joins in one call (the budget is 1)").arg(started);
+        };
+
+        if (r.early && m_cfg.coldSession) {
+            // Hung up the instant the socket left the room for the 404 retry: the retry is abandoned
+            // with the socket OUTSIDE the room. CallManager must put it back (a joined-room ack
+            // after Idle), and nothing may be offered for the call we left.
+            int started = 0, restored = 0;
+            for (const QString &l : all)
+                if (l.contains(QLatin1String("re-joining the room once"))) ++started;
+            for (const QString &l : after)
+                if (l.contains(QLatin1String("Signaling: joined room"))) ++restored;
+            if (started == 0)
+                r.fails << "--cold-session: no join 404 and no room re-join started, so the abandoned-retry path was never exercised";
+            else if (!r.hangupSent)
+                r.fails << "the hang-up during the room re-join never fired";
+            else if (restored == 0)
+                r.fails << "the retry was abandoned and the signaling socket was never put back into the room";
+            else {
+                r.windowHit = true;
+                r.notes << "hung up while the room re-join retry was running; the socket was put back into the room";
+            }
+            return;
+        }
+
         if (r.early) {
+            coldChecks();
             bool offerBefore = false;
             for (const QString &l : before)
                 if (reMint.match(l).hasMatch()) offerBefore = true;
@@ -546,8 +621,23 @@ private:
         if (r.calleeFrames < kFramesNeeded)
             r.fails << QString("the callee received only %1 video frames from us (need %2)")
                            .arg(r.calleeFrames).arg(kFramesNeeded);
-        if (!r.hangupSent)
-            r.fails << "the call ended before the self-test hung up";
+        if (!r.hangupSent) {
+            // The harness callee tears down as soon as IT has seen enough frames, which can be before
+            // our hold after media has run out (a slower start, e.g. after a join retry, shifts it).
+            // Its leaving ends the call. That is a fine end once media demonstrably flowed both ways;
+            // a call that died WITHOUT media is still a failure.
+            static const QRegularExpression reCalleeDone(
+                R"(CALLEE> .*Bidirectional video test complete\. Tearing down)");
+            bool calleeLeftFirst = false;
+            for (const QString &l : before)
+                if (reCalleeDone.match(l).hasMatch()) calleeLeftFirst = true;
+            if (r.mediaSeenMs > 0 && r.calleeFrames >= kFramesNeeded && calleeLeftFirst)
+                r.notes << "the callee finished its own test and left first, which ended the call (media had flowed both ways)";
+            else
+                r.fails << "the call ended before the self-test hung up";
+        }
+
+        coldChecks();
     }
 
     void finish()
@@ -577,8 +667,9 @@ private:
             for (const QString &n : r.notes) say("    note: " + n);
         }
         if (earlyN)
-            say(QString("early hang-up rounds that landed inside the created->delivered offer window: %1 of %2 "
-                        "(a pass here is evidence only for the rounds that hit it)").arg(hits).arg(earlyN));
+            say(QString("early hang-up rounds that hit their window (%3): %1 of %2 "
+                        "(a pass here is evidence only for the rounds that hit it)").arg(hits).arg(earlyN)
+                            .arg(m_cfg.coldSession ? "while the 404 retry was running" : "offer created, not yet delivered"));
         m_signaling.stop();
         QTimer::singleShot(500, this, []() { QCoreApplication::exit(0); });
     }
@@ -642,6 +733,8 @@ int talqRunCallSelfTest(int argc, char **argv)
     };
     if (!roundsArg("--rounds", cfg.healthyRounds) || !roundsArg("--early-rounds", cfg.earlyRounds))
         return 2;
+    for (int i = 1; i < argc; ++i)
+        if (QByteArray(argv[i]) == "--cold-session") cfg.coldSession = true;
     if (cfg.healthyRounds + cfg.earlyRounds == 0) {
         std::fprintf(stdout, "SELFTEST: 0 rounds requested -- nothing would be asserted\n");
         return 2;

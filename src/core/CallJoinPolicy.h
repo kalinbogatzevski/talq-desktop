@@ -108,8 +108,24 @@ enum class JoinFailureAction {
     TreatAsJoined,   // we are demonstrably in the call already -- keep going
     Reconcile,       // ask the server whether the join committed before re-POSTing
     VerifyRejection, // a 4xx after HPB-only confirmation: GET call/{token} decides
+    RejoinRoom,      // 404: the room session did not take -- re-enter the room once, then re-POST
     Fail,            // tell the user, tear down
 };
+
+// POST call/{token} answers 404 when Talk finds no participant for the request's
+// session. Measured against ncloud 2026-10-08 (curl, fresh cookie jar, deterministic):
+// the FIRST participants/active of a brand-new Nextcloud session is not retained --
+// GET room then shows sessionId 0 -- unless the very first request of that session was
+// GET /v4/room; a SECOND participants/active is retained. The real app lists its
+// conversations before any call, so it should not meet this; but the same 404 is what a
+// genuinely deleted conversation or a removed participant answers, and re-entering the
+// room tells them apart (that join answers 404 too, and the join then fails exactly as
+// it did before). Cause on the server NOT established. Only 404 qualifies: 403 is a
+// real refusal, 0/5xx are the transient family handled by the reconcile path.
+inline bool isRoomSessionLostStatus(int status)
+{
+    return status == 404;
+}
 
 // No response (transfer timeout / transport) or a 5xx: the server may have
 // committed the join anyway, or may still commit it.
@@ -133,6 +149,8 @@ struct JoinFailure {
     bool alreadyJoined = false; // HPB self in-call (or an earlier confirmation) seen
     int  attempts = 0;        // reconcile/re-POST rounds already spent
     int  maxAttempts = 2;
+    int  roomRejoins = 0;     // forced room re-joins already spent for this call
+    int  maxRoomRejoins = 1;  // one is enough: a retained session stays retained
 };
 
 inline JoinFailureAction decideJoinFailure(const JoinFailure &f)
@@ -149,6 +167,12 @@ inline JoinFailureAction decideJoinFailure(const JoinFailure &f)
     }
     if (!f.stillTrying) return JoinFailureAction::IgnoreStale;
     if (transient && f.attempts < f.maxAttempts) return JoinFailureAction::Reconcile;
+    // After the transient family and before Fail: a 404 whose room session did not
+    // take. Bounded to ONE room re-join, so a conversation that is really gone fails after
+    // a single extra attempt instead of looping. That attempt is several sequential steps
+    // (conversation list, leave, re-join, join) under CallManager's 15 s bound.
+    if (isRoomSessionLostStatus(f.status) && f.roomRejoins < f.maxRoomRejoins)
+        return JoinFailureAction::RejoinRoom;
     return JoinFailureAction::Fail;
 }
 

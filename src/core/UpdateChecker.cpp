@@ -330,6 +330,11 @@ void UpdateChecker::finalizeManifest(Manifest m)
                        << "— rolling back from v" << currentVersion;
         m_lastManifest = m;
         m_hasPendingUpdate = true;
+        if (m.version != m_lastLoggedOffer) {
+            m_lastLoggedOffer = m.version;
+            qInfo() << "UpdateChecker: v" << m.version << "is offered (running v" << currentVersion
+                    << (m.pin ? ", pinned" : "") << ")";
+        }
         emit updateAvailable(m);
     }
 }
@@ -367,6 +372,7 @@ void UpdateChecker::startDownload()
     if (assetName.isEmpty())
         assetName = QStringLiteral("TalQ-Setup.exe");
     m_downloadPath = tmp + QStringLiteral("/") + assetName;
+    qInfo() << "UpdateChecker: downloading" << assetName;
     // Snapshot the digest we're downloading AGAINST now: a poll landing
     // mid-download can overwrite m_lastManifest with a newer release's sha256,
     // and verifying this download against that would reject a good file.

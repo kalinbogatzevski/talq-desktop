@@ -437,6 +437,12 @@ private:
     // verifyingRejection: a 4xx that followed HPB-only confirmation (review CR-4).
     void reconcileCallJoin(int gen, const QString &token, bool withVideo, int failedStatus,
                            bool verifyingRejection);
+    // 404 on the join: the room session did not take (CallJoinPolicy.h
+    // isRoomSessionLostStatus). Re-enter the room ONCE -- participants/active plus the
+    // WS "room" message under the session Talk will bind the join to -- then re-POST.
+    // If the re-join itself fails, or does not finish in time, the join fails with the
+    // original status exactly as it did before this existed.
+    void rejoinRoomThenRepost(int gen, const QString &token, bool withVideo, int failedStatus);
     void onCallJoinConfirmed(const char *source, bool viaHpb);
     void failCallJoin(int statusCode);               // the old "Couldn't start the call" path
     void maybeStartCallMedia();
@@ -943,6 +949,10 @@ private:
     QDateTime m_lastBusyReplyTime;
     int m_callJoinAttempts = 0;
     static constexpr int kMaxCallJoinAttempts = 2;   // 2 quick retries, then inform
+    int m_callRoomRejoins = 0;                        // forced room re-joins spent on this call's 404 (per call)
+    static constexpr int kMaxCallRoomRejoins = 1;
+    static constexpr int kRoomRejoinTimeoutMs = 15000;   // same bound as ensureSignalingRoomJoined
+    static constexpr int kRoomLeaveWaitMs     = 3000;    // how long to wait for the leave ack before joining anyway
     QDateTime m_incomingTime;  // when incoming call was detected
     bool m_remoteVideoMuted = true;
     bool m_remoteAudioMuted = true;

@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.74.11 "Ravnodenstvie" — STABLE (2026-10-08)
+
+If the server loses track of your session in a conversation, starting a call now recovers instead of
+failing with "conversation could not be found".
+
+### Fixed
+* **A call that failed to start with "This conversation could not be found on the server (404)" is
+  tried again once.** When the server has lost the session TalQ opened in the conversation, it
+  answers the call with 404 although the conversation exists. TalQ now leaves the conversation, joins
+  it again with a fresh session and retries the call once. A conversation that really is gone still
+  fails, after a few seconds.
+* **If that second attempt is abandoned (you hang up meanwhile, or it fails), TalQ puts the
+  connection to the conversation back,** so chat updates and typing indicators in that conversation
+  keep working.
+
+### Changed
+* **TalQ's log now records why an automatic update is waiting to install** (an unsent draft or
+  message, an upload, a call, a held mouse button) and when the wait ends, so a delayed update can be
+  explained.
+
+### Good to know
+* The retry was exercised with automated test calls that force the failure on a test account; it has
+  not been seen in real use, and it has not been tried on a weak device.
+* Why some automatic updates wait until TalQ is opened is not known yet. This release records the
+  reason; it does not change when an update installs.
+
 ## v0.74.10 "Ravnodenstvie" — STABLE (2026-10-08)
 
 Calls clean up after themselves more carefully when you hang up in a hurry, and a participant's

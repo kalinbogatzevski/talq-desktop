@@ -666,6 +666,7 @@ void SignalingClient::onDisconnected()
         m_roomAckedTokenBeforeDrop = m_currentRoom;
     }
     m_roomJoinAcked = false;   // room membership is void until re-acked (or resumed) post-reconnect
+    m_roomLeavePending = false;
     m_sessionId.clear();
     if (!wasAuth) {
         // An idle re-home whose connect failed before hello, although the
@@ -859,6 +860,14 @@ void SignalingClient::onTextMessage(const QString &msg)
         }
     }
     else if (type == "room") {
+        if (m_roomLeavePending && obj["room"].toObject()["roomid"].toString().isEmpty()) {
+            // The answer to leaveRoom(): an empty roomid. Not a join -- no ack, no roomJoined.
+            m_roomLeavePending = false;
+            qInfo() << "Signaling: left room (leave acknowledged)";
+            emit roomLeft();
+            return;
+        }
+        m_roomLeavePending = false;   // a real join ack means no leave answer is still owed
         qInfo() << "Signaling: joined room";
         m_roomJoinAcked = true;   // authoritative: HPB confirmed room membership
         emit roomJoined();
@@ -1331,11 +1340,13 @@ void SignalingClient::joinRoom(const QString &token, bool force)
     // which the signaling server needs to verify room access
     QJsonObject empty;
     m_api->post("apps/spreed/api/v4/room/" + token + "/participants/active", empty,
-        [this, token](bool ok, const QJsonObject &data, int) {
+        [this, token](bool ok, const QJsonObject &data, int status) {
             qDebug() << "Signaling: participants/active response ok=" << ok
                      << "room match=" << (m_currentRoom == token)
                      << "auth=" << m_authenticated
                      << "sessionId=" << data["sessionId"].toString().left(20);
+            if (!ok && m_currentRoom == token)
+                emit roomJoinFailed(token, status);
             if (!ok || m_currentRoom != token || !m_authenticated) return;
 
             // Extract the Nextcloud session ID from the response
@@ -1362,6 +1373,23 @@ void SignalingClient::joinRoom(const QString &token, bool force)
             // pre-upgrade build) eventually heal.
             m_talqClientReannounce.start();
         });
+}
+
+void SignalingClient::leaveRoom()
+{
+    if (!m_authenticated || m_ws.state() != QAbstractSocket::ConnectedState || m_currentRoom.isEmpty()) {
+        qInfo() << "Signaling: leaveRoom skipped -- not connected or not in a room";
+        return;
+    }
+    QJsonObject room;
+    room["roomid"] = QString();
+    QJsonObject msg;
+    msg["type"] = QStringLiteral("room");
+    msg["room"] = room;
+    m_roomLeavePending = true;
+    m_roomJoinAcked = false;   // membership is being given up
+    m_ws.sendTextMessage(QJsonDocument(msg).toJson(QJsonDocument::Compact));
+    qInfo() << "Signaling: leaving room" << m_currentRoom << "(a re-join under a fresh session follows)";
 }
 
 void SignalingClient::sendTalqClientHello()

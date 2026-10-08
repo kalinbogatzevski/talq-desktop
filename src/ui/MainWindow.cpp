@@ -4566,6 +4566,7 @@ void MainWindow::resizeEvent(QResizeEvent *e)
 void MainWindow::onUpdateReadyToLaunch(const QString &installerPath)
 {
     m_pendingInstallerPath = installerPath;
+    qInfo().noquote() << "Update: installer downloaded:" << installerPath;
     // What kind of install this is, decided once, here. Nothing later re-reads
     // updates/autoInstall to reclassify it (UpdateInstallGatePolicy.h). A
     // download that replaced a waiting install -- the re-download after a
@@ -4631,6 +4632,60 @@ void MainWindow::onUpdateReadyToLaunch(const QString &installerPath)
     maybeLaunchPendingInstaller();
 }
 
+void MainWindow::noteInstallGateChange(const talq::InstallGateInputs &gates)
+{
+    const QString note = QString::fromStdString(talq::closedGateNames(gates, kPostCallInstallGraceMs));
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    constexpr qint64 kHeartbeatMs = 10 * 60 * 1000;   // a hold that lasts is re-stated, so the log
+                                                      // still says why if the process dies mid-hold
+    if (note == m_lastInstallGateNote
+        && !(note.size() && now - m_lastInstallGateLogMs >= kHeartbeatMs))
+        return;
+    if (note.isEmpty()) {
+        qInfo().noquote() << "Update: auto-install no longer held (was held by" << m_lastInstallGateNote
+                          << "for" << (now - m_installHeldSinceMs) / 1000 << "s in all)";
+    } else {
+        // Say WHAT inside the coarse gates: which kind of unsent work, and for the mouse gate
+        // whether Windows agrees with Qt's idea of a held button (Qt only updates it from events
+        // delivered to its own windows, so it can lag the real state while TalQ is minimized).
+        QStringList detail;
+        if (gates.unsentText) {
+            if (m_composer && !m_composer->currentText().trimmed().isEmpty())
+                detail << QStringLiteral("open composer has text");
+            int otherDrafts = 0;
+            for (auto it = m_composerDrafts.constBegin(); it != m_composerDrafts.constEnd(); ++it)
+                if (it.key() != m_activeConvToken && !it.value().trimmed().isEmpty()) ++otherDrafts;
+            if (otherDrafts) detail << QStringLiteral("draft in %1 other conversation(s)").arg(otherDrafts);
+            if (m_messages && m_messages->hasPendingSends())
+                detail << QStringLiteral("message in the send outbox");
+        }
+        if (gates.mouseButtonHeld) {
+            int osButtons = 0;
+#ifdef Q_OS_WIN
+            if (GetAsyncKeyState(VK_LBUTTON) & 0x8000) osButtons |= 1;
+            if (GetAsyncKeyState(VK_RBUTTON) & 0x8000) osButtons |= 2;
+            if (GetAsyncKeyState(VK_MBUTTON) & 0x8000) osButtons |= 4;
+            if (GetAsyncKeyState(VK_XBUTTON1) & 0x8000) osButtons |= 8;    // Qt: Back
+            if (GetAsyncKeyState(VK_XBUTTON2) & 0x8000) osButtons |= 16;   // Qt: Forward
+#endif
+            detail << QStringLiteral("qt buttons=%1, windows buttons=%2")
+                          .arg(int(QApplication::mouseButtons())).arg(osButtons);
+        }
+        if (!gates.callActive && talq::withinPostCallGrace(gates, kPostCallInstallGraceMs))
+            detail << QStringLiteral("grace left %1 s")
+                          .arg(talq::postCallGraceRemainingMs(gates, kPostCallInstallGraceMs) / 1000);
+        qInfo().noquote() << "Update: auto-install held by" << note
+                          << (detail.isEmpty() ? QString() : QStringLiteral("(%1)").arg(detail.join(QStringLiteral("; "))))
+                          << (note == m_lastInstallGateNote
+                                  ? QStringLiteral("-- still held after %1 min").arg((now - m_installHeldSinceMs) / 60000)
+                                  : QString());
+    }
+    if (note != m_lastInstallGateNote) m_lastInstallGateChangeMs = now;
+    if (m_lastInstallGateNote.isEmpty() && !note.isEmpty()) m_installHeldSinceMs = now;   // the hold begins
+    m_lastInstallGateNote = note;
+    m_lastInstallGateLogMs = now;
+}
+
 static int autoInstallIdleMinutes()
 {
     return qBound(1,
@@ -4665,6 +4720,7 @@ void MainWindow::onUpdateAutoInstallTick()
     // voice recording, is talq::autoInstallBlocked.
     const talq::InstallGateInputs gates = installGateInputs();
     const bool blocked = talq::autoInstallBlocked(gates, kPostCallInstallGraceMs);
+    noteInstallGateChange(gates);
 
     const int idleWaitMin = autoInstallIdleMinutes();
     const qint64 idleWaitMs = qint64(idleWaitMin) * 60 * 1000;
@@ -4831,6 +4887,8 @@ void MainWindow::startAutoInstallCountdown()
 {
     m_autoInstallActive = true;
     m_countdownNotified = false;
+    qInfo() << "Update: auto-install countdown started -- installs after" << autoInstallIdleMinutes()
+            << "min with no input to TalQ and no gate closed";
     // Anchor the wait window to the moment the countdown (re)starts. A user who
     // was passively watching the download -- or sat idle through whatever had
     // stopped the countdown -- for longer than the configured idle threshold
@@ -4988,6 +5046,8 @@ void MainWindow::maybeLaunchPendingInstaller()
     // The installer relaunches TalQ when it finishes. If TalQ is minimized or
     // in the tray now, the new version starts the same way (see the
     // constructor) instead of popping up over the user's work.
+    qInfo() << "Update: launching the installer (window"
+            << (isMinimized() || !isVisible() ? "minimized/hidden" : "visible") << ")";
     m_settings.setValue(QStringLiteral("updates/relaunchMinimized"),
                         isMinimized() || !isVisible());
     m_settings.sync();
