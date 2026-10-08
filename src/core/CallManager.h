@@ -5,6 +5,7 @@
 #include <QElapsedTimer>
 #include <QHash>
 #include <QSet>
+#include <QStringList>
 #include <QVector>
 #include <QPair>
 #include <QByteArray>
@@ -35,6 +36,8 @@
 #include "core/CallJoinPolicy.h"        // STUN/TURN cache, media-start barrier, join-failure decisions
 #include "core/CallRecoveryPolicy.h"    // publisher rebuild deadline/gates, subscriber recovery by phase
 #include "core/SubscriberRxStallPolicy.h" // inbound packets-received stall (audio-only peers)
+#include "core/SubscriberIceStallPolicy.h" // ICE "new" with zero remote candidates (any peer, video or not)
+#include "core/PublisherSidPolicy.h"      // stale answers/candidates for a replaced camera sid
 #include "core/SecondDeviceRingPolicy.h"  // no ring / no status revert for a call we're in elsewhere
 
 class BackgroundEngine;   // #20 — owned by CallManager; lives across calls.
@@ -579,6 +582,15 @@ private:
     MediaDeviceManager *m_deviceManager = nullptr;
     // MCU dual pipelines
     PublishPipeline *m_publishPipeline = nullptr;
+    // The camera publisher's sid for the CURRENT pipeline (minted in
+    // buildAndStartPublisher), the sids this call has since REPLACED, and whether
+    // the server has proven it tags messages with our sids. An answer/own-session
+    // candidate for a replaced sid is ignored ONLY after that proof, because a
+    // stock HPB reuses the old publisher and keeps answering with the original sid
+    // (PublisherSidPolicy.h). Reset with the pipelines in stopAllPipelines().
+    talq::PublisherSidGuard<QString, QStringList> m_pubSidGuard;
+    QString m_lastStalePubSidLogged;   // last stale sid already logged
+    void noteStalePublisherMessage(const QString &sid, const char *what);   // log once per stale sid
 
     // #20 background engine — long-lived, parented to CallManager so it
     // outlives individual calls. Constructed in CallManager's ctor.
@@ -646,6 +658,12 @@ private:
     // connected subscriber whose RTP stopped is recovered. Same prune sites as
     // m_subStall. See core/SubscriberRxStallPolicy.h for the false-positive case.
     QHash<QString, SubscriberRxStallPolicy> m_subRxStall;
+    // Per-peer ICE-"new" watchdog (core/SubscriberIceStallPolicy.h): a subscriber
+    // handed an offer but never given a remote candidate. Ticked from onLoadTick;
+    // its fire count must SURVIVE recoverSubscriber (it is the per-call cap), so
+    // unlike m_subStall it is NOT pruned there -- only when the peer's subscriber
+    // goes away for good (dropSubscriber / peer left / swept) and at teardown.
+    QHash<QString, SubscriberIceStallPolicy> m_subIceStall;
     // Per-tile signal-quality glyph. updateCallStats() ticks each subscriber's
     // SignalQualityPolicy every 2 s alongside m_subStall, from
     // SubscribeWebrtcSrc::pollInboundRtp()'s windowed loss/jitter, and

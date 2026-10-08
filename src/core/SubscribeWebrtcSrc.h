@@ -49,6 +49,17 @@ public:
     void setFarEndAppsrc(GstElement *appsrc);
     void setRemoteOffer(const QString &sdp);
     void addIceCandidate(const QString &candidate, int sdpMLineIndex, const QString &sdpMid);
+    // Diagnostics for a subscriber that never decodes: how many remote
+    // candidates were handed to this subscriber (queued or delivered), and
+    // webrtcbin's ICE connection state as last reported ("none" before any).
+    // 2026-10-06: ICE sat at "new" and no remote candidate was ever received or
+    // added. Candidates inside the offer SDP are not counted here.
+    int remoteCandidatesGiven() const { return m_remoteCandidatesGiven.load(std::memory_order_relaxed); }
+    QString iceStateName() const;
+    // Milliseconds since the offer was handed to webrtcsrc (the moment the
+    // handshake starts), or -1 while it has not been. Drives the ICE-"new"
+    // watchdog (core/SubscriberIceStallPolicy.h).
+    qint64 offerAgeMs() const;
     bool isRunning() const { return m_running; }
     VideoFrameProvider *videoProvider() const { return m_videoProvider; }
     QString videoCodec() const { return m_videoCodec; }
@@ -261,7 +272,9 @@ private:
     bool m_running = false;
     bool m_offerDelivered = false;     // session-started+session-description emitted
     bool m_webrtcStarted = false;      // webrtcsrc emitted "start" on the signaller
-    int m_lastIceConnState = -1;       // de-dup webrtcbin ice-connection-state notify
+    std::atomic<int> m_lastIceConnState{-1};   // de-dup webrtcbin ice-connection-state notify (GStreamer thread; read by iceStateName())
+    std::atomic<int> m_remoteCandidatesGiven{0};   // addIceCandidate() calls, see remoteCandidatesGiven()
+    std::atomic<qint64> m_offerDeliveredMs{0};     // wall-clock ms the offer reached webrtcsrc; 0 = not yet
     QString m_pendingOffer;            // Janus offer SDP, held until both ready
     QList<QPair<int, QString>> m_pendingRemoteIce;  // mline, candidate
     QMutex m_feedMutex;                // serialises feedOfferToSignaller (2 threads)

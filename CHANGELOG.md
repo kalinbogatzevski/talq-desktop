@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.74.10 "Ravnodenstvie" — STABLE (2026-10-08)
+
+Calls clean up after themselves more carefully when you hang up in a hurry, and a participant's
+video that never starts is now set up again instead of staying black.
+
+### Fixed
+* **Hanging up while a call is still connecting no longer sends your video setup afterwards.** If
+  you ended a call in the moment after TalQ had prepared your video but before it had been sent,
+  TalQ could still send it once you had already left, for a call that no longer existed. It now
+  stops sending the moment you hang up.
+* **Someone's video that never starts is set up again.** If the connection to another
+  participant's video stalled before any network route to them was found, their tile could stay
+  black for the rest of the call. TalQ now notices after about four seconds and sets that
+  connection up again, up to twice. This covers audio-only participants as well.
+* **A late reply for your own earlier video stream is ignored once TalQ has switched to a new
+  one,** so it can no longer be applied to the wrong stream.
+* **When TalQ cannot send a call message because the connection is not ready, it now says so in
+  the log** instead of letting the message vanish without a trace. This makes a call that went
+  wrong much easier to explain.
+
+### Good to know
+* These changes were exercised with automated test calls between two test accounts (two
+  complete calls and five quick hang-ups); nobody has tried them on a weak device yet.
+* They remove some ways TalQ itself could make a call worse. They do not repair a call that is
+  already one-way because the server lost track of someone's video.
+
 ## v0.74.9 "Ravnodenstvie" — STABLE (2026-10-03)
 
 A message that could not be sent no longer stays unsent: TalQ sends it again by itself once the

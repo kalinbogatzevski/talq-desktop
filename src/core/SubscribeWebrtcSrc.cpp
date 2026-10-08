@@ -2,6 +2,7 @@
 #include "core/VideoFrameProvider.h"
 #include "core/LeakStats.h"
 #include "core/TurnList.h"
+#include <QDateTime>
 #include <QDebug>
 #include <QPointer>
 #include <QRegularExpression>
@@ -659,6 +660,7 @@ void SubscribeWebrtcSrc::feedOfferToSignaller()
                           sid.constData(), desc);
     gst_webrtc_session_description_free(desc);
     m_offerDelivered = true;
+    m_offerDeliveredMs.store(QDateTime::currentMSecsSinceEpoch(), std::memory_order_relaxed);
     // Remote ICE is NOT flushed here via "handle-ice" (same unreliable
     // run-stage path as send-ice). webrtcsrc emits "webrtcbin-ready"
     // right after this; onWebrtcbinReady flushes m_pendingRemoteIce
@@ -669,6 +671,7 @@ void SubscribeWebrtcSrc::addIceCandidate(const QString &candidate,
                                          int sdpMLineIndex, const QString &sdpMid)
 {
     Q_UNUSED(sdpMid)
+    m_remoteCandidatesGiven.fetch_add(1, std::memory_order_relaxed);
     // Prefer the authoritative webrtcbin path (set once webrtcbin-ready
     // fired). Until then queue; onWebrtcbinReady flushes the backlog.
     if (m_webrtcbin) {
@@ -789,6 +792,35 @@ void SubscribeWebrtcSrc::onWebrtcbinLocalIce(GstElement *, guint mlineIndex,
     }, Qt::QueuedConnection);
 }
 
+// GstWebRTCICEConnectionState → the strings CallManager expects.
+static const char *iceConnStateName(GstWebRTCICEConnectionState st)
+{
+    switch (st) {
+        case GST_WEBRTC_ICE_CONNECTION_STATE_NEW:          return "new";
+        case GST_WEBRTC_ICE_CONNECTION_STATE_CHECKING:     return "checking";
+        case GST_WEBRTC_ICE_CONNECTION_STATE_CONNECTED:    return "connected";
+        case GST_WEBRTC_ICE_CONNECTION_STATE_COMPLETED:    return "completed";
+        case GST_WEBRTC_ICE_CONNECTION_STATE_FAILED:       return "failed";
+        case GST_WEBRTC_ICE_CONNECTION_STATE_DISCONNECTED: return "disconnected";
+        case GST_WEBRTC_ICE_CONNECTION_STATE_CLOSED:       return "closed";
+        default: break;
+    }
+    return "new";
+}
+
+QString SubscribeWebrtcSrc::iceStateName() const
+{
+    const int st = m_lastIceConnState.load(std::memory_order_relaxed);
+    return st < 0 ? QStringLiteral("none")
+                  : QString::fromLatin1(iceConnStateName(static_cast<GstWebRTCICEConnectionState>(st)));
+}
+
+qint64 SubscribeWebrtcSrc::offerAgeMs() const
+{
+    const qint64 t = m_offerDeliveredMs.load(std::memory_order_relaxed);
+    return t == 0 ? -1 : QDateTime::currentMSecsSinceEpoch() - t;
+}
+
 // webrtcbin's ICE connection state changed (or queried once on bind).
 // Maps GstWebRTCICEConnectionState → the strings CallManager expects and
 // emits iceStateChanged so the call can leave "Connecting" / go Active.
@@ -801,18 +833,7 @@ void SubscribeWebrtcSrc::onWebrtcbinIceConnState(GstElement *webrtcbin,
     g_object_get(webrtcbin, "ice-connection-state", &st, nullptr);
     if ((int)st == self->m_lastIceConnState) return;   // de-dup notify spam
     self->m_lastIceConnState = (int)st;
-    const char *s = "new";
-    switch (st) {
-        case GST_WEBRTC_ICE_CONNECTION_STATE_NEW:          s = "new";          break;
-        case GST_WEBRTC_ICE_CONNECTION_STATE_CHECKING:     s = "checking";     break;
-        case GST_WEBRTC_ICE_CONNECTION_STATE_CONNECTED:    s = "connected";    break;
-        case GST_WEBRTC_ICE_CONNECTION_STATE_COMPLETED:    s = "completed";    break;
-        case GST_WEBRTC_ICE_CONNECTION_STATE_FAILED:       s = "failed";       break;
-        case GST_WEBRTC_ICE_CONNECTION_STATE_DISCONNECTED: s = "disconnected"; break;
-        case GST_WEBRTC_ICE_CONNECTION_STATE_CLOSED:       s = "closed";       break;
-        default: break;
-    }
-    QString state = QString::fromLatin1(s);
+    QString state = QString::fromLatin1(iceConnStateName(st));
     qInfo() << "SubscribeWebrtcSrc: webrtcbin ICE connection state ->" << state;
     // The moment ICE is connected, send a keyframe request upstream so
     // webrtcsrc emits an RTCP PLI to the MCU. Janus forwards it to the

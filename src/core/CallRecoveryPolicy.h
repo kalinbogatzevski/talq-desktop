@@ -13,8 +13,9 @@
 // the field logs:
 //  - MT-13: m_pubRebuildInFlight was cleared only by publisher ICE
 //    connected/completed/failed, a start() failure or teardown. The rebuilt
-//    offer goes out through SignalingClient::sendSessionMessage, which returns
-//    silently while unauthenticated (SignalingClient.cpp:1262). A rebuild fired
+//    offer goes out through SignalingClient::sendSessionMessage, which drops it
+//    while unauthenticated (never queued; it now logs a DROPPED warning, it used
+//    to return silently). A rebuild fired
 //    inside the ~46 s signaling reconnect got no answer, its ICE never left
 //    "new", and recoverPublisher -- also the one sessionReset calls -- returned
 //    early forever: the call stayed Reconnecting.

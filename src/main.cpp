@@ -19,6 +19,7 @@
 #include <chrono>
 #include <atomic>
 #include <cstdarg>
+#include <cstdio>
 #include <cstdlib>
 #include <QDir>
 #include <QDirIterator>
@@ -156,6 +157,9 @@ void talqTerminateHandler()
 #include "core/LogSink.h"
 #include "core/VideoEncoderUtil.h"   // B1/B4 — software-decode latch + HW-decoder demotion
 #include "core/HwEncoderProbe.h"     // #74 — cached out-of-process HW-encoder probe
+#ifdef TALQ_SELFTEST
+#include "core/CallSelfTest.h"       // hidden headless CallManager self-test (--selftest-call)
+#endif
 
 // B4 (0.60.2 — REMOVED, it was a FALSE POSITIVE that crippled hardware decode).
 //
@@ -260,6 +264,27 @@ int main(int argc, char *argv[])
         // scripts.
         std::string scanner = appDir + "/gst-plugin-scanner.exe";
         qputenv("GST_PLUGIN_SCANNER", QByteArray::fromStdString(scanner));
+    }
+
+    // Hidden headless CallManager self-test (core/CallSelfTest.h). Like the probe
+    // above it must run BEFORE the single-instance detection, the log archive and
+    // QApplication: it opens its own log, never takes the instance lock, and
+    // never touches a running TalQ's window or writes its settings. It sits after the
+    // plugin-path block because it needs GStreamer to find the deployed plugins.
+    for (int i = 1; i < argc; ++i) {
+        if (QByteArray(argv[i]) == "--selftest-call") {
+#ifdef TALQ_SELFTEST
+            return talqRunCallSelfTest(argc, argv);
+#else
+            // Not built into this binary (release builds never have it; see
+            // TALQ_SELFTEST in CMakeLists.txt). Answer here instead of falling
+            // through: a fall-through would start a full TalQ or, with one already
+            // running, forward to it and raise its window.
+            std::fputs("--selftest-call: not built into this talq.exe "
+                       "(configure with -DTALQ_SELFTEST=ON)\n", stderr);
+            return 64;
+#endif
+        }
     }
 
     // Single-instance detection — MUST run before any logging side effects.
