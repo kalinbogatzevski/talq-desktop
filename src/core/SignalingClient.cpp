@@ -900,8 +900,12 @@ void SignalingClient::onTextMessage(const QString &msg)
         if (msgType == "answer") {
             QString sdp = msgData["payload"].toObject()["sdp"].toString();
             QString roomType = msgData["roomType"].toString("video");
-            qInfo() << "Signaling: received answer from" << senderSessionId.left(20);
-            emit answerReceived(senderSessionId, sdp, roomType);
+            // The HPB echoes the publisher's sid on the answer (hub.go
+            // sendMcuMessageResponse), as it does on every candidate.
+            const QString answerSid = msgData["sid"].toString();
+            qInfo() << "Signaling: received answer from" << senderSessionId.left(20)
+                    << "sid=" << answerSid;
+            emit answerReceived(senderSessionId, sdp, roomType, answerSid);
             return;
         }
         if (msgType == "candidate") {
@@ -1504,11 +1508,19 @@ void SignalingClient::sendRoomMessage(const QString &msgType)
 
 // --- WebRTC call signaling ---
 
-void SignalingClient::sendSessionMessage(const QString &toSessionId, const QString &type,
+bool SignalingClient::sendSessionMessage(const QString &toSessionId, const QString &type,
                                           const QJsonObject &payload, const QString &sid,
                                           const QJsonObject &extraData, const QString &roomType)
 {
-    if (!m_authenticated) return;
+    if (!m_authenticated) {
+        // Never queued: a stale offer/candidate replayed into a later session would
+        // be worse than a visible drop. Say so, so a call that goes quiet while
+        // signaling is down does not read as "sent" in the log.
+        qWarning() << "Signaling: DROPPED" << type << "to" << toSessionId.left(20)
+                   << "roomType=" << roomType << "sid=" << sid.left(16)
+                   << "-- not authenticated (not queued)";
+        return false;
+    }
 
     QJsonObject msg;
     msg["type"] = QString("message");
@@ -1535,9 +1547,10 @@ void SignalingClient::sendSessionMessage(const QString &toSessionId, const QStri
     QString json = QJsonDocument(msg).toJson(QJsonDocument::Compact);
     qDebug() << "Signaling: WS >>" << type << json.left(500);
     m_ws.sendTextMessage(json);
+    return true;
 }
 
-void SignalingClient::sendOffer(const QString &toSessionId, const QString &sdp,
+bool SignalingClient::sendOffer(const QString &toSessionId, const QString &sdp,
                                 const QString &sid, const QString &nick,
                                 const QString &roomType, const QString &broadcaster,
                                 bool mcuCodecHints)
@@ -1573,20 +1586,24 @@ void SignalingClient::sendOffer(const QString &toSessionId, const QString &sdp,
             extra["videocodec"] = QString("h264,vp8");
         }
     }
-    sendSessionMessage(toSessionId, "offer", payload, sid, extra, roomType);
-    qDebug() << "Signaling: sent offer to" << toSessionId.left(20)
-             << "sid=" << sid.left(10) << "roomType=" << roomType;
+    const bool sent = sendSessionMessage(toSessionId, "offer", payload, sid, extra, roomType);
+    if (sent)
+        qDebug() << "Signaling: sent offer to" << toSessionId.left(20)
+                 << "sid=" << sid.left(10) << "roomType=" << roomType;
+    return sent;
 }
 
-void SignalingClient::sendAnswer(const QString &toSessionId, const QString &sdp,
+bool SignalingClient::sendAnswer(const QString &toSessionId, const QString &sdp,
                                   const QString &sid, const QString &nick, const QString &roomType)
 {
     QJsonObject payload;
     payload["type"] = QString("answer");
     payload["sdp"] = sdp;
     if (!nick.isEmpty()) payload["nick"] = nick;
-    sendSessionMessage(toSessionId, "answer", payload, sid, {}, roomType);
-    qDebug() << "Signaling: sent answer to" << toSessionId.left(20) << "sid=" << sid.left(10);
+    const bool sent = sendSessionMessage(toSessionId, "answer", payload, sid, {}, roomType);
+    if (sent)
+        qDebug() << "Signaling: sent answer to" << toSessionId.left(20) << "sid=" << sid.left(10);
+    return sent;
 }
 
 void SignalingClient::sendCandidate(const QString &toSessionId, const QJsonObject &candidate,
@@ -1609,9 +1626,9 @@ void SignalingClient::sendSelectStream(const QString &toSessionId, const QString
     QJsonObject payload;
     payload["substream"] = substream;
     payload["temporal"]  = temporal;
-    sendSessionMessage(toSessionId, "selectStream", payload, sid, {}, roomType);
-    qDebug() << "Signaling: selectStream to" << toSessionId.left(20)
-             << "substream=" << substream << "temporal=" << temporal;
+    if (sendSessionMessage(toSessionId, "selectStream", payload, sid, {}, roomType))
+        qDebug() << "Signaling: selectStream to" << toSessionId.left(20)
+                 << "substream=" << substream << "temporal=" << temporal;
 }
 
 void SignalingClient::sendBroadcastMessage(const QJsonObject &data)
@@ -1634,7 +1651,12 @@ void SignalingClient::sendBroadcastMessage(const QJsonObject &data)
 
 void SignalingClient::sendMinimalMessage(const QString &toSessionId, const QJsonObject &data)
 {
-    if (!m_authenticated) return;
+    if (!m_authenticated) {
+        // e.g. the hangup hint, which only ever helps if it is sent NOW.
+        qWarning() << "Signaling: DROPPED minimal message" << data["type"].toString()
+                   << "to" << toSessionId.left(20) << "-- not authenticated (not queued)";
+        return;
+    }
 
     QJsonObject msg;
     msg["type"] = QString("message");
@@ -1653,7 +1675,13 @@ void SignalingClient::sendMinimalMessage(const QString &toSessionId, const QJson
 
 void SignalingClient::requestOffer(const QString &sessionId, const QString &roomType)
 {
-    if (!m_authenticated) return;
+    if (!m_authenticated) {
+        // The caller's retry tick counts this as an attempt (CallManager
+        // m_requestOfferRetry), so say that it never left the machine.
+        qWarning() << "Signaling: DROPPED requestOffer to" << sessionId.left(20)
+                   << "type=" << roomType << "-- not authenticated (not queued)";
+        return;
+    }
 
     QJsonObject msg;
     msg["type"] = QString("message");

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(talq VERSION 0.74.9 LANGUAGES CXX)
+project(talq VERSION 0.74.10 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -313,6 +313,28 @@ option(TALQ_PRERELEASE "Mark this binary as a pre-release/beta build" OFF)
 if(TALQ_PRERELEASE)
     target_compile_definitions(talq PRIVATE TALQ_PRERELEASE)
     message(STATUS "TalQ: PRE-RELEASE build (UI will show a beta badge)")
+endif()
+
+# Headless CallManager self-test (`talq.exe --selftest-call`, src/core/CallSelfTest.*;
+# how to run it: docs/TESTING.md Level 2b). It is a TEST SEAM: it remaps HKEY_CURRENT_USER
+# for its process, spawns a second process and logs in as the test bots, none of which
+# belongs in a shipped client. So it is ON only for Debug (daily development)
+# configurations and OFF for everything else, and scripts/build-release.sh passes
+# -DTALQ_SELFTEST=OFF explicitly (an explicit -D beats a stale cache value; the incident
+# that taught that is written up beside BETA_FLAG in scripts/build-release.sh) and refuses
+# to package a talq.exe that carries it.
+# A build without it answers `--selftest-call` with exit code 64 instead of starting TalQ.
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set(_talq_selftest_default ON)
+else()
+    set(_talq_selftest_default OFF)
+endif()
+option(TALQ_SELFTEST "Build the hidden --selftest-call mode (test seam, never ship)"
+       ${_talq_selftest_default})
+if(TALQ_SELFTEST)
+    target_sources(talq PRIVATE src/core/CallSelfTest.h src/core/CallSelfTest.cpp)
+    target_compile_definitions(talq PRIVATE TALQ_SELFTEST)
+    message(STATUS "TalQ: --selftest-call ENABLED (test seam; release builds must not have it)")
 endif()
 
 # #20 Video background blur + replace. Build-time gate so the feature can be

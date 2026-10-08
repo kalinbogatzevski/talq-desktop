@@ -1165,10 +1165,19 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
         onOfferReceived(from, sdp, sid);
     });
     connect(m_signaling, &SignalingClient::answerReceived,
-            this, [this](const QString &from, const QString &sdp, const QString &roomType) {
+            this, [this](const QString &from, const QString &sdp, const QString &roomType,
+                         const QString &sid) {
         if (roomType == "screen" && m_screenSharePipeline) {
             m_screenSharePipeline->setRemoteAnswer(sdp);
             qDebug() << "CallManager: set screen share answer";
+            return;
+        }
+        // An answer for a camera sid this call already REPLACED (a rebuild minted a
+        // fresh one) belongs to the old negotiation; applying it to the new
+        // pipeline would break that one. Evidence-gated on purpose: ignored only
+        // once the server has echoed our CURRENT sid (PublisherSidPolicy.h).
+        if (!m_pubSidGuard.accept(sid)) {
+            noteStalePublisherMessage(sid, "answer");
             return;
         }
         onAnswerReceived(from, sdp);
@@ -1223,6 +1232,13 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
         }
 
         // Video candidates (MCU path)
+        if (fromSessionId == m_signaling->sessionId() && !m_pubSidGuard.accept(sid)) {
+            // Our OWN publisher's candidate, but for a camera sid this call already
+            // replaced (and the server has proven it tags by our sids): stale, not
+            // for the current pipeline.
+            noteStalePublisherMessage(sid, "candidate");
+            return;
+        }
         if (fromSessionId == m_signaling->sessionId() && m_publishPipeline) {
             m_publishPipeline->addIceCandidate(cStr, mline, mid);
         } else if (fromSessionId != m_signaling->sessionId()) {
@@ -1815,6 +1831,7 @@ void CallManager::updateCallStats()
         if (!s || !s->isRunning()) {
             m_subStall.remove(sid);
             m_subRxStall.remove(sid);
+            m_subIceStall.remove(sid);
             m_signalQuality.remove(sid);
             continue;
         }
@@ -2385,6 +2402,7 @@ void CallManager::dropSubscriber(const QString &sessionId)
     m_subscriberSids.remove(sessionId);
     m_subStall.remove(sessionId);
     m_subRxStall.remove(sessionId);
+    m_subIceStall.remove(sessionId);
     m_signalQuality.remove(sessionId);
     m_pendingRequestOffers.remove(sessionId);
     m_requestOfferAttempts.remove(sessionId);
@@ -2426,6 +2444,12 @@ bool CallManager::buildAndStartPublisher()
     // every (re)build makes Janus spin a clean publisher session, discarding
     // any half-dead one left from a previous attempt.
     const QString pubSid = QString::number(QDateTime::currentMSecsSinceEpoch());
+    // Remember the sid this one replaces: once the server echoes the new sid, an
+    // answer/candidate it still has in flight for the old one is stale (see the
+    // receive sites and PublisherSidPolicy.h). NB the comment above is true only on
+    // a server that replaces the publisher on a new sid (our deployed fork); a stock
+    // HPB reuses the surviving publisher and keeps answering with the original sid.
+    m_pubSidGuard.onMinted(pubSid);
 
     qDebug() << "CallManager: creating PublishPipeline...";
     m_publishPipeline = new PublishPipeline(this);
@@ -2445,8 +2469,9 @@ bool CallManager::buildAndStartPublisher()
     connect(m_publishPipeline, &PublishPipeline::localOfferReady,
             this, [this, pubSid](const QString &sdp) {
         setStatusDetail("Sending offer to MCU");
-        m_signaling->sendOffer(m_signaling->sessionId(), sdp, pubSid);
-        qDebug() << "CallManager: sent publish offer to own session, sid=" << pubSid;
+        // (SignalingClient already warned if it dropped the offer; don't log "sent".)
+        if (m_signaling->sendOffer(m_signaling->sessionId(), sdp, pubSid))
+            qDebug() << "CallManager: sent publish offer to own session, sid=" << pubSid;
     });
 
     // Self-heal: forced-exact camera caps mfvideosrc can't deliver → no frames;
@@ -2828,8 +2853,8 @@ void CallManager::rebuildPublisherAndReoffer()
     }
 
     // 2026-09-16 RCA D8 (MT-13) — build only when the new offer can be answered.
-    // While signaling is unauthenticated SignalingClient drops the offer
-    // silently; right after a session reset the new session is not back in the
+    // While signaling is unauthenticated SignalingClient drops the offer (it logs
+    // a DROPPED warning and never queues it); right after a session reset the new session is not back in the
     // room yet; a forced STUN/TURN refresh may be about to land. Waiting spends
     // no backoff attempt (nothing was tried) and keeps the old pipeline -- the
     // self-preview and mic meter stay live at a normal call's capture/encode
@@ -4540,6 +4565,49 @@ void CallManager::onLoadTick()
         }
     }
 
+    // ICE-"new" watchdog (core/SubscriberIceStallPolicy.h). A subscriber that was
+    // handed an offer ~4 s ago but has been given NO remote candidate, with ICE
+    // still none/new, will never connect: a healthy one has its candidates in the
+    // same millisecond as the offer. 2026-10-06: ICE sat at "new" for the whole
+    // call and the only watchdog that noticed (never-decoded, ~12 s, video-ON
+    // peers only) was too slow and blind to audio-only peers. This one keys on ICE
+    // alone, so audio-only peers are covered, and is bounded by its own small cap
+    // (reset when ICE connects): each fire still goes through recoverSubscriber, so
+    // it spends at most maxFires (2) of that function's kMaxSubRecoveries (8) per
+    // ICE-connect cycle. It asks for a REBUILD (a fresh requestoffer); it does not
+    // help when the server never answers that request, and it stays silent when the
+    // offer never reached webrtcsrc or when candidates were counted but never
+    // reached webrtcbin (see SubscriberIceStallPolicy.h). Collect first, recover
+    // after the loop: recoverSubscriber take()s from m_subscribePipelines.
+    if (m_state == Connecting || m_state == Active) {
+        QStringList iceStalled;
+        for (auto it = m_subscribePipelines.constBegin();
+             it != m_subscribePipelines.constEnd(); ++it) {
+            SubscribeWebrtcSrc *s = it.value();
+            if (!s || !s->isRunning()) continue;
+            if (m_pendingRequestOffers.contains(it.key())) continue;   // a re-subscribe is already in flight
+            const QString ice = s->iceStateName();
+            SubscriberIceInput in;
+            in.offerAgeMs            = s->offerAgeMs();
+            in.iceNewOrNone          = (ice == QLatin1String("none") || ice == QLatin1String("new"));
+            in.iceConnected          = (ice == QLatin1String("connected") || ice == QLatin1String("completed"));
+            in.remoteCandidatesGiven = s->remoteCandidatesGiven();
+            if (m_subIceStall[it.key()].onTick(in))
+                iceStalled << it.key();
+        }
+        for (const QString &sid : iceStalled) {
+            const SubscriberIceStallPolicy &pol = m_subIceStall[sid];
+            const SubscribeWebrtcSrc *s = m_subscribePipelines.value(sid);
+            qWarning().nospace() << "CallManager: subscriber " << sid.left(20)
+                << " has had its offer for " << (s ? s->offerAgeMs() : -1)
+                << " ms but ICE is still " << (s ? s->iceStateName() : QStringLiteral("?"))
+                << " with " << (s ? s->remoteCandidatesGiven() : -1)
+                << " remote candidates -- rebuilding (ice-new-stall, fire "
+                << pol.firesUsed() << " of " << pol.maxFires() << ")";
+            recoverSubscriber(sid, QStringLiteral("ice-new-stall"));
+        }
+    }
+
     // Measure SEND/RECEIVE load every tick REGARDLESS of the controller, so the
     // [MEDIA] freeze heartbeat below is logged even with the controller killed
     // (TALQ_DISABLE_LOAD_CONTROLLER=1). Only the load-SHEDDING work is gated.
@@ -5729,6 +5797,16 @@ void CallManager::stopAllPipelines()
     }
     if (m_publishPipeline) {
         qDebug() << "CallManager::teardown — stopping publish pipeline";
+        // Disconnect FIRST, exactly as rebuildPublisherAndReoffer does. The
+        // pipeline's GStreamer threads queue localOfferReady / ICE-candidate /
+        // state edges to us; one already queued for the old sid would otherwise be
+        // delivered AFTER the hang-up, and sendOffer would then offer a publisher
+        // for a call we have just left, into a signaling session the next call
+        // reuses. (Every other site that drops m_publishPipeline already
+        // disconnects; this was the one that did not.) This stops a LATE offer
+        // only: nothing here closes a publisher the server already created -- the
+        // client has no camera-publisher close message (see the 2026-10-06 notes).
+        m_publishPipeline->disconnect(this);
         m_publishPipeline->stop();
         // 1.0 audit — SAME use-after-free hazard the subscriber teardown below
         // documents: teardown can be reached INLINE from PublishPipeline::pollBus()
@@ -5743,6 +5821,11 @@ void CallManager::stopAllPipelines()
         m_publishPipeline->deleteLater();
         m_publishPipeline = nullptr;
     }
+    // The pipeline is gone, so no sid is live and none is "replaced": per-call
+    // state. (stopAllPipelines runs only from teardown(), which every call end
+    // goes through.)
+    m_pubSidGuard.reset();
+    m_lastStalePubSidLogged.clear();
     for (auto *sub : m_subscribePipelines) {
         sub->stop();   // stops the subscriber pipeline + releases its far-end appsrc
         // 1.0 audit / 0.52.16 crash fix — NEVER synchronously `delete` a
@@ -5790,6 +5873,7 @@ void CallManager::stopAllPipelines()
     m_pubLastWaitStep   = 0;
     m_pubSendLegStalled = false;
     m_subRxStall.clear();   // 2026-09-16 D8 — same lifecycle as m_subStall
+    m_subIceStall.clear();  // per-call fire budget of the ICE-"new" watchdog
     // 2026-09-16 D12 — the while-ringing self check belongs to the ring. (A ring
     // pre-check is left alone: it only rings from Idle and self-cleans otherwise.)
     m_ringingSelfCheckTimer.stop();
@@ -6322,6 +6406,7 @@ void CallManager::onParticipantLeftCall(const QString &sessionId)
         m_subscriberSids.remove(sessionId);
         m_subStall.remove(sessionId);   // #bug2
         m_subRxStall.remove(sessionId);
+        m_subIceStall.remove(sessionId);
         m_signalQuality.remove(sessionId);
         m_desiredSubstream.remove(sessionId);      // 1.0 audit — were leaking a
         m_peerSubstreamWant.remove(sessionId);     // 0.51.x receive-load raw want
@@ -6552,8 +6637,8 @@ void CallManager::onOfferReceived(const QString &fromSessionId, const QString &s
                      << fromSessionId.left(20) << "sid=" << sid;
             return;
         }
-        m_signaling->sendAnswer(fromSessionId, sdp, sid);
-        qDebug() << "CallManager: sent subscriber answer to" << fromSessionId.left(20) << "sid=" << sid;
+        if (m_signaling->sendAnswer(fromSessionId, sdp, sid))
+            qDebug() << "CallManager: sent subscriber answer to" << fromSessionId.left(20) << "sid=" << sid;
     });
 
     connect(sub, &SubscribeWebrtcSrc::iceCandidateReady,
@@ -6731,6 +6816,17 @@ void CallManager::onOfferReceived(const QString &fromSessionId, const QString &s
         qInfo() << "CallManager: flushed" << int(early.size())
                 << "queued remote ICE candidates into subscriber" << fromSessionId.left(20)
                 << "sid=" << sid;
+}
+
+// An answer/candidate for a camera sid this call has already replaced was
+// ignored. Logged once per stale sid (a replaced publisher can trickle a dozen
+// candidates), at info level: it is expected after a rebuild, not an error.
+void CallManager::noteStalePublisherMessage(const QString &sid, const char *what)
+{
+    if (sid == m_lastStalePubSidLogged) return;
+    m_lastStalePubSidLogged = sid;
+    qInfo() << "CallManager: ignoring" << what << "for replaced publisher sid" << sid
+            << "-- current sid is" << m_pubSidGuard.current();
 }
 
 void CallManager::onAnswerReceived(const QString &fromSessionId, const QString &sdp)

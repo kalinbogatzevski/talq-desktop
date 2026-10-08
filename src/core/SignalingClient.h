@@ -152,12 +152,14 @@ public:
     // must OMIT them, otherwise the HPB intercepts the offer as an MCU
     // publish (Janus answers "from self" + trickled candidates hit no
     // Janus handle → client_not_found). P2P callers pass false.
-    void sendOffer(const QString &toSessionId, const QString &sdp,
+    // sendOffer/sendAnswer return false when the message was DROPPED (not
+    // authenticated; logged, never queued) so a caller can avoid logging "sent".
+    bool sendOffer(const QString &toSessionId, const QString &sdp,
                    const QString &sid, const QString &nick = {},
                    const QString &roomType = "video",
                    const QString &broadcaster = {},
                    bool mcuCodecHints = true);
-    void sendAnswer(const QString &toSessionId, const QString &sdp,
+    bool sendAnswer(const QString &toSessionId, const QString &sdp,
                     const QString &sid, const QString &nick = {},
                     const QString &roomType = "video");
     void sendCandidate(const QString &toSessionId, const QJsonObject &candidate,
@@ -173,7 +175,10 @@ public:
                           int substream, int temporal = 2,
                           const QString &roomType = "video");
     void requestOffer(const QString &sessionId, const QString &roomType = "video");
-    void sendSessionMessage(const QString &toSessionId, const QString &type,
+    // Returns false when the message was DROPPED (the socket is not authenticated
+    // -- offer/answer/candidate/selectStream are never queued); a warning is
+    // logged for every drop.
+    bool sendSessionMessage(const QString &toSessionId, const QString &type,
                             const QJsonObject &payload, const QString &sid,
                             const QJsonObject &extraData = {},
                             const QString &roomType = "video");
@@ -218,7 +223,11 @@ signals:
 
     // WebRTC signaling signals
     void offerReceived(const QString &fromSessionId, const QString &sdp, const QString &sid, const QString &roomType);
-    void answerReceived(const QString &fromSessionId, const QString &sdp, const QString &roomType);
+    // `sid` is the sid the server echoes on the answer (the publisher's sid, hub.go
+    // sendMcuMessageResponse); "" when absent. Trailing so 3-argument connects keep
+    // compiling. CallManager uses it to drop an answer for a REPLACED camera sid.
+    void answerReceived(const QString &fromSessionId, const QString &sdp, const QString &roomType,
+                        const QString &sid = QString());
     // `sid` is the MCU handle the candidate belongs to ("" when the sender set
     // none, e.g. P2P). Trailing so 3-argument connects keep compiling.
     void candidateReceived(const QString &fromSessionId, const QJsonObject &candidate, const QString &roomType,
