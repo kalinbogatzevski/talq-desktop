@@ -137,6 +137,7 @@ void talqTerminateHandler()
 #include "core/EmojiData.h"
 #include "core/TalqLog.h"
 #include "core/ShutdownWatchdog.h"
+#include "core/TempFileLogic.h"
 #include "ui/MainWindow.h"
 #include "core/CtiService.h"
 #include "ui/NotificationPopup.h"
@@ -1304,6 +1305,22 @@ int main(int argc, char *argv[])
     QObject::connect(&app, &QCoreApplication::aboutToQuit, &app, []() {
         qInfo() << "[SHUTDOWN] aboutToQuit — entering teardown";
         talq::armShutdownWatchdog(6);
+    });
+
+    // Housekeeping, a minute after startup and off the GUI thread: temp files an earlier session
+    // left in %TEMP% -- a pasted image, a voice note, a copy of a file made for an upload. A normal
+    // session removes its own once the share succeeded; this is what a crash, a refused upload or
+    // a quit mid-upload leaves. By exact name shape and by age on BOTH clocks; TempFileLogic.h
+    // lists what it never touches (the update installer above all).
+    QTimer::singleShot(60'000, &app, []() {
+        (void)QtConcurrent::run([]() {
+            const talq::TempSweepResult r = talq::sweepStaleTempFiles(
+                QStandardPaths::writableLocation(QStandardPaths::TempLocation),
+                QDateTime::currentSecsSinceEpoch());
+            if (r.removed || r.failed)
+                qInfo().noquote() << "TempSweep: removed" << r.removed << "stale temp file(s),"
+                                  << (r.bytes / 1024) << "KiB;" << r.failed << "could not be removed";
+        });
     });
 
     const int rc = app.exec();

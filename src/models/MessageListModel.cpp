@@ -3,8 +3,11 @@
 #include <QPointer>
 #include "core/MessageCache.h"
 #include "core/ChatSyncLogic.h"
+#include "core/ScheduleFailurePolicy.h"
 #include "core/SendRetryPolicy.h"
 #include "core/TalqLog.h"
+#include "core/TempFileLogic.h"
+#include "core/UploadPathLogic.h"
 #include "models/ConversationListModel.h"
 #include <QCryptographicHash>
 #include <QSet>
@@ -2095,6 +2098,18 @@ void MessageListModel::setAutoMentionBot(const QString &mentionSlug)
     m_autoMentionBot = mentionSlug.trimmed();
 }
 
+// The text that is actually POSTed for `text`: the bot's @-mention goes in front in a one-to-one
+// room that has exactly one bot, unless this is a reply or the text already addresses the bot
+// (the gate is explained in sendMessage). Public so the composer can measure what will really be
+// sent against the server's length limit instead of what is in the box.
+QString MessageListModel::outgoingText(const QString &text, int replyToId) const
+{
+    if (!m_autoMentionBot.isEmpty() && replyToId <= 0
+        && !text.contains(QStringLiteral("@") + m_autoMentionBot, Qt::CaseInsensitive))
+        return QStringLiteral("@%1 %2").arg(m_autoMentionBot, text);
+    return text;
+}
+
 void MessageListModel::sendMessage(const QString &text, int replyToId, bool silent)
 {
     if (text.trimmed().isEmpty() || m_token.isEmpty())
@@ -2116,12 +2131,7 @@ void MessageListModel::sendMessage(const QString &text, int replyToId, bool sile
     // Twitter handles — exactly the kind of text users paste into a bot
     // chat ABOUT code. The current gate triggers only when the message
     // truly already addresses the bot.
-    QString actualText = text;
-    if (!m_autoMentionBot.isEmpty() && replyToId <= 0
-        && !text.contains(QStringLiteral("@") + m_autoMentionBot,
-                          Qt::CaseInsensitive)) {
-        actualText = QStringLiteral("@%1 %2").arg(m_autoMentionBot, text);
-    }
+    const QString actualText = outgoingText(text, replyToId);
 
     static int tempIdCounter = -1;
     int tempId = tempIdCounter--;
@@ -2223,33 +2233,88 @@ void MessageListModel::sendMessage(const QString &text, int replyToId, bool sile
         startAttempt(tempId);
 }
 
+namespace {
+std::vector<std::string> toStdStrings(const QStringList &list)
+{
+    std::vector<std::string> out;
+    out.reserve(size_t(list.size()));
+    for (const QString &s : list) out.push_back(s.toStdString());
+    return out;
+}
+} // namespace
+
+QStringList MessageListModel::selfReactionsOf(int messageId) const
+{
+    for (const Message &m : m_messages)
+        if (m.id == messageId) return m.reactionsSelf;
+    return {};
+}
+
+void MessageListModel::setSelfReactions(int messageId, const QStringList &emojis, bool repaint)
+{
+    for (int i = 0; i < m_messages.size(); ++i) {
+        if (m_messages[i].id != messageId) continue;
+        m_messages[i].reactionsSelf = emojis;
+        // The cache persists rawJson, and Message::fromJson reads reactionsSelf back from it.
+        if (!m_messages[i].rawJson.isEmpty())
+            m_messages[i].rawJson["reactionsSelf"] = QJsonArray::fromStringList(emojis);
+        if (repaint) {
+            emit dataChanged(index(i), index(i), {ReactionsSelfRole});
+            m_cache->saveMessages(m_token, {m_messages[i]});
+        }
+        return;
+    }
+}
+
+// A click on a reaction is a toggle. Whether it retracts is decided by the user's own reactions
+// on the message (`reactionsSelf`), NOT by a status code: Talk 24 answers a repeated POST of the
+// same reaction with 200 "already there" (ReactionController::react; it has no 409), so the
+// previous "retract on 409" branch never ran and clicking your own reaction did nothing. An
+// unknown or empty set means "add", which is also what an older server without `reactionsSelf`
+// gets: add-only, as before.
 void MessageListModel::addReaction(int messageId, const QString &emoji)
 {
     if (m_token.isEmpty() || messageId <= 0) return;
 
-    qDebug() << "Adding reaction" << emoji << "to message" << messageId << "in" << m_token;
+    const bool retract = talq::reactionClickRetracts(toStdStrings(selfReactionsOf(messageId)),
+                                                     emoji.toStdString());
+    qDebug() << (retract ? "Removing" : "Adding") << "reaction" << emoji << "on message"
+             << messageId << "in" << m_token;
 
-    QJsonObject body;
-    body["reaction"] = emoji;
-
-    QString currentToken = m_token;
-    QString reactionPath = "apps/spreed/api/v1/reaction/" + currentToken + "/" + QString::number(messageId);
-    m_api->post(reactionPath,
-        body, [this, messageId, currentToken, emoji, reactionPath](bool ok, const QJsonObject &data, int statusCode) {
-            // 409 = already reacted → remove it (toggle)
-            if (statusCode == 409) {
-                QUrlQuery params;
-                params.addQueryItem("reaction", emoji);
-                m_api->del(reactionPath, params, [this, messageId, currentToken](bool ok2, const QJsonObject &data2, int) {
-                    if (m_token != currentToken || !ok2) return;
-                    updateReactions(messageId, data2);
-                });
-                return;
-            }
-            if (m_token != currentToken || !ok) return;
-
-            updateReactions(messageId, data);
-        });
+    const QString currentToken = m_token;
+    const QString reactionPath = "apps/spreed/api/v1/reaction/" + currentToken + "/" + QString::number(messageId);
+    // Shared by both legs. The set is updated from the row's state NOW, not from the state at click
+    // time: a poll can change the row while the request is in flight.
+    auto done = [this, messageId, currentToken, emoji, retract](bool ok, const QJsonObject &data, int status) {
+        if (m_token != currentToken) return;
+        auto selfAfter = [&](bool present) {
+            QStringList after;
+            for (const std::string &s : talq::selfReactionsAfter(toStdStrings(selfReactionsOf(messageId)),
+                                                                emoji.toStdString(), present))
+                after.append(QString::fromStdString(s));
+            return after;
+        };
+        if (!ok) {
+            // The server answers 400/404 to a DELETE of a reaction that is not there. That means
+            // our record is stale (it was taken away elsewhere and the poll has not said so yet):
+            // forget it, so the NEXT click adds instead of repeating a retract that can never
+            // succeed. Any other failure (offline, 5xx) changes nothing -- the click can be repeated.
+            if (retract && (status == 400 || status == 404))
+                setSelfReactions(messageId, selfAfter(false), /*repaint*/true);
+            return;
+        }
+        setSelfReactions(messageId, selfAfter(!retract));   // before updateReactions, which saves the row
+        updateReactions(messageId, data);
+    };
+    if (retract) {
+        QUrlQuery params;
+        params.addQueryItem("reaction", emoji);
+        m_api->del(reactionPath, params, done);
+    } else {
+        QJsonObject body;
+        body["reaction"] = emoji;
+        m_api->post(reactionPath, body, done);
+    }
 }
 
 void MessageListModel::updateReactions(int messageId, const QJsonObject &data)
@@ -2271,7 +2336,7 @@ void MessageListModel::updateReactions(int messageId, const QJsonObject &data)
     // Also update rawJson so the cache saves the new reactions
     if (!m_messages[idx].rawJson.isEmpty())
         m_messages[idx].rawJson["reactions"] = data;
-    emit dataChanged(index(idx), index(idx), {ReactionsRole});
+    emit dataChanged(index(idx), index(idx), {ReactionsRole, ReactionsSelfRole});
     m_cache->saveMessages(m_token, {m_messages[idx]});
 }
 
@@ -2290,6 +2355,19 @@ void MessageListModel::applyReactionSystemMessage(const QJsonObject &systemMessa
     const int targetId = parent.value(QStringLiteral("id")).toInt();
     if (targetId <= 0 || !parent.contains(QStringLiteral("reactions")))
         return;
+    // The user's own set on this message. The server injects `reactionsSelf` on a parent only when
+    // the user has a reaction there (ChatController::loadSelfReactions, :1309-1347, which skips
+    // ids with none), so a parent that has `reactions` and no `reactionsSelf` means "none" --
+    // taking the key as absent-means-unchanged left the tint, and the next click's toggle, stale
+    // after the user's reaction was removed from another device. An older server never sends the
+    // key at all; the set is then simply always empty, which is the add-only behaviour it had.
+    // Taken before updateReactions so the repaint and the cached row both carry it.
+    {
+        QStringList self;
+        for (const QJsonValue &v : parent.value(QStringLiteral("reactionsSelf")).toArray())
+            if (!v.toString().isEmpty()) self.append(v.toString());
+        setSelfReactions(targetId, self);
+    }
     updateReactions(targetId, parent.value(QStringLiteral("reactions")).toObject());
 }
 
@@ -2420,38 +2498,6 @@ void MessageListModel::clearLocalHistory()
     emit hasMoreHistoryChanged();
 }
 
-void MessageListModel::createTopic(const QString &title)
-{
-    if (title.trimmed().isEmpty() || m_token.isEmpty())
-        return;
-
-    // Send root message (becomes the thread root)
-    QJsonObject rootBody;
-    rootBody["message"] = title.trimmed();
-    QString token = m_token;
-
-    m_api->post("apps/spreed/api/v1/chat/" + token, rootBody,
-        [this, token, title](bool ok, const QJsonObject &data, int) {
-            if (!ok || m_token != token) return;
-
-            int rootId = data["id"].toInt();
-            if (rootId <= 0) return;
-
-            // Immediately reply to bootstrap the thread
-            QJsonObject replyBody;
-            replyBody["message"] = QString::fromUtf8("\u2709\uFE0F Topic created");  // ✉️
-            replyBody["replyTo"] = rootId;
-
-            m_api->post("apps/spreed/api/v1/chat/" + token, replyBody,
-                [this, token](bool ok2, const QJsonObject &, int) {
-                    if (!ok2) return;
-                    // Refresh thread list to pick up the new topic
-                    if (m_token == token)
-                        emit messageSent();
-                });
-        });
-}
-
 void MessageListModel::deleteMessage(int messageId)
 {
     if (m_token.isEmpty() || messageId <= 0) return;
@@ -2514,10 +2560,19 @@ void MessageListModel::editMessage(int messageId, const QString &newText)
                 if (parent.isObject())
                     updatedObj = parent.toObject();
             }
-            const Message updated = Message::fromJson(updatedObj);
+            Message updated = Message::fromJson(updatedObj);
             if (updated.id <= 0) return;
             for (int i = 0; i < m_messages.size(); ++i) {
                 if (m_messages[i].id == messageId) {
+                    // This response's `parent` is built without loadSelfReactions, so it never
+                    // carries `reactionsSelf`; replacing the row wholesale would forget which
+                    // reactions are the user's, and the next click on one would add, not retract.
+                    if (!updatedObj.contains(QStringLiteral("reactionsSelf"))) {
+                        updated.reactionsSelf = m_messages[i].reactionsSelf;
+                        if (!updated.rawJson.isEmpty())
+                            updated.rawJson["reactionsSelf"] =
+                                QJsonArray::fromStringList(updated.reactionsSelf);
+                    }
                     m_messages[i] = updated;
                     QModelIndex mi = index(i);
                     emit dataChanged(mi, mi);
@@ -2556,7 +2611,8 @@ void MessageListModel::sendFile(const QString &filePath)
     sendFileWithCaption(filePath, QString());
 }
 
-void MessageListModel::sendFileWithCaption(const QString &filePath, const QString &caption)
+void MessageListModel::sendFileWithCaption(const QString &filePath, const QString &caption,
+                                           bool deleteWhenShared)
 {
     if (m_token.isEmpty() || filePath.isEmpty()) return;
 
@@ -2564,25 +2620,13 @@ void MessageListModel::sendFileWithCaption(const QString &filePath, const QStrin
     QString localPath = filePath;
     if (localPath.startsWith("file:///"))
         localPath = QUrl(localPath).toLocalFile();
+    // What gets removed after the share, as the caller named it -- not the junction-resolved
+    // path below, which can point somewhere else.
+    const QString ownedTempPath = deleteWhenShared ? localPath : QString();
 
-    // Resolve junctions in path (Qt 6 blocks traversal of untrusted mount points)
-    {
-        QFileInfo fi(localPath);
-        QString absPath = fi.absoluteFilePath();
-        QStringList parts = absPath.split('/', Qt::SkipEmptyParts);
-        if (!parts.isEmpty()) {
-            QString resolved = parts.first() + "/";
-            for (int i = 1; i < parts.size(); ++i) {
-                resolved += parts[i];
-                QFileInfo info(resolved);
-                if (info.isJunction())
-                    resolved = info.junctionTarget();
-                if (i < parts.size() - 1)
-                    resolved += "/";
-            }
-            localPath = resolved;
-        }
-    }
+    // Resolve junctions in path (Qt 6 blocks traversal of untrusted mount points). Keeps the root
+    // of a UNC path, which the inline version used to drop (UploadPathLogic.h).
+    localPath = talq::resolveJunctionsInPath(localPath);
 
     // If the path traverses a junction/symlink, copy to temp first
     // (Windows blocks junction traversal from protected dirs like Program Files)
@@ -2590,18 +2634,34 @@ void MessageListModel::sendFileWithCaption(const QString &filePath, const QStrin
     QString tempCopy;
     QFile file(readPath);
     if (!file.open(QIODevice::ReadOnly)) {
-        // Try copying to temp as fallback
-        tempCopy = QDir::tempPath() + "/talq_upload_" + QFileInfo(localPath).fileName();
-        if (QFile::copy(localPath, tempCopy)) {
+        const QString openError = file.errorString();   // the reason the USER can act on
+        const QString original = QFileInfo(localPath).fileName();
+        // Try copying to temp as fallback, under a name that is never reused (TempFileLogic.h):
+        // QFile::copy refuses an existing destination, so the old fixed "talq_upload_<name>" made a
+        // stale copy or a second file of the same name fail here. The server-side name below comes
+        // from the ORIGINAL path, so the copy is free to be anonymous.
+        QString copyWhy;
+        tempCopy = talq::makeUploadCopy(
+            localPath, QStandardPaths::writableLocation(QStandardPaths::TempLocation), &copyWhy);
+        if (!tempCopy.isEmpty()) {
+            qDebug() << "Upload: cannot read" << localPath << "in place (" << openError
+                     << "); reading a copy at" << tempCopy;
             readPath = tempCopy;
             file.setFileName(readPath);
             if (!file.open(QIODevice::ReadOnly)) {
-                emit errorOccurred("Cannot open file: " + readPath + "\n" + file.errorString());
+                // Named after the user's file: the copy's name means nothing to them.
+                emit errorOccurred("Cannot open file: " + localPath + "\n" + file.errorString());
                 QFile::remove(tempCopy);
+                forgetPendingUpload(original);   // never reaches the share
                 return;
             }
         } else {
-            emit errorOccurred("Cannot open file: " + localPath + "\n" + file.errorString());
+            emit errorOccurred("Cannot open file: " + localPath + "\n" + openError
+                + ((copyWhy.isEmpty() || copyWhy == openError)
+                       ? QString()
+                       : QStringLiteral("\n(") + tr("copy to a temporary file: %1").arg(copyWhy)
+                             + QLatin1Char(')')));
+            forgetPendingUpload(original);   // never reaches the share
             return;
         }
     }
@@ -2610,6 +2670,8 @@ void MessageListModel::sendFileWithCaption(const QString &filePath, const QStrin
     fileName.remove(QRegularExpression("[/\\\\?#%]"));  // sanitize for WebDAV path safety (S5)
     fileName.replace("..", "_");
     if (fileName.isEmpty()) fileName = "upload";
+    if (!ownedTempPath.isEmpty())
+        m_tempUploadSources.insert(fileName, ownedTempPath);   // removed when its share succeeds
 
     const qint64 fileSize = file.size();
 
@@ -2664,6 +2726,7 @@ void MessageListModel::sendFileWithCaption(const QString &filePath, const QStrin
             m_uploadProgress = -1;
             m_uploadFileName.clear();
             emit uploadProgressChanged();
+            forgetPendingUpload(fileName);   // the share step that consumes it will never run
             emit errorOccurred("Failed to upload file");
             return;
         }
@@ -2817,12 +2880,18 @@ void MessageListModel::shareUploadedFile(const QString &fileName, const QString 
 
             if (ok) {
                 qDebug() << "File shared:" << fileName;
+                // The server has the file now: a temp file TalQ made for it (a pasted image, a
+                // recorded voice note) has done its job. Only after a success -- on a failure
+                // it is the sole copy, and the startup sweep takes it a day later.
+                const QString temp = m_tempUploadSources.take(fileName);
+                if (!temp.isEmpty()) QFile::remove(temp);
                 // Refresh to pick up the server-generated file share message
                 // (file shares don't create an optimistic placeholder)
                 if (m_token == token) {
                     refreshLatest();
                 }
             } else {
+                m_tempUploadSources.remove(fileName);
                 emit errorOccurred("Failed to share file to conversation");
             }
         });
@@ -2852,6 +2921,7 @@ void MessageListModel::uploadFileChunked(const QString &readPath, const QString 
     if (!st->file.open(QIODevice::ReadOnly)) {
         emit errorOccurred("Cannot open file for upload: " + st->file.errorString());
         if (!tempCopy.isEmpty()) QFile::remove(tempCopy);
+        forgetPendingUpload(fileName);
         m_uploadProgress = -1; m_uploadFileName.clear(); emit uploadProgressChanged();
         return;
     }
@@ -2902,6 +2972,9 @@ void MessageListModel::failChunkedUpload(const std::shared_ptr<ChunkUploadState>
 {
     st->file.close();
     if (!st->tempCopy.isEmpty()) QFile::remove(st->tempCopy);
+    // A voice note that failed before the share step would otherwise leave its name in the set
+    // for the rest of the session (shareUploadedFile is what consumes it).
+    forgetPendingUpload(st->fileName);
     m_uploadProgress = -1; m_uploadFileName.clear(); emit uploadProgressChanged();
     emit errorOccurred(msg);
 }
@@ -3026,10 +3099,19 @@ void MessageListModel::onLastCommonReadChanged(int messageId)
 // path; the only difference is the messageType flag added at share time.
 void MessageListModel::sendVoiceMessage(const QString &filePath)
 {
-    if (filePath.isEmpty() || !QFileInfo::exists(filePath))
+    // m_token.isEmpty() is checked here as well as in sendFileWithCaption: the name is only
+    // consumed by shareUploadedFile, so inserting it for an upload that bails out first would leak it.
+    if (m_token.isEmpty() || filePath.isEmpty() || !QFileInfo::exists(filePath))
         return;
     m_voiceMessageFiles.insert(QFileInfo(filePath).fileName());
-    sendFileWithCaption(filePath, QString());
+    // A recording is always a temp file TalQ made (MainWindow records into %TEMP%).
+    sendFileWithCaption(filePath, QString(), /*deleteWhenShared*/ true);
+}
+
+void MessageListModel::forgetPendingUpload(const QString &fileName)
+{
+    m_voiceMessageFiles.remove(fileName);
+    m_tempUploadSources.remove(fileName);
 }
 
 void MessageListModel::downloadFile(int fileId, const QString &fileName,
@@ -3287,81 +3369,6 @@ QString MessageListModel::uniqueDownloadPath(const QString &fileName)
     return path;
 }
 
-bool MessageListModel::pasteClipboardImage()
-{
-    const QClipboard *clipboard = QGuiApplication::clipboard();
-    const QMimeData *mimeData = clipboard->mimeData();
-    if (!mimeData)
-        return false;
-
-    // Case 1: Image data in clipboard (screenshot, copied image)
-    if (mimeData->hasImage()) {
-        QImage image = clipboard->image();
-        if (!image.isNull()) {
-            QString tempPath = QDir::tempPath() + "/talq_paste_"
-                + QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss") + ".png";
-            if (!image.save(tempPath, "PNG")) {
-                qWarning() << "Failed to save clipboard image to" << tempPath;
-                return false;
-            }
-            qDebug() << "Clipboard image saved:" << tempPath << image.size();
-            emit pasteReady("file:///" + tempPath, image.width(), image.height());
-            return true;
-        }
-    }
-
-    // Case 2: File(s) copied from Explorer or file manager
-    if (mimeData->hasUrls()) {
-        QList<QUrl> urls = mimeData->urls();
-        for (const auto &url : urls) {
-            if (!url.isLocalFile()) continue;
-            QString path = url.toLocalFile();
-            if (!QFile::exists(path)) continue;
-
-            QString mime = QMimeDatabase().mimeTypeForFile(path).name();
-            if (mime.startsWith("image/")) {
-                // Image file — show paste confirmation with preview
-                QImage img(path);
-                qDebug() << "Clipboard file paste (image):" << path;
-                emit pasteReady(url.toString(), img.width(), img.height());
-                return true;
-            } else {
-                // Non-image file — show confirmation with caption
-                qDebug() << "Clipboard file paste:" << path;
-                emit pasteReady(url.toString(), 0, 0);
-                return true;
-            }
-        }
-    }
-
-    return false;
-}
-
-void MessageListModel::promptFileSend(const QString &filePath)
-{
-    QUrl url(filePath);
-    QString path = url.isLocalFile() ? url.toLocalFile() : filePath;
-    QString mime = QMimeDatabase().mimeTypeForFile(path).name();
-
-    int w = 0, h = 0;
-    if (mime.startsWith("image/")) {
-        QImage img(path);
-        w = img.width();
-        h = img.height();
-    }
-    emit pasteReady(filePath, w, h);
-}
-
-void MessageListModel::cleanupTempFile(const QString &filePath)
-{
-    QUrl url(filePath);
-    QString path = url.isLocalFile() ? url.toLocalFile() : filePath;
-    if (path.contains("talq_paste_") && QFile::exists(path)) {
-        QFile::remove(path);
-        qDebug() << "Cleaned up temp file:" << path;
-    }
-}
-
 void MessageListModel::sendMessageToToken(const QString &targetToken, const QString &text)
 {
     if (targetToken.isEmpty() || text.trimmed().isEmpty()) return;
@@ -3447,8 +3454,10 @@ void MessageListModel::scheduleMessage(const QString &text, qint64 sendAt,
     if (sendAt <= QDateTime::currentSecsSinceEpoch()) {
         // Refuse to schedule in the past — the server would reject anyway,
         // but giving an inline error here is friendlier than waiting for the
-        // OCS round-trip.
-        emit errorOccurred(tr("Send time must be in the future"));
+        // OCS round-trip. Through scheduleFailed(), not errorOccurred(): the composer has
+        // already emptied its box, and this is the only copy of the text.
+        emit scheduleFailed(m_token, text,
+                            scheduleRefusalText(400, QStringLiteral("send-at")));
         return;
     }
 
@@ -3461,19 +3470,40 @@ void MessageListModel::scheduleMessage(const QString &text, qint64 sendAt,
 
     QString token = m_token;
     m_api->post("apps/spreed/api/v1/chat/" + token + "/schedule", body,
-        [this, sendAt, token](bool ok, const QJsonObject &data, int status) {
+        [this, sendAt, token, text](bool ok, const QJsonObject &data, int status) {
             if (!ok) {
-                QString msg = data.value(QStringLiteral("ocs")).toObject()
-                                  .value(QStringLiteral("meta")).toObject()
-                                  .value(QStringLiteral("message")).toString();
-                emit errorOccurred(msg.isEmpty()
-                    ? tr("Could not schedule message (HTTP %1)").arg(status)
-                    : tr("Could not schedule message: %1").arg(msg));
+                // `data` is the refusal's ocs.data ({"error":"send-at"}); ApiClient hands it
+                // over on an HTTP error as well as on an OCS-level one.
+                emit scheduleFailed(token, text,
+                    scheduleRefusalText(status, data.value(QStringLiteral("error")).toString()));
                 return;
             }
             if (m_token == token)
                 emit messageScheduled(sendAt);
         });
+}
+
+QString MessageListModel::scheduleRefusalText(int status, const QString &error)
+{
+    switch (talq::classifyScheduleFailure(status, error.toStdString())) {
+    case talq::ScheduleRefusal::NoConnection:
+        return tr("TalQ could not reach the server.");
+    case talq::ScheduleRefusal::PastTime:
+        return tr("That send time has already passed. Pick a later time.");
+    case talq::ScheduleRefusal::EmptyMessage:
+        return tr("There was no text to schedule.");
+    case talq::ScheduleRefusal::TooLong:
+        return tr("The message is too long to schedule.");
+    case talq::ScheduleRefusal::ReplyGone:
+        return tr("The message you are replying to is no longer there.");
+    case talq::ScheduleRefusal::ReplyForbidden:
+        return tr("You can’t reply to that message from here.");
+    case talq::ScheduleRefusal::NotAMember:
+        return tr("Scheduled messages need you to be a member of this conversation.");
+    case talq::ScheduleRefusal::Unknown:
+        break;
+    }
+    return tr("The server refused it (HTTP %1).").arg(status);
 }
 
 void MessageListModel::markAsUnread(int messageId)

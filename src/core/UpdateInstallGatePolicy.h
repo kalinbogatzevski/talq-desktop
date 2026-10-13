@@ -108,6 +108,37 @@ inline QString takeDraftOnEnter(QHash<QString, QString> &drafts,
     return drafts.take(token);
 }
 
+// Text that was handed to a request which then failed (a scheduled message the server refused)
+// goes back where it came from WITHOUT overwriting what the user has typed since: it is added
+// after it, separated by a blank line, so the caret and the new text stay where they were. An
+// empty box simply takes it back. Used both for the open composer and for another room's draft.
+inline QString mergeRestoredText(const QString &current, const QString &restored)
+{
+    if (restored.trimmed().isEmpty())
+        return current;
+    if (current.trimmed().isEmpty())
+        return restored;
+    QString head = current;
+    while (!head.isEmpty() && head.back().isSpace())
+        head.chop(1);
+    return head + QStringLiteral("\n\n") + restored;
+}
+
+// Where text that was handed to a failed request goes back to.
+enum class RestoreTarget {
+    Composer,    // the room is open and its box takes text: it is typed back in
+    RoomDraft,   // another room is open now: it becomes that room's draft
+    Clipboard,   // the room is open but its box holds an edit buffer, which must not be mixed with it
+};
+
+inline RestoreTarget restoreTargetFor(const QString &roomToken, const QString &openRoomToken,
+                                      bool composerIsEditing)
+{
+    if (roomToken != openRoomToken)
+        return RestoreTarget::RoomDraft;
+    return composerIsEditing ? RestoreTarget::Clipboard : RestoreTarget::Composer;
+}
+
 // After a successful conversation-list refresh: drop drafts for rooms that
 // are no longer listed. The user cannot open those rooms any more, so the
 // drafts can never be sent -- but they would block the automatic install

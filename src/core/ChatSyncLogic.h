@@ -4,6 +4,10 @@
 // primitives; there are no model/network/Qt dependencies here. Each function
 // encodes one invariant that, when violated, produced a shipped 0.41.9 bug —
 // see docs/superpowers/specs/2026-05-29-chat-sync-hardening-design.md.
+#include <algorithm>
+#include <string>
+#include <vector>
+
 namespace talq {
 
 // H1 — forward-only read marker. Returns true iff posting `lastId` as the
@@ -66,6 +70,32 @@ inline bool messagePairOrdered(int prevId, int curId)
 inline bool isPeerVersionFresh(long long lastSeenMs, long long nowMs, long long windowMs)
 {
     return lastSeenMs > 0 && (nowMs - lastSeenMs) <= windowMs;
+}
+
+// H6 — a click on a reaction is a TOGGLE decided by what the user already has, never by a status
+// code. Talk 24 answers a repeated POST of the same reaction with 200 "already there" (201 only
+// for a new one; ReactionController::react) and has no 409, so a client that waits for a refusal
+// before retracting never retracts. `self` is the message's `reactionsSelf`, `emoji` the
+// reaction clicked; true means the click should DELETE. Exact byte comparison: "❤" (U+2764)
+// and "❤️" (U+2764 U+FE0F) are different reactions to the server and to the pill tint.
+inline bool reactionClickRetracts(const std::vector<std::string> &self, const std::string &emoji)
+{
+    return std::find(self.begin(), self.end(), emoji) != self.end();
+}
+
+// H7 — the user's own reaction set after a reaction was added (`present`) or retracted, as a
+// set: adding what is already there changes nothing (no duplicate, order kept), retracting
+// removes every copy and leaves the rest and their order alone.
+inline std::vector<std::string> selfReactionsAfter(std::vector<std::string> self,
+                                                   const std::string &emoji, bool present)
+{
+    if (present) {
+        if (std::find(self.begin(), self.end(), emoji) == self.end())
+            self.push_back(emoji);
+    } else {
+        self.erase(std::remove(self.begin(), self.end(), emoji), self.end());
+    }
+    return self;
 }
 
 } // namespace talq

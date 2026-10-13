@@ -87,6 +87,11 @@ public:
                                                      QStringLiteral("read-privacy"), 0) == 0; }
     bool sharesTypingStatus() const { return configInt(QStringLiteral("chat"),
                                                        QStringLiteral("typing-privacy"), 0) == 0; }
+    // The longest chat message the server accepts, in characters (Talk 24: 32000, hard-coded
+    // server-side and advertised here). 0 = the server did not say, which the composer treats as
+    // "no client-side limit" -- see MessageLengthPolicy.h.
+    int maxMessageLength() const { return qMax(0, configInt(QStringLiteral("chat"),
+                                                            QStringLiteral("max-length"), 0)); }
     // Empty means "server did not say" -> callers keep the historic "Talk/".
     QString attachmentFolder() const { return configString(QStringLiteral("attachments"),
                                                            QStringLiteral("folder")); }
