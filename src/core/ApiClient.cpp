@@ -1,4 +1,6 @@
 #include "core/ApiClient.h"
+#include "core/OcsErrorBody.h"
+#include "core/PendingReplyDrain.h"
 #include "core/RestReachabilityPolicy.h"
 #include <QBuffer>
 #include <QCoreApplication>
@@ -279,16 +281,14 @@ void ApiClient::handleReply(QNetworkReply *reply, Callback callback,
             // session error) is otherwise lost. This is what lets us diagnose a
             // failed POST call/{token} from the log alone.
             const QByteArray errBody = reply->readAll();
-            QString ocsMsg;
-            if (!errBody.isEmpty()) {
-                const QJsonObject m = QJsonDocument::fromJson(errBody)
-                    .object().value("ocs").toObject().value("meta").toObject();
-                ocsMsg = m.value("message").toString();
-            }
+            const talq::OcsError err = talq::parseOcsError(errBody);
             qWarning() << "API error:" << reply->errorString() << "status:" << status
-                       << "ocsMsg:" << (ocsMsg.isEmpty() ? QStringLiteral("(none)") : ocsMsg)
+                       << "ocsMsg:" << (err.message.isEmpty() ? QStringLiteral("(none)") : err.message)
                        << "body:" << QString::fromUtf8(errBody.left(500));
-            callback(false, {}, status);
+            // The refusal's ocs.data (Talk: {"error":"<reason>"}) goes to the caller with ok=false,
+            // exactly as the OCS-status failure below already does. It used to be {} here, which left
+            // every `data.value("error")` in a failure branch reading nothing.
+            callback(false, err.data, status);
             return;
         }
 
@@ -338,14 +338,9 @@ void ApiClient::handleArrayReply(QNetworkReply *reply, ArrayCallback callback,
                 return;
             }
             const QByteArray errBody = reply->readAll();
-            QString ocsMsg;
-            if (!errBody.isEmpty()) {
-                const QJsonObject m = QJsonDocument::fromJson(errBody)
-                    .object().value("ocs").toObject().value("meta").toObject();
-                ocsMsg = m.value("message").toString();
-            }
+            const talq::OcsError err = talq::parseOcsError(errBody);
             qWarning() << "API error:" << reply->errorString() << "status:" << status
-                       << "ocsMsg:" << (ocsMsg.isEmpty() ? QStringLiteral("(none)") : ocsMsg)
+                       << "ocsMsg:" << (err.message.isEmpty() ? QStringLiteral("(none)") : err.message)
                        << "body:" << QString::fromUtf8(errBody.left(500));
             callback(false, {}, status);
             return;
@@ -1980,8 +1975,10 @@ void ApiClient::broadcastToBreakoutRooms(const QString &token, const QString &me
 
 void ApiClient::cancelAll()
 {
-    for (auto *reply : m_pendingReplies) {
-        reply->abort();
-    }
-    m_pendingReplies.clear();
+    // abort() emits finished() synchronously and the handlers it reaches edit m_pendingReplies
+    // (and may run a nested event loop), so the drain works on a private, guarded copy -- see
+    // PendingReplyDrain.h.
+    talq::abortAll(m_pendingReplies,
+                   [](QNetworkReply *reply) { return QPointer<QNetworkReply>(reply); },
+                   [](QNetworkReply *reply) { reply->abort(); });
 }

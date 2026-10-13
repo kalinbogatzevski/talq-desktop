@@ -91,6 +91,8 @@ public:
     // Empty = no auto-prepend.
     void setAutoMentionBot(const QString &mentionSlug);
     QString autoMentionBot() const { return m_autoMentionBot; }
+    // What sendMessage() will really POST for `text` (bot @-mention in front where it applies).
+    QString outgoingText(const QString &text, int replyToId) const;
 
     int threadId() const { return m_threadId; }
     void setThreadId(int id);
@@ -154,10 +156,12 @@ public:
     Q_INVOKABLE void editMessage(int messageId, const QString &newText);
     Q_INVOKABLE void pinMessage(int messageId);
     Q_INVOKABLE QString messageLink(int messageId) const;
-    Q_INVOKABLE bool pasteClipboardImage();
-    Q_INVOKABLE void sendFileWithCaption(const QString &filePath, const QString &caption);
-    Q_INVOKABLE void promptFileSend(const QString &filePath);
-    Q_INVOKABLE void cleanupTempFile(const QString &filePath);
+    // `deleteWhenShared`: the file is a temp file TalQ itself made (a pasted image, a recorded
+    // voice note), so it is removed once its share to the conversation has succeeded. Never set
+    // it for a file the user chose. On any failure it is left for the startup sweep
+    // (TempFileLogic.h), which also covers a crash or a quit mid-upload.
+    Q_INVOKABLE void sendFileWithCaption(const QString &filePath, const QString &caption,
+                                         bool deleteWhenShared = false);
     // openWhenDone splits the two gestures that reach this. Clicking the file
     // bubble means "show me this", so it opens; the context-menu Download
     // means "put a copy on my disk", so it saves and says where. Same bytes,
@@ -190,7 +194,6 @@ public:
     Q_PROPERTY(QString uploadFileName READ uploadFileName NOTIFY uploadProgressChanged)
     double uploadProgress() const { return m_uploadProgress; }
     QString uploadFileName() const { return m_uploadFileName; }
-    Q_INVOKABLE void createTopic(const QString &title);
     Q_INVOKABLE void refresh();  // trigger immediate poll for read status, new messages
     Q_INVOKABLE void sendMessageToToken(const QString &targetToken, const QString &text);
     // 0.65.3 — forward an attachment by re-sharing its path into another
@@ -227,7 +230,6 @@ signals:
     void hideThreadMessagesChanged();
     void uploadProgressChanged();
     void hasMoreHistoryChanged();
-    void pasteReady(const QString &filePath, int width, int height);
     // An attachment finished writing to disk. `opened` says whether the file
     // was also handed to the OS, so a listener can tell the user where it went
     // WITHOUT announcing a file that is already open in front of them.
@@ -240,12 +242,23 @@ signals:
     // Emitted after POST /chat/{token}/schedule succeeds — UI uses this to
     // confirm the schedule (toast / banner) without polling the queue.
     void messageScheduled(qint64 sendAt);
+    // A scheduled message that did not go: the server refused it, or it never left because the
+    // send time had already passed. The composer cleared its box the moment it asked, so `text`
+    // is the only copy and the owner must put it back -- in the room it was written for (`token`),
+    // not whichever room is open by now. `reason` is user-facing and already translated.
+    void scheduleFailed(const QString &token, const QString &text, const QString &reason);
 
 private slots:
     void onMessagesReceived(const QJsonArray &messages);
     void onLastCommonReadChanged(int messageId);
 
     void updateReactions(int messageId, const QJsonObject &data);
+    // The reactions the CURRENT user has left on a loaded message (`reactionsSelf`), kept in step
+    // with what we send so the next click knows whether it adds or retracts.
+    QStringList selfReactionsOf(int messageId) const;
+    // `repaint` also announces the change (the tint depends on it) and saves the row; the paths
+    // that go on to call updateReactions() leave it false because that does both.
+    void setSelfReactions(int messageId, const QStringList &emojis, bool repaint = false);
     // bug 8 — a reaction/reaction_revoked system message (from the long-poll or
     // a refresh) carries the target comment + its updated reactions map in
     // `parent`. Apply that delta to the target message instead of dropping the
@@ -289,12 +302,20 @@ private:
     // lookup behind both startFileFetch and fetchFileBytes.
     void withDavPath(int fileId, std::function<void(const QString &)> done);
     static QString uniqueDownloadPath(const QString &fileName);
+    // The words for a refused /schedule (ScheduleFailurePolicy.h picks the reason).
+    static QString scheduleRefusalText(int status, const QString &error);
     // File-upload helpers (used by sendFileWithCaption). shareUploadedFile posts
     // the Talk share once the bytes are on the server (shared by the single-PUT
     // and chunked paths); uploadFileChunked streams a large file via Nextcloud
     // chunked-upload v2 so we never readAll() the whole file into memory.
     // Filenames queued by sendVoiceMessage, consumed by shareUploadedFile.
     QSet<QString> m_voiceMessageFiles;
+    // Uploaded file name -> the local temp file TalQ made for it, removed once the share succeeds
+    // (sendFileWithCaption's deleteWhenShared). Keyed by the uploaded name like the set above.
+    QHash<QString, QString> m_tempUploadSources;
+    // An upload that ended before its share step: forget the bookkeeping for it. The temp file,
+    // if any, is deliberately left on disk for the startup sweep.
+    void forgetPendingUpload(const QString &fileName);
     void shareUploadedFile(const QString &fileName, const QString &token,
                            const QString &caption);
     void uploadFileChunked(const QString &readPath, const QString &fileName,

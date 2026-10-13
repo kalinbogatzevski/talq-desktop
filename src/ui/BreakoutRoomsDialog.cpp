@@ -92,9 +92,21 @@ void BreakoutRoomsDialog::configure()
     m_api->configureBreakoutRooms(m_token, mode, amount, QStringLiteral("[]"),
         [this, amount](bool ok, const QJsonObject &data, int) {
             if (!ok) {
+                // ocs.data.error is a code, not words (BreakoutRoomService::setupBreakoutRooms
+                // throws config | room | mode | amount | attendeeMap): never show it raw.
                 const QString err = data.value(QStringLiteral("error")).toString();
-                say(err.isEmpty() ? tr("The rooms could not be created.")
-                                  : tr("The rooms could not be created: %1").arg(err), true);
+                QString why;
+                if (err == QLatin1String("config"))
+                    why = tr("Breakout rooms are turned off on this server.");
+                else if (err == QLatin1String("room"))
+                    why = tr("This conversation can’t be split: it already has breakout rooms, "
+                             "or it is not a group conversation.");
+                else if (err == QLatin1String("mode"))
+                    why = tr("That way of assigning people isn’t available.");
+                else if (err == QLatin1String("amount"))
+                    why = tr("That number of rooms isn’t allowed.");
+                say(why.isEmpty() ? tr("The rooms could not be created.")
+                                  : tr("The rooms could not be created: %1").arg(why), true);
                 return;
             }
             say(tr("%n room(s) created. Open them when you are ready.", nullptr, amount));

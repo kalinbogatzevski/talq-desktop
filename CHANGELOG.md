@@ -1,5 +1,58 @@
 # Changelog
 
+## v0.74.12 "Ravnodenstvie" — STABLE (2026-10-13)
+
+Messages you write are no longer lost or sent the wrong way in a handful of places around long
+messages, "Send later" and file uploads, and files from a network share can be sent again.
+
+### Fixed
+* **A message that is too long for the server is refused with a note, and your text stays in the
+  box.** TalQ used to send it, let the server answer "too long" and leave a failed message behind.
+  The limit is measured the way the server measures it, so a long caption in a non-Latin script is
+  caught as well.
+* **"Send silently" no longer stays switched on after a message that did not go out.** A send that
+  was refused, empty or an edit left it armed, and the next ordinary message went out silently.
+* **Clicking your own reaction takes it back.** It did nothing before.
+* **A scheduled message the server refuses now says why, and its text comes back into the message
+  box.** A time that has already passed, a message you replied to that no longer exists, and no
+  connection each get their own words. Before, the text was gone and the error was generic. If you
+  had moved to another conversation it is kept as a draft there; if you were editing, it is copied to
+  the clipboard instead of being mixed into the edit.
+* **"Send later" is no longer offered where it cannot work.** While you edit a message, while a file
+  is attached or still being prepared, and while you record, it is greyed out with the reason, so
+  the text being edited can no longer be scheduled as a new message. "Send silently" is greyed
+  with the reason for an edit or a file, where it could not be kept.
+* **A message is not scheduled into a different conversation.** If you opened another one while
+  the time picker was still open, the pick is dropped instead of scheduling that conversation's
+  draft at the time you chose for another message.
+* **Pasted images and voice messages no longer pile up in the temporary folder.** They are removed
+  once they have been sent or dismissed, and TalQ clears leftovers from earlier sessions that are
+  more than a day old a minute after it starts.
+* **A file that cannot be read where it is is sent from a temporary copy that cannot clash with an
+  earlier one.** A leftover copy, or a second file with the same name, used to end in "Cannot open
+  file" every time. The copy is removed afterwards even when the original is read-only, and the
+  error now names your file and the reason.
+* **Files on a network share (\\server\share\…) can be sent.** They could not be opened at all
+  before. A shortcut folder (junction) on a share, or on a mapped network drive, is left for the
+  server to resolve.
+
+### Changed
+* **TalQ now reads the reason the server gives when it refuses a request.** Creating breakout rooms
+  says what was wrong (breakout rooms are turned off on the server, the conversation cannot be
+  split, that way of assigning people or that number of rooms is not allowed) instead of a bare
+  "The rooms could not be created."
+
+### Good to know
+* These changes were exercised with automated tests, including deliberately broken variants to
+  confirm the tests notice them, and with test messages against a test conversation on a Talk 24
+  server (a refused scheduled message, an upload and its temporary file). The notice boxes and the
+  "Send later" menu were not clicked through by hand, and nobody has tried them on a weak device.
+* Sending from a network share was checked on the path handling only, not against a real share.
+* A scheduled message that was a reply comes back into the box without its reply link when it is
+  refused. This is known and not changed here.
+* Two files with the same name from different folders can still replace each other in the upload
+  folder on the server. This release only stops them failing on your computer.
+
 ## v0.74.11 "Ravnodenstvie" — STABLE (2026-10-08)
 
 If the server loses track of your session in a conversation, starting a call now recovers instead of

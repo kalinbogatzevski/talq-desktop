@@ -1,4 +1,5 @@
 #include "ComposerWidget.h"
+#include "core/MessageLengthPolicy.h"
 #include "EmojiPickerWidget.h"
 #include "NextcloudFilePickerDialog.h"
 #include "painter/PainterTheme.h"
@@ -30,6 +31,8 @@
 #include <QDateTimeEdit>
 #include <QDialogButtonBox>
 #include <QFutureWatcher>
+#include <QLocale>
+#include <utility>
 #include <QtConcurrent>
 #include <cmath>
 #include <QCursor>
@@ -147,7 +150,8 @@ protected:
                                     .arg(path));
                             return;
                         }
-                        owner->showPendingFile(path);
+                        // TalQ just wrote this file into %TEMP%: the composer owns it.
+                        owner->showPendingOwnedFile(path);
                     });
                 watcher->setFuture(QtConcurrent::run([img, path]() {
                     return img.save(path, "PNG");
@@ -395,6 +399,20 @@ ComposerWidget::ComposerWidget(QWidget *parent)
     connect(editCancelBtn, &QPushButton::clicked, this, &ComposerWidget::hideEditingBar);
     editBarLayout->addWidget(editCancelBtn);
 
+    // "Too long to send" note (hidden until the text passes the server's limit). A label in the
+    // layout rather than a popup: it must stay up while the user shortens the text, and it must
+    // not take focus from the box they are editing.
+    m_lengthLabel = new QLabel(this);
+    m_lengthLabel->setObjectName("lengthNote");
+    m_lengthLabel->setProperty("role", "danger");
+    m_lengthLabel->setWordWrap(true);
+    m_lengthLabel->setContentsMargins(12, 4, 12, 4);
+    m_lengthLabel->hide();
+    // contentsChanged, not textChanged: setText() blocks the input's own signals so a restored
+    // draft does not look like typing, and a restored draft can already be over the limit.
+    connect(m_input->document(), &QTextDocument::contentsChanged,
+            this, &ComposerWidget::updateLengthIndicator);
+
     // Insert bars above the input row
     auto *mainLayout = new QVBoxLayout();
     mainLayout->setContentsMargins(0, 0, 0, 0);
@@ -402,6 +420,7 @@ ComposerWidget::ComposerWidget(QWidget *parent)
     mainLayout->addWidget(m_pendingBar);
     mainLayout->addWidget(m_replyBar);
     mainLayout->addWidget(m_editingBar);
+    mainLayout->addWidget(m_lengthLabel);
 
     auto *inputRow = new QWidget(this);
     inputRow->setLayout(layout);
@@ -478,7 +497,7 @@ void ComposerWidget::changeEvent(QEvent *event)
 
 // Reserve vertical space above the input row for any combination of the
 // pending-file / reply / editing bars (each is 36-56px; total ≤120).
-static constexpr int kComposerBarsReserve = 120;
+static constexpr int kComposerBarsReserve = 120 + 48;   // + the "too long" note (two wrapped lines)
 
 void ComposerWidget::autoResizeInput()
 {
@@ -527,6 +546,66 @@ void ComposerWidget::setMessageModel(MessageListModel *model)
     }
 }
 
+void ComposerWidget::setMaxMessageLength(int n)
+{
+    m_maxMessageLength = n > 0 ? n : 0;
+    updateLengthIndicator();
+}
+
+talq::msglen::Check ComposerWidget::lengthCheckFor(const QString &text, bool plainSend) const
+{
+    // A staged file: the text is its caption, which the server keeps inside the JSON of the file
+    // message, where non-ASCII costs six characters apiece (MessageLengthPolicy.h).
+    if (!m_pendingFilePath.isEmpty())
+        return talq::msglen::checkCaption(text.toStdString(), m_maxMessageLength);
+    QString outgoing = text;
+    if (plainSend && m_model) {
+        // The model puts the bot's @-mention in front AFTER the composer has let the text go, so
+        // measure what it will actually send. It does so only for a send that is not a reply.
+        const bool replying = m_replyBar && !m_replyBar->isHidden();
+        outgoing = m_model->outgoingText(text, replying ? 1 : 0);
+    }
+    return talq::msglen::check(outgoing.toStdString(), m_maxMessageLength);
+}
+
+void ComposerWidget::updateLengthIndicator()
+{
+    if (!m_lengthLabel || !m_input) return;
+    bool over = false;
+    // Runs on every edit. The document's UTF-16 unit count is O(1) and bounds the work: the text is
+    // only converted and scanned when it could really be over (a caption costs up to 6 encoded
+    // characters per unit; a plain send may gain the bot's "@slug " in front).
+    const bool staged = !m_pendingFilePath.isEmpty();
+    const std::size_t units = std::size_t(qMax(0, m_input->document()->characterCount()));
+    const std::size_t prefix = (!staged && m_model) ? std::size_t(m_model->autoMentionBot().size()) + 2 : 0;
+    const bool maybe = staged ? talq::msglen::mayExceedCaption(units, m_maxMessageLength)
+                              : talq::msglen::mayExceed(units + prefix, m_maxMessageLength);
+    if (maybe) {
+        const talq::msglen::Check c =
+            lengthCheckFor(m_input->toPlainText().trimmed(), /*plainSend*/ !m_editing);
+        if (c.tooLong) {
+            over = true;
+            const QLocale loc;
+            const QString count  = loc.toString(qulonglong(c.count));
+            const QString limit  = loc.toString(qulonglong(c.limit));
+            const QString excess = loc.toString(qulonglong(c.excess));
+            m_lengthLabel->setText(staged
+                ? tr("Too long to send with a file: the caption takes %1 of %2 characters once "
+                     "encoded. Shorten it by about %3 to send it.").arg(count, limit, excess)
+                : tr("Too long to send: %1 of %2 characters. Remove %3 to send it.")
+                      .arg(count, limit, excess));
+        }
+    }
+    m_lengthLabel->setVisible(over);
+}
+
+bool ComposerWidget::tooLongToSend(const QString &text, bool plainSend)
+{
+    const talq::msglen::Check c = lengthCheckFor(text, plainSend);
+    if (c.tooLong) updateLengthIndicator();   // make sure the reason is on screen
+    return c.tooLong;
+}
+
 void ComposerWidget::setInputFont(const QFont &font)
 {
     m_input->setFont(font);
@@ -573,8 +652,25 @@ void ComposerWidget::setInputFont(const QFont &font)
     autoResizeInput();
 }
 
+void ComposerWidget::discardOwnedPendingFile()
+{
+    if (m_pendingFileOwned && !m_pendingFilePath.isEmpty())
+        QFile::remove(m_pendingFilePath);
+    m_pendingFileOwned = false;
+}
+
+void ComposerWidget::showPendingOwnedFile(const QString &path)
+{
+    showPendingFile(path);       // also lets go of (and removes) a previous owned file
+    m_pendingFileOwned = true;
+}
+
 void ComposerWidget::showPendingFile(const QString &path)
 {
+    // Replacing a staged file: one TalQ made for the previous paste would otherwise be orphaned.
+    if (m_pendingFilePath != path)
+        discardOwnedPendingFile();
+    m_pendingFileOwned = false;   // showPendingOwnedFile() sets it again for its own file
     m_pendingFilePath = path;
     QFileInfo fi(path);
     m_pendingName->setText(fi.fileName());
@@ -599,10 +695,12 @@ void ComposerWidget::showPendingFile(const QString &path)
     m_pendingBar->show();
     m_input->setPlaceholderText(tr("Add a caption\u2026"));
     m_input->setFocus();
+    updateLengthIndicator();   // text typed before the file was staged is now a caption
 }
 
 void ComposerWidget::showPendingEncoding()
 {
+    discardOwnedPendingFile();   // a new paste replaces the staged one
     m_pendingFilePath.clear();
     m_pendingPreview->setPixmap(QPixmap());
     m_pendingPreview->setText(QStringLiteral("\u23F3"));                       // ⏳ hourglass
@@ -613,6 +711,7 @@ void ComposerWidget::showPendingEncoding()
                  palette().color(QPalette::Highlight).name()));
     m_pendingName->setText(tr("Preparing image\u2026"));
     m_pendingBar->show();
+    updateLengthIndicator();
 }
 
 void ComposerWidget::confirmSendFile()
@@ -626,20 +725,28 @@ void ComposerWidget::confirmSendFile()
         return;
     }
     QString caption = m_input->toPlainText().trimmed();
+    // Too long for the server to store: keep the caption and the staged file where they are. The
+    // upload would otherwise run, the share be refused, and the caption already be gone from the
+    // box with nothing to retry it (files are not in the outbox).
+    if (tooLongToSend(caption, /*plainSend*/ false)) return;
     qDebug() << "confirmSendFile: path=" << m_pendingFilePath << "caption=" << caption;
-    m_model->sendFileWithCaption(m_pendingFilePath, caption);
+    // The model now owns an owned temp file: it removes it once the share succeeds.
+    m_model->sendFileWithCaption(m_pendingFilePath, caption, m_pendingFileOwned);
+    m_pendingFileOwned = false;   // handed over, so cancelPendingFile() below must not delete it
     m_input->clear();
     cancelPendingFile();
 }
 
 void ComposerWidget::cancelPendingFile()
 {
+    discardOwnedPendingFile();   // the user dismissed a paste TalQ made: nobody else wants it
     m_pendingFilePath.clear();
     m_pendingBar->hide();
     m_input->setPlaceholderText(m_topicName.isEmpty()
         ? tr("Message…")
         : tr("Reply in %1…").arg(m_topicName));
     m_input->setFocus();
+    updateLengthIndicator();   // back to measuring it as a message
 }
 
 void ComposerWidget::showReplyBar(const QString &author, const QString &preview)
@@ -649,11 +756,13 @@ void ComposerWidget::showReplyBar(const QString &author, const QString &preview)
              author.toHtmlEscaped(), preview.toHtmlEscaped()));
     m_replyLabel->setTextFormat(Qt::RichText);
     m_replyBar->show();
+    updateLengthIndicator();   // a reply is sent without the bot's @-mention in front
 }
 
 void ComposerWidget::hideReplyBar()
 {
     m_replyBar->hide();
+    updateLengthIndicator();
     emit replyBarCancelled();
 }
 
@@ -675,6 +784,7 @@ void ComposerWidget::showEditingBar(const QString &originalText)
     m_input->setTextCursor(c);
     m_input->setFocus();
     m_editing = true;
+    updateLengthIndicator();   // an edit is sent as it stands, no @-mention in front
 }
 
 void ComposerWidget::hideEditingBar()
@@ -697,6 +807,10 @@ bool ComposerWidget::requestEditLast()
 
 void ComposerWidget::sendAction()
 {
+    // Alt+Enter, Alt+click and "Send silently" arm the flag and then call here. It is consumed up
+    // front so EVERY way out (refused as too long, empty, an edit, a staged file) disarms it; left
+    // armed, the next ordinary send would go out silently and no one would be notified.
+    const bool silent = std::exchange(m_nextSendSilent, false);
     // If a file is pending, Enter sends the file (with caption from composer)
     if (!m_pendingFilePath.isEmpty()) {
         confirmSendFile();
@@ -707,6 +821,9 @@ void ComposerWidget::sendAction()
     flushAutoreplace();
     QString text = m_input->toPlainText().trimmed();
     if (text.isEmpty()) return;
+    // Over the server's limit: leave everything as it is. Clearing the box into a send the
+    // server answers with a 413 would leave a failed bubble whose "Discard" is the only copy.
+    if (tooLongToSend(text, /*plainSend*/ !m_editing)) return;
     if (m_signaling) m_signaling->sendStoppedTyping();
 
     if (m_editing) {
@@ -715,8 +832,6 @@ void ComposerWidget::sendAction()
         return;
     }
 
-    bool silent = m_nextSendSilent;
-    m_nextSendSilent = false;
     emit sendMessage(text, silent);
 
     if (silent) {
@@ -730,26 +845,102 @@ void ComposerWidget::sendAction()
     m_input->clear();
 }
 
-void ComposerWidget::openScheduleMenu()
+talq::ScheduleBlock ComposerWidget::scheduleBlockNow() const
 {
-    QMenu menu(this);
+    const QString text = m_input ? m_input->toPlainText().trimmed() : QString();
+    return talq::scheduleBlockFor(m_editing, hasStagedAttachment(), m_recording,
+                                  text.isEmpty(),
+                                  !text.isEmpty() && lengthCheckFor(text, /*plainSend*/ false).tooLong);
+}
+
+QString ComposerWidget::scheduleBlockHint(talq::ScheduleBlock block)
+{
+    switch (block) {
+    case talq::ScheduleBlock::Editing:    return tr("not while editing");
+    case talq::ScheduleBlock::StagedFile: return tr("not with an attached file");
+    case talq::ScheduleBlock::Recording:  return tr("not while recording");
+    case talq::ScheduleBlock::Empty:      return tr("type a message first");
+    case talq::ScheduleBlock::TooLong:    return tr("message too long");
+    case talq::ScheduleBlock::None:       break;
+    }
+    return QString();
+}
+
+bool ComposerWidget::scheduleAt(qint64 sendAtSecs, const QString &expectedRoomToken)
+{
+    // Consumed first so EVERY way out disarms it, as in sendAction(): left armed, the next
+    // ordinary send would go out silently.
+    const bool silent = std::exchange(m_nextSendSilent, false);
+
+    // The state checks come BEFORE flushAutoreplace(): a refusal leaves the box byte for byte as
+    // it was, the staged file staged and the editing bar up. Empty and too-long need the flushed
+    // text and are judged below.
+    if (talq::scheduleBlockFor(m_editing, hasStagedAttachment(), m_recording,
+                               /*textEmpty*/ false, /*tooLong*/ false) != talq::ScheduleBlock::None)
+        return false;
+    // The time picker can stay open as long as the user likes. If the open conversation changed
+    // meanwhile, the box now holds THAT room's draft: it must not be scheduled into it at a time
+    // picked for another message.
+    if (!expectedRoomToken.isEmpty()
+        && (!m_model || m_model->conversationToken() != expectedRoomToken))
+        return false;
+
+    // Same flush-and-grab dance as sendAction so :)/:shortcode: gets substituted even when the
+    // user never typed a trailing space.
+    flushAutoreplace();
+    const QString text = m_input->toPlainText().trimmed();
+    if (text.isEmpty()) return false;
+    if (tooLongToSend(text, /*plainSend*/ false)) return false;   // same refusal as sendAction()
+
+    if (m_signaling) m_signaling->sendStoppedTyping();
+    // Cleared BEFORE the emit, not after. scheduleRequested reaches MessageListModel::
+    // scheduleMessage synchronously, which can refuse at once (a send time that has already
+    // passed) and hand the text back through scheduleFailed -- into this box, which therefore has
+    // to be empty by then (MainWindow merges it after anything typed since). Clearing afterwards
+    // erased the restored copy while a dialog said it was back.
+    m_input->clear();
+    emit scheduleRequested(text, sendAtSecs, silent);
+    return true;
+}
+
+ComposerWidget::ScheduleMenu ComposerWidget::buildScheduleMenu(QMenu &menu, const QDateTime &now) const
+{
+    ScheduleMenu m;
     QFont boldF = menu.font(); boldF.setBold(true);
+
+    // What this box allows right now (ComposerSchedulePolicy.h). The menu is built from it, and
+    // scheduleAt() asks again once a time is picked: the Custom-time dialog is a nested event
+    // loop of unbounded length and the state can move under it.
+    const talq::ScheduleBlock block = scheduleBlockNow();
+    const bool silentOk = talq::silentSendIsHonoured(m_editing, hasStagedAttachment());
 
     // Primary actions: send now / send silent — same as the legacy menu, so
     // a right-click is still the discoverable path for "send silently".
-    QAction *sendAct   = menu.addAction(tr("Send"));
-    sendAct->setFont(boldF);
-    QAction *silentAct = menu.addAction(QStringLiteral("\U0001F515  ")
-        + tr("Send silently") + QStringLiteral(" — ") + tr("no notification"));
+    m.send = menu.addAction(tr("Send"));
+    m.send->setFont(boldF);
+    // An edit keeps the original's notification setting and a file share carries none, so the
+    // promise "no notification" cannot be kept there: say so instead of making it.
+    m.silent = menu.addAction(QStringLiteral("\U0001F515  ")
+        + tr("Send silently") + QStringLiteral(" — ")
+        + (silentOk ? tr("no notification")
+                    : (m_editing ? tr("not for an edit") : tr("not with an attached file"))));
+    m.silent->setEnabled(silentOk);
 
     menu.addSeparator();
 
-    QMenu *later = menu.addMenu(QStringLiteral("⏰  ") + tr("Send later"));
+    // Kept visible and disabled, with the reason in the label (the "Send silently" idiom above):
+    // hidden would lose the way out, and enabled would send the user through a time picker to a
+    // refusal.
+    QString laterTitle = QStringLiteral("⏰  ") + tr("Send later");
+    if (block != talq::ScheduleBlock::None)
+        laterTitle += QStringLiteral(" — ") + scheduleBlockHint(block);
+    QMenu *later = menu.addMenu(laterTitle);
+    m.later = later->menuAction();
+    m.later->setEnabled(block == talq::ScheduleBlock::None);
 
     // Build the same quick presets as the message-level "Remind me" submenu
     // so users see a consistent vocabulary. All are emitted as absolute unix
     // seconds — the server is the source of truth for timing.
-    const QDateTime now = QDateTime::currentDateTime();
     struct Preset { QString label; QDateTime when; };
     QVector<Preset> presets;
     presets.push_back({tr("In 1 hour"),       now.addSecs(60 * 60)});
@@ -772,36 +963,48 @@ void ComposerWidget::openScheduleMenu()
         nextMon.setTime(QTime(9, 0));
         presets.push_back({tr("Next Monday 9:00"), nextMon});
     }
-    QVector<QAction *> presetActs;
     for (const auto &p : presets) {
         QString label = QStringLiteral("%1  —  %2")
             .arg(p.label, p.when.toString(QStringLiteral("ddd dd MMM, HH:mm")));
-        presetActs.push_back(later->addAction(label));
+        m.presets.push_back(later->addAction(label));
+        m.presetTimes.push_back(p.when);
     }
     later->addSeparator();
-    QAction *customAct = later->addAction(tr("Custom time…"));
+    m.custom = later->addAction(tr("Custom time…"));
 
     menu.addSeparator();
-    QAction *manageAct = menu.addAction(QStringLiteral("\U0001F4CB  ") + tr("Manage scheduled…"));
+    m.manage = menu.addAction(QStringLiteral("\U0001F4CB  ") + tr("Manage scheduled…"));
+    return m;
+}
+
+void ComposerWidget::openScheduleMenu()
+{
+    QMenu menu(this);
+    const QDateTime now = QDateTime::currentDateTime();
+    const ScheduleMenu m = buildScheduleMenu(menu, now);
+    const QString roomAtOpen = m_model ? m_model->conversationToken() : QString();
 
     QAction *picked = menu.exec(QCursor::pos());
     if (!picked) return;
 
-    if (picked == sendAct) { sendAction(); return; }
-    if (picked == silentAct) { m_nextSendSilent = true; sendAction(); return; }
-    if (picked == manageAct) { emit manageScheduledRequested(); return; }
+    if (picked == m.send) { sendAction(); return; }
+    if (picked == m.silent) { m_nextSendSilent = true; sendAction(); return; }
+    if (picked == m.manage) { emit manageScheduledRequested(); return; }
 
     // Below: a scheduling branch. We resolve to a sendAt unix timestamp and
     // emit scheduleRequested. The actual API call lives in MainWindow so it
     // can attach the current reply context and react to the response toast.
     QDateTime sendAt;
-    if (picked == customAct) {
+    if (picked == m.custom) {
+        // The minimum is measured from NOW, not from when the menu opened: the menu can have sat
+        // there for a while, and a "minute from then" that is already in the past is refused.
+        const QDateTime nowAtDialog = QDateTime::currentDateTime();
         QDialog dlg(this);
         dlg.setWindowTitle(tr("Send at"));
         auto *layout = new QVBoxLayout(&dlg);
-        auto *edit = new QDateTimeEdit(now.addSecs(60 * 60), &dlg);
+        auto *edit = new QDateTimeEdit(nowAtDialog.addSecs(60 * 60), &dlg);
         edit->setCalendarPopup(true);
-        edit->setMinimumDateTime(now.addSecs(60));  // at least a minute out
+        edit->setMinimumDateTime(nowAtDialog.addSecs(60));  // at least a minute out
         edit->setDisplayFormat(QStringLiteral("ddd dd MMM yyyy   HH:mm"));
         layout->addWidget(edit);
         auto *buttons = new QDialogButtonBox(
@@ -812,22 +1015,13 @@ void ComposerWidget::openScheduleMenu()
         if (dlg.exec() != QDialog::Accepted) return;
         sendAt = edit->dateTime();
     } else {
-        int idx = presetActs.indexOf(picked);
+        const int idx = m.presets.indexOf(picked);
         if (idx < 0) return;
-        sendAt = presets[idx].when;
+        sendAt = m.presetTimes[idx];
     }
 
-    // Reuse the same flush-and-grab dance as sendAction so :)/:shortcode:
-    // gets substituted even when the user never typed a trailing space.
-    flushAutoreplace();
-    QString text = m_input->toPlainText().trimmed();
-    if (text.isEmpty()) return;
-
-    bool silent = m_nextSendSilent;
-    m_nextSendSilent = false;
-    if (m_signaling) m_signaling->sendStoppedTyping();
-    emit scheduleRequested(text, sendAt.toSecsSinceEpoch(), silent);
-    m_input->clear();
+    // Everything from here is scheduleAt(): it judges the state as it is NOW.
+    scheduleAt(sendAt.toSecsSinceEpoch(), roomAtOpen);
 }
 
 void ComposerWidget::openEmojiPicker()

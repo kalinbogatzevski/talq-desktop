@@ -1400,6 +1400,32 @@ void MainWindow::buildChatPage()
                            tr("✓ Scheduled for %1").arg(when),
                            m_composer, QRect(), 3000);
     });
+    connect(m_messages, &MessageListModel::scheduleFailed, this,
+            [this](const QString &token, const QString &text, const QString &reason) {
+        // The composer emptied its box when it asked to schedule, so this is the only copy of the
+        // text. It goes back to the room it was written for, and never over what is typed now.
+        // Restored BEFORE the modal box below opens, so it is already there behind it.
+        QString where;
+        switch (talq::restoreTargetFor(token, m_activeConvToken,
+                                       /*composerIsEditing*/ !m_composer || m_composer->isEditing())) {
+        case talq::RestoreTarget::Composer:
+            m_composer->setText(talq::mergeRestoredText(m_composer->currentText(), text));
+            where = tr("Your message is back in the message box.");
+            break;
+        case talq::RestoreTarget::RoomDraft:
+            m_composerDrafts[token] = talq::mergeRestoredText(m_composerDrafts.value(token), text);
+            where = tr("Your message was kept as a draft in that conversation.");
+            break;
+        case talq::RestoreTarget::Clipboard:
+            // An edit buffer is an existing message: text added to it would be sent as an edit of
+            // someone's message. Not lost, and not mixed in.
+            QGuiApplication::clipboard()->setText(text);
+            where = tr("Your message was copied to the clipboard.");
+            break;
+        }
+        QMessageBox::warning(this, tr("Message not scheduled"),
+                             reason + QStringLiteral("\n\n") + where);
+    });
     connect(m_composer, &ComposerWidget::replyBarCancelled, this, [this]() {
         m_replyToId = 0;
         m_replyToAuthor.clear();
@@ -2186,8 +2212,11 @@ void MainWindow::buildChatPage()
         // Whether the server has a recording backend at all.
         if (m_callManager)
             m_callManager->setRecordingAvailable(m_auth->recordingAvailable());
-        if (m_composer)
+        if (m_composer) {
             m_composer->setPollsAvailable(m_auth->capabilities().supportsPolls());
+            // 0 (not advertised, or logged out) leaves the composer unrestricted.
+            m_composer->setMaxMessageLength(m_auth->maxMessageLength());
+        }
         // Capabilities have just been parsed — this is the first moment we know
         // whether the server supports Talk 24 tags. Fetching any earlier would
         // fire the request before the gate is known.
@@ -2555,8 +2584,11 @@ void MainWindow::buildSearchBar(QWidget *chatCol)
                 // A draft posts nothing to the chat, so there is no new message
                 // to refresh in for -- say it landed instead of looking inert.
                 if (draft) {
+                    // TalQ can create a draft but has no list of drafts to post one from; the
+                    // Talk web interface does (moderators only). Do not promise more than that.
                     QMessageBox::information(this, tr("Poll"),
-                        tr("Saved as a draft. You can post it from the attachment menu."));
+                        tr("Saved as a draft. TalQ can’t post drafts — open this "
+                           "conversation’s poll drafts in Nextcloud Talk in your browser to post it."));
                     return;
                 }
                 if (m_messages && m_messages->conversationToken() == token)

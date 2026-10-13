@@ -696,6 +696,10 @@ static QString makeLayoutCacheKey(QAbstractListModel *model, int modelRow,
         + get(MessageListModel::ReplyToAuthorRole).toString() + '|'
         + get(MessageListModel::ReplyToTextRole).toString() + '|'
         + get(MessageListModel::ReactionsRole).toString() + '|'
+        // The pill tint is baked into the cached layout from reactionsSelf; without it in the key a
+        // change of ONLY the user's own set (another device, a stale record corrected) repainted
+        // the old tint from the cache.
+        + get(MessageListModel::ReactionsSelfRole).toStringList().join(QChar(0x1F)) + '|'
         + (get(MessageListModel::HasFileRole).toBool() ? '1' : '0') + '|'
         + get(MessageListModel::FileNameRole).toString() + '|'
         + get(MessageListModel::FileMimeRole).toString();
