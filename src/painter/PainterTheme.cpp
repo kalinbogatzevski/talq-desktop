@@ -1,4 +1,5 @@
 #include "PainterTheme.h"
+#include "CodeCopyLogic.h"
 #include <QPainter>
 #include <QPainterPath>
 #include <QtMath>
@@ -356,12 +357,32 @@ QString PainterTheme::richTextStyleSheet() const
     // deliberately repurposes QPalette::Link as a theme-token slot (it holds
     // theme.online, a presence green). Without this rule, stripping the old
     // inline link colour would silently render every message hyperlink green.
+    //
+    // `white-space:pre-wrap` on pre is what makes a code block WRAP. Qt's HTML
+    // importer treats <pre> as QTextBlockFormat::nonBreakableLines, so without
+    // it a long line never wraps: the block's idealWidth grew to the widest line
+    // (1696px in one real message, in a bubble about 600px wide) and the fill
+    // and text painted straight out of the bubble -- ChatPainter's ctx.clip is a
+    // cull rect, not a painter clip. pre-wrap keeps every space, tab and
+    // indentation exactly as pre does, and breaks at word boundaries or, for an
+    // unbroken token (a path, a base64 blob), anywhere: the document's default
+    // wrap mode is already WrapAtWordBoundaryOrAnywhere, measured on Qt 6.10.1.
+    // Do NOT "fix" it with setDefaultTextOption(WordWrap): that mode is a
+    // regression here, the long token overflows again.
+    //
+    // `margin-right` on pre reserves the strip the copy chip sits in (see
+    // CodeCopyLogic.h for why it is a gutter and not an overlay). Qt ignores CSS
+    // padding on a block, but a margin is honoured: it is left out of the
+    // painted fill, and counted by idealWidth so the bubble grows to include it.
+    // The number is kCodeChipGutter, shared with the chip's own geometry.
     return QStringLiteral(
-        "pre { background-color:%1; color:%2; font-family:Consolas,monospace }"
+        "pre { background-color:%1; color:%2; font-family:Consolas,monospace;"
+        " white-space:pre-wrap; margin-right:%5px }"
         " code { background-color:%1; color:%2; font-family:Consolas,monospace }"
         " a { color:%3 }"
         " .mention { color:%4 }")
-        .arg(codeBg.name(), textPrimary.name(), link.name(), mention.name());
+        .arg(codeBg.name(), textPrimary.name(), link.name(), mention.name(),
+             QString::number(talq::kCodeChipGutter));
 }
 
 QString PainterTheme::themeId(Theme t)

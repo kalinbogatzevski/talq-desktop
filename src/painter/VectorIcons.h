@@ -163,6 +163,8 @@ inline void draw(QPainter &p, const QString &id, const QRectF &box,
         QPainterPath b; b.moveTo(5, 16);
         b.lineTo(4, 16); b.lineTo(4, 4); b.lineTo(16, 4); b.lineTo(16, 5);
         p.drawPath(b);
+    } else if (id == "check") {
+        p.drawPolyline(QPolygonF({{5,12.5},{10,17.5},{19,7}}));
     } else if (id == "forward") {
         p.drawPolyline(QPolygonF({{4,8},{12,8},{12,4},{20,11},{12,18},{12,14}}));
         QPainterPath tail; tail.moveTo(4, 8);

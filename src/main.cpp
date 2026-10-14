@@ -145,6 +145,7 @@ void talqTerminateHandler()
 #include "painter/ChatPainter.h"
 #include "painter/SidebarPainter.h"
 #include "painter/PainterTheme.h"
+#include "painter/BodyHtml.h"
 #include <QFontDatabase>
 #include <QFontMetrics>
 #include <QFont>
@@ -974,8 +975,13 @@ int main(int argc, char *argv[])
         // is row 0 and would put the user's OWN unsent text in the sidebar preview.
         auto idx = messages.index(messages.latestArrivedRow());
         QString author = messages.data(idx, MessageListModel::ActorNameRole).toString();
-        QString text = messages.data(idx, MessageListModel::MessageTextRole).toString();
-        text.remove(QRegularExpression("<[^>]*>"));
+        // MessageTextRole is the stored HTML for EVERY row, an unsent temp row
+        // included (tempMessageFor renders it through Message::renderBodyHtml),
+        // so it always goes through the one html -> text recipe. A tag-stripping
+        // regex left "&lt;", "&amp;" and "&quot;" in the preview -- the characters
+        // code is made of. The sidebar paints this as plain text (one elided line).
+        QString text = talq::plainTextFromBodyHtml(
+            messages.data(idx, MessageListModel::MessageTextRole).toString());
         if (text.length() > 80) text = text.left(80) + "...";
         conversations.updateLastMessage(messages.conversationToken(), author, text);
     });
@@ -1005,8 +1011,11 @@ int main(int argc, char *argv[])
         // silent message would still pop a desktop toast on the recipient.
         if (messages.data(idx, MessageListModel::SilentRole).toBool()) return;
         QString actorName = messages.data(idx, MessageListModel::ActorNameRole).toString();
-        QString text = messages.data(idx, MessageListModel::MessageTextRole).toString();
-        text.remove(QRegularExpression("<[^>]*>"));
+        // Stored HTML -> plain text, for a PlainText popup label
+        // (NotificationPopup): decoded here, and NOT escaped again, or the toast
+        // would show the entities themselves.
+        QString text = talq::plainTextFromBodyHtml(
+            messages.data(idx, MessageListModel::MessageTextRole).toString());
         if (text.length() > 100) text = text.left(100) + "...";
         notifications.notify(actorName, text, false, messages.conversationToken());
     });
@@ -1015,8 +1024,16 @@ int main(int argc, char *argv[])
     QObject::connect(&conversations, &ConversationListModel::newUnreadMessage,
                      &notifications, [&notifications, &messages](const QString &name, const QString &lastMsg, const QString &token) {
         if (token == messages.conversationToken()) return;
+        // `lastMsg` is the server's own lastMessage.message for a room that is
+        // not open (ConversationListModel::refresh <- Conversation::fromJson),
+        // so it is what the sender TYPED: not HTML, not escaped. Stripping tags
+        // here deleted whatever they had written between a "<" and a ">", and
+        // running it through the HTML recipe would decode an "&amp;" they typed
+        // literally. It goes to a PlainText popup label, so it is used as is.
+        // (A {mention-...} / {file} placeholder still shows raw: Conversation
+        // keeps the unresolved text and never reads the lastMessage's
+        // messageParameters.)
         QString preview = lastMsg;
-        preview.remove(QRegularExpression("<[^>]*>"));
         if (preview.length() > 80) preview = preview.left(80) + "...";
         notifications.notify(name, preview, true, token);
     });

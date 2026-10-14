@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(talq VERSION 0.74.12 LANGUAGES CXX)
+project(talq VERSION 0.75.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -294,6 +294,23 @@ string(TIMESTAMP TALQ_BUILD_TS "%m%d-%H%M")
 # "Copy image". Chosen by Kalin, 2026-09-26. "Buditeli" (1 November) was
 # offered and held back for a line cut nearer that date.
 # Sources: timeanddate.com and earthsky.org (2026 September equinox, 00:05 UTC).
+#
+# 0.75.x IS "Buditeli" -- Будители, the National Revival Leaders, honoured on
+# 1 November (Ден на народните будители). The day was first marked in Plovdiv
+# in 1909; in 1922 Stoyan Omarchevski, education minister in Aleksandar
+# Stamboliyski's government -- the same pair who moved the school year to 15
+# September, see 0.71.x -- proposed it as a national day, and a royal decree of
+# 1923 made it an official holiday. It was abolished in 1945 and restored in
+# 1992. It returns to the Bulgarian-history thread (0.69.x Saedinenie -> 0.70.x
+# Slivnitsa -> 0.71.x/0.72.x First School Day -> 0.73.x Nezavisimost) after
+# 0.74.x's step into the calendar, and follows the EVENT-name pattern. 0.75.x is
+# odd, so it is the BETA line: the copy button on code blocks and the code
+# paste work. Offered and held back at 0.74.x for a line cut nearer 1 November
+# (homework #1); chosen by Kalin, 2026-10-14. The homework note's reason for the
+# date (St Ivan Rilski's 19 October Old Style = 1 November) was NOT confirmed by
+# the sources checked and is deliberately not stated in the blurb.
+# Sources: bta.bg, bnt.bg, old-news.bnr.bg, novinite.com (1909 Plovdiv, 1922
+# Omarchevski, the 1923 decree, 1945 and 1992).
 set_source_files_properties(
     src/main.cpp
     src/core/CallManager.cpp
@@ -302,7 +319,7 @@ set_source_files_properties(
     src/ui/SettingsDialog.cpp
     src/ui/MainWindow.cpp
     PROPERTIES COMPILE_DEFINITIONS
-      "TALQ_VERSION=\"${PROJECT_VERSION}\";TALQ_VERSION_NAME=\"Ravnodenstvie\";TALQ_BUILD_TS=\"${TALQ_BUILD_TS}\""
+      "TALQ_VERSION=\"${PROJECT_VERSION}\";TALQ_VERSION_NAME=\"Buditeli\";TALQ_BUILD_TS=\"${TALQ_BUILD_TS}\""
 )
 
 # Pre-release flag: when build-release.sh is invoked with --beta it

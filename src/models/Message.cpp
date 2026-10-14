@@ -1,9 +1,49 @@
 #include "models/Message.h"
+#include "models/CodePasteHeuristic.h"
 #include <QJsonArray>
 #include <QRegularExpression>
 #include <QVector>
 
 namespace {
+
+// The body of a fenced block, from the text between the fence's language tag
+// and its closing ```.
+//
+// Indentation of the FIRST real line is content. This used to be a plain
+// .trimmed(), which stripped it: a snippet copied from the middle of a file
+// ("    if (x) {\n        y();\n    }") came out with its first line flush left
+// and the rest still indented, i.e. misaligned. So: drop whole leading blank
+// lines, keep the first real line exactly as typed, and trim only the tail.
+//
+// Only when the body STARTS ON ITS OWN LINE, i.e. the fence's language tag was
+// followed by a newline (```python\n    code). When the content starts on the
+// fence's own line ("``` ls -la\ncd /tmp```", "```bash ls -la") the space after
+// the tag is not indentation, it is the gap between the fence and the text, and
+// keeping it shifted the first line one column right of the second; that and a
+// fence with no newline at all (```foo bar```, an inline span that merely used
+// three backticks) keep the old trimmed() behaviour.
+QString fenceBody(const QString &captured, bool startsOnOwnLine)
+{
+    if (!startsOnOwnLine || !captured.contains(QLatin1Char('\n')))
+        return captured.trimmed();
+
+    qsizetype start = 0;
+    for (;;) {
+        const qsizetype nl = captured.indexOf(QLatin1Char('\n'), start);
+        if (nl < 0) break;                       // the rest is one line: keep it
+        bool blank = true;
+        for (qsizetype i = start; i < nl; ++i) {
+            if (!captured.at(i).isSpace()) { blank = false; break; }
+        }
+        if (!blank) break;
+        start = nl + 1;
+    }
+
+    qsizetype end = captured.size();
+    while (end > start && captured.at(end - 1).isSpace())
+        --end;
+    return captured.mid(start, end - start);
+}
 
 // Render the inline-markdown subset we support: code blocks, inline code,
 // bold, italic, strikethrough. Input must already be HTML-escaped; output
@@ -30,6 +70,13 @@ QString applyMarkdown(QString text)
 {
     if (text.isEmpty()) return text;
 
+    // The sentinels below are \x01 and \x02. A message that already contains
+    // those control characters (a paste from a terminal) could otherwise name a
+    // stash slot of its own, and the restore loop would splice a code block in
+    // twice. They are not printable and have no business in a chat message.
+    text.remove(QChar(0x01));
+    text.remove(QChar(0x02));
+
     QVector<QString> stash;
     auto park = [&](const QString &html) {
         const int n = stash.size();
@@ -39,8 +86,12 @@ QString applyMarkdown(QString text)
 
     // ── Fenced code blocks: ```lang\nbody``` ──
     // Greedy-min body, optional language tag is dropped. Multiline OK.
+    // Group 1 is the line break after the tag, LF or CRLF (empty when the content
+    // starts on the fence's own line), group 2 the body: fenceBody needs to know
+    // which.
     static const QRegularExpression codeBlockRx(
-        QStringLiteral(R"(```[A-Za-z0-9_+-]*\n?([\s\S]*?)```)"));
+        QStringLiteral(R"(```[A-Za-z0-9_+-]*((?:\r?\n)?)([\s\S]*?)```)"));
+    bool hadFence = false;
     {
         QString out;
         int pos = 0;
@@ -49,14 +100,32 @@ QString applyMarkdown(QString text)
             auto m = it.next();
             out += QStringView{text}.mid(pos, m.capturedStart() - pos);
             out += park(QStringLiteral("<pre>")
-                        + m.captured(1).trimmed()
+                        + fenceBody(m.captured(2), !m.captured(1).isEmpty())
                         + QStringLiteral("</pre>"));
             pos = m.capturedEnd();
         }
         if (pos > 0) {
             out += QStringView{text}.mid(pos);
             text = out;
+            hadFence = true;
         }
+    }
+
+    // ── Unfenced code paste ──
+    // Indented code, pretty-printed JSON, a stack trace, typed or pasted with
+    // no fence: HTML would collapse its indentation and it would get none of a
+    // code block's treatment. Box the run as a <pre>, parked like a fence so
+    // the `**` / `_` / backticks inside it are never re-read as emphasis.
+    //
+    // Only when the author used NO fence at all -- not even a dangling one:
+    // somebody who typed ``` knows what they want, and a half-fenced message
+    // is the commonest place for a second guess to be wrong. What counts as a
+    // run, and why every rule leans towards "not code", is in
+    // CodePasteHeuristic.h.
+    if (!hadFence && !text.contains(QLatin1String("```"))) {
+        text = talq::codepaste::wrapRuns(text, [&](const QString &run) {
+            return park(QStringLiteral("<pre>") + run + QStringLiteral("</pre>"));
+        });
     }
 
     // ── Inline code: `body` ──
@@ -109,7 +178,54 @@ QString applyMarkdown(QString text)
     return text;
 }
 
+// STEP ONE of turning a message body into HTML: escape, then (optionally) the
+// markdown subset. Runs BEFORE any {mention-*}/{file*} placeholder is
+// substituted, so the markers around a mention are formatted but the mention's
+// own markup is never re-read as emphasis.
+//
+// The markdown subset runs on the escaped text. Code-block content is stashed
+// first so its inner '**' / '_' aren't re-interpreted.
+QString escapeAndMarkup(const QString &rawText, bool markdown)
+{
+    QString html = rawText.toHtmlEscaped();
+    if (markdown)
+        html = applyMarkdown(html);
+    return html;
+}
+
+// STEP TWO: turn bare http(s) links into clickable <a> tags. Runs AFTER the
+// placeholders are substituted, and its guard looks at the WHOLE resulting
+// string -- a message that already carries an href (a mention's link, a file)
+// is left alone, which is also why a URL inside it is never double-wrapped.
+void linkifyBareUrls(QString &html)
+{
+    // The LAST character of the match may not be a backslash. The href is
+    // written inside single quotes, and Qt's HTML parser reads \' as an escaped
+    // quote -- so "http://e.com/a\" followed by text produced an href that never
+    // closed and swallowed the rest of the message (the bubble showed "see " and
+    // nothing else; verified). A backslash in the MIDDLE of a URL is untouched.
+    static QRegularExpression urlRx(
+        R"((https?://[^\s<>"']*[^\s<>"'\\]))",
+        QRegularExpression::CaseInsensitiveOption);
+    // Don't linkify URLs already inside <a> or <b> tags
+    if (!html.contains("href=")) {
+        html.replace(urlRx,
+            R"(<a href='\1'>\1</a>)");
+    }
+}
+
 } // namespace
+
+QString Message::renderBodyHtml(const QString &rawText, bool markdown)
+{
+    // Same two steps fromJson() runs, minus the placeholder substitution that
+    // sits between them -- a body typed in the composer has no
+    // messageParameters. Keep it that way: the moment this and fromJson()
+    // diverge, an unsent bubble reshapes itself when the server's echo lands.
+    QString html = escapeAndMarkup(rawText, markdown);
+    linkifyBareUrls(html);
+    return html;
+}
 
 Message Message::fromJson(const QJsonObject &json)
 {
@@ -120,12 +236,6 @@ Message Message::fromJson(const QJsonObject &json)
     m.actorType = json["actorType"].toString();
     m.actorId = json["actorId"].toString();
     m.actorDisplayName = json["actorDisplayName"].toString();
-    m.message = json["message"].toString();
-    m.message = m.message.toHtmlEscaped();
-    // Markdown subset (bold/italic/strike/inline-code/code-block) runs on the
-    // escaped text, before mentions/files are substituted. Code-block content
-    // is stashed first so its inner '**' / '_' aren't re-interpreted.
-    //
     // Talk tells us per message whether it is markdown at all. Until 0.65.3
     // TalQ ignored that and formatted everything, so a plain-text message
     // containing `C:\path\**\*.log` or `__init__` came out with chunks bolded
@@ -133,8 +243,7 @@ Message Message::fromJson(const QJsonObject &json)
     // and code that a NOC team sends each other all day. Missing key -> true,
     // so an older server still gets the historic unconditional behaviour.
     m.markdown = json["markdown"].toBool(true);
-    if (m.markdown)
-        m.message = applyMarkdown(m.message);
+    m.message = escapeAndMarkup(json["message"].toString(), m.markdown);
     m.timestamp = json["timestamp"].toInteger();
     m.lastEditTimestamp = json["lastEditTimestamp"].toInteger();
     m.lastEditActorId   = json["lastEditActorId"].toString();
@@ -199,15 +308,7 @@ Message Message::fromJson(const QJsonObject &json)
         }
     }
     // Linkify URLs — turn bare http(s) links into clickable <a> tags
-    // Only process text outside existing HTML tags
-    static QRegularExpression urlRx(
-        R"((https?://[^\s<>"']+))",
-        QRegularExpression::CaseInsensitiveOption);
-    // Don't linkify URLs already inside <a> or <b> tags
-    if (!m.message.contains("href=")) {
-        m.message.replace(urlRx,
-            R"(<a href='\1'>\1</a>)");
-    }
+    linkifyBareUrls(m.message);
 
     // Reply parent
     QJsonObject parent = json["parent"].toObject();

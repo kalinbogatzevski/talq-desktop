@@ -40,8 +40,9 @@ public:
     );
 
 private:
-    static std::shared_ptr<QTextDocument> createBodyDoc(
-        const QString &html, qreal maxWidth, const PainterTheme &theme);
+    // The body document is built by talq::createBodyDoc (BodyDoc.h), a free
+    // function so tests can call the real recipe without this class's
+    // dependencies.
 
     /** Compute file attachment rect size. Returns {width, height}. */
     static std::pair<qreal, qreal> fileRectSize(

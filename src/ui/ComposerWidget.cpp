@@ -388,6 +388,12 @@ ComposerWidget::ComposerWidget(QWidget *parent)
     m_editingPreview = new QLabel(m_editingBar);
     m_editingPreview->setObjectName("editingPreview");
     m_editingPreview->setProperty("role", "secondary");
+    // PlainText, pinned: it shows the message's own text, which is raw markdown.
+    // The default (AutoText) guesses from the string, and for an ESCAPED string
+    // the guess flips on whether an "&lt;" happens to be present -- "a < b" came
+    // out right and "a && b" came out as "a &amp;&amp; b" (Qt::mightBeRichText,
+    // measured). See showEditingBar().
+    m_editingPreview->setTextFormat(Qt::PlainText);
     editBarLayout->addWidget(m_editingPreview, 1);
 
     auto *editCancelBtn = new QPushButton("\u2715", m_editingBar);
@@ -774,8 +780,12 @@ void ComposerWidget::showEditingBar(const QString &originalText)
 
     QString preview = originalText;
     preview.replace(QLatin1Char('\n'), QLatin1Char(' '));
+    preview.replace(QLatin1Char('\r'), QLatin1Char(' '));   // a PlainText label does not collapse it
     if (preview.size() > 120) preview = preview.left(120) + QStringLiteral("…");
-    m_editingPreview->setText(preview.toHtmlEscaped());
+    // Unescaped, because the label is PlainText (see the constructor). Escaping
+    // here was correct only while the label guessed "rich"; it guessed "plain"
+    // for most strings and showed the entities.
+    m_editingPreview->setText(preview);
     m_editingBar->show();
 
     m_input->setPlainText(originalText);

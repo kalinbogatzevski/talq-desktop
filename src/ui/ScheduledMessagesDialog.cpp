@@ -99,10 +99,17 @@ void ScheduledMessagesDialog::renderItems(const QJsonArray &items)
         const QJsonObject o = v.toObject();
         const qint64 messageId = o.value(QStringLiteral("id")).toVariant().toLongLong();
         const qint64 sendAt    = o.value(QStringLiteral("sendAt")).toVariant().toLongLong();
-        QString text = o.value(QStringLiteral("message")).toString();
-        // Strip rich-text markers — the API may have already substituted
-        // {actor}/{file} placeholders into HTML-like spans for the message.
-        text.remove(QRegularExpression("<[^>]*>"));
+        // The message exactly as the server holds it. That is what the user
+        // TYPED -- the composer posts plain text to /schedule
+        // (MessageListModel::scheduleMessage) and the edit below posts plain
+        // text back -- so it is not markup. Stripping "<...>" from it deleted
+        // what they had written, and the Edit popup was then prefilled from the
+        // stripped AND 140-character-truncated copy: re-saving a long scheduled
+        // message, even to change only its time, shipped the first 140
+        // characters followed by an ellipsis. `fullText` feeds the edit,
+        // `text` is only what the row shows.
+        const QString fullText = o.value(QStringLiteral("message")).toString();
+        QString text = fullText;
         if (text.length() > 140) text = text.left(140) + QStringLiteral("…");
 
         const QString when = QDateTime::fromSecsSinceEpoch(sendAt)
@@ -119,16 +126,17 @@ void ScheduledMessagesDialog::renderItems(const QJsonArray &items)
         whenLabel->setProperty("role", "success");
         auto *textLabel = new QLabel(text.isEmpty()
             ? QStringLiteral("(empty)") : text, row);
+        // Plain text, pinned: the default (AutoText) would render a typed
+        // "<b>x</b>" as markup and show "&amp;" literally, depending on the guess.
+        textLabel->setTextFormat(Qt::PlainText);
         textLabel->setWordWrap(true);
         textCol->addWidget(whenLabel);
         textCol->addWidget(textLabel);
         rowLayout->addLayout(textCol, 1);
 
-        // Capture the plain text for the edit popup — server returns the
-        // already-substituted version (HTML-ish), but we round-trip the raw
-        // user content. For now use the plain-stripped version we computed
-        // above; the round-trip is the user's recall, not a perfect copy.
-        const QString editPrefill = text;
+        // The edit popup starts from the whole message, byte for byte, so that
+        // saving without touching the text changes nothing.
+        const QString editPrefill = fullText;
         auto *editBtn = new QPushButton(tr("Edit"), row);
         editBtn->setProperty("variant", "default");
         editBtn->setFixedWidth(70);

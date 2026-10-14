@@ -35,6 +35,7 @@
 #include "painter/HeaderPainter.h"
 #include "painter/ThreadsPainter.h"
 #include "painter/PainterTheme.h"
+#include "painter/BodyHtml.h"
 #include "core/ApiClient.h"
 #include "core/SearchHit.h"
 #include "core/AuthManager.h"
@@ -108,16 +109,42 @@
 #include <dwmapi.h>
 #endif
 
-// Strip HTML tags from message text, substituting a file placeholder when empty.
+// A message's body as plain text, substituting a file placeholder when empty.
+//
+// "messageText" in these maps is the model's STORED HTML (ChatPainter hands
+// over MessageLayout::bodyHtml = MessageTextRole = Message::message): the
+// user's text HTML-escaped, with the markdown rendered on top. So it goes
+// through talq::plainTextFromBodyHtml -- the one recipe for "what the chat
+// shows" -- and never through a tag-stripping regex, which left "&lt;", "&amp;"
+// and "&quot;" in the clipboard (exactly the characters code is made of), or
+// through setHtml() alone, which collapsed every newline outside a code block.
+//
+// That holds for EVERY row: an unsent temp row's text is rendered through the
+// same pipeline (MessageListModel::tempMessageFor -> Message::renderBodyHtml),
+// so there is no raw-text case to branch on here.
 static QString plainBodyText(const QVariantMap &msg)
 {
-    QString html = msg.value("messageText").toString();
-    QTextDocument doc;
-    doc.setHtml(html);
-    QString body = doc.toPlainText().trimmed();
+    QString body = talq::trimBlankEdges(
+        talq::plainTextFromBodyHtml(msg.value("messageText").toString()));
     if (body.isEmpty() && msg.value("hasFile").toBool())
         body = QStringLiteral("[File: %1]").arg(msg.value("fileName").toString());
     return body;
+}
+
+// The one-line text the reply bar shows for the message being replied to.
+//
+// Its input is the stored HTML (see plainBodyText), its output is PLAIN text:
+// ComposerWidget::showReplyBar puts it in a RichText label and escapes it
+// exactly once, so it must arrive decoded. It used to arrive tag-stripped but
+// still escaped, and was escaped a second time: a message saying "a < b" put
+// "a &amp;lt; b" in the label, which shows as "a &lt; b". Both reply entry
+// points -- the context menu and the hover button -- come through here so they
+// cannot disagree.
+static QString replyPreviewFromBodyHtml(const QString &bodyHtml)
+{
+    QString plain = talq::plainTextFromBodyHtml(bodyHtml);
+    if (plain.length() > 60) plain = plain.left(60) + QStringLiteral("...");
+    return plain;
 }
 
 // Forward ONE message to ONE conversation. The single implementation.
@@ -203,7 +230,8 @@ void MainWindow::jumpToMessage(int messageId)
 // inlining the same setHtml()/toPlainText() pair. Either way the markup was
 // already gone, so saving an edit rewrote the message WITHOUT its formatting
 // and destroyed the original in place. (That inlined copy is why grepping for
-// plainBodyText did not turn up both sites.)
+// plainBodyText did not turn up both sites. Both now go through
+// talq::plainTextFromBodyHtml: grep for THAT.)
 //
 // `fallbackPlain` is used only when there is no server copy to read -- an
 // optimistic send not yet acknowledged. Editing then flattens exactly as it
@@ -1459,9 +1487,9 @@ void MainWindow::buildChatPage()
             const int id = m_messages->data(idx, MessageListModel::IdRole).toInt();
             if (id <= 0)
                 continue;   // optimistic/not-yet-acked row
-            QTextDocument doc;
-            doc.setHtml(m_messages->data(idx, MessageListModel::MessageTextRole).toString());
-            const QString plain = doc.toPlainText().trimmed();
+            // The stored HTML; same recipe as plainBodyText().
+            const QString plain = talq::trimBlankEdges(talq::plainTextFromBodyHtml(
+                m_messages->data(idx, MessageListModel::MessageTextRole).toString()));
             if (plain.isEmpty())
                 continue;
             beginEditingMessage(id, plain);
@@ -1682,11 +1710,13 @@ void MainWindow::buildChatPage()
         }
 
         // Standard actions
+        // NOT plainBodyText(): that adds a "[File: name]" placeholder and trims,
+        // and this entry has always put exactly the body text on the clipboard
+        // (an image message's is empty). Only the html -> text step changed:
+        // `text` is escaped HTML, so a tag-stripping regex left "a &lt; b" for
+        // a message that said "a < b".
         menu->addAction(QStringLiteral("\U0001F4CB  ") + tr("Copy"), this, [text]() {
-            QString plain = text;
-            static const QRegularExpression htmlRe("<[^>]*>");
-            plain.remove(htmlRe);
-            QApplication::clipboard()->setText(plain);
+            QApplication::clipboard()->setText(talq::plainTextFromBodyHtml(text));
         });
         menu->addAction(tr("\u21A9\uFE0F  Reply"), this, [this, msgId, author, text]() {
             m_replyToId = msgId;
@@ -1695,11 +1725,7 @@ void MainWindow::buildChatPage()
             // Show the reply preview bar above the composer \u2014 same as the
             // hover-icon path. Without this the reply was armed but invisible,
             // so it looked like nothing happened (field report 2026-06-04).
-            QString plain = text;
-            static const QRegularExpression htmlRe("<[^>]*>");
-            plain.remove(htmlRe);
-            if (plain.length() > 60) plain = plain.left(60) + "...";
-            m_composer->showReplyBar(author, plain);
+            m_composer->showReplyBar(author, replyPreviewFromBodyHtml(text));
             m_composer->setFocus();
         });
         menu->addAction(tr("\u2197\uFE0F  Forward"), this, [this, msg]() {
@@ -1814,11 +1840,7 @@ void MainWindow::buildChatPage()
         m_replyToAuthor = author;
         m_replyToText = text;
         // Show reply bar in composer
-        QString plain = text;
-        static const QRegularExpression htmlRe("<[^>]*>");
-        plain.remove(htmlRe);
-        if (plain.length() > 60) plain = plain.left(60) + "...";
-        m_composer->showReplyBar(author, plain);
+        m_composer->showReplyBar(author, replyPreviewFromBodyHtml(text));
         m_composer->setFocus();
     });
 
