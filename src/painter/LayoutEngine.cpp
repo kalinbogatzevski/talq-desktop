@@ -1,4 +1,5 @@
 #include "LayoutEngine.h"
+#include "BodyDoc.h"
 #include "core/EmojiData.h"
 #include "models/MessageListModel.h"
 #include <QFontMetrics>
@@ -37,29 +38,6 @@ std::pair<qreal, qreal> LayoutEngine::fileRectSize(
         return {qMin(maxWidth, 300.0), 48.0};
 
     return {maxWidth, 44.0};
-}
-
-std::shared_ptr<QTextDocument> LayoutEngine::createBodyDoc(
-    const QString &html, qreal maxWidth, const PainterTheme &theme)
-{
-    auto doc = std::make_shared<QTextDocument>();
-    doc->setDefaultFont(theme.bodyFont());
-    doc->setTextWidth(maxWidth);
-    doc->setDocumentMargin(0);
-
-    // Theme colours for the formatted runs (<pre>, <code>, <a>, mentions).
-    // The message HTML carries no colour of its own by contract (see
-    // Message.cpp), so this is the only thing that inks them -- and it MUST
-    // precede setHtml: Qt resolves the default style sheet while parsing, so
-    // setting it afterwards silently does nothing.
-    doc->setDefaultStyleSheet(theme.richTextStyleSheet());
-
-    // Convert newlines to <br> like QML does, then set as HTML
-    QString processed = html;
-    processed.replace(QLatin1String("\n"), QLatin1String("<br>"));
-    doc->setHtml(processed);
-
-    return doc;
 }
 
 MessageLayout LayoutEngine::computeLayout(
@@ -242,7 +220,7 @@ MessageLayout LayoutEngine::computeLayout(
     }
 
     // ── Measure body text ──
-    ml.bodyDoc = createBodyDoc(ml.bodyHtml, maxContentW, theme);
+    ml.bodyDoc = talq::createBodyDoc(ml.bodyHtml, maxContentW, theme);
     qreal bodyIdealW = ml.bodyDoc->idealWidth();
     qreal bodyH = ml.bodyDoc->size().height();
 
@@ -264,7 +242,7 @@ MessageLayout LayoutEngine::computeLayout(
 
     // Re-layout body if width changed
     if (qAbs(contentW - maxContentW) > 1) {
-        ml.bodyDoc = createBodyDoc(ml.bodyHtml, contentW, theme);
+        ml.bodyDoc = talq::createBodyDoc(ml.bodyHtml, contentW, theme);
         bodyH = ml.bodyDoc->size().height();
     }
 

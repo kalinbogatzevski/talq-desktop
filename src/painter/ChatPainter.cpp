@@ -29,6 +29,9 @@
 #include "core/EmojiData.h"
 #include "core/SignalingClient.h"
 #include "painter/ReactionLayout.h"
+#include "VectorIcons.h"
+#include "BodyDoc.h"
+#include <QTextDocumentFragment>
 #include <QTextBlock>
 #include <QTextLayout>
 #include <QTextLine>
@@ -102,6 +105,15 @@ ChatPainter::ChatPainter(QWidget *parent)
     m_highlightTimer->setInterval(2000);
     connect(m_highlightTimer, &QTimer::timeout, this, [this]() {
         m_highlightMessageId = 0;
+        update();
+    });
+
+    // The tick a code block's copy chip shows after it has copied.
+    m_chipCopiedTimer = new QTimer(this);
+    m_chipCopiedTimer->setSingleShot(true);
+    m_chipCopiedTimer->setInterval(talq::kCodeChipCopiedMs);
+    connect(m_chipCopiedTimer, &QTimer::timeout, this, [this]() {
+        m_chipCopied = {};
         update();
     });
 
@@ -266,7 +278,13 @@ void ChatPainter::setFontScale(qreal scale)
 {
     if (qFuzzyCompare(m_fontScale, scale)) return;
     m_fontScale = scale;
-    m_theme = PainterTheme(m_darkMode, m_fontScale);
+    // From the active THEME, not from the dark/light bool: the bool shim maps
+    // to Vivid or Paper only, so a font-size change silently dropped Ember,
+    // Warm (and Paper's own tokens) for Vivid's while m_themeId still said
+    // otherwise -- and setTheme(sameTheme) returns early, so nothing repaired it.
+    // Every colour in the chat view, the code panel and its copy chip included,
+    // follows m_theme. Found by driving the real ChatPainter offscreen.
+    m_theme = PainterTheme(m_themeId, m_fontScale);
     m_ambientCache = QPixmap();
     m_layoutCache.clear();
     rebuildAllLayouts();
@@ -296,6 +314,11 @@ void ChatPainter::setScrollY(qreal y)
     if (wasAtBottom != atBottom())
         emit atBottomChanged();
     emit scrollYChanged();
+    // Hover and the cursor follow the CONTENT, not just the mouse: a scrollbar
+    // drag, a jump to a quoted message and a scrollToBottom all move the rows
+    // under a stationary pointer, and the hover bar and code chips stayed on
+    // the row that had been there until the mouse next moved.
+    refreshHoverFromCursor();
 
     // Prefetch older history BEFORE the user reaches the very top: fire when
     // within ~1.5 viewports of the top so the next page (200 msgs) loads while
@@ -438,6 +461,143 @@ void ChatPainter::paintJumpToBottom(QPainter *p)
     p->restore();
 }
 
+// ═══════════════════════════════════════════════════════
+// Code-block copy chip
+// ═══════════════════════════════════════════════════════
+
+// "codecopy:<messageId>:<blockIndex>" -> key, or an invalid key. Integers only
+// on purpose: see the avatar: token's comment in hitTestAt.
+static bool parseCodeCopyToken(const QString &hit, int *messageId, int *blockIndex)
+{
+    static const QLatin1String prefix("codecopy:");
+    if (!hit.startsWith(prefix)) return false;
+    const QStringList parts = hit.mid(prefix.size()).split(QLatin1Char(':'));
+    if (parts.size() != 2) return false;
+    bool okId = false, okIdx = false;
+    const int id = parts[0].toInt(&okId);
+    const int idx = parts[1].toInt(&okIdx);
+    if (!okId || !okIdx) return false;
+    *messageId = id;
+    *blockIndex = idx;
+    return true;
+}
+
+QVector<ChatPainter::CodeChip> ChatPainter::codeChipsFor(const MessageLayout &ml) const
+{
+    QVector<CodeChip> chips;
+    if (!ml.bodyDoc || ml.bodyRect.isNull())
+        return chips;
+    if (!talq::codeChipsOffered(m_selectionMode, ml.isSystem,
+                                ml.sendStatus == QLatin1String("sending"),
+                                ml.sendStatus == QLatin1String("failed"),
+                                ml.messageId))
+        return chips;
+
+    QAbstractTextDocumentLayout *lay = ml.bodyDoc->documentLayout();
+    int ordinal = 0;
+    for (QTextBlock b = ml.bodyDoc->begin(); b.isValid(); b = b.next()) {
+        if (!talq::isCodeBlock(b)) continue;
+
+        // blockBoundingRect excludes the block's own margins and equals the
+        // painted fill (pixel-scanned). Its x is NOT the fill's left edge once a
+        // horizontal margin exists -- the layout position is -- so take x from
+        // there; today there are none and the two agree.
+        const QRectF br = lay->blockBoundingRect(b);
+        const qreal bx = b.layout() ? b.layout()->position().x() : br.x();
+
+        CodeChip c;
+        c.blockIndex = ordinal++;
+        c.blockPosition = b.position();
+        c.rect = talq::layoutCodeChip(ml.bodyRect.x() + bx, ml.bodyRect.y() + br.y(),
+                                      br.width(), br.height());
+        if (c.rect.visible)
+            chips.append(c);
+    }
+    return chips;
+}
+
+bool ChatPainter::codeChipAt(const MessageLayout &ml, const QPointF &canvasPos,
+                             CodeChip *out) const
+{
+    for (const CodeChip &c : codeChipsFor(ml)) {
+        if (talq::codeChipHit(c.rect, canvasPos.x(), canvasPos.y())) {
+            if (out) *out = c;
+            return true;
+        }
+    }
+    return false;
+}
+
+void ChatPainter::paintCodeChips(QPainter *p, const MessageLayout &ml, qreal offsetY)
+{
+    const QVector<CodeChip> chips = codeChipsFor(ml);
+    if (chips.isEmpty())
+        return;
+
+    const bool rowHovered = (m_hoveredIndex >= 0 && m_hoveredIndex < m_layouts.size()
+                             && m_layouts[m_hoveredIndex].messageId == ml.messageId);
+    const PainterTheme::FloatingButtonColors col = m_theme.floatingButton();
+    constexpr qreal kRingW = 1.5;
+
+    p->save();
+    p->setRenderHint(QPainter::Antialiasing, true);
+    for (const CodeChip &c : chips) {
+        const CodeChipKey key{ml.messageId, c.blockIndex};
+        const bool copied = (key == m_chipCopied);
+        // Revealed with the row, like the hover bar; a chip that has just copied
+        // stays up for its tick even if the pointer has moved on.
+        if (!rowHovered && !copied)
+            continue;
+        const bool hover = (key == m_chipHover);
+
+        const QRectF r(c.rect.x, c.rect.y + offsetY, c.rect.w, c.rect.h);
+
+        // The same recipe as the jump control, for the same reason: this floats
+        // over a code panel whose fill is codeBg, so the RING is what makes it
+        // findable and what carries the hover state. The hover bar's hairline
+        // divider is 1.1-1.7:1 on codeBg and cannot be reused here. Colours come
+        // from floatingButton() so the conformance suite scores what is painted.
+        p->setPen(QPen(hover ? col.ringHover : col.ring, kRingW));
+        p->setBrush(hover ? col.fillHover : col.fill);
+        p->drawEllipse(r.adjusted(kRingW / 2, kRingW / 2, -kRingW / 2, -kRingW / 2));
+
+        // success (a tick) on bgSurface/bgHover is AA-scored (6.2-7.6:1).
+        const QColor ink = copied ? m_theme.success
+                                  : (hover ? col.glyphHover : col.glyph);
+        VectorIcons::draw(*p, copied ? QStringLiteral("check") : QStringLiteral("copy"),
+                          r.adjusted(4.5, 4.5, -4.5, -4.5), ink);
+    }
+    p->restore();
+}
+
+QString ChatPainter::codeBlockText(const MessageLayout &ml, int blockIndex) const
+{
+    if (!ml.bodyDoc || blockIndex < 0) return {};
+    int ordinal = 0;
+    for (QTextBlock b = ml.bodyDoc->begin(); b.isValid(); b = b.next()) {
+        if (!talq::isCodeBlock(b)) continue;
+        if (ordinal++ != blockIndex) continue;
+        return talq::codeBlockPlainText(b);
+    }
+    return {};
+}
+
+void ChatPainter::copyCodeBlock(int messageId, int blockIndex)
+{
+    // By message id, not row index: rebuildAllLayouts may have replaced
+    // m_layouts since the press.
+    for (const MessageLayout &ml : m_layouts) {
+        if (ml.messageId != messageId) continue;
+        const QString text = codeBlockText(ml, blockIndex);
+        if (text.isEmpty()) return;
+        QApplication::clipboard()->setText(text);
+        m_chipCopied = CodeChipKey{messageId, blockIndex};
+        m_chipCopiedTimer->start();
+        update();
+        return;
+    }
+}
+
 void ChatPainter::enterSelectionMode(int firstMessageId)
 {
     if (m_selectionMode) return;
@@ -445,6 +605,7 @@ void ChatPainter::enterSelectionMode(int firstMessageId)
     m_selectedIds.clear();
     m_selectedIds.insert(firstMessageId);
     m_hoveredIndex = -1;
+    m_chipHover = {};
     emit selectionModeChanged(true);
     emit selectionChanged(1);
     update();
@@ -571,6 +732,17 @@ QString ChatPainter::hitTestAt(qreal x, qreal y)
     if (ml.replyToId > 0 && !ml.quoteRect.isNull() && ml.quoteRect.contains(canvasPos))
         return QStringLiteral("jumpto:%1").arg(ml.replyToId);
 
+    // Code-block copy chip. It sits INSIDE the body, so it must be tested before
+    // the link below: linkify runs after markdown (Message.cpp), so a <pre> can
+    // contain an <a> exactly where the chip is drawn, and the chip is on top.
+    // By geometry, like the hover bar above, not gated on the hover index --
+    // hover may clear between a press and its release.
+    {
+        CodeChip chip;
+        if (codeChipAt(ml, canvasPos, &chip))
+            return QStringLiteral("codecopy:%1:%2").arg(ml.messageId).arg(chip.blockIndex);
+    }
+
     // Link
     QString link = hitTestLink(ml, canvasPos);
     if (!link.isEmpty()) return QStringLiteral("link:") + link;
@@ -656,6 +828,75 @@ void ChatPainter::setHoveredPos(qreal x, qreal y)
         emit hoveredIndexChanged();
         update();
     }
+
+    // Which code chip, if any, is under the pointer. Only a row that is hovered
+    // can own one (idx was set to -1 above for system / unsent rows and under
+    // the jump control), which keeps this in step with what paintCodeChips shows.
+    CodeChipKey chipKey;
+    if (idx >= 0 && idx < m_layouts.size()) {
+        CodeChip chip;
+        if (codeChipAt(m_layouts[idx], canvasPos, &chip))
+            chipKey = CodeChipKey{m_layouts[idx].messageId, chip.blockIndex};
+    }
+    if (!(chipKey == m_chipHover)) {
+        m_chipHover = chipKey;
+        update();
+    }
+}
+
+// The pointer has left the widget: nothing is hovered.
+//
+// This is NOT setHoveredPos(-1, -1). That maps the point to canvas y
+// -1 + m_scrollY, which is a REAL row as soon as the view is scrolled by more
+// than a pixel, so the row at the top edge stayed "hovered" and kept its hover
+// bar (and now its code chips) painted after the pointer was gone.
+void ChatPainter::clearHover()
+{
+    bool changed = false;
+    if (m_jumpHover) { m_jumpHover = false; changed = true; }
+    if (m_hoveredIndex != -1) {
+        m_hoveredIndex = -1;
+        emit hoveredIndexChanged();
+        changed = true;
+    }
+    if (m_chipHover.valid()) { m_chipHover = {}; changed = true; }
+    if (changed) update();
+}
+
+// Re-derive hover and the cursor from where the pointer actually is, after the
+// CONTENT moved (a scroll by any route, a layout rebuild). Not mid-gesture: a
+// drag, a scrollbar grab or a held button owns the pointer, and the next move
+// event settles hover itself. A no-op when the pointer is not over the chat.
+void ChatPainter::refreshHoverFromCursor()
+{
+    if (m_dragging || m_draggingScrollbar || m_jumpPressed || m_chipPressed.valid()
+        || !underMouse())
+        return;
+    updateHoverAt(mapFromGlobal(QCursor::pos()));
+}
+
+// Hover state and cursor shape for a pointer at `pos` (widget coordinates).
+// Shared by mouseMoveEvent and wheelEvent: a wheel scroll moves the rows under a
+// stationary pointer, and without this the hover bar, the code chips and the
+// cursor stayed on whatever row used to be there until the mouse next moved.
+void ChatPainter::updateHoverAt(const QPointF &pos)
+{
+    if (m_selectionMode) {
+        setCursor(Qt::ArrowCursor);
+        return;
+    }
+    setHoveredPos(pos.x(), pos.y());
+    const QPointF canvasPos(pos.x(), pos.y() + m_scrollY);
+    const int idx = layoutIndexAtY(canvasPos.y());
+
+    // IBeam cursor over body text, pointing hand over links
+    const QString hit = hitTestAt(pos.x(), pos.y());
+    if (!hit.isEmpty())
+        setCursor(Qt::PointingHandCursor);
+    else if (isOnBodyText(canvasPos, idx))
+        setCursor(Qt::IBeamCursor);
+    else
+        setCursor(Qt::ArrowCursor);
 }
 
 // ═══════════════════════════════════════════════════════
@@ -885,6 +1126,10 @@ void ChatPainter::rebuildAllLayouts()
 
     update();
 
+    // The rows may have moved under a pointer that did not (a message arrived
+    // while at the bottom, history was prepended): re-derive what is hovered.
+    refreshHoverFromCursor();
+
     // Clean up selection — remove IDs that are no longer in the model
     if (m_selectionMode) {
         QSet<int> validIds;
@@ -1026,6 +1271,20 @@ bool ChatPainter::event(QEvent *e)
             return true;
         }
         QPointF canvas(he->pos().x(), he->pos().y() + m_scrollY);
+        // A code block's copy chip, before the timestamp tooltip: the chip sits
+        // inside the body, never on the timestamp, but it is the more specific.
+        {
+            const int li = layoutIndexAtY(canvas.y());
+            CodeChip chip;
+            if (li >= 0 && li < m_layouts.size()
+                && codeChipAt(m_layouts[li], canvas, &chip)) {
+                const bool copied =
+                    (CodeChipKey{m_layouts[li].messageId, chip.blockIndex} == m_chipCopied);
+                QToolTip::showText(he->globalPos(),
+                                   copied ? tr("Copied") : tr("Copy code"), this);
+                return true;
+            }
+        }
         // An unsent message: say what its clickable warning does, before the
         // timestamp tooltip that would otherwise sit on the same spot.
         {
@@ -1069,7 +1328,7 @@ bool ChatPainter::event(QEvent *e)
         return true;
     }
     if (e->type() == QEvent::HoverLeave) {
-        setHoveredPos(-1, -1);
+        clearHover();
         return true;
     }
     return QWidget::event(e);
@@ -1084,6 +1343,9 @@ void ChatPainter::wheelEvent(QWheelEvent *event)
     qreal delta = event->angleDelta().y();
     // Standard scroll: 120 units = ~3 lines, we use ~40px per 120 units
     qreal scroll = -delta / 120.0 * 40.0;
+    // setScrollY re-derives hover and the cursor itself (refreshHoverFromCursor):
+    // the rows move under a stationary pointer on EVERY scroll route, not only
+    // the wheel, so it is done where the scroll position changes.
     setScrollY(m_scrollY + scroll);
     event->accept();
 }
@@ -1103,12 +1365,42 @@ void ChatPainter::mousePressEvent(QMouseEvent *event)
     // Every button is claimed on the control, not just left and right: Qt gives
     // click focus for a middle or side-button press too.
     m_focusGuard.beginPress();
-    if (hitTestAt(event->position().x(), event->position().y())
-            == QLatin1String("jumpbottom")) {
+    // A press whose release never reached us (window deactivated mid-click)
+    // must not leave a stale claim that swallows the NEXT release. The jump
+    // control's flag has the same lifetime and needs the same reset: left set,
+    // the next ordinary click took the jump branch of mouseReleaseEvent, which
+    // returned before m_dragging was cleared and lost that click's action.
+    m_chipPressed = {};
+    m_jumpPressed = false;
+    const QString claimHit = hitTestAt(event->position().x(), event->position().y());
+    if (claimHit == QLatin1String("jumpbottom")) {
         m_jumpPressed = (event->button() == Qt::LeftButton);
         m_focusGuard.giveBack();
         event->accept();
         return;
+    }
+
+    // A code block's copy chip is claimed the same way and for the same reasons:
+    // it is a button drawn over content. Falling through would anchor a text
+    // selection in the code under it, and a slight drag while clicking would
+    // enter whole-message selection mode (m_dragging below). It hands focus
+    // straight back so the composer keeps the caret and the copied code can be
+    // pasted at once. Left button only; a right-click on a chip is still the
+    // message's context menu.
+    {
+        int chipMsg = 0, chipBlock = -1;
+        if (parseCodeCopyToken(claimHit, &chipMsg, &chipBlock)
+            && event->button() != Qt::RightButton) {
+            // Left arms the copy. A middle / side button does nothing here, but
+            // Qt has already moved click focus to the chat, so it is handed back
+            // like the jump control's every button (a press on a button is not
+            // content). Right is left alone: it is still the context menu.
+            if (event->button() == Qt::LeftButton)
+                m_chipPressed = CodeChipKey{chipMsg, chipBlock};
+            m_focusGuard.giveBack();
+            event->accept();
+            return;
+        }
     }
 
     if (event->button() == Qt::LeftButton || event->button() == Qt::RightButton) {
@@ -1316,22 +1608,7 @@ void ChatPainter::mouseMoveEvent(QMouseEvent *event)
     }
 
     // Not dragging — update hover state and cursor
-    if (!m_selectionMode) {
-        setHoveredPos(event->position().x(), event->position().y());
-        QPointF canvasPos(event->position().x(), event->position().y() + m_scrollY);
-        int idx = layoutIndexAtY(canvasPos.y());
-
-        // IBeam cursor over body text, pointing hand over links
-        QString hit = hitTestAt(event->position().x(), event->position().y());
-        if (!hit.isEmpty())
-            setCursor(Qt::PointingHandCursor);
-        else if (isOnBodyText(canvasPos, idx))
-            setCursor(Qt::IBeamCursor);
-        else
-            setCursor(Qt::ArrowCursor);
-    } else {
-        setCursor(Qt::ArrowCursor);
-    }
+    updateHoverAt(event->position());
 }
 
 void ChatPainter::mouseReleaseEvent(QMouseEvent *event)
@@ -1343,6 +1620,7 @@ void ChatPainter::mouseReleaseEvent(QMouseEvent *event)
     // followed by the at-bottom check in MainWindow.
     if (m_jumpPressed) {
         m_jumpPressed = false;
+        m_dragging = false;   // never leave a drag armed behind an early return
         if (event->button() == Qt::LeftButton
             && talq::jumpToBottomHit(jumpToBottomLayout(),
                                      event->position().x(), event->position().y())) {
@@ -1350,6 +1628,26 @@ void ChatPainter::mouseReleaseEvent(QMouseEvent *event)
             m_jumpClickMs  = QDateTime::currentMSecsSinceEpoch();
             m_jumpClickPos = event->position();
             scrollToBottom();
+        }
+        event->accept();
+        return;
+    }
+
+    // Pair of the code-chip claim in mousePressEvent. Fires only when the
+    // release is still on the SAME chip, so pressing and dragging off cancels,
+    // as with any button. Re-resolved from the message id and block ordinal at
+    // release time: a scroll, or a layout rebuild, between press and release
+    // must not copy a different block.
+    if (m_chipPressed.valid()) {
+        const CodeChipKey pressed = m_chipPressed;
+        m_chipPressed = {};
+        m_dragging = false;
+        if (event->button() == Qt::LeftButton) {
+            int msgId = 0, blockIdx = -1;
+            if (parseCodeCopyToken(hitTestAt(event->position().x(), event->position().y()),
+                                   &msgId, &blockIdx)
+                && CodeChipKey{msgId, blockIdx} == pressed)
+                copyCodeBlock(pressed.messageId, pressed.blockIndex);
         }
         event->accept();
         return;
@@ -1527,13 +1825,30 @@ void ChatPainter::mouseDoubleClickEvent(QMouseEvent *event)
     // no press for the second click, only this event, so claim it exactly as
     // mousePressEvent would -- the release that follows fires the jump -- or it
     // would fall through to selecting a word under the control.
-    if (hitTestAt(event->position().x(), event->position().y())
-            == QLatin1String("jumpbottom")) {
+    const QString dblHit = hitTestAt(event->position().x(), event->position().y());
+    if (dblHit == QLatin1String("jumpbottom")) {
         m_focusGuard.beginPress();
         m_jumpPressed = (event->button() == Qt::LeftButton);
         m_focusGuard.giveBack();
         event->accept();
         return;
+    }
+    // Same for a code chip: a fast second click arrives here, not as a press,
+    // and would otherwise word-select the code under the chip and take focus.
+    // The release that follows copies (idempotently), as for the jump control.
+    {
+        int chipMsg = 0, chipBlock = -1;
+        if (event->button() == Qt::LeftButton
+            && parseCodeCopyToken(dblHit, &chipMsg, &chipBlock)) {
+            // Left only: a right DOUBLE-click on a chip falls through to
+            // QWidget::mouseDoubleClickEvent like anywhere else on the message,
+            // so its second click still opens the context menu.
+            m_focusGuard.beginPress();
+            m_chipPressed = CodeChipKey{chipMsg, chipBlock};
+            m_focusGuard.giveBack();
+            event->accept();
+            return;
+        }
     }
 
     if (event->button() != Qt::LeftButton || m_selectionMode) {
@@ -1748,8 +2063,12 @@ void ChatPainter::copySelectedText()
             cursor.movePosition(QTextCursor::End, QTextCursor::KeepAnchor);
         }
 
-        QString text = cursor.selectedText();
-        text.replace(QChar(0x2029), QChar('\n'));  // paragraph separator → newline
+        // toPlainText, not selectedText(): selectedText keeps U+2028 for every
+        // line break inside a block (a message line, a code line -- the layout
+        // feeds "\n" as <br>), and only U+2029 was mapped here, so drag-copying
+        // any multi-line text put LINE SEPARATOR characters on the clipboard,
+        // which a terminal or editor shows as junk. toPlainText maps both.
+        const QString text = cursor.selection().toPlainText();
         if (!text.isEmpty())
             parts.append(text);
     }
@@ -1890,6 +2209,15 @@ void ChatPainter::paintEvent(QPaintEvent *)
             && ml.sendStatus != QLatin1String("sending")
             && ml.sendStatus != QLatin1String("failed"))
             paintHoverBar(&p, ml, offsetY);
+
+        // Code-block copy chips: ONE call here, after the row, rather than in
+        // paintOwnMessage and paintOtherMessage (which duplicate the body paint
+        // block verbatim -- a chip put in one would be missing from the other).
+        // Shown for the hovered row, and for a row whose chip is still ticking.
+        if (!m_selectionMode && !ml.isSystem
+            && (i == m_hoveredIndex
+                || (m_chipCopied.valid() && ml.messageId == m_chipCopied.messageId)))
+            paintCodeChips(&p, ml, offsetY);
     }
 
     // ── Scrollbar thumb ──
@@ -1968,9 +2296,11 @@ void ChatPainter::paintSystemMessage(QPainter *p, const MessageLayout &ml, qreal
     p->setPen(m_theme.systemMsg);
     p->setFont(m_theme.systemFont());
 
-    // Strip HTML for system messages (they're usually plain)
-    QString plain = ml.bodyHtml;
-    plain.remove(QRegularExpression("<[^>]*>"));
+    // Strip the markup from a system message (they're usually plain) AND decode
+    // its entities: bodyHtml is HTML-escaped, so a display name like R&D used to
+    // paint as "R&amp;D". This runs on every paint, hence the cheap form -- no
+    // QTextDocument here.
+    QString plain = talq::plainTextFromInlineHtml(ml.bodyHtml);
     // Append the time so SERVICE messages (missed calls, call started/ended,
     // joins/leaves, "created the conversation", etc.) show WHEN they happened —
     // they previously rendered with no timestamp at all. bodyRect is full-width
@@ -2370,8 +2700,14 @@ void ChatPainter::paintReplyQuote(QPainter *p, const MessageLayout &ml, qreal of
     p->setFont(m_theme.timeFont());
     p->setPen(m_theme.textSecondary);
     QRectF textR(qr.left() + 10, authorR.bottom() + 1, qr.width() - 18, QFontMetrics(m_theme.timeFont()).height());
+    // replyToText is the parent's RAW text (ReplyToTextRole is the server's
+    // parent JSON "message"), not HTML: a tag strip here only ever deleted what
+    // the author typed between < and >. One line, so a multi-line quote is not
+    // drawn as several (elidedText keeps the newline).
     QString truncated = ml.replyToText;
-    truncated.remove(QRegularExpression("<[^>]*>"));
+    truncated.replace(QLatin1String("\r\n"), QLatin1String(" "));
+    truncated.replace(QLatin1Char('\n'), QLatin1Char(' '));
+    truncated.replace(QLatin1Char('\r'), QLatin1Char(' '));
     QFontMetrics fm(m_theme.timeFont());
     truncated = fm.elidedText(truncated, Qt::ElideRight, qRound(textR.width()));
     p->drawText(textR, Qt::AlignLeft | Qt::AlignVCenter, truncated);

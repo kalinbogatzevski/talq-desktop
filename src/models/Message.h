@@ -102,6 +102,17 @@ public:
 
     static Message fromJson(const QJsonObject &json);
 
+    // The HTML a plain message body is rendered from: HTML-escape, then the
+    // markdown subset (when `markdown`), then bare-URL linkify. This is EXACTLY
+    // what fromJson() does to a message that carries no messageParameters --
+    // fromJson calls the same two steps, with the {mention-*}/{file*}
+    // substitution between them -- so it is how a body that has not been
+    // through the server yet (an unsent composer message) must be turned into
+    // `Message::message`. Handing the raw text to the document instead drew a
+    // pending bubble differently from the echo that replaces it: fences
+    // literal, every `<...>` swallowed as a tag.
+    static QString renderBodyHtml(const QString &rawText, bool markdown = true);
+
     QDateTime dateTime() const {
         return QDateTime::fromSecsSinceEpoch(timestamp);
     }

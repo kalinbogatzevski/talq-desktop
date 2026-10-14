@@ -11,6 +11,7 @@
 #include "PainterTheme.h"
 #include "painter/ReactionLayout.h"
 #include "painter/JumpToBottomLogic.h"
+#include "painter/CodeCopyLogic.h"
 #include "painter/ClickFocusGuard.h"
 
 class AudioPlayer;
@@ -204,6 +205,9 @@ private:
 
     void rebuildAllLayouts();
     void clampScroll();
+    void clearHover();
+    void updateHoverAt(const QPointF &pos);
+    void refreshHoverFromCursor();
     int layoutIndexAtY(qreal viewportY) const;
     QString hitTestLink(const MessageLayout &ml, const QPointF &localPos) const;
     QString hitTestReaction(const MessageLayout &ml, const QPointF &localPos) const;
@@ -228,6 +232,28 @@ private:
     // the view is at the bottom.
     void syncSeenNewest();
     void paintJumpToBottom(QPainter *p);
+
+    // ── Code-block copy chip (geometry and rules: painter/CodeCopyLogic.h) ──
+    // One chip per fenced code block, drawn over the message body while the row
+    // is hovered. The chips of a row are recomputed from the live body document
+    // on every call, never stored: a MessageLayout is cached and y-translated by
+    // translateLayoutY, which lists its rects by hand, so a stored absolute rect
+    // would be silently wrong on every cache hit. Paint, hit-test, hover and
+    // tooltip all go through codeChipsFor so they cannot disagree.
+    struct CodeChip {
+        int blockIndex = 0;            // ordinal of the code block within the message
+        int blockPosition = 0;         // QTextBlock::position() in bodyDoc
+        talq::CodeChipRect rect;       // canvas-absolute (add -m_scrollY to paint)
+    };
+    QVector<CodeChip> codeChipsFor(const MessageLayout &ml) const;
+    // The chip under a canvas point, or nullptr-equivalent {blockIndex -1}.
+    bool codeChipAt(const MessageLayout &ml, const QPointF &canvasPos,
+                    CodeChip *out = nullptr) const;
+    void paintCodeChips(QPainter *p, const MessageLayout &ml, qreal offsetY);
+    // The plain text of one code block: entities decoded, line breaks as '\n',
+    // indentation preserved. Empty when the block no longer exists.
+    QString codeBlockText(const MessageLayout &ml, int blockIndex) const;
+    void copyCodeBlock(int messageId, int blockIndex);
 
     // ── Painting helpers ──
     void paintDateSep(QPainter *p, const MessageLayout &ml, qreal offsetY);
@@ -305,6 +331,21 @@ private:
     ClickFocusGuard m_focusGuard{this};
     qint64  m_jumpClickMs = 0;        // when the control last fired: see mouseDoubleClickEvent
     QPointF m_jumpClickPos;
+    // Code-block copy chip state. A chip is identified by (message id, block
+    // ordinal) -- an id, not a row index, because rebuildAllLayouts may replace
+    // m_layouts between a press and its release.
+    struct CodeChipKey {
+        int messageId = 0;
+        int blockIndex = -1;
+        bool valid() const { return messageId != 0 && blockIndex >= 0; }
+        bool operator==(const CodeChipKey &o) const {
+            return messageId == o.messageId && blockIndex == o.blockIndex;
+        }
+    };
+    CodeChipKey m_chipHover;          // the chip the pointer is on
+    CodeChipKey m_chipPressed;        // a left press landed on this chip, not yet released
+    CodeChipKey m_chipCopied;         // shows the tick until m_chipCopiedTimer fires
+    class QTimer *m_chipCopiedTimer = nullptr;
     qreal m_contentHeight = 0;
     int m_hoveredIndex = -1;
 

@@ -1,5 +1,80 @@
 # Changelog
 
+## v0.75.0 "Buditeli" — BETA (2026-10-14)
+
+Code you paste into a chat now stays inside its message, and every code block has a button that
+copies it. This is the first release of the 0.75.x beta line.
+
+### Added
+* **A copy button on every code block.** Point at a message and a small round button appears beside
+  each code block. One click puts exactly that block's text on the clipboard — real line breaks, its
+  indentation, and `<`, `&` and quotes as they were typed — and the button shows a tick for a moment.
+  It sits in a strip of its own beside the block, so it never covers the code, and it is not shown
+  on a message that is still sending.
+* **Indented code pasted without the three backticks is shown as a code block too.** Code,
+  pretty-printed JSON, a stack trace or a command listing that was pasted indented now keeps its
+  indentation, is shown in the code style and gets the copy button. The rules are deliberately
+  cautious: a bulleted or numbered list, quoted text, and an indented paragraph of ordinary
+  sentences are left alone, and a message that already has a code fence is never second-guessed.
+
+### Fixed
+* **Long lines in a code block wrap instead of running out of the message.** Before, a long line was
+  drawn straight past the edge of the bubble, in one real message more than twice as wide as the
+  bubble. A very long word, path or encoded blob is broken where it has to be; spaces and
+  indentation inside the block are kept exactly.
+* **Copy from the message menu gives what was written.** A message with `a < b && "x"` used to land
+  on the clipboard as `a &lt; b &amp;&amp; &quot;x&quot;` — exactly the characters code is made of.
+* **Selecting text by dragging and copying no longer puts invisible line-separator characters on
+  the clipboard.** Every line break inside a message came out as one, which pastes as junk into a
+  terminal or an editor.
+* **A code block keeps the indentation of its first line.** A snippet copied from the middle of a
+  file used to come out with its first line flush left and the rest still indented. The selection
+  bar's Copy, forwarding and editing fall back to the same text.
+* **Your own message looks the same while it is sending as it does once delivered.** A code block,
+  `<angle brackets>` and `&` used to be shown raw until the server confirmed the message, and then
+  changed shape. A reply's quote is likewise the text the author wrote, not its rendered form.
+* **A link followed directly by a backslash no longer hides the rest of the message.**
+* **Previews and notifications show `<`, `&` and quotes as typed.** The conversation list preview,
+  the new-message notification, the reply bar and the edit bar showed `&lt;` and `&amp;`, and a
+  notification for a conversation you had not opened deleted whatever was typed between `<` and `>`.
+* **A reply's quote no longer drops text between `<` and `>`, and stays on one line.**
+* **Editing a scheduled message no longer cuts it to 140 characters.** Saving a long scheduled
+  message, even only to change the time, used to post it shortened with an ellipsis.
+* **A system line with an `&` in a name (for example "R&D") reads correctly.**
+* **The reply and react buttons follow the message under the pointer when the list scrolls, and are
+  cleared when the pointer leaves the chat.** Before, they could stay on the message that had
+  scrolled away, or on the top row after you left.
+* **Changing the text size no longer switches the chat to a different colour theme.** With any text
+  size other than the default, the conversation view fell back to the Vivid colours while the rest of
+  the window kept the theme you had chosen.
+
+### Changed
+* **A code block is no longer set off from the text around it by an extra blank line.** A blank line
+  you typed is still a blank line.
+* **A code block's panel is a little narrower than the message**, to make room for its button.
+
+### Good to know
+* **Beta channel only.** The stable line is untouched. Because the message history is shown again
+  from the stored text, older messages that are indented code pasted without a fence look different
+  after the update, and every code block (old or new) is drawn narrower by the button's strip.
+* The unfenced-code rules cannot tell a short indented list under a bare label ("Servers:" over three
+  hostnames, an address, a signature) from command output, so such a list can be shown in the code
+  style. Nothing is lost: the text is exactly as typed, and the worst case is a grey box and a copy
+  button.
+* Wrapping keeps a code block inside the message, but it also wraps a wide table of aligned
+  columns at the bubble's width, which breaks its alignment. There is no sideways scroll yet.
+* The first line of a message cannot keep its leading spaces unless the message is fenced: the
+  server removes them when it stores the message. So an indented paste whose very first line is
+  indented is shown with that first line outside the code style.
+* **What was checked.** Each part has automated tests, including deliberately broken variants to
+  confirm the tests notice them (the wrapping test fails when the fix is removed). The real chat view
+  was also driven in an offscreen window by synthesized mouse, wheel and key events: hovering, clicking
+  the copy button, dragging off it, double-clicking, right- and middle-clicking, selecting text at the
+  end of a short command, scrolling with the pointer still, and leaving the chat — in all four
+  themes — comparing the clipboard text exactly and the painted pixels. **Not** checked by hand on a
+  real screen: pasting the copied text into a terminal, a high-DPI display, the branded build, and a
+  weak device.
+
 ## v0.74.12 "Ravnodenstvie" — STABLE (2026-10-13)
 
 Messages you write are no longer lost or sent the wrong way in a handful of places around long

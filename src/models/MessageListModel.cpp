@@ -8,6 +8,7 @@
 #include "core/TalqLog.h"
 #include "core/TempFileLogic.h"
 #include "core/UploadPathLogic.h"
+#include "painter/BodyHtml.h"
 #include "models/ConversationListModel.h"
 #include <QCryptographicHash>
 #include <QSet>
@@ -1518,7 +1519,21 @@ Message MessageListModel::tempMessageFor(const OutboxEntry &e) const
     m.actorType = "users";
     m.actorId = m_api->user();
     m.actorDisplayName = "";
-    m.message = e.text;   // #26 — auto-prepended @<bot> visible in own bubble
+    // #26 — auto-prepended @<bot> visible in own bubble.
+    //
+    // `message` is RENDERED HTML in this model (MessageTextRole feeds it straight
+    // to a QTextDocument), so the raw composer text must go through the same
+    // pipeline the server's echo will: this used to store e.text as is, and the
+    // pending bubble drew a fence literally and lost everything inside `<...>`
+    // ("if (a<b && c>d)" showed as "if (ad)") -- then visibly reshaped when the
+    // echo replaced it.
+    //
+    // e.text itself is untouched and stays the source of truth for the wire:
+    // postBodyFor() and the history probe read e.text / e.referenceId, never this
+    // field, so nothing is ever POSTed (or compared) in its rendered form. That is
+    // also why dedup needs no change -- replaceTempByReferenceId() matches by
+    // referenceId, not by text.
+    m.message = Message::renderBodyHtml(e.text);
     m.timestamp = e.sentAtSecs;
     m.messageType = "comment";
     m.sendStatus = statusFor(e);
@@ -2183,7 +2198,15 @@ void MessageListModel::sendMessage(const QString &text, int replyToId, bool sile
             r[QStringLiteral("actorId")]          = p.actorId;
             r[QStringLiteral("actorType")]        = p.actorType;
             r[QStringLiteral("actorDisplayName")] = p.actorDisplayName;
-            r[QStringLiteral("message")]          = p.message;
+            // The server's parent object carries the RAW text, and
+            // ReplyToTextRole / paintReplyQuote read it as raw. p.message is the
+            // rendered HTML (escaped, markdown applied), so copying it here put
+            // "&lt;" in the quote until the echo replaced it. Take the raw text
+            // the message arrived with; a parent with no rawJson (it always has
+            // one for a server message) falls back to its plain text.
+            const QString rawParent = p.rawJson.value(QStringLiteral("message")).toString();
+            r[QStringLiteral("message")] = rawParent.isEmpty()
+                ? talq::plainTextFromBodyHtml(p.message) : rawParent;
             entry.replyTo = r;
             break;
         }

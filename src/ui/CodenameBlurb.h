@@ -67,6 +67,19 @@ inline QString codenameBlurb(const QString &verName)
             "Africa, the two countries TalQ calls home: one moment, two seasons. The "
             "stable release that follows it brings the 0.73.x work to everyone, and "
             "lets you copy a picture straight out of the chat.").arg(verName);
+    if (verName == QStringLiteral("Buditeli"))
+        return QObject::tr("Codename \"%1\" — Будители, the National Revival "
+            "Leaders: the writers, teachers and fighters for freedom — Paisiy "
+            "Hilendarski, Neofit Bozveli, Vasil Levski and Hristo Botev among "
+            "them — whom Bulgaria honours on 1 November. The day was first "
+            "marked in Plovdiv in 1909. In 1922 Stoyan Omarchevski, education "
+            "minister in Aleksandar Stamboliyski's government (the same pair who "
+            "moved the school year to 15 September), proposed it as a national "
+            "day, and it became an official holiday by a royal decree of 1923. "
+            "It was abolished in 1945 and restored in 1992. A name over a "
+            "release about words being passed on intact: code that wraps "
+            "instead of running off the page, and copies out exactly as it was "
+            "written.").arg(verName);
     if (verName == QStringLiteral("Nezavisimost"))
         return QObject::tr("Codename \"%1\" — Независимост, the Declaration of "
             "Independence of Bulgaria, 22 September 1908. The date is the Old "
