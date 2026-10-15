@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QDateTime>
 #include <QLatin1Char>
 #include <QLatin1String>
 #include <QRegularExpression>
@@ -58,8 +59,16 @@ inline QString layoutHtml(const QString &html)
 // previews' recipe, and the difference from layoutHtml is deliberate: a copied
 // message should be what was written, not what a browser would have made of it.
 // `white-space:pre-wrap` on a wrapper does it (the same mechanism that keeps a
-// code block's spacing), and the newline that touches a <pre> is dropped as in
-// layoutHtml so a fence adds no phantom blank line.
+// code block's spacing); the line breaks themselves are layoutHtml's, so the
+// copy has the very line structure the chat shows -- the <br> that touches a
+// <pre> is dropped, a deliberate blank line keeps one.
+//
+// The line breaks MUST be <br> elements and not raw newlines. This used to strip
+// the newline that touched a <pre> from the string and feed the rest as text,
+// and Qt then dropped a blank line that was followed by INLINE markup:
+// "<pre>code</pre>\n\n<b>bold</b>" pasted as "code\nbold" (a link and a mention
+// too), while the same blank line before plain text survived. A <br> is an
+// element, not whitespace, so it is never collapsed.
 //
 // QTextDocument::toPlainText maps U+2028 and U+2029 to '\n' (QTextCursor::
 // selectedText() does not -- it leaves both in).
@@ -68,14 +77,8 @@ inline QString layoutHtml(const QString &html)
 // message, NOT for a paintEvent -- use plainTextFromInlineHtml there.
 inline QString plainTextFromBodyHtml(const QString &html)
 {
-    QString s = html;
-    s.replace(QLatin1String("\r\n"), QLatin1String("\n"));
-    s.replace(QLatin1Char('\r'), QLatin1Char('\n'));
-    s.replace(QLatin1String("\n<pre>"), QLatin1String("<pre>"));
-    s.replace(QLatin1String("</pre>\n"), QLatin1String("</pre>"));
-
     QTextDocument doc;
-    doc.setHtml(QLatin1String("<div style='white-space:pre-wrap'>") + s
+    doc.setHtml(QLatin1String("<div style='white-space:pre-wrap'>") + layoutHtml(html)
                 + QLatin1String("</div>"));
     return doc.toPlainText();
 }
@@ -102,6 +105,30 @@ inline QString trimBlankEdges(const QString &s)
     qsizetype end = s.size();
     while (end > start && s.at(end - 1).isSpace()) --end;
     return s.mid(start, end - start);
+}
+
+// The header line the selection bar's Copy puts above each copied message:
+// "[Alice, 2026-10-14 09:05]".
+//
+// It used to carry only MessageListModel::TimeStringRole, "HH:mm". That is right
+// on a bubble, which sits under a date separator, and wrong on the clipboard: a
+// paste into a ticket or an e-mail has no separator, so the lines had no day at
+// all, and a selection that crossed midnight (or a week) read as one afternoon.
+// ISO order, local time, no locale words -- it sorts, it means the same to every
+// locale on the team, and it never depends on "Today"/"Yesterday".
+//
+// `timeOfDay` (the bubble's own "HH:mm") is only the fallback for a message that
+// has no usable timestamp; the date is never invented.
+inline QString copiedMessageHeader(const QString &author, qint64 timestampSecs,
+                                   const QString &timeOfDay)
+{
+    const QString when = timestampSecs > 0
+        ? QDateTime::fromSecsSinceEpoch(timestampSecs)
+              .toString(QStringLiteral("yyyy-MM-dd HH:mm"))
+        : timeOfDay;
+    if (author.isEmpty())
+        return QStringLiteral("[%1]").arg(when);
+    return QStringLiteral("[%1, %2]").arg(author, when);
 }
 
 // The cheap form for text that is a single line of inline markup and is wanted

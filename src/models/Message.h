@@ -113,6 +113,19 @@ public:
     // literal, every `<...>` swallowed as a tag.
     static QString renderBodyHtml(const QString &rawText, bool markdown = true);
 
+    // What a reply QUOTE shows of its parent: PLAIN text, not HTML. The parent
+    // object Talk sends carries the RAW `message` -- "{mention-user1}" and
+    // "{file}" are still placeholders in it -- plus the `messageParameters` that
+    // say what they stand for, and a quote that skipped them read "hi
+    // {mention-user1}, see {file}" in the bubble. This substitutes them the way
+    // fromJson does for the message itself ("@Bob", the file name), and drops a
+    // code fence's markers so a quoted snippet shows the code instead of three
+    // backticks. An unknown placeholder, or one with no name, is left as typed.
+    //
+    // `parent` is Message::replyTo (the server's parent object, or the one the
+    // model builds for an unsent reply: it carries messageParameters too).
+    static QString quoteText(const QJsonObject &parent);
+
     QDateTime dateTime() const {
         return QDateTime::fromSecsSinceEpoch(timestamp);
     }

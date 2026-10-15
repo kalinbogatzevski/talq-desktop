@@ -508,8 +508,14 @@ QVector<ChatPainter::CodeChip> ChatPainter::codeChipsFor(const MessageLayout &ml
         CodeChip c;
         c.blockIndex = ordinal++;
         c.blockPosition = b.position();
+        // The rect is canvas-absolute, and so is the visible band: the canvas
+        // y of the viewport's top is the scroll offset (hitTestAt adds it the
+        // same way). A block taller than the viewport keeps its chip on screen.
+        talq::CodeChipView view;
+        view.known = true;
+        view.top = m_scrollY;
         c.rect = talq::layoutCodeChip(ml.bodyRect.x() + bx, ml.bodyRect.y() + br.y(),
-                                      br.width(), br.height());
+                                      br.width(), br.height(), {}, view);
         if (c.rect.visible)
             chips.append(c);
     }
@@ -672,6 +678,10 @@ QVariantMap ChatPainter::variantMapFromLayout(const MessageLayout &ml) const
         {"actorName", ml.actorName},
         {"messageText", ml.bodyHtml},
         {"timeString", ml.timeString},
+        // Seconds since the epoch. timeString is "HH:mm" only; anything that
+        // writes a message out of the app (the selection bar's Copy) needs the
+        // day as well -- see talq::copiedMessageHeader.
+        {"timestamp", ml.timestamp},
         {"hasFile", ml.hasFile},
         {"fileId", ml.fileId},
         {"fileName", ml.fileName},
@@ -2700,10 +2710,11 @@ void ChatPainter::paintReplyQuote(QPainter *p, const MessageLayout &ml, qreal of
     p->setFont(m_theme.timeFont());
     p->setPen(m_theme.textSecondary);
     QRectF textR(qr.left() + 10, authorR.bottom() + 1, qr.width() - 18, QFontMetrics(m_theme.timeFont()).height());
-    // replyToText is the parent's RAW text (ReplyToTextRole is the server's
-    // parent JSON "message"), not HTML: a tag strip here only ever deleted what
-    // the author typed between < and >. One line, so a multi-line quote is not
-    // drawn as several (elidedText keeps the newline).
+    // replyToText is the parent's RAW text with its {placeholders} and code
+    // fences already resolved (ReplyToTextRole -> Message::quoteText), not HTML:
+    // a tag strip here only ever deleted what the author typed between < and >.
+    // One line, so a multi-line quote is not drawn as several (elidedText keeps
+    // the newline).
     QString truncated = ml.replyToText;
     truncated.replace(QLatin1String("\r\n"), QLatin1String(" "));
     truncated.replace(QLatin1Char('\n'), QLatin1Char(' '));

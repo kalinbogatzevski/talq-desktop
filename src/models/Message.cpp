@@ -15,13 +15,13 @@ namespace {
 // and the rest still indented, i.e. misaligned. So: drop whole leading blank
 // lines, keep the first real line exactly as typed, and trim only the tail.
 //
-// Only when the body STARTS ON ITS OWN LINE, i.e. the fence's language tag was
-// followed by a newline (```python\n    code). When the content starts on the
-// fence's own line ("``` ls -la\ncd /tmp```", "```bash ls -la") the space after
-// the tag is not indentation, it is the gap between the fence and the text, and
-// keeping it shifted the first line one column right of the second; that and a
-// fence with no newline at all (```foo bar```, an inline span that merely used
-// three backticks) keep the old trimmed() behaviour.
+// Only when the body STARTS ON ITS OWN LINE, i.e. the fence (or its language
+// tag) was followed by a newline (```python\n    code). When the content starts
+// on the fence's own line ("``` ls -la\ncd /tmp```") the space after the fence
+// is not indentation, it is the gap between the fence and the text, and keeping
+// it shifted the first line one column right of the second; that and a fence
+// with no newline at all (```foo bar```, an inline span that merely used three
+// backticks) keep the old trimmed() behaviour.
 QString fenceBody(const QString &captured, bool startsOnOwnLine)
 {
     if (!startsOnOwnLine || !captured.contains(QLatin1Char('\n')))
@@ -43,6 +43,28 @@ QString fenceBody(const QString &captured, bool startsOnOwnLine)
     while (end > start && captured.at(end - 1).isSpace())
         --end;
     return captured.mid(start, end - start);
+}
+
+// A fenced block: ```lang\nbody```. Greedy-min body, multiline OK.
+//
+// The language tag is dropped ONLY when a line break follows it: that is the
+// one sign that the word is metadata and not something the author typed. The
+// tag used to be matched unconditionally, so ```hello world``` lost "hello"
+// and ```ls``` rendered as an empty box -- the author's own text, silently
+// gone. Now it stays in the body: a word that did not need to be there is a
+// harmless extra, a word that is missing is lost for good. (A tag may be
+// followed by trailing blanks before its line break; '#' and '.' let c#, f#
+// and vb.net through, which used to leave a stray "#" at the top of the box.)
+//
+// Group 1 is the line break after the tag, LF or CRLF (empty when the content
+// starts on the fence's own line), group 2 the body: fenceBody needs to know
+// which. One regex for the markdown pass AND for the reply quote
+// (Message::quoteText), so the two can never disagree about what a fence is.
+const QRegularExpression &codeBlockRegex()
+{
+    static const QRegularExpression rx(
+        QStringLiteral(R"(```(?:[A-Za-z0-9_+#.-]+[ \t]*(?=\r?\n))?((?:\r?\n)?)([\s\S]*?)```)"));
+    return rx;
 }
 
 // Render the inline-markdown subset we support: code blocks, inline code,
@@ -84,18 +106,12 @@ QString applyMarkdown(QString text)
         return QStringLiteral("\x01M%1\x02").arg(n);
     };
 
-    // ── Fenced code blocks: ```lang\nbody``` ──
-    // Greedy-min body, optional language tag is dropped. Multiline OK.
-    // Group 1 is the line break after the tag, LF or CRLF (empty when the content
-    // starts on the fence's own line), group 2 the body: fenceBody needs to know
-    // which.
-    static const QRegularExpression codeBlockRx(
-        QStringLiteral(R"(```[A-Za-z0-9_+-]*((?:\r?\n)?)([\s\S]*?)```)"));
+    // ── Fenced code blocks: ```lang\nbody``` ──  (codeBlockRegex(), above)
     bool hadFence = false;
     {
         QString out;
         int pos = 0;
-        auto it = codeBlockRx.globalMatch(text);
+        auto it = codeBlockRegex().globalMatch(text);
         while (it.hasNext()) {
             auto m = it.next();
             out += QStringView{text}.mid(pos, m.capturedStart() - pos);
@@ -225,6 +241,69 @@ QString Message::renderBodyHtml(const QString &rawText, bool markdown)
     QString html = escapeAndMarkup(rawText, markdown);
     linkifyBareUrls(html);
     return html;
+}
+
+QString Message::quoteText(const QJsonObject &parent)
+{
+    QString text = parent.value(QStringLiteral("message")).toString();
+    if (text.isEmpty())
+        return text;
+
+    // A quote of a code message used to read "``` ls -la ```" in the one line a
+    // quote has: three of its few characters were the fence. Show the code, the
+    // same way the bubble does (same regex, same body rule).
+    {
+        QString out;
+        qsizetype pos = 0;
+        auto it = codeBlockRegex().globalMatch(text);
+        while (it.hasNext()) {
+            const auto m = it.next();
+            out += QStringView{text}.mid(pos, m.capturedStart() - pos);
+            out += fenceBody(m.captured(2), !m.captured(1).isEmpty());
+            pos = m.capturedEnd();
+        }
+        if (pos > 0) {
+            out += QStringView{text}.mid(pos);
+            text = out;
+        }
+    }
+
+    // Placeholders, in ONE pass over the text. A name that itself looks like a
+    // placeholder (a file called "{mention-user1}.txt") must not be substituted
+    // again, which a replace-per-parameter loop would do. Same rule per type as
+    // fromJson, so a quote reads like the bubble it quotes: user / call / guest
+    // are "@name", anything else (a file, a poll, a deck card) is its name.
+    const QJsonObject params = parent.value(QStringLiteral("messageParameters")).toObject();
+    if (!params.isEmpty()) {
+        static const QRegularExpression placeholderRx(
+            QStringLiteral(R"(\{([^{}\s]+)\})"));
+        QString out;
+        qsizetype pos = 0;
+        auto it = placeholderRx.globalMatch(text);
+        while (it.hasNext()) {
+            const auto m = it.next();
+            const QJsonValue v = params.value(m.captured(1));
+            if (!v.isObject())
+                continue;                      // not ours: leave it as typed
+            const QJsonObject p = v.toObject();
+            QString name = p.value(QStringLiteral("name")).toString();
+            if (name.isEmpty())
+                name = p.value(QStringLiteral("id")).toString();
+            if (name.isEmpty())
+                continue;                      // fromJson leaves it too
+            const QString type = p.value(QStringLiteral("type")).toString();
+            const bool mention = type == QLatin1String("user")
+                || type == QLatin1String("call") || type == QLatin1String("guest");
+            out += QStringView{text}.mid(pos, m.capturedStart() - pos);
+            out += mention ? QStringLiteral("@") + name : name;
+            pos = m.capturedEnd();
+        }
+        if (pos > 0) {
+            out += QStringView{text}.mid(pos);
+            text = out;
+        }
+    }
+    return text;
 }
 
 Message Message::fromJson(const QJsonObject &json)
