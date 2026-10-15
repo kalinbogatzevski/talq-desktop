@@ -1546,10 +1546,13 @@ void MainWindow::buildChatPage()
         QString text;
         for (const auto &msg : messages) {
             QString body = plainBodyText(msg);
-            text += QStringLiteral("[%1, %2]\n%3\n\n")
-                .arg(msg.value("actorName").toString(),
-                     msg.value("timeString").toString(),
-                     body);
+            // The header carries the DATE as well as the time: the bubble's own
+            // "HH:mm" says nothing once it is pasted away from its separator.
+            text += talq::copiedMessageHeader(
+                        msg.value("actorName").toString(),
+                        msg.value("timestamp").toLongLong(),
+                        msg.value("timeString").toString())
+                + QLatin1Char('\n') + body + QStringLiteral("\n\n");
         }
         if (!text.isEmpty())
             QApplication::clipboard()->setText(text.trimmed());

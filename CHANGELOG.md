@@ -1,5 +1,44 @@
 # Changelog
 
+## v0.75.1 "Buditeli" — BETA (2026-10-15)
+
+A follow-up to 0.75.0: copied messages carry their date, a code fence typed on one line keeps its
+words, and a reply's quote reads like the message it quotes.
+
+### Fixed
+* **Copied messages carry the date.** The selection bar's Copy (and Ctrl+C while messages are
+  selected) put `[Alice, 09:05]` above each message, so a paste into a ticket or an e-mail said
+  nothing about the day, and a selection that crossed midnight read as one afternoon. It now writes
+  `[Alice, 2026-10-14 09:05]`: the date, then your local time.
+* **A code fence typed on one line keeps its words.** Three backticks, a few words and three
+  backticks on a single line showed an empty box, or lost the first word because it was taken for a
+  language name. A word right after the opening backticks is now a language name only when a line
+  break follows it. Names such as `c#`, `f#`, `vb.net` and `c++` are recognised as language names.
+* **A reply's quote shows who and what was meant.** The quote of a message that mentioned somebody
+  or carried a file used to read `hi {mention-user1}` or `{file}`; it now reads `hi @Alice` and the
+  file's name. The quote of a code block shows the code, not the three backticks around it, and the
+  quote of a message that is still sending reads the same as the delivered one.
+* **The copy button of a code block taller than the window stays within reach.** Scroll far enough
+  into a long log or stack trace that the top of the block was out of sight, and its button went with
+  it. The button now follows the top of the view down the block and stops at the block's end.
+* **Copy from the message menu keeps a blank line that is followed by bold text, a link or a
+  mention.** It used to drop it.
+
+### Good to know
+* **Beta channel only.** The stable line is untouched.
+* Unchanged from 0.75.0: a wide table of aligned columns is wrapped at the bubble's width, which
+  breaks its alignment. There is no sideways scroll yet.
+* A blank line typed between two code blocks adds no extra gap between them; a blank line between a
+  code block and ordinary text is kept.
+* Only the selection bar's Copy writes the `[name, date time]` line. Copying from the message menu
+  and by dragging give the message text alone, as before.
+* **What was checked.** The tests that cover these parts pass, including new cases that were first
+  shown failing against the old behaviour. The real chat painter was also driven offscreen with
+  synthesized mouse events and scrolling, comparing the clipboard text exactly: a reply quote with a
+  mention, and a block taller than the window scrolled so its top is out of view (the button sits
+  just below the top of the view and copies the whole block). **Not** checked by hand on a real screen: pasting
+  the copied text into a terminal, a high-DPI display, the branded build, and a weak device.
+
 ## v0.75.0 "Buditeli" — BETA (2026-10-14)
 
 Code you paste into a chat now stays inside its message, and every code block has a button that

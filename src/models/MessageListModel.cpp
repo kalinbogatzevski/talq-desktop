@@ -200,7 +200,9 @@ QVariant MessageListModel::data(const QModelIndex &index, int role) const
             if (m_threadId > 0 && !m.replyTo.isEmpty()
                 && m.replyTo.value("id").toInt() == m_threadId)
                 return QString();
-            return m.replyTo.isEmpty() ? QString() : m.replyTo["message"].toString();
+            // The parent's RAW text with its placeholders and fences resolved
+            // for a one-line quote (Message::quoteText). Plain text, not HTML.
+            return m.replyTo.isEmpty() ? QString() : Message::quoteText(m.replyTo);
         case ReplyToAuthorRole:
             return m.replyTo.isEmpty() ? QString() : m.replyTo["actorDisplayName"].toString();
         case ReplyToIdRole:
@@ -2207,6 +2209,13 @@ void MessageListModel::sendMessage(const QString &text, int replyToId, bool sile
             const QString rawParent = p.rawJson.value(QStringLiteral("message")).toString();
             r[QStringLiteral("message")] = rawParent.isEmpty()
                 ? talq::plainTextFromBodyHtml(p.message) : rawParent;
+            // The raw text still holds "{mention-user1}" / "{file}": the
+            // parameters are what Message::quoteText turns them into, so the
+            // pending quote reads like the echo's.
+            const QJsonValue parentParams =
+                p.rawJson.value(QStringLiteral("messageParameters"));
+            if (parentParams.isObject() && !rawParent.isEmpty())
+                r[QStringLiteral("messageParameters")] = parentParams;
             entry.replyTo = r;
             break;
         }

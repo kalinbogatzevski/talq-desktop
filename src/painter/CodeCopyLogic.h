@@ -57,20 +57,37 @@ struct CodeChipRect {
     double cy() const { return y + h / 2.0; }
 };
 
+// Where the viewport's top edge is, in the same space as the block's rectangle.
+// When it is known, a block taller than the viewport keeps its chip on screen
+// instead of leaving it behind at the block's (scrolled-away) top. Only the top
+// edge matters: the chip sits at the top of the block, so it is the block's top
+// that scrolls away; the viewport's bottom edge never hides it.
+struct CodeChipView {
+    bool   known = false;
+    double top = 0;
+};
+
 // (bx,by,bw,bh) is the code block's PANEL rectangle (the painted fill, margin
 // excluded) in whatever space the caller works in; the result is in the same
 // space.
 //
 //  * Centred in the gutter to the right of the panel, so it is never over text.
 //  * Aligned to the block's top, like every copy-code control people already
-//    know, so it never drifts down a tall block.
+//    know, so it never drifts down a tall block...
+//  * ...unless that top is scrolled out of view. A block taller than the
+//    viewport (a long log, a stack trace) would otherwise have no reachable
+//    chip at all once its top edge has gone. With `view` known the chip follows
+//    the top of the viewport down the block (staying `inset` below it), and
+//    stops at the block's own last inset: it never leaves the block, and it is
+//    where it always was whenever the block's top is on screen.
 //  * A one-line block is ~17px tall, shorter than the disc. It is then centred
 //    on the block and overhangs it a few pixels above and below rather than
 //    being clipped; the ring is contrast-scored on the bubble ground (see the
 //    conformance test), which is what it overhangs onto.
 //  * Hidden only for a degenerate block (no height).
 inline CodeChipRect layoutCodeChip(double bx, double by, double bw, double bh,
-                                   const CodeChipParams &p = {})
+                                   const CodeChipParams &p = {},
+                                   const CodeChipView &view = {})
 {
     CodeChipRect r;
     if (bh <= 0.0 || bw <= 0.0)
@@ -79,9 +96,17 @@ inline CodeChipRect layoutCodeChip(double bx, double by, double bw, double bh,
     r.visible = true;
     r.w = r.h = p.diameter;
     r.x = bx + bw + (p.gutter - p.diameter) / 2.0;
-    r.y = (bh >= p.diameter + 2.0 * p.inset)
-        ? by + p.inset
-        : by + (bh - p.diameter) / 2.0;
+    if (bh >= p.diameter + 2.0 * p.inset) {
+        const double lo = by + p.inset;                          // the block's top
+        const double hi = by + bh - p.diameter - p.inset;        // its last position (>= lo)
+        r.y = lo;
+        if (view.known) {
+            const double follow = view.top + p.inset;
+            r.y = follow > lo ? (follow < hi ? follow : hi) : lo;
+        }
+    } else {
+        r.y = by + (bh - p.diameter) / 2.0;
+    }
     return r;
 }
 
