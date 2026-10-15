@@ -275,8 +275,24 @@ struct InstallGateInputs {
     bool   attachmentStaged = false;     // a file waiting in the composer to be sent
     bool   voiceRecording = false;       // a voice message is being recorded
     bool   uploadInProgress = false;
-    bool   mouseButtonHeld = false;      // a drag or a slow selection
+    bool   mouseButtonHeld = false;      // a drag or a slow selection (see mouseButtonHeldNow)
 };
+
+// Whether a mouse button is really down, for the "a drag or a slow selection" gate.
+// Qt's own view (QApplication::mouseButtons) is updated only from events delivered to
+// TalQ's windows, so a press inside TalQ whose release lands elsewhere (a drag that left
+// the window, a native menu or dialog) leaves it set until the user next touches TalQ:
+// 2026-10-15 an install sat held for 35 minutes with "qt buttons=1, windows buttons=0".
+//
+// So the OS may CLEAR Qt's hold -- a button that is not physically down is no drag -- but it
+// must never ADD one. Windows' own state is desktop-wide: a click in a browser or an IDE would
+// hold the install and restart the idle countdown, and only input that reaches TalQ may do
+// that (the 0.40.16 rule). osButtons is the mask of buttons Windows reports down, or -1 where
+// it cannot be asked (not Windows); -1 is not zero, so Qt's view then stands as it is.
+inline bool mouseButtonHeldNow(bool qtSaysHeld, int osButtons)
+{
+    return qtSaysHeld && osButtons != 0;
+}
 
 inline bool withinPostCallGrace(const InstallGateInputs &in, qint64 graceMs)
 {

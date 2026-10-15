@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(talq VERSION 0.75.1 LANGUAGES CXX)
+project(talq VERSION 0.76.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -311,6 +311,11 @@ string(TIMESTAMP TALQ_BUILD_TS "%m%d-%H%M")
 # the sources checked and is deliberately not stated in the blurb.
 # Sources: bta.bg, bnt.bg, old-news.bnr.bg, novinite.com (1909 Plovdiv, 1922
 # Omarchevski, the 1923 decree, 1945 and 1992).
+#
+# 0.76.x KEEPS "Buditeli": 0.76.x is even, so it is the STABLE line, and it
+# promotes the 0.75.x beta -- the name carries across the cut exactly as
+# "First School Day" did from 0.71.x to 0.72.x, instead of a fresh name.
+# Decided by Kalin, 2026-10-15, when he asked for a new stable.
 set_source_files_properties(
     src/main.cpp
     src/core/CallManager.cpp
