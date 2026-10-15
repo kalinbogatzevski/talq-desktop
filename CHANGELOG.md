@@ -1,5 +1,112 @@
 # Changelog
 
+## v0.76.0 "Buditeli" — STABLE (2026-10-15)
+
+Promotes the 0.75.x line: code you paste into a chat stays inside its message, every code block has
+a button that copies it, and what you copy is what was written. It also stops an automatic update
+from waiting for a mouse button that is no longer down.
+
+Everyone on 0.74.x gets all of the below. If you ran the 0.75.x beta, the only addition is the
+update fix, the first item under Fixed.
+
+### Added
+* **A copy button on every code block.** Point at a message and a small round button appears beside
+  each code block. One click puts exactly that block's text on the clipboard — real line breaks, its
+  indentation, and `<`, `&` and quotes as they were typed — and the button shows a tick for a moment.
+  It sits in a strip of its own beside the block, so it never covers the code; it is not shown on a
+  message that is still sending, and in a block taller than the window it follows the top of the
+  view down the block and stops at the block's end.
+* **Indented code pasted without the three backticks is shown as a code block too.** Code,
+  pretty-printed JSON, a stack trace or a command listing that was pasted indented now keeps its
+  indentation, is shown in the code style and gets the copy button. The rules are deliberately
+  cautious: a bulleted or numbered list, quoted text, and an indented paragraph of ordinary
+  sentences are left alone, and a message that already has a code fence is never second-guessed.
+* **Copied messages carry the date.** The selection bar's Copy (and Ctrl+C while messages are
+  selected) writes `[Alice, 2026-10-14 09:05]` above each message: the date, then your local time,
+  so a paste into a ticket or an e-mail says which day it was and a selection that crossed midnight
+  no longer reads as one afternoon.
+
+### Fixed
+* **An update that is already downloaded no longer waits for a mouse click that is not there.**
+  TalQ installs a downloaded update by itself once you have been idle, and holds off while a mouse
+  button is down so that it never restarts in the middle of a drag. When a button was pressed in
+  TalQ and let go outside TalQ's windows, TalQ went on believing it was down, and the update waited
+  until you next used TalQ — in one case 35 minutes with the update already on disk. TalQ now also
+  asks Windows, and counts a button as down only while both agree. A click in another program still
+  never holds the update back: only what you do in TalQ counts, as before.
+* **Long lines in a code block wrap instead of running out of the message.** Before, a long line was
+  drawn straight past the edge of the bubble, in one real message more than twice as wide as the
+  bubble. A very long word, path or encoded blob is broken where it has to be; spaces and
+  indentation inside the block are kept exactly.
+* **Copy from the message menu gives what was written.** A message with `a < b && "x"` used to land
+  on the clipboard as `a &lt; b &amp;&amp; &quot;x&quot;` — exactly the characters code is made of.
+  A blank line followed by bold text, a link or a mention is kept.
+* **Selecting text by dragging and copying no longer puts invisible line-separator characters on
+  the clipboard.** Every line break inside a message came out as one, which pastes as junk into a
+  terminal or an editor.
+* **A code block keeps the indentation of its first line.** A snippet copied from the middle of a
+  file used to come out with its first line flush left and the rest still indented. The selection
+  bar's Copy, forwarding and editing fall back to the same text.
+* **A code fence typed on one line keeps its words.** Three backticks, a few words and three
+  backticks on a single line showed an empty box, or lost the first word because it was taken for a
+  language name. A word right after the opening backticks is now a language name only when a line
+  break follows it. Names such as `c#`, `f#`, `vb.net` and `c++` are recognised as language names.
+* **A reply's quote shows who and what was meant.** The quote of a message that mentioned somebody
+  or carried a file used to read `hi {mention-user1}` or `{file}`; it now reads `hi @Alice` and the
+  file's name. The quote of a code block shows the code, not the three backticks around it, and the
+  quote of a message that is still sending reads the same as the delivered one. It no longer drops
+  text between `<` and `>`, and stays on one line.
+* **Your own message looks the same while it is sending as it does once delivered.** A code block,
+  `<angle brackets>` and `&` used to be shown raw until the server confirmed the message, and then
+  changed shape.
+* **A link followed directly by a backslash no longer hides the rest of the message.**
+* **Previews and notifications show `<`, `&` and quotes as typed.** The conversation list preview,
+  the new-message notification, the reply bar and the edit bar showed `&lt;` and `&amp;`, and a
+  notification for a conversation you had not opened deleted whatever was typed between `<` and `>`.
+* **Editing a scheduled message no longer cuts it to 140 characters.** Saving a long scheduled
+  message, even only to change the time, used to post it shortened with an ellipsis.
+* **A system line with an `&` in a name (for example "R&D") reads correctly.**
+* **The reply and react buttons follow the message under the pointer when the list scrolls, and are
+  cleared when the pointer leaves the chat.** Before, they could stay on the message that had
+  scrolled away, or on the top row after you left.
+* **Changing the text size no longer switches the chat to a different colour theme.** With any text
+  size other than the default, the conversation view fell back to the Vivid colours while the rest of
+  the window kept the theme you had chosen.
+
+### Changed
+* **A code block is no longer set off from the text around it by an extra blank line.** A blank line
+  you typed is still a blank line.
+* **A code block's panel is a little narrower than the message**, to make room for its button.
+
+### Good to know
+* Because the message history is shown again from the stored text, older messages that are indented
+  code pasted without a fence look different after the update, and every code block (old or new) is
+  drawn narrower by the button's strip.
+* The unfenced-code rules cannot tell a short indented list under a bare label ("Servers:" over three
+  hostnames, an address, a signature) from command output, so such a list can be shown in the code
+  style. Nothing is lost: the text is exactly as typed, and the worst case is a grey box and a copy
+  button.
+* Wrapping keeps a code block inside the message, but it also wraps a wide table of aligned
+  columns at the bubble's width, which breaks its alignment. There is no sideways scroll yet.
+* A blank line typed between two code blocks adds no extra gap between them; a blank line between a
+  code block and ordinary text is kept.
+* The first line of a message cannot keep its leading spaces unless the message is fenced: the
+  server removes them when it stores the message. So an indented paste whose very first line is
+  indented is shown with that first line outside the code style.
+* Only the selection bar's Copy writes the `[name, date time]` line. Copying from the message menu
+  and by dragging give the message text alone.
+* **What was checked.** The chat parts have automated tests, including deliberately broken variants
+  to confirm the tests notice them, and the real chat view was driven in an offscreen window by
+  synthesized mouse, wheel and key events, comparing the clipboard text exactly and the painted
+  pixels. The update fix is a decision that is tested on its own, against six deliberately broken
+  variants: a button Qt believes is down while Windows reports none no longer holds the install, a
+  button down in another program never does, and a button down in TalQ still does. The Windows
+  reading itself, and its wiring, were compiled but **not** run against a real stuck button.
+  **Not** checked by hand on a real screen: pasting the copied text into a terminal, a high-DPI
+  display, the branded build, a weak device, a touch screen or pen (whether Windows reports a
+  finger or pen contact as a held button was not established), and the update waiting through a real
+  drag that ends outside the window.
+
 ## v0.75.1 "Buditeli" — BETA (2026-10-15)
 
 A follow-up to 0.75.0: copied messages carry their date, a code fence typed on one line keeps its

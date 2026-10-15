@@ -4689,6 +4689,24 @@ void MainWindow::onUpdateReadyToLaunch(const QString &installerPath)
     maybeLaunchPendingInstaller();
 }
 
+// The mouse buttons Windows says are down right now, as a mask (Qt's order: left 1, right 2,
+// middle 4, back 8, forward 16), or -1 where the OS cannot be asked. The PHYSICAL state, so a
+// swapped-button setup needs no mapping: the install gate asks only whether any is down.
+static int osMouseButtonsDown()
+{
+#ifdef Q_OS_WIN
+    int buttons = 0;
+    if (GetAsyncKeyState(VK_LBUTTON) & 0x8000) buttons |= 1;
+    if (GetAsyncKeyState(VK_RBUTTON) & 0x8000) buttons |= 2;
+    if (GetAsyncKeyState(VK_MBUTTON) & 0x8000) buttons |= 4;
+    if (GetAsyncKeyState(VK_XBUTTON1) & 0x8000) buttons |= 8;    // Qt: Back
+    if (GetAsyncKeyState(VK_XBUTTON2) & 0x8000) buttons |= 16;   // Qt: Forward
+    return buttons;
+#else
+    return -1;
+#endif
+}
+
 void MainWindow::noteInstallGateChange(const talq::InstallGateInputs &gates)
 {
     const QString note = QString::fromStdString(talq::closedGateNames(gates, kPostCallInstallGraceMs));
@@ -4703,8 +4721,8 @@ void MainWindow::noteInstallGateChange(const talq::InstallGateInputs &gates)
                           << "for" << (now - m_installHeldSinceMs) / 1000 << "s in all)";
     } else {
         // Say WHAT inside the coarse gates: which kind of unsent work, and for the mouse gate
-        // whether Windows agrees with Qt's idea of a held button (Qt only updates it from events
-        // delivered to its own windows, so it can lag the real state while TalQ is minimized).
+        // both views of the buttons. The gate holds only while Qt AND Windows say one is down
+        // (Qt alone sticks when the release lands outside TalQ's windows).
         QStringList detail;
         if (gates.unsentText) {
             if (m_composer && !m_composer->currentText().trimmed().isEmpty())
@@ -4717,16 +4735,10 @@ void MainWindow::noteInstallGateChange(const talq::InstallGateInputs &gates)
                 detail << QStringLiteral("message in the send outbox");
         }
         if (gates.mouseButtonHeld) {
-            int osButtons = 0;
-#ifdef Q_OS_WIN
-            if (GetAsyncKeyState(VK_LBUTTON) & 0x8000) osButtons |= 1;
-            if (GetAsyncKeyState(VK_RBUTTON) & 0x8000) osButtons |= 2;
-            if (GetAsyncKeyState(VK_MBUTTON) & 0x8000) osButtons |= 4;
-            if (GetAsyncKeyState(VK_XBUTTON1) & 0x8000) osButtons |= 8;    // Qt: Back
-            if (GetAsyncKeyState(VK_XBUTTON2) & 0x8000) osButtons |= 16;   // Qt: Forward
-#endif
+            const int osButtons = osMouseButtonsDown();
             detail << QStringLiteral("qt buttons=%1, windows buttons=%2")
-                          .arg(int(QApplication::mouseButtons())).arg(osButtons);
+                          .arg(int(QApplication::mouseButtons()))
+                          .arg(osButtons >= 0 ? QString::number(osButtons) : QStringLiteral("n/a"));
         }
         if (!gates.callActive && talq::withinPostCallGrace(gates, kPostCallInstallGraceMs))
             detail << QStringLiteral("grace left %1 s")
@@ -4936,7 +4948,11 @@ talq::InstallGateInputs MainWindow::installGateInputs() const
     in.attachmentStaged = m_composer && m_composer->hasStagedAttachment();
     in.voiceRecording = m_recorder && m_recorder->isRecording();
     in.uploadInProgress = m_messages && m_messages->uploadProgress() >= 0.0;
-    in.mouseButtonHeld = QApplication::mouseButtons() != Qt::NoButton;
+    // Qt's own view sticks when a press inside TalQ is released outside its windows, which held
+    // an automatic install for 35 minutes: Windows may clear that hold, never add one (its state
+    // is desktop-wide, and a click in another application is not input to TalQ).
+    in.mouseButtonHeld = talq::mouseButtonHeldNow(QApplication::mouseButtons() != Qt::NoButton,
+                                                  osMouseButtonsDown());
     return in;
 }
 
