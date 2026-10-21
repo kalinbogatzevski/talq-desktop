@@ -17,6 +17,14 @@ your messages, calls, contacts, account details, or usage statistics.
   policy and your agreement with whoever operates it — not by TalQ. The TalQ
   developers never see this traffic.
 
+- **Link previews.** When a message contains a web address, TalQ asks **your
+  Nextcloud server** (its built-in link-preview service, the one Talk's own web
+  client uses) for the page's title, description and picture, and shows them
+  under the message. The linked site is contacted by your server, not by your
+  computer, so it does not see your IP address; the address itself goes to your
+  server for this, like the message it came in. Nothing goes to the TalQ
+  developers. Turn it off in **Settings → Link previews**.
+
 - **Update check.** TalQ periodically asks GitHub whether a newer version exists
   by fetching a public release manifest from
   `https://api.github.com/repos/kalinbogatzevski/talq-desktop`. This is an

@@ -97,6 +97,12 @@ public:
     // download itself was broken.
     bool fileHideDownload = false;
 
+    // The addresses in this message that may get a link-preview card, from the
+    // RAW text (talq::linkpreview::extractPreviewUrls), at most two. Empty for a
+    // system message, a file, a poll and a deleted comment. Derived from
+    // rawJson, so it is recomputed (not stored) when a cached message is loaded.
+    QStringList previewUrls;
+
     // Original server JSON — stored for lossless caching
     QJsonObject rawJson;
 

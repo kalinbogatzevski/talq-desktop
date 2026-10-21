@@ -84,6 +84,7 @@ protected:
 
 signals:
     void closeToTrayChanged(bool enabled);
+    void linkPreviewsChanged(bool enabled);
     void themeIdChanged(int themeId);   // PainterTheme::Theme as int
     void logoutRequested();
     void checkForUpdatesRequested();
@@ -190,6 +191,7 @@ private:
     QCheckBox *m_autoStart = nullptr;
     QCheckBox *m_startMinimized = nullptr;
     QCheckBox *m_closeToTray = nullptr;
+    QCheckBox *m_linkPreviews = nullptr;
     QCheckBox *m_detailedLogging = nullptr;
     QComboBox *m_themeCombo = nullptr;
 

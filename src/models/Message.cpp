@@ -1,5 +1,6 @@
 #include "models/Message.h"
 #include "models/CodePasteHeuristic.h"
+#include "core/LinkPreviewLogic.h"
 #include <QJsonArray>
 #include <QRegularExpression>
 #include <QVector>
@@ -388,6 +389,15 @@ Message Message::fromJson(const QJsonObject &json)
     }
     // Linkify URLs — turn bare http(s) links into clickable <a> tags
     linkifyBareUrls(m.message);
+
+    // Which addresses may get a preview card. From the RAW text, not the HTML
+    // built above: that HTML has escaped entities and href markup around the
+    // URL, and its linkifier deliberately keeps trailing punctuation inside the
+    // link. A file, a poll, a system line and a deleted comment have no card.
+    if (!m.isSystem && m.fileId == 0 && m.pollId == 0
+        && m.messageType != QLatin1String("comment_deleted"))
+        m.previewUrls = talq::linkpreview::extractPreviewUrls(
+            json["message"].toString(), talq::linkpreview::kMaxCardsPerMessage, m.markdown);
 
     // Reply parent
     QJsonObject parent = json["parent"].toObject();

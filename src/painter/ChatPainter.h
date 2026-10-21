@@ -49,6 +49,7 @@ struct TextSelection {
 class MessageListModel;
 class SignalingClient;
 class QNetworkReply;
+class LinkPreviewService;
 
 /**
  * QWidget that renders the entire chat message list using QPainter.
@@ -69,6 +70,11 @@ public:
                                         m_showReadStatus = show; update(); }
 
     explicit ChatPainter(QWidget *parent = nullptr);
+
+    // Link-preview cards under messages that contain a URL. On by default; the
+    // Settings switch turns it off, which also forgets everything fetched.
+    void setLinkPreviewsEnabled(bool on);
+    bool linkPreviewsEnabled() const;
 
     // ── Property accessors ──
     void setModel(MessageListModel *model);
@@ -279,6 +285,13 @@ private:
     // on a dark scrim so it stays legible over any photo.
     void paintImageTimeOverlay(QPainter *p, const MessageLayout &ml, qreal offsetY);
     void paintReactions(QPainter *p, const MessageLayout &ml, qreal offsetY);
+    // Link-preview cards: ONE call per row from paintEvent (like the code chips),
+    // not from the two near-duplicate message painters.
+    void paintLinkCards(QPainter *p, const MessageLayout &ml, qreal offsetY);
+    // A card arrived or changed shape: lay the rows out again, but keep the row
+    // the reader is looking at where it is (see the .cpp for why the usual
+    // "content grew, so scroll" rule is wrong for this).
+    void rebuildKeepingAnchor();
     void paintHoverBar(QPainter *p, const MessageLayout &ml, qreal offsetY);
     void drawEmoji(QPainter *p, const QString &codepoints, const QRectF &rect);
     void paintMessageEmojis(QPainter *p, const MessageLayout &ml, qreal offsetY);
@@ -374,6 +387,15 @@ private:
     // instead of re-running QTextDocument::setHtml + grapheme scan. Cleared
     // when width/theme/font changes invalidate every entry.
     QHash<int, QPair<QString, MessageLayout>> m_layoutCache;
+
+    // Link previews. The service owns the cache and the requests; the timer
+    // coalesces a burst of arriving cards (a history full of links) into one
+    // layout pass.
+    LinkPreviewService *m_linkPreviews = nullptr;
+    class QTimer *m_cardRebuildTimer = nullptr;
+    // Set only while rebuildKeepingAnchor() runs: switches off the "content
+    // grew, so shift the scroll position" rule inside rebuildAllLayouts.
+    bool m_keepAnchorRebuild = false;
 
     // Resize debounce — avoid full rebuild on every pixel of a window drag.
     class QTimer *m_resizeDebounceTimer = nullptr;

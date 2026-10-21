@@ -2,6 +2,7 @@
 
 #include "MessageLayout.h"
 #include "PainterTheme.h"
+#include "painter/LinkCardLayout.h"
 #include <QAbstractListModel>
 
 /**
@@ -36,7 +37,11 @@ public:
         const QString &prevActorId,
         qint64 prevTimestamp,
         bool prevIsSystem,
-        qreal imageAspectRatio = 0.0  // height/width, 0 = unknown (compact placeholder)
+        qreal imageAspectRatio = 0.0,  // height/width, 0 = unknown (compact placeholder)
+        // Link-preview cards the server has answered for, in message order. Only
+        // these take room; the caller (ChatPainter) fetches them from its
+        // LinkPreviewService, so this class stays free of the network.
+        const QVector<talq::linkpreview::ReadyCard> &linkCards = {}
     );
 
 private:

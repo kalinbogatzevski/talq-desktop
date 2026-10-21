@@ -2,6 +2,7 @@
 
 #include <QRectF>
 #include <QString>
+#include <QStringList>
 #include <QTextDocument>
 #include <QVector>
 #include <memory>
@@ -26,6 +27,16 @@ struct HitRegion {
 struct EmojiRun {
     int docPosition;       // char offset in bodyDoc->toPlainText()
     QString codepoints;    // the full grapheme cluster
+};
+
+/**
+ * One link-preview card under a message's text. `url` is the address the
+ * sender typed (what a click opens); `rect` is canvas-absolute like every other
+ * rect here, so translateLayoutY moves it with the row.
+ */
+struct LinkCardSlot {
+    QString url;
+    QRectF rect;
 };
 
 /**
@@ -123,6 +134,12 @@ struct MessageLayout
     // to the bubble radius, with the timestamp floated over the bottom-right on
     // a scrim. Set by LayoutEngine; consumed by ChatPainter.
     bool imageBubble = false;
+
+    // Link previews. previewUrls are the addresses in the message that MAY get a
+    // card (the painter asks the server about those that scroll into view);
+    // linkCards are the ones the server has answered for, each with its rect.
+    QStringList previewUrls;
+    QVector<LinkCardSlot> linkCards;
 
     // Reactions bar
     QRectF reactBarRect;

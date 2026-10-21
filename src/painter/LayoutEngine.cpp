@@ -50,7 +50,8 @@ MessageLayout LayoutEngine::computeLayout(
     const QString &prevActorId,
     qint64 prevTimestamp,
     bool prevIsSystem,
-    qreal imageAspectRatio)
+    qreal imageAspectRatio,
+    const QVector<talq::linkpreview::ReadyCard> &linkCards)
 {
     MessageLayout ml;
     ml.modelRow = modelRow;
@@ -77,6 +78,7 @@ MessageLayout LayoutEngine::computeLayout(
     ml.reactionsSelf = model->data(idx, MessageListModel::ReactionsSelfRole).toStringList();
     ml.pollId       = model->data(idx, MessageListModel::PollIdRole).toInt();
     ml.pollQuestion = model->data(idx, MessageListModel::PollQuestionRole).toString();
+    ml.previewUrls  = model->data(idx, MessageListModel::LinkPreviewUrlsRole).toStringList();
 
     // File attachment
     ml.hasFile  = model->data(idx, MessageListModel::HasFileRole).toBool();
@@ -237,6 +239,10 @@ MessageLayout LayoutEngine::computeLayout(
         neededW = qMax(neededW, fw);
     }
     if (!ml.reactions.isEmpty()) neededW = qMax(neededW, 100.0);
+    // A preview card needs room for its picture and a readable line of text; a
+    // two-word message under a link must not squeeze the card into a sliver.
+    if (!linkCards.isEmpty())
+        neededW = qMax(neededW, qMin(maxContentW, talq::linkpreview::kCardMinWidth));
 
     qreal contentW = qBound(80.0, neededW + 2, maxContentW);
 
@@ -310,6 +316,19 @@ MessageLayout LayoutEngine::computeLayout(
     if (bodyH > 2) {
         ml.bodyRect = QRectF(contentX, y, contentW, bodyH);
         y += bodyH + 2;
+    }
+
+    // Link-preview cards, under the text. Only cards the server has answered
+    // for take any room, so a link that has no preview (or has not been asked
+    // about yet) lays out exactly as before. The card's size comes from
+    // measureCard -- the same call the painter makes -- so the two cannot drift.
+    if (!linkCards.isEmpty()) {
+        const qreal cardW = qMin(contentW, talq::linkpreview::kCardMaxWidth);
+        for (const auto &card : linkCards) {
+            const auto cm = talq::linkpreview::measureCard(theme, card, cardW);
+            ml.linkCards.append({card.data.url, QRectF(contentX, y, cardW, cm.g.height)});
+            y += cm.g.height + talq::linkpreview::kCardGapBelow;
+        }
     }
 
     // Reactions

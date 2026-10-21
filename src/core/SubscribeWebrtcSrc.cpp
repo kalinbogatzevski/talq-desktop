@@ -250,10 +250,15 @@ bool SubscribeWebrtcSrc::start(const QString &stunServer,
     // D5 — raise the receive jitterbuffer latency (default ~200 ms) so a choppy /
     // jittery uplink (bursty loss, big inter-packet gaps — Pavel's link) is RIDDEN
     // OUT by buffering instead of dropping late packets and freezing the decoder.
-    // 400 ms balances more cushion against conversational lag. Guarded on property
-    // existence (gst-plugins-rs versions vary).
-    if (g_object_class_find_property(G_OBJECT_GET_CLASS(m_webrtcsrc), "latency"))
-        g_object_set(m_webrtcsrc, "latency", (guint)400, nullptr);
+    // 400 ms balances more cushion against conversational lag.
+    //
+    // WARNING: this used to be `if (webrtcsrc has a "latency" property) set it`, and
+    // the gst-plugins-rs webrtcsrc this app ships (0.15, GStreamer 1.28) has NO such
+    // property -- so the set NEVER HAPPENED and every call ran at webrtcbin's
+    // default 200 ms (found 2026-10-21 from a call whose audio skipped ~0.2 s about
+    // 5 times a minute while the receive path was losing packets). The property
+    // lives on the webrtcbin inside webrtcsrc, which only exists once the signaller
+    // says "webrtcbin-ready": it is applied there (onWebrtcbinReady).
 
     g_signal_connect(m_webrtcsrc, "pad-added",
                      G_CALLBACK(&SubscribeWebrtcSrc::onPadAdded), this);
@@ -553,8 +558,142 @@ void SubscribeWebrtcSrc::onInboundStatsReady(GstPromise *promise, gpointer userD
     }
 }
 
+namespace {
+// What kind of stream does this rtpjitterbuffer feed? Reads the RTP caps of the pads of
+// the element its src pad is linked to (the payload-type demuxer), which carry
+// media / encoding-name / clock-rate. Leaves the outputs untouched if nothing is found.
+void rtpKindBehind(GstElement *jb, int &clockRate, QByteArray &media, QByteArray &encoding)
+{
+    GstPad *src = gst_element_get_static_pad(jb, "src");
+    if (!src) return;
+    GstPad *peer = gst_pad_get_peer(src);
+    gst_object_unref(src);
+    if (!peer) return;
+    GstElement *next = gst_pad_get_parent_element(peer);
+    gst_object_unref(peer);
+    if (!next) return;
+
+    auto readCaps = [&](GstPad *pad) {
+        if (GstCaps *caps = gst_pad_get_current_caps(pad)) {
+            if (gst_caps_get_size(caps) > 0) {
+                const GstStructure *cs = gst_caps_get_structure(caps, 0);
+                int cr = 0;
+                if (gst_structure_get_int(cs, "clock-rate", &cr) && cr > 0) clockRate = cr;
+                if (const gchar *m = gst_structure_get_string(cs, "media")) media = m;
+                if (const gchar *e = gst_structure_get_string(cs, "encoding-name")) encoding = e;
+            }
+            gst_caps_unref(caps);
+        }
+    };
+    GstIterator *it = gst_element_iterate_src_pads(next);
+    GValue v = G_VALUE_INIT;
+    bool done = false;
+    while (!done && it) {
+        switch (gst_iterator_next(it, &v)) {
+        case GST_ITERATOR_OK:
+            readCaps(GST_PAD(g_value_get_object(&v)));
+            g_value_reset(&v);
+            if (!media.isEmpty() || clockRate > 0) done = true;
+            break;
+        case GST_ITERATOR_RESYNC:
+            gst_iterator_resync(it);
+            break;
+        default:
+            done = true;
+            break;
+        }
+    }
+    g_value_unset(&v);
+    if (it) gst_iterator_free(it);
+    gst_object_unref(next);
+}
+} // namespace
+
+// Every 10 s: what the receive jitterbuffers say about loss, lateness and
+// retransmission. Audio is always logged (that is where a skip is heard); video
+// only in an interval where something was lost or late, to keep the log short.
+// Reads the "stats" property of each rtpjitterbuffer inside webrtcbin (found by
+// walking the bin: webrtcbin does not name them), so nothing here is a guess about
+// webrtcbin's internals beyond the element's factory name.
+void SubscribeWebrtcSrc::logReceiveStats()
+{
+    if (!m_webrtcbin || m_shuttingDown.load() || !GST_IS_BIN(m_webrtcbin)) return;
+
+    GstIterator *it = gst_bin_iterate_recurse(GST_BIN(m_webrtcbin));
+    if (!it) return;
+    GValue v = G_VALUE_INIT;
+    bool done = false;
+    while (!done) {
+        switch (gst_iterator_next(it, &v)) {
+        case GST_ITERATOR_OK: {
+            GstElement *el = GST_ELEMENT(g_value_get_object(&v));
+            GstElementFactory *f = el ? gst_element_get_factory(el) : nullptr;
+            if (f && g_strcmp0(gst_plugin_feature_get_name(GST_PLUGIN_FEATURE(f)),
+                               "rtpjitterbuffer") == 0) {
+                GstStructure *st = nullptr;
+                g_object_get(el, "stats", &st, nullptr);
+                if (st) {
+                    guint64 pushed = 0, lost = 0, late = 0, dup = 0, rtx = 0, rtxOk = 0,
+                            jitterNs = 0, rttNs = 0;
+                    gst_structure_get_uint64(st, "num-pushed", &pushed);
+                    gst_structure_get_uint64(st, "num-lost", &lost);
+                    gst_structure_get_uint64(st, "num-late", &late);
+                    gst_structure_get_uint64(st, "num-duplicates", &dup);
+                    gst_structure_get_uint64(st, "rtx-count", &rtx);
+                    gst_structure_get_uint64(st, "rtx-success-count", &rtxOk);
+                    gst_structure_get_uint64(st, "avg-jitter", &jitterNs);
+                    gst_structure_get_uint64(st, "rtx-rtt", &rttNs);
+                    gst_structure_free(st);
+
+                    guint latencyMs = 0;
+                    g_object_get(el, "latency", &latencyMs, nullptr);
+                    // Audio or video? The jitterbuffer's own pads carry only the ssrc
+                    // (verified: caps are just "application/x-rtp, ssrc=..."), so ask the
+                    // element downstream of it, whose pads carry the full RTP caps.
+                    int clockRate = 0;
+                    QByteArray media, encoding;
+                    rtpKindBehind(el, clockRate, media, encoding);
+                    const bool audio = media == "audio" || encoding.toUpper() == "OPUS" || clockRate == 48000;
+                    const bool video = media == "video" || clockRate == 90000;
+                    const char *kind = audio ? "audio" : (video ? "video" : "stream");
+
+                    JbPrev &prev = m_jbPrev[quintptr(el)];
+                    const quint64 dLost = lost - qMin<quint64>(lost, prev.lost);
+                    const quint64 dLate = late - qMin<quint64>(late, prev.late);
+                    const quint64 dRtx = rtx - qMin<quint64>(rtx, prev.rtx);
+                    const bool quiet = dLost == 0 && dLate == 0 && dRtx == 0;
+                    prev = JbPrev{pushed, lost, late, dup, rtx, rtxOk};
+                    if (audio || !quiet) {
+                        qInfo().nospace()
+                            << "[RXSTATS] " << kind << " jb latency=" << latencyMs
+                            << "ms pushed=" << pushed
+                            << " lost=" << lost << "(+" << dLost << ")"
+                            << " late=" << late << "(+" << dLate << ")"
+                            << " dup=" << dup
+                            << " rtx=" << rtx << "(+" << dRtx << ") rtxOk=" << rtxOk
+                            << " rtt=" << qRound(rttNs / 1e6) << "ms"
+                            << " avgJitter=" << qRound(jitterNs / 1e6) << "ms";
+                    }
+                }
+            }
+            g_value_reset(&v);
+            break;
+        }
+        case GST_ITERATOR_RESYNC:
+            gst_iterator_resync(it);
+            break;
+        default:
+            done = true;
+            break;
+        }
+    }
+    g_value_unset(&v);
+    gst_iterator_free(it);
+}
+
 void SubscribeWebrtcSrc::cleanup()
 {
+    if (m_rxStatsTimer) m_rxStatsTimer->stop();           // no stats walk on a torn-down bin
     m_shuttingDown.store(true);   // 0.52.17 — block a late streaming-thread onPadAdded from re-pointing m_videoAppsink
     if (m_keyframeWatchdog) m_keyframeWatchdog->stop();   // no PLI on a torn-down pipeline
     if (m_livenessWatchdog) m_livenessWatchdog->stop();   // D1 — same, persistent watchdog
@@ -743,6 +882,46 @@ void SubscribeWebrtcSrc::onWebrtcbinReady(GObject *, const gchar *peerId,
     self->m_webrtcbin = webrtcbin;  // webrtcsrc-owned; do not unref
     qDebug() << "SubscribeWebrtcSrc: webrtcbin-ready peer"
              << (peerId ? peerId : "?") << "→ driving ICE on webrtcbin";
+
+    // Receive jitterbuffer depth, on the webrtcbin (see the D5 note where webrtcsrc
+    // is built). webrtcbin hands it on to every jitterbuffer it creates, audio and
+    // video alike. TALQ_RX_LATENCY_MS overrides it for an experiment (0 = leave
+    // webrtcbin's own default); the applied value is read BACK and logged, and each
+    // jitterbuffer's own value is in the [RXSTATS] line, so a build that silently
+    // does nothing is visible in the log instead of in the field.
+    {
+        int wantMs = 400;
+        const QByteArray env = qgetenv("TALQ_RX_LATENCY_MS");
+        if (!env.isEmpty()) {
+            bool ok = false;
+            const int v = env.toInt(&ok);
+            if (ok && v >= 0 && v <= 2000) wantMs = v;
+        }
+        if (wantMs > 0 && g_object_class_find_property(G_OBJECT_GET_CLASS(webrtcbin), "latency")) {
+            g_object_set(webrtcbin, "latency", (guint)wantMs, nullptr);
+            guint got = 0;
+            g_object_get(webrtcbin, "latency", &got, nullptr);
+            qInfo() << "SubscribeWebrtcSrc: receive jitterbuffer latency set to" << wantMs
+                    << "ms (webrtcbin now reports" << got << "ms)";
+        } else if (wantMs > 0) {
+            qWarning() << "SubscribeWebrtcSrc: webrtcbin has no latency property; "
+                          "the receive jitterbuffer stays at its default";
+        }
+    }
+    // Statistics timer, on the main thread (this callback is on a GStreamer thread).
+    {
+        QPointer<SubscribeWebrtcSrc> g(self);
+        QMetaObject::invokeMethod(self, [g]() {
+            if (!g || g->m_rxStatsTimer) return;
+            g->m_rxStatsTimer = new QTimer(g);
+            // 10 s; TALQ_RX_STATS_MS shortens it for a test (a bot call is shorter than that).
+            const int everyMs = qBound(500, qEnvironmentVariableIntValue("TALQ_RX_STATS_MS"), 60000);
+            g->m_rxStatsTimer->setInterval(qEnvironmentVariableIsSet("TALQ_RX_STATS_MS") ? everyMs : 10000);
+            QObject::connect(g->m_rxStatsTimer, &QTimer::timeout, g,
+                             [g]() { if (g) g->logReceiveStats(); });
+            g->m_rxStatsTimer->start();
+        }, Qt::QueuedConnection);
+    }
     // Disable ICE-TCP gathering, matching PublishPipeline. webrtcsrc doesn't
     // expose ice-tcp on itself -- it lives on the nested ice-agent
     // (GstWebRTCNice) that only becomes reachable once webrtcbin exists, i.e.

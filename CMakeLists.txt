@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(talq VERSION 0.76.0 LANGUAGES CXX)
+project(talq VERSION 0.77.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -59,6 +59,7 @@ qt_add_executable(talq
     src/core/IceStats.cpp
     src/core/CtiService.cpp
     src/core/ShiftStatusService.cpp
+    src/core/LinkPreviewService.cpp
     src/models/Conversation.cpp
     src/models/Message.cpp
     src/models/ConversationListModel.cpp
@@ -316,6 +317,18 @@ string(TIMESTAMP TALQ_BUILD_TS "%m%d-%H%M")
 # promotes the 0.75.x beta -- the name carries across the cut exactly as
 # "First School Day" did from 0.71.x to 0.72.x, instead of a fresh name.
 # Decided by Kalin, 2026-10-15, when he asked for a new stable.
+#
+# 0.77.x IS "Vsi Svetii" -- Вси светии, All Saints: the day the Church remembers
+# every saint, the famous and the unknown. The Western church keeps it on
+# 1 November, and its eve, 31 October, is All Hallows' Eve, which is where
+# "Halloween" comes from. Kalin picked 31 October / Halloween (2026-10-21) and
+# named the Bulgarian form himself, so the codename is that form in the
+# transliterated style of Saedinenie, Nezavisimost and Buditeli, with the
+# Cyrillic in the blurb. 0.77.x is odd, so it is the BETA line: link previews
+# under messages and the receive audio buffer that was meant to be 400 ms and
+# never was. The blurb does not state a Bulgarian date for the feast; the
+# Orthodox All Saints Sunday (first Sunday after Pentecost) is mentioned only
+# as the Orthodox church's own day.
 set_source_files_properties(
     src/main.cpp
     src/core/CallManager.cpp
@@ -324,7 +337,7 @@ set_source_files_properties(
     src/ui/SettingsDialog.cpp
     src/ui/MainWindow.cpp
     PROPERTIES COMPILE_DEFINITIONS
-      "TALQ_VERSION=\"${PROJECT_VERSION}\";TALQ_VERSION_NAME=\"Buditeli\";TALQ_BUILD_TS=\"${TALQ_BUILD_TS}\""
+      "TALQ_VERSION=\"${PROJECT_VERSION}\";TALQ_VERSION_NAME=\"Vsi Svetii\";TALQ_BUILD_TS=\"${TALQ_BUILD_TS}\""
 )
 
 # Pre-release flag: when build-release.sh is invoked with --beta it
