@@ -496,6 +496,7 @@ private:
     bool m_showTopics = false;
     bool m_sidebarSqueezed = false;
     bool m_closeToTray = true;
+    bool m_linkPreviews = true;     // Settings > Link previews
     // Windows: RegisterWindowMessage id for the "TaskbarButtonCreated"
     // broadcast Windows sends whenever our taskbar button is created (first
     // show, restore-from-tray, Explorer restart). nativeEvent() watches for it

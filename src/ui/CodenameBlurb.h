@@ -80,6 +80,15 @@ inline QString codenameBlurb(const QString &verName)
             "release about words being passed on intact: code that wraps "
             "instead of running off the page, and copies out exactly as it was "
             "written.").arg(verName);
+    if (verName == QStringLiteral("Vsi Svetii"))
+        return QObject::tr("Codename \"%1\" — Вси светии, All Saints: the day the "
+            "Church remembers every saint, the famous and the unknown alike. The "
+            "Western church keeps it on 1 November, and the evening before it, "
+            "31 October, is All Hallows' Eve, the night that gave Halloween its "
+            "name; the Orthodox church keeps its own All Saints on the first Sunday "
+            "after Pentecost. A name over a release that shows what is behind a "
+            "link before you click it, and that gives the incoming sound more room "
+            "to ride out a bad stretch of the connection.").arg(verName);
     if (verName == QStringLiteral("Nezavisimost"))
         return QObject::tr("Codename \"%1\" — Независимост, the Declaration of "
             "Independence of Bulgaria, 22 September 1908. The date is the Old "

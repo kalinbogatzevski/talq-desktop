@@ -1,5 +1,45 @@
 # Changelog
 
+## v0.77.0 "Vsi Svetii" — BETA (2026-10-21)
+
+Two things: a web address in a message now shows what is behind it, and the buffer that holds the
+incoming sound is now as deep as it was always meant to be, so a bad stretch of the connection is
+ridden out instead of cut into short drops.
+
+### Added
+* **Link previews.** A web address in a message now shows a small card under the text: the page's
+  title, a short description and a picture. Your own Nextcloud server fetches the page, so the site
+  never sees your address; TalQ only draws what the server sends back, as plain text, and a click
+  opens the address that was typed, never one the page supplies. A message shows at most two cards.
+  There is no card for an address inside a code block (fenced, inline, or an indented paste shown as
+  code), for an address that points at a machine on a local network, or for one with a password in
+  it. A card appears when the server has answered, and the view stays on the row you are reading.
+  **Settings → Link previews** turns it off.
+* **The debug log now says how an incoming call is doing.** Every 10 seconds, for the audio and (when
+  something was lost) the video, `talq_debug.log` records the depth of the receive buffer, how many
+  packets were lost, arrived too late or were asked for again, and the jitter. A stretch of choppy
+  sound can now be explained afterwards from the log instead of guessed at.
+
+### Fixed
+* **The incoming sound is buffered 400 ms, as intended.** The receive buffer was meant to be 400 ms
+  but the setting never took effect, so every call ran at 200 ms. On a call whose connection was
+  losing packets, that showed up as short drops of about a fifth of a second, around five a minute.
+  The buffer is now really 400 ms. The cost is that the other person's voice reaches you up to
+  200 ms later.
+
+### Good to know
+* **Beta channel only.** The stable line is untouched.
+* **Not yet shown:** that the deeper buffer removes the drops on a real call. That is what this beta
+  is for, and the new log lines (`[RXSTATS]`) will say. If you still hear drops, send the log.
+* A card that arrives in the row your view starts inside moves what is under the pointer by the
+  card's height. The picture on a card is cropped to a landscape box.
+* **What was checked.** The tests for the new parts pass (142 checks for previews, including hostile
+  input, plus the contrast of the card on all four themes). The real chat painter was driven
+  offscreen against the live server with real pages, in all four themes, and a call between the two
+  test accounts confirmed the buffer reports 400 ms. Five independent reviews of the preview code
+  found 14 defects, all fixed. **Not** checked: a real call with packet loss, a high-DPI display, the
+  branded build, and a weak device.
+
 ## v0.76.0 "Buditeli" — STABLE (2026-10-15)
 
 Promotes the 0.75.x line: code you paste into a chat stays inside its message, every code block has

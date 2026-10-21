@@ -329,6 +329,7 @@ MainWindow::MainWindow(
 
     m_settings.beginGroup("General");
     m_closeToTray = m_settings.value("closeToTray", true).toBool();
+    m_linkPreviews = m_settings.value("linkPreviews", true).toBool();
     m_settings.endGroup();
 
     applyDarkPalette();
@@ -1134,6 +1135,7 @@ void MainWindow::buildChatPage()
     m_chatPainter->setSignaling(m_signaling);
     m_chatPainter->setTheme(m_themeId);
     m_chatPainter->setFontScale(m_fontScale);
+    m_chatPainter->setLinkPreviewsEnabled(m_linkPreviews);
     m_chatPainter->hide();
     chatLayout->addWidget(m_chatPainter, 1);
 
@@ -5958,6 +5960,12 @@ void MainWindow::ensureSettingsDialog()
     });
     connect(m_settingsDialog, &SettingsDialog::closeToTrayChanged,
             this, [this](bool enabled) { m_closeToTray = enabled; });
+    connect(m_settingsDialog, &SettingsDialog::linkPreviewsChanged,
+            this, [this](bool enabled) {
+                m_linkPreviews = enabled;
+                if (m_chatPainter)
+                    m_chatPainter->setLinkPreviewsEnabled(enabled);
+            });
     connect(m_settingsDialog, &SettingsDialog::themeIdChanged,
             this, [this](int id) {
                 applyThemeId(static_cast<PainterTheme::Theme>(id));

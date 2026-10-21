@@ -1653,6 +1653,20 @@ QWidget *SettingsDialog::buildGeneralTab()
            "count visible there — instead of quitting."),
         m_closeToTray));
 
+    m_linkPreviews = new QCheckBox;
+    connect(m_linkPreviews, &QCheckBox::toggled, this, [this](bool checked) {
+        m_settings.beginGroup("General");
+        m_settings.setValue("linkPreviews", checked);
+        m_settings.endGroup();
+        emit linkPreviewsChanged(checked);
+    });
+    layout->addWidget(makeSettingRow(
+        tr("Link previews"),
+        tr("Show a title, description and picture under a link someone posts. "
+           "Your Nextcloud server fetches the page, so the site never sees your "
+           "address. Turn off to see links as plain text."),
+        m_linkPreviews));
+
     layout->addSpacing(kGroupGap - kRowGap);
     layout->addWidget(makeSectionHeader("Diagnostics"));
 
@@ -2179,6 +2193,7 @@ void SettingsDialog::loadGeneralSettings()
     bool autoStart = m_settings.value("autoStart", false).toBool();
     bool startMin = m_settings.value("startMinimized", false).toBool();
     bool closeTray = m_settings.value("closeToTray", true).toBool();
+    bool linkPreviews = m_settings.value("linkPreviews", true).toBool();
     m_settings.endGroup();
 
     m_autoStart->blockSignals(true);
@@ -2192,6 +2207,10 @@ void SettingsDialog::loadGeneralSettings()
     m_closeToTray->blockSignals(true);
     m_closeToTray->setChecked(closeTray);
     m_closeToTray->blockSignals(false);
+
+    m_linkPreviews->blockSignals(true);
+    m_linkPreviews->setChecked(linkPreviews);
+    m_linkPreviews->blockSignals(false);
 
     if (m_themeCombo) {
         m_settings.beginGroup("Theme");

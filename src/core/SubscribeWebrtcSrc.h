@@ -11,6 +11,7 @@
 // already used for SubscribePipeline (drop-in).
 
 #include <QObject>
+#include <QHash>
 #include <QTimer>
 #include <QString>
 #include <QList>
@@ -214,6 +215,14 @@ private:
     // collapses while delivered fps stays up) or the inter-frame gap blows out,
     // re-request a keyframe to recover without waiting for the ~12s full rebuild.
     QTimer            *m_livenessWatchdog = nullptr;
+    // Receive-side jitterbuffer statistics, logged every 10 s ("[RXSTATS]"). The
+    // log had no loss, lateness or retransmission figures for the receive path
+    // at all, so a stretch of choppy audio could not be explained afterwards.
+    // Main thread only (the timer lives on it).
+    struct JbPrev { quint64 pushed = 0, lost = 0, late = 0, dup = 0, rtx = 0, rtxOk = 0; };
+    QTimer            *m_rxStatsTimer = nullptr;
+    QHash<quintptr, JbPrev> m_jbPrev;                   // keyed by the jitterbuffer element
+    void               logReceiveStats();
     int                m_livenessBadTicks = 0;
     int                m_livenessPliCooldown = 0;   // ticks remaining before another forced keyframe
     // 0.51.x AEC single-pipeline fix: external appsrc (publisher pipeline's

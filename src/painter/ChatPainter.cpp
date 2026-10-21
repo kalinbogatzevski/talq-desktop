@@ -26,6 +26,7 @@
 #include <QTextCursor>
 #include <QMenu>
 #include "core/ApiClient.h"
+#include "core/LinkPreviewService.h"
 #include "core/EmojiData.h"
 #include "core/SignalingClient.h"
 #include "painter/ReactionLayout.h"
@@ -117,6 +118,19 @@ ChatPainter::ChatPainter(QWidget *parent)
         update();
     });
 
+    // Link previews. A card arriving changes the height of its row; a history
+    // full of links answers in a burst, so the re-layout is coalesced rather than
+    // run once per answer. A picture arriving changes nothing but pixels.
+    m_linkPreviews = new LinkPreviewService(this);
+    m_cardRebuildTimer = new QTimer(this);
+    m_cardRebuildTimer->setSingleShot(true);
+    m_cardRebuildTimer->setInterval(60);
+    connect(m_cardRebuildTimer, &QTimer::timeout, this, [this]() { rebuildKeepingAnchor(); });
+    connect(m_linkPreviews, &LinkPreviewService::cardReady, this,
+            [this](const QString &) { m_cardRebuildTimer->start(); });
+    connect(m_linkPreviews, &LinkPreviewService::thumbReady, this,
+            [this](const QString &) { update(); });
+
     // Coalesce resize-driven rebuilds — window drags fire resizeEvent every
     // pixel. 50ms idle is below human "delay" threshold but well above the
     // ~16ms drag-event cadence.
@@ -174,6 +188,7 @@ void ChatPainter::setModel(MessageListModel *mdl)
     }
 
     m_model = mdl;
+    m_linkPreviews->setApi(m_model ? m_model->api() : nullptr);
 
     // Clear file preview caches on model switch (avatars persist across conversations)
     m_previewCache.clear();
@@ -212,8 +227,63 @@ void ChatPainter::setMyUserId(const QString &id)
 {
     if (m_myUserId == id) return;
     m_myUserId = id;
+    // A different account: a preview fetched with the previous user's credentials
+    // is not shown to this one.
+    m_linkPreviews->clear();
     m_layoutCache.clear();          // isOwn flips → all rows invalid
     rebuildAllLayouts();
+}
+
+void ChatPainter::setLinkPreviewsEnabled(bool on)
+{
+    if (m_linkPreviews->enabled() == on)
+        return;
+    m_linkPreviews->setEnabled(on);   // off also forgets what was fetched
+    m_layoutCache.clear();            // cards take room, so every row with one is stale
+    rebuildAllLayouts();
+}
+
+bool ChatPainter::linkPreviewsEnabled() const
+{
+    return m_linkPreviews->enabled();
+}
+
+// A link-preview card arrived (or went away). The usual rule in
+// rebuildAllLayouts -- "content grew and we are not at the bottom, so shift the
+// scroll position by the growth" -- is right for older history prepended at the
+// TOP and wrong here: a card can appear in a row below the viewport, and the
+// shift would scroll the reader away from what they are reading. So pin the row
+// at the top of the view instead: remember it and how far into it the view
+// starts, lay out, and put the view back on the same spot of the same row.
+// At the bottom nothing is pinned -- the usual stay-at-the-bottom rule keeps the
+// newest message in view as the row above it grows.
+void ChatPainter::rebuildKeepingAnchor()
+{
+    if (m_layouts.isEmpty() || atBottom() || m_forcePinBottom) {
+        rebuildAllLayouts();
+        return;
+    }
+    int anchorId = 0;
+    qreal anchorOffset = 0;
+    const int idx = layoutIndexAtY(m_scrollY);
+    if (idx >= 0 && idx < m_layouts.size() && m_layouts[idx].messageId > 0) {
+        anchorId = m_layouts[idx].messageId;
+        anchorOffset = m_scrollY - m_layouts[idx].totalY;
+    }
+
+    m_keepAnchorRebuild = true;
+    rebuildAllLayouts();
+    m_keepAnchorRebuild = false;
+
+    if (anchorId <= 0)
+        return;
+    for (const auto &ml : m_layouts) {
+        if (ml.messageId != anchorId)
+            continue;
+        // Never past the row's own end: if the row shrank, land on its last pixel.
+        setScrollY(ml.totalY + qMin(anchorOffset, qMax<qreal>(0, ml.totalHeight - 1)));
+        break;
+    }
 }
 
 void ChatPainter::setUnreadBoundary(int id)
@@ -753,6 +823,14 @@ QString ChatPainter::hitTestAt(qreal x, qreal y)
             return QStringLiteral("codecopy:%1:%2").arg(ml.messageId).arg(chip.blockIndex);
     }
 
+    // Link-preview card -> the address the sender typed. It goes out as a plain
+    // "link:" token, so the one http/https check at dispatch covers it and a card
+    // can never open anything a bare link in the same message could not.
+    for (const auto &card : ml.linkCards) {
+        if (card.rect.contains(canvasPos))
+            return QStringLiteral("link:") + card.url;
+    }
+
     // Link
     QString link = hitTestLink(ml, canvasPos);
     if (!link.isEmpty()) return QStringLiteral("link:") + link;
@@ -921,7 +999,8 @@ static QString makeLayoutCacheKey(QAbstractListModel *model, int modelRow,
                                   qreal width, qreal fontScale, bool darkMode,
                                   const QString &myUserId,
                                   const QString &prevActorId, qint64 prevTimestamp,
-                                  bool prevIsSystem, qreal aspect)
+                                  bool prevIsSystem, qreal aspect,
+                                  const QString &previewSig)
 {
     auto idx = model->index(modelRow);
     auto get = [&](int role) { return model->data(idx, role); };
@@ -936,6 +1015,9 @@ static QString makeLayoutCacheKey(QAbstractListModel *model, int modelRow,
         + QString::number(prevTimestamp) + '|'
         + (prevIsSystem ? '1' : '0') + '|'
         + QString::number(qint64(aspect * 1000)) + '|'
+        // Which link-preview cards the row has room for, and what is in them.
+        // Without it a card arriving would find the cached layout still valid.
+        + previewSig + '|'
         + get(MessageListModel::MessageTextRole).toString() + '|'
         + (get(MessageListModel::IsSystemRole).toBool() ? '1' : '0') + '|'
         + (get(MessageListModel::ShowDateSeparatorRole).toBool() ? '1' : '0') + '|'
@@ -974,6 +1056,8 @@ static void translateLayoutY(MessageLayout &ml, qreal dy)
     ml.fileRect.translate(0, dy);
     ml.pollRect.translate(0, dy);
     ml.reactBarRect.translate(0, dy);
+    for (auto &c : ml.linkCards)
+        c.rect.translate(0, dy);
 }
 
 void ChatPainter::rebuildAllLayouts()
@@ -1041,6 +1125,19 @@ void ChatPainter::rebuildAllLayouts()
         qreal aspect = m_previewAspect.value(fileId, 0.0);  // 0 = unknown, show compact placeholder
         bool isUnreadSepRow = (i == firstUnreadLayoutIdx);
 
+        // Link-preview cards the server has answered for. Empty for the great
+        // majority of rows, which then lay out exactly as before.
+        QVector<talq::linkpreview::ReadyCard> linkCards;
+        QString previewSig;
+        {
+            const QStringList urls =
+                m_model->data(idx, MessageListModel::LinkPreviewUrlsRole).toStringList();
+            if (!urls.isEmpty()) {
+                linkCards = m_linkPreviews->readyCards(urls);
+                previewSig = m_linkPreviews->signatureFor(urls);
+            }
+        }
+
         MessageLayout ml;
         bool cacheHit = false;
 
@@ -1053,7 +1150,8 @@ void ChatPainter::rebuildAllLayouts()
         if (!isUnreadSepRow && messageId > 0) {
             key = makeLayoutCacheKey(m_model, modelRow, width(), m_fontScale,
                                      m_darkMode, m_myUserId,
-                                     prevActorId, prevTimestamp, prevIsSystem, aspect);
+                                     prevActorId, prevTimestamp, prevIsSystem, aspect,
+                                     previewSig);
             auto it = m_layoutCache.constFind(messageId);
             if (it != m_layoutCache.constEnd() && it->first == key) {
                 ml = it->second;
@@ -1073,7 +1171,8 @@ void ChatPainter::rebuildAllLayouts()
 
             ml = LayoutEngine::computeLayout(
                 m_model, modelRow, width(), m_theme, y,
-                m_myUserId, prevActorId, prevTimestamp, prevIsSystem, aspect
+                m_myUserId, prevActorId, prevTimestamp, prevIsSystem, aspect,
+                linkCards
             );
 
             if (isUnreadSepRow) {
@@ -1115,7 +1214,10 @@ void ChatPainter::rebuildAllLayouts()
 
     // If content grew at the top (older history loaded) and we weren't at the bottom,
     // shift scrollY by the delta so the user's viewport stays anchored to the same messages.
-    if (!wasAtBottom && preH > 0 && m_contentHeight > preH && m_scrollY > 0)
+    // (Not for a link-preview card arriving: that grows a row wherever it is, and
+    // rebuildKeepingAnchor() re-pins the row the reader is on instead.)
+    if (!wasAtBottom && preH > 0 && m_contentHeight > preH && m_scrollY > 0
+        && !m_keepAnchorRebuild)
         m_scrollY += (m_contentHeight - preH);
 
     clampScroll();
@@ -2170,6 +2272,11 @@ void ChatPainter::paintEvent(QPaintEvent *)
         if (ml.totalY + ml.totalHeight < vpTop || ml.totalY > vpBottom)
             continue;
 
+        // These addresses are on screen: the service decides what to ask the
+        // server (observe() only queues, so painting never opens a socket).
+        if (!ml.previewUrls.isEmpty())
+            m_linkPreviews->observe(ml.previewUrls);
+
         // Selection row highlight (painted as background, before message)
         if (m_selectionMode && m_selectedIds.contains(ml.messageId)) {
             p.setPen(Qt::NoPen);
@@ -2190,6 +2297,11 @@ void ChatPainter::paintEvent(QPaintEvent *)
             paintOwnMessage(&p, ml, offsetY);
         else
             paintOtherMessage(&p, ml, offsetY);
+
+        // Link-preview cards: one call here, after the row, for the same reason
+        // the code chips are (the two message painters duplicate the body paint).
+        if (!ml.linkCards.isEmpty())
+            paintLinkCards(&p, ml, offsetY);
 
         // Selection checkbox (painted ON TOP of message content)
         if (m_selectionMode && !ml.isSystem) {
@@ -2769,6 +2881,116 @@ void ChatPainter::paintPollCard(QPainter *p, const MessageLayout &ml, qreal offs
     p->restore();
 }
 
+
+// Link-preview cards: a quiet box under the text -- an accent strip, the site,
+// the page's title and description, and a small picture when it has one.
+//
+// Everything about a card comes from a web page, so it is drawn as PLAIN TEXT
+// (never HTML), cut to a fixed number of lines, and a click opens the address the
+// sender typed, not anything the page supplied (see LinkPreviewLogic.h).
+//
+// The ground is the bubble's own: the fill is the text colour at a few percent
+// alpha, and the ink is the text colour too, so it derives from the pairing the
+// theme conformance test already scores on BOTH bubble kinds instead of
+// introducing a token that is only right on one of them (the audio attachment
+// does the same).
+void ChatPainter::paintLinkCards(QPainter *p, const MessageLayout &ml, qreal offsetY)
+{
+    if (ml.linkCards.isEmpty())
+        return;
+    const QVector<talq::linkpreview::ReadyCard> ready = m_linkPreviews->readyCards(ml.previewUrls);
+    if (ready.isEmpty())
+        return;
+    const talq::linkpreview::CardFonts fonts = talq::linkpreview::cardFonts(m_theme);
+
+    p->save();
+    p->setRenderHint(QPainter::Antialiasing, true);
+    for (const LinkCardSlot &slot : ml.linkCards) {
+        const talq::linkpreview::ReadyCard *rc = nullptr;
+        for (const auto &r : ready) {
+            if (r.data.url == slot.url) { rc = &r; break; }
+        }
+        // Gone since this layout was made (the service was cleared): the rebuild
+        // that follows drops the room, there is just nothing to draw meanwhile.
+        if (!rc)
+            continue;
+
+        const QRectF card = slot.rect.translated(0, offsetY);
+        if (card.bottom() < 0 || card.top() > height())
+            continue;
+        const talq::linkpreview::CardMeasure cm =
+            talq::linkpreview::measureCard(m_theme, *rc, card.width());
+        const auto at = [&card](const QRectF &r) { return r.translated(card.topLeft()); };
+
+        // The same faint text-colour wash the reply-quote inset uses (16 on the
+        // light theme, 14 on the dark ones), so the site name can take the quote
+        // author's ink tokens -- accent text corrected against exactly this ground
+        // on each bubble kind and already scored by theme-conformance-test.
+        QColor fill = m_theme.textPrimary;
+        fill.setAlpha(m_theme.isLight ? 16 : 14);
+        p->setPen(Qt::NoPen);
+        p->setBrush(fill);
+        p->drawRoundedRect(card, 8, 8);
+
+        // The strip is clipped to the card's rounded corners.
+        p->save();
+        QPainterPath clip;
+        clip.addRoundedRect(card, 8, 8);
+        p->setClipPath(clip);
+        p->fillRect(at(cm.g.bar), m_theme.accentText);
+        p->restore();
+
+        // Site
+        p->setFont(fonts.site);
+        p->setPen(ml.isOwn ? m_theme.quoteInkOwn : m_theme.quoteInkPeer);
+        p->drawText(at(cm.g.site), Qt::AlignLeft | Qt::AlignVCenter,
+                    QFontMetricsF(fonts.site).elidedText(rc->data.site, Qt::ElideRight,
+                                                         cm.g.site.width()));
+
+        // Title, then description: the exact lines the layout counted.
+        p->setFont(fonts.title);
+        p->setPen(m_theme.textPrimary);
+        const qreal titleLineH = QFontMetricsF(fonts.title).lineSpacing();
+        for (int i = 0; i < cm.titleLines.size(); ++i) {
+            const QRectF lr = at(cm.g.title).adjusted(0, i * titleLineH, 0, 0);
+            p->drawText(QRectF(lr.left(), lr.top(), lr.width(), titleLineH),
+                        Qt::AlignLeft | Qt::AlignVCenter, cm.titleLines.at(i));
+        }
+        if (!cm.descLines.isEmpty()) {
+            p->setFont(fonts.desc);
+            QColor ink = m_theme.textPrimary;
+            ink.setAlpha(200);          // theme-conformance-test scores exactly this
+            p->setPen(ink);
+            const qreal descLineH = QFontMetricsF(fonts.desc).lineSpacing();
+            for (int i = 0; i < cm.descLines.size(); ++i) {
+                const QRectF lr = at(cm.g.desc).adjusted(0, i * descLineH, 0, 0);
+                p->drawText(QRectF(lr.left(), lr.top(), lr.width(), descLineH),
+                            Qt::AlignLeft | Qt::AlignVCenter, cm.descLines.at(i));
+            }
+        }
+
+        // Picture. The box is reserved as soon as the card is, so the card does
+        // not change size when the image lands; until then (or if it never
+        // does) it is a plain tinted square.
+        if (rc->hasThumb) {
+            const QRectF tr = at(cm.g.thumb);
+            QPainterPath tclip;
+            tclip.addRoundedRect(tr, 6, 6);
+            p->save();
+            p->setClipPath(tclip);
+            const QImage th = m_linkPreviews->thumb(slot.url);
+            if (!th.isNull()) {
+                p->drawImage(tr, th);
+            } else {
+                QColor ph = m_theme.textPrimary;
+                ph.setAlphaF(0.10f);
+                p->fillRect(tr, ph);
+            }
+            p->restore();
+        }
+    }
+    p->restore();
+}
 
 // An audio attachment: round play/pause control, a progress track, and a
 // clock. Painted instead of the generic document pill because a voice message

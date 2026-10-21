@@ -276,6 +276,8 @@ QVariant MessageListModel::data(const QModelIndex &index, int role) const
             return m.silent;
         case ReferenceIdRole:
             return m.referenceId;
+        case LinkPreviewUrlsRole:
+            return m.previewUrls;
         default:
             return {};
     }
@@ -316,6 +318,7 @@ QHash<int, QByteArray> MessageListModel::roleNames() const
         {FileHideDownloadRole,  "fileHideDownload"},
         {LastEditTimestampRole, "lastEditTimestamp"},
         {SilentRole,            "silent"},
+        {LinkPreviewUrlsRole,   "linkPreviewUrls"},
     };
 }
 

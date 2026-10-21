@@ -65,6 +65,7 @@ public:
         SilentRole,             // sender suppressed notifications for this message
         ReferenceIdRole,        // #80 -- client referenceId (machine marker, e.g. "talq/busy")
         ReplyToIdRole,          // parent message id, so a click on the quote can jump to it
+        LinkPreviewUrlsRole,    // QStringList: addresses that may get a preview card (<= 2)
     };
 
     explicit MessageListModel(ApiClient *api, MessageCache *cache, QObject *parent = nullptr);
