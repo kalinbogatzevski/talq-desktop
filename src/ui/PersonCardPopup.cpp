@@ -1,5 +1,6 @@
 #include "PersonCardPopup.h"
 
+#include "core/AvatarPaths.h"
 #include "core/PersonCardLogic.h"
 #include "core/ShiftStatusService.h"
 
@@ -7,6 +8,7 @@
 #include <QHBoxLayout>
 #include <QKeyEvent>
 #include <QLabel>
+#include <QMouseEvent>
 #include <QPainter>
 #include <QPushButton>
 #include <QScreen>
@@ -109,6 +111,9 @@ PersonCardPopup::PersonCardPopup(QWidget *parent)
     m_avatar = new QLabel(this);
     m_avatar->setFixedSize(kAvatarPx, kAvatarPx);
     m_avatar->setAttribute(Qt::WA_TranslucentBackground);
+    // A click on the picture opens it large (eventFilter below), for a person it can be
+    // opened for; showForPerson sets the hand and the tip. A label has no click signal.
+    m_avatar->installEventFilter(this);
     idRow->addWidget(m_avatar, 0, Qt::AlignTop);
 
     auto *idCol = new QVBoxLayout;
@@ -199,6 +204,13 @@ void PersonCardPopup::showForPerson(const QString &actorId,
 {
     m_actorId = actorId;
     m_displayName = displayName;
+
+    // The picture opens large only for an id that can name a user (AvatarPaths.h refuses a
+    // bot's "bots/..." id): the pointing hand and the tip are the only thing that say it
+    // can be clicked, so they follow the answer.
+    m_zoomable = !talq::avatarpaths::userPath(actorId).isEmpty();
+    m_avatar->setCursor(m_zoomable ? Qt::PointingHandCursor : Qt::ArrowCursor);
+    m_avatar->setToolTip(m_zoomable ? tr("View picture") : QString());
 
     m_name->setText(QString::fromStdString(
         talq::personCardTitle(displayName.toStdString(), actorId.toStdString())));
@@ -398,6 +410,22 @@ bool PersonCardPopup::event(QEvent *e)
     if (e->type() == QEvent::WindowDeactivate && isVisible())
         close();   // click-away dismissal, like a real dropdown
     return QDialog::event(e);
+}
+
+// A click on the card's picture shows it large. The release is what counts, and only a
+// left button over the label itself (a press that was dragged off does not fire).
+bool PersonCardPopup::eventFilter(QObject *watched, QEvent *e)
+{
+    if (watched == m_avatar && e->type() == QEvent::MouseButtonRelease) {
+        auto *me = static_cast<QMouseEvent *>(e);
+        if (me->button() == Qt::LeftButton && m_avatar->rect().contains(me->position().toPoint())
+            && m_zoomable) {
+            emit pictureRequested(m_actorId, m_displayName);
+            close();   // the viewer is its own window; the card has done its job
+            return true;
+        }
+    }
+    return QDialog::eventFilter(watched, e);
 }
 
 void PersonCardPopup::keyPressEvent(QKeyEvent *e)

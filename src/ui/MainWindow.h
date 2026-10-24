@@ -204,6 +204,12 @@ private:
     void showPersonCard(const QString &actorId, const QString &actorName,
                         const QRect &anchorGlobal);
     void fetchPersonCardAvatar(const QString &actorId);
+    // A person's or a group's picture, large. The header, the person card and the chat
+    // list's right-click menu all come here, so the request and the viewer are built in
+    // one place. `id` is a user id, or a room token when `isRoom`.
+    void showPicture(bool isRoom, const QString &id, const QString &title);
+    // The one picture/image viewer, created on first use.
+    ImageViewerDialog *ensureImageViewer();
     void createNewTopic();
     void buildWelcomeContent();    // (re)build Mission Control content; theme-aware
     void showWelcome();            // rebuild-if-dirty, then show + refresh

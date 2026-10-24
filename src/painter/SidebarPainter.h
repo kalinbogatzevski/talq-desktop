@@ -245,6 +245,9 @@ private:
 
     // ── Image caches ──
     QHash<QString, QImage> m_avatarCache;   // cacheKey -> circular avatar
-    QSet<QString> m_avatarPending;          // in-flight avatar requests
+    // cacheKey -> when the download in flight for it began. The marker is only believed
+    // for talq::avatarfetch::kPendingGiveUpMs: a download that never finishes must not
+    // freeze its picture for the life of the process.
+    QHash<QString, qint64> m_avatarPending;
     QHash<QString, qint64> m_avatarFetchedMs; // cacheKey -> last fetch epoch-ms (TTL)
 };

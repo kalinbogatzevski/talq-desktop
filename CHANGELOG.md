@@ -1,5 +1,49 @@
 # Changelog
 
+## v0.77.1 "Vsi Svetii" — BETA (2026-10-24)
+
+Two things you can now do, and one fix: see who is behind a reaction, open a person's or a group's
+picture large, and a group picture that has been changed no longer stays old in the chat list.
+
+### Added
+* **See who reacted.** Rest the pointer on a reaction under a message and a tip lists the people
+  behind the number: you first, then everyone else in the order they reacted, ten names and then
+  "and N more". The list is read from your Nextcloud server when the pointer arrives, so it is
+  usually there by the time the tip opens, and it counts the people it names. A colleague whose
+  account was deleted reads "Deleted user"; a guest with no name reads "Guest". Names are shown
+  as plain text, and a very long one is cut.
+* **Open a picture large.** Click the picture at the top of a chat (a colleague's or a group's), the
+  picture on a colleague's card, or the group picture in the conversation info, and it opens in its
+  own window; right-click a chat in the list and choose **View picture** for the same. Copy and
+  Save as work on the picture. A group that has no picture of its own shows its default icon sharp
+  instead of blown up. Clicking a picture inside a message still opens the person's card.
+
+### Fixed
+* **A changed group picture could stay old in the chat list until TalQ was restarted.** The chat
+  header showed the new picture and the list did not. Pictures were downloaded with no time limit,
+  and the list would not ask for a picture again while an earlier download of it was still
+  "in flight", so one download that never finished froze that picture for as long as TalQ ran
+  (eleven pictures, three days, on one laptop). A download that stalls now gives up after 20
+  seconds, one that has been going for a minute is no longer waited for, and a refresh that fails
+  keeps the picture you already have instead of blanking it. The chat header and the pictures
+  beside messages follow the same rules. On 0.77.0, restarting TalQ clears a stuck picture.
+
+### Good to know
+* **Beta channel only.** The stable line is untouched.
+* Another person's reaction reaches your screen up to about half a minute after they make it (the
+  server does not announce reactions). The tip reads the list straight from the server, so it can
+  be ahead of the number on the reaction for that moment, and says so by counting the names.
+* **What was checked.** The tests for the new parts pass (73 checks for the reaction list, 48 for
+  the picture addresses, 26 for the picture refresh rules, including hostile input such as markup
+  in a name and an id that tries to walk the request path). Two scenarios ran against the live
+  server: the two test accounts react to one message and the real list comes back named, you
+  first; and the real picture window, drawn offscreen, shows a person's picture and a group's
+  default one. Two rounds of independent review each found twelve issues, none severe, all fixed;
+  one of them (a picture opened from a colleague's card inside the group info would have been a
+  window that ignores every click) was found only by the review. **Not** checked: hovering a
+  reaction and clicking the pictures in a running window, a high-DPI display, a weak device, and
+  the branded build in use.
+
 ## v0.77.0 "Vsi Svetii" — BETA (2026-10-21)
 
 Two things: a web address in a message now shows what is behind it, and the buffer that holds the

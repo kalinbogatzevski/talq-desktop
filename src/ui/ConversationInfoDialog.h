@@ -6,6 +6,7 @@
 #include "core/BotInfo.h"
 
 class ApiClient;
+class ImageViewerDialog;
 class ShiftStatusService;
 class QLabel;
 class QLineEdit;
@@ -87,6 +88,11 @@ private:
     void setAvatarStatus(const QString &text, bool error);
     void applyAvatarPixmap(const QImage &img);   // #25 — center-crop to the disc (no stretch)
     void fetchRoomAvatar();                       // #25 — load the CURRENT room avatar on open
+    // A click on the group picture shows it large. This dialog is application-modal, and a
+    // top-level window that is not its child would be blocked by that, so the viewer is a
+    // child window of the dialog (and goes with it).
+    void showRoomPicture();
+    ImageViewerDialog *m_pictureViewer = nullptr;
 
     ApiClient   *m_api = nullptr;
     ShiftStatusService *m_shiftStatus = nullptr;

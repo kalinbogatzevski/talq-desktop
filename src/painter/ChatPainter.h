@@ -10,6 +10,7 @@
 #include "MessageLayout.h"
 #include "PainterTheme.h"
 #include "painter/ReactionLayout.h"
+#include "core/ReactionWhoLogic.h"
 #include "painter/JumpToBottomLogic.h"
 #include "painter/CodeCopyLogic.h"
 #include "painter/ClickFocusGuard.h"
@@ -50,6 +51,7 @@ class MessageListModel;
 class SignalingClient;
 class QNetworkReply;
 class LinkPreviewService;
+class ReactionWhoService;
 
 /**
  * QWidget that renders the entire chat message list using QPainter.
@@ -224,6 +226,44 @@ private:
     talq::ReactionLayoutParams reactionLayoutParams(const QRectF &barRect) const;
     struct ReactionFonts { QFont emoji, count; };
     ReactionFonts reactionFonts() const;
+
+    // The pill under a canvas point, if any. hitTestReaction (clicks), the hover
+    // prefetch and the "who reacted" tooltip all go through this ONE walk of the
+    // pill geometry, so a tooltip can never describe a different pill than the
+    // one a click would act on.
+    struct ReactionPillHit {
+        QString emoji;
+        QString count;      // the number as the pill shows it
+        QRectF  rect;       // canvas-absolute (subtract m_scrollY for the widget)
+    };
+    bool reactionPillAt(const MessageLayout &ml, const QPointF &canvasPos,
+                        ReactionPillHit *out = nullptr) const;
+
+    // ── Who reacted (logic: core/ReactionWhoLogic.h, fetch: ReactionWhoService) ──
+    // What the pills of a row look like right now. A list of reactors is only
+    // shown while this is unchanged from when it was fetched.
+    QString reactionSignature(const MessageLayout &ml) const;
+    talq::reactionwho::Labels reactionWhoLabels() const;
+    // The pointer is resting on a pill: make sure the list is on its way. Called
+    // from hover (so it is usually there by the time the tooltip opens), never
+    // from paint.
+    void observeReactionHover(const MessageLayout &ml, const QPointF &canvasPos);
+    // Tooltip text for one pill from what is held now ("Loading…" while it is not).
+    QString reactionTipHtml(const MessageLayout &ml, const ReactionPillHit &hit);
+    void showReactionTip(const MessageLayout &ml, const ReactionPillHit &hit,
+                         const QPoint &globalPos);
+    ReactionWhoService *m_reactionWho = nullptr;
+    // Which tooltip is up, so the answer arriving can replace its "Loading…". Only
+    // the identity is kept: the pill under the pointer (its count, its rect) is
+    // resolved again when the answer arrives. Cleared whenever any other tooltip is
+    // raised.
+    struct ReactionTip {
+        QString token;
+        int     messageId = 0;
+        QString emoji;
+        QPoint  globalPos;
+    };
+    ReactionTip m_reactionTip;
     bool isOnBodyText(const QPointF &canvasPos, int layoutIdx) const;
     void copySelectedText();
     QVariantMap variantMapFromLayout(const MessageLayout &ml) const;
@@ -412,7 +452,9 @@ private:
 
     // ── Image caches ──
     QHash<QString, QImage> m_avatarCache;   // userId -> circular avatar
-    QSet<QString> m_avatarPending;          // in-flight avatar requests
+    // userId -> when the download in flight for it began (believed only for
+    // talq::avatarfetch::kPendingGiveUpMs; see core/AvatarFetchPolicy.h).
+    QHash<QString, qint64> m_avatarPending;
     QHash<QString, qint64> m_avatarFetchedMs; // userId -> last fetch epoch-ms (TTL)
     QHash<int, QImage> m_previewCache;      // fileId -> preview image
     QHash<int, qreal> m_previewAspect;     // fileId -> height/width ratio (0 = unknown)

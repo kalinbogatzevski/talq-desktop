@@ -1,9 +1,11 @@
 #include "ConversationInfoDialog.h"
 
 #include "core/ApiClient.h"
+#include "core/AvatarPaths.h"
 #include "core/NcUser.h"
 #include "core/ShiftStatusService.h"
 #include "painter/PainterTheme.h"
+#include "ui/ImageViewerDialog.h"
 
 #include <QCursor>
 #include <QEvent>
@@ -169,6 +171,11 @@ ConversationInfoDialog::ConversationInfoDialog(ApiClient *api,
             "QLabel { background:%1; color:%2; border-radius:28px;"
             "         font-size:24px; font-weight:600; }")
             .arg(avatarBg.name(QColor::HexRgb), th.inkOn(avatarBg).name(QColor::HexRgb)));
+        // Clickable: the picture opens large (eventFilter). A label has no click signal,
+        // so the pointing hand and the tip are what say it can be clicked.
+        m_avatar->setCursor(Qt::PointingHandCursor);
+        m_avatar->setToolTip(tr("View picture"));
+        m_avatar->installEventFilter(this);
         avRow->addWidget(m_avatar);
         avRow->addSpacing(14);
         if (m_amOwnerOrMod) {
@@ -612,6 +619,13 @@ void ConversationInfoDialog::populateParticipants(const QVector<RoomParticipant>
 
 bool ConversationInfoDialog::eventFilter(QObject *watched, QEvent *event)
 {
+    if (m_avatar && watched == m_avatar && event->type() == QEvent::MouseButtonRelease) {
+        auto *me = static_cast<QMouseEvent *>(event);
+        if (me->button() == Qt::LeftButton && m_avatar->rect().contains(me->position().toPoint())) {
+            showRoomPicture();
+            return true;
+        }
+    }
     if (m_memberList && watched == m_memberList->viewport()
         && event->type() == QEvent::MouseButtonRelease) {
         auto *me = static_cast<QMouseEvent *>(event);
@@ -629,6 +643,21 @@ bool ConversationInfoDialog::eventFilter(QObject *watched, QEvent *event)
         }
     }
     return QDialog::eventFilter(watched, event);
+}
+
+void ConversationInfoDialog::showRoomPicture()
+{
+    if (!m_api)
+        return;
+    const QString path = talq::avatarpaths::roomPath(m_token, QDateTime::currentSecsSinceEpoch());
+    if (path.isEmpty())
+        return;                          // not a real token: nothing to ask the server
+    if (!m_pictureViewer)
+        m_pictureViewer = new ImageViewerDialog(m_api, nullptr, this);   // a child window: see the header
+    m_pictureViewer->showPicture(m_nameEdit ? m_nameEdit->text().trimmed() : QString(), path);
+    m_pictureViewer->show();
+    m_pictureViewer->raise();
+    m_pictureViewer->activateWindow();
 }
 
 void ConversationInfoDialog::setShiftStatus(ShiftStatusService *shiftStatus)
