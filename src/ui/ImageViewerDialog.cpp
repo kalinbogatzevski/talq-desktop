@@ -2,9 +2,14 @@
 
 #include "ImageClipboard.h"
 #include "core/ApiClient.h"
+#include "core/AvatarFetchPolicy.h"
+#include "core/AvatarPaths.h"
 #include "painter/PainterTheme.h"
 
 #include <QApplication>
+#include <QBuffer>
+#include <QImageReader>
+#include <QNetworkReply>
 #include <QClipboard>
 #include <QCloseEvent>
 #include <QContextMenuEvent>
@@ -47,6 +52,23 @@ PainterTheme viewerChromeTheme()
         t = PainterTheme::Theme::Vivid;
     return PainterTheme(t, 1.0);
 }
+
+// A picture's bytes as an image. A group without a custom picture is served as an SVG of
+// 22x22 by its own measure; a vector image is rasterised at a size worth looking at
+// (AvatarPaths.h), a bitmap is read as it is, with its EXIF orientation applied.
+QImage decodePicture(const QByteArray &bytes)
+{
+    QByteArray copy = bytes;
+    QBuffer buf(&copy);
+    if (!buf.open(QIODevice::ReadOnly))
+        return {};
+    QImageReader reader(&buf);
+    reader.setAutoTransform(true);
+    const QByteArray fmt = reader.format();
+    if (fmt == "svg" || fmt == "svgz")
+        reader.setScaledSize(talq::avatarpaths::rasterSizeForVector(reader.size()));
+    return reader.read();
+}
 } // namespace
 
 ImageViewerDialog::ImageViewerDialog(ApiClient *api, ImageClipboard *clipboard, QWidget *parent)
@@ -79,6 +101,10 @@ ImageViewerDialog::ImageViewerDialog(ApiClient *api, ImageClipboard *clipboard, 
     titleRowLayout->setSpacing(6);
 
     m_titleBar = new QLabel(titleRow);
+    // PLAIN text: the title is a file name or a person's / room's display name, which any
+    // member of a room can set. A QLabel defaults to AutoText and renders anything that
+    // looks like markup (an <img>, a link) as rich text.
+    m_titleBar->setTextFormat(Qt::PlainText);
     m_titleBar->setStyleSheet("font-size: 13px; background: transparent;");
     m_titleBar->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     titleRowLayout->addWidget(m_titleBar, 1);
@@ -139,6 +165,12 @@ ImageViewerDialog::ImageViewerDialog(ApiClient *api, ImageClipboard *clipboard, 
         menu.exec(p);
     });
 
+    restoreSavedGeometry();
+}
+
+// The window the user last left photos in, or 80% of the screen the first time.
+void ImageViewerDialog::restoreSavedGeometry()
+{
     QSettings s;
     QRect g = s.value(QStringLiteral("imageViewer/geometry")).toRect();
     if (g.isValid()) setGeometry(g);
@@ -148,6 +180,40 @@ ImageViewerDialog::ImageViewerDialog(ApiClient *api, ImageClipboard *clipboard, 
     } else {
         resize(1000, 700);
     }
+}
+
+// A picture of a person or a group is a few hundred pixels. Fitted into the photo-sized
+// window it would be enlarged four times and look like mush, so a viewer that was not
+// open yet is sized to the picture at about double size, within the screen.
+void ImageViewerDialog::sizeForPicture(const QSize &imageSize)
+{
+    if (!m_pictureFresh)
+        return;
+    m_pictureFresh = false;
+    resizeForPicture(imageSize);
+}
+
+// The size itself, kept inside the screen: by the time the picture arrives the window is
+// already on screen at its old position, and a window that is larger than it was must not
+// end up half past the edge.
+void ImageViewerDialog::resizeForPicture(const QSize &imageSize)
+{
+    QRect avail(0, 0, 1600, 1000);
+    if (const QScreen *s = screen() ? screen() : QGuiApplication::primaryScreen())
+        avail = s->availableGeometry();
+    const int titleH = m_titleBar && m_titleBar->parentWidget()
+        ? m_titleBar->parentWidget()->sizeHint().height() : 36;
+    const int w = qBound(480, imageSize.width() * 2,  int(avail.width()  * 0.8));
+    const int h = qBound(480, imageSize.height() * 2, int(avail.height() * 0.8)) + titleH;
+    QRect r(isVisible() ? pos() : QPoint(avail.left() + 40, avail.top() + 40), QSize(w, h));
+    if (r.right()  > avail.right())  r.moveRight(avail.right());
+    if (r.bottom() > avail.bottom()) r.moveBottom(avail.bottom());
+    if (r.left()   < avail.left())   r.moveLeft(avail.left());
+    if (r.top()    < avail.top())    r.moveTop(avail.top());
+    if (isVisible())
+        setGeometry(r);
+    else
+        resize(r.size());   // not shown yet: the platform places it
 }
 
 void ImageViewerDialog::applyPixmap(const QImage &img)
@@ -182,6 +248,13 @@ void ImageViewerDialog::zoomByStep(bool zoomIn)
 void ImageViewerDialog::setImage(int fileId, const QString &fileName, const QString &mime,
                                  const QImage &placeholder)
 {
+    // A photo replaces a picture: drop any picture still on its way, and take the
+    // photo-sized window back (a picture's own window size is never saved).
+    ++m_pictureSeq;
+    if (m_showingPicture) {
+        m_showingPicture = false;
+        restoreSavedGeometry();
+    }
     m_currentFileId = fileId;
     m_currentFileName = fileName;
     m_currentMime = mime;
@@ -218,6 +291,63 @@ void ImageViewerDialog::setImage(int fileId, const QString &fileName, const QStr
     } else {
         m_titleBar->setText(m_currentFileName);
     }
+}
+
+void ImageViewerDialog::showPicture(const QString &title, const QString &path)
+{
+    const int seq = ++m_pictureSeq;
+    const bool wasHidden = !isVisible();
+    // A second request while the first is still loading must not take the "may still be
+    // sized for a picture" state away: only a window that was NOT on screen sets it.
+    if (wasHidden)
+        m_pictureFresh = true;
+    // The user may have resized the window for a photo; leaving photo mode would otherwise
+    // lose that, because a picture's own window is never saved.
+    if (!wasHidden && !m_showingPicture)
+        QSettings().setValue(QStringLiteral("imageViewer/geometry"), geometry());
+    m_showingPicture = true;
+    // Until the picture's real size is known, open at a picture-sized window rather than the
+    // photo-sized one (80% of the screen, black, with a caption in the corner).
+    if (wasHidden)
+        resizeForPicture(QSize(320, 320));
+    // No file behind it: Copy and Save use what is on screen, which is all there is.
+    m_currentFileId = 0;
+    m_currentFileName = talq::avatarpaths::fileNameFor(title);
+    m_currentMime.clear();
+    m_scene->clear();
+    m_item = nullptr;
+    m_currentImage = QImage();
+    setWindowTitle(title.isEmpty() ? tr("Picture") : title);
+    raise();
+    activateWindow();
+
+    if (!m_api || path.isEmpty()) {
+        m_titleBar->setText(title + QStringLiteral("   ·   ") + tr("Couldn't load the picture"));
+        return;
+    }
+    m_titleBar->setText(title + QStringLiteral("   ·   ") + tr("Loading…"));
+
+    // With a timeout: a stalled download errors out instead of leaving "Loading…" for ever.
+    QNetworkReply *reply = m_api->getAbsoluteUrl(path, talq::avatarfetch::kTransferTimeoutMs);
+    // The reply belongs to the long-lived network manager: without this it would survive the
+    // viewer (closed with the info dialog it is a child of), buffer its whole body and never
+    // be deleted. This deletes it when it finishes and aborts it if the viewer dies first.
+    ApiClient::bindReplyLifetime(reply, this);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, seq, title]() {
+        reply->deleteLater();
+        if (seq != m_pictureSeq)
+            return;                         // another picture, a photo, or a close came first
+        QImage img;
+        if (reply->error() == QNetworkReply::NoError)
+            img = decodePicture(reply->readAll());
+        if (!img.isNull()) {
+            sizeForPicture(img.size());
+            applyPixmap(img);
+            m_titleBar->setText(title);
+        } else {
+            m_titleBar->setText(title + QStringLiteral("   ·   ") + tr("Couldn't load the picture"));
+        }
+    });
 }
 
 void ImageViewerDialog::copyImage()
@@ -375,7 +505,11 @@ void ImageViewerDialog::mouseMoveEvent(QMouseEvent *event)
 
 void ImageViewerDialog::closeEvent(QCloseEvent *event)
 {
-    QSettings().setValue(QStringLiteral("imageViewer/geometry"), geometry());
+    ++m_pictureSeq;                         // a picture still on its way is no longer wanted
+    // A picture's window is sized for the picture; the geometry saved here is the
+    // one the user chose for photos.
+    if (!m_showingPicture)
+        QSettings().setValue(QStringLiteral("imageViewer/geometry"), geometry());
     // Closing only hid the dialog, so the last full-resolution image (capped
     // to the largest screen edge — tens of MB on a 4K display) and the scene
     // pixmap stayed resident until the next image replaced them.

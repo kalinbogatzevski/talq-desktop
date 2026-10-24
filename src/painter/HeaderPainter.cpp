@@ -1,5 +1,6 @@
 #include "HeaderPainter.h"
 #include "core/ApiClient.h"
+#include "core/AvatarFetchPolicy.h"
 #include "core/SignalingClient.h"
 #include "core/ShiftStatusService.h"
 #include "painter/VectorIcons.h"
@@ -289,6 +290,7 @@ void HeaderPainter::paintEvent(QPaintEvent *)
     m_searchBtnRect = QRectF();
     m_remindersBtnRect = QRectF();
     m_infoBtnRect = QRectF();
+    m_avatarRect = QRectF();
 
     qreal x = padLeft;
 
@@ -330,6 +332,7 @@ void HeaderPainter::paintEvent(QPaintEvent *)
         qreal avatarY = (h - AvatarSize) / 2.0;
         QRectF avatarRect(x, avatarY, AvatarSize, AvatarSize);
         paintAvatar(painter, avatarRect);
+        m_avatarRect = avatarRect;   // clickable: the picture opens large
         x += AvatarSize + spacing;
     }
 
@@ -926,12 +929,9 @@ void HeaderPainter::paintAvatar(QPainter *p, const QRectF &rect)
 // Avatar loading
 // ═══════════════════════════════════════════════════════
 
-// Avatar cache freshness — see the matching note in ChatPainter.cpp. No HTTP
-// cache exists, so the server always returns the current avatar; re-fetch once
-// the cached copy ages past the TTL (shorter backoff for a failed fetch).
-static constexpr qint64 kAvatarTtlMs      = 15 * 60 * 1000;  // 15 min
-static constexpr qint64 kAvatarErrorTtlMs = 60 * 1000;       // 1 min
-
+// Avatar cache freshness. No HTTP cache exists, so the server always returns the
+// current avatar; re-fetch once the cached copy is due. The rules live in
+// core/AvatarFetchPolicy.h, shared with the sidebar and the chat bubbles.
 QImage HeaderPainter::fetchAvatar(const QString &userId)
 {
     if (userId.isEmpty())
@@ -939,10 +939,8 @@ QImage HeaderPainter::fetchAvatar(const QString &userId)
 
     auto it = m_avatarCache.find(userId);
     if (it != m_avatarCache.end()) {
-        const qint64 age = QDateTime::currentMSecsSinceEpoch()
-                           - m_avatarFetchedMs.value(userId, 0);
-        const qint64 ttl = it.value().isNull() ? kAvatarErrorTtlMs : kAvatarTtlMs;
-        if (age >= ttl)
+        if (talq::avatarfetch::due(it.value().isNull(), m_avatarFetchedMs.value(userId, 0),
+                                   QDateTime::currentMSecsSinceEpoch()))
             requestAvatar(userId);   // refresh in background; keep showing this one
         return it.value();
     }
@@ -953,12 +951,18 @@ QImage HeaderPainter::fetchAvatar(const QString &userId)
 
 void HeaderPainter::requestAvatar(const QString &userId)
 {
-    if (m_avatarPending.contains(userId))
+    const qint64 started = QDateTime::currentMSecsSinceEpoch();
+    // A download in flight is not doubled, but the marker is believed for a minute
+    // only: one that never finishes must not block every later refresh.
+    const auto pending = m_avatarPending.constFind(userId);
+    if (!talq::avatarfetch::mayStart(pending != m_avatarPending.constEnd(),
+                                     pending != m_avatarPending.constEnd() ? pending.value() : 0,
+                                     started))
         return;
     if (!m_api)
         return;
 
-    m_avatarPending.insert(userId);
+    m_avatarPending.insert(userId, started);
 
     // For 1:1, use user avatar. For groups, use room avatar.
     QString url;
@@ -974,25 +978,39 @@ void HeaderPainter::requestAvatar(const QString &userId)
               + QString::number(QDateTime::currentSecsSinceEpoch());
     }
 
-    QNetworkReply *reply = m_api->getAbsoluteUrl(url);
+    // With a transfer timeout: a stalled download errors out instead of hanging.
+    QNetworkReply *reply = m_api->getAbsoluteUrl(url, talq::avatarfetch::kTransferTimeoutMs);
 
-    connect(reply, &QNetworkReply::finished, this, [this, reply, userId]() {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, userId, started]() {
         reply->deleteLater();
-        m_avatarPending.remove(userId);
-        m_avatarFetchedMs[userId] = QDateTime::currentMSecsSinceEpoch();
+        // Only the download that owns the marker releases it.
+        if (m_avatarPending.value(userId, -1) == started)
+            m_avatarPending.remove(userId);
+        const qint64 done = QDateTime::currentMSecsSinceEpoch();
+
+        // A failed refresh never blanks a picture we already hold; it is asked for
+        // again soon (AvatarFetchPolicy.h).
+        const auto failed = [this, userId, done]() {
+            const auto held = m_avatarCache.constFind(userId);
+            const bool hadImage = held != m_avatarCache.constEnd() && !held.value().isNull();
+            m_avatarFetchedMs[userId] = talq::avatarfetch::failedStampMs(hadImage, done);
+            if (!hadImage)
+                m_avatarCache[userId] = QImage();
+        };
 
         if (reply->error() != QNetworkReply::NoError) {
-            m_avatarCache[userId] = QImage();
+            failed();
             return;
         }
 
         QByteArray data = reply->readAll();
         QImage img;
         if (!img.loadFromData(data)) {
-            m_avatarCache[userId] = QImage();
+            failed();
             return;
         }
 
+        m_avatarFetchedMs[userId] = done;
         m_avatarCache[userId] = PainterTheme::cropToCircle(img, AvatarSize);
         qInfo().nospace() << "HeaderPainter: avatar fetched id=" << userId
                           << " bytes=" << data.size();
@@ -1013,6 +1031,7 @@ int HeaderPainter::buttonAtPos(const QPointF &pos) const
     if (m_searchBtnRect.isValid() && m_searchBtnRect.contains(pos)) return 4;
     if (m_remindersBtnRect.isValid() && m_remindersBtnRect.contains(pos)) return 5;
     if (m_infoBtnRect.isValid() && m_infoBtnRect.contains(pos)) return 6;
+    if (m_avatarRect.isValid() && m_avatarRect.contains(pos)) return 7;
     return -1;
 }
 
@@ -1026,6 +1045,7 @@ QRectF HeaderPainter::buttonRect(int id) const
     case 4: return m_searchBtnRect;
     case 5: return m_remindersBtnRect;
     case 6: return m_infoBtnRect;
+    case 7: return m_avatarRect;
     default: return QRectF();
     }
 }
@@ -1040,6 +1060,7 @@ QString HeaderPainter::tooltipFor(int id) const
     case 4: return tr("Search in conversation");
     case 5: return tr("Upcoming reminders");
     case 6: return tr("Conversation info");
+    case 7: return tr("View picture");
     default: return QString();
     }
 }
@@ -1112,6 +1133,8 @@ void HeaderPainter::mouseReleaseEvent(QMouseEvent *event)
     case 4: emit searchRequested(); break;
     case 5: emit remindersRequested(); break;
     case 6: emit infoRequested(); break;
+    case 7: emit pictureRequested(m_conversationType, m_conversationUserId,
+                                  m_conversationToken, m_conversationName); break;
     default: break;
     }
     event->accept();

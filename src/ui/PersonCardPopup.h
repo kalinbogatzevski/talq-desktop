@@ -66,9 +66,13 @@ signals:
     void cardNeeded(const QString &actorId);
     // "I need a bigger avatar than the 36px the chat cache holds."
     void avatarNeeded(const QString &actorId);
+    // The picture on the card was clicked: show it large. The owner builds the request
+    // (core/AvatarPaths.h refuses an id that could not name a user, e.g. a bot's).
+    void pictureRequested(const QString &actorId, const QString &displayName);
 
 protected:
     bool event(QEvent *e) override;
+    bool eventFilter(QObject *watched, QEvent *e) override;
     void keyPressEvent(QKeyEvent *e) override;
     void paintEvent(QPaintEvent *e) override;
 
@@ -81,6 +85,10 @@ private:
     QString m_actorId;
     QString m_displayName;
     QPixmap m_avatarPixmap;
+    // Whether the picture can be opened large: an id that could not name a user (a bot's
+    // "bots/..." actor id) has no picture to show, and a click on it must neither be offered
+    // nor close the card for nothing.
+    bool m_zoomable = false;
 
     QLabel *m_avatar = nullptr;
     QLabel *m_name = nullptr;

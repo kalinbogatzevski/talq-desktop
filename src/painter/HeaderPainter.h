@@ -99,6 +99,11 @@ signals:
     void searchRequested();
     void remindersRequested();
     void infoRequested();
+    // The conversation's picture was clicked. Carries what the owner needs to name
+    // it: a one-to-one chat (type 1) is the peer's picture, anything else is the
+    // room's, by token.
+    void pictureRequested(int conversationType, const QString &userId,
+                          const QString &token, const QString &name);
 
 protected:
     void paintEvent(QPaintEvent *event) override;
@@ -124,6 +129,7 @@ private:
     QRectF m_searchBtnRect;
     QRectF m_remindersBtnRect;
     QRectF m_infoBtnRect;
+    QRectF m_avatarRect;         // the conversation's picture (button id 7: opens it large)
     // Title-label geometry as last painted (set in the same place as the
     // elide, read back in HoverMove below the buttonAtPos check) so a long
     // conversation title elided to fit the header gets a tooltip the same
@@ -144,7 +150,9 @@ private:
     QImage fetchAvatar(const QString &userId);
     void requestAvatar(const QString &userId);
     QHash<QString, QImage> m_avatarCache;
-    QSet<QString> m_avatarPending;
+    // key -> when the download in flight for it began (believed only for
+    // talq::avatarfetch::kPendingGiveUpMs; see core/AvatarFetchPolicy.h).
+    QHash<QString, qint64> m_avatarPending;
     QHash<QString, qint64> m_avatarFetchedMs; // key -> last fetch epoch-ms (TTL)
 
     // ── Painting helpers ──

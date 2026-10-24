@@ -1,6 +1,7 @@
 #include "SidebarPainter.h"
 #include "models/ConversationListModel.h"
 #include "core/ApiClient.h"
+#include "core/AvatarFetchPolicy.h"
 #include "core/SignalingClient.h"
 #include "core/ShiftStatusService.h"
 #include "EmojiTextRenderer.h"
@@ -1133,12 +1134,11 @@ QString SidebarPainter::avatarCacheKey(const QString &userId, const QString &tok
     return QStringLiteral("room:") + token;
 }
 
-// Avatar cache freshness — see the matching note in ChatPainter.cpp. No HTTP
-// cache exists, so the server always returns the current avatar; re-fetch once
-// the cached copy ages past the TTL (shorter backoff for a failed fetch).
-static constexpr qint64 kAvatarTtlMs      = 15 * 60 * 1000;  // 15 min
-static constexpr qint64 kAvatarErrorTtlMs = 60 * 1000;       // 1 min
-
+// Avatar cache freshness. No HTTP cache exists, so the server always returns the
+// current avatar; re-fetch once the cached copy is due. The rules (the TTLs, the
+// download's timeout, when an "in flight" marker stops being believed, what a failed
+// refresh may do to a picture we hold) live in core/AvatarFetchPolicy.h, shared with
+// the header and the chat bubbles so the three cannot drift apart.
 QImage SidebarPainter::fetchAvatar(const QString &userId, const QString &token, int convType, int size)
 {
     QString key = avatarCacheKey(userId, token, convType);
@@ -1148,10 +1148,8 @@ QImage SidebarPainter::fetchAvatar(const QString &userId, const QString &token, 
         // Re-fetch in the background once the cached entry is stale so a
         // changed avatar appears without a restart; a failed (null) entry
         // retries on the shorter error backoff instead of staying blank.
-        const qint64 age = QDateTime::currentMSecsSinceEpoch()
-                           - m_avatarFetchedMs.value(key, 0);
-        const qint64 ttl = cached.isNull() ? kAvatarErrorTtlMs : kAvatarTtlMs;
-        if (age >= ttl)
+        if (talq::avatarfetch::due(cached.isNull(), m_avatarFetchedMs.value(key, 0),
+                                   QDateTime::currentMSecsSinceEpoch()))
             requestAvatar(userId, token, convType, size);
         // Return cached, but re-scale if size differs
         if (cached.isNull()) return cached;
@@ -1166,12 +1164,19 @@ QImage SidebarPainter::fetchAvatar(const QString &userId, const QString &token, 
 void SidebarPainter::requestAvatar(const QString &userId, const QString &token, int convType, int size)
 {
     QString key = avatarCacheKey(userId, token, convType);
-    if (m_avatarPending.contains(key))
+    const qint64 started = QDateTime::currentMSecsSinceEpoch();
+    // A download in flight is not doubled -- but the marker is believed for a minute
+    // only. One that never finishes used to block every later refresh of this picture
+    // until TalQ was restarted.
+    const auto pending = m_avatarPending.constFind(key);
+    if (!talq::avatarfetch::mayStart(pending != m_avatarPending.constEnd(),
+                                     pending != m_avatarPending.constEnd() ? pending.value() : 0,
+                                     started))
         return;
     if (!m_api)
         return;
 
-    m_avatarPending.insert(key);
+    m_avatarPending.insert(key, started);
 
     // Build URL: user avatar for 1:1, room avatar for groups
     QString url;
@@ -1187,27 +1192,42 @@ void SidebarPainter::requestAvatar(const QString &userId, const QString &token, 
               + QString::number(QDateTime::currentSecsSinceEpoch());
     }
 
-    QNetworkReply *reply = m_api->getAbsoluteUrl(url);
+    // With a transfer timeout: a stalled download errors out instead of hanging.
+    QNetworkReply *reply = m_api->getAbsoluteUrl(url, talq::avatarfetch::kTransferTimeoutMs);
 
-    connect(reply, &QNetworkReply::finished, this, [this, reply, key, size]() {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, key, size, started]() {
         reply->deleteLater();
-        m_avatarPending.remove(key);
-        // Stamp fetch time (success OR failure) so the TTL/backoff in
-        // fetchAvatar drives the next retry instead of caching forever.
-        m_avatarFetchedMs[key] = QDateTime::currentMSecsSinceEpoch();
+        // Only the download that owns the marker releases it: one that outlived the
+        // give-up window and finishes late must not release a NEWER download's marker.
+        if (m_avatarPending.value(key, -1) == started)
+            m_avatarPending.remove(key);
+        const qint64 done = QDateTime::currentMSecsSinceEpoch();
+
+        // A failed refresh (a timeout is a normal outcome now, so is an offline blip)
+        // never blanks a picture we already hold; it is just asked for again soon.
+        // With nothing to keep, a null entry marks the failure; the TTL/backoff in
+        // fetchAvatar drives the retry either way.
+        const auto failed = [this, key, done]() {
+            const auto held = m_avatarCache.constFind(key);
+            const bool hadImage = held != m_avatarCache.constEnd() && !held.value().isNull();
+            m_avatarFetchedMs[key] = talq::avatarfetch::failedStampMs(hadImage, done);
+            if (!hadImage)
+                m_avatarCache[key] = QImage();
+        };
 
         if (reply->error() != QNetworkReply::NoError) {
-            m_avatarCache[key] = QImage(); // short error TTL lets it retry
+            failed();
             return;
         }
 
         QByteArray data = reply->readAll();
         QImage img;
         if (!img.loadFromData(data)) {
-            m_avatarCache[key] = QImage();
+            failed();
             return;
         }
 
+        m_avatarFetchedMs[key] = done;
         m_avatarCache[key] = PainterTheme::cropToCircle(img, size);
         qInfo().nospace() << "SidebarPainter: avatar fetched key=" << key
                           << " bytes=" << data.size();

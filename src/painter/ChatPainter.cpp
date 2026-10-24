@@ -26,7 +26,9 @@
 #include <QTextCursor>
 #include <QMenu>
 #include "core/ApiClient.h"
+#include "core/AvatarFetchPolicy.h"
 #include "core/LinkPreviewService.h"
+#include "core/ReactionWhoService.h"
 #include "core/EmojiData.h"
 #include "core/SignalingClient.h"
 #include "painter/ReactionLayout.h"
@@ -131,6 +133,36 @@ ChatPainter::ChatPainter(QWidget *parent)
     connect(m_linkPreviews, &LinkPreviewService::thumbReady, this,
             [this](const QString &) { update(); });
 
+    // Who reacted. The list is fetched when the pointer rests on a pill; if the
+    // tooltip opened before the answer came, "Loading…" is replaced in place.
+    // Only while that same tooltip is still up, so a late answer can never overwrite
+    // some other tooltip (the timestamp's, say). The pill under the pointer is
+    // resolved AGAIN here, not remembered from when the tooltip opened: rows are laid
+    // out again while a tooltip is up (another person's reaction arrives on the
+    // long-poll), and a pill can change its count or slide away from under a pointer
+    // that has not moved. If the pointer is no longer on the pill the tooltip was
+    // opened for, it is closed.
+    m_reactionWho = new ReactionWhoService(this);
+    connect(m_reactionWho, &ReactionWhoService::reactorsReady, this,
+            [this](const QString &token, int messageId) {
+        const ReactionTip tip = m_reactionTip;
+        if (tip.messageId != messageId || tip.token != token || !QToolTip::isVisible())
+            return;
+        for (const MessageLayout &ml : std::as_const(m_layouts)) {
+            if (ml.messageId != messageId)
+                continue;
+            const QPointF canvas = QPointF(mapFromGlobal(QCursor::pos())) + QPointF(0, m_scrollY);
+            ReactionPillHit hit;
+            if (!reactionPillAt(ml, canvas, &hit) || hit.emoji != tip.emoji) {
+                QToolTip::hideText();
+                m_reactionTip = {};
+                return;
+            }
+            showReactionTip(ml, hit, tip.globalPos);
+            return;
+        }
+    });
+
     // Coalesce resize-driven rebuilds — window drags fire resizeEvent every
     // pixel. 50ms idle is below human "delay" threshold but well above the
     // ~16ms drag-event cadence.
@@ -189,6 +221,7 @@ void ChatPainter::setModel(MessageListModel *mdl)
 
     m_model = mdl;
     m_linkPreviews->setApi(m_model ? m_model->api() : nullptr);
+    m_reactionWho->setApi(m_model ? m_model->api() : nullptr);
 
     // Clear file preview caches on model switch (avatars persist across conversations)
     m_previewCache.clear();
@@ -230,6 +263,8 @@ void ChatPainter::setMyUserId(const QString &id)
     // A different account: a preview fetched with the previous user's credentials
     // is not shown to this one.
     m_linkPreviews->clear();
+    m_reactionWho->clear();         // names fetched as the previous user are not for this one
+    m_reactionTip = {};
     m_layoutCache.clear();          // isOwn flips → all rows invalid
     rebuildAllLayouts();
 }
@@ -917,6 +952,11 @@ void ChatPainter::setHoveredPos(qreal x, qreal y)
         update();
     }
 
+    // Resting on a reaction pill: start fetching who reacted now, so the list is
+    // usually there by the time the tooltip opens. Hover only -- never paint.
+    if (idx >= 0 && idx < m_layouts.size())
+        observeReactionHover(m_layouts[idx], canvasPos);
+
     // Which code chip, if any, is under the pointer. Only a row that is hovered
     // can own one (idx was set to -1 above for system / unsent rows and under
     // the jump control), which keeps this in step with what paintCodeChips shows.
@@ -1369,6 +1409,9 @@ bool ChatPainter::event(QEvent *e)
 {
     if (e->type() == QEvent::ToolTip) {
         auto *he = static_cast<QHelpEvent*>(e);
+        // Any tooltip raised below replaces whatever was up; only the reaction
+        // branch sets this again.
+        m_reactionTip = {};
         // The jump-to-bottom control first: it floats over the rows, and its
         // tooltip must not be shadowed by the timestamp tooltip of the row
         // behind it.
@@ -1404,6 +1447,19 @@ bool ChatPainter::event(QEvent *e)
             if (li >= 0 && li < m_layouts.size() && isRetryTarget(m_layouts[li], canvas)) {
                 QToolTip::showText(he->globalPos(),
                     tr("Not sent. Click to retry or discard."), this);
+                return true;
+            }
+        }
+        // A reaction pill: who reacted. The pill is the more specific target, so it
+        // goes before the timestamp below. An unsent or system row has no
+        // reactions to ask about (messageId <= 0 / isSystem).
+        {
+            const int li = layoutIndexAtY(canvas.y());
+            ReactionPillHit hit;
+            if (li >= 0 && li < m_layouts.size()
+                && !m_layouts[li].isSystem && m_layouts[li].messageId > 0
+                && reactionPillAt(m_layouts[li], canvas, &hit)) {
+                showReactionTip(m_layouts[li], hit, he->globalPos());
                 return true;
             }
         }
@@ -2096,9 +2152,12 @@ ChatPainter::ReactionFonts ChatPainter::reactionFonts() const
     return f;
 }
 
-QString ChatPainter::hitTestReaction(const MessageLayout &ml, const QPointF &canvasPos) const
+// The ONE walk of the pill geometry for everything that asks "which pill is under
+// this point": a click (hitTestReaction), the hover prefetch and the tooltip.
+bool ChatPainter::reactionPillAt(const MessageLayout &ml, const QPointF &canvasPos,
+                                 ReactionPillHit *out) const
 {
-    if (!ml.reactBarRect.contains(canvasPos)) return {};
+    if (!ml.reactBarRect.contains(canvasPos)) return false;
 
     QStringList tokens = ml.reactions.split(QStringLiteral("  "), Qt::SkipEmptyParts);
 
@@ -2109,15 +2168,17 @@ QString ChatPainter::hitTestReaction(const MessageLayout &ml, const QPointF &can
     QFontMetrics fmEmoji(fonts.emoji);
     QFontMetrics fmCount(fonts.count);
 
-    QStringList emojis;
+    QStringList emojis, counts;
     std::vector<talq::ReactionMetrics> metrics;
     for (const QString &token : tokens) {
         int lastSpace = token.lastIndexOf(' ');
         if (lastSpace <= 0) continue;
         const QString emoji = token.left(lastSpace);
+        const QString count = token.mid(lastSpace + 1);
         emojis << emoji;
+        counts << count;
         metrics.push_back({ fmEmoji.horizontalAdvance(emoji),
-                            fmCount.horizontalAdvance(token.mid(lastSpace + 1)) });
+                            fmCount.horizontalAdvance(count) });
     }
 
     const auto rects = talq::layoutReactionPills(metrics, reactionLayoutParams(ml.reactBarRect));
@@ -2126,9 +2187,86 @@ QString ChatPainter::hitTestReaction(const MessageLayout &ml, const QPointF &can
         if (!rects[i].visible) continue;
         const QRectF pill(rects[i].x, ml.reactBarRect.top(),
                           rects[i].width, ml.reactBarRect.height());
-        if (pill.contains(canvasPos)) return emojis[i];
+        if (!pill.contains(canvasPos)) continue;
+        if (out) {
+            out->emoji = emojis[i];
+            out->count = counts[i];
+            out->rect  = pill;
+        }
+        return true;
     }
-    return {};
+    return false;
+}
+
+QString ChatPainter::hitTestReaction(const MessageLayout &ml, const QPointF &canvasPos) const
+{
+    ReactionPillHit hit;
+    return reactionPillAt(ml, canvasPos, &hit) ? hit.emoji : QString();
+}
+
+// ─── Who reacted ───────────────────────────────────
+
+QString ChatPainter::reactionSignature(const MessageLayout &ml) const
+{
+    return talq::reactionwho::signatureOf(ml.reactions, ml.reactionsSelf);
+}
+
+talq::reactionwho::Labels ChatPainter::reactionWhoLabels() const
+{
+    talq::reactionwho::Labels l;
+    l.you         = tr("You");
+    l.guest       = tr("Guest");
+    l.deletedUser = tr("Deleted user");
+    l.andMore     = tr("and %1 more");
+    l.loading     = tr("Loading…");
+    l.unavailable = tr("Couldn't load who reacted");
+    l.noNames     = tr("No names to show");
+    return l;
+}
+
+void ChatPainter::observeReactionHover(const MessageLayout &ml, const QPointF &canvasPos)
+{
+    // Cheap rejections first: this runs on every mouse move over the chat.
+    if (!m_model || ml.isSystem || ml.messageId <= 0 || ml.reactions.isEmpty())
+        return;
+    if (!reactionPillAt(ml, canvasPos))
+        return;
+    m_reactionWho->request(m_model->conversationToken(), ml.messageId, reactionSignature(ml));
+}
+
+QString ChatPainter::reactionTipHtml(const MessageLayout &ml, const ReactionPillHit &hit)
+{
+    namespace rw = talq::reactionwho;
+    const QString token = m_model ? m_model->conversationToken() : QString();
+    const QString sig   = reactionSignature(ml);
+    const rw::Labels labels = reactionWhoLabels();
+
+    // Ask first (a no-op when the list is held and fresh), then read what is held:
+    // a stale list is shown until the refreshed one replaces it, one whose pill has
+    // since changed is not shown at all.
+    m_reactionWho->request(token, ml.messageId, sig);
+    const ReactionWhoService::Lookup look = m_reactionWho->lookup(token, ml.messageId, hit.emoji, sig);
+    switch (look.state) {
+    case ReactionWhoService::State::Ready:
+        return rw::namesTipHtml(hit.emoji, hit.count, look.actors, m_myUserId, labels,
+                                ml.reactionsSelf.contains(hit.emoji));
+    case ReactionWhoService::State::Failed:
+        return rw::noteTipHtml(hit.emoji, hit.count, labels.unavailable);
+    case ReactionWhoService::State::Loading:
+    case ReactionWhoService::State::None:
+        break;
+    }
+    return rw::noteTipHtml(hit.emoji, hit.count, labels.loading);
+}
+
+void ChatPainter::showReactionTip(const MessageLayout &ml, const ReactionPillHit &hit,
+                                  const QPoint &globalPos)
+{
+    // The pill's own rectangle: Qt hides the tooltip when the pointer leaves it.
+    const QRect widgetRect = hit.rect.translated(0, -m_scrollY).toAlignedRect();
+    m_reactionTip = ReactionTip{ m_model ? m_model->conversationToken() : QString(),
+                                 ml.messageId, hit.emoji, globalPos };
+    QToolTip::showText(globalPos, reactionTipHtml(ml, hit), this, widgetRect);
 }
 
 int ChatPainter::hitTestBodyCursor(const MessageLayout &ml, const QPointF &canvasPos) const
@@ -3426,20 +3564,18 @@ void ChatPainter::paintHoverBar(QPainter *p, const MessageLayout &ml, qreal offs
 
 // Avatar cache freshness. There is no HTTP cache in TalQ, so the server always
 // returns the CURRENT avatar — the in-memory cache is the only staleness
-// source. Re-fetch a cached avatar once it ages past the TTL so a changed
-// avatar appears without restarting; a failed (null) fetch retries on a much
-// shorter backoff instead of staying blank until restart.
-static constexpr qint64 kAvatarTtlMs      = 15 * 60 * 1000;  // 15 min
-static constexpr qint64 kAvatarErrorTtlMs = 60 * 1000;       // 1 min
-
+// source. Re-fetch a cached avatar once it is due so a changed avatar appears
+// without restarting; a failed (null) fetch retries on a much shorter backoff
+// instead of staying blank until restart. The rules (the TTLs, the download's
+// timeout, when an "in flight" marker stops being believed, what a failed refresh
+// may do to a picture we hold) live in core/AvatarFetchPolicy.h, shared with the
+// sidebar and the header so the three cannot drift apart.
 QImage ChatPainter::fetchAvatar(const QString &userId)
 {
     auto it = m_avatarCache.find(userId);
     if (it != m_avatarCache.end()) {
-        const qint64 age = QDateTime::currentMSecsSinceEpoch()
-                           - m_avatarFetchedMs.value(userId, 0);
-        const qint64 ttl = it.value().isNull() ? kAvatarErrorTtlMs : kAvatarTtlMs;
-        if (age >= ttl)
+        if (talq::avatarfetch::due(it.value().isNull(), m_avatarFetchedMs.value(userId, 0),
+                                   QDateTime::currentMSecsSinceEpoch()))
             requestAvatar(userId);   // refresh in background; keep showing this one
         return it.value();
     }
@@ -3451,38 +3587,56 @@ QImage ChatPainter::fetchAvatar(const QString &userId)
 
 void ChatPainter::requestAvatar(const QString &userId)
 {
-    if (m_avatarPending.contains(userId))
+    const qint64 started = QDateTime::currentMSecsSinceEpoch();
+    // A download in flight is not doubled, but the marker is believed for a minute
+    // only: one that never finishes must not block every later refresh.
+    const auto pending = m_avatarPending.constFind(userId);
+    if (!talq::avatarfetch::mayStart(pending != m_avatarPending.constEnd(),
+                                     pending != m_avatarPending.constEnd() ? pending.value() : 0,
+                                     started))
         return;
     if (!m_model || !m_model->api())
         return;
 
-    m_avatarPending.insert(userId);
+    m_avatarPending.insert(userId, started);
 
     ApiClient *api = m_model->api();
+    // With a transfer timeout: a stalled download errors out instead of hanging.
     QNetworkReply *reply = api->getAbsoluteUrl(
-        QStringLiteral("/index.php/avatar/") + userId + QStringLiteral("/64"));
+        QStringLiteral("/index.php/avatar/") + userId + QStringLiteral("/64"),
+        talq::avatarfetch::kTransferTimeoutMs);
 
-    connect(reply, &QNetworkReply::finished, this, [this, reply, userId]() {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, userId, started]() {
         reply->deleteLater();
-        m_avatarPending.remove(userId);
-        // Stamp the fetch time (success OR failure) so the TTL/backoff in
-        // fetchAvatar governs the next retry instead of caching forever.
-        m_avatarFetchedMs[userId] = QDateTime::currentMSecsSinceEpoch();
+        // Only the download that owns the marker releases it.
+        if (m_avatarPending.value(userId, -1) == started)
+            m_avatarPending.remove(userId);
+        const qint64 done = QDateTime::currentMSecsSinceEpoch();
+
+        // A failed refresh never blanks a picture we already hold; it is asked for
+        // again soon. With nothing to keep, an empty image marks the failure and the
+        // short error TTL lets it retry rather than staying blank until restart.
+        const auto failed = [this, userId, done]() {
+            const auto held = m_avatarCache.constFind(userId);
+            const bool hadImage = held != m_avatarCache.constEnd() && !held.value().isNull();
+            m_avatarFetchedMs[userId] = talq::avatarfetch::failedStampMs(hadImage, done);
+            if (!hadImage)
+                m_avatarCache[userId] = QImage();
+        };
 
         if (reply->error() != QNetworkReply::NoError) {
-            // Cache empty image; the short error TTL lets a transient failure
-            // retry rather than staying blank until restart.
-            m_avatarCache[userId] = QImage();
+            failed();
             return;
         }
 
         QByteArray data = reply->readAll();
         QImage img;
         if (!img.loadFromData(data)) {
-            m_avatarCache[userId] = QImage();
+            failed();
             return;
         }
 
+        m_avatarFetchedMs[userId] = done;
         m_avatarCache[userId] = PainterTheme::cropToCircle(img, PainterTheme::avatarSize);
         update(); // repaint with the loaded avatar
     });

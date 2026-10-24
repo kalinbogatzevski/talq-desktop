@@ -37,6 +37,7 @@
 #include "painter/PainterTheme.h"
 #include "painter/BodyHtml.h"
 #include "core/ApiClient.h"
+#include "core/AvatarPaths.h"
 #include "core/SearchHit.h"
 #include "core/AuthManager.h"
 #include "core/ServerCapabilities.h"
@@ -818,6 +819,23 @@ void MainWindow::buildChatPage()
         auto *menu = new QMenu(this);
         menu->setAttribute(Qt::WA_DeleteOnClose);
         const QString ctxToken = m_conversations->tokenAt(modelIndex);
+
+        // The row's picture, large. A click on the row opens the chat, so the picture
+        // itself has no click of its own here; this is where it is reached from the list.
+        {
+            const QModelIndex ix = m_conversations->index(modelIndex);
+            const int convType = m_conversations->data(ix, ConversationListModel::TypeRole).toInt();
+            const QString peerId = m_conversations->data(ix, ConversationListModel::ActorIdRole).toString();
+            const QString convName = m_conversations->data(ix, ConversationListModel::DisplayNameRole).toString();
+            QAction *pic = menu->addAction(tr("View picture"));
+            connect(pic, &QAction::triggered, this, [this, convType, peerId, ctxToken, convName]() {
+                if (convType == 1)
+                    showPicture(false, peerId, convName);
+                else
+                    showPicture(true, ctxToken, convName);
+            });
+            menu->addSeparator();
+        }
 
         // Favourite. TalQ already sorts favourites to the top, paints the dot,
         // gives them their own filter and section — it just could never SET
@@ -1926,21 +1944,11 @@ void MainWindow::buildChatPage()
     connect(m_chatPainter, &ChatPainter::fileClicked, this, [this](int fileId, const QString &mime, const QString &fileName) {
         if (mime.startsWith("image/")) {
             QImage placeholder = m_chatPainter->cachedPreview(fileId);
-            if (!m_imageViewer) {
-                m_imageViewer = new ImageViewerDialog(m_api, m_imageClipboard, nullptr);
-                // The viewer holds a preview render, never the original file,
-                // so its "Save as…" asks the model to fetch the real bytes.
-                connect(m_imageViewer, &ImageViewerDialog::saveOriginalRequested,
-                        this, [this](int id, const QString &name, const QString &dest) {
-                    m_messages->saveFileAs(id, name, dest);
-                });
-                connect(m_imageViewer, &ImageViewerDialog::copyAnnouncement,
-                        this, &MainWindow::showToast);
-            }
-            m_imageViewer->setImage(fileId, fileName, mime, placeholder);
-            m_imageViewer->show();
-            m_imageViewer->raise();
-            m_imageViewer->activateWindow();
+            ImageViewerDialog *viewer = ensureImageViewer();
+            viewer->setImage(fileId, fileName, mime, placeholder);
+            viewer->show();
+            viewer->raise();
+            viewer->activateWindow();
         } else {
             m_messages->downloadFile(fileId, fileName);
         }
@@ -2630,6 +2638,16 @@ void MainWindow::buildSearchBar(QWidget *chatCol)
 
     connect(m_header, &HeaderPainter::infoRequested,
             this, &MainWindow::openConversationInfo);
+
+    // A click on the conversation's picture in the header: a one-to-one chat shows the
+    // peer's, anything else the room's.
+    connect(m_header, &HeaderPainter::pictureRequested, this,
+            [this](int type, const QString &userId, const QString &token, const QString &name) {
+        if (type == 1)
+            showPicture(false, userId, name);
+        else
+            showPicture(true, token, name);
+    });
 
     m_searchInput->installEventFilter(this);
 }
@@ -4468,6 +4486,11 @@ void MainWindow::showPersonCard(const QString &actorId, const QString &actorName
         connect(m_personCard, &PersonCardPopup::avatarNeeded,
                 this, &MainWindow::fetchPersonCardAvatar);
 
+        connect(m_personCard, &PersonCardPopup::pictureRequested, this,
+                [this](const QString &id, const QString &name) {
+            showPicture(false, id, name);
+        });
+
         connect(m_personCard, &PersonCardPopup::messageRequested, this,
                 [this](const QString &id) {
             // Prefer the conversation that already exists; creating a second
@@ -4523,6 +4546,56 @@ void MainWindow::showPersonCard(const QString &actorId, const QString &actorName
         m_personCard->setPresence(m_conversations->userStatusForUserId(actorId),
                                   m_conversations->userStatusMessageForUserId(actorId));
     }
+}
+
+ImageViewerDialog *MainWindow::ensureImageViewer()
+{
+    if (!m_imageViewer) {
+        m_imageViewer = new ImageViewerDialog(m_api, m_imageClipboard, nullptr);
+        // The viewer holds a preview render, never the original file,
+        // so its "Save as…" asks the model to fetch the real bytes.
+        connect(m_imageViewer, &ImageViewerDialog::saveOriginalRequested,
+                this, [this](int id, const QString &name, const QString &dest) {
+            m_messages->saveFileAs(id, name, dest);
+        });
+        connect(m_imageViewer, &ImageViewerDialog::copyAnnouncement,
+                this, &MainWindow::showToast);
+    }
+    return m_imageViewer;
+}
+
+// A person's or a group's picture at full size. The id comes from the server and goes
+// into a request path that carries the user's own credentials, so the path is built by
+// core/AvatarPaths.h, which refuses an id that could not name the thing (a bot's
+// "bots/..." actor id, a slash, a token that is not Talk's own).
+void MainWindow::showPicture(bool isRoom, const QString &id, const QString &title)
+{
+    const QString path = isRoom
+        ? talq::avatarpaths::roomPath(id, QDateTime::currentSecsSinceEpoch())
+        : talq::avatarpaths::userPath(id);
+    if (path.isEmpty())
+        return;
+    // An application-modal dialog (the conversation info) blocks every window that is not
+    // its child, and a person's card opened from its member list is exactly such a child
+    // (showPersonCard parents it there for the same reason). The shared viewer is a
+    // top-level of its own, so a picture asked for from inside the dialog would open in a
+    // window that ignores every click. Open it as a child of the modal dialog instead; it
+    // goes away with it.
+    if (QWidget *modal = QApplication::activeModalWidget()) {
+        auto *v = new ImageViewerDialog(m_api, m_imageClipboard, modal);
+        v->setAttribute(Qt::WA_DeleteOnClose);
+        connect(v, &ImageViewerDialog::copyAnnouncement, this, &MainWindow::showToast);
+        v->showPicture(title, path);
+        v->show();
+        v->raise();
+        v->activateWindow();
+        return;
+    }
+    ImageViewerDialog *viewer = ensureImageViewer();
+    viewer->showPicture(title, path);
+    viewer->show();
+    viewer->raise();
+    viewer->activateWindow();
 }
 
 // The chat's own avatar cache holds a hard 36x36 circle crop with no
