@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.77.2 "Vsi Svetii" — BETA (2026-10-25)
+
+A fix for the picture window that arrived in 0.77.1: it could open with nothing to click to close it.
+
+### Fixed
+* **The picture window could open with its title bar, and so its close button, above the top of the
+  screen.** When the window had last been left less than a title bar's height below the top edge of
+  a screen, opening a picture moved it up by that much and the title bar ended up out of sight.
+  The window now keeps its whole frame, title bar included, inside the screen it is on. It does the
+  same when it opens at a position saved on a monitor that is no longer there, or on a larger one,
+  and when a photo is opened while a picture is still showing. Esc closed it before and still does.
+* **A window closed while maximized remembered the maximized position.** It was reopened at that
+  position as an ordinary window, which is what left the title bar above the screen. TalQ now keeps
+  the normal size and position of the window instead.
+
+### Added
+* **A close button (×) in the window's own top-right corner**, beside the menu, so closing a picture
+  does not depend on the title bar being in reach.
+
+### Good to know
+* **Beta channel only.** The stable line is untouched.
+* **What was checked.** The real picture window, on a real Windows display, was started at the
+  position that triggers it (23 px below the top of the screen). Before the change its title bar was
+  29 px above the screen; after it, the whole frame is on screen, and clicking the new × closes the
+  window. The tests ran on one laptop with several screens, not on other layouts or display scales.
+
 ## v0.77.1 "Vsi Svetii" — BETA (2026-10-24)
 
 Two things you can now do, and one fix: see who is behind a reaction, open a person's or a group's
