@@ -28,6 +28,7 @@
 #include <QResizeEvent>
 #include <QScreen>
 #include <QSettings>
+#include <QShowEvent>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QWheelEvent>
@@ -119,6 +120,22 @@ ImageViewerDialog::ImageViewerDialog(ApiClient *api, ImageClipboard *clipboard, 
     ).arg(ink, rgba(th.textPrimary, 0.08)));
     titleRowLayout->addWidget(m_menuBtn);
 
+    // A close button of its own. The native title bar has one, but only while the frame is on
+    // screen; a viewer is dismissed from its own corner. "×" (U+00D7) is in every font.
+    m_closeBtn = new QPushButton(QStringLiteral("×"), titleRow);
+    m_closeBtn->setObjectName(QStringLiteral("viewerCloseButton"));
+    m_closeBtn->setFlat(true);
+    m_closeBtn->setFixedSize(28, 24);
+    m_closeBtn->setCursor(Qt::PointingHandCursor);
+    m_closeBtn->setToolTip(tr("Close (Esc)"));
+    m_closeBtn->setAccessibleName(tr("Close"));
+    m_closeBtn->setStyleSheet(QStringLiteral(
+        "QPushButton { background: transparent; color: %1; font-size: 20px; border: none; }"
+        "QPushButton:hover { background: %2; border-radius: 4px; }"
+    ).arg(ink, rgba(th.textPrimary, 0.08)));
+    connect(m_closeBtn, &QPushButton::clicked, this, &QWidget::close);
+    titleRowLayout->addWidget(m_closeBtn);
+
     root->addWidget(titleRow);
 
     m_scene = new QGraphicsScene(this);
@@ -180,6 +197,21 @@ void ImageViewerDialog::restoreSavedGeometry()
     } else {
         resize(1000, 700);
     }
+    // Hidden (the constructor): nothing to do, showEvent() looks again once the window exists.
+    // Visible (a picture window going back to photo size): show() on a window that is already
+    // up sends no showEvent, so this is the only place that keeps the title bar in reach.
+    keepFrameOnScreen();
+}
+
+// The photo window as the user left it. A maximized or full-screen window's geometry() is the
+// client area of the MAXIMIZED window, whose top sits one caption below the top of the work
+// area: restored later as an ordinary window that puts the frame above the screen (a user's
+// saved Rect(2880 23 1920 1009) was exactly that). The normal, restored geometry is saved.
+void ImageViewerDialog::rememberPhotoGeometry()
+{
+    const QRect g = (isMaximized() || isFullScreen()) ? normalGeometry() : geometry();
+    if (g.isValid())
+        QSettings().setValue(QStringLiteral("imageViewer/geometry"), g);
 }
 
 // A picture of a person or a group is a few hundred pixels. Fitted into the photo-sized
@@ -205,15 +237,49 @@ void ImageViewerDialog::resizeForPicture(const QSize &imageSize)
         ? m_titleBar->parentWidget()->sizeHint().height() : 36;
     const int w = qBound(480, imageSize.width() * 2,  int(avail.width()  * 0.8));
     const int h = qBound(480, imageSize.height() * 2, int(avail.height() * 0.8)) + titleH;
-    QRect r(isVisible() ? pos() : QPoint(avail.left() + 40, avail.top() + 40), QSize(w, h));
-    if (r.right()  > avail.right())  r.moveRight(avail.right());
-    if (r.bottom() > avail.bottom()) r.moveBottom(avail.bottom());
-    if (r.left()   < avail.left())   r.moveLeft(avail.left());
-    if (r.top()    < avail.top())    r.moveTop(avail.top());
-    if (isVisible())
-        setGeometry(r);
-    else
-        resize(r.size());   // not shown yet: the platform places it
+    // resize() keeps the client area's corner where it is; the frame is then brought inside
+    // the screen. (This used to build a rectangle from pos(), the FRAME's corner, hand it to
+    // setGeometry(), which takes the CLIENT area, and clamp the client area to the top of the
+    // screen: a window that started less than a title bar below the top edge lost its title
+    // bar above the screen, and with it the close button.) Not shown yet: showEvent() does it.
+    resize(w, h);
+    keepFrameOnScreen();
+}
+
+// setGeometry() and resize() work on the client area, but the native title bar (caption
+// with minimise / maximise / close) sits above it, in the frame. Move the whole FRAME back
+// inside the usable area of the screen it is on, shrinking the window if it is bigger than
+// the area, so the close button can always be reached. A saved position from a monitor that
+// is gone, or from a taller screen, is handled the same way.
+void ImageViewerDialog::keepFrameOnScreen()
+{
+    if (!isVisible() || isMaximized() || isFullScreen())
+        return;
+    const QScreen *s = QGuiApplication::screenAt(frameGeometry().center());
+    if (!s) s = screen();
+    if (!s) s = QGuiApplication::primaryScreen();
+    if (!s)
+        return;
+    const QRect avail = s->availableGeometry();
+    QRect fr = frameGeometry();
+    if (fr.width() > avail.width() || fr.height() > avail.height()) {
+        const QSize chrome = fr.size() - size();
+        resize(qMax(1, qMin(fr.width(),  avail.width())  - chrome.width()),
+               qMax(1, qMin(fr.height(), avail.height()) - chrome.height()));
+        fr = frameGeometry();
+    }
+    const QPoint p(qBound(avail.left(), fr.left(), avail.right()  - fr.width()  + 1),
+                   qBound(avail.top(),  fr.top(),  avail.bottom() - fr.height() + 1));
+    if (p != fr.topLeft())
+        move(p);             // move() takes the frame's corner
+}
+
+void ImageViewerDialog::showEvent(QShowEvent *event)
+{
+    QWidget::showEvent(event);
+    // The frame is only known once the native window exists, and a platform that places the
+    // window itself does so around this event: look again once the event loop is back.
+    QTimer::singleShot(0, this, [this]() { keepFrameOnScreen(); });
 }
 
 void ImageViewerDialog::applyPixmap(const QImage &img)
@@ -304,7 +370,7 @@ void ImageViewerDialog::showPicture(const QString &title, const QString &path)
     // The user may have resized the window for a photo; leaving photo mode would otherwise
     // lose that, because a picture's own window is never saved.
     if (!wasHidden && !m_showingPicture)
-        QSettings().setValue(QStringLiteral("imageViewer/geometry"), geometry());
+        rememberPhotoGeometry();
     m_showingPicture = true;
     // Until the picture's real size is known, open at a picture-sized window rather than the
     // photo-sized one (80% of the screen, black, with a caption in the corner).
@@ -509,7 +575,7 @@ void ImageViewerDialog::closeEvent(QCloseEvent *event)
     // A picture's window is sized for the picture; the geometry saved here is the
     // one the user chose for photos.
     if (!m_showingPicture)
-        QSettings().setValue(QStringLiteral("imageViewer/geometry"), geometry());
+        rememberPhotoGeometry();
     // Closing only hid the dialog, so the last full-resolution image (capped
     // to the largest screen edge — tens of MB on a 4K display) and the scene
     // pixmap stayed resident until the next image replaced them.

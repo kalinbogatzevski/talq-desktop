@@ -54,13 +54,16 @@ protected:
     void mouseMoveEvent(QMouseEvent *event) override;
     void closeEvent(QCloseEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
+    void showEvent(QShowEvent *event) override;
     void contextMenuEvent(QContextMenuEvent *event) override;
     bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
     void restoreSavedGeometry();
+    void rememberPhotoGeometry();                   // the restored size, never the maximized one
     void sizeForPicture(const QSize &imageSize);    // once, for a window that was not open yet
     void resizeForPicture(const QSize &imageSize);  // the size itself, kept inside the screen
+    void keepFrameOnScreen();                       // the title bar with the close button too
     void applyPixmap(const QImage &img);
     void fitToWindow();
     void actualSize();
@@ -77,6 +80,7 @@ private:
     QGraphicsPixmapItem *m_item = nullptr;
     QLabel *m_titleBar;
     QPushButton *m_menuBtn = nullptr;
+    QPushButton *m_closeBtn = nullptr;
     QImage m_currentImage;
     QString m_currentFileName;   // source of truth for the filename; title bar may show a toast suffix
     QString m_currentMime;
