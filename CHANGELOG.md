@@ -1,5 +1,83 @@
 # Changelog
 
+## v0.78.0 "Vsi Svetii" — STABLE (2026-10-26)
+
+Promotes the 0.77.x line: a web address in a message shows what is behind it, a reaction tells you
+who is behind it, a person's or a group's picture opens large, and the buffer that holds the
+incoming sound is now as deep as it was always meant to be.
+
+Everyone on 0.76.0 gets all of the below. If you ran a 0.77 beta, this is the code of 0.77.2 built
+as a stable release; there is nothing in it that you do not already have.
+
+### Added
+* **Link previews.** A web address in a message now shows a small card under the text: the page's
+  title, a short description and a picture. Your own Nextcloud server fetches the page, so the site
+  never sees your address; TalQ only draws what the server sends back, as plain text, and a click
+  opens the address that was typed, never one the page supplies. A message shows at most two cards.
+  There is no card for an address inside a code block (fenced, inline, or an indented paste shown as
+  code), for an address that points at a machine on a local network, or for one with a password in
+  it. A card appears when the server has answered, and the view stays on the row you are reading.
+  **Settings → Link previews** turns it off.
+* **See who reacted.** Rest the pointer on a reaction under a message and a tip lists the people
+  behind the number: you first, then everyone else in the order they reacted, ten names and then
+  "and N more". The list is read from your Nextcloud server when the pointer arrives, so it is
+  usually there by the time the tip opens, and it counts the people it names. A colleague whose
+  account was deleted reads "Deleted user"; a guest with no name reads "Guest". Names are shown
+  as plain text, and a very long one is cut.
+* **Open a picture large.** Click the picture at the top of a chat (a colleague's or a group's), the
+  picture on a colleague's card, or the group picture in the conversation info, and it opens in its
+  own window; right-click a chat in the list and choose **View picture** for the same. Copy and
+  Save as work on the picture. A group that has no picture of its own shows its default icon sharp
+  instead of blown up. Clicking a picture inside a message still opens the person's card. The
+  window has a close button (×) in its own top-right corner, beside the menu, and Esc closes it too.
+  It always keeps its whole frame, title bar included, on the screen it is on, also when it was
+  last left on a monitor that is no longer connected, and a window closed while maximized is
+  remembered at its normal size and position.
+* **The debug log now says how an incoming call is doing.** Every 10 seconds, for the audio and (when
+  something was lost) the video, `talq_debug.log` records the depth of the receive buffer, how many
+  packets were lost, arrived too late or were asked for again, and the jitter. A stretch of choppy
+  sound can now be explained afterwards from the log instead of guessed at.
+
+### Fixed
+* **The incoming sound is buffered 400 ms, as intended.** The receive buffer was meant to be 400 ms
+  but the setting never took effect, so every call ran at 200 ms. On a call whose connection was
+  losing packets, that showed up as short drops of about a fifth of a second, around five a minute.
+  The buffer is now really 400 ms. The cost is that the other person's voice reaches you up to
+  200 ms later.
+* **A changed group picture could stay old in the chat list until TalQ was restarted.** The chat
+  header showed the new picture and the list did not. Pictures were downloaded with no time limit,
+  and the list would not ask for a picture again while an earlier download of it was still
+  "in flight", so one download that never finished froze that picture for as long as TalQ ran
+  (eleven pictures, three days, on one laptop). A download that stalls now gives up after 20
+  seconds, one that has been going for a minute is no longer waited for, and a refresh that fails
+  keeps the picture you already have instead of blanking it. The chat header and the pictures
+  beside messages follow the same rules.
+
+### Good to know
+* **Not yet shown:** that the deeper receive buffer removes the drops on a real call. What is
+  certain is its cost, the other person's voice up to 200 ms later. The `[RXSTATS]` lines in the
+  debug log will say what a call did; if you still hear drops, **Save a copy…** under Diagnostics in
+  Settings saves the log to send.
+* Another person's reaction reaches your screen up to about half a minute after they make it (the
+  server does not announce reactions). The tip reads the list straight from the server, so it can
+  be ahead of the number on the reaction for that moment, and says so by counting the names.
+* A link card that arrives in the row your view starts inside moves what is under the pointer by the
+  card's height. The picture on a card is cropped to a landscape box.
+* **What was checked.** The tests for the new parts pass: 142 checks for previews (hostile input
+  included) and the contrast of the card on all four themes, 73 for the reaction list, 48 for the
+  picture addresses and 26 for the picture refresh rules (including markup in a name and an id that
+  tries to walk the request path). The real chat painter was driven offscreen against the live
+  server with real pages, in all four themes; the two test accounts reacted to one message and the
+  real list came back named, you first; a call between them confirmed the receive buffer reports
+  400 ms. Five independent reviews of the preview code found 14 defects, and two rounds of review of
+  the reactions and pictures found twelve issues each, none severe; all were fixed. One of them (a
+  picture opened from a colleague's card inside the group info would have been a window that
+  ignores every click) was found only by review. The real picture window, on a real Windows display,
+  was started at the position that used to put its title bar above the screen: its whole frame
+  stays on screen and the × closes it. **Not** checked: a real call with packet loss, hovering a
+  reaction in a running window, a high-DPI display or any screen layout other than one laptop's, a
+  weak device, and closing the picture window while it is maximized.
+
 ## v0.77.2 "Vsi Svetii" — BETA (2026-10-25)
 
 A fix for the picture window that arrived in 0.77.1: it could open with nothing to click to close it.

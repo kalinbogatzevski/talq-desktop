@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(talq VERSION 0.77.2 LANGUAGES CXX)
+project(talq VERSION 0.78.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -330,6 +330,12 @@ string(TIMESTAMP TALQ_BUILD_TS "%m%d-%H%M")
 # never was. The blurb does not state a Bulgarian date for the feast; the
 # Orthodox All Saints Sunday (first Sunday after Pentecost) is mentioned only
 # as the Orthodox church's own day.
+#
+# 0.78.x KEEPS "Vsi Svetii": 0.78.x is even, so it is the STABLE line, and it
+# promotes the 0.77.x beta -- the name carries across the cut exactly as
+# "Buditeli" did from 0.75.x to 0.76.x and "First School Day" from 0.71.x to
+# 0.72.x, instead of a fresh name. Carried over on that precedent when Kalin
+# asked for a new stable, 2026-10-26.
 set_source_files_properties(
     src/main.cpp
     src/core/CallManager.cpp
