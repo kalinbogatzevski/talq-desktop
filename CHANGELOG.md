@@ -1,5 +1,48 @@
 # Changelog
 
+## v0.79.1 "Arhangelovden" — BETA (2026-10-30)
+
+Calls start a little faster. In a slow call recorded on 29 October, the person answering waited
+6.7 seconds to hear the caller. About a second of that was TalQ loading its video encoder after
+Answer was pressed, and three more seconds passed between the call being joined and TalQ asking
+for the caller's sound and picture. Both waits are gone; what the server itself needs is not
+changed by this release.
+
+### Changed
+* **The parts of TalQ that carry video and sound are now loaded while the phone rings** (or while
+  you are dialling), not after you press Answer. The first call after starting TalQ used to load the
+  video encoder in the middle of setting the call up, which took about a second on the laptop it was
+  measured on; later calls were never affected. Loading only reads the program into memory: no
+  camera, microphone or speaker is opened before the call.
+* **The caller's sound and picture are asked for as soon as TalQ's own join of the call is
+  confirmed**, instead of after TalQ had finished building the part that sends your own camera and
+  microphone and the next once-a-second check came round.
+
+### Fixed
+* **Starting a call from a conversation you had only just opened could join the room twice.** The
+  second join cancelled the first one on the server, which showed up in the log as a room that no
+  longer exists and held the call back. A second join of the same room now waits for the first;
+  if the first fails, it is tried once more.
+
+### Added
+* **A script that shows where the time of a call goes**, `scripts/call-timeline.py`, for anyone
+  reading a debug log: it prints how long each step of connecting took.
+
+### Good to know
+* **Beta channel only.** The stable line (0.78.0) is untouched.
+* **What was checked.** On one laptop, a test account rang the author's own account and the call
+  was answered by hand, once with 0.79.0 and once with this build, each the first call after
+  starting TalQ. From Answer to hearing the caller it took 5.4 seconds, then 3.6 seconds. Only about
+  1.1 seconds of that difference is this change (the video encoder, already loaded when the phone
+  was answered); the rest is the server being quicker on that run. The new build in that test was a
+  slower development build, so it is not flattered by it.
+* **Not yet seen working.** In that test the old version already asked for the caller's sound and
+  picture at the moment the join was confirmed, so the second change was not exercised; it is for
+  the case from 29 October, where the caller was not yet known at that moment. The room-join fix is
+  covered by an automatic check only. Reports from calls on this beta will show whether they work.
+* **What this does not touch.** Confirming the join (1 to 3 seconds) and the server producing the
+  caller's picture (1 to 2 seconds) are server time.
+
 ## v0.79.0 "Arhangelovden" — BETA (2026-10-29)
 
 The echo canceller could lose the signal it cancels against in the middle of a call and stay blind

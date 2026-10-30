@@ -448,6 +448,11 @@ private:
     void maybeStartCallMedia();
     void startCallMedia();                           // publisher + peer discovery (was the join callback body)
     void flushDeferredRequestOffers();               // requestoffers held until our join was confirmed
+    // Request the stream of every in-call peer that has media but no subscriber.
+    // Called by the periodic onLoadTick sweep AND the moment our own join is
+    // confirmed, so a peer who was already in the call before we answered/joined is
+    // subscribed in parallel with our publisher build instead of after it.
+    void reconcilePeerSubscriptions(const char *why);
     // A join POST of an ended call may still commit server-side (Talk writes
     // in_call ~90 s late when its notifier hangs): after the hold, GET
     // call/{token} and leave if our session is listed (talq::planCallEnd).

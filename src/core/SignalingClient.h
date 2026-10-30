@@ -458,6 +458,13 @@ private:
     // before HPB room membership exists). This is the authoritative flag.
     // A successful RESUME restores it (see m_roomAckedBeforeDrop).
     bool    m_roomJoinAcked = false;
+    // A joinRoom() of m_currentRoom has been issued and is not answered yet (POST
+    // sent, WS "room" ack outstanding). Invalid when none is. A second same-room
+    // joinRoom() waits for it instead of minting another Nextcloud session that
+    // would retire the first's (RoomJoinPolicy.h). m_roomJoinWaiters counts those
+    // callers, so a failed POST can be retried once on their behalf.
+    QElapsedTimer m_roomJoinPending;
+    int     m_roomJoinWaiters = 0;
     bool    m_roomLeavePending = false;   // leaveRoom() sent, its empty-roomid answer not seen yet
     // The room ack as it stood when an authenticated session dropped. A resume
     // keeps the session's room membership server-side and never gets a "room"

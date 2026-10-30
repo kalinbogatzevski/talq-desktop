@@ -6,6 +6,7 @@
 #include "core/SystemProxy.h"
 #include "core/MediaProxyPolicy.h"
 #include "core/ForceMutePolicy.h"
+#include "core/RoomJoinPolicy.h"
 #include <QNetworkProxy>
 #include <QJsonDocument>
 #include <QSettings>
@@ -666,6 +667,8 @@ void SignalingClient::onDisconnected()
         m_roomAckedTokenBeforeDrop = m_currentRoom;
     }
     m_roomJoinAcked = false;   // room membership is void until re-acked (or resumed) post-reconnect
+    m_roomJoinPending.invalidate();   // an unanswered join died with the socket
+    m_roomJoinWaiters = 0;
     m_roomLeavePending = false;
     m_sessionId.clear();
     if (!wasAuth) {
@@ -870,6 +873,8 @@ void SignalingClient::onTextMessage(const QString &msg)
         m_roomLeavePending = false;   // a real join ack means no leave answer is still owed
         qInfo() << "Signaling: joined room";
         m_roomJoinAcked = true;   // authoritative: HPB confirmed room membership
+        m_roomJoinPending.invalidate();
+        m_roomJoinWaiters = 0;
         emit roomJoined();
 
         // ── Breakout rooms: the server MOVED us ──────────────────────────
@@ -1310,6 +1315,21 @@ void SignalingClient::joinRoom(const QString &token, bool force)
         return;
     }
 
+    // The join this one would duplicate is still waiting for its ack: let it finish.
+    // The older guard above only skips a join once the room is ACKED; in the window
+    // before that a second POST retires the session the first is about to bind (HPB
+    // no_such_room) and the room is only really joined a round trip later. Callers
+    // that wait on roomJoined() (CallManager::ensureSignalingRoomJoined) get it from
+    // the first join's ack.
+    if (talq::coalesceRoomJoin(force, token == m_currentRoom, m_authenticated, m_roomJoinAcked,
+                               m_roomJoinPending.isValid() ? m_roomJoinPending.elapsed() : -1)) {
+        ++m_roomJoinWaiters;
+        qInfo() << "Signaling: a join of room" << token << "is already in flight ("
+                << m_roomJoinPending.elapsed() << "ms) — waiting for its ack instead of"
+                   " minting a second session";
+        return;
+    }
+
     // 1.0 audit — m_sessionToUserId is otherwise INSERT-ONLY for the whole client
     // life (one entry per session/reconnect, never pruned), so bound it by
     // clearing on a real ROOM SWITCH. NOT on a same-room re-join (a signaling
@@ -1319,6 +1339,8 @@ void SignalingClient::joinRoom(const QString &token, bool force)
     const bool roomChanged = (token != m_currentRoom);
     m_currentRoom = token;
     m_roomJoinAcked = false;   // a join is now in flight; not acked until WS "room"
+    m_roomJoinPending.start();
+    m_roomJoinWaiters = 0;
     m_roomAckedBeforeDrop = false;   // a resume must not restore an ack this join supersedes
     m_roomAckedTokenBeforeDrop.clear();
 
@@ -1345,8 +1367,19 @@ void SignalingClient::joinRoom(const QString &token, bool force)
                      << "room match=" << (m_currentRoom == token)
                      << "auth=" << m_authenticated
                      << "sessionId=" << data["sessionId"].toString().left(20);
-            if (!ok && m_currentRoom == token)
+            if (!ok && m_currentRoom == token) {
                 emit roomJoinFailed(token, status);
+                m_roomJoinPending.invalidate();
+                // A second caller was told to wait for THIS join (joinRoom above); it
+                // will never be acked, so do the retry that caller would have made —
+                // once. The retry is a fresh join, so a second failure has no waiters.
+                if (std::exchange(m_roomJoinWaiters, 0) > 0 && m_authenticated) {
+                    qInfo() << "Signaling: the join of room" << token << "that a caller was waiting on"
+                               " failed (status" << status << ") — retrying it once";
+                    joinRoom(token, /*force*/true);
+                    return;
+                }
+            }
             if (!ok || m_currentRoom != token || !m_authenticated) return;
 
             // Extract the Nextcloud session ID from the response
@@ -1388,6 +1421,8 @@ void SignalingClient::leaveRoom()
     msg["room"] = room;
     m_roomLeavePending = true;
     m_roomJoinAcked = false;   // membership is being given up
+    m_roomJoinPending.invalidate();
+    m_roomJoinWaiters = 0;
     m_ws.sendTextMessage(QJsonDocument(msg).toJson(QJsonDocument::Compact));
     qInfo() << "Signaling: leaving room" << m_currentRoom << "(a re-join under a fresh session follows)";
 }
