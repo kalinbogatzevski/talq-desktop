@@ -5,6 +5,7 @@
 #include "core/LeakStats.h"
 #include "core/VideoEncoderUtil.h"   // talqAvoidNvenc() latch
 #include "core/HwEncoderProbe.h"   // talqHwEncoderProbeExcludes() — #74 probe exclusions
+#include "core/CallWarmup.h"       // plugin loads moved off the first call's critical path
 #include "core/EncodeTier.h"
 #include "core/Diagnostics.h"
 #include "core/TalqLog.h"
@@ -1998,6 +1999,11 @@ void CallManager::setState(CallState newState)
                              || newState == Connecting || newState == Active
                              || newState == Reconnecting);
     qInfo() << "CallManager: state ->" << newState;
+    // A call is now imminent (ringing, dialling, or joining): load the plugins it
+    // will need on a worker thread while the ring / room-join is still going, not
+    // inside the first publisher build. Once per process; see CallWarmup.h.
+    if (newState == Incoming || newState == Outgoing || newState == Connecting)
+        talq::startCallWarmup();
     // 0.40.15 — Connecting→Active promotion race fix. If the publisher
     // ICE already reached "connected"/"completed" BEFORE we got the
     // participant-joined signal (the common case on a fast SFU with a
@@ -2296,6 +2302,38 @@ void CallManager::flushDeferredRequestOffers()
                 << "deferred requestoffer(s)";
     if (!m_pendingRequestOffers.isEmpty() && !m_requestOfferRetry.isActive())
         m_requestOfferRetry.start();
+}
+
+// subscribe ANY in-call peer that has media but no live subscriber. The
+// onParticipantJoinedCall fix covers peers that join AFTER us, but a peer ALREADY
+// in the call when WE joined had its join event fire while we were still
+// Idle/Incoming (before the subscribe could run) — so a LATE joiner never saw an
+// already-present peer until that peer toggled their camera (field: Ivan joined
+// last and never saw Ilko). requestPeerStream self-dedupes.
+//
+// Two legs. The periodic one (onLoadTick, which only starts ticking once the
+// publisher is built) is the backstop. The join-confirmed one is the fast path:
+// the HPB gates a requestoffer on OUR session being in the call and on nothing
+// else (SubscribeOfferPolicy.h, OwnJoinGate), so the request can leave while the
+// publisher is still being built. Field 2026-10-29: a callee whose caller was
+// already in the call asked for the caller's stream 3.15 s after the join
+// confirmed — the 2.9 s synchronous publisher build plus the 1 s tick — and
+// heard them 6.7 s after pressing Answer.
+void CallManager::reconcilePeerSubscriptions(const char *why)
+{
+    if (m_state != Connecting && m_state != Active) return;
+    for (auto it = m_participants.constBegin(); it != m_participants.constEnd(); ++it) {
+        CallParticipant *p = it.value();
+        if (!p || p->isSelf()) continue;
+        const QString &sid = it.key();
+        if ((!p->audioMuted() || !p->videoMuted())
+            && !m_subscribePipelines.contains(sid)
+            && !m_pendingRequestOffers.contains(sid)) {
+            qInfo() << "CallManager: subscribe-reconcile — in-call peer without a"
+                       " subscriber:" << sid.left(20) << "(" << why << ")";
+            requestPeerStream(sid);
+        }
+    }
 }
 
 // A subscriber feed died mid-call: the SFU sent end-session, or its
@@ -4543,27 +4581,9 @@ void CallManager::onLoadTick()
     }
     // ─────────────────────────────────────────────────────────────────────────
 
-    // GROUP-CALL subscribe RECONCILIATION backstop: subscribe ANY in-call peer
-    // that has media but no live subscriber. The onParticipantJoinedCall fix
-    // covers peers that join AFTER us, but a peer ALREADY in the call when WE
-    // joined had its join event fire while we were still Idle/Incoming (before the
-    // subscribe could run) — so a LATE joiner never saw an already-present peer
-    // until that peer toggled their camera (field: Ivan joined last and never saw
-    // Ilko). This periodic sweep closes that gap; requestPeerStream self-dedupes.
-    if (m_state == Connecting || m_state == Active) {
-        for (auto it = m_participants.constBegin(); it != m_participants.constEnd(); ++it) {
-            CallParticipant *p = it.value();
-            if (!p || p->isSelf()) continue;
-            const QString &sid = it.key();
-            if ((!p->audioMuted() || !p->videoMuted())
-                && !m_subscribePipelines.contains(sid)
-                && !m_pendingRequestOffers.contains(sid)) {
-                qInfo() << "CallManager: subscribe-reconcile — in-call peer without a"
-                           " subscriber:" << sid.left(20);
-                requestPeerStream(sid);
-            }
-        }
-    }
+    // GROUP-CALL subscribe RECONCILIATION backstop (periodic leg; the join-confirmed
+    // leg is in onCallJoinConfirmed).
+    reconcilePeerSubscriptions("tick");
 
     // ICE-"new" watchdog (core/SubscriberIceStallPolicy.h). A subscriber that was
     // handed an offer ~4 s ago but has been given NO remote candidate, with ICE
@@ -5404,6 +5424,10 @@ void CallManager::onCallJoinConfirmed(const char *source, bool viaHpb)
     qInfo() << "CallManager: own call join confirmed via" << source
             << (m_joinPosts.inFlight > 0 ? "(join POST response still outstanding)" : "");
     flushDeferredRequestOffers();
+    // Before maybeStartCallMedia: that builds the publisher synchronously on this
+    // thread (seconds on a cold start), and the peer's offer takes the MCU about a
+    // second and a half to produce — ask for it first so the two overlap.
+    reconcilePeerSubscriptions("join-confirmed");
     maybeStartCallMedia();
 }
 
