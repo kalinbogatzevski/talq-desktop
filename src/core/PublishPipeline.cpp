@@ -20,6 +20,7 @@
 #include <gst/sdp/sdp.h>
 #include <thread>
 #include <atomic>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 
@@ -98,6 +99,13 @@ PublishPipeline::PublishPipeline(QObject *parent)
                       "(attempt" << m_camRecoveryAttempts << "of 2)";
         reArmCameraSource();
     });
+
+    // 0.79.0 — AEC reference watchdog (FarRefStallPolicy.h): a loopback reference that
+    // goes quiet is re-opened, never allowed to leave the canceller blind for the rest
+    // of the call. Armed by start() once the tail is up; every decision is the policy's.
+    m_farRefWatchdog.setSingleShot(false);
+    m_farRefWatchdog.setInterval(1000);
+    connect(&m_farRefWatchdog, &QTimer::timeout, this, [this]() { onFarRefWatchdogTick(); });
 
     // Upstream Talk's BlackVideoEnforcer paints the canvas for 5 s after
     // every transition to "video muted" and then disables the track so
@@ -856,6 +864,10 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
         }
     }
 
+    // 0.79.0 pre-DSP level tap (see PreDspCell). Only where the capture leg is pinned to
+    // 48k/S16LE/mono, i.e. the AEC chains; elsewhere there is no `aecCaps` and no tap.
+    if (aecCaps) installPreDspTap(aecCaps);
+
     // Force a known SSRC via capsfilter between payloader and webrtcbin.
     // This ensures webrtcbin's internal rtpbin uses the SAME SSRC in both
     // the SDP and on the wire. Without this, rtpbin generates its own SSRC
@@ -1562,6 +1574,10 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
     // silently no-op GCC / timers without this reset.
     m_shuttingDown.store(false);
 
+    // The pipeline is PLAYING and the loopback tail (if any) is up: start watching that
+    // the reference keeps delivering. Inert when our canceller is off or the OS does it.
+    armFarRefWatchdog();
+
     // Dummy feeds through dummyValve → funnel → shared encoder for the
     // first 5 s only (m_dummyHaltTimer below). After that the dummy valve
     // closes and RTP halts on the video m-line until enableCamera() flips
@@ -1601,6 +1617,17 @@ void PublishPipeline::cleanup()
     // Block any aux-sender/GCC callback that races this teardown (they run
     // on a GStreamer streaming thread; cleanup() runs on the Qt thread).
     m_shuttingDown.store(true);
+    // 0.79.0: retire the reference watchdog and any re-open still running on a pool
+    // thread BEFORE the pipeline goes to NULL on its worker below, so a late re-open
+    // can neither touch us nor bring a dead source back to PLAYING in a bin that is
+    // being disposed (it checks this cell between its two state changes).
+    m_farRefWatchdog.stop();
+    m_farRefPolicy.disarm();
+    if (m_farRefCell->inFlight.load())
+        qWarning() << "PublishPipeline: tearing down while an AEC reference re-open is still running on GStreamer's "
+                      "pool thread (wasapi2 activation not returning?) -- if the pipeline then fails to release, "
+                      "this is why";
+    m_farRefCell->alive.store(false);
     // Stop the dummy-halt timer so it can't fire on a torn-down pipeline.
     m_dummyHaltTimer.stop();
     // Disconnect GStreamer signals to prevent callbacks with stale userData
@@ -2346,6 +2373,217 @@ void PublishPipeline::reArmCameraSource()
     });
 }
 
+void PublishPipeline::armFarRefWatchdog()
+{
+    m_farRefWatchdog.stop();
+    // Retire anything a previous arm of THIS object left running, then start from a fresh
+    // cell: a re-open from the old arm holds the old one (now not alive) and stays inert.
+    m_farRefCell->alive.store(false);
+    m_farRefCell = std::make_shared<FarRefCell>();
+    m_farRefStuckLogged = false;
+    m_clockLostLogged = 0;
+    // Inert unless OUR canceller is running on a loopback reference WE built. With the OS
+    // cancelling (TALQ_MIC=comms) or AEC off there is no tail, no `pub-far-ref-level`, and
+    // nothing to watch; m_osAecActive is never reset, hence the belt and braces. And the
+    // level element must really exist: without it no message could ever arrive, and a
+    // healthy source would be re-opened five times for nothing.
+    bool haveLevel = false;
+    if (m_pipeline) {
+        if (GstElement *lvl = gst_bin_get_by_name(GST_BIN(m_pipeline), "pub-far-ref-level")) {
+            haveLevel = true;
+            gst_object_unref(lvl);
+        }
+    }
+    if (!m_aecEnabled || m_osAecActive || !m_farSrc || !haveLevel) {
+        m_farRefPolicy.disarm();
+        return;
+    }
+    m_farRefCell->alive.store(true);
+    m_farRefClock.start();
+    m_farRefDrainedMs = 0;
+    m_farRefReopens = 0;
+    m_farRefPolicy.arm(0);
+    const int blackout = qEnvironmentVariableIntValue("TALQ_TEST_FARREF_BLACKOUT_AFTER_MS");
+    m_farRefCell->testBlackout.store(blackout > 0);
+    m_farRefTestBlackoutFromMs = blackout > 0 ? blackout : 0;
+    m_farRefWatchdog.start();
+    const talq::FarRefStallConfig &c = m_farRefPolicy.config();
+    qInfo().nospace() << "PublishPipeline: AEC reference watchdog armed — a reference with no level message for "
+                      << c.staleMs << " ms (" << c.warmupMs << " ms before its first) is re-opened, up to "
+                      << c.maxAttempts << " times; erle-proxy now carries farRefAgeMs / farRefStale";
+    // Which element's clock is the publisher's? Cycling the reference posts CLOCK_LOST; the bin
+    // forwards that only when it was the SELECTED clock, and the answer depends on the chain
+    // depths of the real topology (the mic leg is deeper than this tail, so normally the
+    // mic's clock wins). Logged, read-only, so a field log can tell the two cases apart.
+    if (GstClock *pc = gst_element_get_clock(m_pipeline)) {
+        GstClock *rc = gst_element_provide_clock(m_farSrc);
+        qInfo().nospace() << "PublishPipeline: pipeline clock is "
+                          << (rc && rc == pc ? "the AEC REFERENCE's own clock (a stall also freezes the publisher clock)"
+                                             : "not the AEC reference's (the reference is slaved to it)");
+        if (rc) gst_object_unref(rc);
+        gst_object_unref(pc);
+    }
+    if (m_farRefCell->testBlackout.load())
+        qWarning().nospace() << "PublishPipeline: TEST HOOK TALQ_TEST_FARREF_BLACKOUT_AFTER_MS=" << m_farRefTestBlackoutFromMs
+                             << " — reference messages are ignored from then on to simulate a stall, until a re-open returns";
+}
+
+void PublishPipeline::onFarRefWatchdogTick()
+{
+    if (m_shuttingDown.load() || !m_pipeline || !m_farSrc) { m_farRefWatchdog.stop(); return; }
+    const talq::FarRefStallConfig &c = m_farRefPolicy.config();
+    // A re-open that has not RETURNED from GStreamer yet is still running. Do not ask the
+    // policy meanwhile: it would spend one of its attempts on a re-open we cannot issue,
+    // and each extra call_async would only park another pool thread behind the element's
+    // state lock. (reArmCameraSource guards the same way with m_camRebuildInFlight.) Once
+    // it has been out for a while, say so once -- it means a wasapi2 Open is not
+    // returning, and a teardown then cannot complete either.
+    if (m_farRefCell->inFlight.load(std::memory_order_acquire)) {
+        const qint64 outMs = m_farRefClock.elapsed() - m_farRefCell->inFlightSinceMs.load(std::memory_order_relaxed);
+        if (outMs >= 10000 && !m_farRefStuckLogged) {
+            m_farRefStuckLogged = true;
+            qWarning().nospace() << "PublishPipeline: AEC reference re-open has not returned after " << outMs
+                                 << " ms (wasapi2 activation not completing?); no further re-open is attempted "
+                                    "until it does, and this publisher's teardown may not complete";
+        }
+        return;
+    }
+    m_farRefStuckLogged = false;
+    switch (m_farRefPolicy.onTick(m_farRefDrainedMs)) {
+    case talq::FarRefAction::Reopen: {
+        const qint64 age = m_farRefPolicy.messageAgeMs(m_farRefDrainedMs);
+        qWarning().nospace()
+            << "PublishPipeline: AEC reference STALLED — "
+            << (age < 0 ? QStringLiteral("no pub-far-ref-level message since the call started")
+                        : QStringLiteral("no pub-far-ref-level message for %1 ms").arg(age))
+            << " (last farRefRMS " << m_aecFarRefRms << " dB); the canceller has no usable far end. "
+            << "Re-opening pub-aec-ref, attempt " << m_farRefPolicy.attempts() << " of " << c.maxAttempts;
+        reopenFarRefSource();
+        break;
+    }
+    case talq::FarRefAction::GiveUp:
+        qWarning().nospace()
+            << "PublishPipeline: AEC reference has not held for " << c.healthyMs << " ms after any of "
+            << c.maxAttempts << " re-opens — giving up for this call (echo cancellation is NOT working); "
+               "watching again once it delivers continuously";
+        break;
+    case talq::FarRefAction::None:
+        break;
+    }
+}
+
+void PublishPipeline::reopenFarRefSource()
+{
+    // What is established and what is not. GStreamer 1.28.1's wasapi2src has no default-device
+    // handling of its own (the ring buffer waits on its event handles with INFINITE, an empty
+    // read is a quiet no-op, and gstreamer#5347 is open), and the only thing that re-resolves
+    // the default render endpoint is a fresh Open, i.e. NULL -> PLAYING (a READY bounce reuses
+    // the old context). NOT established: whether Windows re-routes a loopback client on a
+    // default change (Microsoft's pages are silent) or what exactly stopped on the incident
+    // machine. Measured on the build box: cycling pub-aec-ref in a live two-source pipeline
+    // resumes its buffers and the pipeline clock does not jump -- on a HEALTHY source; no
+    // real default-device change has been made to it yet. The field log decides.
+    //
+    // ONLY the source is cycled. webrtcdsp took the probe (talq-aec-probe) by name once and
+    // holds it, so a rebuilt tail with a new probe would be invisible to the running DSP.
+    GstElement *src = nullptr;
+    {
+        QMutexLocker farLk(&m_farPeerMutex);
+        src = m_farSrc;
+    }
+    if (!src) return;
+    ++m_farRefReopens;
+    m_farRefCell->inFlightSinceMs.store(m_farRefClock.elapsed(), std::memory_order_relaxed);
+    m_farRefCell->inFlight.store(true, std::memory_order_release);
+    // Same idiom as reArmCameraSource: GStreamer's pool thread, so a wedged wasapi2 context
+    // does not park the Qt main thread for the whole Open, and a callback that never touches
+    // `this`. It holds its own copy of the cell, which cleanup() clears: between its state
+    // changes it checks that, so a teardown that overtakes it leaves the source in NULL
+    // rather than resurrecting a capture session inside a bin that is being disposed.
+    //
+    // The element is LOCKED for the duration (and left locked, in NULL, if the Open fails).
+    // enableCamera() calls set_state(m_pipeline, PLAYING), which still visits every child; a
+    // child at NULL would have its wasapi2 Open run there, on the Qt main thread -- exactly
+    // what this thread exists to avoid. A locked child is skipped by bin-wide changes. The
+    // main thread can still wait for the element's state lock while this thread holds it;
+    // that residual is one state change long, not an Open on the UI thread.
+    auto *cell = new std::shared_ptr<FarRefCell>(m_farRefCell);
+    gst_element_call_async(src,
+        [](GstElement *el, gpointer user) {
+            FarRefCell &c = **static_cast<std::shared_ptr<FarRefCell> *>(user);
+            if (!c.alive.load()) return;                               // torn down before we ran
+            gst_element_set_locked_state(el, TRUE);
+            gst_element_set_state(el, GST_STATE_NULL);                 // Close: drops the old wasapi2 context
+            if (!c.alive.load()) return;                               // torn down while closing: stays NULL (and locked)
+            const GstStateChangeReturn r =
+                gst_element_set_state(el, GST_STATE_PLAYING);          // Open: activates the CURRENT default
+            c.testBlackout.store(false);                               // the simulated stall ends when the re-open RETURNS
+            if (!c.alive.load()) {                                     // lost the race: leave no capture behind
+                gst_element_set_state(el, GST_STATE_NULL);
+                return;
+            }
+            if (r == GST_STATE_CHANGE_FAILURE) {
+                gst_element_set_state(el, GST_STATE_NULL);             // stopped and locked: nothing retries the Open on the UI thread
+                qWarning() << "PublishPipeline: AEC reference re-open FAILED — pub-aec-ref would not go PLAYING; left stopped";
+                return;
+            }
+            gst_element_set_locked_state(el, FALSE);
+            if (!c.alive.load()) {                                     // teardown ran while it was locked: the bin skipped it
+                gst_element_set_state(el, GST_STATE_NULL);
+                return;
+            }
+            qInfo() << "PublishPipeline: AEC reference source re-opened (NULL -> PLAYING)";
+        },
+        cell,
+        [](gpointer user) {
+            auto *held = static_cast<std::shared_ptr<FarRefCell> *>(user);
+            (*held)->inFlight.store(false, std::memory_order_release);  // also covers every early return above
+            delete held;
+        });
+}
+
+void PublishPipeline::installPreDspTap(GstElement *capsFilter)
+{
+    if (!capsFilter) return;
+    GstPad *pad = gst_element_get_static_pad(capsFilter, "src");
+    if (!pad) {
+        qWarning() << "PublishPipeline: pre-DSP level tap not installed (no src pad on pub-aec-caps); the call is unaffected";
+        return;
+    }
+    // A fresh accumulator for THIS pipeline. start()'s audio-tier retry loop installs a tap per
+    // iteration while the previous pipeline is still being NULLed on a detached thread, and two
+    // streaming threads must not share the plain sumSq / n fields. The old probe keeps its own
+    // copy through the destroy-notified shared_ptr below.
+    m_preDsp = std::make_shared<PreDspCell>();
+    // The probe owns a heap copy of the shared cell (freed by the destroy notify) and never
+    // sees `this`: a buffer racing teardown writes into a cell that is still alive.
+    auto *cell = new std::shared_ptr<PreDspCell>(m_preDsp);
+    gst_pad_add_probe(pad, GST_PAD_PROBE_TYPE_BUFFER,
+        [](GstPad *, GstPadProbeInfo *info, gpointer user) -> GstPadProbeReturn {
+            PreDspCell &c = **static_cast<std::shared_ptr<PreDspCell> *>(user);
+            GstBuffer *b = gst_pad_probe_info_get_buffer(info);
+            if (!b) return GST_PAD_PROBE_OK;
+            GstMapInfo m;
+            if (!gst_buffer_map(b, &m, GST_MAP_READ)) return GST_PAD_PROBE_OK;
+            // The capsfilter in front of us pins 48k / S16LE / mono (see aecCaps).
+            const auto *s = reinterpret_cast<const int16_t *>(m.data);
+            const gsize count = m.size / sizeof(int16_t);
+            for (gsize i = 0; i < count; ++i) { const double v = s[i]; c.sumSq += v * v; }
+            c.n += static_cast<quint32>(count);
+            gst_buffer_unmap(b, &m);
+            if (c.n >= 4800) {   // 100 ms at 48 kHz: the interval pub-level (post-DSP) reports on
+                const double rms = std::sqrt(c.sumSq / c.n) / 32768.0;
+                c.rmsDb.store(rms > 1e-5 ? 20.0 * std::log10(rms) : -100.0, std::memory_order_relaxed);
+                c.windows.fetch_add(1, std::memory_order_relaxed);
+                c.sumSq = 0.0;
+                c.n = 0;
+            }
+            return GST_PAD_PROBE_OK;
+        },
+        cell, [](gpointer user) { delete static_cast<std::shared_ptr<PreDspCell> *>(user); });
+    gst_object_unref(pad);
+}
+
 void PublishPipeline::disableCamera()
 {
     if (!m_pipeline || !m_cameraEnabled) return;
@@ -2428,7 +2666,19 @@ void PublishPipeline::pollBus()
                                          ? g_value_get_double(rmsArr->values) : -100.0;
                 if (rmsArr) g_value_array_free(rmsArr);
                 if (isFarRef) {
-                    m_aecFarRefRms = rmsDb;   // reference level only — no UI meter
+                    // 0.79.0: the ARRIVAL of this message is the reference's heartbeat
+                    // (FarRefStallPolicy.h); m_aecFarRefRms is only a cache of its
+                    // content. The test blackout swallows the message AND the cache
+                    // update so a simulated stall looks exactly like the real one.
+                    const qint64 now = m_farRefClock.isValid() ? m_farRefClock.elapsed() : -1;
+                    const bool blackedOut = m_farRefCell->testBlackout.load(std::memory_order_relaxed)
+                                            && now >= 0 && now >= m_farRefTestBlackoutFromMs;
+                    if (!blackedOut) {
+                        m_aecFarRefRms = rmsDb;   // reference level only — no UI meter
+                        if (now >= 0 && m_farRefPolicy.onMessage(now))
+                            qInfo().nospace() << "PublishPipeline: AEC reference RECOVERED — delivering again after "
+                                              << m_farRefReopens << " re-open(s), farRefRMS " << rmsDb << " dB";
+                    }
                 } else {
                     m_aecSendRms = rmsDb;
                     if (++m_lvlDbg <= 2) {
@@ -2466,9 +2716,31 @@ void PublishPipeline::pollBus()
                         // be a fabricated measurement, and the runner gates leg validity
                         // on farRef, so a stale number would silently decide whether the
                         // leg counted. -999 is unmistakably "absent" rather than "quiet".
+                        //
+                        // 0.79.0: a reference that has gone quiet needs the opposite
+                        // treatment from an absent one. m_aecFarRefRms is a cache that only
+                        // a pub-far-ref-level message updates, so on 2026-10-29 this line
+                        // reprinted one frozen -61.159 for 254 s and read as healthy. It
+                        // still prints that cache -- every existing consumer averages
+                        // farRefRMS, and a -999 here would have biased the AEC harness's
+                        // mean and, for a leg whose reference was dead throughout, taken
+                        // run_aec_matrix's "absent by design" exemption and COUNTED it
+                        // (found by review before it shipped) -- but while the watchdog is
+                        // armed it appends the age of the newest message, and marks a
+                        // reference with none in the last 2 s `farRefStale=1`. The
+                        // appended fields come AFTER the two the harness regex reads, so
+                        // its match is unchanged; call_test.cpp excludes stale samples.
+                        const bool watched = m_farRefWatchdog.isActive();
                         const double farRef = m_osAecActive ? -999.0 : m_aecFarRefRms;
-                        qInfo().nospace() << "AEC erle-proxy: farRefRMS=" << farRef
-                                          << "dB postAecSendRMS=" << m_aecSendRms << "dB";
+                        QDebug line = qInfo().nospace();
+                        line << "AEC erle-proxy: farRefRMS=" << farRef
+                             << "dB postAecSendRMS=" << m_aecSendRms << "dB";
+                        if (watched) {
+                            line << " farRefAgeMs=" << m_farRefPolicy.messageAgeMs(m_farRefDrainedMs);
+                            if (!m_farRefPolicy.referenceAlive(m_farRefDrainedMs)) line << " farRefStale=1";
+                        }
+                        if (m_preDsp->windows.load(std::memory_order_relaxed) > 0)
+                            line << " preDspRMS=" << m_preDsp->rmsDb.load(std::memory_order_relaxed) << "dB";
                     }
                 }
             }
@@ -2551,10 +2823,27 @@ void PublishPipeline::pollBus()
                 // legacy behavior. Camera stays alive.
             }
             g_clear_error(&err); g_free(dbg);
+        } else if (GST_MESSAGE_TYPE(msg) == GST_MESSAGE_CLOCK_LOST) {
+            // 0.79.0: wasapi2src provides a pipeline clock, and cycling the AEC reference
+            // (reopenFarRefSource) posts this when ITS clock is the selected one. Measured on
+            // the build box: the pipeline clock keeps advancing across the cycle (no jump),
+            // so nothing is done about it; it is logged so a field log shows whether it
+            // happened and what the source was. Capped, in case a device flaps.
+            if (m_clockLostLogged++ < 5) {
+                GstObject *csrc = GST_MESSAGE_SRC(msg);
+                gchar *cn = csrc ? gst_object_get_name(csrc) : nullptr;
+                qInfo().nospace() << "PublishPipeline: pipeline clock LOST from "
+                                  << (cn ? cn : "?") << " (logged only; the clock keeps running)";
+                if (cn) g_free(cn);
+            }
         }
         gst_message_unref(msg);
     }
     gst_object_unref(bus);
+    // The bus is empty now: this is the reading the reference watchdog judges staleness
+    // against (FarRefStallPolicy.h). If the main thread stalls and pollBus does not run,
+    // this stands still and so does the staleness.
+    if (m_farRefClock.isValid()) m_farRefDrainedMs = m_farRefClock.elapsed();
 }
 
 void PublishPipeline::sendStatusMessage(const QByteArray &json)
@@ -3833,9 +4122,15 @@ void PublishPipeline::setFarEndOutputDevice(const QString &deviceId)
 {
     // The loopback reference must capture the SAME endpoint the remote audio
     // plays to. Stored here and applied when buildFarEndTail() creates the
-    // loopback wasapi2src (the device can't be changed on a live source). A
-    // live output-device change rebuilds the publisher (CallManager), which
-    // rebuilds the tail against the new endpoint.
+    // loopback wasapi2src; empty = the default render endpoint.
+    //
+    // (This comment used to say "a live output-device change rebuilds the
+    // publisher (CallManager)". Nothing does: this has exactly two callers, both
+    // BEFORE start(), and no code anywhere listens for a change of the Windows
+    // default device or of the in-app speaker. A reference left on the old
+    // endpoint went dead for the last 254 s of the 2026-10-29 call. What now
+    // catches that is the watchdog, by effect: armFarRefWatchdog() /
+    // FarRefStallPolicy.h re-open the source when its level messages stop.)
     m_farOutputDeviceId = deviceId;
 }
 

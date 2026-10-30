@@ -89,6 +89,14 @@ inline QString codenameBlurb(const QString &verName)
             "after Pentecost. A name over a release that shows what is behind a "
             "link before you click it, and that gives the incoming sound more room "
             "to ride out a bad stretch of the connection.").arg(verName);
+    if (verName == QStringLiteral("Arhangelovden"))
+        return QObject::tr("Codename \"%1\" — Архангелов ден, 8 November: the "
+            "Church's feast of the Archangel Michael and the other heavenly powers, "
+            "the second biggest autumn feast in Bulgarian folk tradition after "
+            "Dimitrovden, and the name day of everyone called Angel, Angelina, "
+            "Archangel or Gavril. A name over a release that keeps watch "
+            "over the signal the echo canceller depends on, and starts it again if "
+            "it ever falls silent.").arg(verName);
     if (verName == QStringLiteral("Nezavisimost"))
         return QObject::tr("Codename \"%1\" — Независимост, the Declaration of "
             "Independence of Bulgaria, 22 September 1908. The date is the Old "

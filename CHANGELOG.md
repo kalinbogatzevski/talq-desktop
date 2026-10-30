@@ -1,5 +1,51 @@
 # Changelog
 
+## v0.79.0 "Arhangelovden" — BETA (2026-10-29)
+
+The echo canceller could lose the signal it cancels against in the middle of a call and stay blind
+for the rest of it, so the person you were talking to heard their own voice come back about two
+seconds late. TalQ now notices when that signal goes silent, starts it again by itself, and
+writes it down.
+
+### Fixed
+* **The echo canceller could go deaf in the middle of a call, without a word in the log.** To cancel
+  echo, TalQ listens to what your speakers are playing. On 29 October, around the time a USB
+  headset was plugged in during a call, that listener stopped delivering sound, with no error, for
+  the remaining four minutes of the call, so the canceller had nothing to subtract, and the other
+  person heard an echo about two seconds late. Exactly what stopped on that computer is not known;
+  what is known is that the listener went silent and nothing in TalQ's log said so. TalQ now
+  watches that listener. If it delivers nothing for 8 seconds, TalQ opens it again, and again
+  after 10, 20, 40 and 40 seconds if it has to (five tries in all, then it stops trying for that
+  call), and the log records when it stalled, each re-open and when it came back. Pauses shorter
+  than 8 seconds, which sort themselves out, are left alone, and the call itself is not touched.
+
+### Added
+* **Two new readings in the call log**, on the line that already carries the echo figures. One says
+  how long ago the canceller last heard its reference signal (`farRefAgeMs`, marked
+  `farRefStale=1` once it passes two seconds), so a dead reference no longer looks like a healthy
+  one frozen at its last value. The other is the level of your microphone *before* the noise and
+  echo processing (`preDspRMS`), next to the level that is actually sent, so it can be told whether
+  the processing is cutting into a quiet voice.
+
+### Good to know
+* **Beta channel only.** The stable line is untouched.
+* **What this does not do.** It does not notice the Windows switch itself, only its effect, so the
+  other person can still hear an echo for at least the 8 seconds, plus the short time the canceller
+  needs to adapt again. It does not remove the cause: the sound component TalQ uses can stop
+  delivering without raising an error, which has been reported to its authors and is still open.
+  And it does not
+  change what a colleague hears of *you*: if someone says they cannot understand you, the new
+  microphone reading is there to find out whether it is the processing cutting your first words,
+  not a fix for that.
+* **What was checked.** The decision logic has its own test (81 checks; each of its rules was broken
+  on purpose, and the test caught 17 of the 18 breaks; the one it missed changes nothing visible at
+  the one-second check cadence). A real call between two TalQ instances on one laptop, run by the
+  test harness, with the stall simulated by ignoring the listener's messages, noticed the stall
+  after 8.1 seconds, opened the real listener again and saw it deliver, and the call stayed up. **Not checked: a real Windows output
+  switch.** Whether Windows moves the old listener across by itself is not known, so if you hear an
+  echo after plugging something in, use **Settings → Save a copy…** (next to Open log folder) and
+  look for "AEC reference STALLED" in it: that line is exactly what will tell us.
+
 ## v0.78.0 "Vsi Svetii" — STABLE (2026-10-26)
 
 Promotes the 0.77.x line: a web address in a message shows what is behind it, a reaction tells you

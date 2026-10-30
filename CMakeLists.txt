@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(talq VERSION 0.78.0 LANGUAGES CXX)
+project(talq VERSION 0.79.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -336,6 +336,23 @@ string(TIMESTAMP TALQ_BUILD_TS "%m%d-%H%M")
 # "Buditeli" did from 0.75.x to 0.76.x and "First School Day" from 0.71.x to
 # 0.72.x, instead of a fresh name. Carried over on that precedent when Kalin
 # asked for a new stable, 2026-10-26.
+#
+# 0.79.x IS "Arhangelovden" -- Архангелов ден, 8 November: the Church's feast of the
+# Archangel Michael and the other bodiless heavenly powers (Събор на св. архангел
+# Михаил и другите небесни безплътни сили), described by the Bulgarian National Radio
+# as the second biggest autumn feast in Bulgarian folk tradition, after Dimitrovden
+# (St Dimitar), and the name day of everyone called Angel, Angelina, Archangel,
+# Gavril and a few more. It follows Vsi Svetii (1 November) in the calendar thread
+# rather than the history one (Saedinenie -> Slivnitsa -> Nezavisimost). Offered by
+# the model on 2026-10-29 with Andreevden (30 November) and Nikulden (6 December);
+# chosen by Kalin the same day, 0.79.x being a NEW minor line and so needing a new
+# name. 0.79.x is odd, so it is the BETA line: the echo canceller notices when the
+# signal it cancels against has gone silent (a headset plugged in mid-call did that
+# on 2026-10-29) and re-opens it, and the log gains the readings needed to tell a
+# dead reference, and a quiet talker, from a healthy call.
+# Sources (BNR English, now served from old-news.bnr.bg):
+# old-news.bnr.bg/en/post/100757850 (day-of-archangel-michael-the-warrior-angel) and
+# old-news.bnr.bg/en/post/100893827 (nov-8-orthodox-christians-honor-st-archangel-michael).
 set_source_files_properties(
     src/main.cpp
     src/core/CallManager.cpp
@@ -344,7 +361,7 @@ set_source_files_properties(
     src/ui/SettingsDialog.cpp
     src/ui/MainWindow.cpp
     PROPERTIES COMPILE_DEFINITIONS
-      "TALQ_VERSION=\"${PROJECT_VERSION}\";TALQ_VERSION_NAME=\"Vsi Svetii\";TALQ_BUILD_TS=\"${TALQ_BUILD_TS}\""
+      "TALQ_VERSION=\"${PROJECT_VERSION}\";TALQ_VERSION_NAME=\"Arhangelovden\";TALQ_BUILD_TS=\"${TALQ_BUILD_TS}\""
 )
 
 # Pre-release flag: when build-release.sh is invoked with --beta it
