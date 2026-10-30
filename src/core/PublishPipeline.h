@@ -20,6 +20,7 @@
 #include "BweLayerGate.h"
 #include "SoloStreamPolicy.h"
 #include "FrameHandoff.h"
+#include "FarRefStallPolicy.h"
 
 /**
  * Send-only GStreamer webrtcbin pipeline for MCU publishing.
@@ -103,6 +104,14 @@ public:
     void        removeFarEndPeer(const QString &peerId);
     void        setFarEndOutputDevice(const QString &deviceId);
     bool        aecPlayoutActive() const { return m_farProbe != nullptr; }
+    // Age in ms of the newest AEC-reference level message, on the main thread; -1 when
+    // the watchdog is not armed (AEC off, OS AEC) or no message has arrived yet.
+    // aecPlayoutActive() only says the probe ELEMENT exists, so on 2026-10-29 it read
+    // "up" for the whole 254 s the reference was dead; this is the number that grows.
+    qint64      aecReferenceAgeMs() const
+    {
+        return m_farRefWatchdog.isActive() ? m_farRefPolicy.messageAgeMs(m_farRefDrainedMs) : -1;
+    }
     // Has the camera delivered at least one real frame since the last enable?
     // Diagnostics: "camera on (intent) but firstFrame=0" after a few seconds is
     // the silent mfvideosrc-failure signature (the "her camera stopped" symptom).
@@ -467,6 +476,56 @@ private:
     double      m_aecFarRefRms = -100.0;
     double      m_aecSendRms   = -100.0;
     int         m_aecErleDbg   = 0;
+    // 0.79.0 AEC reference LIVENESS (why: FarRefStallPolicy.h). m_aecFarRefRms above is a
+    // CACHE written only when a pub-far-ref-level message arrives, so a loopback source
+    // that stops delivering leaves it frozen at its last value while every readout still
+    // says healthy. The watchdog keys on message ARRIVAL, timestamps messages on
+    // m_farRefClock as pollBus pops them, and judges staleness against the reading taken
+    // when pollBus last emptied the bus (a stalled main thread must not look like a
+    // stalled reference). All of it lives on the main thread.
+    talq::FarRefStallPolicy m_farRefPolicy;
+    QTimer          m_farRefWatchdog;            // 1 s tick
+    QElapsedTimer   m_farRefClock;               // monotonic ms since armFarRefWatchdog()
+    qint64          m_farRefDrainedMs = 0;       // m_farRefClock at the end of the last pollBus
+    int             m_farRefReopens = 0;         // re-opens issued in this call (telemetry)
+    int             m_clockLostLogged = 0;       // CLOCK_LOST messages logged (capped)
+    // State shared with a re-open running on GStreamer's pool thread. The pool thread holds
+    // its OWN copy of the shared_ptr and never touches `this`, so a teardown racing it cannot
+    // dereference a dead object, and a stale callback from an earlier arm stays inert (the
+    // cell is replaced on every arm).
+    struct FarRefCell {
+        std::atomic<bool>   alive{false};          // cleared in cleanup(): a late re-open must stand down
+        std::atomic<bool>   inFlight{false};       // a re-open has not returned from GStreamer yet
+        std::atomic<qint64> inFlightSinceMs{0};    // m_farRefClock reading when it was issued
+        // TALQ_TEST_FARREF_BLACKOUT_AFTER_MS=N: from N ms after arming, pollBus ignores the
+        // reference's messages (and freezes the cache) -- exactly what the real failure looks
+        // like from here: alive, then silent. The watchdog then runs the REAL re-open, and the
+        // re-open ends the blackout only when its NULL -> PLAYING has RETURNED, so a RECOVERED
+        // line cannot be a message from the still-healthy old source. Test hook, unset in
+        // production (precedent: TALQ_TEST_BWE_OVERRIDE_KBPS).
+        std::atomic<bool>   testBlackout{false};
+    };
+    std::shared_ptr<FarRefCell> m_farRefCell{std::make_shared<FarRefCell>()};
+    qint64          m_farRefTestBlackoutFromMs = 0;
+    bool            m_farRefStuckLogged = false;   // the "re-open has not returned" warning, once per episode
+    void armFarRefWatchdog();
+    void onFarRefWatchdogTick();
+    void reopenFarRefSource();
+    // Pre-DSP microphone level, the one number the post-DSP erle-proxy line cannot give:
+    // what the processor was HANDED, so ducking/gating can be told from a quiet talker
+    // without the survivorship bias of conditioning on post > threshold. A pad probe on
+    // the pinned capture caps (48k/S16LE/mono), never an element in a link list: if it
+    // cannot be installed the tap is simply absent and the call is untouched. The cell is
+    // shared with the probe (which captures it, never `this`); the accumulator fields are
+    // touched by the streaming thread only.
+    struct PreDspCell {
+        std::atomic<double>  rmsDb{-100.0};   // RMS of the last complete 100 ms window, dBFS
+        std::atomic<qint64>  windows{0};      // complete windows so far (0 = tap never ran)
+        double               sumSq = 0.0;     // streaming thread only
+        quint32              n = 0;           // streaming thread only
+    };
+    std::shared_ptr<PreDspCell> m_preDsp{std::make_shared<PreDspCell>()};
+    void installPreDspTap(GstElement *capsFilter);
     QHash<QString, GstElement*> m_farPeerAppsrcs;
     // Serialises far-end peer add/remove and tail teardown against each other:
     // the hash mutations PLUS the structural pipeline edits (audiomixer

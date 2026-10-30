@@ -4689,9 +4689,13 @@ void CallManager::onLoadTick()
     const bool camFrame = m_publishPipeline && m_publishPipeline->cameraFirstFrameSeen();
     const bool pubRun   = m_publishPipeline && m_publishPipeline->isRunning();
     const bool aecOn    = m_publishPipeline && m_publishPipeline->aecPlayoutActive();
+    // aecRefAge = ms since the AEC loopback reference last delivered a level message
+    // (-1 = not watched / none yet). `aec=` only says the probe ELEMENT exists, so it read 1
+    // for the 254 s the reference was dead on 2026-10-29; this is the field that grows.
+    const qint64 aecRefAge = m_publishPipeline ? m_publishPipeline->aecReferenceAgeMs() : -1;
     qInfo().noquote() << QString(
         "[MEDIA] st=%1 cam=%2 camFrame=%3 pub=%4 aec=%5 enc=%6 dec=%7 load=L%8 "
-        "caps=lyr%9/fps%10 rxPeers=%11 rxPeak=%12p share=%13 lc=%14")
+        "caps=lyr%9/fps%10 rxPeers=%11 rxPeak=%12p share=%13 lc=%14 aecRefAge=%15")
         .arg(int(m_state))
         .arg(camOn ? 1 : 0).arg(camFrame ? 1 : 0).arg(pubRun ? 1 : 0).arg(aecOn ? 1 : 0)
         .arg(QString::number(enc, 'f', 2))
@@ -4701,7 +4705,8 @@ void CallManager::onLoadTick()
         .arg(m_subscribePipelines.size())
         .arg(peerPeakRxHeight())
         .arg(m_screenSharing ? 1 : 0)
-        .arg(m_loadControllerEnabled ? 1 : 0);
+        .arg(m_loadControllerEnabled ? 1 : 0)
+        .arg(aecRefAge);
 
     // [LEAK] 0.51.x OOM hunt: per-frame cross-thread delivery gauges. prevPend /
     // subPend = frames POSTED to the Qt main thread minus those DELIVERED — if
