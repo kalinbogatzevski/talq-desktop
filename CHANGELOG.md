@@ -1,5 +1,69 @@
 # Changelog
 
+## v0.79.2 "Arhangelovden" — BETA (2026-10-31)
+
+On some computers the echo canceller never worked, however well it was set up: the sound it
+cancels against (what your speakers play) reached it about a quarter of a second later than the
+echo it was meant to remove, so it cancelled nothing and the other person heard themselves. TalQ
+now measures that delay during the call and corrects it.
+
+### Fixed
+* **The echo canceller can now correct a speaker signal that reaches it too late (or too early).**
+  To cancel echo, TalQ compares what your microphone hears with what your speakers are playing, and
+  it can only subtract an echo whose source it has already received. On one laptop, after a change
+  of state that nobody could pin down and that did not go away in hours or after restarts, the
+  speaker signal arrived about 250 ms later than its echo: no cancellation at all (the echo stayed
+  at about -22 dB of the speech level), and it was different by up to 30 ms on every start, so no
+  fixed correction could work. TalQ now compares the two sounds while you talk, works out how far
+  apart they really are, and moves the timestamps of the speaker signal so that it arrives about
+  25 ms ahead of its echo, which is the middle of the range in which the canceller was measured to
+  work (from about +4 to +44 ms; it failed at -10 ms and below, and at +58 ms and above). It looks
+  again during the call, so a computer whose state changes in the middle of a call is corrected
+  there too.
+
+### Added
+* **Lines in the log that say what the correction measured and did**, starting with
+  `PublishPipeline: AEC align`: the delay it found, how sure it was, every change it made and why,
+  and every time it decided to leave things alone (for example `HOLD reason=in-band` when the
+  signal already arrives at the right time, which is what a computer without the problem logs). If
+  you hear an echo on this beta, these lines are what to send.
+* **A switch for it.** `TALQ_AEC_ALIGN=off` turns the correction off completely (the call then
+  works exactly as in 0.79.1), `observe` only measures and logs what it would do, and `on` (the
+  default in this build) does it. The same family of switches sets the targets
+  (`TALQ_AEC_ALIGN_TARGET_MS` and the others listed in `docs/TESTING.md`).
+* **Test tools for echo work**: raw recordings of the microphone and of the speaker signal before
+  and after the correction (`TALQ_AEC_DUMP_DIR`), `scripts/aec-lead.py` to measure from them how
+  far ahead the speaker signal is, and a switch that makes the speaker signal late or early on
+  purpose (`TALQ_TEST_REF_LABEL_SKEW_MS`) to prove the correction works.
+
+### Good to know
+* **Beta channel only.** The stable line (0.78.0) is untouched.
+* **What was checked.** On the laptop with the problem, in the same call set-up, with a speech
+  recording as the far end: with the correction on, the echo fell to about -64 dB in 3 of 3 runs;
+  with it off, or only watching, it stayed at about -22 to -24 dB in all 6 runs. The measured
+  distance between the two sounds and what the correction believed it was agreed within about 1 ms
+  in every run, and the correction was moved once, by +260 to +279 ms, per run. A signal made to
+  arrive too early was corrected the other way (-55 and -65 ms) and also passed where the same call
+  without the correction failed. When the problem was switched on in the middle of a call (after a
+  minute), TalQ noticed it about 15 seconds later and had corrected it 16 seconds after the change;
+  the same call without the correction stayed broken to the end. Where the signal was already at the
+  right time, the correction left it alone (4 of 4 runs fine).
+* **Not yet seen, and one known risk.** A computer where the echo canceller already worked, with the
+  correction on: it is designed to do nothing there, a laptop with no echo path logged `NOCOUPLING`
+  and never changed anything, and runs already in range were left alone, but a computer that works
+  today is not among the measurements. Nor is the field. **The known risk:** when the person you
+  talk to has an echo (their speakers feeding back into their microphone), your own voice comes back
+  to you late, and to this measurement that looks the same as the problem fixed here. TalQ cannot
+  yet tell the two apart, so on a headset it may move the speaker signal when it should not, and the
+  canceller may then take some of your own voice out of what the other person hears. If someone says
+  they cannot hear you well on this beta, send the log (lines `PublishPipeline: AEC align ... SHIFT`)
+  and set `TALQ_AEC_ALIGN=off`; a guard against this is the next piece of work. Also: on the test
+  laptop the echo after the correction is about 4 dB above the best level it reached with a hand-set
+  correction (-64 dB against -68 dB); the cause was not looked at.
+* **Please send the log** from any call on this beta in which someone heard an echo, and say whether
+  they used speakers, a laptop's own speakers or a headset.
+* **Settings.** To receive beta builds, tick "Pre-release updates".
+
 ## v0.79.1 "Arhangelovden" — BETA (2026-10-30)
 
 Calls start a little faster. In a slow call recorded on 29 October, the person answering waited

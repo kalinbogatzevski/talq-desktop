@@ -333,6 +333,12 @@ int main(int argc, char *argv[])
             // User opted out (Settings → Diagnostics → off): ERR/WARN only.
             qputenv("GST_DEBUG", "1");
         }
+        // TALQ_GST_DEBUG=<spec> hands a GStreamer debug spec through unchanged. The block above
+        // OVERWRITES any GST_DEBUG the caller set, so a category such as webrtcdsp:5 (the
+        // echo probe's "latency of .. and delay of .." line) could never be switched on in the
+        // app. A diagnosis aid for one machine; unset, behaviour is exactly as before.
+        if (qEnvironmentVariableIsSet("TALQ_GST_DEBUG"))
+            qputenv("GST_DEBUG", qgetenv("TALQ_GST_DEBUG"));
         logPath = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/talq_debug.log";
         QDir().mkpath(QFileInfo(logPath).absolutePath());
         // Publish the resolved path so Settings can offer "Save a copy" / "Open

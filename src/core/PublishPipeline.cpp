@@ -3,6 +3,7 @@
 #include "core/TurnList.h"
 #include "core/IceStats.h"
 #include <QCoreApplication>
+#include <QDir>
 #include <memory>
 #include "core/BackgroundEngine.h"
 #include "core/LeakStats.h"
@@ -20,6 +21,7 @@
 #include <gst/sdp/sdp.h>
 #include <thread>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -28,6 +30,33 @@
 #include "core/CaptureDsp.h"
 #include "core/EncodeTier.h"
 #include "core/FpsMeter.h"
+
+// "AEC align" (see AecAlignCell in PublishPipeline.h): the two helpers every part of it shares,
+// defined up here because the reference re-open (far above the controller) feeds it too.
+namespace {
+using AlignCell = PublishPipeline::AecAlignCell;
+
+// One monotonic millisecond clock for every timestamp the controller exchanges between threads.
+inline qint64 alignNowMs() { return static_cast<qint64>(g_get_monotonic_time() / 1000); }
+
+// Ask the reference probe to move the shift to `ns`. The probe applies it at the first quiet
+// buffer, after 4 s, or at once when urgent. The whole request is ONE atomic word, so the
+// probe (a streaming thread) can never combine the shift of one request with the urgency
+// of another when the worker and the re-open callback (a pool thread) ask at the same time.
+inline void alignRequestShift(AlignCell &c, qint64 ns, bool urgent)
+{
+    c.pendingReq.store(talq::alignPackRequest(ns, urgent, alignNowMs()), std::memory_order_release);
+}
+
+// Does a reset to 0 have anything to undo: a shift in effect, or a raise still waiting for
+// its quiet buffer (which would otherwise land on a timeline it was not measured on)?
+inline bool alignHasShiftToUndo(const AlignCell &c)
+{
+    if (c.shiftNs.load(std::memory_order_relaxed) != 0) return true;
+    const quint64 w = c.pendingReq.load(std::memory_order_acquire);
+    return w != 0 && talq::alignUnpackRequest(w).shiftNs != 0;
+}
+}
 
 // C2/#29 — send-FPS adaptation. OFF by default; set TALQ_FPS_ADAPT=1 to enable.
 // When ON, the framerate caps below are a permissive RANGE (so the shared
@@ -126,6 +155,7 @@ PublishPipeline::PublishPipeline(QObject *parent)
 PublishPipeline::~PublishPipeline()
 {
     stop();
+    stopAlignController();   // a joinable worker thread must never be destroyed with its cell
 }
 
 QByteArray PublishPipeline::framerateCapsFrag() const
@@ -569,9 +599,36 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
                    "reference tail (nothing downstream will use it)";
         m_aecEnabled = false;
     }
+    // AEC align: one cell per build (a rebuild must not inherit a worker, a lock or a shift).
+    // Inert -- no cell, no taps, today's exact path -- unless OUR canceller will run on a
+    // loopback reference we build: AEC on, no OS canceller, not the direct AEC3 engine (it
+    // ignores PTS), webrtcdsp present (no webrtcdsp, no aecCaps), and the mode is not off.
+    // The id pairs a build's ref-N / mic-N dumps with its log lines.
+    stopAlignController();
+    {
+        static std::atomic<int> buildGen{0};
+        m_aecBuildId = buildGen.fetch_add(1);
+        if (m_aecEnabled && !osAecActive && !useAec3Engine) {
+            const talq::AlignParams ap = talq::AlignParams::fromEnvironment();
+            bool dspPresent = false;
+            if (ap.mode != talq::AlignMode::Off) {
+                if (GstElementFactory *f = gst_element_factory_find("webrtcdsp")) {
+                    dspPresent = true;
+                    gst_object_unref(f);
+                }
+            }
+            if (dspPresent) {
+                m_align = std::make_shared<AecAlignCell>();
+                m_align->params = ap;
+                m_align->buildId = m_aecBuildId;
+                m_align->mode.store(static_cast<int>(ap.mode));
+            }
+        }
+    }
     if (m_aecEnabled && !buildFarEndTail()) {
         qWarning() << "PublishPipeline: AEC playout tail failed — disabling AEC for this call";
         m_aecEnabled = false;
+        m_align.reset();   // the tail never got its probes: nothing to align
     }
 
     // Optional WebRTC DSP (webrtcdsp): noise suppression and/or automatic gain
@@ -867,6 +924,12 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
     // 0.79.0 pre-DSP level tap (see PreDspCell). Only where the capture leg is pinned to
     // 48k/S16LE/mono, i.e. the AEC chains; elsewhere there is no `aecCaps` and no tap.
     if (aecCaps) installPreDspTap(aecCaps);
+    // The reference tap is already in the tail; if the capture chain turned out not to host the
+    // canceller after all, stand it down (it then does nothing at all).
+    if (m_align && !aecCaps) {
+        m_align->inert.store(true);
+        m_align.reset();
+    }
 
     // Force a known SSRC via capsfilter between payloader and webrtcbin.
     // This ensures webrtcbin's internal rtpbin uses the SAME SSRC in both
@@ -1577,6 +1640,7 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
     // The pipeline is PLAYING and the loopback tail (if any) is up: start watching that
     // the reference keeps delivering. Inert when our canceller is off or the OS does it.
     armFarRefWatchdog();
+    armAlignController();
 
     // Dummy feeds through dummyValve → funnel → shared encoder for the
     // first 5 s only (m_dummyHaltTimer below). After that the dummy valve
@@ -1628,6 +1692,9 @@ void PublishPipeline::cleanup()
                       "pool thread (wasapi2 activation not returning?) -- if the pipeline then fails to release, "
                       "this is why";
     m_farRefCell->alive.store(false);
+    // AEC align: its worker never touches an element, but it must be gone before the pipeline
+    // is handed to the NULL worker below (the join waits for one estimate at most, a few ms).
+    stopAlignController();
     // Stop the dummy-halt timer so it can't fire on a torn-down pipeline.
     m_dummyHaltTimer.stop();
     // Disconnect GStreamer signals to prevent callbacks with stale userData
@@ -2420,6 +2487,28 @@ void PublishPipeline::armFarRefWatchdog()
         qInfo().nospace() << "PublishPipeline: pipeline clock is "
                           << (rc && rc == pc ? "the AEC REFERENCE's own clock (a stall also freezes the publisher clock)"
                                              : "not the AEC reference's (the reference is slaved to it)");
+        // Instrument: name the clocks and the reference source's timing settings, so a field log
+        // says whether the reference timeline is slaved (skew re-sync jumps), re-timestamped, or
+        // free-running, and which element is the pipeline's clock provider.
+        {
+            // The mic source can be a wasapi2src, an appsrc (TALQ_MIC=comms) or a test source,
+            // so only read properties the element really has (a missing one would print a
+            // GLib warning); -1 means "this element has no such property".
+            auto readInt = [](GstElement *e, const char *prop) -> int {
+                if (!e || !g_object_class_find_property(G_OBJECT_GET_CLASS(e), prop)) return -1;
+                gint v = -1;
+                g_object_get(e, prop, &v, nullptr);
+                return v;
+            };
+            GstElement *mic = gst_bin_get_by_name(GST_BIN(m_pipeline), "pub-audiosrc");
+            qInfo().nospace() << "PublishPipeline: AEC timing - pipeline clock '" << GST_OBJECT_NAME(pc)
+                              << "'; reference source (pub-aec-ref) provide-clock=" << readInt(m_farSrc, "provide-clock")
+                              << " slave-method=" << readInt(m_farSrc, "slave-method")
+                              << " (0 resample, 1 re-timestamp, 2 skew, 3 none)"
+                              << "; mic source (pub-audiosrc) provide-clock=" << readInt(mic, "provide-clock")
+                              << " slave-method=" << readInt(mic, "slave-method");
+            if (mic) gst_object_unref(mic);
+        }
         if (rc) gst_object_unref(rc);
         gst_object_unref(pc);
     }
@@ -2507,10 +2596,19 @@ void PublishPipeline::reopenFarRefSource()
     // what this thread exists to avoid. A locked child is skipped by bin-wide changes. The
     // main thread can still wait for the element's state lock while this thread holds it;
     // that residual is one state change long, not an Open on the UI thread.
-    auto *cell = new std::shared_ptr<FarRefCell>(m_farRefCell);
+    //
+    // The AEC align cell rides along the same way: a re-open re-draws the reference's
+    // timeline, so the callback tells the controller (epoch) and asks for the shift back at 0.
+    struct ReopenCtx {
+        std::shared_ptr<FarRefCell> farCell;   // not "far": windows.h defines that as an empty macro
+        std::shared_ptr<AecAlignCell> align;   // null when the controller is not built
+    };
+    auto *cell = new ReopenCtx{ m_farRefCell, m_align };
+    if (cell->align) cell->align->reopenInFlight.store(true, std::memory_order_release);
     gst_element_call_async(src,
         [](GstElement *el, gpointer user) {
-            FarRefCell &c = **static_cast<std::shared_ptr<FarRefCell> *>(user);
+            ReopenCtx &ctx = *static_cast<ReopenCtx *>(user);
+            FarRefCell &c = *ctx.farCell;
             if (!c.alive.load()) return;                               // torn down before we ran
             gst_element_set_locked_state(el, TRUE);
             gst_element_set_state(el, GST_STATE_NULL);                 // Close: drops the old wasapi2 context
@@ -2532,22 +2630,880 @@ void PublishPipeline::reopenFarRefSource()
                 gst_element_set_state(el, GST_STATE_NULL);
                 return;
             }
+            if (ctx.align) {
+                // The new timeline may sit anywhere relative to the old one, so a shift measured
+                // on the old one is void: back to 0 at the next buffer (a forced shift is a
+                // constant and stays), a raise still waiting for its quiet buffer is cancelled
+                // too, and the worker forgets its lock when it sees the epoch.
+                if (!ctx.align->forced && alignHasShiftToUndo(*ctx.align))
+                    alignRequestShift(*ctx.align, 0, true);
+                ctx.align->epoch.fetch_add(1, std::memory_order_release);
+            }
             qInfo() << "PublishPipeline: AEC reference source re-opened (NULL -> PLAYING)";
         },
         cell,
         [](gpointer user) {
-            auto *held = static_cast<std::shared_ptr<FarRefCell> *>(user);
-            (*held)->inFlight.store(false, std::memory_order_release);  // also covers every early return above
+            auto *held = static_cast<ReopenCtx *>(user);
+            held->farCell->inFlight.store(false, std::memory_order_release);  // also covers every early return above
+            if (held->align) held->align->reopenInFlight.store(false, std::memory_order_release);
             delete held;
         });
+}
+
+// ---- TALQ_AEC_DUMP_DIR=<dir> (diagnosis aid, OFF unless set) -------------------------------
+// Writes what flows past a pinned 48 kHz / S16LE / mono caps filter as raw PCM plus a sidecar
+// of "<buffer PTS in ns> <bytes>" lines, one pair per tag and pipeline instance. Attached to
+// the mic leg (pub-aec-caps) and the loopback reference (pub-far-caps), the two files let
+// scripts/aec-lead.py cross-correlate them OFFLINE: when the echo shows up in the mic against
+// where the reference sits on its own timeline. That, with the probe's logged L and delay, is
+// the reference's lead over the echo - the one number nobody has measured, and the thing
+// AEC3 needs to be non-negative. Streaming-thread cost: one fwrite per 10 ms buffer.
+namespace {
+struct AecDumpFiles {
+    FILE *raw = nullptr;
+    FILE *idx = nullptr;
+    int   n   = 0;
+    ~AecDumpFiles() { if (raw) std::fclose(raw); if (idx) std::fclose(idx); }
+};
+}
+
+static void attachAecDump(GstElement *capsFilter, const char *tag, int buildId)
+{
+    const QByteArray dir = qgetenv("TALQ_AEC_DUMP_DIR");
+    if (dir.isEmpty() || !capsFilter) return;
+    QDir().mkpath(QString::fromLocal8Bit(dir));
+    // buildId is unique per start() iteration, so a publisher rebuild never appends to an older
+    // pair AND a build's ref-N and mic-N share N (they used to take two different counts).
+    const QByteArray stem = dir + "/" + tag + "-" + QByteArray::number(buildId);
+    auto *f = new AecDumpFiles;
+    f->raw = std::fopen((stem + ".raw").constData(), "wb");
+    f->idx = std::fopen((stem + ".idx").constData(), "w");
+    GstPad *pad = gst_element_get_static_pad(capsFilter, "src");
+    if (!f->raw || !f->idx || !pad) {
+        qWarning() << "PublishPipeline: AEC dump could not start for" << tag << "in" << dir;
+        delete f;
+        if (pad) gst_object_unref(pad);
+        return;
+    }
+    std::fprintf(f->idx, "# pts_ns bytes ; %s.raw is 48000 Hz S16LE mono\n", stem.constData());
+    gst_pad_add_probe(pad, GST_PAD_PROBE_TYPE_BUFFER,
+        [](GstPad *, GstPadProbeInfo *info, gpointer user) -> GstPadProbeReturn {
+            auto *f = static_cast<AecDumpFiles *>(user);
+            GstBuffer *b = gst_pad_probe_info_get_buffer(info);
+            GstMapInfo m;
+            if (!b || !gst_buffer_map(b, &m, GST_MAP_READ)) return GST_PAD_PROBE_OK;
+            std::fwrite(m.data, 1, m.size, f->raw);
+            std::fprintf(f->idx, "%lld %zu\n",
+                         GST_BUFFER_PTS_IS_VALID(b) ? static_cast<long long>(GST_BUFFER_PTS(b)) : -1LL,
+                         static_cast<size_t>(m.size));
+            gst_buffer_unmap(b, &m);
+            if ((++f->n % 100) == 0) { std::fflush(f->raw); std::fflush(f->idx); }  // survives a hard exit
+            return GST_PAD_PROBE_OK;
+        },
+        f, [](gpointer user) { delete static_cast<AecDumpFiles *>(user); });
+    gst_object_unref(pad);
+    qInfo().nospace() << "PublishPipeline: AEC dump '" << tag << "' -> " << stem.constData() << ".raw / .idx";
+}
+
+// ---- AEC align: the taps, the worker, arm and stop ------------------------------------------------
+// Estimator: AecDelayEstimator.h. Decisions: AecLeadPolicy.h. Shared state: AecAlignCell.
+//
+// Threads. The reference and microphone streaming threads each run one pad probe that only
+// writes atomics and its own ring: no lock but the ring's, no logging, and no allocation except
+// the writable-buffer copy of a shifted reference buffer (and the one-time legacy query below).
+// ONE worker (500 ms ticks, below-normal priority) reads them, runs the estimator and the
+// policy, requests shifts and prints every line. It never touches a GstElement.
+namespace {
+
+// Stream and segment bookkeeping for one pad (streaming thread only).
+struct AlignPadTrack {
+    GstSegment seg;
+    bool haveSeg = false;
+    bool sawStream = false;
+    AlignPadTrack() { gst_segment_init(&seg, GST_FORMAT_TIME); }
+
+    // True when the pad's stream or segment CHANGED. The first of each is not a change: the
+    // rings are empty then, and a reset at start-up would only discard nothing.
+    bool onEvent(GstEvent *ev, qint64 &segStartNs)
+    {
+        switch (GST_EVENT_TYPE(ev)) {
+        case GST_EVENT_STREAM_START: {
+            const bool changed = sawStream;   // a source that restarts announces a new stream
+            sawStream = true;
+            return changed;
+        }
+        case GST_EVENT_SEGMENT: {
+            const GstSegment *s = nullptr;
+            gst_event_parse_segment(ev, &s);
+            if (!s || s->format != GST_FORMAT_TIME) return false;
+            const bool changed = haveSeg && (s->start != seg.start || s->stop != seg.stop || s->time != seg.time
+                                             || s->base != seg.base || s->rate != seg.rate);
+            gst_segment_copy_into(s, &seg);
+            haveSeg = true;
+            segStartNs = static_cast<qint64>(seg.start);
+            return changed;
+        }
+        default:
+            return false;
+        }
+    }
+    // Running time (ns) of a buffer timestamp; -1 when it has none or lies outside the segment.
+    qint64 runningTimeNs(GstClockTime pts) const
+    {
+        if (!GST_CLOCK_TIME_IS_VALID(pts)) return -1;
+        const guint64 rt = gst_segment_to_running_time(&seg, GST_FORMAT_TIME, pts);
+        return GST_CLOCK_TIME_IS_VALID(rt) ? static_cast<qint64>(rt) : -1;
+    }
+};
+
+// Move a buffer's PTS EARLIER by shiftNs (later when negative), clamped at 0. Writable in place:
+// this branch is reference-only (fakesink), so no other consumer sees these timestamps.
+void alignShiftPts(GstPadProbeInfo *info, qint64 shiftNs)
+{
+    GstBuffer *b = gst_pad_probe_info_get_buffer(info);
+    if (!b || !GST_BUFFER_PTS_IS_VALID(b)) return;
+    if (!(b = gst_buffer_make_writable(b))) return;
+    const GstClockTime pts = GST_BUFFER_PTS(b);
+    if (shiftNs >= 0)
+        GST_BUFFER_PTS(b) = pts > static_cast<GstClockTime>(shiftNs) ? pts - static_cast<GstClockTime>(shiftNs) : 0;
+    else
+        GST_BUFFER_PTS(b) = pts + static_cast<GstClockTime>(-shiftNs);
+    GST_PAD_PROBE_INFO_DATA(info) = b;
+}
+
+// ---- the reference tap (pub-far-caps src) ----
+struct FarRefTap {
+    std::shared_ptr<AlignCell> cell;   // null: no controller, only the legacy loopback-comp shift
+    AlignPadTrack pad;                 // streaming thread from here on
+    GstElement *pipeline = nullptr;    // borrowed; the probe never outlives the pipeline
+    bool queryPending = false;         // controller + loopback-comp without a usable SHIFT_MS: ask until the answer comes
+    GstClockTime lat = 0;              // legacy: the constant shift, ns
+    bool known = false;
+    bool envWarned = false;            // the out-of-range SHIFT_MS warning is printed once, not per retry
+    bool first = true;
+    double frameSumSq = 0.0;           // the 20 ms activity frame being filled
+    int    frameN = 0;
+};
+
+// The first-buffer shift of TALQ_AEC_REF=loopback-comp, as it was before the controller existed.
+// Latency is only meaningful once the pipeline is PAUSED/PLAYING, so it is queried lazily and
+// cached; TALQ_AEC_REF_SHIFT_MS overrides the query entirely.
+//
+// Asking the pipeline was the original design and it FAILED SILENTLY: the query succeeded and
+// returned under 1 ms, so the compensation subtracted nothing and the hypothesis went untested
+// while looking like it had been tried. The true render-to-capture offset is not something this
+// pipeline knows (the loopback source is a wasapi2src we do not own), hence the explicit value.
+void resolveLegacyCompShift(FarRefTap *fc)
+{
+    if (qEnvironmentVariableIsSet("TALQ_AEC_REF_SHIFT_MS")) {
+        bool ok = false;
+        const int ms = qEnvironmentVariable("TALQ_AEC_REF_SHIFT_MS").toInt(&ok);
+        if (ok && ms >= 0 && ms <= 500) {
+            fc->lat   = static_cast<GstClockTime>(ms) * GST_MSECOND;
+            fc->known = true;
+            qInfo() << "PublishPipeline: AEC ref shift FORCED to" << ms
+                    << "ms (TALQ_AEC_REF_SHIFT_MS) - pipeline latency query bypassed";
+        } else if (!fc->envWarned) {
+            fc->envWarned = true;
+            qWarning() << "PublishPipeline: ignoring out-of-range "
+                          "TALQ_AEC_REF_SHIFT_MS" << qgetenv("TALQ_AEC_REF_SHIFT_MS")
+                       << "- expected 0..500";
+        }
+    }
+    GstQuery *q = fc->known ? nullptr : gst_query_new_latency();
+    if (q && gst_element_query(fc->pipeline, q)) {
+        gboolean live = FALSE;
+        GstClockTime mn = 0, mx = 0;
+        gst_query_parse_latency(q, &live, &mn, &mx);
+        fc->lat = GST_CLOCK_TIME_IS_VALID(mn) ? mn : 0;
+        fc->known = true;
+        qInfo() << "PublishPipeline: AEC ref loopback-comp - "
+                   "shifting far-end PTS earlier by"
+                << (fc->lat / GST_MSECOND) << "ms";
+    }
+    if (q) gst_query_unref(q);   // null when the env override won
+}
+
+GstPadProbeReturn farRefProbe(GstPad *, GstPadProbeInfo *info, gpointer user)
+{
+    auto *t = static_cast<FarRefTap *>(user);
+    if (!t->cell) {   // legacy loopback-comp, no controller: a constant shift, nothing else
+        if (!t->known) resolveLegacyCompShift(t);
+        if (t->known && t->lat > 0) alignShiftPts(info, static_cast<qint64>(t->lat));
+        return GST_PAD_PROBE_OK;
+    }
+    AlignCell &c = *t->cell;
+    if (c.inert.load(std::memory_order_relaxed)) return GST_PAD_PROBE_OK;
+
+    if (GST_PAD_PROBE_INFO_TYPE(info) & GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM) {
+        if (GstEvent *ev = GST_PAD_PROBE_INFO_EVENT(info)) {
+            qint64 start = AlignCell::kUnknown;
+            if (t->pad.onEvent(ev, start)) c.segEpoch.fetch_add(1, std::memory_order_release);
+            if (start != AlignCell::kUnknown) c.refSegStartNs.store(start, std::memory_order_relaxed);
+        }
+        return GST_PAD_PROBE_OK;
+    }
+    GstBuffer *b = gst_pad_probe_info_get_buffer(info);
+    if (!b) return GST_PAD_PROBE_OK;
+    const qint64 now = alignNowMs();
+
+    if (t->queryPending) {   // legacy loopback-comp without a usable SHIFT_MS: the shift is the pipeline's latency
+        resolveLegacyCompShift(t);
+        if (t->known) {   // as the legacy probe did, an unanswered query is asked again on the next buffer
+            t->queryPending = false;
+            if (t->lat > 0) c.shiftNs.store(static_cast<qint64>(t->lat), std::memory_order_relaxed);
+        }
+    }
+    if (!t->first && GST_BUFFER_FLAG_IS_SET(b, GST_BUFFER_FLAG_DISCONT))
+        c.discontCount.fetch_add(1, std::memory_order_relaxed);   // counted only: the loopback can DISCONT after a gap
+    t->first = false;
+
+    // 2. + 3. + 4.: the RAW label. Running time, into the ring, activity counters, newest end.
+    qint64 rtEnd = -1, durNs = 0;
+    bool quiet = false;
+    GstMapInfo m;
+    if (gst_buffer_map(b, &m, GST_MAP_READ)) {
+        const auto *s = reinterpret_cast<const int16_t *>(m.data);
+        const int n = static_cast<int>(m.size / sizeof(int16_t));
+        const qint64 rt = t->pad.runningTimeNs(GST_BUFFER_PTS(b));
+        c.refRing.push(s, n, rt);
+        durNs = static_cast<qint64>(n) * 1000000000LL / 48000;
+        if (rt >= 0) rtEnd = rt + durNs;
+        // 20 ms frames above -55 dBFS feed the "was the far end talking" gate; this buffer's
+        // own level (-60 dBFS) tells the pending-shift logic when the reference is quiet.
+        constexpr double kFrameThr2 = 3.1623e-6;   // (-55 dBFS)^2
+        double bufSq = 0.0;
+        qint64 frames = 0, active = 0;
+        for (int i = 0; i < n; ++i) {
+            const double v = s[i] * (1.0 / 32768.0);
+            const double q = v * v;
+            bufSq += q;
+            t->frameSumSq += q;
+            if (++t->frameN == 960) {
+                ++frames;
+                if (t->frameSumSq / 960.0 > kFrameThr2) ++active;
+                t->frameSumSq = 0.0;
+                t->frameN = 0;
+            }
+        }
+        quiet = n > 0 && bufSq / n < 1.0e-6;   // below -60 dBFS
+        if (frames) {
+            c.refFrames.fetch_add(frames, std::memory_order_relaxed);
+            c.refActiveFrames.fetch_add(active, std::memory_order_relaxed);
+        }
+        gst_buffer_unmap(b, &m);
+    }
+    if (rtEnd >= 0) c.refEndRawRtNs.store(rtEnd, std::memory_order_relaxed);
+
+    // 5. The shift. A pending change is applied at the first quiet buffer, after 4 s, or at once
+    // when urgent (a back-off, a reset): the plugin's reaction to a label step is its own
+    // business, and stepping while the reference is silent hides it.
+    const quint64 word = c.pendingReq.load(std::memory_order_acquire);
+    if (word != 0) {
+        const talq::AlignRequest rq = talq::alignUnpackRequest(word);
+        int how = 0;
+        if (rq.urgent) how = 3;
+        else if (quiet) how = 1;
+        else if (now - rq.sinceMs >= 4000) how = 2;
+        if (how) {
+            quint64 expected = word;
+            // A request that was replaced since we read it keeps its own turn.
+            if (c.pendingReq.compare_exchange_strong(expected, 0, std::memory_order_acq_rel)) {
+                c.appliedFromNs.store(c.shiftNs.load(std::memory_order_relaxed), std::memory_order_relaxed);
+                c.shiftNs.store(rq.shiftNs, std::memory_order_relaxed);
+                c.appliedHow.store(how, std::memory_order_relaxed);
+                c.appliedAtMonoMs.store(now, std::memory_order_relaxed);
+                c.appliedSeq.fetch_add(1, std::memory_order_release);
+            }
+        }
+    }
+    const qint64 S = c.shiftNs.load(std::memory_order_relaxed);
+    if (S != 0) alignShiftPts(info, S);   // S == 0: the buffer is never touched
+
+    // 6. Where the reference now ends on the timeline the plugin sees, and that it is alive.
+    if (rtEnd >= 0) c.refEndShiftedRtNs.store(std::max(rtEnd - S, durNs), std::memory_order_relaxed);
+    c.refLastArrivalMonoMs.store(now, std::memory_order_relaxed);
+    return GST_PAD_PROBE_OK;
+}
+
+// TALQ_TEST_REF_LABEL_SKEW_MS=<n>[,AT_MS=<t>][,BACK_MS=<u>] (test only, unset in production):
+// add n ms to the SOURCE label from t ms after the first buffer (to the end, or until u ms).
+// Installed BEFORE the dump and the tap, so both see what the "source" delivered; it manufactures
+// the bad state on a machine that does not have it, including a flip in mid-call.
+struct RefSkewTap {
+    qint64 skewNs = 0, atMs = 0, backMs = -1;
+    qint64 firstMs = -1;
+};
+
+GstPadProbeReturn refSkewProbe(GstPad *, GstPadProbeInfo *info, gpointer user)
+{
+    auto *k = static_cast<RefSkewTap *>(user);
+    const qint64 now = alignNowMs();
+    if (k->firstMs < 0) k->firstMs = now;
+    const qint64 el = now - k->firstMs;
+    if (el < k->atMs || (k->backMs >= 0 && el >= k->backMs)) return GST_PAD_PROBE_OK;
+    alignShiftPts(info, -k->skewNs);   // a positive skew makes the reference LATE
+    return GST_PAD_PROBE_OK;
+}
+
+// ---- the microphone tap (pub-aec-caps src, beside the PreDspCell probe) ----
+struct MicTap {
+    std::shared_ptr<AlignCell> cell;
+    AlignPadTrack pad;
+    talq::HeadroomMin hm;              // streaming thread only; published through the cell
+    int seenEpoch = 0;
+};
+
+GstPadProbeReturn micAlignProbe(GstPad *, GstPadProbeInfo *info, gpointer user)
+{
+    auto *t = static_cast<MicTap *>(user);
+    AlignCell &c = *t->cell;
+    if (c.inert.load(std::memory_order_relaxed)) return GST_PAD_PROBE_OK;
+
+    if (GST_PAD_PROBE_INFO_TYPE(info) & GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM) {
+        if (GstEvent *ev = GST_PAD_PROBE_INFO_EVENT(info)) {
+            qint64 start = AlignCell::kUnknown;
+            if (t->pad.onEvent(ev, start)) c.segEpoch.fetch_add(1, std::memory_order_release);
+            if (start != AlignCell::kUnknown) c.micSegStartNs.store(start, std::memory_order_relaxed);
+        }
+        return GST_PAD_PROBE_OK;
+    }
+    GstBuffer *b = gst_pad_probe_info_get_buffer(info);
+    if (!b) return GST_PAD_PROBE_OK;
+    const qint64 now = alignNowMs();
+    const qint64 rt = t->pad.runningTimeNs(GST_BUFFER_PTS(b));
+
+    GstMapInfo m;
+    if (gst_buffer_map(b, &m, GST_MAP_READ)) {
+        const auto *s = reinterpret_cast<const int16_t *>(m.data);
+        const int n = static_cast<int>(m.size / sizeof(int16_t));
+        c.micRing.push(s, n, rt);
+        bool allZero = n > 0;
+        for (int i = 0; i < n && allZero; ++i) allZero = s[i] == 0;
+        if (allZero) c.micSilentBuffers.fetch_add(1, std::memory_order_relaxed);   // an OS-level mute or a dead mic
+        gst_buffer_unmap(b, &m);
+    }
+
+    // Headroom m of this microphone frame: how much further the reference's labels could move
+    // before the data they label would have to exist already. Not updated while L is unknown
+    // (the formula needs it) or while the reference has not delivered for 200 ms (its newest
+    // end is then old, and "no headroom" would be a statement about a dead source).
+    const int ep = c.epoch.load(std::memory_order_acquire) + c.segEpoch.load(std::memory_order_acquire);
+    if (ep != t->seenEpoch) {   // the timeline was re-drawn: what the old one measured is void
+        t->seenEpoch = ep;
+        t->hm.clear();
+    }
+    const qint64 L = c.latencyNs.load(std::memory_order_acquire);   // published after the delay it goes with
+    const qint64 refEnd = c.refEndShiftedRtNs.load(std::memory_order_relaxed);
+    const qint64 arrived = c.refLastArrivalMonoMs.load(std::memory_order_relaxed);
+    if (L >= 0 && rt >= 0 && refEnd != AlignCell::kUnknown && arrived != 0 && now - arrived <= 200)
+        t->hm.push(now, talq::alignHeadroomMs(refEnd, rt, c.delayMs.load(std::memory_order_relaxed),
+                                              static_cast<double>(L) / 1.0e6));
+    double v = 0.0;
+    c.mMin1sNs.store(t->hm.min1s(now, v) ? static_cast<qint64>(std::llround(v * 1.0e6)) : AlignCell::kUnknown,
+                     std::memory_order_relaxed);
+    c.mMin10sNs.store(t->hm.min10s(now, v) ? static_cast<qint64>(std::llround(v * 1.0e6)) : AlignCell::kUnknown,
+                      std::memory_order_relaxed);
+    return GST_PAD_PROBE_OK;
+}
+
+// The plugin's own figure for "how far upstream of the probe is the source", computed the way its
+// LATENCY handler computes it: the same query on the probe's own src pad (the pad this is called
+// with), the minimum latency TRUNCATED to whole ms, and 0 when the query fails or the minimum is
+// invalid. Mirroring it exactly keeps lead = D + S - L + delay on the figure the plugin pairs
+// with. Clamped by alignClampDelayMs; `measured` false when the query got no usable answer.
+void alignMeasureProbeDelay(AlignCell &c, GstPad *probeSrcPad)
+{
+    bool measured = false;
+    double ms = 0.0;
+    if (GstQuery *q = gst_query_new_latency()) {
+        if (gst_pad_query(probeSrcPad, q)) {
+            GstClockTime mn = GST_CLOCK_TIME_NONE;
+            gst_query_parse_latency(q, nullptr, &mn, nullptr);
+            if (GST_CLOCK_TIME_IS_VALID(mn)) {
+                measured = true;
+                ms = static_cast<double>(mn / GST_MSECOND);
+            }
+        }
+        gst_query_unref(q);
+    }
+    c.delayMs.store(static_cast<int>(talq::alignClampDelayMs(c.params, measured, ms)), std::memory_order_relaxed);
+    c.delayMeasured.store(measured, std::memory_order_relaxed);
+}
+
+// ---- the worker ----
+QString f0(double v) { return QString::number(v, 'f', 0); }
+QString f1(double v) { return QString::number(v, 'f', 1); }
+// z and psr: whole numbers when large, one or two decimals near the gates (z=88, psr=21; z=4.1, psr=1.05).
+QString fz(double v) { return v >= 10.0 ? f0(v) : f1(v); }
+QString fpsr(double v) { return v >= 10.0 ? f0(v) : QString::number(v, 'f', 2); }
+
+void alignLog(const QString &msg) { qInfo().noquote() << "PublishPipeline: AEC align" << msg; }
+
+struct AlignWorker {
+    AlignCell &c;
+    talq::EstimatorScratch scratch;          // ~1.3 MB, allocated on the first estimate
+    talq::OffsetTracker tracker;
+    talq::OffsetEstimate last;
+    bool haveEst = false;
+    int periodTicks = 4, ticksSince = 0;     // estimator every 4th tick (2 s); doubled while a run is slow
+    int seenEpoch = 0, seenSegEpoch = 0;
+    qint64 seenApplied = 0;
+    qint64 lastChangeMs = -1;                // -1 = never this build / epoch
+    talq::AlignGuard guardState;             // the guard's streak, rate limit and ceiling (one timeline, one lock)
+    struct Note {                            // what the worker asked for, until the probe applies it
+        bool valid = false;
+        enum Kind { Controller, Backoff, Reset } kind = Controller;
+        double dMs = 0, lMs = 0, delayMs = 0, leadBefore = 0, leadAfter = 0, m10sMs = 0, m1sMs = 0;
+        qint64 setMs = 0;
+        QString why;
+    } note;
+    talq::AlignHold lastHold = talq::AlignHold::None;
+    qint64 lastHoldLogMs = 0;
+    double lastWould = std::numeric_limits<double>::quiet_NaN();
+    qint64 lastWouldLogMs = 0;
+    qint64 nextSummaryMs = 0, sum0Frames = 0, sum0Active = 0;
+    double maxEstMs = 0.0;
+    bool armedLogged = false, forcedLogged = false;
+    qint64 loggedRefSeg = AlignCell::kUnknown, loggedMicSeg = AlignCell::kUnknown;
+
+    explicit AlignWorker(AlignCell &cell) : c(cell) {}
+
+    talq::AlignParams params() const
+    {
+        talq::AlignParams p = c.params;
+        p.mode = static_cast<talq::AlignMode>(c.mode.load(std::memory_order_relaxed));
+        return p;
+    }
+    double shiftMs() const { return static_cast<double>(c.shiftNs.load(std::memory_order_relaxed)) / 1.0e6; }
+    bool latency(double &l) const
+    {
+        const qint64 v = c.latencyNs.load(std::memory_order_acquire);
+        if (v < 0) return false;
+        l = static_cast<double>(v) / 1.0e6;
+        return true;
+    }
+    bool headroom(double &m1, double &m10) const
+    {
+        const qint64 a = c.mMin1sNs.load(std::memory_order_relaxed), b = c.mMin10sNs.load(std::memory_order_relaxed);
+        if (a == AlignCell::kUnknown || b == AlignCell::kUnknown) return false;
+        m1 = static_cast<double>(a) / 1.0e6;
+        m10 = static_cast<double>(b) / 1.0e6;
+        return true;
+    }
+    QString lText() const { double l; return latency(l) ? QString::number(l, 'g', 5) : QStringLiteral("unknown"); }
+
+    void tick()
+    {
+        const qint64 now = alignNowMs();
+        if (!armedLogged) {
+            armedLogged = true;
+            nextSummaryMs = now + 10000;
+            sum0Frames = c.refFrames.load();
+            sum0Active = c.refActiveFrames.load();
+            logArmed();
+        }
+        if (c.forced && !forcedLogged && c.shiftNs.load(std::memory_order_relaxed) != 0) {
+            forcedLogged = true;
+            alignLog(QStringLiteral("FORCED shift=%1 ms (constant from the first buffer; the controller only observes)").arg(f0(shiftMs())));
+        }
+        watchEpoch(now);
+        watchApplied(now);
+        runGuard(now);
+        if (++ticksSince >= periodTicks) {
+            ticksSince = 0;
+            if (!c.reopenInFlight.load(std::memory_order_acquire)) estimate(now);
+        }
+        logSegments();
+        if (now >= nextSummaryMs) summary(now);
+    }
+
+    void logArmed()
+    {
+        const talq::AlignParams p = params();
+        const QString forced = c.forcedArgMs >= 0 ? QString::number(c.forcedArgMs)
+                             : c.forcedArgMs == -2 ? QStringLiteral("query") : QStringLiteral("none");
+        alignLog(QStringLiteral("armed mode=%1 forced=%2 target=%3 lowEdge=%4 maxShift=%5 neg=%6 L=%7 delay=%8(%9) "
+                                "refActualBuf=%10 micActualBuf=%11 refActualLat=%12 micActualLat=%13 clockOwner=%14 build=%15 highEdge=%16")
+                     .arg(QLatin1String(talq::alignModeName(p.mode)), forced, QString::number(p.targetMs, 'g', 5),
+                          QString::number(p.lowEdgeMs, 'g', 5), QString::number(p.maxShiftMs, 'g', 5),
+                          p.allowNeg ? QStringLiteral("on") : QStringLiteral("off"), lText())
+                     .arg(c.delayMs.load())
+                     .arg(c.delayMeasured.load() ? QStringLiteral("measured") : QStringLiteral("assumed"))
+                     .arg(c.refActualBufUs).arg(c.micActualBufUs).arg(c.refActualLatUs).arg(c.micActualLatUs)
+                     .arg(c.clockOwner).arg(c.buildId).arg(p.leadHighMs, 0, 'g', 5));
+    }
+
+    // The probe applied a shift: say what it was and why.
+    void watchApplied(qint64)
+    {
+        const qint64 seq = c.appliedSeq.load(std::memory_order_acquire);
+        if (seq == seenApplied) return;
+        seenApplied = seq;
+        const double from = static_cast<double>(c.appliedFromNs.load(std::memory_order_relaxed)) / 1.0e6;
+        const double to = shiftMs();
+        const int how = c.appliedHow.load(std::memory_order_relaxed);
+        const qint64 at = c.appliedAtMonoMs.load(std::memory_order_relaxed);
+        const QString hn = how == 1 ? QStringLiteral("quiet") : how == 2 ? QStringLiteral("timeout") : QStringLiteral("urgent");
+        QString detail;
+        bool counts = true;   // starts the dwell clock
+        if (note.valid && note.kind == Note::Controller) {
+            detail = QStringLiteral("D=%1 L=%2 delay=%3 lead %4 -> %5 m10s=%6")
+                         .arg(f1(note.dMs), f1(note.lMs), f0(note.delayMs), f1(note.leadBefore), f1(note.leadAfter), f0(note.m10sMs));
+        } else if (note.valid && note.kind == Note::Backoff) {
+            detail = QStringLiteral("backoff m1s=%1").arg(f0(note.m1sMs));
+        } else if (note.valid && note.kind == Note::Reset) {
+            detail = QStringLiteral("reset %1").arg(note.why);
+            counts = false;
+        } else if (to == 0.0 && how == 3) {   // the reference re-open asked for it directly
+            detail = QStringLiteral("reset ref-reopen");
+            counts = false;
+        }
+        const double waited = note.valid ? static_cast<double>(at - note.setMs) / 1000.0 : 0.0;
+        alignLog(QStringLiteral("SHIFT %1 -> %2 ms (%3%4applied=%5 after %6s)")
+                     .arg(f0(from), f0(to), detail, detail.isEmpty() ? QString() : QStringLiteral(" "), hn, f1(waited)));
+        if (counts) lastChangeMs = at;
+        note.valid = false;
+    }
+
+    // The reference was re-opened, or a stream or segment changed: the old timeline is void.
+    void watchEpoch(qint64 now)
+    {
+        const int ep = c.epoch.load(std::memory_order_acquire), sg = c.segEpoch.load(std::memory_order_acquire);
+        if (ep == seenEpoch && sg == seenSegEpoch) return;
+        const QString why = ep != seenEpoch ? QStringLiteral("ref-reopen") : QStringLiteral("segment");
+        seenEpoch = ep;
+        seenSegEpoch = sg;
+        tracker.reset();
+        c.refRing.reset();
+        c.micRing.reset();
+        haveEst = false;
+        ticksSince = 0;
+        lastChangeMs = -1;   // the dwell belongs to the old timeline
+        lastHold = talq::AlignHold::None;
+        lastWould = std::numeric_limits<double>::quiet_NaN();
+        // ... and so does the guard's ceiling: it says how much data the OLD timeline had.
+        const bool freed = guardState.reset(params(), now);
+        if (!c.forced && alignHasShiftToUndo(c)) {
+            alignRequestShift(c, 0, true);
+            note = Note{};
+            note.valid = true;
+            note.kind = Note::Reset;
+            note.why = why;
+            note.setMs = alignNowMs();
+        }
+        alignLog(QStringLiteral("RESET reason=%1%2").arg(why, freed ? QStringLiteral(" (back-off ceiling released)") : QString()));
+    }
+
+    // The guard, every tick: a shift that outruns the data is given back. It takes several
+    // consecutive ticks of it (AlignGuard): one late reference buffer is not a shortage.
+    void runGuard(qint64 now)
+    {
+        const talq::AlignParams p = params();
+        if (p.mode != talq::AlignMode::On) return;
+        const quint64 pend = c.pendingReq.load(std::memory_order_acquire);
+        if (pend != 0 && talq::alignUnpackRequest(pend).urgent) return;   // a reset or back-off is already on its way
+        double m1 = 0, m10 = 0, l = 0;
+        const bool haveL = latency(l), haveM = headroom(m1, m10);
+        const qint64 arrived = c.refLastArrivalMonoMs.load(std::memory_order_relaxed);
+        talq::BackoffInput in;
+        in.forced = c.forced;
+        in.shiftMs = shiftMs();
+        in.refFresh = arrived != 0 && now - arrived <= 200;
+        in.latencyKnown = haveL;
+        in.headroomKnown = haveM;
+        in.m1sMs = m1;
+        const talq::BackoffDecision b = guardState.tick(p, in, now);
+        if (!b.act) return;
+        const double deficit = p.marginMs - b.reduceMs;   // the persistent m1s the cut was sized from
+        alignRequestShift(c, static_cast<qint64>(std::llround(b.newShiftMs * 1.0e6)), true);
+        note = Note{};
+        note.valid = true;
+        note.kind = Note::Backoff;
+        note.m1sMs = deficit;
+        note.setMs = now;
+        lastChangeMs = now;   // the next raise waits out the dwell too
+        qWarning().noquote() << "PublishPipeline: AEC align BACKOFF shift" << f0(in.shiftMs) << "->" << f0(b.newShiftMs)
+                             << "(m1s=" + f0(deficit) + " on" << p.backoffTicks << "ticks; ceiling " + f0(b.capLatchMs)
+                                + " ms until a reset, a re-lock or " + f0(p.capLatchTtlS) + " s)";
+    }
+
+    void estimate(qint64 now)
+    {
+        const qint64 end = talq::aecLatestWindowEndNs(c.refRing, c.micRing);
+        if (end < 0) return;
+        const auto t0 = std::chrono::steady_clock::now();
+        last = talq::estimateAt(c.refRing, c.micRing, end, scratch);
+        const talq::TrackEvent ev = tracker.update(last, last.endNs);
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        haveEst = true;
+        maxEstMs = std::max(maxEstMs, ms);
+        // A run slower than 50 ms (a weak device under load) spaces the next ones out.
+        if (ms > 50.0) periodTicks = std::min(periodTicks * 2, 32);
+        else if (periodTicks > 4) periodTicks = std::max(4, periodTicks / 2);
+        if (ev == talq::TrackEvent::Locked || ev == talq::TrackEvent::Relocked) {
+            // A re-lock means D_raw moved by more than the hold band: the ceiling a back-off latched was
+            // measured against the old relation and says nothing about the new one.
+            const bool freed = ev == talq::TrackEvent::Relocked && guardState.releaseLatch(params(), now);
+            alignLog(QStringLiteral("%1 D=%2ms z=%3 psr=%4 locks=%5%6")
+                         .arg(ev == talq::TrackEvent::Relocked ? QStringLiteral("RELOCK") : QStringLiteral("LOCK"),
+                              f1(tracker.lagMs()), fz(last.z), fpsr(last.psr)).arg(tracker.locks())
+                         .arg(freed ? QStringLiteral(" (back-off ceiling released)") : QString()));
+        }
+        decide(now);
+    }
+
+    void decide(qint64 now)
+    {
+        if (c.pendingReq.load(std::memory_order_acquire) != 0) return;   // one change in flight at a time
+        const talq::AlignParams p = params();
+        double m1 = 0, m10 = 0, l = 0;
+        talq::AlignInput in;
+        in.locked = tracker.locked();
+        in.rawDelayMs = tracker.lagMs();
+        in.latencyKnown = latency(l);
+        in.latencyMs = l;
+        in.delayMs = static_cast<double>(c.delayMs.load(std::memory_order_relaxed));
+        in.shiftMs = shiftMs();
+        in.headroomKnown = headroom(m1, m10);
+        in.m1sMs = m1;
+        in.m10sMs = m10;
+        in.sinceChangeMs = lastChangeMs >= 0 ? static_cast<double>(now - lastChangeMs) : talq::kAlignNeverMs;
+        in.forced = c.forced;
+        in.capLatchMs = guardState.latchMs(p, now);
+        const talq::AlignDecision d = talq::decideShift(p, in);
+
+        if (d.set) {
+            if (p.mode == talq::AlignMode::On) {
+                alignRequestShift(c, static_cast<qint64>(std::llround(d.shiftMs * 1.0e6)), false);
+                note = Note{};
+                note.valid = true;
+                note.kind = Note::Controller;
+                note.dMs = in.rawDelayMs; note.lMs = l; note.delayMs = in.delayMs;
+                note.leadBefore = d.leadBeforeMs; note.leadAfter = d.leadAfterMs;
+                note.m10sMs = m10; note.m1sMs = m1;
+                note.setMs = now;
+            } else if (talq::alignWouldLogDue(lastWould, lastWouldLogMs, d.shiftMs, now, p.minStepMs)) {
+                // Observe: the actuator never moves, so the same answer comes back every estimate; say it when it
+                // moved by a real step (not a whole-ms wobble), or once a minute.
+                lastWould = d.shiftMs;
+                lastWouldLogMs = now;
+                lastHold = talq::AlignHold::None;   // a hold that follows is news again
+                alignLog(QStringLiteral("WOULD SHIFT %1 -> %2 ms (D=%3 L=%4 delay=%5 lead %6 -> %7 m10s=%8%9)")
+                             .arg(f0(in.shiftMs), f0(d.shiftMs), f1(in.rawDelayMs), f1(l), f0(in.delayMs),
+                                  f1(d.leadBeforeMs), f1(d.leadAfterMs), in.headroomKnown ? f0(m10) : QStringLiteral("n/a"),
+                                  d.capped ? QStringLiteral(" capped by the headroom") : QString()));
+            }
+            return;
+        }
+        // Only the holds that say something about the machine are logged; "not locked" is the SEARCH state.
+        switch (d.hold) {
+        case talq::AlignHold::InBand: case talq::AlignHold::NoHeadroom: case talq::AlignHold::MinStep:
+        case talq::AlignHold::Dwell: case talq::AlignHold::Forced: case talq::AlignHold::LeadHigh:
+        case talq::AlignHold::LUnknown: case talq::AlignHold::NegDisabled:
+            break;
+        default:
+            return;
+        }
+        if (d.hold == lastHold && now - lastHoldLogMs < 60000) return;
+        lastHold = d.hold;
+        lastHoldLogMs = now;
+        QString line = QStringLiteral("HOLD reason=%1").arg(QLatin1String(talq::alignHoldName(d.hold)));
+        if (in.locked && in.latencyKnown)
+            line += QStringLiteral(" D=%1ms lead=%2").arg(f1(in.rawDelayMs), f1(d.leadBeforeMs));
+        if (d.hold == talq::AlignHold::NoHeadroom && d.latchLimited)
+            line += QStringLiteral(" m10s=%1ms (held by the ceiling a back-off latched, not by the data)").arg(in.headroomKnown ? f1(m10) : QStringLiteral("n/a"));
+        else if (d.hold == talq::AlignHold::NoHeadroom)
+            line += QStringLiteral(" m10s=%1ms (unfixable by labels: the data is not there)").arg(in.headroomKnown ? f1(m10) : QStringLiteral("n/a"));
+        alignLog(line);
+    }
+
+    void logSegments()
+    {
+        const qint64 r = c.refSegStartNs.load(std::memory_order_relaxed), m = c.micSegStartNs.load(std::memory_order_relaxed);
+        if (r == loggedRefSeg && m == loggedMicSeg) return;
+        loggedRefSeg = r;
+        loggedMicSeg = m;
+        if ((r != AlignCell::kUnknown && r != 0) || (m != AlignCell::kUnknown && m != 0))
+            alignLog(QStringLiteral("segment start ref=%1ms mic=%2ms (non-zero: running time and label differ by that much)")
+                         .arg(r == AlignCell::kUnknown ? QStringLiteral("?") : f1(static_cast<double>(r) / 1.0e6),
+                              m == AlignCell::kUnknown ? QStringLiteral("?") : f1(static_cast<double>(m) / 1.0e6)));
+    }
+
+    void summary(qint64 now)
+    {
+        nextSummaryMs = now + 10000;
+        const qint64 f = c.refFrames.load(), a = c.refActiveFrames.load();
+        const qint64 df = f - sum0Frames, da = a - sum0Active;
+        sum0Frames = f;
+        sum0Active = a;
+        const double estMs = maxEstMs;
+        maxEstMs = 0.0;
+        if (df <= 0 || da * 20 < df) return;   // the far end was talking less than 5% of the last 10 s
+
+        const talq::TrackState st = tracker.state();
+        QString line = QStringLiteral("st=%1").arg(QLatin1String(talq::trackStateName(st)));
+        if (st == talq::TrackState::Locked) {
+            line += QStringLiteral(" D=%1ms").arg(f1(tracker.lagMs()));
+        } else if (st == talq::TrackState::NoCoupling) {
+            line += QStringLiteral(" no echo path observed");
+        } else {
+            line += QStringLiteral(" reason=%1").arg(haveEst ? QLatin1String(tracker.reason()) : QLatin1String("warmup"));
+        }
+        if (haveEst)
+            line += QStringLiteral(" z=%1 psr=%2 sign=%3 refAct=%4% mic=%5dBFS")
+                        .arg(fz(last.z), fpsr(last.psr), last.sign < 0 ? QStringLiteral("-") : QStringLiteral("+"),
+                             f0(last.refActive * 100.0), f0(last.micDbfs));
+        double m1 = 0, m10 = 0, l = 0;
+        const bool haveL = latency(l), haveM = headroom(m1, m10);
+        const double S = shiftMs();
+        line += QStringLiteral(" L=%1 delay=%2 S=%3").arg(lText()).arg(c.delayMs.load()).arg(f0(S));
+        if (st == talq::TrackState::Locked && haveL)
+            line += QStringLiteral(" lead=%1").arg(f1(talq::alignLeadMs(tracker.lagMs(), S, l, c.delayMs.load())));
+        line += QStringLiteral(" m1s=%1 m10s=%2 discont=%3 epoch=%4")
+                    .arg(haveM ? f0(m1) : QStringLiteral("n/a"), haveM ? f0(m10) : QStringLiteral("n/a"))
+                    .arg(c.discontCount.load()).arg(c.epoch.load() + c.segEpoch.load());
+        const qint64 r = c.refSegStartNs.load(), m = c.micSegStartNs.load();
+        line += QStringLiteral(" segStart=%1/%2")
+                    .arg(r == AlignCell::kUnknown ? QStringLiteral("?") : f0(static_cast<double>(r) / 1.0e6),
+                         m == AlignCell::kUnknown ? QStringLiteral("?") : f0(static_cast<double>(m) / 1.0e6));
+        // Label jumps starting a new ring segment: if the live labels jitter by more than 1 ms per
+        // buffer every buffer would, and coverage (the only gate then reporting) collapses.
+        line += QStringLiteral(" jumps=%1/%2 cov=%3%")
+                    .arg(c.refRing.jumps()).arg(c.micRing.jumps()).arg(haveEst ? f0(last.coverage * 100.0) : QStringLiteral("?"));
+        // Buffers a ring skipped rather than wait for the worker's lock (not label jumps; each starts a segment too).
+        if (const qint64 dr = c.refRing.dropped(), dm = c.micRing.dropped(); dr + dm > 0)
+            line += QStringLiteral(" drops=%1/%2").arg(dr).arg(dm);
+        line += QStringLiteral(" estMs=%1").arg(f1(estMs));
+        if (const qint64 sil = c.micSilentBuffers.load()) line += QStringLiteral(" micZeroBuffers=%1").arg(sil);
+        alignLog(line);
+    }
+};
+
+// Thread body. Holds its own copy of the cell, never `this`.
+void alignWorkerMain(std::shared_ptr<AlignCell> cell)
+{
+#ifdef Q_OS_WIN
+    // A duplicate of this thread's handle, so stopAlignController() can lift the priority back to
+    // normal before it joins: a below-normal thread on a saturated CPU may not be scheduled for a
+    // long time, and the join runs on the Qt thread.
+    HANDLE self = nullptr;
+    if (DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &self, 0, FALSE, DUPLICATE_SAME_ACCESS))
+        cell->workerHandle.store(self);
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);   // never compete with the call's own threads
+#endif
+    // A dead worker must leave the reference as it found it: the probe would otherwise go on
+    // shifting by the last S with nobody to give it back. inert stops the shifting at once (a
+    // plain atomic store, no allocation, so it is safe even when the exception was bad_alloc);
+    // a FORCED shift is the operator's constant and stays.
+    try {
+        AlignWorker w(*cell);
+        std::unique_lock<std::mutex> lk(cell->mx);
+        while (!cell->stop) {
+            if (cell->cv.wait_for(lk, std::chrono::milliseconds(500), [&cell] { return cell->stop; })) break;
+            lk.unlock();
+            w.tick();
+            lk.lock();
+        }
+    } catch (const std::exception &e) {
+        if (!cell->forced) cell->inert.store(true);
+        qWarning() << "PublishPipeline: AEC align worker stopped on an exception:" << e.what()
+                   << "- the call is unaffected, the controller is off for the rest of it (the shift is back to 0)";
+    } catch (...) {
+        if (!cell->forced) cell->inert.store(true);
+        qWarning() << "PublishPipeline: AEC align worker stopped on an unknown exception - the call is unaffected, the shift is back to 0";
+    }
+}
+
+// Read a gint64 property the element may not have (-1 when it has none).
+qint64 alignReadInt64(GstElement *e, const char *prop)
+{
+    if (!e) return -1;
+    GParamSpec *ps = g_object_class_find_property(G_OBJECT_GET_CLASS(e), prop);
+    if (!ps || G_PARAM_SPEC_VALUE_TYPE(ps) != G_TYPE_INT64) return -1;
+    gint64 v = -1;
+    g_object_get(e, prop, &v, nullptr);
+    return v;
+}
+
+}   // namespace
+
+void PublishPipeline::armAlignController()
+{
+    if (!m_align) return;
+    std::shared_ptr<AecAlignCell> cell = m_align;
+    if (!m_pipeline || !m_farSrc || !m_farProbe || !m_aecEnabled || m_osAecActive || cell->inert.load()) {
+        cell->inert.store(true);
+        m_align.reset();
+        return;
+    }
+    // Main thread, the one place the controller reads an element: how the two capture sources
+    // are buffered and whose clock the pipeline runs on, for the armed line the worker prints.
+    GstElement *mic = gst_bin_get_by_name(GST_BIN(m_pipeline), "pub-audiosrc");
+    cell->refActualBufUs = alignReadInt64(m_farSrc, "actual-buffer-time");
+    cell->refActualLatUs = alignReadInt64(m_farSrc, "actual-latency-time");
+    cell->micActualBufUs = alignReadInt64(mic, "actual-buffer-time");
+    cell->micActualLatUs = alignReadInt64(mic, "actual-latency-time");
+    QString owner = QStringLiteral("unknown");
+    if (GstClock *pc = gst_element_get_clock(m_pipeline)) {
+        GstClock *rc = gst_element_provide_clock(m_farSrc);
+        GstClock *mc = mic ? gst_element_provide_clock(mic) : nullptr;
+        if (rc && rc == pc) owner = QStringLiteral("ref(pub-aec-ref)");
+        else if (mc && mc == pc) owner = QStringLiteral("mic(pub-audiosrc)");
+        else owner = QString::fromUtf8(GST_OBJECT_NAME(pc));
+        if (rc) gst_object_unref(rc);
+        if (mc) gst_object_unref(mc);
+        gst_object_unref(pc);
+    }
+    cell->clockOwner = owner;
+    if (mic) gst_object_unref(mic);
+    try {
+        cell->worker = std::thread(alignWorkerMain, cell);
+    } catch (const std::exception &e) {
+        qWarning() << "PublishPipeline: AEC align worker could not start (" << e.what() << ") - the call is unaffected";
+        cell->inert.store(true);
+        m_align.reset();
+    }
+}
+
+void PublishPipeline::stopAlignController()
+{
+    if (!m_align) return;
+    std::shared_ptr<AecAlignCell> cell = std::move(m_align);   // m_align is null from here on
+    cell->inert.store(true);   // the probes stand down; they keep the cell alive until the pipeline is disposed
+    if (!cell->worker.joinable()) return;
+    QElapsedTimer t;
+    t.start();
+    {
+        std::lock_guard<std::mutex> lk(cell->mx);
+        cell->stop = true;
+    }
+    cell->cv.notify_all();
+#ifdef Q_OS_WIN
+    // The worker runs below normal priority and may be starved by the very load this call is
+    // under; it has to be scheduled to see the flag, and we are about to wait for it on the Qt
+    // thread. Lift it first, so the join waits for at most one estimate (a few ms).
+    if (void *h = cell->workerHandle.load()) SetThreadPriority(static_cast<HANDLE>(h), THREAD_PRIORITY_NORMAL);
+#endif
+    cell->worker.join();
+#ifdef Q_OS_WIN
+    if (void *h = cell->workerHandle.exchange(nullptr)) CloseHandle(static_cast<HANDLE>(h));   // the thread is gone: nothing else uses it
+#endif
+    if (t.elapsed() > 15)
+        qWarning() << "PublishPipeline: AEC align worker took" << t.elapsed() << "ms to stop";
 }
 
 void PublishPipeline::installPreDspTap(GstElement *capsFilter)
 {
     if (!capsFilter) return;
+    attachAecDump(capsFilter, "mic", m_aecBuildId);
     GstPad *pad = gst_element_get_static_pad(capsFilter, "src");
     if (!pad) {
         qWarning() << "PublishPipeline: pre-DSP level tap not installed (no src pad on pub-aec-caps); the call is unaffected";
+        if (m_align) {   // no microphone tap, no controller
+            m_align->inert.store(true);
+            m_align.reset();
+        }
         return;
     }
     // A fresh accumulator for THIS pipeline. start()'s audio-tier retry loop installs a tap per
@@ -2581,6 +3537,14 @@ void PublishPipeline::installPreDspTap(GstElement *capsFilter)
             return GST_PAD_PROBE_OK;
         },
         cell, [](gpointer user) { delete static_cast<std::shared_ptr<PreDspCell> *>(user); });
+    // AEC align: the microphone side of the controller, a second probe after the one above
+    // (probes run in installation order). Inert, and absent, unless the controller was built.
+    if (m_align && !m_align->inert.load()) {
+        auto *tap = new MicTap;
+        tap->cell = m_align;
+        gst_pad_add_probe(pad, static_cast<GstPadProbeType>(GST_PAD_PROBE_TYPE_BUFFER | GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM),
+                          micAlignProbe, tap, [](gpointer user) { delete static_cast<MicTap *>(user); });
+    }
     gst_object_unref(pad);
 }
 
@@ -3897,6 +4861,21 @@ bool PublishPipeline::buildFarEndTail()
                  "loopback-silence-on-device-mute", TRUE, "do-timestamp", TRUE, nullptr);
     if (!m_farOutputDeviceId.isEmpty())
         g_object_set(m_farSrc, "device", m_farOutputDeviceId.toUtf8().constData(), nullptr);
+    // TALQ_AEC_REF_CLOCK=retimestamp (default OFF; Option B in the 2026-10-30 AEC study):
+    // the loopback source's timeline is a once-anchored sample counter that is only re-synced
+    // after a whole ring buffer (gst audiobasesrc "skew" slaving, the default), so against the
+    // mic's clock it drifts continuously and then jumps. re-timestamp stamps every buffer from
+    // the pipeline clock instead, and provide-clock=FALSE stops this extra source from competing
+    // to be the pipeline's clock.
+    if (qgetenv("TALQ_AEC_REF_CLOCK") == "retimestamp") {
+        GObjectClass *kls = G_OBJECT_GET_CLASS(m_farSrc);
+        if (g_object_class_find_property(kls, "slave-method") && g_object_class_find_property(kls, "provide-clock")) {
+            g_object_set(m_farSrc, "provide-clock", FALSE, "slave-method", 1 /* RE_TIMESTAMP */, nullptr);
+            qInfo() << "PublishPipeline: TALQ_AEC_REF_CLOCK=retimestamp - reference source: provide-clock=0, slave-method=re-timestamp";
+        } else {
+            qWarning() << "PublishPipeline: TALQ_AEC_REF_CLOCK=retimestamp ignored (source has no slave-method/provide-clock)";
+        }
+    }
     GstCaps *c = gst_caps_from_string(
         "audio/x-raw,rate=48000,format=S16LE,channels=1,layout=interleaved");
     g_object_set(caps, "caps", c, nullptr);
@@ -3930,83 +4909,111 @@ bool PublishPipeline::buildFarEndTail()
     // says otherwise. Two changes have already been measured inert this cycle.
     const QByteArray refMode = qEnvironmentVariableIsSet("TALQ_AEC_REF")
                              ? qgetenv("TALQ_AEC_REF") : QByteArray("loopback");
-    if (refMode == "loopback-comp") {
-        // Latency is only meaningful once the pipeline is PAUSED/PLAYING, so it is
-        // queried lazily on the first buffer and cached — a latency query per buffer
-        // would cost more than the correction is worth.
-        struct FarComp { GstElement *pipeline; GstClockTime lat; bool known; };
-        auto *fc = g_new0(FarComp, 1);
-        fc->pipeline = m_pipeline;   // borrowed; the probe never outlives the pipeline
-        GstPad *sp = gst_element_get_static_pad(caps, "src");
-        if (sp) {
-            gst_pad_add_probe(sp, GST_PAD_PROBE_TYPE_BUFFER,
-                [](GstPad *, GstPadProbeInfo *info, gpointer user) -> GstPadProbeReturn {
-                    auto *fc = static_cast<FarComp *>(user);
-                    if (!fc->known) {
-                        // TALQ_AEC_REF_SHIFT_MS overrides the query entirely.
-                        //
-                        // Asking the pipeline was the original design and it FAILED
-                        // SILENTLY: the query succeeded and returned under 1 ms, so the
-                        // compensation subtracted nothing and the whole hypothesis went
-                        // untested while looking like it had been tried.
-                        //
-                        // The true render->capture offset is not something this pipeline
-                        // knows — the loopback source is a wasapi2src we do not own. So
-                        // stop asking and SWEEP it: set the shift explicitly and find the
-                        // value that maximises cancellation. A clear optimum IS the delay,
-                        // measured rather than queried; a flat response across the sweep
-                        // says alignment is not the limiting factor and the residual
-                        // suppressor is, which is an equally useful answer.
-                        if (qEnvironmentVariableIsSet("TALQ_AEC_REF_SHIFT_MS")) {
-                            bool ok = false;
-                            const int ms = qEnvironmentVariable("TALQ_AEC_REF_SHIFT_MS").toInt(&ok);
-                            if (ok && ms >= 0 && ms <= 500) {
-                                fc->lat   = (GstClockTime)ms * GST_MSECOND;
-                                fc->known = true;
-                                qInfo() << "PublishPipeline: AEC ref shift FORCED to" << ms
-                                        << "ms (TALQ_AEC_REF_SHIFT_MS) — pipeline latency query bypassed";
-                            } else {
-                                qWarning() << "PublishPipeline: ignoring out-of-range "
-                                              "TALQ_AEC_REF_SHIFT_MS" << qgetenv("TALQ_AEC_REF_SHIFT_MS")
-                                           << "— expected 0..500";
-                            }
-                        }
-                        GstQuery *q = fc->known ? nullptr : gst_query_new_latency();
-                        if (q && gst_element_query(fc->pipeline, q)) {
-                            gboolean live = FALSE;
-                            GstClockTime mn = 0, mx = 0;
-                            gst_query_parse_latency(q, &live, &mn, &mx);
-                            fc->lat = GST_CLOCK_TIME_IS_VALID(mn) ? mn : 0;
-                            fc->known = true;
-                            qInfo() << "PublishPipeline: AEC ref loopback-comp — "
-                                       "shifting far-end PTS earlier by"
-                                    << (fc->lat / GST_MSECOND) << "ms";
-                        }
-                        if (q) gst_query_unref(q);   // null when the env override won
-                    }
-                    if (fc->known && fc->lat > 0) {
-                        GstBuffer *b = gst_pad_probe_info_get_buffer(info);
-                        // Writable in-place: this branch is reference-only (fakesink),
-                        // so no other consumer sees these timestamps.
-                        if (b && (b = gst_buffer_make_writable(b))) {
-                            if (GST_BUFFER_PTS_IS_VALID(b))
-                                GST_BUFFER_PTS(b) = (GST_BUFFER_PTS(b) > fc->lat)
-                                                  ? GST_BUFFER_PTS(b) - fc->lat : 0;
-                            GST_PAD_PROBE_INFO_DATA(info) = b;
-                        }
-                    }
-                    return GST_PAD_PROBE_OK;
-                }, fc, (GDestroyNotify)g_free);
-            gst_object_unref(sp);
+    const bool comp = refMode == "loopback-comp";
+    if (!comp && refMode != "loopback") {
+        qWarning() << "PublishPipeline: unknown TALQ_AEC_REF" << refMode
+                   << "- using the default loopback reference";
+    }
+
+    // ---- the probes on the reference's src pad, in INSTALLATION order (which is the order they run):
+    //   [test label skew] -> [dump "ref"] -> [the align tap, which also applies the shift] -> [dump "refshift"]
+    // so the first dump and the estimator both see the labels the SOURCE delivered (the dump used to be
+    // taken after the legacy shift, which made its offsets differ from the in-process ones), and the
+    // second dump sees what the canceller is handed: aec-lead.py --ref refshift-N measures the lead
+    // with the shift in it, independent of the controller's own bookkeeping.
+    //
+    // "AEC align" (AecAlignCell): when the controller is built there is ONE tap here, always
+    // installed. Per buffer it converts the label to running time, feeds the 8 kHz ring, counts
+    // reference activity, publishes where the reference ends, then applies the shift -- only when
+    // it is not 0, so in the good state no buffer is ever touched. A constant shift is a FORCED
+    // one (below); without the controller (TALQ_AEC_ALIGN=off, or AEC not ours to run) the legacy
+    // loopback-comp probe is the only thing installed, exactly as before.
+    GstPad *refSrc = gst_element_get_static_pad(caps, "src");
+    {
+        const talq::AlignParams sk = talq::AlignParams::fromEnvironment();
+        if (refSrc && sk.labelSkewMs != 0.0) {
+            auto *k = new RefSkewTap;
+            k->skewNs = static_cast<qint64>(std::llround(sk.labelSkewMs * 1.0e6));
+            k->atMs = static_cast<qint64>(std::llround(sk.labelSkewAtMs));
+            const QByteArray raw = qgetenv("TALQ_TEST_REF_LABEL_SKEW_MS");
+            if (const int bi = raw.indexOf("BACK_MS="); bi >= 0) {
+                bool ok = false;
+                const double v = raw.mid(bi + 8).toDouble(&ok);
+                if (ok && v >= 0.0) k->backMs = static_cast<qint64>(std::llround(v));
+            }
+            qWarning().nospace() << "PublishPipeline: AEC align TEST HOOK TALQ_TEST_REF_LABEL_SKEW_MS=" << qgetenv("TALQ_TEST_REF_LABEL_SKEW_MS")
+                                 << " - the reference's SOURCE labels are moved " << sk.labelSkewMs << " ms later from "
+                                 << k->atMs << " ms after its first buffer"
+                                 << (k->backMs >= 0 ? QStringLiteral(" until %1 ms").arg(k->backMs) : QString());
+            gst_pad_add_probe(refSrc, GST_PAD_PROBE_TYPE_BUFFER, refSkewProbe, k,
+                              [](gpointer p) { delete static_cast<RefSkewTap *>(p); });
+        }
+    }
+    attachAecDump(caps, "ref", m_aecBuildId);   // no-op unless TALQ_AEC_DUMP_DIR is set
+    if (m_align) {
+        AecAlignCell &ac = *m_align;
+        // A FORCED shift is a constant from the first buffer with no query and no controller
+        // action (the controller only observes): TALQ_AEC_REF=loopback-comp with
+        // TALQ_AEC_REF_SHIFT_MS=<0..500> as before, and now TALQ_AEC_REF_SHIFT_MS alone. Without
+        // a usable SHIFT_MS, loopback-comp keeps its first-buffer latency query.
+        int forcedMs = -1;
+        bool badEnv = false;
+        if (qEnvironmentVariableIsSet("TALQ_AEC_REF_SHIFT_MS")) {
+            bool ok = false;
+            const int ms = qEnvironmentVariable("TALQ_AEC_REF_SHIFT_MS").toInt(&ok);
+            if (ok && ms >= 0 && ms <= 500) forcedMs = ms; else badEnv = true;
+        }
+        if (forcedMs >= 0) {
+            ac.forced = true;
+            ac.forcedArgMs = forcedMs;
+            ac.shiftNs.store(static_cast<qint64>(forcedMs) * 1000000LL);
+            qInfo() << "PublishPipeline: AEC ref shift FORCED to" << forcedMs
+                    << "ms (TALQ_AEC_REF_SHIFT_MS) - pipeline latency query bypassed";
         } else {
-            g_free(fc);
-            qWarning() << "PublishPipeline: TALQ_AEC_REF=loopback-comp — no src pad on "
+            if (badEnv && !comp)   // with loopback-comp the first buffer reports it, as before
+                qWarning() << "PublishPipeline: ignoring out-of-range TALQ_AEC_REF_SHIFT_MS"
+                           << qgetenv("TALQ_AEC_REF_SHIFT_MS") << "- expected 0..500";
+            if (comp) {
+                ac.forced = true;
+                ac.forcedArgMs = -2;
+            }
+        }
+        if (refSrc) {
+            auto *t = new FarRefTap;
+            t->cell = m_align;
+            t->pipeline = m_pipeline;   // borrowed; the probe never outlives the pipeline
+            t->queryPending = ac.forcedArgMs == -2;
+            gst_pad_add_probe(refSrc, static_cast<GstPadProbeType>(GST_PAD_PROBE_TYPE_BUFFER | GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM),
+                              farRefProbe, t, [](gpointer p) { delete static_cast<FarRefTap *>(p); });
+        } else {
+            qWarning() << "PublishPipeline: AEC align - no src pad on the far caps filter; the controller is off for this call";
+            ac.inert.store(true);
+            m_align.reset();
+        }
+    } else if (comp) {
+        // Pre-controller behaviour, unchanged: subtract a constant from each PTS so the probe,
+        // which adds the pipeline's latency back, lands where the mic hears the reference.
+        if (refSrc) {
+            auto *t = new FarRefTap;
+            t->pipeline = m_pipeline;   // borrowed; the probe never outlives the pipeline
+            gst_pad_add_probe(refSrc, GST_PAD_PROBE_TYPE_BUFFER, farRefProbe, t,
+                              [](gpointer p) { delete static_cast<FarRefTap *>(p); });
+        } else {
+            qWarning() << "PublishPipeline: TALQ_AEC_REF=loopback-comp - no src pad on "
                           "the far caps filter; falling back to uncompensated loopback";
         }
-    } else if (refMode != "loopback") {
-        qWarning() << "PublishPipeline: unknown TALQ_AEC_REF" << refMode
-                   << "— using the default loopback reference";
+    } else if (qEnvironmentVariableIsSet("TALQ_AEC_REF_SHIFT_MS")) {
+        // Alone, SHIFT_MS rides on the align controller's forced-shift path. Without the controller
+        // (TALQ_AEC_ALIGN=off keeps today's exact path, or the direct AEC3 engine, or no webrtcdsp) it
+        // is not applied, and a bench leg must not read it as if it were.
+        qWarning() << "PublishPipeline: TALQ_AEC_REF_SHIFT_MS" << qgetenv("TALQ_AEC_REF_SHIFT_MS")
+                   << "is NOT applied: the AEC align controller is not built for this call (TALQ_AEC_ALIGN=off, the"
+                      " direct AEC3 engine, or no webrtcdsp); add TALQ_AEC_REF=loopback-comp to force the shift without it";
     }
+    // The same dump again, AFTER whatever moved the labels (installed last, so it runs last). Only
+    // when something can move them; otherwise it would duplicate "ref".
+    if (m_align || comp) attachAecDump(caps, "refshift", m_aecBuildId);   // no-op unless TALQ_AEC_DUMP_DIR is set
+    if (refSrc) gst_object_unref(refSrc);
 
 #if defined(TALQ_WITH_AEC3)
     // AEC3 DIRECT: the far branch must also feed OUR AudioProcessing, or it has no
@@ -4070,6 +5077,58 @@ bool PublishPipeline::buildFarEndTail()
                          "(wasapi2src loopback → webrtcechoprobe talq-aec-probe → fakesink), device="
                       << (m_farOutputDeviceId.isEmpty() ? QStringLiteral("<default>")
                                                         : m_farOutputDeviceId);
+    // Instrument (read-only): webrtcechoprobe hands the canceller the reference whose
+    // PTS + L matches the mic frame, where L is the LATENCY event value the pipeline sends
+    // upstream through the probe. L is the whole publisher's latency and can step when the
+    // camera or a share starts, so log every value that reaches the probe. A field log then
+    // shows L on machines whose encoder runs on the CPU (which no bench of ours has seen).
+    //
+    // With the AEC align controller built, the same handler also stores that L for it and
+    // measures the plugin's own `delay` (the upstream latency query the plugin makes), so the
+    // lead = D + S - L + delay is computed from the values the plugin really uses.
+    if (GstPad *pp = gst_element_get_static_pad(m_farProbe, "src")) {
+        auto *lt = new std::shared_ptr<AecAlignCell>(m_align);   // null when the controller is not built
+        gst_pad_add_probe(pp, GST_PAD_PROBE_TYPE_EVENT_UPSTREAM,
+            [](GstPad *pad, GstPadProbeInfo *info, gpointer user) -> GstPadProbeReturn {
+                // TALQ_AEC_PROBE_L_MS=<ms> (default OFF; Option B): the probe ADDS the pipeline's
+                // LATENCY to a reference that was already captured after playback, which counts
+                // the playback path twice. Replace the value it will see (0 = add nothing).
+                static const int overrideMs = qEnvironmentVariableIsSet("TALQ_AEC_PROBE_L_MS")
+                                                  ? qEnvironmentVariableIntValue("TALQ_AEC_PROBE_L_MS") : -1;
+                GstEvent *ev = GST_PAD_PROBE_INFO_EVENT(info);
+                if (ev && GST_EVENT_TYPE(ev) == GST_EVENT_LATENCY) {
+                    AlignCell *ac = static_cast<std::shared_ptr<AlignCell> *>(user)->get();
+                    if (ac && ac->inert.load()) ac = nullptr;
+                    GstClockTime lat = GST_CLOCK_TIME_NONE;
+                    gst_event_parse_latency(ev, &lat);
+                    QString delayText;
+                    if (ac) {
+                        // L as the plugin will see it (after the override), and the plugin's delay.
+                        const qint64 seen = overrideMs >= 0 ? static_cast<qint64>(overrideMs) * 1000000LL
+                                          : (GST_CLOCK_TIME_IS_VALID(lat) ? static_cast<qint64>(lat) : -1);
+                        // The delay goes first and L is published after it (release), so a reader
+                        // that sees L also sees the delay measured with it.
+                        alignMeasureProbeDelay(*ac, pad);
+                        ac->latencyNs.store(seen, std::memory_order_release);
+                        delayText = QStringLiteral("; probe delay = %1 ms (%2)")
+                                        .arg(ac->delayMs.load())
+                                        .arg(ac->delayMeasured.load() ? QStringLiteral("measured") : QStringLiteral("assumed"));
+                    }
+                    qInfo().nospace() << "PublishPipeline: AEC probe got a LATENCY event, L = "
+                                      << (GST_CLOCK_TIME_IS_VALID(lat) ? qint64(lat / GST_MSECOND) : qint64(-1))
+                                      << " ms (added to the loopback reference's timeline)"
+                                      << (overrideMs >= 0 ? QStringLiteral(" - replaced by %1 ms (TALQ_AEC_PROBE_L_MS)").arg(overrideMs)
+                                                          : QString())
+                                      << delayText;
+                    if (overrideMs >= 0) {
+                        gst_event_unref(ev);
+                        GST_PAD_PROBE_INFO_DATA(info) = gst_event_new_latency(static_cast<GstClockTime>(overrideMs) * GST_MSECOND);
+                    }
+                }
+                return GST_PAD_PROBE_OK;
+            }, lt, [](gpointer user) { delete static_cast<std::shared_ptr<AecAlignCell> *>(user); });
+        gst_object_unref(pp);
+    }
     return true;
 }
 

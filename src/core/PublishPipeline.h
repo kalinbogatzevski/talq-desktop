@@ -2,7 +2,11 @@
 
 #include <array>
 #include <atomic>
+#include <condition_variable>
+#include <limits>
 #include <memory>
+#include <mutex>
+#include <thread>
 #include "Aec3Processor.h"
 #include <QElapsedTimer>
 #include <QObject>
@@ -21,6 +25,8 @@
 #include "SoloStreamPolicy.h"
 #include "FrameHandoff.h"
 #include "FarRefStallPolicy.h"
+#include "AecDelayEstimator.h"
+#include "AecLeadPolicy.h"
 
 /**
  * Send-only GStreamer webrtcbin pipeline for MCU publishing.
@@ -526,6 +532,81 @@ private:
     };
     std::shared_ptr<PreDspCell> m_preDsp{std::make_shared<PreDspCell>()};
     void installPreDspTap(GstElement *capsFilter);
+
+public:
+    // "AEC align" (docs/aec-reference-alignment-plan.md, 2026-10-30): the canceller can only
+    // subtract an echo whose loopback reference it received EARLIER, and the reference's
+    // timestamps depend on machine state (one laptop: 285 ms late, no cancellation; moving
+    // its labels 280 ms earlier restored it). A worker measures the real delay between the
+    // microphone and the reference (AecDelayEstimator.h) and, in mode ON, moves the
+    // reference's labels (AecLeadPolicy.h) so the lead is about 25 ms (the middle of the window
+    // the bench found, +4 .. +44): earlier when the reference runs late, never beyond the
+    // headroom the data physically has; later when it runs early. Public ONLY so the file-local pad probes in
+    // PublishPipeline.cpp can name it; nothing else touches it.
+    //
+    // Everything the streaming threads and the worker share lives here and is reached through
+    // shared_ptr copies (the probes' user data and the worker's own), never through `this`: a
+    // buffer or a tick racing teardown finds a cell that is still alive, and a publisher
+    // rebuild gets a fresh one. The worker never touches a GstElement (so it cannot deadlock
+    // with cleanup()); the main thread reads the elements' properties once, at arm time.
+    struct AecAlignCell {
+        static constexpr qint64 kUnknown = std::numeric_limits<qint64>::min();
+
+        // ---- fixed before any tap runs
+        talq::AlignParams      params;                // TALQ_AEC_ALIGN* switches
+        int                    buildId = 0;           // pairs ref-N / mic-N dumps and the log lines of one build
+        std::atomic<int>       mode{0};               // talq::AlignMode as an int
+        std::atomic<bool>      inert{false};          // the chain turned out not to host the canceller: taps stand down
+        bool                   forced = false;        // loopback-comp / TALQ_AEC_REF_SHIFT_MS: constant shift, no controller action
+        int                    forcedArgMs = -1;      // the forced value; -1 none, -2 taken from the first-buffer latency query
+        qint64                 refActualBufUs = -1, micActualBufUs = -1;   // read by the main thread at arm time
+        qint64                 refActualLatUs = -1, micActualLatUs = -1;
+        QString                clockOwner;
+
+        // ---- the shift (ns, labels moved EARLIER; written by the reference probe only)
+        std::atomic<qint64>    shiftNs{0};
+        std::atomic<quint64>   pendingReq{0};         // what is wanted next, ONE word (talq::alignPackRequest); 0 = nothing
+        std::atomic<qint64>    appliedSeq{0};         // bumped by the probe when it changes the shift from a pending request
+        std::atomic<qint64>    appliedFromNs{0};
+        std::atomic<int>       appliedHow{0};         // 1 quiet, 2 timeout, 3 urgent
+        std::atomic<qint64>    appliedAtMonoMs{0};
+
+        // ---- facts the probes publish
+        std::atomic<qint64>    latencyNs{-1};         // L, from the LATENCY event; -1 until known
+        std::atomic<int>       delayMs{0};            // the plugin's own delay (measured; 0 = it keeps 0 when its query fails)
+        std::atomic<bool>      delayMeasured{false};
+        std::atomic<qint64>    refEndRawRtNs{kUnknown};      // running time of the newest reference sample, raw labels
+        std::atomic<qint64>    refEndShiftedRtNs{kUnknown};  // ... after the shift
+        std::atomic<qint64>    refLastArrivalMonoMs{0};
+        std::atomic<qint64>    mMin1sNs{kUnknown};    // headroom minima (HeadroomMin), kUnknown = no samples
+        std::atomic<qint64>    mMin10sNs{kUnknown};
+        std::atomic<qint64>    refFrames{0};          // 20 ms reference frames seen / above -55 dBFS
+        std::atomic<qint64>    refActiveFrames{0};
+        std::atomic<qint64>    micSilentBuffers{0};   // all-zero microphone buffers
+        std::atomic<qint64>    discontCount{0};       // reference DISCONT buffers (counted, never acted on)
+        std::atomic<qint64>    refSegStartNs{kUnknown};
+        std::atomic<qint64>    micSegStartNs{kUnknown};
+        std::atomic<int>       epoch{0};              // bumped when the reference is re-opened
+        std::atomic<int>       segEpoch{0};           // bumped when either pad's stream or segment changes
+        std::atomic<bool>      reopenInFlight{false};
+
+        // ---- the two timelines the estimator correlates (8 kHz, running time)
+        talq::PtsRing8k        refRing;
+        talq::PtsRing8k        micRing;
+
+        // ---- the worker (500 ms ticks); owned by the cell, joined in stopAlignController()
+        std::thread            worker;
+        std::atomic<void *>    workerHandle{nullptr}; // Windows: a duplicate of the worker's thread handle (see stopAlignController)
+        std::mutex             mx;
+        std::condition_variable cv;
+        bool                   stop = false;          // under mx
+    };
+
+private:
+    std::shared_ptr<AecAlignCell> m_align;   // null: the controller is not built for this publisher
+    int  m_aecBuildId = 0;                   // unique per start() iteration; names the dumps and the log lines
+    void armAlignController();               // main thread, once the pipeline is PLAYING
+    void stopAlignController();              // cleanup(): stop, raise the worker's priority, join, release
     QHash<QString, GstElement*> m_farPeerAppsrcs;
     // Serialises far-end peer add/remove and tail teardown against each other:
     // the hash mutations PLUS the structural pipeline edits (audiomixer

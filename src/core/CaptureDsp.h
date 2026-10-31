@@ -36,6 +36,13 @@ inline void configureCaptureDsp(GstElement *dsp, bool nsEnabled, bool agcEnabled
     // PLAYING. delay-agnostic lets the APM self-estimate the cross-pipeline
     // capture↔playback delay (auto/harmless on AEC3 wap 1.x; load-bearing on
     // the legacy 0.3.x library). See docs/aec-design.md.
+    //
+    // CORRECTION (2026-10-30 study): the paragraph above describes the LEGACY library. In the
+    // webrtcdsp build deployed here delay-agnostic and extended-filter are accepted but do
+    // NOTHING, so neither helps the canceller find a late or early reference. It relies on the
+    // reference timestamps the probe hands it, and getting the delay between the microphone and
+    // that reference right is ours to do: see PublishPipeline's "AEC align" controller and
+    // docs/aec-reference-alignment-plan.md.
 
     // Noise-suppression aggressiveness. We ship 2 (high); the ELEMENT'S OWN DEFAULT
     // IS 1 (moderate), and its documentation says increasing the level "will reduce
@@ -68,8 +75,8 @@ inline void configureCaptureDsp(GstElement *dsp, bool nsEnabled, bool agcEnabled
         g_object_set(dsp,
                      "echo-cancel",             TRUE,
                      "probe",                   aecProbeName,
-                     "delay-agnostic",          TRUE,
-                     "extended-filter",         TRUE,
+                     "delay-agnostic",          TRUE,          // no-op in this plugin build (see above)
+                     "extended-filter",         TRUE,          // no-op in this plugin build (see above)
                      "noise-suppression",       nsEnabled ? TRUE : FALSE,
                      "noise-suppression-level", nsLevel,
                      "high-pass-filter",        TRUE,          // voice-friendly rumble cut
@@ -98,6 +105,9 @@ inline void configureCaptureDsp(GstElement *dsp, bool nsEnabled, bool agcEnabled
                      "compression-gain-db", 15,
                      "limiter",             TRUE,
                      nullptr);
+        // NOTE (2026-10-30 study): this plugin build never applies gain-control-mode, so the
+        // setting below changes nothing; the AGC that actually runs uses the library's default
+        // mode (adaptive analog). The call is kept so the element still reports the intent.
         gst_util_set_object_arg(G_OBJECT(dsp),
                                 "gain-control-mode", "adaptive-digital");
     } else {
