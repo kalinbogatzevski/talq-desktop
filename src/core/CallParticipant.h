@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QDebug>
 #include <QObject>
 #include <QPointer>
 #include <QString>
@@ -57,8 +58,19 @@ public:
     void setDisplayName(const QString &v) { if (v.isEmpty() || m_displayName == v) return; m_displayName = v; emit changed(); }
     void setPeerId(const QString &v)      { if (m_peerId == v) return; m_peerId = v; emit changed(); }
     void setPeerClient(const QString &v)  { if (m_peerClient == v) return; m_peerClient = v; emit changed(); }
-    void setAudioMuted(bool v)            { if (m_audioMuted == v) return; m_audioMuted = v; emit changed(); }
-    void setVideoMuted(bool v)            { if (m_videoMuted == v) return; m_videoMuted = v; emit changed(); }
+    // Mute changes are logged (one line per CHANGE, not per call): until 2026-11-02 a
+    // tile could sit on "Camera off" for a whole call and nothing in the log said
+    // when or why it was muted.
+    void setAudioMuted(bool v)            { if (m_audioMuted == v) return; m_audioMuted = v;
+                                            qInfo().noquote() << "CallParticipant"
+                                                              << (m_isSelf ? QStringLiteral("self") : m_sessionId.left(8))
+                                                              << "audio muted ->" << v;
+                                            emit changed(); }
+    void setVideoMuted(bool v)            { if (m_videoMuted == v) return; m_videoMuted = v;
+                                            qInfo().noquote() << "CallParticipant"
+                                                              << (m_isSelf ? QStringLiteral("self") : m_sessionId.left(8))
+                                                              << "video muted ->" << v;
+                                            emit changed(); }
     void setScreenSharing(bool v)         { if (m_screenSharing == v) return; m_screenSharing = v; emit changed(); }
     void setConnState(ConnState v)        { if (m_connState == v) return; m_connState = v; emit changed(); }
     void setSpeaking(bool v)              { if (m_speaking == v) return; m_speaking = v; emit changed(); }
