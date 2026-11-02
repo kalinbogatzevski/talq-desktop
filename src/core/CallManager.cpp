@@ -6,6 +6,7 @@
 #include "core/VideoEncoderUtil.h"   // talqAvoidNvenc() latch
 #include "core/HwEncoderProbe.h"   // talqHwEncoderProbeExcludes() — #74 probe exclusions
 #include "core/CallWarmup.h"       // plugin loads moved off the first call's critical path
+#include "core/CallPeerFlagsPolicy.h"   // 2026-11-02: what a REST replay may write onto a tile; adopting a live 1:1 peer
 #include "core/EncodeTier.h"
 #include "core/Diagnostics.h"
 #include "core/TalqLog.h"
@@ -5644,7 +5645,13 @@ void CallManager::startCallMedia()
                         // subscription; the real flags follow with the next
                         // HPB participants update).
                         int inCall = p["inCall"].toInt();
-                        if (inCall == 0)
+                        // 2026-11-02 -- remember that these flags are INVENTED. The
+                        // handler below must never write them over what the
+                        // signaling server already told us (it did, every 3 s,
+                        // and hid a caller's video for a whole call; see
+                        // core/CallPeerFlagsPolicy.h).
+                        const bool flagsSynthesized = (inCall == 0);
+                        if (flagsSynthesized)
                             inCall = CALL_FLAG_IN_CALL | CALL_FLAG_WITH_AUDIO;
                         // #bug5 — the REST sessionId is the NEXTCLOUD
                         // session id, a DIFFERENT id space from the HPB
@@ -5707,8 +5714,9 @@ void CallManager::startCallMedia()
                         // the group fallthrough for additional peers). The
                         // poll is then exactly a replay of the missed
                         // edge, not a second adoption code path.
-                        onParticipantJoinedCall(sid, inCall,
-                                                p["displayName"].toString());
+                        handleParticipantJoined(sid, inCall,
+                                                p["displayName"].toString(),
+                                                flagsSynthesized);
                 }
                     // 2026-07-13 backstop — the promotion stopped the 60s
                     // ring timeout (correctly: the call WAS answered), so a
@@ -5817,8 +5825,10 @@ void CallManager::noteRestPeerEvidence(const QString &ncSid, const QString &disp
         m_pendingRestPeerNcSid = ncSid;
 
     // Promote on the FIRST evidence, from Outgoing ONLY: an outgoing call we
-    // placed, not yet adopted. Never from Incoming/acceptCall (that path sets
-    // m_remoteSessionId before the poll can even start), never from
+    // placed, not yet adopted. Never from Incoming/acceptCall (an HPB-detected ring
+    // latches m_remoteSessionId before the poll can even start; a REST-detected
+    // ring does NOT -- 2026-11-02 -- and relies on the adopt gate in
+    // onParticipantJoinedCall instead), never from
     // Ending/teardown, and never twice (m_restPromoted). The normal HPB adopt
     // path remains the sole owner of m_remoteSessionId.
     if (m_state == Outgoing && !m_restPromoted && m_remoteSessionId.isEmpty()) {
@@ -6308,8 +6318,16 @@ void CallManager::clearParticipants()
 
 void CallManager::onParticipantJoinedCall(const QString &sessionId, int flags, const QString &displayName)
 {
+    // The signaling server's join/flag events: real reports.
+    handleParticipantJoined(sessionId, flags, displayName, /*flagsSynthesized*/false);
+}
+
+void CallManager::handleParticipantJoined(const QString &sessionId, int flags, const QString &displayName,
+                                          bool flagsSynthesized)
+{
     TLOG_CALL("onParticipantJoinedCall sid=" << sessionId.left(20) << "flags=" << flags
-              << "name=" << displayName << "state=" << m_state << "callToken=" << m_callToken);
+              << "name=" << displayName << "state=" << m_state << "callToken=" << m_callToken
+              << (flagsSynthesized ? "(REST-synthesized flags)" : ""));
     if (sessionId == m_signaling->sessionId()) {
         TLOG_CALL("ignoring own session join");
         return;
@@ -6337,7 +6355,21 @@ void CallManager::onParticipantJoinedCall(const QString &sessionId, int flags, c
          // for the rest of the call). m_restPromoted is set ONLY by the
          // backstop, so on the happy path (HPB edge first) this condition
          // evaluates exactly as it always did.
-         || (m_restPromoted && m_state == Active))
+         || (m_restPromoted && m_state == Active)
+         // 2026-11-02 -- a 1:1 callee whose ring carried no session id (the
+         // conversation list rang first) and whose publisher connected before the
+         // poll's first tick is Active with NO peer recorded. The poll then never
+         // stopped (137 ticks in one 7-minute call) and, with the peer unknown,
+         // there was no hang-up hint and no peer-left/grace handling. Adopt the
+         // peer we are already subscribed to; the poll stands down. Groups are
+         // not adopted this way (see core/CallPeerFlagsPolicy.h).
+         || talq::shouldAdoptPeerWhileActive(
+                m_state == Active, isOneToOneCall(), m_remoteSessionId.isEmpty(),
+                m_peerGraceActive,
+                !m_signaling->userId().isEmpty()
+                    && m_signaling->userIdForSession(sessionId) == m_signaling->userId(),
+                m_subscribePipelines.contains(sessionId)
+                    || m_pendingRequestOffers.contains(sessionId)))
         && m_remoteSessionId.isEmpty()) {
         m_remoteSessionId = sessionId;
         // #bug4 — stamp the peer USER at adopt time (not only at grace-entry):
@@ -6498,9 +6530,19 @@ void CallManager::onParticipantJoinedCall(const QString &sessionId, int flags, c
     // registered when it starts ringing (seedRingParticipants).
     if (m_state == Incoming || m_state == Outgoing
         || m_state == Connecting || m_state == Active) {
+        const bool participantExisted = m_participants.contains(sessionId);
         if (auto *p = ensureParticipant(sessionId, displayName)) {
-            p->setAudioMuted(!(flags & CALL_FLAG_WITH_AUDIO));
-            p->setVideoMuted(!(flags & CALL_FLAG_WITH_VIDEO));
+            // 2026-11-02 -- a REST-synthesized report (audio-only, no video bit)
+            // used to be written onto the tile as if the peer had said it, every
+            // 3 s, hiding a live video stream behind "Camera off". The signaling
+            // server's flags win; with none known an existing tile is left alone.
+            const talq::PeerFlagsDecision fd = talq::decideRegisteredPeerFlags(
+                flagsSynthesized, participantExisted, flags,
+                m_signaling->callFlagsForSession(sessionId));
+            if (fd.apply) {
+                p->setAudioMuted(!(fd.flags & CALL_FLAG_WITH_AUDIO));
+                p->setVideoMuted(!(fd.flags & CALL_FLAG_WITH_VIDEO));
+            }
         }
         // GROUP/MCU call — subscribe to EVERY in-call peer that publishes media,
         // not just the first. The 1:1 block above only subscribes m_remoteSessionId

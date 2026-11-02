@@ -1,5 +1,67 @@
 # Changelog
 
+## v0.79.3 "Arhangelovden" — BETA (2026-11-02)
+
+In some one-to-one video calls the person who answered saw the caller as a still avatar with
+"Camera off" for almost the whole call, although the caller's picture was reaching them. That is
+fixed. A separate problem, a picture that reaches the other side at only about 7 frames per second
+on one laptop, is not (see "Not fixed" below).
+
+### Fixed
+* **The caller's video no longer disappears behind "Camera off" on the person who answers.** In a
+  test call of almost seven minutes, the log of the person who answered shows the caller's picture
+  arriving the whole time (about 20 frames per second for the first minute, then about 7, see "Not
+  fixed"), while TalQ kept the caller's tile on "Camera off" for all but a few seconds. The caller
+  saw the other side normally. What went wrong: the answering TalQ noticed the call through its
+  conversation list a tenth of a second before the live connection to that conversation reported
+  it, and treated the second report as the same call, so it never noted which connection belonged
+  to the caller. The call also connected within half a second, before TalQ's first re-check of who
+  is in the call (1.2 seconds after the start). That re-check then ran every 3 seconds for the
+  whole call, and because the answer it gets carries nothing about the camera, it took it to mean
+  "audio only" and switched the caller's camera off on screen each time. TalQ now keeps what the
+  server already said about the other person's camera and microphone and no longer overwrites it
+  with that guess, and in a one-to-one call it notes the other person as soon as it has asked for
+  their picture and sound, so the re-check stops.
+* **When it happens.** This bug is older than this beta: the log of version 0.78.0 from 29 October
+  shows the same repeated re-checks (284 in one 14-minute call). It needs all of these: the person
+  answering already has the caller's conversation open when the phone rings, TalQ notices the call
+  through the conversation list before the live connection reports it (the two race each other),
+  and the call connects within about a second of answering.
+* **Two more things depended on the same missing note, on the person who answers.** TalQ did not
+  send its "I hung up" message to the caller when the person who answered hung up (the log of the
+  test call shows it was not sent), and it would not have treated the caller leaving as the end of
+  the call; the second point is read from the program, not seen in a call. Both should now work in
+  these calls as they do in others. Also, a muted microphone of the caller was shown as unmuted
+  again within 3 seconds, because each re-check wrote "microphone on" over it.
+
+### Added
+* **Log lines for every change of a person's camera or microphone state**:
+  `CallParticipant <first 8 characters of the session id> video muted -> true` (and `audio muted`;
+  your own tile shows `self` instead of the id). A "Camera off" that should not be there can now be
+  traced in the log. Re-checks that only guess the state are marked `(REST-synthesized flags)`.
+
+### Good to know
+* **Beta channel only.** The stable line (0.78.0) is untouched and has the same problem; the fix
+  reaches it with the next stable release.
+* **What was checked.** The cause was found by reading both computers' logs of the test call and
+  matching them, line by line, with the program code. A small automatic test
+  (`call-peer-flags-policy-test`, 20 checks) covers the two decisions behind the fix (when a
+  re-check may change a camera or microphone state, and when a running one-to-one call notes who
+  the other person is); it was run against 12 deliberately broken copies of those decisions and
+  caught all 12. It does not cover the code that feeds those decisions. A later call in the other
+  direction, made with the previous build (0.79.2) with the answering side not yet in that
+  conversation, behaved as expected: its log shows no re-checks and nothing that could have
+  switched the caller's camera off.
+* **Not yet seen.** This build in the exact situation that failed. Please say if anyone still sees
+  "Camera off" on someone whose camera is on, and send the log.
+* **Not fixed in this build.** On one laptop the video that reaches the other person can drop to
+  about 7 frames per second for the rest of a call. It was seen on 29 October (the whole call) and
+  on 2 November (in the test call above: about 20 frames per second for the first minute, then 7
+  from the moment the camera was switched off and on again). The cause has not been found and this
+  build does not change it, so that test call would still look choppy, although the picture would
+  no longer be hidden.
+* **Settings.** To receive beta builds, tick "Pre-release updates".
+
 ## v0.79.2 "Arhangelovden" — BETA (2026-10-31)
 
 On some computers the echo canceller never worked, however well it was set up: the sound it

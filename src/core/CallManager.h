@@ -524,6 +524,12 @@ private:
     bool isOneToOneCall() const;                          // room type == 1
     bool isPeerUserSession(const QString &sessionId) const;
     QString pickPeerSiblingSid() const;
+    // The body of onParticipantJoinedCall. `flagsSynthesized` is true only for the
+    // REST poll's replay, whose flags are invented (Talk's call list carries no
+    // inCall field) and so must never overwrite what is already known about the
+    // peer -- see core/CallPeerFlagsPolicy.h.
+    void handleParticipantJoined(const QString &sessionId, int flags, const QString &displayName,
+                                 bool flagsSynthesized);
     // A subscriber feed died mid-call (SFU end-session / its webrtcbin ICE
     // went "failed" — both happen on a normal publisher renegotiation).
     // Tear down just that subscriber and re-subscribe; never kill the call.
