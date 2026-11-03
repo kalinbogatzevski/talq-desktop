@@ -1,6 +1,7 @@
 #include "HeaderPainter.h"
 #include "core/ApiClient.h"
 #include "core/AvatarFetchPolicy.h"
+#include "core/ConversationKind.h"
 #include "core/SignalingClient.h"
 #include "core/ShiftStatusService.h"
 #include "painter/VectorIcons.h"
@@ -71,10 +72,29 @@ void HeaderPainter::setConversationUserId(const QString &v) {
     update();
 }
 
+QString HeaderPainter::avatarKey(const QString &userId, bool groupShape)
+{
+    return (groupShape ? QStringLiteral("sq:") : QStringLiteral("c:")) + userId;
+}
+
 void HeaderPainter::setAvatarImage(const QImage &img) {
     if (!img.isNull() && !m_conversationUserId.isEmpty()) {
-        m_avatarCache[m_conversationUserId] = img;
-        m_avatarFetchedMs[m_conversationUserId] = QDateTime::currentMSecsSinceEpoch();
+        // A hand-over of the sidebar's picture for the conversation just opened
+        // (MainWindow::onConversationSelected is the only caller). TODAY IT NEVER
+        // RUNS: MainWindow looks the picture up under the bare user id (1:1) or
+        // "room/<token>", while the sidebar stores under "user:<id>" /
+        // "room:<token>" (SidebarPainter::avatarCacheKey), so the lookup always
+        // misses and the header downloads and masks its own picture (fetchAvatar).
+        // That mismatch is older than the shape work and was left alone here.
+        // If the lookup is ever made to match, the picture arrives masked by the
+        // sidebar for this type (at the sidebar's size, not the header's), so it
+        // belongs under the key of the shape the header will look up. MainWindow
+        // sets the type BEFORE calling this; the token is set after, which is why
+        // the key does not use it.
+        const QString key = avatarKey(m_conversationUserId,
+                                      talq::isGroupConversation(m_conversationType));
+        m_avatarCache[key] = img;
+        m_avatarFetchedMs[key] = QDateTime::currentMSecsSinceEpoch();
         update();
     }
 }
@@ -902,18 +922,25 @@ void HeaderPainter::paintAvatar(QPainter *p, const QRectF &rect)
 {
     int size = static_cast<int>(rect.width());
     QImage img = fetchAvatar(m_conversationUserId);
+    // A group chat is a rounded square, a person a circle (core/
+    // ConversationKind.h, the one predicate). Picture and letter fallback must
+    // agree, or the shape would jump when the download lands.
+    const bool groupShape = talq::isGroupConversation(m_conversationType);
 
     if (!img.isNull()) {
         if (img.width() != size)
             img = img.scaled(size, size, Qt::KeepAspectRatio, Qt::SmoothTransformation);
         p->drawImage(rect, img);
     } else {
-        // Fallback: colored circle with initial
+        // Fallback: coloured shape with initial
         QColor bgColor = PainterTheme::authorColor(
             m_conversationUserId.isEmpty() ? m_conversationName : m_conversationUserId);
         p->setPen(Qt::NoPen);
         p->setBrush(bgColor);
-        p->drawEllipse(rect);
+        if (groupShape)   // same integer radius as the cropped picture below
+            p->drawRoundedRect(rect, size / 4, size / 4);
+        else
+            p->drawEllipse(rect);
 
         QChar initial = m_conversationName.isEmpty() ? QChar('?') : m_conversationName.at(0).toUpper();
         QFont initFont;
@@ -937,9 +964,12 @@ QImage HeaderPainter::fetchAvatar(const QString &userId)
     if (userId.isEmpty())
         return QImage();
 
-    auto it = m_avatarCache.find(userId);
+    // Looked up under the shape of the conversation that is open NOW, so an
+    // entry masked for the other shape can never be returned (avatarKey()).
+    const QString key = avatarKey(userId, talq::isGroupConversation(m_conversationType));
+    auto it = m_avatarCache.find(key);
     if (it != m_avatarCache.end()) {
-        if (talq::avatarfetch::due(it.value().isNull(), m_avatarFetchedMs.value(userId, 0),
+        if (talq::avatarfetch::due(it.value().isNull(), m_avatarFetchedMs.value(key, 0),
                                    QDateTime::currentMSecsSinceEpoch()))
             requestAvatar(userId);   // refresh in background; keep showing this one
         return it.value();
@@ -952,9 +982,16 @@ QImage HeaderPainter::fetchAvatar(const QString &userId)
 void HeaderPainter::requestAvatar(const QString &userId)
 {
     const qint64 started = QDateTime::currentMSecsSinceEpoch();
+    // The shape and the key are fixed HERE, from the conversation this request
+    // is for, and the reply handler uses these captured values: it must not
+    // read m_conversationType, because the reply can land after the user has
+    // opened another chat, and a picture masked with the new chat's shape would
+    // be stored under the old chat's key.
+    const bool groupShape = talq::isGroupConversation(m_conversationType);
+    const QString key = avatarKey(userId, groupShape);
     // A download in flight is not doubled, but the marker is believed for a minute
     // only: one that never finishes must not block every later refresh.
-    const auto pending = m_avatarPending.constFind(userId);
+    const auto pending = m_avatarPending.constFind(key);
     if (!talq::avatarfetch::mayStart(pending != m_avatarPending.constEnd(),
                                      pending != m_avatarPending.constEnd() ? pending.value() : 0,
                                      started))
@@ -962,7 +999,7 @@ void HeaderPainter::requestAvatar(const QString &userId)
     if (!m_api)
         return;
 
-    m_avatarPending.insert(userId, started);
+    m_avatarPending.insert(key, started);
 
     // For 1:1, use user avatar. For groups, use room avatar.
     QString url;
@@ -981,21 +1018,22 @@ void HeaderPainter::requestAvatar(const QString &userId)
     // With a transfer timeout: a stalled download errors out instead of hanging.
     QNetworkReply *reply = m_api->getAbsoluteUrl(url, talq::avatarfetch::kTransferTimeoutMs);
 
-    connect(reply, &QNetworkReply::finished, this, [this, reply, userId, started]() {
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, userId, key, groupShape, started]() {
         reply->deleteLater();
         // Only the download that owns the marker releases it.
-        if (m_avatarPending.value(userId, -1) == started)
-            m_avatarPending.remove(userId);
+        if (m_avatarPending.value(key, -1) == started)
+            m_avatarPending.remove(key);
         const qint64 done = QDateTime::currentMSecsSinceEpoch();
 
         // A failed refresh never blanks a picture we already hold; it is asked for
         // again soon (AvatarFetchPolicy.h).
-        const auto failed = [this, userId, done]() {
-            const auto held = m_avatarCache.constFind(userId);
+        const auto failed = [this, key, done]() {
+            const auto held = m_avatarCache.constFind(key);
             const bool hadImage = held != m_avatarCache.constEnd() && !held.value().isNull();
-            m_avatarFetchedMs[userId] = talq::avatarfetch::failedStampMs(hadImage, done);
+            m_avatarFetchedMs[key] = talq::avatarfetch::failedStampMs(hadImage, done);
             if (!hadImage)
-                m_avatarCache[userId] = QImage();
+                m_avatarCache[key] = QImage();
         };
 
         if (reply->error() != QNetworkReply::NoError) {
@@ -1010,9 +1048,14 @@ void HeaderPainter::requestAvatar(const QString &userId)
             return;
         }
 
-        m_avatarFetchedMs[userId] = done;
-        m_avatarCache[userId] = PainterTheme::cropToCircle(img, AvatarSize);
+        m_avatarFetchedMs[key] = done;
+        // Radius = a quarter of the side, the house idiom (and what the letter
+        // fallback in paintAvatar draws).
+        m_avatarCache[key] = groupShape
+            ? PainterTheme::cropToRoundedSquare(img, AvatarSize, AvatarSize / 4)
+            : PainterTheme::cropToCircle(img, AvatarSize);
         qInfo().nospace() << "HeaderPainter: avatar fetched id=" << userId
+                          << " shape=" << (groupShape ? "rounded-square" : "circle")
                           << " bytes=" << data.size();
         update();
     });

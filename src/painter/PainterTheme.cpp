@@ -492,6 +492,39 @@ QImage PainterTheme::cropToCircle(const QImage &source, int size)
     return result;
 }
 
+QImage PainterTheme::cropToRoundedSquare(const QImage &source, int size, int radius)
+{
+    // Guard first: QImage::scaled() on a null image logs a warning and returns
+    // a null image, after which cropToCircle's recipe would still hand back a
+    // BLANK size x size square. A caller that checks isNull() on the result
+    // (the avatar caches do) must see "no picture" as null.
+    if (source.isNull() || size <= 0)
+        return QImage();
+
+    QImage scaled = source.scaled(size, size, Qt::KeepAspectRatioByExpanding,
+                                  Qt::SmoothTransformation);
+    int cx = (scaled.width() - size) / 2;
+    int cy = (scaled.height() - size) / 2;
+    if (cx > 0 || cy > 0)
+        scaled = scaled.copy(cx, cy, size, size);
+
+    // size / 2 is the largest radius that still describes a rounded rectangle;
+    // anything bigger would make QPainterPath overshoot into a lens shape.
+    const qreal r = qBound(0, radius, size / 2);
+
+    QImage result(size, size, QImage::Format_ARGB32_Premultiplied);
+    result.fill(Qt::transparent);
+    {
+        QPainter painter(&result);
+        painter.setRenderHint(QPainter::Antialiasing);
+        QPainterPath path;
+        path.addRoundedRect(QRectF(0, 0, size, size), r, r);
+        painter.setClipPath(path);
+        painter.drawImage(0, 0, scaled);
+    }
+    return result;
+}
+
 QString PainterTheme::formatRelativeTime(qint64 epochSecs)
 {
     if (epochSecs <= 0)

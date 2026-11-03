@@ -1,5 +1,48 @@
 # Changelog
 
+## v0.79.4 "Arhangelovden" — BETA (2026-11-03)
+
+If you have a lot of chats, you can now sort them into folders in the chat list, and group chats
+are drawn as rounded squares so they are easy to tell from people, who stay round.
+
+### Added
+* **Folders in the chat list.** A folder is a heading you click to open or close, and it holds
+  chats with people and group chats together. Chats that are in no folder sit under a built-in
+  "Other" heading. A closed folder shows the unread messages of everything inside it added up.
+  Open or closed is remembered. Turn them on from the funnel menu next to the search box:
+  **Group by → Folders**.
+* **Three ways to put a chat in a folder.** Right-click a chat and choose **Move to folder**
+  (that menu also has **New folder…** and **Remove from folder**); choose **New folder…** in the
+  Group by menu; or drag a chat onto a folder heading. Right-click a folder heading to **Rename…**,
+  **Move up**, **Move down** or **Delete folder**; deleting a folder does not delete any chat,
+  they go back to "Other". A folder name can be up to 40 characters, and you can have up to 50 folders.
+* **Group chats are rounded squares, people are circles** in the chat list, in the header of an
+  open chat and in the chat's information window.
+
+### Changed
+* **"Group by tag" in the funnel menu is now a "Group by" choice: None, Tags or Folders.** The
+  old tick box is gone. If you had it on, you start in Tags as before. Tags themselves, the tag
+  filter and the tag menu are unchanged.
+
+### Good to know
+* **Beta channel only.** The stable line (0.78.0) is untouched.
+* **Folders live on this computer only.** They are kept per account in a small file in TalQ's
+  data folder and are never sent to the server, so they do not appear in the Talk web page or
+  phone apps, and they are not shared between your computers. A different account, or a different
+  TalQ install, starts with no folders. While a search matches nothing, no folders are shown.
+* **A folders file written by a newer TalQ is never overwritten.** An older TalQ treats the
+  folders as read-only and says so in the Group by menu.
+* **What was checked.** Automatic tests for the folder rules, the folder file, the choice of
+  Group by at start-up, the avatar shape and the row layout (about 1,200 checks, all passing); the
+  real chat list and the real main window driven by scripted clicks and drags without a screen,
+  including logging out and in again; one real start of the program, which restored a session and
+  drew the chat list with group chats as rounded squares and people as circles; and a review by six
+  independent reviewers, whose 20 small findings were fixed or written down.
+* **Not yet seen.** The new menus drawn on screen in all four themes; a drag with a real mouse;
+  folders created and still there after a restart in a real account; two accounts on one computer;
+  the save of folders just before an update installs; and folders when TalQ's data folder is on a
+  slow network drive. Please say if anything looks wrong.
+
 ## v0.79.3 "Arhangelovden" — BETA (2026-11-02)
 
 In some one-to-one video calls the person who answered saw the caller as a still avatar with
