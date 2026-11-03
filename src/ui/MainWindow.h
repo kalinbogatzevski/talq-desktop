@@ -14,6 +14,7 @@
 #include <QElapsedTimer>
 #include <QTimer>
 #include "core/ConversationTagLogic.h"
+#include "core/FolderLogic.h"
 #include "core/UpdateInstallGatePolicy.h"
 #include "painter/PainterTheme.h"
 
@@ -30,6 +31,8 @@ class CallManager;
 class UserStatusManager;
 class DebugMonitor;
 class AppSettings;
+class FolderStore;
+class QActionGroup;
 
 class ChatPainter;
 class SidebarPainter;
@@ -197,6 +200,53 @@ private:
     void applyTagFilter(const QString &tagId, const QString &displayName);
     // Builds the "Tags" submenu on a conversation's right-click menu.
     void populateTagAssignMenu(QMenu *parent, const QString &token);
+
+    // ── Sidebar folders (local to this PC and account; see core/FolderStore.h) ──
+    // Unlike the tags above, nothing here talks to the server and nothing is
+    // gated on a server capability.
+    //
+    // The store is attached to ONE account at a time. The key is computed once,
+    // at loggedInChanged(true), and kept: AuthManager::logout() clears the server
+    // URL BEFORE it emits loggedInChanged(false), so it cannot be rebuilt then.
+    void attachFolders();
+    void detachFolders();
+    // Hands the store's whole state to the sidebar. Connected to the store's
+    // changed(), so every attach, detach and mutation lands here exactly once.
+    void pushFoldersToSidebar();
+    // Chooses the grouping (None / Tags / Folders): sidebar, funnel menu check
+    // and, when `persist`, Sidebar/groupMode (+ the legacy Sidebar/groupByTag).
+    void applyGroupMode(int mode, bool persist);
+    // Recomputes what the "Group by" submenu may offer right now: the checked
+    // mode, whether Tags is available, whether "New folder..." can work, and
+    // the passive folders notice. Runs when the submenu opens and after every
+    // attach / detach.
+    void syncGroupByMenu();
+    bool tagGroupingAvailable() const;
+    // "Move to folder" on a conversation's right-click menu.
+    void populateFolderAssignMenu(QMenu *parent, const QString &token);
+    // The right-click menu of a folder's header row.
+    void showFolderHeaderMenu(const QString &folderId, qreal globalX, qreal globalY);
+    // The folder actions below take the store's scope key as it was when the
+    // menu / signal that started them fired. If the account changed since (a
+    // logout while a dialog was open), they do nothing rather than act on the
+    // next account's folders.
+    bool folderScopeIs(const QString &scope) const;
+    // Asks for a name and creates the folder. True when the folder now exists
+    // (its id is in *outId); false when the user cancelled or it was refused
+    // (the refusal has already been explained).
+    bool createFolderInteractive(const QString &scope, QString *outId);
+    void newFolderFromFunnel();
+    void newFolderForChat(const QString &scope, const QString &token);
+    void renameFolderInteractive(const QString &scope, const QString &folderId);
+    // File `token` under `folderId` (empty = take it out of its folder).
+    void fileChatInFolder(const QString &scope, const QString &token, const QString &folderId);
+    // Says, calmly, why a folder action did not happen. Ok / Unchanged say
+    // nothing. `typedName` is what the user typed, for the duplicate message
+    // (shown as PLAIN text: it is whatever they typed, markup included).
+    // `filing` selects the wording of "too many" (chats filed, not folders).
+    void reportFolderResult(talq::FolderResult result, const QString &typedName = QString(),
+                            bool filing = false);
+
     void openConversationInfo();
     // Every avatar surface in the app funnels here, so the card is built and
     // wired in exactly one place and behaves identically wherever it is opened
@@ -289,6 +339,25 @@ private:
     // Sort-by / Show sections above them.
     QVector<talq::ConversationTag> m_tags;
     QList<QAction *> m_tagFilterActions;
+    // Sidebar folders. m_folders is a child of this window; m_folderScopeKey is
+    // the account key captured at login (empty while detached).
+    FolderStore *m_folders = nullptr;
+    QString m_folderScopeKey;
+    // The funnel menu's "Group by" submenu. Built once, OUTSIDE
+    // rebuildTagFilterMenu() (which returns early when there are no tags and
+    // deletes its actions on every tag refresh): folders are local and must be
+    // reachable on a server that has no tags at all.
+    QMenu *m_groupMenu = nullptr;
+    QActionGroup *m_groupModeGroup = nullptr;   // None / Tags / Folders; data() = the mode
+    QAction *m_groupNewFolderAct = nullptr;
+    // A disabled one-line notice at the bottom of that submenu (and the separator
+    // above it): shown only while folders are NOT working as the user would
+    // expect, so they learn it without having to try an action. Set by
+    // syncGroupByMenu() from the store's read-only reason, or from
+    // m_foldersLoadFailed (attach() itself failed this login).
+    QAction *m_groupNoticeSep = nullptr;
+    QAction *m_groupNoticeAct = nullptr;
+    bool m_foldersLoadFailed = false;
     QWidget *m_welcomeWidget = nullptr;     // persistent host (shown/hidden)
     QScrollArea *m_welcomeScroll = nullptr; // vertical overflow for the board
     QWidget *m_welcomeContent = nullptr;    // themed content, rebuilt on theme change

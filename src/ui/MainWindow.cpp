@@ -40,6 +40,9 @@
 #include "core/AvatarPaths.h"
 #include "core/SearchHit.h"
 #include "core/AuthManager.h"
+#include "core/FolderStore.h"
+#include "core/SidebarGroupModeLogic.h"
+#include "core/TalkToken.h"
 #include "core/ServerCapabilities.h"
 #include "core/ShutdownWatchdog.h"
 #include "core/NotificationManager.h"
@@ -109,6 +112,16 @@
 #include <windows.h>
 #include <dwmapi.h>
 #endif
+
+#include <optional>
+
+// The persisted sidebar grouping numbers live in SidebarGroupModeLogic.h as plain ints (so the
+// decision is testable without the painter). They are written to the registry, so they and the
+// painter's enum must stay the same numbers.
+static_assert(talq::kSidebarGroupNone == SidebarPainter::GroupNone
+              && talq::kSidebarGroupTags == SidebarPainter::GroupTags
+              && talq::kSidebarGroupFolders == SidebarPainter::GroupFolders,
+              "Sidebar/groupMode values must match SidebarPainter::GroupMode");
 
 // A message's body as plain text, substituting a file placeholder when empty.
 //
@@ -339,6 +352,11 @@ MainWindow::MainWindow(
     m_stack = new QStackedWidget(this);
     setCentralWidget(m_stack);
 
+    // Sidebar folders. Created BEFORE buildChatPage(): that function wires the
+    // sidebar's folder signals to this store, and a connect() to a null store
+    // fails silently.
+    m_folders = new FolderStore(this);
+
     buildLoginPage();
     buildChatPage();
 
@@ -538,6 +556,38 @@ void MainWindow::buildChatPage()
         a->setData(d.mode);
         filterGroup->addAction(a);
     }
+
+    // Group by: None / Tags / Folders. One choice instead of the old "Group by
+    // tag" checkbox, because two grouping systems must not both own the header
+    // rows. Built HERE, not in rebuildTagFilterMenu(): that function returns
+    // early on an empty tag list and deletes its actions on every tag refresh,
+    // so an entry placed there would not exist on a server without tags, and
+    // folders are local. Everything the tag refresh appends lands AFTER this.
+    m_filterMenu->addSeparator();
+    m_groupMenu = m_filterMenu->addMenu(tr("Group by"));
+    m_groupModeGroup = new QActionGroup(m_groupMenu);
+    m_groupModeGroup->setExclusive(true);
+    const ModeDef groupDefs[] = {
+        { QT_TR_NOOP("None"),    talq::kSidebarGroupNone },
+        { QT_TR_NOOP("Tags"),    talq::kSidebarGroupTags },
+        { QT_TR_NOOP("Folders"), talq::kSidebarGroupFolders },
+    };
+    for (const auto &d : groupDefs) {
+        QAction *a = m_groupMenu->addAction(tr(d.label));
+        a->setCheckable(true);
+        a->setData(d.mode);
+        m_groupModeGroup->addAction(a);
+    }
+    m_groupMenu->addSeparator();
+    m_groupNewFolderAct = m_groupMenu->addAction(tr("New folder…"));
+    // The passive folders notice: hidden until syncGroupByMenu() has something
+    // to say. Disabled, so it reads as information and cannot be clicked.
+    m_groupNoticeSep = m_groupMenu->addSeparator();
+    m_groupNoticeAct = m_groupMenu->addAction(QString());
+    m_groupNoticeAct->setEnabled(false);
+    m_groupNoticeSep->setVisible(false);
+    m_groupNoticeAct->setVisible(false);
+
     connect(m_filterBtn, &QPushButton::clicked, this, [this]() {
         m_filterMenu->popup(m_filterBtn->mapToGlobal(
             QPoint(0, m_filterBtn->height() + 2)));
@@ -762,9 +812,94 @@ void MainWindow::buildChatPage()
         m_sidebar->setTagFilter(savedTag);
         m_sidebar->setTagFilterName(savedTagName);
     }
-    m_settings.beginGroup("Sidebar");
-    m_sidebar->setGroupByTag(m_settings.value("groupByTag", false).toBool());
-    m_settings.endGroup();
+    // Grouping: Sidebar/groupMode (None / Tags / Folders) and the legacy
+    // Sidebar/groupByTag bool that builds before folders wrote. A usable mode wins
+    // when the bool is missing or agrees with it; when they DISAGREE the bool is
+    // the newer choice (this build writes both together, so only an older build
+    // can have changed one), see startupSidebarGroupMode. Only READ here:
+    // nothing is written back until the user changes the mode, so someone who
+    // never touches it leaves their settings exactly as they were. An absent
+    // key, or one that does not parse as a number, is "missing".
+    {
+        std::optional<long long> storedMode;
+        std::optional<bool> legacyGroupByTag;
+        m_settings.beginGroup("Sidebar");
+        if (m_settings.contains("groupMode")) {
+            bool ok = false;
+            const qlonglong n = m_settings.value("groupMode").toLongLong(&ok);
+            if (ok)
+                storedMode = n;
+        }
+        if (m_settings.contains("groupByTag"))
+            legacyGroupByTag = m_settings.value("groupByTag").toBool();
+        m_settings.endGroup();
+        applyGroupMode(talq::startupSidebarGroupMode(storedMode, legacyGroupByTag),
+                       /*persist*/ false);
+    }
+
+    // ── Sidebar folders ──
+    // Local to this PC and account; nothing below talks to the Talk server.
+    // Every store change (attach, detach, each mutation) is pushed whole into
+    // the sidebar, which skips an identical push, so the echo of its own header
+    // click costs nothing. Each connect is made exactly once: buildChatPage()
+    // runs once, from the constructor.
+    connect(m_folders, &FolderStore::changed, this, &MainWindow::pushFoldersToSidebar);
+    // A normal mutation is already on disk; this only matters after a failed
+    // write. Context = the store, so no `this` capture is needed.
+    connect(qApp, &QCoreApplication::aboutToQuit, m_folders, &FolderStore::flush);
+    // loggedInChanged() carries no value, so read isLoggedIn(). No
+    // isRestoringSession() early return here (the handler further down has
+    // one): by the time setLoggedIn(true) runs the restore flag is already
+    // false, and both serverUrl() and userId() are valid (AuthManager.cpp
+    // fetchUserInfo sets m_userId before it calls setLoggedIn(true)).
+    connect(m_auth, &AuthManager::loggedInChanged, this, [this]() {
+        if (m_auth->isLoggedIn())
+            attachFolders();
+        else
+            detachFolders();
+    });
+    // A folder header was clicked, or revealToken() opened one. LOCAL only:
+    // deliberately not tagSectionToggled, whose handler below PUTs to the server.
+    connect(m_sidebar, &SidebarPainter::folderToggled, this,
+            [this](const QString &folderId, bool collapsed) {
+        const talq::FolderResult r = folderId.isEmpty()
+            ? m_folders->setOtherCollapsed(collapsed)       // empty id = the Other section
+            : m_folders->setCollapsed(folderId, collapsed);
+        if (talq::isRefusal(r)) {
+            qInfo() << "folders: header toggle refused (result" << int(r) << ")";
+            // The painter flipped its own copy before it told us; put the
+            // store's truth back so the two cannot disagree.
+            pushFoldersToSidebar();
+        }
+    });
+    // A dragged row was dropped on a folder (empty id = on Other = take it out).
+    connect(m_sidebar, &SidebarPainter::conversationDropped, this,
+            [this](const QString &token, const QString &folderId) {
+        const talq::FolderResult r = m_folders->assign(token, folderId);
+        if (talq::isRefusal(r)) {
+            // We are inside the OS drag-and-drop loop here; a modal box must
+            // wait until it has unwound.
+            QTimer::singleShot(0, this, [this, r]() {
+                reportFolderResult(r, QString(), /*filing*/ true);
+            });
+        }
+    });
+    connect(m_sidebar, &SidebarPainter::folderContextMenuRequested,
+            this, &MainWindow::showFolderHeaderMenu);
+    // Group by: None / Tags / Folders. The check state is recomputed whenever
+    // the submenu opens, so it cannot go stale.
+    connect(m_groupModeGroup, &QActionGroup::triggered, this, [this](QAction *a) {
+        applyGroupMode(a->data().toInt(), /*persist*/ true);
+    });
+    connect(m_groupNewFolderAct, &QAction::triggered, this, &MainWindow::newFolderFromFunnel);
+    connect(m_groupMenu, &QMenu::aboutToShow, this, &MainWindow::syncGroupByMenu);
+    pushFoldersToSidebar();   // the sidebar exists now; starts empty
+    // Unreachable today (main() constructs this window BEFORE it calls
+    // auth.tryRestore(), and the restore is asynchronous, so a session is never
+    // logged in yet), kept so a future reorder cannot silently leave a restored
+    // session without folders.
+    if (m_auth->isLoggedIn())
+        attachFolders();
 
     // Collapsed state is per-user SERVER state (it follows you to other
     // devices), so a click on a section header has to be written back. The
@@ -776,6 +911,8 @@ void MainWindow::buildChatPage()
             [this](const QString &tagId, bool collapsed) {
         if (tagId.startsWith(QLatin1Char('!')))
             return;   // client-computed pseudo-sections have no server row
+        if (talq::isFolderId(tagId))
+            return;   // a folder is local; its id must never reach the Talk server
         m_api->put(QStringLiteral("apps/spreed/api/v4/tags/%1/collapsed").arg(tagId),
                    QJsonObject{{QStringLiteral("collapsed"), collapsed}},
                    [tagId](bool ok, const QJsonObject &, int status) {
@@ -988,6 +1125,8 @@ void MainWindow::buildChatPage()
         // Talk 24: assign tags to this conversation. Adds nothing to the menu
         // on a server without `conversation-tags`, so the 0.64 menu is intact.
         populateTagAssignMenu(menu, ctxToken);
+        // Local folders: not gated on any server capability.
+        populateFolderAssignMenu(menu, ctxToken);
         menu->popup(QCursor::pos());
     });
 
@@ -4277,6 +4416,13 @@ void MainWindow::openConversation(const QString &token)
             QString statusMessage = m_conversations->userStatusMessageForToken(token);
             QString statusIcon    = m_conversations->userStatusIconForToken(token);
             m_sidebar->setSelectedIndex(i);
+            // Selecting a row does not make it visible: it may sit in a closed
+            // folder. This opens that folder (persisted by the store, via the
+            // sidebar's folderToggled) and scrolls the row on screen. A no-op
+            // unless the list is grouped by folders. Every programmatic open
+            // (notification click, jump to chat, call join, search hit, new
+            // chat, reminders) comes through here.
+            m_sidebar->revealToken(token);
             onConversationSelected(token, name, userId, convType, status, statusMessage, statusIcon);
             return;
         }
@@ -5199,6 +5345,11 @@ void MainWindow::maybeLaunchPendingInstaller()
     m_settings.setValue(QStringLiteral("updates/relaunchMinimized"),
                         isMinimized() || !isVisible());
     m_settings.sync();
+    // The installer closes TalQ with /CLOSEAPPLICATIONS, so nothing after this
+    // point is guaranteed to run. A folder change is already on disk; this
+    // retries one whose write failed.
+    if (m_folders)
+        m_folders->flush();
     bool ok = QProcess::startDetached(m_pendingInstallerPath, args);
     if (!ok) {
         m_settings.remove(QStringLiteral("updates/relaunchMinimized"));
@@ -5569,19 +5720,10 @@ void MainWindow::rebuildTagFilterMenu()
     for (const talq::ConversationTag &t : m_tags)
         addTagAction(tagFilterIdFor(t), tagDisplayName(t));
 
-    // Grouping is independent of the filter: the filter narrows the list, the
-    // grouping splits whatever survives into labelled sections.
-    QAction *groupAct = m_filterMenu->addAction(tr("Group by tag"));
-    groupAct->setCheckable(true);
-    groupAct->setChecked(m_sidebar->groupByTag());
-    connect(groupAct, &QAction::triggered, this, [this](bool on) {
-        m_sidebar->setGroupByTag(on);
-        m_settings.beginGroup("Sidebar");
-        m_settings.setValue("groupByTag", on);
-        m_settings.endGroup();
-        restyleChrome();
-    });
-    m_tagFilterActions.append(groupAct);
+    // (Grouping by tag is no longer a checkbox here: it is the "Tags" choice of
+    // the "Group by" submenu, which buildChatPage() builds once, outside this
+    // function. Grouping is still independent of the filter above: the filter
+    // narrows the list, the grouping splits whatever survives into sections.)
 
     QAction *manage = m_filterMenu->addAction(tr("Manage tags…"));
     connect(manage, &QAction::triggered, this, &MainWindow::openTagManager);
@@ -5791,6 +5933,421 @@ void MainWindow::populateTagAssignMenu(QMenu *parent, const QString &token)
                 });
         });
     });
+}
+
+// ═══════════════════════════════════════════════════════
+// Sidebar folders (local; the data rules live in core/FolderLogic.h, the file in
+// core/FolderStore.cpp, the painting in painter/SidebarPainter.cpp)
+// ═══════════════════════════════════════════════════════
+
+namespace {
+
+// Asks for a folder name. std::nullopt = the user cancelled; a present but empty
+// (or blank) string = they confirmed an empty box, which the store refuses with
+// EmptyName and reportFolderResult() explains. The two must stay distinct: a
+// cancel says nothing, an empty name gets a message.
+//
+// Deliberately NO setMaxLength(40): QLineEdit counts UTF-16 units, so it would
+// cut an emoji pair in half and stop short of the limit for anything outside
+// the BMP. talq::normaliseFolderName() truncates to 40 CODE POINTS, and the
+// sidebar shows what was stored.
+std::optional<QString> askFolderName(QWidget *parent, const QString &title,
+                                     const QString &label, const QString &initial)
+{
+    bool accepted = false;
+    const QString text = QInputDialog::getText(parent, title, label, QLineEdit::Normal,
+                                               initial, &accepted);
+    if (!accepted)
+        return std::nullopt;
+    return text;
+}
+
+// A folder name as menu text. In a QAction '&' marks a mnemonic, so "R&D" would
+// read "RD" with the D underlined; the doubled form shows the ampersand.
+QString folderMenuText(const QString &name)
+{
+    QString t = name;
+    t.replace(QLatin1Char('&'), QLatin1String("&&"));
+    return t;
+}
+
+} // namespace
+
+void MainWindow::attachFolders()
+{
+    if (!m_folders || !m_auth)
+        return;
+    // Computed ONCE per login and kept. The canonical Nextcloud user id, not the
+    // login name (LDAP / e-mail logins differ). An empty server URL or user id
+    // gives an empty key, and then folders stay off rather than guess an account.
+    const QString key = talq::accountScopeKey(m_auth->serverUrl(), m_auth->userId());
+    if (key.isEmpty()) {
+        qWarning() << "folders: no account identity yet, folders stay off";
+        detachFolders();
+        return;
+    }
+    if (m_folders->isAttached() && m_folderScopeKey == key)
+        return;   // already this account's
+    m_folderScopeKey = key;
+    m_foldersLoadFailed = false;
+    if (!m_folders->attach(key)) {
+        // Logged here, once per login: attach() only runs again after the next
+        // login flip, and there is deliberately no retry timer. The funnel's
+        // "Group by" submenu says so, so folders are not simply "gone".
+        qWarning() << "folders: the folder file for this account could not be opened; "
+                      "folders stay off for this session";
+        m_folderScopeKey.clear();
+        m_foldersLoadFailed = true;
+    }
+    // attach() emits changed() when it attached (or dropped a previous account),
+    // which already pushed. This covers the refusal that attached nothing.
+    pushFoldersToSidebar();
+    syncGroupByMenu();   // the passive notice follows the store's new state
+}
+
+void MainWindow::detachFolders()
+{
+    // The store detaches by the scope it captured at attach(): AuthManager::logout()
+    // clears serverUrl BEFORE it emits loggedInChanged(false), so the key cannot be
+    // rebuilt now. The file stays on disk and the layout returns at the next login.
+    if (m_folders)
+        m_folders->detach();   // flushes first
+    m_folderScopeKey.clear();
+    m_foldersLoadFailed = false;   // the next login starts clean
+    // Explicit, not left to changed(): a store that never attached emits nothing,
+    // and the previous account's folders must not stay on screen.
+    if (m_sidebar)
+        m_sidebar->setFolders({}, false, {});
+    syncGroupByMenu();   // the passive notice belongs to the account that just left
+}
+
+void MainWindow::pushFoldersToSidebar()
+{
+    if (!m_sidebar || !m_folders)
+        return;
+    const talq::FolderState &s = m_folders->state();
+    m_sidebar->setFolders(s.folders, s.otherCollapsed, s.assign);
+}
+
+bool MainWindow::tagGroupingAvailable() const
+{
+    // The same condition under which the old "Group by tag" item existed: it was
+    // added by rebuildTagFilterMenu() only for a server with tags and a tag list.
+    return m_auth && m_auth->supportsConversationTags() && !m_tags.isEmpty();
+}
+
+void MainWindow::syncGroupByMenu()
+{
+    if (!m_groupModeGroup || !m_sidebar)
+        return;
+    const int mode = static_cast<int>(m_sidebar->groupMode());
+    const bool tagsOk = tagGroupingAvailable();
+    for (QAction *a : m_groupModeGroup->actions()) {
+        const int m = a->data().toInt();
+        // Tags is offered only where it can work, and has no click path otherwise.
+        // The CHOSEN mode is never overridden: a saved Tags stays Tags while the
+        // tag list is still loading or the server is older (the sidebar then shows
+        // a flat list, as it always did), and shows as checked-but-disabled.
+        if (m == talq::kSidebarGroupTags)
+            a->setEnabled(tagsOk);
+        if (m == mode)
+            a->setChecked(true);   // exclusive group: unchecks the others
+    }
+    if (m_groupNewFolderAct)
+        m_groupNewFolderAct->setEnabled(m_folders && m_folders->isAttached());
+
+    // The passive notice. A read-only store shows NO folders (it refuses every
+    // change and nothing is written back), and a store that failed to load shows
+    // none either; without a line here the user would only find out by trying an
+    // action, and could reasonably think their folders were gone. The wording
+    // differs because the cause, and so the remedy, does.
+    if (m_groupNoticeAct) {
+        QString notice;
+        if (m_folders && m_folders->isAttached()) {
+            switch (m_folders->readOnlyReason()) {
+            case FolderStore::None:
+                break;
+            case FolderStore::NewerFormat:
+                notice = tr("Folders are hidden: saved by a newer version of TalQ.");
+                break;
+            case FolderStore::CouldNotSetAside:
+                notice = tr("Folders are read-only: the folders file could not be updated.");
+                break;
+            }
+        } else if (m_foldersLoadFailed) {
+            notice = tr("Folders could not be loaded. Restart TalQ to try again.");
+        }
+        m_groupNoticeAct->setText(notice);
+        m_groupNoticeAct->setVisible(!notice.isEmpty());
+        if (m_groupNoticeSep)
+            m_groupNoticeSep->setVisible(!notice.isEmpty());
+    }
+}
+
+void MainWindow::applyGroupMode(int mode, bool persist)
+{
+    if (mode < talq::kSidebarGroupNone || mode > talq::kSidebarGroupFolders)
+        mode = talq::kSidebarGroupNone;
+    if (m_sidebar)
+        m_sidebar->setGroupMode(static_cast<SidebarPainter::GroupMode>(mode));
+    if (persist) {
+        m_settings.beginGroup("Sidebar");
+        m_settings.setValue("groupMode", mode);
+        // Builds before folders read only this key. Keep it true exactly when the
+        // mode is Tags, so a downgrade still behaves.
+        m_settings.setValue("groupByTag", mode == talq::kSidebarGroupTags);
+        m_settings.endGroup();
+    }
+    syncGroupByMenu();
+}
+
+bool MainWindow::folderScopeIs(const QString &scope) const
+{
+    return m_folders && m_folders->isAttached() && m_folders->scopeKey() == scope;
+}
+
+void MainWindow::reportFolderResult(talq::FolderResult result, const QString &typedName,
+                                    bool filing)
+{
+    using talq::FolderResult;
+    // Every folder message is PLAIN text. QMessageBox's default is AutoText, which
+    // renders anything that looks like markup, and a folder name is whatever the
+    // user typed: "<i>a</i>" would lose its tags and "x &lt; y" would come back as
+    // "x < y". Escaping the name instead would not do (under AutoText "R&D" would
+    // then show a literal "R&amp;D"), so the format is pinned and the name is left
+    // exactly as typed. An instance, because the static helpers cannot set it.
+    auto say = [this](QMessageBox::Icon icon, const QString &text) {
+        QMessageBox box(icon, tr("Folders"), text, QMessageBox::Ok, this);
+        box.setTextFormat(Qt::PlainText);
+        box.exec();
+    };
+    switch (result) {
+    case FolderResult::Ok:
+    case FolderResult::Unchanged:
+        return;   // nothing to say: it worked, or there was nothing to do
+    case FolderResult::EmptyName:
+        say(QMessageBox::Information, tr("Please type a name for the folder."));
+        return;
+    case FolderResult::DuplicateName:
+        // The name as it was STORED-style (trimmed, spaces simplified), which is
+        // what the existing folder is compared against.
+        say(QMessageBox::Information,
+            tr("You already have a folder called “%1”.")
+                .arg(talq::normaliseFolderName(typedName)));
+        return;
+    case FolderResult::TooMany:
+        say(QMessageBox::Information,
+            filing ? tr("You can file up to %1 chats in folders.").arg(talq::kMaxAssignments)
+                   : tr("You can have up to %1 folders.").arg(talq::kMaxFolders));
+        return;
+    case FolderResult::ReadOnly:
+        // Two causes, two remedies: the reason is the store's, not a guess.
+        if (m_folders && m_folders->readOnlyReason() == FolderStore::CouldNotSetAside)
+            say(QMessageBox::Warning,
+                tr("Your folders file could not be opened for changes. Close any program "
+                   "that is using it and restart TalQ."));
+        else
+            say(QMessageBox::Warning,
+                tr("Your folders were saved by a newer version of TalQ, so this version "
+                   "can't change them."));
+        return;
+    case FolderResult::NotAttached:
+        // No account is attached (not logged in, or the file could not be opened).
+        // Nothing the user can act on; attachFolders() already logged why.
+        qInfo() << "folders: an action was ignored because no account is attached";
+        return;
+    case FolderResult::BadToken:
+    case FolderResult::NotFound:
+        // Should not happen: the menus only offer valid tokens and existing folders,
+        // and each action re-checks. Worth a line if it ever does.
+        qWarning() << "folders: an action was refused (result" << int(result) << ")";
+        return;
+    }
+}
+
+bool MainWindow::createFolderInteractive(const QString &scope, QString *outId)
+{
+    if (outId)
+        outId->clear();
+    if (!folderScopeIs(scope))
+        return false;
+    // Refuse BEFORE asking for a name when no name could work.
+    if (m_folders->isReadOnly()) {
+        reportFolderResult(talq::FolderResult::ReadOnly);
+        return false;
+    }
+    if (m_folders->state().folders.size() >= talq::kMaxFolders) {
+        reportFolderResult(talq::FolderResult::TooMany);
+        return false;
+    }
+    const std::optional<QString> typed =
+        askFolderName(this, tr("New folder"), tr("Folder name:"), QString());
+    if (!typed)
+        return false;   // cancelled: say nothing
+    // The dialog ran its own event loop. If the account changed under it (a
+    // logout), the folder must not be created in the next account's store.
+    if (!folderScopeIs(scope))
+        return false;
+    const talq::FolderResult r = m_folders->createFolder(*typed, outId);
+    if (r != talq::FolderResult::Ok) {
+        reportFolderResult(r, *typed);
+        return false;
+    }
+    return true;
+}
+
+void MainWindow::newFolderFromFunnel()
+{
+    if (!m_folders || !m_folders->isAttached())
+        return;
+    QString id;
+    if (!createFolderInteractive(m_folders->scopeKey(), &id))
+        return;
+    // Asking for a folder and not seeing it would be odd: show them.
+    applyGroupMode(talq::kSidebarGroupFolders, /*persist*/ true);
+}
+
+void MainWindow::newFolderForChat(const QString &scope, const QString &token)
+{
+    if (!folderScopeIs(scope))
+        return;
+    // Spec D2: the FIRST folder switches the grouping to Folders; later ones leave
+    // the mode alone (a user who chose Tags or None with folders already there
+    // meant it).
+    const bool firstFolder = m_folders->state().folders.isEmpty();
+    QString id;
+    if (!createFolderInteractive(scope, &id))
+        return;
+    if (firstFolder)
+        applyGroupMode(talq::kSidebarGroupFolders, /*persist*/ true);
+    // File THIS chat, by the token captured when the menu opened. No event loop
+    // has run since createFolderInteractive() checked the account.
+    reportFolderResult(m_folders->assign(token, id), QString(), /*filing*/ true);
+}
+
+void MainWindow::renameFolderInteractive(const QString &scope, const QString &folderId)
+{
+    if (!folderScopeIs(scope))
+        return;
+    const int idx = talq::folderIndexOf(m_folders->state(), folderId);
+    if (idx < 0)
+        return;   // deleted since the menu opened
+    // A copy: the dialog's event loop can change the store under a reference.
+    const QString current = m_folders->state().folders.at(idx).name;
+    const std::optional<QString> typed =
+        askFolderName(this, tr("Rename folder"), tr("Folder name:"), current);
+    if (!typed)
+        return;
+    if (!folderScopeIs(scope))
+        return;
+    reportFolderResult(m_folders->renameFolder(folderId, *typed), *typed);
+}
+
+void MainWindow::fileChatInFolder(const QString &scope, const QString &token,
+                                  const QString &folderId)
+{
+    if (!folderScopeIs(scope))
+        return;
+    // assign() re-checks that the folder still exists (NotFound if it was
+    // deleted since the menu opened) and that the token is valid.
+    reportFolderResult(m_folders->assign(token, folderId), QString(), /*filing*/ true);
+}
+
+void MainWindow::populateFolderAssignMenu(QMenu *parent, const QString &token)
+{
+    // Not gated on any server capability: folders are local. Only on there being
+    // an account to keep them for, and a token that can name a chat.
+    if (!m_folders || !m_folders->isAttached() || !talq::isTalkToken(token))
+        return;
+
+    const talq::FolderState &st = m_folders->state();
+    const QString scope = m_folders->scopeKey();
+    const QString current = talq::folderOf(st, token);   // empty = unfiled (Other)
+
+    QMenu *sub = parent->addMenu(tr("Move to folder"));
+    // Every action below captures the TOKEN and folder id as they were when this
+    // menu opened, never a model row: the room list refreshes every 30 s and can
+    // reorder while a menu is open. They also capture the account scope, so an
+    // action from a menu opened for one account cannot touch the next one's.
+    if (!st.folders.isEmpty()) {
+        // Exclusive: clicking the folder a chat is already in keeps it checked
+        // (and files it where it is, a no-op) instead of unchecking it.
+        auto *group = new QActionGroup(sub);
+        group->setExclusive(true);
+        for (const talq::Folder &f : st.folders) {
+            QAction *a = sub->addAction(folderMenuText(f.name));
+            a->setCheckable(true);
+            a->setChecked(f.id == current);
+            group->addAction(a);
+            connect(a, &QAction::triggered, this, [this, scope, token, id = f.id]() {
+                fileChatInFolder(scope, token, id);
+            });
+        }
+        sub->addSeparator();
+    }
+
+    QAction *create = sub->addAction(tr("New folder…"));
+    connect(create, &QAction::triggered, this, [this, scope, token]() {
+        newFolderForChat(scope, token);
+    });
+
+    if (!st.folders.isEmpty()) {
+        QAction *remove = sub->addAction(tr("Remove from folder"));
+        remove->setEnabled(!current.isEmpty());
+        connect(remove, &QAction::triggered, this, [this, scope, token]() {
+            fileChatInFolder(scope, token, QString());
+        });
+    }
+}
+
+void MainWindow::showFolderHeaderMenu(const QString &folderId, qreal globalX, qreal globalY)
+{
+    if (!m_folders || !m_folders->isAttached())
+        return;
+    const talq::FolderState &st = m_folders->state();
+    const int idx = talq::folderIndexOf(st, folderId);
+    if (idx < 0)
+        return;   // gone since the click
+    const QString scope = m_folders->scopeKey();
+    const int last = int(st.folders.size()) - 1;
+
+    // popup(), not exec(): this runs from the painter's mouseReleaseEvent, and the
+    // menu deletes itself when it closes.
+    auto *menu = new QMenu(this);
+    menu->setAttribute(Qt::WA_DeleteOnClose);
+    QAction *rename = menu->addAction(tr("Rename…"));
+    QAction *up     = menu->addAction(tr("Move up"));
+    QAction *down   = menu->addAction(tr("Move down"));
+    up->setEnabled(idx > 0);        // the one that cannot move is greyed out
+    down->setEnabled(idx < last);
+    menu->addSeparator();
+    // No confirmation (spec D15): deleting a folder loses nothing, its chats go back to Other.
+    QAction *del = menu->addAction(tr("Delete folder"));
+
+    // The id is captured by value and the store re-checks it when the action
+    // fires: the folder may be gone by then.
+    connect(rename, &QAction::triggered, this, [this, scope, folderId]() {
+        renameFolderInteractive(scope, folderId);
+    });
+    connect(up, &QAction::triggered, this, [this, scope, folderId]() {
+        if (folderScopeIs(scope))
+            reportFolderResult(m_folders->moveFolder(folderId, -1));
+    });
+    connect(down, &QAction::triggered, this, [this, scope, folderId]() {
+        if (folderScopeIs(scope))
+            reportFolderResult(m_folders->moveFolder(folderId, +1));
+    });
+    connect(del, &QAction::triggered, this, [this, scope, folderId]() {
+        if (folderScopeIs(scope))
+            reportFolderResult(m_folders->deleteFolder(folderId));
+    });
+
+    // The painter hands over the click's real global position. The cursor is only
+    // the fallback for a coordinate that is not a number.
+    const QPoint at = (qIsFinite(globalX) && qIsFinite(globalY))
+        ? QPointF(globalX, globalY).toPoint()
+        : QCursor::pos();
+    menu->popup(at);
 }
 
 void MainWindow::openNewChatDialog()

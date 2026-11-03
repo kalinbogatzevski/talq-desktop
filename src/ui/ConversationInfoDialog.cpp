@@ -2,6 +2,7 @@
 
 #include "core/ApiClient.h"
 #include "core/AvatarPaths.h"
+#include "core/ConversationKind.h"
 #include "core/NcUser.h"
 #include "core/ShiftStatusService.h"
 #include "painter/PainterTheme.h"
@@ -64,6 +65,16 @@ PainterTheme activeTheme()
         PainterTheme::themeId(PainterTheme::Theme::Vivid)).toString();
     s.endGroup();
     return PainterTheme(PainterTheme::themeFromId(id, PainterTheme::Theme::Vivid));
+}
+
+// The picture preview next to the name is a fixed 56 px label. A group chat
+// (talq::isGroupConversation: Group and Public) is a ROUNDED SQUARE whose
+// radius is a quarter of the side, the house idiom shared with the sidebar and
+// the chat header; every other room type keeps the disc it always had.
+constexpr int kAvatarPx = 56;
+constexpr int avatarRadiusPx(int roomType)
+{
+    return talq::isGroupConversation(roomType) ? kAvatarPx / 4 : kAvatarPx / 2;
 }
 
 QPixmap makeBotIcon(int sizePx)
@@ -155,7 +166,7 @@ ConversationInfoDialog::ConversationInfoDialog(ApiClient *api,
     if (roomType != 1) {
         auto *avRow = new QHBoxLayout();
         m_avatar = new QLabel(this);
-        m_avatar->setFixedSize(56, 56);
+        m_avatar->setFixedSize(kAvatarPx, kAvatarPx);
         m_avatar->setAlignment(Qt::AlignCenter);
         m_avatar->setScaledContents(true);
         const QString initial = currentName.trimmed().isEmpty()
@@ -168,9 +179,10 @@ ConversationInfoDialog::ConversationInfoDialog(ApiClient *api,
         const PainterTheme th = activeTheme();
         const QColor avatarBg = PainterTheme::authorColor(currentName);
         m_avatar->setStyleSheet(QStringLiteral(
-            "QLabel { background:%1; color:%2; border-radius:28px;"
+            "QLabel { background:%1; color:%2; border-radius:%3px;"
             "         font-size:24px; font-weight:600; }")
-            .arg(avatarBg.name(QColor::HexRgb), th.inkOn(avatarBg).name(QColor::HexRgb)));
+            .arg(avatarBg.name(QColor::HexRgb), th.inkOn(avatarBg).name(QColor::HexRgb))
+            .arg(avatarRadiusPx(roomType)));
         // Clickable: the picture opens large (eventFilter). A label has no click signal,
         // so the pointing hand and the tip are what say it can be clicked.
         m_avatar->setCursor(Qt::PointingHandCursor);
@@ -447,11 +459,27 @@ void ConversationInfoDialog::applyAvatarPixmap(const QImage &img)
     // never stretched (the old setScaledContents path squished wide photos) and
     // matches EXACTLY what setRoomAvatar uploads (center-cropped square).
     if (!m_avatar || img.isNull()) return;
+    if (talq::isGroupConversation(m_roomType)) {
+        // A group's picture is masked HERE, in the pixels. It is NOT verified
+        // that Qt clips a QLabel's pixmap to a stylesheet border-radius (the
+        // radius is only known to round the label's own background), so the
+        // stylesheet below is kept matching but never relied on.
+        // cropToRoundedSquare does the same centre-crop and cover-scale as the
+        // lines below. Rendered at 56 px with no devicePixelRatio, like the
+        // rest of this dialog.
+        const int radius = avatarRadiusPx(m_roomType);
+        m_avatar->setText(QString());
+        m_avatar->setStyleSheet(QStringLiteral("QLabel { border-radius:%1px; }").arg(radius));
+        m_avatar->setPixmap(QPixmap::fromImage(
+            PainterTheme::cropToRoundedSquare(img, kAvatarPx, radius)));
+        return;
+    }
     const int side = qMin(img.width(), img.height());
     const QImage sq = img.copy((img.width() - side) / 2, (img.height() - side) / 2, side, side)
-                         .scaled(56, 56, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+                         .scaled(kAvatarPx, kAvatarPx, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
     m_avatar->setText(QString());
-    m_avatar->setStyleSheet(QStringLiteral("QLabel { border-radius:28px; }"));
+    m_avatar->setStyleSheet(QStringLiteral("QLabel { border-radius:%1px; }")
+                                .arg(avatarRadiusPx(m_roomType)));
     m_avatar->setPixmap(QPixmap::fromImage(sq));
 }
 

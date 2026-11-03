@@ -149,6 +149,16 @@ private:
     // ── Avatar loading ──
     QImage fetchAvatar(const QString &userId);
     void requestAvatar(const QString &userId);
+    // The key of every avatar map below (cache, pending, fetched-at). The cache
+    // holds PRE-MASKED pixels, so the shape is part of the key: an entry under
+    // a "c:" key is a circle, under a "sq:" key a rounded square, and a lookup
+    // for the open conversation uses the shape of THAT conversation's type. The
+    // plain user id was not enough: a group's "user id" is the room's name
+    // (ActorIdRole is Conversation::name), so a group called "alice" and the
+    // 1:1 with user "alice" shared one entry. Two GROUPS with the same name
+    // still share one (the key carries no token); that is older than the shape
+    // work and is not addressed here.
+    static QString avatarKey(const QString &userId, bool groupShape);
     QHash<QString, QImage> m_avatarCache;
     // key -> when the download in flight for it began (believed only for
     // talq::avatarfetch::kPendingGiveUpMs; see core/AvatarFetchPolicy.h).

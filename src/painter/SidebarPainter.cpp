@@ -4,10 +4,21 @@
 #include "core/AvatarFetchPolicy.h"
 #include "core/SignalingClient.h"
 #include "core/ShiftStatusService.h"
+#include "core/ConversationKind.h"
 #include "EmojiTextRenderer.h"
+#include <QApplication>
+#include <QCursor>
+#include <QDrag>
+#include <QDragEnterEvent>
+#include <QDragLeaveEvent>
+#include <QDragMoveEvent>
+#include <QDropEvent>
+#include <QMimeData>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPaintEvent>
+#include <QPointer>
+#include <QTimer>
 #include <QWheelEvent>
 #include <QMouseEvent>
 #include <QHoverEvent>
@@ -19,6 +30,23 @@
 #include <QDateTime>
 #include <algorithm>
 
+namespace {
+
+// A dragged conversation travels as THIS type and no other. Not text/plain and
+// above all not text/uri-list: ChatPainter's file-drop handler accepts any URL
+// mime, so a URL-shaped payload could be dropped onto the open chat and
+// uploaded. Foreign drops (files, text) are ignored by the sidebar for the same
+// reason in reverse -- it has no use for them.
+constexpr char kConversationMime[] = "application/x-talq-conversation-token";
+
+// While a drag hovers this close to the top or bottom edge the list scrolls
+// toward that edge, faster the nearer the edge (talq::dragAutoScrollStep).
+constexpr int kDragScrollZone = 36;        // px
+constexpr int kDragScrollMaxStep = 14;     // px per tick at the very edge
+constexpr int kDragScrollTickMs = 30;
+
+} // namespace
+
 // ═══════════════════════════════════════════════════════
 // Constructor
 // ═══════════════════════════════════════════════════════
@@ -29,6 +57,12 @@ SidebarPainter::SidebarPainter(QWidget *parent)
 {
     setAttribute(Qt::WA_Hover);
     setMouseTracking(true);
+    // Only for dragging a conversation onto a folder; dragEnterEvent refuses
+    // everything else (and everything at all unless folders are in force).
+    setAcceptDrops(true);
+    m_dragScrollTimer = new QTimer(this);
+    m_dragScrollTimer->setInterval(kDragScrollTickMs);
+    connect(m_dragScrollTimer, &QTimer::timeout, this, &SidebarPainter::onDragScrollTick);
 }
 
 qint64 SidebarPainter::avatarCacheBytes() const
@@ -123,6 +157,13 @@ void SidebarPainter::setSqueezed(bool sq)
     if (m_squeezed == sq) return;
     m_squeezed = sq;
     m_scrollY = 0;
+    // The icon rail has no room for a folder header (and the build drops them
+    // there), but nothing else rebuilds the rows on a squeeze: without this the
+    // rail would keep painting the open list's headers until the next model
+    // refresh, up to 30 s. Folders only -- the tag path has always waited for
+    // the next signal and is left byte-for-byte as it was.
+    if (m_groupMode == GroupFolders && !m_folders.isEmpty())
+        rebuildLayouts();
     update();
 }
 
@@ -205,9 +246,11 @@ void SidebarPainter::rebuildLayouts()
 
     m_layouts.clear();
     m_rows.clear();
+    m_matching.clear();
+    m_listEmpty = true;
     // Conversation indices that survive the text/mode/tag filters, in display
     // order. buildVisibleRows() turns this into m_rows — flat, or split into
-    // tag sections when grouping is on.
+    // tag or folder sections when grouping is on.
     QVector<int> matching;
 
     if (!m_model) {
@@ -298,8 +341,11 @@ void SidebarPainter::rebuildLayouts()
     const QVector<ConversationLayout> &L = m_layouts;
     // When grouping by tag is on, the Favourites SECTION does the favourites-
     // first job; keeping the flat favourites-float as well would pull
-    // favourites to the top of every other section too.
-    const bool groupFavs = (m_filterMode != FilterFavorites) && !m_groupByTag;
+    // favourites to the top of every other section too. Folders have no such
+    // section, so with folders the float stays on: each folder is a stable
+    // slice of this sorted list, which puts a favourite at the top of ITS
+    // folder (and keeps it floating in the flat list when there are no folders).
+    const bool groupFavs = (m_filterMode != FilterFavorites) && m_groupMode != GroupTags;
     const int sortMode = m_sortMode;
     std::stable_sort(matching.begin(), matching.end(),
                      [&L, groupFavs, sortMode](int a, int b) {
@@ -325,6 +371,7 @@ void SidebarPainter::rebuildLayouts()
     });
 
     buildVisibleRows(matching);
+    m_matching = matching;
 
     // Restore selection: find the new index for the previously selected token
     if (!prevSelectedToken.isEmpty()) {
@@ -339,6 +386,12 @@ void SidebarPainter::rebuildLayouts()
     }
 
     clampScroll();
+    // m_hoveredRow is an index into the rows just rebuilt. In folder mode the
+    // rows change under a still pointer (a header toggled, a chat filed, the
+    // 30 s refresh), so re-derive it rather than leave the highlight on
+    // whatever now has that index.
+    if (m_groupMode == GroupFolders)
+        refreshHover();
     update();
 }
 
@@ -346,13 +399,24 @@ void SidebarPainter::buildVisibleRows(const QVector<int> &matching)
 {
     m_rows.clear();
     m_tagSectionCounts.clear();
+    m_folderRollups.clear();
+    m_otherRollup = talq::FolderRollup();
     const int rowH = m_squeezed ? RowHeightSqueezed : RowHeight;
+
+    // Folders have their own branch, tested FIRST: the tag branch below is
+    // skipped on a server with no tags (pre-Talk-24) or with tag grouping off,
+    // and folders are local, so they must work there too.
+    if (foldersBranchActive()) {
+        buildFolderRows(matching, rowH);
+        return;
+    }
 
     // Grouping is off, no tags, or the icon rail (56 px — no room for a header
     // label): emit the flat list. This is byte-for-byte the 0.64 layout, and
     // sidebar-row-layout-test pins that the geometry still matches the old
-    // `visibleIdx * rowH` arithmetic exactly.
-    if (!m_groupByTag || m_tags.isEmpty() || m_squeezed) {
+    // `visibleIdx * rowH` arithmetic exactly. (Folder mode with no folder
+    // lands here too: groupByTag() is false, so it is the flat list.)
+    if (!groupByTag() || m_tags.isEmpty() || m_squeezed) {
         m_rows.reserve(matching.size());
         for (int idx : matching) {
             talq::SidebarRow r;
@@ -360,6 +424,7 @@ void SidebarPainter::buildVisibleRows(const QVector<int> &matching)
             m_rows.push_back(r);
         }
         talq::assignRowGeometry(m_rows, rowH, HeaderHeight);
+        m_listEmpty = m_rows.empty();
         return;
     }
 
@@ -406,20 +471,255 @@ void SidebarPainter::buildVisibleRows(const QVector<int> &matching)
     }
 
     talq::assignRowGeometry(m_rows, rowH, HeaderHeight);
+    m_listEmpty = m_rows.empty();
+}
+
+bool SidebarPainter::folderDisplayedClosed(int folderIndex) const
+{
+    if (!m_filterText.isEmpty())
+        return false;       // a search shows every folder open (D5)
+    if (folderIndex == talq::kFolderOther)
+        return m_otherCollapsed;
+    return folderIndex >= 0 && folderIndex < m_folders.size()
+        && m_folders[folderIndex].collapsed;
+}
+
+void SidebarPainter::buildFolderRows(const QVector<int> &matching, int rowH)
+{
+    // Nothing matched: the "No conversations ..." panel is what paints, and it
+    // covers the whole list. The rows must be empty too, or empty-folder headers
+    // would sit under it unseen yet still answer a click (toggle and persist a
+    // folder nobody can see), a right-click (a Rename / Delete menu for it) and
+    // the wheel. m_rows was cleared by buildVisibleRows(). The price: a folder
+    // made while nothing matches stays unseen until a conversation does.
+    if (matching.isEmpty()) {
+        m_listEmpty = true;
+        return;
+    }
+
+    const bool searching = !m_filterText.isEmpty();
+    // "A filter is active" for the empty-folder rule is exactly what
+    // rebuildLayouts() filters on besides the always-on archived rule: a text
+    // search, a filter mode other than All, a tag filter.
+    const bool filterActive = searching || m_filterMode != FilterAll
+                              || !m_tagFilterId.isEmpty();
+
+    // Partition the already filtered AND sorted list, stably: each folder (and
+    // Other) gets its slice in the order `matching` already has, so favourites
+    // float inside their folder and every sort mode applies per folder. One
+    // O(1) hash lookup per conversation; nothing here touches disk.
+    const int nFolders = m_folders.size();
+    QVector<QVector<int>> members(nFolders);
+    QVector<int> other;
+    m_folderRollups.resize(nFolders);
+    for (int idx : matching) {
+        const ConversationLayout &cl = m_layouts[idx];
+        const int f = m_tokenToFolderIndex.value(cl.token, -1);
+        const bool inFolder = f >= 0 && f < nFolders;
+        (inFolder ? members[f] : other).append(idx);
+        // The roll-up counts the members that survive the filters (the rows an
+        // open folder would show): muted rooms included -- a muted row paints
+        // its badge too -- and archived rooms excluded, because `matching`
+        // already left them out.
+        talq::addToRollup(inFolder ? m_folderRollups[f] : m_otherRollup,
+                          cl.unreadCount, cl.unreadMention, cl.unreadMentionDirect);
+    }
+
+    // The folder index is stamped on the header AND on every row under it, so
+    // a drop on either resolves to the same folder. tagIndex stays -1: nothing
+    // that reads it may mistake this for a tag section.
+    const auto emitSection = [this](int section, const QVector<int> &mem, bool closed) {
+        talq::SidebarRow h;
+        h.layoutIndex = -1;
+        h.folderIndex = section;
+        m_rows.push_back(h);
+        if (closed)
+            return;         // a closed folder keeps its header and shows no rows
+        for (int idx : mem) {
+            talq::SidebarRow r;
+            r.layoutIndex = idx;
+            r.folderIndex = section;
+            m_rows.push_back(r);
+        }
+    };
+
+    m_rows.reserve(matching.size() + nFolders + 1);
+    for (int f = 0; f < nFolders; ++f) {
+        // An empty folder is shown (it is a drop target, and it is how you see
+        // a folder you just made) -- unless something is filtering, when a
+        // folder with no matching member is omitted, as an empty tag section is.
+        // (Not when nothing matches at all: see the early return above.)
+        if (members[f].isEmpty() && filterActive)
+            continue;
+        emitSection(f, members[f], folderDisplayedClosed(f));
+    }
+    // Other: only when it has a member, whatever the filters say.
+    if (!other.isEmpty())
+        emitSection(talq::kFolderOther, other, folderDisplayedClosed(talq::kFolderOther));
+
+    talq::assignRowGeometry(m_rows, rowH, HeaderHeight);
+    // Something matched, so it is in a folder or in Other and has a section.
+    m_listEmpty = m_rows.empty();
 }
 
 void SidebarPainter::setTags(const QVector<SidebarTag> &tags)
 {
     m_tags = tags;
-    if (m_groupByTag)
+    if (groupByTag())
         rebuildLayouts();
+}
+
+void SidebarPainter::setGroupMode(GroupMode mode)
+{
+    if (m_groupMode == mode) return;
+    const GroupMode previous = m_groupMode;
+    m_groupMode = mode;
+    rebuildLayouts();
+    // Folder headers appeared or went, so the hovered index from the previous
+    // mode points at some other row. None <-> Tags is left exactly as it was.
+    if (previous == GroupFolders || mode == GroupFolders)
+        refreshHover();
 }
 
 void SidebarPainter::setGroupByTag(bool on)
 {
-    if (m_groupByTag == on) return;
-    m_groupByTag = on;
+    // The old bool said "is TAG grouping on?"; keep that meaning exactly, so a
+    // caller that says "off" while folders are the mode changes nothing.
+    if (groupByTag() == on) return;
+    setGroupMode(on ? GroupTags : GroupNone);
+}
+
+void SidebarPainter::setFolders(const QVector<talq::Folder> &folders, bool otherCollapsed,
+                                const QHash<QString, QString> &tokenToFolderId)
+{
+    // MainWindow pushes the whole state after EVERY store change, including the
+    // echo of a toggle this widget just reported. Skipping an identical push
+    // spares a second full rebuildLayouts() (it re-reads every role of every
+    // room) and keeps the hover highlight from being recomputed twice.
+    bool same = otherCollapsed == m_otherCollapsed
+             && folders.size() == m_folders.size()
+             && tokenToFolderId == m_tokenToFolderId;
+    for (int i = 0; same && i < folders.size(); ++i) {
+        same = folders[i].id == m_folders[i].id
+            && folders[i].name == m_folders[i].name
+            && folders[i].collapsed == m_folders[i].collapsed;
+    }
+    if (same)
+        return;
+
+    m_folders = folders;
+    m_otherCollapsed = otherCollapsed;
+    m_tokenToFolderId = tokenToFolderId;
+
+    // Resolve folder ids to indices ONCE here, so the row build is a single
+    // token lookup per conversation. A duplicate id keeps its first index; an
+    // assignment to an id that is not in the list is simply left out, which
+    // makes that conversation unfiled (Other) -- never an error.
+    QHash<QString, int> indexById;
+    indexById.reserve(m_folders.size());
+    for (int i = 0; i < m_folders.size(); ++i) {
+        if (!indexById.contains(m_folders[i].id))
+            indexById.insert(m_folders[i].id, i);
+    }
+    m_tokenToFolderIndex.clear();
+    m_tokenToFolderIndex.reserve(m_tokenToFolderId.size());
+    for (auto it = m_tokenToFolderId.cbegin(); it != m_tokenToFolderId.cend(); ++it) {
+        const int idx = indexById.value(it.value(), -1);
+        if (idx >= 0)
+            m_tokenToFolderIndex.insert(it.key(), idx);
+    }
+
+    // Only folder grouping reads any of this; in the other modes there is
+    // nothing to redraw.
+    if (m_groupMode == GroupFolders)
+        rebuildLayouts();
+}
+
+int SidebarPainter::sectionOfToken(const QString &token) const
+{
+    return m_tokenToFolderIndex.value(token, talq::kFolderOther);
+}
+
+QString SidebarPainter::folderIdOfSection(int section) const
+{
+    if (section >= 0 && section < m_folders.size())
+        return m_folders[section].id;
+    return QString();       // Other (or out of range): the "no folder" id
+}
+
+bool SidebarPainter::sectionIsValid(int section) const
+{
+    return section == talq::kFolderOther || (section >= 0 && section < m_folders.size());
+}
+
+int SidebarPainter::layoutIndexOfToken(const QString &token) const
+{
+    if (token.isEmpty())
+        return -1;
+    for (int i = 0; i < m_layouts.size(); ++i) {
+        if (m_layouts[i].token == token)
+            return i;
+    }
+    return -1;
+}
+
+void SidebarPainter::setSectionCollapsed(int section, bool collapsed)
+{
+    // The id is copied BEFORE the emit: a slot may answer by pushing a fresh
+    // folder list into setFolders(), which replaces m_folders and would leave a
+    // reference into it dangling while the slot still reads its argument.
+    QString id;
+    if (section == talq::kFolderOther) {
+        if (m_otherCollapsed == collapsed) return;
+        m_otherCollapsed = collapsed;
+    } else if (section >= 0 && section < m_folders.size()) {
+        if (m_folders[section].collapsed == collapsed) return;
+        m_folders[section].collapsed = collapsed;
+        id = m_folders[section].id;
+    } else {
+        return;
+    }
+    emit folderToggled(id, collapsed);   // NEVER tagSectionToggled: that PUTs to the server
     rebuildLayouts();
+}
+
+void SidebarPainter::refreshHover()
+{
+    // While a drag runs the pointer belongs to the drag, and a hover fill on top
+    // of the drop highlight would only muddy it (the 30 s refresh can rebuild
+    // the rows in the middle of a drag).
+    if (m_dragInProgress || !underMouse()) {
+        m_hoveredRow = -1;
+        return;
+    }
+    m_hoveredRow = rowAtY(mapFromGlobal(QCursor::pos()).y());
+}
+
+void SidebarPainter::revealToken(const QString &token)
+{
+    if (!foldersBranchActive())
+        return;     // flat or tag-grouped: nothing to open, and no scroll-into-view was ever asked for
+    const int layoutIdx = layoutIndexOfToken(token);
+    // Unknown token, or one the filters hide: opening a folder would show nothing.
+    if (layoutIdx < 0 || !m_matching.contains(layoutIdx))
+        return;
+
+    // Selecting a chat that sits in a closed folder must not leave the
+    // selection invisible. (While a search is on the folder is already shown
+    // open, so folderDisplayedClosed() is false and nothing is toggled.)
+    const int section = sectionOfToken(token);
+    if (folderDisplayedClosed(section))
+        setSectionCollapsed(section, false);
+
+    // Re-find the row by layout index: setSectionCollapsed() rebuilt m_rows.
+    for (const talq::SidebarRow &r : m_rows) {
+        if (r.layoutIndex != layoutIdx)
+            continue;
+        m_scrollY = talq::scrollToReveal(m_scrollY, r.y, r.y + r.height, height());
+        clampScroll();
+        update();
+        return;
+    }
 }
 
 void SidebarPainter::clampScroll()
@@ -497,15 +797,147 @@ void SidebarPainter::wheelEvent(QWheelEvent *event)
     event->accept();
 }
 
+void SidebarPainter::clearPressState()
+{
+    m_pressRow = -1;
+    m_pressButton = Qt::NoButton;
+    m_pressToken.clear();
+}
+
 void SidebarPainter::mousePressEvent(QMouseEvent *event)
 {
+    // Remember where and on what the button went down. The release still does
+    // the hit-test that decides a click, but a drag has to know its origin: by
+    // the time the pointer has moved far enough to start one it is over some
+    // other row. The token (not the row index) is kept, because a model
+    // refresh can re-lay the rows between press and move.
+    m_swallowRelease = false;   // a stale flag must never eat a later click
+    m_lastReleaseWasFolderHeader = false;
+    m_pressPos = event->position().toPoint();
+    m_pressRow = rowAtY(event->position().y());
+    m_pressButton = event->button();
+    m_pressToken.clear();
+    if (event->button() == Qt::LeftButton && m_pressRow >= 0
+        && m_pressRow < static_cast<int>(m_rows.size())
+        && !m_rows[m_pressRow].isHeader())
+        m_pressToken = m_layouts[m_rows[m_pressRow].layoutIndex].token;
     event->accept(); // claim the event so release fires
+}
+
+void SidebarPainter::mouseMoveEvent(QMouseEvent *event)
+{
+    // Mouse tracking is on, so this also sees plain hovering (no button); that
+    // is handled by the HoverMove branch of event() and must still reach the
+    // base class exactly as before.
+    if (!(event->buttons() & Qt::LeftButton) || m_pressButton != Qt::LeftButton
+        || m_pressToken.isEmpty() || !dragPossible()) {
+        QWidget::mouseMoveEvent(event);
+        return;
+    }
+    if ((event->position().toPoint() - m_pressPos).manhattanLength()
+        < QApplication::startDragDistance()) {
+        event->accept();
+        return;
+    }
+    event->accept();
+    // By value: startDrag() clears the press state (and so m_pressToken) before
+    // it is done with the token.
+    const QString token = m_pressToken;
+    startDrag(token);
+}
+
+void SidebarPainter::startDrag(const QString &token)
+{
+    // exec() runs its own event loop and no release is delivered back to this
+    // widget afterwards, so the press state must be cleared BEFORE it, and the
+    // "swallow the next release" flag raised after it (some platforms do send
+    // one, and it must not open a chat).
+    clearPressState();
+    m_hoveredRow = -1;      // hover events stop for the whole drag
+    update();
+
+    auto *mime = new QMimeData;
+    mime->setData(QLatin1String(kConversationMime), token.toUtf8());
+    auto *drag = new QDrag(this);
+    drag->setMimeData(mime);
+
+    QPointer<SidebarPainter> self(this);
+    m_dragInProgress = true;
+    drag->exec(Qt::MoveAction);
+    if (!self)
+        return;
+    m_dragInProgress = false;
+    endDragFeedback();
+    m_swallowRelease = true;
+    refreshHover();
+    update();
+}
+
+void SidebarPainter::mouseDoubleClickEvent(QMouseEvent *event)
+{
+    // QWidget's default turns a double-click into a second mousePressEvent, and
+    // that press's release would run the click branch again: a folder header
+    // would open and shut in one double-click. Swallow it. (The tag header has
+    // the same quirk and is deliberately left alone; this only covers folders.)
+    // Decided by what the FIRST click did, not by where this one landed: that
+    // click may have closed a folder and scrolled a different row under the
+    // pointer.
+    if (m_lastReleaseWasFolderHeader) {
+        m_lastReleaseWasFolderHeader = false;
+        clearPressState();
+        m_swallowRelease = true;
+        event->accept();
+        return;
+    }
+    QWidget::mouseDoubleClickEvent(event);
 }
 
 void SidebarPainter::mouseReleaseEvent(QMouseEvent *event)
 {
+    // The press state is consumed by its release, whatever the release does.
+    const int pressRow = m_pressRow;
+    const bool swallow = m_swallowRelease;
+    m_swallowRelease = false;
+    m_lastReleaseWasFolderHeader = false;
+    clearPressState();
+    if (swallow) {          // the tail of a drag, or the 2nd click of a double-click
+        event->accept();
+        return;
+    }
+
     int row = rowAtY(event->position().y());
     if (row < 0 || row >= static_cast<int>(m_rows.size())) {
+        event->accept();
+        return;
+    }
+
+    // A folder header. Checked BEFORE the tag branch below, which assumes every
+    // header is a tag: it would index m_tags with tagIndex (-1 here) and
+    // silently do nothing, and the tag toggle's server PUT must never see a
+    // folder. A click needs the press AND the release on this same header --
+    // toggling is a layout change, so a press that wandered off must not fire.
+    if (m_rows[row].isFolderHeader()) {
+        m_lastReleaseWasFolderHeader = true;     // see mouseDoubleClickEvent
+        if (row == pressRow) {
+            const int section = m_rows[row].folderIndex;
+            if (event->button() == Qt::LeftButton) {
+                // While a search is on every folder is displayed open, so a
+                // click would flip state the user cannot see: ignore it (D5).
+                if (m_filterText.isEmpty()) {
+                    const bool closed = section == talq::kFolderOther
+                        ? m_otherCollapsed
+                        : (section >= 0 && section < m_folders.size() && m_folders[section].collapsed);
+                    setSectionCollapsed(section, !closed);
+                }
+            } else if (event->button() == Qt::RightButton && section >= 0
+                       && section < m_folders.size()) {
+                // Real folders only; Other has no menu. Copied out before the
+                // emit for the same reason as in setSectionCollapsed().
+                const QString id = m_folders[section].id;
+                const QPointF global = mapToGlobal(event->position());
+                emit folderContextMenuRequested(id, global.x(), global.y());
+            }
+        }
         event->accept();
         return;
     }
@@ -552,6 +984,136 @@ void SidebarPainter::mouseReleaseEvent(QMouseEvent *event)
 // hoverMoveEvent/hoverLeaveEvent handled in event() override
 
 // ═══════════════════════════════════════════════════════
+// Drag and drop (conversation row -> folder)
+// ═══════════════════════════════════════════════════════
+
+int SidebarPainter::updateDropTarget(const QPoint &pos, const QString &token)
+{
+    // A folder header, or any row inside that folder, is that folder; the Other
+    // header or a row in Other is "take it out of its folder".
+    int section = talq::folderSectionOfRow(m_rows, rowAtY(pos.y()));
+    if (!sectionIsValid(section))
+        section = -1;
+    // The highlight promises "a drop here files it here", so it is shown only
+    // for a section that would change something. The RETURN value is a different
+    // question -- "is the pointer over a place a drop can land?" -- and is what
+    // dragMoveEvent answers the platform with: a drop on the chat's own folder
+    // is accepted and then ignored by dropEvent, because an answer tied to the
+    // highlight can go stale (the autoscroll tick below moves another folder
+    // under a still pointer and no dragMove arrives to correct it).
+    const int wash = talq::dropChangesFolder(section, sectionOfToken(token)) ? section : -1;
+    if (wash != m_dropSection) {
+        m_dropSection = wash;
+        update();
+    }
+    return section;
+}
+
+void SidebarPainter::updateAutoScroll()
+{
+    const double step = talq::dragAutoScrollStep(m_dragPos.y(), height(),
+                                                 kDragScrollZone, kDragScrollMaxStep);
+    if (step != 0 && !m_dragScrollTimer->isActive())
+        m_dragScrollTimer->start();
+    else if (step == 0)
+        m_dragScrollTimer->stop();
+}
+
+void SidebarPainter::onDragScrollTick()
+{
+    const double step = talq::dragAutoScrollStep(m_dragPos.y(), height(),
+                                                 kDragScrollZone, kDragScrollMaxStep);
+    if (step == 0) {
+        m_dragScrollTimer->stop();
+        return;
+    }
+    m_scrollY += step;
+    clampScroll();
+    // The content moved under a pointer that did not, and no dragMove arrives
+    // for a still pointer: re-resolve the target ourselves.
+    updateDropTarget(m_dragPos, m_dragToken);
+    update();
+}
+
+void SidebarPainter::endDragFeedback()
+{
+    m_dragScrollTimer->stop();
+    m_dragToken.clear();
+    if (m_dropSection != -1) {
+        m_dropSection = -1;
+        update();
+    }
+}
+
+void SidebarPainter::dragEnterEvent(QDragEnterEvent *event)
+{
+    // Our own mime type only, and only while folders are in force. Anything else
+    // (a file, text, a URL) is refused here rather than half-handled.
+    if (!dragPossible() || !event->mimeData()->hasFormat(QLatin1String(kConversationMime))) {
+        event->ignore();
+        return;
+    }
+    const QString token = QString::fromUtf8(
+        event->mimeData()->data(QLatin1String(kConversationMime)));
+    if (layoutIndexOfToken(token) < 0) {    // a room this list does not know
+        event->ignore();
+        return;
+    }
+    m_dragToken = token;
+    m_dragPos = event->position().toPoint();
+    // Accepted for the widget as a whole; dragMoveEvent accepts or refuses per
+    // position (a place a drop can land, or not). The folder the chat is already
+    // in is accepted too and only goes without the highlight.
+    event->acceptProposedAction();
+    updateDropTarget(m_dragPos, m_dragToken);
+    updateAutoScroll();
+}
+
+void SidebarPainter::dragMoveEvent(QDragMoveEvent *event)
+{
+    if (m_dragToken.isEmpty()) {
+        event->ignore();
+        return;
+    }
+    m_dragPos = event->position().toPoint();
+    // Over any section, the chat's own folder included: the platform keeps the
+    // LAST answer given here, and on Windows a release after an "ignore" is
+    // delivered as a drag-leave, not a drop. See updateDropTarget().
+    if (updateDropTarget(m_dragPos, m_dragToken) != -1)
+        event->acceptProposedAction();
+    else
+        event->ignore();
+    updateAutoScroll();
+}
+
+void SidebarPainter::dragLeaveEvent(QDragLeaveEvent *event)
+{
+    endDragFeedback();
+    event->accept();
+}
+
+void SidebarPainter::dropEvent(QDropEvent *event)
+{
+    const QString token = event->mimeData()->hasFormat(QLatin1String(kConversationMime))
+        ? QString::fromUtf8(event->mimeData()->data(QLatin1String(kConversationMime)))
+        : QString();
+    const QPoint pos = event->position().toPoint();
+    endDragFeedback();
+
+    // Re-validate everything at the moment of the drop: the 30 s refresh may
+    // have re-laid the rows, or dropped the room, since the drag began.
+    const int section = talq::folderSectionOfRow(m_rows, rowAtY(pos.y()));
+    if (!dragPossible() || layoutIndexOfToken(token) < 0 || !sectionIsValid(section)
+        || !talq::dropChangesFolder(section, sectionOfToken(token))) {
+        event->ignore();
+        return;
+    }
+    const QString folderId = folderIdOfSection(section);   // empty = unfile
+    event->acceptProposedAction();
+    emit conversationDropped(token, folderId);
+}
+
+// ═══════════════════════════════════════════════════════
 // PAINT
 // ═══════════════════════════════════════════════════════
 
@@ -564,14 +1126,17 @@ void SidebarPainter::paintEvent(QPaintEvent *)
 
     p.fillRect(QRectF(0, 0, width(), height()), m_theme.bgSidebar);
 
-    if (m_rows.empty() && m_squeezed) {
+    // m_listEmpty is m_rows.empty() in every mode (folder mode leaves the rows
+    // empty too when nothing matched), so the panel below never covers a header
+    // or a row that a click could still reach.
+    if (m_listEmpty && m_squeezed) {
         // Squeezed is a 56px icon-only rail (MainWindow.cpp:1861-1864) with no
         // room for a sentence — rows never show text there either. Stay a
         // bare panel rather than clip a message into an unreadable fragment.
         return;
     }
 
-    if (m_rows.empty()) {
+    if (m_listEmpty) {
         // Name the reason the panel is bare — a text search finding nothing
         // reads differently from a filter (Unread/Favorites/Direct/Groups)
         // hiding everything, which reads differently from a genuinely empty
@@ -621,9 +1186,18 @@ void SidebarPainter::paintEvent(QPaintEvent *)
             continue;
 
         if (row.isHeader()) {
-            paintSectionHeader(&p, row);
+            if (row.isFolderHeader())
+                paintFolderHeader(&p, row, vi);
+            else
+                paintSectionHeader(&p, row);
             continue;
         }
+
+        // A drag is over this row's folder: wash the whole section so the
+        // target reads even when its header has scrolled out of view. Painted
+        // first, so a selected or hovered row's own fill still wins.
+        if (m_dropSection != -1 && row.folderIndex == m_dropSection)
+            p.fillRect(QRectF(0, rowTop - m_scrollY, width(), row.height), m_theme.bgHover);
 
         const auto &cl = m_layouts[row.layoutIndex];
         if (m_squeezed)
@@ -807,17 +1381,8 @@ void SidebarPainter::paintRowNormal(QPainter *p, const ConversationLayout &cl, i
 
     // Compute right-side width for badge + muted label
     qreal rightStuffW = 0;
-    if (cl.unreadCount > 0) {
-        QString countStr = cl.unreadCount > 99
-            ? QStringLiteral("99+") : QString::number(cl.unreadCount);
-        QFont badgeFont;
-        badgeFont.setPixelSize(BadgeFontSize);
-        badgeFont.setWeight(QFont::DemiBold);
-        QFontMetrics bfm(badgeFont);
-        qreal textW = bfm.horizontalAdvance(countStr);
-        qreal badgeW = qMax(BadgeHeight * 1.0, textW + 10.0);
-        rightStuffW = badgeW + PainterTheme::spacingSmall;
-    }
+    if (cl.unreadCount > 0)
+        rightStuffW = unreadBadgeWidth(cl.unreadCount) + PainterTheme::spacingSmall;
     // Single-sourced: measured once here (both to reserve layout width and,
     // below, to size the actual draw rect) so a longer translation can never
     // clip against a width computed from a different font/string pairing.
@@ -893,9 +1458,7 @@ void SidebarPainter::paintRowSqueezed(QPainter *p, const ConversationLayout &cl,
         QFont badgeFont;
         badgeFont.setPixelSize(BadgeFontSize);
         badgeFont.setWeight(QFont::DemiBold);
-        QFontMetrics bfm(badgeFont);
-        qreal textW = bfm.horizontalAdvance(countStr);
-        qreal badgeW = qMax(BadgeHeight * 1.0, textW + 10.0);
+        const qreal badgeW = unreadBadgeWidth(cl.unreadCount);
         qreal badgeX = avatarRect.right() - badgeW / 2.0;
         qreal badgeY = avatarRect.top() - BadgeHeight / 2.0 + 2;
 
@@ -950,12 +1513,16 @@ void SidebarPainter::paintAvatar(QPainter *p, const ConversationLayout &cl, cons
     if (!img.isNull()) {
         p->drawImage(rect, img);
     } else {
-        // Fallback: colored circle with initial
+        // Fallback: colored disc with initial -- a rounded square for a group,
+        // so the placeholder reads the same as the picture that replaces it.
         QColor bgColor = PainterTheme::authorColor(
             cl.participantUserId.isEmpty() ? cl.displayName : cl.participantUserId);
         p->setPen(Qt::NoPen);
         p->setBrush(bgColor);
-        p->drawEllipse(rect);
+        if (talq::isGroupConversation(cl.conversationType))
+            p->drawRoundedRect(rect, size / 4, size / 4);
+        else
+            p->drawEllipse(rect);
 
         // Initial letter
         QChar initial = cl.displayName.isEmpty() ? QChar('?') : cl.displayName.at(0).toUpper();
@@ -1002,6 +1569,19 @@ void SidebarPainter::paintAvatar(QPainter *p, const ConversationLayout &cl, cons
 // Unread badge
 // ═══════════════════════════════════════════════════════
 
+// The one place a badge width is worked out: both row paths, paintUnreadBadge()
+// and the folder header call it, so a header can reserve exactly what
+// paintUnreadBadge() will draw before it elides the folder name.
+qreal SidebarPainter::unreadBadgeWidth(int count)
+{
+    const QString countStr = count > 99 ? QStringLiteral("99+") : QString::number(count);
+    QFont badgeFont;
+    badgeFont.setPixelSize(BadgeFontSize);
+    badgeFont.setWeight(QFont::DemiBold);
+    const qreal textW = QFontMetrics(badgeFont).horizontalAdvance(countStr);
+    return qMax(BadgeHeight * 1.0, textW + 10.0);
+}
+
 void SidebarPainter::paintUnreadBadge(QPainter *p, int count, bool mention, bool directMention,
                                       const QRectF &badgeArea)
 {
@@ -1009,9 +1589,7 @@ void SidebarPainter::paintUnreadBadge(QPainter *p, int count, bool mention, bool
     QFont badgeFont;
     badgeFont.setPixelSize(BadgeFontSize);
     badgeFont.setWeight(QFont::DemiBold);
-    QFontMetrics bfm(badgeFont);
-    qreal textW = bfm.horizontalAdvance(countStr);
-    qreal badgeW = qMax(BadgeHeight * 1.0, textW + 10.0);
+    qreal badgeW = unreadBadgeWidth(count);
 
     // Right-align within badgeArea
     qreal badgeX = badgeArea.right() - badgeW;
@@ -1097,6 +1675,97 @@ void SidebarPainter::paintSectionHeader(QPainter *p, const talq::SidebarRow &row
     // section still says how much is hidden under it.
     p->drawText(QRectF(w - padX - countW, top, countW, row.height),
                 Qt::AlignVCenter | Qt::AlignRight, count);
+
+    p->restore();
+}
+
+void SidebarPainter::paintFolderHeader(QPainter *p, const talq::SidebarRow &row, int visibleIdx)
+{
+    const int fi = row.folderIndex;
+    const bool isOther = (fi == talq::kFolderOther);
+    // Never paint a header whose folder is gone (the rows are rebuilt together
+    // with the folder list, so this is a guard, not an expected path).
+    if (!isOther && (fi < 0 || fi >= m_folders.size()))
+        return;
+
+    const qreal top = row.y - m_scrollY;
+    const qreal w = width();
+    const int padX = PainterTheme::spacingLarge;
+    const bool closed = folderDisplayedClosed(fi);
+    const talq::FolderRollup ru = isOther ? m_otherRollup : m_folderRollups.value(fi);
+
+    p->save();
+    p->setRenderHint(QPainter::Antialiasing, true);
+
+    // Unlike a tag header, a folder header IS clickable and a drop target, so it
+    // gets a fill: the drop target wins over hover. Existing tokens only.
+    const QRectF band(0, top, w, row.height);
+    if (m_dropSection == fi) {
+        p->fillRect(band, m_theme.bgSelected);
+        // accentText, not accent: it is the token the conformance sweep scores
+        // against bgSelected, so the outline is guaranteed to read there.
+        p->setPen(QPen(m_theme.accentText, 1.5));
+        p->setBrush(Qt::NoBrush);
+        p->drawRoundedRect(band.adjusted(4, 1.5, -4, -1.5),
+                           PainterTheme::radiusSmall, PainterTheme::radiusSmall);
+    } else if (visibleIdx == m_hoveredRow) {
+        p->fillRect(band, m_theme.bgHover);
+    }
+
+    // Disclosure triangle: a painted path, not a glyph (same recipe as the tag
+    // header). Points right when closed, down when open.
+    const qreal cx = padX + 4;
+    const qreal cy = top + row.height / 2.0;
+    QPainterPath tri;
+    if (closed) {
+        tri.moveTo(cx - 2.5, cy - 4);
+        tri.lineTo(cx + 3.5, cy);
+        tri.lineTo(cx - 2.5, cy + 4);
+    } else {
+        tri.moveTo(cx - 4, cy - 2.5);
+        tri.lineTo(cx + 4, cy - 2.5);
+        tri.lineTo(cx, cy + 3.5);
+    }
+    tri.closeSubpath();
+    p->fillPath(tri, m_theme.textSecondary);
+
+    // Eyebrow label. The tag header shrinks bodyFont() with setPointSizeF(
+    // pointSizeF() * 0.82), but bodyFont() is PIXEL-sized and pointSizeF() is -1
+    // for such a font, so Qt rejects it ("Point size <= 0") and that label is
+    // never shrunk. Shrink in pixels here, where it takes effect.
+    QFont f = m_theme.bodyFont();
+    f.setPixelSize(qMax(9, qRound(m_theme.fontSizeNormal * 0.82)));
+    f.setWeight(QFont::DemiBold);
+    f.setCapitalization(QFont::AllUppercase);
+    f.setLetterSpacing(QFont::AbsoluteSpacing, 0.6);
+    p->setFont(f);
+    p->setPen(m_theme.textSecondary);
+
+    const qreal textX = cx + 12;
+    const QFontMetrics fm(f);
+    const QString count = QString::number(ru.count);
+    const qreal countW = fm.horizontalAdvance(count) + 8;
+    // A CLOSED folder with anything unread shows the sum so nothing hides in it.
+    // The badge and the count are placed from the right edge first and the name
+    // elided against what is left (talq::folderHeaderSpans), never the reverse.
+    const bool showBadge = closed && talq::rollupShowsBadge(ru);
+    const qreal badgeW = showBadge ? unreadBadgeWidth(ru.unread) : 0;
+    const talq::FolderHeaderSpans sp = talq::folderHeaderSpans(
+        w, textX, padX, countW, badgeW, PainterTheme::spacingSmall);
+
+    const QString name = fm.elidedText(isOther ? tr("Other") : m_folders[fi].name,
+                                       Qt::ElideRight, static_cast<int>(sp.nameW));
+    p->drawText(QRectF(textX, top, sp.nameW, row.height),
+                Qt::AlignVCenter | Qt::AlignLeft, name);
+    p->drawText(QRectF(sp.countX, top, countW, row.height),
+                Qt::AlignVCenter | Qt::AlignRight, count);
+
+    if (showBadge) {
+        // Three-level colour (direct @you / @all / plain) comes from the very
+        // same paintUnreadBadge the rows use; it right-aligns in this area.
+        paintUnreadBadge(p, ru.unread, ru.mention, ru.directMention,
+                         QRectF(sp.badgeX, top, badgeW, row.height));
+    }
 
     p->restore();
 }
@@ -1195,7 +1864,7 @@ void SidebarPainter::requestAvatar(const QString &userId, const QString &token, 
     // With a transfer timeout: a stalled download errors out instead of hanging.
     QNetworkReply *reply = m_api->getAbsoluteUrl(url, talq::avatarfetch::kTransferTimeoutMs);
 
-    connect(reply, &QNetworkReply::finished, this, [this, reply, key, size, started]() {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, key, size, started, convType]() {
         reply->deleteLater();
         // Only the download that owns the marker releases it: one that outlived the
         // give-up window and finishes late must not release a NEWER download's marker.
@@ -1228,7 +1897,13 @@ void SidebarPainter::requestAvatar(const QString &userId, const QString &token, 
         }
 
         m_avatarFetchedMs[key] = done;
-        m_avatarCache[key] = PainterTheme::cropToCircle(img, size);
+        // The cache holds PRE-MASKED pixels, so the shape is chosen here, from
+        // the conversation type captured when the request was made. size/4 is
+        // proportional on purpose: fetchAvatar() rescales this image when the
+        // rail squeezes (44 -> 40), and a fixed radius would not scale with it.
+        m_avatarCache[key] = talq::isGroupConversation(convType)
+            ? PainterTheme::cropToRoundedSquare(img, size, size / 4)
+            : PainterTheme::cropToCircle(img, size);
         qInfo().nospace() << "SidebarPainter: avatar fetched key=" << key
                           << " bytes=" << data.size();
         update(); // repaint with loaded avatar

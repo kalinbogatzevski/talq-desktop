@@ -207,6 +207,16 @@ public:
     // ── Crop an image to a circle at the given size ──
     static QImage cropToCircle(const QImage &source, int size);
 
+    // ── Crop an image to a rounded square at the given size ──
+    // A group chat's picture (talq::isGroupConversation, src/core/
+    // ConversationKind.h). Same contract as cropToCircle: cover-scale,
+    // centre-crop, ARGB32_Premultiplied, transparent outside the shape. The
+    // radius is clamped to [0, size/2] (size/2 IS a circle). The house idiom is
+    // radius = size / 4, so callers pass size / 4 and the look survives the
+    // sidebar's later rescale of the cached image. A null source, or a size
+    // that is not positive, returns a NULL image (never a blank square).
+    static QImage cropToRoundedSquare(const QImage &source, int size, int radius);
+
     // ── Format a Unix timestamp as "HH:mm", "Yesterday", or "dd MMM" ──
     static QString formatRelativeTime(qint64 epochSecs);
 
