@@ -1,4 +1,5 @@
 #include "core/NotificationManager.h"
+#include "core/NotificationEnabledStore.h"
 #include "core/ShutdownWatchdog.h"
 #include "core/MicInUse.h"
 #include <QApplication>
@@ -42,6 +43,11 @@ NotificationManager::NotificationManager(QObject *parent)
         s.setValue("soundId", m_soundId);
     }
     s.endGroup();
+
+    // The persisted "Desktop notifications" switch. Assigned to the member directly, not through
+    // setNotificationsEnabled (its only writer), so startup writes nothing to the key. It must be
+    // read before setupTrayIcon(): the tray action takes its checked state from the member.
+    m_notificationsEnabled = talq::loadNotificationsEnabled(s);
 
     loadSoundForId(m_soundId);
 
@@ -561,6 +567,10 @@ void NotificationManager::setNotificationsEnabled(bool v)
 {
     if (m_notificationsEnabled != v) {
         m_notificationsEnabled = v;
+        // The single writer of Notifications/enabled: the Settings checkbox and the tray action
+        // both land here, so whichever the user used, the choice survives a restart.
+        QSettings s("TalQ", "TalQ");
+        talq::saveNotificationsEnabled(s, v);
         emit notificationsEnabledChanged();
     }
 }

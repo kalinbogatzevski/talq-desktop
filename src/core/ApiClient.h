@@ -60,10 +60,27 @@ public:
     void setDavUserId(const QString &uid);
     QString davUser() const { return m_davUserId.isEmpty() ? m_user : m_davUserId; }
 
+    // True once the canonical uid has actually been set (setDavUserId), i.e.
+    // davUser() is the uid and not the login-name fallback above. Code that
+    // must never address the wrong home (folder sync) checks this first.
+    bool davUserKnown() const { return !m_davUserId.isEmpty(); }
+
     // Percent-encodes a DAV-relative path for use in a URL, leaving '/'
     // intact as the separator. The one encoding rule for every DAV URL this
     // client builds -- see listNextcloudFolder, which established it.
     static QString encodeDavPath(const QString &path);
+
+    // "/remote.php/dav/files/<uid>/<relPath>", both parts through
+    // encodeDavPath. EMPTY while the uid is not known (davUserKnown()), never
+    // a path built from the login-name fallback. Append to the server URL as
+    // every other DAV path is (davRequest / getAbsoluteUrl do that).
+    QString davFilePath(const QString &relPath) const;
+
+    // The entity tag of a WebDAV reply: the `OC-ETag` header if present, else
+    // `ETag`, byte for byte -- quotes and a weak `W/` prefix are kept, nothing
+    // is normalised, so the value can go straight back into an `If-Match`.
+    // Empty when the reply carries neither (or `r` is null).
+    static QByteArray davEtag(const QNetworkReply *r);
 
     // ── Server reachability ───────────────────────────────────────────────
     // Whether the Nextcloud server is answering REST requests at all. This is
@@ -125,15 +142,30 @@ public:
     // Generic WebDAV verb (MKCOL / MOVE / PUT) with an absolute path, used by the
     // chunked large-file upload. `body` may be empty (MKCOL/MOVE); `headers`
     // carries Destination / OC-Total-Length etc.
+    // A non-zero `transferTimeoutMs` is Qt's inactivity timeout, as for
+    // getAbsoluteUrl; 0 = none (every existing caller).
+    // `followRedirects` true (the default, every existing caller) leaves the
+    // request's redirect policy unset, so Qt's default applies as before. false
+    // sets ManualRedirectPolicy: the caller gets the 3xx itself. Folder sync
+    // passes false: a followed PUT redirect reads as a successful upload of a
+    // file the server never stored at this path.
     QNetworkReply *davRequest(const QByteArray &verb, const QString &path,
                               const QByteArray &body = QByteArray(),
-                              const QMap<QByteArray, QByteArray> &headers = {});
+                              const QMap<QByteArray, QByteArray> &headers = {},
+                              int transferTimeoutMs = 0,
+                              bool followRedirects = true);
 
     // GET with absolute path (no OCS prefix, no OCS headers). A non-zero
     // `transferTimeoutMs` is Qt's inactivity timeout (see makeRequest): a
     // stalled transfer errors out instead of hanging, a progressing one never
     // trips it. 0 keeps the old behaviour -- no timeout -- for existing callers.
-    QNetworkReply *getAbsoluteUrl(const QString &path, int transferTimeoutMs = 0);
+    // `followRedirects` true (the default: avatars, previews, every existing
+    // caller) leaves the redirect policy unset, so Qt's default applies as
+    // before. false sets ManualRedirectPolicy: Qt never follows (nor queues a
+    // follow-up request carrying the Basic credentials) and the caller gets the
+    // 3xx itself. Folder sync's GET of the shared file passes false.
+    QNetworkReply *getAbsoluteUrl(const QString &path, int transferTimeoutMs = 0,
+                                  bool followRedirects = true);
 
     // Lifetime wiring shared by every context-taking endpoint -- and by any
     // caller outside this class that binds a raw reply's handlers to its own

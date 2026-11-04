@@ -41,6 +41,8 @@
 #include "core/SearchHit.h"
 #include "core/AuthManager.h"
 #include "core/FolderStore.h"
+#include "core/FolderSyncController.h"
+#include "core/FolderSyncUiLogic.h"
 #include "core/SidebarGroupModeLogic.h"
 #include "core/TalkToken.h"
 #include "core/ServerCapabilities.h"
@@ -54,6 +56,7 @@
 #include "core/UserStatusManager.h"
 #include "ui/StatusPopover.h"
 #include "ui/AppStyle.h"
+#include "ui/SearchFieldClear.h"
 #include "core/DebugMonitor.h"
 #include "core/AppSettings.h"
 #include "core/MediaDeviceManager.h"
@@ -107,6 +110,7 @@
 #include <QStyle>
 #include <QProgressBar>
 #include <QProcess>
+#include <QSessionManager>
 
 #ifdef Q_OS_WIN
 #include <windows.h>
@@ -272,6 +276,16 @@ void MainWindow::beginEditingMessage(int messageId, const QString &fallbackPlain
 MainWindow::~MainWindow()
 {
     qInfo() << "[SHUTDOWN] ~MainWindow begin";   // 0.51.15 TEMP hang diag
+    // Folder sync: the destructor does not go through detachFolders(). Cut the
+    // controller's signals to this window first (detach() emits stateChanged, and
+    // nothing may run into a window being torn down), then detach it: no network
+    // call (D18), the reply in flight dropped, every timer stopped.
+    if (m_folderSync) {
+        disconnect(m_folderSync, nullptr, this, nullptr);
+        m_folderSync->detach();
+    }
+    if (m_noticeTimer)
+        m_noticeTimer->stop();
     // m_callWindow is a parentless top-level (so it gets its own Windows
     // taskbar button); it has no QObject parent to auto-delete it.
     delete m_callWindow;
@@ -356,6 +370,95 @@ MainWindow::MainWindow(
     // sidebar's folder signals to this store, and a connect() to a null store
     // fails silently.
     m_folders = new FolderStore(this);
+
+    // Folder sync (spec 2026-11-03-folder-sync-design.md). Created right after the
+    // store it syncs, so Qt destroys it after the store (it checks for that, and
+    // ~MainWindow detaches it first). A remote change is held while a sidebar drag
+    // or a folder dialog is open (D22); the controller asks the gate itself.
+    m_folderSync = new FolderSyncController(m_folders, m_api, this);
+    m_folderSync->setApplyGate([this] { return folderApplyAllowed(); });
+    m_noticeClock.start();   // monotonic (D34): the notice gate's only clock
+    m_noticeTimer = new QTimer(this);
+    m_noticeTimer->setSingleShot(true);
+    connect(m_noticeTimer, &QTimer::timeout, this, &MainWindow::pumpNotices);
+    // The controller's facts. Connected HERE, once, not with the Settings dialog:
+    // notices must work when Settings was never opened. These slots only write the
+    // switch key (enableFinished), push the Settings row, and offer notices. They
+    // NEVER call syncNow(), enable() or disable(): those belong to the user's
+    // button and switch.
+    connect(m_folderSync, &FolderSyncController::stateChanged, this, &MainWindow::pushFolderSyncUi);
+    // DIRECT on purpose: enableFinished(true) comes from inside enable()'s own
+    // chain, before the first cycle starts. Queued, a `true` could land after the
+    // user turned the switch off again and write enabled=true over their `false`.
+    connect(m_folderSync, &FolderSyncController::enableFinished, this,
+            [this](bool ok, const QString &reasonText) {
+        onFolderSyncSwitchEvent(ok ? talq::FolderSyncSwitchEvent::EnableSucceeded
+                                   : talq::FolderSyncSwitchEvent::EnableRefused,
+                                reasonText);
+        // On a refusal the controller has already turned itself off: no disable()
+        // (D35); the push puts the switch back under a QSignalBlocker.
+        pushFolderSyncUi();
+    }, Qt::DirectConnection);
+    connect(m_folderSync, &FolderSyncController::cycleFinished, this,
+            [this](const talq::StateDiff &diff, bool firstAfterEnable, bool uploaded) {
+        m_notices.episodeEnded();   // a success ends a problem episode; a pending (c) goes
+        const bool foldersExist = m_folders && !m_folders->state().folders.isEmpty();
+        const bool groupedByFolders = m_sidebar && m_sidebar->groupMode() == SidebarPainter::GroupFolders;
+        if (const std::optional<talq::NoticeId> id =
+                talq::noticeForCycle(diff, firstAfterEnable, uploaded, foldersExist, groupedByFolders))
+            raiseFolderNotice(*id);
+        m_notices.kick();
+        pumpNotices();
+        pushFolderSyncUi();
+    });
+    connect(m_folderSync, &FolderSyncController::problemRaised, this,
+            [this](talq::FolderSyncPause reason) {
+        if (const std::optional<talq::NoticeId> id = talq::noticeForPause(reason))
+            raiseFolderNotice(*id);
+        m_notices.kick();
+        pumpNotices();
+        pushFolderSyncUi();
+    });
+    connect(m_folderSync, &FolderSyncController::attemptFailed, this, [this]() {
+        if (const std::optional<talq::NoticeId> id = talq::noticeForFailedAttempt(
+                m_folderSync->consecutiveFailures(), m_folderSync->failureSpanMs(),
+                m_api && m_api->isServerReachable()))
+            raiseFolderNotice(*id);
+        m_notices.kick();
+        pumpNotices();
+        pushFolderSyncUi();
+    });
+    // A notice that notifySilently refused (notifications off, Do Not Disturb) is
+    // HELD until the next kick(). The controller's facts kick it, but a terminal
+    // pause produces none (its poll is refused), so it is also asked again
+    // whenever one of the two reasons may have gone: the notifications switch
+    // changed, or the user's status changed. Silent path only, and no loop: a
+    // notice refused again is held again, with no timer, until the next signal.
+    if (m_notifications) {
+        connect(m_notifications, &NotificationManager::notificationsEnabledChanged, this, [this]() {
+            m_notices.kick();
+            pumpNotices();
+        });
+    }
+    if (m_userStatus) {
+        connect(m_userStatus, &UserStatusManager::statusChanged, this, [this]() {
+            // One event-loop turn later: main.cpp's applyDnd sets the Do Not
+            // Disturb flag from this SAME signal and is connected after this
+            // window is built, so it runs after this slot.
+            QTimer::singleShot(0, this, [this]() {
+                m_notices.kick();
+                pumpNotices();
+            });
+        });
+    }
+    // Quit paths this window cannot see through its own events (D18). Windows
+    // session end asks for commitData first: only the flag, because the shutdown
+    // can still be cancelled (and if it is not, aboutToQuit follows). aboutToQuit
+    // is certain: stop sync for good. Connected before buildChatPage()'s own
+    // aboutToQuit flush, so the store is flushed here while the controller still
+    // listens to it (that later flush is then a no-op).
+    connect(qApp, &QGuiApplication::commitDataRequest, this, [this]() { m_folderSyncQuitting = true; });
+    connect(qApp, &QCoreApplication::aboutToQuit, this, &MainWindow::stopFolderSyncForQuit);
 
     buildLoginPage();
     buildChatPage();
@@ -507,6 +610,9 @@ void MainWindow::buildChatPage()
     m_searchField->setObjectName("sbSearch");
     m_searchField->setPlaceholderText(tr("Search conversations\u2026"));
     m_searchField->setMinimumHeight(32);
+    // An "x" at the right end while there is text, and Esc clearing it. Both empty the field
+    // through its textChanged, the one path into SidebarPainter::setFilterText (below).
+    talq::searchclear::attach(m_searchField, PainterTheme(m_themeId));
 
     m_homeBtn = new QPushButton(QStringLiteral("\uE80F"), sidebarCol);  // Home
     m_homeBtn->setObjectName("sbIcon");
@@ -706,8 +812,7 @@ void MainWindow::buildChatPage()
     profileLayout->addWidget(settingsBtn);
 
     connect(settingsBtn, &QPushButton::clicked, this, [this]() {
-        ensureSettingsDialog();
-        m_settingsDialog->refresh();
+        openSettings();
         m_settingsDialog->exec();
     });
 
@@ -838,7 +943,9 @@ void MainWindow::buildChatPage()
     }
 
     // ── Sidebar folders ──
-    // Local to this PC and account; nothing below talks to the Talk server.
+    // Local to this PC and account by default; nothing below talks to the Talk server. With the
+    // opt-in folder sync switch on, m_folderSync (FolderSyncController) keeps a copy in the user's
+    // own Nextcloud Files over WebDAV, never on the Talk server.
     // Every store change (attach, detach, each mutation) is pushed whole into
     // the sidebar, which skips an identical push, so the echo of its own header
     // click costs nothing. Each connect is made exactly once: buildChatPage()
@@ -3390,6 +3497,13 @@ void MainWindow::onServerReachabilityChanged(bool online)
         // edge needs two misses to flip and never fires for a lone timeout or an
         // HTTP error, so the outbox also runs on its own backoff).
         if (m_messages) m_messages->kickOutbox();
+        // Folder sync's reachability edge (D18): this is the true edge (ApiClient
+        // emits only on a change). The controller retries a waiting cycle or a
+        // pending push, and does nothing otherwise.
+        if (m_folderSync
+            && talq::folderSyncHookDue(talq::FolderSyncWindowEvent::ReachabilityRestored, false,
+                                       folderSyncQuitting()))
+            m_folderSync->onReachabilityRestored();
     } else {
         m_offlineDots = 0;
         if (m_offlineLabel) m_offlineLabel->setText(tr("Connecting…"));
@@ -4025,6 +4139,11 @@ void MainWindow::showThemeToast(const QString &name)
 // over from the first would hide the second a moment after it appeared.
 void MainWindow::showToast(const QString &text)
 {
+    showToastFor(text, 1600);
+}
+
+void MainWindow::showToastFor(const QString &text, int ms)
+{
     PainterTheme t(m_themeId, m_fontScale);
     auto hx = [](const QColor &c){ return c.name(QColor::HexRgb); };
     if (!m_toast) {
@@ -4047,7 +4166,7 @@ void MainWindow::showToast(const QString &text)
     m_toast->move((width() - m_toast->width()) / 2, 28);
     m_toast->raise();
     m_toast->show();
-    m_toastHideTimer->start();
+    m_toastHideTimer->start(ms);   // each toast sets its own time (showToast: 1600 ms)
 }
 
 // Re-apply theme tokens to the QSS-styled sidebar chrome. These widgets are
@@ -4074,13 +4193,10 @@ void MainWindow::restyleChrome()
             "QWidget#uploadProgress{background:%2;border-radius:1px;}")
             .arg(hx(t.bgSecondary), hx(t.accent)));
 
-    if (m_searchField)
-        m_searchField->setStyleSheet(QString(
-            "QLineEdit{background:%1;border:1px solid %2;border-radius:16px;"
-            "padding:4px 14px;font-size:13px;color:%3;}"
-            "QLineEdit:focus{border-color:%4;background:%5;}")
-            .arg(hx(t.bgSecondary), hx(t.divider), hx(t.textPrimary),
-                 hx(t.accent), hx(t.bgHover)));
+    if (m_searchField) {
+        m_searchField->setStyleSheet(talq::searchclear::sidebarPillStyleSheet(t));
+        talq::searchclear::retint(m_searchField, t);   // the clear "x"
+    }
 
     if (m_searchResults)
         m_searchResults->setStyleSheet(QStringLiteral(
@@ -4230,6 +4346,13 @@ void MainWindow::switchToLogin()
 void MainWindow::closeEvent(QCloseEvent *event)
 {
     saveWindowState();  // always save, even when closing to tray
+    // A requested quit closing the windows (tray Quit, the installer): the shutdown
+    // watchdog is already armed, so this process ends within seconds whatever this
+    // close does. With close-to-tray the close below only minimises, Qt 6 can then
+    // drop the quit, and aboutToQuit may never come before the watchdog's exit:
+    // stop folder sync here, in both branches (D18).
+    if (talq::g_shutdownWatchdogArmed.load(std::memory_order_relaxed))
+        stopFolderSyncForQuit();
     if (m_chatMode && m_closeToTray) {
         event->ignore();
         // Capture fullscreen separately — isMaximized() returns false while
@@ -4243,6 +4366,9 @@ void MainWindow::closeEvent(QCloseEvent *event)
         // tray badge. The tray icon remains available for Show / Quit.
         showMinimized();
     } else {
+        // A real close: the window goes away and, as the last one, quits the app.
+        // Set BEFORE the hide that follows, so it starts no folder-sync push (D18).
+        m_folderSyncQuitting = true;
         event->accept();
     }
 }
@@ -4318,13 +4444,52 @@ void MainWindow::changeEvent(QEvent *event)
             if (m_api) m_api->probeReachability();
         }
     }
+    // Folder sync (D18, D36). Its own block, outside the 5 s rate limit above and
+    // its m_conversations condition: the controller keeps its own 2-minute
+    // activation gap and judges every pause, backoff and the in-flight guard
+    // itself, so nothing here looks at focus, pauses or the window state.
+    if (event->type() == QEvent::ActivationChange && m_folderSync) {
+        if (isActiveWindow()) {
+            // Active again: a quit this window flagged did not happen. A cancelled
+            // Windows shutdown (commitDataRequest) never hides or shows the window,
+            // so showEvent cannot clear its flag; this does. Only the MEMBER: a quit
+            // that was really requested still reads as one through the shutdown
+            // watchdog's flag (never cleared), and a controller stopped for a quit
+            // stays detached (m_folderSyncStopped), so no hook can start a cycle then.
+            m_folderSyncQuitting = false;
+            if (talq::folderSyncHookDue(talq::FolderSyncWindowEvent::Activated, true, folderSyncQuitting()))
+                m_folderSync->onWindowActivated();   // a pull, at most every 2 minutes
+        } else if (!folderSyncQuitting()) {
+            // D36: losing the focus to this app's OWN window (Settings, a name
+            // prompt, a message box) is not a deactivation. Whether
+            // QApplication::activeWindow() already names the new window inside this
+            // event is not verified, so it is read one event-loop turn later.
+            QTimer::singleShot(0, this, [this]() {
+                if (m_folderSync
+                    && talq::folderSyncHookDue(talq::FolderSyncWindowEvent::Deactivated,
+                                               QApplication::activeWindow() != nullptr,
+                                               folderSyncQuitting()))
+                    m_folderSync->onWindowDeactivated();   // a push, only if one is pending
+            });
+        }
+    }
 }
 
 void MainWindow::hideEvent(QHideEvent *event)
 {
     QMainWindow::hideEvent(event);
-    // Covers close-to-tray and switchToLogin (both hide() the window).
+    // Every hide: a minimise (close-to-tray minimises, and Qt sends a spontaneous
+    // hide for it) and a real close. switchToLogin() does not hide the window (it
+    // calls showNormal()).
     if (m_statusPopover) m_statusPopover->hide();
+    // Folder sync (D18): a hide pushes a pending change. A minimise (close-to-tray
+    // minimises) sends a hide AND a deactivation, so the hook may run twice; the
+    // controller's in-flight guard and push gap make the second a no-op. Nothing
+    // while quitting, and nothing once detachFolders() has run (the controller is
+    // Off then and the hook does nothing).
+    if (m_folderSync
+        && talq::folderSyncHookDue(talq::FolderSyncWindowEvent::Hidden, false, folderSyncQuitting()))
+        m_folderSync->onWindowDeactivated();
 }
 
 bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr *result)
@@ -4349,6 +4514,13 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
 void MainWindow::showEvent(QShowEvent *event)
 {
     QMainWindow::showEvent(event);
+    // Shown again: a close with close-to-tray off did not quit after all (a call
+    // window kept the app running, and the main window came back). This clears the
+    // MEMBER only. A cancelled Windows shutdown never hides or shows the window, so
+    // it is cleared on the next activation instead (changeEvent). Neither place
+    // touches the shutdown watchdog's flag (a requested quit, never cleared) or
+    // m_folderSyncStopped (cleared only by a new attach).
+    m_folderSyncQuitting = false;
 #ifdef Q_OS_WIN
     // Belt-and-suspenders alongside the TaskbarButtonCreated handler: re-assert
     // the overlay badge when the window is shown again after close-to-tray.
@@ -5409,6 +5581,8 @@ void MainWindow::maybeLaunchPendingInstaller()
     // watchdog guarantees this process is GONE within the grace window, so the
     // installer can always complete + restart. Armed at the trigger so a quit()
     // that never propagates can't bypass it.
+    // Folder sync starts nothing from here on (D18): the installer closes TalQ.
+    stopFolderSyncForQuit();
     talq::armShutdownWatchdog(6);
     QTimer::singleShot(500, qApp, &QApplication::quit);
 }
@@ -5988,8 +6162,21 @@ void MainWindow::attachFolders()
     }
     if (m_folders->isAttached() && m_folderScopeKey == key)
         return;   // already this account's
+    // A new account (or the first): the notices and the switch's memory start
+    // clean, so nothing of another account's episode, spacing or refusal leaks in.
+    // A new attach is also the only thing that clears a stop for a quit. After a
+    // real quit no attach comes, so in practice it stays set until the process ends.
+    m_folderSyncStopped = false;
+    resetFolderNotices();
+    onFolderSyncSwitchEvent(talq::FolderSyncSwitchEvent::Attached);   // writes nothing (D17, D28)
     m_folderScopeKey = key;
     m_foldersLoadFailed = false;
+    // Folder sync's switch is READ here, because the Settings dialog is built
+    // lazily; this path never writes it (the key is shared by the generic and the
+    // branded build on one PC). Read BEFORE the store attaches, so nothing sits
+    // between the store's attach and the controller's.
+    const QString syncKey = talq::folderSyncEnabledKey(key);
+    const bool syncOn = !syncKey.isEmpty() && m_settings.value(syncKey, false).toBool();
     if (!m_folders->attach(key)) {
         // Logged here, once per login: attach() only runs again after the next
         // login flip, and there is deliberately no retry timer. The funnel's
@@ -5998,18 +6185,35 @@ void MainWindow::attachFolders()
                       "folders stay off for this session";
         m_folderScopeKey.clear();
         m_foldersLoadFailed = true;
+        if (m_folderSync)
+            m_folderSync->detach();   // nothing to sync; no network call
+    } else if (m_folderSync) {
+        // Right after the store's attach: the controller reads the store's
+        // generation and load facts now. With the switch on it arms its own
+        // login pull and poll; it sends nothing from here.
+        m_folderSync->attach(syncOn);
     }
     // attach() emits changed() when it attached (or dropped a previous account),
     // which already pushed. This covers the refusal that attached nothing.
     pushFoldersToSidebar();
     syncGroupByMenu();   // the passive notice follows the store's new state
+    pushFolderSyncUi();  // ... and so does the Settings row
 }
 
 void MainWindow::detachFolders()
 {
+    // Sync goes first, the store second (spec "Logout"): the controller drops its
+    // reply and timers while the store is still this account's, and sends nothing
+    // (logout() has already cleared the credentials). No final upload: a pending
+    // change is a base diff and goes out at the next login.
+    if (m_folderSync)
+        m_folderSync->detach();
+    resetFolderNotices();
+    onFolderSyncSwitchEvent(talq::FolderSyncSwitchEvent::Detached);   // writes nothing
     // The store detaches by the scope it captured at attach(): AuthManager::logout()
-    // clears serverUrl BEFORE it emits loggedInChanged(false), so the key cannot be
-    // rebuilt now. The file stays on disk and the layout returns at the next login.
+    // clears its serverUrl BEFORE it emits loggedInChanged() (no argument: the slot
+    // reads isLoggedIn()), so the key cannot be rebuilt now. The file stays on disk
+    // and the layout returns at the next login.
     if (m_folders)
         m_folders->detach();   // flushes first
     m_folderScopeKey.clear();
@@ -6019,6 +6223,143 @@ void MainWindow::detachFolders()
     if (m_sidebar)
         m_sidebar->setFolders({}, false, {});
     syncGroupByMenu();   // the passive notice belongs to the account that just left
+    pushFolderSyncUi();
+}
+
+// ── Folder sync: the Qt plumbing around core/FolderSyncUiLogic.h ──
+
+void MainWindow::pushFolderSyncUi()
+{
+    if (!m_settingsDialog || !m_folderSync)
+        return;   // the dialog is built lazily; every open pushes (openSettings)
+    if (m_folderSyncStopped)
+        return;   // stopped for a quit: the row keeps what it last showed
+                  // (the detached controller would read as "switched off")
+    talq::FolderSyncRowInputs in;
+    in.signedIn = m_auth && m_auth->isLoggedIn();
+    in.storeAttached = m_folders && m_folders->isAttached();
+    in.storeLoadFailed = m_foldersLoadFailed;
+    in.storeReadOnly = m_folders && m_folders->isReadOnly();
+    in.storeNewerFormat = m_folders && m_folders->readOnlyReason() == FolderStore::NewerFormat;
+    in.loadOutcome = m_folders ? m_folders->loadOutcome() : talq::FolderLoadOutcome::Detached;
+    in.switchOn = m_folderSync->isEnabled();
+    in.state = m_folderSync->state();
+    in.pause = m_folderSync->pause();
+    in.accountNotReady = m_folderSync->accountNotReady();
+    in.lastSyncedMs = m_folderSync->lastSyncedMs();
+    in.nowMs = QDateTime::currentMSecsSinceEpoch();   // WALL clock, display only (D34), read per push
+    const QPair<int, int> shrink = m_folderSync->shrinkInfo();
+    in.shrinkDropped = shrink.first;
+    in.shrinkOf = shrink.second;
+    in.refusalText = m_folderSyncRefusal;
+    const talq::FolderSyncRow row = talq::folderSyncRow(in);
+
+    // The texts are English SOURCE strings (FolderSyncNotices.h, FolderSyncUiLogic.h
+    // and the controller's refusal): tr() looks each up whole. A composed line
+    // ("Last synced: today 14:32", "2 of your 5 folders") matches no catalogue entry
+    // and stays English until the app's own i18n work.
+    const auto trText = [](const QString &source) {
+        return source.isEmpty() ? QString() : MainWindow::tr(qUtf8Printable(source));
+    };
+    SettingsDialog::FolderSyncUi ui;
+    ui.enabled = row.enabled;
+    ui.available = row.available;
+    ui.canSyncNow = row.canSyncNow;
+    ui.whyNot = trText(row.whyNot);
+    ui.statusText = trText(row.statusText);
+    m_settingsDialog->setFolderSyncUi(ui);   // never emits (QSignalBlocker inside, D35)
+}
+
+void MainWindow::raiseFolderNotice(talq::NoticeId id)
+{
+    m_notices.offer(id, m_noticeClock.elapsed());
+}
+
+// The scheduler's loop (FolderSyncNotices.h): Show -> notifySilently, then report
+// whether it went out (spent ONLY when it did: false is notifications off or Do
+// Not Disturb, and the notice is held until the next kick()); Wait -> ask again
+// when the spacing is over. The shape of the update-ready notice above.
+void MainWindow::pumpNotices()
+{
+    if (!m_noticeTimer)
+        return;
+    const qint64 now = m_noticeClock.elapsed();
+    talq::NoticeScheduler::Action a = m_notices.next(now);
+    if (a.kind == talq::NoticeScheduler::Action::Show) {
+        if (!m_notifications)
+            return;   // nothing can be shown, and nothing is spent
+        const talq::NoticeText text = talq::noticeText(a.id);
+        // notifySilently ONLY: never a sound, shown focused or not. notify() would
+        // chime for an unfocused window and drop the popup for a focused one.
+        const bool shown = m_notifications->notifySilently(tr(text.title), tr(text.body));
+        m_notices.delivered(a.id, now, shown);
+        a = m_notices.next(now);   // a newer notice still in the slot waits out the spacing
+    }
+    if (a.kind == talq::NoticeScheduler::Action::Wait)
+        m_noticeTimer->start(int(qBound<qint64>(1, a.waitMs, talq::kNoticeSpacingMs)));
+    else
+        m_noticeTimer->stop();
+}
+
+void MainWindow::resetFolderNotices()
+{
+    m_notices = talq::NoticeScheduler();
+    if (m_noticeTimer)
+        m_noticeTimer->stop();
+}
+
+void MainWindow::onFolderSyncSwitchEvent(talq::FolderSyncSwitchEvent event, const QString &reasonText)
+{
+    const talq::EnabledKeyWrite write = talq::enabledKeyWriteFor(event);
+    // Never after a stop for a quit: the user's choice is not the dying session's.
+    if (write != talq::EnabledKeyWrite::Nothing && !m_folderSyncStopped) {
+        // The store's scope, as captured at login (empty once logged out: then
+        // nothing is written under any name).
+        const QString key = talq::folderSyncEnabledKey(m_folderScopeKey);
+        if (!key.isEmpty())
+            m_settings.setValue(key, write == talq::EnabledKeyWrite::WriteTrue);
+    }
+    m_folderSyncRefusal = talq::refusalTextAfter(event, m_folderSyncRefusal, reasonText);
+}
+
+// D18: no network call at quit. Every quit the app REQUESTS arms the shutdown
+// watchdog at its trigger (tray Quit, the installer launch, the test hook, and
+// aboutToQuit's backstop: ShutdownWatchdog.h), so that flag is the earliest "a
+// quit was asked for" this window can see on the paths it does not run itself
+// (Qt may then close the windows, and with close-to-tray that close minimises:
+// a deactivation and a hide). m_folderSyncQuitting covers the rest: a close with
+// close-to-tray off, Windows session end, the installer path itself.
+bool MainWindow::folderSyncQuitting() const
+{
+    return m_folderSyncQuitting || talq::g_shutdownWatchdogArmed.load(std::memory_order_relaxed);
+}
+
+// Called only where the process is certain to end (aboutToQuit; the installer
+// launched; a close while the shutdown watchdog is armed). The flag alone gates
+// MainWindow's hooks; the controller's OWN timers (the edit debounce, the poll)
+// would still fire while the process winds down, so it is detached as well. The
+// store is flushed FIRST: a write that failed earlier reaches disk, and its saved()
+// still reaches the controller, which updates the sidecar. A change not yet sent
+// goes out at the next start (it is a base diff). Not called for a close with
+// close-to-tray off or for Windows session end: either can turn out not to quit (a
+// call window keeps the app alive, a shutdown is cancelled), and if they do quit,
+// aboutToQuit follows.
+void MainWindow::stopFolderSyncForQuit()
+{
+    m_folderSyncQuitting = true;
+    // FIRST: from here the Settings row is frozen and the switch and Sync now do
+    // nothing. Otherwise the detach below would push an available row with the
+    // switch unchecked (the controller is no longer enabled) into a dialog that is
+    // still open, and a click on it in the seconds before the exit would reach
+    // enable()'s refusal and write enabled=false over the user's stored true.
+    m_folderSyncStopped = true;
+    if (m_folders)
+        m_folders->flush();   // a no-op when the store is clean
+    if (m_folderSync)
+        m_folderSync->detach();   // no network call, no sidecar write
+    // A fresh, empty scheduler and a stopped timer: no held or pending notice is
+    // shown while the process winds down (a status change would otherwise ask again).
+    resetFolderNotices();
 }
 
 void MainWindow::pushFoldersToSidebar()
@@ -6117,6 +6458,9 @@ void MainWindow::reportFolderResult(talq::FolderResult result, const QString &ty
     // then show a literal "R&amp;D"), so the format is pinned and the name is left
     // exactly as typed. An instance, because the static helpers cannot set it.
     auto say = [this](QMessageBox::Icon icon, const QString &text) {
+        // The box is application-modal and runs its own event loop. Held for the
+        // whole of it, so a remote folder change waits until it is dismissed.
+        FolderDialogDepth guard(m_folderDialogDepth);
         QMessageBox box(icon, tr("Folders"), text, QMessageBox::Ok, this);
         box.setTextFormat(Qt::PlainText);
         box.exec();
@@ -6165,6 +6509,11 @@ void MainWindow::reportFolderResult(talq::FolderResult result, const QString &ty
     }
 }
 
+bool MainWindow::folderApplyAllowed() const
+{
+    return m_sidebar && !m_sidebar->isDragInProgress() && m_folderDialogDepth == 0;
+}
+
 bool MainWindow::createFolderInteractive(const QString &scope, QString *outId)
 {
     if (outId)
@@ -6180,6 +6529,10 @@ bool MainWindow::createFolderInteractive(const QString &scope, QString *outId)
         reportFolderResult(talq::FolderResult::TooMany);
         return false;
     }
+    // Held while the name box is open, so a remote change cannot land under it
+    // (newFolderForChat's dialog is this one). reportFolderResult() holds the
+    // gate for its own message boxes.
+    FolderDialogDepth guard(m_folderDialogDepth);
     const std::optional<QString> typed =
         askFolderName(this, tr("New folder"), tr("Folder name:"), QString());
     if (!typed)
@@ -6234,13 +6587,25 @@ void MainWindow::renameFolderInteractive(const QString &scope, const QString &fo
         return;   // deleted since the menu opened
     // A copy: the dialog's event loop can change the store under a reference.
     const QString current = m_folders->state().folders.at(idx).name;
+    // Held while the name box is open: a remote change must not land under it.
+    FolderDialogDepth guard(m_folderDialogDepth);
     const std::optional<QString> typed =
         askFolderName(this, tr("Rename folder"), tr("Folder name:"), current);
     if (!typed)
         return;
     if (!folderScopeIs(scope))
         return;
-    reportFolderResult(m_folders->renameFolder(folderId, *typed), *typed);
+    const talq::FolderResult r = m_folders->renameFolder(folderId, *typed);
+    if (r == talq::FolderResult::NotFound) {
+        // The folder went away (another computer deleted it) between the click
+        // and the OK. reportFolderResult() would only log it, and the name the
+        // user just typed would vanish with no word: say so. A user-action path,
+        // not a network callback, so a toast is safe here.
+        // About 4 s: a sentence this long needs 2.5 to 3 s to read.
+        showToastFor(tr("That folder was removed on another computer."), 4000);
+        return;
+    }
+    reportFolderResult(r, *typed);
 }
 
 void MainWindow::fileChatInFolder(const QString &scope, const QString &token,
@@ -6648,20 +7013,55 @@ void MainWindow::ensureSettingsDialog()
     // #20 — live-apply Background section changes during a call.
     connect(m_settingsDialog, &SettingsDialog::backgroundSettingsChanged,
             m_callManager, &CallManager::applyBackgroundSettings);
+    // Folder sync's row. The dialog is built once and cached (the early return
+    // above), so each of these is connected exactly once. The dialog never touches
+    // QSettings or the controller: the switch key is written here, and only here.
+    connect(m_settingsDialog, &SettingsDialog::folderSyncToggled, this, [this](bool on) {
+        if (m_folderSyncStopped)
+            return;   // stopped for a quit: no enable/disable, no key write, no push
+        if (m_folderSync) {
+            if (on) {
+                // The old refusal goes BEFORE enable(): enable() can answer at once
+                // (marker present, or nothing to sync), and that answer must stay.
+                onFolderSyncSwitchEvent(talq::FolderSyncSwitchEvent::ToggledOn);
+                m_folderSync->enable();   // enabled=true only once it answers true (D28)
+            } else {
+                onFolderSyncSwitchEvent(talq::FolderSyncSwitchEvent::ToggledOff);   // false, BEFORE disable()
+                m_folderSync->disable();
+            }
+        }
+        // D35: the truth, whatever happened, or the box stays where the finger left it.
+        pushFolderSyncUi();
+    });
+    connect(m_settingsDialog, &SettingsDialog::folderSyncNowRequested, this, [this]() {
+        if (m_folderSyncStopped)
+            return;   // stopped for a quit: nothing is started
+        if (m_folderSync)
+            m_folderSync->syncNow();   // the controller judges the in-flight guard and the pauses
+        pushFolderSyncUi();
+    });
+    pushFolderSyncUi();   // the row's first real state (it is built disabled and empty)
+}
+
+void MainWindow::openSettings()
+{
+    ensureSettingsDialog();
+    m_settingsDialog->refresh();
+    // After refresh(), which does not touch the row, and with the time of THIS open:
+    // a cached dialog would otherwise show another account's or yesterday's line.
+    pushFolderSyncUi();
 }
 
 void MainWindow::openSettingsToBackgrounds()
 {
-    ensureSettingsDialog();
-    m_settingsDialog->refresh();
+    openSettings();
     m_settingsDialog->selectAudioVideoTab();
     m_settingsDialog->exec();
 }
 
 void MainWindow::openSettingsToPhone()
 {
-    ensureSettingsDialog();
-    m_settingsDialog->refresh();
+    openSettings();
     m_settingsDialog->selectPhoneTab();
     m_settingsDialog->exec();
     // Pairing may have just happened, which changes whether the prompt below

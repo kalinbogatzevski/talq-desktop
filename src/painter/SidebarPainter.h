@@ -89,6 +89,11 @@ public:
     bool squeezed() const { return m_squeezed; }
     void setSqueezed(bool sq);
 
+    // True while a row is being dragged (QDrag::exec() is running). The folder
+    // sync apply gate reads it: a remote reorder or delete must not land mid-drag,
+    // because the drop highlight is an index into the folder list.
+    bool isDragInProgress() const { return m_dragInProgress; }
+
     QImage cachedAvatar(const QString &key) const { return m_avatarCache.value(key); }
     // Mark every cached row avatar stale so the next paint re-fetches it (the
     // current image stays visible until the new one loads). Called on window

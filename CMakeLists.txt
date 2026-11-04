@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(talq VERSION 0.79.4 LANGUAGES CXX)
+project(talq VERSION 0.79.5 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -62,6 +62,8 @@ qt_add_executable(talq
     src/core/LinkPreviewService.cpp
     src/core/ReactionWhoService.cpp
     src/core/FolderStore.cpp
+    src/core/FolderSyncController.cpp
+    src/core/FolderSyncMeta.cpp
     src/models/Conversation.cpp
     src/models/Message.cpp
     src/models/ConversationListModel.cpp
@@ -119,6 +121,8 @@ qt_add_executable(talq
     src/ui/StatusPopover.cpp
     src/ui/AppStyle.h
     src/ui/AppStyle.cpp
+    src/ui/SearchFieldClear.h
+    src/ui/SearchFieldClear.cpp
     src/ui/TalqIconButton.h
     src/ui/TalqIconButton.cpp
     src/ui/SharePickerDialog.cpp
@@ -159,6 +163,7 @@ qt_add_executable(talq
     src/core/SearchHit.h
     src/ui/ConversationInfoDialog.h
     src/ui/ConversationInfoDialog.cpp
+    src/ui/ScreenFit.h
     src/ui/NewChatDialog.h
     src/ui/NewChatDialog.cpp
     src/ui/NextcloudFilePickerDialog.h

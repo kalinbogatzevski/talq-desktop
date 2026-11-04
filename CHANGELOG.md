@@ -1,5 +1,52 @@
 # Changelog
 
+## v0.79.5 "Arhangelovden" — BETA (2026-11-04)
+
+Your chat-list folders can now follow you between your own computers, if you turn it on. The
+conversation information window also fits small screens, and the search fields are easier to clear.
+
+### Added
+* **Folder sync (off by default).** In **Settings → General**, turn on **Keep my folders in
+  sync** on each computer you want to match. A change to your folders on one computer reaches your
+  other computers within about ten minutes, and sooner when you switch to TalQ on the other
+  computer. A folder you delete on one is deleted on the others. If a sync would remove a lot of
+  this computer's folders at once, that computer stops and waits until you press **Sync now**. TalQ
+  shows a quiet notice, with no sound, when a sync brings in changes from another computer.
+* **A search field clears with one click.** The chat-list search has a clear button (an "x" in the
+  theme's colours), and **Esc** clears it too.
+
+### Fixed
+* **Desktop notifications you switched off stay off after TalQ restarts,** and a change made from
+  the tray menu is now remembered.
+* **Notices that belong to no chat** (a saved download, a call notice, an update-ready notice) no
+  longer merge into "2 new messages" when two arrive close together.
+* **Conversation information: "+ Add people" no longer pushes the window off the screen.** The
+  window shrinks to fit when it is moved to a shorter screen, adding a person empties the search
+  so you can add the next one, and the open add panel's button reads **Back**.
+
+### Good to know
+* **Beta channel only.** The stable line (0.78.0) is untouched.
+* **Folders stay on this computer unless you turn on sync.** By default they are kept per account
+  in a small file in TalQ's data folder and nothing is sent anywhere. **Keep my folders in sync**
+  (off by default) saves your folders to one small hidden file in your own Nextcloud Files so they
+  match on the other computers where you turn it on. Only the folders are saved: their names,
+  order, which chats are in them and whether they are open. They still do not appear in the Talk
+  web page or phone apps. A different account, or a different TalQ install with sync off, starts
+  with no folders. While a search matches nothing, no folders are shown.
+* **A copy of your folders from just before a sync removed anything** is kept next to the folders
+  file, with `.pre-sync` on the end.
+* **Turning sync off leaves the hidden file in your Files.** After turning it off on every
+  computer you can delete `.talq-folders.json` there. While sync is on, TalQ may also leave a tiny
+  test file in your Files if the first check was interrupted; it is safe to delete.
+* **What was checked.** Automatic tests for the merge rules, the file handling and the sync steps
+  against a stand-in server, and one short run against a real Nextcloud 34 server with a test
+  account. That run showed the server can give two writes made in the same second the same
+  version, so TalQ now waits about a second before it replaces the shared file (a sync with
+  something to send takes about a second longer).
+* **Not yet seen.** Sync between two real computers, the new Settings row and notices drawn in all
+  four themes, a change arriving while you drag a chat, and the quit and shutdown paths with a
+  change pending. Please say if anything looks wrong, or if two of your changes ever collide.
+
 ## v0.79.4 "Arhangelovden" — BETA (2026-11-03)
 
 If you have a lot of chats, you can now sort them into folders in the chat list, and group chats

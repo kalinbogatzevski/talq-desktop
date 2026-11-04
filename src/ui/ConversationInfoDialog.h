@@ -4,6 +4,7 @@
 #include <QVector>
 #include "core/RoomParticipant.h"
 #include "core/BotInfo.h"
+#include "core/NcUser.h"
 
 class ApiClient;
 class ImageViewerDialog;
@@ -12,7 +13,11 @@ class QLabel;
 class QLineEdit;
 class QListWidget;
 class QListWidgetItem;
+class QMargins;
 class QPushButton;
+class QScreen;
+class QScrollArea;
+class QStackedWidget;
 class QWidget;
 class QVBoxLayout;
 class QProgressBar;
@@ -28,6 +33,9 @@ class QProgressBar;
 class ConversationInfoDialog : public QDialog
 {
     Q_OBJECT
+    // tests/conversation_info_dialog_test.cpp: fills the dialog through the
+    // real row builders and drives the add-people handlers without a server.
+    friend struct ConversationInfoDialogTestPeer;
 public:
     // Optional. Absent means rows render exactly as they do today. This is
     // the only surface that can carry shift state for a GROUP room.
@@ -58,6 +66,8 @@ signals:
 
 protected:
     void changeEvent(QEvent *e) override;   // re-theme on palette change
+    // Picks the dialog's size for the screen it opens on, once, before QDialog centres it.
+    void showEvent(QShowEvent *e) override;
     // Watches the member list's viewport so a LEFT release opens the person
     // card and a right one is left entirely to the context menu.
     bool eventFilter(QObject *watched, QEvent *event) override;
@@ -77,9 +87,36 @@ private slots:
 
 private:
     void applyChrome();   // dialog typography/inputs, palette-driven
+    // Screen fit. The size is chosen ONCE, at the first show: everything the body holds,
+    // unscrolled, but no taller than the work area of the screen the dialog opens on (its parent
+    // window's, which is where QDialog centres it) minus the window frame. It never changes on
+    // its own after that: members, bots and files that arrive later, and the add panel, fit
+    // inside it, and the body scrolls when they cannot. Nothing in the dialog can push it past
+    // the bottom of the screen, because its layout minimum is the title, a scroll area and the
+    // footer. The one exception is shrinkToScreen().
+    QScreen *screenToFit() const;
+    QMargins frameMarginsForFit() const;
+    void sizeForScreen();
+    void keepOnScreen();
+    // Moved to another screen (dragged there, or its screen went away): if the dialog is taller
+    // or wider than that screen's work area, it shrinks to it. It never grows, and its position
+    // stays the user's (a move during a drag would fight the mouse).
+    void shrinkToScreen();
+    // The add panel takes the place of the members, bots and shared-files sections (one page of
+    // m_pages each). The page not shown is size-policy Ignored, so only the shown page's minimum
+    // counts and switching never asks the dialog for more room.
+    void showPage(QWidget *page);
+    bool m_placed = false;
     void refreshParticipants();
     void populateParticipants(const QVector<RoomParticipant> &items);
     void runAddSearch();
+    // A search reply for `query`, the search with generation `seq`.
+    void showAddSearchResults(int seq, const QString &query, bool ok,
+                              const QVector<NcUser> &users);
+    // What follows an add request: `queryAtClick` is what the search box held when the result
+    // was clicked.
+    void onParticipantAdded(const QString &userId, const QString &queryAtClick, bool ok,
+                            const QString &err);
     void refreshBots();
     void populateBotRow(const BotInfo &bot);
     void refreshSharedFiles();
@@ -111,10 +148,19 @@ private:
     QListWidget *m_memberList = nullptr;
     QPushButton *m_addBtn = nullptr;
 
+    // Everything between the title and the footer scrolls inside m_body (only when the screen is
+    // too short for it). m_pages is the region under the MEMBERS header: m_overview (members,
+    // bots, shared files, dial-in) or m_addPanel.
+    QScrollArea    *m_body = nullptr;
+    QWidget        *m_bodyContent = nullptr;
+    QStackedWidget *m_pages = nullptr;
+    QWidget        *m_overview = nullptr;
+
     QWidget     *m_addPanel = nullptr;
     QLineEdit   *m_addSearch = nullptr;
     QListWidget *m_addResults = nullptr;
     class QTimer *m_addDebounce = nullptr;
+    int          m_addSearchSeq = 0;   // generation of the search the list may show
 
     QPushButton *m_leaveBtn = nullptr;
     QPushButton *m_clearHistoryBtn = nullptr;

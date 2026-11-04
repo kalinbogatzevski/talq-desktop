@@ -4,11 +4,13 @@
 // slightly different version. Spec: docs/superpowers/specs/2026-11-02-sidebar-folders-design.md
 //
 // WHAT A FOLDER IS. A named, ordered, collapsible section the user files conversations into.
-// Local to this PC and this account, never sent to the Talk server (the Talk-24 tag code is a
-// separate, server-synced feature and is untouched). A conversation is in EXACTLY ONE folder, or
-// in none ("Other"). That invariant holds by DATA SHAPE: `assign` is a token -> folder id map, so
-// a token cannot name two folders; the functions below keep every value pointing at a folder
-// that exists.
+// Local to this PC and this account by default, never sent to the Talk server (the Talk-24 tag
+// code is a separate, server-synced feature and is untouched). With the opt-in sync switch on, a
+// copy also lives in the user's OWN Nextcloud Files (see
+// docs/superpowers/specs/2026-11-03-folder-sync-design.md). A conversation is in EXACTLY ONE
+// folder, or in none ("Other"). That invariant holds by DATA SHAPE: `assign` is a token -> folder
+// id map, so a token cannot name two folders; the functions below keep every value pointing at a
+// folder that exists.
 //
 // TRAPS THIS FILE ALREADY ACCOUNTS FOR
 //  - A folder id is "f_" + 12 lowercase hex. It never starts with '!' and is never numeric, so
@@ -546,8 +548,10 @@ inline bool isScopeKey(const QString &key)
 //     "folders": [ { "id": "f_0a1b2c3d4e5f", "name": "HQ", "collapsed": false } ],
 //     "assign":  { "ycy3ht4n": "f_0a1b2c3d4e5f" } }
 
-// Deterministic: folders in display order, assign sorted by token.
-inline QByteArray encodeFolders(const FolderState &s)
+// Deterministic: folders in display order, assign sorted by token. `version` is the "v" written:
+// the local file always takes the default (kFolderFormatVersion); the sync code passes its own
+// constant for the shared remote file, so the two formats can move apart.
+inline QByteArray encodeFolders(const FolderState &s, int version = kFolderFormatVersion)
 {
     QJsonArray folders;
     for (const Folder &f : s.folders) {
@@ -566,7 +570,7 @@ inline QByteArray encodeFolders(const FolderState &s)
     for (const QString &t : std::as_const(tokens))
         assign.insert(t, s.assign.value(t));
     QJsonObject root;
-    root.insert(QStringLiteral("v"), kFolderFormatVersion);
+    root.insert(QStringLiteral("v"), version);
     root.insert(QStringLiteral("otherCollapsed"), s.otherCollapsed);
     root.insert(QStringLiteral("folders"), folders);
     root.insert(QStringLiteral("assign"), assign);
@@ -577,6 +581,17 @@ enum class DecodeStatus {
     Ok,             // state is valid (possibly empty); `repaired` says whether entries were dropped
     Corrupt,        // not a file this version can read; state is EMPTY; the store sets the bytes aside
     FutureVersion   // "v" is newer than this build; state is EMPTY and untouched; the caller must NOT write it back
+};
+
+// How a store's attach found the file on disk. It lives here, not inside FolderStore, so a pure
+// function (the folder-sync base-trust rule) can take it as an input.
+enum class FolderLoadOutcome {
+    Detached,       // no account attached
+    Ok,             // the file was read, valid, nothing repaired
+    Missing,        // no file
+    Repaired,       // decoded, but entries were dropped or cleaned (DecodeResult::repaired)
+    SetAside,       // corrupt, and renamed away
+    ReadOnlyLoad    // newer format, or the corrupt file could not be set aside: the store is read-only
 };
 
 struct DecodeResult {
@@ -591,10 +606,13 @@ struct DecodeResult {
 //   not JSON, over the byte cap, a root that is not an object, "v" missing / not a number /
 //   not an integer / below 1, or "folders" / "assign" present with the wrong type, or more
 //   entries than the caps -> Corrupt
-//   "v" above kFolderFormatVersion (and finite and integral) -> FutureVersion
+//   "v" above `maxVersion` (and finite and integral) -> FutureVersion
 // Per-entry problems (a folder that is not an object, a non-string id, an assignment whose value
 // is not a string) drop THAT entry and set `repaired`. Unknown fields are ignored.
-inline DecodeResult decodeFolders(const QByteArray &bytes)
+// `maxVersion` is the newest "v" the caller can read (default kFolderFormatVersion, which is what
+// the local file uses); the sync code passes kFolderSyncRemoteVersion for the shared file. The
+// "v" below 1 rule does not depend on it.
+inline DecodeResult decodeFolders(const QByteArray &bytes, int maxVersion = kFolderFormatVersion)
 {
     DecodeResult out;
     const auto corrupt = [&out]() {
@@ -624,7 +642,7 @@ inline DecodeResult decodeFolders(const QByteArray &bytes)
     // 1e400 parses to infinity and floor(inf) == inf, so test finiteness first.
     if (!std::isfinite(version) || version != std::floor(version) || version < 1)
         return corrupt();
-    if (version > kFolderFormatVersion) {
+    if (version > maxVersion) {
         out.status = DecodeStatus::FutureVersion;
         return out;
     }
