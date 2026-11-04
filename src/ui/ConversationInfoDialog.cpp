@@ -7,6 +7,8 @@
 #include "core/ShiftStatusService.h"
 #include "painter/PainterTheme.h"
 #include "ui/ImageViewerDialog.h"
+#include "ui/ScreenFit.h"
+#include "ui/SearchFieldClear.h"
 
 #include <QCursor>
 #include <QEvent>
@@ -27,8 +29,13 @@
 #include <QDateTime>
 #include <QPushButton>
 #include <QProgressBar>
+#include <QScreen>
+#include <QScrollArea>
+#include <QShowEvent>
+#include <QStackedWidget>
 #include <QVBoxLayout>
 #include <QTimer>
+#include <QWindow>
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QUrlQuery>
@@ -160,6 +167,21 @@ ConversationInfoDialog::ConversationInfoDialog(ApiClient *api,
     outer->addWidget(title);
     outer->addSpacing(20);
 
+    // Everything between the title and the footer. It scrolls only when the screen is too short
+    // for it (a 720 px work area, a room with many bots), so the title and the footer -- the
+    // status line and Leave / Clear history / Delete / Done -- are always in view. Until this the
+    // whole column was the dialog's layout, which made its MINIMUM height the sum of everything:
+    // two fixed 150 px lists plus ~47 px per bot, 877 px for a room with 3 bots on a 852 px work
+    // area, and "+ Add people" added 200 px more. No frame and no fill: where it fits it looks
+    // exactly as before.
+    m_body = new QScrollArea(this);
+    m_body->setFrameShape(QFrame::NoFrame);
+    m_body->setWidgetResizable(true);
+    m_bodyContent = new QWidget(m_body);
+    auto *body = new QVBoxLayout(m_bodyContent);
+    body->setContentsMargins(0, 0, 0, 0);
+    body->setSpacing(0);
+
     // #25 — group picture (groups only; 1:1 avatars are the other user's). A
     // placeholder disc with the conversation's initial; moderators get a
     // "Change picture" button that uploads to the Talk room-avatar API.
@@ -224,30 +246,30 @@ ConversationInfoDialog::ConversationInfoDialog(ApiClient *api,
             avRow->addLayout(avCol);
         }
         avRow->addStretch();
-        outer->addLayout(avRow);
-        outer->addSpacing(18);
+        body->addLayout(avRow);
+        body->addSpacing(18);
         fetchRoomAvatar();   // #25 — show the CURRENT picture, not just the letter
     }
 
     // Name
     auto *nameEyebrow = new QLabel(tr("NAME"), this);
     nameEyebrow->setObjectName("eyebrow");
-    outer->addWidget(nameEyebrow);
+    body->addWidget(nameEyebrow);
     m_nameEdit = new QLineEdit(currentName, this);
     m_nameEdit->setObjectName("name");
     m_nameEdit->setReadOnly(!m_amOwnerOrMod || roomType == 1);
-    outer->addWidget(m_nameEdit);
-    outer->addSpacing(16);
+    body->addWidget(m_nameEdit);
+    body->addSpacing(16);
 
     // Description
     auto *descEyebrow = new QLabel(tr("DESCRIPTION"), this);
     descEyebrow->setObjectName("eyebrow");
-    outer->addWidget(descEyebrow);
+    body->addWidget(descEyebrow);
     m_descEdit = new QLineEdit(currentDescription, this);
     m_descEdit->setPlaceholderText(tr("Add a description\u2026"));
     m_descEdit->setReadOnly(!m_amOwnerOrMod);
-    outer->addWidget(m_descEdit);
-    outer->addSpacing(20);
+    body->addWidget(m_descEdit);
+    body->addSpacing(20);
 
     // Members header + Add button
     auto *memRow = new QHBoxLayout();
@@ -260,28 +282,42 @@ ConversationInfoDialog::ConversationInfoDialog(ApiClient *api,
     m_addBtn->setCursor(Qt::PointingHandCursor);
     m_addBtn->setVisible(m_amOwnerOrMod && roomType != 1);
     memRow->addWidget(m_addBtn);
-    outer->addLayout(memRow);
-    outer->addSpacing(6);
+    body->addLayout(memRow);
+    body->addSpacing(6);
+
+    // Under the MEMBERS header: the room overview (members, bots, shared files, dial-in), or
+    // the add-people panel in its place. The panel used to open BELOW the member list, adding
+    // its ~200 px to the dialog's height. As a page it gets the overview's whole height
+    // instead: on a 1440 x 852 work area with three bots the results list is ~380 px (a dozen
+    // rows), where taking only the member list's place would have left it ~80 px.
+    m_pages = new QStackedWidget(m_bodyContent);
+    m_overview = new QWidget(m_pages);
+    auto *ov = new QVBoxLayout(m_overview);
+    ov->setContentsMargins(0, 0, 0, 0);
+    ov->setSpacing(0);
 
     m_memberList = new QListWidget(this);
     m_memberList->setSelectionMode(QAbstractItemView::NoSelection);
     m_memberList->setContextMenuPolicy(Qt::CustomContextMenu);
-    outer->addWidget(m_memberList, 1);
+    // Stretch 2 against the shared files' 1: when the room is short, the members keep the
+    // larger share. (A box layout shrinks an item WITH stretch to its minimum before it takes
+    // anything from one without, so a files list without stretch would win every pixel.)
+    ov->addWidget(m_memberList, 2);
 
-    // Inline add-people panel (hidden until "+ Add people" is clicked)
-    m_addPanel = new QWidget(this);
+    // Inline add-people panel (a page of m_pages, shown by "+ Add people")
+    m_addPanel = new QWidget(m_pages);
     auto *addLay = new QVBoxLayout(m_addPanel);
     addLay->setContentsMargins(0, 8, 0, 0);
     addLay->setSpacing(6);
     m_addSearch = new QLineEdit(m_addPanel);
     m_addSearch->setPlaceholderText(tr("\U0001F50D  Search people to add\u2026"));
     addLay->addWidget(m_addSearch);
+    // The same clear "x" and Esc as the chat-list search. The first Esc in a box with text
+    // clears it; an Esc in an empty box still closes the dialog, as it always did.
+    talq::searchclear::attach(m_addSearch, activeTheme());
     m_addResults = new QListWidget(m_addPanel);
-    m_addResults->setFixedHeight(150);
     m_addResults->setSelectionMode(QAbstractItemView::NoSelection);
-    addLay->addWidget(m_addResults);
-    outer->addWidget(m_addPanel);
-    m_addPanel->hide();
+    addLay->addWidget(m_addResults, 1);   // takes the page's height, no fixed 150 px
 
     m_addDebounce = new QTimer(this);
     m_addDebounce->setSingleShot(true);
@@ -292,7 +328,7 @@ ConversationInfoDialog::ConversationInfoDialog(ApiClient *api,
     // automated participants). Only moderators get the +Add button — the API
     // would reject a non-moderator's enable call anyway, so showing the
     // button is a permissions-leak / dead-button trap.
-    outer->addSpacing(16);
+    ov->addSpacing(16);
     auto *botRow = new QHBoxLayout();
     m_botsHeader = new QLabel(tr("BOTS"), this);
     m_botsHeader->setObjectName("eyebrow");
@@ -303,8 +339,8 @@ ConversationInfoDialog::ConversationInfoDialog(ApiClient *api,
     m_addBotBtn->setCursor(Qt::PointingHandCursor);
     m_addBotBtn->setVisible(m_amOwnerOrMod);
     botRow->addWidget(m_addBotBtn);
-    outer->addLayout(botRow);
-    outer->addSpacing(6);
+    ov->addLayout(botRow);
+    ov->addSpacing(6);
 
     m_botsContainer = new QWidget(this);
     m_botsContainer->setObjectName(QStringLiteral("botsCard"));
@@ -317,7 +353,7 @@ ConversationInfoDialog::ConversationInfoDialog(ApiClient *api,
     m_botsLayout = new QVBoxLayout(m_botsContainer);
     m_botsLayout->setContentsMargins(4, 4, 4, 4);
     m_botsLayout->setSpacing(2);
-    outer->addWidget(m_botsContainer);
+    ov->addWidget(m_botsContainer);
 
     connect(m_addBotBtn, &QPushButton::clicked,
             this, &ConversationInfoDialog::onAddBotClicked);
@@ -325,17 +361,19 @@ ConversationInfoDialog::ConversationInfoDialog(ApiClient *api,
     // ── Shared files section ──────────────────────────────
     // Scans the most recent chat page for file shares. Bounded to one API
     // page so it stays cheap; click a row to open the file in the browser.
-    outer->addSpacing(16);
+    ov->addSpacing(16);
     m_filesHeader = new QLabel(tr("SHARED FILES"), this);
     m_filesHeader->setObjectName("eyebrow");
-    outer->addWidget(m_filesHeader);
-    outer->addSpacing(6);
+    ov->addWidget(m_filesHeader);
+    ov->addSpacing(6);
 
+    // Up to its old 150 px when there is room, down to about two rows when there is not.
     m_filesList = new QListWidget(this);
     m_filesList->setSelectionMode(QAbstractItemView::NoSelection);
-    m_filesList->setFixedHeight(150);
+    m_filesList->setMinimumHeight(64);
+    m_filesList->setMaximumHeight(150);
     m_filesList->setCursor(Qt::PointingHandCursor);
-    outer->addWidget(m_filesList);
+    ov->addWidget(m_filesList, 1);
     connect(m_filesList, &QListWidget::itemClicked, this,
             [](QListWidgetItem *item) {
         const QString link = item->data(Qt::UserRole).toString();
@@ -343,16 +381,30 @@ ConversationInfoDialog::ConversationInfoDialog(ApiClient *api,
             QDesktopServices::openUrl(QUrl(link));
     });
 
-    outer->addSpacing(8);
     // Dial-in details. Created hidden and filled by setSipInfo(); a room
     // without SIP never shows the row, which is every room on a server with no
-    // SIP bridge configured.
+    // SIP bridge configured. The gap above it is its own margin, so a hidden
+    // row leaves none.
     m_sipLabel = new QLabel(QString(), this);
     m_sipLabel->setWordWrap(true);
     m_sipLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_sipLabel->setContentsMargins(0, 8, 0, 0);
     m_sipLabel->setVisible(false);
-    outer->addWidget(m_sipLabel);
+    ov->addWidget(m_sipLabel);
 
+    m_pages->addWidget(m_overview);
+    m_pages->addWidget(m_addPanel);
+    body->addWidget(m_pages, 1);
+    showPage(m_overview);
+
+    m_body->setWidget(m_bodyContent);
+    // setWidget() turns the content's autoFillBackground on; the dialog's own
+    // ground must show through, as it did before there was a scroll area.
+    m_bodyContent->setAutoFillBackground(false);
+    m_body->viewport()->setAutoFillBackground(false);
+    outer->addWidget(m_body, 1);
+
+    outer->addSpacing(8);
     m_status = new QLabel(QString(), this);
     m_status->setProperty("role", "secondary");
     outer->addWidget(m_status);
@@ -449,8 +501,107 @@ void ConversationInfoDialog::changeEvent(QEvent *e)
     QDialog::changeEvent(e);
     // ApplicationPaletteChange only — PaletteChange recurses via setStyleSheet.
     if (e->type() == QEvent::ApplicationPaletteChange
-        || e->type() == QEvent::ThemeChange)
+        || e->type() == QEvent::ThemeChange) {
         applyChrome();
+        talq::searchclear::retint(m_addSearch, activeTheme());
+    }
+}
+
+void ConversationInfoDialog::showEvent(QShowEvent *e)
+{
+    // QDialog::showEvent centres the dialog over its parent with whatever size it has at that
+    // moment, so the size is chosen first. A spontaneous show (restored from minimised) changes
+    // nothing.
+    const bool first = !m_placed && !e->spontaneous();
+    if (first)
+        sizeForScreen();
+    QDialog::showEvent(e);
+    if (first) {
+        m_placed = true;
+        keepOnScreen();   // the centring only estimates the frame; this uses the real one
+        // Queued: on Windows the screen change comes in the middle of the move (and of a DPI
+        // change, whose own resize must land first); the slot reads the screen it is on then.
+        if (QWindow *w = windowHandle())
+            connect(w, &QWindow::screenChanged, this, [this]() { shrinkToScreen(); },
+                    Qt::QueuedConnection);
+    }
+}
+
+void ConversationInfoDialog::shrinkToScreen()
+{
+    // Opened at 859 px on a 1080p screen and dragged to a laptop with an 852 px work area, the
+    // frame was ~898 px: the footer could not be put on screen wherever the dialog was dropped.
+    // fitClientSize() with the current size as the wish can only shrink it, and leaves it alone
+    // when it already fits, so a move to a taller screen changes nothing.
+    QScreen *scr = screen();
+    if (!scr)
+        return;
+    const QSize fitted = talq::screenfit::fitClientSize(size(), minimumSize(),
+                                                        scr->availableGeometry(),
+                                                        frameMarginsForFit());
+    if (fitted != size())
+        resize(fitted);
+}
+
+QScreen *ConversationInfoDialog::screenToFit() const
+{
+    // Where QDialog centres the dialog: on its parent window's screen. Before the first show
+    // the dialog has no position of its own to ask.
+    if (QWidget *p = parentWidget())
+        if (QScreen *s = p->window()->screen())
+            return s;
+    return screen();
+}
+
+QMargins ConversationInfoDialog::frameMarginsForFit() const
+{
+    // The title bar and borders (~31 px on top at 200 % on Windows). The dialog's own once its
+    // native window exists, which it does by showEvent; failing that, the parent window's,
+    // which is on screen with the same kind of frame.
+    if (const QWindow *w = windowHandle()) {
+        const QMargins m = w->frameMargins();
+        if (!m.isNull())
+            return m;
+    }
+    if (QWidget *p = parentWidget())
+        if (const QWindow *pw = p->window()->windowHandle())
+            return pw->frameMargins();
+    return QMargins();
+}
+
+void ConversationInfoDialog::sizeForScreen()
+{
+    QScreen *scr = screenToFit();
+    if (!scr || !layout())
+        return;
+    layout()->activate();
+    // What the body holds, unscrolled. The outer layout counts the body at the scroll area's own
+    // size hint, which Qt caps at a few hundred pixels, so the content's hint is swapped in.
+    const int wanted = layout()->sizeHint().height() - m_body->sizeHint().height()
+                       + m_bodyContent->sizeHint().height();
+    resize(talq::screenfit::fitClientSize(QSize(width(), wanted), minimumSize(),
+                                          scr->availableGeometry(), frameMarginsForFit()));
+}
+
+void ConversationInfoDialog::keepOnScreen()
+{
+    QScreen *scr = screenToFit();
+    if (!scr)
+        return;
+    const QRect frame = frameGeometry();
+    const QPoint to = talq::screenfit::keepFrameOnScreen(frame, scr->availableGeometry());
+    if (to != frame.topLeft())
+        move(to);
+}
+
+void ConversationInfoDialog::showPage(QWidget *page)
+{
+    for (int i = 0; i < m_pages->count(); ++i) {
+        QWidget *w = m_pages->widget(i);
+        w->setSizePolicy(w == page ? QSizePolicy::Preferred : QSizePolicy::Ignored,
+                         w == page ? QSizePolicy::Preferred : QSizePolicy::Ignored);
+    }
+    m_pages->setCurrentWidget(page);
 }
 
 void ConversationInfoDialog::applyAvatarPixmap(const QImage &img)
@@ -642,7 +793,10 @@ void ConversationInfoDialog::populateParticipants(const QVector<RoomParticipant>
         m_shiftStatus->observe(uids);
     }
 
-    m_status->clear();
+    // Only its own "Loading members..." line. A confirmation set since -- "Added X.", which
+    // onParticipantAdded() writes after starting this reload -- stays on screen.
+    if (m_status->text() == tr("Loading members\u2026"))
+        m_status->clear();
 }
 
 bool ConversationInfoDialog::eventFilter(QObject *watched, QEvent *event)
@@ -769,9 +923,12 @@ void ConversationInfoDialog::onRemoveMember(QListWidgetItem *item)
 
 void ConversationInfoDialog::onAddMembersToggled()
 {
-    const bool opening = !m_addPanel->isVisible();
-    m_addPanel->setVisible(opening);
-    m_addBtn->setText(opening ? tr("Close add panel") : tr("+ Add people"));
+    const bool opening = m_pages->currentWidget() != m_addPanel;
+    showPage(opening ? m_addPanel : m_overview);
+    // The panel stands in for the whole overview (members, bots and shared files) while the
+    // MEMBERS header stays above it, so the way out is a plain "Back".
+    m_addBtn->setText(opening ? tr("Back") : tr("+ Add people"));
+    ++m_addSearchSeq;   // a search still in flight belongs to the panel as it was
     if (opening) {
         m_addSearch->clear();
         m_addResults->clear();
@@ -781,42 +938,65 @@ void ConversationInfoDialog::onAddMembersToggled()
 
 void ConversationInfoDialog::onAddSearchChanged()
 {
+    // Any reply still in flight is for text that is no longer in the box (this includes the
+    // box being cleared after an add). The debounced search below starts a new generation.
+    ++m_addSearchSeq;
+    // An empty box (the x, Esc, an add) has nothing to search for, and its old rows must not
+    // stay clickable for the debounce's 250 ms under a box that no longer asks for them.
+    if (m_addSearch->text().isEmpty()) {
+        m_addDebounce->stop();
+        m_addResults->clear();
+        return;
+    }
     m_addDebounce->start();
 }
 
 void ConversationInfoDialog::runAddSearch()
 {
     const QString q = m_addSearch->text().trimmed();
+    const int seq = ++m_addSearchSeq;
     m_addResults->clear();
     if (q.size() < 2) return;
     m_api->searchNcUsers(q, this,
-        [this](bool ok, const QVector<NcUser> &users) {
-            if (!ok) { m_addResults->addItem(tr("Search failed.")); return; }
-            for (const NcUser &u : users) {
-                // Groups and Teams are added by passing their own `source`;
-                // the server expands them to their members. This used to skip
-                // everything that was not an account, on the mistaken premise
-                // that the participants endpoint took users only - so a
-                // moderator could never add a department group to an existing
-                // room and got no explanation, just no search results.
-                // QString, not QChar: QChar is a single UTF-16 code unit and
-                // every one of these emoji is above the BMP, so a QChar would
-                // silently truncate to a replacement glyph.
-                const QString glyph = u.source == QStringLiteral("groups")
-                                          ? QStringLiteral("\U0001F465")   // busts = group
-                                          : u.source == QStringLiteral("circles")
-                                                ? QStringLiteral("\U0001F310")  // globe = Team
-                                                : QStringLiteral("\U0001F464"); // bust = person
-                const QString label = QStringLiteral("%1  %2  ·  %3")
-                                          .arg(glyph)
-                                          .arg(u.displayName.isEmpty() ? u.id : u.displayName,
-                                               u.id);
-                auto *item = new QListWidgetItem(label, m_addResults);
-                item->setData(kActorIdRole, u.id);
-                item->setData(kUserSourceRole, u.source);
-            }
-            if (m_addResults->count() == 0) m_addResults->addItem(tr("No matches."));
+        [this, seq, q](bool ok, const QVector<NcUser> &users) {
+            showAddSearchResults(seq, q, ok, users);
         });
+}
+
+void ConversationInfoDialog::showAddSearchResults(int seq, const QString &query, bool ok,
+                                                  const QVector<NcUser> &users)
+{
+    // runAddSearch() captured only `this` until now, so a reply that came back after the box
+    // was cleared or changed filled the list with rows for a query nobody could see, and a
+    // click on one added that person. A reply counts only for the newest search, and only
+    // while the box still holds what it searched for.
+    if (seq != m_addSearchSeq || query != m_addSearch->text().trimmed())
+        return;
+    if (!ok) { m_addResults->addItem(tr("Search failed.")); return; }
+    for (const NcUser &u : users) {
+        // Groups and Teams are added by passing their own `source`;
+        // the server expands them to their members. This used to skip
+        // everything that was not an account, on the mistaken premise
+        // that the participants endpoint took users only - so a
+        // moderator could never add a department group to an existing
+        // room and got no explanation, just no search results.
+        // QString, not QChar: QChar is a single UTF-16 code unit and
+        // every one of these emoji is above the BMP, so a QChar would
+        // silently truncate to a replacement glyph.
+        const QString glyph = u.source == QStringLiteral("groups")
+                                  ? QStringLiteral("\U0001F465")   // busts = group
+                                  : u.source == QStringLiteral("circles")
+                                        ? QStringLiteral("\U0001F310")  // globe = Team
+                                        : QStringLiteral("\U0001F464"); // bust = person
+        const QString label = QStringLiteral("%1  %2  ·  %3")
+                                  .arg(glyph)
+                                  .arg(u.displayName.isEmpty() ? u.id : u.displayName,
+                                       u.id);
+        auto *item = new QListWidgetItem(label, m_addResults);
+        item->setData(kActorIdRole, u.id);
+        item->setData(kUserSourceRole, u.source);
+    }
+    if (m_addResults->count() == 0) m_addResults->addItem(tr("No matches."));
 }
 
 void ConversationInfoDialog::onAddResultClicked(QListWidgetItem *item)
@@ -825,21 +1005,48 @@ void ConversationInfoDialog::onAddResultClicked(QListWidgetItem *item)
     const QString userId = item->data(kActorIdRole).toString();
     if (userId.isEmpty()) return;
     const QString source = item->data(kUserSourceRole).toString();
+    const QString queryAtClick = m_addSearch->text();
 
     m_status->setText(tr("Adding %1\u2026").arg(userId));
     m_api->addRoomParticipant(m_token, userId, this,
-        [this, userId](bool ok, const QString &err) {
-            if (!ok) {
-                m_status->setProperty("role", "danger");
-                m_status->setText(tr("Couldn't add %1: %2")
-                                      .arg(userId, err.isEmpty() ? tr("refused") : err));
-                return;
-            }
-            m_status->setProperty("role", "secondary");
-            m_status->setText(tr("Added %1.").arg(userId));
-            refreshParticipants();
-            emit roomChanged();
+        [this, userId, queryAtClick](bool ok, const QString &err) {
+            onParticipantAdded(userId, queryAtClick, ok, err);
         }, source);
+}
+
+void ConversationInfoDialog::onParticipantAdded(const QString &userId,
+                                                const QString &queryAtClick, bool ok,
+                                                const QString &err)
+{
+    if (!ok) {
+        // The query and the results stay, so the user can try again from where they were.
+        m_status->setProperty("role", "danger");
+        m_status->setText(tr("Couldn't add %1: %2")
+                              .arg(userId, err.isEmpty() ? tr("refused") : err));
+        return;
+    }
+    // The reload first: it writes "Loading members..." to the status line, which used to land
+    // on top of the confirmation below in this same call.
+    refreshParticipants();
+    m_status->setProperty("role", "secondary");
+    m_status->setText(tr("Added %1.").arg(userId));
+    // Ready for the next person: an empty box with the cursor in it. Only if the box still
+    // holds the search that found this person; if the user has started typing the next name
+    // while the add was in flight, that text is theirs.
+    if (m_addSearch->text() == queryAtClick) {
+        m_addSearch->clear();     // textChanged: a search still in flight is now stale
+        m_addDebounce->stop();    // ...and there is nothing to search for
+        m_addResults->clear();
+    }
+    // The cursor goes back to the box only from the panel itself (the result clicked, the box)
+    // or from nowhere. Anywhere else -- the user has moved on to the name or the description
+    // while the add was in flight -- taking the focus would end that edit, and editingFinished
+    // saves a half-typed name or description to the server.
+    QWidget *focus = focusWidget();
+    if (m_pages->currentWidget() == m_addPanel
+        && (!focus || focus == m_addPanel || m_addPanel->isAncestorOf(focus)))
+        m_addSearch->setFocus();
+    emit roomChanged();
 }
 
 void ConversationInfoDialog::onLeaveClicked()

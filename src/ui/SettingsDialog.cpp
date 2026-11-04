@@ -1458,10 +1458,7 @@ QWidget *SettingsDialog::buildNotificationsTab()
 
     m_notifEnabled = new QCheckBox;
     connect(m_notifEnabled, &QCheckBox::toggled, this, [this](bool checked) {
-        m_notifications->setNotificationsEnabled(checked);
-        m_settings.beginGroup("Notifications");
-        m_settings.setValue("enabled", checked);
-        m_settings.endGroup();
+        m_notifications->setNotificationsEnabled(checked);  // also persists (its only writer)
     });
     layout->addWidget(makeSettingRow(
         tr("Desktop notifications"),
@@ -1666,6 +1663,54 @@ QWidget *SettingsDialog::buildGeneralTab()
            "Your Nextcloud server fetches the page, so the site never sees your "
            "address. Turn off to see links as plain text."),
         m_linkPreviews));
+
+    // Folder sync (spec D24). The row only REPORTS the switch: nothing here reads
+    // or writes QSettings and the dialog has no pointer to the sync controller.
+    // MainWindow pushes what to show through setFolderSyncUi() on every open and on
+    // every state change, and answers folderSyncToggled / folderSyncNowRequested.
+    layout->addSpacing(kGroupGap - kRowGap);
+    layout->addWidget(makeSectionHeader(tr("Sync")));
+
+    // The control has no text of its own (makeSettingRow() puts the name in a label
+    // beside it), so the accessible name is set here or a screen reader would
+    // announce an unnamed check box.
+    m_folderSync = new QCheckBox;
+    m_folderSync->setAccessibleName(tr("Keep my folders in sync"));
+    connect(m_folderSync, &QCheckBox::toggled, this, &SettingsDialog::folderSyncToggled);
+    layout->addWidget(makeSettingRow(
+        tr("Keep my folders in sync"),
+        tr("Keep your folders the same on every computer you turn this on for, "
+           "on this account: their names, order, which chats are in them (by "
+           "room code; no chat names or messages) and whether they are open. "
+           "They are saved in one small hidden file, .talq-folders.json, in "
+           "your own Nextcloud Files, and nothing else (the first time sync "
+           "starts on a computer, it makes a tiny test file and normally "
+           "deletes it right away). While this is off, nothing leaves this computer. Turning it "
+           "off stops syncing and leaves the file in place; after turning sync "
+           "off on every computer, you can delete it in Files. A folder deleted "
+           "on one computer is deleted on the others."),
+        m_folderSync));
+
+    // Under the row, as separate widgets (makeSettingRow() has no slot for them).
+    // Same look as the description above it: role "settingDesc" is the theme's
+    // small secondary text, so no colour is set here.
+    m_folderSyncStatus = new QLabel;
+    m_folderSyncStatus->setProperty("role", "settingDesc");
+    m_folderSyncStatus->setWordWrap(true);
+    // Plain text, always: the line is produced elsewhere (MainWindow, from the sync
+    // controller's facts), so it is never given the chance to be read as markup.
+    m_folderSyncStatus->setTextFormat(Qt::PlainText);
+    layout->addWidget(m_folderSyncStatus);
+
+    m_folderSyncNow = new QPushButton(tr("Sync now"));
+    m_folderSyncNow->setProperty("variant", "default");
+    m_folderSyncNow->setCursor(Qt::PointingHandCursor);
+    connect(m_folderSyncNow, &QPushButton::clicked, this, &SettingsDialog::folderSyncNowRequested);
+    layout->addWidget(m_folderSyncNow, 0, Qt::AlignLeft);
+
+    // Until MainWindow pushes the real state: switch off and disabled, no status,
+    // no button. Nothing can be turned on from a row nobody is listening to.
+    setFolderSyncUi(FolderSyncUi{});
 
     layout->addSpacing(kGroupGap - kRowGap);
     layout->addWidget(makeSectionHeader("Diagnostics"));
@@ -2222,6 +2267,32 @@ void SettingsDialog::loadGeneralSettings()
         m_themeCombo->setCurrentIndex(idx < 0 ? 2 : idx);
         m_themeCombo->blockSignals(false);
     }
+}
+
+void SettingsDialog::setFolderSyncUi(const FolderSyncUi &ui)
+{
+    // Defensive: the three exist once the constructor has built the General tab.
+    if (!m_folderSync || !m_folderSyncStatus || !m_folderSyncNow)
+        return;
+
+    {
+        // A programmatic change must never reach folderSyncToggled (spec D35): the
+        // revert after a refused first sync would otherwise re-enter disable().
+        const QSignalBlocker blocker(m_folderSync);
+        m_folderSync->setChecked(ui.enabled);
+    }
+    // The whole row is off while there is nothing to sync into, and says why.
+    m_folderSync->setEnabled(ui.available);
+
+    const QString status = ui.available ? ui.statusText : ui.whyNot;
+    m_folderSyncStatus->setText(status);
+    m_folderSyncStatus->setVisible(!status.isEmpty());
+    // The status label cannot take focus, so a screen reader user on the switch
+    // would never reach it; the switch carries the same words as its description.
+    m_folderSync->setAccessibleDescription(status);
+
+    m_folderSyncNow->setVisible(ui.enabled && ui.canSyncNow);
+    m_folderSyncNow->setEnabled(ui.available);
 }
 
 // ═══════════════════════════════════════════════════════

@@ -1,5 +1,6 @@
 #include "NotificationStack.h"
 #include "NotificationPopup.h"
+#include "core/NotificationCoalesceLogic.h"
 
 #include <QApplication>
 #include <QScreen>
@@ -35,11 +36,10 @@ NotificationStack::~NotificationStack()
 void NotificationStack::notify(const QString &title, const QString &message,
                                 const QString &token)
 {
-    // Coalesce rapid repeats from the same conversation.
+    // Coalesce rapid repeats from the same conversation (never a popup with no token).
     for (int i = 0; i < m_stack.size(); ++i) {
         Entry &e = m_stack[i];
-        if (e.token != token) continue;
-        if (e.shownAt.elapsed() > kCoalesceMs) continue;
+        if (!talq::canCoalesce(e.token, token, e.shownAt.elapsed(), kCoalesceMs)) continue;
         ++e.coalescedCount;
         QString collapsed = QObject::tr("%n new message(s)", nullptr, e.coalescedCount);
         QScreen *screen = QApplication::primaryScreen();

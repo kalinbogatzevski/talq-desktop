@@ -25,6 +25,32 @@ your messages, calls, contacts, account details, or usage statistics.
   server for this, like the message it came in. Nothing goes to the TalQ
   developers. Turn it off in **Settings → Link previews**.
 
+- **Chat-list folders.** The folders you make in the chat list are kept per
+  account in a small file in TalQ's data folder **on your computer**. Nothing
+  about them leaves your computer unless you turn on folder sync (below), which
+  is off by default.
+
+- **Folder sync (off by default).** With **Settings → Keep my folders in sync**
+  on, TalQ also keeps your folders in one small hidden file, `.talq-folders.json`,
+  at the top of **your own Nextcloud Files**, over the connection and sign-in it
+  already uses. The file holds only the folders: their names, their order, which
+  chats are in each (by room code, never a chat's name or messages) and whether
+  each folder, and the "Other" section, is open or closed. It is never sent to the
+  TalQ developers or anyone else.
+  While sync is on, TalQ reads the file now and then (about every ten minutes,
+  also from the tray) and writes it when your folders change. Before it syncs on
+  a computer, and again whenever that check has to be repeated, TalQ makes a tiny
+  test file (`.talq-folders.probe-` and a random ending, holding only `{}`) to
+  check that your server can store the file safely, and normally deletes it
+  right away; if the check is interrupted (sync turned off, signed out, TalQ
+  closed, or the sign-in refused) or the deletion fails, it can stay. Your
+  server's trash or file versions may keep copies of either file. On your
+  computer, sync keeps a note of the last state it synced, a marker that the
+  check passed, and one copy of your folders file from just before a sync last
+  removed anything. Turning sync off stops syncing and leaves the file in your
+  Files; to remove it, turn sync off on every computer, then delete
+  `.talq-folders.json` in your Files (show hidden files first).
+
 - **Update check.** TalQ periodically asks GitHub whether a newer version exists
   by fetching a public release manifest from
   `https://api.github.com/repos/kalinbogatzevski/talq-desktop`. This is an
@@ -36,7 +62,9 @@ your messages, calls, contacts, account details, or usage statistics.
 
 - **On-device only.** Your login credentials / session token, your settings, any
   cached chat history and avatars, and the local debug log (`talq_debug.log`)
-  are stored **on your computer**. They are never uploaded by TalQ. The optional
+  are stored **on your computer**. They are never uploaded by TalQ (the one
+  exception is opt-in: your chat-list folders, to your own Nextcloud Files, when
+  you turn on folder sync, above). The optional
   "Collect diagnostics" feature writes a `.txt` file locally for you to inspect
   or share manually — TalQ does not transmit it anywhere on its own.
 

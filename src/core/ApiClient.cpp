@@ -85,6 +85,25 @@ QString ApiClient::encodeDavPath(const QString &path)
     return QString::fromLatin1(QUrl::toPercentEncoding(p, "/"));
 }
 
+QString ApiClient::davFilePath(const QString &relPath) const
+{
+    // davUser() would answer with the login name here; on an LDAP or
+    // email-login server that is somebody else's (or nobody's) home.
+    if (!davUserKnown())
+        return QString();
+    return QStringLiteral("/remote.php/dav/files/") + encodeDavPath(davUser())
+         + QLatin1Char('/') + encodeDavPath(relPath);
+}
+
+QByteArray ApiClient::davEtag(const QNetworkReply *r)
+{
+    if (!r)
+        return QByteArray();
+    if (r->hasRawHeader("OC-ETag"))
+        return r->rawHeader("OC-ETag");
+    return r->rawHeader("ETag");
+}
+
 void ApiClient::resetSession()
 {
     // Fresh jar drops the previous account's session cookie; clearing the
@@ -514,12 +533,17 @@ QNetworkReply *ApiClient::getLongPoll(const QString &path, const QUrlQuery &para
     return reply;
 }
 
-QNetworkReply *ApiClient::getAbsoluteUrl(const QString &path, int transferTimeoutMs)
+QNetworkReply *ApiClient::getAbsoluteUrl(const QString &path, int transferTimeoutMs, bool followRedirects)
 {
     QNetworkRequest req{QUrl(m_serverUrl + path)};
     applyBasicAuth(req);
     if (transferTimeoutMs > 0)
         req.setTransferTimeout(transferTimeoutMs);
+    // Opt-in, as for davRequest: a caller that asks never follows a redirect (Qt would copy this
+    // request, Basic credentials included, to wherever it points). Every other caller keeps Qt's
+    // default, as before.
+    if (!followRedirects)
+        req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
     // Not added to m_pendingReplies — caller manages lifetime
     return m_nam.get(req);
 }
@@ -533,10 +557,19 @@ QNetworkReply *ApiClient::putAbsoluteUrl(const QString &path, const QByteArray &
 
 QNetworkReply *ApiClient::davRequest(const QByteArray &verb, const QString &path,
                                      const QByteArray &body,
-                                     const QMap<QByteArray, QByteArray> &headers)
+                                     const QMap<QByteArray, QByteArray> &headers,
+                                     int transferTimeoutMs, bool followRedirects)
 {
     QNetworkRequest req{QUrl(m_serverUrl + path)};
     applyBasicAuth(req);
+    if (transferTimeoutMs > 0)
+        req.setTransferTimeout(transferTimeoutMs);
+    // Opt-in: a caller that asks never follows a redirect and sees the 3xx itself. Qt 6 follows them
+    // by default, and a PUT answered 301/302/303 then comes back as the 200 of a GET of wherever it
+    // pointed (307/308 re-send the PUT there): a "success" for a write the server never stored at
+    // this path. Every other caller keeps Qt's default, as before.
+    if (!followRedirects)
+        req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
     for (auto it = headers.constBegin(); it != headers.constEnd(); ++it)
         req.setRawHeader(it.key(), it.value());
     if (body.isEmpty())

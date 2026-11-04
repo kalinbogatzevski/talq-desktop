@@ -63,6 +63,23 @@ public:
     // inert tab rather than a broken one.
     void setCtiService(class CtiService *cti);
 
+    // The "Keep my folders in sync" row on the General tab (spec D24). The dialog
+    // holds NO state for it: it reads no setting, has no pointer to the sync
+    // controller, and only REPORTS the switch (folderSyncToggled). MainWindow
+    // pushes what to show, on every open and on every state change.
+    struct FolderSyncUi {
+        bool enabled = false;      // what the switch SHOWS (checked)
+        bool available = false;    // false: the folder store is detached, read-only or failed
+                                   // to load; the row is disabled and `whyNot` is shown
+        bool canSyncNow = false;   // a cycle may be started now (none is running)
+        QString whyNot;            // shown in place of `statusText` while !available
+        QString statusText;        // the status line, already worded and translated; empty = none
+    };
+    // Safe to call at any time and as often as needed. It never emits
+    // folderSyncToggled: the checkbox is set under a QSignalBlocker (spec D35), so
+    // a programmatic revert cannot re-enter the disable path.
+    void setFolderSyncUi(const FolderSyncUi &ui);
+
 protected:
     // Tear down the live BG preview pipeline (releases the camera so a
     // subsequent call can claim it). Sync also runs on showEvent so the
@@ -89,6 +106,10 @@ signals:
     void logoutRequested();
     void checkForUpdatesRequested();
     void updateNowRequested();   // 0.52.14 — manual "Update now": check + install immediately
+    // The user flipped the folder-sync switch (never emitted by setFolderSyncUi).
+    void folderSyncToggled(bool on);
+    // The user pressed "Sync now" under the folder-sync row.
+    void folderSyncNowRequested();
     // #20 — fires when any Talk/Backgrounds/* QSetting is changed via
     // the Backgrounds section. CallManager listens to live-apply during
     // calls instead of waiting for the next call's pipeline rebuild.
@@ -192,6 +213,10 @@ private:
     QCheckBox *m_startMinimized = nullptr;
     QCheckBox *m_closeToTray = nullptr;
     QCheckBox *m_linkPreviews = nullptr;
+    // Folder sync row; filled only by setFolderSyncUi().
+    QCheckBox *m_folderSync = nullptr;
+    QLabel *m_folderSyncStatus = nullptr;
+    QPushButton *m_folderSyncNow = nullptr;
     QCheckBox *m_detailedLogging = nullptr;
     QComboBox *m_themeCombo = nullptr;
 

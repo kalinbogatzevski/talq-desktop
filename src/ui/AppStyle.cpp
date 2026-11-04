@@ -277,8 +277,21 @@ QRadioButton::indicator {
 QCheckBox::indicator:hover, QRadioButton::indicator:hover {
     border-color:@{accent};
 }
+/* A disabled check box must LOOK disabled: a live-looking one (a checked one
+ * above all, in the full accent) reads as "on and working". Placed after
+ * :hover so the hover tint never shows on it, and BEFORE :checked: at equal
+ * specificity a later bare :disabled would paint a checked-but-disabled box as
+ * unchecked. The checked case has its own, more specific rule below. */
+QCheckBox::indicator:disabled {
+    border-color:@{divider}; background:@{bgSecondary};
+}
 QCheckBox::indicator:checked, QRadioButton::indicator:checked {
     background:@{accent}; border-color:@{accent};
+}
+/* Checked and disabled: still visibly ticked, in the dimmed accent the primary
+ * button uses for its own disabled state. */
+QCheckBox::indicator:checked:disabled {
+    background:@{accentDim}; border-color:@{accentDim};
 }
 
 /* ── Lists / trees / tables ── */

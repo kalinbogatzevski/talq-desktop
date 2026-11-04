@@ -15,6 +15,7 @@
 #include <QTimer>
 #include "core/ConversationTagLogic.h"
 #include "core/FolderLogic.h"
+#include "core/FolderSyncNotices.h"
 #include "core/UpdateInstallGatePolicy.h"
 #include "painter/PainterTheme.h"
 
@@ -32,7 +33,12 @@ class UserStatusManager;
 class DebugMonitor;
 class AppSettings;
 class FolderStore;
+class FolderSyncController;
 class QActionGroup;
+
+namespace talq {
+enum class FolderSyncSwitchEvent;   // core/FolderSyncUiLogic.h
+}
 
 class ChatPainter;
 class SidebarPainter;
@@ -201,13 +207,15 @@ private:
     // Builds the "Tags" submenu on a conversation's right-click menu.
     void populateTagAssignMenu(QMenu *parent, const QString &token);
 
-    // ── Sidebar folders (local to this PC and account; see core/FolderStore.h) ──
-    // Unlike the tags above, nothing here talks to the server and nothing is
-    // gated on a server capability.
+    // ── Sidebar folders (local to this PC and account by default; see core/FolderStore.h) ──
+    // Unlike the tags above, nothing here talks to the Talk server and nothing is
+    // gated on a Talk capability. The opt-in sync (m_folderSync, below) keeps a copy
+    // in the user's OWN Nextcloud Files over WebDAV, never on the Talk server.
     //
     // The store is attached to ONE account at a time. The key is computed once,
-    // at loggedInChanged(true), and kept: AuthManager::logout() clears the server
-    // URL BEFORE it emits loggedInChanged(false), so it cannot be rebuilt then.
+    // when loggedInChanged() reports a login (the signal carries no argument: read
+    // isLoggedIn()), and kept: AuthManager::logout() clears its server URL BEFORE it
+    // emits loggedInChanged(), so the key cannot be rebuilt then.
     void attachFolders();
     void detachFolders();
     // Hands the store's whole state to the sidebar. Connected to the store's
@@ -247,6 +255,57 @@ private:
     void reportFolderResult(talq::FolderResult result, const QString &typedName = QString(),
                             bool filing = false);
 
+    // The folder-sync controller's apply gate (spec D22): a remote change may be
+    // applied only while no sidebar drag and no folder dialog is open. The drop
+    // highlight and "is this the first folder" are both worked out before a
+    // dialog or a drag starts, and a remote apply would change the folder list
+    // under them. Out of line because SidebarPainter is only declared here.
+    bool folderApplyAllowed() const;
+    // Holds m_folderDialogDepth up for the life of the object. A scope guard,
+    // never a bare ++/--: those functions have many early returns, and a dialog
+    // runs its own event loop. Always NAME it: `FolderDialogDepth guard(m_folderDialogDepth);`
+    // (an unnamed one is destroyed on the spot and holds nothing). Not copyable:
+    // a copy would release twice.
+    struct FolderDialogDepth {
+        explicit FolderDialogDepth(int &depth) : m_depth(depth) { ++m_depth; }
+        ~FolderDialogDepth() { --m_depth; }
+        FolderDialogDepth(const FolderDialogDepth &) = delete;
+        FolderDialogDepth &operator=(const FolderDialogDepth &) = delete;
+    private:
+        int &m_depth;
+    };
+
+    // ── Folder sync (spec docs/superpowers/specs/2026-11-03-folder-sync-design.md) ──
+    // The controller (core/FolderSyncController.h) syncs and only reports facts;
+    // MainWindow owns the Settings row, the switch key and every notice. Every
+    // decision is a pure function in core/FolderSyncUiLogic.h (unit-tested);
+    // what is here is the Qt plumbing around them.
+    //
+    // Builds the Settings row from the controller and the store and pushes it,
+    // with the wall-clock time of this push. A no-op until the dialog exists.
+    void pushFolderSyncUi();
+    // Asks the notice scheduler what to do now: show the pending notice through
+    // notifySilently (never notify(): it sounds when unfocused), or arm the
+    // single-shot timer for the spacing that is left.
+    void pumpNotices();
+    // Offers `id` to the scheduler's one pending slot (it decides whether it stays).
+    void raiseFolderNotice(talq::NoticeId id);
+    // A fresh scheduler and a stopped timer: nothing of one account's notices
+    // (episode, spacing, pending slot) carries into the next.
+    void resetFolderNotices();
+    // Writes the shared switch key as enabledKeyWriteFor() says and keeps the
+    // refusal text as refusalTextAfter() says.
+    void onFolderSyncSwitchEvent(talq::FolderSyncSwitchEvent event,
+                                 const QString &reasonText = QString());
+    // A quit has been asked for (D18: no network call at quit). See the .cpp.
+    bool folderSyncQuitting() const;
+    // The process is certain to end: flush the store, then detach the controller
+    // (no network call; its timers stop and its reply is dropped). Idempotent.
+    void stopFolderSyncForQuit();
+    // The three Settings open sites: build the dialog if needed, refresh it,
+    // then push the folder-sync row (after refresh(), with the time of THIS open).
+    void openSettings();
+
     void openConversationInfo();
     // Every avatar surface in the app funnels here, so the card is built and
     // wired in exactly one place and behaves identically wherever it is opened
@@ -265,7 +324,11 @@ private:
     void showWelcome();            // rebuild-if-dirty, then show + refresh
     void restyleChrome();          // re-apply theme tokens to QSS-styled chrome
     void showThemeToast(const QString &name);  // brief "Theme: X" overlay
-    void showToast(const QString &text);       // brief top-centre confirmation pill
+    void showToast(const QString &text);       // brief top-centre confirmation pill (1.6 s)
+    // The same pill, held for `ms`. A separate name, not a default argument:
+    // showToast is connected as a member-function pointer (the image viewer's
+    // copyAnnouncement), which a second parameter would break.
+    void showToastFor(const QString &text, int ms);
     void refreshWelcomeStatus();   // repaint Mission Control telemetry/LEDs/pill
 
     // Decides whether the connection-health strip is shown, and what it says.
@@ -358,6 +421,33 @@ private:
     QAction *m_groupNoticeSep = nullptr;
     QAction *m_groupNoticeAct = nullptr;
     bool m_foldersLoadFailed = false;
+    // How many folder dialogs are open right now (a name prompt, or one of
+    // reportFolderResult()'s message boxes). Raised only through FolderDialogDepth;
+    // read by folderApplyAllowed().
+    int m_folderDialogDepth = 0;
+    // Folder sync. A child of this window created right after m_folders, so Qt
+    // destroys it after the store (it guards for that; ~MainWindow detaches it first).
+    FolderSyncController *m_folderSync = nullptr;
+    // The notice gate and its one pending slot (D40). Replaced whole on every
+    // account change (resetFolderNotices). Its clock is m_noticeClock: MONOTONIC,
+    // never the wall clock (D34); m_noticeTimer is the single-shot "ask again when
+    // the spacing is over".
+    talq::NoticeScheduler m_notices;
+    QTimer *m_noticeTimer = nullptr;
+    QElapsedTimer m_noticeClock;
+    // The last "Not turned on: ..." answer, shown under the switch while the
+    // controller is off (the Off push that follows a refusal would otherwise wipe it).
+    QString m_folderSyncRefusal;
+    // Set at the earliest point of the quit paths this window runs itself (see
+    // folderSyncQuitting()); cleared when the window is shown again or becomes
+    // active again (that quit did not happen: a cancelled Windows shutdown, a close
+    // that left a call window running).
+    bool m_folderSyncQuitting = false;
+    // Set ONLY by stopFolderSyncForQuit(), where the process is certain to end.
+    // While set, the Settings row is not pushed (it keeps what it last showed) and
+    // the switch and Sync now do nothing: no enable/disable/syncNow and no write
+    // of the switch key. Cleared only by a new attach (attachFolders).
+    bool m_folderSyncStopped = false;
     QWidget *m_welcomeWidget = nullptr;     // persistent host (shown/hidden)
     QScrollArea *m_welcomeScroll = nullptr; // vertical overflow for the board
     QWidget *m_welcomeContent = nullptr;    // themed content, rebuilt on theme change
