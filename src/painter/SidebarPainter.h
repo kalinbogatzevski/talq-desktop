@@ -44,6 +44,7 @@ struct ConversationLayout {
     qint64 lastActivity = 0;
     int notificationLevel = 0;  // 0=default, 1=always, 2=mention, 3=never
     QStringList tagIds;         // Talk 24 conversation tags (empty pre-24)
+    int attributes = 0;         // Talk 24/25 room bit-flags (channel, classified, preserved...)
 
     // Computed
     QString timeString;

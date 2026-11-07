@@ -108,6 +108,33 @@ public:
     int sipEnabled = 0;
     QString attendeePin;
 
+    // --- Talk 25 (channels, announcements, classified, preserved) ----------
+    // None of these was parsed before. Each defaults to the answer that keeps
+    // the pre-25 behaviour when the key is absent, so an older server reads
+    // exactly as it did (see core/Talk25Rooms.h for the rules built on them).
+    //
+    // `permissions`: the EFFECTIVE permission mask of THIS user in this room (a
+    // moderator already has the maximum). `hasPermissions` is false when the
+    // server did not send it, which must read as "allowed", never as "none".
+    bool hasPermissions = false;
+    int permissions = 0;
+    // The server's own verdict on Leave / Delete. TRUE when absent. False for a
+    // member of an announcement (cannot leave) and for a preserved room (cannot
+    // be deleted); the dialog hides or disables the action instead of letting
+    // the user click into a refusal.
+    bool canLeave = true;
+    bool canDelete = true;
+    // The user's own "hide message content" switch (`sensitive-conversations`).
+    // The server already leaves `lastMessage` out of the list for such a room;
+    // this lets the client keep the text out of the places IT fills from the
+    // live chat (the list preview, the toast).
+    bool isSensitive = false;
+    // `objectType` is "classified" while a classified room is queued for
+    // automatic deletion, "classified_persist" once a moderator kept it.
+    // Empty for an ordinary room. objectId is not used: the sweep runs on
+    // lastActivity, not on it (core/Talk25Rooms.h::classifiedDeleteAt).
+    QString objectType;
+
     static Conversation fromJson(const QJsonObject &json);
 
     // For sorting: most recent activity first

@@ -1,6 +1,17 @@
 #include "models/ConversationListModel.h"
+#include "core/Talk25Rooms.h"
 #include <algorithm>
 #include <QHash>
+
+namespace {
+// Classified is sensitive for EVERY member (the server sets the flag on each
+// join path), but the user can in principle flip their own switch afterwards;
+// a classified room is treated as sensitive whatever the flag says.
+bool isSensitiveRoom(const Conversation &c)
+{
+    return c.isSensitive || talq::isClassifiedRoom(c.attributes);
+}
+} // namespace
 
 ConversationListModel::ConversationListModel(ApiClient *api, QObject *parent)
     : QAbstractListModel(parent)
@@ -162,6 +173,17 @@ void ConversationListModel::refresh()
         // Preserve hasTopics flag across refresh
         for (auto &c : newConversations) {
             c.hasTopics = oldHasTopics.value(c.token, false);
+            // A sensitive (and so every classified) room carries NO message text
+            // anywhere TalQ keeps it. Talk already leaves lastMessage out of the
+            // room list for such a room; this keeps that true if a server ever
+            // sent it, and it is decided here, on the FRESH room: the signal
+            // below fires before m_conversations is replaced, so a lookup by
+            // token at that point would read the previous list (and know
+            // nothing of a room that has just appeared).
+            if (isSensitiveRoom(c)) {
+                c.lastMessageText.clear();
+                c.lastMessageAuthor.clear();
+            }
         }
 
         // Detect new unread messages and emit notifications
@@ -175,7 +197,8 @@ void ConversationListModel::refresh()
                 // Skip emitting if the last message was sent silently — the
                 // sender explicitly opted out of notifying us.
                 if (!c.lastMessageSilent)
-                    emit newUnreadMessage(c.displayName, c.lastMessageText, c.token);
+                    emit newUnreadMessage(c.displayName, c.lastMessageText, c.token,
+                                          isSensitiveRoom(c));
             }
 
             // Detect incoming calls — use persistent m_callState so two
@@ -587,10 +610,33 @@ int ConversationListModel::participantTypeForToken(const QString &token) const
     return 0;
 }
 
+bool ConversationListModel::conversationForToken(const QString &token, Conversation *out) const
+{
+    for (const Conversation &c : m_conversations) {
+        if (c.token == token) {
+            if (out) *out = c;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool ConversationListModel::isSensitiveForToken(const QString &token) const
+{
+    for (const Conversation &c : m_conversations)
+        if (c.token == token) return isSensitiveRoom(c);
+    return false;
+}
+
 void ConversationListModel::updateLastMessage(const QString &token, const QString &author, const QString &text)
 {
     int i = indexOfToken(token);
     if (i < 0) return;
+    // A sensitive (and so every classified) room: the server leaves the last
+    // message out of the room list on purpose. Filling it back in from the live
+    // chat would put the text on the sidebar row, where anyone looking at the
+    // screen reads it.
+    if (isSensitiveRoom(m_conversations[i])) return;
     m_conversations[i].lastMessageText = text;
     m_conversations[i].lastMessageAuthor = author;
     emit dataChanged(index(i), index(i), {LastMessageRole, LastAuthorRole});

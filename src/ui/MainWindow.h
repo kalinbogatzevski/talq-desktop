@@ -323,6 +323,11 @@ private:
     void buildWelcomeContent();    // (re)build Mission Control content; theme-aware
     void showWelcome();            // rebuild-if-dirty, then show + refresh
     void restyleChrome();          // re-apply theme tokens to QSS-styled chrome
+    // Talk 25. Re-derives, from the open room's fields, whether the composer may
+    // post (and why not) and whether the classified auto-deletion bar shows.
+    // Cheap and idempotent: called when a room opens, on Home, and after every
+    // room-list refresh, because a moderator can change the room under the user.
+    void applyRoomGuards();
     void showThemeToast(const QString &name);  // brief "Theme: X" overlay
     void showToast(const QString &text);       // brief top-centre confirmation pill (1.6 s)
     // The same pill, held for `ms`. A separate name, not a default argument:
@@ -536,6 +541,11 @@ private:
     QPointer<class PersonCardPopup> m_personCard;
     bool m_personCardWiredToCti = false;   // the one connection that outlives a card
     ShiftStatusService *m_shiftStatus = nullptr;
+    // Talk 25: the "queued for automatic deletion" bar above the composer of a
+    // classified room, with the moderator's Keep action. Hidden otherwise.
+    QWidget       *m_roomNoticeBar = nullptr;
+    class QLabel  *m_roomNoticeLabel = nullptr;
+    class QPushButton *m_roomNoticeKeepBtn = nullptr;
     QWidget       *m_updateBanner = nullptr;
     class QLabel  *m_updateLabel = nullptr;
     QProgressBar  *m_updateProgress = nullptr;

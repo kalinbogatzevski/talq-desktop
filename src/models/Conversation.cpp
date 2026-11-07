@@ -42,6 +42,14 @@ Conversation Conversation::fromJson(const QJsonObject &json)
     // an empty array and toInt() yields 0, so an old server parses as
     // "untagged, no attributes" with no special-casing needed here.
     c.attributes = json["attributes"].toInt(0);
+    // Talk 25. Absent on older servers; every default below is the
+    // "behave as before" answer (see the field comments in Conversation.h).
+    c.hasPermissions = json.contains(QStringLiteral("permissions"));
+    c.permissions = json["permissions"].toInt(0);
+    c.canLeave = json["canLeaveConversation"].toBool(true);
+    c.canDelete = json["canDeleteConversation"].toBool(true);
+    c.isSensitive = json["isSensitive"].toBool(false);
+    c.objectType = json["objectType"].toString();
     const QJsonArray tagIds = json["tagIds"].toArray();
     c.tagIds.reserve(tagIds.size());
     for (const auto &t : tagIds) {

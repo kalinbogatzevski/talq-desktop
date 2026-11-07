@@ -5,6 +5,7 @@
 #include "core/SignalingClient.h"
 #include "core/ShiftStatusService.h"
 #include "core/ConversationKind.h"
+#include "core/Talk25Rooms.h"
 #include "EmojiTextRenderer.h"
 #include <QApplication>
 #include <QCursor>
@@ -281,6 +282,7 @@ void SidebarPainter::rebuildLayouts()
         cl.lastActivity = m_model->data(idx, ConversationListModel::LastActivityRole).toLongLong();
         cl.notificationLevel = m_model->data(idx, ConversationListModel::NotificationLevelRole).toInt();
         cl.tagIds = m_model->data(idx, ConversationListModel::TagIdsRole).toStringList();
+        cl.attributes = m_model->data(idx, ConversationListModel::AttributesRole).toInt();
 
         cl.timeString = PainterTheme::formatRelativeTime(cl.lastActivity);
         cl.previewText = PainterTheme::formatPreviewText(cl.lastAuthor, cl.lastMessage);
@@ -1343,6 +1345,26 @@ void SidebarPainter::paintRowNormal(QPainter *p, const ConversationLayout &cl, i
     qreal nameLeft = textLeft;
     qreal nameRight = textRight - timeW - PainterTheme::spacingSmall;
 
+    // Talk 25 room kind, in words: "Channel", "Announcement", "Classified", or
+    // "Preserved" for an ordinary room its owner has locked against deletion.
+    // Drawn in the "Muted" label's font and colour (textMuted at the tiny size,
+    // already contrast-checked on this row), between the name and the time, and
+    // measured here so the name elides around it. Empty for every other room.
+    QString kindLabel;
+    switch (talq::roomKind(cl.attributes)) {
+    case talq::RoomKind::Classified:   kindLabel = tr("Classified");   break;
+    case talq::RoomKind::Announcement: kindLabel = tr("Announcement"); break;
+    case talq::RoomKind::Channel:      kindLabel = tr("Channel");      break;
+    case talq::RoomKind::Plain:
+        if (talq::isPreservedRoom(cl.attributes)) kindLabel = tr("Preserved");
+        break;
+    }
+    qreal kindW = 0;
+    if (!kindLabel.isEmpty()) {
+        kindW = timeFM.horizontalAdvance(kindLabel);
+        nameRight -= kindW + PainterTheme::spacingSmall;
+    }
+
     // Favorite dot — affinity, not a "needs you" signal. One-Signal Rule:
     // it must NOT use the teal accent (which competes with unread/active).
     if (cl.isFavorite) {
@@ -1363,6 +1385,14 @@ void SidebarPainter::paintRowNormal(QPainter *p, const ConversationLayout &cl, i
     p->setPen(m_theme.textPrimary);
     p->setFont(nameFont);
     p->drawText(nameDrawRect, Qt::AlignLeft | Qt::AlignVCenter, elidedName);
+
+    if (!kindLabel.isEmpty()) {
+        p->setPen(m_theme.textMuted);
+        p->setFont(timeFont);
+        p->drawText(QRectF(textRight - timeW - PainterTheme::spacingSmall - kindW, nameY,
+                           kindW, m_theme.fontSizeNormal + 6),
+                    Qt::AlignRight | Qt::AlignVCenter, kindLabel);
+    }
 
     // Timestamp
     // accentText, not accent: this is an 11px timestamp, and the fill-tuned

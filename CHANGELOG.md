@@ -1,5 +1,42 @@
 # Changelog
 
+## v0.79.6 "Arhangelovden" — BETA (2026-11-07)
+
+Nextcloud Talk 25 added three new kinds of conversation. TalQ now treats each one properly, so you
+are no longer left to find out by trial and error what you can and cannot do in them.
+
+### Added
+* **Channels and announcements.** Only moderators can post in a channel or an announcement. If that
+  is not you, the message box is greyed out and says so, instead of letting you type a message the
+  server then refuses. Calls are off in them, and only moderators can see who is in a channel (the
+  members list says so instead of "Couldn't load"). You cannot leave an announcement. The chat list
+  marks them with **Channel** or **Announcement**, and the conversation information window explains
+  which one it is. Only a Nextcloud administrator can create an announcement.
+* **Classified conversations.** Message text is kept out of the chat list and out of pop-up
+  notifications, which show "New message" instead. **When a call ends in a classified conversation,
+  the server puts it on a deletion list: it is deleted after seven days (your administrator can
+  change this) in which nobody writes in it, unless a moderator keeps it.** TalQ now tells you so in
+  a bar above the message box and in the conversation information window, with the day it will
+  happen from about, and moderators get a **Keep this conversation** button. Writing in the
+  conversation moves the day back; keeping it stops the deletion for good, including after later
+  calls. The chat list marks them with **Classified**.
+* **Preserved conversations.** The owner of a conversation can turn on **Preserve this
+  conversation** in the conversation information window. While it is on, the conversation cannot be
+  deleted, its chat history cannot be cleared, and its public link and listing cannot be changed;
+  Delete and Clear history are greyed out and say why. The chat list marks it with **Preserved**.
+* **Read-only conversations** grey out the message box too, as channels do. Before, TalQ let you
+  type and the server refused.
+
+### Good to know
+* **Beta channel only.** The stable line (0.78.0) is untouched.
+* **You need a Talk 25 server** (Nextcloud 35) for any of this. On an older server nothing changes.
+* **Creating them** works from **New chat** → **Group** → **Conversation type**, as it did before
+  this version: TalQ shows whatever types the server offers.
+* **Not yet checked:** an announcement against a real server (only an administrator can create
+  one), and how the new bar, labels and information-window rows look in each of the four themes.
+  Files dropped or pasted into a room where you cannot post are still sent to the server, which
+  refuses them.
+
 ## v0.79.5 "Arhangelovden" — BETA (2026-11-04)
 
 Your chat-list folders can now follow you between your own computers, if you turn it on. The

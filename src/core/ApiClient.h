@@ -454,6 +454,22 @@ public:
     // a "history_cleared" system message that clients purge their cache on.
     void clearChatHistory(const QString &token, QObject *context,
                           std::function<void(bool ok, const QString &error)> callback);
+    // Talk 25 (capability `preserve-conversation`): POST / DELETE
+    // /room/{token}/preserve. OWNER only; anyone else is refused with
+    // {"error":"permissions"}. While preserved the room cannot be deleted, its
+    // history cannot be cleared, and its guest/listable settings cannot change.
+    // On success `attributes` is the room's new bitmask (the reply is the whole
+    // formatted room); on failure `errorCode` is Talk's machine word (never user
+    // text: map it, fall back to a generic line). `context` guards the callback.
+    void setRoomPreserved(const QString &token, bool preserved, QObject *context,
+                          std::function<void(bool ok, int attributes, const QString &errorCode)> callback);
+    // Talk 25 (capability `unbind-conversation`): DELETE /room/{token}/object,
+    // moderator only. On a classified room this is "keep this conversation": it
+    // turns the object type into "classified_persist", which the nightly sweep
+    // never deletes and a later call never re-queues. Refused with
+    // {"error":"object-type"} for a room that has nothing to unbind.
+    void keepClassifiedRoom(const QString &token, QObject *context,
+                            std::function<void(bool ok, const QString &errorCode)> callback);
 
     // Participants.
     void fetchRoomParticipants(const QString &token, QObject *context,

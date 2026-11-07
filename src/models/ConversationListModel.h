@@ -125,6 +125,12 @@ public:
     // SIP dial-in state and this user's dial-in PIN for a room.
     Q_INVOKABLE int sipEnabledForToken(const QString &token) const;
     Q_INVOKABLE QString attendeePinForToken(const QString &token) const;
+    // Talk 25. A copy of the room, for the guards that need several of its
+    // fields at once (composer, info dialog, notice bar). False for an unknown
+    // token, in which case `out` is left untouched and callers behave as before.
+    bool conversationForToken(const QString &token, Conversation *out) const;
+    // The user's "hide message content" switch for this room; false if unknown.
+    bool isSensitiveForToken(const QString &token) const;
     // Display name for a token, so a cross-conversation search hit can say
     // WHICH conversation it is in. Empty for an unknown token.
     Q_INVOKABLE QString displayNameForToken(const QString &token) const;
@@ -143,7 +149,11 @@ signals:
     void totalUnreadChanged();
     void errorOccurred(const QString &error);
     // Emitted when a conversation gets new unread messages
-    void newUnreadMessage(const QString &conversationName, const QString &lastMessage, const QString &token);
+    // `sensitive` is judged on the room as the server just described it (a
+    // classified room is always sensitive): the toast then says that something
+    // arrived and never what.
+    void newUnreadMessage(const QString &conversationName, const QString &lastMessage,
+                          const QString &token, bool sensitive);
     // Emitted when someone starts a call in a conversation
     void incomingCallDetected(const QString &conversationName, const QString &token, int callFlag);
 
