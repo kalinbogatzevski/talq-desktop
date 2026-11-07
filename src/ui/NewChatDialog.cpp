@@ -482,9 +482,35 @@ void NewChatDialog::selectPreset(int index)
     m_selectedPreset = index;
     for (int i = 0; i < m_presetButtons.size(); ++i)
         m_presetButtons[i]->setChecked(i == index);
-    m_presetHint->setText(index >= 0 && index < m_presets.size()
-                              ? m_presets[index].description
-                              : QString());
+    if (index < 0 || index >= m_presets.size()) {
+        m_presetHint->setText(QString());
+        return;
+    }
+    const RoomPreset &p = m_presets[index];
+    QString text = p.description;
+
+    // A type that makes messages vanish must say so BEFORE the room exists: the
+    // Classified type sets messageExpiration to 604800 (7 days), nothing in its
+    // server-written description mentions it, and a deleted message cannot be
+    // recovered. Read from the preset's own parameters, so it is right for any
+    // type and for any value an administrator forces, not hard-coded for one.
+    const int expiry = p.parameters.value(QStringLiteral("messageExpiration")).toInt(0);
+    if (expiry > 0) {
+        QString span;
+        if (expiry % 86400 == 0) {
+            const int n = expiry / 86400;
+            span = n == 1 ? tr("1 day") : tr("%1 days").arg(n);
+        } else if (expiry % 3600 == 0) {
+            const int n = expiry / 3600;
+            span = n == 1 ? tr("1 hour") : tr("%1 hours").arg(n);
+        } else {
+            const int n = qMax(1, expiry / 60);
+            span = n == 1 ? tr("1 minute") : tr("%1 minutes").arg(n);
+        }
+        if (!text.isEmpty()) text += QLatin1Char('\n');
+        text += tr("Messages in this type are deleted automatically after %1.").arg(span);
+    }
+    m_presetHint->setText(text);
 }
 
 void NewChatDialog::runSearch()

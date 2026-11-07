@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.79.7 "Arhangelovden" — BETA (2026-11-07)
+
+### Changed
+* **New chat now says when a conversation type deletes its messages by itself.** Under **New chat** →
+  **Group** → **Conversation type**, a type whose messages expire shows a line under the type buttons,
+  for example "Messages in this type are deleted automatically after 7 days." Nextcloud's Classified
+  type does this, and until now you only found out afterwards. TalQ reads the period from the type
+  the server offers, so it shows the period your server uses.
+
+### Good to know
+* **Beta channel only.** The stable line (0.78.0) is untouched.
+* Nothing else changes from 0.79.6.
+
 ## v0.79.6 "Arhangelovden" — BETA (2026-11-07)
 
 Nextcloud Talk 25 added three new kinds of conversation. TalQ now treats each one properly, so you
