@@ -40,6 +40,8 @@
 #include "core/AvatarPaths.h"
 #include "core/SearchHit.h"
 #include "core/AuthManager.h"
+#include "core/RoomParticipant.h"
+#include "core/Talk25Rooms.h"
 #include "core/FolderStore.h"
 #include "core/FolderSyncController.h"
 #include "core/FolderSyncUiLogic.h"
@@ -1050,6 +1052,7 @@ void MainWindow::buildChatPage()
         stashComposerDraftOnLeave();
         if (m_composer) m_composer->clearText();
         m_activeConvToken.clear();
+        applyRoomGuards();   // no room open: nothing blocked, no bar
         m_chatPainter->hide();
         if (m_composer) m_composer->hide();
         m_header->hide();
@@ -1587,7 +1590,48 @@ void MainWindow::buildChatPage()
     m_composer->setSignaling(m_signaling);
     m_composer->setMessageModel(m_messages);
     m_composer->hide();
+
+    // Talk 25: a classified room that a call has put on the deletion list says
+    // so, right above the box the user types in, and a moderator can keep it
+    // from here. Hidden for every other room (applyRoomGuards decides).
+    m_roomNoticeBar = new QWidget(chatCol);
+    m_roomNoticeBar->setObjectName("rnRoot");
+    m_roomNoticeBar->hide();
+    auto *rnLay = new QHBoxLayout(m_roomNoticeBar);
+    rnLay->setContentsMargins(18, 8, 12, 8);
+    rnLay->setSpacing(12);
+    m_roomNoticeLabel = new QLabel(m_roomNoticeBar);
+    m_roomNoticeLabel->setObjectName("rnLabel");
+    m_roomNoticeLabel->setWordWrap(true);
+    rnLay->addWidget(m_roomNoticeLabel, 1);
+    m_roomNoticeKeepBtn = new QPushButton(tr("Keep this conversation"), m_roomNoticeBar);
+    m_roomNoticeKeepBtn->setObjectName("rnKeep");
+    m_roomNoticeKeepBtn->setCursor(Qt::PointingHandCursor);
+    rnLay->addWidget(m_roomNoticeKeepBtn);
+    connect(m_roomNoticeKeepBtn, &QPushButton::clicked, this, [this]() {
+        const QString token = m_activeConvToken;
+        if (token.isEmpty()) return;
+        m_roomNoticeKeepBtn->setEnabled(false);
+        m_api->keepClassifiedRoom(token, this, [this, token](bool ok, const QString &code) {
+            m_roomNoticeKeepBtn->setEnabled(true);
+            if (token != m_activeConvToken) return;   // the user moved on
+            if (!ok) {
+                qWarning() << "keep classified room refused:" << token << code;
+                m_roomNoticeLabel->setText(
+                    tr("Could not keep this conversation (%1). Open the conversation "
+                       "info to try again, or ask a moderator.")
+                        .arg(code.isEmpty() ? tr("the server refused") : code));
+                return;
+            }
+            m_roomNoticeBar->hide();
+            m_conversations->refresh();   // the room now reports classified_persist
+        });
+    });
+    chatLayout->addWidget(m_roomNoticeBar);
     chatLayout->addWidget(m_composer);
+    // Every refresh ends in countChanged (in place or by reset).
+    connect(m_conversations, &ConversationListModel::countChanged,
+            this, &MainWindow::applyRoomGuards);
 
     // Restore the saved zoom through the SAME path a manual zoom uses, now
     // that both the chat painter and composer exist. Previously only the
@@ -3048,6 +3092,70 @@ void MainWindow::sidebarSqueezedChanged()
     m_splitter->setSizes({sideW, topicsW, m_splitter->width() - sideW - topicsW});
 }
 
+void MainWindow::applyRoomGuards()
+{
+    if (!m_composer || !m_conversations) return;
+
+    Conversation c;
+    const bool known = !m_activeConvToken.isEmpty()
+                       && m_conversations->conversationForToken(m_activeConvToken, &c);
+    if (!known) {
+        m_composer->setPostBlockedReason(QString());
+        if (m_roomNoticeBar) m_roomNoticeBar->hide();
+        return;
+    }
+
+    // Can this user post here? The server is the judge and says so per room
+    // (`readOnly`, and `permissions` = their effective mask); asking it by
+    // sending a message means typing the message first. An absent field reads
+    // as "allowed", so an older server is unchanged.
+    QString reason;
+    switch (talq::postBlock(c.attributes, c.readOnly, c.hasPermissions, c.permissions)) {
+    case talq::PostBlock::None:
+        break;
+    case talq::PostBlock::ReadOnly:
+        reason = tr("This conversation is read-only.");
+        break;
+    case talq::PostBlock::ChannelModeratorsOnly:
+        reason = talq::isAnnouncementRoom(c.attributes)
+            ? tr("Only moderators can post in this announcement.")
+            : tr("Only moderators can post in this channel.");
+        break;
+    case talq::PostBlock::NoPermission:
+        reason = tr("You do not have permission to post here.");
+        break;
+    }
+    m_composer->setPostBlockedReason(reason);
+
+    // A classified room that a call has queued for automatic deletion.
+    if (!m_roomNoticeBar) return;
+    if (c.objectType != QLatin1String("classified")) {
+        m_roomNoticeBar->hide();
+        return;
+    }
+    const qint64 retention = m_auth ? m_auth->configInt(QStringLiteral("conversations"),
+                                                        QStringLiteral("retention-classified"), 0) : 0;
+    const qint64 at = talq::classifiedDeleteAt("classified", c.lastActivity, retention);
+    const int pt = c.participantType;
+    const bool moderator = (pt == RoomParticipant::Owner || pt == RoomParticipant::Moderator
+                            || pt == RoomParticipant::GuestModerator);
+    const bool canKeep = moderator && m_auth && m_auth->capabilities().supportsUnbind();
+    QString text;
+    if (at > 0) {
+        const QString when = QLocale().toString(QDateTime::fromSecsSinceEpoch(at).date(),
+                                                QLocale::LongFormat);
+        text = tr("A call has taken place here, so this classified conversation will be "
+                  "deleted from about %1 unless someone writes in it before then.").arg(when);
+    } else {
+        text = tr("A call has taken place here, so this classified conversation will be "
+                  "deleted automatically after a period without activity.");
+    }
+    text += canKeep ? QString() : QLatin1Char(' ') + tr("Ask a moderator to keep it.");
+    m_roomNoticeLabel->setText(text);
+    m_roomNoticeKeepBtn->setVisible(canKeep);
+    m_roomNoticeBar->show();
+}
+
 void MainWindow::onConversationSelected(const QString &token, const QString &name,
                                          const QString &userId, int convType,
                                          const QString &userStatus,
@@ -3101,6 +3209,7 @@ void MainWindow::onConversationSelected(const QString &token, const QString &nam
     m_header->show();
     m_chatPainter->show();
     m_composer->show();
+    applyRoomGuards();
     if (m_updateBannerActive) {
         m_updateBanner->show();
         m_updateBanner->raise();
@@ -4302,6 +4411,18 @@ void MainWindow::restyleChrome()
             "QPushButton#healthClose:hover{color:%4;}")
             .arg(hx(t.bgSecondary), hx(t.divider), hx(t.amber),
                  hx(t.textPrimary), hx(t.textSecondary)));
+    }
+
+    if (m_roomNoticeBar) {
+        m_roomNoticeBar->setStyleSheet(QString(
+            "QWidget#rnRoot{background:%1;border-top:2px solid %2;}"
+            "QLabel#rnLabel{color:%3;font-size:13px;}"
+            "QPushButton#rnKeep{background:%4;color:%5;border:none;"
+            "border-radius:7px;padding:7px 16px;font-weight:700;}"
+            "QPushButton#rnKeep:hover{background:%6;}")
+            .arg(hx(t.bgSecondary), hx(t.amber), hx(t.textPrimary),
+                 hx(t.accent), hx(t.inkOn(t.accent)),
+                 hx(t.accent.lighter(118))));
     }
 
     if (m_updateBanner) {
@@ -6898,6 +7019,25 @@ void MainWindow::openConversationInfo()
     // SIP bridge, which is every room on ours today.
     dlg->setSipInfo(m_conversations->sipEnabledForToken(m_activeConvToken),
                     m_conversations->attendeePinForToken(m_activeConvToken));
+    {
+        // Talk 25: what kind of room it is and what the server will refuse in it.
+        ConversationInfoDialog::Talk25State st;
+        Conversation rc;
+        if (m_conversations->conversationForToken(m_activeConvToken, &rc)) {
+            const qint64 retention = m_auth ? m_auth->configInt(QStringLiteral("conversations"),
+                                                                QStringLiteral("retention-classified"), 0) : 0;
+            st.attributes = rc.attributes;
+            st.canLeave = rc.canLeave;
+            st.canDelete = rc.canDelete;
+            st.objectType = rc.objectType;
+            st.classifiedDeleteAt = talq::classifiedDeleteAt(rc.objectType.toStdString(),
+                                                             rc.lastActivity, retention);
+            st.classifiedRetentionDays = int((retention + 86399) / 86400);
+        }
+        st.canPreserve = m_auth && m_auth->capabilities().supportsPreserve();
+        st.canKeep = m_auth && m_auth->capabilities().supportsUnbind();
+        dlg->setTalk25State(st);
+    }
     connect(dlg, &ConversationInfoDialog::roomChanged, this, [this]() {
         m_conversations->refresh();
         // A name/picture change from the info dialog must drop the cached

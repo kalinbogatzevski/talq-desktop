@@ -1587,6 +1587,37 @@ void ApiClient::clearChatHistory(const QString &token, QObject *context,
     });
 }
 
+void ApiClient::setRoomPreserved(const QString &token, bool preserved, QObject *context,
+                                 std::function<void(bool, int, const QString &)> callback)
+{
+    const QString path = QStringLiteral("apps/spreed/api/v4/room/") + token
+                         + QStringLiteral("/preserve");
+    // The generic post()/del() have no context argument, so the guard is ours:
+    // a dialog closed while the request is in flight must not be called into.
+    QPointer<QObject> guard(context);
+    const bool hasContext = (context != nullptr);
+    auto done = [guard, hasContext, callback](bool ok, const QJsonObject &data, int) {
+        if (hasContext && !guard) return;
+        callback(ok, ok ? data.value(QStringLiteral("attributes")).toInt() : 0,
+                 ok ? QString() : data.value(QStringLiteral("error")).toString());
+    };
+    if (preserved) post(path, done);
+    else           del(path, done);
+}
+
+void ApiClient::keepClassifiedRoom(const QString &token, QObject *context,
+                                   std::function<void(bool, const QString &)> callback)
+{
+    const QString path = QStringLiteral("apps/spreed/api/v4/room/") + token
+                         + QStringLiteral("/object");
+    QPointer<QObject> guard(context);
+    const bool hasContext = (context != nullptr);
+    del(path, [guard, hasContext, callback](bool ok, const QJsonObject &data, int) {
+        if (hasContext && !guard) return;
+        callback(ok, ok ? QString() : data.value(QStringLiteral("error")).toString());
+    });
+}
+
 void ApiClient::leaveRoom(const QString &token, QObject *context,
                           std::function<void(bool, const QString &)> callback)
 {

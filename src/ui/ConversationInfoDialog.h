@@ -16,6 +16,7 @@ class QListWidgetItem;
 class QMargins;
 class QPushButton;
 class QScreen;
+class QCheckBox;
 class QScrollArea;
 class QStackedWidget;
 class QWidget;
@@ -55,6 +56,21 @@ public:
     // conversation list; a room without SIP shows nothing at all.
     void setSipInfo(int sipEnabled, const QString &pin);
 
+    // Talk 25: what kind of room this is and what the server will refuse in it.
+    // Read by the owner from the conversation list, like setSipInfo(); a room of
+    // an older server passes the defaults and the dialog is exactly what it was.
+    struct Talk25State {
+        int attributes = 0;          // bit-flags, core/ServerCapabilities.h
+        bool canLeave = true;        // the server's canLeaveConversation
+        bool canDelete = true;       // the server's canDeleteConversation
+        QString objectType;          // "classified" = queued for auto-deletion
+        qint64 classifiedDeleteAt = 0;  // earliest deletion, Unix s (0 = none queued)
+        int classifiedRetentionDays = 0;
+        bool canPreserve = false;    // server has `preserve-conversation`
+        bool canKeep = false;        // server has `unbind-conversation`
+    };
+    void setTalk25State(const Talk25State &state);
+
 signals:
     void roomChanged();   // name/description/members changed
     void roomDeleted();   // room deleted OR current user left
@@ -84,6 +100,8 @@ private slots:
     void onClearHistoryClicked();
     void onAddBotClicked();
     void onChangeAvatar();   // #25 — pick + upload a group picture
+    void onPreserveToggled(bool checked);
+    void onKeepClicked();
 
 private:
     void applyChrome();   // dialog typography/inputs, palette-driven
@@ -107,6 +125,9 @@ private:
     // counts and switching never asks the dialog for more room.
     void showPage(QWidget *page);
     bool m_placed = false;
+    // Re-derives everything the Talk 25 state controls (the explanation, the
+    // preserve switch, the keep row, Leave / Clear history / Delete). Idempotent.
+    void applyTalk25State();
     void refreshParticipants();
     void populateParticipants(const QVector<RoomParticipant> &items);
     void runAddSearch();
@@ -167,6 +188,16 @@ private:
     QPushButton *m_deleteBtn = nullptr;
     QPushButton *m_closeBtn = nullptr;
     QLabel      *m_sipLabel = nullptr;
+
+    // Talk 25. Hidden until setTalk25State() says there is something to show.
+    Talk25State  m_talk25;
+    QWidget     *m_kindBox = nullptr;
+    QLabel      *m_kindLabel = nullptr;       // what this kind of room is
+    QCheckBox   *m_preserveCheck = nullptr;   // owner only
+    QLabel      *m_preserveHint = nullptr;
+    QWidget     *m_keepRow = nullptr;         // classified: deletion notice + Keep
+    QLabel      *m_keepLabel = nullptr;
+    QPushButton *m_keepBtn = nullptr;         // moderators only
     QLabel      *m_status = nullptr;
 
     // Bots panel (everyone can view; only moderators see the +Add control).

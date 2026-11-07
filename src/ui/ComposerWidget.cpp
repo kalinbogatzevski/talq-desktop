@@ -217,7 +217,7 @@ ComposerWidget::ComposerWidget(QWidget *parent)
     layout->addWidget(m_recLabel, 1);
 
     m_input = new ComposeTextEdit(this);
-    m_input->setPlaceholderText(tr("Write a message\u2026"));
+    applyPlaceholder(tr("Write a message\u2026"));
     setFocusProxy(m_input);
     // The QTextEdit stylesheet and min/max height are owned by
     // setInputFont() (called at the end of this constructor and on every
@@ -519,13 +519,34 @@ void ComposerWidget::autoResizeInput()
         m_input->setFixedHeight(newH);
 }
 
+void ComposerWidget::applyPlaceholder(const QString &text)
+{
+    // Remembered even while blocked, so the right text comes back when the
+    // block lifts (the room can change under a blocked composer).
+    m_placeholder = text;
+    m_input->setPlaceholderText(m_postBlockedReason.isEmpty() ? m_placeholder
+                                                              : m_postBlockedReason);
+}
+
+void ComposerWidget::setPostBlockedReason(const QString &reason)
+{
+    if (reason == m_postBlockedReason) return;
+    m_postBlockedReason = reason;
+    // The whole widget, not just the box: the send, attach, emoji and
+    // microphone buttons must go quiet with it, or the one thing left to click
+    // is the thing that is refused.
+    setEnabled(reason.isEmpty());
+    setToolTip(reason);
+    applyPlaceholder(m_placeholder);
+}
+
 void ComposerWidget::setTopicName(const QString &name)
 {
     m_topicName = name;
     if (name.isEmpty())
-        m_input->setPlaceholderText(tr("Message…"));
+        applyPlaceholder(tr("Message…"));
     else
-        m_input->setPlaceholderText(tr("Reply in %1…").arg(name));
+        applyPlaceholder(tr("Reply in %1…").arg(name));
 }
 
 void ComposerWidget::setSignaling(SignalingClient *sig)
@@ -699,7 +720,7 @@ void ComposerWidget::showPendingFile(const QString &path)
     }
 
     m_pendingBar->show();
-    m_input->setPlaceholderText(tr("Add a caption\u2026"));
+    applyPlaceholder(tr("Add a caption\u2026"));
     m_input->setFocus();
     updateLengthIndicator();   // text typed before the file was staged is now a caption
 }
@@ -748,7 +769,7 @@ void ComposerWidget::cancelPendingFile()
     discardOwnedPendingFile();   // the user dismissed a paste TalQ made: nobody else wants it
     m_pendingFilePath.clear();
     m_pendingBar->hide();
-    m_input->setPlaceholderText(m_topicName.isEmpty()
+    applyPlaceholder(m_topicName.isEmpty()
         ? tr("Message…")
         : tr("Reply in %1…").arg(m_topicName));
     m_input->setFocus();

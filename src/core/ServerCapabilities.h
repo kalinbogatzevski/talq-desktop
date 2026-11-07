@@ -77,6 +77,18 @@ inline const char *const CAP_TALK_POLLS = "talk-polls";
 inline const char *const CAP_TALK_POLLS_DRAFTS = "talk-polls-drafts";
 inline const char *const CAP_CHAT_SUMMARY = "chat-summary-api";
 
+// Talk 25 (Nextcloud 35). Read out of spreed v25.0.7's lib/Capabilities.php, not
+// docs/: preserve-conversation, classified-conversations, announcement-preset
+// and unbind-conversation are all in its FEATURES list. `announcement-preset`
+// gates BOTH the `channel` and the `announcement` preset (and their attribute
+// bits); there is no capability named "channel".
+inline const char *const CAP_PRESERVE_CONVERSATION = "preserve-conversation";
+inline const char *const CAP_CLASSIFIED_CONVERSATIONS = "classified-conversations";
+inline const char *const CAP_ANNOUNCEMENT_PRESET = "announcement-preset";
+// DELETE /room/{token}/object. For a classified room it is the "keep this
+// conversation" action (see ConversationKind25.h).
+inline const char *const CAP_UNBIND_CONVERSATION = "unbind-conversation";
+
 // Bit-flags of the conversation `attributes` field (Talk 24 lib/RoomAttributes.php).
 // A bit-flag, not an enum value: test with a mask, never with equality, or a
 // future second attribute bit silently turns every voice room into a non-voice
@@ -84,6 +96,11 @@ inline const char *const CAP_CHAT_SUMMARY = "chat-summary-api";
 enum ConversationAttribute : int {
     AttributeNone = 0,
     AttributeVoiceRoom = 1,
+    // Talk 25 (spreed v25.0.7 lib/RoomAttributes.php, docs/constants.md):
+    AttributePreserve = 2,       // owner-only: no delete, no history clear, no guests/listable change
+    AttributeClassified = 4,     // locked down; forced sensitive; auto-deleted after a call unless kept
+    AttributeChannel = 8,        // broadcast: calls off for everyone, member list moderators-only
+    AttributeAnnouncement = 16,  // a channel that also cannot be left; ALWAYS set together with 8
 };
 
 // A server's advertised Talk feature set.
@@ -160,6 +177,15 @@ public:
     // ⚠ Present only when the server has an AI text provider installed.
     // The capability IS the availability check.
     bool supportsChatSummary() const { return has(CAP_CHAT_SUMMARY); }
+
+    // --- Talk 25 gates ----------------------------------------------------
+    // These license ACTIONS (a request to an endpoint an older server answers
+    // with 404). Reading the attribute bits for display needs no gate: only a
+    // Talk 25 server can set them.
+    bool supportsPreserve() const { return has(CAP_PRESERVE_CONVERSATION); }
+    bool supportsClassified() const { return has(CAP_CLASSIFIED_CONVERSATIONS); }
+    bool supportsChannels() const { return has(CAP_ANNOUNCEMENT_PRESET); }
+    bool supportsUnbind() const { return has(CAP_UNBIND_CONVERSATION); }
 
 private:
     std::set<std::string> m_features;

@@ -4,18 +4,21 @@
 #include "core/AvatarPaths.h"
 #include "core/ConversationKind.h"
 #include "core/NcUser.h"
+#include "core/Talk25Rooms.h"
 #include "core/ShiftStatusService.h"
 #include "painter/PainterTheme.h"
 #include "ui/ImageViewerDialog.h"
 #include "ui/ScreenFit.h"
 #include "ui/SearchFieldClear.h"
 
+#include <QCheckBox>
 #include <QCursor>
 #include <QEvent>
 #include <QPalette>
 #include <QHBoxLayout>
 #include <QFileDialog>
 #include <QLabel>
+#include <QLocale>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QListWidgetItem>
@@ -33,6 +36,7 @@
 #include <QScrollArea>
 #include <QShowEvent>
 #include <QStackedWidget>
+#include <QStyle>
 #include <QVBoxLayout>
 #include <QTimer>
 #include <QWindow>
@@ -271,6 +275,42 @@ ConversationInfoDialog::ConversationInfoDialog(ApiClient *api,
     body->addWidget(m_descEdit);
     body->addSpacing(20);
 
+    // Talk 25 room kind. Built hidden and filled by setTalk25State(); an
+    // ordinary room never shows it. The gap below is the box's own margin, so a
+    // hidden box leaves none.
+    m_kindBox = new QWidget(this);
+    auto *kindLay = new QVBoxLayout(m_kindBox);
+    kindLay->setContentsMargins(0, 0, 0, 20);
+    kindLay->setSpacing(8);
+    m_kindLabel = new QLabel(m_kindBox);
+    m_kindLabel->setWordWrap(true);
+    m_kindLabel->setProperty("role", "secondary");
+    kindLay->addWidget(m_kindLabel);
+
+    m_preserveCheck = new QCheckBox(tr("Preserve this conversation"), m_kindBox);
+    m_preserveCheck->setCursor(Qt::PointingHandCursor);
+    kindLay->addWidget(m_preserveCheck);
+    m_preserveHint = new QLabel(m_kindBox);
+    m_preserveHint->setWordWrap(true);
+    m_preserveHint->setProperty("role", "secondary");
+    kindLay->addWidget(m_preserveHint);
+
+    m_keepRow = new QWidget(m_kindBox);
+    auto *keepLay = new QVBoxLayout(m_keepRow);
+    keepLay->setContentsMargins(0, 0, 0, 0);
+    keepLay->setSpacing(8);
+    m_keepLabel = new QLabel(m_keepRow);
+    m_keepLabel->setWordWrap(true);
+    keepLay->addWidget(m_keepLabel);
+    m_keepBtn = new QPushButton(tr("Keep this conversation"), m_keepRow);
+    m_keepBtn->setProperty("variant", "primary");
+    m_keepBtn->setCursor(Qt::PointingHandCursor);
+    keepLay->addWidget(m_keepBtn, 0, Qt::AlignLeft);
+    kindLay->addWidget(m_keepRow);
+
+    m_kindBox->setVisible(false);
+    body->addWidget(m_kindBox);
+
     // Members header + Add button
     auto *memRow = new QHBoxLayout();
     m_memberCount = new QLabel(tr("MEMBERS"), this);
@@ -465,6 +505,8 @@ ConversationInfoDialog::ConversationInfoDialog(ApiClient *api,
     connect(m_clearHistoryBtn, &QPushButton::clicked, this, &ConversationInfoDialog::onClearHistoryClicked);
     connect(m_deleteBtn, &QPushButton::clicked, this, &ConversationInfoDialog::onDeleteClicked);
     connect(m_closeBtn,  &QPushButton::clicked, this, &QDialog::accept);
+    connect(m_preserveCheck, &QCheckBox::clicked, this, &ConversationInfoDialog::onPreserveToggled);
+    connect(m_keepBtn, &QPushButton::clicked, this, &ConversationInfoDialog::onKeepClicked);
 
     refreshParticipants();
     refreshBots();
@@ -729,7 +771,17 @@ void ConversationInfoDialog::refreshParticipants()
     m_status->setText(tr("Loading members\u2026"));
     m_api->fetchRoomParticipants(m_token, this,
         [this](bool ok, const QVector<RoomParticipant> &items) {
-            if (!ok) { m_status->setText(tr("Couldn't load members.")); return; }
+            if (!ok) {
+                // A channel keeps its member list from everyone but moderators
+                // (the server answers 403), which is not a failure to load.
+                if (talq::isChannelRoom(m_talk25.attributes) && !m_amOwnerOrMod) {
+                    m_memberCount->setText(tr("MEMBERS"));
+                    m_status->setText(tr("Only moderators can see who is in a channel."));
+                } else {
+                    m_status->setText(tr("Couldn't load members."));
+                }
+                return;
+            }
             populateParticipants(items);
         });
 }
@@ -1471,4 +1523,189 @@ void ConversationInfoDialog::setSipInfo(int sipEnabled, const QString &pin)
         ? tr("You can dial in to this conversation by phone.")
         : tr("You can dial in by phone. Your PIN is %1.").arg(pin));
     m_sipLabel->setVisible(true);
+}
+
+// ─── Talk 25 ─────────────────────────────────────────────────────────────
+
+void ConversationInfoDialog::setTalk25State(const Talk25State &state)
+{
+    m_talk25 = state;
+    applyTalk25State();
+}
+
+void ConversationInfoDialog::applyTalk25State()
+{
+    const int attrs = m_talk25.attributes;
+    const talq::RoomKind kind = talq::roomKind(attrs);
+
+    // What kind of room this is, in the words of what changes for the reader.
+    QString kindText;
+    switch (kind) {
+    case talq::RoomKind::Channel:
+        kindText = tr("This is a channel. Only moderators can post here. Calls are "
+                      "turned off, and only moderators see the member list.");
+        break;
+    case talq::RoomKind::Announcement:
+        kindText = tr("This is an announcement. Only moderators can post here. "
+                      "Members cannot leave it, calls are turned off, and everyone "
+                      "is notified of every message by default.");
+        break;
+    case talq::RoomKind::Classified:
+        kindText = tr("This is a classified conversation. Guests, phone dial-in, "
+                      "recordings and bots are turned off, and message text stays "
+                      "out of lists and notifications.");
+        break;
+    case talq::RoomKind::Plain:
+        break;
+    }
+    m_kindLabel->setText(kindText);
+    m_kindLabel->setVisible(!kindText.isEmpty());
+
+    // Preserve: the owner's switch. Shown whenever the server offers it, not
+    // only once the room is preserved, so there is a way to turn it ON.
+    const bool preserved = talq::isPreservedRoom(attrs);
+    const bool isOwner = (m_myType == RoomParticipant::Owner);
+    const bool showPreserve = m_talk25.canPreserve && isOwner && m_roomType != 1;
+    {
+        const QSignalBlocker block(m_preserveCheck);
+        m_preserveCheck->setChecked(preserved);
+    }
+    m_preserveCheck->setVisible(showPreserve);
+    if (showPreserve) {
+        m_preserveHint->setText(
+            tr("While it is preserved the conversation cannot be deleted, its chat "
+               "history cannot be cleared, and its public link and listing cannot "
+               "be changed. Only the owner can turn this on or off."));
+        m_preserveHint->setVisible(true);
+    } else if (preserved) {
+        // Not the owner, but the greyed-out Delete still needs its reason.
+        m_preserveHint->setText(
+            tr("This conversation is preserved: it cannot be deleted and its chat "
+               "history cannot be cleared."));
+        m_preserveHint->setVisible(true);
+    } else {
+        m_preserveHint->setVisible(false);
+    }
+
+    // Classified auto-deletion. Say it plainly: this is the one thing in Talk 25
+    // that can remove a conversation nobody asked to remove.
+    const bool queued = (m_talk25.objectType == QLatin1String("classified"));
+    const bool kept = (m_talk25.objectType == QLatin1String("classified_persist"));
+    QString keepText;
+    if (queued && m_talk25.classifiedDeleteAt > 0) {
+        const QString when = QLocale().toString(
+            QDateTime::fromSecsSinceEpoch(m_talk25.classifiedDeleteAt).date(),
+            QLocale::LongFormat);
+        keepText = tr("A call has taken place here, so this conversation is queued for "
+                      "automatic deletion: from about %1, unless someone writes in it "
+                      "before then. A moderator can keep it for good.").arg(when);
+    } else if (queued) {
+        keepText = tr("A call has taken place here, so this conversation is queued for "
+                      "automatic deletion after a period without activity. A moderator "
+                      "can keep it for good.");
+    } else if (kept) {
+        keepText = tr("A moderator has kept this conversation. It will not be deleted "
+                      "automatically.");
+    } else if (kind == talq::RoomKind::Classified && m_talk25.classifiedRetentionDays > 0) {
+        keepText = tr("Once a call has ended here, this conversation is deleted "
+                      "automatically after %n day(s) without activity, unless a "
+                      "moderator keeps it.", nullptr, m_talk25.classifiedRetentionDays);
+    }
+    m_keepLabel->setProperty("role", queued ? "danger" : "secondary");
+    m_keepLabel->style()->unpolish(m_keepLabel);
+    m_keepLabel->style()->polish(m_keepLabel);
+    m_keepLabel->setText(keepText);
+    m_keepLabel->setVisible(!keepText.isEmpty());
+    m_keepBtn->setVisible(queued && m_talk25.canKeep && m_amOwnerOrMod);
+    m_keepRow->setVisible(!keepText.isEmpty());
+
+    m_kindBox->setVisible(!kindText.isEmpty() || showPreserve || preserved || !keepText.isEmpty());
+
+    // Leave: the server has said whether it will accept it.
+    switch (talq::leaveBlock(attrs, m_talk25.canLeave)) {
+    case talq::LeaveBlock::None:
+        m_leaveBtn->setEnabled(true);
+        m_leaveBtn->setToolTip(QString());
+        break;
+    case talq::LeaveBlock::Announcement:
+        m_leaveBtn->setEnabled(false);
+        m_leaveBtn->setToolTip(tr("An announcement cannot be left. Ask a moderator to "
+                                  "remove you."));
+        break;
+    case talq::LeaveBlock::Refused:
+        m_leaveBtn->setEnabled(false);
+        m_leaveBtn->setToolTip(tr("This conversation cannot be left."));
+        break;
+    }
+
+    // Delete and Clear history. Only the PRESERVED case is acted on: the
+    // server's bare canDeleteConversation=false also covers rooms where TalQ has
+    // always offered Delete (a one-to-one), and removing that is not this change.
+    const bool blocked = (talq::deleteBlock(attrs, m_talk25.canDelete)
+                          == talq::DeleteBlock::Preserved);
+    m_deleteBtn->setEnabled(!blocked);
+    m_deleteBtn->setToolTip(blocked
+        ? tr("This conversation is preserved. Turn off \"Preserve\" first.") : QString());
+    m_clearHistoryBtn->setEnabled(!blocked);
+    m_clearHistoryBtn->setToolTip(blocked
+        ? tr("The chat history of a preserved conversation cannot be cleared.") : QString());
+}
+
+namespace {
+// Talk's refusal codes are machine words, never user text (CLAUDE.md, ApiClient).
+QString talk25ErrorText(const QString &code)
+{
+    if (code == QLatin1String("permissions"))
+        return QObject::tr("Only the owner can do that.");
+    if (code == QLatin1String("preserved"))
+        return QObject::tr("This conversation is preserved.");
+    if (code == QLatin1String("object-type"))
+        return QObject::tr("This conversation is not queued for deletion, so there is "
+                           "nothing to keep.");
+    return QObject::tr("The server refused that.");
+}
+} // namespace
+
+void ConversationInfoDialog::onPreserveToggled(bool checked)
+{
+    // The box has already flipped under the click. Hold it still until the
+    // server answers, then settle on what is TRUE rather than what was asked.
+    m_preserveCheck->setEnabled(false);
+    m_status->setProperty("role", "secondary");
+    m_status->setText(checked ? tr("Preserving…") : tr("Turning preserve off…"));
+    m_api->setRoomPreserved(m_token, checked, this,
+        [this, checked](bool ok, int, const QString &code) {
+            m_preserveCheck->setEnabled(true);
+            if (!ok) {
+                m_status->setProperty("role", "danger");
+                m_status->setText(talk25ErrorText(code));
+                applyTalk25State();   // back to what the server still says
+                return;
+            }
+            if (checked) m_talk25.attributes |= talq::AttributePreserve;
+            else         m_talk25.attributes &= ~talq::AttributePreserve;
+            m_status->setText(checked ? tr("Preserved.") : tr("No longer preserved."));
+            applyTalk25State();
+            emit roomChanged();   // the list re-reads the room
+        });
+}
+
+void ConversationInfoDialog::onKeepClicked()
+{
+    m_keepBtn->setEnabled(false);
+    m_status->setProperty("role", "secondary");
+    m_status->setText(tr("Keeping this conversation…"));
+    m_api->keepClassifiedRoom(m_token, this,
+        [this](bool ok, const QString &code) {
+            m_keepBtn->setEnabled(true);
+            if (!ok) {
+                m_status->setProperty("role", "danger");
+                m_status->setText(talk25ErrorText(code));
+                return;
+            }
+            m_talk25.objectType = QStringLiteral("classified_persist");
+            m_status->setText(tr("Kept. It will not be deleted automatically."));
+            applyTalk25State();
+            emit roomChanged();
+        });
 }

@@ -993,7 +993,7 @@ int main(int argc, char *argv[])
     });
 
     // Notify on new polled messages in active conversation
-    QObject::connect(&messages, &MessageListModel::newMessagesAtEnd, &notifications, [&messages, &notifications, &auth, &callManager]() {
+    QObject::connect(&messages, &MessageListModel::newMessagesAtEnd, &notifications, [&messages, &notifications, &auth, &callManager, &conversations]() {
         int count = messages.rowCount();
         if (count == 0) return;
         // The announced message. The model is newest-first, but row 0 is only the latest
@@ -1023,12 +1023,17 @@ int main(int argc, char *argv[])
         QString text = talq::plainTextFromBodyHtml(
             messages.data(idx, MessageListModel::MessageTextRole).toString());
         if (text.length() > 100) text = text.left(100) + "...";
+        // A sensitive room (and every classified one): the toast says who wrote,
+        // not what. The text of a message the user has asked to hide would
+        // otherwise surface on whatever is sharing the screen.
+        if (conversations.isSensitiveForToken(messages.conversationToken()))
+            text = QObject::tr("New message");
         notifications.notify(actorName, text, false, messages.conversationToken());
     });
 
     // Notify on new messages in OTHER conversations
     QObject::connect(&conversations, &ConversationListModel::newUnreadMessage,
-                     &notifications, [&notifications, &messages](const QString &name, const QString &lastMsg, const QString &token) {
+                     &notifications, [&notifications, &messages](const QString &name, const QString &lastMsg, const QString &token, bool sensitive) {
         if (token == messages.conversationToken()) return;
         // `lastMsg` is the server's own lastMessage.message for a room that is
         // not open (ConversationListModel::refresh <- Conversation::fromJson),
@@ -1041,6 +1046,11 @@ int main(int argc, char *argv[])
         // messageParameters.)
         QString preview = lastMsg;
         if (preview.length() > 80) preview = preview.left(80) + "...";
+        // A sensitive room has no text to show (the model has already dropped
+        // it): say that something arrived. `sensitive` comes from the room as
+        // the server has just described it, not from a lookup in the old list.
+        if (sensitive)
+            preview = QObject::tr("New message");
         notifications.notify(name, preview, true, token);
     });
 

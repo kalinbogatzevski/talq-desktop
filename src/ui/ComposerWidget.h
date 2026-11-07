@@ -38,6 +38,12 @@ public:
     static constexpr int kBaseInputPx = 14;
 
     void setTopicName(const QString &name);
+    // Talk 25. A non-empty reason switches the whole composer off and shows the
+    // reason as its placeholder (a channel only moderators post in, a read-only
+    // room, a room where the user holds no chat permission). Empty = normal.
+    // Idempotent, so the caller may re-apply it on every room refresh.
+    void setPostBlockedReason(const QString &reason);
+    QString postBlockedReason() const { return m_postBlockedReason; }
     void setSignaling(SignalingClient *sig);
     void setMessageModel(MessageListModel *model);
     void setInputFont(const QFont &font);
@@ -209,6 +215,11 @@ private:
     SignalingClient *m_signaling = nullptr;
     MessageListModel *m_model = nullptr;
     QString m_topicName;
+    // Every placeholder goes through here: while blocked the reason wins, and
+    // the text meant for the unblocked box is kept for when the block lifts.
+    void applyPlaceholder(const QString &text);
+    QString m_placeholder;
+    QString m_postBlockedReason;
 
     // Pending file confirmation bar
     QWidget *m_pendingBar = nullptr;
