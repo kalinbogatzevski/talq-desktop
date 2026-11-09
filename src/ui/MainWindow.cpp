@@ -17,6 +17,7 @@
 #include "ImageViewerDialog.h"
 #include "core/AudioPlayer.h"
 #include "core/ImageCopyLogic.h"
+#include "core/MarkdownHtml.h"
 #include "core/UpdateInstallGatePolicy.h"
 #include "core/VoiceRecorder.h"
 #include <QDir>
@@ -2211,7 +2212,10 @@ void MainWindow::buildChatPage()
     // Chat mouse interaction — wheel and click are handled by ChatPainter directly
     // Link/file clicks from ChatPainter signals
     connect(m_chatPainter, &ChatPainter::linkActivated, this, [](const QString &url) {
-        QDesktopServices::openUrl(QUrl(url));
+        // ChatPainter has already judged it; the text is a stranger's, so the
+        // one place that hands anything to the operating system asks again.
+        if (talq::markdown::isOpenableLinkUrl(url))
+            QDesktopServices::openUrl(QUrl(url));
     });
     // A poll card opens the voting dialog. The card itself is deliberately
     // non-interactive -- see ChatPainter::paintPollCard for why.

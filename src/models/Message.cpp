@@ -1,6 +1,8 @@
 #include "models/Message.h"
 #include "models/CodePasteHeuristic.h"
+#include "core/BareUrlLogic.h"
 #include "core/LinkPreviewLogic.h"
+#include "core/MarkdownHtml.h"
 #include <QJsonArray>
 #include <QRegularExpression>
 #include <QVector>
@@ -68,15 +70,35 @@ const QRegularExpression &codeBlockRegex()
     return rx;
 }
 
-// Render the inline-markdown subset we support: code blocks, inline code,
-// bold, italic, strikethrough. Input must already be HTML-escaped; output
-// is HTML. Code blocks/inline code are stashed under sentinel tokens before
-// emphasis runs, so their content isn't re-parsed (a literal `**` inside a
-// code block must stay literal).
+// QString::toHtmlEscaped() undone: "&amp;" is decoded LAST, so a typed "&lt;"
+// (stored as "&amp;lt;") comes back as "&lt;" and not as "<".
+QString unescapeHtml(QString s)
+{
+    s.replace(QLatin1String("&quot;"), QLatin1String("\""));
+    s.replace(QLatin1String("&gt;"), QLatin1String(">"));
+    s.replace(QLatin1String("&lt;"), QLatin1String("<"));
+    s.replace(QLatin1String("&amp;"), QLatin1String("&"));
+    return s;
+}
+
+// Render a message body as Talk does: CommonMark + GitHub-flavoured markdown
+// (headings, emphasis, strikethrough, inline and fenced code, nested block
+// quotes, nested bullet / numbered / task lists, tables, rules, [text](url)
+// links, autolinks, backslash escapes, a single newline as a line break), parsed
+// by md4c in core/MarkdownHtml.cpp.
 //
-// Limited to a chat-message subset on purpose: no headings, no lists, no
-// horizontal rules, no images. People don't use those in chat, and adding
-// them invites false positives on punctuation-heavy plain text.
+// Input is the RAW text the sender typed -- NOT HTML-escaped. Escaping happens
+// once, on the way out, inside the renderer, so a character is never escaped
+// twice and `\*`, `>` and `&copy;` mean what they mean in markdown. (Until
+// 0.80 this took already-escaped text, which is why a `>` quote could not be
+// seen and TalQ had no backslash escapes.) Output is HTML.
+//
+// Two TalQ rules run BEFORE the parser, because they are lenient where
+// CommonMark is strict and a NOC team depends on that: a fenced block
+// (codeBlockRegex(): a fence typed on one line, a fence with no line break) and
+// an unfenced code paste (CodePasteHeuristic.h). Both are parked under sentinel
+// tokens, so the parser never sees their content -- a literal `**` inside a code
+// block stays literal -- and swapped back for their <pre> at the end.
 //
 // COLOURLESS BY CONTRACT -- do not add a style='color:...' / background here,
 // and the same goes for the mention and link markup further down. This
@@ -92,6 +114,7 @@ const QRegularExpression &codeBlockRegex()
 QString applyMarkdown(QString text)
 {
     if (text.isEmpty()) return text;
+    const QString original = text;
 
     // The sentinels below are \x01 and \x02. A message that already contains
     // those control characters (a paste from a terminal) could otherwise name a
@@ -117,7 +140,7 @@ QString applyMarkdown(QString text)
             auto m = it.next();
             out += QStringView{text}.mid(pos, m.capturedStart() - pos);
             out += park(QStringLiteral("<pre>")
-                        + fenceBody(m.captured(2), !m.captured(1).isEmpty())
+                        + fenceBody(m.captured(2), !m.captured(1).isEmpty()).toHtmlEscaped()
                         + QStringLiteral("</pre>"));
             pos = m.capturedEnd();
         }
@@ -140,95 +163,94 @@ QString applyMarkdown(QString text)
     // run, and why every rule leans towards "not code", is in
     // CodePasteHeuristic.h.
     if (!hadFence && !text.contains(QLatin1String("```"))) {
-        text = talq::codepaste::wrapRuns(text, [&](const QString &run) {
-            return park(QStringLiteral("<pre>") + run + QStringLiteral("</pre>"));
-        });
+        // The heuristic was tuned, and is tested, on ESCAPED text (it matches
+        // "&gt;" and "&quot;"), so it still sees escaped text and its decisions
+        // are exactly what they were. What it leaves behind is turned back into
+        // raw text for the parser; a run it boxes is already parked, escaped.
+        const int parkedBefore = stash.size();
+        const QString boxed = talq::codepaste::wrapRuns(
+            text.toHtmlEscaped(), [&](const QString &run) {
+                return park(QStringLiteral("<pre>") + run + QStringLiteral("</pre>"));
+            });
+        if (stash.size() != parkedBefore)
+            text = unescapeHtml(boxed);
     }
 
-    // ── Inline code: `body` ──
-    static const QRegularExpression inlineCodeRx(
-        QStringLiteral(R"(`([^`\n]+)`)"));
-    {
+    // ── Everything else: the markdown parser ──
+    QString html = talq::markdown::toHtml(text);
+
+    // Swap each parked block back in, in one pass. (The tokens are \x01M<n>\x02;
+    // the parser passed them through as ordinary text.)
+    if (!stash.isEmpty()) {
         QString out;
-        int pos = 0;
-        auto it = inlineCodeRx.globalMatch(text);
-        while (it.hasNext()) {
-            auto m = it.next();
-            out += QStringView{text}.mid(pos, m.capturedStart() - pos);
-            out += park(QStringLiteral("<code>")
-                        + m.captured(1)
-                        + QStringLiteral("</code>"));
-            pos = m.capturedEnd();
+        out.reserve(html.size() + 64);
+        // Each parked block goes back AT MOST ONCE. The markers cannot be typed
+        // (stripped above) or written as an entity (MarkdownHtml.cpp), so this
+        // should never matter -- but if one ever got through, repeating it must
+        // not repeat a block: that is a 30000-character block times a 3000-marker
+        // message, written into a chat bubble.
+        QVector<bool> restored(stash.size(), false);
+        qsizetype i = 0;
+        const qsizetype n = html.size();
+        while (i < n) {
+            const QChar c = html.at(i);
+            if (c.unicode() == talq::markdown::kParkOpen) {
+                const qsizetype close = html.indexOf(QChar(talq::markdown::kParkClose), i + 1);
+                bool ok = false;
+                const int idx = close > i + 2
+                    ? QStringView{html}.mid(i + 2, close - i - 2).toInt(&ok) : 0;
+                if (ok && idx >= 0 && idx < stash.size()) {
+                    if (!restored.at(idx)) {
+                        out += stash.at(idx);
+                        restored[idx] = true;
+                    }
+                    i = close + 1;
+                    continue;
+                }
+            }
+            out += c;
+            ++i;
         }
-        if (pos > 0) {
-            out += QStringView{text}.mid(pos);
-            text = out;
-        }
+        html = out;
     }
-
-    // ── Bold: **body** ──  no internal '*', no newline
-    static const QRegularExpression boldRx(
-        QStringLiteral(R"(\*\*([^*\n]+?)\*\*)"));
-    text.replace(boldRx, QStringLiteral("<b>\\1</b>"));
-
-    // ── Strikethrough: ~~body~~ ──
-    static const QRegularExpression strikeRx(
-        QStringLiteral(R"(~~([^~\n]+?)~~)"));
-    text.replace(strikeRx, QStringLiteral("<s>\\1</s>"));
-
-    // ── Italic: *body* ──  CommonMark "flanking delimiter" rule: opening
-    // '*' must be followed by non-whitespace and not be a leftover '**'.
-    // (?<!\*) and (?!\*) prevent matching across a bold pair.
-    static const QRegularExpression italicStarRx(
-        QStringLiteral(R"((?<!\*)\*(\S[^*\n]*?\S|\S)\*(?!\*))"));
-    text.replace(italicStarRx, QStringLiteral("<i>\\1</i>"));
-
-    // ── Italic: _body_ ──  word-boundary so we don't eat snake_case_names.
-    static const QRegularExpression italicUnderRx(
-        QStringLiteral(R"(\b_(\S[^_\n]*?\S|\S)_\b)"));
-    text.replace(italicUnderRx, QStringLiteral("<i>\\1</i>"));
-
-    // Restore stashed code segments verbatim.
-    for (int i = 0; i < stash.size(); ++i)
-        text.replace(QStringLiteral("\x01M%1\x02").arg(i), stash[i]);
-
-    return text;
-}
-
-// STEP ONE of turning a message body into HTML: escape, then (optionally) the
-// markdown subset. Runs BEFORE any {mention-*}/{file*} placeholder is
-// substituted, so the markers around a mention are formatted but the mention's
-// own markup is never re-read as emphasis.
-//
-// The markdown subset runs on the escaped text. Code-block content is stashed
-// first so its inner '**' / '_' aren't re-interpreted.
-QString escapeAndMarkup(const QString &rawText, bool markdown)
-{
-    QString html = rawText.toHtmlEscaped();
-    if (markdown)
-        html = applyMarkdown(html);
+    // A body that is only blanks parses to nothing. It still arrived, and a
+    // bubble must never lose what the sender sent: show it as typed.
+    if (html.isEmpty())
+        return original.toHtmlEscaped();
     return html;
 }
 
-// STEP TWO: turn bare http(s) links into clickable <a> tags. Runs AFTER the
-// placeholders are substituted, and its guard looks at the WHOLE resulting
-// string -- a message that already carries an href (a mention's link, a file)
-// is left alone, which is also why a URL inside it is never double-wrapped.
+// STEP ONE of turning a message body into HTML: markdown (or, for a message the
+// server says is not markdown, plain escaping). Runs BEFORE any
+// {mention-*}/{file*} placeholder is substituted, so the markers around a
+// mention are formatted but the mention's own markup is never re-read as
+// emphasis. Either way every character of the raw text leaves here escaped.
+QString escapeAndMarkup(const QString &rawText, bool markdown)
+{
+    if (markdown)
+        return applyMarkdown(rawText);
+    return rawText.toHtmlEscaped();
+}
+
+// STEP TWO, for a message that is NOT markdown: turn bare http(s) links into
+// clickable <a> tags. A markdown message does not come through here -- the
+// parser has already linked its addresses (and applied the same
+// trailing-punctuation rule). Runs AFTER the placeholders are substituted, and
+// its guard looks at the WHOLE resulting string -- a message that already
+// carries an href is left alone, which is also why a URL inside it is never
+// double-wrapped.
 void linkifyBareUrls(QString &html)
 {
-    // The LAST character of the match may not be a backslash. The href is
-    // written inside single quotes, and Qt's HTML parser reads \' as an escaped
-    // quote -- so "http://e.com/a\" followed by text produced an href that never
-    // closed and swallowed the rest of the message (the bubble showed "see " and
-    // nothing else; verified). A backslash in the MIDDLE of a URL is untouched.
-    static QRegularExpression urlRx(
-        R"((https?://[^\s<>"']*[^\s<>"'\\]))",
-        QRegularExpression::CaseInsensitiveOption);
     // Don't linkify URLs already inside <a> or <b> tags
-    if (!html.contains("href=")) {
-        html.replace(urlRx,
-            R"(<a href='\1'>\1</a>)");
-    }
+    if (html.contains(QLatin1String("href=")))
+        return;
+
+    // Where an address ENDS is talq::bareurl::linkLength's call (BareUrlLogic.h):
+    // "(see https://x.y)" and "go to https://x.y." used to link the ")" and the
+    // "." and open a dead page. It also keeps a trailing backslash out of the
+    // link, which Qt's HTML parser would read as an escaped quote and swallow
+    // the rest of the message.
+    html = talq::bareurl::linkify(html);
 }
 
 } // namespace
@@ -240,7 +262,8 @@ QString Message::renderBodyHtml(const QString &rawText, bool markdown)
     // messageParameters. Keep it that way: the moment this and fromJson()
     // diverge, an unsent bubble reshapes itself when the server's echo lands.
     QString html = escapeAndMarkup(rawText, markdown);
-    linkifyBareUrls(html);
+    if (!markdown)
+        linkifyBareUrls(html);
     return html;
 }
 
@@ -387,13 +410,16 @@ Message Message::fromJson(const QJsonObject &json)
             }
         }
     }
-    // Linkify URLs — turn bare http(s) links into clickable <a> tags
-    linkifyBareUrls(m.message);
+    // Linkify URLs — turn bare http(s) links into clickable <a> tags. Only for a
+    // message that is not markdown: the markdown parser has linked its own.
+    if (!m.markdown)
+        linkifyBareUrls(m.message);
 
     // Which addresses may get a preview card. From the RAW text, not the HTML
     // built above: that HTML has escaped entities and href markup around the
-    // URL, and its linkifier deliberately keeps trailing punctuation inside the
-    // link. A file, a poll, a system line and a deleted comment have no card.
+    // URL. The card applies the same tail rule as the link (trailing punctuation
+    // and an unbalanced closing bracket stay out of the address). A file, a poll,
+    // a system line and a deleted comment have no card.
     if (!m.isSystem && m.fileId == 0 && m.pollId == 0
         && m.messageType != QLatin1String("comment_deleted"))
         m.previewUrls = talq::linkpreview::extractPreviewUrls(

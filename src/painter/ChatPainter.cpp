@@ -1,5 +1,6 @@
 #include "ChatPainter.h"
 #include "core/AudioPlayer.h"
+#include "core/MarkdownHtml.h"
 #include "LayoutEngine.h"
 #include "models/MessageListModel.h"
 #include <QPainter>
@@ -1872,7 +1873,10 @@ void ChatPainter::mouseReleaseEvent(QMouseEvent *event)
             QString hit = m_pressHit;
             if (hit.startsWith("link:")) {
                 QString url = hit.mid(5);
-                if (url.startsWith("http://") || url.startsWith("https://"))
+                // The one list of what a link may open: http, https, mailto, tel
+                // (core/MarkdownHtml.h) -- the same one the renderer uses to
+                // decide what becomes a link at all. A link card is http(s) only.
+                if (talq::markdown::isOpenableLinkUrl(url))
                     emit linkActivated(url);
             } else if (hit.startsWith("reaction:")) {
                 QStringList rparts = hit.mid(9).split(":");

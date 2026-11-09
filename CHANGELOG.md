@@ -1,5 +1,47 @@
 # Changelog
 
+## v0.79.8 "Arhangelovden" — BETA (2026-11-09)
+
+Messages now show their formatting the way Nextcloud Talk shows it. Until now TalQ understood only
+bold, italic, strikethrough and code, so a message written with headings, lists, quotes or a table
+reached you as a block of symbols.
+
+### Added
+* **Full message formatting.** Headings (`#`, `##`, `###`), bullet and numbered lists with items
+  inside items, task lists (`- [ ]` and `- [x]`, shown as boxes), quotes (also inside quotes),
+  tables, horizontal rules, `***bold italic***`, and links written as `[text](https://…)`, which
+  show only the text. A single line break stays a line break, as before.
+* **Backslash escapes.** `\*` shows a literal `*`, `\_` a literal `_`, and so on for the other
+  punctuation characters. Text that a bot or a colleague escaped on purpose used to arrive with the
+  backslashes still in it.
+* **`mailto:` and `tel:` links** can be clicked. Only `http`, `https`, `mailto` and `tel` are ever
+  opened; any other kind of link (`javascript:`, `file:`, …) is shown as its plain text and cannot be
+  clicked. A picture written into a message is never downloaded: it appears as a link that shows its
+  description.
+
+### Fixed
+* **A web address followed by a bracket, comma or full stop no longer takes it along.**
+  "(see https://example.com)" used to open `https://example.com)` and "go to https://example.com."
+  opened the address with the dot, which did not work. Addresses that contain brackets of their own
+  (`…/wiki/Tuple_(film)`) are kept whole.
+* An address inside `code` or a code block is no longer turned into a link.
+
+### Changed
+* Text typed as `&amp;`, `&lt;` or `&copy;` now shows the character it names (`&`, `<`, `©`), as in
+  Talk. Inside code it is shown as typed.
+* Blank lines: several in a row show as one, and blank lines at the end of a message are dropped.
+* A code block with no closing fence now runs to the end of the message instead of showing the
+  three backticks.
+
+### Good to know
+* **Beta channel only.** The stable line (0.78.0) is untouched.
+* Task-list boxes are display only: ticking one in a message is not possible yet.
+* Code blocks are not colour-highlighted by language.
+* A message with an extreme amount of structure (more than 400 list items, 300 table rows or 1500
+  table cells) is shown as plain text, so that one message cannot slow the chat down. Nothing is
+  left out and addresses stay clickable.
+* Messages the server does not mark as formatted (some system messages) are shown as plain text, as before.
+
 ## v0.79.7 "Arhangelovden" — BETA (2026-11-07)
 
 ### Changed
