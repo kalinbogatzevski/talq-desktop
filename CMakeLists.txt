@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(talq VERSION 0.79.7 LANGUAGES CXX)
+project(talq VERSION 0.79.8 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -18,6 +18,19 @@ find_package(Qt6 REQUIRED COMPONENTS
     WebSockets
     Widgets
 )
+
+# Markdown (src/core/MarkdownHtml.cpp): messages are parsed as CommonMark + GFM,
+# the grammar Talk's own client draws, by md4c -- the same parser Qt uses for
+# QTextDocument::setMarkdown, and a package qt6-base already depends on in the
+# build MSYS2. Linked STATICALLY when the archive is there: a missing DLL is a
+# dead app (see the updater notes), and this is a few hundred KB of C.
+# Every target that compiles src/models/Message.cpp links talq-markdown; the
+# loop that does it is at the end of this file, once they all exist.
+find_path(TALQ_MD4C_INCLUDE_DIR md4c.h REQUIRED)
+find_library(TALQ_MD4C_LIBRARY NAMES libmd4c.a md4c REQUIRED)
+add_library(talq-markdown STATIC src/core/MarkdownHtml.cpp)
+target_include_directories(talq-markdown PUBLIC src ${TALQ_MD4C_INCLUDE_DIR})
+target_link_libraries(talq-markdown PUBLIC Qt6::Core ${TALQ_MD4C_LIBRARY})
 
 # GStreamer (for calls)
 set(GSTREAMER_ROOT "C:/msys64/mingw64" CACHE PATH "GStreamer installation root")

@@ -375,7 +375,7 @@ QString PainterTheme::richTextStyleSheet() const
     // padding on a block, but a margin is honoured: it is left out of the
     // painted fill, and counted by idealWidth so the bubble grows to include it.
     // The number is kCodeChipGutter, shared with the chip's own geometry.
-    return QStringLiteral(
+    QString css = QStringLiteral(
         "pre { background-color:%1; color:%2; font-family:Consolas,monospace;"
         " white-space:pre-wrap; margin-right:%5px }"
         " code { background-color:%1; color:%2; font-family:Consolas,monospace }"
@@ -383,6 +383,36 @@ QString PainterTheme::richTextStyleSheet() const
         " .mention { color:%4 }")
         .arg(codeBg.name(), textPrimary.name(), link.name(), mention.name(),
              QString::number(talq::kCodeChipGutter));
+
+    // ---- Markdown blocks (src/core/MarkdownHtml.cpp emits the tags; this is the
+    // ONLY place they get a colour or a size -- the stored HTML has neither).
+    // Every rule below was measured in QTextDocument (Qt 6.10.1) with
+    // markdown-shots; what Qt does NOT do is why the markup is what it is:
+    //   * headings are always <h6 class='h4|h5|h6'>: Qt ignores a style sheet
+    //     font-size on h4/h5 (the tag's own default wins) and honours it on h6.
+    //     Sizes follow the body font (Talk: 20/18/15 px over a 14-15 px body),
+    //     so the font-size setting scales them.
+    //   * a quote is a one-cell table, because a table cell is the only thing
+    //     that takes a left border; a <blockquote> gets an indent and no bar.
+    //   * a list's indent is Qt's 40px a level; the negative margin brings it to
+    //     ~20px. Nested lists lose the 12px Qt puts above and below each.
+    //   * a task list (ul.task) has no bullet: the item text starts with a box.
+    const int body = fontSizeNormal;
+    css += QStringLiteral(
+        " h6 { font-weight:bold; margin-top:6px; margin-bottom:3px }"
+        " h6.h4 { font-size:%1px } h6.h5 { font-size:%2px } h6.h6 { font-size:%3px }"
+        " td.q { border-left-width:3px; border-left-style:solid; border-left-color:%4;"
+        " padding-left:10px; color:%5 }"
+        " ul, ol { margin-top:3px; margin-bottom:3px; margin-left:-20px }"
+        " ul ul, ul ol, ol ul, ol ol { margin-top:0px; margin-bottom:0px }"
+        " ul.task, ol.task { list-style-type:none }"
+        " hr { background-color:%4; color:%4; margin-top:6px; margin-bottom:6px }"
+        " table { border-color:%4; border-style:solid; border-collapse:collapse }"
+        " th { background-color:%6; font-weight:bold }")
+        .arg(QString::number(qRound(body * 1.4)), QString::number(qRound(body * 1.25)),
+             QString::number(qRound(body * 1.1)), textMuted.name(), textSecondary.name(),
+             bgSurface.name());
+    return css;
 }
 
 QString PainterTheme::themeId(Theme t)

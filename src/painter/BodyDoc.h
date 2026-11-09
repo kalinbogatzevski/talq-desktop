@@ -20,9 +20,18 @@ namespace talq {
 // the HTML importer. The message HTML is colourless by contract, so the style
 // sheet is the only thing that can put a fill on a block -- message content
 // cannot fake a code block.
+//
+// A horizontal rule (<hr>, markdown "---") is the other block that carries a
+// background brush -- it is how Qt takes the rule's colour from the style sheet
+// -- and it is an empty block, not code: with no exclusion every "---" got a copy
+// chip that copied nothing (found by counting these on a message with a rule).
 inline bool isCodeBlock(const QTextBlock &b)
 {
-    return b.isValid() && b.blockFormat().background().style() != Qt::NoBrush;
+    if (!b.isValid())
+        return false;
+    const QTextBlockFormat f = b.blockFormat();
+    return f.background().style() != Qt::NoBrush
+        && !f.hasProperty(QTextFormat::BlockTrailingHorizontalRulerWidth);
 }
 
 // The text of one code block as a person would copy it: entities decoded, line
