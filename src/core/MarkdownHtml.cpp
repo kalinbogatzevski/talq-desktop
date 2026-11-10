@@ -320,8 +320,17 @@ int enterBlock(MD_BLOCKTYPE type, void *detail, void *user)
                                                       gt - r.listTag.last()).contains(QLatin1String("class")))
                     r.out.insert(gt, QLatin1String(" class='task'"));
             }
-            // A check box drawn as text: QTextDocument has no <input>.
-            r.out += (d->task_mark == 'x' || d->task_mark == 'X') ? QChar(0x2611) : QChar(0x2610);
+            // A check box drawn as text: QTextDocument has no <input>. The ticked
+            // one is U+2611 followed by U+FE0E (text presentation): U+2611 is in
+            // the Dingbats range, so without it TalQ's own emoji drawing swaps in
+            // Twemoji's blue emoji box while the empty one (U+2610) stays a plain
+            // outline (see EmojiClusterLogic.h).
+            if (d->task_mark == 'x' || d->task_mark == 'X') {
+                r.out += QChar(0x2611);
+                r.out += QChar(0xFE0E);
+            } else {
+                r.out += QChar(0x2610);
+            }
             r.out += QLatin1Char(' ');
         }
         r.containers.push_back({});

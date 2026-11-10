@@ -405,7 +405,8 @@ QString PainterTheme::richTextStyleSheet() const
         " padding-left:10px; color:%5 }"
         " ul, ol { margin-top:3px; margin-bottom:3px; margin-left:-20px }"
         " ul ul, ul ol, ol ul, ol ol { margin-top:0px; margin-bottom:0px }"
-        " ul.task, ol.task { list-style-type:none }"
+        " ul.task, ol.task { list-style-type:none; margin-left:-40px }"
+        " li ul.task, li ol.task { margin-left:-20px }"
         " hr { background-color:%4; color:%4; margin-top:6px; margin-bottom:6px }"
         " table { border-color:%4; border-style:solid; border-collapse:collapse }"
         " th { background-color:%6; font-weight:bold }")
