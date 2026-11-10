@@ -1,5 +1,118 @@
 # Changelog
 
+## v0.80.0 "Arhangelovden" — STABLE (2026-11-10)
+
+Promotes the 0.79.x line: messages show their full formatting (headings, lists, quotes, tables,
+links), chats can be sorted into folders, the new kinds of conversation in Nextcloud Talk 25 are
+understood, calls start a little faster, a caller's video no longer hides behind "Camera off", and
+the echo canceller now repairs itself in two situations where it used to stay broken.
+
+Everyone on 0.78.0 gets all of the below. If you ran a 0.79 beta, this is the code of 0.79.8 plus a
+small polish of task lists (the boxes sit flush left, and the ticked one is no longer a blue emoji);
+there is nothing else in it that you do not already have.
+
+### Added
+* **Full message formatting, the way Nextcloud Talk shows it.** Headings (`#`, `##`, `###`), bullet
+  and numbered lists with items inside items, task lists (`- [ ]` and `- [x]`, shown as boxes),
+  quotes (also inside quotes), tables, horizontal rules, `***bold italic***`, and links written as
+  `[text](https://…)`, which show only the text. A single line break stays a line break. `\*` shows a
+  literal `*` (and the same for the other punctuation characters), so text that a bot or a colleague
+  escaped on purpose no longer arrives with the backslashes in it. `mailto:` and `tel:` links can be
+  clicked. Only `http`, `https`, `mailto` and `tel` are ever opened; any other kind of link is shown
+  as its plain text, and a picture written into a message is never downloaded: it appears as a link
+  that shows its description.
+* **Folders in the chat list.** A folder is a heading you click to open or close, and it holds chats
+  with people and group chats together. Chats in no folder sit under a built-in "Other" heading, and a
+  closed folder shows the unread messages of everything inside it. Turn them on from the funnel menu
+  next to the search box: **Group by → Folders**. Right-click a chat and choose **Move to folder**,
+  or drag a chat onto a folder heading; right-click a folder heading to rename, move or delete it
+  (deleting a folder never deletes a chat). Group chats are drawn as rounded squares and people stay
+  round.
+* **Folder sync (off by default).** In **Settings → General**, **Keep my folders in sync** saves your
+  folders to one small hidden file in your own Nextcloud Files, so they match on the other computers
+  where you turn it on. A change reaches them within about ten minutes, sooner when you switch to
+  TalQ there. Folders are never sent to the Talk server and do not appear in the Talk web page or
+  phone apps.
+* **The new kinds of conversation in Talk 25.** In a **channel** or an **announcement** only
+  moderators can post: if that is not you, the message box is greyed out and says so, instead of
+  letting you type a message the server then refuses. The same goes for a **read-only** conversation.
+  A **classified** conversation keeps its text out of the chat list and out of pop-up notifications,
+  and TalQ tells you, in a bar above the message box, that the server deletes it seven days after a
+  call ends in it unless somebody writes in it or a moderator keeps it (moderators get a **Keep this
+  conversation** button). The owner of a conversation can turn on **Preserve this conversation** so
+  it cannot be deleted or cleared. The chat list marks each kind. You need a Talk 25 server
+  (Nextcloud 35) for any of this; on an older server nothing changes.
+* **New chat says when a conversation type deletes its messages by itself**, with the period your
+  server uses, before you create it.
+* **A search field clears with one click**, and **Esc** clears it too.
+* **The debug log says more about calls.** It records how the echo canceller's reference is doing
+  and what the delay correction measured and did (lines starting `PublishPipeline: AEC align`),
+  every change of a person's camera or microphone state, and where the time of a call goes
+  (`scripts/call-timeline.py`). **Settings → Save a copy…** saves the log to send.
+
+### Changed
+* **Calls start a little faster.** The parts of TalQ that carry video and sound are loaded while the
+  phone rings, not after you press Answer, and the caller's sound and picture are asked for as soon
+  as TalQ's own join of the call is confirmed.
+* **"Group by tag" in the funnel menu is now "Group by": None, Tags or Folders.** If you had tags on,
+  you start in Tags as before.
+* Text typed as `&amp;`, `&lt;` or `&copy;` shows the character it names, as in Talk; inside code it
+  is shown as typed. Several blank lines in a row show as one, and blank lines at the end of a
+  message are dropped. A code block with no closing fence runs to the end of the message.
+
+### Fixed
+* **The caller's video no longer disappears behind "Camera off" on the person who answers.** It
+  happened when the person answering already had the conversation open and the call connected
+  within about a second. The same missing note also kept the "I hung up" message from being sent
+  and showed a muted microphone as unmuted again within 3 seconds. (This bug is older than the
+  betas: 0.78.0 has it.)
+* **The echo canceller could go deaf in the middle of a call.** If its listener to your speakers
+  delivers nothing for 8 seconds, TalQ opens it again (up to five times) and writes it in the log.
+* **The echo canceller could never work on a computer where the speaker signal reaches it a
+  quarter of a second late**, so the other person heard themselves. TalQ now measures that delay
+  during the call and corrects it. It is on by default; `TALQ_AEC_ALIGN=off` turns it off.
+* **Starting a call from a conversation you had only just opened could join the room twice**, and
+  the second join cancelled the first on the server.
+* **A web address followed by a bracket, comma or full stop no longer takes it along.**
+  "(see https://example.com)" used to open `https://example.com)`. Addresses that contain brackets
+  of their own (`…/wiki/Tuple_(film)`) are kept whole, and an address in code is no longer linked.
+* **Desktop notifications you switched off stay off after TalQ restarts**, and a change made from
+  the tray menu is remembered. Notices that belong to no chat (a saved download, a call notice) no
+  longer merge into "2 new messages".
+* **Conversation information: "+ Add people" no longer pushes the window off the screen.**
+
+### Good to know
+* **Echo correction is on by default, and has one known risk.** When the person you talk to has an
+  echo of their own (their speakers feeding back into their microphone), your voice comes back to
+  you late, and to the measurement that looks like the problem it fixes. TalQ cannot yet tell the two
+  apart, so on a headset it may move the speaker signal when it should not, and the canceller may then
+  take some of your own voice out of what the other person hears. If someone says they cannot hear
+  you well, send the log (lines `PublishPipeline: AEC align … SHIFT`) and set `TALQ_AEC_ALIGN=off`.
+  A guard against this is the next piece of work.
+* **Not fixed.** On one laptop the video that reaches the other person can drop to about 7 frames per
+  second for the rest of a call. The cause has not been found.
+* **Folders stay on this computer unless you turn on sync**, and then only their names, order, which
+  chats are in them and whether they are open are saved. Turning sync off leaves the hidden file
+  `.talq-folders.json` in your Files; you can delete it once it is off on every computer.
+* **Not done yet.** Task-list boxes in a message are display only (Talk 25 lets you tick them on your
+  own messages). Code blocks are not colour-highlighted by language. A message with an extreme amount
+  of structure (more than 400 list items, 300 table rows or 1500 table cells) is shown as plain text,
+  so that one message cannot slow the chat down; nothing is left out and addresses stay clickable.
+* **What was checked.** Formatting: 96 automatic checks, a 4000-message random test, and a real
+  TalQ window on one laptop showing a test message with every kind of formatting, which drew as
+  intended; two problems found by an automatic security review (a numeric entity that could write an
+  internal marker, and a mention that could land inside a link) are fixed. Echo: on the laptop that
+  had the problem the echo fell from about -22 dB to about -64 dB in 3 of 3 runs with the correction
+  on, and stayed at -22 to -24 dB in all 6 runs with it off or only watching. Folders: about 1,200
+  automatic checks and a real start of the program. The call speed-up was measured in test calls
+  between two accounts on one laptop. The camera fix was found by reading both computers' logs of a
+  test call line by line against the program and is covered by an automatic test (20 checks); it
+  has not yet been seen in the exact situation that failed.
+* **Not yet seen.** The echo correction on a computer where the canceller already worked, and on a
+  headset; the camera fix in the exact situation that failed; a real Windows output switch for the
+  echo watchdog; folder sync between two real computers; an announcement on a real server; and the
+  folders, labels and the new bar drawn in all four themes. Please say if anything looks wrong.
+
 ## v0.79.8 "Arhangelovden" — BETA (2026-11-09)
 
 Messages now show their formatting the way Nextcloud Talk shows it. Until now TalQ understood only
