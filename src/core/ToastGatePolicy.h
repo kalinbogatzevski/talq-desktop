@@ -23,6 +23,7 @@
 #include <QHash>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QSet>
 #include <QString>
 #include <QVector>
 
@@ -274,9 +275,64 @@ inline CatchUpResult catchUpMessages(const QJsonArray &chatMessages, const QStri
 // they muted it to stop being told about it. Popups are decided elsewhere and use
 // the raw count.
 // ---------------------------------------------------------------------------
-inline int countedUnread(int roomLevel, int unread, bool countMuted)
+//
+// `silencedTopicUnread` is how many of the room's unread messages sit in topics the user silenced
+// (silencedUnreadCount): they are left out of the chat's number as well, unless muted things are
+// counted. The server counts a room's unread without knowing the topics.
+inline int countedUnread(int roomLevel, int unread, bool countMuted, int silencedTopicUnread = 0)
 {
-    return (roomLevel == Never && !countMuted) ? 0 : unread;
+    if (countMuted)
+        return unread;
+    if (roomLevel == Never)
+        return 0;
+    return std::max(0, unread - std::max(0, silencedTopicUnread));
+}
+
+// How many of a room's UNREAD messages are in the topics `silencedTopics`, read off a page of
+// GET chat/{token}. Talk's unread count is the number of `comment` rows after the read marker
+// (ChatManager::getUnreadCount), so the unread messages are the newest `unread` such rows from other
+// people -- the same rows catchUpMessages judges -- and of those this counts the ones whose
+// `threadId` (with `isThread`: the id is sent on every message) is a silenced topic. Only the
+// newest `unread` are looked at, so an older, already-read message in a silenced topic is never
+// counted; a page that does not reach back that far under-counts, which leaves the chat's number
+// a little high rather than hiding a message that is not silenced.
+// `upTo`: rows with a higher id are newer than the room list the `unread` came from (a message that
+// arrived while the page was being fetched) and are not looked at (0 = no bound), as in catchUpMessages.
+inline int silencedUnreadCount(const QJsonArray &chatMessages, const QString &me, int unread,
+                               const QSet<int> &silencedTopics, int upTo = 0)
+{
+    if (unread <= 0 || silencedTopics.isEmpty())
+        return 0;
+    QVector<QJsonObject> rows;
+    rows.reserve(chatMessages.size());
+    for (const QJsonValue &v : chatMessages)
+        rows.append(v.toObject());
+    std::sort(rows.begin(), rows.end(), [](const QJsonObject &a, const QJsonObject &b) {
+        return a.value(QLatin1String("id")).toInt() > b.value(QLatin1String("id")).toInt();
+    });
+    int inspected = 0, silenced = 0;
+    for (const QJsonObject &m : rows) {
+        const int id = m.value(QLatin1String("id")).toInt();
+        if (id <= 0)
+            continue;
+        if (upTo > 0 && id > upTo)
+            continue;                        // newer than the list this was asked for
+        const QString type = m.value(QLatin1String("messageType")).toString();
+        const bool counts = (type == QLatin1String("comment") || type == QLatin1String("voice-message"))
+            && m.value(QLatin1String("systemMessage")).toString().isEmpty();
+        if (!counts)
+            continue;
+        if (m.value(QLatin1String("actorType")).toString() == QLatin1String("users")
+            && !me.isEmpty() && m.value(QLatin1String("actorId")).toString() == me)
+            continue;                        // ours: never unread to us
+        if (inspected >= unread)
+            break;
+        ++inspected;
+        if (m.value(QLatin1String("isThread")).toBool()
+            && silencedTopics.contains(m.value(QLatin1String("threadId")).toInt()))
+            ++silenced;
+    }
+    return silenced;
 }
 
 // Does the popup decision need a topic's level? Any message that is in a topic:

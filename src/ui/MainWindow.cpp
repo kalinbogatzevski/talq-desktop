@@ -1294,6 +1294,14 @@ void MainWindow::buildChatPage()
     // Topic tabs (Telegram-style horizontal strip below the header).
     m_topicTabBar = new TopicTabBar(chatCol);
     m_topicTabBar->setModel(m_threads);
+    // "Count muted chats and topics" (Settings > Notifications): whether a silenced topic keeps its
+    // number. The same switch as for a muted chat; off by default.
+    if (m_notifications) {
+        m_topicTabBar->setCountMuted(m_notifications->countMutedChats());
+        connect(m_notifications, &NotificationManager::countMutedChatsChanged, m_topicTabBar, [this]() {
+            m_topicTabBar->setCountMuted(m_notifications->countMutedChats());
+        });
+    }
     // Followed topics across every conversation. Opening one has to do BOTH
     // halves -- switch conversation and then select the topic -- or the list is
     // just another place to look rather than a way to get there.
@@ -1580,7 +1588,12 @@ void MainWindow::buildChatPage()
             return;
         }
         m_uploadBar->show();
-        m_uploadLabel->setText(m_messages->uploadFileName());
+        // "report.pdf (2 of 5)" while a batch is uploading, one file after another.
+        m_uploadLabel->setText(m_messages->uploadBatchTotal() > 1
+            ? tr("%1 (%2 of %3)").arg(m_messages->uploadFileName())
+                                 .arg(m_messages->uploadBatchIndex())
+                                 .arg(m_messages->uploadBatchTotal())
+            : m_messages->uploadFileName());
         percentLabel->setText(QStringLiteral("%1%").arg(qRound(progress * 100)));
         // Use the full upload bar width for the progress line
         int barW = qRound(m_uploadBar->width() * qMax(0.0, progress));
@@ -1825,7 +1838,7 @@ void MainWindow::buildChatPage()
     });
 
     // Drag-and-drop files onto chat → show confirmation in composer
-    connect(m_chatPainter, &ChatPainter::fileDropped, m_composer, &ComposerWidget::showPendingFile);
+    connect(m_chatPainter, &ChatPainter::filesDropped, m_composer, &ComposerWidget::showPendingFiles);
 
     // Infinite scroll: load older history when user scrolls near top.
     connect(m_chatPainter, &ChatPainter::moreHistoryRequested, m_messages, &MessageListModel::loadHistory);
@@ -5465,7 +5478,9 @@ talq::InstallGateInputs MainWindow::installGateInputs() const
         || (m_messages && m_messages->hasPendingSends());
     in.attachmentStaged = m_composer && m_composer->hasStagedAttachment();
     in.voiceRecording = m_recorder && m_recorder->isRecording();
-    in.uploadInProgress = m_messages && m_messages->uploadProgress() >= 0.0;
+    // Between two files of a batch the progress is back at -1 for an instant: a queued file counts.
+    in.uploadInProgress = m_messages
+        && (m_messages->uploadProgress() >= 0.0 || m_messages->hasQueuedUploads());
     // Qt's own view sticks when a press inside TalQ is released outside its windows, which held
     // an automatic install for 35 minutes: Windows may clear that hold, never add one (its state
     // is desktop-wide, and a click in another application is not input to TalQ).

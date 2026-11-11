@@ -1,5 +1,6 @@
 #include "ThreadListModel.h"
 #include "models/ConversationListModel.h"
+#include "core/TopicLevelStore.h"
 #include <QGuiApplication>
 #include <QJsonObject>
 #include <QUrlQuery>
@@ -109,6 +110,7 @@ void ThreadListModel::onCachedThreadsLoaded(const QString &token, const QVector<
         info.lastAuthor = t["lastAuthor"].toString();
         info.replyCount = t["replyCount"].toInt();
         info.lastReadMessageId = t["lastReadMessageId"].toInt();
+        info.notificationLevel = m_topicLevels.value(tid, 0);   // the cache keeps no levels; we do
         cached.append(info);
     }
 
@@ -147,6 +149,7 @@ void ThreadListModel::setConversationToken(const QString &token)
     emit tokenChanged();
     loadHiddenTopics();   // per-room hidden set
     loadTopicSeen();      // per-room, per-topic read state
+    loadTopicLevels();    // per-room, per-topic notification level
     // The open topic belongs to the previous room; MainWindow re-selects one.
     m_selectedThreadId = -1;
     m_lastScanNewestId = 0;
@@ -202,10 +205,38 @@ void ThreadListModel::selectTopic(int threadId)
 
 int ThreadListModel::notificationLevelForThread(int threadId) const
 {
-    for (const auto &t : m_threads) {
-        if (t.threadId == threadId) return t.notificationLevel;
-    }
-    return 0;
+    // The remembered level, not a field of the list: the list is rebuilt wholesale on every
+    // inbound batch, and until it learned to carry the level this answered "Default" a moment
+    // after the user had chosen "Never".
+    return m_topicLevels.value(threadId, 0);
+}
+
+QString ThreadListModel::levelsKeyFor(const QString &token) const
+{
+    return talq::topiclevels::levelsKey(m_api ? m_api->user() : QString(), token);
+}
+
+void ThreadListModel::loadTopicLevels()
+{
+    m_topicLevels.clear();
+    if (m_token.isEmpty()) return;
+    m_topicLevels = talq::topiclevels::loadLevels(levelsKeyFor(m_token));
+}
+
+void ThreadListModel::rememberTopicLevel(const QString &token, int threadId, int level)
+{
+    if (token.isEmpty() || threadId <= 0) return;
+    const QString key = levelsKeyFor(token);
+    talq::topiclevels::Levels levels = talq::topiclevels::loadLevels(key);
+    if (talq::topiclevels::isStorable(threadId, level)) levels.insert(threadId, level);
+    else                                                levels.remove(threadId);
+    talq::topiclevels::saveLevels(key, levels);
+    if (token == m_token)
+        m_topicLevels = levels;
+    // The chat list leaves silenced topics out of a chat's number: tell it now, so the number follows
+    // the user's choice at once instead of at the next refresh.
+    if (m_conversations)
+        m_conversations->noteTopicLevelsChanged(token);
 }
 
 void ThreadListModel::setThreadNotificationLevel(int threadId, int level)
@@ -215,7 +246,10 @@ void ThreadListModel::setThreadNotificationLevel(int threadId, int level)
     QPointer<ThreadListModel> guard(this);
     m_api->setThreadNotificationLevel(token, threadId, level,
         [this, guard, token, threadId, level](bool ok, const QJsonObject &, int) {
-            if (!guard || token != m_token || !ok) return;
+            if (!guard || !ok) return;
+            // Remember it first, for the room it was set in: the user may have moved on by now.
+            rememberTopicLevel(token, threadId, level);
+            if (token != m_token) return;
             for (int i = 0; i < m_threads.size(); ++i) {
                 if (m_threads[i].threadId != threadId) continue;
                 m_threads[i].notificationLevel = level;
@@ -484,6 +518,18 @@ void ThreadListModel::fetchThreads()
                                          == m_api->user();
                     m_serverThreads.insert(id, info);
                 }
+                // The server's word on the topics it listed wins; a topic it did not list (it only
+                // lists the recent ones) keeps what we knew (core/TopicLevelStore.h).
+                talq::topiclevels::Levels listed;
+                for (auto it = m_serverThreads.cbegin(); it != m_serverThreads.cend(); ++it)
+                    listed.insert(it.key(), it.value().notificationLevel);
+                bool changed = false;
+                m_topicLevels = talq::topiclevels::applyServer(m_topicLevels, listed, &changed);
+                if (changed) {
+                    talq::topiclevels::saveLevels(levelsKeyFor(m_token), m_topicLevels);
+                    if (m_conversations)
+                        m_conversations->noteTopicLevelsChanged(m_token);   // changed elsewhere
+                }
             } else {
                 qWarning() << "topics: threads/recent failed for" << capturedToken
                            << "- falling back to the message scan alone";
@@ -649,6 +695,9 @@ void ThreadListModel::scanThreadsFromMessages()
             ThreadInfo info;
             info.threadId = acc.threadRootId;
             info.title = acc.threadTitle;
+            // The user's own notification level for this topic. Left out here until now, which is
+            // why a silenced topic looked like every other one after the first rebuild.
+            info.notificationLevel = m_topicLevels.value(acc.threadRootId, 0);
 
             info.lastMessage = acc.latestMessage;
             info.lastAuthor = acc.latestAuthor;

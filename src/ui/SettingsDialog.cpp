@@ -1473,10 +1473,10 @@ QWidget *SettingsDialog::buildNotificationsTab()
         m_notifications->setCountMutedChats(checked);  // also persists (its only writer)
     });
     layout->addWidget(makeSettingRow(
-        tr("Count muted chats"),
-        tr("Count unread messages from chats you muted in the unread numbers: the "
-           "badge on the chat, folders, and the tray and taskbar. Off, a muted chat "
-           "adds nothing."),
+        tr("Count muted chats and topics"),
+        tr("Show the unread number of a chat or a topic you muted. Off, a muted chat "
+           "adds nothing to its own badge, folders, or the tray and taskbar, and a "
+           "silenced topic shows no number on its tab."),
         m_countMuted));
 
     // Style — radios stacked in the row's control column.

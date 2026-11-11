@@ -10,6 +10,9 @@
 #include <QLabel>
 #include <QMenu>
 #include <QMessageBox>
+#include <QPainter>
+#include <QPainterPath>
+#include <QPixmap>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QScrollBar>
@@ -50,6 +53,33 @@ Pal pal(PainterTheme::Theme t)
              n(th.accentSoftInk),  // and the ink that actually reads on it
              n(th.unreadBadge),    // unread-badge fill, same token as SidebarPainter
              n(th.inkOn(th.unreadBadge)) };  // its ink: scored per theme, as the sidebar badge
+}
+
+// The mark of a topic whose notifications are off: a bell with a slash through it,
+// drawn on a 14x14 grid in the chip's own ink. A painted shape, not a glyph or an
+// emoji: a glyph's size and baseline change with the font (an emoji would also be
+// drawn in colour, by a different engine than the rest of the chip).
+QPixmap mutedBellPixmap(const QColor &ink, int size, qreal dpr)
+{
+    QPixmap pm(QSize(size, size) * dpr);
+    pm.setDevicePixelRatio(dpr);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.scale(size / 14.0, size / 14.0);
+    p.setPen(QPen(ink, 1.4, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    p.setBrush(Qt::NoBrush);
+    QPainterPath bell;
+    bell.moveTo(2.8, 10.2);
+    bell.cubicTo(4.0, 9.2, 4.3, 8.0, 4.3, 6.4);
+    bell.cubicTo(4.3, 4.5, 5.5, 3.2, 7.0, 3.2);
+    bell.cubicTo(8.5, 3.2, 9.7, 4.5, 9.7, 6.4);
+    bell.cubicTo(9.7, 8.0, 10.0, 9.2, 11.2, 10.2);
+    bell.closeSubpath();
+    p.drawPath(bell);
+    p.drawArc(QRectF(5.6, 10.6, 2.8, 2.2), 180 * 16, 180 * 16);   // the clapper
+    p.drawLine(QPointF(2.2, 2.0), QPointF(11.8, 12.2));            // the slash
+    return pm;
 }
 
 // QMessageBox button styling now lives once in the global app sheet
@@ -175,11 +205,26 @@ void TopicTabBar::setTheme(PainterTheme::Theme t)
     rebuild();
 }
 
+void TopicTabBar::setCountMuted(bool on)
+{
+    if (m_countMuted == on) return;
+    m_countMuted = on;
+    rebuild();
+}
+
 QWidget *TopicTabBar::makeChip(const QString &label, int threadId,
-                               int unreadCount, bool active)
+                               int unreadCount, bool active, int notifLevel)
 {
     auto *b = new QPushButton(m_row);
     const bool hasUnread = unreadCount > 0;
+    // Only a real topic has a level of its own. Never (3) is the silenced topic;
+    // mentions only (2) is half silenced. Both are marked, so the strip tells you
+    // which topics will not pop up, and a silenced one is quiet: no loud unread style.
+    const bool silenced     = threadId > 0 && notifLevel == 3;
+    const bool mentionsOnly = threadId > 0 && notifLevel == 2;
+    const bool marked       = silenced || mentionsOnly;
+    // A silenced topic shows no number unless muted topics are counted (the mark says it is silenced).
+    const bool showCount    = hasUnread && (!silenced || m_countMuted);
 
     // The unread count lives INSIDE the chip, after the title: one object per
     // topic, so the count can never be read as belonging to the neighbouring
@@ -194,7 +239,10 @@ QWidget *TopicTabBar::makeChip(const QString &label, int threadId,
     badgeFont.setWeight(QFont::DemiBold);
     const int badgeW = qMax(PainterTheme::badgeHeight,
                             QFontMetrics(badgeFont).horizontalAdvance(countStr) + 10);
-    const int padRight = hasUnread ? kTitleGap + badgeW + kCountInset : 16;
+    constexpr int kMarkW = 14, kMarkGap = 6, kMarkEdge = 12;
+    const int padRight = marked
+        ? kTitleGap + kMarkW + (showCount ? kMarkGap + badgeW + kCountInset : kMarkEdge)
+        : (showCount ? kTitleGap + badgeW + kCountInset : 16);
     // Three chip states, each distinct at a glance:
     //   open   — accent tint + accent border (the only tinted chip: where you are)
     //   unread — the plain chip, but a full-ink SemiBold title plus the count
@@ -218,7 +266,7 @@ QWidget *TopicTabBar::makeChip(const QString &label, int threadId,
             "  font-weight: 600; letter-spacing: 0.1px; }"
             "QPushButton:hover { background: %1; }"
           ).arg(c.accentSoft, c.accentSoftInk, c.accent)
-        : hasUnread
+        : (hasUnread && !silenced)
         ? QStringLiteral(
             "QPushButton { background: %1; color: %2; border: 1px solid %3;"
             "  border-radius: 16px; padding: 6px %PAD%px 6px 16px; font-size: 13px;"
@@ -308,8 +356,45 @@ QWidget *TopicTabBar::makeChip(const QString &label, int threadId,
         }
     });
 
-    if (!hasUnread)
+    if (marked)
+        b->setToolTip(silenced ? tr("Notifications are off for this topic")
+                               : tr("Only mentions notify you in this topic"));
+    if (!showCount && !marked)
         return b;
+
+    // The mark: a slashed bell (notifications off) or "@" (mentions only), in the
+    // chip's own ink. Transparent to the mouse like the count, so a click on it is
+    // a click on the topic and the chip's tooltip shows over it.
+    QLabel *mark = nullptr;
+    if (marked) {
+        const QColor markInk(active ? c.accentSoftInk : c.inkDim);
+        mark = new QLabel(b);
+        mark->setObjectName(QStringLiteral("topicNotifMark"));
+        mark->setAttribute(Qt::WA_TransparentForMouseEvents);
+        mark->setFixedSize(kMarkW, kMarkW);
+        mark->setAlignment(Qt::AlignCenter);
+        if (silenced) {
+            mark->setPixmap(mutedBellPixmap(markInk, kMarkW, b->devicePixelRatioF()));
+        } else {
+            QFont f;
+            f.setPixelSize(13);
+            f.setWeight(QFont::Bold);
+            mark->setFont(f);
+            mark->setText(QStringLiteral("@"));
+            mark->setStyleSheet(QStringLiteral("QLabel { color: %1; background: transparent; }")
+                                    .arg(markInk.name(QColor::HexRgb)));
+        }
+        mark->setAccessibleName(silenced ? tr("Notifications off") : tr("Mentions only"));
+    }
+
+    if (!showCount) {
+        auto *innerMark = new QHBoxLayout(b);
+        innerMark->setContentsMargins(0, 0, kMarkEdge, 0);
+        innerMark->setSpacing(0);
+        innerMark->addStretch(1);
+        innerMark->addWidget(mark, 0, Qt::AlignVCenter);
+        return b;
+    }
 
     // The count capsule: the same pill as SidebarPainter::paintUnreadBadge
     // (PainterTheme::badgeHeight, demibold, unreadBadge fill with its scored
@@ -321,16 +406,22 @@ QWidget *TopicTabBar::makeChip(const QString &label, int threadId,
     badge->setFont(badgeFont);
     badge->setAlignment(Qt::AlignCenter);
     badge->setFixedSize(badgeW, PainterTheme::badgeHeight);
-    badge->setStyleSheet(QStringLiteral(
-        "QLabel { background: %1; color: %2; border-radius: %3px; }"
-    ).arg(c.unreadBadge, c.badgeInk)
-     .arg(PainterTheme::badgeHeight / 2));
+    // A silenced topic's count is an OUTLINE in the quiet ink, not the filled
+    // unread pill: the number is still there, it just does not call for you.
+    badge->setStyleSheet(silenced
+        ? QStringLiteral("QLabel { background: transparent; color: %1; border: 1px solid %1;"
+                         " border-radius: %2px; }")
+              .arg(c.inkDim).arg(PainterTheme::badgeHeight / 2)
+        : QStringLiteral("QLabel { background: %1; color: %2; border-radius: %3px; }")
+              .arg(c.unreadBadge, c.badgeInk).arg(PainterTheme::badgeHeight / 2));
     badge->setAccessibleName(tr("%n unread", nullptr, unreadCount));
 
     auto *inner = new QHBoxLayout(b);
     inner->setContentsMargins(0, 0, kCountInset, 0);
-    inner->setSpacing(0);
+    inner->setSpacing(marked ? kMarkGap : 0);
     inner->addStretch(1);
+    if (mark)
+        inner->addWidget(mark, 0, Qt::AlignVCenter);
     inner->addWidget(badge, 0, Qt::AlignVCenter);
     return b;
 }
@@ -386,9 +477,10 @@ void TopicTabBar::rebuild()
         QString title      = idx.data(ThreadListModel::TitleRole).toString();
         if (title.isEmpty()) title = tr("Thread %1").arg(threadId);
         const int unread   = idx.data(ThreadListModel::UnreadCountRole).toInt();
+        const int notif    = idx.data(ThreadListModel::NotificationLevelRole).toInt();
 
         auto *chip = makeChip(QStringLiteral("#  ") + title, threadId, unread,
-                              m_selectedThreadId == threadId);
+                              m_selectedThreadId == threadId, notif);
         if (m_selectedThreadId == threadId) m_selectedChip = chip;
         m_rowLayout->insertWidget(m_rowLayout->count() - 1, chip);
     }

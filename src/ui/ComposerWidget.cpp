@@ -1,5 +1,6 @@
 #include "ComposerWidget.h"
 #include "core/MessageLengthPolicy.h"
+#include "core/MultiFileLogic.h"
 #include "EmojiPickerWidget.h"
 #include "NextcloudFilePickerDialog.h"
 #include "painter/PainterTheme.h"
@@ -160,11 +161,15 @@ protected:
             }
         }
         if (source->hasUrls()) {
-            for (const QUrl &url : source->urls()) {
-                if (url.isLocalFile()) {
-                    m_owner->showPendingFile(url.toLocalFile());
-                    return;
-                }
+            // EVERY local file, not the first: copying three files in Explorer and pasting kept
+            // one and said nothing about the other two.
+            QStringList files;
+            for (const QUrl &url : source->urls())
+                if (url.isLocalFile())
+                    files.append(url.toLocalFile());
+            if (!files.isEmpty()) {
+                m_owner->showPendingFiles(files);
+                return;
             }
         }
         QTextEdit::insertFromMimeData(source);
@@ -288,9 +293,9 @@ ComposerWidget::ComposerWidget(QWidget *parent)
         QAction *picked = menu.exec(pos);
         if (picked && picked == newPoll) { emit createPollRequested(); return; }
         if (picked == fromDevice) {
-            QString file = QFileDialog::getOpenFileName(this, tr("Send file"));
-            if (!file.isEmpty())
-                showPendingFile(file);
+            const QStringList files = QFileDialog::getOpenFileNames(this, tr("Send files"));
+            if (!files.isEmpty())
+                showPendingFiles(files);
         } else if (picked == fromNc) {
             auto *dlg = new NextcloudFilePickerDialog(m_model->api(), this);
             dlg->setAttribute(Qt::WA_DeleteOnClose);
@@ -699,8 +704,9 @@ void ComposerWidget::showPendingFile(const QString &path)
         discardOwnedPendingFile();
     m_pendingFileOwned = false;   // showPendingOwnedFile() sets it again for its own file
     m_pendingFilePath = path;
-    QFileInfo fi(path);
-    m_pendingName->setText(fi.fileName());
+    m_pendingMore.clear();        // one file replaces whatever batch was staged (showPendingFiles adds)
+    m_pendingNote.clear();
+    refreshPendingName();
 
     // Clear any "Preparing image…" styling left from showPendingEncoding().
     m_pendingPreview->setText(QString());
@@ -725,10 +731,80 @@ void ComposerWidget::showPendingFile(const QString &path)
     updateLengthIndicator();   // text typed before the file was staged is now a caption
 }
 
+void ComposerWidget::refreshPendingName()
+{
+    QString text = QFileInfo(m_pendingFilePath).fileName();
+    if (!m_pendingMore.isEmpty())
+        text += QStringLiteral("  ") + tr("+%n more", nullptr, m_pendingMore.size());
+    if (!m_pendingNote.isEmpty())
+        text += QStringLiteral("  \u00B7  ") + m_pendingNote;
+    m_pendingName->setText(text);
+    // The whole list, for a batch, with the FULL path of each: the label only has room for the
+    // first name, and where a file lives (a paste can bring files from anywhere) is the thing worth
+    // seeing before pressing Send.
+    QStringList paths;
+    if (!m_pendingFilePath.isEmpty()) {
+        paths.append(QDir::toNativeSeparators(m_pendingFilePath));
+        for (const QString &p : m_pendingMore)
+            paths.append(QDir::toNativeSeparators(p));
+    }
+    m_pendingName->setToolTip(paths.size() > 1 ? paths.join(QLatin1Char('\n')) : QString());
+}
+
+void ComposerWidget::showPendingFiles(const QStringList &paths)
+{
+    // What is staged and may be added to: files the user chose. A pasted image (a temp file TalQ
+    // made) is replaced by a new arrival, as it always was.
+    QStringList staged;
+    if (!m_pendingFilePath.isEmpty() && !m_pendingFileOwned) {
+        staged.append(m_pendingFilePath);
+        staged.append(m_pendingMore);
+    }
+    const talq::multifile::AddResult r = talq::multifile::addStaged(staged, paths);
+
+    if (r.files.isEmpty()) {
+        // Everything that arrived was a folder, or gone: nothing is staged, and the user must
+        // not be left wondering why a paste or a drop did nothing. Said from the event loop, NOT
+        // from here: this runs inside a drop (Explorer's drag is blocked until the target's Drop
+        // returns, so a modal box in it freezes Explorer) and inside a paste.
+        const QString why = r.notFiles > 0
+            ? tr("A folder cannot be sent as it is. Add the files inside it, or compress the "
+                 "folder into one file first.")
+            : tr("The file could not be found. It may have been moved or deleted.");
+        QTimer::singleShot(0, this, [this, why]() {
+            QMessageBox::information(this, tr("Nothing to send"), why);
+        });
+        return;
+    }
+    if (r.added == 0 && !staged.isEmpty() && r.notFiles == 0 && r.missing == 0 && r.overLimit == 0)
+        return;                                   // only files that were already staged
+
+    // First file: the existing single-file staging (preview, ownership, bar). The rest follow it.
+    // The replacement path is not the staged first file when the staged one was an owned image.
+    if (m_pendingFilePath != r.files.first() || m_pendingFileOwned)
+        showPendingFile(r.files.first());
+    m_pendingMore = r.files.mid(1);
+
+    QStringList notes;
+    if (r.notFiles > 0)
+        notes.append(tr("%n folder(s) skipped", nullptr, r.notFiles));
+    if (r.missing > 0)
+        notes.append(tr("%n not found", nullptr, r.missing));
+    if (r.overLimit > 0)
+        notes.append(tr("%n over the limit of %1 left out", nullptr, r.overLimit)
+                         .arg(talq::multifile::kMaxFiles));
+    m_pendingNote = notes.join(QStringLiteral(", "));
+    refreshPendingName();
+    applyPlaceholder(m_pendingMore.isEmpty() ? tr("Add a caption\u2026")
+                                             : tr("Add a caption (it goes with the first file)\u2026"));
+}
+
 void ComposerWidget::showPendingEncoding()
 {
     discardOwnedPendingFile();   // a new paste replaces the staged one
     m_pendingFilePath.clear();
+    m_pendingMore.clear();
+    m_pendingNote.clear();
     m_pendingPreview->setPixmap(QPixmap());
     m_pendingPreview->setText(QStringLiteral("\u23F3"));                       // ⏳ hourglass
     m_pendingPreview->setStyleSheet(
@@ -756,9 +832,14 @@ void ComposerWidget::confirmSendFile()
     // upload would otherwise run, the share be refused, and the caption already be gone from the
     // box with nothing to retry it (files are not in the outbox).
     if (tooLongToSend(caption, /*plainSend*/ false)) return;
-    qDebug() << "confirmSendFile: path=" << m_pendingFilePath << "caption=" << caption;
-    // The model now owns an owned temp file: it removes it once the share succeeds.
-    m_model->sendFileWithCaption(m_pendingFilePath, caption, m_pendingFileOwned);
+    QStringList all;
+    all.append(m_pendingFilePath);
+    all.append(m_pendingMore);
+    qDebug() << "confirmSendFile: path=" << m_pendingFilePath << "files=" << all.size()
+             << "caption=" << caption;
+    // The model now owns an owned temp file: it removes it once the share succeeds. The caption
+    // goes with the first file; the files go one after another.
+    m_model->sendFilesWithCaption(all, caption, m_pendingFileOwned);
     m_pendingFileOwned = false;   // handed over, so cancelPendingFile() below must not delete it
     m_input->clear();
     cancelPendingFile();
@@ -768,6 +849,8 @@ void ComposerWidget::cancelPendingFile()
 {
     discardOwnedPendingFile();   // the user dismissed a paste TalQ made: nobody else wants it
     m_pendingFilePath.clear();
+    m_pendingMore.clear();       // the cancel button removes the whole batch
+    m_pendingNote.clear();
     m_pendingBar->hide();
     applyPlaceholder(m_topicName.isEmpty()
         ? tr("Message…")

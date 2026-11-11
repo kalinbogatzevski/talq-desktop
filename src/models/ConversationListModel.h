@@ -2,6 +2,8 @@
 
 #include <QAbstractListModel>
 #include <QVector>
+#include <QHash>
+#include <QSet>
 #include <QTimer>
 #include "models/Conversation.h"
 #include "core/ApiClient.h"
@@ -172,6 +174,24 @@ public:
     // total, the tray and taskbar count). Off by default: they muted it so as not to
     // be told about it. Changing it recounts at once. See countedUnread().
     void setCountMutedChats(bool on);
+    // The user's own Nextcloud user id (not always the login name ApiClient holds): to tell a message
+    // of ours from someone else's when working out how many of a chat's unread messages sit in topics
+    // the user silenced. Without it the login name is used.
+    void setSelfUserId(const QString &id)
+    {
+        if (id == m_selfUserId)
+            return;
+        m_selfUserId = id;
+        // Another account: nothing worked out for the last one may be applied to this one, and an
+        // answer still on its way for the last one must be dropped when it arrives (m_silencedGen).
+        ++m_silencedGen;
+        m_silencedUnread.clear();
+        m_silencedTopicsCache.clear();
+        m_silencedInFlight.clear();
+    }
+    // The user's levels for the topics of this chat changed (silenced, un-silenced, or learned from the
+    // server): the figure of how much of its unread is in silenced topics is worked out again.
+    void noteTopicLevelsChanged(const QString &token);
     // What the server says is unread in this room, whatever is SHOWN (UnreadCountRole
     // is 0 for a muted chat that is not counted). For "is there something to read".
     int rawUnreadAt(int index) const;
@@ -226,6 +246,28 @@ private:
     bool m_pendingRefresh = false;
     int m_totalUnread = 0;
     bool m_countMutedChats = false;
+    // For a chat with silenced topics: how many of its `forUnread` unread messages are in them, worked
+    // out from the chat's newest messages (core/ToastGatePolicy.h silencedUnreadCount). The chat's
+    // shown number leaves them out (countedUnreadOf), so a topic the user silenced does not keep
+    // lighting up its chat, the folder and the tray. Recomputed whenever the chat's unread or the set
+    // of silenced topics changes; until then the old figure (clamped to the unread) stands.
+    // It is valid only for the chat's read position it was worked out at (`lastRead`) and while the
+    // unread has not fallen below it: otherwise (read elsewhere, partly read) it is not applied.
+    // `lastMsg`: the newest message of the room list it was worked out for. `verifiedAtMs`: when the
+    // server last confirmed the silenced topics; a figure above 0 is only believed for a few minutes
+    // (a topic may be switched back on from another device at any time) and then asked again.
+    struct SilencedUnread { int forUnread = 0; int lastRead = 0; int lastMsg = 0; QString topicsKey;
+                            int silenced = 0; qint64 verifiedAtMs = 0; };
+    QHash<QString, SilencedUnread> m_silencedUnread;
+    // The silenced topics of each chat, read from the settings once and kept (the list refreshes on
+    // every push); noteTopicLevelsChanged drops an entry.
+    mutable QHash<QString, QSet<int>> m_silencedTopicsCache;
+    QSet<int> silencedTopicsFor(const QString &token) const;
+    QSet<QString> m_silencedInFlight;
+    QString m_selfUserId;
+    int m_silencedGen = 0;          // bumped on an account change: older answers are dropped
+    int silencedUnreadOf(const Conversation &c) const;
+    void reclassifySilenced();
     // The unread number SHOWN for a room: 0 for a muted chat unless muted chats count.
     int countedUnreadOf(const Conversation &c) const;
     // Recompute m_totalUnread (and tell the views) after a change that alters what counts.

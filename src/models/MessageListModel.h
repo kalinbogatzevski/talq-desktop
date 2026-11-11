@@ -7,6 +7,7 @@
 #include <QList>
 #include <QJsonArray>
 #include <QTimer>
+#include <QPointer>
 #include <memory>
 #include "models/Message.h"
 #include "core/ApiClient.h"
@@ -177,6 +178,25 @@ public:
     // (TempFileLogic.h), which also covers a crash or a quit mid-upload.
     Q_INVOKABLE void sendFileWithCaption(const QString &filePath, const QString &caption,
                                          bool deleteWhenShared = false);
+    // Several files in one go (the composer's paste, drop and file dialog). The caption goes with
+    // the FIRST file; `firstDeleteWhenShared` is that file's flag (only a pasted image is a temp
+    // file TalQ made, and that is always a batch of one). Files are uploaded ONE AFTER ANOTHER,
+    // never together: the engine keeps a single progress state and name-keyed bookkeeping, and a
+    // queue is what keeps two uploads from clobbering each other (the upload bar showed whichever
+    // finished first). The room and the topic are taken NOW, when the user pressed Send, so a long
+    // batch lands where it was sent even if they move on meanwhile. Names that clash within the
+    // batch are made distinct (MultiFileLogic.h) -- the same name would overwrite the earlier file.
+    Q_INVOKABLE void sendFilesWithCaption(const QStringList &filePaths, const QString &caption,
+                                          bool firstDeleteWhenShared = false);
+    // Where the upload in flight stands within its batch (1-based; both 0 when nothing is queued).
+    int uploadBatchIndex() const { return m_uploadBatchIndex; }
+    int uploadBatchTotal() const { return m_uploadBatchTotal; }
+    // Something is uploading OR waiting to. For the automatic-update gate: between two files of a
+    // batch the progress is back at -1 for an instant, which must not read as "idle".
+    bool hasQueuedUploads() const { return m_fileQueueRunning || !m_fileQueue.isEmpty(); }
+    // Drop the files still waiting (the session ended); the one in flight finishes. A temp file
+    // TalQ made for a dropped entry is removed.
+    void clearFileQueue();
     // openWhenDone splits the two gestures that reach this. Clicking the file
     // bubble means "show me this", so it opens; the context-menu Download
     // means "put a copy on my disk", so it saves and says where. Same bytes,
@@ -323,6 +343,38 @@ private:
     // the Talk share once the bytes are on the server (shared by the single-PUT
     // and chunked paths); uploadFileChunked streams a large file via Nextcloud
     // chunked-upload v2 so we never readAll() the whole file into memory.
+    // One file waiting to be uploaded, with everything that must not be read at upload time (the
+    // user may have left the room or the topic by then).
+    struct FileSend {
+        QString path, caption, name, token;   // name = the upload name; empty = derive from the path
+        bool owned = false;                   // a temp file TalQ made: removed after its share
+        int threadId = 0;                     // the topic open when Send was pressed (0 = none)
+        int batchIndex = 1, batchTotal = 1;
+    };
+    QVector<FileSend> m_fileQueue;
+    bool m_fileQueueRunning = false;
+    int m_uploadBatchIndex = 0, m_uploadBatchTotal = 0;
+    // An upload that makes no progress for this long is given up on, so one hung transfer cannot
+    // hold the queue (and so every later file send) forever: the small-file PUT has no transfer
+    // timeout of its own.
+    QTimer m_fileQueueWatchdog;
+    // Which upload is "the one in flight". Bumped when one starts and when the watchdog gives up on
+    // one; every callback of an upload captures the number it started with and does NOTHING to the
+    // shared progress state once it is stale -- a transfer that is given up on and finishes (or is
+    // aborted) later must not be read as the end of the file that is uploading by then.
+    quint64 m_uploadGen = 0;
+    // The request that can hang (the small-file PUT, a chunk PUT, the MOVE): aborted on give-up.
+    QPointer<QNetworkReply> m_currentUploadReply;
+    // Failures of the files of a BATCH, said once when the batch is over (a single file says its own
+    // at once). Without this a refusal that hits every file stacked one modal box per file.
+    struct UploadFailure { QString name, reason; };
+    QVector<UploadFailure> m_batchFailures;
+    void reportUploadFailure(const QString &name, const QString &reason,
+                             const QString &singleText = QString());
+    void flushBatchFailures();
+    void enqueueFileSends(const QVector<FileSend> &items);
+    void pumpFileQueue();
+    void startFileSend(const FileSend &fs);
     // Filenames queued by sendVoiceMessage, consumed by shareUploadedFile.
     QSet<QString> m_voiceMessageFiles;
     // Uploaded file name -> the local temp file TalQ made for it, removed once the share succeeds
@@ -332,15 +384,17 @@ private:
     // if any, is deliberately left on disk for the startup sweep.
     void forgetPendingUpload(const QString &fileName);
     void shareUploadedFile(const QString &fileName, const QString &token,
-                           const QString &caption);
+                           const QString &caption, int threadId, quint64 gen);
     void uploadFileChunked(const QString &readPath, const QString &fileName,
                            const QString &token, const QString &caption,
-                           const QString &tempCopy);
+                           const QString &tempCopy, int threadId, quint64 gen);
     // Uploads the next chunk (or MOVE-assembles + shares when done). Re-invoked
     // from each chunk's finished() callback — no self-referential std::function,
     // so the state is released cleanly when the last reply completes.
     void uploadNextChunk(std::shared_ptr<ChunkUploadState> st);
-    void failChunkedUpload(const std::shared_ptr<ChunkUploadState> &st, const QString &msg);
+    void failChunkedUpload(const std::shared_ptr<ChunkUploadState> &st, const QString &reason);
+    // A chunked upload that was given up on (stale generation): release what it holds, touch nothing shared.
+    void dropStaleChunkedUpload(const std::shared_ptr<ChunkUploadState> &st);
     // Lightweight pull just to refresh X-Chat-Last-Common-Read.
     // Used by m_readMarkerTimer because this server's HPB doesn't relay
     // read-marker events (only new-message events), so the long-poll never

@@ -1,6 +1,9 @@
 #include "models/ConversationListModel.h"
 #include "core/Talk25Rooms.h"
 #include "core/ToastGatePolicy.h"
+#include "core/TopicLevelStore.h"
+#include <QDateTime>
+#include <QPointer>
 #include <algorithm>
 #include <QHash>
 
@@ -286,6 +289,7 @@ void ConversationListModel::refresh()
             m_totalUnread = newTotalUnread;
             emit totalUnreadChanged();
         }
+        reclassifySilenced();
     });
 }
 
@@ -378,6 +382,7 @@ void ConversationListModel::clearUnreadForToken(const QString &token)
     m_totalUnread = qMax(0, m_totalUnread - countedUnreadOf(m_conversations[i]));
     m_conversations[i].unreadMessages = 0;
     m_conversations[i].unreadMention = false;
+    m_silencedUnread.remove(token);
     emit dataChanged(index(i), index(i), {UnreadCountRole, UnreadMentionRole});
     emit totalUnreadChanged();
 }
@@ -387,14 +392,19 @@ void ConversationListModel::markReadAt(const QString &token, int lastReadMessage
     int i = indexOfToken(token);
     if (i < 0) return;
     bool changed = false;
+    // What this chat adds to the total is judged BEFORE the read marker moves: the silenced-unread
+    // figure is tied to the marker, so afterwards it would not be applied and the full number would be
+    // taken off a total that only held the counted part.
+    const int counted = countedUnreadOf(m_conversations[i]);
     if (lastReadMessageId > m_conversations[i].lastReadMessage) {
         m_conversations[i].lastReadMessage = lastReadMessageId;
         changed = true;
     }
     if (m_conversations[i].unreadMessages > 0) {
-        m_totalUnread = qMax(0, m_totalUnread - countedUnreadOf(m_conversations[i]));
+        m_totalUnread = qMax(0, m_totalUnread - counted);
         m_conversations[i].unreadMessages = 0;
         m_conversations[i].unreadMention = false;
+        m_silencedUnread.remove(token);
         changed = true;
         emit totalUnreadChanged();
     }
@@ -487,7 +497,162 @@ void ConversationListModel::setNotificationLevel(int idx, int level)
 
 int ConversationListModel::countedUnreadOf(const Conversation &c) const
 {
-    return talq::toastgate::countedUnread(c.notificationLevel, c.unreadMessages, m_countMutedChats);
+    return talq::toastgate::countedUnread(c.notificationLevel, c.unreadMessages, m_countMutedChats,
+                                          silencedUnreadOf(c));
+}
+
+int ConversationListModel::silencedUnreadOf(const Conversation &c) const
+{
+    if (m_countMutedChats || c.unreadMessages <= 0)
+        return 0;
+    const auto it = m_silencedUnread.constFind(c.token);
+    if (it == m_silencedUnread.constEnd())
+        return 0;
+    // Valid only for the read position it was worked out at, and only while the unread has not
+    // shrunk below what it was worked out for. Anything else (the chat was read, or partly read,
+    // elsewhere) and the figure is not applied: showing the full number for a moment is safe,
+    // hiding a message that is not silenced is not.
+    if (it->lastRead != c.lastReadMessage || c.unreadMessages < it->forUnread)
+        return 0;
+    // The same unread count but another newest message: one was deleted and another arrived, so the
+    // figure may no longer fit. (A larger unread keeps the old figure as a lower bound until the
+    // next answer, which can only leave the number a little high.)
+    if (c.unreadMessages == it->forUnread && c.lastMessageId != it->lastMsg)
+        return 0;
+    return qMin(it->silenced, c.unreadMessages);
+}
+
+QSet<int> ConversationListModel::silencedTopicsFor(const QString &token) const
+{
+    const auto it = m_silencedTopicsCache.constFind(token);
+    if (it != m_silencedTopicsCache.constEnd())
+        return it.value();
+    const QSet<int> ids = talq::topiclevels::silencedIds(talq::topiclevels::loadLevels(
+        talq::topiclevels::levelsKey(m_api ? m_api->user() : QString(), token)));
+    m_silencedTopicsCache.insert(token, ids);
+    return ids;
+}
+
+void ConversationListModel::noteTopicLevelsChanged(const QString &token)
+{
+    m_silencedTopicsCache.remove(token);
+    m_silencedUnread.remove(token);          // worked out for the old set
+    const int i = indexOfToken(token);
+    if (i >= 0)
+        emit dataChanged(index(i), index(i), {UnreadCountRole, UnreadMentionRole, UnreadMentionDirectRole});
+    recountUnread();
+    reclassifySilenced();
+}
+
+// After the list was replaced: for every chat that has a silenced topic and unread messages, make sure
+// the figure of how many of them are in silenced topics is up to date, and ask for it if not. One read
+// of the chat's newest messages (setReadMarker=0: nothing is marked read), only for a chat whose unread
+// or silenced topics changed since the last answer.
+void ConversationListModel::reclassifySilenced()
+{
+    constexpr qint64 kReverifyMs = 3 * 60 * 1000;   // how long a figure above 0 is believed unasked
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    bool dropped = false;
+    for (const Conversation &c : m_conversations) {
+        QSet<int> topics;
+        if (!m_countMutedChats && c.unreadMessages > 0 && c.notificationLevel != 3)
+            topics = silencedTopicsFor(c.token);
+        if (topics.isEmpty()) {
+            // Nothing to leave out here (or nothing unread): forget the old figure.
+            if (m_silencedUnread.remove(c.token) > 0)
+                dropped = true;
+            continue;
+        }
+        const QString key = talq::topiclevels::topicsKey(topics);
+        const auto have = m_silencedUnread.constFind(c.token);
+        if (have != m_silencedUnread.constEnd() && have->forUnread == c.unreadMessages
+            && have->lastRead == c.lastReadMessage && have->lastMsg == c.lastMessageId
+            && have->topicsKey == key
+            && (have->silenced == 0 || nowMs - have->verifiedAtMs < kReverifyMs))
+            continue;                                   // up to date
+        if (m_silencedInFlight.contains(c.token))
+            continue;                                   // its answer will say; the next refresh re-checks
+        m_silencedInFlight.insert(c.token);
+
+        const int wanted = qMin(c.unreadMessages, 50);   // beyond that the older ones stay counted
+        const int limit = qBound(20, wanted * 2 + 10, 100);
+        QPointer<ConversationListModel> guard(this);
+        const QString token = c.token;
+        const int unread = c.unreadMessages;
+        const int lastRead = c.lastReadMessage;
+        const int lastMsg = c.lastMessageId;
+        const int gen = m_silencedGen;
+        m_api->fetchLatestMessages(token, limit,
+            [guard, token, unread, lastRead, lastMsg, gen, topics, wanted](bool ok, const QJsonArray &page, int) {
+                if (!guard || guard->m_silencedGen != gen) return;   // gone, or another account since
+                if (!ok) { guard->m_silencedInFlight.remove(token); return; }   // retried on the next refresh
+                const QString me = guard->m_selfUserId.isEmpty() ? guard->m_api->user()
+                                                                  : guard->m_selfUserId;
+                // The answer is applied only if the chat is still the way it was asked about: it may
+                // have been read (here or elsewhere) while the request was out.
+                auto stillCurrent = [guard, token, lastRead]() {
+                    const int i = guard->indexOfToken(token);
+                    return i >= 0 && guard->m_conversations[i].unreadMessages > 0
+                           && guard->m_conversations[i].lastReadMessage == lastRead;
+                };
+                // `keyIds` is the silenced set the figure is keyed by (what the next refresh compares).
+                auto apply = [guard, token, unread, lastRead, lastMsg](const QSet<int> &keyIds, int silenced) {
+                    SilencedUnread su;
+                    su.forUnread = unread;
+                    su.lastRead = lastRead;
+                    su.lastMsg = lastMsg;
+                    su.topicsKey = talq::topiclevels::topicsKey(keyIds);
+                    su.silenced = silenced;
+                    su.verifiedAtMs = QDateTime::currentMSecsSinceEpoch();
+                    guard->m_silencedUnread.insert(token, su);
+                    const int i = guard->indexOfToken(token);
+                    if (i >= 0)
+                        emit guard->dataChanged(guard->index(i), guard->index(i),
+                                                {UnreadCountRole, UnreadMentionRole, UnreadMentionDirectRole});
+                    guard->recountUnread();
+                };
+                const int n = talq::toastgate::silencedUnreadCount(page, me, wanted, topics, lastMsg);
+                if (n == 0) {
+                    guard->m_silencedInFlight.remove(token);
+                    if (stillCurrent()) apply(topics, 0);
+                    return;
+                }
+                // Something would be left out of the chat's number, and the level that says so was
+                // learned when this chat was last open: it may have been changed since, on another
+                // device. Ask the server and use ITS word before hiding anything.
+                guard->m_api->fetchRecentThreads(token, 50,
+                    [guard, token, gen, page, me, wanted, lastMsg, stillCurrent, apply](bool ok2, const QJsonArray &list, int) {
+                        if (!guard || guard->m_silencedGen != gen) return;
+                        guard->m_silencedInFlight.remove(token);
+                        if (!ok2) return;           // unverified: the full number stays, retried later
+                        const QString key = talq::topiclevels::levelsKey(guard->m_api->user(), token);
+                        const talq::topiclevels::Levels known = talq::topiclevels::loadLevels(key);
+                        const talq::topiclevels::Levels listed = talq::topiclevels::listedFromThreadsRecent(list);
+                        bool changed = false;
+                        const talq::topiclevels::Levels now = talq::topiclevels::applyServer(known, listed, &changed);
+                        if (changed)
+                            talq::topiclevels::saveLevels(key, now);
+                        const QSet<int> ids = talq::topiclevels::silencedIds(now);
+                        guard->m_silencedTopicsCache.insert(token, ids);
+                        // Only a topic the SERVER's list shows as silenced is left out of the number.
+                        // The list holds the ~50 most recently active topics and an unread message can
+                        // be older than that: a topic it does not show keeps its messages counted (too
+                        // high is safe; a stale local "silenced" must not hide a message).
+                        QSet<int> confirmed;
+                        for (auto it = listed.constBegin(); it != listed.constEnd(); ++it)
+                            if (it.value() == 3)
+                                confirmed.insert(it.key());
+                        if (stillCurrent())
+                            apply(ids, talq::toastgate::silencedUnreadCount(page, me, wanted, confirmed, lastMsg));
+                    });
+            });
+    }
+    if (dropped) {
+        if (!m_conversations.isEmpty())
+            emit dataChanged(index(0), index(m_conversations.size() - 1),
+                             {UnreadCountRole, UnreadMentionRole, UnreadMentionDirectRole});
+        recountUnread();
+    }
 }
 
 int ConversationListModel::rawUnreadAt(int idx) const
@@ -514,6 +679,7 @@ void ConversationListModel::setCountMutedChats(bool on)
         emit dataChanged(index(0), index(m_conversations.size() - 1),
                          {UnreadCountRole, UnreadMentionRole, UnreadMentionDirectRole});
     recountUnread();
+    reclassifySilenced();    // off: the figures are needed again; on: they are dropped
 }
 
 // --- 0.65.3 ---------------------------------------------------------------
