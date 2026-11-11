@@ -520,9 +520,10 @@ void SidebarPainter::buildFolderRows(const QVector<int> &matching, int rowH)
         const bool inFolder = f >= 0 && f < nFolders;
         (inFolder ? members[f] : other).append(idx);
         // The roll-up counts the members that survive the filters (the rows an
-        // open folder would show): muted rooms included -- a muted row paints
-        // its badge too -- and archived rooms excluded, because `matching`
-        // already left them out.
+        // open folder would show), and archived rooms excluded, because `matching`
+        // already left them out. A muted room is in the roll-up with the number its
+        // own row shows: 0 unless "Count muted chats" is on (ConversationListModel::
+        // countedUnreadOf), so the folder total always matches its rows.
         talq::addToRollup(inFolder ? m_folderRollups[f] : m_otherRollup,
                           cl.unreadCount, cl.unreadMention, cl.unreadMentionDirect);
     }

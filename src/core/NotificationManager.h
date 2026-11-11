@@ -44,6 +44,12 @@ public:
     void playCurrentSound();
     bool isNotificationsEnabled() const { return m_notificationsEnabled; }
     void setNotificationsEnabled(bool v);
+    // "Count unread messages from muted chats" (Settings > Notifications). Off by
+    // default: a chat set to Never adds nothing to the unread numbers (its badge,
+    // a folder's total, the tray and taskbar count). Persisted; the setter is its
+    // only writer. The numbers themselves are the conversation model's job.
+    bool countMutedChats() const { return m_countMutedChats; }
+    void setCountMutedChats(bool v);
     // Own status is Do Not Disturb: notify() and notifySilently() raise NOTHING
     // -- no popup, no sound. Only notifyFeedback() still shows (still silent).
     void setDoNotDisturb(bool on) { m_doNotDisturb = on; }
@@ -89,6 +95,7 @@ public:
 signals:
     void soundIdChanged();
     void notificationsEnabledChanged();
+    void countMutedChatsChanged();
     void notifStyleChanged();
     void showRequested();
     void desktopPopupRequested(const QString &title, const QString &message, const QString &token);
@@ -113,6 +120,7 @@ private:
     QString m_soundId = "chime";       // see header doc for valid values
     QString m_notifStyle = "popup";    // "popup" (Telegram-style) or "windows" (toast)
     bool m_notificationsEnabled = true;
+    bool m_countMutedChats = false;
     bool m_doNotDisturb = false;
     int m_unreadCount = 0;
     QByteArray m_wavData;  // bytes of the currently-selected tone (empty for none/system)

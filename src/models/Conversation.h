@@ -45,6 +45,13 @@ public:
     QString lastMessageText;
     QString lastMessageAuthor;
     bool lastMessageSilent = false;  // sender chose to suppress notifications
+    // What the popup gate (core/ToastGatePolicy.h) needs to know about the last
+    // message without showing it: its mention markup (for "mentions only") and
+    // the topic it was written in (0 = none), because a muted topic is muted
+    // even in a chat that is not.
+    QJsonObject lastMessageParams;
+    int lastMessageThreadId = 0;
+    int lastMessageId = 0;           // 0 = none / unknown
     qint64 lastActivity = 0;
     int lastReadMessage = 0;
     int participantType = 0;

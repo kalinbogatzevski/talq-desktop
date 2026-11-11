@@ -359,6 +359,7 @@ Message Message::fromJson(const QJsonObject &json)
 
     // Resolve messageParameters — replace {placeholder} with styled mentions
     QJsonObject params = json["messageParameters"].toObject();
+    m.messageParameters = params;
     for (auto it = params.begin(); it != params.end(); ++it) {
         QJsonObject param = it.value().toObject();
         QString type = param["type"].toString();

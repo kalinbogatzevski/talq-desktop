@@ -76,6 +76,13 @@ Conversation Conversation::fromJson(const QJsonObject &json)
         c.lastMessageText = lastMsg["message"].toString();
         c.lastMessageAuthor = lastMsg["actorDisplayName"].toString();
         c.lastMessageSilent = lastMsg["silent"].toBool();
+        c.lastMessageId = lastMsg["id"].toInt();
+        c.lastMessageParams = lastMsg["messageParameters"].toObject();
+        // `threadId` is sent on EVERY message (it is the message's own id when it
+        // is in no topic); only `isThread` says it really is one. Same rule as
+        // Message::fromJson.
+        if (lastMsg["isThread"].toBool())
+            c.lastMessageThreadId = lastMsg["threadId"].toInt();
     }
 
     return c;

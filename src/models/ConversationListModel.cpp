@@ -1,5 +1,6 @@
 #include "models/ConversationListModel.h"
 #include "core/Talk25Rooms.h"
+#include "core/ToastGatePolicy.h"
 #include <algorithm>
 #include <QHash>
 
@@ -17,6 +18,7 @@ ConversationListModel::ConversationListModel(ApiClient *api, QObject *parent)
     : QAbstractListModel(parent)
     , m_api(api)
 {
+    qRegisterMetaType<NewUnreadInfo>();
     m_autoRefreshTimer.setInterval(30000); // 30s fallback — push provides real-time
     connect(&m_autoRefreshTimer, &QTimer::timeout, this, &ConversationListModel::refresh);
 
@@ -54,9 +56,10 @@ QVariant ConversationListModel::data(const QModelIndex &index, int role) const
         case TokenRole:         return c.token;
         case DisplayNameRole:   return c.displayName;
         case TypeRole:          return c.type;
-        case UnreadCountRole:   return c.unreadMessages;
-        case UnreadMentionRole: return c.unreadMention;
-        case UnreadMentionDirectRole: return c.unreadMentionDirect;
+        case UnreadCountRole:   return countedUnreadOf(c);
+        // A mention in a chat that is not counted must not light the badge either.
+        case UnreadMentionRole: return c.unreadMention && countedUnreadOf(c) > 0;
+        case UnreadMentionDirectRole: return c.unreadMentionDirect && countedUnreadOf(c) > 0;
         case FavoriteRole:      return c.favorite;
         case LastMessageRole:   return c.lastMessageText;
         case LastAuthorRole:    return c.lastMessageAuthor;
@@ -157,9 +160,13 @@ void ConversationListModel::refresh()
         // Snapshot old state for preservation across refresh
         QHash<QString, int> oldUnread;
         QHash<QString, bool> oldHasTopics;
+        QHash<QString, bool> oldUnreadMention;
+        QHash<QString, int> oldLastMessageId;
         for (const auto &c : m_conversations) {
             oldUnread[c.token] = c.unreadMessages;
             oldHasTopics[c.token] = c.hasTopics;
+            oldUnreadMention[c.token] = c.unreadMention;
+            oldLastMessageId[c.token] = c.lastMessageId;
         }
 
         // Parse new data
@@ -189,16 +196,32 @@ void ConversationListModel::refresh()
         // Detect new unread messages and emit notifications
         int newTotalUnread = 0;
         for (const auto &c : newConversations) {
-            newTotalUnread += c.unreadMessages;
+            newTotalUnread += countedUnreadOf(c);
 
             int prev = oldUnread.value(c.token, 0);
             if (c.unreadMessages > prev && prev >= 0 && !oldUnread.isEmpty()) {
                 // This conversation has new unread messages since last check.
                 // Skip emitting if the last message was sent silently — the
                 // sender explicitly opted out of notifying us.
-                if (!c.lastMessageSilent)
-                    emit newUnreadMessage(c.displayName, c.lastMessageText, c.token,
-                                          isSensitiveRoom(c));
+                if (!c.lastMessageSilent) {
+                    NewUnreadInfo info;
+                    info.name = c.displayName;
+                    info.lastMessage = c.lastMessageText;
+                    info.token = c.token;
+                    info.sensitive = isSensitiveRoom(c);
+                    info.notificationLevel = c.notificationLevel;
+                    info.threadId = c.lastMessageThreadId;
+                    info.messageParameters = c.lastMessageParams;
+                    info.unreadMention = c.unreadMention;
+                    // A mention that arrived since the last look: covers a reply to
+                    // us, which the last message's own markup does not show.
+                    info.newUnreadMention = c.unreadMention && !oldUnreadMention.value(c.token, false);
+                    info.unreadMessages = c.unreadMessages;
+                    info.previousUnread = prev;
+                    info.lastMessageId = c.lastMessageId;
+                    info.previousLastMessageId = oldLastMessageId.value(c.token, 0);
+                    emit newUnreadMessage(info);
+                }
             }
 
             // Detect incoming calls — use persistent m_callState so two
@@ -352,7 +375,7 @@ void ConversationListModel::clearUnreadForToken(const QString &token)
     int i = indexOfToken(token);
     if (i < 0 || m_conversations[i].unreadMessages == 0) return;
 
-    m_totalUnread = qMax(0, m_totalUnread - m_conversations[i].unreadMessages);
+    m_totalUnread = qMax(0, m_totalUnread - countedUnreadOf(m_conversations[i]));
     m_conversations[i].unreadMessages = 0;
     m_conversations[i].unreadMention = false;
     emit dataChanged(index(i), index(i), {UnreadCountRole, UnreadMentionRole});
@@ -369,7 +392,7 @@ void ConversationListModel::markReadAt(const QString &token, int lastReadMessage
         changed = true;
     }
     if (m_conversations[i].unreadMessages > 0) {
-        m_totalUnread = qMax(0, m_totalUnread - m_conversations[i].unreadMessages);
+        m_totalUnread = qMax(0, m_totalUnread - countedUnreadOf(m_conversations[i]));
         m_conversations[i].unreadMessages = 0;
         m_conversations[i].unreadMention = false;
         changed = true;
@@ -455,8 +478,42 @@ void ConversationListModel::setNotificationLevel(int idx, int level)
             int i = indexOfToken(token);
             if (i < 0) return;
             m_conversations[i].notificationLevel = level;
-            emit dataChanged(index(i), index(i), {NotificationLevelRole});
+            emit dataChanged(index(i), index(i), {NotificationLevelRole, UnreadCountRole,
+                                                  UnreadMentionRole, UnreadMentionDirectRole});
+            // Muting (or un-muting) changes what counts toward the totals.
+            recountUnread();
         });
+}
+
+int ConversationListModel::countedUnreadOf(const Conversation &c) const
+{
+    return talq::toastgate::countedUnread(c.notificationLevel, c.unreadMessages, m_countMutedChats);
+}
+
+int ConversationListModel::rawUnreadAt(int idx) const
+{
+    if (idx < 0 || idx >= m_conversations.size()) return 0;
+    return m_conversations[idx].unreadMessages;
+}
+
+void ConversationListModel::recountUnread()
+{
+    int total = 0;
+    for (const Conversation &c : m_conversations)
+        total += countedUnreadOf(c);
+    if (total == m_totalUnread) return;
+    m_totalUnread = total;
+    emit totalUnreadChanged();
+}
+
+void ConversationListModel::setCountMutedChats(bool on)
+{
+    if (m_countMutedChats == on) return;
+    m_countMutedChats = on;
+    if (!m_conversations.isEmpty())
+        emit dataChanged(index(0), index(m_conversations.size() - 1),
+                         {UnreadCountRole, UnreadMentionRole, UnreadMentionDirectRole});
+    recountUnread();
 }
 
 // --- 0.65.3 ---------------------------------------------------------------
@@ -626,6 +683,13 @@ bool ConversationListModel::isSensitiveForToken(const QString &token) const
     for (const Conversation &c : m_conversations)
         if (c.token == token) return isSensitiveRoom(c);
     return false;
+}
+
+int ConversationListModel::notificationLevelForToken(const QString &token) const
+{
+    for (const Conversation &c : m_conversations)
+        if (c.token == token) return c.notificationLevel;
+    return 0;
 }
 
 void ConversationListModel::updateLastMessage(const QString &token, const QString &author, const QString &text)

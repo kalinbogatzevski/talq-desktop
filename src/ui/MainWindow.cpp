@@ -1121,9 +1121,9 @@ void MainWindow::buildChatPage()
         // where there is something unread to summarise -- a summary of nothing
         // is a wasted round trip and a confusing empty dialog.
         if (m_auth && m_auth->capabilities().supportsChatSummary()) {
-            const int unread = m_conversations->data(
-                m_conversations->index(modelIndex),
-                ConversationListModel::UnreadCountRole).toInt();
+            // The RAW count: a muted chat that is not counted shows 0, but it can
+            // still have something to summarise.
+            const int unread = m_conversations->rawUnreadAt(modelIndex);
             if (unread > 0) {
                 QAction *sum = menu->addAction(tr("Summarise what I missed"));
                 connect(sum, &QAction::triggered, this, [this, ctxToken, modelIndex]() {

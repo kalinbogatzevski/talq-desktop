@@ -1899,6 +1899,23 @@ void ApiClient::setThreadNotificationLevel(const QString &token, int threadId, i
     post(path, body, callback ? callback : Callback([](bool, const QJsonObject &, int) {}));
 }
 
+void ApiClient::fetchThread(const QString &token, int threadId, Callback callback)
+{
+    const QString path = QStringLiteral("apps/spreed/api/v1/chat/") + token
+                         + QStringLiteral("/threads/") + QString::number(threadId);
+    get(path, callback);
+}
+
+void ApiClient::fetchLatestMessages(const QString &token, int limit, ArrayCallback callback)
+{
+    QUrlQuery q;
+    q.addQueryItem(QStringLiteral("lookIntoFuture"), QStringLiteral("0"));
+    q.addQueryItem(QStringLiteral("limit"), QString::number(limit));
+    q.addQueryItem(QStringLiteral("setReadMarker"), QStringLiteral("0"));
+    q.addQueryItem(QStringLiteral("markNotificationsAsRead"), QStringLiteral("0"));
+    getArray(QStringLiteral("apps/spreed/api/v1/chat/") + token, q, callback);
+}
+
 void ApiClient::setArchived(const QString &token, bool archived, Callback callback)
 {
     const QString path = QStringLiteral("apps/spreed/api/v4/room/") + token

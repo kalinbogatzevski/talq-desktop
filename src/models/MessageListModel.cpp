@@ -1427,6 +1427,10 @@ void MessageListModel::onMessagesReceived(const QJsonArray &messages)
         while (newestReal < m_messages.size() && m_messages[newestReal].id < 0) ++newestReal;
         m_latestArrivedRow = newestReal;
     }
+    // The ids of the whole batch (not only the newest) for latestBatchRows().
+    m_latestBatchIds.clear();
+    for (const Message &m : toCache)
+        m_latestBatchIds.append(m.id);
     emit newMessagesAtEnd();
 
     // Auto-mark as read when new messages arrive
@@ -1490,6 +1494,27 @@ bool MessageListModel::canRetry(int tempId) const
 int MessageListModel::latestArrivedRow() const
 {
     return qBound(0, m_latestArrivedRow, qMax(0, int(m_messages.size()) - 1));
+}
+
+QVector<int> MessageListModel::latestBatchRows() const
+{
+    QVector<int> rows;
+    for (int row = 0; row < m_messages.size(); ++row)
+        if (m_latestBatchIds.contains(m_messages.at(row).id))
+            rows.append(row);
+    return rows;
+}
+
+MessageListModel::ToastFacts MessageListModel::toastFactsAt(int row) const
+{
+    ToastFacts f;
+    if (row < 0 || row >= m_messages.size())
+        return f;
+    const Message &m = m_messages.at(row);
+    f.messageParameters = m.messageParameters;
+    f.replyToActorId = m.replyTo.value(QStringLiteral("actorId")).toString();
+    f.replyToId = m.replyToId;
+    return f;
 }
 
 void MessageListModel::clearOutbox()
@@ -2248,6 +2273,7 @@ void MessageListModel::sendMessage(const QString &text, int replyToId, bool sile
 
     emit messageSent();
     m_latestArrivedRow = 0;      // our own temp, which is the front row
+    m_latestBatchIds.clear();    // not a received batch: latestBatchRows() is empty
     emit newMessagesAtEnd();
 
     // 0.41.2-beta — diagnostic. We're chasing a "zero messages in

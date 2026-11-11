@@ -372,6 +372,20 @@ public:
     void setThreadNotificationLevel(const QString &token, int threadId, int level,
                                     Callback callback);
 
+    // One topic's state (`threads`): { thread, attendee, first, last }. The
+    // user's own level for it is attendee.notificationLevel. The popup gate asks
+    // this for a message in a chat that is NOT open, where no topic list is
+    // loaded, before deciding whether to show it. v1; a 404 means no such topic.
+    void fetchThread(const QString &token, int threadId, Callback callback);
+
+    // The newest `limit` messages of a chat, WITHOUT touching its read state: the
+    // popup gate reads a room it is not showing, to see a mention or a topic that
+    // the room list's single last message hides. setReadMarker=0 and
+    // markNotificationsAsRead=0 are the whole point -- without them the server
+    // marks the room read and clears its notifications, i.e. swallows the very
+    // unread state being judged. The page is in no particular order.
+    void fetchLatestMessages(const QString &token, int limit, ArrayCallback callback);
+
     // Archive a conversation out of the default list without leaving it
     // (`archived-conversations-v2`), and mark one important so it still
     // notifies while archived (`important-conversations`). POST sets, DELETE

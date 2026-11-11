@@ -124,6 +124,8 @@ void talqTerminateHandler()
 #include "core/AuthManager.h"
 #include "core/MessageCache.h"
 #include "core/NotificationManager.h"
+#include "core/ToastGatePolicy.h"
+#include <memory>
 #include "core/PushClient.h"
 #include "core/SignalingClient.h"
 #include "models/ConversationListModel.h"
@@ -992,66 +994,248 @@ int main(int argc, char *argv[])
         conversations.updateLastMessage(messages.conversationToken(), author, text);
     });
 
-    // Notify on new polled messages in active conversation
-    QObject::connect(&messages, &MessageListModel::newMessagesAtEnd, &notifications, [&messages, &notifications, &auth, &callManager, &conversations]() {
-        int count = messages.rowCount();
-        if (count == 0) return;
-        // The announced message. The model is newest-first, but row 0 is only the latest
-        // message while no unsent message of ours is pinned in front of it -- one
-        // there made this handler read OUR text, see our own id, and swallow the
-        // peer's toast and sound (and the busy signal below).
-        auto idx = messages.index(messages.latestArrivedRow());
-        // #80 -- TalQ-exclusive busy signal: the peer we're ringing auto-replied
-        // with the "talq/busy" marker. If we're still ringing THIS conversation,
-        // play the busy tone + popup; swallow it so it isn't also toasted.
-        if (messages.data(idx, MessageListModel::ReferenceIdRole).toString() == QStringLiteral("talq/busy")) {
-            if (callManager.state() == CallManager::Outgoing
-                && callManager.callToken() == messages.conversationToken())
-                callManager.onPeerBusy(messages.data(idx, MessageListModel::ActorNameRole).toString());
+    // The one gate behind BOTH chat popups below (the open conversation, and every
+    // other one). A chat or a topic the user set to "mentions only" or "never"
+    // (right-click -> Notifications) must not pop up: those settings were saved
+    // and shown ("Muted") but nothing here ever read them. See core/ToastGatePolicy.h.
+    //
+    // It is given EVERY new message of a poll batch, newest first, and raises ONE
+    // popup for the newest that passes: a poll can carry several messages (two in
+    // the same second, or a backlog after a reconnect), and the mention that is not
+    // the last of them must still be heard.
+    //
+    // A message in a topic needs the TOPIC's own level, which beats the chat's, so
+    // it is asked of the server first (one small GET per topic, at most
+    // kMaxTopicLookups of them -- the newest topics; the rest are judged by the
+    // chat's level). If a lookup fails (offline, topic deleted) the topic has no
+    // level of its own, so the CHAT's level decides: a chat on "all messages" still
+    // pops up, a chat on "never" stays silent.
+    struct ToastItem {
+        QString title;
+        QString text;        // ready to show
+        QString bodyHtml;    // else: the stored HTML, converted only for the ONE popup shown
+        talq::toastgate::Candidate gate;
+    };
+    constexpr int kMaxTopicLookups = 8;
+    auto raiseChatToast = [&api, &notifications, &messages, &window](const QVector<ToastItem> &items,
+                                                                    bool alwaysSound, const QString &token,
+                                                                    int roomLevel) {
+        // The open chat while the window has focus: NotificationManager::deliver drops
+        // that popup AND its sound whatever is decided here, so do not spend a topic
+        // lookup (and a round trip) on it. Same rule as deliver(); keep them together.
+        if (!alwaysSound && window.isActiveWindow())
+            return;
+        auto finish = [&notifications, &messages, items, alwaysSound, token, roomLevel](const QHash<int, int> &threadLevels) {
+            // The topic lookups take a moment. A popup for ANOTHER chat (alwaysSound)
+            // must not appear for one the user has opened meanwhile: with the window
+            // focused on it, alwaysSound would still sound and show it.
+            if (alwaysSound && token == messages.conversationToken())
+                return;
+            QVector<talq::toastgate::Candidate> candidates;
+            candidates.reserve(items.size());
+            for (const ToastItem &it : items)
+                candidates.append(it.gate);
+            const int pick = talq::toastgate::firstAllowed(roomLevel, candidates, threadLevels);
+            if (pick < 0) {
+                // No chat name in the log: who wrote where, when, is not for a log file.
+                qInfo() << "NotificationManager: chat popup skipped -- notification level"
+                        << roomLevel << "(" << items.size() << "new)";
+                return;
+            }
+            const ToastItem &shown = items.at(pick);
+            QString text = shown.text;
+            if (text.isEmpty() && !shown.bodyHtml.isEmpty()) {
+                // Stored HTML -> plain text, for a PlainText popup label
+                // (NotificationPopup): decoded here, and NOT escaped again, or the
+                // toast would show the entities themselves. Only for the message
+                // actually shown: a reconnect backlog can be 100 of them.
+                text = talq::plainTextFromBodyHtml(shown.bodyHtml);
+                if (text.length() > 100) text = text.left(100) + "...";
+            }
+            notifications.notify(shown.title, text, alwaysSound, token);
+        };
+
+        QVector<int> topics;     // distinct, newest first
+        for (const ToastItem &it : items) {
+            const int t = it.gate.threadId;
+            if (talq::toastgate::needsThreadLevel(t) && !topics.contains(t))
+                topics.append(t);
+        }
+        if (topics.size() > kMaxTopicLookups) {
+            qInfo() << "NotificationManager:" << topics.size() << "topics in one batch, looking up the newest"
+                    << kMaxTopicLookups;
+            topics.resize(kMaxTopicLookups);
+        }
+        if (topics.isEmpty()) {
+            finish({});
             return;
         }
-        QString actorId = messages.data(idx, MessageListModel::ActorIdRole).toString();
-        if (actorId == auth.userId()) return;
-        // Honor the sender's "Send silently" choice — same wire flag the
-        // web client checks. Without this, a scheduled-silent or right-click
-        // silent message would still pop a desktop toast on the recipient.
-        if (messages.data(idx, MessageListModel::SilentRole).toBool()) return;
-        QString actorName = messages.data(idx, MessageListModel::ActorNameRole).toString();
-        // Stored HTML -> plain text, for a PlainText popup label
-        // (NotificationPopup): decoded here, and NOT escaped again, or the toast
-        // would show the entities themselves.
-        QString text = talq::plainTextFromBodyHtml(
-            messages.data(idx, MessageListModel::MessageTextRole).toString());
-        if (text.length() > 100) text = text.left(100) + "...";
+        auto levels = std::make_shared<QHash<int, int>>();
+        auto pending = std::make_shared<int>(topics.size());
+        for (int threadId : topics) {
+            api.fetchThread(token, threadId, [finish, levels, pending, threadId](bool ok, const QJsonObject &data, int) {
+                if (ok)
+                    levels->insert(threadId, data.value(QStringLiteral("attendee")).toObject()
+                                                 .value(QStringLiteral("notificationLevel")).toInt(0));
+                if (--*pending == 0)
+                    finish(*levels);
+            });
+        }
+    };
+
+    // Notify on new polled messages in active conversation
+    QObject::connect(&messages, &MessageListModel::newMessagesAtEnd, &notifications, [&messages, &notifications, &auth, &callManager, &conversations, raiseChatToast]() {
+        int count = messages.rowCount();
+        if (count == 0) return;
+        // EVERY message the poll just added, not only the newest: see raiseChatToast.
+        // (Empty when this announcement is our own send; then the announced row is
+        // judged alone, and is filtered out below as ours.)
+        // Row 0 is the newest message only while no unsent message of ours is pinned
+        // in front of it -- one there made this handler read OUR text, see our own
+        // id, and swallow the peer's toast and sound (and the busy signal below).
+        QVector<int> rows = messages.latestBatchRows();
+        if (rows.isEmpty())
+            rows.append(messages.latestArrivedRow());
+        const QString token = messages.conversationToken();
+        const QString me = auth.userId();
         // A sensitive room (and every classified one): the toast says who wrote,
         // not what. The text of a message the user has asked to hide would
         // otherwise surface on whatever is sharing the screen.
-        if (conversations.isSensitiveForToken(messages.conversationToken()))
-            text = QObject::tr("New message");
-        notifications.notify(actorName, text, false, messages.conversationToken());
+        const bool sensitive = conversations.isSensitiveForToken(token);
+        QVector<ToastItem> items;
+        for (int row : rows) {
+            auto idx = messages.index(row);
+            // #80 -- TalQ-exclusive busy signal: the peer we're ringing auto-replied
+            // with the "talq/busy" marker. If we're still ringing THIS conversation,
+            // play the busy tone + popup; swallow it so it isn't also toasted.
+            if (messages.data(idx, MessageListModel::ReferenceIdRole).toString() == QStringLiteral("talq/busy")) {
+                if (callManager.state() == CallManager::Outgoing
+                    && callManager.callToken() == token)
+                    callManager.onPeerBusy(messages.data(idx, MessageListModel::ActorNameRole).toString());
+                continue;
+            }
+            if (messages.data(idx, MessageListModel::ActorIdRole).toString() == me) continue;
+            // Honor the sender's "Send silently" choice — same wire flag the
+            // web client checks. Without this, a scheduled-silent or right-click
+            // silent message would still pop a desktop toast on the recipient.
+            if (messages.data(idx, MessageListModel::SilentRole).toBool()) continue;
+            ToastItem it;
+            it.title = messages.data(idx, MessageListModel::ActorNameRole).toString();
+            // The text is converted to plain text only if THIS message is the one
+            // shown (see raiseChatToast); a sensitive room never carries it at all.
+            if (sensitive)
+                it.text = QObject::tr("New message");
+            else
+                it.bodyHtml = messages.data(idx, MessageListModel::MessageTextRole).toString();
+            it.gate.threadId = messages.data(idx, MessageListModel::ThreadIdRole).toInt();
+            const MessageListModel::ToastFacts facts = messages.toastFactsAt(row);
+            // "Mentions me": named, @all or a group -- or a reply to one of OUR
+            // messages, which Talk treats as a mention too.
+            it.gate.mentionsMe = talq::toastgate::mentionsUser(facts.messageParameters, me)
+                || talq::toastgate::isReplyToUser(facts.replyToActorId, facts.replyToId,
+                                                  it.gate.threadId, me);
+            items.append(it);
+        }
+        if (items.isEmpty()) return;
+        raiseChatToast(items, false, token, conversations.notificationLevelForToken(token));
     });
+
+    // Per chat: the newest message a catch-up has judged, so that the next look starts above
+    // it (a sensitive room has no last message to anchor on). In memory only; it is a
+    // floor, and losing it at restart just means the first look uses the unread count.
+    auto catchUpSeen = std::make_shared<QHash<QString, int>>();
 
     // Notify on new messages in OTHER conversations
     QObject::connect(&conversations, &ConversationListModel::newUnreadMessage,
-                     &notifications, [&notifications, &messages](const QString &name, const QString &lastMsg, const QString &token, bool sensitive) {
+                     &notifications, [&messages, &auth, &api, raiseChatToast, catchUpSeen](const NewUnreadInfo &info) {
+        const QString token = info.token;
         if (token == messages.conversationToken()) return;
-        // `lastMsg` is the server's own lastMessage.message for a room that is
+        const QString me = auth.userId();
+        // `info.lastMessage` is the server's own lastMessage.message for a room that is
         // not open (ConversationListModel::refresh <- Conversation::fromJson),
         // so it is what the sender TYPED: not HTML, not escaped. Stripping tags
         // here deleted whatever they had written between a "<" and a ">", and
         // running it through the HTML recipe would decode an "&amp;" they typed
         // literally. It goes to a PlainText popup label, so it is used as is.
-        // (A {mention-...} / {file} placeholder still shows raw: Conversation
-        // keeps the unresolved text and never reads the lastMessage's
-        // messageParameters.)
-        QString preview = lastMsg;
-        if (preview.length() > 80) preview = preview.left(80) + "...";
+        // (A {mention-...} / {file} placeholder still shows raw here; the catch-up
+        // below, which reads the real messages, writes mentions as @name.)
+        auto shortText = [](QString t) {
+            if (t.length() > 80) t = t.left(80) + "...";
+            return t;
+        };
         // A sensitive room has no text to show (the model has already dropped
         // it): say that something arrived. `sensitive` comes from the room as
         // the server has just described it, not from a lookup in the old list.
-        if (sensitive)
-            preview = QObject::tr("New message");
-        notifications.notify(name, preview, true, token);
+        ToastItem cheap;
+        cheap.title = info.name;
+        cheap.text = info.sensitive ? QObject::tr("New message") : shortText(info.lastMessage);
+        cheap.gate.threadId = info.threadId;
+        // The room list shows only the LAST message, so a mention (or a reply to us)
+        // that is not the last one is caught by the room's own unread-mention flag
+        // turning on since the previous look.
+        cheap.gate.mentionsMe = info.newUnreadMention
+            || talq::toastgate::mentionsUser(info.messageParameters, me);
+
+        const int newUnread = info.unreadMessages - info.previousUnread;
+        if (!talq::toastgate::needsCatchUp(info.notificationLevel, info.sensitive,
+                                           cheap.gate.mentionsMe,
+                                           info.unreadMention && !info.newUnreadMention,
+                                           newUnread, info.threadId)) {
+            raiseChatToast(QVector<ToastItem>{cheap}, true, token, info.notificationLevel);
+            return;
+        }
+
+        // The last message alone cannot decide this popup (see needsCatchUp): read the
+        // room's newest messages -- without marking anything read -- and judge each.
+        //
+        // WHICH messages are new: Talk's unread count is the number of comment rows
+        // after the read marker, so the new ones are the newest `newUnread` comments
+        // from other people. Two anchors keep successive looks apart: a floor (the
+        // newest message seen before -- the room list's previous last message, or
+        // for a room that has none, the newest one an earlier look judged) and an
+        // upper bound (the room list we are judging; a later message is the next look's).
+        // A look that may have missed new messages (a full page that reached neither
+        // the floor nor the count) falls back to what the room list said, as does a
+        // failed read; a read that worked and found nothing worth a popup shows none.
+        constexpr int kCatchUpMax = 50;
+        const int wanted = qMin(newUnread, kCatchUpMax);
+        if (newUnread > kCatchUpMax)
+            qInfo() << "NotificationManager:" << newUnread << "new messages in one chat, judging the newest"
+                    << kCatchUpMax;
+        // Room for the system rows, reactions and our own messages that sit between them.
+        const int limit = qBound(20, wanted * 2 + 10, 100);
+        const int floor = qMax(info.previousLastMessageId, catchUpSeen->value(info.token, 0));
+        api.fetchLatestMessages(token, limit,
+            [raiseChatToast, catchUpSeen, cheap, info, me, token, shortText, wanted, limit, floor]
+            (bool ok, const QJsonArray &page, int) {
+            QVector<ToastItem> items;
+            bool useCheap = !ok;
+            if (ok) {
+                const talq::toastgate::CatchUpResult r = talq::toastgate::catchUpMessages(
+                    page, me, floor, info.lastMessageId, wanted, limit);
+                if (r.highestId > 0)
+                    catchUpSeen->insert(token, qMax(catchUpSeen->value(token, 0), r.highestId));
+                for (const talq::toastgate::CatchUpMessage &m : r.messages) {
+                    ToastItem it;
+                    it.title = info.name;
+                    it.text = info.sensitive ? QObject::tr("New message") : shortText(m.text);
+                    it.gate = m.gate;
+                    items.append(it);
+                }
+                if (!r.complete) {
+                    qInfo() << "NotificationManager: chat page did not reach the previous message, "
+                               "also judging by the room list";
+                    useCheap = true;
+                }
+            }
+            if (useCheap)
+                items.prepend(cheap);       // the newest message, as the room list saw it
+            if (items.isEmpty()) {
+                qInfo() << "NotificationManager: chat popup skipped -- nothing new worth a popup";
+                return;
+            }
+            raiseChatToast(items, true, token, info.notificationLevel);
+        });
     });
 
     // Incoming call detection
@@ -1165,6 +1349,14 @@ int main(int argc, char *argv[])
     });
 
     // Tray unread count
+    // "Count muted chats" (Settings > Notifications): whether a chat set to Never adds to
+    // the unread numbers. Off by default. Set before the first refresh lands, and kept
+    // in step when the user flips it.
+    conversations.setCountMutedChats(notifications.countMutedChats());
+    QObject::connect(&notifications, &NotificationManager::countMutedChatsChanged, &conversations,
+                     [&conversations, &notifications]() {
+        conversations.setCountMutedChats(notifications.countMutedChats());
+    });
     QObject::connect(&conversations, &ConversationListModel::totalUnreadChanged,
                      &notifications, [&conversations, &notifications]() {
         notifications.updateUnreadCount(conversations.totalUnread());

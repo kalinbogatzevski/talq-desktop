@@ -6,6 +6,29 @@
 #include "models/Conversation.h"
 #include "core/ApiClient.h"
 
+// What the popup gate (core/ToastGatePolicy.h) is told when a chat that is not open
+// gets new unread messages. Everything describes the room as the server just sent
+// it, because the model's own list is replaced only after the announcement.
+struct NewUnreadInfo {
+    QString name;                     // the chat's display name (the popup's title)
+    QString lastMessage;              // the server's lastMessage.message (empty for a sensitive room)
+    QString token;
+    bool sensitive = false;           // judged on the fresh room; a classified room always is
+    int notificationLevel = 0;        // the chat's own: 0 default .. 3 never
+    int threadId = 0;                 // the topic the LAST message was written in (0 = none)
+    QJsonObject messageParameters;    // the last message's mention markup
+    // The room's unread-mention flag (set by a mention OR a reply to us) and whether
+    // it turned on since the previous look. The flag is sticky: it stays on after
+    // later plain messages, so only the flip means "a new mention".
+    bool unreadMention = false;
+    bool newUnreadMention = false;
+    int unreadMessages = 0;           // RAW counts (what the server says), not the shown ones
+    int previousUnread = 0;
+    int lastMessageId = 0;
+    int previousLastMessageId = 0;    // the newest message of this room seen before (0 = unknown)
+};
+Q_DECLARE_METATYPE(NewUnreadInfo)
+
 /**
  * QAbstractListModel exposing conversations to QML.
  * Fetches from Talk API and keeps the list sorted (favorites first, then by activity).
@@ -131,6 +154,8 @@ public:
     bool conversationForToken(const QString &token, Conversation *out) const;
     // The user's "hide message content" switch for this room; false if unknown.
     bool isSensitiveForToken(const QString &token) const;
+    // The user's notification level for this room (0 default .. 3 never); 0 if unknown.
+    int notificationLevelForToken(const QString &token) const;
     // Display name for a token, so a cross-conversation search hit can say
     // WHICH conversation it is in. Empty for an unknown token.
     Q_INVOKABLE QString displayNameForToken(const QString &token) const;
@@ -143,17 +168,24 @@ public:
     bool isLoading() const { return m_loading; }
     int totalUnread() const { return m_totalUnread; }
 
+    // Whether a chat set to Never still adds to unread NUMBERS (its badge, a folder's
+    // total, the tray and taskbar count). Off by default: they muted it so as not to
+    // be told about it. Changing it recounts at once. See countedUnread().
+    void setCountMutedChats(bool on);
+    // What the server says is unread in this room, whatever is SHOWN (UnreadCountRole
+    // is 0 for a muted chat that is not counted). For "is there something to read".
+    int rawUnreadAt(int index) const;
+
 signals:
     void loadingChanged();
     void countChanged();
     void totalUnreadChanged();
     void errorOccurred(const QString &error);
-    // Emitted when a conversation gets new unread messages
-    // `sensitive` is judged on the room as the server just described it (a
-    // classified room is always sensitive): the toast then says that something
-    // arrived and never what.
-    void newUnreadMessage(const QString &conversationName, const QString &lastMessage,
-                          const QString &token, bool sensitive);
+    // Emitted when a conversation gets new unread messages (see NewUnreadInfo).
+    // The room list carries only the LAST message of a room, so what a popup can be
+    // decided from is limited; main.cpp reads the real messages when that is not
+    // enough (core/ToastGatePolicy.h, needsCatchUp).
+    void newUnreadMessage(const NewUnreadInfo &info);
     // Emitted when someone starts a call in a conversation
     void incomingCallDetected(const QString &conversationName, const QString &token, int callFlag);
 
@@ -193,4 +225,9 @@ private:
     // refresh after the in-flight one completes, so new rooms are never missed.
     bool m_pendingRefresh = false;
     int m_totalUnread = 0;
+    bool m_countMutedChats = false;
+    // The unread number SHOWN for a room: 0 for a muted chat unless muted chats count.
+    int countedUnreadOf(const Conversation &c) const;
+    // Recompute m_totalUnread (and tell the views) after a change that alters what counts.
+    void recountUnread();
 };
