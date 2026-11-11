@@ -48,6 +48,12 @@ public:
     void setMessageModel(MessageListModel *model);
     void setInputFont(const QFont &font);
     void showPendingFile(const QString &path);
+    // Several files at once (paste, drop, the file dialog). They are ADDED to what is already
+    // staged -- except a pasted image, which a new arrival replaces as it always did -- so the user
+    // can build a batch in more than one go. Folders are not files and are skipped, and so is
+    // anything over MultiFileLogic's cap: both are SAID in the bar, never dropped silently. The
+    // first file carries the caption; they are sent one after another (MessageListModel).
+    void showPendingFiles(const QStringList &paths);
     // Same, for a file TalQ made itself (a pasted image encoded into %TEMP%): the composer owns
     // it, so it is removed if the user cancels or replaces it, and handed to the model to remove
     // after the share succeeds. Never use it for a file the user picked or dropped.
@@ -227,6 +233,12 @@ private:
     QLabel *m_pendingName = nullptr;
     QPushButton *m_pendingCancelBtn = nullptr;
     QString m_pendingFilePath;
+    // The staged files AFTER the first (m_pendingFilePath is the first, and the one every other
+    // check -- the caption's length, "is something staged" -- looks at), and what was left out of
+    // the last arrival, worded for the bar.
+    QStringList m_pendingMore;
+    QString m_pendingNote;
+    void refreshPendingName();
     // m_pendingFilePath is a temp file TalQ created (showPendingOwnedFile), so the composer may
     // delete it. False for everything the user chose: file dialog, drop, pasted Explorer URL.
     bool m_pendingFileOwned = false;

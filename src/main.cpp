@@ -1353,6 +1353,11 @@ int main(int argc, char *argv[])
     // the unread numbers. Off by default. Set before the first refresh lands, and kept
     // in step when the user flips it.
     conversations.setCountMutedChats(notifications.countMutedChats());
+    // Our own Nextcloud user id, for telling our messages from others' when working out how much of a
+    // chat's unread number is in silenced topics (the login name ApiClient holds can differ).
+    conversations.setSelfUserId(auth.userId());
+    QObject::connect(&auth, &AuthManager::userInfoChanged, &conversations,
+                     [&conversations, &auth]() { conversations.setSelfUserId(auth.userId()); });
     QObject::connect(&notifications, &NotificationManager::countMutedChatsChanged, &conversations,
                      [&conversations, &notifications]() {
         conversations.setCountMutedChats(notifications.countMutedChats());

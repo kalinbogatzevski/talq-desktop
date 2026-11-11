@@ -140,6 +140,12 @@ public:
 private:
     void loadHiddenTopics();   // from QSettings for m_token
     void saveHiddenTopics();
+    // The levels this user has on the topics of THIS room (1..3; default is no entry), remembered
+    // across rebuilds of the list and restarts -- see core/TopicLevelStore.h for why and for the
+    // rule that combines them with the server's answer.
+    void loadTopicLevels();
+    void rememberTopicLevel(const QString &token, int threadId, int level);
+    QString levelsKeyFor(const QString &token) const;
     void loadTopicSeen();      // from QSettings for m_token
     void saveTopicSeen();
     // The id at or below which topic `threadId` counts as read, or -1 when it
@@ -156,6 +162,7 @@ private:
     int m_roomLastReadId = 0;
     ConversationListModel *m_conversations = nullptr;
     QSet<int> m_hiddenTopics;   // per-room, persisted; filtered from the chips
+    QHash<int, int> m_topicLevels;   // per-room, persisted: topic id -> notification level 1..3
     // Per-topic read state, per room, persisted: the newest message id the user
     // has seen IN that topic. Talk keeps one read marker per room and none per
     // topic, and the room marker advances whenever the user reads anything newer

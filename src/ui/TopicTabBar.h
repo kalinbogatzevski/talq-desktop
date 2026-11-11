@@ -51,17 +51,25 @@ public:
     // (`threads`). False hides the submenu rather than offering a
     // control that would 404.
     void setThreadsCapable(bool c) { m_threadsCapable = c; }
+    // Whether a SILENCED topic (Never) still shows its unread number. Off by default, like a muted
+    // chat: they silenced it so as not to be told about it. The mark stays either way.
+    void setCountMuted(bool on);
 
 private:
     bool m_threadsCapable = false;
+    bool m_countMuted = false;
 
     void rebuild();
     void applyBarChrome();   // bar bg/border + thin scrollbar, palette-driven
     // Returns the chip's top-level widget: either the QPushButton itself (no
     // unread), or a small container wrapping the button + a real unread-badge
     // pill (see #11) beside it.
+    // `notifLevel` is the user's own Talk level for this topic (0 default .. 3
+    // never; only a real topic has one): 3 marks the chip with a slashed bell and
+    // quiets it, 2 marks it "@" (mentions only), so a topic that no longer pops up
+    // does not look like every other one.
     QWidget *makeChip(const QString &label, int threadId,
-                      int unreadCount, bool active);
+                      int unreadCount, bool active, int notifLevel = 0);
 
     ThreadListModel *m_model = nullptr;
     QScrollArea     *m_scroll = nullptr;

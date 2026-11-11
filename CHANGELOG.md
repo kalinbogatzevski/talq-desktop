@@ -1,5 +1,82 @@
 # Changelog
 
+## v0.81.1 "Friday 13th" — BETA (2026-11-11)
+
+You can now send several files in one message, a topic whose notifications are off is marked on the
+topic strip, and the notification choice of a topic is finally remembered. Until now, pasting or
+dropping several files attached one of them and said nothing about the rest, and a topic you had
+set to Never showed "Default" again as soon as you switched to another chat and back.
+
+### Added
+* **Several files in one message.** Copy files in Explorer and paste, drop them on the chat, or pick
+  several in **Send file**. They are added to what is already waiting to be sent, so you can build a
+  batch in more than one go. The bar above the message box shows the first file and "+2 more" (hover
+  it to see every name), and the ✕ button removes the whole batch. The caption you type goes with the
+  first file. The files are sent one after another and the upload bar shows "report.pdf (2 of 5)".
+  * A folder, a file that is no longer there, and anything past 50 files are skipped, and the bar
+    says so ("1 folder skipped", "2 over the limit of 50 left out"), so nothing is dropped silently.
+    A folder cannot be sent as it is: add the files inside it, or compress it first.
+  * Two files with the same name (for example `image.png` from two folders) are sent as `image.png`
+    and `image (2).png`. They used to share one name on the server, and the second replaced the first.
+  * A pasted image still replaces what was waiting, as before.
+* **Silenced topics are marked.** A topic whose notifications are off (right-click it, then
+  Notifications, then Never) shows a bell with a slash, and no unread number: you silenced it so as
+  not to be told about it. A topic on Mentions only shows an "@" and keeps its number. Hover a topic
+  to see why. The marks use the chip's own colours in all four themes.
+
+### Changed
+* **A chat's number leaves out the messages in topics you silenced.** The badge on the chat in the
+  list, the folder totals and the tray and taskbar count used to include them, so a silenced topic
+  kept lighting up its chat. For a chat that has a silenced topic, TalQ now reads the chat's newest
+  messages (nothing is marked read) and leaves out the unread ones that sit in silenced topics.
+* **"Count muted chats" is now "Count muted chats and topics"** (Settings, Notifications). Off, as
+  before, a muted chat adds nothing to its badge, folders, the tray and the taskbar; now a silenced
+  topic adds nothing to its chat's number and shows no number on its tab either. Switch it on and the
+  numbers come back (outlined, in a quiet colour, on a silenced topic's tab).
+* A file that cannot be sent now says which one: "Could not send “report.pdf”: the server refused
+  the upload (HTTP 507)". When several files of one batch fail you get one message at the end that
+  lists them, instead of a box for each.
+* A file you send into a topic goes to the topic that was open when you pressed Send. It used to go
+  to whichever topic was open when it finished uploading, so moving to another topic while a large
+  file uploaded filed it in the wrong one.
+
+### Fixed
+* **A topic's notification choice (Default, All messages, Mentions only, Never) is remembered.** It
+  was applied on the server, so the popups really stopped, but TalQ forgot it: after you switched to
+  another chat and back, or restarted, the topic's menu showed "Default" again, so you chose Never
+  again and again. TalQ now keeps the choice per chat, follows the server when you change it on
+  another device, and a topic that has been quiet for a while keeps its mark.
+
+### Good to know
+* **Beta channel only.** The stable line (0.80.0) is untouched.
+* The server counts a chat's unread messages without knowing which topic they are in, so TalQ works the
+  silenced part out itself, for chats that have a silenced topic. For a chat with more than 50 unread
+  messages only the newest 50 are checked; older ones stay counted. After a new message the chat can
+  show its full number for a moment, until the check finishes. TalQ asks the server whether the topic
+  is still silenced before it leaves anything out, so a topic you switched back on from your phone or
+  the web is counted again, and it asks again every few minutes; if the server cannot be reached,
+  the full number stays. A silenced topic that has had no activity for a long while is not on the
+  server's list of recent topics and keeps its messages counted.
+* The files of a batch are sent one at a time. If one upload makes no progress for two minutes TalQ
+  gives up on it, says so, and carries on with the next file (a very large file's final assembly on
+  the server is given twenty minutes).
+* A file whose name already exists in your Talk upload folder from an earlier send is replaced by
+  the new one, as before.
+* **What was checked.** The staging rules, the upload queue, the remembered topic choice and the rule
+  for a chat's number by automatic checks, and against a real server: three files in order with a name
+  clash, a batch with two unreadable files around a good one (the good one arrives and one message
+  names both), the pasted-image clean-up, a large chunked upload, a topic set to Never that is still on
+  Never after switching chats and in a fresh start (it read Default before), and a chat with three
+  unread messages where one sits in a silenced topic (the chat shows 1, "Count muted chats and topics"
+  brings back 3, switching the topic back on brings back 3, and a topic switched back on from another
+  device is counted). The topic marks were drawn and measured in all four themes. Independent code
+  reviews of the multi-file send and of the chat number found and fixed problems before this release.
+  **Not yet seen in a real TalQ window:** dropping several files on the chat, the "+N more" bar, the
+  topic marks, and the chat number leaving out silenced topics. The popup and **Count muted chats**
+  changes of 0.81.0 are also still waiting for a look in a real window. Please say if a file goes
+  missing from a batch, a silenced topic looks wrong, or a chat's number differs from what you find
+  when you open it.
+
 ## v0.81.0 "Friday 13th" — BETA (2026-11-11)
 
 You can now silence a chat, or one topic inside a chat, so that it stops popping up. The

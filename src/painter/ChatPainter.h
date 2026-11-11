@@ -177,7 +177,8 @@ signals:
     // The warning on an own message that did not send was clicked. tempId is the
     // pending message's negative id; the window offers Retry now / Discard.
     void retryRequested(int tempId, const QPoint &globalPos);
-    void fileDropped(const QString &filePath);
+    // Every local file of a drop, in the order given (a drop of several used to give one).
+    void filesDropped(const QStringList &filePaths);
     void selectionModeChanged(bool active);
     void selectionChanged(int count);
     void moreHistoryRequested();

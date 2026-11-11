@@ -1,4 +1,5 @@
 #include "core/ForwardLogic.h"
+#include "core/MultiFileLogic.h"
 #include "models/MessageListModel.h"
 #include <QPointer>
 #include "core/MessageCache.h"
@@ -35,6 +36,14 @@
 #include <QDesktopServices>
 #include <QMimeDatabase>
 
+namespace {
+// No progress for this long and the upload queue gives up on the file in flight (see the
+// constructor). The server-side assembly of a chunked upload (the MOVE) reports no progress at
+// all and can take much longer on a large file, so it gets its own, longer allowance.
+constexpr int kUploadStallMs = 120 * 1000;
+constexpr int kUploadAssembleMs = 20 * 60 * 1000;
+} // namespace
+
 // ============================================================================
 // STORAGE: m_messages is stored NEWEST-FIRST (reverse chronological order).
 //   m_messages[0] = newest message
@@ -65,6 +74,45 @@ MessageListModel::MessageListModel(ApiClient *api, MessageCache *cache, QObject 
     // HTTP call every 5s carrying just the latest message + headers.
     m_readMarkerTimer.setInterval(5000);
     connect(&m_readMarkerTimer, &QTimer::timeout, this, &MessageListModel::refreshReadMarker);
+
+    // The upload queue (sendFilesWithCaption). EVERY way an upload ends -- the share done or
+    // refused, the upload failed, a chunk failed -- sets the progress to -1 and clears the name
+    // before emitting uploadProgressChanged, so that edge is "the file in flight is over, start
+    // the next". Any other emission is progress: it proves the transfer is alive.
+    m_fileQueueWatchdog.setSingleShot(true);
+    m_fileQueueWatchdog.setInterval(kUploadStallMs);
+    connect(this, &MessageListModel::uploadProgressChanged, this, [this]() {
+        if (!m_fileQueueRunning) return;
+        if (m_uploadProgress < 0 && m_uploadFileName.isEmpty()) {
+            m_fileQueueRunning = false;
+            m_fileQueueWatchdog.stop();
+            // Not from inside the emission: the engine is still unwinding its callback.
+            QTimer::singleShot(0, this, &MessageListModel::pumpFileQueue);
+        } else {
+            m_fileQueueWatchdog.start(kUploadStallMs);   // still moving
+        }
+    });
+    connect(&m_fileQueueWatchdog, &QTimer::timeout, this, [this]() {
+        if (!m_fileQueueRunning) return;
+        const QString stuck = m_uploadFileName;
+        qWarning() << "Upload queue: no progress for"
+                   << m_fileQueueWatchdog.interval() / 1000 << "s -- giving up on" << stuck;
+        // Give up on it FOR REAL: a new generation makes everything the old transfer still does
+        // ignored (its late end must not be read as the end of the next file), and its request is
+        // aborted -- the small-file PUT and the chunked PUT/MOVE have no transfer timeout of their own.
+        ++m_uploadGen;
+        if (m_currentUploadReply)
+            m_currentUploadReply->abort();
+        m_fileQueueRunning = false;
+        m_uploadProgress = -1;
+        m_uploadFileName.clear();
+        emit uploadProgressChanged();
+        // Move on BEFORE saying so: reporting can open a modal box, and the queue must not wait for
+        // someone to click it (the next file then starts inside the box's event loop, as it does
+        // after any failure).
+        QTimer::singleShot(0, this, &MessageListModel::pumpFileQueue);
+        reportUploadFailure(stuck, tr("the upload stopped responding"));
+    });
 
     connect(m_poller, &MessagePoller::messagesReceived,
             this, &MessageListModel::onMessagesReceived);
@@ -1519,6 +1567,7 @@ MessageListModel::ToastFacts MessageListModel::toastFactsAt(int row) const
 
 void MessageListModel::clearOutbox()
 {
+    clearFileQueue();   // files still waiting to upload belong to the session that just ended
     if (m_outbox.isEmpty() && m_sendQueue.isEmpty()) return;
     qInfo().nospace() << "SendOutbox: cleared (" << m_outbox.size()
                       << " unsent message(s) dropped -- session ended)";
@@ -2676,6 +2725,134 @@ void MessageListModel::sendFileWithCaption(const QString &filePath, const QStrin
                                            bool deleteWhenShared)
 {
     if (m_token.isEmpty() || filePath.isEmpty()) return;
+    FileSend fs;
+    fs.path = filePath;
+    fs.caption = caption;
+    fs.owned = deleteWhenShared;
+    fs.token = m_token;
+    fs.threadId = m_threadId;
+    enqueueFileSends({fs});
+}
+
+void MessageListModel::sendFilesWithCaption(const QStringList &filePaths, const QString &caption,
+                                            bool firstDeleteWhenShared)
+{
+    QStringList paths;
+    for (const QString &p : filePaths)
+        if (!p.isEmpty()) paths.append(p);
+    if (paths.isEmpty() || m_token.isEmpty()) return;
+
+    // The names the engine would derive (from the junction-resolved path), made distinct.
+    QStringList names;
+    for (const QString &p : paths) {
+        QString local = p;
+        if (local.startsWith(QLatin1String("file:///")))
+            local = QUrl(local).toLocalFile();
+        names.append(talq::multifile::uploadNameFor(talq::resolveJunctionsInPath(local)));
+    }
+    const QStringList unique = talq::multifile::uniqueUploadNames(names);
+
+    QVector<FileSend> batch;
+    for (int i = 0; i < paths.size(); ++i) {
+        FileSend fs;
+        fs.path = paths.at(i);
+        fs.caption = i == 0 ? caption : QString();     // one caption, on the first file
+        fs.owned = i == 0 && firstDeleteWhenShared;
+        fs.name = unique.at(i);
+        fs.token = m_token;
+        fs.threadId = m_threadId;
+        fs.batchIndex = i + 1;
+        fs.batchTotal = paths.size();
+        batch.append(fs);
+    }
+    enqueueFileSends(batch);
+}
+
+void MessageListModel::enqueueFileSends(const QVector<FileSend> &items)
+{
+    for (const FileSend &fs : items)
+        m_fileQueue.append(fs);
+    pumpFileQueue();
+}
+
+void MessageListModel::pumpFileQueue()
+{
+    while (!m_fileQueueRunning && !m_fileQueue.isEmpty()) {
+        const FileSend fs = m_fileQueue.takeFirst();
+        m_fileQueueRunning = true;
+        m_uploadBatchIndex = fs.batchIndex;
+        m_uploadBatchTotal = fs.batchTotal;
+        // The watchdog is NOT armed here: it starts with the first progress emission of a real
+        // transfer. A file that cannot even be opened reports its error (possibly a modal box) from
+        // inside startFileSend, and a timer running under that box would fire a false "stopped
+        // responding" if the user left it up.
+        startFileSend(fs);
+        // The engine names the transfer (m_uploadFileName) only when one really started. A file
+        // that could not even be opened ends before that and reports its own error: nothing
+        // is running, so go straight on to the next. Otherwise the end of the transfer comes as
+        // the progress edge handled in the constructor.
+        if (m_uploadFileName.isEmpty()) {
+            m_fileQueueRunning = false;
+            m_fileQueueWatchdog.stop();
+        }
+    }
+    if (!m_fileQueueRunning && m_fileQueue.isEmpty()) {
+        m_uploadBatchIndex = 0;
+        m_uploadBatchTotal = 0;
+        flushBatchFailures();     // a batch says what failed ONCE, when it is over
+    }
+}
+
+void MessageListModel::reportUploadFailure(const QString &name, const QString &reason,
+                                           const QString &singleText)
+{
+    // One file on its own says so at once. The files of a BATCH collect their failures and say them
+    // together when the batch is over (flushBatchFailures): a refusal that hits every file (quota,
+    // a proxy limit, the server down) used to stack one modal box per file, because the next upload
+    // started inside the first box's event loop -- and none of them said which file it was about.
+    if (m_uploadBatchTotal > 1) {
+        m_batchFailures.append({name, reason});
+        return;
+    }
+    emit errorOccurred(!singleText.isEmpty() ? singleText
+                                              : tr("Could not send \u201C%1\u201D: %2").arg(name, reason));
+}
+
+void MessageListModel::flushBatchFailures()
+{
+    if (m_batchFailures.isEmpty()) return;
+    const QVector<UploadFailure> failures = m_batchFailures;
+    m_batchFailures.clear();
+    constexpr int kShown = 10;
+    QStringList lines;
+    for (int i = 0; i < failures.size() && i < kShown; ++i)
+        lines.append(QStringLiteral("\u2022 ") + failures.at(i).name
+                     + QStringLiteral(" \u2014 ") + failures.at(i).reason);
+    if (failures.size() > kShown)
+        lines.append(tr("\u2026 and %n more", nullptr, failures.size() - kShown));
+    emit errorOccurred(tr("%n file(s) could not be sent:", nullptr, failures.size())
+                       + QLatin1Char('\n') + lines.join(QLatin1Char('\n')));
+}
+
+void MessageListModel::clearFileQueue()
+{
+    for (const FileSend &fs : m_fileQueue) {
+        if (fs.owned) QFile::remove(fs.path);     // nobody is going to send it now
+        // sendVoiceMessage noted its name when it QUEUED the send; shareUploadedFile, which
+        // consumes it, will never run for a dropped entry.
+        m_voiceMessageFiles.remove(QFileInfo(fs.path).fileName());
+    }
+    m_fileQueue.clear();
+    m_batchFailures.clear();
+}
+
+void MessageListModel::startFileSend(const FileSend &fs)
+{
+    const QString &filePath = fs.path;
+    const QString &caption = fs.caption;
+    const bool deleteWhenShared = fs.owned;
+    if (fs.token.isEmpty() || filePath.isEmpty()) return;
+    const quint64 gen = ++m_uploadGen;     // this upload is now "the one in flight"
 
     // Accept both raw paths and file:// URLs
     QString localPath = filePath;
@@ -2711,13 +2888,15 @@ void MessageListModel::sendFileWithCaption(const QString &filePath, const QStrin
             file.setFileName(readPath);
             if (!file.open(QIODevice::ReadOnly)) {
                 // Named after the user's file: the copy's name means nothing to them.
-                emit errorOccurred("Cannot open file: " + localPath + "\n" + file.errorString());
+                reportUploadFailure(original, file.errorString(),
+                                    "Cannot open file: " + localPath + "\n" + file.errorString());
                 QFile::remove(tempCopy);
                 forgetPendingUpload(original);   // never reaches the share
                 return;
             }
         } else {
-            emit errorOccurred("Cannot open file: " + localPath + "\n" + openError
+            reportUploadFailure(original, openError,
+                "Cannot open file: " + localPath + "\n" + openError
                 + ((copyWhy.isEmpty() || copyWhy == openError)
                        ? QString()
                        : QStringLiteral("\n(") + tr("copy to a temporary file: %1").arg(copyWhy)
@@ -2727,10 +2906,9 @@ void MessageListModel::sendFileWithCaption(const QString &filePath, const QStrin
         }
     }
 
-    QString fileName = QFileInfo(localPath).fileName();
-    fileName.remove(QRegularExpression("[/\\\\?#%]"));  // sanitize for WebDAV path safety (S5)
-    fileName.replace("..", "_");
-    if (fileName.isEmpty()) fileName = "upload";
+    // The upload name: made safe for a WebDAV path (S5), and distinct within its batch when the
+    // queue gave it one (MultiFileLogic.h -- the one sanitiser).
+    QString fileName = fs.name.isEmpty() ? talq::multifile::uploadNameFor(localPath) : fs.name;
     if (!ownedTempPath.isEmpty())
         m_tempUploadSources.insert(fileName, ownedTempPath);   // removed when its share succeeds
 
@@ -2752,7 +2930,7 @@ void MessageListModel::sendFileWithCaption(const QString &filePath, const QStrin
 
     if (fileSize >= chunkThreshold) {
         file.close();   // uploadFileChunked re-opens and streams it in slices
-        uploadFileChunked(readPath, fileName, m_token, caption, tempCopy);
+        uploadFileChunked(readPath, fileName, fs.token, caption, tempCopy, fs.threadId, gen);
         return;
     }
 
@@ -2768,18 +2946,25 @@ void MessageListModel::sendFileWithCaption(const QString &filePath, const QStrin
     QString uploadPath = "/remote.php/dav/files/" + m_api->user()
                          + "/" + attachmentFolder() + "/" + fileName;
     auto *uploadReply = m_api->putAbsoluteUrl(uploadPath, fileData);
+    m_currentUploadReply = uploadReply;
 
     // Track upload progress
-    connect(uploadReply, &QNetworkReply::uploadProgress, this, [this](qint64 sent, qint64 total) {
+    connect(uploadReply, &QNetworkReply::uploadProgress, this, [this, gen](qint64 sent, qint64 total) {
+        if (gen != m_uploadGen) return;        // given up on: not the upload in flight any more
         if (total > 0) {
             m_uploadProgress = static_cast<double>(sent) / total;
             emit uploadProgressChanged();
         }
     });
 
-    QString token = m_token;
-    connect(uploadReply, &QNetworkReply::finished, this, [this, uploadReply, fileName, token, caption]() {
+    const QString token = fs.token;
+    const int threadId = fs.threadId;
+    connect(uploadReply, &QNetworkReply::finished, this, [this, uploadReply, fileName, token, caption, threadId, gen]() {
         uploadReply->deleteLater();
+        if (gen != m_uploadGen) {              // given up on (and aborted): leave the shared state alone
+            forgetPendingUpload(fileName);
+            return;
+        }
 
         int status = uploadReply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         if (status != 201 && status != 204) {
@@ -2788,13 +2973,15 @@ void MessageListModel::sendFileWithCaption(const QString &filePath, const QStrin
             m_uploadFileName.clear();
             emit uploadProgressChanged();
             forgetPendingUpload(fileName);   // the share step that consumes it will never run
-            emit errorOccurred("Failed to upload file");
+            reportUploadFailure(fileName, status > 0
+                ? tr("the server refused the upload (HTTP %1)").arg(status)
+                : tr("the upload failed"));
             return;
         }
 
         m_uploadProgress = 1.0;
         emit uploadProgressChanged();
-        shareUploadedFile(fileName, token, caption);
+        shareUploadedFile(fileName, token, caption, threadId, gen);
     });
 }
 
@@ -2893,7 +3080,7 @@ void MessageListModel::shareExistingFile(const QString &path, const QString &tok
 }
 
 void MessageListModel::shareUploadedFile(const QString &fileName, const QString &token,
-                                         const QString &caption)
+                                         const QString &caption, int threadId, quint64 gen)
 {
     qDebug() << "File uploaded, sharing to conversation" << token;
 
@@ -2911,14 +3098,13 @@ void MessageListModel::shareUploadedFile(const QString &fileName, const QString 
     QJsonObject metaData;
     if (!caption.isEmpty())
         metaData["caption"] = caption;            // capability: media-caption
-    // ⚠ Only when the open conversation IS the one being shared into. Uploads
-    // complete asynchronously, so the user can have moved on by the time this
-    // runs — and m_threadId belongs to whatever is open NOW. Without the
-    // token check, a share finishing after a room switch would be filed under
-    // a topic id from a different conversation.
+    // The topic is the one that was open when the user pressed Send, carried with the upload
+    // (FileSend::threadId). It used to be read HERE, from whatever is open NOW: an upload finishes
+    // asynchronously, and a batch of files takes minutes, so a user who moved to another topic
+    // (or room -- hence the old token check) had the file filed under the wrong one.
     // Read server-side by Chat/SystemMessage/Listener.php:435.
-    if (m_threadId > 0 && m_token == token)
-        metaData["threadId"] = m_threadId;        // capability: threads
+    if (threadId > 0)
+        metaData["threadId"] = threadId;          // capability: threads
 
     // A voice message is an ordinary audio attachment PLUS this flag; without
     // it every client renders a file pill instead of a player. The server only
@@ -2934,7 +3120,18 @@ void MessageListModel::shareUploadedFile(const QString &fileName, const QString 
         body["talkMetaData"] = QString::fromUtf8(QJsonDocument(metaData).toJson(QJsonDocument::Compact));
 
     m_api->post("apps/files_sharing/api/v1/shares", body,
-        [this, fileName, token](bool ok, const QJsonObject &, int) {
+        [this, fileName, token, gen](bool ok, const QJsonObject &, int) {
+            if (gen != m_uploadGen) {
+                // This upload was given up on while its share was in flight; the progress state
+                // now belongs to another file. If the share went through anyway, finish the
+                // bookkeeping and show the message -- and touch nothing shared.
+                const QString temp = m_tempUploadSources.take(fileName);
+                if (ok) {
+                    if (!temp.isEmpty()) QFile::remove(temp);
+                    if (m_token == token) refreshLatest();
+                }
+                return;
+            }
             m_uploadProgress = -1;
             m_uploadFileName.clear();
             emit uploadProgressChanged();
@@ -2953,7 +3150,7 @@ void MessageListModel::shareUploadedFile(const QString &fileName, const QString 
                 }
             } else {
                 m_tempUploadSources.remove(fileName);
-                emit errorOccurred("Failed to share file to conversation");
+                reportUploadFailure(fileName, tr("the server refused to share it into the conversation"));
             }
         });
 }
@@ -2970,24 +3167,31 @@ struct ChunkUploadState {
     QString uploadFolder;                     // /remote.php/dav/uploads/<user>/<uuid>
     QString destUrl;                          // full URL of the final dav/files target
     QString fileName, token, caption, tempCopy;
+    int threadId = 0;                         // the topic open when Send was pressed
+    quint64 gen = 0;                          // the upload this belongs to (MessageListModel::m_uploadGen)
 };
 
 void MessageListModel::uploadFileChunked(const QString &readPath, const QString &fileName,
                                          const QString &token, const QString &caption,
-                                         const QString &tempCopy)
+                                         const QString &tempCopy, int threadId, quint64 gen)
 {
     // Per-upload state shared across the async MKCOL → chunk PUTs → MOVE chain.
     auto st = std::make_shared<ChunkUploadState>();
     st->file.setFileName(readPath);
     if (!st->file.open(QIODevice::ReadOnly)) {
-        emit errorOccurred("Cannot open file for upload: " + st->file.errorString());
+        const QString why = st->file.errorString();
         if (!tempCopy.isEmpty()) QFile::remove(tempCopy);
         forgetPendingUpload(fileName);
         m_uploadProgress = -1; m_uploadFileName.clear(); emit uploadProgressChanged();
+        // After the end-of-upload edge, like every other failure: a modal box raised before it
+        // would hold the queue (and the watchdog, already running) behind it.
+        reportUploadFailure(fileName, why, "Cannot open file for upload: " + why);
         return;
     }
     st->size = st->file.size();
     st->fileName = fileName; st->token = token; st->caption = caption; st->tempCopy = tempCopy;
+    st->threadId = threadId;
+    st->gen = gen;
     if (qEnvironmentVariableIsSet("TALQ_CHUNK_SIZE_BYTES"))
         st->chunkSize = qMax<qint64>(1, qEnvironmentVariable("TALQ_CHUNK_SIZE_BYTES").toLongLong());
 
@@ -3006,21 +3210,25 @@ void MessageListModel::uploadFileChunked(const QString &readPath, const QString 
     // 409-on-MOVE when a fresh account has never had the folder auto-created.
     const QString destParent = "/remote.php/dav/files/" + m_api->user() + "/Talk";
     auto *mkParent = m_api->davRequest("MKCOL", destParent);
+    m_currentUploadReply = mkParent;
     connect(mkParent, &QNetworkReply::finished, this, [this, mkParent, st]() {
         mkParent->deleteLater();
+        if (st->gen != m_uploadGen) { dropStaleChunkedUpload(st); return; }
         const int ps = mkParent->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         if (ps != 201 && ps != 405) {
             qWarning() << "Chunked upload: destination-parent MKCOL failed:" << ps;
-            failChunkedUpload(st, "Failed to prepare upload destination");
+            failChunkedUpload(st, tr("the server could not prepare the upload destination"));
             return;
         }
         auto *mk = m_api->davRequest("MKCOL", st->uploadFolder);
+        m_currentUploadReply = mk;
         connect(mk, &QNetworkReply::finished, this, [this, mk, st]() {
             mk->deleteLater();
+            if (st->gen != m_uploadGen) { dropStaleChunkedUpload(st); return; }
             const int status = mk->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
             if (status != 201 && status != 405) {
                 qWarning() << "Chunked upload MKCOL failed:" << status << mk->errorString();
-                failChunkedUpload(st, "Failed to start chunked upload");
+                failChunkedUpload(st, tr("the server could not start the upload"));
                 return;
             }
             uploadNextChunk(st);   // keeps st alive only via the in-flight reply
@@ -3028,16 +3236,24 @@ void MessageListModel::uploadFileChunked(const QString &readPath, const QString 
     });
 }
 
-void MessageListModel::failChunkedUpload(const std::shared_ptr<ChunkUploadState> &st,
-                                         const QString &msg)
+void MessageListModel::dropStaleChunkedUpload(const std::shared_ptr<ChunkUploadState> &st)
 {
+    st->file.close();
+    if (!st->tempCopy.isEmpty()) QFile::remove(st->tempCopy);
+    forgetPendingUpload(st->fileName);
+}
+
+void MessageListModel::failChunkedUpload(const std::shared_ptr<ChunkUploadState> &st,
+                                         const QString &reason)
+{
+    if (st->gen != m_uploadGen) { dropStaleChunkedUpload(st); return; }
     st->file.close();
     if (!st->tempCopy.isEmpty()) QFile::remove(st->tempCopy);
     // A voice note that failed before the share step would otherwise leave its name in the set
     // for the rest of the session (shareUploadedFile is what consumes it).
     forgetPendingUpload(st->fileName);
     m_uploadProgress = -1; m_uploadFileName.clear(); emit uploadProgressChanged();
-    emit errorOccurred(msg);
+    reportUploadFailure(st->fileName, reason);
 }
 
 void MessageListModel::uploadNextChunk(std::shared_ptr<ChunkUploadState> st)
@@ -3052,18 +3268,23 @@ void MessageListModel::uploadNextChunk(std::shared_ptr<ChunkUploadState> st)
         moveHeaders["OC-Total-Length"] = QByteArray::number(st->size);
         auto *mv = m_api->davRequest("MOVE", st->uploadFolder + "/.file",
                                      QByteArray(), moveHeaders);
+        m_currentUploadReply = mv;
+        // Assembling a multi-GB file on the server sends no progress: do not let the stall watchdog
+        // judge it by the ordinary allowance.
+        m_fileQueueWatchdog.start(kUploadAssembleMs);
         connect(mv, &QNetworkReply::finished, this, [this, st, mv]() {
             mv->deleteLater();
+            if (st->gen != m_uploadGen) { dropStaleChunkedUpload(st); return; }
             const int status = mv->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
             if (status != 201 && status != 204) {
                 qWarning() << "Chunked upload MOVE failed:" << status << mv->errorString();
-                failChunkedUpload(st, "Failed to assemble uploaded file");
+                failChunkedUpload(st, tr("the server could not assemble the uploaded file"));
                 return;
             }
             st->file.close();
             if (!st->tempCopy.isEmpty()) QFile::remove(st->tempCopy);
             m_uploadProgress = 1.0; emit uploadProgressChanged();
-            shareUploadedFile(st->fileName, st->token, st->caption);
+            shareUploadedFile(st->fileName, st->token, st->caption, st->threadId, st->gen);
         });
         return;
     }
@@ -3072,14 +3293,16 @@ void MessageListModel::uploadNextChunk(std::shared_ptr<ChunkUploadState> st)
     st->file.seek(st->offset);
     const QByteArray chunk = st->file.read(thisLen);
     if (chunk.size() != thisLen) {
-        failChunkedUpload(st, "Failed to read file for upload");
+        failChunkedUpload(st, tr("it could not be read"));
         return;
     }
     ++st->index;
     const QString chunkName = QStringLiteral("%1").arg(st->index, 5, 10, QLatin1Char('0'));
     const qint64 base = st->offset;
     auto *put = m_api->davRequest("PUT", st->uploadFolder + "/" + chunkName, chunk);
+    m_currentUploadReply = put;
     connect(put, &QNetworkReply::uploadProgress, this, [this, st, base](qint64 sent, qint64) {
+        if (st->gen != m_uploadGen) return;    // given up on
         if (st->size > 0) {
             m_uploadProgress = static_cast<double>(base + sent) / st->size;
             emit uploadProgressChanged();
@@ -3087,10 +3310,11 @@ void MessageListModel::uploadNextChunk(std::shared_ptr<ChunkUploadState> st)
     });
     connect(put, &QNetworkReply::finished, this, [this, st, put, thisLen]() {
         put->deleteLater();
+        if (st->gen != m_uploadGen) { dropStaleChunkedUpload(st); return; }
         const int status = put->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         if (status != 201 && status != 204 && status != 200) {
             qWarning() << "Chunk PUT failed:" << status << put->errorString();
-            failChunkedUpload(st, "Failed to upload file chunk");
+            failChunkedUpload(st, tr("an upload chunk failed"));
             return;
         }
         st->offset += thisLen;

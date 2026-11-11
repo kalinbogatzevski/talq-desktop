@@ -2084,12 +2084,12 @@ void ChatPainter::dragEnterEvent(QDragEnterEvent *event)
 
 void ChatPainter::dropEvent(QDropEvent *event)
 {
-    for (const QUrl &url : event->mimeData()->urls()) {
-        if (url.isLocalFile()) {
-            emit fileDropped(url.toLocalFile());
-            break;
-        }
-    }
+    QStringList files;
+    for (const QUrl &url : event->mimeData()->urls())
+        if (url.isLocalFile())
+            files.append(url.toLocalFile());
+    if (!files.isEmpty())
+        emit filesDropped(files);
     event->acceptProposedAction();
 }
 
