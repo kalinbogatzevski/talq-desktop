@@ -37,6 +37,9 @@ public:
     int replyToId = 0;
     QJsonObject replyTo;   // parent message for replies
     int threadId = 0;           // Root thread message ID (0 = not in a thread)
+    // The server's `messageParameters` as sent: who is mentioned, which file.
+    // Kept so the popup gate can ask "does this mention me?" (ToastGatePolicy.h).
+    QJsonObject messageParameters;
     QString threadTitle;         // Thread title if this is a thread root
     int threadReplyCount = 0;    // Number of replies (for root messages)
     // 0.41.3-beta — upstream Talk dedup key. Sent on POST; the server

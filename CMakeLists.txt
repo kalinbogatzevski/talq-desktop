@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(talq VERSION 0.80.0 LANGUAGES CXX)
+project(talq VERSION 0.81.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -372,6 +372,16 @@ string(TIMESTAMP TALQ_BUILD_TS "%m%d-%H%M")
 # Sources (BNR English, now served from old-news.bnr.bg):
 # old-news.bnr.bg/en/post/100757850 (day-of-archangel-michael-the-warrior-angel) and
 # old-news.bnr.bg/en/post/100893827 (nov-8-orthodox-christians-honor-st-archangel-michael).
+#
+# 0.80.x KEEPS "Arhangelovden": 0.80.x is even, so it is the STABLE line, and it
+# promotes the 0.79.x beta -- the name carries across the cut, as before.
+#
+# 0.81.x IS "Friday 13th" -- 13 November 2026 is a Friday, so a Friday the 13th. It
+# keeps to the calendar thread (Vsi Svetii, Arhangelovden), in English like "First
+# School Day". Offered by Kalin on 2026-11-11 ("As November Friday is 13th"); 0.81.x
+# being a NEW minor line it needs a new name. It is odd, so it is the BETA line: a chat or a
+# topic set to Never / Mentions only stops popping up (the setting was saved and
+# shown but never read), and a muted chat's unread count becomes optional.
 set_source_files_properties(
     src/main.cpp
     src/core/CallManager.cpp
@@ -380,7 +390,7 @@ set_source_files_properties(
     src/ui/SettingsDialog.cpp
     src/ui/MainWindow.cpp
     PROPERTIES COMPILE_DEFINITIONS
-      "TALQ_VERSION=\"${PROJECT_VERSION}\";TALQ_VERSION_NAME=\"Arhangelovden\";TALQ_BUILD_TS=\"${TALQ_BUILD_TS}\""
+      "TALQ_VERSION=\"${PROJECT_VERSION}\";TALQ_VERSION_NAME=\"Friday 13th\";TALQ_BUILD_TS=\"${TALQ_BUILD_TS}\""
 )
 
 # Pre-release flag: when build-release.sh is invoked with --beta it

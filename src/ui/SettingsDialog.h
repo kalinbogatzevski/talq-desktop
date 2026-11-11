@@ -202,6 +202,7 @@ private:
 
     // Notifications tab
     QCheckBox *m_notifEnabled = nullptr;
+    QCheckBox *m_countMuted = nullptr;
     QRadioButton *m_stylePopup = nullptr;
     QRadioButton *m_styleWindows = nullptr;
     QComboBox *m_soundCombo = nullptr;   // None / System default / bundled tones

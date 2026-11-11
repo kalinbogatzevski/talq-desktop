@@ -1,5 +1,51 @@
 # Changelog
 
+## v0.81.0 "Friday 13th" — BETA (2026-11-11)
+
+You can now silence a chat, or one topic inside a chat, so that it stops popping up. The
+controls were already in the menus; TalQ saved your choice but never looked at it when a message
+arrived, so a muted chat kept popping up and playing its sound.
+
+### Added
+* **Silence a chat or a topic.** Right-click a chat (or a topic's tab) and choose **Notifications**:
+  * **Never**: no popup and no sound, not even for a message that mentions you.
+  * **Mentions only**: a popup only for a message that mentions you by name, mentions everyone
+    (`@all`) or a group, or replies to one of your own messages.
+  * **Default** and **All messages**: as before.
+
+  A topic's own setting wins over its chat's, so you can mute one noisy topic in a chat you
+  otherwise follow, or keep following one topic in a chat you muted. These are Nextcloud Talk's own
+  settings, so they are shared with your phone and the Talk web page.
+* **Count muted chats** (Settings → Notifications), off by default. A chat set to Never no longer
+  adds to the unread numbers: its own badge, a folder's total, and the count on the tray icon and
+  taskbar. Switch the option on to count them again.
+
+### Changed
+* When several messages arrive at once, TalQ judges all of them, so a mention that is not the last
+  of them still gets its popup. One popup is shown, for the newest message that passes.
+* For a chat you have not opened, TalQ now reads the chat's newest messages (without marking
+  anything read) when the one last message cannot settle whether to pop up: in a Mentions-only
+  chat, in a chat whose content you chose to hide, and when the newest message is in a topic. In a
+  Mentions-only chat a mention is therefore no longer missed because an older one is still unread.
+* A mention in a popup for such a chat reads `@name` instead of showing the internal marker.
+
+### Good to know
+* **Beta channel only.** The stable line (0.80.0) is untouched.
+* A post in a topic you started does not count as a reply to you; only a message that quotes one of
+  yours does. An explicit quote of the topic's first message cannot be told from an ordinary post
+  there, so in a Mentions-only topic it does not pop up (the unread badge still shows it).
+* If TalQ cannot ask the server about a topic (offline, topic deleted), the chat's own setting decides.
+* A chat set to Never with one topic switched back on pops up for that topic only when its message is
+  the newest of several that arrive together; reading every muted chat on every message would cost
+  a request per message in exactly the busy rooms people mute.
+* The tray and taskbar number, and the folder totals, follow **Count muted chats**; a chat set to
+  Mentions only is still counted.
+* **What was checked.** The popup rules are covered by about 100 automatic checks, including the
+  case of a mention hidden behind a later plain message, and two independent code reviews; the
+  server's answers for a single topic and for a chat's last message were checked on a live server.
+  **Not yet seen:** a popup being suppressed, and the **Count muted chats** option, in a real TalQ
+  window. Please say if a muted chat still pops up, or a chat you did not mute stops popping up.
+
 ## v0.80.0 "Arhangelovden" — STABLE (2026-11-10)
 
 Promotes the 0.79.x line: messages show their full formatting (headings, lists, quotes, tables,

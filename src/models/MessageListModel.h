@@ -147,6 +147,20 @@ public:
     // newest message only when no unsent message is pinned in front of it, so a
     // listener must not assume index(0).
     int latestArrivedRow() const;
+    // The rows the LAST announced batch added, newest first (ascending row index).
+    // A poll can bring several messages at once, and the popup gate must judge all
+    // of them: a mention that is not the newest used to be lost. Empty when the
+    // last announcement was not a received batch (our own send); a row is dropped
+    // if the message has been trimmed away since.
+    QVector<int> latestBatchRows() const;
+    // What the popup gate (core/ToastGatePolicy.h) needs to know about the message
+    // at `row`; all empty for a row that does not exist.
+    struct ToastFacts {
+        QJsonObject messageParameters;   // who it mentions
+        QString replyToActorId;          // who wrote the message it replies to
+        int replyToId = 0;               // ...and that message's id (0 = no reply)
+    };
+    ToastFacts toastFactsAt(int row) const;
     Q_INVOKABLE void addReaction(int messageId, const QString &emoji);
     Q_INVOKABLE void loadHistory();
     Q_INVOKABLE void loadHistoryUntil(int messageId);
@@ -415,6 +429,7 @@ private:
     QTimer m_outboxTimer;                     // 2 s tick while any entry is still active
     quint64 m_attemptCounter = 0;
     int m_latestArrivedRow = 0;               // see latestArrivedRow()
+    QVector<int> m_latestBatchIds;            // see latestBatchRows()
 
     ApiClient *m_api;
     MessageCache *m_cache;

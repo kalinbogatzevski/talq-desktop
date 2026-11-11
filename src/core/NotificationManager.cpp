@@ -48,6 +48,11 @@ NotificationManager::NotificationManager(QObject *parent)
     // setNotificationsEnabled (its only writer), so startup writes nothing to the key. It must be
     // read before setupTrayIcon(): the tray action takes its checked state from the member.
     m_notificationsEnabled = talq::loadNotificationsEnabled(s);
+    // Muted chats are NOT counted unless the user said so. Read straight into the member
+    // (startup writes nothing); the setter is the only writer of the key.
+    s.beginGroup(QStringLiteral("Notifications"));
+    m_countMutedChats = s.value(QStringLiteral("countMuted"), false).toBool();
+    s.endGroup();
 
     loadSoundForId(m_soundId);
 
@@ -561,6 +566,17 @@ void NotificationManager::playCurrentSound()
     // bundled tones so it's a clear "this is the tone" preview).
     if (m_soundId == "none" || m_soundId == "system") return;
     playInternalSound();
+}
+
+void NotificationManager::setCountMutedChats(bool v)
+{
+    if (m_countMutedChats == v) return;
+    m_countMutedChats = v;
+    QSettings s("TalQ", "TalQ");
+    s.beginGroup(QStringLiteral("Notifications"));
+    s.setValue(QStringLiteral("countMuted"), v);
+    s.endGroup();
+    emit countMutedChatsChanged();
 }
 
 void NotificationManager::setNotificationsEnabled(bool v)

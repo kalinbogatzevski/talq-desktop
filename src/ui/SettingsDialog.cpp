@@ -1465,6 +1465,20 @@ QWidget *SettingsDialog::buildNotificationsTab()
         tr("Show a notification when a new message arrives."),
         m_notifEnabled));
 
+    // Off by default: a chat set to Never (right-click it > Notifications) adds nothing
+    // to the unread numbers -- its own badge, a folder's total, the tray and taskbar
+    // count. Switch it on to keep counting them. The model recounts at once.
+    m_countMuted = new QCheckBox;
+    connect(m_countMuted, &QCheckBox::toggled, this, [this](bool checked) {
+        m_notifications->setCountMutedChats(checked);  // also persists (its only writer)
+    });
+    layout->addWidget(makeSettingRow(
+        tr("Count muted chats"),
+        tr("Count unread messages from chats you muted in the unread numbers: the "
+           "badge on the chat, folders, and the tray and taskbar. Off, a muted chat "
+           "adds nothing."),
+        m_countMuted));
+
     // Style — radios stacked in the row's control column.
     m_stylePopup = new QRadioButton(tr("In-app popup"));
     m_styleWindows = new QRadioButton(tr("Windows toast"));
@@ -2199,6 +2213,10 @@ void SettingsDialog::loadNotificationSettings()
     m_notifEnabled->blockSignals(true);
     m_notifEnabled->setChecked(enabled);
     m_notifEnabled->blockSignals(false);
+
+    m_countMuted->blockSignals(true);
+    m_countMuted->setChecked(m_notifications->countMutedChats());
+    m_countMuted->blockSignals(false);
 
     m_stylePopup->blockSignals(true);
     m_styleWindows->blockSignals(true);
