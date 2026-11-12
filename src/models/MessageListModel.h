@@ -276,6 +276,11 @@ signals:
     void unreadBoundaryChanged();
     // Emitted after POST /chat/{token}/schedule succeeds — UI uses this to
     // confirm the schedule (toast / banner) without polling the queue.
+    // The user is sending (or scheduling) something to this room: a text, a file or batch, a voice
+    // note, a forward. The chat list takes an archived room back out of the archive when it hears
+    // this (ConversationListModel::unarchiveIfArchived), so a chat the user is talking in is never
+    // hidden from them.
+    void userSentTo(const QString &token);
     void messageScheduled(qint64 sendAt);
     // A scheduled message that did not go: the server refused it, or it never left because the
     // send time had already passed. The composer cleared its box the moment it asked, so `text`
