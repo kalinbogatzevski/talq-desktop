@@ -1711,6 +1711,11 @@ void MainWindow::buildChatPage()
     m_selectionBar->hide();
     chatLayout->addWidget(m_selectionBar);
 
+    // Talking in an archived chat takes it out of the archive: archiving hides a chat from every
+    // normal view, and a conversation the user is writing in must not be hidden from them.
+    connect(m_messages, &MessageListModel::userSentTo, m_conversations,
+            &ConversationListModel::unarchiveIfArchived);
+
     connect(m_composer, &ComposerWidget::sendMessage, this, [this](const QString &text, bool silent) {
         // 0.40.9 — only pass `replyTo` when the user explicitly clicked
         // "Reply" on a specific message. Topic membership goes through
@@ -6992,6 +6997,10 @@ void MainWindow::createNewTopic()
                                   : err);
                 return;
             }
+            // Starting a topic is talking in the chat (this send does not go through the message
+            // model), so an archived chat comes back out of the archive.
+            if (m_conversations)
+                m_conversations->unarchiveIfArchived(token);
             // User may have switched rooms while the create was in flight —
             // don't yank them into a topic on a different room.
             if (m_activeConvToken != token) return;

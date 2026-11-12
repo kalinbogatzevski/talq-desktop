@@ -751,6 +751,31 @@ void ConversationListModel::setArchived(int idx, bool archived)
         });
 }
 
+// Archiving hides a chat from every normal view, which is right for one the user is done with and
+// wrong for one they have just written in. Done at once on the local list, so the chat is back in the
+// list the moment they send; the server is told in the same breath. If it refuses, the chat really is
+// still archived there and the list says so again. A refresh that lands before the server has
+// processed the request can bring the old state back for a moment: the next send, or the next
+// refresh, settles it.
+void ConversationListModel::unarchiveIfArchived(const QString &token)
+{
+    const int i = indexOfToken(token);
+    if (i < 0 || !m_conversations[i].archived)
+        return;
+    m_conversations[i].archived = false;
+    resort();
+    QPointer<ConversationListModel> guard(this);
+    m_api->setArchived(token, false, [guard, token](bool ok, const QJsonObject &, int) {
+        if (!guard || ok)
+            return;
+        const int j = guard->indexOfToken(token);
+        if (j < 0)
+            return;
+        guard->m_conversations[j].archived = true;      // the server kept it archived
+        guard->resort();
+    });
+}
+
 bool ConversationListModel::importantAt(int idx) const
 {
     if (idx < 0 || idx >= m_conversations.size()) return false;

@@ -2208,6 +2208,7 @@ void MessageListModel::sendMessage(const QString &text, int replyToId, bool sile
 {
     if (text.trimmed().isEmpty() || m_token.isEmpty())
         return;
+    emit userSentTo(m_token);
 
     // #26 — in a one_to_one room with exactly one bot enabled, prepend
     // the bot's @-mention so the message reaches it without the user
@@ -2770,6 +2771,9 @@ void MessageListModel::sendFilesWithCaption(const QStringList &filePaths, const 
 
 void MessageListModel::enqueueFileSends(const QVector<FileSend> &items)
 {
+    // Every file, batch and voice note goes through here, with the room it was started in.
+    if (!items.isEmpty() && !items.first().token.isEmpty())
+        emit userSentTo(items.first().token);
     for (const FileSend &fs : items)
         m_fileQueue.append(fs);
     pumpFileQueue();
@@ -3657,6 +3661,7 @@ QString MessageListModel::uniqueDownloadPath(const QString &fileName)
 void MessageListModel::sendMessageToToken(const QString &targetToken, const QString &text)
 {
     if (targetToken.isEmpty() || text.trimmed().isEmpty()) return;
+    emit userSentTo(targetToken);
 
     QJsonObject body;
     body["message"] = text;
@@ -3745,6 +3750,7 @@ void MessageListModel::scheduleMessage(const QString &text, qint64 sendAt,
                             scheduleRefusalText(400, QStringLiteral("send-at")));
         return;
     }
+    emit userSentTo(m_token);
 
     QJsonObject body;
     body["message"]  = text;

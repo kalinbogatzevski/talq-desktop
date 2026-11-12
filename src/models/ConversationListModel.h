@@ -163,6 +163,9 @@ public:
     Q_INVOKABLE QString displayNameForToken(const QString &token) const;
     Q_INVOKABLE bool archivedAt(int index) const;
     Q_INVOKABLE void setArchived(int index, bool archived);
+    // The user is talking in this room: an archived one comes back out of the archive at once (the
+    // row returns to the list) and the server is told. Not archived, or unknown: nothing happens.
+    void unarchiveIfArchived(const QString &token);
     Q_INVOKABLE bool importantAt(int index) const;
     Q_INVOKABLE void setImportant(int index, bool important);
     Q_INVOKABLE void updateLastMessage(const QString &token, const QString &author, const QString &text);

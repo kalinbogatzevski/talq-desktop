@@ -1,5 +1,34 @@
 # Changelog
 
+## v0.81.2 "Friday 13th" — BETA (2026-11-12)
+
+Writing in an archived chat now takes it out of the archive. Until now an archived chat stayed hidden
+from every normal list even while you were in the middle of a conversation in it: it showed only
+under the filter menu's Archived entry, so you had to find the person again with the **+** button.
+
+### Changed
+* **Sending something in an archived chat unarchives it.** The moment you send, the chat comes back
+  into your list (under its folder, or under "Other"), and TalQ tells the server, so it is
+  unarchived on your phone and the web too. This covers a message, one or several files, a voice
+  note, a message you forward to that chat, a message you schedule, and a topic you start. If the
+  server refuses, the chat shows as archived again.
+* **Receiving a message does not unarchive a chat.** Archiving still keeps a chat you are done with
+  out of your way.
+
+### Good to know
+* **Beta channel only.** The stable line (0.80.0) is untouched.
+* **This update also carries the fixes made to 0.81.1 after its first build.** The first copies of
+  0.81.1 were replaced a few hours later under the same version number, so a copy installed early
+  that day never saw the update. The fixes: a chat's number checks with the server that a topic is
+  still silenced (it asks again every few minutes, so a topic you switched back on from your phone is
+  counted), the tray and taskbar number no longer drops too far after you read a chat, and signing in
+  as another person starts clean.
+* **What was checked.** Against a real server: a chat archived through the server, then a message
+  sent in it, brings the chat back into the list at once and shows it as not archived on the server.
+  **Not yet seen in a real TalQ window:** the chat reappearing in the sidebar after you send, and the
+  file, forward, schedule and topic cases, which use the same step but were not each tried. Please say
+  if an archived chat you wrote in is still missing from your list.
+
 ## v0.81.1 "Friday 13th" — BETA (2026-11-11)
 
 You can now send several files in one message, a topic whose notifications are off is marked on the
