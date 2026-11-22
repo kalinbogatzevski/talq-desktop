@@ -8,6 +8,8 @@
 
 Your team chat as a real desktop app: instant open, near-zero idle, built to be left running all day.
 
+For your phone: **[TalQ for Android](https://github.com/kalinbogatzevski/talq-android)**, the same design with chat, topics, files and notifications.
+
 <sub>Current line: **Saedinenie** — Bulgarian for *unification*, for the line that brings the pieces of a person into one place: whether a colleague is online, whether they are actually on shift, and whatever else your own systems know about them, on one card. Stable is **0.68.2**; **0.69.x** is the open beta line (odd minor = beta, even = stable). It follows **Blue Fiesta** (0.68 stable, 0.60), **July Morning** (0.56, clean calls), **Bafana Bafana** (0.52), **Slartibartfast** (0.50), **Botev** (0.48), **Margaritka** (0.46), *Magrathea* (0.44) and *Deep Thought* (0.42) 🔵</sub>
 
 </div>
@@ -20,7 +22,9 @@ Your team chat as a real desktop app: instant open, near-zero idle, built to be 
 >
 > **Group calls need a Talk High Performance Backend** on the server — that is
 > a Nextcloud Talk requirement, not a TalQ one, but it is the thing most often
-> missing when calls do not work. Windows only for now.
+> missing when calls do not work. Windows only for now on the desktop; on the
+> phone there is [TalQ for Android](https://github.com/kalinbogatzevski/talq-android) (chat, topics, files and
+> notifications; no calls yet).
 
 ---
 
@@ -97,6 +101,10 @@ eventually you rebuild the part that's between you and the work.
 ## Download
 
 **[⬇ Download the latest TalQ installer](https://github.com/kalinbogatzevski/talq-desktop/releases/latest)** — Windows 10/11, 64-bit.
+
+**On Android:** the APK is in the [TalQ for Android releases](https://github.com/kalinbogatzevski/talq-android/releases)
+(Android 8.0 or newer; still a pre-release). Its source, notes and changelog are in
+[talq-android](https://github.com/kalinbogatzevski/talq-android).
 
 Grab the `TalQ-v<version>-Setup.exe` asset from the latest release and run it,
 then point TalQ at your Nextcloud server. The same installer performs in-place
@@ -328,7 +336,8 @@ TalQ is what I use every day, but it's honest about where it is:
   card rather than a broken one — but if you wire an endpoint up, I would
   like to hear how it went.
 - **Windows only.** Linux/macOS would need the media/compositor paths
-  reworked.
+  reworked. On the phone there is a separate client,
+  [TalQ for Android](https://github.com/kalinbogatzevski/talq-android), without calls so far.
 - **Help especially welcome here:** call reliability across the range of
   NAT, firewall, and device configurations real users have is where
   outside testing and bug reports move the needle most.
