@@ -6,7 +6,7 @@
 // handed an offer but whose ICE never left "none"/"new" because it was never
 // given a single remote candidate.
 //
-// Why it exists (field 2026-10-06, Tester D <-> Kalin): the HPB delivered an offer
+// Why it exists (field 2026-10-06, a tester <-> Kalin): the HPB delivered an offer
 // (0.86 s after requestOffer, like a healthy call) and then trickled NO
 // candidate at all, so webrtcbin had nothing to check and ICE sat at "new". A
 // healthy subscriber gets its candidates in the same millisecond as the offer

@@ -11,7 +11,7 @@
 // the second round trip. The existing guard (SignalingClient::joinRoom) skips a
 // redundant join only once the room is ACKED; this covers the window before that.
 //
-// Field 2026-10-29, Kalin's Zenbook: he opened the chat with Tester B and pressed
+// Field 2026-10-29, on a test laptop: Kalin opened the chat with a tester and pressed
 // Call within seconds. startCall() saw currentRoom() == token (set optimistically
 // by the chat's join) but roomJoinAcked() still false, so ensureSignalingRoomJoined
 // issued a second join — two participants/active POSTs 0.7 s apart, a no_such_room

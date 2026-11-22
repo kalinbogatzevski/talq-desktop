@@ -47,7 +47,7 @@ public:
     ConnState connState() const { return m_connState; }
     bool speaking() const { return m_speaking; }
     double audioLevel() const { return m_audioLevel; }
-    // Per-tile signal-quality bars glyph (loss+jitter, Zoom/Teams-style).
+    // Per-tile signal-quality bars glyph (loss+jitter, as in other call apps).
     // -1 = unknown (no stats tick has classified this peer's receive stream
     // yet — CallStage draws nothing); 0..3 = SignalQualityPolicy's
     // Lost/Poor/Fair/Good, committed by CallManager::updateCallStats() each

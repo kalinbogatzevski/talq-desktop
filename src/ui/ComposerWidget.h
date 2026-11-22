@@ -136,7 +136,7 @@ public:
     void hideEditingBar();
     bool isEditing() const { return m_editing; }
 
-    // Up-arrow on an empty composer → edit the last own message (Telegram-style).
+    // Up-arrow on an empty composer → edit the last own message (common chat-app behaviour).
     // Returns true if it consumed the key (composer was idle, request emitted).
     bool requestEditLast();
 

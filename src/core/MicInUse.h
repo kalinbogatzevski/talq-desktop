@@ -5,7 +5,7 @@
 namespace talq {
 
 // True when another application is capturing from a microphone right now (a
-// Zoom/Teams/Meet call). TalQ then plays no notification sound and no incoming
+// call in another app). TalQ then plays no notification sound and no incoming
 // ring; popups still show. See MicInUsePolicy.h for the rule and why.
 //
 // Cheap (one WASAPI session enumeration, a few ms), so callers ask at the moment

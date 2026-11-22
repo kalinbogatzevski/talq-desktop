@@ -10,7 +10,7 @@
 // tests/stage_policy_test.cpp can drive them through simulated minutes of a
 // call in microseconds. Two units live here:
 //
-//   - StageSpeakerLatch  — the active-speaker LATCH for the Zoom-style
+//   - StageSpeakerLatch  — the active-speaker LATCH for the familiar
 //     speaker stage (directly below);
 //   - StageSourcePolicy  — WHO OWNS THE MAIN STAGE: the pick() precedence and
 //     the manual-pin lifecycle (end of file), extracted from CallStage after
@@ -26,7 +26,7 @@
 //   - promotion needs sustained speech (kPromoteMs), not a blip;
 //   - a promoted speaker rides out inter-sentence gaps (kHoldMs) and is
 //     guaranteed a minimum residency (kMinDwellMs);
-//   - the set NEVER collapses to empty on silence (sticky-empty — Zoom does
+//   - the set NEVER collapses to empty on silence (sticky-empty — other call apps do
 //     this; without it the layout flips every time the room pauses);
 //   - insertion order is preserved, never re-sorted by loudness;
 //   - all promote/demote decisions are rate-limited (kMutateCooldownMs).
@@ -193,7 +193,7 @@ public:
         // (4c) Demotion: silent for kHoldMs AND past kMinDwellMs since
         // promotion — but NEVER down to an empty set. STICKY EMPTY SET is
         // the single most important anti-flicker rule: when the whole room
-        // pauses, the last promoted set is RETAINED (Zoom does this; without
+        // pauses, the last promoted set is RETAINED (other call apps do this; without
         // it the layout flips on every lull). Demotion removes and closes
         // the gap; least-recently-promoted eligible goes first.
         if (m_promoted.size() >= 2) {
@@ -370,7 +370,7 @@ public:
         for (const StageCandidate &c : now)
             if (!c.isSelf && c.screenLive) return {c.sessionId, true};
 
-        // PRECEDENCE 3 — 0.53.0 Zoom-style self-view: when WE are sharing and
+        // PRECEDENCE 3 — 0.53.0 presenter self-view: when WE are sharing and
         // no PEER is, our OWN share takes the stage (rendered from the local
         // capture preview tap), so the presenter sees what they're
         // broadcasting full-size — the same view the remote gets — instead of

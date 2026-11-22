@@ -117,14 +117,14 @@ struct BgFrameMailbox
     std::atomic<quint64> completed{0};
     std::atomic<quint64> dropped{0};
 
-    // 0.60.6 P0-d (Tester B's 0.60.5 foggy-window RCA) — content-free mosaics the
+    // 0.60.6 P0-d (a tester's 0.60.5 foggy-window RCA) — content-free mosaics the
     // WORKER published into the output slot while composeLatched (see below).
     // NOT counted in `completed`: a mosaic is a cover, not a composite, so the
     // zero-composite detector still reads structural failure. Proves the camera
     // thread stopped recomputing the inline mosaic (ground-truth #7).
     std::atomic<quint64> mosaicked{0};
 
-    // 0.60.6 (Tester B's 0.60.5 foggy-window RCA) — the persistent-failure
+    // 0.60.6 (a tester's 0.60.5 foggy-window RCA) — the persistent-failure
     // ladder's shared state. lastFailReason holds the BgFailReason (as int)
     // of the most recent compose() outcome; composeLatched flips true once the
     // worker has given up after a run of consecutive STRUCTURAL failures.
@@ -279,7 +279,7 @@ private:
     // previous frame), slow drift ACCUMULATES until it trips the gate
     // instead of sneaking under a per-frame threshold. This is what stops
     // inference burning ~0.5 of a core while the user just sits in a call
-    // (Kalin's 2026-07-13 zenbook report).
+    // (Kalin's 2026-07-13 test-laptop report).
     QImage        m_lastMask;              // 256×256 Grayscale8, EMA-smoothed
     QElapsedTimer m_lastMaskClock;         // age of m_lastMask
     int           m_reusesSinceInfer = 0;
@@ -300,7 +300,7 @@ private:
     // re-warms. Worker thread only.
     QSize m_prewarmedSize;
 
-    // 0.60.6 (Tester B's 0.60.5 foggy-window RCA) — persistent-compose-failure
+    // 0.60.6 (a tester's 0.60.5 foggy-window RCA) — persistent-compose-failure
     // latch, modelled on TfliteSegmenter's m_runFailStreak. A compositor that
     // is structurally dead on this driver (old UHD 620 GL, a wedged context)
     // returns null from EVERY compose; through 0.60.5 the engine then served
@@ -318,7 +318,7 @@ private:
 
     // Fault-injection seam (TALQ_BG_FORCE_COMPOSE_FAIL, worker-thread getenv,
     // same idiom as TfliteSegmenter's TALQ_BG_SEG_FAIL). This dev box
-    // composites fine, so Tester B's structural GL failure cannot be reproduced
+    // composites fine, so the tester's structural GL failure cannot be reproduced
     // organically — the seam forces compose() to return null so every ladder
     // rung is reachable here. `transient` fails the first N composes then
     // recovers (exercises rung 1 + recovery WITHOUT latching); `persistent`

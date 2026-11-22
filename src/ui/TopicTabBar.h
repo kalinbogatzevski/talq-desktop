@@ -12,7 +12,7 @@ class QWheelEvent;
 
 /**
  * Horizontal topic/thread picker shown above the chat area, inspired by
- * Telegram Desktop's forum view. One chip per thread, plus a leading
+ * the forum view of common chat apps. One chip per thread, plus a leading
  * "All messages" chip and a trailing "+" chip for creating a new topic.
  *
  * Hidden automatically when the bound model is empty (no topics yet).

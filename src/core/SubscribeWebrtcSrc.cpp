@@ -248,7 +248,7 @@ bool SubscribeWebrtcSrc::start(const QString &stunServer,
                        { QByteArrayLiteral("H264"), QByteArrayLiteral("VP8") });
 
     // D5 — raise the receive jitterbuffer latency (default ~200 ms) so a choppy /
-    // jittery uplink (bursty loss, big inter-packet gaps — Tester C's link) is RIDDEN
+    // jittery uplink (bursty loss, big inter-packet gaps — a tester's link) is RIDDEN
     // OUT by buffering instead of dropping late packets and freezing the decoder.
     // 400 ms balances more cushion against conversational lag.
     //

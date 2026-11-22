@@ -100,7 +100,7 @@ protected:
             e->accept();
             return;
         }
-        // Up-arrow on an empty composer edits the last own message (Telegram).
+        // Up-arrow on an empty composer edits the last own message (as common chat apps do).
         // Only when empty so multi-line cursor navigation is unaffected.
         if (e->key() == Qt::Key_Up && toPlainText().isEmpty()
             && !(e->modifiers() & (Qt::ShiftModifier | Qt::ControlModifier))) {

@@ -422,7 +422,7 @@ void SubscribePipeline::createAudioChain(GstPad *pad)
 
     // 0.41.0-beta — receive-side loudness chain (mirror PeerPipeline).
     // audiodynamic compressor + volume + rglimiter between opusdec and
-    // the sink; matches the tgcalls / libwebrtc AudioProcessing playout.
+    // the sink; matches the usual call-app / libwebrtc AudioProcessing playout.
     QSettings audSettings("TalQ", "TalQ");
     audSettings.beginGroup("Audio");
     const double playbackGain = qBound(0.0,

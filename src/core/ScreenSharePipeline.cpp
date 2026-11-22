@@ -497,7 +497,7 @@ bool ScreenSharePipeline::start(const QString &stunServer, const QList<TurnServe
     // videoscale's default bilinear (2-tap) decimator effectively drops /
     // pair-averages rows, which field-reads as "interlaced" / vertical detail
     // missing / unreadable fonts whenever a hi-DPI monitor share is scaled to
-    // the quality cap (Kalin→Tester A 2026-07-08). Lanczos is the community-proven
+    // the quality cap (Kalin→a tester 2026-07-08). Lanczos is the community-proven
     // quality scaler for screen content; a frame already within the cap
     // (native share) passes through untouched either way.
     gst_util_set_object_arg(G_OBJECT(vscale), "method", "lanczos");
@@ -507,7 +507,7 @@ bool ScreenSharePipeline::start(const QString &stunServer, const QList<TurnServe
             // arbitrary native size, and an ODD dimension is invalid H.264 4:2:0
             // — Intel QSV rejects it (MFXVideoENCODE_Query ->
             // MFX_WRN_INCOMPATIBLE_VIDEO_PARAM) and the REMOTE decoder can't
-            // render it (Kalin's Intel-QSV app-share showed NOTHING on Tester A's
+            // render it (Kalin's Intel-QSV app-share showed NOTHING on a tester's
             // AMD receiver while full-screen worked — field 2026-06-18).
             // videoscale negotiates to the nearest even size, so the encoder
             // always gets a valid frame regardless of the window's real size.

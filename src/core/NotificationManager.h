@@ -118,7 +118,7 @@ private:
     QMenu *m_trayMenu = nullptr;
     QWidget *m_window = nullptr;
     QString m_soundId = "chime";       // see header doc for valid values
-    QString m_notifStyle = "popup";    // "popup" (Telegram-style) or "windows" (toast)
+    QString m_notifStyle = "popup";    // "popup" (TalQ's own desktop card) or "windows" (toast)
     bool m_notificationsEnabled = true;
     bool m_countMutedChats = false;
     bool m_doNotDisturb = false;

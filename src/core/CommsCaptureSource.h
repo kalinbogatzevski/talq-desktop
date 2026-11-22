@@ -5,7 +5,7 @@
 //
 // WHY THIS EXISTS (measured, not assumed — 2026-08-11)
 // ----------------------------------------------------
-// Probing KALIN-ZENBOOK's Realtek mic array with IAudioEffectsManager, same endpoint
+// Probing a test laptop's Realtek mic array with IAudioEffectsManager, same endpoint
 // and same shared-mode mix format, changing ONLY the client category:
 //
 //     default category        ->  0 effects, no AEC

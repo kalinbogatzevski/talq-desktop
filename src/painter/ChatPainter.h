@@ -466,7 +466,7 @@ private:
     bool m_selectionMode = false;
     QSet<int> m_selectedIds;
 
-    // ── Text selection state (character-level, Telegram-style) ──
+    // ── Text selection state (character-level, like common chat apps) ──
     TextSelection m_textSelection;
     bool m_textAnchorSet = false;  // true if mousePress landed on body text
     bool m_wordSelectMode = false; // true after double-click (extend by whole words)

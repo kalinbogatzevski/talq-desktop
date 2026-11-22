@@ -4,8 +4,8 @@
 #include <QtGlobal>
 
 // A frameless, click-through, always-on-top overlay that paints a coloured
-// border around a monitor to signal an active screen-share (the Zoom green /
-// Teams red "you are sharing this screen" indicator). It is input-transparent
+// border around a monitor to signal an active screen-share (the familiar green /
+// red call-app "you are sharing this screen" indicator). It is input-transparent
 // so it never intercepts clicks, never takes focus, and on Windows 10 2004+ is
 // excluded from screen capture so the shared peer never sees the border itself.
 class ShareOverlay : public QWidget
@@ -25,7 +25,7 @@ public:
     static QColor borderColor();  // semi-transparent "sharing" green
     // Show the monitor border only when the user setting is ON *and* this is
     // a full-monitor share. Window shares (windowHandle != 0) never get a
-    // frame — that matches Zoom's per-app share, the original request.
+    // frame — that matches how other call apps treat a per-app share, the original request.
     static bool shouldShowForShare(bool borderEnabled, quintptr windowHandle);
 
 protected:

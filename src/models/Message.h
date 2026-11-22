@@ -166,7 +166,7 @@ public:
     // Deleted-message noise. Talk replaces a deleted comment with messageType
     // "comment_deleted" and emits a "message_deleted" system event — which the
     // upstream API docs explicitly say clients should NOT show (use it to remove
-    // the original from storage). We hide both for Telegram-style clean deletes.
+    // the original from storage). We hide both for clean deletes, as common chat apps do.
     bool isDeletedMessage() const {
         return messageType == "comment_deleted"
             || systemMessage == "message_deleted";

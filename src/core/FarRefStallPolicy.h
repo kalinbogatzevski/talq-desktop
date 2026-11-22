@@ -9,7 +9,7 @@
 // from ONE monotonic clock, so the whole thing is unit-testable without a call --
 // see tests/far_ref_stall_policy_test.cpp.
 //
-// Why it exists (field call 2026-10-29, Kalin <-> Tester B): a USB headset was plugged
+// Why it exists (field call 2026-10-29, Kalin <-> a tester): a USB headset was plugged
 // in mid-call and Windows made it the default output. The reference is a WASAPI
 // loopback of the DEFAULT render endpoint (pub-aec-ref, a wasapi2src with
 // loopback=TRUE). At that instant its level meter froze at one value and never

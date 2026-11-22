@@ -1563,7 +1563,7 @@ fixes at the end.
 * **Desks behind a company proxy were being sent to the wrong region.** TalQ picks the closest call
   server by briefly connecting to each one, and those measurements were made without going through
   the proxy — so on a proxied PC every measurement failed and TalQ fell back to an arbitrary
-  choice. A desk in South Africa was being served from Europe: it works, but adds delay to every
+  choice. A desk was being served from a call server on another continent: it works, but adds delay to every
   call for no reason.
 
 * **A problem that will not fix itself is now harder to miss.** The warning strip could be closed,
@@ -1590,7 +1590,7 @@ the log how a call actually connected.
 * **Desks behind a company proxy were being sent to the wrong region.** TalQ measures which of the
   call servers is closest by briefly connecting to each one, and those measurements were made
   without going through the proxy — so on a proxied PC every measurement failed, and TalQ silently
-  fell back to an arbitrary choice. A desk in South Africa was being served from Europe, which
+  fell back to an arbitrary choice. A desk was being served from a call server on another continent, which
   works, but adds delay to every call for no reason.
 
   The measurement now goes through the proxy when there is one. It still ranks the servers
@@ -4034,18 +4034,17 @@ Promotes the 0.51.x line to stable. Highlights since 0.50.11:
 ### Fixed
 
 * **The standard build now installs reliably on managed/work machines.** The
-  standard (unbranded) build is now code-signed, so Windows no longer mis-flags
-  it as untrusted during install on centrally-managed or cert-trusted computers —
-  the same trust a branded build already had. (On a personal/unmanaged PC,
-  Windows Defender may still need a one-time exclusion until the public signing
-  certificate is in place.)
+  standard installer is now signed too, so Windows no longer mis-flags it as
+  untrusted during install on centrally-managed or cert-trusted computers.
+  (On a personal/unmanaged PC, Windows Defender may still need a one-time
+  exclusion until the public signing certificate is in place.)
 
 ## v0.51.0 "Bafana Bafana" -- BETA (2026-06-11)
 
 Codename **Bafana Bafana** — the nickname ("the boys") of South Africa's
 national football team — for the **FIFA 2026 World Cup**, where South Africa
-plays the Opening Match. Fitting on two counts: TalQ's call server lives in
-South Africa, and so does the company that builds it.
+plays the Opening Match. Fitting: the company that builds TalQ is based in
+South Africa.
 
 ### Added
 
@@ -4056,7 +4055,7 @@ South Africa, and so does the company that builds it.
   people) to keep the call smooth, then restores quality once there's headroom
   again. It adapts to your *hardware*, separately from how it already adapts to
   your *network*. Powerful machines are unaffected (no change). This is the
-  long-promised "Zoom-style" load controller: it keeps weak laptops from
+  long-promised hardware-adaptive load controller: it keeps weak laptops from
   freezing during camera + screen-share calls. The person you're looking at
   stays sharpest; smaller tiles give way first. Still in beta — if it ever
   misbehaves it can be turned off.
@@ -4734,7 +4733,7 @@ The Slartibartfast line, promoted to stable. The headlines since 0.48.9:
 ### Changed
 
 * **Your call audio keeps its volume.** Windows no longer quietens TalQ during a
-  call when another communications app (Teams, Skype, a softphone) opens in the
+  call when another communications app (another call app, a softphone) opens in the
   background.
 * **Sharper direct one-to-one calls.** When a 1:1 call connects directly between
   two TalQ apps, video now uses a higher-quality H.264 profile for more detail at
@@ -4811,7 +4810,7 @@ The Slartibartfast line, promoted to stable. The headlines since 0.48.9:
 * **Topics are ordered by what needs attention.** The topic bar lists topics with
   unread messages first, then by most recent activity.
 * **Deleted messages no longer leave noise.** Removing a message no longer leaves
-  a "deleted message" placeholder cluttering the thread (as in Telegram) — it
+  a "deleted message" placeholder cluttering the thread (as in common chat apps) — it
   simply disappears.
 
 ## v0.43.2 "Magrathea" — BETA (2026-05-29)
@@ -4864,7 +4863,7 @@ The Slartibartfast line, promoted to stable. The headlines since 0.48.9:
 
 ### Changed
 
-* **Calls reconnect instead of dropping (Zoom-style).** When your connection to
+* **Calls reconnect instead of dropping.** When your connection to
   the call server is lost (a flaky long-haul link revoking ICE consent, a
   NAT/Wi-Fi blip), the call no longer hangs up after a few seconds. It enters a
   **Reconnecting…** state and keeps actively re-establishing your media with
@@ -5034,7 +5033,7 @@ crash when sending the first message in a brand-new group is fixed.
 
 ## v0.41.9 "Koprivshtitsa" — BETA (2026-05-28)
 
-Zoom-style direct peer-to-peer for one-to-one calls, plus a deep
+Direct peer-to-peer for one-to-one calls, plus a deep
 overhaul of the peer-to-peer media engine.
 
 ### Added — direct peer-to-peer for 1:1 calls (experimental, opt-in)
@@ -5042,7 +5041,7 @@ overhaul of the peer-to-peer media engine.
 * **One-to-one calls can now connect directly between the two
   people** instead of routing audio and video through the server —
   lower latency and bandwidth when you are near each other. Group
-  calls (3+) keep using the server, exactly like Zoom. Enable it in
+  calls (3+) keep using the server, as in mainstream call apps. Enable it in
   **Settings → "Direct P2P for 1:1 calls"** (off by default while the
   direct media path is being validated in the field). If the other
   person is on a non-TalQ client, or the direct connection can't be
@@ -5238,8 +5237,8 @@ opt-in "direct P2P for 1:1 calls" toggle.
 * **"Direct P2P for 1:1 calls (experimental)"** checkbox. Default
   OFF. When on, 1:1 calls (room type == 1) bypass the SFU and go
   peer-to-peer for lower latency — useful when both peers are in
-  the same region and the SFU is far away (e.g. BG↔BG with an
-  SA-hosted HPB). Group calls (3+) always stay on the SFU. The
+  the same region and the SFU is far away (e.g. two peers on one
+  continent with the HPB on another). Group calls (3+) always stay on the SFU. The
   decision is per-call: if direct ICE fails, TalQ falls back to
   the MCU automatically.
 * Note: the experimental tag is honest — `PeerPipeline`'s audio→
@@ -5291,7 +5290,7 @@ UX polish on the 0.41.0 resolution work + a stickier `revertStuckCall`.
 
 * **`revertStuckCall` two-stage clear.** The Talk-specific
   `/user_status/revert/call` endpoint silently no-ops on some NC
-  builds (verified on the ZA-hosted instance), so a user-status
+  builds (verified on a production Nextcloud), so a user-status
   custom message of "In a call" stayed sticky after hangup. The
   revert call now always chains a standard
   `DELETE /user_status/message` after, which is the documented
@@ -5303,7 +5302,7 @@ UX polish on the 0.41.0 resolution work + a stickier `revertStuckCall`.
 ### Known follow-ups (queued for 0.41.5-beta)
 
 * P2P-first toggle for 1:1 calls when both peers are in the same
-  region (BG/SA HPB latency penalty observed).
+  region (cross-region HPB latency penalty observed).
 * Auto-cap published resolution on sustained packet loss (GCC
   estimate < threshold for N seconds → clamp HIGH-layer target).
 * Reply-chain fallback for thread membership (catch messages tagged
@@ -5350,7 +5349,7 @@ documented in `docs/superpowers/specs/2026-05-28-upstream-talk-chat-history.md`.
 ### Changed
 
 * **Playback-volume control removed from Settings → Audio & Video.**
-  Telegram, Zoom, Meet do not surface a manual playback gain;
+  Mainstream call apps do not surface a manual playback gain;
   their receive-side AGC handles it. TalQ's
   `audiodynamic`+`rglimiter` chain (added in 0.41.0) does the
   same job. The 1.8× internal default stays via the
@@ -5445,10 +5444,10 @@ both visible only while screen-sharing is live.
 * The screen-share UX consensus from
   `docs/superpowers/specs/2026-05-28-screenshare-ux-research.md`:
   the camera self-view is **never** replaced by the share preview
-  (Zoom, Teams, Meet, Telegram all keep both visible). TalQ
+  (mainstream call apps all keep both visible). TalQ
   matches that — the camera PiP stays put, the share PiP takes
   the opposite corner.
-* OS-level coloured monitor borders (Zoom green / Teams red) are
+* OS-level coloured monitor borders (green/red, as other call apps draw) are
   still deferred behind a future flag — they need per-platform
   transparent click-through overlay windows.
 
@@ -5457,16 +5456,16 @@ both visible only while screen-sharing is live.
 ## v0.41.0 "Koprivshtitsa" — BETA (2026-05-28)
 
 Opens the 0.41.x beta cycle. Field-driven call-quality work —
-remote-peer playback is much quieter than Telegram on the same
+remote-peer playback is much quieter than other call apps on the same
 hardware (despite healthy VU meters on both ends) and 720p30 looks
-softer than Telegram on the same camera. Research briefs in
+softer than other call apps on the same camera. Research briefs in
 `docs/superpowers/specs/2026-05-28-*.md`.
 
 ### Changed (audio)
 
 * **Receive-side loudness chain.** Vanilla `opusdec → wasapi2sink`
   ran playback at unity gain with no AGC, no compressor, no limiter —
-  Telegram/Discord/Zoom/Meet all run libwebrtc's `AudioProcessing`
+  libwebrtc-based call apps run its `AudioProcessing`
   (AGC2 + soft-limiter) on playout. TalQ now inserts
   `audiodynamic` (soft-knee compressor, threshold 0.25, ratio 0.4)
   + `volume` + `rglimiter` between `opusdec` and the resampler in
@@ -5477,7 +5476,7 @@ softer than Telegram on the same camera. Research briefs in
   (64 kbps, `audio-type=generic`, `inband-fec=false`, `dtx=false`).
   Now: `bitrate=48000`, `audio-type=voice` (SILK-hybrid voice path),
   `inband-fec=true`, `dtx=false`, `bitrate-type=cbr`, `complexity=10`.
-  Matches the tgcalls recipe.
+  Matches the usual libwebrtc voice recipe.
 * **Opus SDP fmtp munge.** Local offer now carries
   `useinbandfec=1; usedtx=0; maxaveragebitrate=48000; minptime=10`
   on the Opus payload so the peer also encodes voice-mode + FEC.
@@ -5615,7 +5614,7 @@ join" RCA, and a long-overdue ring-only test harness mode.
 * **`TALQ_TEST_RING_ONLY=1` mode for `talq-call-test`.** Peer A
   signaling-joins room + call (bot account, no media, no peer B),
   sits until `--timeout`, hangs up cleanly. Used to ring a real
-  human's TalQ — e.g. test-bot calling `tok1room` rings a real user —
+  human's TalQ — e.g. a test account calling a real user's id rings that user —
   for manual in-call UI verification without needing a second
   laptop. Default `--timeout 60`; ring-only is allowed up to 300.
 
@@ -7038,7 +7037,7 @@ Updates → "Pre-release updates"). Stable users remain on 0.31.2.
   the encoder above what the link could actually carry, leading to
   packet loss and decoder artifacts that read as "choppy" even when
   distinct-frame counts were near 30 fps. The floor is now 600 kbps
-  (the same range libwebrtc / Zoom use for 720p30) and congestion
+  (the range libwebrtc uses for 720p30) and congestion
   control still ramps up freely to the server ceiling on good links.
 - **Screen-share now shares the window / monitor you actually picked.**
   Window capture needs `d3d11screencapturesrc` in WGC mode (it silently
@@ -7122,7 +7121,7 @@ Updates → "Pre-release updates"). Stable users remain on 0.31.2.
   too low for 720p30: the encoder starved, frames were dropped, and the
   constant-rate stage padded them back with duplicates, so the receiver
   got "30 fps" of mostly repeated pictures. The floor is now a
-  720p30-viable 1.2 Mbps, matching what browsers/Zoom use for a 720p
+  720p30-viable 1.2 Mbps, matching what browsers/other call apps use for a 720p
   camera. Per-peer RX telemetry (delivered vs distinct fps) makes the
   result measurable.
 
@@ -7169,7 +7168,7 @@ below.
   saw "30 fps" but only ~10 distinct pictures — choppy. The camera now
   accepts the webcam's **MJPEG** mode (≈10:1 compressed, fits USB →
   true 720p30) via a decode stage, falling back to raw for cameras
-  without MJPEG. This is the same approach Zoom/Telegram use, which is
+  without MJPEG. This is the same approach mainstream call apps use, which is
   why they were always smooth on the affected camera.
 - **The in-call window now has its own Windows taskbar button.** It was
   an owned window (shared the main window's button), so when another
@@ -7921,7 +7920,7 @@ The NC Talk bot framework does not allow user-initiated 1-on-1 conversations wit
 - **Promote & demote** — click a member in the info dialog → context menu with promote-to-moderator, demote-to-member, or remove actions.
 
 ### Topics, properly
-- **Telegram-style topic strip** replaces the old 3-column threads panel. Horizontal chip bar above the chat: "All messages", every topic as its own chip with unread count, trailing "+" for new.
+- **Compact topic strip** replaces the old 3-column threads panel. Horizontal chip bar above the chat: "All messages", every topic as its own chip with unread count, trailing "+" for new.
 - **One-click topic creation** — click +, type a name, done. TalQ sends a silent seed message and best-effort sets the thread title; you land in the new topic ready to chat.
 - **Threads clear on group switch** — the old list no longer leaks into the new group during the fetch round-trip; cache path now actually runs on switch.
 - **1-on-1 chats correctly hide the topic strip** — previously flickered visible during model reset.
@@ -8031,7 +8030,7 @@ The NC Talk bot framework does not allow user-initiated 1-on-1 conversations wit
 
 ### Fixes
 - **Edited messages update in place** — v0.17.2's `editMessage` was double-unwrapping the OCS envelope, which silently replaced your bubble with a blank row. Now the edit shows immediately without a conversation switch.
-- **Unread divider auto-dismisses** — once the "New messages" pill has scrolled above the viewport for 2 seconds, it fades out automatically (Discord-style). Switching conversations still resets the state.
+- **Unread divider auto-dismisses** — once the "New messages" pill has scrolled above the viewport for 2 seconds, it fades out automatically (as common chat apps do). Switching conversations still resets the state.
 - **Scrollbar drag** — grabbing the chat scrollbar now scrolls instead of triggering multi-message selection. Clicking the track jumps the thumb to that point; dragging the thumb follows the cursor.
 
 ## v0.17.3 (2026-04-18)
@@ -8093,8 +8092,8 @@ The NC Talk bot framework does not allow user-initiated 1-on-1 conversations wit
 
 ### Emoji
 - **Twemoji everywhere** — chat messages, reactions, composer all render via bundled Twemoji (Nextcloud Talk style). Consistent across Windows versions.
-- **Autoreplace** — `:)`, `:D`, `<3`, `:P`, `;)`, etc. → emoji on space. Also `:shortcode:` (Slack-style): `:smile:`, `:rocket:`, `:heart:`, …
-- **Emoji picker** — new 😀 button in the composer opens a Telegram-style picker: 9 category tabs, search, recents (24), skin-tone variants via long-press/right-click.
+- **Autoreplace** — `:)`, `:D`, `<3`, `:P`, `;)`, etc. → emoji on space. Also `:shortcode:` (as in common chat apps): `:smile:`, `:rocket:`, `:heart:`, …
+- **Emoji picker** — new 😀 button in the composer opens a compact picker: 9 category tabs, search, recents (24), skin-tone variants via long-press/right-click.
 - **Shortcode autocomplete** — typing `:smi` shows a popup of matches; Up/Down/Enter/Tab to pick, Esc to dismiss.
 
 ### Image viewer
@@ -8162,7 +8161,7 @@ The NC Talk bot framework does not allow user-initiated 1-on-1 conversations wit
 - Receive media state from subscriber data channels (browser mute/unmute reflected in TalQ)
 - Speaking detection with 500ms grace timer — sends speaking/stoppedSpeaking to peers
 
-### In-bubble text selection (Telegram-style)
+### In-bubble text selection
 - Click and drag on message text selects characters with teal highlight
 - Drag across messages extends selection seamlessly
 - Double-click selects a word; continue dragging extends word-by-word
@@ -8350,7 +8349,7 @@ Root cause: three protocol compliance issues found by comparing TalQ's SDP with 
 ## v0.14.2 (2026-03-29)
 
 ### Notifications
-- **Custom notification popup** — Telegram-style dark rounded popup at bottom-right of screen
+- **Custom notification popup** — dark rounded popup at bottom-right of screen
 - **Click notification opens conversation** — restores window and switches to the chat
 - **Cross-chat notifications** — shows even when app is focused (different conversation)
 - **Notification text fix** — was showing oldest message instead of newest (model index bug)
@@ -8373,7 +8372,7 @@ Root cause: three protocol compliance issues found by comparing TalQ's SDP with 
 
 ## v0.14.0 (2026-03-29)
 
-### Multi-Message Selection (Telegram-style)
+### Multi-Message Selection
 - **Drag-to-select** — click and drag to sweep-select messages
 - **Selection mode** — right-click → "Select" or Ctrl+Click to enter, Esc to exit
 - **Visual feedback** — teal row highlight + circular checkboxes on the right
@@ -8456,7 +8455,7 @@ Root cause: three protocol compliance issues found by comparing TalQ's SDP with 
 
 ### UI Polish
 - **Reply bar** — teal accent bar above composer shows "Author: preview..." with X to cancel
-- **Context menu** — Telegram-style dark popup with emoji row, Download, Open in NC, Copy, Reply, Pin, Copy link, Thread (groups only), Delete (own + confirmation)
+- **Context menu** — compact dark popup with emoji row, Download, Open in NC, Copy, Reply, Pin, Copy link, Thread (groups only), Delete (own + confirmation)
 - **Emoji toggle** — clicking same emoji again removes it (POST 409 → DELETE)
 - **Hover buttons fixed** — hit test at press time (hover state was clearing during click)
 - **Call buttons** — subtle transparent icons with hover highlight + tooltips
@@ -8593,7 +8592,7 @@ Root cause: three protocol compliance issues found by comparing TalQ's SDP with 
 
 ### Automated Call Testing
 - **talq-call-test.exe** — headless two-user MCU call test harness
-- Authenticates a real user + test-bot, joins call via HPB, creates WebRTC pipelines, verifies ICE connection through real STUN/TURN, validates 3s stability, tears down cleanly
+- Authenticates a real user + a test account, joins call via HPB, creates WebRTC pipelines, verifies ICE connection through real STUN/TURN, validates 3s stability, tears down cleanly
 - Catches SDP issues, ICE failures, and signaling bugs without GUI
 
 ### Build & Deploy
@@ -8737,7 +8736,7 @@ Root cause: three protocol compliance issues found by comparing TalQ's SDP with 
 ### Thread/Topic Fixes
 - Fixed false thread detection in 1:1 chats — regular replies no longer create phantom topics
 - Thread detection now uses the API-provided `isThread`/`threadId`/`threadTitle` fields instead of heuristic parent scanning
-- "All Messages" renamed to "General" — now shows only non-thread messages (like Telegram's #General)
+- "All Messages" renamed to "General" — now shows only non-thread messages (like the #General topic in common chat apps)
 - Back arrow added to topics column header for returning to full chat list
 - "+ New Topic" button moved from header to bottom of topic list to prevent overlap
 - Sidebar can now be expanded/collapsed via toggle even when topics are active
@@ -8749,7 +8748,7 @@ Root cause: three protocol compliance issues found by comparing TalQ's SDP with 
 
 ## v0.6.0 (2026-03-19)
 
-### Threads / Topics (Telegram-style)
+### Threads / Topics
 - 3-column layout for group chats with threads: squeezed sidebar icons | topics list | messages
 - Sidebar auto-squeezes to 56px icon-only mode with smooth animation
 - Manual squeeze toggle chevron at sidebar bottom
@@ -8799,7 +8798,7 @@ Root cause: three protocol compliance issues found by comparing TalQ's SDP with 
 - Fixed status dots disappearing: dual-source status (user_status API primary, room API fallback)
 
 ### Context Menu Polish
-- Layered shadow for depth (Telegram-style)
+- Layered shadow for depth
 - Faster enter/exit transitions (100ms/60ms)
 - Stronger emoji row separator and hover states
 - Reduced emoji count to 6 to prevent overflow

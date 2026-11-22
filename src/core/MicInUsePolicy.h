@@ -5,7 +5,7 @@
 // capture sessions (WASAPI IAudioSessionManager2 on every active capture
 // endpoint) and hands them here.
 //
-// Why (Kalin, 2026-09-30): in a Zoom call on the office laptop, TalQ's message
+// Why (Kalin, 2026-09-30): in another app's call on the office laptop, TalQ's message
 // chimes and a loud incoming-call ring went straight into his headphones. While
 // another app holds the mic TalQ plays no sound at all -- the desktop popup and
 // the call window still appear. Being Away alone must NOT silence TalQ: auto-away

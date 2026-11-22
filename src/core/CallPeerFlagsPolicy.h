@@ -11,8 +11,8 @@
 // facts (the poll row, the signaling server's flag cache, the subscriber maps)
 // and owns the side effects.
 //
-// 2026-11-02 RCA (Tester D as callee, TalQ 0.79.2; the same signature is in 0.78.0
-// logs). Tester D's TalQ received and decoded the caller's video for the whole ~410 s
+// 2026-11-02 RCA (a tester as callee, TalQ 0.79.2; the same signature is in 0.78.0
+// logs). The tester's TalQ received and decoded the caller's video for the whole ~410 s
 // call (about 20 fps for the first minute, about 7 fps after the caller switched
 // his camera off and on -- a separate, unsolved send-rate problem) and his screen
 // showed the caller's avatar with "Camera off" for all but a few seconds:

@@ -10,19 +10,20 @@ Your team chat as a real desktop app: instant open, near-zero idle, built to be 
 
 For your phone: **[TalQ for Android](https://github.com/kalinbogatzevski/talq-android)**, the same design with chat, topics, files and notifications.
 
-<sub>Current line: **Saedinenie** — Bulgarian for *unification*, for the line that brings the pieces of a person into one place: whether a colleague is online, whether they are actually on shift, and whatever else your own systems know about them, on one card. Stable is **0.68.2**; **0.69.x** is the open beta line (odd minor = beta, even = stable). It follows **Blue Fiesta** (0.68 stable, 0.60), **July Morning** (0.56, clean calls), **Bafana Bafana** (0.52), **Slartibartfast** (0.50), **Botev** (0.48), **Margaritka** (0.46), *Magrathea* (0.44) and *Deep Thought* (0.42) 🔵</sub>
+<sub>Current line: **Friday 13th** — **0.81.x**, the open beta line (odd minor = beta, even = stable), named for 13 November 2026, which fell on a Friday. Stable is **0.80.0 "Arhangelovden"**, after the feast of the Archangel Michael on 8 November. Earlier lines: **Vsi Svetii** (0.78), **Buditeli** (0.76), **Ravnodenstvie** (0.74), **Nezavisimost** (0.73), **First School Day** (0.72), **Slivnitsa** (0.70), **Saedinenie** (0.69, the person card), **Blue Fiesta** (0.68 stable, 0.60), **July Morning** (0.56, clean calls) and **Bafana Bafana** (0.52) 🔵</sub>
 
 </div>
 
 > ⚠️ **Status:** Chat is the solid, daily-driver core. **Audio/video calls,
 > simulcast quality switching, and screen sharing work end to end** and are
-> verified in real two-party use (1:1 and MCU/conference). The remaining work
+> verified in real two-party use (one-to-one and conference calls, all routed through the MCU). The remaining work
 > is breadth of cross-network/NAT hardening and multi-party validation beyond
 > two peers.
 >
-> **Group calls need a Talk High Performance Backend** on the server — that is
-> a Nextcloud Talk requirement, not a TalQ one, but it is the thing most often
-> missing when calls do not work. Windows only for now on the desktop; on the
+> **Every call needs a Talk High Performance Backend** on the server — one-to-one
+> and group alike: TalQ does not implement Talk's internal signaling. On a Nextcloud with internal signaling only,
+> TalQ's chat works but calls do not, and a missing HPB is the thing most often
+> behind calls that do not work. Windows only for now on the desktop; on the
 > phone there is [TalQ for Android](https://github.com/kalinbogatzevski/talq-android) (chat, topics, files and
 > notifications; no calls yet).
 
@@ -95,8 +96,9 @@ eventually you rebuild the part that's between you and the work.
   against the MCU to check signalling, negotiation and the substream
   ladder. It is honest about its limits: on a single headless box media
   frames do not route, so it proves the call is *set up* correctly, not
-  that video arrived. See [`docs/TESTING.md`](docs/TESTING.md), which
-  states for each level what it proves and what it cannot.
+  that video arrived. The tests and their guide (`docs/TESTING.md`, which
+  states for each level what it proves and what it cannot) live in the
+  development repository and are not part of this public one.
 
 ## Download
 
@@ -113,22 +115,26 @@ upgrades (it reuses your existing install location and shortcuts).
 ### Code signing
 
 The Windows builds (`TalQ-…-Setup.exe` and the `talq.exe` inside) are
-Authenticode-signed with the distributor's code-signing certificate.
+Authenticode-signed with TalQ's own self-signed certificate (`CN=TalQ`).
+Windows does not trust that certificate by itself, so it treats the publisher
+as unverified: SmartScreen will usually show "Windows protected your PC" for a new
+release (More info → Run anyway), and Microsoft Defender may flag it too.
 
-Every release is a brand-new binary, so Microsoft Defender's cloud reputation
-may still flag a fresh build on a standalone PC until it has been seen enough
-times. If that happens, allow it once (restore it from quarantine, or add a
-per-machine Defender exclusion for the install folder) — the signature confirms
-the publisher.
+To check a download, run `Get-FileHash .\TalQ-v<version>-Setup.exe -Algorithm SHA256`
+in PowerShell and compare the result with the `.sha256` file published next to
+the installer on the release page. If they match and Defender still flags it,
+restore it from quarantine once, or add a per-machine Defender exclusion for the
+install folder.
 
 ## Requirements
 
 - **Windows 10/11, 64-bit.** TalQ currently uses Windows-specific media
   and compositor paths; Linux/macOS are not supported yet.
 - A **Nextcloud server with the Talk app** enabled, and an account on it.
-- For **group calls**, that server also needs a **Talk High Performance
-  Backend**. This is a Nextcloud Talk requirement rather than a TalQ one, but
-  it is the single most common reason calls do not work.
+- For **calls** — one-to-one and group alike — that server also
+  needs a **Talk High Performance Backend**. On a Nextcloud with internal
+  signaling only, chat works but calls do not; it is the single most common
+  reason calls do not work.
 
 - **Behind a corporate proxy?** TalQ follows the proxy Windows is configured
   with, for ordinary web requests *and* for the live connections that carry
@@ -245,8 +251,9 @@ bash scripts/deploy-dev.sh        # deploy Qt + GStreamer DLLs/plugins (+ talq_w
 bash scripts/deploy-dev.sh --no-run
 ```
 
-To produce a packaged Windows installer (Inno Setup required, `ISCC` on
-PATH), see `scripts/build-release.sh`.
+To produce a packaged Windows installer, compile `installer/talq-setup.iss`
+with Inno Setup (`ISCC` on PATH); the release script that stages its input
+is not in the public repo.
 
 ## Usage
 
@@ -320,17 +327,18 @@ TalQ is what I use every day, but it's honest about where it is:
   day.
 - **Solid in two-party use:** **audio/video calls, simulcast quality
   switching, and screen sharing.** The WebRTC pipeline is verified working
-  end to end in real 1:1 and MCU/conference use —
+  end to end in real one-to-one and group calls, all routed through the MCU —
   hardware H264, three-layer simulcast publishing with auto + manual
   substream selection, screen sharing with live-thumbnail picker — with
   crash barriers so a media failure can't take the app down. A headless
-  self-test suite (`talq-call-test`) asserts the entire publish +
-  subscribe path against the MCU on every release.
+  self-test suite (`talq-call-test`, kept in the development repository, not
+  this public one) asserts the entire publish + subscribe path against the
+  MCU on every release.
 - **Multi-party (3+ peers):** works, but hasn't been validated as
   exhaustively as 1:1; field reports from larger meetings are the most
   useful contribution right now.
-- **Newest, least proven:** the **person card** and the **shift status** it
-  can show. Both shipped in the 0.69.x beta line and have far less field
+- **Newer, less proven:** the **person card** and the **shift status** it
+  can show. Both have been in stable since 0.70 but have less field
   mileage than anything above. The card falls back to name, picture and
   presence when a site provides nothing, so the failure mode is a quieter
   card rather than a broken one — but if you wire an endpoint up, I would

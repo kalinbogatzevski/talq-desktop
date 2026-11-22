@@ -46,7 +46,7 @@ bool anotherAppUsingMic(QString *who)
                                 reinterpret_cast<void **>(&enumerator))) || !enumerator)
         goto done;
     // Every active capture endpoint, not only the default: a headset mic in a
-    // Zoom call is often not the Windows default device.
+    // call in another app is often not the Windows default device.
     if (FAILED(enumerator->EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE, &devices)) || !devices)
         goto done;
     devices->GetCount(&deviceCount);

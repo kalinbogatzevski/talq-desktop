@@ -810,7 +810,7 @@ QWidget *SettingsDialog::buildAudioVideoTab()
 
     // #72 — screen-share monitor border toggle. The thin frame around a
     // full-screen share is on by default as a "you are sharing" signal;
-    // users who find it distracting (the Zoom-green-frame complaint) switch
+    // users who find it distracting (the loud-green-frame complaint) switch
     // it off here. Window/app shares never draw a frame regardless.
     m_ssBorderCheck = new QCheckBox;
     m_ssBorderCheck->setToolTip(
@@ -831,8 +831,8 @@ QWidget *SettingsDialog::buildAudioVideoTab()
            "share. Sharing a single window never shows a border."),
         m_ssBorderCheck));
 
-    // 0.41.3-beta — playback-gain control removed. Telegram, Zoom and
-    // Meet do not surface a "playback volume" setting; their receive-
+    // 0.41.3-beta — playback-gain control removed. Mainstream call
+    // apps do not surface a "playback volume" setting; their receive-
     // side AudioProcessing AGC handles it automatically. TalQ now
     // does the same with audiodynamic + rglimiter on the receive
     // chain (PeerPipeline / SubscribePipeline). The 1.8× constant in
@@ -1402,7 +1402,7 @@ void SettingsDialog::syncBgPreview()
     // A live call already holds the (exclusive, on Windows MediaFoundation)
     // camera via the publisher pipeline. Opening a SECOND camera consumer here
     // would STEAL the device from the call — the in-call camera then errors out
-    // and can't re-acquire until the call is rebuilt (Tester A, 0.52.16: opened
+    // and can't re-acquire until the call is rebuilt (a field tester, 0.52.16: opened
     // Settings mid-call → camera dead for the rest of the call). So while a call
     // is active we do NOT open the camera for the preview. The chosen background
     // still applies live to the call via backgroundSettingsChanged(); only this

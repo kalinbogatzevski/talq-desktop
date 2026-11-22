@@ -404,12 +404,12 @@ if(TALQ_PRERELEASE)
 endif()
 
 # Headless CallManager self-test (`talq.exe --selftest-call`, src/core/CallSelfTest.*;
-# how to run it: docs/TESTING.md Level 2b). It is a TEST SEAM: it remaps HKEY_CURRENT_USER
+# how to run it: the development repository's test guide). It is a TEST SEAM: it remaps HKEY_CURRENT_USER
 # for its process, spawns a second process and logs in as the test bots, none of which
 # belongs in a shipped client. So it is ON only for Debug (daily development)
-# configurations and OFF for everything else, and scripts/build-release.sh passes
+# configurations and OFF for everything else, and the release build passes
 # -DTALQ_SELFTEST=OFF explicitly (an explicit -D beats a stale cache value; the incident
-# that taught that is written up beside BETA_FLAG in scripts/build-release.sh) and refuses
+# that taught that is written up in the release build script, not public) and refuses
 # to package a talq.exe that carries it.
 # A build without it answers `--selftest-call` with exit code 64 instead of starting TalQ.
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")

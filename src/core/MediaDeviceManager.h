@@ -142,7 +142,7 @@ private:
     // debounce; on settle we refreshAsync() (-> devicesChanged). So plugging /
     // unplugging a camera or mic mid-call is noticed, the picker stays current,
     // and CallManager can auto-resume a camera that comes back. NOT auto-switching
-    // the active device — just making the change available (Zoom/Teams behaviour).
+    // the active device — just making the change available (the usual call-app behaviour).
     void startHotplugMonitor();
     static GstBusSyncReply onMonitorBusSync(GstBus *, GstMessage *, gpointer);
     GstDeviceMonitor *m_liveMonitor = nullptr;

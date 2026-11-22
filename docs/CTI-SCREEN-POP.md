@@ -80,7 +80,7 @@ however you normally do, shows what is being authorised, and records approval.
 POST {customer_system}/api/v1/cti/pair/poll
      {"pair_token": "..."}
   -> 202  still waiting for the human
-  -> 200  {"api_key": "...", "extension": "131", "display_name": "..."}
+  -> 200  {"api_key": "...", "extension": "100", "display_name": "..."}
   -> 410  denied, expired, or already claimed
 ```
 
@@ -114,7 +114,7 @@ TalQ connects to your `wss://` endpoint and sends one frame:
 Validate it. Then either accept:
 
 ```json
-{"type": "ready", "extension": "131", "display_name": "Sam Patel"}
+{"type": "ready", "extension": "100", "display_name": "Demo Agent"}
 ```
 
 or reject:
@@ -133,7 +133,7 @@ code TalQ does not recognise is also treated as retryable.
 ### Events
 
 ```json
-{"type":"ring","call_id":"<opaque>","extension":"131",
+{"type":"ring","call_id":"<opaque>","extension":"100",
  "caller":"+27210000000","direction":"inbound","ts":1787602524}
 
 {"type":"end","call_id":"<opaque>",
@@ -185,7 +185,7 @@ TalQ renders whatever you send. It does not know what a "balance" or a
   "badges": [ {"text": "OUTAGE", "style": "danger"} ],
   "fields": [
     {"label": "Balance due", "value": "R 1 234.56", "style": "warning"},
-    {"label": "Contract 1001",     "value": "expires 2027-03-01"}
+    {"label": "Contract 1001", "value": "expires 2027-03-01"}
   ],
   "actions": [
     {"label": "Open customer", "url": "/customers/88123"}
@@ -240,7 +240,7 @@ launch a local handler is refused.
 If your bridge can place calls, say so in `ready`:
 
 ```json
-{"type": "ready", "extension": "131", "display_name": "Sam Patel", "can_dial": true}
+{"type": "ready", "extension": "100", "display_name": "Demo Agent", "can_dial": true}
 ```
 
 Omit it, or send `false`, and TalQ leaves the dial control out entirely. A
@@ -372,7 +372,7 @@ You answer with exactly the §3 response:
   "subtitle": "Support Engineer  ·  Network Operations",
   "badges": [ {"text": "Paired", "style": "normal"} ],
   "fields": [
-    {"label": "Extension", "value": "214"},
+    {"label": "Extension", "value": "200"},
     {"label": "Email",     "value": "sam@example.com"}
   ],
   "actions": [ {"label": "Open in HR", "url": "/hr/employees/1042"} ],

@@ -299,7 +299,7 @@ void SignalingClient::onSettingsFetched(bool ok, const QJsonObject &data)
     }
     // Manual signaling-server override (hidden, for A/B stability testing —
     // QSettings key Signaling/overrideServer). Pins a specific regional HPB
-    // (e.g. storm/BG) instead of the per-conversation server the backend
+    // (e.g. a remote HPB node) instead of the per-conversation server the backend
     // assigns; the Nextcloud-issued ticket still validates because a clustered
     // HPB shares the same backend + secret. Empty string = normal behaviour.
     {
@@ -505,8 +505,8 @@ void SignalingClient::probeHpbPool(const QStringList &cands, HpbProbeDone done)
         // in 0.70.3, and the symptom was subtle rather than loud: a raw
         // QTcpSocket inherits the system proxy like everything else, so on a
         // proxied desk every probe failed, every RTT came back -1, and the
-        // "no candidate answered" fallback quietly routed a South African desk
-        // to the Bulgarian POP. Nothing looked broken -- calls connected, just
+        // "no candidate answered" fallback quietly routed a desk in one region
+        // to a POP on another continent. Nothing looked broken -- calls connected, just
         // through the wrong continent.
         const QList<QNetworkProxy> probeProxies = talq::systemTcpProxiesFor(host, 443);
         const std::vector<talq::ProxyCandidate> probeCands =
@@ -1292,7 +1292,7 @@ void SignalingClient::joinRoom(const QString &token, bool force)
     // ALREADY in is never harmless: the participants/active POST below mints
     // a FRESH Nextcloud session, and Nextcloud retires the old one — which is
     // the session carrying our in-call flag if a call is running. Field
-    // (2026-07-03, Kalin↔Tester A): clicking around the main window re-selected
+    // (2026-07-03, Kalin↔a tester): clicking around the main window re-selected
     // the call's conversation, the re-join replaced the in-call session, and
     // both sides collapsed to "Reconnecting". The reconnect path is the one
     // legitimate same-room re-join (fresh hello genuinely must re-enter the

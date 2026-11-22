@@ -348,7 +348,7 @@ private:
     int m_initBitrate = 3500000;
     // Server video ceiling (HPB signaling [mcu] maxstreambitrate). GCC is
     // clamped here so it never probes past what Janus will forward.
-    // 0.41.0-beta — bumped 4 → 6 Mbps to match Telegram's 720p30 target.
+    // 0.41.0-beta — ceiling bumped 4 → 6 Mbps: headroom above 720p30 on good links (GCC still adapts down).
     int m_maxBitrate = 6000000;
     // 0.41.6-beta — auto-cap on sustained packet loss. m_originalMaxBitrate
     // is captured in start() after the resolution-based ceiling is picked.

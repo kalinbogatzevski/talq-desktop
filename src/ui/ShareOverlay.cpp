@@ -20,7 +20,7 @@
 namespace {
 // Sharing-active indicator colour (the near-universal "live / sharing"
 // green) and the border geometry. #72 follow-up: the original 4 px fully
-// opaque frame read as the "ugly Zoom green frame"; we drop to a thin 2 px
+// opaque frame read as the "ugly green frame"; we drop to a thin 2 px
 // stroke at ~60% opacity so it still signals "you are sharing" without
 // dominating the screen edge. It stays excluded from the captured stream.
 constexpr int kBorderPx = 2;

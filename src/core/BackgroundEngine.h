@@ -95,7 +95,7 @@ class QOffscreenSurface;
 class QThread;
 struct BgFrameMailbox;
 
-// 0.60.6 (Tester B's 0.60.5 foggy-window field RCA) — a compose() that cannot
+// 0.60.6 (a tester's 0.60.5 foggy-window field RCA) — a compose() that cannot
 // produce a frame used to collapse to a bare null QImage on all six of its
 // return paths, indistinguishable from each other. The engine then served the
 // content-free mosaic FOREVER with no way to tell "no image was ever chosen"
@@ -222,7 +222,7 @@ public:
     //
     // Return contract while mode != None: NEVER the input frame — either a
     // real composite or the content-free mosaic fallback. The ONE exception
-    // (0.60.6, Tester B's foggy-window RCA): Image mode with NO image chosen is a
+    // (0.60.6, a tester's foggy-window RCA): Image mode with NO image chosen is a
     // misconfiguration, not a concealment intent, so it passes the real frame
     // through and surfaces backgroundPassthroughNoImage. Blur and
     // Image-with-a-chosen-plate never pass through.
@@ -271,7 +271,7 @@ public:
     quint64 framesComposited() const;
     quint64 framesDropped() const;
 
-    // 0.60.6 P0-d (Tester B's 0.60.5 foggy-window RCA) — content-free mosaics the
+    // 0.60.6 P0-d (a tester's 0.60.5 foggy-window RCA) — content-free mosaics the
     // WORKER published into the output slot while the effect was latched off (a
     // structurally-dead compositor this session). Distinct from framesComposited
     // — a mosaic is NOT a composite, so the zero-composite detector still reads
@@ -291,7 +291,7 @@ public:
     // reveal the real background.
     static QImage mosaicFallback(const QImage &rgba);
 
-    // 0.60.6 (Tester B's 0.60.5 foggy-window RCA) — the reason the LAST compose
+    // 0.60.6 (a tester's 0.60.5 foggy-window RCA) — the reason the LAST compose
     // failed (BgFailReason::None if it succeeded, or while passing through an
     // unconfigured Image mode). Readable from any thread. Drives the
     // persistent-failure ladder's rung selection in CallManager::onLoadTick.
@@ -317,7 +317,7 @@ signals:
     // "never hide errors silently" — surface once, then go quiet.
     void backgroundImageFailed(const QString &path);
 
-    // 0.60.6 (Tester B's 0.60.5 foggy-window RCA) — fires when the engine is in
+    // 0.60.6 (a tester's 0.60.5 foggy-window RCA) — fires when the engine is in
     // Image mode with NO image chosen. That is a misconfiguration, not a
     // hide-my-room request: there is no concealment intent to honour, so the
     // engine sends REAL video (the one non-None state that passes through) and
@@ -338,7 +338,7 @@ private:
     mutable QMutex m_pathMutex;
     QString        m_imagePath;
 
-    // 0.60.6 (Tester B's 0.60.5 foggy-window RCA) — lock-free snapshot of "the
+    // 0.60.6 (a tester's 0.60.5 foggy-window RCA) — lock-free snapshot of "the
     // Image-mode path is empty", read on the streaming thread by processFrame
     // to route the Image+no-image state to pass-through without touching
     // m_pathMutex. Kept in sync by setImagePath/setMode. Starts true

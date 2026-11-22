@@ -375,7 +375,7 @@ bool BackgroundEngine::composeLatched() const
 
 void BackgroundEngine::refreshNoImageNotice()
 {
-    // 0.60.6 (Tester B's 0.60.5 foggy-window RCA) — Image mode with NO image
+    // 0.60.6 (a tester's 0.60.5 foggy-window RCA) — Image mode with NO image
     // chosen is a misconfiguration, not a hide-my-room request, so processFrame
     // sends real video. Surface that ONCE per entry into the state (a one-shot
     // latch, reset on leaving), so the user is told "no image selected —
@@ -468,7 +468,7 @@ QImage BackgroundEngine::processFrame(const QImage &rgba)
     const Mode m = m_modeAtomic.load(std::memory_order_acquire);
     if (m == Mode::None || rgba.isNull()) return rgba;
 
-    // 0.60.6 (Tester B's 0.60.5 foggy-window RCA) — the ONE non-None state where
+    // 0.60.6 (a tester's 0.60.5 foggy-window RCA) — the ONE non-None state where
     // the real frame is the correct output: Image mode with NO image chosen.
     // Her QSettings were exactly this (type="image", url="") and the engine
     // obscured every frame of the whole call with the mosaic. An Image

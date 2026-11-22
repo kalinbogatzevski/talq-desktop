@@ -239,7 +239,7 @@ void NotificationManager::deliver(const QString &title, const QString &message, 
 
     // Play sound: always for cross-chat, only when unfocused for active chat --
     // but never in Do Not Disturb (a feedback toast gets here in DND, and is
-    // silent), nor while another app has the mic (a Zoom/Teams call in the
+    // silent), nor while another app has the mic (another app's call in the
     // user's headset). The popup below still shows.
     // Away alone does NOT silence it. See MicInUsePolicy.h.
     const bool wantSound = (alwaysSound || !windowActive) && m_soundId != "none";

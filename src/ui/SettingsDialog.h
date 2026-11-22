@@ -191,7 +191,7 @@ private:
     // True while a call is active (pushed by MainWindow from CallManager state).
     // The publisher holds the exclusive (Windows MF) camera during a call, so
     // syncBgPreview() must NOT open the device for the preview while this is set
-    // — doing so steals the camera and wedges the in-call video (Tester A, 0.52.16).
+    // — doing so steals the camera and wedges the in-call video (a field tester, 0.52.16).
     bool                     m_callActive       = false;
     // Debouncer: dragging the slider used to fire 20 QSettings writes +
     // 20 backgroundSettingsChanged emits in a fraction of a second; the

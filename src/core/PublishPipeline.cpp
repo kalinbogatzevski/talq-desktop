@@ -483,7 +483,7 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
     // Dedicated mute stage. setMuted() used to toggle the SOURCE's "mute"
     // property, but only wasapi2src exposes one — the wasapisrc and
     // autoaudiosrc fallbacks silently ignored it, so on those boxes the mic
-    // kept transmitting while the UI showed muted (field 2026-07-06, Kalin↔Tester A:
+    // kept transmitting while the UI showed muted (field 2026-07-06, Kalin↔a tester:
     // "mic didn't mute though I saw him muted"). A `volume` element ALWAYS
     // supports "mute" and sits after audioconvert (uniform format), so mute is
     // enforced regardless of which source backend was selected.
@@ -537,9 +537,9 @@ bool PublishPipeline::start(const QString &stunServer, const QList<TurnServer> &
     GstElement *opusenc = gst_element_factory_make("opusenc", nullptr);
     GstElement *rtpopuspay = gst_element_factory_make("rtpopuspay", "pub-rtpopuspay");
 
-    // 0.41.0-beta — explicit Opus voice-mode + FEC, the tgcalls recipe.
+    // 0.41.0-beta — explicit Opus voice-mode + FEC, the usual call-app recipe.
     // GStreamer default is bitrate=64000, audio-type=generic, inband-fec=false.
-    // Voice mode picks the SILK-hybrid path that Telegram / Discord / Meet
+    // Voice mode picks the SILK-hybrid path that libwebrtc-based clients
     // use for live calls; FEC restores quietly-attenuated frames on 1-2%
     // packet loss; dtx=FALSE keeps the silence-suppression OFF so peers
     // don't read inter-sentence gaps as drop-outs. complexity=10 is the
@@ -2003,7 +2003,7 @@ bool PublishPipeline::buildCameraChain(int deviceIndex, bool hd1080)
     // structure menu lets mfvideosrc fall back to its native raw format
     // (raw 1280x720 over USB negotiates 30/1 but delivers ~10 real fps;
     // MJPEG is ~10:1 compressed so it fits USB and yields a true 30 fps,
-    // which is why Zoom/Telegram are smooth on the same camera).
+    // which is why other call apps are smooth on the same camera).
     // decodebin (below) auto-plugs jpegdec for MJPEG or passes raw
     // through. If the setting is empty (device exposed no parseable
     // modes / pre-population), fall back to the permissive ≤720p menu.
@@ -2089,7 +2089,7 @@ bool PublishPipeline::buildCameraChain(int deviceIndex, bool hd1080)
         // width/height, failed setcaps ("invalid caps", garbage fixation
         // like 1x70@0/1 + gst_util_fraction CRITICALs) and had to rely on
         // sticky-event retry to recover when the real caps arrived.
-        // Field logs 2026-07-10 (Kalin Iris Xe + Tester B UHD 620) showed
+        // Field logs 2026-07-10 (Kalin Iris Xe + a low-end Intel UHD 620 laptop) showed
         // this fired on every camera enable. With no static caps, appsrc
         // negotiates nothing until the first real sample.
         g_object_set(m_bgAppsrc,
@@ -3867,7 +3867,7 @@ void PublishPipeline::onIceCandidate(GstElement *, guint mlineIndex, gchar *cand
 // 0.41.0-beta — ensure the Opus media block carries the voice-mode +
 // FEC fmtp parameters so the PEER also encodes that way (our local
 // `opusenc` settings only affect what WE transmit, not what arrives).
-// Telegram's tgcalls sets useinbandfec=1 + usedtx=0 + maxaveragebitrate
+// libwebrtc-based voice clients commonly set useinbandfec=1 + usedtx=0 + maxaveragebitrate
 // explicitly for the same reason. Looks for the existing `a=fmtp:<pt>`
 // line for the Opus payload type and rewrites it; if missing, inserts
 // one after the matching `a=rtpmap:<pt> opus/...` line.
@@ -4591,7 +4591,7 @@ GstElement *PublishPipeline::onRequestAuxSender(GstElement *, GObject *,
     //                       the wire can carry, so excess bytes drop and
     //                       the receiver sees decoder artifacts even
     //                       though distinct ≈ delivered (a field case).
-    //   0.31.2+      600k — libwebrtc / Zoom-ish 720p30 floor: enough
+    //   0.31.2+      600k — libwebrtc / usual call-app 720p30 floor: enough
     //                       to encode moving content at acceptable
     //                       quality, low enough that a marginal uplink
     //                       doesn't sustain constant loss. GCC remains
@@ -4671,7 +4671,7 @@ void PublishPipeline::applyBweToLayers(int estimateBps)
     // 0.51.14 anti-flap: an estimate hovering near a threshold flipped a layer
     // ACTIVE/MUTED every few seconds (each flip = keyframe + visible quality
     // jump). The gate DROPS fast but only RE-ADDS after the estimate stays above
-    // re-open this long. See BweLayerGate.h. (Tester A ~1.9 Mbps field repro.)
+    // re-open this long. See BweLayerGate.h. (A tester's ~1.9 Mbps field repro.)
     // 0.52.4: the dwell is now HEADROOM-SCALED (bweReopenDwellMs) — a flat 4 s
     // latched the high layer off for seconds after a single dip on a healthy LAN
     // ("stuck at 180p, won't climb back"); near a threshold it stays the full 4 s.
@@ -4746,7 +4746,7 @@ void PublishPipeline::applySharedFramerate(int fps)
     // can't satisfy, and it threw NOT_NEGOTIATED (-4) on pub-dummyvideo /
     // bg-appsrc / enc-queue, WEDGING the whole video path → the camera froze on
     // BOTH ends (and the wedged-but-still-fed bg-appsrc was the memory leak fixed
-    // in 0.51.4). Proven from Kalin+Tester A's log: "load controller set send
+    // in 0.51.4). Proven from Kalin's and a tester's log: "load controller set send
     // framerate 20 fps" was immediately followed by those three NOT_NEGOTIATED
     // errors. The encode-load controller now sheds via simulcast LAYERS only
     // (setLayerActive → valve drop, which renegotiates nothing). A real fps knob
@@ -5246,7 +5246,7 @@ void PublishPipeline::onGccBitrate(GObject *gcc, GParamSpec *, gpointer userData
     // this, NOT the clamped value. Once the cap latches m_maxBitrate low, clamping
     // est to m_maxBitrate would pin every future sample below the restore
     // threshold so the cap could never lift → video stuck low for the whole call
-    // even after the link recovered (field: 1080p → low → stayed low, Kalin↔Tester D/SA).
+    // even after the link recovered (field: 1080p → low → stayed low, Kalin↔a far-region tester).
     const int rawBps = (int)est;
     if (est > (guint)self->m_maxBitrate) est = (guint)self->m_maxBitrate;  // encoder-bitrate path only
 

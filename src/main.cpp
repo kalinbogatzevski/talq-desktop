@@ -1310,7 +1310,7 @@ int main(int argc, char *argv[])
     });
 
     // Screen-share reliability — surface the auto-retry + the give-up to the
-    // user instead of a silent dead share (Tester A field report: "I clicked share
+    // user instead of a silent dead share (a field tester's report: "I clicked share
     // and nothing happened for ~30 s"). screenShareRetrying fires per bounded
     // auto-retry (so the user sees TalQ is working on it, not frozen);
     // screenShareFailed fires once after the retry budget is exhausted, with a

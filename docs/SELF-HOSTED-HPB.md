@@ -64,8 +64,8 @@ the camera cap for sharp shared screens, since screen content benefits
 far more from bitrate than camera does.
 
 Pick values for *your* bandwidth budget. The numbers above are a
-"high quality, ample bandwidth" profile (camera ≈ 4 Mbit/s ≈ Zoom/Teams
-1080p; screen ≈ 12 Mbit/s ≈ near-lossless). For constrained links,
+"high quality, ample bandwidth" profile (camera ≈ 4 Mbit/s ≈ mainstream
+call apps' 1080p; screen ≈ 12 Mbit/s ≈ near-lossless). For constrained links,
 3 Mbit/s / 6 Mbit/s is a safe HD profile.
 
 ### Apply

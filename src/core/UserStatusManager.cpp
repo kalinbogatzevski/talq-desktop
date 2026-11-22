@@ -43,7 +43,7 @@ constexpr int    kStatusReadCapMs = 4000;
 // app sends nothing to it), so TalQ approximates that by asking often. Do Not
 // Disturb set on a phone therefore reaches the PC within this many ms, not
 // within a minute. One small GET per user per interval, no write.
-// COST (measured on ncloud, 2026-10-02: ~2.7 requests/s in total, ~64% of it chat
+// COST (measured on a production Nextcloud, 2026-10-02: ~2.7 requests/s in total, ~64% of it chat
 // and room polling): on top of the 60 s heartbeat's own read this adds
 // 60000/kStatusPollMs GETs per client per minute - about +3 at 20 s, i.e. roughly
 // +1 request/s for ~22 clients. Halve the interval only if that headroom exists.
@@ -582,7 +582,7 @@ void UserStatusManager::revertStuckCall()
         //   Stage 1: the Talk-specific revert endpoint (restores the pre-call
         //    snapshot on the user_status app side). Works on most NC builds.
         //   Stage 2 (fallback): standard /message DELETE — clears the custom
-        //    status Talk set. Field report (NC build in ZA): /revert/call 404s
+        //    status Talk set. Field report (one production NC build): /revert/call 404s
         //    on that server and the "In a call" message stays sticky. Now safe
         //    to chain because we've confirmed messageId=="call" above.
         m_api->delMustComplete(statusPath(QStringLiteral("/revert/call")), {}, this,

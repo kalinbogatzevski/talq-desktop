@@ -62,8 +62,8 @@ namespace talq {
 
 enum class AlignMode { Off, Observe, On };
 
-// The ONE place the shipped default lives. On since 0.79.2 (Zenbook bench, Phase E: the canceller
-// works with it and fails without it; the Yoga, which has no echo path, never shifts). Known limit:
+// The ONE place the shipped default lives. On since 0.79.2 (bench on the second test laptop, Phase E: the canceller
+// works with it and fails without it; the first test laptop, which has no echo path, never shifts). Known limit:
 // a far end that echoes a headset user back looks like a late reference (see the plan doc);
 // TALQ_AEC_ALIGN=off|observe switches it back.
 constexpr AlignMode kAlignDefaultMode = AlignMode::On;

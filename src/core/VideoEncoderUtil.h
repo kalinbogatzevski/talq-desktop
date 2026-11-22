@@ -88,7 +88,7 @@ inline std::atomic<int> &talqDecodeFallbackStage()
 // d3d11 decoders and promote nvcodec's.
 //
 // This exists because of a real field failure (2026-07-13, Kalin's RTX 3070 laptop
-// and Tester D's RTX 2060 desktop — BOTH Intel iGPU + NVIDIA hybrids). GStreamer's
+// and a tester's RTX 2060 desktop — BOTH Intel iGPU + NVIDIA hybrids). GStreamer's
 // d3d11 decoder could not obtain a video device on either box:
 //     gst_d3d11_device_get_video_device_handle: D3D11 call failed:
 //         0x80004002, No such interface supported        (E_NOINTERFACE)

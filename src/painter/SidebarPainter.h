@@ -231,7 +231,7 @@ private slots:
 
 private:
     // ── Layout ──
-    static constexpr int RowHeight = 62;       // compact, Telegram-style
+    static constexpr int RowHeight = 62;       // compact, like common chat apps
     static constexpr int RowHeightSqueezed = 52;
     // Tag section header. Deliberately less than half a conversation row: a
     // header is a label, and at full row height a few sections would push the

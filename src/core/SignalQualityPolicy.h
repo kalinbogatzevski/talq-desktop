@@ -3,7 +3,7 @@
 #include <cstdint>
 
 // SignalQualityPolicy -- pure, per-remote-participant bucketing + hysteresis
-// for the per-tile signal-quality bars glyph (Zoom/Teams-style). CallManager
+// for the per-tile signal-quality bars glyph (as in other call apps). CallManager
 // feeds it a WINDOWED inbound-RTP loss fraction + latest jitter sample once
 // per 2 s updateCallStats tick (the same tick SubscriberStallPolicy already
 // runs its frame-stall check on) -- see SubscribeWebrtcSrc::pollInboundRtp().
@@ -16,7 +16,7 @@
 // average).
 //
 // Bucketing (4 levels; exact cutoffs are a tuning knob, not a hard
-// requirement -- these mirror common Zoom/Meet-style heuristics). Loss and
+// requirement -- these mirror common call-app heuristics). Loss and
 // jitter are each bucketed independently against the same 4-level ladder,
 // and the OVERALL bucket is the WORSE of the two:
 //   GOOD  loss < 1%   , jitter < 30 ms   -> full bars

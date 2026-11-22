@@ -78,8 +78,8 @@ public:
     // glReadPixels straight into client memory, a full CPU↔GPU sync that
     // parked the worker for the whole 4-pass GPU render every frame
     // (measured 18.8 ms of the 44 ms worker total at 720p — the single
-    // biggest item behind Kalin's 2026-07-13 "talq eats much more CPU on
-    // my zenbook" report). Now the render is read into a pixel-pack
+    // biggest item behind Kalin's 2026-07-13 "talq eats much more CPU" report
+    // on a test laptop). Now the render is read into a pixel-pack
     // buffer asynchronously and MAPPED one call later, when the GPU has
     // long finished, so the CPU never waits. The first call after
     // init / resolution change / discardPendingReadback() maps its own

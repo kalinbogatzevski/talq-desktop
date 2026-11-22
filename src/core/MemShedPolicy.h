@@ -2,7 +2,7 @@
 
 // Pure decision logic for the host-protection memory watchdog (CallManager's
 // onLoadTick): hard-shed every peer to the 180p layer when memory genuinely
-// overloads the host (original field case: Tester D ~2 GB and climbing on a
+// overloads the host (original field case: a tester at ~2 GB and climbing on a
 // stalled hybrid-GPU decode, chopped audio), restore when it eases.
 // Hysteresis on every mark so it cannot oscillate. No Qt, no GStreamer — the
 // hysteresis is unit-tested as a sequence in tests/mem_shed_policy_test.cpp.

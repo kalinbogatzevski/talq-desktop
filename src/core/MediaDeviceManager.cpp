@@ -489,7 +489,7 @@ void MediaDeviceManager::resolveAndPersistCameraSrcCaps()
         for (const CameraMode &m : modes)
             if (m.key() == choice) { chosen = m; break; }
     }
-    // CRITICAL (0.31.0 Zenbook regression): a forced exact caps that the
+    // CRITICAL (0.31.0 test-laptop regression): a forced exact caps that the
     // actually-opened mfvideosrc instance cannot negotiate kills the
     // camera outright — no LED, no preview, no capture. Auto therefore
     // NEVER hard-forces: empty caps → PublishPipeline's permissive

@@ -11,7 +11,7 @@
 // Without the dwell, an estimate hovering near a threshold makes a layer flip
 // ACTIVE/MUTED every few seconds (each flip costs a keyframe + visible quality
 // jump) — the "camera quality keeps changing, mostly down, rarely up" field
-// report (Tester A, 2026-06-18, ~1.9 Mbps congested link).
+// report (a tester, 2026-06-18, ~1.9 Mbps congested link).
 #pragma once
 
 namespace talq {

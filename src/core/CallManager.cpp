@@ -173,7 +173,7 @@ void CallManager::startRingtone() {
         s.endGroup();
         if (id == "none") return;
         // Silent (the call window still pops up) while another app has the mic --
-        // a Zoom/Teams ring would go straight into the user's headset. Away
+        // a ring during another app's call would go straight to the headset. Away
         // alone does NOT silence it: auto-away from inactivity is exactly when a
         // ring must be heard. MicInUsePolicy.h. Do Not Disturb never gets here:
         // ringIncomingCall refuses the call before it enters Incoming. This
@@ -391,7 +391,7 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
     // But these latches must NOT be permanent: the GPU can change between sessions
     // (a docked eGPU, a swapped card, a driver update) and a toolchain/GStreamer
     // upgrade can change what works — a stale latch otherwise pins a now-capable
-    // box to 3×software-x264 (CPU-melting; field: Tester D's NVIDIA box wrongly stuck
+    // box to 3×software-x264 (CPU-melting; field: tester B's NVIDIA box wrongly stuck
     // on software after the 0.57 toolchain upgrade, nvh264enc available + GPU
     // Capable yet forced to x264). So key the latches on an ENVIRONMENT
     // FINGERPRINT — app version + GPU adapter names. When it changes, clear the
@@ -455,10 +455,10 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
     });
     connect(m_backgroundEngine, &BackgroundEngine::backgroundPassthroughNoImage,
             this, [this]() {
-        // 0.60.6 (Tester B's foggy-window RCA): Image mode with no image chosen is a
+        // 0.60.6 (a tester's foggy-window RCA): Image mode with no image chosen is a
         // MISCONFIGURATION, not a hide-my-room request, so the engine sends real
         // video (there is no concealment intent to betray). But it must not be
-        // SILENT — Tester B sat through a whole call not knowing why her camera
+        // SILENT — the tester sat through a whole call not knowing why the camera
         // looked wrong. Tell the user their real video is going out and why.
         qInfo() << "CallManager: background is Image mode with NO image selected —"
                    " sending normal video (pick an image in Settings)";
@@ -519,7 +519,7 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
     // mid-call and our camera was INTENDED but had failed (unavailable), retry it
     // now that the device set changed — a camera that comes back auto-resumes
     // instead of staying dark. We deliberately do NOT auto-SWITCH the active
-    // device on a new plug (Zoom/Teams behaviour: make it available, don't yank).
+    // device on a new plug (the usual call-app behaviour: make it available, don't yank).
     if (m_deviceManager) {
         connect(m_deviceManager, &MediaDeviceManager::devicesChanged, this, [this]() {
             if ((m_state == Active || m_state == Connecting)
@@ -626,8 +626,8 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
         // per-WebSocket-session; a reconnect mints a NEW sid that arrives via
         // roomPeerJoined and resubscribes fresh). The old code recoverSubscriber'd
         // the dead sid, which re-requested an offer the MCU rejects forever
-        // ("Not allowed to request offer." every ~8s = the not_allowed STORM Tester C
-        // triggered when his session churned 46PWZPP8->EVJJ0EE7). Instead DROP the
+        // ("Not allowed to request offer." every ~8s = the not_allowed STORM a tester
+        // triggered when their session churned 46PWZPP8->EVJJ0EE7). Instead DROP the
         // zombie + purge its requestoffer bookkeeping so we stop chasing it. Purge
         // unconditionally (even when not Active) so a churn during our own
         // Reconnecting can't leave dead-sid state armed.
@@ -658,7 +658,7 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
     // RTP-blasting a dead publisher handle (black-holed: packets-sent may keep
     // rising so the publisher-stall watchdog never trips) while every peer
     // re-subscribes to a session with nothing behind it — the room-wide outage
-    // Tester C's session-flip caused. Recover deterministically under the new sid.
+    // a tester's session-flip caused. Recover deterministically under the new sid.
     connect(m_signaling, &SignalingClient::sessionReset, this,
             [this](const QString &newSid) {
         if (m_state != Connecting && m_state != Active && m_state != Reconnecting)
@@ -876,7 +876,7 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
             // reap-race re-assert must NOT rebuild it, or the fresh sub is killed
             // before its first I-frame decodes → it never reaches "live" → the
             // infinite ~6s rebuild loop that stranded a re-shared screen on
-            // "Starting" (Kalin↔Tester A 0.52.14). So while young AND never-decoded:
+            // "Starting" (Kalin↔tester A 0.52.14). So while young AND never-decoded:
             // re-PLI to hurry the keyframe and IGNORE the re-offer. A GENUINE
             // re-share (sub WAS live → frameMark>0) skips this and falls through to
             // rebuild (drops the frozen frame). Can't strand a dead build: once
@@ -921,7 +921,7 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
                     // build wall-clock grace. (a) is the load-bearing one: the
                     // reap-race re-assert lands at +5s AND +11s, but
                     // kScreenSubStartupGraceMs is shorter than +11s, so a sub that
-                    // reaches "checking" early and stays there (Tester A 0.52.16) would
+                    // reaches "checking" early and stays there (tester A 0.52.16) would
                     // age out and be torn down by the +11s rebuild mid-pairing. A sub
                     // pairing ICE must never be killed by a redundant re-offer; the
                     // only re-offers are the 2 reap re-asserts, so "hold while
@@ -1022,7 +1022,7 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
                 // build; a slow re-share can burn all of it while ICE is still
                 // "checking", so the publisher's +5/+11s reap-race re-assert rebuilds
                 // a sub that was about to connect → the churn. 0.52.16 re-stamped on
-                // connected/completed ONLY — but Tester A's 0.52.16 receiver log showed
+                // connected/completed ONLY — but tester A's 0.52.16 receiver log showed
                 // the sub reaching "checking" (remote candidates in, pairs forming)
                 // and the +11s rebuild killing it RIGHT THERE, landing on a fresh sid
                 // whose candidates were mis-delivered to the dying sub → it never
@@ -1220,7 +1220,7 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
             // publisher's +5/+11s reap re-assert can then REBUILD this sub a beat
             // AFTER those candidates land — routed only to the (about-to-die) old
             // sub they're lost, and the rebuilt sub STARVES → stuck "Starting your
-            // share" (Tester A 0.53.0, sid 8389…/10:41:57: "flushing 0 queued candidates"
+            // share" (tester A 0.53.0, sid 8389…/10:41:57: "flushing 0 queued candidates"
             // → no remote candidates → no ICE). handleScreenOffer flushes this buffer
             // into the (re)built sub, covering BOTH the initial-build (0.52.16) and
             // rebuild starvation. !isOwnSession mirrors the camera path: never buffer
@@ -1304,7 +1304,7 @@ CallManager::CallManager(ApiClient *api, SignalingClient *signaling, MediaDevice
     m_statsTimer.setInterval(2000);
     connect(&m_statsTimer, &QTimer::timeout, this, &CallManager::updateCallStats);
 
-    // Publisher reconnect timer (Zoom-style — NEVER auto-drops the call).
+    // Publisher reconnect timer (never-drop reconnect — NEVER auto-drops the call).
     // Armed with exponential backoff by recoverPublisher() while the call is
     // in the Reconnecting state; each fire rebuilds the publisher pipeline and
     // re-offers to the MCU. A fire that arrives after we already recovered
@@ -1569,7 +1569,7 @@ void CallManager::detectGpuClass()
     // A hardware H.264 encoder counts only if it EXISTS, was not marked
     // non-working by the #74 out-of-process probe on THIS GPU, and the runtime
     // "HW encoder failed, fell back to x264" latch is not set. This catches the
-    // Tester C class: a box whose HW encoder is present but actually running on
+    // field case: a box whose HW encoder is present but actually running on
     // software — the old bare-factory check mislabelled it Capable/WeakIgpu.
     bool hwEnc = false;
     for (const char *e : { "nvh264enc", "qsvh264enc", "mfh264enc" }) {
@@ -1842,7 +1842,7 @@ void CallManager::updateCallStats()
         const bool muted   = (p && p->videoMuted());
         const bool pending = m_pendingRequestOffers.contains(sid);
 
-        // Per-tile signal-quality glyph (loss+jitter bars, Zoom/Teams-style).
+        // Per-tile signal-quality glyph (loss+jitter bars, as in other call apps).
         // Read back this subscriber's LAST completed inbound-rtp get-stats
         // reply (one-tick-stale — pollInboundRtp() below refreshes it for
         // the NEXT tick, exactly like the publisher stall watchdog reads
@@ -1938,7 +1938,7 @@ void CallManager::updateCallStats()
     // nothing else observes the dead send leg while the encoder + nicesink
     // hot-loop ~89x/s (it froze a peer's laptop). packets-sent ceasing to rise
     // is the one observable signal. On a sustained stall, route through the
-    // EXISTING recoverPublisher (publisher-only rebuild, Zoom-style -- never a
+    // EXISTING recoverPublisher (publisher-only rebuild, the never-drop path -- never a
     // call drop): the rebuild stop()s the flooding pipeline, ending the flood.
     // Suppressed while a rebuild/retry is in flight or a screen-share is tearing
     // down, so it can't double- or false-fire; the policy fires once then
@@ -2309,8 +2309,8 @@ void CallManager::flushDeferredRequestOffers()
 // onParticipantJoinedCall fix covers peers that join AFTER us, but a peer ALREADY
 // in the call when WE joined had its join event fire while we were still
 // Idle/Incoming (before the subscribe could run) — so a LATE joiner never saw an
-// already-present peer until that peer toggled their camera (field: Tester D joined
-// last and never saw Tester A). requestPeerStream self-dedupes.
+// already-present peer until that peer toggled their camera (field: tester B joined
+// last and never saw tester A). requestPeerStream self-dedupes.
 //
 // Two legs. The periodic one (onLoadTick, which only starts ticking once the
 // publisher is built) is the backstop. The join-confirmed one is the fast path:
@@ -2587,7 +2587,7 @@ bool CallManager::buildAndStartPublisher()
                 return;
             }
             // This rebuild attempt has concluded (failed); clear the in-flight
-            // guard so recoverPublisher() can arm the next backoff. Zoom-style:
+            // guard so recoverPublisher() can arm the next backoff. Never-drop rule:
             // NEVER auto-drop — enter Reconnecting and keep retrying.
             concludePublisherRebuild();
             if (m_state == Active || m_state == Connecting)
@@ -3643,8 +3643,8 @@ void CallManager::hangUp() {
     // churns: the peer's inCall flag can flip 7->0->7->0 within ~150ms as both
     // sides leave, and the transient 0->7 edge looks exactly like "a peer just
     // joined the call = incoming ring". Suppress re-detection on this token for a
-    // short window (see onIncomingCallDetected). Field: Kalin↔Tester A, a phantom
-    // incoming call from Tester A fired ~2s after Kalin hung up.
+    // short window (see onIncomingCallDetected). Field: Kalin↔tester A, a phantom
+    // incoming call from tester A fired ~2s after Kalin hung up.
     m_lastHangupToken = m_callToken;
     m_lastHangupTime  = QDateTime::currentDateTime();
     // #79 -- also stash the peer session(s) we were in a call with, BEFORE
@@ -3725,7 +3725,7 @@ void CallManager::toggleCamera() {
     if (m_cameraOn) { m_cameraUnavailable = false; m_cameraGraceRetries = 0; }
     emit cameraChanged();   // UI button reflects the intent immediately
 
-    // D3 — COALESCE the actual device enable/disable. Fast mute-mashing (Tester C
+    // D3 — COALESCE the actual device enable/disable. Fast mute-mashing (a tester
     // toggled the camera ~10× in one call) otherwise fires a burst of
     // enable/disable on the exclusive MF source, where an async NULL can overtake
     // a later sync PLAYING and park the device mid-transition (camera wedged off
@@ -3866,7 +3866,7 @@ void CallManager::dispatchScreenSendoffer()
     // reference, a slow reconnect) can cause -- if OUR OWN subscribe to a
     // peer isn't tracked yet at the moment we start sharing, that peer would
     // silently never be told a screen offer is available at all (field:
-    // Kalin -> Tester A share never arriving despite the primary call otherwise
+    // Kalin -> tester A share never arriving despite the primary call otherwise
     // working). m_participants is the full room roster and doesn't depend
     // on our own subscribe state being in sync.
     QSet<QString> peers(m_subscribePipelines.keyBegin(), m_subscribePipelines.keyEnd());
@@ -4028,7 +4028,7 @@ void CallManager::buildAndStartSharePipeline(int monitorIndex, quintptr windowHa
         // NOT unshare, so the server-side screen publisher SURVIVES — and the
         // signaling server pins it to the FIRST sid it saw, rejecting ICE
         // candidates for any other ("candidate message sid (X) does not match
-        // publisher sid (Y)", hub.go:3019, storm log 2026-07-08) — a retry
+        // publisher sid (Y)", hub.go:3019, HPB log 2026-07-08) — a retry
         // under a fresh sid could never converge no matter what the encoder
         // did. A re-offer with the MATCHING sid takes the server's update()
         // path instead. stopScreenShare() clears the sid, so a genuinely new
@@ -4512,7 +4512,7 @@ void CallManager::onLoadTick()
             // Frames are OUTPUT by the decoder but the content is frozen (<=1
             // distinct) = the HW decoder is stuck. Catch it even at a LOW output
             // fps: a hybrid-GPU d3d11 stall delivers ~2 fps / 1 distinct (field:
-            // Tester A receiving Tester D's 1080p), which the old >=3 fps gate missed, so
+            // tester A receiving tester B's 1080p), which the old >=3 fps gate missed, so
             // the demote never fired and the peer stayed frozen. Gated by the
             // d3d11-fault flag above, so a healthy box never reaches here.
             if (s->rxVideoFps() >= 1 && s->rxDistinctVideoFps() <= 1) { decodingBadly = true; break; }
@@ -4529,7 +4529,7 @@ void CallManager::onLoadTick()
     }
 
     // ── HOST-PROTECTION memory watchdog (Kalin 2026-06-30; reworked 2026-07-13) ──
-    // The receive/decode path can balloon and melt the host — field: Tester D's box
+    // The receive/decode path can balloon and melt the host — field: tester B's box
     // hit ~2 GB while a hybrid-GPU d3d11 decoder was stalled, with chopped audio.
     // Process memory is an INDEPENDENT signal (the decode-load proxy was disabled
     // in 0.52.1 for oscillating), so use it with hysteresis: on trip, SHED hard —
@@ -4849,7 +4849,7 @@ void CallManager::onShareConfirmed()
 // release: a back-to-back share (stop, then re-share within ~30 s) re-acquired
 // mfh264enc while the prior session was still freeing, so the new encoder
 // produced no output and outbound RTP never confirmed — every ~10 s confirm-
-// retry re-collided, and only a long idle (~60 s) freed it (Tester A field repro
+// retry re-collided, and only a long idle (~60 s) freed it (tester A field repro
 // 2026-06-18, single AMD Radeon, both camera+screen on mfh264enc). The per-poll
 // packets-sent diag in ScreenSharePipeline confirms whether 1.5 s is enough or
 // the screen encoder needs a software (x264) fallback on repeated HW failure.
@@ -4868,7 +4868,7 @@ void CallManager::onShareConfirmTimeout()
         // On HW-encoder boxes the dominant no-confirm cause is a hardware
         // session collision (the encoder opens but produces nothing —
         // packets-sent pinned in the RTP confirm poll). Retrying on the SAME
-        // hardware re-collides every 8 s until retries exhaust (Tester A
+        // hardware re-collides every 8 s until retries exhaust (tester A
         // 2026-06-18 mf, Kalin 2026-07-08 qsv), so the rebuild goes software
         // (x264) — it cannot collide. Cleared on the next fresh user start.
         m_ssForceSwEncoder = true;
@@ -5246,7 +5246,7 @@ void CallManager::rejoinRoomThenRepost(int gen, const QString &token, bool withV
 
     // Conversation list FIRST, then LEAVE, then join again. After a fresh Nextcloud session lost
     // its first participants/active, only a session that has served GET /v4/room (or has seen an
-    // earlier participants/active) retains the next one. Measured against ncloud 2026-10-08,
+    // earlier participants/active) retains the next one. Measured against a production Nextcloud 2026-10-08,
     // deterministic over repeats:
     //   a room join happened in the new session, the join was lost (404):
     //     retry [participants/active, call] -> 200      retry [GET room, participants/active, call] -> 200
@@ -5598,7 +5598,7 @@ void CallManager::startCallMedia()
 
     // --- MCU mode: build + start the publisher (send leg). ---
     // Factored into buildAndStartPublisher() so the
-    // Zoom-style reconnect path can rebuild the publisher on
+    // never-drop reconnect path can rebuild the publisher on
     // the cached STUN/TURN without re-joining the call.
     // Review CR-7: never build over an existing publisher -- buildAndStartPublisher
     // assigns m_publishPipeline without stopping the old one, which would leak a
@@ -5898,7 +5898,7 @@ void CallManager::leaveCallOnServer(const QString &token, bool wasJoined,
     body["all"] = false;
     // Must-complete: the DELETE MUST land or the other party stays "in the
     // call". delMustComplete retries on confirmed non-delivery (status 0 /
-    // 5xx — the high-latency/flaky-link case, ZA server from BG), bounded
+    // 5xx — the high-latency/flaky-link case, a server in a distant region), bounded
     // and non-blocking. teardown() already ran setState(Idle)+callEnded
     // synchronously; only the status-revert hook waits on onDone.
     m_api->delMustComplete("apps/spreed/api/v4/call/" + token, body, this,
@@ -6549,7 +6549,7 @@ void CallManager::handleParticipantJoined(const QString &sessionId, int flags, c
         // (the first joiner); every ADDITIONAL conference peer fell through to here
         // with NO subscriber, so their video never arrived until THEY toggled their
         // camera (the participantFlagsChanged off->on edge — exactly the field bug
-        // "we had to stop/start cameras; Tester D saw Kalin but not Tester A"). requestPeerStream
+        // "we had to stop/start cameras; tester B saw Kalin but not tester A"). requestPeerStream
         // self-dedupes on m_subscribePipelines / m_pendingRequestOffers, so this is a
         // no-op for the already-subscribed first peer and on repeated participant-updates.
         if ((m_state == Connecting || m_state == Active)

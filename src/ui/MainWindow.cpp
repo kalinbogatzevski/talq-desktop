@@ -1291,7 +1291,7 @@ void MainWindow::buildChatPage()
     m_header->setShiftStatus(m_shiftStatus);
     chatLayout->addWidget(m_header);
 
-    // Topic tabs (Telegram-style horizontal strip below the header).
+    // Topic tabs (compact horizontal strip below the header).
     m_topicTabBar = new TopicTabBar(chatCol);
     m_topicTabBar->setModel(m_threads);
     // "Count muted chats and topics" (Settings > Notifications): whether a silenced topic keeps its
@@ -1415,7 +1415,7 @@ void MainWindow::buildChatPage()
     m_chatPainter->hide();
     chatLayout->addWidget(m_chatPainter, 1);
 
-    // ── Connection-status strip (Telegram-style "Connecting…"; restyleChrome) ──
+    // ── Connection-status strip (compact "Connecting…"; restyleChrome) ──
     // Deliberately quiet: a thin, centred, muted bar — NOT an alarming error
     // panel — so it reads as "reconnecting in the background." It never grabs
     // focus or disables a widget, so the cached chat list + history stay fully
@@ -1477,7 +1477,7 @@ void MainWindow::buildChatPage()
     connect(&m_healthPollTimer, &QTimer::timeout, this, &MainWindow::refreshConnectionHealth);
     m_healthPollTimer.start();
 
-    // Animate the trailing dots (Telegram cycles "Connecting" with 1–3 dots) so
+    // Animate the trailing dots (common chat apps cycle "Connecting" with 1–3 dots) so
     // the strip reads as actively working, not stuck. Runs only while offline.
     m_offlineAnimTimer.setInterval(450);
     connect(&m_offlineAnimTimer, &QTimer::timeout, this, [this]{
@@ -1798,7 +1798,7 @@ void MainWindow::buildChatPage()
         m_editingMessageId = 0;
     });
     // Up-arrow on an empty composer → edit the newest own editable message
-    // (Telegram-style). Skip system rows, files (not editable), and unacked
+    // (common chat-app behaviour). Skip system rows, files (not editable), and unacked
     // optimistic rows. The server enforces the edit time-window; if it's too
     // old the edit PUT fails and editMessage surfaces the error.
     connect(m_composer, &ComposerWidget::editLastRequested, this, [this]() {
@@ -3260,7 +3260,7 @@ void MainWindow::onConversationSelected(const QString &token, const QString &nam
     m_conversations->clearUnreadForToken(token);
     // joinRoom handles both REST (/participants/active) and signaling WebSocket.
     //
-    // CALL GUARD (field 2026-07-03, Kalin↔Tester A "total regression"): the
+    // CALL GUARD (field 2026-07-03, Kalin↔a field tester "total regression"): the
     // signaling session can only be in ONE room, and a live call is BOUND to
     // its room + the Nextcloud session that joined it. Re-pointing the
     // signaling session at a different room here (or even re-joining the
@@ -3613,7 +3613,7 @@ void MainWindow::refreshWelcomeStatus()
     }
 }
 
-// React to the REST layer's reachability verdict, Telegram-style: just show or
+// React to the REST layer's reachability verdict the common chat-app way: just show or
 // hide the quiet "Connecting…" strip and refresh the Home tile. Intentionally
 // NO desktop/OS notification — chat apps don't toast you for a transient
 // connection blip — and nothing here disables any widget, so the cached chat
@@ -4399,7 +4399,7 @@ void MainWindow::restyleChrome()
                                       .arg(hx(t.divider)));
 
     if (m_offlineBanner) {
-        // Quiet, neutral strip (Telegram-style): a muted secondary-surface fill
+        // Quiet, neutral strip (as in common chat apps): a muted secondary-surface fill
         // with a hairline divider and soft secondary text — informational, not
         // an alarm. No red: offline is a transient background state here, not an
         // error the user must act on.
@@ -7114,7 +7114,7 @@ void MainWindow::ensureSettingsDialog()
     // The Settings live background preview opens a SECOND camera consumer. During
     // a call the publisher already holds the (exclusive, Windows MF) camera, so
     // the preview must not open the device or it steals it and wedges the in-call
-    // video (Tester A, 0.52.16). Seed the dialog's call-active flag for the current
+    // video (a field tester, 0.52.16). Seed the dialog's call-active flag for the current
     // state and keep it live — a call can start/end while Settings is open.
     m_settingsDialog->setCallActive(m_callManager->state() != CallManager::Idle);
     connect(m_callManager, &CallManager::stateChanged, m_settingsDialog, [this]() {

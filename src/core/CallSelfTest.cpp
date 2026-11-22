@@ -184,7 +184,8 @@ struct Cfg {
     QString server;                                        // no default: this file is in the PUBLIC source
                                                            // tree, so TALQ_TEST_SERVER must name the host
                                                            // (scripts/run-selftest.sh supplies it)
-    QString token       = QStringLiteral("tok6room");     // "TalQ Auto Test": the two bots only
+    QString token;                                         // no default either: TALQ_TEST_TOKEN names the
+                                                           // bots' own room (the runner supplies it)
     QString user, pass;                                    // the account CallManager runs as
     QString calleeUser, calleePass;                        // the harness bot that answers
     QString calleeExe;
@@ -277,7 +278,7 @@ private:
         QCoreApplication::exit(1);
     }
 
-    // Measured with curl against ncloud (cause NOT established): in a fresh
+    // Measured with curl against a production Nextcloud (cause NOT established): in a fresh
     // cookie jar, ONE participants/active followed by POST call/{token} answers
     // 404, and GET room then shows sessionId 0 -- the room session was not
     // retained, and the PHP session cookie changed between requests. What was
@@ -705,11 +706,11 @@ int talqRunCallSelfTest(int argc, char **argv)
     // dispatch. Everything below stays off the shared single-instance lock, the
     // live debug log and the real registry.
     Cfg cfg;
-    cfg.user       = qEnvironmentVariable("TALQ_TEST_USERA", "test-bot-b");
+    cfg.user       = qEnvironmentVariable("TALQ_TEST_USERA");
     cfg.pass       = qEnvironmentVariable("TALQ_TEST_USERA_PASS");
-    cfg.calleeUser = qEnvironmentVariable("TALQ_TEST_USERB", "test-bot");
+    cfg.calleeUser = qEnvironmentVariable("TALQ_TEST_USERB");
     cfg.calleePass = qEnvironmentVariable("TALQ_TEST_USERB_PASS");
-    cfg.token      = qEnvironmentVariable("TALQ_TEST_TOKEN", cfg.token);
+    cfg.token      = qEnvironmentVariable("TALQ_TEST_TOKEN");
     cfg.server     = qEnvironmentVariable("TALQ_TEST_SERVER", cfg.server);
     cfg.logPath    = argValue(argc, argv, "--log");
     if (cfg.logPath.isEmpty())
@@ -744,8 +745,15 @@ int talqRunCallSelfTest(int argc, char **argv)
         return 2;
     }
 
-    // Never ring a person: both accounts must be the dedicated test bots.
-    if (!cfg.user.startsWith("test-bot") || !cfg.calleeUser.startsWith("test-bot")) {
+    if (cfg.token.isEmpty()) {
+        std::fprintf(stdout, "SELFTEST: missing TALQ_TEST_TOKEN (the bots' own room; scripts/run-selftest.sh sets it)\n");
+        return 2;
+    }
+
+    // Never ring a person: both accounts must be the dedicated test bots, whose user ids start
+    // with TALQ_TEST_BOT_PREFIX (set by the runner; the bots are not named in this public source).
+    const QString botPrefix = qEnvironmentVariable("TALQ_TEST_BOT_PREFIX");
+    if (botPrefix.isEmpty() || !cfg.user.startsWith(botPrefix) || !cfg.calleeUser.startsWith(botPrefix)) {
         std::fprintf(stdout, "SELFTEST: refusing to run -- accounts must be test bots (got %s / %s)\n",
                      qPrintable(cfg.user), qPrintable(cfg.calleeUser));
         return 2;

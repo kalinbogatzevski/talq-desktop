@@ -14,7 +14,7 @@
 //      a verdict that will never change on its own, so holding it back for two
 //      minutes only delays the fix.
 //   2. Everything else must OUTLIVE a threshold. TalQ already has a calm,
-//      Telegram-style "Connecting…" strip for ordinary transience; a second,
+//      compact "Connecting…" strip for ordinary transience; a second,
 //      louder warning that fired on every Wi-Fi roam would be noise, and noise
 //      is how the last warning nobody read got ignored.
 //

@@ -113,7 +113,7 @@ enum class JoinFailureAction {
 };
 
 // POST call/{token} answers 404 when Talk finds no participant for the request's
-// session. Measured against ncloud 2026-10-08 (curl, fresh cookie jar, deterministic):
+// session. Measured against a production Nextcloud 2026-10-08 (curl, fresh cookie jar, deterministic):
 // the FIRST participants/active of a brand-new Nextcloud session is not retained --
 // GET room then shows sessionId 0 -- unless the very first request of that session was
 // GET /v4/room; a SECOND participants/active is retained. The real app lists its

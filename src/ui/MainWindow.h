@@ -497,7 +497,7 @@ private:
     void forwardOneMessage(const QVariantMap &msg, const QString &targetToken);
     void relayoutWelcomeTiles();       // recompute columns from the panel width
 
-    // Connection-status strip — a quiet, Telegram-style "Connecting…" bar
+    // Connection-status strip — a quiet, compact "Connecting…" bar
     // shown whenever ApiClient reports the Nextcloud server unreachable (REST
     // calls not landing). Inserted at the top of the chat column so it sits
     // above both the Home screen and an open conversation. It is purely

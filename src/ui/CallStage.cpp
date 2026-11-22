@@ -278,7 +278,7 @@ void CallStage::onFrame(CallParticipant *p, bool screen, const QImage &img)
     // SCREEN frames take the QUALITY path: FastTransformation is nearest-
     // neighbour, which DROPS pixel rows outright — on downscaled screen text
     // that reads exactly as "interlaced / detail missing vertically / fonts
-    // unreadable" (Kalin→Tester A field 2026-07-08; worse the BIGGER the source,
+    // unreadable" (Kalin→a field tester 2026-07-08; worse the BIGGER the source,
     // so "even native res looked bad"). And the cap was in LOGICAL pixels: on
     // a hi-DPI viewer the tile then re-upscaled the decimated image by the
     // device-pixel-ratio (decimate-then-blur). So for screens: cap in PHYSICAL
@@ -319,7 +319,7 @@ static std::string stageKey(CallParticipant *p)
 // CallManager prepends it), so a policy pick maps back to a participant by
 // position. screenLive means a decodable stream RIGHT NOW — flag AND provider:
 // for a peer, screenSharing() alone is true during startup/rebuild frame gaps
-// while screen() is still null; for self, the 0.53.0 Zoom-style self-view
+// while screen() is still null; for self, the 0.53.0 presenter self-view
 // stage needs the local capture preview tap to actually exist.
 std::vector<talq::stage::StageCandidate> CallStage::stageCandidates() const
 {
@@ -452,7 +452,7 @@ QVector<CallStage::Tile> CallStage::computeLayout() const
     // sharing starts), NOT from isScreen (which is true only once the screen
     // provider has DECODED a frame, so it flickers self out to a PiP during a
     // share's startup/rebuild/frame-gap — the wrong-interface bug Kalin hit in a
-    // 3-way call while Tester C was sharing). isScreen still drives what the STAGE
+    // 3-way call while a tester was sharing). isScreen still drives what the STAGE
     // renders; shareActive drives the layout MODE.
     bool shareActive = isScreen || m_call->isScreenSharing();
     if (!shareActive)
@@ -741,7 +741,7 @@ void CallStage::relayout(bool animate)
     }
 
     // 0.41.1-beta — second small PiP for the local screen share so the
-    // user can SEE what they're broadcasting (Zoom/Teams/Meet/Telegram
+    // user can SEE what they're broadcasting (mainstream call-app
     // consensus: never hide the camera PiP for the share — both stay).
     // Anchor to the corner opposite the camera PiP so they don't stack.
     // 0.53.0 — when OUR share is the STAGE (self-view; no peer is sharing) the big
@@ -1191,7 +1191,7 @@ void CallStage::paintTile(QPainter &p, const Tile &t, const PainterTheme &th, bo
     // Hidden when muted (the ✕ already says "no audio").
     const bool showMeter = !cp->audioMuted();
     const qreal meterW = showMeter ? 46.0 : 0.0;
-    // Per-participant signal-quality bars (Zoom/Teams-style). Remote peers
+    // Per-participant signal-quality bars (as in mainstream call apps). Remote peers
     // only -- self has no inbound receive stream to measure -- and only once
     // a stats tick has actually classified this peer (signalQuality() < 0
     // means "no data yet", e.g. before the subscriber's first poll lands).

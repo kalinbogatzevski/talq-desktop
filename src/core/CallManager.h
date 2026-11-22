@@ -68,7 +68,7 @@ class CallManager : public QObject
 public:
     // Reconnecting sits between Active and Ending: the call is logically
     // still up but the publisher media path is being actively rebuilt after
-    // an ICE failure (Zoom-style — we never auto-drop). Appended before
+    // an ICE failure (never-drop reconnect — we never auto-drop). Appended before
     // Ending so Idle..Active keep their existing int values; consumers
     // compare by enum name, not literal.
     enum CallState { Idle, Outgoing, Incoming, Connecting, Active, Reconnecting, Ending };
@@ -252,7 +252,7 @@ public:
     Q_INVOKABLE void stopScreenShare();
     bool isScreenSharing() const { return m_screenSharing; }
     // 0.53.1 — true when the active share is a single WINDOW (not a full monitor).
-    // The Zoom-style self-view stage is shown ONLY for window shares: a MONITOR
+    // The presenter self-view stage is shown ONLY for window shares: a MONITOR
     // share usually contains the TalQ window, so promoting the live share to the
     // stage makes the capture grab TalQ-showing-the-share → a frozen hall-of-mirrors
     // (and the near-static content stalls the receiver into a rebuild). Window shares
@@ -542,7 +542,7 @@ private:
     // pipeline; called by m_cameraApplyTimer after toggle mashing settles.
     void applyCameraState();
 
-    // Publisher (our send leg) reconnect — the Zoom-style "never drop"
+    // Publisher (our send leg) reconnect — the "never drop"
     // counterpart to recoverSubscriber. recoverPublisher() enters/keeps the
     // Reconnecting state and arms m_pubRetryTimer with backoff (never tears
     // the call down). rebuildPublisherAndReoffer() runs on the timer: it
@@ -843,7 +843,7 @@ private:
     QTimer m_ringingSelfCheckTimer;
     QTimer m_statsTimer;
     // Publisher ICE "failed" means our send path to the MCU died (e.g. a
-    // long-haul link revoking ICE consent). Zoom-style recovery: NEVER
+    // long-haul link revoking ICE consent). Never-drop recovery: NEVER
     // auto-drop. On "failed" we enter the Reconnecting state and arm this
     // single-shot timer with exponential backoff; each fire rebuilds the
     // publisher pipeline and re-offers to the MCU (reusing the cached
@@ -1084,14 +1084,14 @@ private:
     // pulling its first keyframe (~2-5s on a re-share). The publisher's reap-race
     // re-assert (+5/+11s) must NOT tear it down or it can never reach "live" → the
     // infinite ~6s rebuild loop that stranded a re-shared screen on "Starting"
-    // (Kalin↔Tester A 0.52.14). Kept in lockstep with the two maps above (cleared
+    // (Kalin↔tester A 0.52.14). Kept in lockstep with the two maps above (cleared
     // everywhere they are; re-stamped only after a successful start()).
     QHash<QString,qint64> m_screenSubBuiltMs;
     static constexpr qint64 kScreenSubStartupGraceMs = 8000;
     // 0.52.17 — last ICE state each screen sub reported. The wall-clock grace above
     // is SHORTER than the publisher's +11s reap-race re-assert, so a sub that reaches
     // ICE "checking" early (FIX 2's candidate queue makes that sooner) and STAYS there
-    // — exactly Tester A's 0.52.16 failure — would age out of the grace and be torn down
+    // — exactly tester A's 0.52.16 failure — would age out of the grace and be torn down
     // mid-pairing by the +11s rebuild. A sub actively PROGRESSING ICE (checking/
     // connected/completed, frameMark==0) must be protected from a redundant-re-offer
     // rebuild regardless of wall-clock; this map drives that check. Lockstep with the
@@ -1151,7 +1151,7 @@ private:
     // the MCU trickles with/just before its offer were DROPPED if they landed
     // before the screen-offer handler built the SubscribePipeline, so the fresh
     // sub started candidate-starved -> ICE never left "new"/"checking" -> the
-    // re-share stuck on "Starting your share" (Kalin<->Tester A 0.52.16, frame-by-
+    // re-share stuck on "Starting your share" (Kalin<->tester A 0.52.16, frame-by-
     // frame in the receiver log). Queue per remote session; the screen-offer
     // handler flushes into the sub right before setRemoteOffer (same contract as
     // the camera path). Cleared in lockstep with m_screenSubscribers.

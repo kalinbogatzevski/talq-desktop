@@ -44,7 +44,7 @@ fi
 # compiler redistributable the Windows SDK exposes on this machine. Lockstep
 # with scripts/build-release.sh: keep windeployqt's copy if present, else fall
 # back to System32, else FATAL (a dev build without it renders blank/crashes
-# on first D3D11/D3D12 RHI use — this is Tester C's missing-DLL report).
+# on first D3D11/D3D12 RHI use — this is a field tester's missing-DLL report).
 if [ -f "$BUILD_DIR/D3Dcompiler_47.dll" ]; then
     : # windeployqt already deployed it
 elif [ -f "/c/Windows/System32/D3Dcompiler_47.dll" ]; then

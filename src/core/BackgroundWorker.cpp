@@ -33,7 +33,7 @@ namespace {
 // epoch boundary or a failing compose always composes/attempts immediately.
 constexpr qint64 kBgCompositeMinIntervalMs = 50;   // = 20 fps target
 
-// 0.60.6 (Tester B's 0.60.5 foggy-window RCA) — consecutive STRUCTURAL compose
+// 0.60.6 (a tester's 0.60.5 foggy-window RCA) — consecutive STRUCTURAL compose
 // nulls before the effect latches off. Mirrors TfliteSegmenter's
 // kRunFailureLatch (60): compose is attempted on every submit while nothing is
 // parked (the rate cap never skips a starved slot), so at the worker's
@@ -311,13 +311,13 @@ void BackgroundWorker::processMailbox()
     // has to come from. maybeLog is rate-limited internally.
     talq::bg::Stats::maybeLog();
 
-    // 0.60.6 P0-d (Tester B's 0.60.5 foggy-window RCA) — once compose has LATCHED
+    // 0.60.6 P0-d (a tester's 0.60.5 foggy-window RCA) — once compose has LATCHED
     // OFF (a structurally-dead compositor this session) it returns null in ~µs
     // without touching ORT or GL. Publish a WORKER-computed content-free mosaic
     // into the output slot so the camera thread re-serves it with a cheap mutex
     // swap, instead of recomputing the mosaic INLINE every frame — that inline
-    // cost was Tester B's UHD 620 cameraHold p50 ~10 ms, which tripped the false
-    // "FREEZE signature" warning for her whole call (ground-truth #7). This is
+    // cost was the tester's UHD 620 cameraHold p50 ~10 ms, which tripped the false
+    // "FREEZE signature" warning for the tester's whole call (ground-truth #7). This is
     // NOT a composite: `completed` stays flat so the zero-composite detector
     // keeps reading structural failure; `mosaicked` counts it instead. The
     // frame is content-free — the room is never revealed. The mailbox's rate
@@ -398,7 +398,7 @@ QImage BackgroundWorker::failCompose(BgFailReason reason)
         return QImage();
 
     // Persistent structural failure — the compositor will not recover this
-    // session (Tester B's old-UHD-620 case: GL compose returns null every frame).
+    // session (the tester's old-UHD-620 case: GL compose returns null every frame).
     // Latch the effect OFF so compose() stops the doomed ORT inference + GL
     // passes, record it for the detector, and surface it ONCE through the
     // engine→CallManager notice. The frame stays obscured by the content-free
@@ -424,7 +424,7 @@ QImage BackgroundWorker::compose(const QImage &rgba, int modeInt,
     const auto m = static_cast<BackgroundEngine::Mode>(modeInt);
     if (m == BackgroundEngine::Mode::None || rgba.isNull()) return QImage();
 
-    // 0.60.6 (Tester B's 0.60.5 foggy-window RCA) — once the effect has latched
+    // 0.60.6 (a tester's 0.60.5 foggy-window RCA) — once the effect has latched
     // off (a structurally-dead compositor this session), do the doomed ORT
     // inference + GL passes NO more: return null immediately. The engine keeps
     // serving the content-free mosaic (fail-closed) and engineDisabled has
@@ -436,7 +436,7 @@ QImage BackgroundWorker::compose(const QImage &rgba, int modeInt,
     }
 
     // Fault-injection seam (TALQ_BG_FORCE_COMPOSE_FAIL). This dev box
-    // composites fine, so Tester B's structural GL failure cannot be reproduced
+    // composites fine, so the tester's structural GL failure cannot be reproduced
     // organically; the seam forces compose() to return null so every ladder
     // rung is reachable here. `persistent` never recovers (→ rung-3 latch);
     // `transient` fails a fixed budget then recovers (→ rung-1 fail-closed +
@@ -475,7 +475,7 @@ QImage BackgroundWorker::compose(const QImage &rgba, int modeInt,
 
     // 0.60.6 — MASK DECIMATION + STATIC-SCENE GATE. Inference (input
     // downscale + ORT Run) was ~26 ms of the 55 ms worker total at 720p on
-    // Kalin's zenbook (the 2026-07-13 "talq eats much more CPU" report),
+    // a test laptop (Kalin's 2026-07-13 "talq eats much more CPU" report),
     // and a silhouette does not change meaningfully in 33 ms — so:
     //   * under MOTION, segment() runs on every SECOND composed frame
     //     (~10 Hz now that composed frames are themselves capped at 20 fps —
@@ -650,12 +650,12 @@ QImage BackgroundWorker::compose(const QImage &rgba, int modeInt,
         return QImage();
     }
 
-    // 0.60.6 (Tester B's 0.60.5 foggy-window RCA) — THE fix for her actual case.
+    // 0.60.6 (a tester's 0.60.5 foggy-window RCA) — THE fix for the tester's actual case.
     // The GL compositor returns a NULL image when makeCurrent / FBO alloc /
-    // readback fails on an old driver (her UHD 620, Build 31.0.101.2130). This
+    // readback fails on an old driver (the tester's UHD 620, Build 31.0.101.2130). This
     // used to fall straight through: a null `out` was recorded as a composite
     // and returned, the engine served the mosaic, and — with nothing detecting
-    // "0 composites all call" — it obscured EVERY frame until she quit. Now a
+    // "0 composites all call" — it obscured EVERY frame until the tester quit. Now a
     // null compositor result is the STRUCTURAL rung: it counts toward the latch
     // so a compositor that is dead this session stops the doomed work and the
     // user is told, instead of a silent foggy window for the whole call.

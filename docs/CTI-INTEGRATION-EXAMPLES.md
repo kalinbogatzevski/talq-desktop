@@ -47,7 +47,7 @@ import asyncio, base64, hashlib, json, struct, threading, time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-AGENT_EXTENSION = "131"          # who this demo pretends you are
+AGENT_EXTENSION = "100"          # who this demo pretends you are
 
 # ── 1. The card source (and pairing) ────────────────────────────────────────
 class Api(BaseHTTPRequestHandler):
@@ -81,7 +81,7 @@ class Api(BaseHTTPRequestHandler):
             # string: you format currency and dates, not TalQ.
             return self._json({
                 "known": True,
-                "title": "Acme Logistics",
+                "title": "Jane Example",
                 "subtitle": f"Account 88123  ·  {phone}",
                 "badges": [{"text": "VIP", "style": "warning"}],
                 "fields": [
@@ -314,8 +314,8 @@ with a stand-in directory near the top of the file:
 
 ```python
 DIRECTORY = {
-    "sam": {"name": "Sam Example", "title": "Support Engineer",
-               "team": "Network Operations", "extension": "214",
+    "sam":    {"name": "Sam Example", "title": "Support Engineer",
+               "team": "Network Operations", "extension": "200",
                "email": "sam@example.com"},
 }
 ```

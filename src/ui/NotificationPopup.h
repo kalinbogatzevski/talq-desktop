@@ -7,7 +7,7 @@
 #include <QTimer>
 
 /**
- * Custom notification popup — Telegram-style slide-in notification.
+ * Custom notification popup — compact slide-in notification.
  * Used for both desktop (frameless top-level window) and in-app popups.
  */
 class NotificationPopup : public QWidget
